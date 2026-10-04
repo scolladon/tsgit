@@ -12,6 +12,7 @@ import { buildPack } from '../primitives/build-pack.js';
 import { assertValidPackIntConfig } from '../primitives/config-read.js';
 import { enumerateBundleObjects } from '../primitives/enumerate-bundle-objects.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
+import type { ClosureTip } from '../primitives/internal/closure-engine.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { readObject } from '../primitives/read-object.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
@@ -53,9 +54,17 @@ export interface BundleCreateResult {
 
 interface Accumulator {
   readonly refs: BundleRef[];
-  readonly wants: ObjectId[];
-  readonly haves: ObjectId[];
+  /** Every tip in git's pending order — `handle_revision_arg`'s. */
+  readonly pending: ClosureTip[];
 }
+
+const want = (acc: Accumulator, id: ObjectId): void => {
+  acc.pending.push({ id, excluded: false });
+};
+
+const exclude = (acc: Accumulator, id: ObjectId): void => {
+  acc.pending.push({ id, excluded: true });
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Ref-name lookup helpers
@@ -85,7 +94,7 @@ const findFullRef = (name: string, allRefs: ReadonlyArray<RefName>): RefName | u
 const addRefToAccumulator = async (ctx: Context, ref: RefName, acc: Accumulator): Promise<void> => {
   const oid = await resolveRef(ctx, ref);
   acc.refs.push({ name: ref, oid });
-  acc.wants.push(oid);
+  want(acc, oid);
 };
 
 const refsWithPrefix = (prefix: string, allRefs: ReadonlyArray<RefName>): RefName[] =>
@@ -122,11 +131,11 @@ const processTip = async (
   const oid = await resolveRevision(ctx, tip);
   const fullRef = findFullRef(tip, allRefs);
   if (fullRef !== undefined) acc.refs.push({ name: fullRef, oid });
-  acc.wants.push(oid);
+  want(acc, oid);
 };
 
-const processExclude = async (ctx: Context, exclude: string, acc: Accumulator): Promise<void> => {
-  acc.haves.push(await resolveRevision(ctx, exclude));
+const processExclude = async (ctx: Context, excluded: string, acc: Accumulator): Promise<void> => {
+  exclude(acc, await resolveRevision(ctx, excluded));
 };
 
 const processRange = async (
@@ -136,11 +145,11 @@ const processRange = async (
   acc: Accumulator,
 ): Promise<void> => {
   const [aExpr, bExpr] = range;
-  acc.haves.push(await resolveRevision(ctx, aExpr));
+  exclude(acc, await resolveRevision(ctx, aExpr));
   const bOid = await resolveRevision(ctx, bExpr);
   const bFullRef = findFullRef(bExpr, allRefs);
   if (bFullRef !== undefined) acc.refs.push({ name: bFullRef, oid: bOid });
-  acc.wants.push(bOid);
+  want(acc, bOid);
 };
 
 const processSymmetricRange = async (
@@ -153,12 +162,15 @@ const processSymmetricRange = async (
   const aOid = await resolveRevision(ctx, aExpr);
   const aFullRef = findFullRef(aExpr, allRefs);
   if (aFullRef !== undefined) acc.refs.push({ name: aFullRef, oid: aOid });
-  acc.wants.push(aOid);
   const bOid = await resolveRevision(ctx, bExpr);
   const bFullRef = findFullRef(bExpr, allRefs);
   if (bFullRef !== undefined) acc.refs.push({ name: bFullRef, oid: bOid });
-  acc.wants.push(bOid);
-  acc.haves.push(...(await symmetricBases(ctx, `${aExpr}...${bExpr}`, [aOid, bOid])));
+  // git's `handle_dotdot_1` pends the merge bases before either side.
+  for (const base of await symmetricBases(ctx, `${aExpr}...${bExpr}`, [aOid, bOid])) {
+    exclude(acc, base);
+  }
+  want(acc, aOid);
+  want(acc, bOid);
 };
 
 const processRevArgs = async (
@@ -295,11 +307,15 @@ export const bundleCreate = async (
     ...(opts.version !== undefined ? { requested: opts.version } : {}),
   });
   const allRefs = await enumerateRefs(ctx);
-  const acc: Accumulator = { refs: [], wants: [], haves: [] };
+  const acc: Accumulator = { refs: [], pending: [] };
   await expandPseudoRefs(ctx, opts, allRefs, acc);
   await processRevArgs(ctx, opts.revs ?? [], allRefs, acc);
   if (acc.refs.length === 0) throw bundleEmpty('no-refs');
-  const closure = await enumerateBundleObjects(ctx, { wants: acc.wants, haves: acc.haves });
+  const closure = await enumerateBundleObjects(ctx, {
+    wants: acc.pending.filter((tip) => !tip.excluded).map((tip) => tip.id),
+    haves: acc.pending.filter((tip) => tip.excluded).map((tip) => tip.id),
+    tips: acc.pending,
+  });
   const refs = deduplicateRefs(acc.refs.filter((ref) => !closure.uninteresting.has(ref.oid)));
   if (refs.length === 0) throw bundleEmpty('no-refs');
   const prerequisites = await makePrerequisites(ctx, closure.boundary);

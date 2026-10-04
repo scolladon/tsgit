@@ -11,6 +11,7 @@ import * as buildPackMod from '../../../../src/application/primitives/build-pack
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import * as enumerateBundleObjectsMod from '../../../../src/application/primitives/enumerate-bundle-objects.js';
+import * as closureEngineMod from '../../../../src/application/primitives/internal/closure-engine.js';
 import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
@@ -1239,6 +1240,171 @@ describe('assertBoundaryCommit', () => {
         // Assert
         expect(result.type).toBe('commit');
         expect(result.id).toBe(commit1);
+      });
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Object types — the bundle walk and its pack-objects feed each type objects
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('bundleCreate: object types assigned while enumerating', () => {
+  const MISSING = `cd${'0'.repeat(38)}` as ObjectId;
+
+  interface TypingRepo {
+    readonly ctx: Context;
+    readonly logged: string[];
+    readonly blob: ObjectId;
+    readonly root: ObjectId;
+    readonly empty: ObjectId;
+  }
+
+  const buildTypingRepo = async (): Promise<TypingRepo> => {
+    const base = await initRepo();
+    const logged: string[] = [];
+    const ctx: Context = { ...base, logger: { error: (line: string) => logged.push(line) } };
+    const blob = await makeBlob(ctx, 'hi\n');
+    const empty = await writeTree(ctx, []);
+    const root = await makeCommitObj(ctx, empty, [], 'root', 1);
+    await setRef(ctx, 'refs/heads/root', root);
+    return { ctx, logged, blob, root, empty };
+  };
+
+  /** A commit stored as spelt, naming `tree` and `parents` whatever they are. */
+  const writeCommitNaming = (
+    ctx: Context,
+    tree: ObjectId,
+    parents: ReadonlyArray<ObjectId>,
+  ): Promise<ObjectId> =>
+    writeObject(ctx, {
+      type: 'commit',
+      id: '' as ObjectId,
+      data: {
+        tree,
+        parents,
+        author: { ...AUTHOR, timestamp: 2 },
+        committer: { ...AUTHOR, timestamp: 2 },
+        message: 'm\n',
+        extraHeaders: [],
+      },
+    });
+
+  const refusalOf = async (ctx: Context, opts: BundleCreateOptions): Promise<unknown> => {
+    try {
+      await bundleCreate(ctx, opts);
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  };
+
+  describe('Given a branch whose commit names a blob as its tree', () => {
+    describe('When bundleCreate packs it', () => {
+      it('Then it logs the blob is not a tree and refuses it as a bad tree object', async () => {
+        // Arrange
+        const { ctx, logged, blob, root } = await buildTypingRepo();
+        await setRef(ctx, 'refs/heads/main', await writeCommitNaming(ctx, blob, [root]));
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(ctx, { revs: [{ tip: 'main' }] });
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'BAD_TREE_OBJECT', id: blob },
+          logged: [`Object ${blob} not a tree`],
+        });
+      });
+    });
+  });
+
+  describe.each([
+    ['names a blob as its parent', (repo: TypingRepo) => [repo.blob], 'blob'],
+    ['names a parent the store lacks', () => [MISSING], 'missing'],
+  ] as const)('Given a branch whose commit %s', (_label, parentsOf, kind) => {
+    const loggedFor = (repo: TypingRepo): string =>
+      kind === 'blob' ? `Object ${repo.blob} not a commit` : `Could not read ${MISSING}`;
+
+    describe('When bundleCreate walks it alone', () => {
+      it('Then it fails to traverse the parents of that commit', async () => {
+        // Arrange
+        const repo = await buildTypingRepo();
+        const tip = await writeCommitNaming(repo.ctx, repo.empty, parentsOf(repo));
+        await setRef(repo.ctx, 'refs/heads/main', tip);
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(repo.ctx, { revs: [{ tip: 'main' }] });
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged: repo.logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED', commit: tip },
+          logged: [loggedFor(repo)],
+        });
+      });
+    });
+
+    describe('When bundleCreate walks it as a range from an excluded root', () => {
+      it('Then it fails the walk setup', async () => {
+        // Arrange
+        const repo = await buildTypingRepo();
+        const parents = [repo.root, ...parentsOf(repo)];
+        await setRef(
+          repo.ctx,
+          'refs/heads/main',
+          await writeCommitNaming(repo.ctx, repo.empty, parents),
+        );
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(repo.ctx, { revs: [{ range: ['root', 'main'] }] });
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged: repo.logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED' },
+          logged: [loggedFor(repo)],
+        });
+      });
+    });
+  });
+
+  describe('Given a range, a tip the exclusion reaches and a symmetric range', () => {
+    describe('When bundleCreate feeds its pack walk', () => {
+      it("Then the tips follow git's pending order, flagged as the bundle walk left them", async () => {
+        // Arrange
+        const { ctx, root, empty } = await buildTypingRepo();
+        const left = await makeCommitObj(ctx, empty, [root], 'left', 3);
+        const right = await makeCommitObj(ctx, empty, [root], 'right', 4);
+        await setRef(ctx, 'refs/heads/left', left);
+        await setRef(ctx, 'refs/heads/right', right);
+        const closureSpy = vi.spyOn(closureEngineMod, 'computeClosure');
+        const sut = bundleCreate;
+
+        // Act
+        await sut(ctx, {
+          revs: [
+            { range: ['root', 'left'] },
+            { tip: 'root' },
+            { symmetricRange: ['left', 'right'] },
+          ],
+        });
+
+        // Assert
+        const request = closureSpy.mock.calls[0]?.[1];
+        expect({ tips: request?.tips, typed: request?.objectTypes !== undefined }).toEqual({
+          tips: [
+            { id: root, excluded: true },
+            { id: left, excluded: false },
+            { id: root, excluded: true },
+            { id: root, excluded: true },
+            { id: left, excluded: false },
+            { id: right, excluded: false },
+            { id: root, excluded: true },
+          ],
+          typed: true,
+        });
+        closureSpy.mockRestore();
       });
     });
   });

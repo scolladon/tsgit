@@ -2184,8 +2184,8 @@ describe('push — object types assigned while enumerating', () => {
         await sut({ ...ctx, transport }, { refspecs: ['main', 'main:refs/heads/new'] });
 
         // Assert
-        const request = closureSpy.mock.calls[0]![1];
-        expect({ tips: request.tips, typed: request.objectTypes !== undefined }).toEqual({
+        const request = closureSpy.mock.calls[0]?.[1];
+        expect({ tips: request?.tips, typed: request?.objectTypes !== undefined }).toEqual({
           tips: [
             { id: alternate.id, excluded: true },
             { id: parent.id, excluded: true },

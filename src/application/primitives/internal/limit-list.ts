@@ -1,7 +1,7 @@
 import { commitLookupFailed, revisionWalkFailed } from '../../../domain/commands/error.js';
 import { BinaryHeap } from '../../../domain/commit/binary-heap.js';
 import { precedesByArrival } from '../../../domain/commit/priority-queue.js';
-import { operationAborted } from '../../../domain/error.js';
+import { operationAborted, type TsgitError } from '../../../domain/error.js';
 import type { Commit, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { type BoundedReader, createBoundedReader } from './bounded-reader.js';
@@ -431,3 +431,18 @@ const remember = (state: LimitState, id: ObjectId, parsed: Parsed): Parsed => {
   state.parsed.set(id, parsed);
   return parsed;
 };
+
+/** git's `limit_list` runs inside `prepare_revision_walk`: a commit it cannot parse fails the setup. */
+export async function limitOrFailSetup(
+  ctx: Context,
+  options: LimitListOptions,
+): Promise<LimitedWalk> {
+  try {
+    return await limitList(ctx, options);
+  } catch (error) {
+    if ((error as Partial<TsgitError>).data?.code === 'REVISION_WALK_FAILED') {
+      throw revisionWalkFailed();
+    }
+    throw error;
+  }
+}

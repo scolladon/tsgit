@@ -1701,3 +1701,92 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+describe.skipIf(!GIT_AVAILABLE)('bundle interop — object types assigned while enumerating', () => {
+  const IDENT = 'author a <a@b> 1700000000 +0000\ncommitter a <a@b> 1700000000 +0000\n\nm\n';
+  const ABSENT_PARENT = `cd${'0'.repeat(38)}`;
+  const dirs: string[] = [];
+
+  afterAll(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A commit stored as spelt, naming `tree` and `parents` whatever they are. */
+  const writeLiteralCommit = (dir: string, tree: string, parents: ReadonlyArray<string>): string =>
+    runGit(['-C', dir, 'hash-object', '-t', 'commit', '-w', '--stdin', '--literally'], {
+      input: `tree ${tree}\n${parents.map((p) => `parent ${p}\n`).join('')}${IDENT}`,
+    }).trim();
+
+  /** `root` an empty-tree commit and `main` the commit `naming` builds over it. */
+  const buildRepo = (naming: (dir: string, blob: string, root: string) => string): string => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'tsgit-interop-bundle-types-'));
+    dirs.push(dir);
+    runGit(['init', '-q', '-b', 'main', dir]);
+    const blob = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: 'hi\n' }).trim();
+    const root = writeLiteralCommit(dir, runGit(['-C', dir, 'mktree'], { input: '' }).trim(), []);
+    runGit(['-C', dir, 'update-ref', 'refs/heads/root', root]);
+    runGit(['-C', dir, 'update-ref', 'refs/heads/main', naming(dir, blob, root)]);
+    return dir;
+  };
+
+  const emptyTree = (dir: string): string => runGit(['-C', dir, 'mktree'], { input: '' }).trim();
+
+  /** git's death, rebuilt from the logged `error:` lines and the refusal's data. */
+  const deathOf = (logged: ReadonlyArray<string>, error: unknown): string => {
+    const data = (error as { data?: { code?: string; commit?: string; id?: string } }).data;
+    const commit = data?.commit;
+    const walkFatal =
+      commit === undefined
+        ? 'fatal: revision walk setup failed'
+        : `fatal: Failed to traverse parents of commit ${commit}`;
+    const fatal =
+      data?.code === 'BAD_TREE_OBJECT' ? `fatal: bad tree object ${data.id}` : walkFatal;
+    return `${logged.map((line) => `error: ${line}\n`).join('')}${fatal}\n`;
+  };
+
+  const treeNamingBlob = (dir: string, blob: string, root: string): string =>
+    writeLiteralCommit(dir, blob, [root]);
+  const parentNamingBlob = (dir: string, blob: string, root: string): string =>
+    writeLiteralCommit(dir, emptyTree(dir), [root, blob]);
+  const parentAbsent = (dir: string, _blob: string, root: string): string =>
+    writeLiteralCommit(dir, emptyTree(dir), [root, ABSENT_PARENT]);
+  const ALONE = { args: ['main'], revs: [{ tip: 'main' }] } as const;
+  const RANGE = { args: ['root..main'], revs: [{ range: ['root', 'main'] }] } as const;
+
+  describe.each([
+    ['names a blob as its tree', treeNamingBlob, 'alone', ALONE],
+    ['names a blob as its parent', parentNamingBlob, 'alone', ALONE],
+    ['names a blob as its parent', parentNamingBlob, 'as a range from the root', RANGE],
+    ['names a parent the store lacks', parentAbsent, 'alone', ALONE],
+    ['names a parent the store lacks', parentAbsent, 'as a range from the root', RANGE],
+  ] as const)('Given a branch whose commit %s', (_label, naming, how, { args, revs }) => {
+    describe(`When both tools bundle it ${how}`, () => {
+      it('Then both die enumerating it the same way', async () => {
+        // Arrange
+        const dir = buildRepo(naming);
+        const git = tryRunGitWithExit([
+          '-C',
+          dir,
+          'bundle',
+          'create',
+          path.join(dir, 'g.bundle'),
+          ...args,
+        ]);
+        const logged: string[] = [];
+        const base = createNodeContext({ workDir: dir });
+        const ctx = { ...base, logger: { error: (line: string) => logged.push(line) } };
+        const sut = bundleCreate;
+
+        // Act
+        const thrown = await sut(ctx, { revs }).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+
+        // Assert
+        expect(git.exitCode).not.toBe(0);
+        expect(git.stderr.startsWith(deathOf(logged, thrown))).toBe(true);
+      });
+    });
+  });
+});

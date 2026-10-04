@@ -611,29 +611,28 @@ describe('enumerateBundleObjects — ignoreMissing on missing parents', () => {
 
   describe('Given a wants commit that references a non-existent parent', () => {
     describe('When enumerateBundleObjects is called with haves=[]', () => {
-      it('Then completes without error and emits the wants commit', async () => {
-        // Arrange — ignoreMissing:true in walkInteresting; without it the walk
-        // would throw when it cannot resolve the phantom parent.
-        const ctx = await buildSeededContext();
+      it('Then it cannot read the parent and fails to traverse the wants commit, as git does', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const logged: string[] = [];
+        const ctx = { ...base, logger: { error: (line: string) => logged.push(line) } };
         const PHANTOM_PARENT = 'e'.repeat(40) as ObjectId;
         const blobA = await makeBlob(ctx, 'A');
         const tree = await makeTree(ctx, [treeEntry(BLOB_MODE, 'a.txt', blobA)]);
         const wantCommit = await makeCommit(ctx, tree, [PHANTOM_PARENT], 'want', 1);
+        const sut = enumerateBundleObjects;
 
         // Act
-        let thrown: unknown;
-        const result = await enumerateBundleObjects(ctx, {
-          wants: [wantCommit],
-          haves: [],
-        }).catch((err) => {
-          thrown = err;
-          return null;
-        });
+        const thrown = await sut(ctx, { wants: [wantCommit], haves: [] }).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
 
-        // Assert — no error; wantCommit and its objects are emitted
-        expect(thrown).toBeUndefined();
-        expect(result).not.toBeNull();
-        expect(idsOf(result!.objects)).toContain(wantCommit);
+        // Assert
+        expect({ data: (thrown as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED', commit: wantCommit },
+          logged: [`Could not read ${PHANTOM_PARENT}`],
+        });
       });
     });
   });

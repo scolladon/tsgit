@@ -22,7 +22,6 @@
  * display order sort the result themselves.
  */
 
-import { revisionWalkFailed } from '../../../domain/commands/error.js';
 import type { TsgitError } from '../../../domain/error.js';
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import { badTreeObject, treeEntryTypeMismatch } from '../../../domain/objects/error.js';
@@ -58,8 +57,8 @@ import {
 } from './closure-not-marks.js';
 import {
   type LimitedWalk,
-  type LimitListOptions,
   limitList,
+  limitOrFailSetup,
   readShown,
   resolveLimitOptions,
 } from './limit-list.js';
@@ -491,18 +490,6 @@ async function collectLimitedWalk(
     boundary: edgesOf(walk, listed),
     limited: { walk, listed },
   };
-}
-
-/** git's `limit_list` runs inside `prepare_revision_walk`: a commit it cannot parse fails the setup. */
-async function limitOrFailSetup(ctx: Context, options: LimitListOptions): Promise<LimitedWalk> {
-  try {
-    return await limitList(ctx, options);
-  } catch (error) {
-    if ((error as Partial<TsgitError>).data?.code === 'REVISION_WALK_FAILED') {
-      throw revisionWalkFailed();
-    }
-    throw error;
-  }
 }
 
 /**

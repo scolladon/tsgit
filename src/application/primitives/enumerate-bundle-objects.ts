@@ -15,10 +15,15 @@
 import { TsgitError } from '../../domain/error.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { computeClosure } from './internal/closure-engine.js';
-import { markNotSide } from './internal/closure-not-marks.js';
-import { limitList, readShown, resolveLimitOptions } from './internal/limit-list.js';
+import { type ClosureTip, computeClosure } from './internal/closure-engine.js';
+import {
+  createNotMarks,
+  markNotTip,
+  type NotMarksAccumulator,
+} from './internal/closure-not-marks.js';
+import { limitOrFailSetup, readShown, resolveLimitOptions } from './internal/limit-list.js';
 import { resolveTagChain } from './internal/object-emit.js';
+import { createObjectTypeTable, type ObjectTypeTable } from './internal/object-type-table.js';
 import { MAX_PUSH_OBJECTS } from './types.js';
 
 export interface EnumerateBundleObjectsInput {
@@ -26,6 +31,12 @@ export interface EnumerateBundleObjectsInput {
   readonly wants: ReadonlyArray<ObjectId>;
   /** Excluded oids — explicit excludes of any type, or computed merge-bases. */
   readonly haves: ReadonlyArray<ObjectId>;
+  /**
+   * `wants` and `haves` in git's pending (command-line) order — the order
+   * the bundle walk and its `pack-objects` feed type and pop them in.
+   * Omitted means `wants`, then `haves`.
+   */
+  readonly tips?: ReadonlyArray<ClosureTip>;
   /** Hard cap on total emitted objects. Defaults to MAX_PUSH_OBJECTS. */
   readonly maxObjects?: number;
 }
@@ -66,27 +77,53 @@ const NOTHING_EXCLUDED: BundleWalk = { boundary: [], uninteresting: new Set() };
 
 type BundleWalk = Pick<BundleObjectClosure, 'boundary' | 'uninteresting'>;
 
+/** The commits the bundle walk starts from, in pending order, and those it seeds. */
+interface BundleSeeds {
+  readonly from: ObjectId[];
+  readonly seeds: ObjectId[];
+}
+
 /**
- * git's `--boundary` walk of the bundle's revisions: the uninteresting
- * parents of every commit the limited walk lists, in walk order, and every
- * object the walk leaves flagged uninteresting.
+ * git's `prepare_revision_walk` over the bundle's pending tips: an excluded
+ * one marked, a wanted one peeled, each commit seeded in that order.
  */
-const walkBundle = async (
+const seedInOrder = async (
   ctx: Context,
-  wants: ReadonlyArray<ObjectId>,
-  haves: ReadonlyArray<ObjectId>,
-): Promise<BundleWalk> => {
-  if (haves.length === 0) return NOTHING_EXCLUDED;
-  const marks = await markNotSide(ctx, haves, { objects: true });
-  const from = await Promise.all(
-    wants.map((want) => resolveTagChain(ctx, undefined, want, IGNORE_TAG)),
-  );
+  tips: ReadonlyArray<ClosureTip>,
+  marks: NotMarksAccumulator,
+  objectTypes: ObjectTypeTable,
+): Promise<BundleSeeds> => {
+  const seeded: BundleSeeds = { from: [], seeds: [] };
+  for (const tip of tips) {
+    if (tip.excluded) {
+      const commit = await markNotTip(ctx, tip.id, marks);
+      if (commit !== undefined) seeded.seeds.push(commit);
+      continue;
+    }
+    const peeled = await resolveTagChain(ctx, objectTypes, tip.id, IGNORE_TAG);
+    seeded.from.push(peeled);
+    seeded.seeds.push(peeled);
+  }
+  return seeded;
+};
+
+/**
+ * git's `--boundary` walk of the bundle's revisions, typed into the bundle
+ * process's own table: the uninteresting parents of every commit the limited
+ * walk lists, in walk order, and every object the walk leaves flagged
+ * uninteresting.
+ */
+const walkBundle = async (ctx: Context, tips: ReadonlyArray<ClosureTip>): Promise<BundleWalk> => {
+  if (tips.every((tip) => !tip.excluded)) return NOTHING_EXCLUDED;
+  const objectTypes = createObjectTypeTable();
+  const marks = await createNotMarks(ctx, { objects: true, objectTypes });
+  const { from, seeds } = await seedInOrder(ctx, tips, marks, objectTypes);
   const options = await resolveLimitOptions(
     ctx,
-    { from, ignoreMissing: true },
-    { until: new Set(marks.commitTips), firstParent: false, settle: 'slop' },
+    { from },
+    { seeds, until: new Set(marks.commitTips), firstParent: false, settle: 'slop', objectTypes },
   );
-  const walk = await limitList(ctx, options);
+  const walk = await limitOrFailSetup(ctx, options);
   const boundary = new Set<ObjectId>();
   for await (const commit of readShown(ctx, options, walk)) {
     for (const parent of commit.data.parents) {
@@ -99,6 +136,24 @@ const walkBundle = async (
   };
 };
 
+/**
+ * git's `write_pack_data` feed: each pending tip, excluded once the bundle
+ * walk flagged it, then each prerequisite.
+ */
+const packFeed = (
+  tips: ReadonlyArray<ClosureTip>,
+  walked: BundleWalk,
+): ReadonlyArray<ClosureTip> => [
+  ...tips.map(({ id, excluded }) => ({ id, excluded: excluded || walked.uninteresting.has(id) })),
+  ...walked.boundary.map((id) => ({ id, excluded: true })),
+];
+
+const pendingOf = (input: EnumerateBundleObjectsInput): ReadonlyArray<ClosureTip> =>
+  input.tips ?? [
+    ...input.wants.map((id) => ({ id, excluded: false })),
+    ...input.haves.map((id) => ({ id, excluded: true })),
+  ];
+
 /** `tryEmit`'s own refusal, for a closure that outgrew the caller's cap. */
 const assertWithinCap = (count: number, cap: number): void => {
   if (count <= cap) return;
@@ -110,12 +165,16 @@ export const enumerateBundleObjects = async (
   input: EnumerateBundleObjectsInput,
 ): Promise<BundleObjectClosure> => {
   if (input.wants.length === 0) return { objects: [], ...NOTHING_EXCLUDED };
-  const { boundary, uninteresting } = await walkBundle(ctx, input.wants, input.haves);
+  const tips = pendingOf(input);
+  const walked = await walkBundle(ctx, tips);
+  const { boundary, uninteresting } = walked;
   const closure = await computeClosure(ctx, {
     wants: input.wants,
     not: [...input.haves, ...boundary],
+    tips: packFeed(tips, walked),
     objects: true,
     tier: 'bitmap',
+    objectTypes: createObjectTypeTable(),
   });
   assertWithinCap(closure.objects.length, input.maxObjects ?? MAX_PUSH_OBJECTS);
   return { objects: closure.objects, boundary, uninteresting };
