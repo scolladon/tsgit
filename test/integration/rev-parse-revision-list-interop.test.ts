@@ -22,6 +22,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { type RevParseEntry, revParse } from '../../src/application/commands/rev-parse.js';
 import type { TsgitError } from '../../src/domain/error.js';
+import { errorDataCode } from '../../src/domain/error-data-code.js';
 import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
@@ -74,8 +75,14 @@ const tsgitOutcome = async (repo: string, cwd: string, argument: string): Promis
   try {
     return { stdout: revParseStdout(await revParse(ctx, argument)), refused: false, errors };
   } catch (error) {
-    const printed = (error as TsgitError).data as { readonly printed?: Printed };
-    return { stdout: revParseStdout(printed.printed ?? []), refused: true, errors };
+    const data = (error as TsgitError).data as { readonly printed?: Printed; readonly id?: string };
+    const walkLine =
+      errorDataCode(error) === 'COMMIT_PARSE_FAILED' ? [`could not parse commit ${data.id}`] : [];
+    return {
+      stdout: revParseStdout(data.printed ?? []),
+      refused: true,
+      errors: [...errors, ...walkLine],
+    };
   }
 };
 
@@ -296,3 +303,52 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse revision list parity w
     );
   });
 });
+
+/** `bm` names a parent the store lacks and `bb` a blob as its parent, both off `main`'s tree. */
+const buildBrokenParentRepository = (repo: string): void => {
+  runGit(['init', '-q', '-b', 'main', repo]);
+  disableAutoMaintenance(repo);
+  commitAt(repo, 'c1', 1);
+  const tree = git(repo, 'rev-parse', 'main^{tree}').trim();
+  const blob = runGit(['-C', repo, 'hash-object', '-w', '--stdin'], { input: 'b\n' }).trim();
+  const brokenOn = (parent: string): string =>
+    runGit(['-C', repo, 'hash-object', '-t', 'commit', '-w', '--stdin', '--literally'], {
+      input: `tree ${tree}\nparent ${parent}\nauthor a <a@b> ${EPOCH} +0000\ncommitter a <a@b> ${EPOCH} +0000\n\nz\n`,
+    }).trim();
+  git(repo, 'update-ref', 'refs/heads/bm', brokenOn(`cd${'0'.repeat(38)}`));
+  git(repo, 'update-ref', 'refs/heads/bb', brokenOn(blob));
+};
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'integration — revParse symmetric walk failure parity with git',
+  () => {
+    let repo = '';
+
+    beforeAll(async () => {
+      repo = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-parse-broken-walk-interop-'));
+      buildBrokenParentRepository(repo);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(repo, { recursive: true, force: true });
+    });
+
+    describe('Given branches whose commit names a parent that fails to parse', () => {
+      describe.each(['main...bm', 'bm...main', 'main...bb', 'bb...main'])(
+        'When git rev-parse and revParse read %s',
+        (argument) => {
+          it('Then both print the two sides, log the same errors and refuse', async () => {
+            // Arrange
+            const peer = gitOutcome(repo, argument);
+
+            // Act
+            const result = await tsgitOutcome(repo, repo, argument);
+
+            // Assert
+            expect(result).toEqual(peer);
+          });
+        },
+      );
+    });
+  },
+);

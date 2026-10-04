@@ -1,4 +1,8 @@
-import { pathspecOutsideRepo, revparseUnresolved } from '../../domain/commands/error.js';
+import {
+  commitParseFailed,
+  pathspecOutsideRepo,
+  revparseUnresolved,
+} from '../../domain/commands/error.js';
 import { applyGraft } from '../../domain/commit/graft.js';
 import { TsgitError, type TsgitErrorData } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
@@ -31,7 +35,7 @@ import { peel } from '../primitives/internal/peel.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { descendTreePath } from '../primitives/internal/resolve-tree-path.js';
 import { loadShallowSet } from '../primitives/internal/shallow-set.js';
-import { mergeBasesOf } from '../primitives/merge-base.js';
+import { mergeBasesOf, parseFailureOf } from '../primitives/merge-base.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { readTree } from '../primitives/read-tree.js';
@@ -306,8 +310,23 @@ const symmetricDifference = async (
   const a = await lookupCommitReference(ctx, start);
   const b = await lookupCommitReference(ctx, end);
   if (a === undefined || b === undefined) return { printed: sides, consumed: false };
-  const bases = await mergeBasesOf(ctx, [a.id, b.id], { all: true });
+  const bases = await printingMergeBases(ctx, [a.id, b.id], sides);
   return { printed: [...sides, ...bases.map(excluded)], consumed: true };
+};
+
+/** git's `repo_get_merge_bases(...) < 0` in `try_difference`: exit 128 after what it had printed. */
+const printingMergeBases = async (
+  ctx: Context,
+  commits: readonly ObjectId[],
+  printed: ReadonlyArray<RevParseEntry>,
+): Promise<readonly ObjectId[]> => {
+  try {
+    return await mergeBasesOf(ctx, commits, { all: true });
+  } catch (error) {
+    const id = parseFailureOf(error);
+    if (id === undefined) throw error;
+    throw commitParseFailed(id, printed);
+  }
 };
 
 /**

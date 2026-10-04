@@ -1898,6 +1898,20 @@ describe('domain commands error — extractDetail message formatting', () => {
         expect(result.data).toEqual({ code: 'COMMIT_PARSE_FAILED', id: OID1 });
       });
     });
+
+    describe('When called with what rev-parse had printed', () => {
+      it('Then data carries the printed entries', () => {
+        // Arrange
+        const sut = commitParseFailed;
+        const printed = [{ kind: 'object', id: OID1, negated: false }] as const;
+
+        // Act
+        const result = sut(OID1, printed);
+
+        // Assert
+        expect(result.data).toEqual({ code: 'COMMIT_PARSE_FAILED', id: OID1, printed });
+      });
+    });
   });
 
   describe('Given the needTwoCommitRanges error helper', () => {

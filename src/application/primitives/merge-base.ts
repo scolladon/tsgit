@@ -647,9 +647,15 @@ export const tryMergeBasesOf = async (
   try {
     return await mergeBasesOf(ctx, commits, options);
   } catch (error) {
-    if (errorDataCode(error) !== COMMIT_PARSE_FAILED) throw error;
-    const { id } = (error as TsgitError).data as { readonly id: ObjectId };
+    const id = parseFailureOf(error);
+    if (id === undefined) throw error;
     ctx.logger?.error?.(`could not parse commit ${id}`, { id });
     return undefined;
   }
 };
+
+/** The parent a walk refused with `COMMIT_PARSE_FAILED` could not parse; `undefined` for any other refusal. */
+export const parseFailureOf = (error: unknown): ObjectId | undefined =>
+  errorDataCode(error) === COMMIT_PARSE_FAILED
+    ? ((error as TsgitError).data as { readonly id: ObjectId }).id
+    : undefined;

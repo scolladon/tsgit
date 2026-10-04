@@ -543,3 +543,56 @@ describe('Given a worktree holding f at its root and g under sub', () => {
     });
   });
 });
+
+describe('Given a branch whose commit names a parent that fails to parse', () => {
+  const MISSING = `cd${'0'.repeat(38)}` as ObjectId;
+
+  describe('When revParse reads the symmetric range of main and that branch', () => {
+    it('Then it logs the unread parent and refuses it with the two sides it printed', async () => {
+      // Arrange
+      const { ctx, errors, ids } = await listRepo();
+      const broken = await writeCommit(ctx, ids.tree as ObjectId, [MISSING], 5, 'b\n');
+      await writeRef(ctx, 'refs/heads/broken', broken);
+      const sut = revParse;
+
+      // Act
+      const result = await failureData(() => sut(ctx, 'main...broken'));
+
+      // Assert
+      expect({ result, errors }).toEqual({
+        result: {
+          code: 'COMMIT_PARSE_FAILED',
+          id: MISSING,
+          printed: entries({ ...ids, broken }, [
+            ['broken', false],
+            ['c2', false],
+          ]),
+        },
+        errors: [`Could not read ${MISSING}`],
+      });
+    });
+  });
+
+  describe('When revParse reads the symmetric range of main and a branch over a corrupt parent', () => {
+    it('Then it refuses with the read failure, printing nothing', async () => {
+      // Arrange
+      const { ctx, ids } = await listRepo();
+      await ctx.fs.write(
+        `${ctx.layout.gitDir}/objects/cd/${MISSING.slice(2)}`,
+        encoder.encode('x'),
+      );
+      const broken = await writeCommit(ctx, ids.tree as ObjectId, [MISSING], 5, 'b\n');
+      await writeRef(ctx, 'refs/heads/broken', broken);
+      const sut = revParse;
+
+      // Act
+      const result = await failureData(() => sut(ctx, 'main...broken'));
+
+      // Assert
+      expect(result).toEqual({
+        code: 'DECOMPRESS_FAILED',
+        reason: 'unexpected end of deflate stream',
+      });
+    });
+  });
+});
