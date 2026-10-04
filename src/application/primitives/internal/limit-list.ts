@@ -1,4 +1,4 @@
-import { revisionWalkFailed } from '../../../domain/commands/error.js';
+import { commitLookupFailed, revisionWalkFailed } from '../../../domain/commands/error.js';
 import { BinaryHeap } from '../../../domain/commit/binary-heap.js';
 import { precedesByArrival } from '../../../domain/commit/priority-queue.js';
 import { operationAborted } from '../../../domain/error.js';
@@ -6,7 +6,7 @@ import type { Commit, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { type BoundedReader, createBoundedReader } from './bounded-reader.js';
 import { limitFor } from './concurrency.js';
-import { type ObjectTypeTable, typeWalkedCommit } from './object-type-table.js';
+import { assignObjectType, type ObjectTypeTable, typeWalkedCommit } from './object-type-table.js';
 import { readCommit } from './read-commit.js';
 import { commitHeader, generationNumbersEnabled } from './read-commit-graph.js';
 import { resolveShallow } from './shallow-set.js';
@@ -116,6 +116,8 @@ interface LimitState {
   /** Commits whose pointers the table already typed — git parses each once. */
   readonly typed: Set<ObjectId>;
   readonly missing: Set<string>;
+  /** Commits a typing walk parsed from the commit-graph, whose parents it types on first use. */
+  readonly fromGraph: Set<ObjectId>;
   /** Objects a typing walk read that are not commits — git's failed `repo_parse_commit`. */
   readonly notCommits: Set<ObjectId>;
   readonly uninteresting: Set<ObjectId>;
@@ -190,6 +192,7 @@ const createState = (ctx: Context, options: LimitListOptions): LimitState => ({
   bodies: new Map(),
   typed: new Set(),
   missing: new Set(),
+  fromGraph: new Set(),
   notCommits: new Set(),
   uninteresting: new Set(),
   seen: new Set(),
@@ -293,10 +296,25 @@ const processParents = async (state: LimitState, id: ObjectId): Promise<void> =>
  */
 const typeParsed = async (state: LimitState, id: ObjectId): Promise<boolean> => {
   const table = state.options.objectTypes;
+  if (table === undefined || state.typed.has(id)) return true;
   const body = state.bodies.get(id);
-  if (table === undefined || body === undefined || state.typed.has(id)) return true;
+  if (body !== undefined) {
+    state.typed.add(id);
+    return typeWalkedCommit(state.ctx, table, body);
+  }
+  if (state.fromGraph.has(id)) typeGraphParents(state, table, id);
+  return true;
+};
+
+/**
+ * git's `fill_commit_in_graph`: each parent looked up as a commit, dying —
+ * gentle parse or not — on one an earlier lookup typed otherwise.
+ */
+const typeGraphParents = (state: LimitState, table: ObjectTypeTable, id: ObjectId): void => {
   state.typed.add(id);
-  return typeWalkedCommit(state.ctx, table, body);
+  for (const parent of (state.parsed.get(id) as Parsed).parents) {
+    if (!assignObjectType(state.ctx, table, parent, 'commit')) throw commitLookupFailed(parent);
+  }
 };
 
 /** Parents parsed concurrently; a refusal surfaces for the first in parent order, as git's loop meets it. */
@@ -367,6 +385,7 @@ const parse = async (
   const header = shallow.has(id) ? undefined : await commitHeader(state.ctx, id);
   if (header !== undefined) {
     const { parents, committerDate: date, generation } = header;
+    if (state.options.objectTypes !== undefined) state.fromGraph.add(id);
     return remember(state, id, { parents, date, generation });
   }
   const commit = await readCommit(state.ctx, id, {

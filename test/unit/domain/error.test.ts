@@ -424,6 +424,21 @@ describe('domain error — AdapterError', () => {
       });
     });
 
+    describe('Given COMMIT_LOOKUP_FAILED', () => {
+      describe('When reading message', () => {
+        it("Then reads as git's graph parent death", () => {
+          // Arrange & Act
+          const result = new TsgitErrorClass({
+            code: 'COMMIT_LOOKUP_FAILED',
+            id: 'abc123' as never,
+          });
+
+          // Assert
+          expect(result.message).toBe('COMMIT_LOOKUP_FAILED: could not find commit abc123');
+        });
+      });
+    });
+
     describe('Given TREE_ENTRY_TYPE_MISMATCH', () => {
       describe('When reading message', () => {
         it('Then reads as git names the entry, its tree and its mode', () => {

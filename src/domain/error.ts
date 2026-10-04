@@ -453,6 +453,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `cannot resolve revision: ${data.expression}`;
     case 'REVISION_WALK_FAILED':
       return revisionWalkDetail(data.commit);
+    case 'COMMIT_LOOKUP_FAILED':
+      return `could not find commit ${data.id}`;
     case 'PATH_NOT_IN_TREE':
       return `path '${data.path}' does not exist in '${data.rev}'`;
     case 'WORKTREE_FILE_ABSENT':

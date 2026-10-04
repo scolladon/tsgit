@@ -82,6 +82,11 @@ export type CommandError =
       readonly commit?: ObjectId;
     }
   | {
+      /** git's `could not find commit <id>`: a commit-graph parent an earlier lookup typed otherwise. */
+      readonly code: 'COMMIT_LOOKUP_FAILED';
+      readonly id: ObjectId;
+    }
+  | {
       readonly code: 'REVPARSE_UNRESOLVED';
       readonly expression: string;
       /** What `rev-parse` had printed before refusing. */
@@ -554,6 +559,9 @@ export const revisionWalkFailed = (commit?: ObjectId): TsgitError =>
       ? { code: 'REVISION_WALK_FAILED' }
       : { code: 'REVISION_WALK_FAILED', commit },
   );
+
+export const commitLookupFailed = (id: ObjectId): TsgitError =>
+  new TsgitError({ code: 'COMMIT_LOOKUP_FAILED', id });
 
 export const revparseUnresolved = (expression: string): TsgitError =>
   new TsgitError({ code: 'REVPARSE_UNRESOLVED', expression });

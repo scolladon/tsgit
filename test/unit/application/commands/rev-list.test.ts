@@ -32,6 +32,7 @@ import {
   type BitmapStreamSpec,
   buildBitmap,
 } from '../../domain/storage/arbitraries.js';
+import { writeCommitGraph } from '../primitives/fixtures.js';
 import {
   type EntrySpec,
   writeSyntheticBitmap,
@@ -1989,6 +1990,36 @@ describe('revList: object types assigned during one invocation', () => {
             { id: empty, type: 'tree', path: '' },
           ],
           logged: [`object ${empty} is a tree, not a blob`],
+        });
+      });
+    });
+  });
+
+  describe('Given a commit-graph line whose oldest commit an excluded tree lists with blob mode', () => {
+    describe('When the walk parses the commit naming it from the graph', () => {
+      it('Then the parent lookup fails and the walk dies on a commit it could not find', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const oldest = await writeCommitNaming(ctx, empty, []);
+        const middle = await writeCommitNaming(ctx, empty, [oldest]);
+        const newest = await writeCommitNaming(ctx, empty, [middle]);
+        const commits = await Promise.all(
+          [oldest, middle, newest].map(async (id) => (await readObject(ctx, id)) as Commit),
+        );
+        await writeCommitGraph(ctx, [commits]);
+        const excluded = await writeTreeOf(ctx, [[BLOB_MODE, 'f', oldest]]);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() =>
+          sut(ctx, { wants: [newest], not: [excluded], objects: true }),
+        );
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'COMMIT_LOOKUP_FAILED', id: oldest },
+          logged: [`object ${oldest} is a blob, not a commit`],
         });
       });
     });

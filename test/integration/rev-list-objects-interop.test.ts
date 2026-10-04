@@ -1038,6 +1038,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in o
   const walkFatalOf = (error: unknown): string => {
     const data = (error as { data?: { code?: string; commit?: string; id?: string } }).data;
     if (data?.code === 'BAD_TREE_OBJECT') return `fatal: bad tree object ${data.id}\n`;
+    if (data?.code === 'COMMIT_LOOKUP_FAILED') return `fatal: could not find commit ${data.id}\n`;
     const commit = data?.commit;
     return commit === undefined
       ? 'fatal: revision walk setup failed\n'
@@ -1240,6 +1241,39 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in o
           listed: peer.stdout.split('\n').flatMap((line) => (line === '' ? [] : [line.trimEnd()])),
           stderr: peer.stderr,
         });
+      });
+    });
+  });
+
+  describe('Given a commit-graph line whose oldest commit an excluded tree lists with blob mode', () => {
+    describe('When rev-list --objects parses the commit naming it from the graph on both tools', () => {
+      it('Then both log the same lookup and die on the same commit they could not find', async () => {
+        // Arrange
+        const { dir } = await buildMistypedTagFixture();
+        const empty = emptyTreeOf(dir);
+        const oldest = writeLiteralCommit(dir, empty, []);
+        const newest = writeLiteralCommit(dir, empty, [writeLiteralCommit(dir, empty, [oldest])]);
+        runGit(['-C', dir, 'commit-graph', 'write', '--stdin-commits'], { input: `${newest}\n` });
+        const excluded = writeLiteralTree(dir, [['100644', 'f', oldest]]);
+        const peer = tryRunGitWithExit([
+          '-C',
+          dir,
+          'rev-list',
+          '--objects',
+          `^${excluded}`,
+          newest,
+        ]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const result = await settled(() =>
+          sut(ctx, { wants: [newest], not: [excluded], objects: true }),
+        );
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(walkStderrOf(logged, result)).toBe(peer.stderr);
       });
     });
   });
