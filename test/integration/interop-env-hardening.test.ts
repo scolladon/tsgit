@@ -23,7 +23,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { GIT_AVAILABLE, runGitEnv, tryRunGit } from './interop-helpers.js';
+import { GIT_AVAILABLE, runGitEnv, tryRunGit, tryRunGitWithExit } from './interop-helpers.js';
 
 describe.skipIf(!GIT_AVAILABLE)('interop-env-hardening', () => {
   describe('Given the hardened interop spawn env', () => {
@@ -124,6 +124,28 @@ describe.skipIf(!GIT_AVAILABLE)('interop-env-hardening', () => {
           'gc.auto': '0',
           'gc.autoDetach': 'false',
           'maintenance.auto': 'false',
+        });
+      });
+    });
+  });
+
+  describe('Given a stdin payload larger than the pipe buffer', () => {
+    describe('When git exits before draining it', () => {
+      it("Then git's own exit code and stderr are reported, not the EPIPE", () => {
+        // Arrange
+        const overPipeBuffer = 'x'.repeat(4 * 1024 * 1024);
+        const missingDir = path.join(os.tmpdir(), 'tsgit-interop-epipe-missing-dir');
+
+        // Act
+        const result = tryRunGitWithExit(['-C', missingDir, 'cat-file', '--batch'], {
+          input: overPipeBuffer,
+        });
+
+        // Assert
+        expect(result).toEqual({
+          stdout: '',
+          stderr: `fatal: cannot change to '${missingDir}': No such file or directory\n`,
+          exitCode: 128,
         });
       });
     });

@@ -287,6 +287,18 @@ export const topReflogSubject = (dir: string, ref: string): string =>
  * case to a fake `1` would misreport a process that never actually ran as a
  * `fsck` WARN/ERROR exit.
  */
+/**
+ * A git that refuses before reading its stdin (a fatal in setup, a bad
+ * argument) closes the pipe while the parent is still writing a payload
+ * larger than the pipe buffer, so `spawnSync` reports `EPIPE` alongside the
+ * real exit status. That is git's verdict, not a spawn failure.
+ */
+const isStdinClosedByExitedGit = (result: {
+  readonly error?: Error;
+  readonly status: number | null;
+}): boolean =>
+  (result.error as NodeJS.ErrnoException | undefined)?.code === 'EPIPE' && result.status !== null;
+
 export const tryRunGitWithExit = (
   args: ReadonlyArray<string>,
   options: { readonly input?: string | Uint8Array; readonly env?: NodeJS.ProcessEnv } = {},
@@ -299,7 +311,7 @@ export const tryRunGitWithExit = (
     ...(options.input === undefined ? {} : { input: options.input }),
   };
   const result = spawnSync('git', args as string[], opts);
-  if (result.error !== undefined) {
+  if (result.error !== undefined && !isStdinClosedByExitedGit(result)) {
     throw new Error(`git ${args.join(' ')} failed to spawn: ${result.error.message}`);
   }
   if (result.status === null) {
