@@ -12,7 +12,7 @@
  *   interopSurface: revParse
  */
 import { writeFileSync } from 'node:fs';
-import { cp, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -444,6 +444,9 @@ describe.skipIf(!GIT_AVAILABLE)('integration — skip and ambiguity warnings per
     git(repo, 'update-ref', 'refs/tags/main', tip);
     git(repo, 'update-ref', 'refs/tags/td', tip);
     git(repo, 'symbolic-ref', 'refs/heads/td', 'refs/heads/nowhere');
+    await mkdir(path.join(repo, 'sub'));
+    await writeFile(path.join(repo, 'sub', 'x'), 'x\n');
+    await symlink('sub', path.join(repo, 'dg:link'));
   }, SETUP_TIMEOUT);
 
   afterAll(async () => {
@@ -571,6 +574,16 @@ describe.skipIf(!GIT_AVAILABLE)('integration — skip and ambiguity warnings per
       label: 'rev-parse of a relative path climbing out past a dangling symref',
       args: ['rev-parse', 'dg:../absent'],
       run: ((ctx) => revParse(ctx, 'dg:../absent')) as CommandRun,
+    },
+    {
+      label: 'rev-parse of a path reached through a symlinked directory',
+      args: ['rev-parse', 'dg:link/x'],
+      run: ((ctx) => revParse(ctx, 'dg:link/x')) as CommandRun,
+    },
+    {
+      label: 'rev-parse of a missing path under a symlinked directory',
+      args: ['rev-parse', 'dg:link/nope'],
+      run: ((ctx) => revParse(ctx, 'dg:link/nope')) as CommandRun,
     },
     {
       label: 'rev-parse of a missing path that reads as a pathspec',
