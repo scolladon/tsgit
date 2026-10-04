@@ -139,8 +139,8 @@ describe('MemoryCompressor', () => {
     describe('Given bytes that never form a valid zlib stream', () => {
       describe('When streamInflate', () => {
         it('Then throws DECOMPRESS_FAILED', async () => {
-          // Arrange — all-zero input has a valid-looking CMF/FLG check but an
-          // unsupported compression method, so the decoder rejects it upfront.
+          // Arrange — all-zero input has a valid-looking CMF/FLG check but names a
+          // compression method other than deflate, so the decoder rejects it upfront.
           const sut = new MemoryCompressor();
           const garbage = new Uint8Array([0, 0, 0, 0]);
 
@@ -157,7 +157,7 @@ describe('MemoryCompressor', () => {
           const data = (caught as TsgitError).data;
           expect(data.code).toBe('DECOMPRESS_FAILED');
           if (data.code === 'DECOMPRESS_FAILED') {
-            expect(data.reason).toBe('unsupported compression method');
+            expect(data.reason).toBe('unknown compression method');
           }
         });
       });

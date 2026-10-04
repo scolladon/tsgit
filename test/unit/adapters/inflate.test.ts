@@ -14,6 +14,10 @@ import { TsgitError } from '../../../src/domain/index.js';
 const ZLIB_CMF_CM8_CINFO7 = 0x78;
 const FCHECK_MOD = 31;
 const FCHECK_SEARCH_LIMIT = 32;
+
+/** `cmf` and the first FLG byte that makes the pair a multiple of 31, as zlib's checksum requires. */
+const headerWithValidCheck = (cmf: number): Uint8Array =>
+  new Uint8Array([cmf, (FCHECK_MOD - ((cmf * 256) % FCHECK_MOD)) % FCHECK_MOD]);
 const FDICT_SHIFT = 5;
 
 const FIRST_BLOCK_BYTE_INDEX = 2;
@@ -306,32 +310,22 @@ describe('inflateZlibMember', () => {
     describe('When decoding', () => {
       it.each([
         {
-          buildMember: () => {
-            const member = deflateSync(new Uint8Array([1, 2, 3]), { level: 0 });
-            const corrupted = new Uint8Array(member);
-            corrupted[0] = ((corrupted[0] as number) & 0xf0) | 0x07;
-            return corrupted;
-          },
-          reason: 'unsupported compression method',
+          buildMember: () => headerWithValidCheck(0x77),
+          reason: 'unknown compression method',
           label:
-            'an unsupported compression method (CM != 8) throws with the unsupported-method reason',
+            "a header with a valid checksum naming a compression method other than deflate throws with zlib's unknown-method reason",
         },
         {
-          buildMember: () => {
-            const member = deflateSync(new Uint8Array([1, 2, 3]), { level: 0 });
-            const corrupted = new Uint8Array(member);
-            corrupted[0] = ((corrupted[0] as number) & 0x0f) | (8 << 4);
-            return corrupted;
-          },
+          buildMember: () => headerWithValidCheck(0x88),
           reason: 'invalid window size',
           label:
-            'CINFO above the maximum window size (CINFO > 7) throws with the invalid-window-size reason',
+            'a header with a valid checksum and CINFO above the maximum window size throws with the invalid-window-size reason',
         },
         {
-          buildMember: () => new Uint8Array([ZLIB_CMF_CM8_CINFO7, 0x00]),
-          reason: 'invalid zlib header checksum',
+          buildMember: () => new Uint8Array([0x77, 0x00]),
+          reason: 'incorrect header check',
           label:
-            'FCHECK bits that do not satisfy the mod-31 checksum throw with the invalid-header-checksum reason',
+            "a header failing the mod-31 checksum throws zlib's incorrect-header-check reason before the method is read",
         },
         {
           buildMember: () => {
@@ -342,9 +336,9 @@ describe('inflateZlibMember', () => {
           label: 'FDICT set (preset dictionary) throws with the preset-dictionary reason',
         },
         {
-          buildMember: () => new Uint8Array([0xff, 0xff, 0xff, 0xff]),
-          reason: 'unsupported compression method',
-          label: 'non-zlib junk bytes throw with the unsupported-method reason',
+          buildMember: () => new TextEncoder().encode('garbage'),
+          reason: 'incorrect header check',
+          label: "non-zlib junk bytes throw zlib's incorrect-header-check reason",
         },
       ])('Then $label', ({ buildMember, reason }) => {
         // Arrange
