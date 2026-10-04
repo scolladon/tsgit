@@ -1326,3 +1326,111 @@ describe('revList all: other worktrees', () => {
     });
   });
 });
+
+describe('revList: object types assigned during one invocation', () => {
+  interface MistypedTag {
+    readonly ctx: Context;
+    readonly logged: string[];
+    readonly blob: ObjectId;
+    readonly tag: ObjectId;
+  }
+
+  /** `refs/tags/t` naming a tag that declares `type commit` for a blob. */
+  const seedMistypedTag = async (): Promise<MistypedTag> => {
+    const { ctx: base } = await seedThree();
+    const logged: string[] = [];
+    const ctx: Context = { ...base, logger: { error: (message: string) => logged.push(message) } };
+    const blob = await writeObject(ctx, {
+      type: 'blob',
+      id: '' as ObjectId,
+      content: new TextEncoder().encode('hi\n'),
+    });
+    const tag = await writeObject(ctx, {
+      type: 'tag',
+      id: '' as ObjectId,
+      data: {
+        object: blob,
+        objectType: 'commit',
+        tagName: 't',
+        tagger: AUTHOR,
+        message: 't\n',
+        extraHeaders: [],
+      },
+    });
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/t`, `${tag}\n`);
+    return { ctx, logged, blob, tag };
+  };
+
+  const caughtFrom = async (run: () => Promise<unknown>): Promise<unknown> => {
+    try {
+      await run();
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  };
+
+  describe.each([
+    ['the tag alone', { wants: ['t'] }],
+    ['every ref', { all: true }],
+  ] as const)('Given a tag declaring a commit for a blob, walked from %s', (_label, opts) => {
+    describe('When revList peels it', () => {
+      it('Then the blob already typed a commit is a bad object', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, opts));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: blob },
+          logged: [`object ${blob} is a commit, not a blob`],
+        });
+      });
+    });
+  });
+
+  describe('Given a tag declaring a commit for a blob wanted before it', () => {
+    describe('When revList parses the tag', () => {
+      it('Then the tag pointer is bad and the tag is a bad object', async () => {
+        // Arrange
+        const { ctx, logged, blob, tag } = await seedMistypedTag();
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [blob, 't'], objects: true }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: 't' },
+          logged: [
+            `object ${blob} is a blob, not a commit`,
+            `bad tag pointer to ${blob} in ${tag}`,
+          ],
+        });
+      });
+    });
+  });
+
+  describe('Given an earlier invocation typed the blob', () => {
+    describe('When revList walks the tag in a later one', () => {
+      it('Then the earlier typing does not carry over', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        await revList(ctx, { wants: [blob], objects: true });
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: ['t'] }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: blob },
+          logged: [`object ${blob} is a commit, not a blob`],
+        });
+      });
+    });
+  });
+});

@@ -23,6 +23,7 @@ import type { Context } from '../../ports/context.js';
 import { buildPack } from '../primitives/build-pack.js';
 import { assertValidPackIntConfig } from '../primitives/config-read.js';
 import { type ClosureTier, computeClosure } from '../primitives/internal/closure-engine.js';
+import { withObjectTypeTable } from '../primitives/internal/object-type-table.js';
 import { packUseSparse } from '../primitives/internal/pack-use-sparse.js';
 import { writePackArtifacts } from '../primitives/internal/write-pack-artifacts.js';
 import { commonGitDir, packsDir } from '../primitives/path-layout.js';
@@ -72,7 +73,11 @@ export interface PackObjectsResult {
 const closureTierFor = (opts: PackObjectsOptions): ClosureTier =>
   opts.useBitmapIndex === false ? 'walk' : 'bitmap';
 
-export const packObjects = async (
+/** One invocation, with its own object-type table as git's process has. */
+export const packObjects = (ctx: Context, opts: PackObjectsOptions): Promise<PackObjectsResult> =>
+  packObjectsScoped(withObjectTypeTable(ctx), opts);
+
+const packObjectsScoped = async (
   ctx: Context,
   opts: PackObjectsOptions,
 ): Promise<PackObjectsResult> => {

@@ -155724,6 +155724,14 @@
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
+							"comment": {
+								"summary": [
+									{
+										"kind": "text",
+										"text": "One invocation, with its own object-type table as git's process has."
+									}
+								]
+							},
 							"parameters": [
 								{
 									"id": 2295,
@@ -160467,6 +160475,14 @@
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
+							"comment": {
+								"summary": [
+									{
+										"kind": "text",
+										"text": "One invocation, with its own object-type table as git's process has."
+									}
+								]
+							},
 							"parameters": [
 								{
 									"id": 2551,

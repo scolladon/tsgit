@@ -27,6 +27,7 @@ import {
   readObject,
   refreshPackRegistry,
 } from '../../../../src/application/primitives/read-object.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
 import { serializeObject } from '../../../../src/domain/objects/index.js';
@@ -451,6 +452,55 @@ describe('packObjects', () => {
         expect(err.data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
         expect((err.data as { key: string }).key).toBe('pack.depth');
         expect((err.data as { reason: string }).reason).toBe('invalid unit');
+      });
+    });
+  });
+});
+
+describe('packObjects: object types assigned during one invocation', () => {
+  describe('Given a tag declaring a commit for a blob', () => {
+    describe('When packObjects peels it', () => {
+      it('Then the blob already typed a commit is a bad object', async () => {
+        // Arrange
+        const { ctx: base } = await seedOneCommit();
+        const logged: string[] = [];
+        const ctx: Context = {
+          ...base,
+          logger: { error: (message: string) => logged.push(message) },
+        };
+        const blob = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: new TextEncoder().encode('hi\n'),
+        });
+        const tag = await writeObject(ctx, {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: {
+            object: blob,
+            objectType: 'commit',
+            tagName: 't',
+            tagger: AUTHOR,
+            message: 't\n',
+            extraHeaders: [],
+          },
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/t`, `${tag}\n`);
+        const sut = packObjects;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { wants: ['t'] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: blob },
+          logged: [`object ${blob} is a commit, not a blob`],
+        });
       });
     });
   });

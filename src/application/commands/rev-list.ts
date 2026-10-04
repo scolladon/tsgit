@@ -16,6 +16,7 @@ import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js'
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { type ClosureTier, computeClosure } from '../primitives/internal/closure-engine.js';
+import { withObjectTypeTable } from '../primitives/internal/object-type-table.js';
 import { readRefCandidate } from '../primitives/resolve-ref.js';
 import { worktreeContexts } from './internal/fsck/roots.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -166,7 +167,7 @@ const resolveRevListTips = async (ctx: Context, opts: RevListOptions): Promise<R
 const closureTierFor = (opts: RevListOptions): ClosureTier =>
   opts.useBitmapIndex === true && opts.maxCount === undefined ? 'bitmap' : 'walk';
 
-export const revList = async (ctx: Context, opts: RevListOptions = {}): Promise<RevListResult> => {
+const revListScoped = async (ctx: Context, opts: RevListOptions): Promise<RevListResult> => {
   await assertOperationalRepository(ctx);
   const { wants, not } = await resolveRevListTips(ctx, opts);
   const closure = await computeClosure(ctx, {
@@ -185,3 +186,7 @@ export const revList = async (ctx: Context, opts: RevListOptions = {}): Promise<
   );
   return { entries, count: entries.length };
 };
+
+/** One invocation, with its own object-type table as git's process has. */
+export const revList = (ctx: Context, opts: RevListOptions = {}): Promise<RevListResult> =>
+  revListScoped(withObjectTypeTable(ctx), opts);

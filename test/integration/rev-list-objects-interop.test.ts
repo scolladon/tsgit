@@ -907,3 +907,93 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list all interop — other worktrees', () =
     });
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in one run', () => {
+  const dirs: string[] = [];
+  afterAll(async () => {
+    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  /** `refs/tags/t` naming a tag that declares `type commit` for blob `B`. */
+  const buildMistypedTagFixture = async (): Promise<{
+    readonly dir: string;
+    readonly blob: string;
+  }> => {
+    const dir = await buildLooseRefFixture({});
+    dirs.push(dir);
+    const blob = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: 'hi\n' }).trim();
+    const tag = runGit(['-C', dir, 'hash-object', '-t', 'tag', '-w', '--stdin'], {
+      input: `object ${blob}\ntype commit\ntag t\ntagger a <a@b> 1700000000 +0000\n\nt\n`,
+    }).trim();
+    git(dir, 'update-ref', '--no-deref', 'refs/tags/t', tag);
+    return { dir, blob };
+  };
+
+  /** git's stderr, rebuilt from the logged `error:` lines and the refusal's data. */
+  const stderrOf = (logged: ReadonlyArray<string>, error: unknown): string =>
+    `${logged.map((line) => `error: ${line}\n`).join('')}${badObjectLine(error)}`;
+
+  const capturing = (dir: string): { readonly ctx: Context; readonly logged: string[] } => {
+    const logged: string[] = [];
+    const base = createNodeContext({ workDir: dir });
+    return { ctx: { ...base, logger: { error: (line: string) => logged.push(line) } }, logged };
+  };
+
+  describe.each([
+    ['the tag alone', () => ['t'], () => ({ wants: ['t'] })],
+    ['every ref', () => ['--all'], () => ({ all: true })],
+    [
+      'the blob, then the tag',
+      (blob: string) => ['--objects', blob, 't'],
+      (blob: string) => ({ wants: [blob, 't'], objects: true }),
+    ],
+  ] as const)('Given a tag declaring a commit for a blob, walked from %s', (_label, args, opts) => {
+    describe('When rev-list runs on both tools', () => {
+      it('Then both log the same typing errors and refuse the same bad object', async () => {
+        // Arrange
+        const { dir, blob } = await buildMistypedTagFixture();
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', ...args(blob)]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, opts(blob));
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(stderrOf(logged, caught)).toBe(peer.stderr);
+      });
+    });
+  });
+
+  describe('Given a tag declaring a commit for a blob', () => {
+    describe('When pack-objects --revs reads it on both tools', () => {
+      it('Then both log the same typing error and refuse the same bad object', async () => {
+        // Arrange
+        const { dir } = await buildMistypedTagFixture();
+        const peer = tryRunGitWithExit(['-C', dir, 'pack-objects', '--revs', '--stdout'], {
+          input: 't\n',
+        });
+        const { ctx, logged } = capturing(dir);
+        const sut = packObjects;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { wants: ['t'] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(stderrOf(logged, caught)).toBe(peer.stderr);
+      });
+    });
+  });
+});

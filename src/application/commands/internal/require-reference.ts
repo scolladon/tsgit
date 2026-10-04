@@ -1,27 +1,32 @@
 /**
  * git's `get_reference`: a walk tip's object is parsed before the walk sees
- * it, so an absent one dies `bad object <name>` — `name` as the argument or
- * ref spelt it, never the id it resolved to.
+ * it, so an absent one — or one whose typing conflicts with what the command
+ * already assigned — dies `bad object <name>`, `name` as the argument or ref
+ * spelt it, never the id it resolved to.
  */
 import { isObjectNotFound, objectNotFound } from '../../../domain/objects/error.js';
-import type { ObjectId } from '../../../domain/objects/index.js';
+import type { GitObject, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import { type HasObjectOptions, hasObject } from '../../primitives/has-object.js';
-import { readObject } from '../../primitives/read-object.js';
+import { parseTypedObject } from '../../primitives/internal/object-type-table.js';
 
-/** `parse_object` reads with a pack re-scan on a miss. */
-const RECHECK: HasObjectOptions = { mode: 'recheck' };
-
-/**
- * Refuses `OBJECT_NOT_FOUND` naming `name` unless `id` is stored — or, in a
- * partial clone, fetched from the promisor as `parse_object` would.
- */
-export const requireReference = async (ctx: Context, name: string, id: ObjectId): Promise<void> => {
-  if (await hasObject(ctx, id, RECHECK)) return;
+const parseNamed = async (
+  ctx: Context,
+  name: string,
+  id: ObjectId,
+): Promise<GitObject | undefined> => {
   try {
-    await readObject(ctx, id);
+    return await parseTypedObject(ctx, id);
   } catch (error) {
     if (isObjectNotFound(error)) throw objectNotFound(name as ObjectId);
     throw error;
   }
+};
+
+/**
+ * Refuses `OBJECT_NOT_FOUND` naming `name` unless `id` is stored — or, in a
+ * partial clone, fetched from the promisor as `parse_object` would — and
+ * types as the command's earlier lookups allow.
+ */
+export const requireReference = async (ctx: Context, name: string, id: ObjectId): Promise<void> => {
+  if ((await parseNamed(ctx, name, id)) === undefined) throw objectNotFound(name as ObjectId);
 };
