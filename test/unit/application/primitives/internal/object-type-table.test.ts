@@ -1,9 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
   assignObjectType,
   createObjectTypeTable,
+  parseTypedObjectOrAbsent,
 } from '../../../../../src/application/primitives/internal/object-type-table.js';
+import * as readObjectModule from '../../../../../src/application/primitives/read-object.js';
 import type { ObjectId } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
@@ -68,6 +70,49 @@ describe('assignObjectType', () => {
 
         // Assert
         expect({ result, logged }).toEqual({ result: true, logged: [] });
+      });
+    });
+  });
+});
+
+describe('parseTypedObjectOrAbsent', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given an absent object', () => {
+    describe('When it is parsed', () => {
+      it('Then it answers undefined, logging nothing', async () => {
+        // Arrange
+        const { ctx, logged } = logging();
+        const sut = parseTypedObjectOrAbsent;
+
+        // Act
+        const result = await sut(ctx, createObjectTypeTable(), ID);
+
+        // Assert
+        expect({ result, logged }).toEqual({ result: undefined, logged: [] });
+      });
+    });
+  });
+
+  describe('Given a read that fails other than on an absent object', () => {
+    describe('When it is parsed', () => {
+      it('Then the fault propagates', async () => {
+        // Arrange
+        const { ctx } = logging();
+        const fault = new Error('unexpected');
+        vi.spyOn(readObjectModule, 'readObject').mockRejectedValue(fault);
+        const sut = parseTypedObjectOrAbsent;
+
+        // Act
+        const caught = await sut(ctx, createObjectTypeTable(), ID).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+
+        // Assert
+        expect(caught).toBe(fault);
       });
     });
   });

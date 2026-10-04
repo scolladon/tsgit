@@ -7,6 +7,8 @@
  * a lookup given none (a primitive called outside a typing command) assigns
  * nothing and never conflicts.
  */
+
+import { isObjectNotFound } from '../../../domain/objects/error.js';
 import type {
   Commit,
   GitObject,
@@ -124,4 +126,18 @@ export const parseTypedObject = async (
   const object = await readObject(ctx, id);
   if (!assignObjectType(ctx, table, id, object.type)) return undefined;
   return (await assignPointers(ctx, table, id, object)) ? object : undefined;
+};
+
+/** {@link parseTypedObject} answering `undefined` for an absent object too, as git's `parse_object` does. */
+export const parseTypedObjectOrAbsent = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  id: ObjectId,
+): Promise<GitObject | undefined> => {
+  try {
+    return await parseTypedObject(ctx, table, id);
+  } catch (error) {
+    if (isObjectNotFound(error)) return undefined;
+    throw error;
+  }
 };

@@ -123,6 +123,13 @@ await repo.rangeDiff({ old, new: next, creationFactor: 90 });
 - `INVALID_OPTION` — `creationFactor` is not a non-negative integer.
 - `OBJECT_NOT_FOUND` / `REVPARSE_UNRESOLVED` — a range endpoint cannot be
   resolved (co-refuses with git's `bad revision`).
+- `INVALID_REVISION_RANGE` — an endpoint names an absent object, or one
+  whose parse fails against the types the earlier parses assigned (a commit
+  naming a blob as its tree, a blob such a commit already typed a tree).
+  Both ranges are set up — every end parsed into one object table, old range
+  first — before either is walked, as git does; `expression` is
+  `<base>..<tip>` as given, and the `error:` lines git prints before its
+  `fatal: Invalid revision range <expression>` go to `ctx.logger.error`.
 
 ## See also
 

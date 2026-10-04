@@ -24,7 +24,7 @@ import {
   rangeDiff as rangeDiffCmd,
 } from '../../src/application/commands/range-diff.js';
 import type { Context } from '../../src/ports/context.js';
-import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
+import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
 
@@ -321,6 +321,81 @@ runs('range-diff interop', () => {
         const changed = entries.find((e) => e.status === 'changed');
         expect(changed?.diffOfDiffs).toBeDefined();
         expect(changed?.diffOfDiffs?.hunks.some((h) => h.kind !== 'common')).toBe(true);
+      });
+    });
+  });
+});
+
+const ABSENT = `cd${'0'.repeat(38)}`;
+
+/** What `git range-diff` prints on stderr, rebuilt from tsgit's logged lines and refusal. */
+const rebuiltRangeStderr = (logged: ReadonlyArray<string>, expression: string): string =>
+  `${logged.map((line) => `error: ${line}\n`).join('')}fatal: Invalid revision range ${expression}\n`;
+
+describe.skipIf(!GIT_AVAILABLE)('range-diff interop — range setup', () => {
+  let dir: string;
+  const ids = new Map<string, string>();
+
+  beforeAll(async () => {
+    dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-range-diff-setup-'));
+    runGit(['init', '-q', '-b', 'main', dir]);
+    await writeAndCommit(dir, 'a', 'a\n', 'root');
+    const root = git(dir, 'rev-parse', 'HEAD').trim();
+    const blob = git(dir, 'rev-parse', 'HEAD:a').trim();
+    const body = `tree ${blob}\nparent ${root}\nauthor A U Thor <author@x> ${clock} +0000\ncommitter A U Thor <author@x> ${clock} +0000\n\ntb\n`;
+    const blobTree = runGit(
+      ['-C', dir, 'hash-object', '-t', 'commit', '-w', '--stdin', '--literally'],
+      {
+        input: body,
+      },
+    ).trim();
+    await writeAndCommit(dir, 'b', 'b\n', 'two');
+    const two = git(dir, 'rev-parse', 'HEAD').trim();
+    ids.set('ROOT', root).set('C2', two).set('B', blob).set('TB', blobTree).set('M', ABSENT);
+  }, SETUP_TIMEOUT);
+
+  afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+  describe.each([
+    { old: ['B', 'TB'], new: ['ROOT', 'TB'] },
+    { old: ['ROOT', 'TB'], new: ['B', 'TB'] },
+    { old: ['M', 'C2'], new: ['ROOT', 'C2'] },
+    { old: ['ROOT', 'C2'], new: ['ROOT', 'M'] },
+  ])('Given range-diff $old $new', ({ old, new: next }) => {
+    describe('When both tools set the ranges up', () => {
+      it('Then tsgit refuses the range git dies on, after the error lines git prints', async () => {
+        // Arrange
+        const [oldBase, oldTip, newBase, newTip] = [...old, ...next].map(
+          (name) => ids.get(name) ?? name,
+        );
+        const peer = tryRunGitWithExit([
+          '-C',
+          dir,
+          'range-diff',
+          `${oldBase}..${oldTip}`,
+          `${newBase}..${newTip}`,
+        ]);
+        const logged: string[] = [];
+        const base = createNodeContext({ workDir: dir });
+        const ctx: Context = { ...base, logger: { error: (line: string) => logged.push(line) } };
+        const sut = rangeDiffCmd;
+
+        // Act
+        const caught = await sut(ctx, {
+          old: { base: oldBase ?? '', tip: oldTip ?? '' },
+          new: { base: newBase ?? '', tip: newTip ?? '' },
+        }).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+
+        // Assert
+        const data = (
+          caught as { readonly data?: { readonly code: string; readonly expression: string } }
+        ).data;
+        expect(data?.code).toBe('INVALID_REVISION_RANGE');
+        expect(peer.exitCode).toBe(128);
+        expect(rebuiltRangeStderr(logged, data?.expression ?? '')).toBe(peer.stderr);
       });
     });
   });

@@ -102,6 +102,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `REFTABLE_LOCKED` | `stack, reason` | Another writer holds the reftable stack's `tables.list.lock`. |
 | `REVPARSE_AMBIGUOUS` | `expression, candidates` | A revision expression matched more than one object — a short oid across several objects, or a name that several ref namespaces carry. [`branch.create`](commands/branch.md)'s start point is counted this way at **every** width, a full 40-hex spelling included, because that is the one surface git refuses on rather than taking the first candidate and warning. |
 | `REVPARSE_UNRESOLVED` | `expression, reason` | Revision expression could not resolve. |
+| `INVALID_REVISION_RANGE` | `expression` | An `A..B` range end names an absent object, or one whose parse fails against the types the command's earlier parses assigned. Raised by [`rangeDiff`](commands/range-diff.md); reconstructs git's `fatal: Invalid revision range <expression>`, preceded by the `error:` lines logged for the failed parse. |
 | `TAG_EXISTS` | `name` | `tag.create(...)` without `force` against an existing tag. |
 | `TAG_NOT_FOUND` | `name` | `tag.delete(...)` against an unknown tag. |
 

@@ -35,6 +35,7 @@ import {
   hookFailed,
   invalidOption,
   invalidPushDefault,
+  invalidRevisionRange,
   invalidSymmetricRange,
   invalidUrl,
   MAX_BUNDLE_DETAIL_IN_ERROR,
@@ -1760,6 +1761,10 @@ describe('domain commands error — extractDetail message formatting', () => {
       'INVALID_SYMMETRIC_RANGE: invalid symmetric difference expression main...t',
     ],
     [
+      { code: 'INVALID_REVISION_RANGE', expression: 'main..t' },
+      'INVALID_REVISION_RANGE: invalid revision range main..t',
+    ],
+    [
       { code: 'BUNDLE_READ_FAILED', path: '/some/path.bundle' },
       "BUNDLE_READ_FAILED: could not open '/some/path.bundle'",
     ],
@@ -1847,6 +1852,25 @@ describe('domain commands error — extractDetail message formatting', () => {
           nonCommits,
         });
         expect(result.data).not.toEqual(expect.objectContaining({ expression: 'main...t\u001b' }));
+      });
+    });
+  });
+
+  describe('Given the invalidRevisionRange error helper', () => {
+    describe('When called with an expression holding a control byte', () => {
+      it('Then data carries the sanitised expression', () => {
+        // Arrange
+        const sut = invalidRevisionRange;
+
+        // Act
+        const result = sut('main..t\u001b');
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'INVALID_REVISION_RANGE',
+          expression: sanitizeForDisplay('main..t\u001b'),
+        });
+        expect(result.data).not.toEqual(expect.objectContaining({ expression: 'main..t\u001b' }));
       });
     });
   });

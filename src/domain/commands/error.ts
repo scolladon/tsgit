@@ -376,6 +376,7 @@ export type CommandError =
       readonly expression: string;
       readonly nonCommits: ReadonlyArray<SymmetricRangeNonCommit>;
     }
+  | { readonly code: 'INVALID_REVISION_RANGE'; readonly expression: string }
   | { readonly code: 'BUNDLE_READ_FAILED'; readonly path: string }
   | ({ readonly code: 'BUNDLE_BAD_HEADER'; readonly path: string } & BundleBadHeaderDetails)
   | {
@@ -1102,6 +1103,12 @@ export const invalidSymmetricRange = (
     expression: sanitizeForDisplay(expression),
     nonCommits,
   });
+
+// git's `dotdot_missing` for `A..B`: either end names no object, or one whose
+// parse failed. `expression` is caller-supplied and sanitised before embedding.
+// git: `fatal: Invalid revision range <A..B>`.
+export const invalidRevisionRange = (expression: string): TsgitError =>
+  new TsgitError({ code: 'INVALID_REVISION_RANGE', expression: sanitizeForDisplay(expression) });
 
 // `bundle verify`/`bundle list-heads` open-failure: the path does not exist or is
 // unreadable. `path` is caller-supplied and sanitised before embedding.

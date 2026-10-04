@@ -673,6 +673,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `refusing to create empty bundle: ${data.reason}`;
     case 'INVALID_SYMMETRIC_RANGE':
       return `invalid symmetric difference expression ${data.expression}`;
+    case 'INVALID_REVISION_RANGE':
+      return `invalid revision range ${data.expression}`;
     case 'BUNDLE_READ_FAILED':
       return `could not open '${data.path}'`;
     case 'BUNDLE_BAD_HEADER':

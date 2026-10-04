@@ -8,7 +8,7 @@
  * and blobs — then hands the pure domain orchestrator two hydrated patch series.
  */
 
-import { invalidOption } from '../../domain/commands/error.js';
+import { invalidOption, invalidRevisionRange } from '../../domain/commands/error.js';
 import { foldSubject } from '../../domain/objects/commit-message.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { Commit, ObjectId } from '../../domain/objects/index.js';
@@ -21,11 +21,17 @@ import {
 import type { Context } from '../../ports/context.js';
 import { diffTrees } from '../primitives/diff-trees.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
+import {
+  createObjectTypeTable,
+  type ObjectTypeTable,
+  parseTypedObjectOrAbsent,
+} from '../primitives/internal/object-type-table.js';
+import { peel } from '../primitives/internal/peel.js';
 import { materialisePatchFiles } from '../primitives/materialise-patch-files.js';
 import { readObject } from '../primitives/read-object.js';
 import { walkCommitsByDate } from '../primitives/walk-commits-by-date.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
-import { resolveCommitOnce } from './internal/resolve-rev.js';
+import { evaluateRevision } from './rev-parse.js';
 
 export type {
   RangeDiffCommit,
@@ -92,13 +98,32 @@ const hydrateSeries = (
 ): Promise<ReadonlyArray<RenderedPatch>> =>
   boundedMapFor(ctx, 'ioBound', commits, (commit) => hydrate(ctx, commit));
 
-/** Walk `base..tip` (date order), drop merges, reverse to a patch series. */
-const readSeries = async (
+interface RangeEnds {
+  readonly base: ObjectId;
+  readonly tip: ObjectId;
+}
+
+/** git's `handle_dotdot_1`: both ends parsed into the table, then a failed
+ *  parse of either dies `Invalid revision range <base>..<tip>`. */
+const setUpRange = async (
   ctx: Context,
+  table: ObjectTypeTable,
   range: RangeDiffRange,
-): Promise<ReadonlyArray<RenderedPatch>> => {
-  const base = await resolveCommitOnce(ctx, range.base);
-  const tip = await resolveCommitOnce(ctx, range.tip);
+): Promise<RangeEnds> => {
+  const base = await evaluateRevision(ctx, range.base);
+  const tip = await evaluateRevision(ctx, range.tip);
+  const parsedBase = await parseTypedObjectOrAbsent(ctx, table, base);
+  const parsedTip = await parseTypedObjectOrAbsent(ctx, table, tip);
+  if (parsedBase === undefined || parsedTip === undefined) {
+    throw invalidRevisionRange(`${range.base}..${range.tip}`);
+  }
+  return { base, tip };
+};
+
+/** Walk `base..tip` (date order), drop merges, reverse to a patch series. */
+const readSeries = async (ctx: Context, ends: RangeEnds): Promise<ReadonlyArray<RenderedPatch>> => {
+  const base = await peel(ctx, undefined, ends.base, 'commit');
+  const tip = await peel(ctx, undefined, ends.tip, 'commit');
   const commits: Commit[] = [];
   for await (const commit of walkCommitsByDate(ctx, { from: [tip], until: [base] })) {
     if (commit.data.parents.length <= 1) commits.push(commit); // git's --no-merges
@@ -113,7 +138,11 @@ export const rangeDiff = async (
 ): Promise<ReadonlyArray<RangeDiffEntry>> => {
   await assertOperationalRepository(ctx);
   const creationFactor = resolveCreationFactor(opts.creationFactor);
-  const oldSeries = await readSeries(ctx, opts.old);
-  const newSeries = await readSeries(ctx, opts.new);
+  // git validates both ranges, in one object table, before it walks either.
+  const table = createObjectTypeTable();
+  const oldEnds = await setUpRange(ctx, table, opts.old);
+  const newEnds = await setUpRange(ctx, table, opts.new);
+  const oldSeries = await readSeries(ctx, oldEnds);
+  const newSeries = await readSeries(ctx, newEnds);
   return rangeDiffEntries(oldSeries, newSeries, creationFactor);
 };

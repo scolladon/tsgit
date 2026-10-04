@@ -2,7 +2,11 @@ import { isObjectNotFound } from '../../../domain/objects/error.js';
 import type { Commit, ObjectId, ObjectType } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readObject, readObjectMetadata } from '../read-object.js';
-import { type ObjectTypeTable, parseTypedObject, typeWalkedCommit } from './object-type-table.js';
+import {
+  type ObjectTypeTable,
+  parseTypedObjectOrAbsent,
+  typeWalkedCommit,
+} from './object-type-table.js';
 import { commitHeader, isGraphKnownAbsent } from './read-commit-graph.js';
 
 /**
@@ -58,7 +62,7 @@ const peelDeclared = async (
 ): Promise<Declared | undefined> => {
   let declared: Declared = { id, type: 'tag' };
   while (declared.type === 'tag') {
-    const tag = await absentAsUndefined(() => parseTypedObject(ctx, table, declared.id));
+    const tag = await parseTypedObjectOrAbsent(ctx, table, declared.id);
     if (tag?.type !== 'tag') return undefined;
     declared = { id: tag.data.object, type: tag.data.objectType };
   }
