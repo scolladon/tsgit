@@ -25,7 +25,10 @@ import { refCandidates, validateRefName } from '../../domain/refs/index.js';
 import { workTreeRequired } from '../../domain/repository/error.js';
 import type { Context } from '../../ports/context.js';
 import { committishFilter, treeishFilter } from '../primitives/internal/disambiguation-hints.js';
-import { lookupCommitReference } from '../primitives/internal/lookup-commit-reference.js';
+import {
+  lookupCommitReference,
+  lookupTypedCommitReference,
+} from '../primitives/internal/lookup-commit-reference.js';
 import {
   createObjectTypeTable,
   type ObjectTypeTable,
@@ -298,30 +301,32 @@ const tryDifference = async (
   const end = await readCommittish(ctx, table, sides.end);
   if (end === undefined) return NOTHING_PRINTED;
   if (!sides.symmetric) return { printed: [included(end), excluded(start)], consumed: true };
-  return symmetricDifference(ctx, start, end);
+  return symmetricDifference(ctx, table, [start, end]);
 };
 
+/** Both sides looked up as commits against the invocation's table, then walked in it. */
 const symmetricDifference = async (
   ctx: Context,
-  start: ObjectId,
-  end: ObjectId,
+  table: ObjectTypeTable,
+  [start, end]: readonly [ObjectId, ObjectId],
 ): Promise<Attempt> => {
   const sides = [included(end), included(start)];
-  const a = await lookupCommitReference(ctx, start);
-  const b = await lookupCommitReference(ctx, end);
+  const a = await lookupTypedCommitReference(ctx, table, start);
+  const b = await lookupTypedCommitReference(ctx, table, end);
   if (a === undefined || b === undefined) return { printed: sides, consumed: false };
-  const bases = await printingMergeBases(ctx, [a.id, b.id], sides);
+  const bases = await printingMergeBases(ctx, table, [a, b], sides);
   return { printed: [...sides, ...bases.map(excluded)], consumed: true };
 };
 
 /** git's `repo_get_merge_bases(...) < 0` in `try_difference`: exit 128 after what it had printed. */
 const printingMergeBases = async (
   ctx: Context,
+  table: ObjectTypeTable,
   commits: readonly ObjectId[],
   printed: ReadonlyArray<RevParseEntry>,
 ): Promise<readonly ObjectId[]> => {
   try {
-    return await mergeBasesOf(ctx, commits, { all: true });
+    return await mergeBasesOf(ctx, commits, { all: true }, table);
   } catch (error) {
     const id = parseFailureOf(error);
     if (id === undefined) throw error;
@@ -544,7 +549,7 @@ const applyOperation = async (
   if (op.kind === 'deref') return derefTags(ctx, table, id, op.name);
   if (op.kind === 'peel') return peelTo(ctx, table, id, op.target, op.name);
   if (op.kind === 'search') return searchFrom(ctx, table, id, op);
-  const commit = await commitToWalk(ctx, id);
+  const commit = await commitToWalk(ctx, table, id);
   if (op.kind === 'parent') return op.n === 0 ? commit.id : nthParent(ctx, commit, op.n);
   return nthAncestor(ctx, commit, op.n);
 };
@@ -569,7 +574,7 @@ const searchFrom = async (
   id: ObjectId,
   op: Extract<RevOperation, { readonly kind: 'search' }>,
 ): Promise<ObjectId> => {
-  const peeled = await commitToWalk(ctx, await peel(ctx, table, id, 'commit', op.name));
+  const peeled = await untypedCommitToWalk(ctx, await peel(ctx, table, id, 'commit', op.name));
   if (op.pattern === '') return peeled.id;
   const found = await searchCommitMessages(ctx, [peeled.commit], op.pattern);
   if (found === undefined) throw revparseUnresolved(op.name);
@@ -625,8 +630,23 @@ interface PeeledCommit {
   readonly commit: Commit;
 }
 
-/** The commit `^`/`~` walk from: git's `lookup_commit_reference`, which refuses any other kind. */
-const commitToWalk = async (ctx: Context, id: ObjectId): Promise<PeeledCommit> => {
+/**
+ * The commit `^`/`~` walk from: git's `lookup_commit_reference`, which refuses
+ * any other kind — against the invocation's table when there is one, so the
+ * parse types the commit's pointers there.
+ */
+const commitToWalk = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  id: ObjectId,
+): Promise<PeeledCommit> => {
+  if (table === undefined) return untypedCommitToWalk(ctx, id);
+  const found = await lookupTypedCommitReference(ctx, table, id);
+  if (found === undefined) throw objectNotFound(id);
+  return readCommitAt(ctx, found);
+};
+
+const untypedCommitToWalk = async (ctx: Context, id: ObjectId): Promise<PeeledCommit> => {
   const commit = await lookupCommitReference(ctx, id);
   if (commit === undefined) throw objectNotFound(id);
   return { id: commit.id, commit };

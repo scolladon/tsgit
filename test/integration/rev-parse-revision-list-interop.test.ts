@@ -304,19 +304,21 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse revision list parity w
   });
 });
 
-/** `bm` names a parent the store lacks and `bb` a blob as its parent, both off `main`'s tree. */
+/** `bm` names a parent the store lacks, `bb` a blob and `bt` `main`'s tree as its parent. */
 const buildBrokenParentRepository = (repo: string): void => {
   runGit(['init', '-q', '-b', 'main', repo]);
   disableAutoMaintenance(repo);
   commitAt(repo, 'c1', 1);
   const tree = git(repo, 'rev-parse', 'main^{tree}').trim();
   const blob = runGit(['-C', repo, 'hash-object', '-w', '--stdin'], { input: 'b\n' }).trim();
-  const brokenOn = (parent: string): string =>
+  const brokenOn = (parent: string, own = tree): string =>
     runGit(['-C', repo, 'hash-object', '-t', 'commit', '-w', '--stdin', '--literally'], {
-      input: `tree ${tree}\nparent ${parent}\nauthor a <a@b> ${EPOCH} +0000\ncommitter a <a@b> ${EPOCH} +0000\n\nz\n`,
+      input: `tree ${own}\nparent ${parent}\nauthor a <a@b> ${EPOCH} +0000\ncommitter a <a@b> ${EPOCH} +0000\n\nz\n`,
     }).trim();
   git(repo, 'update-ref', 'refs/heads/bm', brokenOn(`cd${'0'.repeat(38)}`));
   git(repo, 'update-ref', 'refs/heads/bb', brokenOn(blob));
+  const other = runGit(['-C', repo, 'mktree'], { input: `100644 blob ${blob}\tb\n` }).trim();
+  git(repo, 'update-ref', 'refs/heads/bt', brokenOn(tree, other));
 };
 
 describe.skipIf(!GIT_AVAILABLE)(
@@ -333,22 +335,34 @@ describe.skipIf(!GIT_AVAILABLE)(
       await rm(repo, { recursive: true, force: true });
     });
 
-    describe('Given branches whose commit names a parent that fails to parse', () => {
-      describe.each(['main...bm', 'bm...main', 'main...bb', 'bb...main'])(
-        'When git rev-parse and revParse read %s',
-        (argument) => {
-          it('Then both print the two sides, log the same errors and refuse', async () => {
-            // Arrange
-            const peer = gitOutcome(repo, argument);
+    describe('Given branches whose commit names a parent that fails to parse or to type', () => {
+      describe.each([
+        'main...bm',
+        'bm...main',
+        'main...bb',
+        'bb...main',
+        'bb~0...main',
+        'main...bb~0',
+        'bb^{commit}...bb~0',
+        'bm~0...main',
+        'main...bt',
+        'bt...main',
+        'main~0...bt',
+        'bt...main~0',
+        'main^{/c1}...bt',
+        'main^{tree}...bt',
+      ])('When git rev-parse and revParse read %s', (argument) => {
+        it('Then both print the two sides, log the same errors and refuse', async () => {
+          // Arrange
+          const peer = gitOutcome(repo, argument);
 
-            // Act
-            const result = await tsgitOutcome(repo, repo, argument);
+          // Act
+          const result = await tsgitOutcome(repo, repo, argument);
 
-            // Assert
-            expect(result).toEqual(peer);
-          });
-        },
-      );
+          // Assert
+          expect(result).toEqual(peer);
+        });
+      });
     });
   },
 );
