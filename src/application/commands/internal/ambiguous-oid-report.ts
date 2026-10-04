@@ -1,13 +1,18 @@
 import type { TsgitError } from '../../../domain/error.js';
 import type { Context } from '../../../ports/context.js';
 
+/** git's `advise` header over the candidate list `get_short_oid` shows. */
+const CANDIDATES_HINT = 'The candidates are:';
+
 /**
- * git's `get_short_oid` reports an ambiguous abbreviated id on `error:` before
- * the read fails; a reader that carries on past the failure (`name-rev`,
- * `mailmap.blob`) emits that line itself. Any other failure reports nothing.
+ * git's `get_short_oid` reports an ambiguous abbreviated id on `error:`, then
+ * lists the candidates on `hint:` — logged here with the structured candidates
+ * as its payload — before the read fails. Any other failure reports nothing.
  */
 export const reportAmbiguousOid = (ctx: Context, failure: unknown): void => {
   const data = (failure as Partial<TsgitError>).data;
   if (data?.code !== 'AMBIGUOUS_OID_PREFIX') return;
-  ctx.logger?.error?.(`short object ID ${data.prefix} is ambiguous`, { prefix: data.prefix });
+  const { prefix, candidates } = data;
+  ctx.logger?.error?.(`short object ID ${prefix} is ambiguous`, { prefix });
+  ctx.logger?.error?.(CANDIDATES_HINT, { prefix, candidates });
 };

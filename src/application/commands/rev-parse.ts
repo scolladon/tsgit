@@ -32,6 +32,7 @@ import { readTree } from '../primitives/read-tree.js';
 import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
 import type { CandidateFilter } from '../primitives/resolve-oid-prefix.js';
 import { readRefCandidate } from '../primitives/resolve-ref.js';
+import { reportAmbiguousOid } from './internal/ambiguous-oid-report.js';
 import { searchCommitMessages, searchRefMessages } from './internal/commit-message-search.js';
 import { committishFilter, treeishFilter } from './internal/disambiguate-committish.js';
 import {
@@ -102,7 +103,7 @@ const readArgument = async (
   const negated = expression.startsWith(NEGATION);
   const name = negated ? expression.slice(NEGATION.length) : expression;
   try {
-    const id = await evaluateRevision(ctx, name);
+    const id = await readReporting(ctx, name);
     return [...printed, negated ? excluded(id) : included(id)];
   } catch (error) {
     if (!namesNoObject(error)) throw error;
@@ -127,15 +128,55 @@ const readFilename = async (
   throw withPrinted(failure, printed);
 };
 
-/** git's `maybe_die_on_misspelt_object_name`: a second read of `arg`, which skips a `:/` search. */
+/**
+ * git's `maybe_die_on_misspelt_object_name`: a second, quiet read of `arg`,
+ * which skips a `:/` search — quiet but below a `^<n>` or `~<n>`, which reads
+ * what precedes it without the quiet flag, so an ambiguity there is reported again.
+ */
 const rereadMisspelt = async (ctx: Context, arg: string): Promise<void> => {
   if (isMessageSearch(arg)) return;
-  await evaluateRevision(ctx, arg);
+  try {
+    await evaluateRevision(ctx, arg);
+  } catch (error) {
+    if (errorDataCode(error) === 'AMBIGUOUS_OID_PREFIX' && dropsQuietRead(arg)) {
+      reportAmbiguousOid(ctx, error);
+    }
+    throw error;
+  }
+};
+
+const PARENT_STEPS: ReadonlySet<RevOperation['kind']> = new Set(['parent', 'ancestor']);
+
+/** Whether `arg` holds a `^<n>` or `~<n>`: git's `get_parent` and `get_nth_ancestor` drop the quiet flag. */
+const dropsQuietRead = (arg: string): boolean => {
+  const expr = parseExpression(arg);
+  if (expr.kind === 'tree-path') return dropsQuietRead(expr.rev);
+  return expr.kind === 'ref-or-hex' && expr.operations.some((op) => PARENT_STEPS.has(op.kind));
+};
+
+/** git's `get_oid` read aloud: an ambiguous abbreviated name is reported before the read fails. */
+const readReporting = async (
+  ctx: Context,
+  expression: string,
+  accepts?: CandidateFilter,
+): Promise<ObjectId> => {
+  try {
+    return await evaluateRevision(ctx, expression, accepts);
+  } catch (error) {
+    reportAmbiguousOid(ctx, error);
+    throw error;
+  }
 };
 
 type PrintingRefusal = Extract<
   TsgitErrorData,
-  { readonly code: 'OBJECT_NOT_FOUND' | 'REVPARSE_UNRESOLVED' | 'PATH_NOT_IN_TREE' }
+  {
+    readonly code:
+      | 'OBJECT_NOT_FOUND'
+      | 'REVPARSE_UNRESOLVED'
+      | 'PATH_NOT_IN_TREE'
+      | 'AMBIGUOUS_OID_PREFIX';
+  }
 >;
 
 const withPrinted = (refusal: unknown, printed: ReadonlyArray<RevParseEntry>): unknown => {
@@ -167,7 +208,7 @@ export const resolveRevision = async (
   source: RevisionSource = 'command-line',
 ): Promise<ObjectId> => {
   await readDifferenceSides(ctx, SIDES_BY_SOURCE[source](expression));
-  if (source === 'stdin') return evaluateRevision(ctx, expression);
+  if (source === 'stdin') return readReporting(ctx, expression);
   return readNamedObject(ctx, expression, expression);
 };
 
@@ -178,11 +219,9 @@ export const resolveRevision = async (
  */
 const readNamedObject = async (ctx: Context, name: string, arg: string): Promise<ObjectId> => {
   try {
-    return await evaluateRevision(ctx, name);
+    return await readReporting(ctx, name);
   } catch (error) {
-    if (await rereadsMisspeltRevision(ctx, arg, error)) {
-      await evaluateRevision(ctx, arg);
-    }
+    if (await rereadsMisspeltRevision(ctx, arg, error)) await rereadMisspelt(ctx, arg);
     throw error;
   }
 };
@@ -190,7 +229,7 @@ const readNamedObject = async (ctx: Context, name: string, arg: string): Promise
 /** A range side or shorthand base, read commit-ish; a read that names no object is not a refusal here. */
 const readCommittish = async (ctx: Context, side: string): Promise<ObjectId | undefined> => {
   try {
-    return await evaluateRevision(ctx, side, committishFilter(ctx));
+    return await readReporting(ctx, side, committishFilter(ctx));
   } catch (error) {
     if (namesNoObject(error)) return undefined;
     throw error;

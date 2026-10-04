@@ -241,26 +241,48 @@ describe('resolveRevision', () => {
     });
   });
 
-  describe('Given an abbreviated oid matching two objects', () => {
-    describe('When resolveRevision', () => {
-      it('Then throws AMBIGUOUS_OID_PREFIX', async () => {
-        // Arrange — two loose objects sharing prefix 'abcdef'
-        const ctx = createMemoryContext();
-        await seedRepo(ctx, {});
-        for (const tail of ['0'.repeat(34), '1'.repeat(34)]) {
-          await ctx.fs.write(`${ctx.layout.gitDir}/objects/ab/cdef${tail}`, new Uint8Array([1]));
-        }
+  describe('Given an abbreviated oid two blobs share', () => {
+    const SHARED = 'abcd';
+    /** Two blob contents whose ids share the abbreviation `abcd`. */
+    const SHARING_ABCD = ['x20507\n', 'x115828\n'];
+    const sharedRepo = async () => {
+      const logged: Array<readonly [string, unknown]> = [];
+      const base = createMemoryContext();
+      const ctx: Context = {
+        ...base,
+        logger: { error: (message, context) => logged.push([message, context]) },
+      };
+      const { commitIds } = await seedRepo(ctx, { commits: [{ tree: TREE_OID }] });
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitIds[0]}\n`);
+      const ids: ObjectId[] = [];
+      for (const text of SHARING_ABCD) ids.push(await writeBlob(ctx, text));
+      const candidates = ids.sort().map((id) => ({ id, type: 'blob' }));
+      const report = [
+        [`short object ID ${SHARED} is ambiguous`, { prefix: SHARED }],
+        ['The candidates are:', { prefix: SHARED, candidates }],
+      ];
+      return { ctx, logged, report };
+    };
+
+    describe.each([
+      { arg: 'abcd', source: 'command-line', reads: 1 },
+      { arg: 'abcd', source: 'stdin', reads: 1 },
+      { arg: 'abcd^{}', source: 'command-line', reads: 1 },
+      { arg: 'abcd~1', source: 'command-line', reads: 2 },
+      { arg: 'abcd~1:f', source: 'command-line', reads: 2 },
+      { arg: 'abcd..main', source: 'command-line', reads: 1 },
+    ] as const)('When resolveRevision reads $arg from the $source', ({ arg, source, reads }) => {
+      it('Then it refuses, reporting the candidates once per read git makes aloud', async () => {
+        // Arrange
+        const { ctx, logged, report } = await sharedRepo();
+        const sut = resolveRevision;
 
         // Act
-        let caught: unknown;
-        try {
-          await resolveRevision(ctx, 'abcdef');
-        } catch (err) {
-          caught = err;
-        }
+        const result = await sut(ctx, arg, source).catch((error: TsgitError) => error.data.code);
 
         // Assert
-        expect((caught as TsgitError).data.code).toBe('AMBIGUOUS_OID_PREFIX');
+        expect(result).toMatch(/^(AMBIGUOUS_OID_PREFIX|OBJECT_NOT_FOUND|REVPARSE_UNRESOLVED)$/);
+        expect(logged).toEqual(Array.from({ length: reads }, () => report).flat());
       });
     });
   });

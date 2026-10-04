@@ -1,5 +1,6 @@
 // Value objects — companion object pattern (type + value share a name)
 
+export type { AmbiguousCandidate, CandidateDate } from './ambiguous-candidate.js';
 export type { AuthorIdentity } from './author-identity.js';
 export { parseIdentity, serializeIdentity } from './author-identity.js';
 // Blob

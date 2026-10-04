@@ -58,6 +58,7 @@ import {
   type TsgitError,
   unsupportedOperation,
 } from '../../../src/domain/index.js';
+import type { AmbiguousCandidate } from '../../../src/domain/objects/ambiguous-candidate.js';
 import type { FilePath, ObjectId, RefName } from '../../../src/domain/objects/index.js';
 import { invalidFilterSpec, remoteFilterUnsupported } from '../../../src/domain/protocol/error.js';
 import type { WorkdirStat } from '../../../src/domain/snapshot/index.js';
@@ -1336,7 +1337,10 @@ describe('domain error — AdapterError', () => {
     describe('When reading .message', () => {
       it('Then reports the prefix and candidate count', () => {
         // Arrange
-        const candidates = ['1', '2'] as unknown as ReadonlyArray<ObjectId>;
+        const candidates: ReadonlyArray<AmbiguousCandidate> = [
+          { id: '1' as ObjectId, type: 'blob' },
+          { id: '2' as ObjectId, type: 'tree' },
+        ];
 
         // Act
         const result = ambiguousOidPrefix('abc', candidates);

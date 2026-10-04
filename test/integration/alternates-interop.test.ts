@@ -1198,7 +1198,7 @@ const candidatesOf = async (repo: Repository, prefix: string): Promise<ReadonlyA
   const error = await rejectionOf(() => resolveOidPrefix(repo.ctx, prefix));
   if (error.data.code !== 'AMBIGUOUS_OID_PREFIX')
     return expect.fail(`unexpected ${error.data.code}`);
-  return error.data.candidates;
+  return error.data.candidates.map((candidate) => candidate.id);
 };
 
 describe.skipIf(!GIT_AVAILABLE)('alternates interop — abbreviation across stores', () => {

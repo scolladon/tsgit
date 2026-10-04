@@ -13,6 +13,7 @@ import type { HashConfig } from '../../domain/objects/hash-config.js';
 import { isOid, type ObjectId } from '../../domain/objects/index.js';
 import { findByPrefix } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
+import { describeCandidates } from './internal/ambiguous-candidates.js';
 import { isMissingFanoutDir } from './internal/loose-oid-cache.js';
 import { getObjectStore, type ObjectSource } from './object-store.js';
 
@@ -105,17 +106,36 @@ export const scanPacksIn = async (
 /** git's disambiguation hint: whether a candidate is the kind the caller reads. */
 export type CandidateFilter = (id: ObjectId) => Promise<boolean>;
 
-/**
- * git's `update_candidates`: among several candidates, the single one passing
- * `accepts` wins; none or more than one passing leaves the prefix ambiguous.
- */
-const disambiguate = async (
+/** The candidates passing git's disambiguation hint `accepts`. */
+const passing = async (
   candidates: ReadonlyArray<ObjectId>,
   accepts: CandidateFilter,
-): Promise<ObjectId | undefined> => {
-  const passing: ObjectId[] = [];
-  for (const id of candidates) if (await accepts(id)) passing.push(id);
-  return passing.length === 1 ? passing[0] : undefined;
+): Promise<ReadonlyArray<ObjectId>> => {
+  const kept: ObjectId[] = [];
+  for (const id of candidates) if (await accepts(id)) kept.push(id);
+  return kept;
+};
+
+/**
+ * git's `update_candidates` then `get_short_oid`'s listing: among several
+ * candidates, the single one passing `accepts` wins; otherwise the prefix is
+ * ambiguous, listing the hint's survivors when more than one passed it, else
+ * every match.
+ */
+const chooseCandidate = async (
+  ctx: Context,
+  prefix: string,
+  candidates: ReadonlyArray<ObjectId>,
+  accepts: CandidateFilter | undefined,
+): Promise<ObjectId> => {
+  const kept = accepts === undefined ? [] : await passing(candidates, accepts);
+  const [chosen, rival] = kept;
+  if (chosen !== undefined && rival === undefined) return chosen;
+  const listed = rival === undefined ? candidates : kept;
+  throw ambiguousOidPrefix(
+    prefix,
+    await describeCandidates(ctx, listed, MAX_OID_PREFIX_CANDIDATES),
+  );
 };
 
 export const resolveOidPrefix = async (
@@ -132,9 +152,6 @@ export const resolveOidPrefix = async (
     ),
   );
   const unique = [...new Set<ObjectId>(perSource.flat(2))];
-  if (unique.length === 0) return undefined;
-  if (unique.length === 1) return unique[0];
-  const chosen = accepts === undefined ? undefined : await disambiguate(unique, accepts);
-  if (chosen !== undefined) return chosen;
-  throw ambiguousOidPrefix(prefix, unique.slice(0, MAX_OID_PREFIX_CANDIDATES));
+  if (unique.length <= 1) return unique[0];
+  return chooseCandidate(ctx, prefix, unique, accepts);
 };

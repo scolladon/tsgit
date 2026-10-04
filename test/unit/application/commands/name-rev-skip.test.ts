@@ -5,6 +5,7 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { describe as describeCommand } from '../../../../src/application/commands/describe.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { nameRev } from '../../../../src/application/commands/name-rev.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
@@ -14,6 +15,10 @@ const ident: AuthorIdentity = {
   timestamp: 1_700_000_000,
   timezoneOffset: '+0000',
 };
+
+/** Two blob contents whose ids share the abbreviation `abcd`. */
+const SHARING_ABCD = ['x20507\n', 'x115828\n'];
+const encoder = new TextEncoder();
 
 interface Seeded {
   readonly ctx: Context;
@@ -81,10 +86,10 @@ describe('Given an abbreviated object id two objects share', () => {
     it('Then it reports the ambiguity and skips the argument', async () => {
       // Arrange
       const { ctx, logs } = await seed();
-      for (const tail of ['0'.repeat(34), '1'.repeat(34)]) {
-        await ctx.fs.write(`${ctx.layout.gitDir}/objects/ab/cdef${tail}`, new Uint8Array([1]));
+      for (const text of SHARING_ABCD) {
+        await writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: encoder.encode(text) });
       }
-      const shared = 'abcdef';
+      const shared = 'abcd';
       const sut = nameRev;
 
       // Act
@@ -94,6 +99,7 @@ describe('Given an abbreviated object id two objects share', () => {
       expect(result).toBeUndefined();
       expect(logs).toEqual([
         `error: short object ID ${shared} is ambiguous`,
+        'error: The candidates are:',
         `Could not get sha1 for ${shared}. Skipping.`,
       ]);
     });

@@ -217,10 +217,28 @@ describe('Given a history with two branches, criss-cross merges and a tag', () =
     });
   });
 
-  describe.each([C2_PREFIX, `^${C2_PREFIX}`, `${C2_PREFIX}^{}..side`])(
-    'When revParse reads %s, the abbreviated id a blob shares with a commit',
+  describe('When revParse reads the abbreviated id a blob shares with a commit', () => {
+    it('Then it refuses the ambiguous name read with no commit-ish hint, printing it', async () => {
+      // Arrange
+      const { ctx } = await listRepo();
+      const sut = revParse;
+
+      // Act
+      const result = await failureData(() => sut(ctx, C2_PREFIX));
+
+      // Assert
+      expect(result).toMatchObject({
+        code: 'AMBIGUOUS_OID_PREFIX',
+        prefix: C2_PREFIX,
+        printed: [{ kind: 'path', path: C2_PREFIX }],
+      });
+    });
+  });
+
+  describe.each([`^${C2_PREFIX}`, `${C2_PREFIX}^{}..side`])(
+    'When revParse reads %s, its ambiguous name read with no commit-ish hint',
     (arg) => {
-      it('Then it refuses the ambiguous name read with no commit-ish hint', async () => {
+      it('Then the whole argument names no revision and is printed as given', async () => {
         // Arrange
         const { ctx } = await listRepo();
         const sut = revParse;
@@ -229,7 +247,10 @@ describe('Given a history with two branches, criss-cross merges and a tag', () =
         const result = await failureData(() => sut(ctx, arg));
 
         // Assert
-        expect(result).toMatchObject({ code: 'AMBIGUOUS_OID_PREFIX', prefix: C2_PREFIX });
+        expect(result).toMatchObject({
+          code: 'REVPARSE_UNRESOLVED',
+          printed: [{ kind: 'path', path: arg }],
+        });
       });
     },
   );

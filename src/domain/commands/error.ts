@@ -1,5 +1,6 @@
 import { sanitizeForDisplay, TsgitError } from '../error.js';
 import type { HookName } from '../hooks/index.js';
+import type { AmbiguousCandidate } from '../objects/ambiguous-candidate.js';
 import { MAX_OBJECT_ID_IN_ERROR, type ObjectType } from '../objects/error.js';
 import type { FilePath, ObjectId, RefName } from '../objects/object-id.js';
 import type { RevParseEntry } from '../objects/rev-parse-entry.js';
@@ -340,7 +341,10 @@ export type CommandError =
   | {
       readonly code: 'AMBIGUOUS_OID_PREFIX';
       readonly prefix: string;
-      readonly candidates: ReadonlyArray<ObjectId>;
+      /** The objects git's `hint:` lists, in its order: tags, commits, trees, then blobs, each by id. */
+      readonly candidates: ReadonlyArray<AmbiguousCandidate>;
+      /** What `rev-parse` had printed before refusing. */
+      readonly printed?: ReadonlyArray<RevParseEntry>;
     }
   | { readonly code: 'INVALID_SEQUENCER_TODO'; readonly reason: string }
   | { readonly code: 'CHERRY_PICK_MERGE_NO_MAINLINE'; readonly commit: ObjectId }
@@ -1003,7 +1007,7 @@ export const stashApplyWouldOverwrite = (paths: ReadonlyArray<FilePath>): TsgitE
 // validated 4–39-hex query, embedded verbatim.
 export const ambiguousOidPrefix = (
   prefix: string,
-  candidates: ReadonlyArray<ObjectId>,
+  candidates: ReadonlyArray<AmbiguousCandidate>,
 ): TsgitError => new TsgitError({ code: 'AMBIGUOUS_OID_PREFIX', prefix, candidates });
 
 // Corrupt `.git/sequencer/todo` line. `reason` embeds the offending line

@@ -11,6 +11,8 @@ import type { Context } from '../../../../../src/ports/context.js';
 import { asBareContext } from '../fixtures.js';
 
 const encoder = new TextEncoder();
+/** Two blob contents whose ids share the abbreviation `abcd`. */
+const SHARING_ABCD = ['x20507\n', 'x115828\n'];
 const decoder = new TextDecoder();
 const IDENTITY = { name: 'A', email: 'a@example.com', timestamp: 0, timezoneOffset: '+0000' };
 const REGULAR_FILE = '100644';
@@ -229,10 +231,14 @@ describe('readMailmap', () => {
         const base = createMemoryContext();
         const ctx = { ...base, logger: { error: (message: string) => errors.push(message) } };
         await commitMailmap(ctx, rule('Blob', 'old@example.com'));
-        for (const tail of ['0'.repeat(34), '1'.repeat(34)]) {
-          await ctx.fs.write(`${ctx.layout.gitDir}/objects/ab/cdef${tail}`, new Uint8Array([1]));
+        for (const text of SHARING_ABCD) {
+          await writeObject(ctx, {
+            type: 'blob',
+            id: '' as ObjectId,
+            content: encoder.encode(text),
+          });
         }
-        await writeConfig(ctx, '[mailmap]\n\tblob = abcdef\n');
+        await writeConfig(ctx, '[mailmap]\n\tblob = abcd\n');
         const sut = mapped;
 
         // Act
@@ -240,7 +246,7 @@ describe('readMailmap', () => {
 
         // Assert
         expect(result).toBe('Old');
-        expect(errors).toEqual(['short object ID abcdef is ambiguous']);
+        expect(errors).toEqual(['short object ID abcd is ambiguous', 'The candidates are:']);
       });
     });
   });

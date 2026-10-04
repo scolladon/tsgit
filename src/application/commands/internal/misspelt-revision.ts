@@ -16,11 +16,12 @@ import { pathIsOccupied } from '../../primitives/internal/path-occupied.js';
 import { isMessageSearch } from './rev-parse-grammar.js';
 import { startupPrefix } from './startup-prefix.js';
 
-/** The codes a read that found no object refuses with — git's `get_oid` returning -1. */
+/** The codes a read that found no object refuses with — git's `get_oid` returning non-zero. */
 const UNRESOLVED_CODES: ReadonlySet<string | undefined> = new Set([
   'OBJECT_NOT_FOUND',
   'REVPARSE_UNRESOLVED',
   'PATH_NOT_IN_TREE',
+  'AMBIGUOUS_OID_PREFIX',
 ]);
 
 /** git's `is_missing_file_error`: `ENOENT` and `ENOTDIR` both mean nothing is there. */

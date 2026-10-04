@@ -253,14 +253,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse revision list parity w
       },
     );
 
-    describe.each([
-      '<prefix>',
-      '^<prefix>',
-      '<prefix>^{}..side',
-      '<prefix>^{}',
-      '<prefix>^{blob}',
-      '<prefix>^{object}',
-    ])(
+    describe.each(['<prefix>', '<prefix>^{}', '<prefix>^{blob}', '<prefix>^{object}'])(
       'When git rev-parse and revParse read %s, the prefix read with no commit-ish hint',
       (row) => {
         it('Then both refuse the ambiguous abbreviated id', async () => {
