@@ -4,12 +4,14 @@
  * it was given as `merge_name` does; `pull` hands over FETCH_HEAD's lines.
  */
 import { configMissingValue } from '../../../domain/commands/error.js';
+import { ancestorSpelling } from '../../../domain/merge/ancestor-spelling.js';
 import { mergeTitle } from '../../../domain/merge/merge-title.js';
-import type { ObjectId } from '../../../domain/objects/index.js';
+import type { ObjectId, RefName } from '../../../domain/objects/index.js';
 import { compileGlob } from '../../../domain/pathspec/compile-glob.js';
 import type { Context } from '../../../ports/context.js';
 import { findEntries, type LocatedConfigEntry } from '../../primitives/config-read.js';
 import { readObject } from '../../primitives/read-object.js';
+import { refResolvesForReading } from '../../primitives/resolve-ref.js';
 import { dwimRefWarning } from './revision-name.js';
 
 /** One head merged, described as a FETCH_HEAD line describes it. */
@@ -21,6 +23,7 @@ export interface MergeHead {
 /** git's built-in `merge.suppressDest` list, used until the key is configured. */
 const DEFAULT_SUPPRESSED = ['main', 'master'] as const;
 const LOCAL_SOURCE = ' of .';
+const EARLY_PART = ' (early part)';
 const REF_KINDS: ReadonlyArray<readonly [prefix: string, kind: string]> = [
   ['refs/heads/', 'branch'],
   ['refs/tags/', 'tag'],
@@ -80,24 +83,41 @@ export const formatMergeMessage = async (
 const refKind = (ref: string): string | undefined =>
   REF_KINDS.find(([prefix]) => ref.startsWith(prefix))?.[1];
 
+/** git's `merge_name` of `<branch>^…` / `<branch>~<n>`: the branch it steps back along. */
+const describeAncestorSpelling = async (
+  ctx: Context,
+  name: string,
+  commit: ObjectId,
+): Promise<MergeHead | undefined> => {
+  const spelling = ancestorSpelling(name);
+  if (spelling === undefined) return undefined;
+  if (!(await refResolvesForReading(ctx, `refs/heads/${spelling.branch}` as RefName))) {
+    return undefined;
+  }
+  const part = spelling.early ? EARLY_PART : '';
+  return { id: commit, description: `branch '${spelling.branch}'${part}${LOCAL_SOURCE}` };
+};
+
 /**
  * git's `merge_name`: a name that is a branch, tag or remote-tracking ref is
- * described as one of `.`, with the ref's own (unpeeled) id; any other name
- * for a tag object as a tag; anything else as the commit it resolved to.
+ * described as one of `.`, with the ref's own (unpeeled) id; an ancestor
+ * spelling of a branch as that branch; any other name for a tag object as a
+ * tag; anything else as the commit it resolved to. `object` is what the name
+ * resolved to before peeling — only a tag peels to a different commit.
  */
 export const describeMergeHead = async (
   ctx: Context,
   name: string,
   commit: ObjectId,
+  object: ObjectId = commit,
 ): Promise<MergeHead> => {
   const found = await dwimRefWarning(ctx, name);
   const kind = found === undefined ? undefined : refKind(found.ref);
   if (found !== undefined && kind !== undefined) {
     return { id: found.id, description: `${kind} '${name}'${LOCAL_SOURCE}` };
   }
-  // Only an annotated tag peels to a different commit, so a differing id is a tag.
-  if (found !== undefined && found.id !== commit) {
-    return { id: found.id, description: `tag '${name}'` };
-  }
+  const ancestor = await describeAncestorSpelling(ctx, name, commit);
+  if (ancestor !== undefined) return ancestor;
+  if (object !== commit) return { id: object, description: `tag '${name}'` };
   return { id: commit, description: `commit '${name}'` };
 };

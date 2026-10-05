@@ -35,6 +35,7 @@ import {
   type TreeEntry,
 } from '../../domain/objects/index.js';
 import { treeEntry } from '../../domain/objects/tree.js';
+import { refNotFound } from '../../domain/refs/error.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
@@ -44,6 +45,7 @@ import { createCommit } from '../primitives/create-commit.js';
 import { changedPaths, findWouldOverwrite } from '../primitives/find-would-overwrite.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
+import { peelChain } from '../primitives/internal/peel-chain.js';
 import { resolveMaxTreeDepth } from '../primitives/internal/resolve-max-tree-depth.js';
 import {
   createLeadingPathScanner,
@@ -71,7 +73,6 @@ import { writeObject } from '../primitives/write-object.js';
 import { writeTree } from '../primitives/write-tree.js';
 import { removeMergeBranchState } from './internal/branch-state.js';
 import { conflictMergeMsg } from './internal/cherry-pick-state.js';
-import { resolveCommitIsh } from './internal/commit-ish.js';
 import { resolveAuthor, resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
@@ -87,12 +88,17 @@ import {
   writeOrigHead,
 } from './internal/merge-state.js';
 import { type OctopusRemote, type OctopusResult, octopusMerge } from './internal/octopus-merge.js';
+import { expandPriorCheckout } from './internal/prior-checkout.js';
 import {
   assertNoPendingOperation,
   assertOperationalRepositorySettingsFirst,
   readHeadRaw,
   requireWorkTree,
 } from './internal/repo-state.js';
+import { resolveRevisionExpression } from './internal/revision-expression.js';
+
+const PREVIOUS_BRANCH_SHORTHAND = '-';
+const PREVIOUS_BRANCH = '@{-1}';
 
 export type { IndexEntry } from '../../domain/git-index/index.js';
 export type { ConflictType, MergeConflict, MergeOutcome } from '../../domain/merge/index.js';
@@ -204,13 +210,15 @@ const settleMessage = async (
   opts: MergeRunInput,
   internal: MergeInternalOptions,
   branch: RefName,
-  remotes: ReadonlyArray<OctopusRemote>,
+  remotes: ReadonlyArray<MergeRemote>,
 ): Promise<SettledMerge> => {
   const rev = remotes.map((remote) => remote.name).join(' ');
   if (opts.message !== undefined) return { ...opts, rev, message: opts.message };
   const heads =
     internal.heads ??
-    (await Promise.all(remotes.map((remote) => describeMergeHead(ctx, remote.name, remote.id))));
+    (await Promise.all(
+      remotes.map((remote) => describeMergeHead(ctx, remote.spelt, remote.id, remote.object)),
+    ));
   return { ...opts, rev, message: await formatMergeMessage(ctx, heads, shortBranchName(branch)) };
 };
 
@@ -228,7 +236,7 @@ const computeMerge = async (
     throw unsupportedOperation('merge', 'cannot merge with detached HEAD');
   }
   const ourId = await resolveRef(ctx, head.target);
-  const named = await resolveRemotes(ctx, typeof input.rev === 'string' ? [input.rev] : input.rev);
+  const named = await resolveRemotes(ctx, mergeArguments(input.rev));
   const result =
     named.length === 1
       ? await twoHeadMerge(ctx, input, internal, head.target, ourId, named[0]!)
@@ -238,13 +246,38 @@ const computeMerge = async (
   return result;
 };
 
+/** git's `merge -`: a lone `-` names the previous branch, `@{-1}`. */
+const mergeArguments = (rev: string | ReadonlyArray<string>): ReadonlyArray<string> => {
+  const revs = typeof rev === 'string' ? [rev] : rev;
+  return revs.length === 1 && revs[0] === PREVIOUS_BRANCH_SHORTHAND ? [PREVIOUS_BRANCH] : revs;
+};
+
+/** A head to merge: the commit, and the object its name resolved to before peeling. */
+interface MergeRemote extends OctopusRemote {
+  readonly object: ObjectId;
+  /** The name with a leading `@{-<n>}` spelt out, as git's `merge_name` describes it. */
+  readonly spelt: string;
+}
+
+/** git's `get_merge_parent`: any revision, peeled to the commit it names. */
+const resolveMergeParent = async (ctx: Context, name: string): Promise<MergeRemote> => {
+  const spelt = await expandPriorCheckout(ctx, name);
+  const object = await resolveRevisionExpression(ctx, spelt);
+  if (object === undefined) throw refNotFound(name as RefName);
+  const { id, result } = await peelChain(ctx, object, readObject, (peeled) =>
+    peeled.type === 'tag' ? peeled.data.object : undefined,
+  );
+  if (result.type !== 'commit') throw refNotFound(name as RefName);
+  return { id, name, object, spelt };
+};
+
 /** git's `get_merge_parent` over each name given, in order. */
 const resolveRemotes = async (
   ctx: Context,
   revs: ReadonlyArray<string>,
-): Promise<OctopusRemote[]> => {
-  const remotes: OctopusRemote[] = [];
-  for (const name of revs) remotes.push({ id: await resolveCommitIsh(ctx, name), name });
+): Promise<MergeRemote[]> => {
+  const remotes: MergeRemote[] = [];
+  for (const name of revs) remotes.push(await resolveMergeParent(ctx, name));
   return remotes;
 };
 
@@ -255,7 +288,7 @@ const twoHeadMerge = async (
   internal: MergeInternalOptions,
   branch: RefName,
   ourId: ObjectId,
-  remote: OctopusRemote,
+  remote: MergeRemote,
 ): Promise<MergeResult> => {
   const theirId = remote.id;
   const opts = await settleMessage(ctx, input, internal, branch, [remote]);
@@ -297,7 +330,7 @@ const manyHeadMerge = async (
   internal: MergeInternalOptions,
   branch: RefName,
   ourId: ObjectId,
-  named: ReadonlyArray<OctopusRemote>,
+  named: ReadonlyArray<MergeRemote>,
 ): Promise<MergeResult> => {
   const reduced = (await tryReduceHeads(ctx, [ourId, ...named.map((remote) => remote.id)])) ?? [];
   const remotes = reduced.flatMap(

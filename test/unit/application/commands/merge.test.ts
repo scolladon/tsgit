@@ -4493,22 +4493,20 @@ describe('Given an alternate that fails to load', () => {
   };
 
   describe('When mergeRun targets the current HEAD commit', () => {
-    it('Then it rejects with the alternate error, writing ORIG_HEAD and nothing else', async () => {
+    it('Then it rejects with the alternate error before writing anything', async () => {
       // Arrange
       const { ctx, main } = await seedDiverged();
       const before = await snapshotFiles(ctx);
       const loadError = await failSourceLoad(ctx);
       const sut = mergeRun;
 
-      // Act — an explicit message, so no default-message object read precedes ORIG_HEAD
+      // Act — git's get_merge_parent parses the named object before ORIG_HEAD is written
       const attempt = sut(ctx, { rev: main, author, message: 'm' });
 
       // Assert
       await expect(attempt).rejects.toBe(loadError);
-      const after = await snapshotFiles(ctx);
-      const expected = new Map(before);
-      expected.set(`${ctx.layout.gitDir}/ORIG_HEAD`, Buffer.from(`${main}\n`).toString('base64'));
-      expect(after).toEqual(expected);
+      const result = await snapshotFiles(ctx);
+      expect(result).toEqual(before);
       vi.restoreAllMocks();
     });
   });
