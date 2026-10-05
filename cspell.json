@@ -740,6 +740,7 @@
     "NMAX",
     "noblink",
     "nobold",
+    "NODELETE",
     "nodiff",
     "nodispose",
     "noEmit",

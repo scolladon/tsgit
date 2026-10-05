@@ -32,6 +32,13 @@ returns every ref's outcome. A rejected `PushedRef` gains
 (`'remote'` when the server's `ng` line rejected it, with its text kept in `reason`). The client-side
 `NON_FAST_FORWARD` throw is removed.
 
+**Amendment (2026-10-05).** The union covers every per-ref rejection git's push reports, not only the
+four judged by `set_ref_status_for_push`: `'stale-info'` (`REJECT_STALE`, a `--force-with-lease`
+expectation that no longer holds) and `'remote-ref-not-deletable'` (`REJECT_NODELETE`, a delete
+refused because the server lacks `delete-refs`) join it, so the stale-lease case leaves
+`PUSH_REJECTED` for the per-ref result as the other rejections did. An atomic push aborts every ref
+on a client-side rejection, exactly as git's `atomic` push does.
+
 ## Consequences
 
 - Breaking public change (`feat(push)!`): callers that caught `NON_FAST_FORWARD` read the per-ref
