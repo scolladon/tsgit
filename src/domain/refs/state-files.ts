@@ -28,3 +28,12 @@ export const REBASE_HEAD = 'REBASE_HEAD';
 
 /** Records the refs fetched by the most recent fetch. */
 export const FETCH_HEAD = 'FETCH_HEAD';
+
+/** The recorded-resolution log of the paths a stopped merge left conflicted. */
+export const MERGE_RR = 'MERGE_RR';
+
+/** The tree a stopped merge auto-resolved to, conflict markers included. */
+export const AUTO_MERGE = 'AUTO_MERGE';
+
+/** The prepared message of a `merge --squash` awaiting its commit. */
+export const SQUASH_MSG = 'SQUASH_MSG';

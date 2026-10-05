@@ -10,11 +10,14 @@
  *   kind:    equivalent-under-readback
  *   format:  git-index-tree-state
  */
-import { revparseUnresolved } from '../../domain/commands/error.js';
+import { operationInProgress, revparseUnresolved } from '../../domain/commands/error.js';
+import type { GitIndex } from '../../domain/git-index/index.js';
 import { bareRepository } from '../../domain/index.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { resetMovingTo } from '../../domain/reflog/reflog-messages.js';
+import { MERGE_HEAD } from '../../domain/refs/state-files.js';
+import { MERGE } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import { buildIndexFromTree } from '../primitives/build-index-from-tree.js';
 import { peelChain } from '../primitives/internal/peel-chain.js';
@@ -23,10 +26,10 @@ import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { updateRef } from '../primitives/update-ref.js';
+import { removeBranchState } from './internal/branch-state.js';
 import { checkoutMetadataFor } from './internal/checkout-metadata.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
-  assertNoPendingOperation,
   assertOperationalRepository,
   readHeadRaw,
   requireWorkTree,
@@ -71,8 +74,8 @@ export const reset = async (ctx: Context, opts: ResetOptions): Promise<ResetResu
   // work-tree question, this is the bareness question, and they disagree in
   // that shape.
   if (opts.mode === 'mixed' && ctx.layout.bare) throw bareRepository('reset --mixed');
-  await assertNoPendingOperation(ctx);
   const id = await resolveTarget(ctx, opts.rev);
+  if (opts.mode === 'soft') await assertNotInTheMiddleOfAMerge(ctx);
 
   if (opts.mode === 'mixed') {
     await rebuildIndexFromCommit(ctx, id);
@@ -90,8 +93,21 @@ export const reset = async (ctx: Context, opts: ResetOptions): Promise<ResetResu
   await updateRef(ctx, 'HEAD' as RefName, id, {
     reflogMessage: resetMovingTo(opts.rev),
   });
+  await removeBranchState(ctx, 'silent');
   return { mode: opts.mode, id, branch };
 };
+
+/**
+ * git's `die_if_unmerged_cache`: a soft reset keeps the index, so it refuses
+ * while `MERGE_HEAD` stands or the index still holds a conflict.
+ */
+const assertNotInTheMiddleOfAMerge = async (ctx: Context): Promise<void> => {
+  const merging = await ctx.fs.exists(`${ctx.layout.gitDir}/${MERGE_HEAD}`);
+  if (merging || hasUnmergedEntry(await readIndex(ctx))) throw operationInProgress(MERGE);
+};
+
+const hasUnmergedEntry = (index: GitIndex): boolean =>
+  index.entries.some((entry) => entry.flags.stage !== 0);
 
 const rebuildIndexFromCommit = async (ctx: Context, commitId: ObjectId): Promise<void> => {
   const commit = await readObject(ctx, commitId);
