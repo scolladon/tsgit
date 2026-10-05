@@ -1660,8 +1660,8 @@ describe('push — per-ref stale lease, undeletable refs and atomic pushes', () 
           errors,
         }).toEqual({
           outcomes: [
-            ['refs/heads/new', 'rejected', 'atomic-push-failed'],
             ['refs/heads/main', 'rejected', 'non-fast-forward'],
+            ['refs/heads/new', 'rejected', 'atomic-push-failed'],
           ],
           methods: ['GET'],
           errors: ['atomic push failed for ref refs/heads/main. status: 2'],
@@ -1787,6 +1787,52 @@ describe('push — per-ref stale lease, undeletable refs and atomic pushes', () 
           status: result.pushedRefs.map((ref) => ref.status),
           atomic: capsOf(requestBodies[0]).includes('atomic'),
         }).toEqual({ status: ['ok'], atomic: sendsAtomic });
+      });
+    });
+  });
+});
+
+describe('push — remote-ref order', () => {
+  describe('Given refspecs naming new refs between advertised ones', () => {
+    describe('When push runs with a pre-push hook', () => {
+      it('Then the hook and the result list advertised refs in advertisement order, then new refs in refspec order', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const old = await seedCommit(ctx, [], 'old');
+        const tip = await seedCommit(ctx, [old.id], 'tip');
+        const names = ['zeta', 'newer', 'alpha', 'anew'];
+        await seedRepo(ctx, {
+          refs: Object.fromEntries(names.map((name) => [`refs/heads/${name}`, tip.id])),
+        });
+        await writeOriginConfig(ctx);
+        const ordered = [
+          'refs/heads/alpha',
+          'refs/heads/zeta',
+          'refs/heads/newer',
+          'refs/heads/anew',
+        ];
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [
+            { name: 'refs/heads/alpha', id: old.id },
+            { name: 'refs/heads/zeta', id: old.id },
+          ],
+          reportStatus: {
+            unpack: 'ok',
+            refs: ordered.map((name) => ({ name, status: 'ok' as const })),
+          },
+        });
+        const hooks = new MemoryHookRunner();
+        const sut = push;
+
+        // Act
+        const result = await sut({ ...ctx, transport, hooks }, { refspecs: names });
+
+        // Assert
+        expect({
+          result: result.pushedRefs.map((ref) => ref.name),
+          hook: hooks.calls[0]?.stdin.split('\n').map((line) => line.split(' ')[2]),
+        }).toEqual({ result: ordered, hook: [...ordered, undefined] });
       });
     });
   });

@@ -313,11 +313,29 @@ const resolveAllRefspecs = async (
     opts,
     table: createObjectTypeTable(),
   };
-  const out: ResolvedRefspec[] = [];
+  const located: ResolvedRefspec[] = [];
   for (const parsed of refspecs) {
-    out.push(await resolveOneRefspec(ctx, parsed, scope));
+    located.push(await locateRefspec(ctx, parsed, scope));
+  }
+  const out: ResolvedRefspec[] = [];
+  for (const ref of inRemoteOrder(located, adv)) {
+    out.push(await judgeRefspec(ctx, ref, scope));
   }
   return out;
+};
+
+/**
+ * git's `remote_refs` list: the advertised refs in advertisement order, then
+ * each ref the push creates, appended in refspec order as it is matched.
+ */
+const inRemoteOrder = (
+  located: ReadonlyArray<ResolvedRefspec>,
+  adv: Advertisement,
+): ReadonlyArray<ResolvedRefspec> => {
+  const position = new Map(adv.refs.map((ref, index) => [ref.name, index]));
+  const rank = (ref: ResolvedRefspec): number =>
+    position.get(ref.parsed.dst) ?? Number.POSITIVE_INFINITY;
+  return [...located].sort((a, b) => rank(a) - rank(b));
 };
 
 const buildRemoteMap = (refs: ReadonlyArray<AdvertisedRef>): ReadonlyMap<string, ObjectId> => {
@@ -326,7 +344,7 @@ const buildRemoteMap = (refs: ReadonlyArray<AdvertisedRef>): ReadonlyMap<string,
   return map;
 };
 
-const resolveOneRefspec = async (
+const locateRefspec = async (
   ctx: Context,
   parsed: ParsedRefspec,
   scope: RefspecScope,
@@ -337,12 +355,18 @@ const resolveOneRefspec = async (
     throw invalidOption('refspecs', `delete target ${parsed.dst} is not advertised`);
   }
   const localOid = parsed.isDelete ? zero : await resolveRef(ctx, parsed.src as RefName);
+  return { parsed, localOid, remoteOid };
+};
+
+const judgeRefspec = async (
+  ctx: Context,
+  ref: ResolvedRefspec,
+  scope: RefspecScope,
+): Promise<ResolvedRefspec> => {
   // git settles an up-to-date ref before the lease or any lookup.
-  if (localOid === remoteOid) return { parsed, localOid, remoteOid };
-  const rejection = await judgeUpdate(ctx, { parsed, localOid, remoteOid }, scope);
-  return rejection === undefined
-    ? { parsed, localOid, remoteOid }
-    : { parsed, localOid, remoteOid, rejection };
+  if (ref.localOid === ref.remoteOid) return ref;
+  const rejection = await judgeUpdate(ctx, ref, scope);
+  return rejection === undefined ? ref : { ...ref, rejection };
 };
 
 /**

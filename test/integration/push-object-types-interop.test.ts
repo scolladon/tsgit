@@ -302,7 +302,12 @@ describe.skipIf(!GIT_AVAILABLE)('push interop — client-side rejections per ref
         );
         const gitLines = git.stdout.split('\n').filter((line) => /^[*!]\t/.test(line));
         expect(git.exitCode).toBe(1);
-        expect([...rebuilt].sort()).toEqual([...gitLines].sort());
+        // git prints its accepted refs first, then its rejected ones, each in remote-ref order.
+        const display = [
+          ...rebuilt.filter((line) => line.startsWith('*')),
+          ...rebuilt.filter((line) => line.startsWith('!')),
+        ];
+        expect(display).toEqual(gitLines);
         expect(objectsOf(peer.bare)).toBe(objectsOf(gitPeer.bare));
         expect(refsOf(peer.bare)).toBe(refsOf(gitPeer.bare));
       });
