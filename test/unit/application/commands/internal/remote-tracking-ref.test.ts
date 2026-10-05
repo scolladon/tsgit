@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { findTrackingRef } from '../../../../../src/application/commands/internal/remote-tracking-ref.js';
+import {
+  findTrackedSources,
+  findTrackingRef,
+} from '../../../../../src/application/commands/internal/remote-tracking-ref.js';
 
 const MIRROR_HEADS = '+refs/heads/*:refs/remotes/mirror/*';
 
@@ -70,6 +73,54 @@ describe('findTrackingRef', () => {
 
         // Assert
         expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('findTrackedSources', () => {
+  describe.each([
+    {
+      label: 'a pattern refspec storing into the local ref',
+      specs: [MIRROR_HEADS],
+      ref: 'refs/remotes/mirror/b2',
+      expected: ['refs/heads/b2'],
+    },
+    {
+      label: 'an exact refspec storing into the local ref, beside one storing elsewhere',
+      specs: ['refs/heads/main:refs/remotes/solo/trunk', 'refs/heads/x:refs/remotes/solo/x'],
+      ref: 'refs/remotes/solo/trunk',
+      expected: ['refs/heads/main'],
+    },
+    {
+      label: 'two refspecs storing into the local ref',
+      specs: [MIRROR_HEADS, 'refs/heads/other:refs/remotes/mirror/main'],
+      ref: 'refs/remotes/mirror/main',
+      expected: ['refs/heads/main', 'refs/heads/other'],
+    },
+    {
+      label: 'a negative refspec ruling the mapped source out',
+      specs: [MIRROR_HEADS, '^refs/heads/secret'],
+      ref: 'refs/remotes/mirror/secret',
+      expected: [],
+    },
+    {
+      label: 'a refspec storing elsewhere',
+      specs: [MIRROR_HEADS],
+      ref: 'refs/remotes/origin/main',
+      expected: [],
+    },
+  ])('Given $label', ({ specs, ref, expected }) => {
+    describe('When the tracked sources are looked up', () => {
+      it('Then they are the remote refs mapped onto it', () => {
+        // Arrange
+        const sut = findTrackedSources;
+
+        // Act
+        const result = sut(specs, ref);
+
+        // Assert
+        expect(result).toEqual(expected);
       });
     });
   });

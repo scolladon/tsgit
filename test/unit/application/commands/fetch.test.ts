@@ -227,7 +227,8 @@ const fakeRemoteV2 = (
 const writeOriginConfig = async (ctx: ReturnType<typeof createMemoryContext>): Promise<void> => {
   await ctx.fs.writeUtf8(
     `${ctx.layout.gitDir}/config`,
-    '[remote "origin"]\n  url = https://example.com/r.git\n',
+    '[remote "origin"]\n  url = https://example.com/r.git\n' +
+      '  fetch = +refs/heads/*:refs/remotes/origin/*\n',
   );
 };
 
@@ -1617,12 +1618,9 @@ describe('fetch', () => {
   describe('hostile server defenses', () => {
     describe('Given a server advertising refs/heads/../../config (path traversal)', () => {
       describe('When fetch', () => {
-        it('Then the malicious ref is silently dropped', async () => {
-          // Arrange — security review HIGH-1. Without validateRefName in
-          // `remoteTargetForRef`, the composed `refs/remotes/origin/../../config`
-          // would point at `.git/config` and `readExistingRef` would `readUtf8`
-          // it. validateRefName rejects `..`, so the ref is dropped entirely —
-          // no on-disk read, no updatedRefs entry.
+        it("Then the malicious ref is dropped with git's funny-ref error", async () => {
+          // Arrange — the mapped `refs/remotes/origin/../../config` would point
+          // at `.git/config`; git's name check drops it before any read.
           const ctx = createMemoryContext();
           await seedRepo(ctx, {});
           await writeOriginConfig(ctx);
@@ -1636,11 +1634,17 @@ describe('fetch', () => {
             packBytes,
           });
 
+          const errors: string[] = [];
+          const logger = { error: (message: string) => errors.push(message) };
+
           // Act
-          const result = await fetch({ ...ctx, transport });
+          const result = await fetch({ ...ctx, transport, logger });
 
           // Assert — only the safe ref made it through.
           expect(result.updatedRefs.map((r) => r.name)).toEqual(['refs/remotes/origin/main']);
+          expect(errors).toEqual([
+            "* Ignoring funny ref 'refs/remotes/origin/../../config' locally",
+          ]);
         });
       });
     });
@@ -2681,6 +2685,107 @@ describe('fetch — everything local', () => {
 
         // Assert
         expect(requests.some((r) => r.method === 'POST')).toBe(false);
+      });
+    });
+  });
+});
+
+describe('fetch — tracking refs mapped through the fetch refspecs', () => {
+  const URL = 'https://example.com/r.git';
+  const writeConfig = async (
+    ctx: ReturnType<typeof createMemoryContext>,
+    fetchLines: ReadonlyArray<string>,
+  ): Promise<void> => {
+    const lines = fetchLines.map((spec) => `  fetch = ${spec}\n`).join('');
+    await ctx.fs.writeUtf8(
+      `${ctx.layout.gitDir}/config`,
+      `[remote "origin"]\n  url = ${URL}\n${lines}`,
+    );
+    __resetConfigCacheForTests();
+  };
+  const advertising = async (ctx: ReturnType<typeof createMemoryContext>, names: string[]) => {
+    const { packBytes, blobId } = await buildOneBlobPack(ctx, 'mapped\n');
+    const { transport } = fakeRemote({
+      url: URL,
+      advertisedRefs: names.map((name) => ({ name, id: blobId })),
+      packBytes,
+    });
+    return { transport, blobId };
+  };
+
+  describe('Given a pattern refspec mapping only b* branches under refs/remotes/x/', () => {
+    describe('When fetch runs against main and b2', () => {
+      it('Then only refs/remotes/x/b2 is written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await writeConfig(ctx, ['+refs/heads/b*:refs/remotes/x/b*']);
+        const { transport } = await advertising(ctx, ['refs/heads/b2', 'refs/heads/main']);
+
+        // Act
+        const result = await fetch({ ...ctx, transport });
+
+        // Assert
+        expect(result.updatedRefs.map((ref) => ref.name)).toEqual(['refs/remotes/x/b2']);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/main`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a negative refspec beside the pattern', () => {
+    describe('When fetch runs against main and secret', () => {
+      it('Then the excluded branch gets no tracking ref', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await writeConfig(ctx, ['+refs/heads/*:refs/remotes/origin/*', '^refs/heads/secret']);
+        const { transport } = await advertising(ctx, ['refs/heads/main', 'refs/heads/secret']);
+
+        // Act
+        const result = await fetch({ ...ctx, transport });
+
+        // Assert
+        expect(result.updatedRefs.map((ref) => ref.name)).toEqual(['refs/remotes/origin/main']);
+      });
+    });
+  });
+
+  describe('Given a remote with no fetch refspec', () => {
+    describe('When fetch runs', () => {
+      it('Then no tracking ref is written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await writeConfig(ctx, []);
+        const { transport } = await advertising(ctx, ['refs/heads/main']);
+
+        // Act
+        const result = await fetch({ ...ctx, transport });
+
+        // Assert
+        expect(result.updatedRefs).toEqual([]);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given prune and a mapped tracking ref the remote no longer advertises', () => {
+    describe('When fetch runs', () => {
+      it('Then only the mapped ref is pruned and an unmapped namespace is kept', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {
+          refs: { 'refs/remotes/x/b2': FAKE_OID('a'), 'refs/remotes/origin/zz': FAKE_OID('b') },
+        });
+        await writeConfig(ctx, ['+refs/heads/b*:refs/remotes/x/b*']);
+        const { transport } = await advertising(ctx, ['refs/heads/b3']);
+
+        // Act
+        const result = await fetch({ ...ctx, transport }, { prune: true });
+
+        // Assert
+        expect(result.prunedRefs).toEqual(['refs/remotes/x/b2']);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/zz`)).toBe(true);
       });
     });
   });

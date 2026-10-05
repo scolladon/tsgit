@@ -39,6 +39,13 @@ const matchesNegative = (name: string, negative: RefspecSides): boolean =>
     ? expandPattern(negative.src, name, negative.src) !== undefined
     : name === negative.src;
 
+/** git's `refname_matches_negative_refspec_item`: a negative among `specs` names `name` itself. */
+export const matchesNegativeRefspec = (specs: ReadonlyArray<string>, name: string): boolean =>
+  specs
+    .map(splitSides)
+    .filter((side) => side.negative)
+    .some((negative) => matchesNegative(name, negative));
+
 /** Whether a negative refspec among `specs` excludes the tracking ref `ref`. */
 export const isExcludedByNegativeRefspec = (specs: ReadonlyArray<string>, ref: string): boolean => {
   const sides = specs.map(splitSides);

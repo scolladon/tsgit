@@ -94,7 +94,15 @@ const seedConfig = async (
   const remote = opts.remote ?? 'origin';
   await updateConfigEntries(ctx, [
     ...(opts.url !== undefined
-      ? [{ section: 'remote', subsection: remote, key: 'url', value: opts.url }]
+      ? [
+          { section: 'remote', subsection: remote, key: 'url', value: opts.url },
+          {
+            section: 'remote',
+            subsection: remote,
+            key: 'fetch',
+            value: `+refs/heads/*:refs/remotes/${remote}/*`,
+          },
+        ]
       : []),
     ...(opts.upstream === true
       ? [
@@ -307,6 +315,12 @@ describe('pull', () => {
         const a = await commitFile(ctx, 'a.txt', 'a', 'A');
         await updateConfigEntries(ctx, [
           { section: 'remote', subsection: 'origin', key: 'url', value: REMOTE_URL },
+          {
+            section: 'remote',
+            subsection: 'origin',
+            key: 'fetch',
+            value: '+refs/heads/*:refs/remotes/origin/*',
+          },
           { section: 'branch', subsection: 'main', key: 'merge', value: 'refs/heads/main' },
         ]);
         const { transport } = buildPullRemote(
@@ -333,6 +347,12 @@ describe('pull', () => {
         const a = await commitFile(ctx, 'a.txt', 'a', 'A');
         await updateConfigEntries(ctx, [
           { section: 'remote', subsection: 'solo', key: 'url', value: REMOTE_URL },
+          {
+            section: 'remote',
+            subsection: 'solo',
+            key: 'fetch',
+            value: '+refs/heads/*:refs/remotes/solo/*',
+          },
           { section: 'branch', subsection: 'main', key: 'merge', value: 'refs/heads/main' },
         ]);
         const { transport } = buildPullRemote(

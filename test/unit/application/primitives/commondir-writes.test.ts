@@ -386,7 +386,7 @@ describe('common-dir write sweep (writes ⇒ commonGitDir)', () => {
         );
         await ctx.fs.writeUtf8(
           `${ctx.layout.gitDir}/config`,
-          '[remote "origin"]\n  url = https://example.com/r.git\n',
+          '[remote "origin"]\n  url = https://example.com/r.git\n  fetch = +refs/heads/*:refs/remotes/origin/*\n',
         );
         const built = await buildSyntheticPack(ctx, [
           { kind: 'base', type: 'blob', content: ENCODER.encode('commondir haves\n') },
@@ -420,7 +420,7 @@ describe('common-dir write sweep (writes ⇒ commonGitDir)', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/feature-x`, `${stale}\n`);
         await ctx.fs.writeUtf8(
           `${ctx.layout.gitDir}/config`,
-          '[remote "origin"]\n  url = https://example.com/r.git\n',
+          '[remote "origin"]\n  url = https://example.com/r.git\n  fetch = +refs/heads/*:refs/remotes/origin/*\n',
         );
         const built = await buildSyntheticPack(ctx, [
           { kind: 'base', type: 'blob', content: ENCODER.encode('commondir prune\n') },

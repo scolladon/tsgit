@@ -390,7 +390,7 @@ describe('common-dir per-worktree-ref sweep', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`, `${oldOid}\n`);
           await ctx.fs.writeUtf8(
             `${ctx.layout.gitDir}/config`,
-            '[remote "origin"]\n  url = https://example.com/r.git\n',
+            '[remote "origin"]\n  url = https://example.com/r.git\n  fetch = +refs/heads/*:refs/remotes/origin/*\n',
           );
           const built = await buildSyntheticPack(ctx, [
             { kind: 'base', type: 'blob', content: ENCODER.encode('per-worktree-refs fetch a\n') },
@@ -423,7 +423,7 @@ describe('common-dir per-worktree-ref sweep', () => {
           await ctx.fs.writeUtf8(`${adminDir(ctx)}/refs/remotes/origin/main`, `${decoyOid}\n`);
           await ctx.fs.writeUtf8(
             `${ctx.layout.gitDir}/config`,
-            '[remote "origin"]\n  url = https://example.com/r.git\n',
+            '[remote "origin"]\n  url = https://example.com/r.git\n  fetch = +refs/heads/*:refs/remotes/origin/*\n',
           );
           const built = await buildSyntheticPack(ctx, [
             { kind: 'base', type: 'blob', content: ENCODER.encode('per-worktree-refs fetch b\n') },

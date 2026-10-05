@@ -9,23 +9,22 @@
  *  4. POST `git-upload-pack` with `want` + `have` + `deepen` (when depth set)
  *  via the shared `fetchPack` primitive.
  *  5. If the server emitted shallow / unshallow lines, persist `.git/shallow`.
- *  6. Write each advertised ref to `refs/remotes/<remote>/<branch>` or
- *  `refs/tags/<tag>` atomically.
- *  7. If `prune: true`, delete `refs/remotes/<remote>/<branch>` refs the
- *  server no longer advertises. Local refs are never touched.
+ *  6. Write each advertised ref to the local ref `remote.<name>.fetch` maps it
+ *  onto, then — when any refspec stores into a ref — every `refs/tags/<tag>`.
+ *  7. If `prune: true`, delete each local ref those refspecs map from a remote
+ *  ref the server no longer advertises.
  *
  * Working-tree materialization is out of scope.
  */
 import { remoteAdvertisesNoRefs, remoteNotConfigured } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
-import type { AdvertisedRef, Advertisement } from '../../domain/protocol/index.js';
+import type { Advertisement } from '../../domain/protocol/index.js';
 import {
   formatObjectFilter,
   parseObjectFilter,
   remoteFilterUnsupported,
 } from '../../domain/protocol/index.js';
 import { FETCH_PRUNE_REFLOG, fetchStoringHead } from '../../domain/reflog/reflog-messages.js';
-import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { isSafeRefName, validateRefName } from '../../domain/refs/ref-validation.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { Context } from '../../ports/context.js';
@@ -40,9 +39,11 @@ import { deleteRefs, updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
 import { assertValidRemoteName, defaultRemoteName } from './internal/default-remote.js';
 import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
+import { type MappedRef, mapFetchedRefs } from './internal/fetch-ref-map.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
 import { assertPeerAlgorithm } from './internal/object-format-guard.js';
 import { readRemoteConfig } from './internal/remote-config.js';
+import { findTrackedSources } from './internal/remote-tracking-ref.js';
 import {
   assertOperationalRepository,
   branchRefFromHead,
@@ -85,6 +86,7 @@ export interface FetchResult {
 }
 
 const FETCH_NEGOTIATE_OP = 'fetch:negotiate';
+const REFS_PREFIX = 'refs/';
 const FETCH_WRITE_OBJECTS_OP = 'fetch:write-objects';
 
 export const fetch = async (ctx: Context, opts: FetchOptions = {}): Promise<FetchResult> => {
@@ -94,28 +96,35 @@ export const fetch = async (ctx: Context, opts: FetchOptions = {}): Promise<Fetc
   const currentBranch = branchRef !== undefined ? shortBranchName(branchRef) : undefined;
   const config = await readRemoteConfig(ctx);
   const remoteName = defaultRemoteName(config, opts.remote, currentBranch);
+  const trackingSpecs = config.remote?.get(remoteName)?.fetch ?? [];
   // git's single-remote fetch asks `repo_has_promisor_remote` before it fetches.
   await warnSlashLeadingPromisorRemotes(ctx);
   const { url, filter } = await resolveRemoteUrl(ctx, remoteName);
 
   ctx.progress.start(FETCH_NEGOTIATE_OP);
   try {
-    return await fetchViaSession(ctx, opts, remoteName, url, filter);
+    return await fetchViaSession(ctx, opts, { name: remoteName, trackingSpecs }, url, filter);
   } finally {
     ctx.progress.end(FETCH_NEGOTIATE_OP);
   }
 };
 
+/** The remote fetched from: its name, and the refspecs mapping its refs locally. */
+interface FetchRemote {
+  readonly name: string;
+  readonly trackingSpecs: ReadonlyArray<string>;
+}
+
 const fetchViaSession = async (
   ctx: Context,
   opts: FetchOptions,
-  remoteName: string,
+  remote: FetchRemote,
   url: string,
   filter: string | undefined,
 ): Promise<FetchResult> => {
   const session = openGitSession(ctx, url, 'git-upload-pack');
   try {
-    return await negotiateAndApply(ctx, opts, remoteName, url, filter, session);
+    return await negotiateAndApply(ctx, opts, remote, url, filter, session);
   } finally {
     await session.close();
   }
@@ -124,7 +133,7 @@ const fetchViaSession = async (
 const negotiateAndApply = async (
   ctx: Context,
   opts: FetchOptions,
-  remoteName: string,
+  remote: FetchRemote,
   url: string,
   filter: string | undefined,
   session: GitServiceSession,
@@ -155,10 +164,10 @@ const negotiateAndApply = async (
   // to updating refs. Checked before deriving haves: the have-walk is wasted
   // work when this short-circuit is about to discard it anyway.
   if (filter === undefined && opts.depth === undefined && (await isEverythingLocal(ctx, wants))) {
-    return applyRefsAndBuildResult(ctx, opts, remoteName, url, advertisement, [], []);
+    return applyRefsAndBuildResult(ctx, opts, remote, url, advertisement, [], []);
   }
 
-  const haves = await deriveHaves(ctx, remoteName);
+  const haves = await deriveHaves(ctx, remote.name);
   const packResult = await fetchPack(
     ctx,
     (c, req) => negotiatePackBytes(c, session, discovery.version, req),
@@ -184,7 +193,7 @@ const negotiateAndApply = async (
   return applyRefsAndBuildResult(
     ctx,
     opts,
-    remoteName,
+    remote,
     url,
     advertisement,
     packResult.shallow,
@@ -209,17 +218,18 @@ const isEverythingLocal = async (
 const applyRefsAndBuildResult = async (
   ctx: Context,
   opts: FetchOptions,
-  remoteName: string,
+  remote: FetchRemote,
   url: string,
   advertisement: Advertisement,
   shallow: ReadonlyArray<ObjectId>,
   unshallow: ReadonlyArray<ObjectId>,
 ): Promise<FetchResult> => {
-  const updatedRefs = await applyRemoteRefs(ctx, remoteName, advertisement);
-  const prunedRefs = opts.prune === true ? await prune(ctx, remoteName, advertisement) : [];
+  const refMap = mapFetchedRefs(remote.trackingSpecs, advertisement.refs);
+  const updatedRefs = await applyRemoteRefs(ctx, remote.name, refMap);
+  const prunedRefs = opts.prune === true ? await prune(ctx, remote.trackingSpecs, refMap) : [];
 
   return {
-    remote: remoteName,
+    remote: remote.name,
     url,
     updatedRefs,
     prunedRefs,
@@ -310,53 +320,37 @@ const collectRefTips = async (
 const applyRemoteRefs = async (
   ctx: Context,
   remoteName: string,
-  advertisement: Advertisement,
+  refMap: ReadonlyArray<MappedRef>,
 ): Promise<ReadonlyArray<FetchUpdate>> => {
   const updates: FetchUpdate[] = [];
-  for (const ref of advertisement.refs) {
-    const target = remoteTargetForRef(remoteName, ref);
-    if (target === undefined) continue;
-    const oldId = await readExistingRef(ctx, target);
-    if (oldId === ref.id) {
-      // No-op: ref already at the advertised oid. We still surface it in the
-      // updatedRefs list so callers can distinguish "considered" from
-      // "advanced" by comparing oldId === newId.
-      updates.push({ name: target, oldId, newId: ref.id });
-      continue;
+  for (const { source, target } of refMap) {
+    if (!isStorableRef(ctx, target)) continue;
+    const name = target as RefName;
+    const oldId = await readExistingRef(ctx, name);
+    // An up-to-date ref is still listed, so callers tell "considered" from
+    // "advanced" by comparing oldId and newId.
+    if (oldId !== source.id) {
+      await updateRef(ctx, name, source.id, { reflogMessage: fetchStoringHead(remoteName) });
     }
-    await updateRef(ctx, target, ref.id, {
-      reflogMessage: fetchStoringHead(remoteName),
-    });
-    updates.push({ name: target, oldId, newId: ref.id });
+    updates.push({ name, oldId, newId: source.id });
   }
   return updates;
 };
 
-const remoteTargetForRef = (remoteName: string, ref: AdvertisedRef): RefName | undefined => {
-  // Stryker disable next-line ConditionalExpression,StringLiteral: equivalent — a `HEAD` (or `''`) ref already falls through to `return undefined` because it matches neither `refs/heads/` nor `refs/tags/`; the only behaviour-changing direction (always-undefined) is killed by the happy-path tests.
-  if (ref.name === 'HEAD') return undefined;
-  // Validate the server-controlled ref name BEFORE composing the local path.
-  // Without this guard, a malicious server advertising `refs/heads/../../config`
-  // would build `refs/remotes/<remote>/../../config` and let `readExistingRef`
-  // execute a filesystem read on `.git/config`. `validateRefName` rejects every
-  // path-traversal vector that the `as RefName` brand cast otherwise bypasses.
-  if (!isSafeRefName(ref.name)) return undefined;
-  if (ref.name.startsWith(HEADS_PREFIX)) {
-    const branch = ref.name.slice(HEADS_PREFIX.length);
-    const composed = `refs/remotes/${remoteName}/${branch}`;
-    // Stryker disable next-line ConditionalExpression: equivalent — `branch` is derived from a name that already passed isSafeRefName, and `remoteName` is rejected upstream by resolveRemoteUrl's config lookup, so `composed` is always safe here.
-    if (!isSafeRefName(composed)) return undefined;
-    return composed as RefName;
-  }
-  if (ref.name.startsWith('refs/tags/')) {
-    return ref.name as RefName;
-  }
-  return undefined;
+/**
+ * git's `get_fetch_map` check: a local ref outside `refs/` or of a bad name is
+ * ignored with an error — and never composed into a path, so a server's
+ * `refs/heads/../../config` cannot reach a file outside the ref store.
+ */
+const isStorableRef = (ctx: Context, target: string): boolean => {
+  if (target.startsWith(REFS_PREFIX) && isSafeRefName(target)) return true;
+  ctx.logger?.error?.(`* Ignoring funny ref '${target}' locally`, { ref: target });
+  return false;
 };
 
 const readExistingRef = async (ctx: Context, name: RefName): Promise<ObjectId | undefined> => {
-  // Defense in depth: every caller of `readExistingRef` constructs `name` via
-  // `remoteTargetForRef`, which already validates. We re-validate here so a
+  // Defense in depth: every caller of `readExistingRef` passes a name
+  // `isStorableRef` already validated. We re-validate here so a
   // future refactor that loses the guard cannot reintroduce the
   // path-traversal vulnerability. validateRefName throws if invalid.
   validateRefName(name);
@@ -368,35 +362,28 @@ const readExistingRef = async (ctx: Context, name: RefName): Promise<ObjectId | 
 };
 
 /**
- * Delete any `refs/remotes/<remote>/<branch>` ref whose `<branch>` is not
- * present in the advertisement's `refs/heads/*` set. Local refs
- * (`refs/heads/*`, `refs/tags/*`) are NEVER deleted. Candidates come from
- * `listRefs`, which only ever yields names that resolve to a real ref — a
- * hostile or phantom directory entry that resolves to nothing is invisible
- * here, not a candidate that needs a runtime safety check.
+ * git's `get_stale_heads`: a local ref is stale when the refspecs map it from
+ * remote refs and none of them was fetched. A symref (`<remote>/HEAD`) is
+ * never stale. Candidates come from `listRefs`, which only ever yields names
+ * that resolve to a real ref.
  */
 const prune = async (
   ctx: Context,
-  remoteName: string,
-  advertisement: Advertisement,
+  trackingSpecs: ReadonlyArray<string>,
+  refMap: ReadonlyArray<MappedRef>,
 ): Promise<ReadonlyArray<RefName>> => {
-  const advertisedBranches = new Set(
-    advertisement.refs
-      .filter((r) => r.name.startsWith(HEADS_PREFIX))
-      .map((r) => r.name.slice(HEADS_PREFIX.length)),
-  );
-  const prefix = `refs/remotes/${remoteName}/` as RefName;
-  const tracked = await getRefStore(ctx).listRefs(prefix);
-  // A symref (`<remote>/HEAD`) is never a stale-branch candidate — its own
-  // name is not a tracked branch slug, and git's prune scan skips symrefs
-  // outright rather than testing the name they happen to carry.
-  const stale = tracked
+  const fetched = new Set(refMap.map((entry) => entry.source.name));
+  const local = await getRefStore(ctx).listRefs(REFS_PREFIX as RefName);
+  const stale = local
     .filter((entry) => entry.value.kind !== 'symbolic')
     .map((entry) => entry.name)
-    .filter((name) => !advertisedBranches.has(name.slice(prefix.length)));
+    .filter((name) => isStale(findTrackedSources(trackingSpecs, name), fetched));
   // One transaction, as git's prune queues every stale ref into one: a
   // packed-only tracking ref deletes like any other, and `packed-refs` is
   // rewritten once for the whole run.
   await deleteRefs(ctx, stale, { reflogMessage: FETCH_PRUNE_REFLOG });
   return stale;
 };
+
+const isStale = (sources: ReadonlyArray<string>, fetched: ReadonlySet<string>): boolean =>
+  sources.length > 0 && !sources.some((source) => fetched.has(source));
