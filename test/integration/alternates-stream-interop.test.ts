@@ -1495,12 +1495,12 @@ describe.skipIf(!GIT_AVAILABLE)('alternates stream interop — refused history c
 
     describe('When merge runs', () => {
       it(
-        'Then tsgit refuses as unsupported and keeps its state (git refuses on the object source)',
+        'Then both tools refuse on the object source and leave the same state',
         async () => {
           // Arrange
           const side = detachedBehind();
           const before = writeState(side.tsgit.dir);
-          const stateBefore = gitStateOf(side.tsgit.dir);
+          const git = gitIn(side.git.dir, 'merge', 'main');
           const repo = await side.tsgit.repo();
 
           // Act
@@ -1508,9 +1508,11 @@ describe.skipIf(!GIT_AVAILABLE)('alternates stream interop — refused history c
           await repo.dispose();
 
           // Assert
-          expect(result.data).toMatchObject({ code: 'UNSUPPORTED_OPERATION', operation: 'merge' });
+          expectGitRefused(git);
+          expect(result.data).toMatchObject(REFUSAL_DATA);
+          expect(gitStateOf(side.tsgit.dir)).toEqual(gitStateOf(side.git.dir));
           expect(writeState(side.tsgit.dir)).toEqual(before);
-          expect(gitStateOf(side.tsgit.dir)).toEqual(stateBefore);
+          expect(writeState(side.git.dir)).toEqual(before);
         },
         ROW_TIMEOUT,
       );

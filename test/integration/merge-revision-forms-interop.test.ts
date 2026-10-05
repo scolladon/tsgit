@@ -6,10 +6,10 @@
  * @proves
  *   surface:        merge
  *   bucket:         cross-tool-interop
- *   unique:         merge names tag oids, ancestor spellings and @{-1} as git does
+ *   unique:         merge names tag oids, ancestor spellings and @{-1} as git does, and merges into a detached HEAD
  *   interopSurface: merge
  */
-import { cp, writeFile } from 'node:fs/promises';
+import { cp, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openRepository } from '../../src/index.node.js';
@@ -112,6 +112,42 @@ describe.skipIf(!GIT_AVAILABLE)('merge revision forms interop', () => {
         // Assert
         const result = tipOf(pair.ours);
         expect(result).toBe(tipOf(pair.peer));
+      });
+    });
+  });
+
+  /** HEAD's value, and the note its newest reflog entry carries. */
+  const headState = async (dir: string): Promise<string> => {
+    const gitDir = path.join(dir, '.git');
+    const head = await readFile(path.join(gitDir, 'HEAD'), 'utf8');
+    const log = (await readFile(path.join(gitDir, 'logs', 'HEAD'), 'utf8')).trimEnd().split('\n');
+    return `${head}${log.at(-1)?.split('\t')[1]}`;
+  };
+
+  describe.each([
+    ['one branch', ['side']],
+    ['two branches', ['side', 'other']],
+  ])('Given a detached HEAD and %s', (_label, revs) => {
+    describe('When both tools merge them', () => {
+      it('Then HEAD stays detached at the same commit with the same reflog note', async () => {
+        // Arrange
+        await seed();
+        gitIn(pair.peer, 'branch', 'other', 'main~1');
+        gitIn(pair.peer, 'checkout', '-q', 'other');
+        await commitFile('o');
+        gitIn(pair.peer, 'checkout', '-q', '--detach', 'main');
+        await cp(pair.peer, pair.ours, { recursive: true });
+        repo = await openRepository({ cwd: pair.ours });
+        const sut = repo.merge.run;
+
+        // Act
+        gitIn(pair.peer, 'merge', '-q', '--no-edit', ...revs);
+        await sut({ rev: revs, author: AUTHOR, committer: AUTHOR });
+
+        // Assert
+        const result = await headState(pair.ours);
+        expect(result).toBe(await headState(pair.peer));
+        expect(tipOf(pair.ours)).toBe(tipOf(pair.peer));
       });
     });
   });

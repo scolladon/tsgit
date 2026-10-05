@@ -1723,31 +1723,128 @@ describe('merge — guard rails', () => {
     });
   });
 
-  describe('Given a detached HEAD', () => {
-    describe('When merge runs', () => {
-      it('Then throws UNSUPPORTED_OPERATION with the detached-HEAD reason', async () => {
-        // Arrange — point HEAD directly at a commit id (detached).
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
-        await add(ctx, ['a.txt']);
-        const c = await commit(ctx, { message: 'base', author });
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${c.id}\n`);
+  describe('Given a detached HEAD diverged from a branch', () => {
+    /** HEAD detached at `main`, which diverged from `side`. */
+    const seedDetached = async (): Promise<{
+      ctx: Context;
+      base: ObjectId;
+      ours: ObjectId;
+      theirs: ObjectId;
+    }> => {
+      const ctx = createMemoryContext();
+      await init(ctx, { initialBranch: 'main' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+      await add(ctx, ['a.txt']);
+      const base = await commit(ctx, { message: 'base', author });
+      await branchCreate(ctx, { name: 'side' });
+      await checkout(ctx, { rev: 'side' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/s.txt`, 's');
+      await add(ctx, ['s.txt']);
+      const theirs = await commit(ctx, { message: 'side', author });
+      await checkout(ctx, { rev: 'main' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/m.txt`, 'm');
+      await add(ctx, ['m.txt']);
+      const ours = await commit(ctx, { message: 'main', author });
+      await checkout(ctx, { rev: ours.id });
+      return { ctx, base: base.id, ours: ours.id, theirs: theirs.id };
+    };
+
+    describe('When merge is given the branch', () => {
+      it('Then HEAD stays detached at the two-parent merge commit', async () => {
+        // Arrange
+        const { ctx, ours, theirs } = await seedDetached();
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author, committer: author });
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'merge',
+          id: expect.any(String),
+          branch: undefined,
+          parents: [ours, theirs],
+        });
+        const head = await getRefStore(ctx).resolveDirect('HEAD' as RefName);
+        expect(head).toEqual({ kind: 'direct', id: (result as { id: ObjectId }).id });
+      });
+
+      it("Then the commit is titled into HEAD and HEAD logs git's merge note", async () => {
+        // Arrange
+        const { ctx } = await seedDetached();
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author, committer: author });
+
+        // Assert
+        const made = await readObject(ctx, (result as { id: ObjectId }).id);
+        expect(made.type === 'commit' && made.data.message).toBe("Merge branch 'side' into HEAD\n");
+        expect((await readReflog(ctx, 'HEAD' as RefName)).at(-1)?.message).toBe(
+          "merge side: Merge made by the 'ort' strategy.",
+        );
+      });
+    });
+
+    describe('When merge fast-forwards to the branch', () => {
+      it('Then HEAD moves detached and logs the fast-forward', async () => {
+        // Arrange
+        const { ctx, base, theirs } = await seedDetached();
+        await checkout(ctx, { rev: base });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side' });
+
+        // Assert
+        expect(result).toEqual({ kind: 'fast-forward', id: theirs, branch: undefined });
+        const head = await getRefStore(ctx).resolveDirect('HEAD' as RefName);
+        expect(head).toEqual({ kind: 'direct', id: theirs });
+        expect((await readReflog(ctx, 'HEAD' as RefName)).at(-1)?.message).toBe(
+          'merge side: Fast-forward',
+        );
+      });
+    });
+
+    describe('When merge is told fast-forward only', () => {
+      it('Then it refuses NON_FAST_FORWARD on HEAD', async () => {
+        // Arrange
+        const { ctx, ours, theirs } = await seedDetached();
+        const sut = mergeRun;
 
         // Act
         let caught: unknown;
         try {
-          await mergeRun(ctx, { rev: 'feature' });
+          await sut(ctx, { rev: 'side', fastForward: 'only' });
         } catch (err) {
           caught = err;
         }
 
-        // Assert — both string args of unsupportedOperation are load-bearing.
-        const data = (caught as { data?: { code?: string; operation?: string; reason?: string } })
-          ?.data;
-        expect(data?.code).toBe('UNSUPPORTED_OPERATION');
-        expect(data?.operation).toBe('merge');
-        expect(data?.reason).toBe('cannot merge with detached HEAD');
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'NON_FAST_FORWARD',
+          ref: 'HEAD',
+          local: ours,
+          remote: theirs,
+        });
+      });
+    });
+
+    describe('When merge.suppressDest names HEAD', () => {
+      it('Then the title drops the destination', async () => {
+        // Arrange
+        const { ctx } = await seedDetached();
+        const configPath = `${ctx.layout.gitDir}/config`;
+        const config = await ctx.fs.readUtf8(configPath);
+        await ctx.fs.writeUtf8(configPath, `${config}[merge]\n  suppressDest = HEAD\n`);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author, committer: author });
+
+        // Assert
+        const made = await readObject(ctx, (result as { id: ObjectId }).id);
+        expect(made.type === 'commit' && made.data.message).toBe("Merge branch 'side'\n");
       });
     });
   });
@@ -4882,6 +4979,57 @@ describe('merge — several heads (octopus)', () => {
         expect((await readReflog(ctx, 'refs/heads/main' as RefName)).at(-1)?.message).toBe(
           expected,
         );
+      });
+    });
+  });
+
+  describe('Given a detached HEAD at main', () => {
+    describe('When merge is given two branches', () => {
+      it('Then HEAD stays detached at the octopus titled into HEAD', async () => {
+        // Arrange
+        const ctx = await seedOctopus();
+        await checkout(ctx, { rev: 'main', detach: true });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: ['b1', 'b2'], author: t, committer: t });
+
+        // Assert
+        const id = (result as { id: ObjectId }).id;
+        expect(result).toMatchObject({ kind: 'merge', branch: undefined });
+        expect(await getRefStore(ctx).resolveDirect('HEAD' as RefName)).toEqual({
+          kind: 'direct',
+          id,
+        });
+        const made = await readObject(ctx, id);
+        expect(made.type === 'commit' && made.data.message).toBe(
+          "Merge branches 'b1' and 'b2' into HEAD\n",
+        );
+        expect((await readReflog(ctx, 'HEAD' as RefName)).at(-1)?.message).toBe(
+          "merge b1 b2: Merge made by the 'octopus' strategy.",
+        );
+      });
+    });
+
+    describe('When merge is given two branches with fastForward only', () => {
+      it('Then it refuses NON_FAST_FORWARD on HEAD', async () => {
+        // Arrange
+        const ctx = await seedOctopus();
+        await checkout(ctx, { rev: 'main', detach: true });
+        const sut = mergeRun;
+
+        // Act
+        const caught = await sut(ctx, { rev: ['b1', 'b2'], fastForward: 'only' }).catch(
+          (error: unknown) => error,
+        );
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'NON_FAST_FORWARD',
+          ref: 'HEAD',
+          local: 'a0565ce1b30ed961ef194231a4cc8b508d620fbb',
+          remote: '099642b15be68830b2a3d06dbb08b13534567c1c',
+        });
       });
     });
   });

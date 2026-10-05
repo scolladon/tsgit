@@ -92,6 +92,7 @@ import { expandPriorCheckout } from './internal/prior-checkout.js';
 import {
   assertNoPendingOperation,
   assertOperationalRepositorySettingsFirst,
+  branchRefFromHead,
   readHeadRaw,
   requireWorkTree,
 } from './internal/repo-state.js';
@@ -158,11 +159,12 @@ export interface MergeConflictDescriptor {
 
 export type MergeResult =
   | { readonly kind: 'up-to-date'; readonly id: ObjectId }
-  | { readonly kind: 'fast-forward'; readonly id: ObjectId; readonly branch: RefName }
+  /** `branch` is the branch HEAD names; `undefined` when HEAD is detached. */
+  | { readonly kind: 'fast-forward'; readonly id: ObjectId; readonly branch: RefName | undefined }
   | {
       readonly kind: 'merge';
       readonly id: ObjectId;
-      readonly branch: RefName;
+      readonly branch: RefName | undefined;
       readonly parents: ReadonlyArray<ObjectId>;
     }
   | {
@@ -177,7 +179,7 @@ export type MergeResult =
 const SQUASH_FLAG_OFF = '0';
 
 /**
- * Merge `rev` into the current HEAD branch.
+ * Merge `rev` into HEAD: the branch it names, or HEAD itself when detached.
  *
  * - Up-to-date: rev is ancestor of HEAD → no-op.
  * - Fast-forward: HEAD is ancestor of rev → branch advances.
@@ -209,7 +211,7 @@ const settleMessage = async (
   ctx: Context,
   opts: MergeRunInput,
   internal: MergeInternalOptions,
-  branch: RefName,
+  branch: RefName | undefined,
   remotes: ReadonlyArray<MergeRemote>,
 ): Promise<SettledMerge> => {
   const rev = remotes.map((remote) => remote.name).join(' ');
@@ -219,7 +221,8 @@ const settleMessage = async (
     (await Promise.all(
       remotes.map((remote) => describeMergeHead(ctx, remote.spelt, remote.id, remote.object)),
     ));
-  return { ...opts, rev, message: await formatMergeMessage(ctx, heads, shortBranchName(branch)) };
+  const into = shortBranchName(branch ?? HEAD);
+  return { ...opts, rev, message: await formatMergeMessage(ctx, heads, into) };
 };
 
 const computeMerge = async (
@@ -232,15 +235,13 @@ const computeMerge = async (
   requireWorkTree(ctx, 'merge');
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
-  if (head.kind !== 'symbolic') {
-    throw unsupportedOperation('merge', 'cannot merge with detached HEAD');
-  }
-  const ourId = await resolveRef(ctx, head.target);
+  const branch = branchRefFromHead(head);
+  const ourId = head.kind === 'symbolic' ? await resolveRef(ctx, head.target) : head.id;
   const named = await resolveRemotes(ctx, mergeArguments(input.rev));
   const result =
     named.length === 1
-      ? await twoHeadMerge(ctx, input, internal, head.target, ourId, named[0]!)
-      : await manyHeadMerge(ctx, input, internal, head.target, ourId, named);
+      ? await twoHeadMerge(ctx, input, internal, branch, ourId, named[0]!)
+      : await manyHeadMerge(ctx, input, internal, branch, ourId, named);
   // git's `remove_merge_branch_state` on every concluded merge; a stop keeps its files.
   if (result.kind !== 'conflict') await removeMergeBranchState(ctx);
   return result;
@@ -286,7 +287,7 @@ const twoHeadMerge = async (
   ctx: Context,
   input: MergeRunInput,
   internal: MergeInternalOptions,
-  branch: RefName,
+  branch: RefName | undefined,
   ourId: ObjectId,
   remote: MergeRemote,
 ): Promise<MergeResult> => {
@@ -306,7 +307,7 @@ const twoHeadMerge = async (
     return fastForward(ctx, opts, internal, branch, { ourId, theirId });
   }
   if (opts.fastForward === 'only') {
-    throw nonFastForward(branch, ourId, theirId);
+    throw nonFastForward(branch ?? HEAD, ourId, theirId);
   }
   return mergeCommit(ctx, opts, internal, branch, ourId, theirId, base);
 };
@@ -328,7 +329,7 @@ const manyHeadMerge = async (
   ctx: Context,
   input: MergeRunInput,
   internal: MergeInternalOptions,
-  branch: RefName,
+  branch: RefName | undefined,
   ourId: ObjectId,
   named: ReadonlyArray<MergeRemote>,
 ): Promise<MergeResult> => {
@@ -346,7 +347,7 @@ const manyHeadMerge = async (
   await writeOrigHead(ctx, ourId);
   await assertEverySourceLoadable(ctx);
   assertRelated(opts, await mergeBasesOf(ctx, [ourId, ...remotes.map((r) => r.id)], OCTOPUS));
-  if (opts.fastForward === 'only') throw nonFastForward(branch, ourId, remotes[0]!.id);
+  if (opts.fastForward === 'only') throw nonFastForward(branch ?? HEAD, ourId, remotes[0]!.id);
   const keepsHead = reduced.includes(ourId) || opts.fastForward === 'never';
   const parents = [...(keepsHead ? [ourId] : []), ...remotes.map((remote) => remote.id)];
   return octopus(ctx, { opts, internal, branch, ourId, parents }, remotes);
@@ -371,12 +372,11 @@ const fastForward = async (
   ctx: Context,
   opts: SettledMerge,
   internal: MergeInternalOptions,
-  branch: RefName,
+  branch: RefName | undefined,
   { ourId, theirId }: { readonly ourId: ObjectId; readonly theirId: ObjectId },
 ): Promise<MergeResult> =>
   materialiseAndApply(ctx, await getTree(ctx, theirId), async () => {
-    // Written through the literal `HEAD` — merge refuses on a detached
-    // HEAD, so `HEAD` always names the branch being fast-forwarded here.
+    // Written through the literal `HEAD`: the branch it names, or HEAD itself when detached.
     await updateRef(ctx, HEAD, theirId, {
       expected: ourId,
       reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: Fast-forward`,
@@ -395,7 +395,7 @@ const mergeCommit = async (
   ctx: Context,
   opts: SettledMerge,
   internal: MergeInternalOptions,
-  branchName: RefName,
+  branchName: RefName | undefined,
   ourId: ObjectId,
   theirId: ObjectId,
   baseId: ObjectId | undefined,
@@ -469,7 +469,8 @@ const materialiseAndApply = async (
 interface MergeCommitInput {
   readonly opts: SettledMerge;
   readonly internal: MergeInternalOptions;
-  readonly branch: RefName;
+  /** The branch it advances; `undefined` when HEAD is detached. */
+  readonly branch: RefName | undefined;
   readonly ourId: ObjectId;
   readonly parents: ReadonlyArray<ObjectId>;
 }
@@ -494,8 +495,7 @@ const commitCleanMerge = async (
   };
   return materialiseAndApply(ctx, mergedTree, async () => {
     const id = await createCommit(ctx, commitData);
-    // Written through the literal `HEAD` — merge refuses on a detached
-    // HEAD, so `HEAD` always names the branch this merge commit advances.
+    // Written through the literal `HEAD`: the branch it names, or HEAD itself when detached.
     await updateRef(ctx, HEAD, id, {
       expected: ourId,
       reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: ${note}`,

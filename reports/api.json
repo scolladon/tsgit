@@ -141666,10 +141666,19 @@
 												"isReadonly": true
 											},
 											"type": {
-												"type": "reference",
-												"target": 706,
-												"name": "RefName",
-												"package": "@scolladon/tsgit"
+												"type": "union",
+												"types": [
+													{
+														"type": "reference",
+														"target": 706,
+														"name": "RefName",
+														"package": "@scolladon/tsgit"
+													},
+													{
+														"type": "intrinsic",
+														"name": "undefined"
+													}
+												]
 											}
 										},
 										{
@@ -141731,10 +141740,19 @@
 												"isReadonly": true
 											},
 											"type": {
-												"type": "reference",
-												"target": 706,
-												"name": "RefName",
-												"package": "@scolladon/tsgit"
+												"type": "union",
+												"types": [
+													{
+														"type": "reference",
+														"target": 706,
+														"name": "RefName",
+														"package": "@scolladon/tsgit"
+													},
+													{
+														"type": "intrinsic",
+														"name": "undefined"
+													}
+												]
 											}
 										},
 										{
@@ -141919,6 +141937,29 @@
 									]
 								}
 							}
+						],
+						"elementSummaries": [
+							[],
+							[
+								{
+									"kind": "code",
+									"text": "`branch`"
+								},
+								{
+									"kind": "text",
+									"text": " is the branch HEAD names; "
+								},
+								{
+									"kind": "code",
+									"text": "`undefined`"
+								},
+								{
+									"kind": "text",
+									"text": " when HEAD is detached."
+								}
+							],
+							[],
+							[]
 						]
 					}
 				},
@@ -157432,23 +157473,15 @@
 									},
 									{
 										"kind": "text",
-										"text": ", then clears "
+										"text": ", then clears the branch state as git's "
 									},
 									{
 										"kind": "code",
-										"text": "`MERGE_HEAD`"
+										"text": "`reset --merge`"
 									},
 									{
 										"kind": "text",
-										"text": " and "
-									},
-									{
-										"kind": "code",
-										"text": "`MERGE_MSG`"
-									},
-									{
-										"kind": "text",
-										"text": ". "
+										"text": " does. "
 									},
 									{
 										"kind": "code",
@@ -157851,7 +157884,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " into the current HEAD branch.\n\n- Up-to-date: rev is ancestor of HEAD → no-op.\n- Fast-forward: HEAD is ancestor of rev → branch advances.\n- True merge for diverged histories: the three-way tree merge ("
+										"text": " into HEAD: the branch it names, or HEAD itself when detached.\n\n- Up-to-date: rev is ancestor of HEAD → no-op.\n- Fast-forward: HEAD is ancestor of rev → branch advances.\n- True merge for diverged histories: the three-way tree merge ("
 									},
 									{
 										"kind": "code",
@@ -161533,7 +161566,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " reflog), then replay the remaining todo."
+										"text": " reflog), then replay the remaining todo. An\nindex matching HEAD (resolution committed by hand, or resolved to HEAD) makes\nno commit — HEAD stands in for the stopped commit, as in git."
 									}
 								]
 							},

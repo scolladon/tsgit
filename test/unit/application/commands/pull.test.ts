@@ -1134,7 +1134,7 @@ describe('pull', () => {
 
     describe('Given a detached HEAD pulling an explicit ref', () => {
       describe('When pull', () => {
-        it('Then the fetch runs and merge refuses the detached HEAD', async () => {
+        it('Then HEAD stays detached at a merge titled into HEAD', async () => {
           // Arrange
           const { ctx, b } = await divergedRepo();
           const head = await resolveRef(ctx, 'refs/heads/main' as RefName);
@@ -1144,18 +1144,23 @@ describe('pull', () => {
             [{ name: 'refs/heads/side', id: b }],
             await emptyPack(ctx),
           );
-          const sut = refusal;
+          const sut = pull;
 
           // Act
           const result = await sut(withTransport(ctx, transport), { ref: 'side', author });
 
           // Assert
-          expect(result).toEqual({
-            code: 'UNSUPPORTED_OPERATION',
-            operation: 'merge',
-            reason: 'cannot merge with detached HEAD',
+          expect(result.merge).toMatchObject({
+            kind: 'merge',
+            branch: undefined,
+            parents: [head, b],
           });
-          expect(await resolveRef(ctx, 'refs/remotes/origin/side' as RefName)).toBe(b);
+          const id = result.merge.kind === 'merge' ? result.merge.id : b;
+          const obj = await readObject(ctx, id);
+          expect(obj.type === 'commit' && obj.data.message).toBe(
+            "Merge branch 'side' of https://remote.example/r into HEAD\n",
+          );
+          expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe(`${id}\n`);
         });
       });
     });
