@@ -11,7 +11,7 @@
  *   bucket:         cross-tool-interop
  *   unique:         fetch writes and prunes the refs its configured refspecs map
  */
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -84,6 +84,43 @@ describe.skipIf(!GIT_AVAILABLE)('fetch tracking refs interop', () => {
         // Assert
         expect(allRefs(ours)).toBe(allRefs(theirs));
         expect(allRefs(ours)).toContain('refs/remotes/x/b2');
+      });
+    });
+  });
+
+  describe('Given a remote that is an empty repository', () => {
+    describe('When both tools fetch from it', () => {
+      it('Then both succeed with no ref and an empty FETCH_HEAD', async () => {
+        // Arrange
+        const emptyRoot = path.join(root, 'empty-peer');
+        runGit(['init', '-q', '--bare', path.join(emptyRoot, 'peer.git')]);
+        const dirs = {
+          ours: path.join(root, 'empty-ours'),
+          theirs: path.join(root, 'empty-theirs'),
+        };
+        for (const [dir, url] of [
+          [dirs.ours, PEER_URL],
+          [dirs.theirs, path.join(emptyRoot, 'peer.git')],
+        ] as const) {
+          runGit(['init', '-q', '-b', 'main', dir]);
+          runGit(['-C', dir, 'remote', 'add', 'origin', url]);
+        }
+        const ctx = {
+          ...createNodeContext({ workDir: dirs.ours }),
+          transport: backendTransport(emptyRoot),
+        };
+        const sut = fetch;
+
+        // Act
+        const result = await sut(ctx, { remote: 'origin' });
+        git(dirs.theirs, 'fetch', '-q', 'origin');
+
+        // Assert
+        expect(result.updatedRefs).toEqual([]);
+        const fetchHead = (dir: string) =>
+          readFileSync(path.join(dir, '.git', 'FETCH_HEAD'), 'utf8');
+        expect(fetchHead(dirs.ours)).toBe(fetchHead(dirs.theirs));
+        expect(allRefs(dirs.ours)).toBe(allRefs(dirs.theirs));
       });
     });
   });

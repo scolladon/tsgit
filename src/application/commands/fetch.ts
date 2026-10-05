@@ -17,7 +17,7 @@
  *
  * Working-tree materialization is out of scope.
  */
-import { remoteAdvertisesNoRefs, remoteNotConfigured } from '../../domain/index.js';
+import { remoteNotConfigured } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { refspecInvalid } from '../../domain/protocol/error.js';
 import type { AdvertisedRef, Advertisement } from '../../domain/protocol/index.js';
@@ -201,7 +201,6 @@ const negotiateAndApply = async (
   const discovery = await negotiateDiscovery(ctx, session);
   assertPeerAlgorithm(ctx.hashConfig.algorithm, discovery.objectFormat, 'fetch');
   const advertisement = discovery.advertisement;
-  if (advertisement.refs.length === 0) throw remoteAdvertisesNoRefs();
   // A partial repo's fetch must re-apply its filter; the server must still
   // advertise the `filter` capability.
   if (filter !== undefined && !advertisesFilter(advertisement.capabilities)) {

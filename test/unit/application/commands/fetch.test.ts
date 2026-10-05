@@ -2,7 +2,7 @@
  * fetch command. Real pack-driven body.
  *
  * Tests cover:
- *  - REMOTE_NOT_CONFIGURED + REMOTE_ADVERTISES_NO_REFS guards.
+ *  - REMOTE_NOT_CONFIGURED guard; an empty remote fetches nothing.
  *  - Happy fetch (no shallow): pack written, refs/remotes/<remote>/* updated.
  *  - haves derivation (the request body carries `have <oid>` lines).
  *  - prune semantics (refs/remotes/<remote>/<branch> deletion).
@@ -303,7 +303,7 @@ describe('fetch', () => {
 
     describe('Given an advertisement with zero refs', () => {
       describe('When fetch', () => {
-        it('Then throws REMOTE_ADVERTISES_NO_REFS', async () => {
+        it('Then it succeeds, updating nothing and writing an empty FETCH_HEAD', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seedRepo(ctx, {});
@@ -314,18 +314,14 @@ describe('fetch', () => {
             advertisedRefs: [],
             packBytes,
           });
+          const sut = fetch;
 
           // Act
-          let caught: unknown;
-          try {
-            await fetch({ ...ctx, transport }, { remote: 'origin' });
-          } catch (err) {
-            caught = err;
-          }
+          const result = await sut({ ...ctx, transport }, { remote: 'origin' });
 
           // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data.code).toBe('REMOTE_ADVERTISES_NO_REFS');
+          expect(result.updatedRefs).toEqual([]);
+          expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/FETCH_HEAD`)).toBe('');
         });
       });
     });
