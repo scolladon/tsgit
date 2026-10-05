@@ -4,6 +4,7 @@ import {
   invalidOption,
   revparseUnresolved,
 } from '../../domain/commands/error.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import {
   FILE_MODE,
   type FilePath,
@@ -100,14 +101,22 @@ const isPaths = (opts: CheckoutOptions): opts is CheckoutPathsOptions =>
  * `check_refname_format` gate before the same read.
  */
 const branchRefFor = async (ctx: Context, rev: string): Promise<RefName | undefined> => {
-  let name: RefName;
-  try {
-    name = validateRefName(`${HEADS_PREFIX}${rev}`);
-  } catch {
-    return undefined;
-  }
+  const name = formattedBranchRef(rev);
+  if (name === undefined) return undefined;
   // git's `refs_read_ref`: a dangling or broken branch is no branch to attach to.
   return (await resolveRefForReading(ctx, name)) === undefined ? undefined : name;
+};
+
+const INVALID_REF_CODE = 'INVALID_REF';
+
+/** `refs/heads/<rev>` when it formats as a refname, else `undefined`; any other failure propagates. */
+const formattedBranchRef = (rev: string): RefName | undefined => {
+  try {
+    return validateRefName(`${HEADS_PREFIX}${rev}`);
+  } catch (error) {
+    if (errorDataCode(error) === INVALID_REF_CODE) return undefined;
+    throw error;
+  }
 };
 
 /** The object a switch detaches onto once no branch carries the name: git's
