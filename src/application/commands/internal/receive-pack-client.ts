@@ -4,16 +4,13 @@
  * Symmetric to `upload-pack-client.ts`:
  * - `discoverReceivePackRefs` — service-bound wrapper around
  *  `discoverRefsForService(..., 'git-receive-pack')`.
- * - `selectPushCapabilities` — intersect the server's advertised
- *  capability set with the tsgit-supported v1 subset:
- *  `report-status`, `side-band-64k`, `ofs-delta`, `delete-refs`, the
- *  push's opt-ins (`atomic`, `push-cert`), plus the appended `agent` slot.
+ * - `selectPushCapabilities` — the capabilities git's send-pack requests
+ *  from the server's advertisement.
  */
 import type { Advertisement } from '../../../domain/protocol/index.js';
 import {
   AGENT,
   CLIENT_CAPABILITIES_PUSH,
-  negotiateCapabilities as negotiateProtocolCapabilities,
   peerNegotiatesObjectFormat,
 } from '../../../domain/protocol/index.js';
 import type { GitServiceSession } from './git-service-session.js';
@@ -22,33 +19,25 @@ import { discoverRefsForService } from './refs-discovery.js';
 export const discoverReceivePackRefs = async (session: GitServiceSession): Promise<Advertisement> =>
   discoverRefsForService(session, 'git-receive-pack');
 
+const advertises = (advertised: ReadonlyArray<string>, name: string): boolean =>
+  advertised.some((capability) => capability === name || capability.startsWith(`${name}=`));
+
 /**
- * The agent slot is always appended client-side — the server does not need
- * to advertise it for us to send our own. Any server-advertised `agent=...`
- * is dropped by the dedup filter so it does not leak into our request.
- *
- * emits non-delta packs so we never advertise
- * `thin-pack`; it is absent from `CLIENT_CAPABILITIES_PUSH` already, so the
- * intersect step naturally drops it from any server-side advertisement.
- *
- * `object-format=<objectFormat>` is appended the same unconditional way as
- * AGENT: it is OUR OWN algorithm, sent verbatim regardless of what the
- * server advertised.
- *
- * `optIns` are the capabilities only some pushes ask for — `atomic` for an
- * atomic push, `push-cert` for a signed one — still intersected with the
- * advertisement.
+ * git's send-pack capability line: each token it asks for, in its order, only
+ * when the server advertises it — the push's own requests, then `optIns`
+ * (`atomic` for an atomic push), then OUR `object-format` and agent, the
+ * server's own values never echoed back.
  */
 export const selectPushCapabilities = (
   advertised: ReadonlyArray<string>,
   objectFormat: 'sha1' | 'sha256',
   optIns: ReadonlyArray<string> = [],
 ): ReadonlyArray<string> => {
-  const clientWants = [...CLIENT_CAPABILITIES_PUSH.filter((c) => c !== AGENT), ...optIns];
-  const intersected = negotiateProtocolCapabilities(advertised, clientWants);
-  // git orders `object-format` before `agent`, and sends it only when the
-  // peer advertised the capability.
-  return peerNegotiatesObjectFormat(advertised)
-    ? [...intersected, `object-format=${objectFormat}`, AGENT]
-    : [...intersected, AGENT];
+  const offered = (name: string): boolean => advertises(advertised, name);
+  return [
+    ...CLIENT_CAPABILITIES_PUSH.filter(offered),
+    ...optIns.filter(offered),
+    ...(peerNegotiatesObjectFormat(advertised) ? [`object-format=${objectFormat}`] : []),
+    ...(offered('agent') ? [AGENT] : []),
+  ];
 };

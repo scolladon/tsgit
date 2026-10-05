@@ -475,7 +475,7 @@ const sendUpdates = async (
   const capabilities = selectPushCapabilities(
     adv.capabilities,
     ctx.hashConfig.algorithm,
-    capabilityOptIns(opts, intent),
+    capabilityOptIns(opts),
   );
   const requestBody = intent.signing
     ? await buildSignedRequestBody(ctx, capabilities, accepted, packfile, url, intent.nonce)
@@ -498,10 +498,8 @@ const sendUpdates = async (
   return pushedRefs;
 };
 
-const capabilityOptIns = (opts: PushOptions, intent: SigningIntent): ReadonlyArray<string> => [
-  ...(opts.atomic === true ? [ATOMIC] : []),
-  ...(intent.signing ? [PUSH_CERT] : []),
-];
+const capabilityOptIns = (opts: PushOptions): ReadonlyArray<string> =>
+  opts.atomic === true ? [ATOMIC] : [];
 
 /**
  * git's `send_pack` before it writes a command: an atomic push the server
@@ -579,7 +577,7 @@ const resolveSigningIntent = (
 /**
  * Build the P.1 certificate envelope: resolve the pusher identity/selector
  * (same ident-fallback rule as commit/tag `-u`), sign the P.2 raw payload,
- * and frame it with the armor and the nonce-stripped opener capabilities.
+ * and frame it with the armor and the negotiated opener capabilities.
  */
 const buildSignedRequestBody = async (
   ctx: Context,
@@ -600,12 +598,9 @@ const buildSignedRequestBody = async (
   const updates = movers.map(toRefUpdate);
   const payload = buildPushCertPayload({ pusher, pushee, nonce, updates });
   const armor = await signOrThrow(ctx, payload, resolveSignRequest(config, identity, undefined));
-  const capabilities = negotiatedCapabilities.filter(
-    (c) => c !== PUSH_CERT && !c.startsWith(`${PUSH_CERT}=`),
-  );
   return buildSignedReceivePackRequest({
     updates,
-    capabilities,
+    capabilities: negotiatedCapabilities,
     armor,
     pusher,
     pushee,
