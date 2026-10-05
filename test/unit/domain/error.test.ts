@@ -12,6 +12,7 @@ import {
   pathNotInTree,
   pushDefaultNothing,
   pushDetachedNoRefspec,
+  pushRefspecUnmatched,
   pushRemoteNotUpstream,
   pushUpstreamNameMismatch,
   signedPushUnsupported,
@@ -1922,6 +1923,27 @@ describe('timestampOutOfRange error', () => {
 
         // Assert
         expect(result.message).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('pushRefspecUnmatched error', () => {
+  describe('Given pushRefspecUnmatched factory with a url', () => {
+    describe('When reading .message', () => {
+      it("Then message is git's failed-to-push line naming the url", () => {
+        // Arrange
+        const sut = pushRefspecUnmatched;
+
+        // Act
+        const result = sut('https://example.com/r.git', [
+          { dst: 'nope', reason: 'remote-ref-missing' },
+        ]);
+
+        // Assert
+        expect(result.message).toBe(
+          "PUSH_REFSPEC_UNMATCHED: failed to push some refs to 'https://example.com/r.git'",
+        );
       });
     });
   });

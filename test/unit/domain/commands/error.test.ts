@@ -64,6 +64,7 @@ import {
   pathspecOutsideRepo,
   pushDefaultNothing,
   pushDetachedNoRefspec,
+  pushRefspecUnmatched,
   pushRejected,
   pushRemoteNotUpstream,
   pushUpstreamNameMismatch,
@@ -2113,6 +2114,25 @@ describe('domain commands error — extractDetail message formatting', () => {
           code: 'SIGNING_FAILED',
           reason: 'unsupported-format',
           format: 'x509',
+        });
+      });
+    });
+  });
+
+  describe('Given the pushRefspecUnmatched error helper', () => {
+    describe('When called with a url and the unmatched refspecs', () => {
+      it('Then data carries code, url and each unmatched destination', () => {
+        // Arrange
+        const sut = pushRefspecUnmatched;
+
+        // Act
+        const result = sut('https://example.com/r.git', [{ dst: 'nope', reason: 'ambiguous' }]);
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'PUSH_REFSPEC_UNMATCHED',
+          url: 'https://example.com/r.git',
+          unmatched: [{ dst: 'nope', reason: 'ambiguous' }],
         });
       });
     });

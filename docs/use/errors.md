@@ -194,6 +194,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `REMOTE_ERROR` | `message` | Server sent an `ERR` pkt-line. The peer's own text, escaped and cut to 4096 characters. |
 | `SIDEBAND_FATAL` | `message` | Server emitted a sideband fatal-error line. The peer's own text, escaped and cut to 4096 characters. |
 | `ATOMIC_PUSH_UNSUPPORTED` | — | `push({ atomic: true })` but the server does not advertise the `atomic` capability. Nothing is sent. |
+| `PUSH_REFSPEC_UNMATCHED` | `url, unmatched` | A push refspec's destination named no single remote ref: a short delete destination no advertised ref matches (`reason: 'remote-ref-missing'`, git's `unable to delete '<dst>': remote ref does not exist`) or one several match (`'ambiguous'`, `dst refspec <dst> matches more than one`). Each is logged through `ctx.logger.error`; nothing is sent. |
 | `SIGNED_PUSH_UNSUPPORTED` | — | `push({ signed: 'yes' })` but the server does not advertise the `push-cert` capability. Nothing is sent. (`'if-asked'` falls back to an unsigned push.) |
 | `TOO_MANY_ADVERTISED_REFS` | `count, limit` | Server advertised more refs than the cap (v1 ref advertisement or v2 `ls-refs` response). |
 | `TOO_MANY_REDIRECTS` | `count, limit` | HTTP redirect loop / overflow. |

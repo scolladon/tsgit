@@ -1924,39 +1924,122 @@ describe('push — delete refspec', () => {
     });
   });
 
-  describe('Given a delete refspec for a ref the server does NOT advertise', () => {
+  describe('Given a fully qualified delete refspec for a ref the server does NOT advertise', () => {
     describe('When push runs', () => {
-      it('Then throws INVALID_OPTION', async () => {
+      it('Then the delete is sent from the null id and reported as the remote reports it', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const feature = await seedCommit(ctx, [], 'feature');
-        await seedRepo(ctx, { refs: { 'refs/heads/feature': feature.id } });
+        await seedRepo(ctx, {});
         await writeOriginConfig(ctx);
-        const { transport } = fakeServer({
+        const main = await seedCommit(ctx, [], 'main');
+        const { transport, requestBodies } = fakeServer({
           url: 'https://example.com/r.git',
-          advertisedRefs: [{ name: 'refs/heads/main', id: feature.id }],
-          reportStatus: { unpack: 'ok', refs: [] },
+          advertisedRefs: [{ name: 'refs/heads/main', id: main.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/nope', status: 'ok' }] },
         });
+
+        // Act
+        const result = await push({ ...ctx, transport }, { refspecs: [':refs/heads/nope'] });
+
+        // Assert
+        expect(result.pushedRefs).toEqual([
+          { name: 'refs/heads/nope', oldId: ZERO_OID, newId: ZERO_OID, status: 'ok' },
+        ]);
+        const decoded = new TextDecoder().decode(requestBodies[0]);
+        expect(decoded).toContain(`${ZERO_OID} ${ZERO_OID} refs/heads/nope`);
+      });
+    });
+  });
+
+  describe.each([
+    {
+      label: 'a short delete matching no advertised ref',
+      advertised: ['refs/heads/main'],
+      dst: 'nope',
+      reason: 'remote-ref-missing',
+      message: "unable to delete 'nope': remote ref does not exist",
+    },
+    {
+      label: 'a short delete matching both a branch and a tag',
+      advertised: ['refs/heads/x', 'refs/tags/x'],
+      dst: 'x',
+      reason: 'ambiguous',
+      message: 'dst refspec x matches more than one',
+    },
+    {
+      label: 'a short delete matching two refs only weakly',
+      advertised: ['refs/remotes/x', 'refs/remotes/x/HEAD'],
+      dst: 'x',
+      reason: 'ambiguous',
+      message: 'dst refspec x matches more than one',
+    },
+  ])('Given $label', ({ advertised, dst, reason, message }) => {
+    describe('When push runs beside a branch it would update', () => {
+      it("Then nothing is sent and the push fails naming git's error", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport, requests } = fakeServer({
+          url: 'https://user:secret@example.com/r.git',
+          advertisedRefs: advertised.map((name) => ({ name, id: parent.id })),
+          reportStatus: CLEAN_REPORT,
+        });
+        const errors: string[] = [];
+        const logger = { error: (text: string) => errors.push(text) };
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[remote "origin"]\n  url = https://user:secret@example.com/r.git\n',
+        );
+        __resetConfigCacheForTests();
 
         // Act
         let caught: unknown;
         try {
-          await push({ ...ctx, transport }, { refspecs: [':refs/heads/feature'] });
+          await push({ ...ctx, transport, logger }, { refspecs: [`:${dst}`, 'main'] });
         } catch (err) {
           caught = err;
         }
 
-        // Assert — option literal is 'refspecs' and the message names the
-        // unadvertised delete target (kills both StringLiteral mutants).
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data as {
-          code: string;
-          option: string;
-          reason: string;
-        };
-        expect(data.code).toBe('INVALID_OPTION');
-        expect(data.option).toBe('refspecs');
-        expect(data.reason).toBe('delete target refs/heads/feature is not advertised');
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'PUSH_REFSPEC_UNMATCHED',
+          url: 'https://example.com/r.git',
+          unmatched: [{ dst, reason }],
+        });
+        expect(errors).toEqual([message]);
+        expect(requests.filter((req) => req.method === 'POST')).toEqual([]);
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'a tag', advertised: 'refs/tags/t1', dst: 't1' },
+    { label: 'a lone weakly matched ref', advertised: 'refs/remotes/t1', dst: 't1' },
+    { label: 'a top-level ref', advertised: 'refs/t1', dst: 't1' },
+  ])('Given a short delete naming $label the server advertises', ({ advertised, dst }) => {
+    describe('When push runs', () => {
+      it('Then the advertised ref is deleted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const tagged = await seedCommit(ctx, [], 'tagged');
+        await seedRepo(ctx, {});
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: advertised, id: tagged.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: advertised, status: 'ok' }] },
+        });
+
+        // Act
+        const result = await push({ ...ctx, transport }, { refspecs: [`:${dst}`] });
+
+        // Assert
+        expect(result.pushedRefs.map((ref) => [ref.name, ref.status])).toEqual([
+          [advertised, 'ok'],
+        ]);
       });
     });
   });

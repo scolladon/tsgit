@@ -113,6 +113,7 @@ for (const r of result.pushedRefs) {
 - `PUSH_REMOTE_NOT_UPSTREAM` — `push.default` is `upstream` and the resolved push remote isn't the branch's fetch remote (a triangular workflow). Carries `{ remote, branch }`.
 - `PUSH_UPSTREAM_NAME_MISMATCH` — `push.default` is `simple`, the remote isn't triangular, and the configured upstream's branch name differs from the current branch's. Carries `{ branch, upstream }`.
 - `ATOMIC_PUSH_UNSUPPORTED` — `atomic: true` but the server does not advertise the `atomic` capability. Thrown after the `pre-push` hook; nothing is sent.
+- `PUSH_REFSPEC_UNMATCHED` — a delete refspec's destination matched no single remote ref. A full `refs/` destination the remote does not advertise is still sent, as git sends it; a short one (`:nope`) is matched against the remote's refs the way git's `count_refspec_match` does (`:t1` deletes the remote's `refs/tags/t1`), and when none or several match, each is logged through `ctx.logger.error` and nothing is sent — no hook, no request.
 - `SIGNED_PUSH_UNSUPPORTED` — `signed: 'yes'` but the server does not advertise the `push-cert` capability. Nothing is sent. (`'if-asked'` falls back to an unsigned push instead of throwing.)
 - `SIGNING_FAILED` — the push certificate could not be signed (signing program failed or unavailable, e.g. off-node).
 

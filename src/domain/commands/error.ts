@@ -416,6 +416,11 @@ export type CommandError =
     }
   | { readonly code: 'SIGNED_PUSH_UNSUPPORTED'; readonly remote: string }
   | { readonly code: 'ATOMIC_PUSH_UNSUPPORTED'; readonly remote: string }
+  | {
+      readonly code: 'PUSH_REFSPEC_UNMATCHED';
+      readonly url: string;
+      readonly unmatched: ReadonlyArray<PushUnmatchedRefspec>;
+    }
   | { readonly code: 'PUSH_DETACHED_NO_REFSPEC' }
   | { readonly code: 'PUSH_DEFAULT_NOTHING' }
   | {
@@ -1260,6 +1265,23 @@ export const signingFailed = (
 // signing attempt or wire exchange — the push is aborted, nothing is sent.
 export const signedPushUnsupported = (remote: string): TsgitError =>
   new TsgitError({ code: 'SIGNED_PUSH_UNSUPPORTED', remote });
+
+/**
+ * Why a push refspec's destination matched no single remote ref: git's
+ * `unable to delete '<dst>': remote ref does not exist` and
+ * `dst refspec <dst> matches more than one`.
+ */
+export interface PushUnmatchedRefspec {
+  readonly dst: string;
+  readonly reason: 'remote-ref-missing' | 'ambiguous';
+}
+
+// Refusal: one or more refspecs matched no single remote ref. git reports each
+// and then sends nothing at all.
+export const pushRefspecUnmatched = (
+  url: string,
+  unmatched: ReadonlyArray<PushUnmatchedRefspec>,
+): TsgitError => new TsgitError({ code: 'PUSH_REFSPEC_UNMATCHED', url, unmatched });
 
 // Refusal: an atomic push to a server whose advertisement carries no `atomic`
 // token. Thrown after the `pre-push` hook and before anything is sent.

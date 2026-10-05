@@ -18,8 +18,9 @@
 import {
   atomicPushUnsupported,
   configBadBooleanLiteral,
-  invalidOption,
   invalidPushDefault,
+  type PushUnmatchedRefspec,
+  pushRefspecUnmatched,
   pushRejected,
   sanitize,
   signedPushUnsupported,
@@ -72,6 +73,7 @@ import { assertValidRemoteName, resolvePushRemote } from './internal/default-rem
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
 import { isAncestor } from './internal/is-ancestor.js';
 import { assertPeerAlgorithm } from './internal/object-format-guard.js';
+import { matchDeleteTarget } from './internal/push-delete-target.js';
 import {
   finalizePushRefspecs,
   type PushRefspecPlan,
@@ -245,9 +247,9 @@ const negotiateAndSend = async (
       ? // Stryker disable next-line MethodExpression: equivalent — finalizePushRefspecs intersects localHeads with the head-only advertised set, so dropping this refs/heads/ pre-filter cannot change the resolved refspecs.
         (await enumerateRefs(ctx)).filter((ref) => ref.startsWith(HEADS_PREFIX))
       : [];
-  const refspecs = finalizePushRefspecs(plan, adv, localHeads);
+  const refspecs = matchDeleteTargets(ctx, finalizePushRefspecs(plan, adv, localHeads), adv, url);
   const resolved = await resolveAllRefspecs(ctx, refspecs, adv, remote, opts);
-  const movers = resolved.filter((r) => r.localOid !== r.remoteOid);
+  const movers = resolved.filter((r) => !isUpToDate(r));
   const pushedRefs =
     movers.length === 0 ? [] : await pushMovers(ctx, session, adv, movers, remote, opts, url);
   await updateUpToDateTracking(ctx, resolved, remote);
@@ -267,13 +269,52 @@ const pushMovers = async (
   return sendUpdates(ctx, session, adv, movers, remote, opts, url);
 };
 
+/** git's up-to-date ref status: never a delete, which is always sent. */
+const isUpToDate = (ref: ResolvedRefspec): boolean =>
+  !ref.parsed.isDelete && ref.localOid === ref.remoteOid;
+
+/**
+ * git's `match_explicit_refs` for the deletes: each destination resolves to the
+ * one remote ref it names; any that resolves to none is reported, and then
+ * nothing at all is sent.
+ */
+const matchDeleteTargets = (
+  ctx: Context,
+  refspecs: ReadonlyArray<ParsedRefspec>,
+  adv: Advertisement,
+  url: string,
+): ReadonlyArray<ParsedRefspec> => {
+  const names = adv.refs.map((ref) => ref.name).filter((name) => name !== HAVE_LINE);
+  const matched = refspecs.map((parsed) =>
+    parsed.isDelete ? { parsed, match: matchDeleteTarget(parsed.dst, names) } : { parsed },
+  );
+  const unmatched = matched.flatMap(({ parsed, match }) =>
+    match?.kind === 'unmatched' ? [{ dst: parsed.dst, reason: match.reason }] : [],
+  );
+  if (unmatched.length === 0) {
+    return matched.map(({ parsed, match }) =>
+      match?.kind === 'matched' ? { ...parsed, dst: match.name } : parsed,
+    );
+  }
+  for (const entry of unmatched) logUnmatched(ctx, entry);
+  throw pushRefspecUnmatched(anonymizeRemoteUrl(url), unmatched);
+};
+
+const logUnmatched = (ctx: Context, { dst, reason }: PushUnmatchedRefspec): void => {
+  const message =
+    reason === 'ambiguous'
+      ? `dst refspec ${dst} matches more than one`
+      : `unable to delete '${dst}': remote ref does not exist`;
+  ctx.logger?.error?.(message, { dst, reason });
+};
+
 /** git's `transport_update_tracking_ref` also refreshes an up-to-date ref's tracking ref. */
 const updateUpToDateTracking = async (
   ctx: Context,
   resolved: ReadonlyArray<ResolvedRefspec>,
   remote: PushRemote,
 ): Promise<void> => {
-  for (const ref of resolved.filter((r) => r.localOid === r.remoteOid)) {
+  for (const ref of resolved.filter(isUpToDate)) {
     await updateTrackingRef(ctx, ref, remote.trackingSpecs);
   }
 };
@@ -381,9 +422,6 @@ const locateRefspec = async (
 ): Promise<ResolvedRefspec> => {
   const zero = zeroOid(ctx.hashConfig);
   const remoteOid = scope.remoteByName.get(parsed.dst) ?? zero;
-  if (parsed.isDelete && remoteOid === zero) {
-    throw invalidOption('refspecs', `delete target ${parsed.dst} is not advertised`);
-  }
   const localOid = parsed.isDelete ? zero : await resolveRef(ctx, parsed.src as RefName);
   return { parsed, localOid, remoteOid };
 };
@@ -394,7 +432,7 @@ const judgeRefspec = async (
   scope: RefspecScope,
 ): Promise<ResolvedRefspec> => {
   // git settles an up-to-date ref before the lease or any lookup.
-  if (ref.localOid === ref.remoteOid) return ref;
+  if (isUpToDate(ref)) return ref;
   const rejection = await judgeUpdate(ctx, ref, scope);
   return rejection === undefined ? ref : { ...ref, rejection };
 };
