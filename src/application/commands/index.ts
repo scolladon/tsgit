@@ -230,7 +230,13 @@ export {
 } from './pack-objects.js';
 export { type PackRefsResult, packRefs } from './pack-refs.js';
 export { type PullOptions, type PullResult, pull } from './pull.js';
-export { type PushOptions, type PushResult, push } from './push.js';
+export {
+  type PushedRef,
+  type PushOptions,
+  type PushRejection,
+  type PushResult,
+  push,
+} from './push.js';
 export {
   type RangeDiffCommit,
   type RangeDiffEntry,

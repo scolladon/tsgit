@@ -11,6 +11,10 @@
  * parent whose pointers that table already typed otherwise fails to parse, and
  * git dies on it before the peer moves.
  *
+ * A ref git refuses to push — not a fast-forward, an end that is not a
+ * commit, an advertised end missing locally, an existing tag — is reported per
+ * ref while the rest are sent, and its new value still feeds the pack.
+ *
  * @proves
  *   surface:        push
  *   bucket:         cross-tool-interop
@@ -213,3 +217,91 @@ describe.skipIf(!GIT_AVAILABLE)(
     );
   },
 );
+
+/** git's porcelain wording for each client-side rejection. */
+const REJECTION_TEXT: Readonly<Record<string, string>> = {
+  'non-fast-forward': 'non-fast-forward',
+  'needs-force': 'needs force',
+  'fetch-first': 'fetch first',
+  'already-exists': 'already exists',
+};
+
+/** The repository and the peer both tools push to, seeded identically. */
+const buildRejectionScene = (): {
+  readonly dir: string;
+  readonly gitPeer: { readonly root: string; readonly bare: string };
+  readonly peer: { readonly root: string; readonly bare: string };
+} => {
+  const dir = buildRepo((repo, blob) => {
+    const tree = runGit(['-C', repo, 'mktree'], { input: `100644 blob ${blob}\ta\n` }).trim();
+    return writeLiteralCommit(repo, tree, []);
+  });
+  const base = runGit(['-C', dir, 'rev-parse', 'main']).trim();
+  const tree = runGit(['-C', dir, 'rev-parse', 'main^{tree}']).trim();
+  const other = writeLiteralCommit(dir, emptyTreeOf(dir), []);
+  const gitPeer = makePeer();
+  const seeds = [`${base}:refs/heads/seed`, `${other}:refs/heads/main`, `${other}:refs/tags/v1`];
+  runGit(['-C', dir, 'push', '-q', gitPeer.bare, ...seeds, `${other}:refs/heads/ahead`]);
+  runGit(['-C', gitPeer.bare, 'update-ref', 'refs/misc/tree', tree]);
+  const ahead = writeLiteralCommit(gitPeer.bare, tree, [other]);
+  runGit(['-C', gitPeer.bare, 'update-ref', 'refs/heads/ahead', ahead]);
+  const peer = { root: freshDir('peer'), bare: '' };
+  cpSync(gitPeer.root, peer.root, { recursive: true });
+  const blob = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: 'r\n' }).trim();
+  const tip = runGit(['-C', dir, 'mktree'], { input: `100644 blob ${blob}\tr\n` }).trim();
+  runGit(['-C', dir, 'update-ref', 'refs/heads/main', writeLiteralCommit(dir, tip, [base])]);
+  for (const name of ['refs/heads/tree', 'refs/heads/ahead', 'refs/heads/new', 'refs/tags/v1']) {
+    runGit(['-C', dir, 'update-ref', name, base]);
+  }
+  return { dir, gitPeer, peer: { ...peer, bare: path.join(peer.root, 'peer.git') } };
+};
+
+const objectsOf = (bare: string): string =>
+  runGit(['-C', bare, 'cat-file', '--batch-all-objects', '--batch-check=%(objectname)']);
+
+describe.skipIf(!GIT_AVAILABLE)('push interop — client-side rejections per ref', () => {
+  describe('Given refs git rejects for each local reason beside a new ref', () => {
+    describe('When both tools push them to identical peers', () => {
+      it('Then both report the same per-ref verdicts, send the same objects and move the same refs', async () => {
+        // Arrange
+        const { dir, gitPeer, peer } = buildRejectionScene();
+        const sources: Readonly<Record<string, string>> = {
+          'refs/heads/main': 'refs/heads/main',
+          'refs/misc/tree': 'refs/heads/tree',
+          'refs/heads/ahead': 'refs/heads/ahead',
+          'refs/tags/v1': 'refs/tags/v1',
+          'refs/heads/new': 'refs/heads/new',
+        };
+        const refspecs = ['main', 'tree:refs/misc/tree', 'ahead', 'refs/tags/v1', 'new'];
+        const git = tryRunGitWithExit([
+          '-C',
+          dir,
+          'push',
+          '--porcelain',
+          gitPeer.bare,
+          ...refspecs,
+        ]);
+        const { ctx } = capturing(dir);
+        const sut = push;
+
+        // Act
+        const result = await sut(
+          { ...ctx, transport: backendTransport(peer.root) },
+          { remote: 'origin', refspecs },
+        );
+
+        // Assert
+        const rebuilt = result.pushedRefs.map((ref) =>
+          ref.status === 'ok'
+            ? `*\t${sources[ref.name]}:${ref.name}\t[new branch]`
+            : `!\t${sources[ref.name]}:${ref.name}\t[rejected] (${REJECTION_TEXT[ref.rejection ?? '']})`,
+        );
+        const gitLines = git.stdout.split('\n').filter((line) => /^[*!]\t/.test(line));
+        expect(git.exitCode).toBe(1);
+        expect([...rebuilt].sort()).toEqual([...gitLines].sort());
+        expect(objectsOf(peer.bare)).toBe(objectsOf(gitPeer.bare));
+        expect(refsOf(peer.bare)).toBe(refsOf(gitPeer.bare));
+      });
+    });
+  });
+});

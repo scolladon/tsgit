@@ -6,7 +6,8 @@
  *  2. Parse refspecs (default = current branch).
  *  3. Discover refs over smart-HTTP v1 (`info/refs?service=git-receive-pack`).
  *  4. Resolve every refspec → local oid + server oid + lease.
- *  5. Apply force-with-lease / non-fast-forward guards.
+ *  5. Judge each ref as git's `set_ref_status_for_push` does; a rejected ref
+ *     is reported, not thrown, and the push carries on with the rest.
  *  6. Enumerate the object closure missing on the remote (non-delete refspecs).
  *  7. Build the pack (non-delta,).
  *  8. POST `git-receive-pack` with ref-updates + pack body.
@@ -17,7 +18,6 @@ import {
   configBadBooleanLiteral,
   invalidOption,
   invalidPushDefault,
-  nonFastForward,
   pushRejected,
   sanitize,
   signedPushUnsupported,
@@ -40,7 +40,7 @@ import {
   readObjectFormat,
 } from '../../domain/protocol/index.js';
 import { PUSH_UPDATE } from '../../domain/reflog/reflog-messages.js';
-import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
+import { HEADS_PREFIX, TAGS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { isSafeRefName } from '../../domain/refs/ref-validation.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { Context } from '../../ports/context.js';
@@ -100,11 +100,28 @@ export interface PushOptions {
   readonly signed?: 'yes' | 'no' | 'if-asked';
 }
 
+/**
+ * Why a ref was not updated. The first four are judged locally before anything
+ * is sent (git's `REJECT_NONFASTFORWARD`, `REJECT_NEEDS_FORCE`,
+ * `REJECT_FETCH_FIRST`, `REJECT_ALREADY_EXISTS`); `'remote'` is the receiving
+ * end's `ng`, whose text is kept in {@link PushedRef.reason}.
+ */
+export type PushRejection =
+  | 'non-fast-forward'
+  | 'needs-force'
+  | 'fetch-first'
+  | 'already-exists'
+  | 'remote';
+
+type ClientRejection = Exclude<PushRejection, 'remote'>;
+
 export interface PushedRef {
   readonly name: RefName;
   readonly oldId: ObjectId;
   readonly newId: ObjectId;
   readonly status: 'ok' | 'rejected';
+  /** Set exactly when `status` is `'rejected'`. */
+  readonly rejection?: PushRejection;
   readonly reason?: string;
 }
 
@@ -118,6 +135,7 @@ interface ResolvedRefspec {
   readonly parsed: ParsedRefspec;
   readonly localOid: ObjectId;
   readonly remoteOid: ObjectId;
+  readonly rejection?: ClientRejection;
 }
 
 const PUSH_ENUMERATE_OBJECTS_OP = 'push:enumerate-objects';
@@ -211,7 +229,11 @@ const runPrePushHook = async (
   movers: ReadonlyArray<ResolvedRefspec>,
 ): Promise<void> => {
   if (noVerify) return;
-  const stdin = movers.map(prePushLine).join('');
+  // git's pre-push feed skips a non-fast-forward but still lists the other rejections.
+  const stdin = movers
+    .filter((m) => m.rejection !== 'non-fast-forward')
+    .map(prePushLine)
+    .join('');
   await runHook(ctx, 'pre-push', { args: [remoteName, url], stdin });
 };
 
@@ -286,46 +308,54 @@ const resolveOneRefspec = async (
     return { parsed, localOid: zero, remoteOid };
   }
   const localOid = await resolveRef(ctx, parsed.src as RefName);
-  const resolved: ResolvedRefspec = { parsed, localOid, remoteOid };
-  await enforceLeaseAndFastForward(ctx, resolved, scope);
-  return resolved;
+  // git settles an up-to-date ref before the lease or any lookup.
+  if (localOid === remoteOid) return { parsed, localOid, remoteOid };
+  const rejection = await judgeUpdate(ctx, { parsed, localOid, remoteOid }, scope);
+  return rejection === undefined
+    ? { parsed, localOid, remoteOid }
+    : { parsed, localOid, remoteOid, rejection };
 };
 
 /**
- * git's `set_ref_status_for_push`: a stale lease rejects outright; otherwise
- * the fast-forward is measured — forced or not, as git measures it before
- * force overrides the verdict — and only an update neither forced nor
- * leased that does not fast-forward is rejected.
+ * git's `set_ref_status_for_push`: a stale lease rejects outright; a new ref
+ * is not judged; otherwise the verdict is measured —
+ * forced or not, as git measures it before force overrides it — and only
+ * an update neither forced nor leased keeps its rejection.
  */
-const enforceLeaseAndFastForward = async (
+const judgeUpdate = async (
   ctx: Context,
   { parsed, localOid, remoteOid }: ResolvedRefspec,
   scope: RefspecScope,
-): Promise<void> => {
+): Promise<ClientRejection | undefined> => {
   const lease = await resolveLease(ctx, parsed, scope.remoteName, scope.opts);
   if (lease !== undefined && lease !== remoteOid) {
     throw pushRejected(parsed.dst as RefName, 'lease-mismatch', emptyReport());
   }
-  if (remoteOid === zeroOid(ctx.hashConfig)) return; // creating a new ref
-  const newer = await refNewer(ctx, scope.table, localOid, remoteOid);
-  if (lease !== undefined || parsed.force === 'force' || scope.opts.force === true) return;
-  if (!newer) throw nonFastForward(parsed.dst as RefName, localOid, remoteOid);
+  if (remoteOid === zeroOid(ctx.hashConfig)) return undefined;
+  const rejection = await rejectionOf(ctx, scope.table, parsed.dst, localOid, remoteOid);
+  const forced = lease !== undefined || parsed.force === 'force' || scope.opts.force === true;
+  return forced ? undefined : rejection;
 };
 
 /**
- * git's lookups then `ref_newer`: the advertised end looked up first, then the
- * local one, quietly, into the push's table; only two commits are walked.
+ * git's rules in order: a tag destination that exists, an advertised end not
+ * held locally, either end not a commit (looked up quietly, advertised end
+ * first, into the push's table), then `ref_newer`'s two-commit walk.
  */
-const refNewer = async (
+const rejectionOf = async (
   ctx: Context,
   table: ObjectTypeTable,
+  dst: string,
   localOid: ObjectId,
   remoteOid: ObjectId,
-): Promise<boolean> => {
+): Promise<ClientRejection | undefined> => {
+  if (dst.startsWith(TAGS_PREFIX)) return 'already-exists';
+  if (!(await hasObject(ctx, remoteOid, { mode: 'recheck' }))) return 'fetch-first';
   const old = await lookupTypedCommitReferenceQuietly(ctx, table, remoteOid);
-  if (old === undefined) return false;
+  if (old === undefined) return 'needs-force';
   const fresh = await lookupTypedCommitReferenceQuietly(ctx, table, localOid);
-  return fresh !== undefined && isAncestor(ctx, old, fresh, table);
+  if (fresh === undefined) return 'needs-force';
+  return (await isAncestor(ctx, old, fresh, table)) ? undefined : 'non-fast-forward';
 };
 
 const resolveLease = async (
@@ -350,13 +380,14 @@ const emptyReport = (): { unpackOk: boolean; refUpdates: ReadonlyArray<RefStatus
   refUpdates: [],
 });
 
-// git's `need_pack_data` is false when every command is a delete: no pack, so
-// nothing is read from the object store.
+// git's `need_pack_data` is false when every command sent is a delete: no pack,
+// so nothing is read from the object store.
 const buildPackfileFor = async (
   ctx: Context,
+  accepted: ReadonlyArray<ResolvedRefspec>,
   feed: ReadonlyArray<ClosureTip>,
 ): Promise<Uint8Array | undefined> => {
-  if (feed.every((tip) => tip.excluded)) return undefined;
+  if (accepted.every((m) => m.parsed.isDelete)) return undefined;
   const oids = await collectObjects(ctx, feed);
   const pack = await buildPack(ctx, { objects: oids.map((id) => ({ id })) });
   return pack.bytes;
@@ -375,20 +406,23 @@ const sendUpdates = async (
   const mode = await resolveSignedPushMode(ctx, opts);
   const nonce = parsePushCertNonce(adv.capabilities);
   const intent = resolveSigningIntent(mode, nonce, remoteName);
+  const accepted = movers.filter((m) => m.rejection === undefined);
+  // git's send_pack sends no command, and so nothing at all, when every ref was rejected.
+  if (accepted.length === 0) return applyReportStatus(ctx, movers, [], remoteName);
   // Zero-oid-advertised refs (ref-creation sentinels) are kept verbatim in
   // the feed: `hasObject(ctx, zeroOid)` is always false (no pack hit, no
   // loose file), so the sentinel drops out of `collectObjects`'s negatives on
   // its own — one absent negative among others, not a special case.
-  const packfile = await buildPackfileFor(ctx, sendPackFeed(adv, movers));
+  const packfile = await buildPackfileFor(ctx, accepted, sendPackFeed(adv, movers));
   const capabilities = selectPushCapabilities(
     adv.capabilities,
     ctx.hashConfig.algorithm,
     intent.signing,
   );
   const requestBody = intent.signing
-    ? await buildSignedRequestBody(ctx, capabilities, movers, packfile, url, intent.nonce)
+    ? await buildSignedRequestBody(ctx, capabilities, accepted, packfile, url, intent.nonce)
     : buildReceivePackRequest({
-        updates: movers.map(toRefUpdate),
+        updates: accepted.map(toRefUpdate),
         capabilities,
         packfile,
       });
@@ -396,7 +430,7 @@ const sendUpdates = async (
   const parsed = await parseReceiveResponse(ctx, pktSource, capabilities);
   if (!parsed.unpackOk) {
     throw pushRejected(
-      movers[0]?.parsed.dst as RefName,
+      accepted[0]?.parsed.dst as RefName,
       // Stryker disable next-line StringLiteral: equivalent — `parseReceivePackResponse` always sets `unpackError` (a string) whenever `unpackOk` is false, so the `??` fallback is unreachable.
       parsed.unpackError ?? 'unpack failed',
       parsed,
@@ -575,18 +609,30 @@ const applyReportStatus = async (
   for (const s of refUpdates) statusByName.set(s.name, s);
   const out: PushedRef[] = [];
   for (const m of movers) {
-    const status = statusByName.get(m.parsed.dst);
-    const accepted = status?.accepted === true;
-    if (accepted) await updateTrackingCache(ctx, m, remoteName);
-    out.push({
-      name: m.parsed.dst as RefName,
-      oldId: m.remoteOid,
-      newId: m.localOid,
-      status: accepted ? 'ok' : 'rejected',
-      ...(status?.reason !== undefined ? { reason: status.reason } : {}),
-    });
+    out.push(await reportRef(ctx, m, statusByName.get(m.parsed.dst), remoteName));
   }
   return out;
+};
+
+/** One ref's outcome: its local verdict, else the remote's report for it. */
+const reportRef = async (
+  ctx: Context,
+  m: ResolvedRefspec,
+  status: RefStatus | undefined,
+  remoteName: string,
+): Promise<PushedRef> => {
+  const ref = { name: m.parsed.dst as RefName, oldId: m.remoteOid, newId: m.localOid };
+  if (m.rejection !== undefined) return { ...ref, status: 'rejected', rejection: m.rejection };
+  if (status?.accepted === true) {
+    await updateTrackingCache(ctx, m, remoteName);
+    return { ...ref, status: 'ok' };
+  }
+  return {
+    ...ref,
+    status: 'rejected',
+    rejection: 'remote',
+    ...(status?.reason !== undefined ? { reason: status.reason } : {}),
+  };
 };
 
 const updateTrackingCache = async (

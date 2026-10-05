@@ -180,7 +180,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `MISSING_SERVICE_HEADER` | — | Smart-HTTP discovery response missing the service line. |
 | `NETWORK_ERROR` | `reason` | Transport failure. HTTP: `'connection-reset' \| 'dns' \| 'tls' \| 'http-status' \| 'aborted' \| 'timeout'`. SSH: free-form text naming the `ssh` child process's exit code (e.g. `'ssh exited with code 128'`). |
 | `NO_PROMISOR_REMOTE` | — | `fetchMissing` against a non-partial repo. |
-| `NON_FAST_FORWARD` | `name` | `push` would not fast-forward and no `force` / `forceWithLease`. |
+| `NON_FAST_FORWARD` | `ref, local, remote` | `merge` / `pull` with `fastForward: 'only'` when a true merge is required. `push` reports a non-fast-forward per ref instead (`PushedRef.rejection`). |
 | `PKT_LENGTH_RESERVED` | `value` | pkt-line length in the reserved range. |
 | `PKT_TOO_LARGE` | `bytes, limit` | pkt-line payload exceeds the cap. |
 | `PKT_TRUNCATED` | — | Stream ended mid pkt-line. |

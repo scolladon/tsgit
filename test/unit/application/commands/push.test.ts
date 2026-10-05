@@ -9,7 +9,8 @@
  *  - Happy single-ref push: request body is well-formed, pushedRefs is ok.
  *  - Per-ref `ng` from server → status 'rejected'.
  *  - `unpack <err>` from server → throws PUSH_REJECTED.
- *  - Non-fast-forward without force → NON_FAST_FORWARD.
+ *  - Client-side rejections (non-fast-forward, needs force, fetch first,
+ *    already exists) → reported per ref; the push carries on.
  *  - `force: true` skips the non-FF guard.
  *  - `forceWithLease: 'auto'` reads remote-tracking ref; mismatch → PUSH_REJECTED.
  *  - `forceWithLease: 'auto'` on a tag dst → INVALID_OPTION.
@@ -828,6 +829,7 @@ describe('push — server responses', () => {
         expect(result.pushedRefs).toHaveLength(1);
         expect(result.pushedRefs[0]).toMatchObject({
           status: 'rejected',
+          rejection: 'remote',
           reason: 'pre-receive hook declined',
         });
       });
@@ -870,30 +872,34 @@ describe('push — server responses', () => {
 describe('push — force / non-fast-forward', () => {
   describe('Given a non-FF update with no force', () => {
     describe('When push runs', () => {
-      it('Then throws NON_FAST_FORWARD', async () => {
-        // Arrange — kills the ancestor-check skip mutant.
+      it('Then it reports the ref rejected as non-fast-forward and sends nothing', async () => {
+        // Arrange
         const ctx = createMemoryContext();
         const branchA = await seedCommit(ctx, [], 'branch-a');
         const branchB = await seedCommit(ctx, [], 'branch-b'); // disjoint, NOT a descendant of branchA
         await seedRepo(ctx, { refs: { 'refs/heads/main': branchB.id } });
         await writeOriginConfig(ctx);
-        const { transport } = fakeServer({
+        const { transport, requests } = fakeServer({
           url: 'https://example.com/r.git',
           advertisedRefs: [{ name: 'refs/heads/main', id: branchA.id }],
           reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
         });
+        const sut = push;
 
         // Act
-        let caught: unknown;
-        try {
-          await push({ ...ctx, transport });
-        } catch (err) {
-          caught = err;
-        }
+        const result = await sut({ ...ctx, transport });
 
         // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('NON_FAST_FORWARD');
+        expect(result.pushedRefs).toEqual([
+          {
+            name: 'refs/heads/main',
+            oldId: branchA.id,
+            newId: branchB.id,
+            status: 'rejected',
+            rejection: 'non-fast-forward',
+          },
+        ]);
+        expect(requests).toHaveLength(1);
       });
     });
   });
@@ -1014,10 +1020,10 @@ describe('push — fast-forward walk against the push object table', () => {
   );
 });
 
-describe('push — fast-forward against an advertised commit the store lacks', () => {
+describe('push — client-side rejections per ref', () => {
   describe('Given an advertised tip absent locally and no force', () => {
     describe('When push runs', () => {
-      it('Then it refuses NON_FAST_FORWARD without a logged line', async () => {
+      it('Then it reports the ref rejected as fetch-first without a logged line', async () => {
         // Arrange
         const base = createMemoryContext();
         const errors: string[] = [];
@@ -1034,27 +1040,243 @@ describe('push — fast-forward against an advertised commit the store lacks', (
         const sut = push;
 
         // Act
-        let caught: unknown;
-        try {
-          await sut({ ...ctx, transport });
-        } catch (err) {
-          caught = err;
-        }
+        const result = await sut({ ...ctx, transport });
 
         // Assert
-        expect((caught as TsgitError).data).toEqual({
-          code: 'NON_FAST_FORWARD',
-          ref: 'refs/heads/main',
-          local: local.id,
-          remote: absent,
-        });
+        expect(result.pushedRefs).toEqual([
+          {
+            name: 'refs/heads/main',
+            oldId: absent,
+            newId: local.id,
+            status: 'rejected',
+            rejection: 'fetch-first',
+          },
+        ]);
         expect(errors).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an advertised end that is a tree', () => {
+    describe.each([
+      ['unforced', {}, { status: 'rejected', rejection: 'needs-force' }],
+      ['forced', { force: true }, { status: 'ok' }],
+    ] as const)('When push runs %s', (_, opts, outcome) => {
+      it('Then the needs-force verdict follows the force', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const local = await seedCommit(ctx, [], 'local');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': local.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: local.tree }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut({ ...ctx, transport }, opts);
+
+        // Assert
+        expect(result.pushedRefs).toEqual([
+          { name: 'refs/heads/main', oldId: local.tree, newId: local.id, ...outcome },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a local end that is a tree over an advertised commit', () => {
+    describe('When push runs', () => {
+      it('Then it reports the ref rejected as needs-force', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const advertised = await seedCommit(ctx, [], 'advertised');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': advertised.tree } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: advertised.id }],
+          reportStatus: { unpack: 'ok', refs: [] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut({ ...ctx, transport });
+
+        // Assert
+        expect(result.pushedRefs.map((ref) => ref.rejection)).toEqual(['needs-force']);
+      });
+    });
+  });
+
+  describe('Given a receiving end that reports no status for a sent ref', () => {
+    describe('When push runs', () => {
+      it('Then the ref is reported rejected by the remote without a reason', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'parent');
+        const tip = await seedCommit(ctx, [parent.id], 'tip');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut({ ...ctx, transport });
+
+        // Assert
+        expect(result.pushedRefs).toEqual([
+          {
+            name: 'refs/heads/main',
+            oldId: parent.id,
+            newId: tip.id,
+            status: 'rejected',
+            rejection: 'remote',
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a tag destination the remote already carries at an object absent locally', () => {
+    describe('When push runs', () => {
+      it('Then it reports already-exists before looking the advertised end up', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const local = await seedCommit(ctx, [], 'local');
+        const absent = 'c'.repeat(40) as ObjectId;
+        await seedRepo(ctx, { refs: { 'refs/heads/main': local.id, 'refs/tags/v1': local.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/tags/v1', id: absent }],
+          reportStatus: { unpack: 'ok', refs: [] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut({ ...ctx, transport }, { refspecs: ['refs/tags/v1'] });
+
+        // Assert
+        expect(result.pushedRefs).toEqual([
+          {
+            name: 'refs/tags/v1',
+            oldId: absent,
+            newId: local.id,
+            status: 'rejected',
+            rejection: 'already-exists',
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a non-fast-forward ref beside a new ref', () => {
+    describe('When push runs', () => {
+      it('Then only the new ref is commanded while the rejected value still feeds the pack', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const advertised = await seedCommit(ctx, [], 'advertised');
+        const rejected = await seedCommit(ctx, [], 'rejected');
+        const created = await seedCommit(ctx, [], 'created');
+        await seedRepo(ctx, {
+          refs: { 'refs/heads/main': rejected.id, 'refs/heads/new': created.id },
+        });
+        await writeOriginConfig(ctx);
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: advertised.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/new', status: 'ok' }] },
+        });
+        const closureSpy = vi.spyOn(closureMod, 'computeClosure');
+        const sut = push;
+
+        // Act
+        const result = await sut({ ...ctx, transport }, { refspecs: ['main', 'new'] });
+
+        // Assert
+        const body = new TextDecoder().decode(requestBodies[0]);
+        expect({
+          commandsMain: body.includes(' refs/heads/main'),
+          commandsNew: body.includes(' refs/heads/new'),
+          wants: closureSpy.mock.calls[0]?.[1].wants,
+          outcomes: result.pushedRefs.map((ref) => [ref.name, ref.status, ref.rejection]),
+        }).toEqual({
+          commandsMain: false,
+          commandsNew: true,
+          wants: [rejected.id, created.id],
+          outcomes: [
+            ['refs/heads/main', 'rejected', 'non-fast-forward'],
+            ['refs/heads/new', 'ok', undefined],
+          ],
+        });
+        closureSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a non-fast-forward ref beside a needs-force ref and a pre-push hook', () => {
+    describe('When push runs', () => {
+      it('Then the hook runs and its stdin skips only the non-fast-forward ref', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const advertised = await seedCommit(ctx, [], 'advertised');
+        const local = await seedCommit(ctx, [], 'local');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': local.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [
+            { name: 'refs/heads/main', id: advertised.id },
+            { name: 'refs/misc/tree', id: advertised.tree },
+          ],
+          reportStatus: { unpack: 'ok', refs: [] },
+        });
+        const hooks = new MemoryHookRunner();
+        const sut = push;
+
+        // Act
+        await sut({ ...ctx, transport, hooks }, { refspecs: ['main', 'main:refs/misc/tree'] });
+
+        // Assert
+        expect(hooks.calls[0]?.stdin).toBe(
+          `refs/heads/main ${local.id} refs/misc/tree ${advertised.tree}\n`,
+        );
       });
     });
   });
 });
 
 describe('push — force-with-lease', () => {
+  describe('Given an up-to-date ref and a stale explicit lease', () => {
+    describe('When push runs', () => {
+      it('Then the ref is not judged and nothing is pushed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const tip = await seedCommit(ctx, [], 'tip');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: tip.id }],
+          reportStatus: { unpack: 'ok', refs: [] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut({ ...ctx, transport }, { forceWithLease: tip.tree });
+
+        // Assert
+        expect(result.pushedRefs).toEqual([]);
+      });
+    });
+  });
+
   describe('Given `forceWithLease: "auto"` and the cached remote-tracking ref matches the server', () => {
     describe('When push runs', () => {
       it('Then the update succeeds without force', async () => {
