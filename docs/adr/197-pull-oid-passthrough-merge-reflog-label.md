@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted (at `1dbd41e`)
+Accepted (at `1dbd41e`); reflog strategy label superseded
+
+> The `Merge made by the 'tsgit' strategy.` reflog note quoted here is superseded: tsgit writes git's
+> `Merge made by the 'ort' strategy.` (prime directive, ADR-226; reflog contents are byte-for-byte).
+> The rest of this decision stands.
 
 ## Context
 

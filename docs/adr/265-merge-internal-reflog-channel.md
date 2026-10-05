@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted (at `63342156`)
+Accepted (at `63342156`); reflog strategy label superseded
+
+> The `Merge made by the 'tsgit' strategy.` reflog note quoted here is superseded: tsgit writes git's
+> `Merge made by the 'ort' strategy.` (prime directive, ADR-226; reflog contents are byte-for-byte).
+> The rest of this decision stands.
 
 Supersedes the public-field half of
 [ADR-197](197-pull-oid-passthrough-merge-reflog-label.md).
