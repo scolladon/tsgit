@@ -1,4 +1,4 @@
-import type { CommandError } from './commands/error.js';
+import type { CommandError, RejectedFetchUpdate } from './commands/error.js';
 import type { CommitGraphError } from './commit/error.js';
 import type { DiffError } from './diff/error.js';
 import type { IndexError } from './git-index/error.js';
@@ -252,6 +252,9 @@ const fetchRefspecConflictMessage = ({
   reason === 'cannot-fetch-both'
     ? `Cannot fetch both ${first} and ${second} to ${target}`
     : `${target} tracks both ${first} and ${second}`;
+
+const rejectedUpdate = ({ name, rejection }: RejectedFetchUpdate): string =>
+  `${name} (${rejection})`;
 
 const pullNoMergeCandidatesMessage = (
   reason: Extract<CommandError, { code: 'PULL_NO_MERGE_CANDIDATES' }>['reason'],
@@ -732,6 +735,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `couldn't find remote ref ${data.ref}`;
     case 'FETCH_REFSPEC_CONFLICT':
       return fetchRefspecConflictMessage(data);
+    case 'FETCH_REJECTED':
+      return `fetch from ${data.remote} rejected ${data.rejected.map(rejectedUpdate).join(', ')}`;
     case 'PULL_NO_MERGE_CANDIDATES':
       return pullNoMergeCandidatesMessage(data.reason, data.remote, data.ref);
     case 'PUSH_DETACHED_NO_REFSPEC':

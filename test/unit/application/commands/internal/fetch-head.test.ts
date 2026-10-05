@@ -139,6 +139,7 @@ describe('fetchHeadEntries', () => {
     source: { name: 'refs/heads/main', id },
     target: undefined,
     status,
+    force: false,
   });
 
   describe.each([

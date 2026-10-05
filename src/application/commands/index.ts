@@ -125,7 +125,13 @@ export {
 } from './continue-merge.js';
 export { type DescribeOptions, type DescribeResult, describe } from './describe.js';
 export { type DiffOptions, diff } from './diff.js';
-export { type FetchOptions, type FetchResult, fetch } from './fetch.js';
+export {
+  type FetchOptions,
+  type FetchRejection,
+  type FetchResult,
+  type FetchUpdate,
+  fetch,
+} from './fetch.js';
 export {
   createPromisorRemote,
   type FetchMissingOptions,

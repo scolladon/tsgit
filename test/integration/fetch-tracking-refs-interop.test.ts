@@ -16,9 +16,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
-import { fetch } from '../../src/application/commands/fetch.js';
+import { type FetchUpdate, fetch } from '../../src/application/commands/fetch.js';
 import { backendTransport } from './http-backend-transport.js';
-import { GIT_AVAILABLE, git, runGit } from './interop-helpers.js';
+import { GIT_AVAILABLE, git, runGit, tryRunGitWithExit } from './interop-helpers.js';
 
 const PEER_URL = 'https://example.com/peer.git';
 const REFSPECS = ['+refs/heads/b*:refs/remotes/x/b*', '^refs/heads/b3'] as const;
@@ -61,6 +61,24 @@ const setUp = (): { readonly ours: string; readonly theirs: string; readonly pee
   }
   return { ours, theirs, peerRoot };
 };
+
+const SHORT_PREFIXES = /^refs\/(heads|tags|remotes)\//;
+const REJECTION_TEXT = {
+  'non-fast-forward': 'non-fast-forward',
+  'would-clobber-existing-tag': 'would clobber existing tag',
+} as const;
+
+/** git's `! [rejected] <src> -> <dst> (<reason>)` line, column padding collapsed. */
+const rejectedLine = (update: FetchUpdate): string =>
+  update.status === 'rejected'
+    ? `! [rejected] ${update.source.replace(SHORT_PREFIXES, '')} -> ${update.name.replace(SHORT_PREFIXES, '')} (${REJECTION_TEXT[update.rejection]})`
+    : '';
+
+const collapsed = (text: string): ReadonlyArray<string> =>
+  text
+    .split('\n')
+    .map((line) => line.trim().replace(/\s+/g, ' '))
+    .filter((line) => line.startsWith('! '));
 
 const allRefs = (dir: string): string =>
   git(dir, 'for-each-ref', '--format=%(refname) %(objectname)');
@@ -168,6 +186,76 @@ describe.skipIf(!GIT_AVAILABLE)('fetch tracking refs interop', () => {
         runGit(['-C', dirs.theirs, 'fetch', 'origin']);
 
         // Assert
+        const actions = (dir: string) =>
+          ['refs/remotes/origin/main', 'refs/remotes/origin/side', 'refs/tags/v1'].map((ref) =>
+            git(dir, 'reflog', 'show', '--format=%gs', ref),
+          );
+        expect(actions(dirs.ours)).toEqual(actions(dirs.theirs));
+      });
+    });
+  });
+
+  describe('Given refspecs without the force flag and a remote that rewrites main, advances side and moves a tag', () => {
+    describe('When both tools fetch again', () => {
+      it("Then git's rejections, refs, FETCH_HEAD and reflogs agree", async () => {
+        // Arrange
+        const peerRoot = path.join(root, 'reject-peer');
+        const work = path.join(root, 'reject-work');
+        const bare = path.join(peerRoot, 'peer.git');
+        runGit(['init', '-q', '-b', 'main', work]);
+        runGit(['-C', work, 'commit', '-q', '--allow-empty', '-m', 'a']);
+        runGit(['-C', work, 'branch', 'side']);
+        runGit(['-C', work, 'tag', 'v1']);
+        runGit(['clone', '-q', '--bare', work, bare]);
+        const dirs = {
+          ours: path.join(root, 'reject-ours'),
+          theirs: path.join(root, 'reject-theirs'),
+        };
+        for (const [dir, url] of [
+          [dirs.ours, PEER_URL],
+          [dirs.theirs, bare],
+        ] as const) {
+          runGit(['init', '-q', '-b', 'main', dir]);
+          runGit(['-C', dir, 'config', 'core.logAllRefUpdates', 'always']);
+          runGit(['-C', dir, 'remote', 'add', 'origin', bare]);
+          runGit([
+            '-C',
+            dir,
+            'config',
+            'remote.origin.fetch',
+            'refs/heads/*:refs/remotes/origin/*',
+          ]);
+          runGit(['-C', dir, 'config', '--add', 'remote.origin.fetch', 'refs/tags/*:refs/tags/*']);
+          runGit(['-C', dir, 'fetch', 'origin']);
+          runGit(['-C', dir, 'remote', 'set-url', 'origin', url]);
+        }
+        runGit(['-C', work, 'commit', '-q', '--amend', '--allow-empty', '-m', 'a2']);
+        runGit(['-C', work, 'checkout', '-q', 'side']);
+        runGit(['-C', work, 'commit', '-q', '--allow-empty', '-m', 's']);
+        runGit(['-C', work, 'tag', '-f', 'v1']);
+        runGit(['-C', work, 'push', '-q', '-f', bare, 'main', 'side', 'v1']);
+        const ctx = {
+          ...createNodeContext({ workDir: dirs.ours }),
+          transport: backendTransport(peerRoot),
+        };
+        const sut = fetch;
+
+        // Act
+        const result = await sut(ctx, { remote: 'origin' });
+        const theirs = tryRunGitWithExit(['-C', dirs.theirs, 'fetch', 'origin']);
+
+        // Assert
+        expect(theirs.exitCode).toBe(1);
+        expect(result.updatedRefs.map(rejectedLine).filter((line) => line !== '')).toEqual(
+          collapsed(theirs.stderr),
+        );
+        expect(allRefs(dirs.ours)).toBe(allRefs(dirs.theirs));
+        const fetchHead = (dir: string) =>
+          readFileSync(path.join(dir, '.git', 'FETCH_HEAD'), 'utf8').replaceAll(
+            bare.replace(/\.git$/, ''),
+            PEER_URL.replace(/\.git$/, ''),
+          );
+        expect(fetchHead(dirs.ours)).toBe(fetchHead(dirs.theirs));
         const actions = (dir: string) =>
           ['refs/remotes/origin/main', 'refs/remotes/origin/side', 'refs/tags/v1'].map((ref) =>
             git(dir, 'reflog', 'show', '--format=%gs', ref),

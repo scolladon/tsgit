@@ -10,6 +10,7 @@
  * `merge.continue` resolve a pull-initiated conflict with no pull-specific code.
  */
 import {
+  fetchRejected,
   invalidOption,
   noUpstreamConfigured,
   pullNoMergeCandidates,
@@ -20,7 +21,7 @@ import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
-import { type FetchResult, fetch } from './fetch.js';
+import { type FetchResult, type FetchUpdate, fetch } from './fetch.js';
 import { defaultRemoteName } from './internal/default-remote.js';
 import { type FetchHeadLine, readFetchHead } from './internal/fetch-head.js';
 import { buildRemoteTable } from './internal/remote-config.js';
@@ -126,6 +127,18 @@ const mergeHead = async (
   return head;
 };
 
+type RejectedUpdate = Extract<FetchUpdate, { readonly status: 'rejected' }>;
+
+const isRejected = (update: FetchUpdate): update is RejectedUpdate => update.status === 'rejected';
+
+/** git's pull stops when its fetch exits 1 on a rejected ref update. */
+const assertNothingRejected = ({ remote, updatedRefs }: FetchResult): void => {
+  const rejected = updatedRefs
+    .filter(isRejected)
+    .map(({ name, oldId, newId, rejection }) => ({ name, oldId, newId, rejection }));
+  if (rejected.length > 0) throw fetchRejected(remote, rejected);
+};
+
 export const pull = async (ctx: Context, opts: PullOptions = {}): Promise<PullResult> => {
   await assertOperationalRepository(ctx);
   requireWorkTree(ctx, 'pull');
@@ -145,6 +158,7 @@ export const pull = async (ctx: Context, opts: PullOptions = {}): Promise<PullRe
     ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
   });
 
+  assertNothingRejected(fetchResult);
   const fetched = await mergeHead(ctx, opts, upstream, branchRef);
 
   // git sets GIT_REFLOG_ACTION=pull for the integrate step; this is its analogue.

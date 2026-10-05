@@ -27,6 +27,8 @@ export interface MappedRef {
   /** The local ref the source updates, not yet checked for a valid name; none when absent. */
   readonly target: string | undefined;
   readonly status: FetchHeadStatus;
+  /** git's `peer_ref->force`: the `+` of the refspec mapping a local ref. */
+  readonly force: boolean;
 }
 
 /** Everything `get_ref_map` reads besides the advertisement. */
@@ -90,7 +92,7 @@ const localRef = (dst: string | undefined): string | undefined => {
 };
 
 const expandedMap = (
-  { src, dst }: RefspecSides,
+  { src, dst, force }: RefspecSides,
   refs: ReadonlyArray<AdvertisedRef>,
 ): ReadonlyArray<MappedRef> => {
   if (dst === undefined) return [];
@@ -98,7 +100,8 @@ const expandedMap = (
     .filter((ref) => !ref.name.includes(PEELED_MARK))
     .flatMap((source) => {
       const target = expandPattern(src, source.name, dst);
-      return target === undefined ? [] : [{ source, target, status: 'not-for-merge' as const }];
+      if (target === undefined) return [];
+      return [{ source, target, status: 'not-for-merge' as const, force }];
     });
 };
 
@@ -113,7 +116,10 @@ const getFetchMap = (
   const name = sides.src === '' ? HEAD : sides.src;
   const source = findRefByNameAbbrev(refs, name);
   if (source !== undefined) {
-    return [{ source, target: localRef(sides.dst), status: 'not-for-merge' }];
+    const target = localRef(sides.dst);
+    return [
+      { source, target, status: 'not-for-merge', force: target !== undefined && sides.force },
+    ];
   }
   if (missing === 'refuse') throw remoteRefNotFound(name);
   return [];
@@ -153,7 +159,11 @@ const mergeOne = (
 ): ReadonlyArray<MappedRef> => {
   const index = list.findIndex((entry) => refnameMatch(src, entry.source.name));
   if (index !== -1) return markForMerge(list, index);
-  const fetched = getFetchMap(refs, { negative: false, src, dst: undefined }, 'allow');
+  const fetched = getFetchMap(
+    refs,
+    { negative: false, force: false, src, dst: undefined },
+    'allow',
+  );
   return list.concat(withStatus(fetched, 'merge'));
 };
 
@@ -184,7 +194,11 @@ const defaultMap = (request: RefMapRequest, refs: ReadonlyArray<AdvertisedRef>):
   const hasMerge = request.merge.length > 0;
   const mergesHere = hasMerge && request.mergesFromRemote;
   if (request.configSpecs.length === 0 && !mergesHere) {
-    const head = getFetchMap(refs, { negative: false, src: HEAD, dst: undefined }, 'refuse');
+    const head = getFetchMap(
+      refs,
+      { negative: false, force: false, src: HEAD, dst: undefined },
+      'refuse',
+    );
     return { head: withStatus(head, 'merge'), opportunistic: [] };
   }
   const specs = request.configSpecs.map(splitSides);
@@ -217,7 +231,12 @@ export const findNonLocalTags = (
     .filter((ref) => ref.name.startsWith(TAGS_PREFIX) && !ref.name.includes(PEELED_MARK))
     .filter((ref) => !local.refs.has(ref.name) && (reachable(ref.id) || reachable(ref.peeled)))
     .sort(byName)
-    .map((source) => ({ source, target: source.name, status: 'not-for-merge' as const }));
+    .map((source) => ({
+      source,
+      target: source.name,
+      status: 'not-for-merge' as const,
+      force: false,
+    }));
 };
 
 export type Warn = (message: string) => void;

@@ -452,4 +452,80 @@ describe('getRefMap', () => {
       });
     });
   });
+
+  describe.each([
+    {
+      label: 'a forcing pattern refspec',
+      request: configured(ORIGIN_HEADS),
+      refs: advertised('refs/heads/main'),
+      expected: [['refs/remotes/origin/main', true]],
+    },
+    {
+      label: 'a pattern refspec without the force flag',
+      request: configured('refs/heads/*:refs/remotes/origin/*'),
+      refs: advertised('refs/heads/main'),
+      expected: [['refs/remotes/origin/main', false]],
+    },
+    {
+      label: 'a forcing exact refspec',
+      request: configured('+refs/heads/main:refs/remotes/solo/main'),
+      refs: advertised('refs/heads/main'),
+      expected: [['refs/remotes/solo/main', true]],
+    },
+    {
+      label: 'an exact refspec without the force flag',
+      request: configured('refs/heads/main:refs/remotes/solo/main'),
+      refs: advertised('refs/heads/main'),
+      expected: [['refs/remotes/solo/main', false]],
+    },
+    {
+      label: 'a forcing command-line refspec storing into no ref',
+      request: fromCli(['+refs/heads/main']),
+      refs: advertised('refs/heads/main'),
+      expected: [
+        [undefined, false],
+        ['refs/remotes/origin/main', true],
+      ],
+    },
+    {
+      label: 'a branch refspec a tag follows',
+      request: configured(ORIGIN_HEADS),
+      refs: advertised('refs/heads/main', 'refs/tags/v1'),
+      expected: [
+        ['refs/remotes/origin/main', true],
+        ['refs/tags/v1', false],
+      ],
+    },
+    {
+      label: 'a merge source no refspec maps',
+      request: {
+        ...configured('refs/heads/main:refs/remotes/origin/main'),
+        merge: ['refs/heads/other'],
+        mergesFromRemote: true,
+      },
+      refs: advertised('refs/heads/main', 'refs/heads/other'),
+      expected: [
+        ['refs/remotes/origin/main', false],
+        [undefined, false],
+      ],
+    },
+  ] as ReadonlyArray<{
+    label: string;
+    request: RefMapRequest;
+    refs: ReadonlyArray<AdvertisedRef>;
+    expected: ReadonlyArray<readonly [string | undefined, boolean]>;
+  }>)('Given $label', ({ request, refs, expected }) => {
+    describe('When the ref map is built', () => {
+      it('Then each local ref carries the force flag of the refspec that maps it', () => {
+        // Arrange
+        const sut = getRefMap;
+
+        // Act
+        const result = sut(request, refs);
+
+        // Assert
+        expect(result.map((entry) => [entry.target, entry.force])).toEqual(expected);
+      });
+    });
+  });
 });

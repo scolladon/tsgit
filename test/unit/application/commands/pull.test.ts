@@ -1169,4 +1169,60 @@ describe('pull', () => {
       });
     });
   });
+
+  describe('Given a non-forcing fetch refspec and a remote branch rewritten under its tracking ref', () => {
+    describe('When pull', () => {
+      it('Then it refuses with the rejected update before merging', async () => {
+        // Arrange — the tracking ref sits on X, which the remote's B does not descend from.
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'a', 'A');
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        const b = await commitFile(ctx, 'b.txt', 'b', 'B');
+        await checkout(ctx, { rev: 'main' });
+        const x = await commitFile(ctx, 'c.txt', 'c', 'X');
+        await updateRef(ctx, 'refs/remotes/origin/main' as RefName, x, { reflogMessage: 'seed' });
+        await seedConfig(ctx, { upstream: true });
+        await updateConfigEntries(ctx, [
+          { section: 'remote', subsection: 'origin', key: 'url', value: REMOTE_URL },
+          {
+            section: 'remote',
+            subsection: 'origin',
+            key: 'fetch',
+            value: 'refs/heads/*:refs/remotes/origin/*',
+          },
+        ]);
+        const { transport } = buildPullRemote(
+          [{ name: 'refs/heads/main', id: b }],
+          await emptyPack(ctx),
+        );
+        const sut = pull;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(withTransport(ctx, transport), { author });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as { data?: unknown }).data).toEqual({
+          code: 'FETCH_REJECTED',
+          remote: 'origin',
+          rejected: [
+            {
+              name: 'refs/remotes/origin/main',
+              oldId: x,
+              newId: b,
+              rejection: 'non-fast-forward',
+            },
+          ],
+        });
+        expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(x);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
+      });
+    });
+  });
 });

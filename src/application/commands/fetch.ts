@@ -17,6 +17,7 @@
  *
  * Working-tree materialization is out of scope.
  */
+import type { FetchRejection } from '../../domain/commands/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import { remoteNotConfigured } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
@@ -106,11 +107,25 @@ export interface FetchOptions {
   readonly depth?: number;
 }
 
-export interface FetchUpdate {
+export type { FetchRejection } from '../../domain/commands/error.js';
+
+interface RefMove {
+  /** The local ref. */
   readonly name: RefName;
-  readonly oldId: ObjectId | undefined;
+  /** The remote ref it is fetched from. */
+  readonly source: RefName;
   readonly newId: ObjectId;
 }
+
+/** One local ref a fetch considered; an up-to-date ref is listed with `oldId === newId`. */
+export type FetchUpdate =
+  | (RefMove & { readonly oldId: ObjectId | undefined; readonly status: 'ok' })
+  | (RefMove & {
+      readonly oldId: ObjectId;
+      /** The local ref stays at `oldId`; `FETCH_HEAD` still lists the fetched object. */
+      readonly status: 'rejected';
+      readonly rejection: FetchRejection;
+    });
 
 export interface FetchResult {
   readonly remote: string;
@@ -480,18 +495,61 @@ const storingAction = (remoteRef: string): FetchReflogAction => {
   return 'storing ref';
 };
 
-/** git's `update_local_ref` reflog action for one ref a fetch rewrites. */
-const updateAction = async (
+/** What git's `update_local_ref` does with one ref whose object changes. */
+type Judgement =
+  | { readonly kind: 'update'; readonly action: FetchReflogAction }
+  | { readonly kind: 'reject'; readonly rejection: FetchRejection };
+
+const updating = (action: FetchReflogAction): Judgement => ({ kind: 'update', action });
+const rejecting = (rejection: FetchRejection): Judgement => ({ kind: 'reject', rejection });
+
+/** git's `update_local_ref` for an existing ref: a tag or a non-fast-forward moves only under `+`. */
+const judgeUpdate = async (
   ctx: Context,
-  source: AdvertisedRef,
+  { source, force }: MappedRef,
   name: RefName,
-  oldId: ObjectId | undefined,
-): Promise<FetchReflogAction> => {
-  if (oldId !== undefined && name.startsWith(TAGS_PREFIX)) return 'updating tag';
-  const current = oldId === undefined ? undefined : await commitOf(ctx, oldId);
+  oldId: ObjectId,
+): Promise<Judgement> => {
+  if (name.startsWith(TAGS_PREFIX)) {
+    return force ? updating('updating tag') : rejecting('would-clobber-existing-tag');
+  }
+  const current = await commitOf(ctx, oldId);
   const updated = await commitOf(ctx, source.id);
-  if (current === undefined || updated === undefined) return storingAction(source.name);
-  return (await isAncestor(ctx, current, updated)) ? 'fast-forward' : 'forced-update';
+  if (current === undefined || updated === undefined) return updating(storingAction(source.name));
+  if (await isAncestor(ctx, current, updated)) return updating('fast-forward');
+  return force ? updating('forced-update') : rejecting('non-fast-forward');
+};
+
+const storeUpdate = async (
+  ctx: Context,
+  remoteName: string,
+  update: RefMove & { readonly oldId: ObjectId | undefined },
+  action: FetchReflogAction,
+): Promise<FetchUpdate> => {
+  await updateRef(ctx, update.name, update.newId, {
+    reflogMessage: fetchReflogMessage(remoteName, action),
+  });
+  return { ...update, status: 'ok' };
+};
+
+const applyRemoteRef = async (
+  ctx: Context,
+  remoteName: string,
+  entry: MappedRef,
+  name: RefName,
+): Promise<FetchUpdate> => {
+  const newId = entry.source.id;
+  const source = entry.source.name as RefName;
+  const oldId = await readExistingRef(ctx, name);
+  if (oldId === newId) return { name, source, oldId, newId, status: 'ok' };
+  if (oldId === undefined) {
+    return storeUpdate(ctx, remoteName, { name, source, oldId, newId }, storingAction(source));
+  }
+  const judgement = await judgeUpdate(ctx, entry, name, oldId);
+  if (judgement.kind === 'reject') {
+    return { name, source, oldId, newId, status: 'rejected', rejection: judgement.rejection };
+  }
+  return storeUpdate(ctx, remoteName, { name, source, oldId, newId }, judgement.action);
 };
 
 const applyRemoteRefs = async (
@@ -500,19 +558,9 @@ const applyRemoteRefs = async (
   refMap: ReadonlyArray<MappedRef>,
 ): Promise<ReadonlyArray<FetchUpdate>> => {
   const updates: FetchUpdate[] = [];
-  for (const { source, target } of refMap) {
-    if (target === undefined) continue;
-    const name = target as RefName;
-    const oldId = await readExistingRef(ctx, name);
-    // An up-to-date ref is still listed, so callers tell "considered" from
-    // "advanced" by comparing oldId and newId.
-    if (oldId !== source.id) {
-      const action = await updateAction(ctx, source, name, oldId);
-      await updateRef(ctx, name, source.id, {
-        reflogMessage: fetchReflogMessage(remoteName, action),
-      });
-    }
-    updates.push({ name, oldId, newId: source.id });
+  for (const entry of refMap) {
+    if (entry.target === undefined) continue;
+    updates.push(await applyRemoteRef(ctx, remoteName, entry, entry.target as RefName));
   }
   return updates;
 };

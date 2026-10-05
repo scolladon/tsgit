@@ -12,7 +12,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
-import { fetch } from '../../../../src/application/commands/fetch.js';
+import { type FetchResult, fetch } from '../../../../src/application/commands/fetch.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import * as peelModule from '../../../../src/application/primitives/internal/peel-ref-to-commit.js';
 import {
@@ -3197,7 +3197,7 @@ describe('fetch reflog actions', () => {
     local: Readonly<Record<string, ObjectId>>,
     remote: ReadonlyArray<{ readonly name: string; readonly id: ObjectId }>,
     ctx: ReturnType<typeof createMemoryContext>,
-  ): Promise<void> => {
+  ): Promise<FetchResult> => {
     await ctx.fs.writeUtf8(
       `${ctx.layout.gitDir}/config`,
       `[core]\n  logAllRefUpdates = always\n[remote "origin"]\n  url = https://example.com/r.git\n  fetch = ${spec}\n`,
@@ -3211,7 +3211,7 @@ describe('fetch reflog actions', () => {
       advertisedRefs: remote,
       packBytes,
     });
-    await fetch({ ...ctx, transport }, { remote: 'origin' });
+    return fetch({ ...ctx, transport }, { remote: 'origin' });
   };
 
   describe.each([
@@ -3332,7 +3332,8 @@ describe('fetch reflog actions', () => {
         // Arrange
         const ctx = createMemoryContext();
         await seedRepo(ctx, {});
-        const tip = await writeCommit(ctx, [], 'tip\n');
+        const base = await writeCommit(ctx, [], 'base\n');
+        const tip = await writeCommit(ctx, [base], 'tip\n');
         const failure = new Error('object store unreadable');
         vi.spyOn(peelModule, 'peelRefToCommit').mockRejectedValue(failure);
         const sut = fetchWith;
@@ -3340,7 +3341,7 @@ describe('fetch reflog actions', () => {
         // Act
         const attempt = sut(
           '+refs/heads/*:refs/remotes/origin/*',
-          {},
+          { 'refs/remotes/origin/b': base },
           [{ name: 'refs/heads/b', id: tip }],
           ctx,
         );
@@ -3348,6 +3349,186 @@ describe('fetch reflog actions', () => {
         // Assert
         await expect(attempt).rejects.toBe(failure);
         vi.restoreAllMocks();
+      });
+    });
+  });
+
+  const tipOf = async (ctx: ReturnType<typeof createMemoryContext>, ref: string) => {
+    const value = await getRefStore(ctx).resolveDirect(ref as RefName);
+    return value.kind === 'direct' ? value.id : undefined;
+  };
+
+  describe('Given a refspec without the force flag and a tracking ref the advertised commit does not descend from', () => {
+    describe('When fetch runs', () => {
+      it('Then that update is rejected as non-fast-forward and the other refs still update', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const base = await writeCommit(ctx, [], 'base\n');
+        const other = await writeCommit(ctx, [], 'other\n');
+        const next = await writeCommit(ctx, [base], 'next\n');
+        const sut = fetchWith;
+
+        // Act
+        const result = await sut(
+          'refs/heads/*:refs/remotes/origin/*',
+          { 'refs/remotes/origin/main': base, 'refs/remotes/origin/side': base },
+          [
+            { name: 'refs/heads/main', id: other },
+            { name: 'refs/heads/side', id: next },
+          ],
+          ctx,
+        );
+
+        // Assert
+        expect(result.updatedRefs).toEqual([
+          {
+            name: 'refs/remotes/origin/main',
+            source: 'refs/heads/main',
+            oldId: base,
+            newId: other,
+            status: 'rejected',
+            rejection: 'non-fast-forward',
+          },
+          {
+            name: 'refs/remotes/origin/side',
+            source: 'refs/heads/side',
+            oldId: base,
+            newId: next,
+            status: 'ok',
+          },
+        ]);
+        expect(await tipOf(ctx, 'refs/remotes/origin/main')).toBe(base);
+        expect(await reflogOf(ctx, 'refs/remotes/origin/main')).toEqual(['seed']);
+        expect(await tipOf(ctx, 'refs/remotes/origin/side')).toBe(next);
+      });
+    });
+  });
+
+  describe('Given a refspec without the force flag and an existing tag the remote moved', () => {
+    describe('When fetch runs', () => {
+      it('Then the update is rejected as clobbering the tag, which keeps its object', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const base = await writeCommit(ctx, [], 'base\n');
+        const next = await writeCommit(ctx, [base], 'next\n');
+        const sut = fetchWith;
+
+        // Act
+        const result = await sut(
+          'refs/tags/*:refs/tags/*',
+          { 'refs/tags/v1': base },
+          [{ name: 'refs/tags/v1', id: next }],
+          ctx,
+        );
+
+        // Assert
+        expect(result.updatedRefs).toEqual([
+          {
+            name: 'refs/tags/v1',
+            source: 'refs/tags/v1',
+            oldId: base,
+            newId: next,
+            status: 'rejected',
+            rejection: 'would-clobber-existing-tag',
+          },
+        ]);
+        expect(await tipOf(ctx, 'refs/tags/v1')).toBe(base);
+      });
+    });
+  });
+
+  describe('Given a refspec without the force flag and a rejected update', () => {
+    describe('When fetch writes FETCH_HEAD', () => {
+      it('Then the rejected ref is still listed with the fetched object', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const base = await writeCommit(ctx, [], 'base\n');
+        const other = await writeCommit(ctx, [], 'other\n');
+        const sut = fetchWith;
+
+        // Act
+        await sut(
+          'refs/heads/main:refs/remotes/origin/main',
+          { 'refs/remotes/origin/main': base },
+          [{ name: 'refs/heads/main', id: other }],
+          ctx,
+        );
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/FETCH_HEAD`)).toBe(
+          `${other}\t\tbranch 'main' of https://example.com/r\n`,
+        );
+      });
+    });
+  });
+
+  describe('Given a refspec without the force flag and a ref that does not name a commit', () => {
+    describe('When fetch replaces it', () => {
+      it('Then the update is stored, as git stores what it cannot compare', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const base = await writeCommit(ctx, [], 'base\n');
+        const tree = emptyTreeOid(ctx.hashConfig);
+        await writeObject(ctx, { type: 'tree', id: '' as ObjectId, entries: [] });
+        const sut = fetchWith;
+
+        // Act
+        const result = await sut(
+          'refs/heads/*:refs/remotes/origin/*',
+          { 'refs/remotes/origin/main': tree },
+          [{ name: 'refs/heads/main', id: base }],
+          ctx,
+        );
+
+        // Assert
+        expect(result.updatedRefs).toEqual([
+          {
+            name: 'refs/remotes/origin/main',
+            source: 'refs/heads/main',
+            oldId: tree,
+            newId: base,
+            status: 'ok',
+          },
+        ]);
+        expect(await reflogOf(ctx, 'refs/remotes/origin/main')).toEqual([
+          'seed',
+          'fetch origin: storing head',
+        ]);
+      });
+    });
+  });
+
+  describe('Given a refspec without the force flag and a ref already at the advertised commit', () => {
+    describe('When fetch runs', () => {
+      it('Then the ref is listed as up to date', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const base = await writeCommit(ctx, [], 'base\n');
+        const sut = fetchWith;
+
+        // Act
+        const result = await sut(
+          'refs/heads/*:refs/remotes/origin/*',
+          { 'refs/remotes/origin/main': base },
+          [{ name: 'refs/heads/main', id: base }],
+          ctx,
+        );
+
+        // Assert
+        expect(result.updatedRefs).toEqual([
+          {
+            name: 'refs/remotes/origin/main',
+            source: 'refs/heads/main',
+            oldId: base,
+            newId: base,
+            status: 'ok',
+          },
+        ]);
       });
     });
   });

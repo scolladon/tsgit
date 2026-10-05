@@ -246,6 +246,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'PUSH_REFSPEC_UNMATCHED':
     case 'REMOTE_REF_NOT_FOUND':
     case 'FETCH_REFSPEC_CONFLICT':
+    case 'FETCH_REJECTED':
     case 'PULL_NO_MERGE_CANDIDATES':
     case 'PUSH_DETACHED_NO_REFSPEC':
     case 'PUSH_DEFAULT_NOTHING':

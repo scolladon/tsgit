@@ -11,7 +11,8 @@
  *   bucket:         cross-tool-interop
  *   unique:         pull merges the FETCH_HEAD merge heads under git's merge message
  */
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+
+import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -19,7 +20,7 @@ import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { pull } from '../../src/application/commands/pull.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { backendTransport } from './http-backend-transport.js';
-import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
+import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 
 const PEER_URL = 'https://example.com/peer.git';
 const SHORT_URL = 'https://example.com/peer';
@@ -143,6 +144,49 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
 
         // Assert
         expect(head(ours)).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a non-forcing fetch refspec and a tracking ref the fetched upstream does not descend from', () => {
+    describe('When both tools pull', () => {
+      it('Then both refuse before merging and leave the same refs', async () => {
+        // Arrange
+        const { ours, theirs } = setUp('rejected', 'main', [
+          ['remote.origin.fetch', 'refs/heads/*:refs/remotes/origin/*'],
+          ['branch.main.remote', 'origin'],
+          ['branch.main.merge', 'refs/heads/side'],
+        ]);
+        for (const dir of [ours, theirs]) {
+          dated(['-C', dir, 'update-ref', 'refs/remotes/origin/side', 'HEAD']);
+        }
+        const ctx = {
+          ...createNodeContext({ workDir: ours }),
+          transport: backendTransport(peerRoot),
+        };
+        const sut = pull;
+        const theirsRun = tryRunGitWithExit(
+          ['-C', theirs, 'pull', '-q', '--no-rebase', '--no-edit'],
+          {
+            env: DATED_ENV,
+          },
+        );
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, { author: IDENTITY, committer: IDENTITY });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(theirsRun.exitCode).toBe(1);
+        expect((caught as { data?: { code?: string } }).data?.code).toBe('FETCH_REJECTED');
+        const refs = (dir: string) => git(dir, 'for-each-ref', '--format=%(refname) %(objectname)');
+        expect(refs(ours)).toBe(refs(theirs));
+        expect(existsSync(path.join(ours, '.git', 'MERGE_HEAD'))).toBe(false);
+        expect(existsSync(path.join(theirs, '.git', 'MERGE_HEAD'))).toBe(false);
       });
     });
   });

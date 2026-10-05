@@ -20,6 +20,17 @@ export type BundleBadHeaderDetails =
   | { readonly reason: 'unknown-capability'; readonly capability: string }
   | { readonly reason: 'unknown-hash-algorithm'; readonly algorithm: string };
 
+/** Why git's `update_local_ref` refused a ref update a refspec without `+` asked for. */
+export type FetchRejection = 'non-fast-forward' | 'would-clobber-existing-tag';
+
+/** A local ref a fetch left at `oldId` instead of moving it to `newId`. */
+export interface RejectedFetchUpdate {
+  readonly name: RefName;
+  readonly oldId: ObjectId;
+  readonly newId: ObjectId;
+  readonly rejection: FetchRejection;
+}
+
 export type CommandError =
   | {
       readonly code: 'WORKING_TREE_DIRTY';
@@ -429,6 +440,11 @@ export type CommandError =
       readonly reason: 'cannot-fetch-both' | 'tracks-both';
       readonly target: string;
       readonly sources: readonly [string, string];
+    }
+  | {
+      readonly code: 'FETCH_REJECTED';
+      readonly remote: string;
+      readonly rejected: ReadonlyArray<RejectedFetchUpdate>;
     }
   | {
       readonly code: 'PULL_NO_MERGE_CANDIDATES';
@@ -1310,6 +1326,12 @@ export const fetchRefspecConflict = (
 ): TsgitError => new TsgitError({ code: 'FETCH_REFSPEC_CONFLICT', reason, target, sources });
 
 /** Why git's `die_no_merge_candidates` found nothing to merge in FETCH_HEAD. */
+// Refusal: a pull whose fetch rejected a ref update, as git's pull stops on fetch's exit 1.
+export const fetchRejected = (
+  remote: string,
+  rejected: ReadonlyArray<RejectedFetchUpdate>,
+): TsgitError => new TsgitError({ code: 'FETCH_REJECTED', remote, rejected });
+
 export type PullNoMergeCandidatesReason =
   | 'refspec-unmatched'
   | 'not-default-remote'

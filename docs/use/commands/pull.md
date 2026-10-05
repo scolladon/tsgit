@@ -94,6 +94,7 @@ await repo.pull({ remote: 'upstream', ref: 'main' });
   the absent case (`NO_UPSTREAM_CONFIGURED`).
 - `REMOTE_NOT_CONFIGURED` — the resolved remote has no configured URL.
 - `REMOTE_REF_NOT_FOUND` — the remote does not advertise the requested `ref` (from the fetch).
+- `FETCH_REJECTED` — the fetch rejected a ref update (a non-fast-forward or a moved tag under a refspec without `+`); raised after the fetch's other updates and `FETCH_HEAD`, before merging, carrying each rejected update.
 - `INVALID_OPTION` — the fetch marked several refs for merging (an octopus pull).
 - `WORK_TREE_REQUIRED` / `OPERATION_IN_PROGRESS` — refused before the fetch. `WORK_TREE_REQUIRED` fires when the repository has no work tree (bare, or opened without one).
 - `NON_FAST_FORWARD` — `fastForward: 'only'` and a true merge is required.

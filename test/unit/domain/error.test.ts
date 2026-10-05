@@ -4,6 +4,7 @@ import {
   atomicPushUnsupported,
   cleanFilterFailed,
   fetchRefspecConflict,
+  fetchRejected,
   filterUnsupportedCapability,
   formatPlaceholderUnsupported,
   grepLineTooLong,
@@ -2029,6 +2030,40 @@ describe('fetchRefspecConflict error', () => {
 
         // Assert
         expect(result.message).toBe(`FETCH_REFSPEC_CONFLICT: ${expected}`);
+      });
+    });
+  });
+});
+
+describe('fetchRejected error', () => {
+  describe('Given two ref updates a fetch refused', () => {
+    describe('When reading .message and .data', () => {
+      it('Then they name the remote and carry each rejected update', () => {
+        // Arrange
+        const sut = fetchRejected;
+        const rejected = [
+          {
+            name: 'refs/remotes/origin/main' as RefName,
+            oldId: 'a'.repeat(40) as ObjectId,
+            newId: 'b'.repeat(40) as ObjectId,
+            rejection: 'non-fast-forward' as const,
+          },
+          {
+            name: 'refs/tags/v1' as RefName,
+            oldId: 'c'.repeat(40) as ObjectId,
+            newId: 'd'.repeat(40) as ObjectId,
+            rejection: 'would-clobber-existing-tag' as const,
+          },
+        ];
+
+        // Act
+        const result = sut('origin', rejected);
+
+        // Assert
+        expect(result.message).toBe(
+          'FETCH_REJECTED: fetch from origin rejected refs/remotes/origin/main (non-fast-forward), refs/tags/v1 (would-clobber-existing-tag)',
+        );
+        expect(result.data).toEqual({ code: 'FETCH_REJECTED', remote: 'origin', rejected });
       });
     });
   });
