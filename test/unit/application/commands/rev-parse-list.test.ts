@@ -596,3 +596,45 @@ describe('Given a branch whose commit names a parent that fails to parse', () =>
     });
   });
 });
+
+describe("Given a commit whose parent names the commit's own tree as its parent", () => {
+  describe('When revParse reads two generations back from it', () => {
+    it('Then the middle hop fails to parse against the tree its start typed, on each read of the name', async () => {
+      // Arrange
+      const errors: string[] = [];
+      const ctx = {
+        ...createMemoryContext(),
+        logger: { error: (message: string) => errors.push(message) },
+      } as Context;
+      const tree = await writeRawObjectBytes(ctx, 'tree', new Uint8Array());
+      const blob = await writeRawObjectBytes(ctx, 'blob', encoder.encode('b\n'));
+      const otherTree = await writeRawObjectBytes(
+        ctx,
+        'tree',
+        new Uint8Array([...encoder.encode('100644 b\0'), ...hexBytes(blob)]),
+      );
+      const parent = await writeCommit(ctx, otherTree, [tree], 1, 'p\n');
+      const start = await writeCommit(ctx, tree, [parent], 2, 'x\n');
+      await writeRef(ctx, 'refs/heads/main', start);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+      const sut = revParse;
+
+      // Act
+      const result = await failureData(() => sut(ctx, `${start}~2`));
+
+      // Assert
+      const lines = [
+        `object ${tree} is a tree, not a commit`,
+        `bad parent ${tree} in commit ${parent}`,
+      ];
+      expect({ result, errors }).toEqual({
+        result: {
+          code: 'OBJECT_NOT_FOUND',
+          id: parent,
+          printed: [{ kind: 'path', path: `${start}~2` }],
+        },
+        errors: [...lines, ...lines],
+      });
+    });
+  });
+});

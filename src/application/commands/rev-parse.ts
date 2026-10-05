@@ -28,6 +28,7 @@ import { committishFilter, treeishFilter } from '../primitives/internal/disambig
 import {
   lookupCommitReference,
   lookupTypedCommitReference,
+  parseCommit,
 } from '../primitives/internal/lookup-commit-reference.js';
 import {
   createObjectTypeTable,
@@ -551,7 +552,7 @@ const applyOperation = async (
   if (op.kind === 'search') return searchFrom(ctx, table, id, op);
   const commit = await commitToWalk(ctx, table, id);
   if (op.kind === 'parent') return op.n === 0 ? commit.id : nthParent(ctx, commit, op.n);
-  return nthAncestor(ctx, commit, op.n);
+  return nthAncestor(ctx, table, commit, op.n);
 };
 
 /** git's `peel_onion`: `^{object}` only needs the object to exist. */
@@ -660,10 +661,25 @@ const nthParent = async (ctx: Context, peeled: PeeledCommit, n: number): Promise
 };
 
 /** git's `get_nth_ancestor`: every hop but the last parses the commit it lands on. */
-const nthAncestor = async (ctx: Context, start: PeeledCommit, n: number): Promise<ObjectId> => {
+const nthAncestor = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  start: PeeledCommit,
+  n: number,
+): Promise<ObjectId> => {
   let cur = start;
-  for (let i = 1; i < n; i += 1) cur = await readCommitAt(ctx, await nthParent(ctx, cur, 1));
+  for (let i = 1; i < n; i += 1) cur = await parseHop(ctx, table, await nthParent(ctx, cur, 1));
   return n === 0 ? cur.id : nthParent(ctx, cur, 1);
+};
+
+/** A middle hop's `repo_parse_commit`, against the invocation's table when there is one. */
+const parseHop = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  id: ObjectId,
+): Promise<PeeledCommit> => {
+  if (table !== undefined && !(await parseCommit(ctx, table, id))) throw objectNotFound(id);
+  return readCommitAt(ctx, id);
 };
 
 const readCommitAt = async (ctx: Context, id: ObjectId): Promise<PeeledCommit> => {

@@ -78,7 +78,7 @@ const reportUnparsed = (ctx: Context, message: string, id: ObjectId): false => {
 /** git's `repo_parse_commit_gently`, not quiet: the commit-graph answers
  *  without a read, typing the parents it serves; otherwise the stored commit
  *  is parsed, typing its pointers. */
-const parseCommit = async (
+export const parseCommit = async (
   ctx: Context,
   table: ObjectTypeTable,
   id: ObjectId,
