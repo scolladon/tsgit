@@ -9,6 +9,7 @@ import { init } from '../../../../src/application/commands/init.js';
 import {
   asMergeDirtyError,
   buildConflictIndexEntries,
+  type MergeRunInput,
   materialiseConflictBytes,
   mergeRun,
   resolveMergeAuthor,
@@ -1057,7 +1058,11 @@ describe('merge', () => {
         });
 
         // Act
-        const result = await mergeRun(ctx, { rev: 'unrelated', author });
+        const result = await mergeRun(ctx, {
+          rev: 'unrelated',
+          author,
+          allowUnrelatedHistories: true,
+        });
 
         // Assert — kind='conflict' with add-add for shared.txt.
         expect(result.kind).toBe('conflict');
@@ -3662,7 +3667,11 @@ describe('merge — add-add content merge (slice 4, end-to-end)', () => {
         });
 
         // Act
-        const result = await mergeRun(ctx, { rev: 'theirs', author });
+        const result = await mergeRun(ctx, {
+          rev: 'theirs',
+          author,
+          allowUnrelatedHistories: true,
+        });
 
         // Assert — conflict kind and worktree carries marker bytes
         expect(result.kind).toBe('conflict');
@@ -3735,7 +3744,11 @@ describe('merge — add-add content merge (slice 4, end-to-end)', () => {
         });
 
         // Act
-        const result = await mergeRun(ctx, { rev: 'theirs', author });
+        const result = await mergeRun(ctx, {
+          rev: 'theirs',
+          author,
+          allowUnrelatedHistories: true,
+        });
 
         // Assert — bare add-add: ours symlink remains
         expect(result.kind).toBe('conflict');
@@ -3798,7 +3811,11 @@ describe('merge — distinct-types conflict (slice 4, end-to-end)', () => {
         ]);
 
         // Act
-        const result = await mergeRun(ctx, { rev: 'theirs', author });
+        const result = await mergeRun(ctx, {
+          rev: 'theirs',
+          author,
+          allowUnrelatedHistories: true,
+        });
 
         // Assert — conflict reported
         expect(result.kind).toBe('conflict');
@@ -3865,7 +3882,11 @@ describe('merge — distinct-types conflict (slice 4, end-to-end)', () => {
         ]);
 
         // Act
-        const result = await mergeRun(ctx, { rev: 'theirs', author });
+        const result = await mergeRun(ctx, {
+          rev: 'theirs',
+          author,
+          allowUnrelatedHistories: true,
+        });
 
         // Assert — conflict reported
         expect(result.kind).toBe('conflict');
@@ -3928,7 +3949,7 @@ describe('merge — labels threading (slice 4)', () => {
         });
 
         // Act
-        await mergeRun(ctx, { rev: 'feature', author });
+        await mergeRun(ctx, { rev: 'feature', author, allowUnrelatedHistories: true });
 
         // Assert — conflict markers use HEAD and feature labels
         const onDisk = await ctx.fs.readUtf8(`${ctx.layout.workDir}/f.txt`);
@@ -5181,35 +5202,6 @@ describe('merge — several heads (octopus)', () => {
     });
   });
 
-  describe('Given a head sharing no history with main', () => {
-    describe('When merge is given it with another head', () => {
-      it('Then the octopus fails at that head', async () => {
-        // Arrange
-        const ctx = await seedOctopus();
-        const tree = await writeTreeMod.writeTree(ctx, []);
-        const orphan = await writeObject(ctx, {
-          type: 'commit',
-          id: '' as ObjectId,
-          data: { tree, parents: [], author: t, committer: t, message: 'o\n', extraHeaders: [] },
-        });
-        await seedRef(ctx, 'refs/heads/orphan' as RefName, orphan, { reflogMessage: 'seed' });
-        const sut = mergeRun;
-
-        // Act
-        const caught = await sut(ctx, { rev: ['b1', 'orphan'], author: t, committer: t }).catch(
-          (error: unknown) => error,
-        );
-
-        // Assert
-        expect((caught as TsgitError).data).toEqual({
-          code: 'OCTOPUS_MERGE_FAILED',
-          head: 'orphan',
-          reason: 'no-common-ancestor',
-        });
-      });
-    });
-  });
-
   describe('Given an earlier head deletes a file and the last head conflicts', () => {
     describe('When merge is given g1, b2 and c1', () => {
       it('Then the deletion reaches the working tree and the index', async () => {
@@ -5247,6 +5239,131 @@ describe('merge — several heads (octopus)', () => {
 
         // Assert
         expect(result.id).toBe('f1e6d6a0c610f4cc8fe6829cbd74d266eb6214dd');
+      });
+    });
+  });
+});
+
+describe('merge — unrelated histories', () => {
+  const t: AuthorIdentity = {
+    name: 't',
+    email: 't@t',
+    timestamp: 1_700_000_000,
+    timezoneOffset: '+0000',
+  };
+
+  const commitFile = async (ctx: Context, name: string): Promise<void> => {
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, `${name}\n`);
+    await add(ctx, [name]);
+    await commit(ctx, { message: name, author: t, committer: t });
+  };
+
+  /** `main` holds `a`; `rel` adds `r` on top of it; `orphan` shares no history with either. */
+  const seedUnrelated = async (): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await init(ctx, { initialBranch: 'main' });
+    await commitFile(ctx, 'a');
+    await branchCreate(ctx, { name: 'rel' });
+    await checkout(ctx, { rev: 'rel' });
+    await commitFile(ctx, 'r');
+    await checkout(ctx, { rev: 'main' });
+    const blob = await writeBlob(ctx, 'o\n');
+    const tree = await writeTreeMod.writeTree(ctx, [
+      treeEntry(FILE_MODE.REGULAR, 'o' as never, blob),
+    ]);
+    const orphan = await writeObject(ctx, {
+      type: 'commit',
+      id: '' as ObjectId,
+      data: { tree, parents: [], author: t, committer: t, message: 'o\n', extraHeaders: [] },
+    });
+    await seedRef(ctx, 'refs/heads/orphan' as RefName, orphan, { reflogMessage: 'seed' });
+    return ctx;
+  };
+
+  const refusalOf = async (ctx: Context, input: MergeRunInput): Promise<unknown> => {
+    const caught = await mergeRun(ctx, input).catch((error: unknown) => error);
+    return (caught as TsgitError).data;
+  };
+
+  describe.each([
+    ['the orphan alone', ['orphan']],
+    ['rel and the orphan', ['rel', 'orphan']],
+  ])('Given %s', (_label, rev) => {
+    describe.each([
+      ['by default', {}],
+      ['fast-forward only', { fastForward: 'only' as const }],
+    ])('When merge runs %s', (_mode, extra) => {
+      it('Then it refuses with UNRELATED_HISTORIES after recording ORIG_HEAD', async () => {
+        // Arrange
+        const ctx = await seedUnrelated();
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        const sut = refusalOf;
+
+        // Act
+        const result = await sut(ctx, { rev, author: t, committer: t, ...extra });
+
+        // Assert
+        expect(result).toEqual({ code: 'UNRELATED_HISTORIES' });
+        expect(await resolveRef(ctx, 'ORIG_HEAD' as RefName)).toBe(head);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given the orphan and allowUnrelatedHistories', () => {
+    describe('When merge runs', () => {
+      it('Then it records a two-parent merge of both roots', async () => {
+        // Arrange
+        const ctx = await seedUnrelated();
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        const orphan = await resolveRef(ctx, 'refs/heads/orphan' as RefName);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, {
+          rev: 'orphan',
+          allowUnrelatedHistories: true,
+          author: t,
+          committer: t,
+        });
+
+        // Assert
+        expect(result).toMatchObject({ kind: 'merge', parents: [head, orphan] });
+      });
+    });
+  });
+
+  describe('Given rel and the orphan and allowUnrelatedHistories', () => {
+    describe('When merge runs', () => {
+      it("Then the octopus stops at the orphan and leaves git's conflicted merge state", async () => {
+        // Arrange
+        const ctx = await seedUnrelated();
+        const logged: string[] = [];
+        const logging = { ...ctx, logger: { error: (line: string) => logged.push(line) } };
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        const rel = await resolveRef(ctx, 'refs/heads/rel' as RefName);
+        const orphan = await resolveRef(ctx, 'refs/heads/orphan' as RefName);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(logging, {
+          rev: ['rel', 'orphan'],
+          allowUnrelatedHistories: true,
+          author: t,
+          committer: t,
+        });
+
+        // Assert
+        expect(result).toEqual({ kind: 'conflict', conflicts: [], mergeHead: rel, origHead: head });
+        expect(logged).toEqual(['Unable to find common commit with orphan']);
+        const gitDir = ctx.layout.gitDir;
+        expect(await ctx.fs.readUtf8(`${gitDir}/MERGE_HEAD`)).toBe(`${rel}\n${orphan}\n`);
+        expect(await ctx.fs.readUtf8(`${gitDir}/MERGE_MSG`)).toBe(
+          "Merge branches 'rel' and 'orphan'\n\n# Conflicts:\n",
+        );
+        const paths = (await readIndex(ctx)).entries.map((entry) => entry.path);
+        expect(paths).toEqual(['a', 'r']);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/r`)).toBe('r\n');
       });
     });
   });

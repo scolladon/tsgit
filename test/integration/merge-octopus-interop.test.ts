@@ -79,13 +79,23 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — several heads', () => {
     await pair.dispose();
   });
 
-  /** Each tool merges `heads`; tsgit's refusal, if any, is returned. */
-  const mergeBoth = async (heads: ReadonlyArray<string>): Promise<unknown> => {
-    tryRunGitWithExit(['-C', pair.peer, 'merge', '-q', '--no-edit', ...heads], { env: COMMIT_ENV });
+  /** Each tool merges `heads`; tsgit's result, or its refusal, is returned. */
+  const mergeBoth = async (
+    heads: ReadonlyArray<string>,
+    options: { readonly allowUnrelatedHistories?: boolean } = {},
+  ): Promise<unknown> => {
+    const allow = options.allowUnrelatedHistories === true ? ['--allow-unrelated-histories'] : [];
+    tryRunGitWithExit(['-C', pair.peer, 'merge', '-q', '--no-edit', ...allow, ...heads], {
+      env: COMMIT_ENV,
+    });
     const repo = await openRepository({ cwd: pair.ours });
     try {
-      await repo.merge.run({ rev: heads, author: IDENTITY, committer: IDENTITY });
-      return undefined;
+      return await repo.merge.run({
+        rev: heads,
+        author: IDENTITY,
+        committer: IDENTITY,
+        ...options,
+      });
     } catch (error) {
       return error;
     } finally {
@@ -189,6 +199,75 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — several heads', () => {
         expect(status).toBe(expectedStatus);
         const [head, expectedHead] = both('rev-parse', 'HEAD');
         expect(head).toBe(expectedHead);
+      });
+    });
+  });
+
+  describe('Given a root sharing no history with main', () => {
+    const addOrphan = (): void => {
+      for (const dir of [pair.ours, pair.peer]) {
+        git(dir, 'checkout', '-q', '--orphan', 'orphan');
+        git(dir, 'rm', '-rfq', '.');
+        commitFile(dir, 'o', 'o\n');
+        git(dir, 'checkout', '-q', 'main');
+      }
+    };
+
+    describe.each([
+      ['the orphan alone', ['orphan']],
+      ['b1 and the orphan', ['b1', 'orphan']],
+    ])('When both tools merge %s', (_label, heads) => {
+      it('Then both refuse after recording ORIG_HEAD alike', async () => {
+        // Arrange
+        addOrphan();
+        const sut = mergeBoth;
+
+        // Act
+        const result = await sut(heads);
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({ code: 'UNRELATED_HISTORIES' });
+        const [origHead, expectedOrigHead] = await gitFile('ORIG_HEAD');
+        expect(origHead).toBe(expectedOrigHead);
+        const [status, expectedStatus] = both('status', '--porcelain');
+        expect(status).toBe(expectedStatus);
+      });
+    });
+
+    describe('When both tools merge the orphan allowing unrelated histories', () => {
+      it('Then the merge commits and their reflog notes are identical', async () => {
+        // Arrange
+        addOrphan();
+        const sut = mergeBoth;
+
+        // Act
+        await sut(['orphan'], { allowUnrelatedHistories: true });
+
+        // Assert
+        const [result, expected] = both('log', '-1', '-g', '--format=%H %gs', 'HEAD');
+        expect(result).toBe(expected);
+      });
+    });
+
+    describe('When both tools merge b1 and the orphan allowing unrelated histories', () => {
+      it("Then both stop at the orphan with git's MERGE_HEAD, MERGE_MSG and index", async () => {
+        // Arrange
+        addOrphan();
+        const sut = mergeBoth;
+
+        // Act
+        const result = await sut(['b1', 'orphan'], { allowUnrelatedHistories: true });
+
+        // Assert
+        expect(result).toMatchObject({ kind: 'conflict', conflicts: [] });
+        for (const name of ['MERGE_HEAD', 'MERGE_MSG']) {
+          const [file, expectedFile] = await gitFile(name);
+          expect(file).toBe(expectedFile);
+        }
+        const [index, expectedIndex] = both('ls-files', '-s');
+        expect(index).toBe(expectedIndex);
+        const [status, expectedStatus] = both('status', '--porcelain');
+        expect(status).toBe(expectedStatus);
       });
     });
   });

@@ -61,6 +61,10 @@ export type CommandError =
       readonly head: string;
       readonly reason: OctopusFailureReason;
     }
+  /** git's `refusing to merge unrelated histories`: the heads share no commit. */
+  | { readonly code: 'UNRELATED_HISTORIES' }
+  /** git's pull `Cannot fast-forward to multiple branches.` */
+  | { readonly code: 'FAST_FORWARD_MULTIPLE_BRANCHES' }
   | {
       readonly code: 'NON_FAST_FORWARD';
       readonly ref: RefName;
@@ -568,12 +572,17 @@ export const noPromisorRemote = (): TsgitError => new TsgitError({ code: 'NO_PRO
 
 /**
  * Why git's octopus strategy gave up (`Merge with strategy octopus failed.`):
- * a head before the last left conflicts, or a head shares no history.
+ * a head before the last left conflicts.
  */
-export type OctopusFailureReason = 'conflict-before-last-head' | 'no-common-ancestor';
+export type OctopusFailureReason = 'conflict-before-last-head';
 
 export const octopusMergeFailed = (head: string, reason: OctopusFailureReason): TsgitError =>
   new TsgitError({ code: 'OCTOPUS_MERGE_FAILED', head, reason });
+
+export const unrelatedHistories = (): TsgitError => new TsgitError({ code: 'UNRELATED_HISTORIES' });
+
+export const fastForwardMultipleBranches = (): TsgitError =>
+  new TsgitError({ code: 'FAST_FORWARD_MULTIPLE_BRANCHES' });
 
 export const nonFastForward = (ref: RefName, local: ObjectId, remote: ObjectId): TsgitError =>
   new TsgitError({ code: 'NON_FAST_FORWARD', ref, local, remote });

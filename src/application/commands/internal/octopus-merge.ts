@@ -186,10 +186,17 @@ const writeFlatTree = (ctx: Context, entries: FlatEntries): Promise<ObjectId> =>
     [...entries].map(([path, entry]) => stage0Entry(path, entry.id, entry.mode)),
   );
 
-/** One head of git's loop: a fast-forward to it, or a merge step into the running result. */
-const advance = async (ctx: Context, running: Running, remote: OctopusRemote): Promise<Running> => {
+/**
+ * One head of git's loop: a fast-forward to it, or a merge step into the
+ * running result — `undefined` when the head shares no history with it.
+ */
+const advance = async (
+  ctx: Context,
+  running: Running,
+  remote: OctopusRemote,
+): Promise<Running | undefined> => {
   const common = await mergeBasesOf(ctx, [remote.id, ...running.commits], { all: true });
-  if (common.length === 0) throw octopusMergeFailed(remote.name, 'no-common-ancestor');
+  if (common.length === 0) return undefined;
   const remoteEntries = await flatOfCommit(ctx, remote.id);
   if (running.step === undefined && common.length === 1 && common[0] === running.commits[0]) {
     ctx.logger?.info?.(`Fast-forwarding to: ${remote.name}`);
@@ -200,6 +207,15 @@ const advance = async (ctx: Context, running: Running, remote: OctopusRemote): P
   const input = { bases, current: running.entries, remote: remoteEntries, remoteName: remote.name };
   const step = await mergeStep(ctx, input);
   return { commits: [...running.commits, remote.id], entries: step.merged, step };
+};
+
+/**
+ * `git-merge-octopus` dies on a head sharing no history — git's merge then
+ * takes the strategy's exit as conflicts, keeping what merged so far.
+ */
+const stopAtUnrelated = (ctx: Context, running: Running, remote: OctopusRemote): OctopusResult => {
+  ctx.logger?.error?.(`Unable to find common commit with ${remote.name}`);
+  return { kind: 'conflict', merged: running.entries, worktree: running.entries, conflicts: [] };
 };
 
 /** The strategy's outcome: the merged tree, or the last head's conflicts. */
@@ -218,7 +234,8 @@ const isLast = (index: number, remotes: ReadonlyArray<OctopusRemote>): boolean =
 /**
  * Merge `remotes` into `headId` as `git-merge-octopus` does: intermediate
  * results are written as trees (its `write-tree`), a conflict before the last
- * head refuses with `OCTOPUS_MERGE_FAILED`, one on the last is returned.
+ * head refuses with `OCTOPUS_MERGE_FAILED`, one on the last is returned, and a
+ * head sharing no history ends the merge as a conflict with nothing unmerged.
  */
 export const octopusMerge = async (
   ctx: Context,
@@ -227,7 +244,9 @@ export const octopusMerge = async (
 ): Promise<OctopusResult> => {
   let running: Running = { commits: [headId], entries: await flatOfCommit(ctx, headId) };
   for (const [index, remote] of remotes.entries()) {
-    running = await advance(ctx, running, remote);
+    const next = await advance(ctx, running, remote);
+    if (next === undefined) return stopAtUnrelated(ctx, running, remote);
+    running = next;
     const step = running.step;
     if (step === undefined || isLast(index, remotes)) continue;
     if (step.conflicts.length > 0)

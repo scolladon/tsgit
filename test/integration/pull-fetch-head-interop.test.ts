@@ -12,12 +12,13 @@
  *   unique:         pull merges the FETCH_HEAD merge heads under git's merge message
  */
 
-import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { pull } from '../../src/application/commands/pull.js';
+import { errorDataCode } from '../../src/domain/error-data-code.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { backendTransport } from './http-backend-transport.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
@@ -59,6 +60,8 @@ beforeAll(() => {
   dated(['-C', work, 'commit', '-q', '--allow-empty', '-m', 'side']);
   dated(['-C', work, 'checkout', '-q', '-b', 'side2', 'main']);
   dated(['-C', work, 'commit', '-q', '--allow-empty', '-m', 'side2']);
+  dated(['-C', work, 'checkout', '-q', '--orphan', 'root']);
+  dated(['-C', work, 'commit', '-q', '--allow-empty', '-m', 'root']);
   dated(['-C', work, 'checkout', '-q', 'main']);
   dated(['clone', '-q', '--bare', work, peerPath]);
 });
@@ -214,6 +217,90 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
         expect(refs(ours)).toBe(refs(theirs));
         expect(existsSync(path.join(ours, '.git', 'MERGE_HEAD'))).toBe(false);
         expect(existsSync(path.join(theirs, '.git', 'MERGE_HEAD'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an upstream sharing no history with the branch', () => {
+    const UNRELATED = [
+      ['branch.main.remote', 'origin'],
+      ['branch.main.merge', 'refs/heads/root'],
+    ] as const;
+    const ctxFor = (ours: string) => ({
+      ...createNodeContext({ workDir: ours }),
+      transport: backendTransport(peerRoot),
+    });
+    const origHead = (dir: string): string | undefined => {
+      const file = path.join(dir, '.git', 'ORIG_HEAD');
+      return existsSync(file) ? readFileSync(file, 'utf8') : undefined;
+    };
+
+    describe.each([
+      { label: 'unrelated', flags: [], opts: {}, code: 'UNRELATED_HISTORIES', config: UNRELATED },
+      {
+        label: 'unrelated-ff-only',
+        flags: ['--ff-only'],
+        opts: { fastForward: 'only' },
+        code: 'NON_FAST_FORWARD',
+        config: UNRELATED,
+      },
+      {
+        label: 'two-heads-ff-only',
+        flags: ['--ff-only'],
+        opts: { fastForward: 'only' },
+        code: 'FAST_FORWARD_MULTIPLE_BRANCHES',
+        config: [...UNRELATED, ['branch.main.merge', 'refs/heads/side']],
+      },
+    ] as const)(
+      'When both tools pull the $label upstream',
+      ({ label, flags, opts, code, config }) => {
+        it('Then both refuse and leave ORIG_HEAD alike', async () => {
+          // Arrange
+          const { ours, theirs } = setUp(label, 'main', config);
+          const theirsRun = tryRunGitWithExit(
+            ['-C', theirs, 'pull', '-q', '--no-rebase', '--no-edit', ...flags],
+            { env: DATED_ENV },
+          );
+          const sut = pull;
+
+          // Act
+          const result = await sut(ctxFor(ours), { ...opts, author: IDENTITY, committer: IDENTITY })
+            .then(() => undefined)
+            .catch(errorDataCode);
+
+          // Assert
+          expect(theirsRun.exitCode).toBe(128);
+          expect(result).toBe(code);
+          expect(origHead(ours)).toBe(origHead(theirs));
+        });
+      },
+    );
+
+    describe('When both tools pull it allowing unrelated histories', () => {
+      it('Then the merge commits agree', async () => {
+        // Arrange
+        const { ours, theirs } = setUp('unrelated-allowed', 'main', UNRELATED);
+        dated([
+          '-C',
+          theirs,
+          'pull',
+          '-q',
+          '--no-rebase',
+          '--no-edit',
+          '--allow-unrelated-histories',
+        ]);
+        const expected = head(theirs).replaceAll(peerPath.slice(0, -'.git'.length), SHORT_URL);
+        const sut = pull;
+
+        // Act
+        await sut(ctxFor(ours), {
+          allowUnrelatedHistories: true,
+          author: IDENTITY,
+          committer: IDENTITY,
+        });
+
+        // Assert
+        expect(head(ours)).toBe(expected);
       });
     });
   });

@@ -476,6 +476,10 @@ function extractDetail(data: TsgitErrorData): string {
       return 'remote advertised no refs';
     case 'OCTOPUS_MERGE_FAILED':
       return `Merge with strategy octopus failed: ${data.reason} at ${data.head}`;
+    case 'UNRELATED_HISTORIES':
+      return 'refusing to merge unrelated histories';
+    case 'FAST_FORWARD_MULTIPLE_BRANCHES':
+      return 'cannot fast-forward to multiple branches';
     case 'NON_FAST_FORWARD':
       return `non-fast-forward update for ${data.ref}: local=${data.local} remote=${data.remote}`;
     case 'PUSH_REJECTED':

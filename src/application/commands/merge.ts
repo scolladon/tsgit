@@ -1,4 +1,8 @@
-import { nonFastForward, workingTreeDirty } from '../../domain/commands/error.js';
+import {
+  nonFastForward,
+  unrelatedHistories,
+  workingTreeDirty,
+} from '../../domain/commands/error.js';
 import type { FlatTreeEntry } from '../../domain/diff/flat-tree.js';
 import { conflictsToIndexEntries, sortedRecordedPaths } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
@@ -54,7 +58,7 @@ import {
   writeWorkingTreeFileStream,
 } from '../primitives/internal/write-working-tree-file.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
-import { reduceHeads, tryMergeBasesOf } from '../primitives/merge-base.js';
+import { mergeBasesOf, reduceHeads, tryMergeBasesOf } from '../primitives/merge-base.js';
 import { assertEverySourceLoadable } from '../primitives/object-store.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -103,6 +107,11 @@ export interface MergeRunInput {
    * - `'never'` — always create a merge commit, even when a fast-forward is possible.
    */
   readonly fastForward?: 'only' | 'never' | 'allow';
+  /**
+   * git's `--allow-unrelated-histories`: merge heads that share no commit with
+   * `HEAD`, which otherwise refuse with `UNRELATED_HISTORIES`.
+   */
+  readonly allowUnrelatedHistories?: boolean;
   readonly author?: AuthorIdentity;
   readonly committer?: AuthorIdentity;
 }
@@ -246,6 +255,7 @@ const twoHeadMerge = async (
   const bases = await tryMergeBasesOf(ctx, [ourId, theirId]);
   // git's `reduce_heads` leaves no remote head when its walk cannot parse a parent.
   if (bases === undefined) return { kind: 'up-to-date', id: ourId };
+  assertRelated(opts, bases);
   const [base] = bases;
   if (base === theirId) return { kind: 'up-to-date', id: ourId };
   if (base === ourId && opts.fastForward !== 'never') {
@@ -256,6 +266,14 @@ const twoHeadMerge = async (
   }
   return mergeCommit(ctx, opts, internal, branch, ourId, theirId, base);
 };
+
+/** git's `refusing to merge unrelated histories`, unless `--allow-unrelated-histories`. */
+const assertRelated = (opts: SettledMerge, common: ReadonlyArray<ObjectId>): void => {
+  if (common.length === 0 && opts.allowUnrelatedHistories !== true) throw unrelatedHistories();
+};
+
+/** git's `get_octopus_merge_bases` over `HEAD` and every head. */
+const OCTOPUS = { octopus: true } as const;
 
 /**
  * Several heads: git's `reduce_parents` drops repeats, heads `HEAD` reaches,
@@ -283,6 +301,7 @@ const manyHeadMerge = async (
   const opts = await settleMessage(ctx, input, described, branch, remotes);
   await writeOrigHead(ctx, ourId);
   await assertEverySourceLoadable(ctx);
+  assertRelated(opts, await mergeBasesOf(ctx, [ourId, ...remotes.map((r) => r.id)], OCTOPUS));
   if (opts.fastForward === 'only') throw nonFastForward(branch, ourId, remotes[0]!.id);
   const keepsHead = reduced.includes(ourId) || opts.fastForward === 'never';
   const parents = [...(keepsHead ? [ourId] : []), ...remotes.map((remote) => remote.id)];

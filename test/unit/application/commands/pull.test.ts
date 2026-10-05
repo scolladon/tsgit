@@ -13,6 +13,9 @@ import { readReflog } from '../../../../src/application/primitives/reflog-store.
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { updateConfigEntries } from '../../../../src/application/primitives/update-config.js';
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { writeTree } from '../../../../src/application/primitives/write-tree.js';
+import type { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type {
@@ -595,6 +598,77 @@ describe('pull', () => {
     });
   });
 
+  describe('Given the remote branch shares no history with HEAD', () => {
+    /** Local `main` holds `a.txt`; the remote's `main` is a root commit of its own. */
+    const seedUnrelated = async (): Promise<{ ctx: Context; head: ObjectId; orphan: ObjectId }> => {
+      const ctx = createMemoryContext();
+      await init(ctx);
+      const head = await commitFile(ctx, 'a.txt', 'a', 'A');
+      const tree = await writeTree(ctx, []);
+      const orphan = await writeObject(ctx, {
+        type: 'commit',
+        id: '' as ObjectId,
+        data: { tree, parents: [], author, committer: author, message: 'O\n', extraHeaders: [] },
+      });
+      await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
+      const { transport } = buildPullRemote(
+        [{ name: 'refs/heads/main', id: orphan }],
+        await emptyPack(ctx),
+      );
+      return { ctx: withTransport(ctx, transport), head, orphan };
+    };
+
+    describe('When pull', () => {
+      it('Then it refuses with UNRELATED_HISTORIES', async () => {
+        // Arrange
+        const { ctx } = await seedUnrelated();
+        const sut = pull;
+
+        // Act
+        const result = await sut(ctx, { author }).catch((error: unknown) => error);
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({ code: 'UNRELATED_HISTORIES' });
+      });
+    });
+
+    describe('When pull allows unrelated histories', () => {
+      it('Then it records a merge of both roots', async () => {
+        // Arrange
+        const { ctx, head, orphan } = await seedUnrelated();
+        const sut = pull;
+
+        // Act
+        const result = await sut(ctx, { allowUnrelatedHistories: true, author });
+
+        // Assert
+        expect(result.merge).toMatchObject({ kind: 'merge', parents: [head, orphan] });
+      });
+    });
+
+    describe('When pull only fast-forwards', () => {
+      it('Then it refuses with NON_FAST_FORWARD before merging', async () => {
+        // Arrange
+        const { ctx, head, orphan } = await seedUnrelated();
+        const sut = pull;
+
+        // Act
+        const result = await sut(ctx, { fastForward: 'only', author }).catch(
+          (error: unknown) => error,
+        );
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'NON_FAST_FORWARD',
+          ref: 'refs/heads/main',
+          local: head,
+          remote: orphan,
+        });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(false);
+      });
+    });
+  });
+
   describe('Given a custom merge message', () => {
     describe('When pull over a true merge', () => {
       it('Then the merge commit uses the supplied message', async () => {
@@ -1085,6 +1159,33 @@ describe('pull', () => {
       });
     });
 
+    describe('Given a detached HEAD pulling a diverged ref fast-forward only', () => {
+      describe('When pull', () => {
+        it('Then it refuses with NON_FAST_FORWARD against HEAD before merging', async () => {
+          // Arrange
+          const { ctx, b } = await divergedRepo();
+          const head = await resolveRef(ctx, 'refs/heads/main' as RefName);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${head}\n`);
+          await updateConfigEntries(ctx, remoteEntries(ORIGIN_FETCH));
+          const { transport } = buildPullRemote(
+            [{ name: 'refs/heads/side', id: b }],
+            await emptyPack(ctx),
+          );
+          const sut = refusal;
+
+          // Act
+          const result = await sut(withTransport(ctx, transport), {
+            ref: 'side',
+            fastForward: 'only',
+            author,
+          });
+
+          // Assert
+          expect(result).toEqual({ code: 'NON_FAST_FORWARD', ref: 'HEAD', local: head, remote: b });
+        });
+      });
+    });
+
     describe('Given an explicit ref fetching a ref HEAD already contains alongside a diverged one', () => {
       describe('When pull', () => {
         it('Then the message names only the ref that survives reduce_heads, as git does', async () => {
@@ -1147,6 +1248,74 @@ describe('pull', () => {
           expect(obj.type === 'commit' && obj.data.message).toBe(
             "Merge branches 'side-a' and 'side-b' of https://remote.example/r\n",
           );
+        });
+      });
+    });
+
+    /** `main`'s parent `A`, `main` itself, a child of `main`, and the diverged `side`. */
+    const fastForwardRepo = async () => {
+      const { ctx, b } = await divergedRepo();
+      const head = await resolveRef(ctx, 'refs/heads/main' as RefName);
+      const headCommit = await readObject(ctx, head);
+      const parent = headCommit.type === 'commit' ? headCommit.data.parents[0]! : head;
+      await branchCreate(ctx, { name: 'ahead' });
+      await checkout(ctx, { rev: 'ahead' });
+      const child = await commitFile(ctx, 'd.txt', 'd', 'D');
+      await checkout(ctx, { rev: 'main' });
+      return { ctx, tips: { parent, head, child, side: b } };
+    };
+
+    describe.each([
+      { label: 'a head HEAD fast-forwards to', heads: ['child'], kind: 'fast-forward' },
+      { label: 'a head HEAD already contains', heads: ['parent'], kind: 'up-to-date' },
+    ] as const)('Given fastForward only and $label', ({ heads, kind }) => {
+      describe('When pull', () => {
+        it('Then the merge goes ahead', async () => {
+          // Arrange
+          const { ctx, tips } = await fastForwardRepo();
+          await updateConfigEntries(ctx, remoteEntries(ORIGIN_FETCH));
+          const refs = heads.map((tip, at) => ({ name: `refs/heads/s${at}`, id: tips[tip] }));
+          const { transport } = buildPullRemote(refs, await emptyPack(ctx));
+          const sut = pull;
+
+          // Act
+          const result = await sut(withTransport(ctx, transport), {
+            ref: 'refs/heads/s*:refs/remotes/s/*',
+            fastForward: 'only',
+            author,
+          });
+
+          // Assert
+          expect(result.merge.kind).toBe(kind);
+        });
+      });
+    });
+
+    describe('Given fastForward only and two heads HEAD already contains', () => {
+      describe('When pull', () => {
+        it('Then it refuses to fast-forward to several branches before merging', async () => {
+          // Arrange
+          const { ctx, tips } = await fastForwardRepo();
+          await updateConfigEntries(ctx, remoteEntries(ORIGIN_FETCH));
+          const { transport } = buildPullRemote(
+            [
+              { name: 'refs/heads/s0', id: tips.parent },
+              { name: 'refs/heads/s1', id: tips.head },
+            ],
+            await emptyPack(ctx),
+          );
+          const sut = refusal;
+
+          // Act
+          const result = await sut(withTransport(ctx, transport), {
+            ref: 'refs/heads/s*:refs/remotes/s/*',
+            fastForward: 'only',
+            author,
+          });
+
+          // Assert
+          expect(result).toEqual({ code: 'FAST_FORWARD_MULTIPLE_BRANCHES' });
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(false);
         });
       });
     });

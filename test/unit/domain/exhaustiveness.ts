@@ -119,6 +119,8 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'TARGET_DIRECTORY_NOT_EMPTY':
     case 'REMOTE_ADVERTISES_NO_REFS':
     case 'OCTOPUS_MERGE_FAILED':
+    case 'UNRELATED_HISTORIES':
+    case 'FAST_FORWARD_MULTIPLE_BRANCHES':
     case 'NON_FAST_FORWARD':
     case 'PUSH_REJECTED':
     case 'MERGE_HAS_CONFLICTS':

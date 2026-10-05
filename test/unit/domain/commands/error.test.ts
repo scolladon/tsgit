@@ -29,6 +29,7 @@ import {
   configValueInvalid,
   emptyCommitMessage,
   emptyPathspec,
+  fastForwardMultipleBranches,
   formatPlaceholderUnsupported,
   fsckCannotDemote,
   fsckUnknownMsgId,
@@ -88,6 +89,7 @@ import {
   targetDirectoryNotEmpty,
   timestampOutOfRange,
   tooManyRedirects,
+  unrelatedHistories,
   unsupportedScheme,
   workingTreeDirty,
   workingTreeFileTooLarge,
@@ -481,14 +483,44 @@ describe('domain commands error — factory data', () => {
         const sut = octopusMergeFailed;
 
         // Act
-        const result = sut('b2', 'no-common-ancestor');
+        const result = sut('b2', 'conflict-before-last-head');
 
         // Assert
         expect(result.data).toEqual({
           code: 'OCTOPUS_MERGE_FAILED',
           head: 'b2',
-          reason: 'no-common-ancestor',
+          reason: 'conflict-before-last-head',
         });
+      });
+    });
+  });
+
+  describe('Given the fastForwardMultipleBranches error helper', () => {
+    describe('When called', () => {
+      it('Then data carries the code alone', () => {
+        // Arrange
+        const sut = fastForwardMultipleBranches;
+
+        // Act
+        const result = sut();
+
+        // Assert
+        expect(result.data).toEqual({ code: 'FAST_FORWARD_MULTIPLE_BRANCHES' });
+      });
+    });
+  });
+
+  describe('Given the unrelatedHistories error helper', () => {
+    describe('When called', () => {
+      it('Then data carries the code alone', () => {
+        // Arrange
+        const sut = unrelatedHistories;
+
+        // Act
+        const result = sut();
+
+        // Assert
+        expect(result.data).toEqual({ code: 'UNRELATED_HISTORIES' });
       });
     });
   });
@@ -1490,6 +1522,11 @@ describe('domain commands error — extractDetail message formatting', () => {
       { code: 'OCTOPUS_MERGE_FAILED', head: 'b1', reason: 'conflict-before-last-head' },
       'OCTOPUS_MERGE_FAILED: Merge with strategy octopus failed: conflict-before-last-head at b1',
     ],
+    [
+      { code: 'FAST_FORWARD_MULTIPLE_BRANCHES' },
+      'FAST_FORWARD_MULTIPLE_BRANCHES: cannot fast-forward to multiple branches',
+    ],
+    [{ code: 'UNRELATED_HISTORIES' }, 'UNRELATED_HISTORIES: refusing to merge unrelated histories'],
     [
       { code: 'NON_FAST_FORWARD', ref: 'refs/heads/main' as RefName, local: OID1, remote: OID2 },
       `NON_FAST_FORWARD: non-fast-forward update for refs/heads/main: local=${OID1} remote=${OID2}`,

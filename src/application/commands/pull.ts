@@ -10,16 +10,20 @@
  * `merge.continue` resolve a pull-initiated conflict with no pull-specific code.
  */
 import {
+  fastForwardMultipleBranches,
   fetchRejected,
+  nonFastForward,
   noUpstreamConfigured,
   pullNoMergeCandidates,
 } from '../../domain/commands/error.js';
 import type { TsgitError } from '../../domain/error.js';
-import { type AuthorIdentity, RefName } from '../../domain/objects/index.js';
+import { type AuthorIdentity, type ObjectId, RefName } from '../../domain/objects/index.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
+import { inMergeBases } from '../primitives/merge-base.js';
+import { resolveRef } from '../primitives/resolve-ref.js';
 import { type FetchResult, type FetchUpdate, fetch } from './fetch.js';
 import { defaultRemoteName } from './internal/default-remote.js';
 import { type FetchHeadLine, readFetchHead } from './internal/fetch-head.js';
@@ -55,6 +59,12 @@ export interface PullOptions {
    * - `'never'` — always create a merge commit, even when a fast-forward is possible.
    */
   readonly fastForward?: 'only' | 'never' | 'allow';
+  /**
+   * git's `--allow-unrelated-histories`, forwarded to `merge`: integrate a
+   * head that shares no commit with `HEAD` instead of refusing with
+   * `UNRELATED_HISTORIES`.
+   */
+  readonly allowUnrelatedHistories?: boolean;
   /** Prune deleted remote-tracking refs during the fetch step. */
   readonly prune?: boolean;
   /** Shallow fetch depth, forwarded to fetch. */
@@ -136,6 +146,26 @@ const assertNothingRejected = ({ remote, updatedRefs }: FetchResult): void => {
   if (rejected.length > 0) throw fetchRejected(remote, rejected);
 };
 
+/** git's pull `divergent`: `HEAD` neither fast-forwards to the head nor already contains it. */
+const divergent = async (ctx: Context, ours: ObjectId, theirs: ObjectId): Promise<boolean> =>
+  !(await inMergeBases(ctx, ours, theirs)) && !(await inMergeBases(ctx, theirs, ours));
+
+/** git's pull refuses `--ff-only` over several heads, or a divergent one, before it merges anything. */
+const assertFastForwardable = async (
+  ctx: Context,
+  opts: PullOptions,
+  branchRef: RefName | undefined,
+  heads: ReadonlyArray<FetchHeadLine>,
+): Promise<void> => {
+  if (opts.fastForward !== 'only') return;
+  if (heads.length > 1) throw fastForwardMultipleBranches();
+  const ours = await resolveRef(ctx, RefName.from('HEAD'));
+  const theirs = heads[0]!.id;
+  if (await divergent(ctx, ours, theirs)) {
+    throw nonFastForward(branchRef ?? RefName.from('HEAD'), ours, theirs);
+  }
+};
+
 export const pull = async (ctx: Context, opts: PullOptions = {}): Promise<PullResult> => {
   await assertOperationalRepository(ctx);
   requireWorkTree(ctx, 'pull');
@@ -157,6 +187,7 @@ export const pull = async (ctx: Context, opts: PullOptions = {}): Promise<PullRe
 
   assertNothingRejected(fetchResult);
   const fetched = await mergeHeads(ctx, opts, upstream, branchRef);
+  await assertFastForwardable(ctx, opts, branchRef, fetched);
 
   // git sets GIT_REFLOG_ACTION=pull for the integrate step; this is its analogue.
   const mergeInternal: MergeInternalOptions = { reflogAction: 'pull', heads: fetched };
@@ -164,6 +195,7 @@ export const pull = async (ctx: Context, opts: PullOptions = {}): Promise<PullRe
     ctx,
     {
       rev: fetched.map((line) => line.id),
+      allowUnrelatedHistories: opts.allowUnrelatedHistories === true,
       ...(opts.message !== undefined ? { message: opts.message } : {}),
       // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ fastForward: undefined }`, which `merge` reads as `!== 'never'` (so a fast-forward proceeds) and `=== 'only'` (false) — identical to omitting it. The drop direction + the `!==` flip are killed by the fastForward-forwarding tests.
       ...(opts.fastForward !== undefined ? { fastForward: opts.fastForward } : {}),
