@@ -438,7 +438,7 @@ Matches canonical git wording so third-party reflog readers stay happy:
 | `checkout` switch | HEAD | `checkout: moving from <A> to <B>` |
 | `reset` (soft/mixed/hard) | branch, HEAD | `reset: moving to <target>` |
 | `merge` fast-forward | branch, HEAD | `merge <name>: Fast-forward` |
-| `merge` clean merge commit | branch, HEAD | `merge <name>: Merge made by the 'tsgit' strategy.` |
+| `merge` clean merge commit | branch, HEAD | `merge <name>: Merge made by the 'ort' strategy.` |
 | `fetch` | `refs/remotes/<r>/<b>` | `fetch <remote>: storing head` |
 | `push` | `refs/remotes/<r>/<b>` | `update by push` |
 | `clone` | branch, HEAD | `clone: from <url>` |

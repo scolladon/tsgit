@@ -69,9 +69,9 @@ resolve (they are folded/removed in the docs phase, not slice 3).
   - Rewrite the two `reflogLabel: 'pull'` cases to pass the **third arg**:
     `merge(ctx, { target: 'feature' }, { reflogAction: 'pull' })` and the forced
     `fastForward: 'never'` variant with the third arg → assert `pull: Fast-forward`
-    / `pull: Merge made by the 'tsgit' strategy.`.
+    / `pull: Merge made by the 'ort' strategy.`.
   - Add an isolated default-merge-commit reflog case (no third arg, `'never'`) →
-    `merge feature: Merge made by the 'tsgit' strategy.` (kills the `?? default`
+    `merge feature: Merge made by the 'ort' strategy.` (kills the `?? default`
     mutant at the merge-commit site, mirroring the FF site).
 - `pull.test.ts`: the existing pull reflog expectations (`pull: …`) stay; only the
   internal wiring under test changes — verify still green after Green step.

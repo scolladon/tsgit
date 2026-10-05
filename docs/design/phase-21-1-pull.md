@@ -47,9 +47,9 @@ Notes:
   would throw `REMOTE_NOT_CONFIGURED`.
 - The reflog *action* is `pull` (stock git appends the literal CLI args, e.g.
   `pull -q`; a library has no argv, so the faithful action is bare `pull`).
-- tsgit's merge strategy label is `'tsgit'`, not `'ort'` — the existing `merge`
-  command already writes `Merge made by the 'tsgit' strategy.`, so a
-  pull-initiated true merge reads `pull: Merge made by the 'tsgit' strategy.`.
+- The strategy label is git's own `'ort'`, as the `merge` command writes it
+  (`Merge made by the 'ort' strategy.`), so a pull-initiated true merge reads
+  `pull: Merge made by the 'ort' strategy.`.
 
 ## 3. Public surface
 
@@ -184,10 +184,10 @@ The two reflog write sites change from a hard-coded `merge ${opts.target}` to
 `${opts.reflogLabel ?? \`merge ${opts.target}\`}`:
 
 - Fast-forward: `${label}: Fast-forward`
-- Merge commit: `${label}: Merge made by the 'tsgit' strategy.`
+- Merge commit: `${label}: Merge made by the 'ort' strategy.`
 
 `pull` passes `reflogLabel: 'pull'` → `pull: Fast-forward` /
-`pull: Merge made by the 'tsgit' strategy.`. A direct `merge('feature')` is
+`pull: Merge made by the 'ort' strategy.`. A direct `merge('feature')` is
 unchanged (`merge feature: Fast-forward`).
 
 This is the **whole-prefix** override (not just the action word) because git's
@@ -385,7 +385,7 @@ per CLAUDE.md), never bare `toThrow(ErrorClass)`.
 - default (`reflogLabel` omitted) → reflog `merge <target>: Fast-forward`
   (existing behaviour, pin it);
 - explicit `reflogLabel: 'pull'` → reflog `pull: Fast-forward` and
-  `pull: Merge made by the 'tsgit' strategy.` (FF + merge-commit sites, isolated
+  `pull: Merge made by the 'ort' strategy.` (FF + merge-commit sites, isolated
   tests so each site's substitution is independently proven).
 
 `resolveTarget` DWIM (in `merge.test.ts`, exported helper already tested

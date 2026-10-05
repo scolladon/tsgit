@@ -2098,7 +2098,7 @@ describe('merge commit — HEAD through a chain of symbolic refs', () => {
 
         // Assert
         const created = result.kind === 'merge' ? result.id : undefined;
-        const line = `${ours.id} ${created} tsgit <tsgit@localhost> ${FROZEN_SECONDS} +0000\tmerge feature: Merge made by the 'tsgit' strategy.`;
+        const line = `${ours.id} ${created} tsgit <tsgit@localhost> ${FROZEN_SECONDS} +0000\tmerge feature: Merge made by the 'ort' strategy.`;
         expect(await lastReflogLine(ctx, 'refs/heads/x')).toBe(line);
         expect(await lastReflogLine(ctx, 'refs/heads/s')).toBe(line);
         expect(await lastReflogLine(ctx, 'HEAD')).toBe(line);
@@ -2137,7 +2137,7 @@ describe('merge — internal reflog action', () => {
             'the default "merge <rev>" merge-commit prefix is recorded for a forced merge commit',
           mergeOptions: { rev: 'feature', fastForward: 'never', message: 'merge', author } as const,
           internalOptions: undefined,
-          expected: "merge feature: Merge made by the 'tsgit' strategy.",
+          expected: "merge feature: Merge made by the 'ort' strategy.",
         },
         {
           label: '"pull: Fast-forward" is recorded when reflogAction is "pull"',
@@ -2147,10 +2147,10 @@ describe('merge — internal reflog action', () => {
         },
         {
           label:
-            '"pull: Merge made by the \'tsgit\' strategy." is recorded for a forced merge with reflogAction "pull"',
+            '"pull: Merge made by the \'ort\' strategy." is recorded for a forced merge with reflogAction "pull"',
           mergeOptions: { rev: 'feature', fastForward: 'never', message: 'merge', author } as const,
           internalOptions: { reflogAction: 'pull' } as const,
-          expected: "pull: Merge made by the 'tsgit' strategy.",
+          expected: "pull: Merge made by the 'ort' strategy.",
         },
       ])('Then $label', async ({ mergeOptions, internalOptions, expected }) => {
         // Arrange

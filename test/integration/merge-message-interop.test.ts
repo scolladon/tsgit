@@ -107,6 +107,23 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — default message', () => {
     });
   });
 
+  describe('Given a branch diverged from main', () => {
+    describe('When both tools merge it', () => {
+      it("Then HEAD's and main's reflogs record git's strategy note", async () => {
+        // Arrange
+        const sut = mergeBoth;
+
+        // Act
+        await sut('feature', 'main');
+
+        // Assert
+        const subjects = (dir: string) =>
+          ['HEAD', 'main'].map((ref) => git(dir, 'reflog', '-1', '--format=%gs', ref));
+        expect(subjects(pair.ours)).toEqual(subjects(pair.peer));
+      });
+    });
+  });
+
   describe('Given the feature commit named by its full and abbreviated id', () => {
     describe.each([
       ['full', 40],

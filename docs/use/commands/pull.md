@@ -55,7 +55,7 @@ upstream needs an explicit `repo.pull({ ref })`.
 |---|---|---|
 | Already current | `up-to-date` | No commit; reflog unchanged. |
 | Behind upstream | `fast-forward` | Branch advances; reflog `pull: Fast-forward`. |
-| Diverged, clean | `merge` | Two-parent commit titled from the `FETCH_HEAD` line as git's `fmt_merge_msg` titles it — `Merge branch '<branch>' of <url>` (`tag`, `remote-tracking branch`, `commit '<ref>'`, or the url alone for a remote `HEAD`), the url shortened as `FETCH_HEAD` records it, then ` into <current>` unless the current branch is `main` or `master`; reflog `pull: Merge made by the 'tsgit' strategy.`. |
+| Diverged, clean | `merge` | Two-parent commit titled from the `FETCH_HEAD` line as git's `fmt_merge_msg` titles it — `Merge branch '<branch>' of <url>` (`tag`, `remote-tracking branch`, `commit '<ref>'`, or the url alone for a remote `HEAD`), the url shortened as `FETCH_HEAD` records it, then ` into <current>` unless the current branch is `main` or `master`; reflog `pull: Merge made by the 'ort' strategy.`. |
 | Diverged, clashing | `conflict` | `MERGE_HEAD`/`MERGE_MSG`/`ORIG_HEAD` + conflicted index written. |
 
 The reflog action is `pull` (git-faithful), achieved via `merge`'s internal

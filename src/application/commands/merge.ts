@@ -346,11 +346,14 @@ const commitCleanMerge = async (
     // HEAD, so `HEAD` always names the branch this merge commit advances.
     await updateRef(ctx, HEAD, id, {
       expected: ourId,
-      reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: Merge made by the 'tsgit' strategy.`,
+      reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: ${MERGE_MADE_BY_ORT}`,
     });
     return { kind: 'merge', id, branch: branchName, parents: [ourId, theirId] };
   });
 };
+
+/** git's `finish` reflog note for a two-head merge, which its default `ort` strategy makes. */
+const MERGE_MADE_BY_ORT = "Merge made by the 'ort' strategy.";
 
 type MergeTreeResult =
   | { readonly kind: 'clean'; readonly tree: ObjectId }

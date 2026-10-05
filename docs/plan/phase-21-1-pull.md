@@ -85,13 +85,13 @@ S5 depends on S2+S3+S4 (and reuses S1 transitively). S6 depends on S4+S5.
     `merge feature: Fast-forward` (pin existing).
   - `reflogLabel:'pull'` over an FF → message === `pull: Fast-forward`.
   - `reflogLabel:'pull'` over a `noFastForward` merge commit → message ===
-    `pull: Merge made by the 'tsgit' strategy.`.
+    `pull: Merge made by the 'ort' strategy.`.
   (Two isolated tests for the two substitution sites.) Run: label cases fail.
 - **Green**: add `readonly reflogLabel?: string;` to `MergeOptions`. At both
   reflog sites replace `` `merge ${opts.target}` `` with
   `` opts.reflogLabel ?? `merge ${opts.target}` ``:
   - FF: `` `${opts.reflogLabel ?? `merge ${opts.target}`}: Fast-forward` ``
-  - merge: `` `${opts.reflogLabel ?? `merge ${opts.target}`}: Merge made by the 'tsgit' strategy.` ``
+  - merge: `` `${opts.reflogLabel ?? `merge ${opts.target}`}: Merge made by the 'ort' strategy.` ``
 - **Verify**: `merge.test.ts` green; `npm run validate`.
 - **Commit**: `feat(merge): optional reflogLabel overrides the reflog action prefix`.
 
@@ -151,7 +151,7 @@ plus any exhaustive code→message switch the compiler flags.
   2. up-to-date → `merge.kind==='up-to-date'`.
   3. true merge (diverged distinct files) → `merge.kind==='merge'`, 2 parents,
      commit message `Merge branch 'main' of <url>`, reflog
-     `pull: Merge made by the 'tsgit' strategy.`.
+     `pull: Merge made by the 'ort' strategy.`.
   4. conflict (diverged same file) → `merge.kind==='conflict'`, MERGE_HEAD/
      MERGE_MSG/ORIG_HEAD present, conflicted index; then `abortMerge` restores
      ORIG_HEAD (composition assertion).

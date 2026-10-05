@@ -204,7 +204,7 @@ describe('pull', () => {
           }
         }
         expect(await reflogMessages(ctx, 'refs/heads/main')).toContain(
-          "pull: Merge made by the 'tsgit' strategy.",
+          "pull: Merge made by the 'ort' strategy.",
         );
       });
     });

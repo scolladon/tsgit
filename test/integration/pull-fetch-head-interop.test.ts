@@ -128,7 +128,7 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
     config: ReadonlyArray<readonly [string, string]>;
   }>)('Given the $label upstream', ({ label, branch, config }) => {
     describe('When both tools pull', () => {
-      it('Then the merge commits agree', async () => {
+      it('Then the merge commits and their reflog notes agree', async () => {
         // Arrange
         const { ours, theirs } = setUp(label, branch, config);
         const ctx = {
@@ -144,6 +144,9 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
 
         // Assert
         expect(head(ours)).toBe(expected);
+        const note = (dir: string) =>
+          git(dir, 'reflog', '-1', '--format=%gs', 'HEAD').split(': ').slice(1).join(': ');
+        expect(note(ours)).toBe(note(theirs));
       });
     });
   });
