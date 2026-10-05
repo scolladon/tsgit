@@ -16,6 +16,7 @@ import {
   type CommitGraphChangedPaths,
   type CommitGraphGeneration,
   type CommitGraphWriterCommit,
+  type CorrectedDatePass,
   computeCommitGraphGenerations,
   EMPTY_COMMIT_GRAPH_BASE,
   serializeCommitGraph,
@@ -43,6 +44,7 @@ import {
   parsedForWrite,
   rootCommits,
 } from './internal/commit-graph-passes.js';
+import { correctedDatePass } from './internal/corrected-date-pass.js';
 import {
   type LocalGraphLayer,
   loadLocalCommitGraphLayers,
@@ -130,11 +132,12 @@ interface ParsedGraphCommits {
 async function collectCommits(
   ctx: Context,
   roots: readonly ObjectId[],
+  pass: CorrectedDatePass,
 ): Promise<ParsedGraphCommits> {
   const parser = createCommitGraphParser(ctx);
   const closed = await closeReachable(parser, await rootCommits(parser, roots), NOT_IN_GRAPH);
   const order = await copyOidsToCommits(parser, closed, NOT_IN_GRAPH);
-  const generations = computeCommitGraphGenerations(order, EMPTY_COMMIT_GRAPH_BASE, parser);
+  const generations = computeCommitGraphGenerations(order, EMPTY_COMMIT_GRAPH_BASE, parser, pass);
   return { commits: parsedForWrite(parser, order), generations };
 }
 
@@ -219,10 +222,11 @@ export async function writeCommitGraph(ctx: Context): Promise<WriteCommitGraphRe
   if (await declinesChangedPathsVersion(ctx)) return { commitCount: 0 };
 
   const roots = await commitGraphRoots(ctx);
-  const { commits, generations } = await collectCommits(ctx, roots);
+  const layers = await loadLocalCommitGraphLayers(ctx);
+  const pass = await correctedDatePass(ctx, layers, []);
+  const { commits, generations } = await collectCommits(ctx, roots, pass);
   if (commits.length === 0) return { commitCount: 0 };
 
-  const layers = await loadLocalCommitGraphLayers(ctx);
   const changedPaths = await changedPathsFor(ctx, commits, layers, 'preserve');
   const bytes = serializeCommitGraph(
     commits,
@@ -230,6 +234,7 @@ export async function writeCommitGraph(ctx: Context): Promise<WriteCommitGraphRe
     EMPTY_COMMIT_GRAPH_BASE,
     changedPaths,
     generations,
+    pass,
   );
   const trailerStart = bytes.length - ctx.hashConfig.digestLength;
   const digest = await ctx.hash.hash(bytes.subarray(0, trailerStart));

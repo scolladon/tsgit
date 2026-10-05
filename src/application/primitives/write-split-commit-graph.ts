@@ -20,6 +20,7 @@ import {
   type CommitGraphChangedPaths,
   type CommitGraphGeneration,
   type CommitGraphWriterCommit,
+  type CorrectedDatePass,
   computeCommitGraphGenerations,
   serializeCommitGraph,
 } from '../../domain/commit/commit-graph-writer.js';
@@ -38,6 +39,7 @@ import {
   parsedForWrite,
   rootCommits,
 } from './internal/commit-graph-passes.js';
+import { correctedDatePass } from './internal/corrected-date-pass.js';
 import {
   type LocalGraphLayer,
   loadLocalCommitGraphLayers,
@@ -163,8 +165,16 @@ async function serializeLayer(
   base: CommitGraphBase,
   changedPaths: CommitGraphChangedPaths | undefined,
   generations: ReadonlyMap<ObjectId, CommitGraphGeneration>,
+  pass: CorrectedDatePass,
 ): Promise<{ readonly bytes: Uint8Array; readonly hash: ObjectId }> {
-  const bytes = serializeCommitGraph(commits, ctx.hashConfig, base, changedPaths, generations);
+  const bytes = serializeCommitGraph(
+    commits,
+    ctx.hashConfig,
+    base,
+    changedPaths,
+    generations,
+    pass,
+  );
   const trailerStart = bytes.length - ctx.hashConfig.digestLength;
   const digest = await ctx.hash.hash(bytes.subarray(0, trailerStart));
   bytes.set(digest, trailerStart);
@@ -263,10 +273,11 @@ export async function writeSplitCommitGraph(ctx: Context): Promise<WriteSplitCom
   const order = mergedOrder([...fresh, ...(await foldedCommits(parser, plan.folded))]);
   const parsed = order.flatMap((id) => parser.parsed(id) ?? []);
   const base = graphBase(plan.base, order, parsed);
-  const generations = computeCommitGraphGenerations(order, base, parser);
+  const pass = await correctedDatePass(ctx, layers, plan.base);
+  const generations = computeCommitGraphGenerations(order, base, parser, pass);
   const commits = parsedForWrite(parser, order);
   const changedPaths = await changedPathsFor(ctx, commits, layers, request);
-  const layer = await serializeLayer(ctx, commits, base, changedPaths, generations);
+  const layer = await serializeLayer(ctx, commits, base, changedPaths, generations, pass);
   await writeChainLayer(ctx, plan, layer);
   return { written: true, commitCount: base.commitCount + commits.length };
 }

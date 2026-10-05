@@ -76,6 +76,16 @@ export interface CommitGraphGeneration {
 
 type Generation = CommitGraphGeneration;
 
+/**
+ * git's corrected-commit-date pass: `skipped` when the layer carries no GDA2
+ * (`commitGraph.generationVersion` other than 2, or a split layer over a top
+ * base without one) — no date walk runs and the dates computed for the other
+ * passes are never written; `untrusted` when a layer of the chain lacks GDA2,
+ * so git first parses every commit once more and the base serves topological
+ * levels in place of dates; `trusted` otherwise.
+ */
+export type CorrectedDatePass = 'skipped' | 'trusted' | 'untrusted';
+
 /** A base-layer commit a written layer's commits name as a parent. */
 export interface CommitGraphBaseCommit {
   /** Its chain-global position: the layers below the base it lives in, plus its local index. */
@@ -131,7 +141,9 @@ export function serializeCommitGraph(
   base: CommitGraphBase = EMPTY_COMMIT_GRAPH_BASE,
   changedPaths?: CommitGraphChangedPaths,
   generations: ReadonlyMap<ObjectId, Generation> = silentGenerations(commits, base),
+  correctedDates: CorrectedDatePass = 'trusted',
 ): Uint8Array {
+  const generationData = correctedDates !== 'skipped';
   const hashVersion: 1 | 2 = hashConfig.digestLength === 32 ? 2 : 1;
   const hashLength = hashLengthFor(hashVersion);
   const sortedCommits = sortByOid(commits);
@@ -139,10 +151,13 @@ export function serializeCommitGraph(
     ...[...base.commits].map(([id, entry]) => [id, entry.position] as const),
     ...sortedCommits.map((commit, i) => [commit.id, base.commitCount + i] as const),
   ]);
-  const overflowPlan = planOverflowGenerations(sortedCommits, generations);
+  const overflowPlan = generationData
+    ? planOverflowGenerations(sortedCommits, generations)
+    : NO_OVERFLOW;
 
   const edgePlan = planEdges(sortedCommits, positionOf);
   const chunkSpecs = planChunks(sortedCommits.length, hashLength, {
+    generationData,
     overflowEntryCount: overflowPlan.entries.length,
     edgeEntryCount: edgePlan.entries.length,
     baseLayerCount: base.layerHashes.length,
@@ -177,7 +192,9 @@ export function serializeCommitGraph(
     hashLength,
     edgePlan,
   );
-  writeGenerationData(view, sortedCommits, generations, overflowPlan, chunkOffset('GDA2'));
+  if (generationData) {
+    writeGenerationData(view, sortedCommits, generations, overflowPlan, chunkOffset('GDA2'));
+  }
   // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — writeOverflowGenerationChunk's forEach never iterates over an empty array, so calling it unconditionally has no observable effect when overflowPlan.entries.length is 0.
   if (overflowPlan.entries.length > 0) {
     writeOverflowGenerationChunk(view, overflowPlan.entries, chunkOffset('GDO2'));
@@ -193,6 +210,8 @@ export function serializeCommitGraph(
 
   return bytes;
 }
+
+const NO_OVERFLOW: OverflowPlan = { entries: [], indexByCommit: new Map() };
 
 /** GDA2's overflow flag carries an index into GDO2 — assigned in sorted
  *  (position) order, the same order `writeGenerationData` visits commits. */
@@ -265,17 +284,31 @@ export function computeCommitGraphGenerations(
   order: readonly ObjectId[],
   base: CommitGraphBase,
   view: GenerationWalkView,
+  pass: CorrectedDatePass = 'trusted',
 ): ReadonlyMap<ObjectId, Generation> {
-  const baseEntries = [...base.commits];
   const levels = walkGenerations(order, view, deriveLevel, {
-    known: new Map(baseEntries.map(([id, entry]) => [id, entry.generation.level])),
+    known: baseGenerations(base, 'level'),
   });
-  const dates = walkGenerations(order, view, deriveCorrectedDate, {
-    known: new Map(baseEntries.map(([id, entry]) => [id, entry.generation.correctedDate])),
-  });
+  // A skipped pass leaves nothing to write, so the level stands in for a date no chunk holds.
+  const dates = pass === 'skipped' ? levels : walkCorrectedDates(order, base, view, pass);
   const generations = new Map<ObjectId, Generation>();
   for (const [id, level] of levels) generations.set(id, { level, correctedDate: dates.get(id)! });
   return generations;
+}
+
+const baseGenerations = (base: CommitGraphBase, field: keyof Generation): Map<ObjectId, number> =>
+  new Map([...base.commits].map(([id, { generation }]) => [id, generation[field]]));
+
+/** git's `compute_generation_numbers`: an untrusted chain parses every commit first and reads the base for levels. */
+function walkCorrectedDates(
+  order: readonly ObjectId[],
+  base: CommitGraphBase,
+  view: GenerationWalkView,
+  pass: Exclude<CorrectedDatePass, 'skipped'>,
+): ReadonlyMap<ObjectId, number> {
+  if (pass === 'untrusted') for (const id of order) view.parse(id);
+  const known = baseGenerations(base, pass === 'untrusted' ? 'level' : 'correctedDate');
+  return walkGenerations(order, view, deriveCorrectedDate, { known });
 }
 
 /** One pass of git's `compute_reachable_generation_numbers`. */
@@ -348,6 +381,8 @@ function planEdges(
 }
 
 interface OptionalChunkCounts {
+  /** Whether the layer carries GDA2 — git's `write_generation_data`. */
+  readonly generationData: boolean;
   readonly overflowEntryCount: number;
   readonly edgeEntryCount: number;
   readonly baseLayerCount: number;
@@ -358,15 +393,21 @@ interface OptionalChunkCounts {
 function planChunks(
   commitCount: number,
   hashLength: number,
-  { overflowEntryCount, edgeEntryCount, baseLayerCount, bloomDataSize }: OptionalChunkCounts,
+  {
+    generationData,
+    overflowEntryCount,
+    edgeEntryCount,
+    baseLayerCount,
+    bloomDataSize,
+  }: OptionalChunkCounts,
 ): ChunkSpec[] {
   const cdatEntrySize = hashLength + CDAT_FIXED_SIZE;
   const specs: ChunkSpec[] = [
     { id: 'OIDF', size: FANOUT_SIZE },
     { id: 'OIDL', size: commitCount * hashLength },
     { id: 'CDAT', size: commitCount * cdatEntrySize },
-    { id: 'GDA2', size: commitCount * 4 },
   ];
+  if (generationData) specs.push({ id: 'GDA2', size: commitCount * 4 });
   if (overflowEntryCount > 0)
     specs.push({ id: 'GDO2', size: overflowEntryCount * GDO2_ENTRY_SIZE });
   if (edgeEntryCount > 0) specs.push({ id: 'EDGE', size: edgeEntryCount * 4 });

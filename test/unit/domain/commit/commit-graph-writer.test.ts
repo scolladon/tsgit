@@ -373,6 +373,38 @@ describe('serializeCommitGraph', () => {
     });
   });
 
+  describe('Given a chain whose corrected-date offset would overflow, and a skipped corrected-date pass', () => {
+    describe('When serialized', () => {
+      it('Then only OIDF, OIDL and CDAT are written — neither GDA2 nor GDO2', () => {
+        // Arrange
+        const parent = commit('c0', [], { committerDate: 0x7fffffff + 5 });
+        const child = commit('c1', [parent.id], { committerDate: 0 });
+        const generations = new Map([
+          [parent.id, { level: 1, correctedDate: 1 }],
+          [child.id, { level: 2, correctedDate: 0x7fffffff + 6 }],
+        ]);
+        const sut = serializeCommitGraph;
+
+        // Act
+        const result = sut(
+          [parent, child],
+          SHA1_CONFIG,
+          undefined,
+          undefined,
+          generations,
+          'skipped',
+        );
+
+        // Assert
+        const ids = [0, 1, 2].map((row) => decode(result.subarray(8 + row * 12, 12 + row * 12)));
+        expect({ numChunks: result[6], ids }).toEqual({
+          numChunks: 3,
+          ids: ['OIDF', 'OIDL', 'CDAT'],
+        });
+      });
+    });
+  });
+
   describe('Given a chain whose corrected-date offset exceeds 0x7fffffff', () => {
     describe('When serialized', () => {
       it('Then numChunks is 5 (adds GDO2, no EDGE)', () => {
@@ -697,6 +729,57 @@ describe('computeCommitGraphGenerations', () => {
         expect({ parses, child: result.get(child.id) }).toEqual({
           parses: [child.id, parent, child.id, parent],
           child: { level: 0x3fffffff, correctedDate: 10 },
+        });
+      });
+    });
+  });
+  describe('Given a commit over a base-layer parent, and an untrusted corrected-date pass', () => {
+    describe('When the generations are computed', () => {
+      it("Then every commit is parsed once more first and the date follows the base's level", () => {
+        // Arrange
+        const parent = oid('a');
+        const child = commit('b', [parent], { committerDate: 5 });
+        const base: CommitGraphBase = {
+          layerHashes: [oid('f')],
+          commitCount: 1,
+          commits: new Map([[parent, { position: 0, generation: { level: 7, correctedDate: 9 } }]]),
+        };
+        const { parses, view } = recordingView([child]);
+        const sut = computeCommitGraphGenerations;
+
+        // Act
+        const result = sut([child.id], base, view, 'untrusted');
+
+        // Assert
+        expect({ parses, child: result.get(child.id) }).toEqual({
+          parses: [child.id, parent, child.id, child.id, parent],
+          child: { level: 8, correctedDate: 8 },
+        });
+      });
+    });
+  });
+
+  describe('Given a commit over a base-layer parent, and a skipped corrected-date pass', () => {
+    describe('When the generations are computed', () => {
+      it('Then only the level walk parses, its level standing in for the unwritten date', () => {
+        // Arrange
+        const parent = oid('a');
+        const child = commit('b', [parent], { committerDate: 5 });
+        const base: CommitGraphBase = {
+          layerHashes: [oid('f')],
+          commitCount: 1,
+          commits: new Map([[parent, { position: 0, generation: { level: 7, correctedDate: 9 } }]]),
+        };
+        const { parses, view } = recordingView([child]);
+        const sut = computeCommitGraphGenerations;
+
+        // Act
+        const result = sut([child.id], base, view, 'skipped');
+
+        // Assert
+        expect({ parses, child: result.get(child.id) }).toEqual({
+          parses: [child.id, parent],
+          child: { level: 8, correctedDate: 8 },
         });
       });
     });

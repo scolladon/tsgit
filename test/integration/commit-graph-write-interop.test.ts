@@ -364,6 +364,31 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop', () => {
     });
   });
 
+  describe.each([
+    ['1', false],
+    ['3', false],
+    ['2', true],
+  ] as const)(
+    'Given commitGraph.generationVersion=%s, When tsgit writes the commit-graph',
+    (version, generationData) => {
+      it('Then tsgit writes the GDA2 chunk only where git does, byte-identical to it', async () => {
+        // Arrange
+        const baseDir = await buildLinearRepo();
+        git(baseDir, 'config', 'commitGraph.generationVersion', version);
+
+        // Act
+        const twin = await writeBoth(baseDir, `generation-version-${version}`);
+
+        // Assert
+        expect(twin.peerBytes.includes('GDA2')).toBe(generationData);
+        expect(Buffer.compare(twin.peerBytes, twin.oursBytes)).toBe(0);
+        await rm(baseDir, { recursive: true, force: true });
+        await rm(twin.peerDir, { recursive: true, force: true });
+        await rm(twin.oursDir, { recursive: true, force: true });
+      });
+    },
+  );
+
   describe('split commit-graph chains written by the maintenance commit-graph task', () => {
     /** A commit no ref reaches yet — `refs/heads/next` adopts it between the two runs. */
     const danglingCommit = (dir: string, parentRevs: readonly string[]): string => {
@@ -459,6 +484,51 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop', () => {
         });
       });
     });
+
+    /** The chain's tip layer, read back from `dir`. */
+    const tipLayer = async (dir: string): Promise<Buffer> => {
+      const layersDir = path.join(dir, '.git', 'objects', 'info', 'commit-graphs');
+      const chain = (await readFile(path.join(layersDir, 'commit-graph-chain'), 'utf8')).trim();
+      return readFile(path.join(layersDir, `graph-${chain.split('\n').at(-1)}.graph`));
+    };
+
+    describe.each([
+      { label: 'folded into the new one', base: 10, tip: 1, generationData: true },
+      { label: 'too large to fold', base: 2, tip: 6, generationData: false },
+    ] as const)(
+      'Given a tip layer written without generation data, $label',
+      ({ base, tip, generationData }) => {
+        describe('When both tools run the commit-graph maintenance task', () => {
+          it('Then both write the same layers, the base read for topological levels alone', async () => {
+            // Arrange
+            const slug = `untrusted-${base}-${tip}`;
+            const baseDir = await initRepo(slug);
+            for (let i = 0; i < base; i += 1) await addDatedCommit(baseDir, `b${i}`, 1_700_000_000);
+            git(baseDir, 'commit-graph', 'write', '--reachable', '--split');
+            for (let i = 0; i < tip; i += 1) await addDatedCommit(baseDir, `t${i}`, 1_700_000_000);
+            const levelsOnly = ['-c', 'commitGraph.generationVersion=1', 'commit-graph', 'write'];
+            runGit(['-C', baseDir, ...levelsOnly, '--reachable', '--split=no-merge']);
+            const next = danglingCommit(baseDir, ['HEAD']);
+            const peerDir = await tmpDir(`${slug}-peer`);
+            const oursDir = await tmpDir(`${slug}-ours`);
+            for (const dir of [peerDir, oursDir]) {
+              await cp(baseDir, dir, { recursive: true });
+              git(dir, 'update-ref', 'refs/heads/next', next);
+            }
+            await rm(baseDir, { recursive: true, force: true });
+
+            // Act
+            await runBoth(peerDir, oursDir);
+
+            // Assert
+            expect((await tipLayer(peerDir)).includes('GDA2')).toBe(generationData);
+            expect(await graphFiles(oursDir)).toEqual(await graphFiles(peerDir));
+            await rm(peerDir, { recursive: true, force: true });
+            await rm(oursDir, { recursive: true, force: true });
+          });
+        });
+      },
+    );
   });
 
   describe('Given info/commit-graphs is a file, When both tools run the commit-graph then gc maintenance tasks', () => {
@@ -506,11 +576,8 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop', () => {
   });
 });
 
-/** A repository whose `main` commit names the blob `hi` as its parent, its id sorting `order` the blob's. */
-async function buildBlobParentRepo(
-  order: 'before' | 'after',
-): Promise<{ readonly dir: string; readonly blob: string }> {
-  const dir = await initRepo(`blob-parent-${order}`);
+/** A commit naming the blob `hi` as its parent, its id sorting `order` the blob's, at `ref`. */
+function addBlobParentCommit(dir: string, order: 'before' | 'after', ref: string): string {
   const blob = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: 'hi\n' }).trim();
   const tree = runGit(['-C', dir, 'mktree'], { input: '' }).trim();
   const ident = 'author a <a@b> 1700000000 +0000\ncommitter a <a@b> 1700000000 +0000\n';
@@ -522,9 +589,32 @@ async function buildBlobParentRepo(
       },
     ).trim();
     if (commit < blob !== (order === 'before')) continue;
-    git(dir, 'update-ref', 'refs/heads/main', commit);
-    return { dir, blob };
+    git(dir, 'update-ref', ref, commit);
+    return blob;
   }
+}
+
+/** A repository whose `main` commit names the blob `hi` as its parent, its id sorting `order` the blob's. */
+async function buildBlobParentRepo(
+  order: 'before' | 'after',
+): Promise<{ readonly dir: string; readonly blob: string }> {
+  const dir = await initRepo(`blob-parent-${order}`);
+  return { dir, blob: addBlobParentCommit(dir, order, 'refs/heads/main') };
+}
+
+/** A ten-commit base layer under a one-commit tip layer written without GDA2,
+ *  and a `broken` branch whose commit names a blob as its parent. */
+async function buildUntrustedBlobParentRepo(): Promise<{
+  readonly dir: string;
+  readonly blob: string;
+}> {
+  const dir = await initRepo('untrusted-blob-parent');
+  for (let i = 0; i < 10; i += 1) await addDatedCommit(dir, `b${i}`, 1_700_000_000);
+  git(dir, 'commit-graph', 'write', '--reachable', '--split');
+  await addDatedCommit(dir, 'tip', 1_700_000_000);
+  const levelsOnly = ['-c', 'commitGraph.generationVersion=1', 'commit-graph', 'write'];
+  runGit(['-C', dir, ...levelsOnly, '--reachable', '--split=no-merge']);
+  return { dir, blob: addBlobParentCommit(dir, 'after', 'refs/heads/broken') };
 }
 
 describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop — an unparseable parent', () => {
@@ -594,6 +684,42 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop — an unparseable p
           task: 'commit-graph',
           id: blob,
           lines,
+          stderr: peer.stderr,
+        });
+        await rm(dir, { recursive: true, force: true });
+        await rm(oursDir, { recursive: true, force: true });
+      });
+    });
+  });
+
+  describe('Given a commit whose blob parent the split write folds over a chain lacking GDA2 in a layer', () => {
+    describe('When both tools run the commit-graph maintenance task', () => {
+      it('Then the untrusted chain parses every commit once more and both fail the task alike', async () => {
+        // Arrange
+        const { dir, blob } = await buildUntrustedBlobParentRepo();
+        const oursDir = await tmpDir('untrusted-blob-parent-ours');
+        await cp(dir, oursDir, { recursive: true });
+        const peer = tryRunGitWithExit(['-C', dir, 'maintenance', 'run', '--task=commit-graph']);
+        const logged: string[] = [];
+        const base = createNodeContext({ workDir: oursDir, algorithm: 'sha1' });
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(
+          { ...base, logger: { error: (line: string) => logged.push(line) } },
+          { tasks: ['commit-graph'] },
+        );
+
+        // Assert
+        const [failure] = result.tasksFailed;
+        const id = failure?.data.code === 'COMMIT_PARSE_FAILED' ? failure.data.id : '';
+        const rebuilt =
+          `${logged.map((line) => `error: ${line}\n`).join('')}fatal: unable to parse commit ${id}\n` +
+          'error: failed to write commit-graph\n' +
+          "error: task 'commit-graph' failed\n";
+        expect({ id, lines: logged.length, stderr: rebuilt }).toEqual({
+          id: blob,
+          lines: 8,
           stderr: peer.stderr,
         });
         await rm(dir, { recursive: true, force: true });

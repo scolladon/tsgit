@@ -237,18 +237,22 @@ async function loadGraphUncached(ctx: Context): Promise<LoadedGraph | undefined>
   return undefined;
 }
 
-const GENERATION_DATA_VERSION = 2;
+export const GENERATION_DATA_VERSION = 2;
 
 /**
- * git's `commitGraph.generationVersion` (default 2): below 2, git never reads
- * GDA2 or GDO2, so every layer serves topological levels and a wrong-sized
- * GDA2 goes unnoticed. A malformed value reads as the default here; its
- * refusal belongs to git's repo-settings prologue.
+ * git's `commitGraph.generationVersion` (default 2). A malformed value reads
+ * as the default here; its refusal belongs to git's repo-settings prologue.
  */
-async function readsGenerationData(ctx: Context): Promise<boolean> {
+export async function configuredGenerationVersion(ctx: Context): Promise<number> {
   const configured = (await findLastEntry(ctx, 'commitGraph', 'generationVersion'))?.value;
   const parsed = configured == null ? undefined : parseGitInt(configured);
-  return parsed?.ok !== true || parsed.value >= GENERATION_DATA_VERSION;
+  return parsed?.ok === true ? parsed.value : GENERATION_DATA_VERSION;
+}
+
+/** Below version 2, git never reads GDA2 or GDO2, so every layer serves
+ *  topological levels and a wrong-sized GDA2 goes unnoticed. */
+async function readsGenerationData(ctx: Context): Promise<boolean> {
+  return (await configuredGenerationVersion(ctx)) >= GENERATION_DATA_VERSION;
 }
 
 function warnGenerationMisfits(ctx: Context, graph: LoadedGraph): void {
