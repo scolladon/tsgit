@@ -313,4 +313,25 @@ describe.skipIf(!GIT_AVAILABLE)('branch-state removal interop', () => {
       });
     });
   });
+
+  describe("Given a merge stopped on a conflict, with git's AUTO_MERGE beside it", () => {
+    describe('When both tools abort the merge', () => {
+      it('Then both drop the whole merge state', async () => {
+        // Arrange
+        await seedDivergedHistory();
+        gitIn(pair.peer, 'merge', 'side');
+        const ours = await openOurCopy();
+        const sut = ours.merge.abort;
+
+        // Act
+        gitIn(pair.peer, 'merge', '--abort');
+        await sut();
+
+        // Assert
+        const result = stateFilesOf(pair.ours);
+        expect(result).toEqual(stateFilesOf(pair.peer));
+        expect(result).toEqual(['ORIG_HEAD']);
+      });
+    });
+  });
 });

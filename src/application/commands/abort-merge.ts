@@ -5,7 +5,8 @@ import { resetMovingTo } from '../../domain/reflog/reflog-messages.js';
 import { MERGE, MERGE_ABORT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import { updateRef } from '../primitives/update-ref.js';
-import { clearMergeState, readMergeHead, readOrigHead } from './internal/merge-state.js';
+import { removeBranchState } from './internal/branch-state.js';
+import { readMergeHead, readOrigHead } from './internal/merge-state.js';
 import {
   assertOperationalRepositorySettingsFirst,
   readHeadRaw,
@@ -22,7 +23,7 @@ export interface MergeAbortResult {
 
 /**
  * Abort a conflicting merge. Restores the working tree, index, and branch
- * ref to `ORIG_HEAD`, then clears `MERGE_HEAD` and `MERGE_MSG`. `ORIG_HEAD`
+ * ref to `ORIG_HEAD`, then clears the branch state as git's `reset --merge` does. `ORIG_HEAD`
  * is preserved on disk as a cross-operation recovery aid (ADR-173).
  *
  * Refuses when no merge is in progress (`MERGE_HEAD` absent) or when the
@@ -54,6 +55,6 @@ export const mergeAbort = async (ctx: Context): Promise<MergeAbortResult> => {
   // (the literal `HEAD`, not the oid) — and the write itself goes through
   // the literal `HEAD` too, as git's own reset does.
   await updateRef(ctx, 'HEAD' as RefName, origHead, { reflogMessage: resetMovingTo('HEAD') });
-  await clearMergeState(ctx);
+  await removeBranchState(ctx, 'silent');
   return { origHead, branch: head.target };
 };

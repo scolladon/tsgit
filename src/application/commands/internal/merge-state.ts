@@ -4,8 +4,7 @@
  * `.git/MERGE_HEAD`, `.git/MERGE_MODE`, `.git/MERGE_MSG`, `.git/ORIG_HEAD`
  * are the canonical git markers that record "a merge is in progress". `merge`
  * writes them when conflicts are detected; `commit` reads MERGE_HEAD (and
- * MERGE_MODE) for the parents and deletes all but ORIG_HEAD when the resolved
- * merge commits.
+ * MERGE_MODE) for the parents; `branch-state.ts` removes them.
  *
  * Symmetric with `repo-state.ts` which reads these markers via
  * `assertNoPendingOperation`. See `docs/adr/027-merge-conflict-write-order.md`
@@ -111,18 +110,6 @@ export const readMergeMsg = async (ctx: Context): Promise<string | undefined> =>
   const path = mergeMsgPath(ctx);
   if (!(await ctx.fs.exists(path))) return undefined;
   return ctx.fs.readUtf8(path);
-};
-
-/**
- * Delete the merge-state files after a resolved merge commit. Idempotent
- * — missing files are not an error.
- */
-export const clearMergeState = async (ctx: Context): Promise<void> => {
-  for (const path of [mergeHeadPath(ctx), mergeMsgPath(ctx), mergeModePath(ctx)]) {
-    if (await ctx.fs.exists(path)) {
-      await ctx.fs.rm(path);
-    }
-  }
 };
 
 /** Delete `.git/MERGE_MSG` only (cherry-pick / revert resolution). Idempotent. */

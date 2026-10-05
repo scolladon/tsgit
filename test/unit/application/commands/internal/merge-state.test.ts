@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { init } from '../../../../../src/application/commands/init.js';
 import {
-  clearMergeState,
   readMergeHead,
   readMergeMsg,
   readOrigHead,
@@ -372,43 +371,6 @@ describe('merge-state', () => {
 
           // Assert
           expect(result).toBe('Merge branch feature\nbody');
-        });
-      });
-    });
-  });
-
-  describe('clearMergeState', () => {
-    describe('Given existing MERGE_HEAD and MERGE_MSG', () => {
-      describe('When clearMergeState is called', () => {
-        it('Then both files are removed (ORIG_HEAD is preserved as a recovery aid)', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          await init(ctx);
-          await writeMergeHeads(ctx, ['a'.repeat(40) as ObjectId]);
-          await writeMergeMsg(ctx, 'msg');
-          await writeOrigHead(ctx, 'b'.repeat(40) as ObjectId);
-
-          // Act
-          await clearMergeState(ctx);
-
-          // Assert — MERGE_HEAD and MERGE_MSG gone; ORIG_HEAD survives so the
-          // user can `reset --hard ORIG_HEAD` after the resolved commit.
-          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
-          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(false);
-          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(true);
-        });
-      });
-    });
-
-    describe('Given no merge-state files', () => {
-      describe('When clearMergeState is called', () => {
-        it('Then no error is thrown (idempotent)', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          await init(ctx);
-
-          // Act / Assert
-          await expect(clearMergeState(ctx)).resolves.toBeUndefined();
         });
       });
     });
