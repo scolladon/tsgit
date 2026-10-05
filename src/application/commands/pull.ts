@@ -26,6 +26,7 @@ import { inMergeBases } from '../primitives/merge-base.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { type FetchResult, type FetchUpdate, fetch } from './fetch.js';
 import { defaultRemoteName } from './internal/default-remote.js';
+import { configuredPullFastForward } from './internal/fast-forward-config.js';
 import { type FetchHeadLine, readFetchHead } from './internal/fetch-head.js';
 import { buildRemoteTable } from './internal/remote-config.js';
 import {
@@ -53,8 +54,10 @@ export interface PullOptions {
   readonly ref?: string;
   /**
    * Fast-forward policy for the integrate step, forwarded to `merge` (git
-   * `--ff` / `--ff-only` / `--no-ff`):
-   * - `'allow'` (default) — fast-forward when possible, else a true merge.
+   * `--ff` / `--ff-only` / `--no-ff`). Unset, it is `pull.ff`'s — where `only`
+   * reads as `'allow'`, as under git's `--no-rebase` — else the merge's own
+   * `merge.ff`, else `'allow'`; an invalid `pull.ff` refuses before the fetch:
+   * - `'allow'` — fast-forward when possible, else a true merge.
    * - `'only'` — reject when a true merge would be required.
    * - `'never'` — always create a merge commit, even when a fast-forward is possible.
    */
@@ -166,9 +169,17 @@ const assertFastForwardable = async (
   }
 };
 
-export const pull = async (ctx: Context, opts: PullOptions = {}): Promise<PullResult> => {
+/** git's `config_get_ff`: an unset policy takes `pull.ff`, else leaves `merge.ff` to the merge. */
+const settleFastForward = async (ctx: Context, opts: PullOptions): Promise<PullOptions> => {
+  if (opts.fastForward !== undefined) return opts;
+  const configured = await configuredPullFastForward(ctx);
+  return configured === undefined ? opts : { ...opts, fastForward: configured };
+};
+
+export const pull = async (ctx: Context, given: PullOptions = {}): Promise<PullResult> => {
   await assertOperationalRepository(ctx);
   requireWorkTree(ctx, 'pull');
+  const opts = await settleFastForward(ctx, given);
   await assertNoPendingOperation(ctx);
 
   const head = await readHeadRaw(ctx);

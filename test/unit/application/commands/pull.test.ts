@@ -1467,4 +1467,157 @@ describe('pull', () => {
       });
     });
   });
+
+  describe('fast-forward configuration', () => {
+    /** Remote main one commit ahead of main; `diverged` adds a commit of main's own. */
+    const seedPull = async (diverged: boolean) => {
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await commitFile(ctx, 'a.txt', 'a', 'A');
+      await branchCreate(ctx, { name: 'feature' });
+      await checkout(ctx, { rev: 'feature' });
+      const ahead = await commitFile(ctx, 'b.txt', 'b', 'B');
+      await checkout(ctx, { rev: 'main' });
+      if (diverged) await commitFile(ctx, 'c.txt', 'c', 'X');
+      await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
+      const remote = buildPullRemote(
+        [{ name: 'refs/heads/main', id: ahead }],
+        await emptyPack(ctx),
+      );
+      return { ctx: withTransport(ctx, remote.transport), requests: remote.requests };
+    };
+
+    const configure = (ctx: Context, entries: ReadonlyArray<readonly [string, string]>) =>
+      updateConfigEntries(
+        ctx,
+        entries.map(([key, value]) => {
+          const [section, name] = key.split('.') as [string, string];
+          return { section, key: name, value };
+        }),
+      );
+
+    describe.each([
+      ['pull.ff=false over a fast-forwardable head', false, [['pull.ff', 'false']], 'merge'],
+      [
+        'pull.ff=true over merge.ff=false',
+        false,
+        [
+          ['merge.ff', 'false'],
+          ['pull.ff', 'true'],
+        ],
+        'fast-forward',
+      ],
+      [
+        'pull.ff=false over merge.ff=only',
+        false,
+        [
+          ['merge.ff', 'only'],
+          ['pull.ff', 'false'],
+        ],
+        'merge',
+      ],
+      ['pull.ff=only over a diverged head', true, [['pull.ff', 'only']], 'merge'],
+      [
+        'pull.ff=only over merge.ff=only and a diverged head',
+        true,
+        [
+          ['merge.ff', 'only'],
+          ['pull.ff', 'only'],
+        ],
+        'merge',
+      ],
+      ['merge.ff=false and no pull.ff', false, [['merge.ff', 'false']], 'merge'],
+    ] as const)('Given %s', (_label, diverged, entries, kind) => {
+      describe('When pull runs without a fast-forward policy', () => {
+        it(`Then the integration concludes as a ${kind}`, async () => {
+          // Arrange
+          const { ctx } = await seedPull(diverged);
+          await configure(ctx, entries);
+          const sut = pull;
+
+          // Act
+          const result = await sut(ctx, { author });
+
+          // Assert
+          expect(result.merge.kind).toBe(kind);
+        });
+      });
+    });
+
+    describe('Given a valueless pull.ff over merge.ff=false', () => {
+      describe('When pull runs without a fast-forward policy', () => {
+        it('Then the valueless key reads as true and the pull fast-forwards', async () => {
+          // Arrange
+          const { ctx } = await seedPull(false);
+          const configPath = `${ctx.layout.gitDir}/config`;
+          await configure(ctx, [['merge.ff', 'false']]);
+          await ctx.fs.writeUtf8(configPath, `${await ctx.fs.readUtf8(configPath)}[pull]\n\tff\n`);
+          invalidateConfigCache(ctx);
+          const sut = pull;
+
+          // Act
+          const result = await sut(ctx, { author });
+
+          // Assert
+          expect(result.merge.kind).toBe('fast-forward');
+        });
+      });
+    });
+
+    describe('Given merge.ff=only over a diverged head', () => {
+      describe('When pull runs without a fast-forward policy', () => {
+        it('Then the merge refuses with NON_FAST_FORWARD', async () => {
+          // Arrange
+          const { ctx } = await seedPull(true);
+          await configure(ctx, [['merge.ff', 'only']]);
+          const sut = pull;
+
+          // Act
+          const result = await sut(ctx, { author }).catch((error: unknown) => error);
+
+          // Assert
+          expect((result as TsgitError).data).toMatchObject({ code: 'NON_FAST_FORWARD' });
+        });
+      });
+    });
+
+    describe.each(['bogus', 'ONLY'])('Given pull.ff=%s', (value) => {
+      describe('When pull runs without a fast-forward policy', () => {
+        it('Then it refuses with CONFIG_INVALID_ENUM_VALUE before fetching', async () => {
+          // Arrange
+          const { ctx, requests } = await seedPull(false);
+          await configure(ctx, [['pull.ff', value]]);
+          const sut = pull;
+
+          // Act
+          const result = await sut(ctx, { author }).catch((error: unknown) => error);
+
+          // Assert
+          expect((result as TsgitError).data).toEqual({
+            code: 'CONFIG_INVALID_ENUM_VALUE',
+            key: 'pull.ff',
+            source: `${ctx.layout.gitDir}/config`,
+            value,
+            line: expect.any(Number),
+          });
+          expect(requests).toHaveLength(0);
+        });
+      });
+
+      describe('When pull runs with fastForward allow', () => {
+        it('Then pull.ff is never read and the pull fast-forwards', async () => {
+          // Arrange
+          const { ctx } = await seedPull(false);
+          await configure(ctx, [['pull.ff', value]]);
+          const sut = pull;
+
+          // Act
+          const result = await sut(ctx, { fastForward: 'allow', author });
+
+          // Assert
+          expect(result.merge.kind).toBe('fast-forward');
+        });
+      });
+    });
+  });
 });

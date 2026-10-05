@@ -15,6 +15,7 @@
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { errorDataCode } from '../../src/domain/error-data-code.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
@@ -481,6 +482,45 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — non-conflict materialisation'
         expect(peerResult.ok).toBe(false);
         expect(await origHeadBytes(pair.ours)).toBe(await origHeadBytes(pair.peer));
         expect(await origHeadBytes(pair.ours)).not.toBeNull();
+      });
+    });
+  });
+
+  describe.each([
+    { value: 'false', diverged: false, kind: 'merge' },
+    { value: 'bogus', diverged: false, kind: 'fast-forward' },
+    { value: 'only', diverged: true, kind: 'NON_FAST_FORWARD' },
+  ] as const)('Given merge.ff=$value on both tools', ({ value, diverged, kind }) => {
+    describe('When both tools merge with no fast-forward flag', () => {
+      it(`Then both conclude alike: ${kind}`, async () => {
+        // Arrange
+        await writeBoth('f.txt', 'base\n');
+        await commitBoth('base', ['f.txt']);
+        await branchBoth('feature');
+        await writeBoth('m.txt', 'm\n');
+        await commitBoth('feature-add', ['m.txt']);
+        await checkoutBoth('main');
+        if (diverged) {
+          await writeBoth('o.txt', 'o\n');
+          await commitBoth('ours-add', ['o.txt']);
+        }
+        runGit(['-C', pair.peer, 'config', 'merge.ff', value]);
+        runGit(['-C', pair.ours, 'config', 'merge.ff', value]);
+        const peerResult = tryRunGit(['-C', pair.peer, 'merge', '-m', 'm', 'feature'], {
+          env: COMMIT_ENV,
+        });
+        const sut = repo.merge;
+
+        // Act
+        const result = await sut
+          .run({ rev: 'feature', message: 'm', author: AUTHOR, committer: AUTHOR })
+          .then((outcome) => outcome.kind)
+          .catch(errorDataCode);
+
+        // Assert
+        expect(result).toBe(kind);
+        expect(peerResult.ok).toBe(kind !== 'NON_FAST_FORWARD');
+        expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
       });
     });
   });

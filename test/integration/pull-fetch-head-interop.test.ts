@@ -304,4 +304,78 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
       });
     });
   });
+
+  describe('Given fast-forward configuration', () => {
+    const UPSTREAM = [
+      ['branch.main.remote', 'origin'],
+      ['branch.main.merge', 'refs/heads/side'],
+    ] as const;
+    const ctxFor = (ours: string) => ({
+      ...createNodeContext({ workDir: ours }),
+      transport: backendTransport(peerRoot),
+    });
+    /** Both clones without their local commit, so the upstream fast-forwards. */
+    const dropLocal = (dirs: ReadonlyArray<string>) => {
+      for (const dir of dirs) dated(['-C', dir, 'reset', '-q', '--hard', 'HEAD~1']);
+    };
+
+    describe.each([
+      { label: 'merge-ff-false', ff: true, config: [['merge.ff', 'false']] },
+      { label: 'pull-ff-false', ff: true, config: [['pull.ff', 'false']] },
+      {
+        label: 'pull-ff-true',
+        ff: true,
+        config: [
+          ['merge.ff', 'false'],
+          ['pull.ff', 'true'],
+        ],
+      },
+      { label: 'pull-ff-only-diverged', ff: false, config: [['pull.ff', 'only']] },
+    ] as const)('When both tools pull under $label', ({ label, ff, config }) => {
+      it('Then the commits HEAD lands on and the reflog notes agree', async () => {
+        // Arrange
+        const { ours, theirs } = setUp(label, 'main', [...UPSTREAM, ...config]);
+        if (ff) dropLocal([ours, theirs]);
+        dated(['-C', theirs, 'pull', '-q', '--no-rebase', '--no-edit']);
+        const expected = head(theirs).replaceAll(peerPath.slice(0, -'.git'.length), SHORT_URL);
+        const sut = pull;
+
+        // Act
+        await sut(ctxFor(ours), { author: IDENTITY, committer: IDENTITY });
+
+        // Assert
+        expect(head(ours)).toBe(expected);
+        const note = (dir: string) =>
+          git(dir, 'reflog', '-1', '--format=%gs', 'HEAD').split(': ').slice(1).join(': ');
+        expect(note(ours)).toBe(note(theirs));
+      });
+    });
+
+    describe.each([
+      { label: 'merge-ff-only-diverged', config: [['merge.ff', 'only']], code: 'NON_FAST_FORWARD' },
+      { label: 'pull-ff-bogus', config: [['pull.ff', 'bogus']], code: 'CONFIG_INVALID_ENUM_VALUE' },
+    ] as const)('When both tools pull under $label', ({ label, config, code }) => {
+      it('Then both refuse and leave HEAD and FETCH_HEAD alike', async () => {
+        // Arrange
+        const { ours, theirs } = setUp(label, 'main', [...UPSTREAM, ...config]);
+        const theirsRun = tryRunGitWithExit(
+          ['-C', theirs, 'pull', '-q', '--no-rebase', '--no-edit'],
+          { env: DATED_ENV },
+        );
+        const sut = pull;
+
+        // Act
+        const result = await sut(ctxFor(ours), { author: IDENTITY, committer: IDENTITY })
+          .then(() => undefined)
+          .catch(errorDataCode);
+
+        // Assert
+        expect(theirsRun.exitCode).toBe(128);
+        expect(result).toBe(code);
+        expect(git(ours, 'rev-parse', 'HEAD')).toBe(git(theirs, 'rev-parse', 'HEAD'));
+        const fetched = (dir: string) => existsSync(path.join(dir, '.git', 'FETCH_HEAD'));
+        expect(fetched(ours)).toBe(fetched(theirs));
+      });
+    });
+  });
 });

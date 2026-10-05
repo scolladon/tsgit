@@ -75,6 +75,7 @@ import { writeTree } from '../primitives/write-tree.js';
 import { removeMergeBranchState } from './internal/branch-state.js';
 import { conflictMergeMsg } from './internal/cherry-pick-state.js';
 import { resolveAuthor, resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
+import { configuredMergeFastForward } from './internal/fast-forward-config.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
   assertMergeMessageConfig,
@@ -115,8 +116,9 @@ export interface MergeRunInput {
   readonly rev: string | ReadonlyArray<string>;
   readonly message?: string;
   /**
-   * Fast-forward policy (git `--ff` / `--ff-only` / `--no-ff`):
-   * - `'allow'` (default) — fast-forward when possible, else a true merge.
+   * Fast-forward policy (git `--ff` / `--ff-only` / `--no-ff`); unset, it is
+   * `merge.ff`'s, else `'allow'`:
+   * - `'allow'` — fast-forward when possible, else a true merge.
    * - `'only'` — refuse with `NON_FAST_FORWARD` when a true merge is required.
    * - `'never'` — always create a merge commit, even when a fast-forward is possible.
    */
@@ -226,7 +228,10 @@ const settleMessage = async (
   return { ...opts, rev, message: await formatMergeMessage(ctx, heads, into) };
 };
 
-/** What git settles before merging: the message, and `--no-ff` over a throwaway tag. */
+/**
+ * What git settles before merging: the fast-forward policy (the caller's, else
+ * `merge.ff`), the message, and `--no-ff` over a throwaway tag.
+ */
 const settleMerge = async (
   ctx: Context,
   input: MergeRunInput,
@@ -234,12 +239,19 @@ const settleMerge = async (
   branch: RefName | undefined,
   remotes: ReadonlyArray<MergeRemote>,
 ): Promise<SettledMerge> => {
-  const settled = await settleMessage(ctx, input, internal, branch, remotes);
+  const policy = await settleFastForward(ctx, input);
+  const settled = await settleMessage(ctx, policy, internal, branch, remotes);
   const throwaway = await mergesThrowawayTag(ctx, settled, remotes);
   return throwaway ? { ...settled, fastForward: NO_FAST_FORWARD } : settled;
 };
 
 const NO_FAST_FORWARD = 'never';
+
+const settleFastForward = async (ctx: Context, input: MergeRunInput): Promise<MergeRunInput> => {
+  if (input.fastForward !== undefined) return input;
+  const configured = await configuredMergeFastForward(ctx);
+  return configured === undefined ? input : { ...input, fastForward: configured };
+};
 
 /** git's `merging_a_throwaway_tag` over every head, which only `--ff-only` overrides. */
 const mergesThrowawayTag = async (
