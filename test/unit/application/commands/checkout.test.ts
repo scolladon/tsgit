@@ -13,6 +13,7 @@ import * as materializeTreeMod from '../../../../src/application/primitives/mate
 import * as objectStoreMod from '../../../../src/application/primitives/object-store.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readTree } from '../../../../src/application/primitives/read-tree.js';
+import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
 import { snapshotFiles } from './fixtures.js';
@@ -23,6 +24,8 @@ const author: AuthorIdentity = {
   timestamp: 1_700_000_000,
   timezoneOffset: '+0000',
 };
+
+const REF_PREFIX = 'ref: refs/heads/';
 
 const seedWithBranches = async () => {
   const ctx = createMemoryContext();
@@ -77,6 +80,46 @@ describe('checkout', () => {
         expect(result.id).toBe(commitId);
         const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
         expect(head).toBe(`${commitId}\n`);
+      });
+    });
+  });
+
+  describe('Given a branch two commits deep and an annotated tag on its tip', () => {
+    const seedTwoDeep = async () => {
+      const { ctx, commitId } = await seedWithBranches();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'b');
+      await add(ctx, ['a.txt']);
+      const tip = await commit(ctx, { message: 'second', author });
+      const configPath = `${ctx.layout.gitDir}/config`;
+      const config = await ctx.fs.readUtf8(configPath);
+      await ctx.fs.writeUtf8(
+        configPath,
+        `${config}[user]\n  name = Ada\n  email = ada@example.com\n`,
+      );
+      await tagCreate(ctx, { name: 'v1', message: 'v1' });
+      return { ctx, first: commitId, tip: tip.id };
+    };
+
+    describe.each([
+      ['an ancestor of HEAD', 'HEAD~1', 'first'],
+      ['the parent of HEAD', 'HEAD^', 'first'],
+      ['the tag peeled to its commit', 'v1^{commit}', 'tip'],
+    ] as const)('When checkout %s', (_label, rev, expected) => {
+      it('Then HEAD detaches at the commit it names, logged as typed', async () => {
+        // Arrange
+        const seeded = await seedTwoDeep();
+        const headPath = `${seeded.ctx.layout.gitDir}/HEAD`;
+        const from = (await seeded.ctx.fs.readUtf8(headPath)).slice(REF_PREFIX.length).trim();
+        const sut = checkout;
+
+        // Act
+        const result = await sut(seeded.ctx, { rev });
+
+        // Assert
+        expect(result).toMatchObject({ detached: true, id: seeded[expected] });
+        expect(await seeded.ctx.fs.readUtf8(headPath)).toBe(`${seeded[expected]}\n`);
+        const log = await readReflog(seeded.ctx, 'HEAD' as RefName);
+        expect(log.at(-1)?.message).toBe(`checkout: moving from ${from} to ${rev}`);
       });
     });
   });

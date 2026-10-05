@@ -119,6 +119,10 @@ const formattedBranchRef = (rev: string): RefName | undefined => {
   }
 };
 
+/** git's `get_oid_mb`: the name through the ref ladder, else the whole revision grammar. */
+const resolveSwitchTarget = async (ctx: Context, arg: string): Promise<ObjectId | undefined> =>
+  (await resolveRevisionName(ctx, arg)) ?? resolveRevisionExpression(ctx, arg);
+
 /** The object a switch detaches onto once no branch carries the name: git's
  *  `get_oid_mb` answer over the revision ladder. */
 const requireSwitchOid = (id: ObjectId | undefined, rev: string): ObjectId => {
@@ -179,7 +183,7 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
   // git names the argument through `get_oid_mb` first, branch or not — its
   // warnings and its read of core.warnAmbiguousRefs happen either way.
   const arg = previousCheckoutArg(opts.rev);
-  const named = await resolveRevisionName(ctx, arg);
+  const named = await resolveSwitchTarget(ctx, arg);
   const branchName = await interpretBranchName(ctx, arg);
   const onBranch = await branchRefFor(ctx, branchName);
   const detached = opts.detach === true || onBranch === undefined;

@@ -101,6 +101,12 @@ describe.skipIf(!GIT_AVAILABLE)('integration — target-name parity with canonic
         arg: 'org/tgt',
         ref: 'refs/remotes/org/tgt',
       },
+      {
+        label: 'a revision no branch name can carry',
+        slug: 'ancestor',
+        arg: 'main~1',
+        ref: 'main~1',
+      },
     ])('When both tools switch to $label', ({ slug, arg, ref }) => {
       it('Then both detach onto it with byte-identical HEAD and log lines', async () => {
         // Arrange
