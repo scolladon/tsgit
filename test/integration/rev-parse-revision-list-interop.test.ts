@@ -366,3 +366,51 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+/** `main` is `x`, whose parent `p` names `x`'s own tree as its parent. */
+const buildTreeParentRepository = (repo: string): void => {
+  runGit(['init', '-q', '-b', 'main', repo]);
+  disableAutoMaintenance(repo);
+  const tree = runGit(['-C', repo, 'mktree'], { input: '' }).trim();
+  const blob = runGit(['-C', repo, 'hash-object', '-w', '--stdin'], { input: 'b\n' }).trim();
+  const other = runGit(['-C', repo, 'mktree'], { input: `100644 blob ${blob}\tb\n` }).trim();
+  const commitOn = (own: string, parent: string, message: string): string =>
+    runGit(['-C', repo, 'hash-object', '-t', 'commit', '-w', '--stdin', '--literally'], {
+      input: `tree ${own}\nparent ${parent}\nauthor a <a@b> ${EPOCH} +0000\ncommitter a <a@b> ${EPOCH} +0000\n\n${message}\n`,
+    }).trim();
+  git(repo, 'update-ref', 'refs/heads/main', commitOn(tree, commitOn(other, tree, 'p'), 'x'));
+};
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'integration — revParse typed hops and message searches parity with git',
+  () => {
+    let repo = '';
+
+    beforeAll(async () => {
+      repo = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-parse-tree-parent-interop-'));
+      buildTreeParentRepository(repo);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(repo, { recursive: true, force: true });
+    });
+
+    describe('Given a commit whose parent names the commit’s own tree as its parent', () => {
+      describe.each(['main~1', 'main~2', 'main~3', 'main^{/p}', 'main^{/x}', ':/p', ':/x'])(
+        'When git rev-parse and revParse read %s',
+        (argument) => {
+          it('Then both print the same, log the same errors and agree on refusing', async () => {
+            // Arrange
+            const peer = gitOutcome(repo, argument);
+
+            // Act
+            const result = await tsgitOutcome(repo, repo, argument);
+
+            // Assert
+            expect(result).toEqual(peer);
+          });
+        },
+      );
+    });
+  },
+);

@@ -405,7 +405,7 @@ const evaluate = async (
   if (expr.kind === 'tree-path') {
     return resolveTreePath(ctx, table, expr.rev, expr.path);
   }
-  if (expr.kind === 'message-search') return searchFromRefs(ctx, expr.pattern, raw);
+  if (expr.kind === 'message-search') return searchFromRefs(ctx, table, expr.pattern, raw);
   // `now` is read once per call so the reflog `@{date}` resolution is
   // deterministic within an evaluation; the grammar parser stays clock-free.
   const now = Math.floor(Date.now() / 1000);
@@ -577,13 +577,18 @@ const searchFrom = async (
 ): Promise<ObjectId> => {
   const peeled = await untypedCommitToWalk(ctx, await peel(ctx, table, id, 'commit', op.name));
   if (op.pattern === '') return peeled.id;
-  const found = await searchCommitMessages(ctx, [peeled.commit], op.pattern);
+  const found = await searchCommitMessages(ctx, [peeled.commit], op.pattern, table);
   if (found === undefined) throw revparseUnresolved(op.name);
   return found;
 };
 
-const searchFromRefs = async (ctx: Context, pattern: string, raw: string): Promise<ObjectId> => {
-  const found = await searchRefMessages(ctx, pattern);
+const searchFromRefs = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  pattern: string,
+  raw: string,
+): Promise<ObjectId> => {
+  const found = await searchRefMessages(ctx, pattern, table);
   if (found === undefined) throw revparseUnresolved(raw);
   return found;
 };

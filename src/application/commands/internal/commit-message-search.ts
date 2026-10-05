@@ -3,16 +3,21 @@ import { precedesByArrival } from '../../../domain/commit/priority-queue.js';
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import { type Commit, commitBodyBytes } from '../../../domain/objects/commit.js';
 import { decodePreservingBom } from '../../../domain/objects/encoding.js';
-import type { GitObject, ObjectId, RefName } from '../../../domain/objects/index.js';
+import type { ObjectId, RefName } from '../../../domain/objects/index.js';
 import { compileExtendedRegex } from '../../../domain/regex/extended-regex.js';
 import type { Context } from '../../../ports/context.js';
 import { enumerateRefs } from '../../primitives/enumerate-refs.js';
+import { parseCommit } from '../../primitives/internal/lookup-commit-reference.js';
+import {
+  type ObjectTypeTable,
+  parseTypedObjectOrAbsent,
+} from '../../primitives/internal/object-type-table.js';
 import {
   type CommitMeta,
   commitMetaOf,
   readCommitMeta,
 } from '../../primitives/internal/read-commit-meta.js';
-import { readObject, readRawObject } from '../../primitives/read-object.js';
+import { readRawObject } from '../../primitives/read-object.js';
 import { resolveRefForReading } from '../../primitives/resolve-ref.js';
 
 /**
@@ -20,12 +25,14 @@ import { resolveRefForReading } from '../../primitives/resolve-ref.js';
  * commit date, an equal date in the order queued — the first commit whose
  * message matches `search`, a POSIX extended regex. `!-` negates it and `!!`
  * spells a leading `!`; any other leading `!`, or a pattern regcomp refuses,
- * matches nothing.
+ * matches nothing. Each parent parses against `table`, the invocation's, when
+ * there is one.
  */
 export const searchCommitMessages = async (
   ctx: Context,
   seeds: ReadonlyArray<Commit>,
   search: string,
+  table: ObjectTypeTable | undefined,
 ): Promise<ObjectId | undefined> => {
   const test = parseMessageTest(search);
   if (test === undefined) return undefined;
@@ -33,6 +40,7 @@ export const searchCommitMessages = async (
     heap: new BinaryHeap<Queued>(precedesByArrival),
     seen: new Set(),
     arrivals: 0,
+    table,
   };
   for (const seed of seeds) enqueue(walk, seed.id, await commitMetaOf(ctx, seed));
   for (let top = walk.heap.pop(); top !== undefined; top = walk.heap.pop()) {
@@ -46,17 +54,22 @@ export const searchCommitMessages = async (
 export const searchRefMessages = async (
   ctx: Context,
   search: string,
-): Promise<ObjectId | undefined> => searchCommitMessages(ctx, await refTipCommits(ctx), search);
+  table: ObjectTypeTable | undefined,
+): Promise<ObjectId | undefined> =>
+  searchCommitMessages(ctx, await refTipCommits(ctx, table), search, table);
 
 const REFS_PREFIX = 'refs/';
 const HEAD = 'HEAD';
 
 /** git's seed list: each ref in name order, then HEAD, put at the list's head — HEAD ends first. */
-const refTipCommits = async (ctx: Context): Promise<ReadonlyArray<Commit>> => {
+const refTipCommits = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+): Promise<ReadonlyArray<Commit>> => {
   const names = (await enumerateRefs(ctx)).filter((name) => name.startsWith(REFS_PREFIX));
   const tips: Commit[] = [];
   for (const name of [...names, HEAD] as const) {
-    const tip = await refTipCommit(ctx, name);
+    const tip = await refTipCommit(ctx, table, name);
     if (tip !== undefined) tips.unshift(tip);
   }
   return tips;
@@ -66,25 +79,20 @@ const refTipCommits = async (ctx: Context): Promise<ReadonlyArray<Commit>> => {
  * git's `handle_one_ref`: the commit a ref names through its tags. An object
  * that does not read is skipped; a tag of one is reported under the ref's name.
  */
-const refTipCommit = async (ctx: Context, name: RefName | 'HEAD'): Promise<Commit | undefined> => {
+const refTipCommit = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  name: RefName | 'HEAD',
+): Promise<Commit | undefined> => {
   const id = await resolveRefForReading(ctx, name);
   if (id === undefined) return undefined;
-  let object = await readPresent(ctx, id);
+  let object = await parseTypedObjectOrAbsent(ctx, table, id);
   while (object?.type === 'tag') {
-    object = await readPresent(ctx, object.data.object);
+    object = await parseTypedObjectOrAbsent(ctx, table, object.data.object);
     if (object === undefined)
       ctx.logger?.error?.(`missing object referenced by '${name}'`, { name });
   }
   return object?.type === 'commit' ? object : undefined;
-};
-
-const readPresent = async (ctx: Context, id: ObjectId): Promise<GitObject | undefined> => {
-  try {
-    return await readObject(ctx, id);
-  } catch (error) {
-    if (errorDataCode(error) === 'OBJECT_NOT_FOUND') return undefined;
-    throw error;
-  }
 };
 
 interface MessageTest {
@@ -105,6 +113,7 @@ interface Walk {
   readonly heap: BinaryHeap<Queued>;
   readonly seen: Set<ObjectId>;
   arrivals: number;
+  readonly table: ObjectTypeTable | undefined;
 }
 
 const BANG = '!';
@@ -142,13 +151,18 @@ const enqueueParents = async (
 ): Promise<void> => {
   for (const parent of parents) {
     if (walk.seen.has(parent)) continue;
-    const meta = await parseParent(ctx, parent);
+    const meta = await parseParent(ctx, walk.table, parent);
     if (meta !== undefined) enqueue(walk, parent, meta);
   }
 };
 
 /** git's `repo_parse_commit`: a parent that does not parse is reported and skipped. */
-const parseParent = async (ctx: Context, id: ObjectId): Promise<CommitMeta | undefined> => {
+const parseParent = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  id: ObjectId,
+): Promise<CommitMeta | undefined> => {
+  if (table !== undefined && !(await parseCommit(ctx, table, id))) return undefined;
   try {
     const meta = await readCommitMeta(ctx, id);
     if (meta === undefined) ctx.logger?.error?.(`Object ${id} not a commit`, { id });

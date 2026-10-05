@@ -638,3 +638,75 @@ describe("Given a commit whose parent names the commit's own tree as its parent"
     });
   });
 });
+
+describe("Given a commit whose parent names the commit's own tree as its parent, searched by message", () => {
+  const seedTreeParentRepo = async (): Promise<{
+    readonly ctx: Context;
+    readonly errors: string[];
+    readonly tree: ObjectId;
+    readonly parent: ObjectId;
+    readonly start: ObjectId;
+  }> => {
+    const errors: string[] = [];
+    const ctx = {
+      ...createMemoryContext(),
+      logger: { error: (message: string) => errors.push(message) },
+    } as Context;
+    const tree = await writeRawObjectBytes(ctx, 'tree', new Uint8Array());
+    const blob = await writeRawObjectBytes(ctx, 'blob', encoder.encode('b\n'));
+    const otherTree = await writeRawObjectBytes(
+      ctx,
+      'tree',
+      new Uint8Array([...encoder.encode('100644 b\0'), ...hexBytes(blob)]),
+    );
+    const parent = await writeCommit(ctx, otherTree, [tree], 1, 'p\n');
+    const start = await writeCommit(ctx, tree, [parent], 2, 'x\n');
+    await writeRef(ctx, 'refs/heads/main', start);
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+    return { ctx, errors, tree, parent, start };
+  };
+
+  describe.each([
+    ['from the commit', (start: ObjectId) => `${start}^{/p}`],
+    ['from every ref', () => ':/p'],
+  ])('When revParse searches %s for the parent’s message', (_, spell) => {
+    it('Then the parent fails to parse against the tree the start typed, on each read, and nothing matches', async () => {
+      // Arrange
+      const { ctx, errors, tree, parent, start } = await seedTreeParentRepo();
+      const sut = revParse;
+
+      // Act
+      const result = await failureData(() => sut(ctx, spell(start)));
+
+      // Assert
+      const lines = [
+        `object ${tree} is a tree, not a commit`,
+        `bad parent ${tree} in commit ${parent}`,
+      ];
+      expect({ code: (result as { code: string }).code, errors }).toEqual({
+        code: 'REVPARSE_UNRESOLVED',
+        errors: [...lines, ...lines],
+      });
+    });
+  });
+
+  describe('When revParse searches from the commit for its own message', () => {
+    it('Then the commit matches after its parent failed to parse once', async () => {
+      // Arrange
+      const { ctx, errors, tree, parent, start } = await seedTreeParentRepo();
+      const sut = revParse;
+
+      // Act
+      const result = await sut(ctx, `${start}^{/x}`);
+
+      // Assert
+      expect({ result, errors }).toEqual({
+        result: [{ kind: 'object', id: start, negated: false }],
+        errors: [
+          `object ${tree} is a tree, not a commit`,
+          `bad parent ${tree} in commit ${parent}`,
+        ],
+      });
+    });
+  });
+});
