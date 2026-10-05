@@ -14,7 +14,12 @@ import {
   readRefCandidate,
   UNREADABLE_REF_CODES,
 } from '../../primitives/resolve-ref.js';
-import { resolveRefLadder, warnIfRefNamesObjectId } from './refname-ambiguity.js';
+import { nthPriorCheckout } from './prior-checkout.js';
+import {
+  resolveRefLadder,
+  resolveSubstitutedRefLadder,
+  warnIfRefNamesObjectId,
+} from './refname-ambiguity.js';
 
 /** What a candidate may fail with and still just not be this name: a ref
  *  that does not parse or resolve, or whose target object is absent. Anything
@@ -33,6 +38,8 @@ export const resolveCommitIsh = async (ctx: Context, target: string): Promise<Ob
     await warnIfRefNamesObjectId(ctx, target, peeledCandidate(ctx));
     return target as ObjectId;
   }
+  const prior = await nthPriorCheckout(ctx, target);
+  if (prior !== undefined) return resolvePriorCheckout(ctx, target, prior);
   // gitrevisions ref-DWIM: each candidate namespace in priority order,
   // peeling annotated tags to their underlying commit.
   const byRef = await resolveRefLadder(ctx, target, peeledCandidate(ctx));
@@ -41,6 +48,19 @@ export const resolveCommitIsh = async (ctx: Context, target: string): Promise<Ob
   const byPrefix = await resolveOidPrefix(ctx, target);
   if (byPrefix !== undefined) return byPrefix;
   throw refNotFound(target as RefName);
+};
+
+/** `@{-<n>}`: a detached prior checkout is its object id, a branch is read
+ *  through the ref ladder alone, the ambiguity judged under `target`. */
+const resolvePriorCheckout = async (
+  ctx: Context,
+  target: string,
+  prior: string,
+): Promise<ObjectId> => {
+  if (isOid(prior, ctx.hashConfig)) return prior as ObjectId;
+  const byRef = await resolveSubstitutedRefLadder(ctx, target, prior, peeledCandidate(ctx));
+  if (byRef === undefined) throw refNotFound(target as RefName);
+  return byRef;
 };
 
 /** One candidate peeled to its commit; a target that cannot be peeled is not this name. */

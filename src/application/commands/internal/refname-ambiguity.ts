@@ -163,8 +163,17 @@ export const resolveRefLadder = (
   ctx: Context,
   name: string,
   resolve: CandidateResolver,
+): Promise<ObjectId | undefined> => resolveSubstitutedRefLadder(ctx, name, name, resolve);
+
+/** git's `substitute_branch_name` under `dwim_ref`: the ladder walks `substitute`'s
+ *  namespaces while the ambiguity is still judged and warned under `name`. */
+export const resolveSubstitutedRefLadder = (
+  ctx: Context,
+  name: string,
+  substitute: string,
+  resolve: CandidateResolver,
 ): Promise<ObjectId | undefined> =>
-  resolveAmbiguousLadder(ctx, name, refCandidates(name), (candidate) =>
+  resolveAmbiguousLadder(ctx, name, refCandidates(substitute), (candidate) =>
     readCandidate(ctx, candidate, resolve),
   );
 

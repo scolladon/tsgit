@@ -122,10 +122,9 @@ describe('checkout', () => {
     describe('When checkout', () => {
       it.each([
         {
-          label:
-            'a ref outside refs/heads/, the label is the rev basename (not a mangled prefix-strip)',
+          label: 'a ref outside refs/heads/, the label is the full object id HEAD names, as git',
           refPath: 'refs/remotes/origin/main',
-          expected: 'main',
+          expected: undefined,
         },
         {
           label:
@@ -134,10 +133,9 @@ describe('checkout', () => {
           expected: 'topic/sub',
         },
         {
-          label:
-            'a ref outside refs/heads/, the label is the basename after the last slash — a valid symbolic HEAD always begins refs/, so no-slash targets cannot exist',
+          label: 'another ref outside refs/heads/, the label is the full object id HEAD names',
           refPath: 'refs/x/main',
-          expected: 'main',
+          expected: undefined,
         },
       ])('Then $label', async ({ refPath, expected }) => {
         // Arrange — point HEAD at a loose ref of the given shape. The label
@@ -157,7 +155,7 @@ describe('checkout', () => {
         // Assert — the newest HEAD reflog entry records the move from the label.
         const headLog = await readReflog(ctx, 'HEAD' as RefName);
         expect(headLog[headLog.length - 1]?.message).toBe(
-          `checkout: moving from ${expected} to feature`,
+          `checkout: moving from ${expected ?? commitId} to feature`,
         );
       });
     });
@@ -165,9 +163,8 @@ describe('checkout', () => {
 
   describe('Given a detached prior HEAD', () => {
     describe('When checkout', () => {
-      it('Then the reflog label is the 7-char abbreviated oid (not the full oid)', async () => {
-        // Arrange — detach HEAD onto the commit oid, then check out a branch. The
-        // `from` label must be the commit abbreviated to 7 chars, not all 40.
+      it('Then the reflog label is the full object id, as git writes it', async () => {
+        // Arrange — detach HEAD onto the commit oid, then check out a branch.
         const { ctx, commitId } = await seedWithBranches();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${commitId}\n`);
         const { readReflog } = await import(
@@ -177,10 +174,10 @@ describe('checkout', () => {
         // Act
         await checkout(ctx, { rev: 'feature' });
 
-        // Assert — the label is exactly the first 7 hex chars of the detached oid.
+        // Assert
         const headLog = await readReflog(ctx, 'HEAD' as RefName);
         expect(headLog[headLog.length - 1]?.message).toBe(
-          `checkout: moving from ${commitId.slice(0, 7)} to feature`,
+          `checkout: moving from ${commitId} to feature`,
         );
       });
     });

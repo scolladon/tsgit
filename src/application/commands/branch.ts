@@ -51,6 +51,7 @@ import {
   trackableStartRef,
 } from './internal/branch-tracking.js';
 import { worktreeHolding } from './internal/checked-out-branches.js';
+import { interpretBranchName } from './internal/prior-checkout.js';
 import { buildRemoteTable } from './internal/remote-config.js';
 import {
   assertOperationalRepository,
@@ -215,7 +216,8 @@ export const branchCreate = async (
   input: BranchCreateInput,
 ): Promise<BranchCreateResult> => {
   await assertOperationalRepository(ctx);
-  const name = validateRefName(`${HEADS_PREFIX}${input.name}`);
+  const branchName = await interpretBranchName(ctx, input.name);
+  const name = validateRefName(`${HEADS_PREFIX}${branchName}`);
   const force = input.force === true;
   // git's `ref_exists` answers this once and the answer is kept: it both
   // refuses an unforced clobber and types the reflog message below.
@@ -240,7 +242,7 @@ export const branchCreate = async (
   await writeNewBranch(ctx, { name, target, force, reflogMessage });
   if (tableRead === 'after-write') await buildRemoteTable(ctx);
   const upstream =
-    startRef === undefined ? undefined : await setupTracking(ctx, input.name, startRef, mode);
+    startRef === undefined ? undefined : await setupTracking(ctx, branchName, startRef, mode);
   return { name, id: target, ...(upstream !== undefined && { upstream }) };
 };
 
@@ -276,7 +278,7 @@ export const branchDelete = async (
 ): Promise<BranchDeleteResult> => {
   await assertOperationalRepository(ctx);
   await assertRepoSettingsValid(ctx);
-  const name = validateRefName(`${HEADS_PREFIX}${input.name}`);
+  const name = validateRefName(`${HEADS_PREFIX}${await interpretBranchName(ctx, input.name)}`);
   const valve = input.force === true ? undefined : await openMergeValve(ctx);
   await assertNoWorktreeHolds(ctx, name);
   const held = await getRefStore(ctx).resolveDirect(name);
@@ -330,8 +332,8 @@ export const branchRename = async (
   input: BranchRenameInput,
 ): Promise<BranchRenameResult> => {
   await assertOperationalRepository(ctx);
-  const from = validateRefName(`${HEADS_PREFIX}${input.from}`);
-  const to = validateRefName(`${HEADS_PREFIX}${input.to}`);
+  const from = validateRefName(`${HEADS_PREFIX}${await interpretBranchName(ctx, input.from)}`);
+  const to = validateRefName(`${HEADS_PREFIX}${await interpretBranchName(ctx, input.to)}`);
   const id = await resolveRef(ctx, from);
   const request: RenameRequest = { from, to, force: input.force === true };
   await assertRenameAllowed(ctx, request);

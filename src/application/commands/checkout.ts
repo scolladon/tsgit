@@ -18,6 +18,7 @@ import type { Context } from '../../ports/context.js';
 import type { CheckoutMetadata } from '../primitives/internal/apply-smudge-filter.js';
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
 import { peelChain } from '../primitives/internal/peel-chain.js';
+import type { HeadState } from '../primitives/internal/repo-state.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { assertEverySourceLoadable } from '../primitives/object-store.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -37,6 +38,7 @@ import { type BranchTrack, branchCreate } from './branch.js';
 import { removeBranchState } from './internal/branch-state.js';
 import { checkoutMetadataFor } from './internal/checkout-metadata.js';
 import { acquireIndexLock } from './internal/index-update.js';
+import { interpretBranchName, previousCheckoutArg } from './internal/prior-checkout.js';
 import {
   assertOperationalRepository,
   readHeadRaw,
@@ -115,22 +117,11 @@ const requireSwitchOid = (id: ObjectId | undefined, rev: string): ObjectId => {
   return id;
 };
 
-/** git's checkout reflog label: the branch short-name on a branch, the
- *  abbreviated oid when detached. A symbolic target outside `refs/heads/`
- *  (e.g. `refs/remotes/...`) falls back to its last path segment so the
- *  prefix-strip never mangles the name. */
-const headCheckoutLabel = (
-  head:
-    | { readonly kind: 'symbolic'; readonly target: RefName }
-    | { readonly kind: 'direct'; readonly id: ObjectId },
-): string => {
-  if (head.kind !== 'symbolic') return head.id.slice(0, 7);
-  if (head.target.startsWith(HEADS_PREFIX)) return head.target.slice(HEADS_PREFIX.length);
-  // A usable symbolic HEAD always begins `refs/` (the repository gate
-  // enforces the same grammar discovery does), so a slash is guaranteed and
-  // the basename slice is total.
-  return head.target.slice(head.target.lastIndexOf('/') + 1);
-};
+/** git's `old_desc`: the branch HEAD was on, else the full object id it named. */
+const headCheckoutLabel = (head: HeadState, oldOid: ObjectId): string =>
+  head.kind === 'symbolic' && head.target.startsWith(HEADS_PREFIX)
+    ? head.target.slice(HEADS_PREFIX.length)
+    : oldOid;
 
 /** git refuses `-b` with `--detach`, and an existing branch name, before the work tree moves. */
 const assertBranchCreatable = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<void> => {
@@ -143,10 +134,11 @@ const assertBranchCreatable = async (ctx: Context, opts: CheckoutSwitchOptions):
 const createRequestedBranch = async (
   ctx: Context,
   opts: CheckoutSwitchOptions,
+  startPoint: string,
 ): Promise<RefName | undefined> => {
   const request = opts.createBranch;
   if (request === undefined) return undefined;
-  const created = await branchCreate(ctx, { ...request, startPoint: opts.rev });
+  const created = await branchCreate(ctx, { ...request, startPoint });
   return created.name;
 };
 
@@ -177,12 +169,14 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
   // git's own fallback does: a tag, a remote-tracking path or an object id.
   // git names the argument through `get_oid_mb` first, branch or not — its
   // warnings and its read of core.warnAmbiguousRefs happen either way.
-  const named = await resolveRevisionName(ctx, opts.rev);
-  const onBranch = await branchRefFor(ctx, opts.rev);
+  const arg = previousCheckoutArg(opts.rev);
+  const named = await resolveRevisionName(ctx, arg);
+  const branchName = await interpretBranchName(ctx, arg);
+  const onBranch = await branchRefFor(ctx, branchName);
   const detached = opts.detach === true || onBranch === undefined;
   const branchRef = detached ? undefined : onBranch;
   const oid =
-    onBranch === undefined ? requireSwitchOid(named, opts.rev) : await resolveRef(ctx, onBranch);
+    onBranch === undefined ? requireSwitchOid(named, branchName) : await resolveRef(ctx, onBranch);
 
   // Read target tree — git objects are content-addressed and immutable, so
   // this can happen outside the index lock without risk.
@@ -207,7 +201,7 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
       targetTree: target.id,
       currentIndex,
       force: opts.force ?? false,
-      checkoutMetadata: await checkoutMetadataFor(ctx, opts.rev, oid),
+      checkoutMetadata: await checkoutMetadataFor(ctx, branchName, oid),
       // `exactOptionalPropertyTypes`: add `sparse` only when a matcher exists.
       ...(matcher !== undefined ? { sparse: matcher } : {}),
     });
@@ -222,12 +216,12 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
   }
 
   // git creates a `-b` branch only once the work tree has moved, then attaches HEAD to it.
-  const created = await createRequestedBranch(ctx, opts);
+  const created = await createRequestedBranch(ctx, opts, arg);
   const attached = created ?? branchRef;
   // Move HEAD — outside the index lock (HEAD writes are atomic on their own).
   // git echoes the argument it was handed, abbreviated or not.
-  const label = opts.createBranch?.name ?? opts.rev;
-  const message = `checkout: moving from ${headCheckoutLabel(priorHead)} to ${label}`;
+  const label = opts.createBranch?.name ?? branchName;
+  const message = `checkout: moving from ${headCheckoutLabel(priorHead, oldOid)} to ${label}`;
   await moveHead(ctx, { attached, oid, oldOid, message });
   await removeBranchState(ctx, 'announce');
   // post-checkout (informational) fires after the worktree + HEAD are updated;

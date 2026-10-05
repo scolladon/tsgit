@@ -16,7 +16,13 @@ import { refCandidates } from '../../../domain/refs/index.js';
 import type { Context } from '../../../ports/context.js';
 import { type CandidateFilter, resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
 import { type RefCandidateOutcome, readRefCandidate } from '../../primitives/resolve-ref.js';
-import { expandRef, resolveRefLadder, warnIfRefNamesObjectId } from './refname-ambiguity.js';
+import { nthPriorCheckout } from './prior-checkout.js';
+import {
+  expandRef,
+  resolveRefLadder,
+  resolveSubstitutedRefLadder,
+  warnIfRefNamesObjectId,
+} from './refname-ambiguity.js';
 
 /**
  * One candidate as `expand_ref` reads it. Never peels: git's plain `get_oid`
@@ -43,9 +49,23 @@ export const resolveRevisionName = async (
     await warnIfRefNamesObjectId(ctx, name, resolveCandidate(ctx));
     return ObjectIdFactory.from(name);
   }
+  const prior = await nthPriorCheckout(ctx, name);
+  if (prior !== undefined) return resolvePriorCheckout(ctx, name, prior);
   const byRef = await resolveRefLadder(ctx, name, resolveCandidate(ctx));
   if (byRef !== undefined) return byRef;
   return resolveOidPrefix(ctx, name, accepts);
+};
+
+/** git's `get_oid_basic` over `@{-<n>}`: a detached prior checkout is its
+ *  object id; a branch is read through the ref ladder alone, never as an
+ *  abbreviated object id. */
+const resolvePriorCheckout = (
+  ctx: Context,
+  name: string,
+  prior: string,
+): Promise<ObjectId | undefined> => {
+  if (isOid(prior, ctx.hashConfig)) return Promise.resolve(ObjectIdFactory.from(prior));
+  return resolveSubstitutedRefLadder(ctx, name, prior, resolveCandidate(ctx));
 };
 
 /**

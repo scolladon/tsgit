@@ -10,6 +10,7 @@ import { peelRefToCommit } from '../../primitives/internal/peel-ref-to-commit.js
 import { readObject } from '../../primitives/read-object.js';
 import { evaluateRevision } from '../rev-parse.js';
 import { resolveCommitIsh } from './commit-ish.js';
+import { previousCheckoutArg } from './prior-checkout.js';
 
 const RANGE = /^(.*)\.\.(.*)$/;
 const SYMMETRIC_RANGE = '...';
@@ -56,7 +57,9 @@ export const resolveSequencerRevisions = async (
   ctx: Context,
   args: ReadonlyArray<string>,
 ): Promise<SequencerRevisions> => {
-  const seeds = await resolveSeeds(ctx, args);
+  // git's `parse_args`: only the first revision may be the `-` shorthand.
+  const spelt = args.map((arg, position) => (position === 0 ? previousCheckoutArg(arg) : arg));
+  const seeds = await resolveSeeds(ctx, spelt);
   const resolved =
     seeds.excluded.length === 0
       ? { kind: 'listed' as const, commits: [...new Set(seeds.tips)] }

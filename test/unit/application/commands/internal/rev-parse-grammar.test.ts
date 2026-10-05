@@ -37,6 +37,9 @@ describe('internal/rev-parse-grammar', () => {
             // can reject it.
             label: "'HEAD@{12' (a multi-character body with no closing brace)",
           },
+          { raw: 'x@{-1}', label: "'x@{-1}' (a prior checkout that does not lead the name)" },
+          { raw: '@{1}@{-1}', label: "'@{1}@{-1}' (a prior checkout after a selector)" },
+          { raw: '@{-1}x', label: "'@{-1}x' (a prior checkout trailed by a name)" },
           { raw: ':0:', label: "':0:' (empty path)" },
           { raw: ':', label: "':' alone" },
           { raw: 'HEAD^{', label: "'HEAD^{' (peel with no closing brace)" },
@@ -917,6 +920,28 @@ describe('internal/rev-parse-grammar', () => {
           // Assert
           expect(result).toEqual({ kind: 'tree-path', rev: 'HEAD^{/fix}', path: 'f' });
         });
+      });
+    });
+  });
+
+  describe.each([
+    ['@{-1}', { kind: 'ref-or-hex', base: '@{-1}', operations: [] }],
+    [
+      '@{-2}@{3}',
+      { kind: 'ref-or-hex', base: '@{-2}', reflog: { kind: 'index', n: 3 }, operations: [] },
+    ],
+    ['@{-1}~2', { kind: 'ref-or-hex', base: '@{-1}', operations: [{ kind: 'ancestor', n: 2 }] }],
+  ] as const)('Given the prior-checkout expression %s', (raw, expected) => {
+    describe('When parseExpression', () => {
+      it('Then @{-<n>} is the whole base, never a reflog selector', () => {
+        // Arrange
+        const sut = parseExpression;
+
+        // Act
+        const result = sut(raw);
+
+        // Assert
+        expect(result).toEqual(expected);
       });
     });
   });

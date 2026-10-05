@@ -53,6 +53,7 @@ import {
   namesNoObject,
   rereadsMisspeltRevision,
 } from './internal/misspelt-revision.js';
+import { nthPriorCheckout } from './internal/prior-checkout.js';
 import { readCandidateRef, resolveAmbiguousLadder } from './internal/refname-ambiguity.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import {
@@ -467,13 +468,19 @@ const resolveReflogBase = async (
   raw: string,
 ): Promise<ObjectId> => {
   const ref =
-    base === '' ? await currentBranchLog(ctx) : await dwimLog(ctx, interpretEmptyAt(base));
+    base === ''
+      ? await currentBranchLog(ctx)
+      : await dwimLog(ctx, await substituteBranch(ctx, base));
   if (ref === undefined) throw revparseUnresolved(raw);
   const entries = await readReflogLenient(ctx, ref);
   if (entries.length === 0) throw revparseUnresolved(raw);
   if (selector.kind === 'index') return pickByIndex(entries, selector.n, ref);
   return pickByDate(entries, selector.raw, now, raw, ctx.hashConfig);
 };
+
+/** git's `substitute_branch_name` before `dwim_log`: `@` is HEAD, `@{-<n>}` the branch it left. */
+const substituteBranch = async (ctx: Context, base: string): Promise<string> =>
+  (await nthPriorCheckout(ctx, base)) ?? interpretEmptyAt(base);
 
 /** git's `@{...}`: `dwim_ref("HEAD")`, its ambiguity warned under the empty name git passes. */
 const currentBranchLog = (ctx: Context): Promise<RefName | undefined> =>

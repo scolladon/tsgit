@@ -76,6 +76,9 @@ const TRAILING_STEP_PATTERN = /([~^])(\d*)$/;
 const DIGITS_ONLY_PATTERN = /^\d+$/;
 /** What no ref name, object id or describe output can hold. */
 const FOREIGN_BASE_PATTERN = /[~^]|@\{/;
+/** git's `@{-<n>}` prior-checkout opener: only a whole base may start with it. */
+const PRIOR_CHECKOUT_PATTERN = /^@\{-\d+\}$/;
+const PRIOR_CHECKOUT_MARK = '-';
 const PEEL_OPENER = '^{';
 const REFLOG_OPENER = '@{';
 const CLOSER = '}';
@@ -188,9 +191,9 @@ const parseBase = (
   name: string,
   raw: string,
 ): { readonly kind: 'ref-or-hex'; readonly base: string; readonly reflog?: ReflogSelector } => {
-  const selected = splitReflog(name);
+  const selected = splitReflog(name, raw);
   const base = selected?.base ?? name;
-  if (FOREIGN_BASE_PATTERN.test(base)) fail(raw);
+  if (FOREIGN_BASE_PATTERN.test(base) && !PRIOR_CHECKOUT_PATTERN.test(base)) fail(raw);
   if (selected === undefined) {
     if (base === '') fail(raw);
     return { kind: 'ref-or-hex', base };
@@ -198,14 +201,17 @@ const parseBase = (
   return { kind: 'ref-or-hex', base, reflog: selected.reflog };
 };
 
-/** git's `get_oid_basic`: a closing `@{<body>}`, its opener the last one with a non-empty body. */
+/** git's `get_oid_basic`: a closing `@{<body>}`, its opener the last one with a
+ *  non-empty body; a `@{-<n>}` there is no selector, and only leads the name. */
 const splitReflog = (
   name: string,
+  raw: string,
 ): { readonly base: string; readonly reflog: ReflogSelector } | undefined => {
   if (name.length < MIN_BRACED_LENGTH || !name.endsWith(CLOSER)) return undefined;
   const at = name.lastIndexOf(REFLOG_OPENER, name.length - MIN_BRACED_LENGTH);
   if (at === -1) return undefined;
   const body = name.slice(at + REFLOG_OPENER.length, -1);
+  if (body.startsWith(PRIOR_CHECKOUT_MARK)) return at === 0 ? undefined : fail(raw);
   const reflog: ReflogSelector = DIGITS_ONLY_PATTERN.test(body)
     ? { kind: 'index', n: Number(body) }
     : { kind: 'date', raw: body };

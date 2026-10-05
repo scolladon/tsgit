@@ -68,6 +68,7 @@ import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { readCommitData, treeOf } from './internal/history-rewrite.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { writeOrigHead } from './internal/merge-state.js';
+import { previousCheckoutArg } from './internal/prior-checkout.js';
 import { branchBaseOf, canFastForward } from './internal/rebase-fast-forward.js';
 import { resolveRebaseReplay } from './internal/rebase-replay.js';
 import {
@@ -460,14 +461,15 @@ export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<Re
   const head = await readHeadRaw(ctx);
   const headCommit = head.kind === 'symbolic' ? await resolveHeadCommit(ctx, head.target) : head.id;
   const branch = branchRefFromHead(head);
-  const upstream = await resolveCommitIsh(ctx, input.upstream);
+  const upstreamName = previousCheckoutArg(input.upstream);
+  const upstream = await resolveCommitIsh(ctx, upstreamName);
   const onto = input.onto !== undefined ? await resolveCommitIsh(ctx, input.onto) : upstream;
-  const ontoName = input.onto ?? input.upstream;
+  const ontoName = input.onto ?? upstreamName;
   const branchBase = await branchBaseOf(ctx, onto, headCommit);
   await assertCleanWorkTree(ctx, await treeOf(ctx, headCommit));
   if (input.interactive !== undefined) {
     const sides = { branch, headCommit, upstream, onto, ontoName };
-    return startInteractive(ctx, input.upstream, input.interactive, sides);
+    return startInteractive(ctx, upstreamName, input.interactive, sides);
   }
   // git fires pre-rebase only when the rebase will do work; an up-to-date rebase
   // (nothing to replay or fast-forward) returns before the hook, matching git.
@@ -475,7 +477,7 @@ export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<Re
     return { kind: 'up-to-date' };
   }
   await assertEverySourceLoadable(ctx);
-  await firePreRebase(ctx, input.upstream);
+  await firePreRebase(ctx, upstreamName);
   const toReplay = await resolveRebaseReplay(ctx, { upstream, head: headCommit });
   const todo = await buildTodoEntries(ctx, toReplay);
   await writeOrigHead(ctx, headCommit);
