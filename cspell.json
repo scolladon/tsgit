@@ -750,6 +750,7 @@
     "NONBLOCK",
     "nonbool",
     "nondeterministically",
+    "NONFASTFORWARD",
     "nonlib",
     "nonstale",
     "nopath",
