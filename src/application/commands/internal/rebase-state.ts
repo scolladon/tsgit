@@ -231,6 +231,16 @@ export const readRewrittenList = async (
   return pairs;
 };
 
+const FIXUP_GROUP_FILES = ['message-fixup', 'message-squash', 'current-fixups'] as const;
+
+/** git's `commit_staged_changes` over a fixup/squash group the caller finished
+ *  by hand: the group's messages and member list no longer apply. */
+export const dropFixupGroup = async (ctx: Context): Promise<void> => {
+  for (const name of FIXUP_GROUP_FILES) {
+    if (await ctx.fs.exists(file(ctx, name))) await ctx.fs.rm(file(ctx, name));
+  }
+};
+
 /** Remove the whole `.git/rebase-merge/` dir and `.git/REBASE_HEAD`. Idempotent. */
 export const clearRebaseState = async (ctx: Context): Promise<void> => {
   if (await ctx.fs.exists(dir(ctx))) await ctx.fs.rmRecursive(dir(ctx));

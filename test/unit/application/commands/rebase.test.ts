@@ -13,6 +13,7 @@ import {
   rebaseRun,
   rebaseSkip,
 } from '../../../../src/application/commands/rebase.js';
+import { reset } from '../../../../src/application/commands/reset.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { invalidateShallowSet } from '../../../../src/application/primitives/internal/shallow-set.js';
 import * as objectStoreMod from '../../../../src/application/primitives/object-store.js';
@@ -1664,6 +1665,68 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
         // Assert
         expect(result).toEqual({ kind: 'rebased', commits: [] });
         expect(await resolveRef(ctx, 'refs/heads/topic' as RefName)).toBe(manual);
+      });
+    });
+
+    describe.each(['fixup', 'squash'] as const)(
+      'When a conflicted %s is amended into its group by hand and continued',
+      (action) => {
+        it('Then the hand-made message stands and the group state is dropped', async () => {
+          // Arrange
+          const { ctx, t1, t2, t3 } = await seedTopicConflict();
+          await rebaseRun(ctx, {
+            upstream: 'main',
+            interactive: [
+              { action: 'pick', oid: t1 },
+              { action, oid: t2 },
+              { action: 'pick', oid: t3 },
+            ],
+          });
+          await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'RESOLVED\n');
+          await add(ctx, ['f.txt']);
+          await reset(ctx, { mode: 'soft', rev: 'HEAD~1' });
+          const amended = (await commit(ctx, { message: 't1 by hand', author: FEAT_AUTHOR })).id;
+          const sut = rebaseContinue;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result.kind).toBe('rebased');
+          const tip = await resolveRef(ctx, 'refs/heads/topic' as RefName);
+          expect((await readCommit(ctx, tip)).parents).toEqual([amended]);
+          expect((await readCommit(ctx, amended)).message).toBe('t1 by hand\n');
+        });
+      },
+    );
+
+    describe('When a conflicted squash is amended by hand and the rebase stops again later', () => {
+      it('Then the later stop carries no group state', async () => {
+        // Arrange
+        const { ctx, t1, t2, t3 } = await seedTopicConflict();
+        await rebaseRun(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'squash', oid: t2 },
+            { action: 'edit', oid: t3 },
+          ],
+        });
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'RESOLVED\n');
+        await add(ctx, ['f.txt']);
+        await reset(ctx, { mode: 'soft', rev: 'HEAD~1' });
+        await commit(ctx, { message: 't1 by hand', author: FEAT_AUTHOR });
+        const sut = rebaseContinue;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.kind).toBe('stopped');
+        const present = async (name: string) =>
+          ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/${name}`);
+        expect(await present('current-fixups')).toBe(false);
+        expect(await present('message-squash')).toBe(false);
       });
     });
 

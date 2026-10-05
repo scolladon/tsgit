@@ -612,4 +612,66 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
       });
     });
   });
+
+  describe.each(['fixup', 'squash'])(
+    'Given a %s that conflicts, amended into its group by hand',
+    (verb) => {
+      /** base f=L; topic t1 adds a, t2 sets f, t3 adds c; main sets f too. Stops on t2. */
+      const stopOnGroup = (dir: string): void => {
+        runGit(['init', '-q', '-b', 'main', dir]);
+        configGit(dir);
+        writeWork(dir, 'f.txt', 'L\n');
+        git(dir, 'add', 'f.txt');
+        gitCommit(dir, 'base');
+        git(dir, 'checkout', '-q', '-b', 'topic');
+        for (const [rel, body, title] of [
+          ['a.txt', 'a\n', 't1 subject'],
+          ['f.txt', 'TOPIC\n', 't2 subject'],
+          ['c.txt', 'c\n', 't3 subject'],
+        ] as const) {
+          writeWork(dir, rel, body);
+          git(dir, 'add', rel);
+          gitCommit(dir, title);
+        }
+        git(dir, 'checkout', '-q', 'main');
+        writeWork(dir, 'f.txt', 'MAIN\n');
+        git(dir, 'add', 'f.txt');
+        gitCommit(dir, 'm1');
+        git(dir, 'checkout', '-q', 'topic');
+        tryRunGit(['-C', dir, 'rebase', '-i', 'main'], {
+          env: {
+            ...runGitEnv(),
+            GIT_SEQUENCE_EDITOR: `perl -i -pe 's/^pick (.*t2 subject)/${verb} $1/'`,
+            GIT_EDITOR: 'true',
+          },
+        });
+        writeWork(dir, 'f.txt', 'RESOLVED\n');
+        git(dir, 'add', 'f.txt');
+        git(dir, 'reset', '-q', '--soft', 'HEAD~1');
+        gitCommit(dir, 't1 by hand');
+      };
+
+      describe('When git and tsgit each continue it', () => {
+        it('Then both keep the hand-made commit and replay the rest alike', async () => {
+          // Arrange
+          stopOnGroup(pair.peer);
+          stopOnGroup(pair.ours);
+          runGit(['-C', pair.peer, '-c', 'core.editor=true', 'rebase', '--continue']);
+          const repo = await openRepository({ cwd: pair.ours });
+          const sut = repo.rebase;
+
+          // Act
+          const result = await sut.continue();
+          await repo.dispose();
+
+          // Assert
+          expect(result.kind).toBe('rebased');
+          expect(oidAt(pair.ours, 'HEAD~1')).toBe(oidAt(pair.peer, 'HEAD~1'));
+          expect(oidAt(pair.ours, 'HEAD^{tree}')).toBe(oidAt(pair.peer, 'HEAD^{tree}'));
+          const headMessage = (dir: string) => git(dir, 'log', '-1', '--format=%B', 'HEAD');
+          expect(headMessage(pair.ours)).toBe(headMessage(pair.peer));
+        });
+      });
+    },
+  );
 });

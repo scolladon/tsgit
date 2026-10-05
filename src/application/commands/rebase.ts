@@ -77,6 +77,7 @@ import { branchBaseOf, canFastForward } from './internal/rebase-fast-forward.js'
 import { resolveRebaseReplay } from './internal/rebase-replay.js';
 import {
   clearRebaseState,
+  dropFixupGroup,
   type RebaseState,
   type RebaseStop,
   readRebaseState,
@@ -1204,9 +1205,13 @@ const resumeInteractiveStop = async (
   tree: ObjectId,
   currentHead: ObjectId,
 ): Promise<ObjectId> => {
-  if (state.currentFixups !== undefined)
+  const clean = await treeMatchesCommit(ctx, tree, currentHead);
+  const byHand = clean && state.amend !== currentHead;
+  if (state.currentFixups !== undefined && !byHand) {
     return commitFixupResolution(ctx, state, tree, currentHead);
-  if (await treeMatchesCommit(ctx, tree, currentHead)) return currentHead;
+  }
+  if (state.currentFixups !== undefined) await dropFixupGroup(ctx);
+  if (clean) return currentHead;
   if (state.amend === undefined) return commitStoppedResolution(ctx, state, tree, currentHead);
   if (state.amend !== currentHead) throw await uncommittedOnTopOfEdit(ctx, currentHead);
   const amendCommit = await readCommitData(ctx, state.amend);
