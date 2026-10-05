@@ -57,6 +57,8 @@ beforeAll(() => {
   dated(['-C', work, 'commit', '-q', '--allow-empty', '-m', 'a']);
   dated(['-C', work, 'checkout', '-q', '-b', 'side']);
   dated(['-C', work, 'commit', '-q', '--allow-empty', '-m', 'side']);
+  dated(['-C', work, 'checkout', '-q', '-b', 'side2', 'main']);
+  dated(['-C', work, 'commit', '-q', '--allow-empty', '-m', 'side2']);
   dated(['-C', work, 'checkout', '-q', 'main']);
   dated(['clone', '-q', '--bare', work, peerPath]);
 });
@@ -79,7 +81,11 @@ const setUp = (label: string, branch: string, config: ReadonlyArray<readonly [st
     dated(['-C', dir, 'remote', 'set-url', 'origin', url]);
     dated(['-C', dir, 'checkout', '-q', '-B', branch]);
     dated(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'local']);
-    for (const [key, value] of config) dated(['-C', dir, 'config', key, value]);
+    const seen = new Set<string>();
+    for (const [key, value] of config) {
+      dated(['-C', dir, 'config', ...(seen.has(key) ? ['--add'] : []), key, value]);
+      seen.add(key);
+    }
   }
   return dirs;
 };
@@ -110,6 +116,24 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
       config: [
         ['remote.origin.fetch', '+refs/heads/*:refs/remotes/mirror/*'],
         ['branch.main.remote', 'origin'],
+        ['branch.main.merge', 'refs/heads/side'],
+      ],
+    },
+    {
+      label: 'octopus',
+      branch: 'main',
+      config: [
+        ['branch.main.remote', 'origin'],
+        ['branch.main.merge', 'refs/heads/side'],
+        ['branch.main.merge', 'refs/heads/side2'],
+      ],
+    },
+    {
+      label: 'reduced-to-one',
+      branch: 'main',
+      config: [
+        ['branch.main.remote', 'origin'],
+        ['branch.main.merge', 'refs/heads/main'],
         ['branch.main.merge', 'refs/heads/side'],
       ],
     },

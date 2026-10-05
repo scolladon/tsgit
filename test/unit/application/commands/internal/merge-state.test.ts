@@ -6,14 +6,32 @@ import {
   readMergeHead,
   readMergeMsg,
   readOrigHead,
-  writeMergeHead,
+  writeMergeHeads,
   writeMergeMsg,
   writeOrigHead,
 } from '../../../../../src/application/commands/internal/merge-state.js';
 import type { ObjectId } from '../../../../../src/domain/objects/index.js';
 
 describe('merge-state', () => {
-  describe('writeMergeHead', () => {
+  describe('writeMergeHeads', () => {
+    describe('Given several heads merged', () => {
+      describe('When writeMergeHeads is called', () => {
+        it('Then .git/MERGE_HEAD lists each id on its own line, in order', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await init(ctx);
+          const sut = writeMergeHeads;
+
+          // Act
+          await sut(ctx, ['b'.repeat(40) as ObjectId, 'a'.repeat(40) as ObjectId]);
+
+          // Assert
+          const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`);
+          expect(result).toBe(`${'b'.repeat(40)}\n${'a'.repeat(40)}\n`);
+        });
+      });
+    });
+
     describe('Given a target ObjectId', () => {
       describe('When writeMergeHead is called', () => {
         it('Then .git/MERGE_HEAD contains the id followed by a single newline', async () => {
@@ -23,7 +41,7 @@ describe('merge-state', () => {
           const targetId = 'a'.repeat(40) as ObjectId;
 
           // Act
-          await writeMergeHead(ctx, targetId);
+          await writeMergeHeads(ctx, [targetId]);
 
           // Assert — exact content (not just contains), kills mutants that drop the LF.
           const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`);
@@ -42,8 +60,8 @@ describe('merge-state', () => {
           const second = 'b'.repeat(40) as ObjectId;
 
           // Act
-          await writeMergeHead(ctx, first);
-          await writeMergeHead(ctx, second);
+          await writeMergeHeads(ctx, [first]);
+          await writeMergeHeads(ctx, [second]);
 
           // Assert
           const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`);
@@ -135,7 +153,7 @@ describe('merge-state', () => {
           const ctx = createMemoryContext();
           await init(ctx);
           const targetId = 'd'.repeat(40) as ObjectId;
-          await writeMergeHead(ctx, targetId);
+          await writeMergeHeads(ctx, [targetId]);
 
           // Act
           const result = await readMergeHead(ctx);
@@ -312,7 +330,7 @@ describe('merge-state', () => {
           // Arrange
           const ctx = createMemoryContext();
           await init(ctx);
-          await writeMergeHead(ctx, 'a'.repeat(40) as ObjectId);
+          await writeMergeHeads(ctx, ['a'.repeat(40) as ObjectId]);
           await writeMergeMsg(ctx, 'msg');
           await writeOrigHead(ctx, 'b'.repeat(40) as ObjectId);
 

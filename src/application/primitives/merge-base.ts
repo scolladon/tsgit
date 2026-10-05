@@ -676,6 +676,18 @@ export const mergeBasesOf = async (
   return findAll ? bases : bases.slice(0, 1);
 };
 
+/**
+ * git's `reduce_heads`: `commits` deduped in order, less every one reachable
+ * from another — the independent tips, in the order they were given.
+ */
+export const reduceHeads = async (
+  ctx: Context,
+  commits: readonly ObjectId[],
+): Promise<readonly ObjectId[]> => {
+  const read = makeReadCommit(ctx, createObjectTypeTable());
+  return removeRedundant(read, commits, await correctedCommitDatesEnabled(ctx));
+};
+
 const COMMIT_PARSE_FAILED = 'COMMIT_PARSE_FAILED';
 
 /**

@@ -56,6 +56,12 @@ export type CommandError =
   | { readonly code: 'REMOTE_ADVERTISES_NO_REFS' }
   | { readonly code: 'NO_PROMISOR_REMOTE' }
   | {
+      readonly code: 'OCTOPUS_MERGE_FAILED';
+      /** The head git's octopus could not merge on its own — the name it was given. */
+      readonly head: string;
+      readonly reason: OctopusFailureReason;
+    }
+  | {
       readonly code: 'NON_FAST_FORWARD';
       readonly ref: RefName;
       readonly local: ObjectId;
@@ -559,6 +565,15 @@ export const remoteAdvertisesNoRefs = (): TsgitError =>
   new TsgitError({ code: 'REMOTE_ADVERTISES_NO_REFS' });
 
 export const noPromisorRemote = (): TsgitError => new TsgitError({ code: 'NO_PROMISOR_REMOTE' });
+
+/**
+ * Why git's octopus strategy gave up (`Merge with strategy octopus failed.`):
+ * a head before the last left conflicts, or a head shares no history.
+ */
+export type OctopusFailureReason = 'conflict-before-last-head' | 'no-common-ancestor';
+
+export const octopusMergeFailed = (head: string, reason: OctopusFailureReason): TsgitError =>
+  new TsgitError({ code: 'OCTOPUS_MERGE_FAILED', head, reason });
 
 export const nonFastForward = (ref: RefName, local: ObjectId, remote: ObjectId): TsgitError =>
   new TsgitError({ code: 'NON_FAST_FORWARD', ref, local, remote });

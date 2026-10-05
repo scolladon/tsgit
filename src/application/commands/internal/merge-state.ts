@@ -25,9 +25,12 @@ const mergeHeadPath = (ctx: Context): string => `${ctx.layout.gitDir}/${MERGE_HE
 const mergeMsgPath = (ctx: Context): string => `${ctx.layout.gitDir}/${MERGE_MSG}`;
 const origHeadPath = (ctx: Context): string => `${ctx.layout.gitDir}/${ORIG_HEAD}`;
 
-/** Write `.git/MERGE_HEAD` containing the merge target's commit id + LF. */
-export const writeMergeHead = async (ctx: Context, targetId: ObjectId): Promise<void> => {
-  await ctx.fs.writeUtf8(mergeHeadPath(ctx), `${targetId}\n`);
+/** Write `.git/MERGE_HEAD`: each head merged's commit id + LF, in merge order. */
+export const writeMergeHeads = async (
+  ctx: Context,
+  targetIds: ReadonlyArray<ObjectId>,
+): Promise<void> => {
+  await ctx.fs.writeUtf8(mergeHeadPath(ctx), targetIds.map((id) => `${id}\n`).join(''));
 };
 
 /** Write `.git/MERGE_MSG` containing the merge message draft. */
@@ -41,21 +44,24 @@ export const writeOrigHead = async (ctx: Context, oldHeadId: ObjectId): Promise<
 };
 
 /**
- * Read `.git/MERGE_HEAD` and return the recorded target ObjectId, or
- * `undefined` when the file is absent. Used by `commit` to pick up the
- * second parent for a resolved merge.
+ * Read every `.git/MERGE_HEAD` line — one per head merged, in merge order —
+ * or `undefined` when the file is absent or empty. Each line is validated via
+ * the ObjectId factory: a corrupt MERGE_HEAD (mid-write crash) refuses with
+ * INVALID_OBJECT_ID rather than produce a malformed parent.
  */
-export const readMergeHead = async (ctx: Context): Promise<ObjectId | undefined> => {
+export const readMergeHeads = async (
+  ctx: Context,
+): Promise<ReadonlyArray<ObjectId> | undefined> => {
   const path = mergeHeadPath(ctx);
   if (!(await ctx.fs.exists(path))) return undefined;
-  const content = await ctx.fs.readUtf8(path);
-  const trimmed = content.trim();
-  if (trimmed.length === 0) return undefined;
-  // Validate via the ObjectId factory — a corrupt MERGE_HEAD (mid-write
-  // crash) would otherwise produce a malformed second parent on the
-  // resolving commit. Factory throws INVALID_OBJECT_ID for non-40-hex.
-  return ObjectIdFactory.from(trimmed);
+  const lines = (await ctx.fs.readUtf8(path)).split('\n').map((line) => line.trim());
+  const ids = lines.filter((line) => line.length > 0).map((line) => ObjectIdFactory.from(line));
+  return ids.length === 0 ? undefined : ids;
 };
+
+/** What `MERGE_HEAD` resolves to as a ref — its first line — or `undefined` when absent. */
+export const readMergeHead = async (ctx: Context): Promise<ObjectId | undefined> =>
+  (await readMergeHeads(ctx))?.[0];
 
 /**
  * Read `.git/ORIG_HEAD` and return the recorded pre-merge ObjectId,

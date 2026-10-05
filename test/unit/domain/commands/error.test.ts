@@ -58,6 +58,7 @@ import {
   nothingToCommit,
   noUpstreamConfigured,
   objectFormatConflict,
+  octopusMergeFailed,
   operationInProgress,
   pathspecBeyondSymlink,
   pathspecNoMatch,
@@ -468,6 +469,25 @@ describe('domain commands error — factory data', () => {
           ref: 'refs/heads/main',
           local: OID1,
           remote: OID2,
+        });
+      });
+    });
+  });
+
+  describe('Given the octopusMergeFailed error helper', () => {
+    describe('When called', () => {
+      it('Then data carries the head and the reason', () => {
+        // Arrange
+        const sut = octopusMergeFailed;
+
+        // Act
+        const result = sut('b2', 'no-common-ancestor');
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'OCTOPUS_MERGE_FAILED',
+          head: 'b2',
+          reason: 'no-common-ancestor',
         });
       });
     });
@@ -1466,6 +1486,10 @@ describe('domain commands error — extractDetail message formatting', () => {
       'TARGET_DIRECTORY_NOT_EMPTY: target directory is not empty: repo',
     ],
     [{ code: 'REMOTE_ADVERTISES_NO_REFS' }, 'REMOTE_ADVERTISES_NO_REFS: remote advertised no refs'],
+    [
+      { code: 'OCTOPUS_MERGE_FAILED', head: 'b1', reason: 'conflict-before-last-head' },
+      'OCTOPUS_MERGE_FAILED: Merge with strategy octopus failed: conflict-before-last-head at b1',
+    ],
     [
       { code: 'NON_FAST_FORWARD', ref: 'refs/heads/main' as RefName, local: OID1, remote: OID2 },
       `NON_FAST_FORWARD: non-fast-forward update for refs/heads/main: local=${OID1} remote=${OID2}`,

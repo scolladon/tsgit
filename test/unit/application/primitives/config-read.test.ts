@@ -495,6 +495,27 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given a [branch "main"] merge key set twice, across two sections', () => {
+    describe('When readConfig', () => {
+      it('Then merges keeps every value in config order and merge the last', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(
+          ctx,
+          '[branch "main"]\n  merge = refs/heads/a\n[branch "main"]\n  merge = refs/heads/b\n',
+        );
+        const sut = readConfig;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.branch?.get('main')?.merges).toEqual(['refs/heads/a', 'refs/heads/b']);
+        expect(result.branch?.get('main')?.merge).toBe('refs/heads/b');
+      });
+    });
+  });
+
   describe('Given a [branch "main"] section with pushRemote', () => {
     describe('When readConfig', () => {
       it('Then parsed.branch.get("main").pushRemote is set', async () => {

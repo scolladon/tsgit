@@ -12,7 +12,7 @@ import {
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { bindCherryPickNamespace } from '../../../../src/application/commands/internal/cherry-pick-namespace.js';
-import { writeMergeHead } from '../../../../src/application/commands/internal/merge-state.js';
+import { writeMergeHeads } from '../../../../src/application/commands/internal/merge-state.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
@@ -1233,7 +1233,7 @@ describe('cherryPickRun', () => {
       it('Then refuses with OPERATION_IN_PROGRESS', async () => {
         // Arrange — a stray MERGE_HEAD
         const { ctx, base } = await seedFeature();
-        await writeMergeHead(ctx, base);
+        await writeMergeHeads(ctx, [base]);
 
         // Act
         const code = await codeOf(() => cherryPickRun(ctx, { commits: ['feature'] }));

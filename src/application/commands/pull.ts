@@ -11,7 +11,6 @@
  */
 import {
   fetchRejected,
-  invalidOption,
   noUpstreamConfigured,
   pullNoMergeCandidates,
 } from '../../domain/commands/error.js';
@@ -113,18 +112,16 @@ const noMergeCandidates = (
   return pullNoMergeCandidates('merge-ref-not-fetched', upstream.remote, upstream.merge);
 };
 
-const OCTOPUS_REFUSAL = 'merging more than one fetched ref (an octopus pull) is not supported';
-const mergeHead = async (
+/** git's `handle_fetch_head`: every for-merge FETCH_HEAD line, in order. */
+const mergeHeads = async (
   ctx: Context,
   opts: PullOptions,
   upstream: Upstream,
   branchRef: RefName | undefined,
-): Promise<FetchHeadLine> => {
+): Promise<ReadonlyArray<FetchHeadLine>> => {
   const heads = (await readFetchHead(ctx)).filter((line) => line.forMerge);
-  const [head] = heads;
-  if (head === undefined) throw noMergeCandidates(opts, upstream, branchRef);
-  if (heads.length > 1) throw invalidOption('ref', OCTOPUS_REFUSAL);
-  return head;
+  if (heads.length === 0) throw noMergeCandidates(opts, upstream, branchRef);
+  return heads;
 };
 
 type RejectedUpdate = Extract<FetchUpdate, { readonly status: 'rejected' }>;
@@ -159,14 +156,14 @@ export const pull = async (ctx: Context, opts: PullOptions = {}): Promise<PullRe
   });
 
   assertNothingRejected(fetchResult);
-  const fetched = await mergeHead(ctx, opts, upstream, branchRef);
+  const fetched = await mergeHeads(ctx, opts, upstream, branchRef);
 
   // git sets GIT_REFLOG_ACTION=pull for the integrate step; this is its analogue.
-  const mergeInternal: MergeInternalOptions = { reflogAction: 'pull', head: fetched };
+  const mergeInternal: MergeInternalOptions = { reflogAction: 'pull', heads: fetched };
   const mergeResult = await mergeRun(
     ctx,
     {
-      rev: fetched.id,
+      rev: fetched.map((line) => line.id),
       ...(opts.message !== undefined ? { message: opts.message } : {}),
       // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ fastForward: undefined }`, which `merge` reads as `!== 'never'` (so a fast-forward proceeds) and `=== 'only'` (false) — identical to omitting it. The drop direction + the `!==` flip are killed by the fastForward-forwarding tests.
       ...(opts.fastForward !== undefined ? { fastForward: opts.fastForward } : {}),

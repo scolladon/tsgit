@@ -3,7 +3,11 @@ import { afterEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import * as readCommitGraphModule from '../../../../src/application/primitives/internal/read-commit-graph.js';
 import * as readCommitMetaModule from '../../../../src/application/primitives/internal/read-commit-meta.js';
-import { inMergeBases, mergeBase } from '../../../../src/application/primitives/merge-base.js';
+import {
+  inMergeBases,
+  mergeBase,
+  reduceHeads,
+} from '../../../../src/application/primitives/merge-base.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
@@ -1294,6 +1298,40 @@ describe('inMergeBases without a caller table', () => {
             `bad parent ${tree} in commit ${parent}`,
           ],
         });
+      });
+    });
+  });
+});
+
+describe('reduceHeads', () => {
+  describe('Given a diamond a <- b, c <- d', () => {
+    describe('When reducing heads that repeat and reach one another', () => {
+      it('Then the independent tips remain, deduped in the order given', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { a, b, c } = await buildDiamond(ctx);
+        const sut = reduceHeads;
+
+        // Act
+        const result = await sut(ctx, [c, a, c, b]);
+
+        // Assert
+        expect(result).toEqual([c, b]);
+      });
+    });
+
+    describe('When reducing a head and its descendant', () => {
+      it('Then only the descendant remains', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { a, d } = await buildDiamond(ctx);
+        const sut = reduceHeads;
+
+        // Act
+        const result = await sut(ctx, [a, d]);
+
+        // Assert
+        expect(result).toEqual([d]);
       });
     });
   });

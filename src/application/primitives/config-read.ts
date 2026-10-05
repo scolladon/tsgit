@@ -126,6 +126,8 @@ export interface ParsedConfig {
     {
       readonly remote?: string;
       readonly merge?: string;
+      /** Every `branch.<name>.merge` value, in config order — git merges them all. */
+      readonly merges?: ReadonlyArray<string>;
       /** `branch.<name>.pushRemote` — overrides the push-remote for this branch. */
       readonly pushRemote?: string;
     }
@@ -1341,7 +1343,10 @@ interface MutableParsedConfig {
     }
   >;
   remotePushDefault?: string;
-  branch?: Map<string, { remote?: string; merge?: string; pushRemote?: string }>;
+  branch?: Map<
+    string,
+    { remote?: string; merge?: string; merges?: ReadonlyArray<string>; pushRemote?: string }
+  >;
   submodule?: Map<string, { url?: string; active?: boolean; update?: string }>;
   merge?: Map<string, { name?: string; driver?: string; recursive?: string }>;
   diff?: Map<string, { textconv?: string; cachetextconv?: boolean; binary?: boolean }>;
@@ -1763,18 +1768,31 @@ const mergeRemoteTopLevel = (acc: { remotePushDefault?: string }, sec: IniSectio
 };
 
 const mergeBranch = (
-  acc: { branch?: Map<string, { remote?: string; merge?: string; pushRemote?: string }> },
+  acc: {
+    branch?: Map<
+      string,
+      { remote?: string; merge?: string; merges?: ReadonlyArray<string>; pushRemote?: string }
+    >;
+  },
   name: string,
   sec: IniSection,
 ): void => {
   acc.branch ??= new Map();
   const current = acc.branch.get(name) ?? {};
-  const next: { remote?: string; merge?: string; pushRemote?: string } = { ...current };
+  const next: {
+    remote?: string;
+    merge?: string;
+    merges?: ReadonlyArray<string>;
+    pushRemote?: string;
+  } = { ...current };
   for (const { key, value } of sec.entries) {
     // String-typed fields skip null (valueless key treated as absent).
     if (value === null) continue;
     if (key === 'remote') next.remote = value;
-    else if (key === 'merge') next.merge = value;
+    else if (key === 'merge') {
+      next.merge = value;
+      next.merges = [...(next.merges ?? []), value];
+    }
     // Git config keys are case-insensitive; compare pushRemote on the lower-cased key.
     else if (key.toLowerCase() === 'pushremote') next.pushRemote = value;
   }
@@ -2384,7 +2402,10 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
       }
     >;
     remotePushDefault?: string;
-    branch?: ReadonlyMap<string, { remote?: string; merge?: string; pushRemote?: string }>;
+    branch?: ReadonlyMap<
+      string,
+      { remote?: string; merge?: string; merges?: ReadonlyArray<string>; pushRemote?: string }
+    >;
     submodule?: ReadonlyMap<string, { url?: string; active?: boolean; update?: string }>;
     merge?: ReadonlyMap<string, { name?: string; driver?: string; recursive?: string }>;
     diff?: ReadonlyMap<string, { textconv?: string; cachetextconv?: boolean; binary?: boolean }>;

@@ -30,6 +30,7 @@ import {
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { assertOperationalRepositorySettingsFirst } from '../primitives/internal/repo-state.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
+import { reduceHeads } from '../primitives/merge-base.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { getRefStore } from '../primitives/ref-store.js';
@@ -52,7 +53,7 @@ import {
 import {
   clearMergeMsg,
   clearMergeState,
-  readMergeHead,
+  readMergeHeads,
   readMergeMsg,
 } from './internal/merge-state.js';
 import { assertNoPendingOperation, readHeadRaw, requireWorkTree } from './internal/repo-state.js';
@@ -134,7 +135,7 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   const treeId = await buildTreeFromIndex(ctx, index.entries);
   const head = await readHeadRaw(ctx);
   const parentId = head.kind === 'symbolic' ? await tryResolve(ctx, head.target) : head.id;
-  const parents = buildParents(parentId, mergeHead);
+  const parents = await buildParents(ctx, parentId, markers.mergeHeads);
   if (!opts.allowEmpty && parentId !== undefined && mergeHead === undefined) {
     // Tree-equality guard intentionally skipped during a merge resolution
     // (mergeHead !== undefined). A merge commit with a tree identical to
@@ -250,15 +251,21 @@ const writeCommitRef = async (ctx: Context, update: CommitRefUpdate): Promise<vo
 
 interface PendingMarkers {
   readonly mergeHead: ObjectId | undefined;
+  /** Every MERGE_HEAD line; `mergeHead` is the first. */
+  readonly mergeHeads: ReadonlyArray<ObjectId> | undefined;
   readonly cherryPickHead: ObjectId | undefined;
   readonly revertHead: ObjectId | undefined;
 }
 
-const readPendingMarkers = async (ctx: Context): Promise<PendingMarkers> => ({
-  mergeHead: await readMergeHead(ctx),
-  cherryPickHead: await readCherryPickHead(ctx),
-  revertHead: await readRevertHead(ctx),
-});
+const readPendingMarkers = async (ctx: Context): Promise<PendingMarkers> => {
+  const mergeHeads = await readMergeHeads(ctx);
+  return {
+    mergeHead: mergeHeads?.[0],
+    mergeHeads,
+    cherryPickHead: await readCherryPickHead(ctx),
+    revertHead: await readRevertHead(ctx),
+  };
+};
 
 const pendingExceptOf = (m: PendingMarkers): PendingOperation | undefined => {
   if (m.mergeHead !== undefined) return MERGE;
@@ -319,14 +326,19 @@ const commitReflogMessage = (
   return commitReflog(subject);
 };
 
-const buildParents = (
+/**
+ * git's `commit` parents: HEAD, then — resolving a merge — every MERGE_HEAD
+ * line, reduced by `reduce_heads` (git skips that only under a `no-ff`
+ * MERGE_MODE, which tsgit's merge never writes).
+ */
+const buildParents = async (
+  ctx: Context,
   parentId: ObjectId | undefined,
-  mergeHead: ObjectId | undefined,
-): ReadonlyArray<ObjectId> => {
-  const parents: ObjectId[] = [];
-  if (parentId !== undefined) parents.push(parentId);
-  if (mergeHead !== undefined) parents.push(mergeHead);
-  return parents;
+  mergeHeads: ReadonlyArray<ObjectId> | undefined,
+): Promise<ReadonlyArray<ObjectId>> => {
+  const head = parentId === undefined ? [] : [parentId];
+  if (mergeHeads === undefined) return head;
+  return reduceHeads(ctx, [...head, ...mergeHeads]);
 };
 
 const rejectUnmergedIndex = (entries: ReadonlyArray<IndexEntry>): void => {

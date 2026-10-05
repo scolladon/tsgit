@@ -13,7 +13,6 @@ import { writeSymbolicRef } from '../../../../src/application/primitives/write-s
 import * as writeTreeMod from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
-import { ObjectId as ObjectIdFactory } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { HookResult, HookRunner } from '../../../../src/ports/hook-runner.js';
 import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
@@ -25,6 +24,21 @@ const author: AuthorIdentity = {
   timestamp: 1_700_000_000,
   timezoneOffset: '+0000',
 };
+
+/** A root commit unrelated to the branch — a real head a merge resolution can record. */
+const sideCommit = async (ctx: Context): Promise<ObjectId> =>
+  writeObject(ctx, {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: {
+      tree: await writeTreeMod.writeTree(ctx, []),
+      parents: [],
+      author,
+      committer: author,
+      message: 'side\n',
+      extraHeaders: [],
+    },
+  });
 
 const seed = async (workingTree: Readonly<Record<string, string>> = { 'a.txt': 'a' }) => {
   const ctx = createMemoryContext();
@@ -315,7 +329,7 @@ describe('commit', () => {
         // so the tree equals HEAD's tree.
         const ctx = await seed();
         const first = await commit(ctx, { message: 'first', author });
-        const mergeHead = ObjectIdFactory.from('1'.repeat(40));
+        const mergeHead = await sideCommit(ctx);
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${mergeHead}\n`);
 
         // Act — the tree-equality guard must be skipped during a merge resolution.
@@ -337,7 +351,7 @@ describe('commit', () => {
         // prefix, not the plain `commit:` prefix and not an empty string.
         const ctx = await seed();
         await commit(ctx, { message: 'first', author });
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${'1'.repeat(40)}\n`);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${await sideCommit(ctx)}\n`);
 
         // Act
         await commit(ctx, { message: 'resolve the merge', author });
@@ -358,7 +372,7 @@ describe('commit', () => {
         // Arrange — both an explicit message and a MERGE_MSG draft are available.
         const ctx = await seed();
         await commit(ctx, { message: 'first', author });
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${'1'.repeat(40)}\n`);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${await sideCommit(ctx)}\n`);
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_MSG`, 'draft from merge');
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'changed');
         await add(ctx, ['a.txt']);
@@ -467,7 +481,7 @@ describe('commit', () => {
         // Arrange
         const ctx = await seed();
         await commit(ctx, { message: 'first', author });
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${'1'.repeat(40)}\n`);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${await sideCommit(ctx)}\n`);
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_MSG`, 'merge draft');
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'changed');
         await add(ctx, ['a.txt']);
@@ -740,7 +754,7 @@ describe('commit — hooks', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'first', author });
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${'1'.repeat(40)}\n`);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${await sideCommit(ctx)}\n`);
 
         // Act
         await commit(ctx, { message: 'resolve', author });

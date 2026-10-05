@@ -219,7 +219,7 @@ const refMapRequest = (
   currentBranch: string | undefined,
 ): RefMapRequest => {
   const branch = currentBranch === undefined ? undefined : config.branch?.get(currentBranch);
-  const merge = branch?.remote !== undefined && branch.merge !== undefined ? [branch.merge] : [];
+  const merge = branch?.remote !== undefined ? (branch.merges ?? []) : [];
   return {
     cliSpecs: assertFetchRefspecs(opts.refspecs ?? []),
     refmap: assertFetchRefspecs(opts.refmap ?? []),

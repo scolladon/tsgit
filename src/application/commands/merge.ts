@@ -1,4 +1,5 @@
 import { nonFastForward, workingTreeDirty } from '../../domain/commands/error.js';
+import type { FlatTreeEntry } from '../../domain/diff/flat-tree.js';
 import { conflictsToIndexEntries, sortedRecordedPaths } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
 import {
@@ -53,7 +54,7 @@ import {
   writeWorkingTreeFileStream,
 } from '../primitives/internal/write-working-tree-file.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
-import { tryMergeBasesOf } from '../primitives/merge-base.js';
+import { reduceHeads, tryMergeBasesOf } from '../primitives/merge-base.js';
 import { assertEverySourceLoadable } from '../primitives/object-store.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -74,7 +75,8 @@ import {
   formatMergeMessage,
   type MergeHead,
 } from './internal/merge-message.js';
-import { writeMergeHead, writeMergeMsg, writeOrigHead } from './internal/merge-state.js';
+import { writeMergeHeads, writeMergeMsg, writeOrigHead } from './internal/merge-state.js';
+import { type OctopusRemote, type OctopusResult, octopusMerge } from './internal/octopus-merge.js';
 import {
   assertNoPendingOperation,
   assertOperationalRepositorySettingsFirst,
@@ -88,8 +90,11 @@ export type { SparseMatcher } from '../../domain/sparse/index.js';
 
 const HEAD: RefName = 'HEAD' as RefName;
 
+type FlatEntries = ReadonlyMap<FilePath, FlatTreeEntry>;
+
 export interface MergeRunInput {
-  readonly rev: string;
+  /** The head merged — or several, which git merges with its `octopus` strategy. */
+  readonly rev: string | ReadonlyArray<string>;
   readonly message?: string;
   /**
    * Fast-forward policy (git `--ff` / `--ff-only` / `--no-ff`):
@@ -115,14 +120,15 @@ export interface MergeInternalOptions {
    */
   readonly reflogAction?: string;
   /**
-   * The head merged, as FETCH_HEAD describes it — what the default message is
-   * formatted from. Defaults to `merge_name`'s description of `rev`.
+   * The heads merged, as FETCH_HEAD's for-merge lines describe them — what the
+   * default message is formatted from. Defaults to `merge_name`'s description
+   * of each head left once `reduce_heads` has run.
    */
-  readonly head?: MergeHead;
+  readonly heads?: ReadonlyArray<MergeHead>;
 }
 
 /** A merge whose message is settled — the caller's, or git's default. */
-type SettledMerge = MergeRunInput & { readonly message: string };
+type SettledMerge = Omit<MergeRunInput, 'rev'> & { readonly rev: string; readonly message: string };
 
 export interface MergeConflictDescriptor {
   readonly path: FilePath;
@@ -141,6 +147,7 @@ export type MergeResult =
   | {
       readonly kind: 'conflict';
       readonly conflicts: ReadonlyArray<MergeConflictDescriptor>;
+      /** What `MERGE_HEAD` resolves to: the first head merged. */
       readonly mergeHead: ObjectId;
       readonly origHead: ObjectId;
     };
@@ -182,11 +189,14 @@ const settleMessage = async (
   opts: MergeRunInput,
   internal: MergeInternalOptions,
   branch: RefName,
-  theirId: ObjectId,
+  remotes: ReadonlyArray<OctopusRemote>,
 ): Promise<SettledMerge> => {
-  if (opts.message !== undefined) return { ...opts, message: opts.message };
-  const head = internal.head ?? (await describeMergeHead(ctx, opts.rev, theirId));
-  return { ...opts, message: await formatMergeMessage(ctx, head, shortBranchName(branch)) };
+  const rev = remotes.map((remote) => remote.name).join(' ');
+  if (opts.message !== undefined) return { ...opts, rev, message: opts.message };
+  const heads =
+    internal.heads ??
+    (await Promise.all(remotes.map((remote) => describeMergeHead(ctx, remote.name, remote.id))));
+  return { ...opts, rev, message: await formatMergeMessage(ctx, heads, shortBranchName(branch)) };
 };
 
 const computeMerge = async (
@@ -203,8 +213,32 @@ const computeMerge = async (
     throw unsupportedOperation('merge', 'cannot merge with detached HEAD');
   }
   const ourId = await resolveRef(ctx, head.target);
-  const theirId = await resolveCommitIsh(ctx, input.rev);
-  const opts = await settleMessage(ctx, input, internal, head.target, theirId);
+  const named = await resolveRemotes(ctx, typeof input.rev === 'string' ? [input.rev] : input.rev);
+  if (named.length === 1) return twoHeadMerge(ctx, input, internal, head.target, ourId, named[0]!);
+  return manyHeadMerge(ctx, input, internal, head.target, ourId, named);
+};
+
+/** git's `get_merge_parent` over each name given, in order. */
+const resolveRemotes = async (
+  ctx: Context,
+  revs: ReadonlyArray<string>,
+): Promise<OctopusRemote[]> => {
+  const remotes: OctopusRemote[] = [];
+  for (const name of revs) remotes.push({ id: await resolveCommitIsh(ctx, name), name });
+  return remotes;
+};
+
+/** A merge `reduce_heads` leaves with one remote head: git's two-head path. */
+const twoHeadMerge = async (
+  ctx: Context,
+  input: MergeRunInput,
+  internal: MergeInternalOptions,
+  branch: RefName,
+  ourId: ObjectId,
+  remote: OctopusRemote,
+): Promise<MergeResult> => {
+  const theirId = remote.id;
+  const opts = await settleMessage(ctx, input, internal, branch, [remote]);
   await writeOrigHead(ctx, ourId);
   await assertEverySourceLoadable(ctx);
   // Stryker disable next-line ConditionalExpression: equivalent — when ourId===theirId, mergeBase returns that same commit, so the `base === theirId` check below yields the identical up-to-date result.
@@ -215,12 +249,59 @@ const computeMerge = async (
   const [base] = bases;
   if (base === theirId) return { kind: 'up-to-date', id: ourId };
   if (base === ourId && opts.fastForward !== 'never') {
-    return fastForward(ctx, opts, internal, head.target, { ourId, theirId });
+    return fastForward(ctx, opts, internal, branch, { ourId, theirId });
   }
   if (opts.fastForward === 'only') {
-    throw nonFastForward(head.target, ourId, theirId);
+    throw nonFastForward(branch, ourId, theirId);
   }
-  return mergeCommit(ctx, opts, internal, head.target, ourId, theirId, base);
+  return mergeCommit(ctx, opts, internal, branch, ourId, theirId, base);
+};
+
+/**
+ * Several heads: git's `reduce_parents` drops repeats, heads `HEAD` reaches,
+ * and `HEAD` itself when another head reaches it; one remote head left takes
+ * the two-head path, several take the `octopus` strategy.
+ */
+const manyHeadMerge = async (
+  ctx: Context,
+  input: MergeRunInput,
+  internal: MergeInternalOptions,
+  branch: RefName,
+  ourId: ObjectId,
+  named: ReadonlyArray<OctopusRemote>,
+): Promise<MergeResult> => {
+  const reduced = await reduceHeads(ctx, [ourId, ...named.map((remote) => remote.id)]);
+  const remotes = reduced.flatMap(
+    (id) => named.find((remote) => remote.id === id && id !== ourId) ?? [],
+  );
+  const described = describedSurvivors(internal, named, reduced);
+  if (remotes.length === 1) return twoHeadMerge(ctx, input, described, branch, ourId, remotes[0]!);
+  if (remotes.length === 0) {
+    await writeOrigHead(ctx, ourId);
+    return { kind: 'up-to-date', id: ourId };
+  }
+  const opts = await settleMessage(ctx, input, described, branch, remotes);
+  await writeOrigHead(ctx, ourId);
+  await assertEverySourceLoadable(ctx);
+  if (opts.fastForward === 'only') throw nonFastForward(branch, ourId, remotes[0]!.id);
+  const keepsHead = reduced.includes(ourId) || opts.fastForward === 'never';
+  const parents = [...(keepsHead ? [ourId] : []), ...remotes.map((remote) => remote.id)];
+  return octopus(ctx, { opts, internal, branch, ourId, parents }, remotes);
+};
+
+/**
+ * `fmt_merge_msg`'s `find_merge_parents`: a described head (a FETCH_HEAD line)
+ * is named in the message only while its commit survives `reduce_heads` with
+ * `HEAD` — one `HEAD` already contains drops out.
+ */
+const describedSurvivors = (
+  internal: MergeInternalOptions,
+  named: ReadonlyArray<OctopusRemote>,
+  reduced: ReadonlyArray<ObjectId>,
+): MergeInternalOptions => {
+  if (internal.heads === undefined) return internal;
+  const heads = internal.heads.filter((_, at) => reduced.includes(named[at]!.id));
+  return { ...internal, heads };
 };
 
 const fastForward = async (
@@ -262,7 +343,8 @@ const mergeCommit = async (
     if (treeResult.kind === 'conflict') {
       return persistConflictState(ctx, opts, treeResult, ourId, theirId);
     }
-    return commitCleanMerge(ctx, opts, internal, branchName, ourId, theirId, treeResult.tree);
+    const commit = { opts, internal, branch: branchName, ourId, parents: [ourId, theirId] };
+    return commitCleanMerge(ctx, commit, treeResult.tree, MERGE_MADE_BY_ORT);
   } finally {
     ctx.progress.end(MERGE_WRITE_FILES_OP);
   }
@@ -320,21 +402,28 @@ const materialiseAndApply = async (
   }
 };
 
+/** What a merge commit records: its message and identities, the branch it advances, its parents. */
+interface MergeCommitInput {
+  readonly opts: SettledMerge;
+  readonly internal: MergeInternalOptions;
+  readonly branch: RefName;
+  readonly ourId: ObjectId;
+  readonly parents: ReadonlyArray<ObjectId>;
+}
+
+/** git's `finish_automerge`: commit the merged tree and log `note` behind the reflog action. */
 const commitCleanMerge = async (
   ctx: Context,
-  opts: SettledMerge,
-  internal: MergeInternalOptions,
-  branchName: RefName,
-  ourId: ObjectId,
-  theirId: ObjectId,
+  { opts, internal, branch, ourId, parents }: MergeCommitInput,
   mergedTree: ObjectId,
+  note: string,
 ): Promise<MergeResult> => {
   const author = await resolveMergeAuthor(ctx, opts);
   const committer = resolveMergeCommitter(opts, author);
   const message = sanitizeMessage(opts.message, { allowEmpty: false });
   const commitData: CommitData = {
     tree: mergedTree,
-    parents: [ourId, theirId],
+    parents,
     author,
     committer,
     message,
@@ -346,14 +435,92 @@ const commitCleanMerge = async (
     // HEAD, so `HEAD` always names the branch this merge commit advances.
     await updateRef(ctx, HEAD, id, {
       expected: ourId,
-      reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: ${MERGE_MADE_BY_ORT}`,
+      reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: ${note}`,
     });
-    return { kind: 'merge', id, branch: branchName, parents: [ourId, theirId] };
+    return { kind: 'merge', id, branch, parents };
   });
 };
 
 /** git's `finish` reflog note for a two-head merge, which its default `ort` strategy makes. */
 const MERGE_MADE_BY_ORT = "Merge made by the 'ort' strategy.";
+
+/** git's `finish` reflog note for a merge of several heads, which its `octopus` strategy makes. */
+const MERGE_MADE_BY_OCTOPUS = "Merge made by the 'octopus' strategy.";
+
+/**
+ * git's `octopus` strategy: the index must match `HEAD`; a clean result is
+ * committed, a conflict on the last head is left to be resolved by hand.
+ */
+const octopus = async (
+  ctx: Context,
+  commit: MergeCommitInput,
+  remotes: ReadonlyArray<OctopusRemote>,
+): Promise<MergeResult> => {
+  const ours = await flattenTree(ctx, await getTree(ctx, commit.ourId));
+  await assertIndexMatches(ctx, ours.entries);
+  const result = await octopusMerge(ctx, commit.ourId, remotes);
+  if (result.kind === 'clean') {
+    return commitCleanMerge(ctx, commit, result.tree, MERGE_MADE_BY_OCTOPUS);
+  }
+  return persistOctopusConflict(ctx, commit, result, ours.entries);
+};
+
+/** `git-merge-octopus`'s `diff-index --cached HEAD`: staged changes refuse the strategy. */
+const assertIndexMatches = async (ctx: Context, ours: FlatEntries): Promise<void> => {
+  const { entries } = await readIndex(ctx);
+  const indexed = new Set(entries.map((entry) => entry.path));
+  const staged = new Set([
+    ...entries.filter((entry) => !sameEntry(ours.get(entry.path), entry)).map((e) => e.path),
+    ...[...ours.keys()].filter((path) => !indexed.has(path)),
+  ]);
+  if (staged.size > 0) throw workingTreeDirty({ localChanges: [...staged].sort(), untracked: [] });
+};
+
+const sameEntry = (committed: FlatTreeEntry | undefined, entry: FlatTreeEntry): boolean =>
+  committed?.id === entry.id && committed.mode === entry.mode;
+
+/** The working-tree moves from `ours` to `target`: each path added or changed, then each removed. */
+const outcomesBetween = (
+  ours: FlatEntries,
+  target: FlatEntries,
+  spared: ReadonlySet<FilePath>,
+): MergeOutcome[] => [
+  ...[...target].map(
+    ([path, { id, mode }]): MergeOutcome => ({ status: 'resolved-known', path, id, mode }),
+  ),
+  ...[...ours.keys()]
+    .filter((path) => !target.has(path) && !spared.has(path))
+    .map((path): MergeOutcome => ({ status: 'resolved-deleted', path })),
+];
+
+/**
+ * The octopus's last head left conflicts: the working tree takes the merged
+ * entries (and, for a path `git-merge-one-file` refused, what it held), each
+ * content conflict its marked bytes; `MERGE_HEAD` lists every head merged.
+ */
+const persistOctopusConflict = async (
+  ctx: Context,
+  commit: MergeCommitInput,
+  result: Extract<OctopusResult, { readonly kind: 'conflict' }>,
+  ours: FlatEntries,
+): Promise<MergeResult> => {
+  const marked = result.conflicts.filter((conflict) => conflict.conflictContent !== undefined);
+  const outcomes = outcomesBetween(ours, result.worktree, new Set(marked.map((c) => c.path)));
+  const changed = changedPaths(outcomes, result.conflicts, ours);
+  await assertNothingOverwritten(ctx, changed);
+  validateMergeWritePaths(outcomes, result.conflicts, changed);
+  const matcher = await loadSparseMatcher(ctx);
+  const merged = outcomesBetween(new Map(), result.merged, new Set());
+  const remotes = commit.parents.filter((id) => id !== commit.ourId);
+  await underIndexLock(ctx, async () => {
+    await writeConflictingWorkingTree(ctx, outcomes, marked, changed, matcher);
+    await writeMergeHeads(ctx, remotes);
+    const message = sanitizeMessage(commit.opts.message, { allowEmpty: false });
+    await writeMergeMsg(ctx, conflictMergeMsg(message, sortedRecordedPaths(result.conflicts)));
+    return buildConflictIndexEntries(merged, result.conflicts, matcher);
+  });
+  return conflictOutcome(result.conflicts, remotes[0]!, commit.ourId);
+};
 
 type MergeTreeResult =
   | { readonly kind: 'clean'; readonly tree: ObjectId }
@@ -606,16 +773,8 @@ const persistConflictState = async (
 ): Promise<MergeResult> => {
   rejectUnsupportedConflicts(result.conflicts);
 
-  // Refuse before any write when materialising the conflict would clobber a
-  // tracked working file with local changes, or squat an untracked file on a
-  // path the merge adds. Pure, lock-free reads — so the refusal is atomic
-  // (working tree / index / HEAD untouched, no MERGE_HEAD, no leaked lock).
-  const currentIndex = await readIndex(ctx);
   const changed = changedPaths(result.outcomes, result.conflicts, result.ours);
-  const { localChanges, untracked } = await findWouldOverwrite(ctx, changed, currentIndex);
-  if (localChanges.length > 0 || untracked.length > 0) {
-    throw workingTreeDirty({ localChanges, untracked });
-  }
+  await assertNothingOverwritten(ctx, changed);
 
   // Whole-set path gate, hoisted above the write wave and above
   // `acquireIndexLock`: every outcome/conflict path this call is about to
@@ -629,28 +788,58 @@ const persistConflictState = async (
   // defined matcher keeps excluded blob-backed paths out of the working tree
   // and marks their stage-0 conflict-state entries skip-worktree.
   const matcher = await loadSparseMatcher(ctx);
-  const lock = await acquireIndexLock(ctx);
-  try {
+  await underIndexLock(ctx, async () => {
     await writeConflictingWorkingTree(ctx, result.outcomes, result.conflicts, changed, matcher);
-    await writeMergeHead(ctx, theirId);
+    await writeMergeHeads(ctx, [theirId]);
     const message = sanitizeMessage(opts.message, { allowEmpty: false });
     await writeMergeMsg(ctx, conflictMergeMsg(message, sortedRecordedPaths(result.conflicts)));
-    const indexEntries = buildConflictIndexEntries(result.outcomes, result.conflicts, matcher);
-    await lock.commit(indexEntries);
+    return buildConflictIndexEntries(result.outcomes, result.conflicts, matcher);
+  });
+  return conflictOutcome(result.conflicts, theirId, ourId);
+};
+
+/**
+ * Refuse before any write when materialising the merge would clobber a
+ * tracked working file with local changes, or squat an untracked file on a
+ * path the merge adds — pure, lock-free reads, so the refusal is atomic.
+ */
+const assertNothingOverwritten = async (
+  ctx: Context,
+  changed: ReadonlySet<FilePath>,
+): Promise<void> => {
+  const currentIndex = await readIndex(ctx);
+  const { localChanges, untracked } = await findWouldOverwrite(ctx, changed, currentIndex);
+  if (localChanges.length > 0 || untracked.length > 0) {
+    throw workingTreeDirty({ localChanges, untracked });
+  }
+};
+
+/**
+ * Run `write` under the index lock and commit the entries it returns. The
+ * lock is always released — `commit` flips it to a no-op on success.
+ */
+const underIndexLock = async (
+  ctx: Context,
+  write: () => Promise<ReadonlyArray<IndexEntry>>,
+): Promise<void> => {
+  const lock = await acquireIndexLock(ctx);
+  try {
+    await lock.commit(await write());
   } finally {
-    // Always release the lock — `commit` flips the lock to a no-op state
-    // on success, so this is safe regardless of which path completed.
-    // Matches the `try/finally` pattern in `add.ts` and `checkout.ts`.
     await lock.release();
   }
-
-  return {
-    kind: 'conflict',
-    conflicts: result.conflicts.map((c) => ({ path: c.path, type: c.type })),
-    mergeHead: theirId,
-    origHead: ourId,
-  };
 };
+
+const conflictOutcome = (
+  conflicts: ReadonlyArray<MergeConflict>,
+  mergeHead: ObjectId,
+  origHead: ObjectId,
+): MergeResult => ({
+  kind: 'conflict',
+  conflicts: conflicts.map((c) => ({ path: c.path, type: c.type })),
+  mergeHead,
+  origHead,
+});
 
 /**
  * Reject conflict types that v1 cannot persist as resolvable merge state

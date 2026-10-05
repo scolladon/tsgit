@@ -474,6 +474,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `target directory is not empty: ${basename(data.path)}`;
     case 'REMOTE_ADVERTISES_NO_REFS':
       return 'remote advertised no refs';
+    case 'OCTOPUS_MERGE_FAILED':
+      return `Merge with strategy octopus failed: ${data.reason} at ${data.head}`;
     case 'NON_FAST_FORWARD':
       return `non-fast-forward update for ${data.ref}: local=${data.local} remote=${data.remote}`;
     case 'PUSH_REJECTED':

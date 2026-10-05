@@ -55,21 +55,25 @@ const destination = async (ctx: Context, branch: string): Promise<string | undef
   return suppressed ? undefined : branch;
 };
 
-/** git's `fmt_merge_msg_sigs` for the one head merged: an annotated tag's message
- *  follows the title (the commit's cleanup completes and trims it). */
+/** git's `fmt_merge_msg_sigs`: each annotated tag merged has its message follow
+ *  the title (the commit's cleanup completes and trims it). */
 const tagBlock = async (ctx: Context, head: MergeHead): Promise<string> => {
   const object = await readObject(ctx, head.id);
   return object.type === 'tag' ? `\n${object.data.message}` : '';
 };
 
-/** git's `fmt_merge_msg` with a title: the message a merge of `head` into `branch` records. */
+/** git's `fmt_merge_msg` with a title: the message a merge of `heads` into `branch` records. */
 export const formatMergeMessage = async (
   ctx: Context,
-  head: MergeHead,
+  heads: ReadonlyArray<MergeHead>,
   branch: string,
 ): Promise<string> => {
-  const title = mergeTitle([head.description], await destination(ctx, branch));
-  return `${title}\n${await tagBlock(ctx, head)}`;
+  const title = mergeTitle(
+    heads.map((head) => head.description),
+    await destination(ctx, branch),
+  );
+  const tags = await Promise.all(heads.map((head) => tagBlock(ctx, head)));
+  return `${title}\n${tags.join('')}`;
 };
 
 /** The kind `merge_name` labels a ref with, when it is one it labels. */

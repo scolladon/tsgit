@@ -1085,11 +1085,45 @@ describe('pull', () => {
       });
     });
 
-    describe('Given an explicit ref fetching several refs for merging', () => {
+    describe('Given an explicit ref fetching a ref HEAD already contains alongside a diverged one', () => {
       describe('When pull', () => {
-        it('Then the octopus pull is refused', async () => {
+        it('Then the message names only the ref that survives reduce_heads, as git does', async () => {
           // Arrange
           const { ctx, b } = await divergedRepo();
+          const head = await readObject(ctx, await resolveRef(ctx, 'refs/heads/main' as RefName));
+          const contained = head.type === 'commit' ? head.data.parents[0]! : b;
+          await updateConfigEntries(ctx, remoteEntries(ORIGIN_FETCH));
+          const { transport } = buildPullRemote(
+            [
+              { name: 'refs/heads/side-a', id: contained },
+              { name: 'refs/heads/side-b', id: b },
+            ],
+            await emptyPack(ctx),
+          );
+          const sut = pull;
+
+          // Act
+          const result = await sut(withTransport(ctx, transport), {
+            ref: 'refs/heads/side-*:refs/remotes/s/*',
+            author,
+          });
+
+          // Assert
+          const id = result.merge.kind === 'merge' ? result.merge.id : b;
+          const obj = await readObject(ctx, id);
+          expect(obj.type === 'commit' && obj.data.message).toBe(
+            "Merge branch 'side-b' of https://remote.example/r\n",
+          );
+        });
+      });
+    });
+
+    describe('Given an explicit ref fetching two refs at one tip for merging', () => {
+      describe('When pull', () => {
+        it('Then the repeated tip is merged once, the message naming both refs as git does', async () => {
+          // Arrange
+          const { ctx, b } = await divergedRepo();
+          const head = await resolveRef(ctx, 'refs/heads/main' as RefName);
           await updateConfigEntries(ctx, remoteEntries(ORIGIN_FETCH));
           const { transport } = buildPullRemote(
             [
@@ -1098,19 +1132,21 @@ describe('pull', () => {
             ],
             await emptyPack(ctx),
           );
-          const sut = refusal;
+          const sut = pull;
 
           // Act
           const result = await sut(withTransport(ctx, transport), {
             ref: 'refs/heads/side-*:refs/remotes/s/*',
+            author,
           });
 
           // Assert
-          expect(result).toEqual({
-            code: 'INVALID_OPTION',
-            option: 'ref',
-            reason: 'merging more than one fetched ref (an octopus pull) is not supported',
-          });
+          const merged = result.merge.kind === 'merge' ? result.merge : undefined;
+          expect(merged?.parents).toEqual([head, b]);
+          const obj = await readObject(ctx, merged?.id ?? b);
+          expect(obj.type === 'commit' && obj.data.message).toBe(
+            "Merge branches 'side-a' and 'side-b' of https://remote.example/r\n",
+          );
         });
       });
     });
