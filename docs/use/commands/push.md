@@ -28,6 +28,7 @@ interface PushedRef {
   readonly status: 'ok' | 'rejected';
   readonly rejection?: PushRejection; // set exactly when rejected
   readonly reason?: string;           // server's `ng <reason>` text when rejection is 'remote'
+  readonly forcedUpdate?: boolean;    // the receiver's `report-status-v2` `option forced-update`
 }
 
 type PushRejection =
@@ -67,7 +68,8 @@ type PushRejection =
 - **Per-ref rejections.** Each ref is judged before anything is sent, as git's `set_ref_status_for_push` does, in this order: a `forceWithLease` the remote no longer holds → `'stale-info'` (deletes included; nothing else is measured); a delete or a new ref is not judged further; a `refs/tags/` destination the remote already has → `'already-exists'` (no object is looked up); an advertised value not held locally → `'fetch-first'`; either end not a commit → `'needs-force'`; the new value not descending from the advertised one → `'non-fast-forward'`. `force` or a `+` refspec overrides every verdict, a stale lease included; a matching `forceWithLease` overrides the others. A delete sent to a server that does not advertise `delete-refs` → `'remote-ref-not-deletable'`. A rejected ref does not stop the push: the other refs are sent, the rejected ref's new value still feeds the pack, and every ref's outcome comes back in `pushedRefs`. When every ref is rejected nothing is sent. The `pre-push` hook still runs, and its stdin omits only the non-fast-forward and stale refs. A ref already at the advertised value is up to date and is neither judged nor checked against a lease.
 - **Ref order.** Refs are judged, fed to the `pre-push` hook and returned in `pushedRefs` in git's remote-ref order: the refs the remote advertised, in advertisement order, then the refs the push creates, in refspec order.
 - **Atomic pushes.** With `atomic: true`, any ref rejected before sending fails every other ref as `'atomic-push-failed'` and nothing is sent; `ctx.logger.error` receives git's `atomic push failed for ref <ref>. status: <n>` for the first rejected ref. The server then applies the sent refs in one transaction. Without it, the server applies each ref on its own.
-- **Local remote-tracking refresh.** On an accepted heads-branch push, `refs/remotes/<remote>/<branch>` is updated to the new oid.
+- **Local remote-tracking refresh.** Each accepted or already up-to-date ref updates the local ref `remote.<name>.fetch` maps it onto (`refs/remotes/<remote>/<branch>` under the default refspec, nothing when no refspec maps it), reflogged `update by push`; an accepted delete deletes it. An automatic `forceWithLease` reads its expectation through the same mapping.
+- **`report-status-v2`.** Push asks for `report-status-v2` whenever the server offers it, as git does. A receiver's `proc-receive` hook (the AGit `refs/for/<branch>` flow) may answer one command with `option` lines naming the refs it really stored: each becomes its own `PushedRef`, under the reported name and ids (an id the receiver does not restate is the pushed one), with `forcedUpdate` when the receiver says so, and each updates its own tracking ref.
 - **Hooks (Node only):** `pre-push` runs with git's canonical `<local-ref> <local-oid> <remote-ref> <remote-oid>` stdin.
 
 ## Examples

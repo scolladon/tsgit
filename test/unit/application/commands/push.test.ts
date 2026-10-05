@@ -4026,3 +4026,129 @@ describe('push — remote-tracking refs mapped through the fetch refspecs', () =
     });
   });
 });
+
+describe('push — report-status-v2 ref rewrites', () => {
+  const v2Report = (lines: ReadonlyArray<string>): Uint8Array =>
+    encodePktStream(['unpack ok\n', ...lines].map((line) => new TextEncoder().encode(line)));
+
+  describe('Given a receiver whose proc-receive hook stores one command under two refs', () => {
+    describe('When the command is pushed', () => {
+      it('Then each rewritten ref is reported and tracked under its own name and ids', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          advertisedCaps: ['report-status', 'report-status-v2', 'delete-refs'],
+          reportStatus: CLEAN_REPORT,
+          rawReport: v2Report([
+            'ok refs/for/main\n',
+            'option refname refs/heads/topic\n',
+            `option old-oid ${parent.id}\n`,
+            `option new-oid ${tip.id}\n`,
+            'ok refs/for/main\n',
+            'option refname refs/heads/other\n',
+            'option forced-update\n',
+          ]),
+        });
+
+        // Act
+        const result = await push({ ...ctx, transport }, { refspecs: ['main:refs/for/main'] });
+
+        // Assert
+        expect(result.pushedRefs).toEqual([
+          { name: 'refs/heads/topic', oldId: parent.id, newId: tip.id, status: 'ok' },
+          {
+            name: 'refs/heads/other',
+            oldId: ZERO_OID,
+            newId: tip.id,
+            status: 'ok',
+            forcedUpdate: true,
+          },
+        ]);
+        for (const tracked of ['topic', 'other']) {
+          const value = await ctx.fs.readUtf8(
+            `${ctx.layout.gitDir}/refs/remotes/origin/${tracked}`,
+          );
+          expect(value.trim()).toBe(tip.id);
+        }
+        expect(new TextDecoder().decode(requestBodies[0])).toContain('\0report-status-v2');
+      });
+    });
+  });
+
+  describe('Given a receiver rewriting a command to a deletion', () => {
+    describe('When the command is pushed', () => {
+      it('Then the rewritten ref reports the null id and its tracking ref is deleted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const tip = await seedCommit(ctx, [], 't');
+        await seedRepo(ctx, {
+          refs: { 'refs/heads/main': tip.id, 'refs/remotes/origin/gone': tip.id },
+        });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: tip.id }],
+          reportStatus: CLEAN_REPORT,
+          rawReport: v2Report([
+            'ok refs/for/main\n',
+            'option refname refs/heads/gone\n',
+            `option new-oid ${ZERO_OID}\n`,
+          ]),
+        });
+
+        // Act
+        const result = await push({ ...ctx, transport }, { refspecs: ['main:refs/for/main'] });
+
+        // Assert
+        expect(result.pushedRefs.map((ref) => [ref.name, ref.newId])).toEqual([
+          ['refs/heads/gone', ZERO_OID],
+        ]);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/gone`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a receiver that rewrites a ref and then rejects it', () => {
+    describe('When the command is pushed', () => {
+      it('Then the ref is reported rejected under its own name', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: CLEAN_REPORT,
+          rawReport: v2Report([
+            'ok refs/heads/main\n',
+            'option refname refs/heads/topic\n',
+            'ng refs/heads/main hook declined\n',
+          ]),
+        });
+
+        // Act
+        const result = await push({ ...ctx, transport }, { refspecs: ['main'] });
+
+        // Assert
+        expect(result.pushedRefs).toEqual([
+          {
+            name: 'refs/heads/main',
+            oldId: parent.id,
+            newId: tip.id,
+            status: 'rejected',
+            rejection: 'remote',
+            reason: 'hook declined',
+          },
+        ]);
+      });
+    });
+  });
+});

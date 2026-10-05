@@ -101,7 +101,7 @@ describe('selectPushCapabilities', () => {
 
         // Assert
         expect(result).toEqual([
-          'report-status',
+          'report-status-v2',
           'side-band-64k',
           'quiet',
           'atomic',
@@ -114,7 +114,7 @@ describe('selectPushCapabilities', () => {
 
   describe('Given server advertises only %s', () => {
     describe('When selectPushCapabilities runs', () => {
-      it.each([['report-status'], ['side-band-64k'], ['quiet']] as const)(
+      it.each([['report-status'], ['report-status-v2'], ['side-band-64k'], ['quiet']] as const)(
         'Then %s IS in the result',
         (cap) => {
           // Arrange & Act

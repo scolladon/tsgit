@@ -59,6 +59,7 @@ export type {
   ReceivePackRequest,
   ReceivePackResponse,
   RefStatus,
+  RefStatusReport,
   RefUpdate,
   SignedReceivePackRequest,
 } from './receive-pack.js';

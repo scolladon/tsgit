@@ -18,10 +18,24 @@ export interface ReceivePackRequest {
   readonly packfile?: Uint8Array | undefined;
 }
 
+/**
+ * What a `report-status-v2` receiver's `option` lines say about one `ok`: the
+ * ref it was really stored under and the ids it really moved between, each
+ * absent when the receiver did not say.
+ */
+export interface RefStatusReport {
+  readonly refName?: string;
+  readonly oldId?: ObjectId;
+  readonly newId?: ObjectId;
+  readonly forcedUpdate?: boolean;
+}
+
 export interface RefStatus {
   readonly name: string;
   readonly accepted: boolean;
   readonly reason?: string;
+  /** Set on an `ok` that `option` lines follow. */
+  readonly report?: RefStatusReport;
 }
 
 export interface ReceivePackResponse {
@@ -156,8 +170,53 @@ const collectDataLines = async (source: AsyncIterable<PktLine>): Promise<string[
   return lines;
 };
 
+const OPTION_PREFIX = 'option ';
+const HEX_ID = /^[0-9a-f]+$/;
+
+/** git's object-id parse of an option value: the id the value starts with, when it does. */
+const parseOptionId = (value: string | undefined, hexLength: number): ObjectId | undefined => {
+  const hex = value?.slice(0, hexLength);
+  return hex?.length === hexLength && HEX_ID.test(hex) ? (hex as ObjectId) : undefined;
+};
+
+/** One `option <key> [<value>]` line folded into the report it extends; an unknown key or an unparseable id leaves it as it was. */
+const withOption = (report: RefStatusReport, line: string, hexLength: number): RefStatusReport => {
+  const body = line.slice(OPTION_PREFIX.length);
+  const space = body.indexOf(' ');
+  const key = space < 0 ? body : body.slice(0, space);
+  const value = space < 0 ? undefined : body.slice(space + 1);
+  if (key === 'refname') return value === undefined ? report : { ...report, refName: value };
+  if (key === 'forced-update') return { ...report, forcedUpdate: true };
+  const id = parseOptionId(value, hexLength);
+  if (id === undefined) return report;
+  if (key === 'old-oid') return { ...report, oldId: id };
+  return key === 'new-oid' ? { ...report, newId: id } : report;
+};
+
+/** git's `receive_status`: an `option` line extends the report of the `ok` it follows. */
+const foldStatusLines = (
+  lines: ReadonlyArray<string>,
+  hexLength: number,
+): ReadonlyArray<RefStatus> => {
+  const statuses: RefStatus[] = [];
+  for (const line of lines) {
+    if (!line.startsWith(OPTION_PREFIX)) {
+      statuses.push(parseRefStatusLine(line));
+      continue;
+    }
+    const last = statuses[statuses.length - 1];
+    if (last?.accepted !== true) throw invalidReportStatus(line);
+    statuses[statuses.length - 1] = {
+      ...last,
+      report: withOption(last.report ?? {}, line, hexLength),
+    };
+  }
+  return statuses;
+};
+
 export const parseReceivePackResponse = async (
   source: AsyncIterable<PktLine>,
+  hexLength: 40 | 64 = 40,
 ): Promise<ReceivePackResponse> => {
   const lines = await collectDataLines(source);
   if (lines.length === 0) throw invalidReportStatus('');
@@ -166,6 +225,5 @@ export const parseReceivePackResponse = async (
   if (!unpack.ok) {
     return { unpackOk: false, unpackError: unpack.error, refUpdates: [] };
   }
-  const refUpdates = rest.map(parseRefStatusLine);
-  return { unpackOk: true, refUpdates };
+  return { unpackOk: true, refUpdates: foldStatusLines(rest, hexLength) };
 };

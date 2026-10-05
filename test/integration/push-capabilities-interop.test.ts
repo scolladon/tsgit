@@ -6,8 +6,6 @@
  * `ofs-delta` or `delete-refs`, which only steer its own choices. tsgit pushes
  * to a peer served by `git http-backend`, its request captured on the way;
  * git pushes to a twin peer over a local path with `GIT_TRACE_PACKET` on.
- * git's `report-status-v2` is read as `report-status`: tsgit parses only the
- * v1 report, which a peer without a proc-receive hook answers identically.
  *
  * @proves
  *   surface:        push
@@ -27,7 +25,6 @@ import { GIT_AVAILABLE, runGit, runGitEnv, tryRunGitWithExit } from './interop-h
 const PEER_URL = 'https://example.com/peer.git';
 const AGENT_VALUE = /^agent=.*/;
 const NUL = '\0';
-const REPORT_STATUS_V2 = 'report-status-v2';
 
 let root: string;
 
@@ -97,12 +94,7 @@ describe.skipIf(!GIT_AVAILABLE)('push capabilities interop', () => {
           await sut({ ...ctx, transport }, { remote: 'origin', refspecs: ['main'], atomic });
 
           // Assert
-          // git asks for report-status-v2 where the peer offers it; tsgit reads only
-          // the v1 report, which the peer answers identically unless a
-          // proc-receive hook rewrites refs.
-          const gitCapabilities = capabilitiesOf((gitLine ?? '').replace(/\\0/, NUL)).map(
-            (capability) => (capability === REPORT_STATUS_V2 ? 'report-status' : capability),
-          );
+          const gitCapabilities = capabilitiesOf((gitLine ?? '').replace(/\\0/, NUL));
           expect(traced.exitCode).toBe(0);
           expect(lines.map(capabilitiesOf)).toEqual([gitCapabilities]);
         });

@@ -41,6 +41,7 @@ import {
   parseReceivePackResponse,
   parseSideBand,
   type RefStatus,
+  type RefStatusReport,
   type RefUpdate,
   readObjectFormat,
 } from '../../domain/protocol/index.js';
@@ -144,6 +145,8 @@ export interface PushedRef {
   /** Set exactly when `status` is `'rejected'`. */
   readonly rejection?: PushRejection;
   readonly reason?: string;
+  /** Set when the receiving end's `report-status-v2` reports the ref as force-updated. */
+  readonly forcedUpdate?: boolean;
 }
 
 export interface PushResult {
@@ -315,7 +318,11 @@ const updateUpToDateTracking = async (
   remote: PushRemote,
 ): Promise<void> => {
   for (const ref of resolved.filter(isUpToDate)) {
-    await updateTrackingRef(ctx, ref, remote.trackingSpecs);
+    await updateTrackingRef(
+      ctx,
+      { name: ref.parsed.dst as RefName, oldId: ref.remoteOid, newId: ref.localOid },
+      remote.trackingSpecs,
+    );
   }
 };
 
@@ -765,9 +772,9 @@ const parseReceiveResponse = async (
     const channel1 = parseSideBand(pktSource, {
       onProgress: (text) => ctx.progress.update(PUSH_UPLOAD_OP, 0, undefined, sanitize(text)),
     });
-    return parseReceivePackResponse(decodePktStream(channel1));
+    return parseReceivePackResponse(decodePktStream(channel1), ctx.hashConfig.hexLength);
   }
-  return parseReceivePackResponse(pktSource);
+  return parseReceivePackResponse(pktSource, ctx.hashConfig.hexLength);
 };
 
 const hasSideBand = (caps: ReadonlyArray<string>): boolean =>
@@ -779,35 +786,68 @@ const applyReportStatus = async (
   refUpdates: ReadonlyArray<RefStatus>,
   trackingSpecs: ReadonlyArray<string>,
 ): Promise<ReadonlyArray<PushedRef>> => {
-  const statusByName = new Map<string, RefStatus>();
-  for (const s of refUpdates) statusByName.set(s.name, s);
+  const statusesByName = groupByName(refUpdates);
   const out: PushedRef[] = [];
   for (const m of movers) {
-    out.push(await reportRef(ctx, m, statusByName.get(m.parsed.dst), trackingSpecs));
+    const statuses = statusesByName.get(m.parsed.dst) ?? [];
+    out.push(...(await reportRef(ctx, m, statuses, trackingSpecs)));
   }
   return out;
 };
 
-/** One ref's outcome: its local verdict, else the remote's report for it. */
+const groupByName = (
+  refUpdates: ReadonlyArray<RefStatus>,
+): ReadonlyMap<string, ReadonlyArray<RefStatus>> => {
+  const grouped = new Map<string, RefStatus[]>();
+  for (const status of refUpdates) {
+    const group = grouped.get(status.name);
+    if (group === undefined) grouped.set(status.name, [status]);
+    else group.push(status);
+  }
+  return grouped;
+};
+
+/**
+ * One ref's outcomes: its local verdict, else the remote's last word on it —
+ * an accepted ref reported once per `report-status-v2` rewrite, each under the
+ * name and ids the receiver gave it.
+ */
 const reportRef = async (
   ctx: Context,
   m: SettledRefspec,
-  status: RefStatus | undefined,
+  statuses: ReadonlyArray<RefStatus>,
   trackingSpecs: ReadonlyArray<string>,
-): Promise<PushedRef> => {
+): Promise<ReadonlyArray<PushedRef>> => {
   const ref = { name: m.parsed.dst as RefName, oldId: m.remoteOid, newId: m.localOid };
-  if (m.rejection !== undefined) return { ...ref, status: 'rejected', rejection: m.rejection };
-  if (status?.accepted === true) {
-    await updateTrackingRef(ctx, m, trackingSpecs);
-    return { ...ref, status: 'ok' };
-  }
-  return {
-    ...ref,
-    status: 'rejected',
-    rejection: 'remote',
-    ...(status?.reason !== undefined ? { reason: status.reason } : {}),
-  };
+  if (m.rejection !== undefined) return [{ ...ref, status: 'rejected', rejection: m.rejection }];
+  const final = statuses[statuses.length - 1];
+  if (final?.accepted !== true) return [remoteRejection(ref, final)];
+  const reports = statuses.flatMap((status) => status.report ?? []);
+  const pushed =
+    reports.length === 0
+      ? [{ ...ref, status: 'ok' as const }]
+      : reports.map((report) => rewritten(ref, report));
+  for (const entry of pushed) await updateTrackingRef(ctx, entry, trackingSpecs);
+  return pushed;
 };
+
+type UpdatedRef = Pick<PushedRef, 'name' | 'oldId' | 'newId'>;
+
+const remoteRejection = (ref: UpdatedRef, status: RefStatus | undefined): PushedRef => ({
+  ...ref,
+  status: 'rejected',
+  rejection: 'remote',
+  ...(status?.reason !== undefined ? { reason: status.reason } : {}),
+});
+
+/** git's push report: each id the receiver did not restate is the one pushed. */
+const rewritten = (ref: UpdatedRef, report: RefStatusReport): PushedRef => ({
+  name: (report.refName ?? ref.name) as RefName,
+  oldId: report.oldId ?? ref.oldId,
+  newId: report.newId ?? ref.newId,
+  status: 'ok',
+  ...(report.forcedUpdate === true ? { forcedUpdate: true } : {}),
+});
 
 /**
  * git's `update_one_tracking_ref`: the ref the remote's fetch refspecs map the
@@ -816,14 +856,14 @@ const reportRef = async (
  */
 const updateTrackingRef = async (
   ctx: Context,
-  m: SettledRefspec,
+  { name, newId }: UpdatedRef,
   trackingSpecs: ReadonlyArray<string>,
 ): Promise<void> => {
-  const trackingRef = findTrackingRef(trackingSpecs, m.parsed.dst);
+  const trackingRef = findTrackingRef(trackingSpecs, name);
   if (trackingRef === undefined) return;
-  if (m.parsed.isDelete) {
+  if (newId === zeroOid(ctx.hashConfig)) {
     await deleteRefs(ctx, [trackingRef], {});
     return;
   }
-  await updateRef(ctx, trackingRef, m.localOid, { reflogMessage: PUSH_UPDATE });
+  await updateRef(ctx, trackingRef, newId, { reflogMessage: PUSH_UPDATE });
 };
