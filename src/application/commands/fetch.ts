@@ -214,7 +214,9 @@ const negotiateAndApply = async (
     followTags && (discovery.version === 2 || advertisement.capabilities.includes(INCLUDE_TAG)),
   );
   const local = await localState(ctx, advertisement.refs);
-  const refMap = storableRefMap(ctx, getRefMap(remote.request, advertisement.refs, local));
+  const warn = (message: string): void => ctx.logger?.warn?.(message);
+  const mapped = getRefMap(remote.request, advertisement.refs, local, warn);
+  const refMap = storableRefMap(ctx, mapped);
   const wants = uniqueRefOids(refMap.map((entry) => entry.source));
 
   // A partial repo's wanted objects may be legitimately promised-absent (the

@@ -76,7 +76,8 @@ console.log(result.prunedRefs);
 - `ADAPTER_UNAVAILABLE` — an `ssh://`/scp-like remote given to a runtime with no `SshTransport` wired (Browser, Memory).
 - `NETWORK_ERROR` — transport failure (reason varies; SSH surfaces the `ssh` child's exit code).
 - `REFSPEC_INVALID` — a `refspecs` or `refmap` entry git's fetch refspec grammar refuses (`reason: 'not a valid refspec'`).
-- `REMOTE_REF_NOT_FOUND` — an exact `refspecs` source, or the `HEAD` a remote with no fetch refspec is fetched by, names no advertised ref (git's `couldn't find remote ref <name>`). `FETCH_HEAD` is left truncated.
+- `FETCH_REFSPEC_CONFLICT` — two remote refs map onto one local ref (git's `ref_remove_duplicates`); a command-line ref beside the tracking update it displaces only warns through `ctx.logger.warn`.
+- `REMOTE_REF_NOT_FOUND` — an exact `refspecs` or configured `remote.<name>.fetch` source, or the `HEAD` a remote with no fetch refspec is fetched by, names no advertised ref (git's `couldn't find remote ref <name>`). `FETCH_HEAD` is left truncated.
 - `INVALID_OPTION` — `refmap` given without `refspecs` (`option: 'refmap'`).
 - `REMOTE_FILTER_UNSUPPORTED` — the repo's stored `partialclonefilter` can't be re-applied because the server's capabilities lack `filter` support (v1 capability list or v2 `fetch` command's sub-features).
 - `SHALLOW_FILE_MALFORMED` — persisting the server's `shallow`/`unshallow` lines would exceed the entry cap or include a foreign-width oid; refuses before any repository state changes (refs unmoved).

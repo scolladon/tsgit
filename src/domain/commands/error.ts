@@ -424,6 +424,13 @@ export type CommandError =
   | { readonly code: 'PUSH_DETACHED_NO_REFSPEC' }
   | { readonly code: 'REMOTE_REF_NOT_FOUND'; readonly ref: string }
   | {
+      readonly code: 'FETCH_REFSPEC_CONFLICT';
+      /** `cannot-fetch-both`: two fetched refs; `tracks-both`: two tracking updates. */
+      readonly reason: 'cannot-fetch-both' | 'tracks-both';
+      readonly target: string;
+      readonly sources: readonly [string, string];
+    }
+  | {
       readonly code: 'PULL_NO_MERGE_CANDIDATES';
       readonly reason: PullNoMergeCandidatesReason;
       readonly remote: string;
@@ -1294,6 +1301,13 @@ export const pushRefspecUnmatched = (
 // Refusal: a fetch refspec naming one remote ref the remote does not advertise.
 export const remoteRefNotFound = (ref: string): TsgitError =>
   new TsgitError({ code: 'REMOTE_REF_NOT_FOUND', ref });
+
+// Refusal: git's `ref_remove_duplicates` — two remote refs mapped onto one local ref.
+export const fetchRefspecConflict = (
+  reason: 'cannot-fetch-both' | 'tracks-both',
+  target: string,
+  sources: readonly [string, string],
+): TsgitError => new TsgitError({ code: 'FETCH_REFSPEC_CONFLICT', reason, target, sources });
 
 /** Why git's `die_no_merge_candidates` found nothing to merge in FETCH_HEAD. */
 export type PullNoMergeCandidatesReason =

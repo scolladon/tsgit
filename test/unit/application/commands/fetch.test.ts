@@ -3130,4 +3130,39 @@ describe('fetch — wants, include-tag and tag backfill', () => {
       });
     });
   });
+
+  describe('Given a command-line refspec storing into the ref the tracking refspec maps another ref to', () => {
+    describe('When fetch runs', () => {
+      it('Then git warns through the logger that the ref usually tracks the other', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await configure(ctx, '+refs/heads/*:refs/remotes/origin/*');
+        const { packBytes, first, second } = await twoBlobPack(ctx);
+        const { transport } = fakeRemote({
+          url: URL,
+          advertisedRefs: [
+            { name: 'refs/heads/a', id: first },
+            { name: 'refs/heads/b', id: second },
+          ],
+          packBytes,
+        });
+        const warnings: string[] = [];
+        const logger = { ...ctx.logger, warn: (message: string) => warnings.push(message) };
+        const sut = fetch;
+
+        // Act
+        await sut(
+          { ...ctx, transport, logger },
+          {
+            refspecs: ['refs/heads/a:refs/remotes/origin/b', 'b'],
+          },
+        );
+
+        // Assert
+        expect(warnings).toEqual([
+          'refs/remotes/origin/b usually tracks refs/heads/b, not refs/heads/a',
+        ]);
+      });
+    });
+  });
 });

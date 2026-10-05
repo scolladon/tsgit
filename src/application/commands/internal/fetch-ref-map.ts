@@ -7,7 +7,11 @@
  * refspec stores into a ref, a negative refspec drops the remote refs it
  * names, and a local ref mapped twice keeps its first source.
  */
-import { invalidOption, remoteRefNotFound } from '../../../domain/commands/error.js';
+import {
+  fetchRefspecConflict,
+  invalidOption,
+  remoteRefNotFound,
+} from '../../../domain/commands/error.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { AdvertisedRef } from '../../../domain/protocol/index.js';
 import { refCandidates } from '../../../domain/refs/ref-candidates.js';
@@ -164,14 +168,16 @@ const addMergeConfig = (
   return list;
 };
 
-/** With no merge configuration, an exact first refspec that mapped a ref is for merging. */
+/**
+ * With no merge configuration, an exact first refspec is for merging: a
+ * configured exact source always maps its one ref, or the fetch refused it.
+ */
 const markFirstForMerge = (
   first: RefspecSides | undefined,
   mapped: ReadonlyArray<MappedRef>,
-  refs: ReadonlyArray<AdvertisedRef>,
 ): ReadonlyArray<MappedRef> => {
   if (first === undefined || first.negative || first.src.includes(STAR)) return mapped;
-  return getFetchMap(refs, first, 'allow').length === 0 ? mapped : markForMerge(mapped, 0);
+  return markForMerge(mapped, 0);
 };
 
 const defaultMap = (request: RefMapRequest, refs: ReadonlyArray<AdvertisedRef>): PlannedMap => {
@@ -182,8 +188,8 @@ const defaultMap = (request: RefMapRequest, refs: ReadonlyArray<AdvertisedRef>):
     return { head: withStatus(head, 'merge'), opportunistic: [] };
   }
   const specs = request.configSpecs.map(splitSides);
-  const mapped = specs.flatMap((sides) => getFetchMap(refs, sides, 'allow'));
-  const marked = hasMerge ? mapped : markFirstForMerge(specs[0], mapped, refs);
+  const mapped = specs.flatMap((sides) => getFetchMap(refs, sides, 'refuse'));
+  const marked = hasMerge ? mapped : markFirstForMerge(specs[0], mapped);
   return {
     head: mergesHere ? addMergeConfig(marked, request.merge, refs) : marked,
     opportunistic: [],
@@ -214,13 +220,33 @@ export const findNonLocalTags = (
     .map((source) => ({ source, target: source.name, status: 'not-for-merge' as const }));
 };
 
-const firstPerTarget = (mapped: ReadonlyArray<MappedRef>): ReadonlyArray<MappedRef> => {
-  const seen = new Set<string>();
-  return mapped.filter(({ target }) => {
-    if (target === undefined) return true;
-    if (seen.has(target)) return false;
-    seen.add(target);
-    return true;
+export type Warn = (message: string) => void;
+
+const IGNORED: FetchHeadStatus = 'ignore';
+
+/** git's `handle_duplicate`: a second source for a local ref already mapped. */
+const handleDuplicate = (
+  first: MappedRef,
+  second: MappedRef,
+  target: string,
+  warn: Warn | undefined,
+) => {
+  if (first.source.name === second.source.name) return;
+  const sources = [first.source.name, second.source.name] as const;
+  if (second.status !== IGNORED) throw fetchRefspecConflict('cannot-fetch-both', target, sources);
+  if (first.status === IGNORED) throw fetchRefspecConflict('tracks-both', target, sources);
+  warn?.(`${target} usually tracks ${second.source.name}, not ${first.source.name}`);
+};
+
+/** git's `ref_remove_duplicates`: a local ref keeps its first source. */
+const removeDuplicates = (mapped: ReadonlyArray<MappedRef>, warn: Warn | undefined) => {
+  const firsts = new Map<string, MappedRef>();
+  return mapped.filter((entry) => {
+    if (entry.target === undefined) return true;
+    const first = firsts.get(entry.target);
+    if (first === undefined) firsts.set(entry.target, entry);
+    else handleDuplicate(first, entry, entry.target, warn);
+    return first === undefined;
   });
 };
 
@@ -234,6 +260,7 @@ export const getRefMap = (
   request: RefMapRequest,
   refs: ReadonlyArray<AdvertisedRef>,
   local: LocalState = NOTHING_LOCAL,
+  warn?: Warn,
 ): ReadonlyArray<MappedRef> => {
   const cli = request.cliSpecs.map(splitSides);
   if (cli.length === 0 && request.refmap.length > 0) {
@@ -243,7 +270,8 @@ export const getRefMap = (
   const tags = autoFollowsTags(request) ? findNonLocalTags(refs, planned.head, local) : [];
   const negatives = cli.length > 0 ? request.cliSpecs : request.configSpecs;
   const combined = [...planned.head, ...tags, ...planned.opportunistic];
-  return firstPerTarget(
+  return removeDuplicates(
     combined.filter((entry) => !matchesNegativeRefspec(negatives, entry.source.name)),
+    warn,
   );
 };

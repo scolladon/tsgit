@@ -3,6 +3,7 @@ import {
   ambiguousOidPrefix,
   atomicPushUnsupported,
   cleanFilterFailed,
+  fetchRefspecConflict,
   filterUnsupportedCapability,
   formatPlaceholderUnsupported,
   grepLineTooLong,
@@ -2002,6 +2003,32 @@ describe('pullNoMergeCandidates error', () => {
             ? { code: 'PULL_NO_MERGE_CANDIDATES', reason, remote: 'origin' }
             : { code: 'PULL_NO_MERGE_CANDIDATES', reason, remote: 'origin', ref },
         );
+      });
+    });
+  });
+});
+
+describe('fetchRefspecConflict error', () => {
+  describe.each([
+    {
+      reason: 'cannot-fetch-both',
+      expected: 'Cannot fetch both refs/heads/a and refs/heads/b to refs/remotes/o/x',
+    },
+    {
+      reason: 'tracks-both',
+      expected: 'refs/remotes/o/x tracks both refs/heads/a and refs/heads/b',
+    },
+  ] as const)('Given the $reason reason', ({ reason, expected }) => {
+    describe('When reading .message', () => {
+      it("Then it is git's ref_remove_duplicates line", () => {
+        // Arrange
+        const sut = fetchRefspecConflict;
+
+        // Act
+        const result = sut(reason, 'refs/remotes/o/x', ['refs/heads/a', 'refs/heads/b']);
+
+        // Assert
+        expect(result.message).toBe(`FETCH_REFSPEC_CONFLICT: ${expected}`);
       });
     });
   });

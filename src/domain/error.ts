@@ -244,6 +244,15 @@ function timestampRangeDetail(
 }
 
 /** git's two walk deaths: while limiting (no commit) or while walking a commit's parents. */
+const fetchRefspecConflictMessage = ({
+  reason,
+  target,
+  sources: [first, second],
+}: Extract<CommandError, { code: 'FETCH_REFSPEC_CONFLICT' }>): string =>
+  reason === 'cannot-fetch-both'
+    ? `Cannot fetch both ${first} and ${second} to ${target}`
+    : `${target} tracks both ${first} and ${second}`;
+
 const pullNoMergeCandidatesMessage = (
   reason: Extract<CommandError, { code: 'PULL_NO_MERGE_CANDIDATES' }>['reason'],
   remote: string,
@@ -721,6 +730,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `failed to push some refs to '${data.url}'`;
     case 'REMOTE_REF_NOT_FOUND':
       return `couldn't find remote ref ${data.ref}`;
+    case 'FETCH_REFSPEC_CONFLICT':
+      return fetchRefspecConflictMessage(data);
     case 'PULL_NO_MERGE_CANDIDATES':
       return pullNoMergeCandidatesMessage(data.reason, data.remote, data.ref);
     case 'PUSH_DETACHED_NO_REFSPEC':

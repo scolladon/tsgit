@@ -46,12 +46,6 @@ describe('getRefMap', () => {
       expected: [['refs/heads/main', 'refs/remotes/solo/trunk']],
     },
     {
-      label: 'an exact refspec naming no advertised ref',
-      specs: ['refs/heads/gone:refs/remotes/solo/gone'],
-      refs: advertised('refs/heads/main'),
-      expected: [],
-    },
-    {
       label: 'an exact refspec with an empty destination, which stores into no ref',
       specs: ['refs/heads/main:'],
       refs: advertised('refs/heads/main', 'refs/tags/v1'),
@@ -281,6 +275,34 @@ describe('getRefMap', () => {
       expected: { code: 'REMOTE_REF_NOT_FOUND', ref: 'HEAD' },
     },
     {
+      label: 'a configured exact refspec naming no advertised ref',
+      request: configured('refs/heads/gone:refs/remotes/solo/gone', ORIGIN_HEADS),
+      expected: { code: 'REMOTE_REF_NOT_FOUND', ref: 'refs/heads/gone' },
+    },
+    {
+      label: 'two configured refspecs storing two remote refs into one local ref',
+      request: configured('refs/heads/main:refs/remotes/o/x', 'refs/heads/b:refs/remotes/o/x'),
+      expected: {
+        code: 'FETCH_REFSPEC_CONFLICT',
+        reason: 'cannot-fetch-both',
+        target: 'refs/remotes/o/x',
+        sources: ['refs/heads/main', 'refs/heads/b'],
+      },
+    },
+    {
+      label: 'two tracking refspecs storing two command-line refs into one local ref',
+      request: {
+        ...fromCli(['main', 'b']),
+        configSpecs: ['refs/heads/main:refs/remotes/o/x', 'refs/heads/b:refs/remotes/o/x'],
+      },
+      expected: {
+        code: 'FETCH_REFSPEC_CONFLICT',
+        reason: 'tracks-both',
+        target: 'refs/remotes/o/x',
+        sources: ['refs/heads/main', 'refs/heads/b'],
+      },
+    },
+    {
       label: 'a refmap and no command-line refspec',
       request: { ...configured(ORIGIN_HEADS), refmap: [''] },
       expected: {
@@ -296,7 +318,7 @@ describe('getRefMap', () => {
         const sut = refusal;
 
         // Act
-        const result = sut(request, advertised('refs/heads/main'));
+        const result = sut(request, advertised('refs/heads/main', 'refs/heads/b'));
 
         // Assert
         expect(result).toEqual(expected);
@@ -399,6 +421,34 @@ describe('getRefMap', () => {
             .filter((entry) => entry.source.name.startsWith('refs/tags/'))
             .map((entry) => entry.target),
         ).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a command-line refspec storing into the ref a tracking refspec maps another ref to', () => {
+    describe('When the ref map is built', () => {
+      it('Then the command-line ref wins and git warns of the usual tracking', () => {
+        // Arrange
+        const sut = getRefMap;
+        const warnings: string[] = [];
+
+        // Act
+        const result = sut(
+          fromCli(['refs/heads/a:refs/remotes/origin/b', 'b']),
+          advertised('refs/heads/a', 'refs/heads/b'),
+          undefined,
+          (message) => warnings.push(message),
+        );
+
+        // Assert
+        expect(result.map((entry) => [entry.source.name, entry.target])).toEqual([
+          ['refs/heads/a', 'refs/remotes/origin/b'],
+          ['refs/heads/b', undefined],
+          ['refs/heads/a', 'refs/remotes/origin/a'],
+        ]);
+        expect(warnings).toEqual([
+          'refs/remotes/origin/b usually tracks refs/heads/b, not refs/heads/a',
+        ]);
       });
     });
   });
