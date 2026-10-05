@@ -334,4 +334,53 @@ describe.skipIf(!GIT_AVAILABLE)('branch-state removal interop', () => {
       });
     });
   });
+
+  describe.each([
+    ['cherry-pick', ['cherry-pick', 'side~2'], 'skip'],
+    ['cherry-pick', ['cherry-pick', 'side~2'], 'abort'],
+    ['revert', ['revert', '--no-edit', 'HEAD~1'], 'abort'],
+  ] as const)('Given a %s stopped on a conflict', (op, stop, verb) => {
+    describe(`When both tools end it with --${verb}`, () => {
+      it('Then both drop the stop and record the HEAD they left as ORIG_HEAD', async () => {
+        // Arrange
+        await seedDivergedHistory();
+        gitIn(pair.peer, ...stop);
+        const ours = await openOurCopy();
+        const namespace = op === 'revert' ? ours.revert : ours.cherryPick;
+        const sut = verb === 'skip' ? namespace.skip : namespace.abort;
+
+        // Act
+        gitIn(pair.peer, op, `--${verb}`);
+        await sut();
+
+        // Assert
+        const result = stateFilesOf(pair.ours);
+        expect(result).toEqual(stateFilesOf(pair.peer));
+        expect(result).toEqual(['ORIG_HEAD']);
+        const origHead = (dir: string) => readFile(path.join(dir, '.git', 'ORIG_HEAD'), 'utf8');
+        expect(await origHead(pair.ours)).toBe(await origHead(pair.peer));
+      });
+    });
+  });
+
+  describe('Given a rebase stopped on a conflict', () => {
+    describe('When both tools abort it', () => {
+      it('Then both drop the stop state', async () => {
+        // Arrange
+        await seedDivergedHistory();
+        gitIn(pair.peer, 'rebase', 'side');
+        const ours = await openOurCopy();
+        const sut = ours.rebase.abort;
+
+        // Act
+        gitIn(pair.peer, 'rebase', '--abort');
+        await sut();
+
+        // Assert
+        const result = stateFilesOf(pair.ours).filter((name) => name !== 'ORIG_HEAD');
+        expect(result).toEqual(stateFilesOf(pair.peer).filter((name) => name !== 'ORIG_HEAD'));
+        expect(result).toEqual([]);
+      });
+    });
+  });
 });

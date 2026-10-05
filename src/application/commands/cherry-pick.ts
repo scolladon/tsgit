@@ -41,7 +41,7 @@ import { readIndex } from '../primitives/read-index.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { updateRef } from '../primitives/update-ref.js';
-import { abortSequencerReset } from './internal/abort-sequencer-reset.js';
+import { abortSequencerReset, skipSequencerReset } from './internal/abort-sequencer-reset.js';
 import {
   clearCherryPickHead,
   conflictMergeMsg,
@@ -54,7 +54,6 @@ import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { readCommitData, requireSymbolicHead, treeOf } from './internal/history-rewrite.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { clearMergeMsg, readMergeMsg, writeMergeMsg } from './internal/merge-state.js';
-import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
 import {
   isSequence,
   resolveSequencerRevisions,
@@ -551,9 +550,7 @@ export const cherryPickSkip = async (
   const branch = await requireSymbolicHead(ctx, CHERRY_PICK_SKIP);
   const ourId = await resolveRef(ctx, branch);
   const opts = await resolveResumeOpts(ctx, input);
-  await hardResetWorktreeToCommit(ctx, ourId);
-  await clearCherryPickHead(ctx);
-  await clearMergeMsg(ctx);
+  await skipSequencerReset(ctx, ourId);
   // Skip always drops the current instruction (todo[0]) — whether it stopped as a
   // conflict (CHERRY_PICK_HEAD set) or a merge (no head). Resume the rest.
   const rest = (todoOnDisk ?? []).slice(1).map((e) => e.oid);
@@ -584,6 +581,6 @@ export const cherryPickAbort = async (ctx: Context): Promise<CherryPickAbortResu
   }
   const branch = await requireSymbolicHead(ctx, CHERRY_PICK_ABORT);
   const target = seqHead ?? (await resolveRef(ctx, branch));
-  await abortSequencerReset(ctx, { target, clearHead: clearCherryPickHead });
+  await abortSequencerReset(ctx, { target });
   return { head: target, branch };
 };

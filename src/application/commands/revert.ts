@@ -43,7 +43,7 @@ import { resolveRef } from '../primitives/resolve-ref.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeTree } from '../primitives/write-tree.js';
-import { abortSequencerReset } from './internal/abort-sequencer-reset.js';
+import { abortSequencerReset, skipSequencerReset } from './internal/abort-sequencer-reset.js';
 import { conflictMergeMsg } from './internal/cherry-pick-state.js';
 import { assertCleanWorkTree } from './internal/clean-work-tree.js';
 import { sanitizeMessage, stripComments } from './internal/commit-message.js';
@@ -51,7 +51,6 @@ import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { readCommitData, requireSymbolicHead, treeOf } from './internal/history-rewrite.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { clearMergeMsg, readMergeMsg, writeMergeMsg } from './internal/merge-state.js';
-import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
 import {
   clearRevertHead,
   readRevertHead,
@@ -493,9 +492,7 @@ export const revertSkip = async (ctx: Context): Promise<RevertResult> => {
   await assertEverySourceLoadable(ctx);
   const branch = await requireSymbolicHead(ctx, REVERT_SKIP);
   const ourId = await resolveRef(ctx, branch);
-  await hardResetWorktreeToCommit(ctx, ourId);
-  await clearRevertHead(ctx);
-  await clearMergeMsg(ctx);
+  await skipSequencerReset(ctx, ourId);
   // An empty `rest` flows through `runSequence` (clears the sequencer, returns
   // `reverted []`); no separate early-return is needed.
   const rest = (todoOnDisk ?? []).slice(1).map((e) => e.oid);
@@ -517,6 +514,6 @@ export const revertAbort = async (ctx: Context): Promise<RevertAbortResult> => {
   if (source === undefined && seqHead === undefined) throw noOperationInProgress(REVERT);
   const branch = await requireSymbolicHead(ctx, REVERT_ABORT);
   const target = seqHead ?? (await resolveRef(ctx, branch));
-  await abortSequencerReset(ctx, { target, clearHead: clearRevertHead });
+  await abortSequencerReset(ctx, { target });
   return { head: target, branch };
 };

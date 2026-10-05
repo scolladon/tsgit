@@ -59,6 +59,7 @@ import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-inde
 import { updateRef } from '../primitives/update-ref.js';
 import { REASON_SKIP_TARGET_PARENTLESS } from '../primitives/validators.js';
 import { walkCommits, walkCommitsStoppingAt } from '../primitives/walk-commits.js';
+import { removeBranchState } from './internal/branch-state.js';
 import { conflictMergeMsg } from './internal/cherry-pick-state.js';
 import { assertCleanWorkTree } from './internal/clean-work-tree.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
@@ -559,6 +560,7 @@ export const rebaseSkip = async (ctx: Context): Promise<RebaseResult> => {
   if (isInteractiveState(state)) return rebaseSkipInteractive(ctx, state);
   const currentHead = await resolveRef(ctx, HEAD);
   await hardResetWorktreeToCommit(ctx, currentHead);
+  await removeBranchState(ctx, 'silent');
   const rc: ReplayContext = {
     branch: branchOf(state.headName),
     onto: state.onto,
@@ -600,6 +602,7 @@ export const rebaseAbort = async (ctx: Context): Promise<RebaseAbortResult> => {
       ? { kind: 'setSymbolic', name: HEAD, target: branch, reflog }
       : { kind: 'set', name: HEAD, id: state.origHead, reflog },
   ]);
+  await removeBranchState(ctx, 'silent');
   await clearRebaseState(ctx);
   return { head: state.origHead, headName: state.headName };
 };
