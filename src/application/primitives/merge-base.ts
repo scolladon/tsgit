@@ -479,21 +479,38 @@ const octopusMergeBases = async (
  * its line, the way `paint_down_to_common` does.
  *
  * Every parse types its pointers into `table` — the caller's, when its own
- * lookups already filled one, as git's process-wide table carries them.
+ * lookups already filled one, as git's process-wide table carries them;
+ * otherwise a fresh one, typed first as the ends' own lookups would type it.
  */
 export const inMergeBases = async (
   ctx: Context,
   commit: ObjectId,
   reference: ObjectId,
-  table: ObjectTypeTable = createObjectTypeTable(),
+  table?: ObjectTypeTable,
 ): Promise<boolean> => {
   const target = await readMetaOrMissing(ctx, commit);
   const from = await readMetaOrMissing(ctx, reference);
   if (target === undefined || from === undefined) return false;
-  if (target.generation > from.generation) return false;
   const ends: Ends = { target: { id: commit, meta: target }, from: { id: reference, meta: from } };
-  if (await generationNumbersEnabled(ctx)) return reachesDepthFirst(ctx, ends, table);
-  return reachesByPaint(ctx, ends, table);
+  const walkTable = table ?? tableTypedByEnds(ctx, ends);
+  if (walkTable === undefined || target.generation > from.generation) return false;
+  if (await generationNumbersEnabled(ctx)) return reachesDepthFirst(ctx, ends, walkTable);
+  return reachesByPaint(ctx, ends, walkTable);
+};
+
+/**
+ * git's callers look both ends up and parse them before asking — the commit
+ * end first — typing each a commit and then its pointers; `undefined` once
+ * that typing conflicted, git's lookup failing with its lines logged.
+ */
+const tableTypedByEnds = (ctx: Context, { target, from }: Ends): ObjectTypeTable | undefined => {
+  const table = createObjectTypeTable();
+  const typed = [target, from].every(
+    (end) =>
+      assignObjectType(ctx, table, end.id, 'commit') &&
+      typeParsedPointers(ctx, table, end.id, end.meta),
+  );
+  return typed ? table : undefined;
 };
 
 interface Parsed {

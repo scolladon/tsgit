@@ -6,14 +6,17 @@ import * as readCommitMetaModule from '../../../../src/application/primitives/in
 import { inMergeBases, mergeBase } from '../../../../src/application/primitives/merge-base.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type {
   AuthorIdentity,
   Commit,
+  FileMode,
   ObjectId,
   ObjectType,
   Tree,
 } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext, instrumentedContext, writeCommitGraph } from './fixtures.js';
 
@@ -1208,6 +1211,88 @@ describe('inMergeBases on a read refusal that is not a missing object', () => {
         expect((caught as TsgitError).data).toEqual({
           code: 'INVALID_OBJECT_HEADER',
           reason: 'bad header',
+        });
+      });
+    });
+  });
+});
+
+/** A commit over `tree` with `parents`, written as given — no typing gate. */
+const writeRawCommit = (
+  ctx: Context,
+  tree: ObjectId,
+  parents: ReadonlyArray<ObjectId>,
+  message: string,
+): Promise<ObjectId> => {
+  const commit: Commit = {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: { tree, parents, author: AUTHOR, committer: AUTHOR, message, extraHeaders: [] },
+  };
+  return writeObject(ctx, commit);
+};
+
+describe('inMergeBases without a caller table', () => {
+  describe('Given a reference naming the commit end as its tree', () => {
+    describe('When inMergeBases measures the commit end against it', () => {
+      it("Then typing the ends conflicts on the reference's tree and answers false after git's lines", async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const logged: string[] = [];
+        const ctx = { ...base, logger: { error: (line: string) => logged.push(line) } };
+        const commit = await writeRawCommit(ctx, await emptyTree(ctx), [], 'commit');
+        const reference = await writeRawCommit(ctx, commit, [commit], 'reference');
+        const sut = inMergeBases;
+
+        // Act
+        const result = await sut(ctx, commit, reference);
+
+        // Assert
+        expect({ result, logged }).toEqual({
+          result: false,
+          logged: [
+            `object ${commit} is a commit, not a tree`,
+            `bad tree pointer ${commit} in commit ${reference}`,
+          ],
+        });
+      });
+    });
+  });
+
+  describe("Given a reference whose parent names the reference's own tree as its parent", () => {
+    describe('When inMergeBases measures an unrelated commit against it', () => {
+      it("Then the ends' pointers are typed first, so that parent fails to parse on its bad parent", async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const logged: string[] = [];
+        const ctx = { ...base, logger: { error: (line: string) => logged.push(line) } };
+        const tree = await emptyTree(ctx);
+        const blob = await writeObject(ctx, {
+          type: 'blob',
+          content: new TextEncoder().encode('b'),
+          id: '' as ObjectId,
+        });
+        const otherTree = await writeTree(ctx, [treeEntry('100644' as FileMode, 'b', blob)]);
+        const parent = await writeRawCommit(ctx, otherTree, [tree], 'parent');
+        const reference = await writeRawCommit(ctx, tree, [parent], 'reference');
+        const unrelated = await writeRawCommit(ctx, otherTree, [], 'unrelated');
+        const sut = inMergeBases;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, unrelated, reference);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'COMMIT_PARSE_FAILED', id: parent },
+          logged: [
+            `object ${tree} is a tree, not a commit`,
+            `bad parent ${tree} in commit ${parent}`,
+          ],
         });
       });
     });
