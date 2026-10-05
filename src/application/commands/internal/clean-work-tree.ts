@@ -80,3 +80,12 @@ export const assertCleanWorkTree = async (ctx: Context, headTree: ObjectId): Pro
     throw workingTreeDirty({ localChanges: [...dirty].sort(comparePaths), untracked: [] });
   }
 };
+
+/** Paths whose index entry differs from `headTree`, in git's raw-byte order. */
+export const stagedChangePaths = async (
+  ctx: Context,
+  headTree: ObjectId,
+): Promise<ReadonlyArray<FilePath>> => {
+  const { stage0 } = partitionIndex((await readIndex(ctx)).entries);
+  return [...(await stagedDirty(ctx, stage0, headTree))].sort(comparePaths);
+};

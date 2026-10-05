@@ -61,7 +61,7 @@ import { REASON_SKIP_TARGET_PARENTLESS } from '../primitives/validators.js';
 import { walkCommits, walkCommitsStoppingAt } from '../primitives/walk-commits.js';
 import { removeBranchState } from './internal/branch-state.js';
 import { conflictMergeMsg } from './internal/cherry-pick-state.js';
-import { assertCleanWorkTree } from './internal/clean-work-tree.js';
+import { assertCleanWorkTree, stagedChangePaths } from './internal/clean-work-tree.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import { sanitizeMessage, stripComments } from './internal/commit-message.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
@@ -507,7 +507,9 @@ const branchOf = (headName: string): RefName | undefined =>
 /**
  * Resume the rebase after the conflicted commit was resolved: commit the resolved
  * index as the stopped commit (preserved author from `author-script`, current
- * committer, `rebase (continue)` reflog), then replay the remaining todo.
+ * committer, `rebase (continue)` reflog), then replay the remaining todo. An
+ * index matching HEAD (resolution committed by hand, or resolved to HEAD) makes
+ * no commit — HEAD stands in for the stopped commit, as in git.
  */
 export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
   await assertOperationalRepositorySettingsFirst(ctx);
@@ -521,34 +523,56 @@ export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
   const stopped = state.done[state.done.length - 1]!;
   const currentHead = await resolveRef(ctx, HEAD);
   const tree = await synthesizeTreeFromIndex(ctx, index.entries);
-  const committer = await resolveCurrentIdentity(ctx);
-  // Stryker disable next-line BooleanLiteral: equivalent — the rebase `message` file carries the replayed commit's subject, so the stripped/sanitised message is always non-empty here and the empty-message guard never fires.
-  const message = sanitizeMessage(stripComments(state.message), { allowEmpty: false });
-  const resolutionId = await createCommit(ctx, {
-    tree,
-    parents: [currentHead],
-    author: state.author,
-    committer,
-    message,
-    extraHeaders: [],
-  });
-  await updateRef(ctx, HEAD, resolutionId, {
-    expected: currentHead,
-    reflogMessage: rebaseContinueReflog(subjectLine(message)),
-  });
-  const rewritten = [...(await readRewrittenList(ctx)), [stopped.oid, resolutionId] as const];
-  const rc: ReplayContext = {
-    branch: branchOf(state.headName),
-    onto: state.onto,
-    origHead: state.origHead,
-    doneBefore: state.done,
-    todo: state.remaining,
-  };
+  const rc = replayContextOf(state);
+  const rewrittenBefore = await readRewrittenList(ctx);
+  if (await treeMatchesCommit(ctx, tree, currentHead)) {
+    return replayFrom(ctx, rc, currentHead, {
+      applied: [],
+      rewritten: [...rewrittenBefore, [stopped.oid, currentHead] as const],
+    });
+  }
+  const resolutionId = await commitStoppedResolution(ctx, state, tree, currentHead);
   return replayFrom(ctx, rc, resolutionId, {
     applied: [{ source: stopped.oid, created: resolutionId }],
-    rewritten,
+    rewritten: [...rewrittenBefore, [stopped.oid, resolutionId] as const],
   });
 };
+
+const replayContextOf = (state: RebaseState): ReplayContext => ({
+  branch: branchOf(state.headName),
+  onto: state.onto,
+  origHead: state.origHead,
+  doneBefore: state.done,
+  todo: state.remaining,
+});
+
+/** Commit the staged resolution as the stopped commit (its author, the current
+ *  committer, its comment-stripped message) on top of HEAD. */
+const commitStoppedResolution = (
+  ctx: Context,
+  state: RebaseState,
+  tree: ObjectId,
+  currentHead: ObjectId,
+): Promise<ObjectId> => {
+  // Stryker disable next-line BooleanLiteral: equivalent — the rebase `message` file carries the replayed commit's subject, so the stripped/sanitised message is always non-empty here and the empty-message guard never fires.
+  const message = sanitizeMessage(stripComments(state.message), { allowEmpty: false });
+  return commitAndAdvance(ctx, {
+    tree,
+    parent: currentHead,
+    expected: currentHead,
+    author: state.author,
+    message,
+    reflog: rebaseContinueReflog(subjectLine(message)),
+  });
+};
+
+/** git's `is_clean`: a staged index equal to HEAD's tree leaves nothing to
+ *  commit — the caller committed the resolution, or resolved to HEAD. */
+const treeMatchesCommit = async (
+  ctx: Context,
+  tree: ObjectId,
+  commitId: ObjectId,
+): Promise<boolean> => (await readCommitData(ctx, commitId)).tree === tree;
 
 /** Drop the conflicted commit (hard-reset to the last good pick) and replay the rest. */
 export const rebaseSkip = async (ctx: Context): Promise<RebaseResult> => {
@@ -1153,52 +1177,62 @@ const rebaseContinueInteractive = async (
   rejectUnmergedIndex(index.entries);
   const tree = await synthesizeTreeFromIndex(ctx, index.entries);
   const currentHead = await resolveRef(ctx, HEAD);
-  const stoppedOid = state.done[state.done.length - 1]!.oid;
-  let resumeHead: ObjectId;
-  if (state.currentFixups !== undefined) {
-    // A squash/fixup meld conflicted: commit the resolution as the group commit
-    // (replacing the base — its parent), with the cleaned combined message.
-    const baseData = await readCommitData(ctx, currentHead);
-    // Stryker disable next-line BooleanLiteral: equivalent — `state.message` is the stopped commit's (non-empty) message persisted at the stop, so the cleaned result is never empty here and the empty-message guard never fires.
-    const message = sanitizeMessage(stripComments(state.message), { allowEmpty: false });
-    resumeHead = await commitAndAdvance(ctx, {
-      tree,
-      parent: baseData.parents[0],
-      expected: currentHead,
-      author: baseData.author,
-      message,
-      reflog: rebaseContinueReflog(subjectLine(message)),
-    });
-    rewritten.push([stoppedOid, resumeHead]);
-  } else if (state.amend !== undefined) {
-    const amendCommit = await readCommitData(ctx, state.amend);
-    if (tree === amendCommit.tree) {
-      resumeHead = currentHead; // edit left the tree unchanged — keep the commit
-    } else {
-      resumeHead = await commitAndAdvance(ctx, {
-        tree,
-        parent: amendCommit.parents[0],
-        expected: currentHead,
-        author: state.author,
-        message: amendCommit.message,
-        reflog: rebaseContinueReflog(subjectLine(amendCommit.message)),
-      });
-      rewritten.push([stoppedOid, resumeHead]);
-    }
-  } else {
-    // Stryker disable next-line BooleanLiteral: equivalent — `state.message` is the stopped commit's (non-empty) message persisted at the stop, so the cleaned result is never empty here and the empty-message guard never fires.
-    const message = sanitizeMessage(stripComments(state.message), { allowEmpty: false });
-    resumeHead = await commitAndAdvance(ctx, {
-      tree,
-      parent: currentHead,
-      expected: currentHead,
-      author: state.author,
-      message,
-      reflog: rebaseContinueReflog(subjectLine(message)),
-    });
-    rewritten.push([stoppedOid, resumeHead]);
-  }
+  const resumeHead = await resumeInteractiveStop(ctx, state, tree, currentHead);
+  rewritten.push([state.done[state.done.length - 1]!.oid, resumeHead]);
   return replayInteractive(ctx, ic, resumeHead, { applied: [], rewritten });
+};
+
+/** git's `commit_staged_changes`: nothing staged against HEAD → keep HEAD (the
+ *  caller committed, or left the edit as is); an edit stop amends only while
+ *  HEAD is still the edit'd commit; a conflict stop commits the resolution. */
+const resumeInteractiveStop = async (
+  ctx: Context,
+  state: RebaseState,
+  tree: ObjectId,
+  currentHead: ObjectId,
+): Promise<ObjectId> => {
+  if (state.currentFixups !== undefined)
+    return commitFixupResolution(ctx, state, tree, currentHead);
+  if (await treeMatchesCommit(ctx, tree, currentHead)) return currentHead;
+  if (state.amend === undefined) return commitStoppedResolution(ctx, state, tree, currentHead);
+  if (state.amend !== currentHead) throw await uncommittedOnTopOfEdit(ctx, currentHead);
+  const amendCommit = await readCommitData(ctx, state.amend);
+  return commitAndAdvance(ctx, {
+    tree,
+    parent: amendCommit.parents[0],
+    expected: currentHead,
+    author: state.author,
+    message: amendCommit.message,
+    reflog: rebaseContinueReflog(subjectLine(amendCommit.message)),
+  });
+};
+
+/** Changes staged on top of a commit the caller made at an edit stop: git
+ *  refuses to fold them into either commit. */
+const uncommittedOnTopOfEdit = async (ctx: Context, head: ObjectId): Promise<TsgitError> => {
+  const headTree = (await readCommitData(ctx, head)).tree;
+  return workingTreeDirty({ localChanges: await stagedChangePaths(ctx, headTree), untracked: [] });
+};
+
+/** A squash/fixup meld conflicted: commit the resolution as the group commit
+ *  (replacing the base — its parent), with the cleaned combined message. */
+const commitFixupResolution = async (
+  ctx: Context,
+  state: RebaseState,
+  tree: ObjectId,
+  currentHead: ObjectId,
+): Promise<ObjectId> => {
+  const baseData = await readCommitData(ctx, currentHead);
+  // Stryker disable next-line BooleanLiteral: equivalent — `state.message` is the stopped commit's (non-empty) message persisted at the stop, so the cleaned result is never empty here and the empty-message guard never fires.
+  const message = sanitizeMessage(stripComments(state.message), { allowEmpty: false });
+  return commitAndAdvance(ctx, {
+    tree,
+    parent: baseData.parents[0],
+    expected: currentHead,
+    author: baseData.author,
+    message,
+    reflog: rebaseContinueReflog(subjectLine(message)),
+  });
 };
 
 /** Dropping an edit'd commit moves HEAD to that commit's first parent. A

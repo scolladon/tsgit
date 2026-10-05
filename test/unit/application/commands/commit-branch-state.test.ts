@@ -88,4 +88,24 @@ describe('commit clears the branch state, as git does', () => {
       });
     });
   });
+
+  describe('Given a rebase stopped at a commit', () => {
+    describe('When commit', () => {
+      it('Then it commits on HEAD and leaves the rebase state in place', async () => {
+        // Arrange
+        const { ctx, head } = await seedCommitAndStage();
+        await plant(ctx, 'REBASE_HEAD', `${head}\n`);
+        await plant(ctx, 'rebase-merge/stopped-sha', `${head}\n`);
+        const sut = commit;
+
+        // Act
+        const result = await sut(ctx, { message: 'manual', author });
+
+        // Assert
+        expect(result.parents).toEqual([head]);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/REBASE_HEAD`)).toBe(true);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/stopped-sha`)).toBe(true);
+      });
+    });
+  });
 });

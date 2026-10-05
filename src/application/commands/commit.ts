@@ -16,6 +16,7 @@ import {
   CHERRY_PICK,
   MERGE,
   type PendingOperation,
+  REBASE,
   REVERT,
 } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
@@ -99,13 +100,12 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   // Promisor-remote guard (see assertValidPromisorRemoteConfig) — loaded up front.
   await assertValidPromisorRemoteConfig(ctx);
   // Resolving a conflicted merge / cherry-pick / revert IS the legitimate way to
-  // clear its marker — skip that marker's check. All other in-progress operations
-  // still block. A cherry-pick / revert resolution stays single-parent (no
-  // MERGE_HEAD).
+  // clear its marker — skip that marker's check. A stopped rebase never blocks:
+  // git commits on top of it and `rebase --continue` picks up from the new HEAD.
+  // A cherry-pick / revert resolution stays single-parent (no MERGE_HEAD).
   const markers = await readPendingMarkers(ctx);
   const { mergeHead, cherryPickHead, revertHead } = markers;
-  const pendingExcept = pendingExceptOf(markers);
-  await assertNoPendingOperation(ctx, pendingExcept !== undefined ? { except: pendingExcept } : {});
+  await assertNoPendingOperation(ctx, { except: allowedPendingOf(markers) });
   const noVerify = opts.noVerify ?? false;
   // pre-commit runs before the index is read, so a hook that re-stages files
   // (e.g. a formatter) is reflected in the committed tree.
@@ -263,11 +263,16 @@ const readPendingMarkers = async (ctx: Context): Promise<PendingMarkers> => {
   };
 };
 
-const pendingExceptOf = (m: PendingMarkers): PendingOperation | undefined => {
+const resolvedPendingOf = (m: PendingMarkers): PendingOperation | undefined => {
   if (m.mergeHead !== undefined) return MERGE;
   if (m.cherryPickHead !== undefined) return CHERRY_PICK;
   if (m.revertHead !== undefined) return REVERT;
   return undefined;
+};
+
+const allowedPendingOf = (m: PendingMarkers): ReadonlyArray<PendingOperation> => {
+  const resolved = resolvedPendingOf(m);
+  return resolved !== undefined ? [REBASE, resolved] : [REBASE];
 };
 
 const resolveCommitMessage = async (

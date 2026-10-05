@@ -148,6 +148,35 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interop', () => {
     });
   });
 
+  describe('Given a rebase stopped on a conflict, When the resolution is committed by hand and the rebase continued', () => {
+    it('Then tsgit keeps the hand-made commit like git, adding none of its own', async () => {
+      // Arrange
+      buildConflict(pair.peer);
+      buildConflict(pair.ours);
+      tryRunGit(['-C', pair.peer, '-c', 'core.editor=true', 'rebase', 'main']);
+      writeWork(pair.peer, 'f.txt', 'l1\nRESOLVED\n');
+      git(pair.peer, 'add', 'f.txt');
+      gitCommit(pair.peer, 'manual');
+      runGit(['-C', pair.peer, '-c', 'core.editor=true', 'rebase', '--continue']);
+      const repo = await openRepository({ cwd: pair.ours });
+      await repo.rebase.run({ upstream: 'main' });
+      writeWork(pair.ours, 'f.txt', 'l1\nRESOLVED\n');
+      git(pair.ours, 'add', 'f.txt');
+      await repo.commit({ message: 'manual' });
+
+      // Act
+      const result = await repo.rebase.continue();
+      await repo.dispose();
+
+      // Assert
+      expect(result).toEqual({ kind: 'rebased', commits: [] });
+      const subjects = (dir: string): string => git(dir, 'log', '--format=%s', 'main..topic');
+      expect(subjects(pair.ours)).toBe(subjects(pair.peer));
+      expect(writeTreeOf(pair.ours)).toBe(writeTreeOf(pair.peer));
+      expect(git(pair.ours, 'symbolic-ref', 'HEAD').trim()).toBe('refs/heads/topic');
+    });
+  });
+
   describe('Given a rebase aborted mid-conflict, When both tools abort', () => {
     it('Then tsgit and git write the same faithful abort reflog, branch untouched', async () => {
       // Arrange — identical conflict in both; run each to the stop.

@@ -720,6 +720,45 @@ describe('rebaseContinue', () => {
     });
   });
 
+  describe('Given a conflict resolved and committed by the caller', () => {
+    describe('When continued', () => {
+      it('Then it keeps the caller commit and creates none of its own', async () => {
+        // Arrange
+        const ctx = await seedConflict();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nRESOLVED\n');
+        await add(ctx, ['f.txt']);
+        const manual = (await commit(ctx, { message: 'manual', author: FEAT_AUTHOR })).id;
+
+        // Act
+        const result = await rebaseContinue(ctx);
+
+        // Assert
+        expect(result).toEqual({ kind: 'rebased', commits: [] });
+        expect(await resolveRef(ctx, 'refs/heads/topic' as RefName)).toBe(manual);
+        expect(await headIsSymbolic(ctx)).toBe(true);
+      });
+    });
+  });
+
+  describe("Given a conflict resolved back to HEAD's tree", () => {
+    describe('When continued', () => {
+      it('Then the stopped pick is dropped', async () => {
+        // Arrange
+        const ctx = await seedConflict();
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nMAIN\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        const result = await rebaseContinue(ctx);
+
+        // Assert
+        expect(result).toEqual({ kind: 'rebased', commits: [] });
+        expect(await resolveRef(ctx, 'refs/heads/topic' as RefName)).toBe(head);
+      });
+    });
+  });
+
   describe('Given an unresolved (still-conflicted) index', () => {
     describe('When continued', () => {
       it('Then it refuses with MERGE_HAS_CONFLICTS naming the conflicted path', async () => {
@@ -1471,6 +1510,85 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
     });
   });
 
+  describe('Given an edit stop continued with no tree change and a post-rewrite hook', () => {
+    describe('When continue is called', () => {
+      it('Then post-rewrite still maps the edited commit to HEAD', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await init(ctx);
+        await setUser(ctx);
+        const base = await writeAddCommit(ctx, 'base.txt', 'base\n', 'base');
+        const c1 = await writeAddCommit(ctx, '1.txt', '1\n', 'c1 subject');
+        const c2 = await writeAddCommit(ctx, '2.txt', '2\n', 'c2 subject');
+        await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'edit', oid: c1 },
+            { action: 'pick', oid: c2 },
+          ],
+        });
+
+        // Act
+        await rebaseContinue(ctx);
+
+        // Assert
+        const result = runner.calls.filter((call) => call.name === 'post-rewrite');
+        expect(result.map((call) => call.stdin)).toEqual([`${c1} ${c1}\n${c2} ${c2}\n`]);
+      });
+    });
+  });
+
+  describe('Given an edit stop where the caller committed on top', () => {
+    describe('When continued', () => {
+      it('Then the caller commit is kept and the edited commit is not amended', async () => {
+        // Arrange
+        const { ctx, base, c1, c2 } = await seedLinear();
+        await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'edit', oid: c1 },
+            { action: 'pick', oid: c2 },
+          ],
+        });
+        const extra = await writeAddCommit(ctx, 'extra.txt', 'extra\n', 'extra');
+
+        // Act
+        await rebaseContinue(ctx);
+
+        // Assert
+        const result = await readCommit(ctx, await mainTipOid(ctx));
+        expect(result.message).toBe('c2 subject\n');
+        expect(result.parents).toEqual([extra]);
+        expect((await readCommit(ctx, extra)).parents).toEqual([c1]);
+      });
+    });
+  });
+
+  describe('Given an edit stop where the caller committed on top and staged more', () => {
+    describe('When continued', () => {
+      it('Then it refuses with WORKING_TREE_DIRTY naming the staged path', async () => {
+        // Arrange
+        const { ctx, base, c1 } = await seedLinear();
+        await rebaseRun(ctx, { upstream: base, interactive: [{ action: 'edit', oid: c1 }] });
+        await writeAddCommit(ctx, 'extra.txt', 'extra\n', 'extra');
+        await ctx.fs.writeUtf8(work(ctx, 'extra.txt'), 'more\n');
+        await add(ctx, ['extra.txt']);
+
+        // Act
+        const result = await dataOf(() => rebaseContinue(ctx));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['extra.txt'],
+          untracked: [],
+        });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(true);
+      });
+    });
+  });
+
   describe('Given an edit stop that is skipped', () => {
     describe('When skip is called', () => {
       it('Then the edit commit is dropped and the rest replays onto its parent', async () => {
@@ -1523,6 +1641,29 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
         const head = await reflogMessages(ctx, 'HEAD');
         expect(head[0]).toBe('rebase (finish): returning to refs/heads/topic');
         expect(head[1]).toBe('rebase (continue): t2 subject');
+      });
+    });
+
+    describe('When the resolution is committed by the caller and continued', () => {
+      it('Then the caller commit stands in for the stopped pick', async () => {
+        // Arrange
+        const { ctx, t1, t2, t3 } = await seedTopicConflict();
+        await rebaseRun(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'pick', oid: t2 },
+            { action: 'drop', oid: t3 },
+          ],
+        });
+        const manual = await writeAddCommit(ctx, 'f.txt', 'RESOLVED\n', 'manual');
+
+        // Act
+        const result = await rebaseContinue(ctx);
+
+        // Assert
+        expect(result).toEqual({ kind: 'rebased', commits: [] });
+        expect(await resolveRef(ctx, 'refs/heads/topic' as RefName)).toBe(manual);
       });
     });
 
