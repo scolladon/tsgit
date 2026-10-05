@@ -12,7 +12,7 @@ const STAR = '*';
  * git's `match_refname_with_pattern`: `name` matched against the one-`*`
  * pattern `key`, with what the `*` captured substituted into `value`.
  */
-const expandPattern = (key: string, name: string, value: string): string | undefined => {
+export const expandPattern = (key: string, name: string, value: string): string | undefined => {
   const star = key.indexOf(STAR);
   const prefix = key.slice(0, star);
   const suffix = key.slice(star + 1);

@@ -733,7 +733,10 @@ describe.skipIf(SKIP_REASON !== false)('push — remote resolution against git-h
 
         // Arrange — tsgit twin: the same sequence against its own bare.
         const { repo, dir } = await initTsgitRepo();
-        await appendConfig(repo, `[remote "${remote}"]\n  url = ${bareUrl(remote, 'ts')}`);
+        await appendConfig(
+          repo,
+          `[remote "${remote}"]\n  url = ${bareUrl(remote, 'ts')}\n  fetch = +refs/heads/*:refs/remotes/${remote}/*`,
+        );
         await repo.push({ refspecs: ['refs/heads/main:refs/heads/main'] });
         await plantTrackingSymref(dir, remote);
         await writeFile(path.join(dir, 'seed.txt'), 'second from tsgit\n');

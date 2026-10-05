@@ -155,6 +155,7 @@ const writeOriginConfig = async (ctx: ReturnType<typeof createMemoryContext>): P
     `${ctx.layout.gitDir}/config`,
     '[remote "origin"]\n' +
       '  url = https://example.com/r.git\n' +
+      '  fetch = +refs/heads/*:refs/remotes/origin/*\n' +
       '[branch "main"]\n' +
       '  remote = origin\n' +
       '  merge = refs/heads/main\n',
@@ -3798,6 +3799,146 @@ describe('push — an advertised have whose tree is missing locally', () => {
         const body = requestBodies[0];
         expect(body).toBeDefined();
         expect(packObjectCount(body as Uint8Array)).toBe(3);
+      });
+    });
+  });
+});
+
+describe('push — remote-tracking refs mapped through the fetch refspecs', () => {
+  const MIRROR_CONFIG =
+    '[remote "origin"]\n  url = https://example.com/r.git\n' +
+    '  fetch = +refs/heads/*:refs/remotes/mirror/*\n';
+  const URL_ONLY_CONFIG = '[remote "origin"]\n  url = https://example.com/r.git\n';
+  const writeConfig = async (
+    ctx: ReturnType<typeof createMemoryContext>,
+    body: string,
+  ): Promise<void> => {
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, body);
+    __resetConfigCacheForTests();
+  };
+  const trackingRef = (ctx: ReturnType<typeof createMemoryContext>, name: string) =>
+    ctx.fs.exists(`${ctx.layout.gitDir}/${name}`);
+
+  describe('Given a fetch refspec mapping branches under refs/remotes/mirror/', () => {
+    describe('When an accepted push updates main', () => {
+      it('Then refs/remotes/mirror/main holds the pushed oid and refs/remotes/origin/main is absent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeConfig(ctx, MIRROR_CONFIG);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        await push({ ...ctx, transport }, { refspecs: ['main'] });
+
+        // Assert
+        const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/mirror/main`);
+        expect(result.trim()).toBe(tip.id);
+        expect(await trackingRef(ctx, 'refs/remotes/origin/main')).toBe(false);
+      });
+    });
+
+    describe('When an accepted push deletes a branch the mirror tracks', () => {
+      it('Then the mapped tracking ref is deleted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const gone = await seedCommit(ctx, [], 'gone');
+        await seedRepo(ctx, { refs: { 'refs/remotes/mirror/gone': gone.id } });
+        await writeConfig(ctx, MIRROR_CONFIG);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/gone', id: gone.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/gone', status: 'ok' }] },
+        });
+
+        // Act
+        await push({ ...ctx, transport }, { refspecs: [':refs/heads/gone'] });
+
+        // Assert
+        expect(await trackingRef(ctx, 'refs/remotes/mirror/gone')).toBe(false);
+      });
+    });
+
+    describe('When the pushed branch is already up to date and its tracking ref is missing', () => {
+      it('Then the tracking ref is written all the same', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const tip = await seedCommit(ctx, [], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeConfig(ctx, MIRROR_CONFIG);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: tip.id }],
+          reportStatus: CLEAN_REPORT,
+        });
+
+        // Act
+        await push({ ...ctx, transport }, { refspecs: ['main'] });
+
+        // Assert
+        const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/mirror/main`);
+        expect(result.trim()).toBe(tip.id);
+      });
+    });
+
+    describe('When an automatic lease reads a mapped tracking ref the remote still holds', () => {
+      it('Then the lease holds even though refs/remotes/origin/main disagrees', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const a = await seedCommit(ctx, [], 'a');
+        const b = await seedCommit(ctx, [], 'b');
+        await seedRepo(ctx, {
+          refs: {
+            'refs/heads/main': b.id,
+            'refs/remotes/mirror/main': a.id,
+            'refs/remotes/origin/main': b.id,
+          },
+        });
+        await writeConfig(ctx, MIRROR_CONFIG);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: a.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        const result = await push(
+          { ...ctx, transport },
+          { refspecs: ['main'], forceWithLease: 'auto' },
+        );
+
+        // Assert
+        expect(result.pushedRefs.map((ref) => ref.status)).toEqual(['ok']);
+      });
+    });
+  });
+
+  describe('Given a remote with no fetch refspec', () => {
+    describe('When an accepted push updates main', () => {
+      it('Then no tracking ref is written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeConfig(ctx, URL_ONLY_CONFIG);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        await push({ ...ctx, transport }, { refspecs: ['main'] });
+
+        // Assert
+        expect(await trackingRef(ctx, 'refs/remotes')).toBe(false);
       });
     });
   });
