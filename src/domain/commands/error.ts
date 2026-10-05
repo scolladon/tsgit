@@ -422,6 +422,7 @@ export type CommandError =
       readonly unmatched: ReadonlyArray<PushUnmatchedRefspec>;
     }
   | { readonly code: 'PUSH_DETACHED_NO_REFSPEC' }
+  | { readonly code: 'REMOTE_REF_NOT_FOUND'; readonly ref: string }
   | { readonly code: 'PUSH_DEFAULT_NOTHING' }
   | {
       readonly code: 'PUSH_REMOTE_NOT_UPSTREAM';
@@ -1282,6 +1283,10 @@ export const pushRefspecUnmatched = (
   url: string,
   unmatched: ReadonlyArray<PushUnmatchedRefspec>,
 ): TsgitError => new TsgitError({ code: 'PUSH_REFSPEC_UNMATCHED', url, unmatched });
+
+// Refusal: a fetch refspec naming one remote ref the remote does not advertise.
+export const remoteRefNotFound = (ref: string): TsgitError =>
+  new TsgitError({ code: 'REMOTE_REF_NOT_FOUND', ref });
 
 // Refusal: an atomic push to a server whose advertisement carries no `atomic`
 // token. Thrown after the `pre-push` hook and before anything is sent.

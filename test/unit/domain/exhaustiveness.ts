@@ -244,6 +244,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'SIGNED_PUSH_UNSUPPORTED':
     case 'ATOMIC_PUSH_UNSUPPORTED':
     case 'PUSH_REFSPEC_UNMATCHED':
+    case 'REMOTE_REF_NOT_FOUND':
     case 'PUSH_DETACHED_NO_REFSPEC':
     case 'PUSH_DEFAULT_NOTHING':
     case 'PUSH_REMOTE_NOT_UPSTREAM':

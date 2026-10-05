@@ -705,6 +705,8 @@ function extractDetail(data: TsgitErrorData): string {
       return 'the receiving end does not support --atomic push';
     case 'PUSH_REFSPEC_UNMATCHED':
       return `failed to push some refs to '${data.url}'`;
+    case 'REMOTE_REF_NOT_FOUND':
+      return `couldn't find remote ref ${data.ref}`;
     case 'PUSH_DETACHED_NO_REFSPEC':
       return 'you are not currently on a branch';
     case 'PUSH_DEFAULT_NOTHING':

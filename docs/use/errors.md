@@ -191,6 +191,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `REMOTE_ADVERTISES_NO_REFS` | — | Server returned an empty ref list. |
 | `REMOTE_FILTER_UNSUPPORTED` | — | Server's capabilities lack `filter` (v1 capability list or v2 `fetch` command's sub-features). |
 | `REMOTE_NOT_CONFIGURED` | `name` | `[remote "<name>"]` not in `.git/config`. |
+| `REMOTE_REF_NOT_FOUND` | `ref` | A [`fetch`](commands/fetch.md) refspec's exact source — or the `HEAD` a remote with no fetch refspec is fetched by — names no advertised ref (git's `couldn't find remote ref <ref>`). |
 | `REMOTE_ERROR` | `message` | Server sent an `ERR` pkt-line. The peer's own text, escaped and cut to 4096 characters. |
 | `SIDEBAND_FATAL` | `message` | Server emitted a sideband fatal-error line. The peer's own text, escaped and cut to 4096 characters. |
 | `ATOMIC_PUSH_UNSUPPORTED` | — | `push({ atomic: true })` but the server does not advertise the `atomic` capability. Nothing is sent. |

@@ -9,8 +9,9 @@
  *  4. POST `git-upload-pack` with `want` + `have` + `deepen` (when depth set)
  *  via the shared `fetchPack` primitive.
  *  5. If the server emitted shallow / unshallow lines, persist `.git/shallow`.
- *  6. Write each advertised ref to the local ref `remote.<name>.fetch` maps it
- *  onto, then — when any refspec stores into a ref — every `refs/tags/<tag>`.
+ *  6. Write each fetched ref to the local ref its refspec maps it onto — the
+ *  command-line refspecs, else `remote.<name>.fetch` — then — when any refspec
+ *  stores into a ref — every `refs/tags/<tag>`, and list them in `FETCH_HEAD`.
  *  7. If `prune: true`, delete each local ref those refspecs map from a remote
  *  ref the server no longer advertises.
  *
@@ -18,7 +19,7 @@
  */
 import { remoteAdvertisesNoRefs, remoteNotConfigured } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
-import type { Advertisement } from '../../domain/protocol/index.js';
+import { refspecInvalid } from '../../domain/protocol/error.js';
 import {
   formatObjectFilter,
   parseObjectFilter,
@@ -28,7 +29,11 @@ import { FETCH_PRUNE_REFLOG, fetchStoringHead } from '../../domain/reflog/reflog
 import { isSafeRefName, validateRefName } from '../../domain/refs/ref-validation.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { Context } from '../../ports/context.js';
-import { readConfig, warnSlashLeadingPromisorRemotes } from '../primitives/config-read.js';
+import {
+  type ParsedConfig,
+  readConfig,
+  warnSlashLeadingPromisorRemotes,
+} from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
 import { hasObject } from '../primitives/has-object.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
@@ -38,10 +43,17 @@ import { MAX_HAVES, MAX_WALK_SEEDS } from '../primitives/types.js';
 import { deleteRefs, updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
 import { assertValidRemoteName, defaultRemoteName } from './internal/default-remote.js';
+import {
+  fetchHeadEntries,
+  fetchHeadUrl,
+  formatFetchHead,
+  writeFetchHead,
+} from './internal/fetch-head.js';
 import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
-import { type MappedRef, mapFetchedRefs } from './internal/fetch-ref-map.js';
+import { getRefMap, type MappedRef, type RefMapRequest } from './internal/fetch-ref-map.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
 import { assertPeerAlgorithm } from './internal/object-format-guard.js';
+import { isValidFetchRefspec } from './internal/refspec-grammar.js';
 import { readRemoteConfig } from './internal/remote-config.js';
 import { findTrackedSources } from './internal/remote-tracking-ref.js';
 import {
@@ -61,7 +73,18 @@ export interface FetchOptions {
    * configured remote ?? `'origin'`; detached HEAD skips the branch step.
    */
   readonly remote?: string;
+  /**
+   * Refspecs fetched instead of `remote.<name>.fetch` (git's command-line
+   * `<refspec>…`). Every ref they name is listed for merging in `FETCH_HEAD`,
+   * and still updates the tracking ref the configured refspecs map it onto.
+   */
   readonly refspecs?: ReadonlyArray<string>;
+  /**
+   * git's `--refmap=<refspec>`, one entry per flag: the refspecs mapping the
+   * `refspecs` refs onto tracking refs, in place of `remote.<name>.fetch`.
+   * `['']` updates no tracking ref. Refused without `refspecs`.
+   */
+  readonly refmap?: ReadonlyArray<string>;
   readonly prune?: boolean;
   /** Shallow clone depth. Delegates to fetchPack's deepen path. */
   readonly depth?: number;
@@ -96,24 +119,50 @@ export const fetch = async (ctx: Context, opts: FetchOptions = {}): Promise<Fetc
   const currentBranch = branchRef !== undefined ? shortBranchName(branchRef) : undefined;
   const config = await readRemoteConfig(ctx);
   const remoteName = defaultRemoteName(config, opts.remote, currentBranch);
-  const trackingSpecs = config.remote?.get(remoteName)?.fetch ?? [];
+  const request = refMapRequest(config, opts, remoteName, currentBranch);
   // git's single-remote fetch asks `repo_has_promisor_remote` before it fetches.
   await warnSlashLeadingPromisorRemotes(ctx);
   const { url, filter } = await resolveRemoteUrl(ctx, remoteName);
 
   ctx.progress.start(FETCH_NEGOTIATE_OP);
   try {
-    return await fetchViaSession(ctx, opts, { name: remoteName, trackingSpecs }, url, filter);
+    return await fetchViaSession(ctx, opts, { name: remoteName, request }, url, filter);
   } finally {
     ctx.progress.end(FETCH_NEGOTIATE_OP);
   }
 };
 
-/** The remote fetched from: its name, and the refspecs mapping its refs locally. */
+/** The remote fetched from: its name, and what maps its refs locally. */
 interface FetchRemote {
   readonly name: string;
-  readonly trackingSpecs: ReadonlyArray<string>;
+  readonly request: RefMapRequest;
 }
+
+const REFSPEC_REFUSAL = 'not a valid refspec';
+
+/** git's `refspec_append` over the command line: an unusable spec is fatal. */
+const assertFetchRefspecs = (specs: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const invalid = specs.find((spec) => !isValidFetchRefspec(spec));
+  if (invalid !== undefined) throw refspecInvalid(invalid, REFSPEC_REFUSAL);
+  return specs;
+};
+
+const refMapRequest = (
+  config: ParsedConfig,
+  opts: FetchOptions,
+  remoteName: string,
+  currentBranch: string | undefined,
+): RefMapRequest => {
+  const branch = currentBranch === undefined ? undefined : config.branch?.get(currentBranch);
+  const merge = branch?.remote !== undefined && branch.merge !== undefined ? [branch.merge] : [];
+  return {
+    cliSpecs: assertFetchRefspecs(opts.refspecs ?? []),
+    refmap: assertFetchRefspecs(opts.refmap ?? []),
+    configSpecs: config.remote?.get(remoteName)?.fetch ?? [],
+    merge,
+    mergesFromRemote: branch?.remote === remoteName,
+  };
+};
 
 const fetchViaSession = async (
   ctx: Context,
@@ -122,6 +171,8 @@ const fetchViaSession = async (
   url: string,
   filter: string | undefined,
 ): Promise<FetchResult> => {
+  // git truncates FETCH_HEAD before it lists the remote's refs.
+  await writeFetchHead(ctx, '');
   const session = openGitSession(ctx, url, 'git-upload-pack');
   try {
     return await negotiateAndApply(ctx, opts, remote, url, filter, session);
@@ -152,6 +203,7 @@ const negotiateAndApply = async (
     advertisement.capabilities,
     ctx.hashConfig.algorithm,
   );
+  const refMap = storableRefMap(ctx, getRefMap(remote.request, advertisement.refs));
   const wants = uniqueRefOids(advertisement.refs);
 
   // A partial repo's wanted objects may be legitimately promised-absent (the
@@ -164,7 +216,7 @@ const negotiateAndApply = async (
   // to updating refs. Checked before deriving haves: the have-walk is wasted
   // work when this short-circuit is about to discard it anyway.
   if (filter === undefined && opts.depth === undefined && (await isEverythingLocal(ctx, wants))) {
-    return applyRefsAndBuildResult(ctx, opts, remote, url, advertisement, [], []);
+    return applyRefsAndBuildResult(ctx, opts, remote, url, refMap, [], []);
   }
 
   const haves = await deriveHaves(ctx, remote.name);
@@ -195,7 +247,7 @@ const negotiateAndApply = async (
     opts,
     remote,
     url,
-    advertisement,
+    refMap,
     packResult.shallow,
     packResult.unshallow,
   );
@@ -220,13 +272,16 @@ const applyRefsAndBuildResult = async (
   opts: FetchOptions,
   remote: FetchRemote,
   url: string,
-  advertisement: Advertisement,
+  refMap: ReadonlyArray<MappedRef>,
   shallow: ReadonlyArray<ObjectId>,
   unshallow: ReadonlyArray<ObjectId>,
 ): Promise<FetchResult> => {
-  const refMap = mapFetchedRefs(remote.trackingSpecs, advertisement.refs);
+  const { request } = remote;
+  const pruneSpecs = request.cliSpecs.length > 0 ? request.cliSpecs : request.configSpecs;
+  const prunedRefs = opts.prune === true ? await prune(ctx, pruneSpecs, refMap) : [];
   const updatedRefs = await applyRemoteRefs(ctx, remote.name, refMap);
-  const prunedRefs = opts.prune === true ? await prune(ctx, remote.trackingSpecs, refMap) : [];
+  const entries = await fetchHeadEntries(ctx, refMap);
+  await writeFetchHead(ctx, formatFetchHead(entries, fetchHeadUrl(url)));
 
   return {
     remote: remote.name,
@@ -324,7 +379,7 @@ const applyRemoteRefs = async (
 ): Promise<ReadonlyArray<FetchUpdate>> => {
   const updates: FetchUpdate[] = [];
   for (const { source, target } of refMap) {
-    if (!isStorableRef(ctx, target)) continue;
+    if (target === undefined) continue;
     const name = target as RefName;
     const oldId = await readExistingRef(ctx, name);
     // An up-to-date ref is still listed, so callers tell "considered" from
@@ -342,6 +397,9 @@ const applyRemoteRefs = async (
  * ignored with an error — and never composed into a path, so a server's
  * `refs/heads/../../config` cannot reach a file outside the ref store.
  */
+const storableRefMap = (ctx: Context, refMap: ReadonlyArray<MappedRef>): ReadonlyArray<MappedRef> =>
+  refMap.filter(({ target }) => target === undefined || isStorableRef(ctx, target));
+
 const isStorableRef = (ctx: Context, target: string): boolean => {
   if (target.startsWith(REFS_PREFIX) && isSafeRefName(target)) return true;
   ctx.logger?.error?.(`* Ignoring funny ref '${target}' locally`, { ref: target });

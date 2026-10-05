@@ -632,7 +632,10 @@ describe('fetch', () => {
             const { packBytes, blobId } = await buildOneBlobPack(ctx, 'hello fetch\n');
             const { transport } = fakeRemote({
               url: remoteUrl,
-              advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+              advertisedRefs: [
+                { name: 'HEAD', id: blobId },
+                { name: 'refs/heads/main', id: blobId },
+              ],
               packBytes,
             });
 
@@ -663,7 +666,10 @@ describe('fetch', () => {
           const { packBytes, blobId } = await buildOneBlobPack(ctx, 'hello fetch\n');
           const { transport } = fakeRemote({
             url: 'https://example.com/origin.git',
-            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            advertisedRefs: [
+              { name: 'HEAD', id: blobId },
+              { name: 'refs/heads/main', id: blobId },
+            ],
             packBytes,
           });
 
@@ -692,7 +698,10 @@ describe('fetch', () => {
             const { packBytes, blobId } = await buildOneBlobPack(ctx, 'hello fetch\n');
             const { transport } = fakeRemote({
               url: 'https://example.com/r.git',
-              advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+              advertisedRefs: [
+                { name: 'HEAD', id: blobId },
+                { name: 'refs/heads/main', id: blobId },
+              ],
               packBytes,
             });
 
@@ -2257,7 +2266,10 @@ describe('fetch — partial clone', () => {
         const { packBytes, blobId } = await buildOneBlobPack(ctx, 'partial fetch\n');
         const { transport, requests } = fakeRemote({
           url: 'https://example.com/r.git',
-          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          advertisedRefs: [
+            { name: 'HEAD', id: blobId },
+            { name: 'refs/heads/main', id: blobId },
+          ],
           advertisedCaps: ['side-band-64k', 'ofs-delta', 'filter'],
           packBytes,
         });
@@ -2283,7 +2295,10 @@ describe('fetch — partial clone', () => {
         const { packBytes, blobId } = await buildOneBlobPack(ctx, 'plain fetch\n');
         const { transport, requests } = fakeRemote({
           url: 'https://example.com/r.git',
-          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          advertisedRefs: [
+            { name: 'HEAD', id: blobId },
+            { name: 'refs/heads/main', id: blobId },
+          ],
           packBytes,
         });
 
@@ -2371,7 +2386,10 @@ describe('fetch — partial clone', () => {
         );
         const { packBytes, blobId } = await buildOneBlobPack(ctx, 'v2 partial fetch\n');
         const { transport, requests } = fakeRemoteV2({
-          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          advertisedRefs: [
+            { name: 'HEAD', id: blobId },
+            { name: 'refs/heads/main', id: blobId },
+          ],
           packBytes,
           filter: true,
         });
@@ -2524,7 +2542,10 @@ describe('fetch — everything local', () => {
         ]);
         const { transport, requests } = fakeRemote({
           url: 'https://example.com/r.git',
-          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          advertisedRefs: [
+            { name: 'HEAD', id: blobId },
+            { name: 'refs/heads/main', id: blobId },
+          ],
           advertisedCaps: ['side-band-64k', 'ofs-delta', 'filter'],
           packBytes,
         });
@@ -2757,7 +2778,7 @@ describe('fetch — tracking refs mapped through the fetch refspecs', () => {
         const ctx = createMemoryContext();
         await seedRepo(ctx, {});
         await writeConfig(ctx, []);
-        const { transport } = await advertising(ctx, ['refs/heads/main']);
+        const { transport } = await advertising(ctx, ['HEAD', 'refs/heads/main']);
 
         // Act
         const result = await fetch({ ...ctx, transport });
@@ -2786,6 +2807,188 @@ describe('fetch — tracking refs mapped through the fetch refspecs', () => {
         // Assert
         expect(result.prunedRefs).toEqual(['refs/remotes/x/b2']);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/zz`)).toBe(true);
+      });
+    });
+  });
+});
+
+describe('fetch — FETCH_HEAD and command-line refspecs', () => {
+  const URL = 'https://example.com/r.git/';
+  const TREE = 'e'.repeat(40);
+  const arrange = async (config: string, names: ReadonlyArray<string>) => {
+    const ctx = createMemoryContext();
+    const { commitIds } = await seedRepo(ctx, { commits: [{ tree: TREE }] });
+    const tip = commitIds[0] as ObjectId;
+    await ctx.fs.writeUtf8(
+      `${ctx.layout.gitDir}/config`,
+      `[remote "origin"]\n  url = ${URL}\n${config}`,
+    );
+    __resetConfigCacheForTests();
+    const { transport } = fakeRemote({
+      url: URL,
+      advertisedRefs: names.map((name) => ({ name, id: tip })),
+      packBytes: new Uint8Array(0),
+    });
+    return { ctx: { ...ctx, transport }, tip };
+  };
+  const fetchHead = (ctx: ReturnType<typeof createMemoryContext>) =>
+    ctx.fs.readUtf8(`${ctx.layout.gitDir}/FETCH_HEAD`);
+  const ORIGIN_FETCH = '  fetch = +refs/heads/*:refs/remotes/origin/*\n';
+  const MERGE_B2 = '[branch "main"]\n  remote = origin\n  merge = refs/heads/b2\n';
+
+  describe('Given a branch whose upstream is the fetched remote', () => {
+    describe('When fetch runs', () => {
+      it('Then FETCH_HEAD lists the upstream for merging first and the rest not for merging', async () => {
+        // Arrange
+        const { ctx, tip } = await arrange(`${ORIGIN_FETCH}${MERGE_B2}`, [
+          'refs/heads/b2',
+          'refs/heads/main',
+        ]);
+        const sut = fetch;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await fetchHead(ctx)).toBe(
+          `${tip}\t\tbranch 'b2' of https://example.com/r\n` +
+            `${tip}\tnot-for-merge\tbranch 'main' of https://example.com/r\n`,
+        );
+      });
+    });
+  });
+
+  describe('Given command-line refspecs', () => {
+    describe('When fetch runs', () => {
+      it('Then their refs are for merging and the configured refspecs update tracking refs', async () => {
+        // Arrange
+        const { ctx, tip } = await arrange(ORIGIN_FETCH, ['refs/heads/b2', 'refs/heads/main']);
+        const sut = fetch;
+
+        // Act
+        const result = await sut(ctx, { refspecs: ['main'] });
+
+        // Assert
+        expect(await fetchHead(ctx)).toBe(`${tip}\t\tbranch 'main' of https://example.com/r\n`);
+        expect(result.updatedRefs.map((ref) => ref.name)).toEqual(['refs/remotes/origin/main']);
+      });
+    });
+  });
+
+  describe('Given command-line refspecs and an empty refmap', () => {
+    describe('When fetch runs', () => {
+      it('Then no tracking ref is updated', async () => {
+        // Arrange
+        const { ctx } = await arrange(ORIGIN_FETCH, ['refs/heads/main']);
+        const sut = fetch;
+
+        // Act
+        const result = await sut(ctx, { refspecs: ['main'], refmap: [''] });
+
+        // Assert
+        expect(result.updatedRefs).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a command-line refspec git cannot parse', () => {
+    describe('When fetch runs', () => {
+      it('Then it refuses the refspec before touching FETCH_HEAD', async () => {
+        // Arrange
+        const { ctx } = await arrange(ORIGIN_FETCH, ['refs/heads/main']);
+        const sut = fetch;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, { refspecs: ['refs/heads/*'] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'REFSPEC_INVALID',
+          raw: 'refs/heads/*',
+          reason: 'not a valid refspec',
+        });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/FETCH_HEAD`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an invalid refmap', () => {
+    describe('When fetch runs', () => {
+      it('Then it refuses the refmap', async () => {
+        // Arrange
+        const { ctx } = await arrange(ORIGIN_FETCH, ['refs/heads/main']);
+        const sut = fetch;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, { refspecs: ['main'], refmap: ['a b'] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'REFSPEC_INVALID',
+          raw: 'a b',
+          reason: 'not a valid refspec',
+        });
+      });
+    });
+  });
+
+  describe('Given a stale FETCH_HEAD and a refspec naming a missing remote ref', () => {
+    describe('When fetch runs', () => {
+      it('Then FETCH_HEAD is left truncated', async () => {
+        // Arrange
+        const { ctx } = await arrange(ORIGIN_FETCH, ['refs/heads/main']);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/FETCH_HEAD`, 'stale\n');
+        const sut = fetch;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, { refspecs: ['nope'] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'REMOTE_REF_NOT_FOUND', ref: 'nope' });
+        expect(await fetchHead(ctx)).toBe('');
+      });
+    });
+  });
+
+  describe('Given a ref for merging that names no commit', () => {
+    describe('When fetch runs', () => {
+      it('Then FETCH_HEAD lists it not for merging', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          `[remote "origin"]\n  url = ${URL}\n`,
+        );
+        __resetConfigCacheForTests();
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'not a commit\n');
+        const { transport } = fakeRemote({
+          url: URL,
+          advertisedRefs: [{ name: 'HEAD', id: blobId }],
+          packBytes,
+        });
+        const sut = fetch;
+
+        // Act
+        await sut({ ...ctx, transport });
+
+        // Assert
+        expect(await fetchHead(ctx)).toBe(`${blobId}\tnot-for-merge\thttps://example.com/r\n`);
       });
     });
   });
