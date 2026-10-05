@@ -4,8 +4,8 @@
  * Flow (see `docs/design/phase-12-2-fetch.md`):
  *  1. Resolve the remote name → URL via `.git/config`.
  *  2. Discover refs over smart-HTTP v1 (`info/refs?service=git-upload-pack`).
- *  3. Derive `haves` from the local commit graph reachable from
- *  `refs/remotes/<remote>/*` (capped at MAX_HAVES).
+ *  3. Derive `haves` from the local commit graph reachable from every local
+ *  ref (capped at MAX_HAVES); `wants` are the ref map's objects alone.
  *  4. POST `git-upload-pack` with `want` + `have` + `deepen` (when depth set)
  *  via the shared `fetchPack` primitive.
  *  5. If the server emitted shallow / unshallow lines, persist `.git/shallow`.
@@ -20,12 +20,14 @@
 import { remoteAdvertisesNoRefs, remoteNotConfigured } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { refspecInvalid } from '../../domain/protocol/error.js';
+import type { AdvertisedRef, Advertisement } from '../../domain/protocol/index.js';
 import {
   formatObjectFilter,
   parseObjectFilter,
   remoteFilterUnsupported,
 } from '../../domain/protocol/index.js';
 import { FETCH_PRUNE_REFLOG, fetchStoringHead } from '../../domain/reflog/reflog-messages.js';
+import { TAGS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { isSafeRefName, validateRefName } from '../../domain/refs/ref-validation.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { Context } from '../../ports/context.js';
@@ -50,7 +52,14 @@ import {
   writeFetchHead,
 } from './internal/fetch-head.js';
 import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
-import { getRefMap, type MappedRef, type RefMapRequest } from './internal/fetch-ref-map.js';
+import {
+  autoFollowsTags,
+  findNonLocalTags,
+  getRefMap,
+  type LocalState,
+  type MappedRef,
+  type RefMapRequest,
+} from './internal/fetch-ref-map.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
 import { assertPeerAlgorithm } from './internal/object-format-guard.js';
 import { isValidFetchRefspec } from './internal/refspec-grammar.js';
@@ -199,12 +208,14 @@ const negotiateAndApply = async (
     throw remoteFilterUnsupported();
   }
 
-  const capabilities = selectFetchCapabilities(
-    advertisement.capabilities,
-    ctx.hashConfig.algorithm,
+  const followTags = autoFollowsTags(remote.request);
+  const capabilities = tagFollowingCapabilities(
+    selectFetchCapabilities(advertisement.capabilities, ctx.hashConfig.algorithm),
+    followTags && (discovery.version === 2 || advertisement.capabilities.includes(INCLUDE_TAG)),
   );
-  const refMap = storableRefMap(ctx, getRefMap(remote.request, advertisement.refs));
-  const wants = uniqueRefOids(advertisement.refs);
+  const local = await localState(ctx, advertisement.refs);
+  const refMap = storableRefMap(ctx, getRefMap(remote.request, advertisement.refs, local));
+  const wants = uniqueRefOids(refMap.map((entry) => entry.source));
 
   // A partial repo's wanted objects may be legitimately promised-absent (the
   // filter deliberately omits them), and a `depth` request needs to reach the
@@ -216,10 +227,18 @@ const negotiateAndApply = async (
   // to updating refs. Checked before deriving haves: the have-walk is wasted
   // work when this short-circuit is about to discard it anyway.
   if (filter === undefined && opts.depth === undefined && (await isEverythingLocal(ctx, wants))) {
-    return applyRefsAndBuildResult(ctx, opts, remote, url, refMap, [], []);
+    return applyRefsAndBuildResult(
+      ctx,
+      opts,
+      remote,
+      url,
+      { refMap, advertisement, followTags },
+      [],
+      [],
+    );
   }
 
-  const haves = await deriveHaves(ctx, remote.name);
+  const haves = await deriveHaves(ctx);
   const packResult = await fetchPack(
     ctx,
     (c, req) => negotiatePackBytes(c, session, discovery.version, req),
@@ -247,7 +266,7 @@ const negotiateAndApply = async (
     opts,
     remote,
     url,
-    refMap,
+    { refMap, advertisement, followTags },
     packResult.shallow,
     packResult.unshallow,
   );
@@ -272,16 +291,20 @@ const applyRefsAndBuildResult = async (
   opts: FetchOptions,
   remote: FetchRemote,
   url: string,
-  refMap: ReadonlyArray<MappedRef>,
+  fetched: FetchedMap,
   shallow: ReadonlyArray<ObjectId>,
   unshallow: ReadonlyArray<ObjectId>,
 ): Promise<FetchResult> => {
   const { request } = remote;
+  const { refMap } = fetched;
   const pruneSpecs = request.cliSpecs.length > 0 ? request.cliSpecs : request.configSpecs;
   const prunedRefs = opts.prune === true ? await prune(ctx, pruneSpecs, refMap) : [];
-  const updatedRefs = await applyRemoteRefs(ctx, remote.name, refMap);
-  const entries = await fetchHeadEntries(ctx, refMap);
-  await writeFetchHead(ctx, formatFetchHead(entries, fetchHeadUrl(url)));
+  const updated = await applyRemoteRefs(ctx, remote.name, refMap);
+  const backfill = fetched.followTags ? await backfillTags(ctx, fetched.advertisement) : [];
+  const backfilled = await applyRemoteRefs(ctx, remote.name, backfill);
+  const fetchHeadText = await fetchHeadContent(ctx, [refMap, backfill], fetchHeadUrl(url));
+  await writeFetchHead(ctx, fetchHeadText);
+  const updatedRefs = [...updated, ...backfilled];
 
   return {
     remote: remote.name,
@@ -291,6 +314,71 @@ const applyRefsAndBuildResult = async (
     shallow,
     unshallow,
   };
+};
+
+/** The ref map a fetch applies, and what its tag backfill reads. */
+interface FetchedMap {
+  readonly refMap: ReadonlyArray<MappedRef>;
+  readonly advertisement: Advertisement;
+  readonly followTags: boolean;
+}
+
+const INCLUDE_TAG = 'include-tag';
+const NOTHING_LOCAL: LocalState = { refs: new Set(), objects: new Set() };
+
+/** git asks for `include-tag` only when it follows tags. */
+const tagFollowingCapabilities = (
+  capabilities: ReadonlyArray<string>,
+  includeTag: boolean,
+): ReadonlyArray<string> => {
+  const without = capabilities.filter((capability) => capability !== INCLUDE_TAG);
+  return includeTag ? [INCLUDE_TAG, ...without] : without;
+};
+
+/** The local refs, and which advertised tag objects and peeled commits are present. */
+const localState = async (
+  ctx: Context,
+  refs: ReadonlyArray<AdvertisedRef>,
+): Promise<LocalState> => {
+  // With no tag advertised, no tag can follow, and the local refs go unread.
+  if (!refs.some((ref) => ref.name.startsWith(TAGS_PREFIX))) return NOTHING_LOCAL;
+  const listed = await getRefStore(ctx).listRefs(REFS_PREFIX as RefName);
+  const names = new Set<string>(listed.map((entry) => entry.name));
+  const objects = new Set<ObjectId>();
+  for (const ref of refs) {
+    if (!ref.name.startsWith(TAGS_PREFIX) || names.has(ref.name)) continue;
+    for (const id of [ref.id, ref.peeled]) {
+      if (id !== undefined && (await hasObject(ctx, id))) objects.add(id);
+    }
+  }
+  return { refs: names, objects };
+};
+
+/**
+ * git's `backfill_tags`: once the pack is in, the tags still missing whose
+ * object arrived with it follow too. A tag whose own object is still absent
+ * would need a second fetch git makes and tsgit does not.
+ */
+const backfillTags = async (
+  ctx: Context,
+  advertisement: Advertisement,
+): Promise<ReadonlyArray<MappedRef>> => {
+  const local = await localState(ctx, advertisement.refs);
+  const arrived = findNonLocalTags(advertisement.refs, [], local).filter((entry) =>
+    local.objects.has(entry.source.id),
+  );
+  return storableRefMap(ctx, arrived);
+};
+
+/** Each round's FETCH_HEAD lines, in the order git appends them. */
+const fetchHeadContent = async (
+  ctx: Context,
+  rounds: ReadonlyArray<ReadonlyArray<MappedRef>>,
+  url: string,
+): Promise<string> => {
+  let content = '';
+  for (const round of rounds) content += formatFetchHead(await fetchHeadEntries(ctx, round), url);
+  return content;
 };
 
 const resolveRemoteUrl = async (
@@ -318,9 +406,9 @@ const resolveRemoteUrl = async (
 /**
  * Collect haves from the local object graph. Strategy:
  *
- *  1. Read every ref tip under `refs/remotes/<remote>/` and `refs/tags/`
- *  (loose or packed). These tips ARE the first-class haves — the server
- *  uses them to filter the pack without needing their ancestors.
+ *  1. Read every ref tip under `refs/` (loose or packed), as git's
+ *  negotiation seeds from `for_each_ref`. These tips ARE the first-class
+ *  haves — the server uses them to filter the pack without their ancestors.
  *  2. Walk the commit graph from those tips (ignoring missing objects) and
  *  append the reachable commits in BFS order until `MAX_HAVES` is
  *  reached.
@@ -329,8 +417,8 @@ const resolveRemoteUrl = async (
  * server may ignore it, but if it happens to be the cut-point we want, this
  * keeps the negotiation honest.
  */
-const deriveHaves = async (ctx: Context, remoteName: string): Promise<ReadonlyArray<ObjectId>> => {
-  const seeds = await collectRefTips(ctx, remoteName);
+const deriveHaves = async (ctx: Context): Promise<ReadonlyArray<ObjectId>> => {
+  const seeds = await collectRefTips(ctx);
   if (seeds.length === 0) return [];
   const seen = new Set<string>();
   const haves: ObjectId[] = [];
@@ -354,19 +442,14 @@ const deriveHaves = async (ctx: Context, remoteName: string): Promise<ReadonlyAr
   return haves;
 };
 
-const collectRefTips = async (
-  ctx: Context,
-  remoteName: string,
-): Promise<ReadonlyArray<ObjectId>> => {
+const collectRefTips = async (ctx: Context): Promise<ReadonlyArray<ObjectId>> => {
   // `listRefs` already merges loose and packed storage, so repos that have
   // packed their refs (e.g. after `git gc`) contribute haves the same as an
   // unpacked one — without it, every fetch of a packed repo would send zero
   // haves and the server would resend a full pack.
-  const store = getRefStore(ctx);
-  const remoteEntries = await store.listRefs(`refs/remotes/${remoteName}/` as RefName);
-  const tagEntries = await store.listRefs('refs/tags/' as RefName);
+  const entries = await getRefStore(ctx).listRefs(REFS_PREFIX as RefName);
   const ids: ObjectId[] = [];
-  for (const entry of [...remoteEntries, ...tagEntries]) {
+  for (const entry of entries) {
     if (entry.value.kind === 'direct') ids.push(entry.value.id);
   }
   return ids;

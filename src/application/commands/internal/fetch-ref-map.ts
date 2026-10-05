@@ -8,6 +8,7 @@
  * names, and a local ref mapped twice keeps its first source.
  */
 import { invalidOption, remoteRefNotFound } from '../../../domain/commands/error.js';
+import type { ObjectId } from '../../../domain/objects/index.js';
 import type { AdvertisedRef } from '../../../domain/protocol/index.js';
 import { refCandidates } from '../../../domain/refs/ref-candidates.js';
 import { TAGS_PREFIX } from '../../../domain/refs/ref-prefixes.js';
@@ -36,10 +37,19 @@ export interface RefMapRequest {
   readonly mergesFromRemote: boolean;
 }
 
+/** What the repository already holds, as tag auto-following asks it. */
+export interface LocalState {
+  /** Every local ref name. */
+  readonly refs: ReadonlySet<string>;
+  /** The advertised tag objects and their peeled targets present locally. */
+  readonly objects: ReadonlySet<ObjectId>;
+}
+
+const NOTHING_LOCAL: LocalState = { refs: new Set(), objects: new Set() };
+
 interface PlannedMap {
   readonly head: ReadonlyArray<MappedRef>;
   readonly opportunistic: ReadonlyArray<MappedRef>;
-  readonly autotags: boolean;
 }
 
 type MissingRef = 'refuse' | 'allow';
@@ -129,11 +139,7 @@ const commandLineMap = (
   const opportunistic = mapSpecs
     .map(splitSides)
     .flatMap((sides) => getFetchMap(sources, sides, 'allow'));
-  return {
-    head,
-    opportunistic: withStatus(opportunistic, 'ignore'),
-    autotags: cli.some(storesIntoRef),
-  };
+  return { head, opportunistic: withStatus(opportunistic, 'ignore') };
 };
 
 const mergeOne = (
@@ -173,7 +179,7 @@ const defaultMap = (request: RefMapRequest, refs: ReadonlyArray<AdvertisedRef>):
   const mergesHere = hasMerge && request.mergesFromRemote;
   if (request.configSpecs.length === 0 && !mergesHere) {
     const head = getFetchMap(refs, { negative: false, src: HEAD, dst: undefined }, 'refuse');
-    return { head: withStatus(head, 'merge'), opportunistic: [], autotags: false };
+    return { head: withStatus(head, 'merge'), opportunistic: [] };
   }
   const specs = request.configSpecs.map(splitSides);
   const mapped = specs.flatMap((sides) => getFetchMap(refs, sides, 'allow'));
@@ -181,14 +187,32 @@ const defaultMap = (request: RefMapRequest, refs: ReadonlyArray<AdvertisedRef>):
   return {
     head: mergesHere ? addMergeConfig(marked, request.merge, refs) : marked,
     opportunistic: [],
-    autotags: specs.some(storesIntoRef),
   };
 };
 
-const tagRefs = (refs: ReadonlyArray<AdvertisedRef>): ReadonlyArray<MappedRef> =>
-  refs
+/** git's byte-wise `strcmp`; advertised names are unique, so never equal. */
+const byName = (left: AdvertisedRef, right: AdvertisedRef): number =>
+  left.name < right.name ? -1 : 1;
+
+/**
+ * git's `find_non_local_tags`: the advertised tags the repository lacks whose
+ * object — or the commit it peels to — is present or about to be fetched, in
+ * name order, each stored under its own name.
+ */
+export const findNonLocalTags = (
+  refs: ReadonlyArray<AdvertisedRef>,
+  fetching: ReadonlyArray<MappedRef>,
+  local: LocalState,
+): ReadonlyArray<MappedRef> => {
+  const fetched = new Set(fetching.map((entry) => entry.source.id));
+  const reachable = (id: ObjectId | undefined): boolean =>
+    id !== undefined && (fetched.has(id) || local.objects.has(id));
+  return refs
     .filter((ref) => ref.name.startsWith(TAGS_PREFIX) && !ref.name.includes(PEELED_MARK))
+    .filter((ref) => !local.refs.has(ref.name) && (reachable(ref.id) || reachable(ref.peeled)))
+    .sort(byName)
     .map((source) => ({ source, target: source.name, status: 'not-for-merge' as const }));
+};
 
 const firstPerTarget = (mapped: ReadonlyArray<MappedRef>): ReadonlyArray<MappedRef> => {
   const seen = new Set<string>();
@@ -200,16 +224,23 @@ const firstPerTarget = (mapped: ReadonlyArray<MappedRef>): ReadonlyArray<MappedR
   });
 };
 
+/** git's `autotags`: tags follow when a refspec in force stores into a ref. */
+export const autoFollowsTags = (request: RefMapRequest): boolean => {
+  const specs = request.cliSpecs.length > 0 ? request.cliSpecs : request.configSpecs;
+  return specs.map(splitSides).some(storesIntoRef);
+};
+
 export const getRefMap = (
   request: RefMapRequest,
   refs: ReadonlyArray<AdvertisedRef>,
+  local: LocalState = NOTHING_LOCAL,
 ): ReadonlyArray<MappedRef> => {
   const cli = request.cliSpecs.map(splitSides);
   if (cli.length === 0 && request.refmap.length > 0) {
     throw invalidOption('refmap', REFMAP_WITHOUT_REFSPEC);
   }
   const planned = cli.length > 0 ? commandLineMap(request, cli, refs) : defaultMap(request, refs);
-  const tags = planned.autotags ? tagRefs(refs) : [];
+  const tags = autoFollowsTags(request) ? findNonLocalTags(refs, planned.head, local) : [];
   const negatives = cli.length > 0 ? request.cliSpecs : request.configSpecs;
   const combined = [...planned.head, ...tags, ...planned.opportunistic];
   return firstPerTarget(

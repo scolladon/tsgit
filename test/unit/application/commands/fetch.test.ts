@@ -1393,7 +1393,7 @@ describe('fetch', () => {
 
     describe('Given a packed ref outside refs/remotes/<remote>/* and refs/tags/*', () => {
       describe('When fetch', () => {
-        it('Then its oid is NOT sent as a have', async () => {
+        it('Then its oid is sent as a have, as git seeds haves from every ref', async () => {
           // Arrange — kills the `entry.name.startsWith(refPrefix) || entry.name.startsWith(tagPrefix)`
           // → always-true mutant. With always-true, a packed `refs/internal/x`
           // would be treated as a remote-tracking tip and emitted as a have.
@@ -1418,7 +1418,7 @@ describe('fetch', () => {
           // Assert
           const postReq = requests.find((r) => r.method === 'POST');
           const decoded = new TextDecoder().decode(postReq?.body);
-          expect(decoded).not.toContain(`have ${internalOid}`);
+          expect(decoded).toContain(`have ${internalOid}`);
         });
       });
     });
@@ -1774,7 +1774,7 @@ describe('fetch', () => {
 
     describe('Given a local refs/heads/main oid', () => {
       describe('When fetch derives haves', () => {
-        it('Then that oid is NOT sent as a have (kills the looseDirs scope mutant)', async () => {
+        it('Then that oid is sent as a have, as git seeds haves from every ref', async () => {
           // Arrange — kills the `'refs/tags'` → `""` StringLiteral mutant in
           // `looseDirs`. With `""`, `collectFromDir` would walk the entire
           // gitDir tree and surface `refs/heads/main` content (which IS an oid)
@@ -1799,7 +1799,7 @@ describe('fetch', () => {
           // Assert
           const postReq = requests.find((r) => r.method === 'POST');
           const decoded = new TextDecoder().decode(postReq?.body);
-          expect(decoded).not.toContain(`have ${localHeadOid}`);
+          expect(decoded).toContain(`have ${localHeadOid}`);
         });
       });
     });
@@ -2989,6 +2989,144 @@ describe('fetch — FETCH_HEAD and command-line refspecs', () => {
 
         // Assert
         expect(await fetchHead(ctx)).toBe(`${blobId}\tnot-for-merge\thttps://example.com/r\n`);
+      });
+    });
+  });
+});
+
+describe('fetch — wants, include-tag and tag backfill', () => {
+  const URL = 'https://example.com/r.git';
+  const UNMAPPED = FAKE_OID('d');
+  const twoBlobPack = async (ctx: ReturnType<typeof createMemoryContext>) => {
+    const built = await buildSyntheticPack(ctx, [
+      { kind: 'base', type: 'blob', content: ENCODER.encode('first\n') },
+      { kind: 'base', type: 'blob', content: ENCODER.encode('second\n') },
+    ]);
+    return {
+      packBytes: built.packBytes,
+      first: built.ids[0] as ObjectId,
+      second: built.ids[1] as ObjectId,
+    };
+  };
+  const configure = async (ctx: ReturnType<typeof createMemoryContext>, fetchSpec: string) => {
+    await seedRepo(ctx, {});
+    await ctx.fs.writeUtf8(
+      `${ctx.layout.gitDir}/config`,
+      `[remote "origin"]\n  url = ${URL}\n  fetch = ${fetchSpec}\n`,
+    );
+    __resetConfigCacheForTests();
+  };
+  const postBody = (requests: ReadonlyArray<HttpRequest>): string =>
+    DECODER.decode(requests.find((request) => request.method === 'POST')?.body);
+
+  describe('Given refspecs mapping only some advertised branches', () => {
+    describe('When fetch negotiates', () => {
+      it('Then only the mapped refs are wanted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await configure(ctx, '+refs/heads/b*:refs/remotes/x/b*');
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'mapped\n');
+        const { transport, requests } = fakeRemote({
+          url: URL,
+          advertisedRefs: [
+            { name: 'refs/heads/b2', id: blobId },
+            { name: 'refs/heads/main', id: UNMAPPED },
+          ],
+          packBytes,
+        });
+        const sut = fetch;
+
+        // Act
+        await sut({ ...ctx, transport });
+
+        // Assert
+        expect(postBody(requests)).toContain(`want ${blobId}`);
+        expect(postBody(requests)).not.toContain(`want ${UNMAPPED}`);
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'refspecs storing into refs', refspecs: undefined, expected: true },
+    { label: 'a command-line refspec storing nowhere', refspecs: ['main'], expected: false },
+  ])('Given a v1 server offering include-tag and $label', ({ refspecs, expected }) => {
+    describe('When fetch negotiates', () => {
+      it(`Then include-tag is ${expected ? '' : 'not '}requested`, async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await configure(ctx, '+refs/heads/*:refs/remotes/origin/*');
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'tip\n');
+        const { transport, requests } = fakeRemote({
+          url: URL,
+          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          advertisedCaps: ['side-band-64k', 'ofs-delta', 'include-tag'],
+          packBytes,
+        });
+        const sut = fetch;
+
+        // Act
+        await sut({ ...ctx, transport }, refspecs === undefined ? {} : { refspecs });
+
+        // Assert
+        expect(postBody(requests).includes('include-tag')).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a v2 server and refspecs storing into refs', () => {
+    describe('When fetch negotiates', () => {
+      it('Then the fetch command carries include-tag', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await configure(ctx, '+refs/heads/*:refs/remotes/origin/*');
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'v2 tip\n');
+        const { transport, requests } = fakeRemoteV2({
+          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          packBytes,
+        });
+        const sut = fetch;
+
+        // Act
+        await sut({ ...ctx, transport });
+
+        // Assert
+        const fetchRequest = requests
+          .map((request) => DECODER.decode(request.body))
+          .find((body) => body.includes('command=fetch'));
+        expect(fetchRequest).toContain('include-tag');
+      });
+    });
+  });
+
+  describe('Given a tag on an object that only arrives with the pack', () => {
+    describe('When fetch completes', () => {
+      it('Then the tag is backfilled and listed after the fetched refs', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await configure(ctx, '+refs/heads/*:refs/remotes/origin/*');
+        const { packBytes, first, second } = await twoBlobPack(ctx);
+        const { transport } = fakeRemote({
+          url: URL,
+          advertisedRefs: [
+            { name: 'refs/heads/main', id: first },
+            { name: 'refs/tags/t', id: second },
+          ],
+          packBytes,
+        });
+        const sut = fetch;
+
+        // Act
+        const result = await sut({ ...ctx, transport });
+
+        // Assert
+        expect(result.updatedRefs.map((ref) => ref.name)).toEqual([
+          'refs/remotes/origin/main',
+          'refs/tags/t',
+        ]);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/FETCH_HEAD`)).toBe(
+          `${first}\tnot-for-merge\tbranch 'main' of https://example.com/r\n` +
+            `${second}\tnot-for-merge\ttag 't' of https://example.com/r\n`,
+        );
       });
     });
   });

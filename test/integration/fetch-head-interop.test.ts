@@ -3,7 +3,9 @@
  * marks the refs for merging — the current branch's configured upstream, an
  * exact first refspec, every command-line refspec — and `store_updated_refs`
  * lists them first, the rest `not-for-merge`, each described by its kind and
- * the shortened url. Command-line refspecs still update the tracking refs the
+ * the shortened url; tags follow only into the fetched history, the ones whose
+ * objects arrive with the pack appended by `backfill_tags`, and an unreachable
+ * tag never. Command-line refspecs still update the tracking refs the
  * configured refspecs (or `--refmap`) map them onto. tsgit fetches through
  * `git http-backend`, git over a local path; the url each tool records is
  * swapped for one before the files are compared.
@@ -40,6 +42,9 @@ beforeAll(() => {
   runGit(['-C', work, 'branch', 'b2']);
   runGit(['-C', work, 'tag', 'v1']);
   runGit(['-C', work, 'tag', '-a', '-m', 't', 'va']);
+  runGit(['-C', work, 'tag', 'tt', 'HEAD^{tree}']);
+  const orphan = git(work, 'commit-tree', '-m', 'orphan', 'HEAD^{tree}').trim();
+  runGit(['-C', work, 'tag', 'far', orphan]);
   runGit(['-C', work, 'commit', '-q', '--allow-empty', '-m', 'b']);
   runGit(['clone', '-q', '--bare', work, peerPath]);
 });
@@ -69,7 +74,14 @@ const fetchHead = (dir: string): string =>
   readFileSync(path.join(dir, '.git', 'FETCH_HEAD'), 'utf8');
 
 const trackingRefs = (dir: string): string =>
-  git(dir, 'for-each-ref', '--format=%(refname) %(objectname)', 'refs/remotes', 'refs/heads');
+  git(
+    dir,
+    'for-each-ref',
+    '--format=%(refname) %(objectname)',
+    'refs/remotes',
+    'refs/heads',
+    'refs/tags',
+  );
 
 describe.skipIf(!GIT_AVAILABLE)('fetch FETCH_HEAD interop', () => {
   describe.each([
@@ -98,6 +110,12 @@ describe.skipIf(!GIT_AVAILABLE)('fetch FETCH_HEAD interop', () => {
       config: [],
       opts: { refspecs: ['main'], refmap: ['refs/heads/*:refs/remotes/rm/*'] },
       args: ['--refmap=refs/heads/*:refs/remotes/rm/*', 'main'],
+    },
+    {
+      label: 'cli-storing',
+      config: [],
+      opts: { refspecs: ['main:refs/heads/x'] },
+      args: ['main:refs/heads/x'],
     },
     {
       label: 'cli-empty-refmap',

@@ -139,11 +139,10 @@ export const negotiateDiscovery = async (
 
   const capabilities = await parseV2Capabilities(withPushback(iter, first));
   if (!supportsV2Fetch(capabilities)) throw v2CommandUnsupported('fetch');
-  // `peel` and `ref-prefix` are omitted deliberately: tsgit always wants the
-  // full advertised ref set, so filtering/peeling server-side buys nothing —
-  // the resulting on-disk state is identical to requesting them.
+  // `peel`, as git's ls-refs asks it: tag auto-following reads each annotated
+  // tag's peeled commit. `ref-prefix` is omitted: tsgit wants the full set.
   const responsePkts = await session.exchange(
-    buildLsRefsRequest({ symrefs: true, objectFormat: ctx.hashConfig.algorithm }),
+    buildLsRefsRequest({ symrefs: true, peel: true, objectFormat: ctx.hashConfig.algorithm }),
   );
   const lsRefsAdvertisement = await parseLsRefsResponse(responsePkts);
   const advertisement = withV2FilterCapability(lsRefsAdvertisement, capabilities.fetchFeatures);
@@ -153,11 +152,16 @@ export const negotiateDiscovery = async (
 /** Pack-byte negotiation only ever calls `session.exchange` — narrowing to this one member keeps test stubs a one-liner and the dependency honest (ISP). */
 export type PackExchangeSession = Pick<GitServiceSession, 'exchange'>;
 
-// `ofs-delta` and `include-tag` are omitted deliberately: they only steer how
-// the server *packs* bytes on the wire, and the resulting on-disk objects are
-// byte-identical either way, so there is nothing to negotiate for.
-const v2Args = (input: Pick<FetchPackInput, 'depth' | 'filter'>): ReadonlyArray<string> => {
+const INCLUDE_TAG = 'include-tag';
+
+// `ofs-delta` is omitted deliberately: it only steers how the server packs
+// bytes on the wire. `include-tag` changes which objects arrive, so it is sent
+// when the caller's capabilities carry it, as git sends it to follow tags.
+const v2Args = (
+  input: Pick<FetchPackInput, 'capabilities' | 'depth' | 'filter'>,
+): ReadonlyArray<string> => {
   const args: string[] = [];
+  if (input.capabilities.includes(INCLUDE_TAG)) args.push(INCLUDE_TAG);
   if (input.depth !== undefined) args.push(`deepen ${input.depth}`);
   if (input.filter !== undefined) args.push(`filter ${input.filter}`);
   return args;

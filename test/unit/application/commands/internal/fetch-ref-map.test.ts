@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   getRefMap,
+  type LocalState,
   type RefMapRequest,
 } from '../../../../../src/application/commands/internal/fetch-ref-map.js';
 import type { TsgitError } from '../../../../../src/domain/index.js';
@@ -8,6 +9,8 @@ import type { ObjectId } from '../../../../../src/domain/objects/index.js';
 import type { AdvertisedRef } from '../../../../../src/domain/protocol/index.js';
 
 const OID = 'a'.repeat(40) as ObjectId;
+const OTHER = 'b'.repeat(40) as ObjectId;
+const THIRD = 'c'.repeat(40) as ObjectId;
 const advertised = (...names: string[]): ReadonlyArray<AdvertisedRef> =>
   names.map((name) => ({ name, id: OID }));
 const ORIGIN_HEADS = '+refs/heads/*:refs/remotes/origin/*';
@@ -297,6 +300,105 @@ describe('getRefMap', () => {
 
         // Assert
         expect(result).toEqual(expected);
+      });
+    });
+  });
+
+  describe.each([
+    {
+      label: 'a tag on a fetched commit',
+      refs: [
+        { name: 'refs/heads/main', id: OID },
+        { name: 'refs/tags/v1', id: OID },
+      ],
+      local: { refs: new Set<string>(), objects: new Set<ObjectId>() },
+      expected: ['refs/tags/v1'],
+    },
+    {
+      label: 'a tag outside the fetched history and absent locally',
+      refs: [
+        { name: 'refs/heads/main', id: OID },
+        { name: 'refs/tags/far', id: OTHER },
+      ],
+      local: { refs: new Set<string>(), objects: new Set<ObjectId>() },
+      expected: [],
+    },
+    {
+      label: 'a tag on an object present locally',
+      refs: [
+        { name: 'refs/heads/main', id: OID },
+        { name: 'refs/tags/far', id: OTHER },
+      ],
+      local: { refs: new Set<string>(), objects: new Set<ObjectId>([OTHER]) },
+      expected: ['refs/tags/far'],
+    },
+    {
+      label: 'a tag the repository already has',
+      refs: [
+        { name: 'refs/heads/main', id: OID },
+        { name: 'refs/tags/v1', id: OID },
+      ],
+      local: { refs: new Set<string>(['refs/tags/v1']), objects: new Set<ObjectId>() },
+      expected: [],
+    },
+    {
+      label: 'an annotated tag peeling to a fetched commit',
+      refs: [
+        { name: 'refs/heads/main', id: OID },
+        { name: 'refs/tags/va', id: OTHER, peeled: OID },
+      ],
+      local: { refs: new Set<string>(), objects: new Set<ObjectId>() },
+      expected: ['refs/tags/va'],
+    },
+    {
+      label: 'an annotated tag peeling to a locally present commit',
+      refs: [
+        { name: 'refs/heads/main', id: OID },
+        { name: 'refs/tags/va', id: OTHER, peeled: THIRD },
+      ],
+      local: { refs: new Set<string>(), objects: new Set<ObjectId>([THIRD]) },
+      expected: ['refs/tags/va'],
+    },
+    {
+      label: 'an annotated tag peeling outside the fetched history',
+      refs: [
+        { name: 'refs/heads/main', id: OID },
+        { name: 'refs/tags/va', id: OTHER, peeled: THIRD },
+      ],
+      local: { refs: new Set<string>(), objects: new Set<ObjectId>() },
+      expected: [],
+    },
+    {
+      label: 'tags advertised out of name order',
+      refs: [
+        { name: 'refs/heads/main', id: OID },
+        { name: 'refs/tags/b', id: OID },
+        { name: 'refs/tags/c', id: OID },
+        { name: 'refs/tags/a', id: OID },
+      ],
+      local: { refs: new Set<string>(), objects: new Set<ObjectId>() },
+      expected: ['refs/tags/a', 'refs/tags/b', 'refs/tags/c'],
+    },
+  ] as ReadonlyArray<{
+    label: string;
+    refs: ReadonlyArray<AdvertisedRef>;
+    local: LocalState;
+    expected: ReadonlyArray<string>;
+  }>)('Given $label', ({ refs, local, expected }) => {
+    describe('When the ref map follows tags', () => {
+      it('Then only tags pointing into what the repository will have follow, by name', () => {
+        // Arrange
+        const sut = getRefMap;
+
+        // Act
+        const result = sut(configured(ORIGIN_HEADS), refs, local);
+
+        // Assert
+        expect(
+          result
+            .filter((entry) => entry.source.name.startsWith('refs/tags/'))
+            .map((entry) => entry.target),
+        ).toEqual(expected);
       });
     });
   });

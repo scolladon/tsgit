@@ -155,7 +155,7 @@ describe('negotiateDiscovery', () => {
 
   describe('Given a version-2 advertisement', () => {
     describe('When negotiateDiscovery builds its ls-refs request', () => {
-      it('Then the request carries command=ls-refs and symrefs but omits peel and ref-prefix', async () => {
+      it('Then the request carries command=ls-refs and symrefs but peel but omits ref-prefix', async () => {
         // Arrange — tsgit always wants the full advertised ref set, so it
         // never asks the server to peel tags or filter by prefix.
         const discoveryBody = concatBytes(...v2CapabilityLines(), FLUSH);
@@ -170,7 +170,7 @@ describe('negotiateDiscovery', () => {
         const request = await decodeRequest(session);
         expect(request).toContain('command=ls-refs');
         expect(request).toContain('symrefs');
-        expect(request).not.toContain('peel');
+        expect(request).toContain('peel');
         expect(request).not.toContain('ref-prefix');
       });
     });
