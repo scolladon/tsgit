@@ -12,8 +12,9 @@
  * git dies on it before the peer moves.
  *
  * A ref git refuses to push — not a fast-forward, an end that is not a
- * commit, an advertised end missing locally, an existing tag — is reported per
- * ref while the rest are sent, and its new value still feeds the pack.
+ * commit, an advertised end missing locally, an existing tag, a stale lease —
+ * is reported per ref while the rest are sent, and its new value still feeds
+ * the pack; an atomic push instead fails every other ref and sends nothing.
  *
  * @proves
  *   surface:        push
@@ -27,6 +28,7 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { push } from '../../src/application/commands/push.js';
+import type { ObjectId } from '../../src/domain/objects/index.js';
 import type { Context } from '../../src/ports/context.js';
 import { backendTransport } from './http-backend-transport.js';
 import { GIT_AVAILABLE, runGit, tryRunGitWithExit } from './interop-helpers.js';
@@ -224,6 +226,8 @@ const REJECTION_TEXT: Readonly<Record<string, string>> = {
   'needs-force': 'needs force',
   'fetch-first': 'fetch first',
   'already-exists': 'already exists',
+  'stale-info': 'stale info',
+  'atomic-push-failed': 'atomic push failed',
 };
 
 /** The repository and the peer both tools push to, seeded identically. */
@@ -301,6 +305,94 @@ describe.skipIf(!GIT_AVAILABLE)('push interop — client-side rejections per ref
         expect([...rebuilt].sort()).toEqual([...gitLines].sort());
         expect(objectsOf(peer.bare)).toBe(objectsOf(gitPeer.bare));
         expect(refsOf(peer.bare)).toBe(refsOf(gitPeer.bare));
+      });
+    });
+  });
+});
+
+const refStateOf = (bare: string): string =>
+  runGit(['-C', bare, 'for-each-ref', '--format=%(refname) %(objectname)']).trim();
+
+/** git's porcelain `!` line for each rejected ref of a tsgit result. */
+const rejectedLines = (
+  pushedRefs: ReadonlyArray<{ readonly name: string; readonly rejection?: string }>,
+): ReadonlyArray<string> =>
+  pushedRefs
+    .filter((ref) => ref.rejection !== undefined)
+    .map(
+      (ref) => `!\t${ref.name}:${ref.name}\t[rejected] (${REJECTION_TEXT[ref.rejection ?? '']})`,
+    );
+
+const gitRejectedLines = (stdout: string): ReadonlyArray<string> =>
+  stdout.split('\n').filter((line) => line.startsWith('!\t'));
+
+describe.skipIf(!GIT_AVAILABLE)('push interop — stale leases and atomic pushes', () => {
+  describe('Given a lease that holds for one ref and is stale for another', () => {
+    describe('When both tools push them to identical peers', () => {
+      it('Then both reject the stale ref as stale info and move the other', async () => {
+        // Arrange
+        const { dir, gitPeer, peer } = buildRejectionScene();
+        const expected = runGit(['-C', gitPeer.bare, 'rev-parse', 'refs/heads/main']).trim();
+        const git = tryRunGitWithExit([
+          '-C',
+          dir,
+          'push',
+          '--porcelain',
+          `--force-with-lease=refs/heads/main:${expected}`,
+          `--force-with-lease=refs/heads/ahead:${expected}`,
+          gitPeer.bare,
+          'main',
+          'ahead',
+        ]);
+        const { ctx } = capturing(dir);
+        const sut = push;
+
+        // Act
+        const result = await sut(
+          { ...ctx, transport: backendTransport(peer.root) },
+          { remote: 'origin', refspecs: ['main', 'ahead'], forceWithLease: expected as ObjectId },
+        );
+
+        // Assert
+        expect(git.exitCode).toBe(1);
+        expect(rejectedLines(result.pushedRefs)).toEqual(gitRejectedLines(git.stdout));
+        expect(refStateOf(peer.bare)).toBe(refStateOf(gitPeer.bare));
+      });
+    });
+  });
+
+  describe('Given an atomic push of a new ref beside a non-fast-forward one', () => {
+    describe('When both tools push them to identical peers', () => {
+      it('Then both fail the new ref, move nothing and log the same error', async () => {
+        // Arrange
+        const { dir, gitPeer, peer } = buildRejectionScene();
+        const git = tryRunGitWithExit([
+          '-C',
+          dir,
+          'push',
+          '--porcelain',
+          '--atomic',
+          gitPeer.bare,
+          'main',
+          'new',
+        ]);
+        const { ctx, logged } = capturing(dir);
+        const sut = push;
+
+        // Act
+        const result = await sut(
+          { ...ctx, transport: backendTransport(peer.root) },
+          { remote: 'origin', refspecs: ['main', 'new'], atomic: true },
+        );
+
+        // Assert
+        expect(git.exitCode).toBe(1);
+        expect(rejectedLines(result.pushedRefs)).toEqual(gitRejectedLines(git.stdout));
+        expect(logged.map((line) => `error: ${line}`)).toEqual(
+          git.stderr.split('\n').filter((line) => line.startsWith('error: atomic')),
+        );
+        expect(refStateOf(peer.bare)).toBe(refStateOf(gitPeer.bare));
+        expect(objectsOf(peer.bare)).toBe(objectsOf(gitPeer.bare));
       });
     });
   });

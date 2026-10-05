@@ -415,6 +415,7 @@ export type CommandError =
       readonly format?: 'openpgp' | 'ssh' | 'x509';
     }
   | { readonly code: 'SIGNED_PUSH_UNSUPPORTED'; readonly remote: string }
+  | { readonly code: 'ATOMIC_PUSH_UNSUPPORTED'; readonly remote: string }
   | { readonly code: 'PUSH_DETACHED_NO_REFSPEC' }
   | { readonly code: 'PUSH_DEFAULT_NOTHING' }
   | {
@@ -1259,6 +1260,11 @@ export const signingFailed = (
 // signing attempt or wire exchange — the push is aborted, nothing is sent.
 export const signedPushUnsupported = (remote: string): TsgitError =>
   new TsgitError({ code: 'SIGNED_PUSH_UNSUPPORTED', remote });
+
+// Refusal: an atomic push to a server whose advertisement carries no `atomic`
+// token. Thrown after the `pre-push` hook and before anything is sent.
+export const atomicPushUnsupported = (remote: string): TsgitError =>
+  new TsgitError({ code: 'ATOMIC_PUSH_UNSUPPORTED', remote });
 
 // Refusal: `push.default=current` needs the branch HEAD currently points
 // at, but HEAD is detached. Thrown before the remote is resolved or

@@ -192,6 +192,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `REMOTE_NOT_CONFIGURED` | `name` | `[remote "<name>"]` not in `.git/config`. |
 | `REMOTE_ERROR` | `message` | Server sent an `ERR` pkt-line. The peer's own text, escaped and cut to 4096 characters. |
 | `SIDEBAND_FATAL` | `message` | Server emitted a sideband fatal-error line. The peer's own text, escaped and cut to 4096 characters. |
+| `ATOMIC_PUSH_UNSUPPORTED` | — | `push({ atomic: true })` but the server does not advertise the `atomic` capability. Nothing is sent. |
 | `SIGNED_PUSH_UNSUPPORTED` | — | `push({ signed: 'yes' })` but the server does not advertise the `push-cert` capability. Nothing is sent. (`'if-asked'` falls back to an unsigned push.) |
 | `TOO_MANY_ADVERTISED_REFS` | `count, limit` | Server advertised more refs than the cap (v1 ref advertisement or v2 `ls-refs` response). |
 | `TOO_MANY_REDIRECTS` | `count, limit` | HTTP redirect loop / overflow. |

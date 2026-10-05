@@ -14,15 +14,20 @@ export const CLIENT_CAPABILITIES_FETCH: ReadonlyArray<string> = [
   AGENT,
 ];
 
+// Server capability that allows a push to delete refs.
+export const DELETE_REFS = 'delete-refs';
+
 export const CLIENT_CAPABILITIES_PUSH: ReadonlyArray<string> = [
   'report-status',
   'side-band-64k',
   'ofs-delta',
-  'atomic',
-  'delete-refs',
+  DELETE_REFS,
   AGENT,
 ];
 
+// Bare atomic capability token. Requested only by an atomic push, so it is
+// kept out of the default CLIENT_CAPABILITIES_PUSH set like push-cert.
+export const ATOMIC = 'atomic';
 // Bare push-cert capability token. Advertised by the client only when a push
 // is being signed, so it is kept out of the default CLIENT_CAPABILITIES_PUSH
 // set and added conditionally by the caller building the wants list.

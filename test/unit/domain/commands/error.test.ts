@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   adapterUnavailable,
+  atomicPushUnsupported,
   authorUnconfigured,
   blockedHost,
   branchExists,
@@ -2113,6 +2114,18 @@ describe('domain commands error — extractDetail message formatting', () => {
           reason: 'unsupported-format',
           format: 'x509',
         });
+      });
+    });
+  });
+
+  describe('Given the atomicPushUnsupported error helper', () => {
+    describe('When called with a remote name', () => {
+      it('Then data carries code and remote', () => {
+        // Arrange & Act
+        const result = atomicPushUnsupported('origin');
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect(result.data).toEqual({ code: 'ATOMIC_PUSH_UNSUPPORTED', remote: 'origin' });
       });
     });
   });

@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted (at `d7ecbac`)
+Superseded by [ADR-942](942-push-reports-client-side-rejections-per-ref.md) — git requests
+`atomic` only for `--atomic`; tsgit now requests it only for `push({ atomic: true })`.
 
 ## Context
 

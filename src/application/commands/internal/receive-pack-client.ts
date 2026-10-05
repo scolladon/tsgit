@@ -6,15 +6,14 @@
  *  `discoverRefsForService(..., 'git-receive-pack')`.
  * - `selectPushCapabilities` — intersect the server's advertised
  *  capability set with the tsgit-supported v1 subset:
- *  `report-status`, `side-band-64k`, `ofs-delta`, `atomic`, `delete-refs`,
- *  plus the appended `agent` slot.
+ *  `report-status`, `side-band-64k`, `ofs-delta`, `delete-refs`, the
+ *  push's opt-ins (`atomic`, `push-cert`), plus the appended `agent` slot.
  */
 import type { Advertisement } from '../../../domain/protocol/index.js';
 import {
   AGENT,
   CLIENT_CAPABILITIES_PUSH,
   negotiateCapabilities as negotiateProtocolCapabilities,
-  PUSH_CERT,
   peerNegotiatesObjectFormat,
 } from '../../../domain/protocol/index.js';
 import type { GitServiceSession } from './git-service-session.js';
@@ -35,14 +34,17 @@ export const discoverReceivePackRefs = async (session: GitServiceSession): Promi
  * `object-format=<objectFormat>` is appended the same unconditional way as
  * AGENT: it is OUR OWN algorithm, sent verbatim regardless of what the
  * server advertised.
+ *
+ * `optIns` are the capabilities only some pushes ask for — `atomic` for an
+ * atomic push, `push-cert` for a signed one — still intersected with the
+ * advertisement.
  */
 export const selectPushCapabilities = (
   advertised: ReadonlyArray<string>,
   objectFormat: 'sha1' | 'sha256',
-  signing = false,
+  optIns: ReadonlyArray<string> = [],
 ): ReadonlyArray<string> => {
-  const base = CLIENT_CAPABILITIES_PUSH.filter((c) => c !== AGENT);
-  const clientWants = signing ? [...base, PUSH_CERT] : base;
+  const clientWants = [...CLIENT_CAPABILITIES_PUSH.filter((c) => c !== AGENT), ...optIns];
   const intersected = negotiateProtocolCapabilities(advertised, clientWants);
   // git orders `object-format` before `agent`, and sends it only when the
   // peer advertised the capability.

@@ -37,7 +37,10 @@ four judged by `set_ref_status_for_push`: `'stale-info'` (`REJECT_STALE`, a `--f
 expectation that no longer holds) and `'remote-ref-not-deletable'` (`REJECT_NODELETE`, a delete
 refused because the server lacks `delete-refs`) join it, so the stale-lease case leaves
 `PUSH_REJECTED` for the per-ref result as the other rejections did. An atomic push aborts every ref
-on a client-side rejection, exactly as git's `atomic` push does.
+on a client-side rejection, exactly as git's `atomic` push does: `atomic: true` is git's `--atomic`,
+the only push that requests the `atomic` capability (superseding ADR-016's always-request), refused
+with `ATOMIC_PUSH_UNSUPPORTED` when the server does not advertise it; the refs it holds back report
+`'atomic-push-failed'` (`REF_STATUS_ATOMIC_PUSH_FAILED`).
 
 ## Consequences
 

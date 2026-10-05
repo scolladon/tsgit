@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ambiguousOidPrefix,
+  atomicPushUnsupported,
   cleanFilterFailed,
   filterUnsupportedCapability,
   formatPlaceholderUnsupported,
@@ -1708,6 +1709,22 @@ describe('signingFailed error', () => {
 
         // Assert
         expect(result.message).toMatch(/^SIGNING_FAILED: gpg failed to sign the data \(/);
+      });
+    });
+  });
+});
+
+describe('atomicPushUnsupported error', () => {
+  describe('Given atomicPushUnsupported factory with a remote name', () => {
+    describe('When reading .message', () => {
+      it('Then message states the receiving end does not support --atomic push', () => {
+        // Arrange & Act
+        const result = atomicPushUnsupported('origin');
+
+        // Assert
+        expect(result.message).toBe(
+          'ATOMIC_PUSH_UNSUPPORTED: the receiving end does not support --atomic push',
+        );
       });
     });
   });

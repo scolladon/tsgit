@@ -77,19 +77,16 @@ describe('selectPushCapabilities', () => {
 
   describe('Given server advertises only %s', () => {
     describe('When selectPushCapabilities runs', () => {
-      it.each([
-        ['report-status'],
-        ['side-band-64k'],
-        ['ofs-delta'],
-        ['atomic'],
-        ['delete-refs'],
-      ] as const)('Then %s IS in the result', (cap) => {
-        // Arrange & Act
-        const result = selectPushCapabilities([cap], 'sha1');
+      it.each([['report-status'], ['side-band-64k'], ['ofs-delta'], ['delete-refs']] as const)(
+        'Then %s IS in the result',
+        (cap) => {
+          // Arrange & Act
+          const result = selectPushCapabilities([cap], 'sha1');
 
-        // Assert — the intersect keeps any v1-supported capability.
-        expect(result).toContain(cap);
-      });
+          // Assert — the intersect keeps any v1-supported capability.
+          expect(result).toContain(cap);
+        },
+      );
     });
   });
 
@@ -123,12 +120,11 @@ describe('selectPushCapabilities', () => {
     });
   });
 
-  describe('Given the server does NOT advertise atomic', () => {
+  describe('Given the server advertises atomic and the push does not opt in', () => {
     describe('When selectPushCapabilities runs', () => {
       it('Then atomic is NOT in the result', () => {
-        // Arrange & Act — pins the negotiation contract: we only ask for what the
-        // server can give us.
-        const result = selectPushCapabilities(['report-status'], 'sha1');
+        // Arrange & Act
+        const result = selectPushCapabilities(['report-status', 'atomic'], 'sha1');
 
         // Assert
         expect(result).not.toContain('atomic');
@@ -136,11 +132,38 @@ describe('selectPushCapabilities', () => {
     });
   });
 
-  describe('Given signing=true and the server advertises push-cert=<nonce>', () => {
+  describe('Given the server advertises atomic and the push opts in', () => {
+    describe('When selectPushCapabilities runs', () => {
+      it('Then atomic IS in the result', () => {
+        // Arrange & Act
+        const result = selectPushCapabilities(['report-status', 'atomic'], 'sha1', ['atomic']);
+
+        // Assert
+        expect(result).toContain('atomic');
+      });
+    });
+  });
+
+  describe('Given the server does NOT advertise atomic', () => {
+    describe('When selectPushCapabilities runs', () => {
+      it('Then atomic is NOT in the result', () => {
+        // Arrange & Act — pins the negotiation contract: we only ask for what the
+        // server can give us.
+        const result = selectPushCapabilities(['report-status'], 'sha1', ['atomic']);
+
+        // Assert
+        expect(result).not.toContain('atomic');
+      });
+    });
+  });
+
+  describe('Given the push opts in to push-cert and the server advertises push-cert=<nonce>', () => {
     describe('When selectPushCapabilities runs', () => {
       it('Then the negotiated push-cert=<nonce> token IS in the result', () => {
         // Arrange & Act
-        const result = selectPushCapabilities(['report-status', 'push-cert=abc123'], 'sha1', true);
+        const result = selectPushCapabilities(['report-status', 'push-cert=abc123'], 'sha1', [
+          'push-cert',
+        ]);
 
         // Assert — negotiateCapabilities echoes back the SERVER's value.
         expect(result).toContain('push-cert=abc123');
@@ -148,7 +171,7 @@ describe('selectPushCapabilities', () => {
     });
   });
 
-  describe('Given signing is omitted (default) and the server advertises push-cert=<nonce>', () => {
+  describe('Given no opt-in and the server advertises push-cert=<nonce>', () => {
     describe('When selectPushCapabilities runs', () => {
       it('Then no push-cert token is in the result', () => {
         // Arrange & Act — kills the "always want push-cert" mutant.
@@ -160,11 +183,11 @@ describe('selectPushCapabilities', () => {
     });
   });
 
-  describe('Given signing=true but the server does NOT advertise push-cert', () => {
+  describe('Given the push opts in to push-cert but the server does NOT advertise push-cert', () => {
     describe('When selectPushCapabilities runs', () => {
       it('Then no push-cert token is in the result', () => {
         // Arrange & Act — the intersect step still applies to push-cert.
-        const result = selectPushCapabilities(['report-status'], 'sha1', true);
+        const result = selectPushCapabilities(['report-status'], 'sha1', ['push-cert']);
 
         // Assert
         expect(result.some((c) => c === 'push-cert' || c.startsWith('push-cert='))).toBe(false);

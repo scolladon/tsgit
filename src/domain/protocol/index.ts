@@ -1,7 +1,9 @@
 export {
   AGENT,
+  ATOMIC,
   CLIENT_CAPABILITIES_FETCH,
   CLIENT_CAPABILITIES_PUSH,
+  DELETE_REFS,
   formatCapabilities,
   isSupportedObjectFormat,
   negotiateCapabilities,

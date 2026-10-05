@@ -15,6 +15,7 @@
  *  10. Update local `refs/remotes/<remote>/*` cache for accepted refs.
  */
 import {
+  atomicPushUnsupported,
   configBadBooleanLiteral,
   invalidOption,
   invalidPushDefault,
@@ -27,9 +28,11 @@ import { type ObjectId, type RefName, zeroOid } from '../../domain/objects/index
 import {
   type AdvertisedRef,
   type Advertisement,
+  ATOMIC,
   buildPushCertPayload,
   buildReceivePackRequest,
   buildSignedReceivePackRequest,
+  DELETE_REFS,
   decodePktStream,
   type PktLine,
   PUSH_CERT,
@@ -98,22 +101,37 @@ export interface PushOptions {
    * to an unsigned push in that case. Falls back to `push.gpgSign` when unset.
    */
   readonly signed?: 'yes' | 'no' | 'if-asked';
+  /**
+   * All refs or none (git's `--atomic`): any ref rejected before sending fails
+   * the others as `'atomic-push-failed'` and nothing is sent. Throws
+   * `ATOMIC_PUSH_UNSUPPORTED` when the server does not advertise `atomic`.
+   */
+  readonly atomic?: boolean;
 }
 
 /**
- * Why a ref was not updated. The first four are judged locally before anything
- * is sent (git's `REJECT_NONFASTFORWARD`, `REJECT_NEEDS_FORCE`,
- * `REJECT_FETCH_FIRST`, `REJECT_ALREADY_EXISTS`); `'remote'` is the receiving
- * end's `ng`, whose text is kept in {@link PushedRef.reason}.
+ * Why a ref was not updated. All but `'remote'` are judged locally before
+ * anything is sent: git's `REJECT_NONFASTFORWARD`, `REJECT_NEEDS_FORCE`,
+ * `REJECT_FETCH_FIRST`, `REJECT_ALREADY_EXISTS`, `REJECT_STALE` (a
+ * `forceWithLease` expectation the remote no longer holds),
+ * `REJECT_NODELETE` (a delete the server cannot take, lacking `delete-refs`)
+ * and `ATOMIC_PUSH_FAILED` (a ref held back because another failed an atomic
+ * push). `'remote'` is the receiving end's `ng`, whose text is kept in
+ * {@link PushedRef.reason}.
  */
 export type PushRejection =
   | 'non-fast-forward'
   | 'needs-force'
   | 'fetch-first'
   | 'already-exists'
+  | 'stale-info'
+  | 'remote-ref-not-deletable'
+  | 'atomic-push-failed'
   | 'remote';
 
 type ClientRejection = Exclude<PushRejection, 'remote'>;
+/** A rejection a ref earns on its own, before an atomic push fails the rest. */
+type JudgedRejection = Exclude<ClientRejection, 'atomic-push-failed'>;
 
 export interface PushedRef {
   readonly name: RefName;
@@ -135,8 +153,22 @@ interface ResolvedRefspec {
   readonly parsed: ParsedRefspec;
   readonly localOid: ObjectId;
   readonly remoteOid: ObjectId;
+  readonly rejection?: JudgedRejection;
+}
+
+interface SettledRefspec extends Omit<ResolvedRefspec, 'rejection'> {
   readonly rejection?: ClientRejection;
 }
+
+/** git's `enum ref_status` value for each rejection, as its atomic error prints it. */
+const GIT_REF_STATUS: Readonly<Record<JudgedRejection, number>> = {
+  'non-fast-forward': 2,
+  'already-exists': 3,
+  'remote-ref-not-deletable': 4,
+  'fetch-first': 5,
+  'needs-force': 6,
+  'stale-info': 7,
+};
 
 const PUSH_ENUMERATE_OBJECTS_OP = 'push:enumerate-objects';
 const PUSH_UPLOAD_OP = 'push:upload';
@@ -229,9 +261,9 @@ const runPrePushHook = async (
   movers: ReadonlyArray<ResolvedRefspec>,
 ): Promise<void> => {
   if (noVerify) return;
-  // git's pre-push feed skips a non-fast-forward but still lists the other rejections.
+  // git's pre-push feed skips a non-fast-forward or stale ref but lists the other rejections.
   const stdin = movers
-    .filter((m) => m.rejection !== 'non-fast-forward')
+    .filter((m) => m.rejection !== 'non-fast-forward' && m.rejection !== 'stale-info')
     .map(prePushLine)
     .join('');
   await runHook(ctx, 'pre-push', { args: [remoteName, url], stdin });
@@ -301,13 +333,10 @@ const resolveOneRefspec = async (
 ): Promise<ResolvedRefspec> => {
   const zero = zeroOid(ctx.hashConfig);
   const remoteOid = scope.remoteByName.get(parsed.dst) ?? zero;
-  if (parsed.isDelete) {
-    if (remoteOid === zero) {
-      throw invalidOption('refspecs', `delete target ${parsed.dst} is not advertised`);
-    }
-    return { parsed, localOid: zero, remoteOid };
+  if (parsed.isDelete && remoteOid === zero) {
+    throw invalidOption('refspecs', `delete target ${parsed.dst} is not advertised`);
   }
-  const localOid = await resolveRef(ctx, parsed.src as RefName);
+  const localOid = parsed.isDelete ? zero : await resolveRef(ctx, parsed.src as RefName);
   // git settles an up-to-date ref before the lease or any lookup.
   if (localOid === remoteOid) return { parsed, localOid, remoteOid };
   const rejection = await judgeUpdate(ctx, { parsed, localOid, remoteOid }, scope);
@@ -317,24 +346,33 @@ const resolveOneRefspec = async (
 };
 
 /**
- * git's `set_ref_status_for_push`: a stale lease rejects outright; a new ref
- * is not judged; otherwise the verdict is measured —
- * forced or not, as git measures it before force overrides it — and only
- * an update neither forced nor leased keeps its rejection.
+ * git's `set_ref_status_for_push`: a stale lease is rejected as stale info;
+ * otherwise a delete or a new ref is not judged and any other update is
+ * measured — forced or not, as git measures it before force overrides it.
+ * Force overrides every verdict; a lease that holds forces the update.
  */
 const judgeUpdate = async (
   ctx: Context,
-  { parsed, localOid, remoteOid }: ResolvedRefspec,
+  ref: ResolvedRefspec,
   scope: RefspecScope,
-): Promise<ClientRejection | undefined> => {
-  const lease = await resolveLease(ctx, parsed, scope.remoteName, scope.opts);
-  if (lease !== undefined && lease !== remoteOid) {
-    throw pushRejected(parsed.dst as RefName, 'lease-mismatch', emptyReport());
-  }
-  if (remoteOid === zeroOid(ctx.hashConfig)) return undefined;
-  const rejection = await rejectionOf(ctx, scope.table, parsed.dst, localOid, remoteOid);
-  const forced = lease !== undefined || parsed.force === 'force' || scope.opts.force === true;
+): Promise<JudgedRejection | undefined> => {
+  const lease = await resolveLease(ctx, ref.parsed, scope.remoteName, scope.opts);
+  const stale = lease !== undefined && lease !== ref.remoteOid;
+  const rejection = stale ? 'stale-info' : await measureUpdate(ctx, scope.table, ref);
+  const forced = (lease !== undefined && !stale) || isForced(ref.parsed, scope.opts);
   return forced ? undefined : rejection;
+};
+
+const isForced = (parsed: ParsedRefspec, opts: PushOptions): boolean =>
+  parsed.force === 'force' || opts.force === true;
+
+const measureUpdate = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  { parsed, localOid, remoteOid }: ResolvedRefspec,
+): Promise<JudgedRejection | undefined> => {
+  if (parsed.isDelete || remoteOid === zeroOid(ctx.hashConfig)) return undefined;
+  return rejectionOf(ctx, table, parsed.dst, localOid, remoteOid);
 };
 
 /**
@@ -348,7 +386,7 @@ const rejectionOf = async (
   dst: string,
   localOid: ObjectId,
   remoteOid: ObjectId,
-): Promise<ClientRejection | undefined> => {
+): Promise<JudgedRejection | undefined> => {
   if (dst.startsWith(TAGS_PREFIX)) return 'already-exists';
   if (!(await hasObject(ctx, remoteOid, { mode: 'recheck' }))) return 'fetch-first';
   const old = await lookupTypedCommitReferenceQuietly(ctx, table, remoteOid);
@@ -375,16 +413,11 @@ const resolveLease = async (
   return resolveRef(ctx, trackingRef);
 };
 
-const emptyReport = (): { unpackOk: boolean; refUpdates: ReadonlyArray<RefStatus> } => ({
-  unpackOk: true,
-  refUpdates: [],
-});
-
 // git's `need_pack_data` is false when every command sent is a delete: no pack,
 // so nothing is read from the object store.
 const buildPackfileFor = async (
   ctx: Context,
-  accepted: ReadonlyArray<ResolvedRefspec>,
+  accepted: ReadonlyArray<SettledRefspec>,
   feed: ReadonlyArray<ClosureTip>,
 ): Promise<Uint8Array | undefined> => {
   if (accepted.every((m) => m.parsed.isDelete)) return undefined;
@@ -406,9 +439,10 @@ const sendUpdates = async (
   const mode = await resolveSignedPushMode(ctx, opts);
   const nonce = parsePushCertNonce(adv.capabilities);
   const intent = resolveSigningIntent(mode, nonce, remoteName);
-  const accepted = movers.filter((m) => m.rejection === undefined);
+  const settled = settleBeforeSending(ctx, adv, movers, opts, remoteName);
+  const accepted = settled.filter((m) => m.rejection === undefined);
   // git's send_pack sends no command, and so nothing at all, when every ref was rejected.
-  if (accepted.length === 0) return applyReportStatus(ctx, movers, [], remoteName);
+  if (accepted.length === 0) return applyReportStatus(ctx, settled, [], remoteName);
   // Zero-oid-advertised refs (ref-creation sentinels) are kept verbatim in
   // the feed: `hasObject(ctx, zeroOid)` is always false (no pack hit, no
   // loose file), so the sentinel drops out of `collectObjects`'s negatives on
@@ -417,7 +451,7 @@ const sendUpdates = async (
   const capabilities = selectPushCapabilities(
     adv.capabilities,
     ctx.hashConfig.algorithm,
-    intent.signing,
+    capabilityOptIns(opts, intent),
   );
   const requestBody = intent.signing
     ? await buildSignedRequestBody(ctx, capabilities, accepted, packfile, url, intent.nonce)
@@ -436,8 +470,51 @@ const sendUpdates = async (
       parsed,
     );
   }
-  const pushedRefs = await applyReportStatus(ctx, movers, parsed.refUpdates, remoteName);
+  const pushedRefs = await applyReportStatus(ctx, settled, parsed.refUpdates, remoteName);
   return pushedRefs;
+};
+
+const capabilityOptIns = (opts: PushOptions, intent: SigningIntent): ReadonlyArray<string> => [
+  ...(opts.atomic === true ? [ATOMIC] : []),
+  ...(intent.signing ? [PUSH_CERT] : []),
+];
+
+/**
+ * git's `send_pack` before it writes a command: an atomic push the server
+ * cannot take dies, every delete is refused when the server lacks
+ * `delete-refs`, and an atomic push with any rejected ref fails the rest.
+ */
+const settleBeforeSending = (
+  ctx: Context,
+  adv: Advertisement,
+  movers: ReadonlyArray<ResolvedRefspec>,
+  opts: PushOptions,
+  remoteName: string,
+): ReadonlyArray<SettledRefspec> => {
+  const atomic = opts.atomic === true;
+  if (atomic && !adv.capabilities.includes(ATOMIC)) throw atomicPushUnsupported(remoteName);
+  const deletable = adv.capabilities.includes(DELETE_REFS);
+  const judged = movers.map((m) =>
+    m.parsed.isDelete && !deletable ? { ...m, rejection: 'remote-ref-not-deletable' as const } : m,
+  );
+  return atomic ? failAtomicPush(ctx, judged) : judged;
+};
+
+/** git's `reject_atomic_push`: the first rejected ref fails every accepted one. */
+const failAtomicPush = (
+  ctx: Context,
+  judged: ReadonlyArray<ResolvedRefspec>,
+): ReadonlyArray<SettledRefspec> => {
+  const first = judged.find((m) => m.rejection !== undefined);
+  if (first?.rejection === undefined) return judged;
+  const status = GIT_REF_STATUS[first.rejection];
+  ctx.logger?.error?.(`atomic push failed for ref ${first.parsed.dst}. status: ${status}`, {
+    ref: first.parsed.dst,
+    status,
+  });
+  return judged.map((m) =>
+    m.rejection === undefined ? { ...m, rejection: 'atomic-push-failed' as const } : m,
+  );
 };
 
 type SignedPushMode = 'yes' | 'no' | 'if-asked';
@@ -483,7 +560,7 @@ const resolveSigningIntent = (
 const buildSignedRequestBody = async (
   ctx: Context,
   negotiatedCapabilities: ReadonlyArray<string>,
-  movers: ReadonlyArray<ResolvedRefspec>,
+  movers: ReadonlyArray<SettledRefspec>,
   packfile: Uint8Array | undefined,
   url: string,
   nonce: string,
@@ -563,7 +640,7 @@ const collectObjects = async (
   return closure.objects.map((object) => object.id);
 };
 
-const toRefUpdate = (m: ResolvedRefspec): RefUpdate => ({
+const toRefUpdate = (m: SettledRefspec): RefUpdate => ({
   name: m.parsed.dst,
   oldId: m.remoteOid,
   newId: m.localOid,
@@ -601,7 +678,7 @@ const hasSideBand = (caps: ReadonlyArray<string>): boolean =>
 
 const applyReportStatus = async (
   ctx: Context,
-  movers: ReadonlyArray<ResolvedRefspec>,
+  movers: ReadonlyArray<SettledRefspec>,
   refUpdates: ReadonlyArray<RefStatus>,
   remoteName: string,
 ): Promise<ReadonlyArray<PushedRef>> => {
@@ -617,7 +694,7 @@ const applyReportStatus = async (
 /** One ref's outcome: its local verdict, else the remote's report for it. */
 const reportRef = async (
   ctx: Context,
-  m: ResolvedRefspec,
+  m: SettledRefspec,
   status: RefStatus | undefined,
   remoteName: string,
 ): Promise<PushedRef> => {
@@ -637,7 +714,7 @@ const reportRef = async (
 
 const updateTrackingCache = async (
   ctx: Context,
-  m: ResolvedRefspec,
+  m: SettledRefspec,
   remoteName: string,
 ): Promise<void> => {
   if (!m.parsed.dst.startsWith(HEADS_PREFIX)) return; // tags handled elsewhere
