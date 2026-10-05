@@ -63,7 +63,7 @@ import {
   type ObjectTypeTable,
 } from '../primitives/internal/object-type-table.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
-import { resolveRef } from '../primitives/resolve-ref.js';
+import { resolveRef, resolveRefOrMissing } from '../primitives/resolve-ref.js';
 import { runHook } from '../primitives/run-hook.js';
 import { resolveSigningSelector } from '../primitives/sign-payload.js';
 import { updateRef } from '../primitives/update-ref.js';
@@ -429,12 +429,19 @@ const resolveLease = async (
   // Stryker disable next-line ConditionalExpression: equivalent — when `forceWithLease` is undefined the next line (`undefined !== 'auto'`) returns `opts.forceWithLease` which is `undefined`, the identical result.
   if (opts.forceWithLease === undefined) return undefined;
   if (opts.forceWithLease !== 'auto') return opts.forceWithLease;
-  if (!parsed.dst.startsWith(HEADS_PREFIX)) {
-    throw invalidOption('forceWithLease', 'lease-on-non-branch');
-  }
-  const branch = parsed.dst.slice(HEADS_PREFIX.length);
-  const trackingRef = `refs/remotes/${remoteName}/${branch}` as RefName;
-  return resolveRef(ctx, trackingRef);
+  return trackedValue(ctx, parsed.dst, remoteName);
+};
+
+/**
+ * git's `remote_tracking` for an automatic lease: the branch's remote-tracking
+ * ref, or — when the destination is no branch or nothing tracks it — the null
+ * id, so the lease expects the remote ref absent.
+ */
+const trackedValue = async (ctx: Context, dst: string, remoteName: string): Promise<ObjectId> => {
+  const absent = zeroOid(ctx.hashConfig);
+  if (!dst.startsWith(HEADS_PREFIX)) return absent;
+  const trackingRef = `refs/remotes/${remoteName}/${dst.slice(HEADS_PREFIX.length)}` as RefName;
+  return (await resolveRefOrMissing(ctx, trackingRef)) ?? absent;
 };
 
 // git's `need_pack_data` is false when every command sent is a delete: no pack,

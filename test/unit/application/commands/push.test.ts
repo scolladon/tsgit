@@ -1400,41 +1400,63 @@ describe('push — force-with-lease', () => {
     });
   });
 
-  describe('Given `forceWithLease: "auto"` on a tag refspec', () => {
+  describe.each([
+    { label: 'a tag', dst: 'refs/tags/v1.0' },
+    { label: 'a branch nothing tracks', dst: 'refs/heads/topic' },
+  ] as const)('Given `forceWithLease: "auto"` on $label the remote holds', ({ dst }) => {
     describe('When push runs', () => {
-      it('Then throws INVALID_OPTION (lease-on-non-branch)', async () => {
+      it('Then the lease expects it absent and rejects it as stale info', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const tip = await seedCommit(ctx, [], 'tagged');
-        await seedRepo(ctx, { refs: { 'refs/tags/v1.0': tip.id } });
+        const tip = await seedCommit(ctx, [], 'tip');
+        const held = await seedCommit(ctx, [], 'held');
+        await seedRepo(ctx, { refs: { [dst]: tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport, requests } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: dst, id: held.id }],
+          reportStatus: { unpack: 'ok', refs: [] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut(
+          { ...ctx, transport },
+          { refspecs: [`${dst}:${dst}`], forceWithLease: 'auto' },
+        );
+
+        // Assert
+        expect(result.pushedRefs.map((ref) => ref.rejection)).toEqual(['stale-info']);
+        expect(requests.map((r) => r.method)).toEqual(['GET']);
+      });
+    });
+  });
+
+  describe('Given `forceWithLease: "auto"` on a branch nothing tracks and the remote lacks', () => {
+    describe('When push runs', () => {
+      it('Then the lease holds and the new branch is sent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const tip = await seedCommit(ctx, [], 'tip');
+        await seedRepo(ctx, { refs: { 'refs/heads/topic': tip.id } });
         await writeOriginConfig(ctx);
         const { transport } = fakeServer({
           url: 'https://example.com/r.git',
-          advertisedRefs: [{ name: 'refs/tags/v1.0', id: '0'.repeat(40) }],
-          reportStatus: { unpack: 'ok', refs: [] },
+          advertisedRefs: [],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/topic', status: 'ok' }] },
         });
+        const sut = push;
 
         // Act
-        let caught: unknown;
-        try {
-          await push(
-            { ...ctx, transport },
-            { refspecs: ['refs/tags/v1.0:refs/tags/v1.0'], forceWithLease: 'auto' },
-          );
-        } catch (err) {
-          caught = err;
-        }
+        const result = await sut(
+          { ...ctx, transport },
+          { refspecs: ['refs/heads/topic:refs/heads/topic'], forceWithLease: 'auto' },
+        );
 
-        // Assert — option literal is 'forceWithLease' (kills the StringLiteral mutant).
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data as {
-          code: string;
-          option: string;
-          reason: string;
-        };
-        expect(data.code).toBe('INVALID_OPTION');
-        expect(data.option).toBe('forceWithLease');
-        expect(data.reason).toBe('lease-on-non-branch');
+        // Assert
+        expect(result.pushedRefs.map((ref) => [ref.name, ref.status])).toEqual([
+          ['refs/heads/topic', 'ok'],
+        ]);
       });
     });
   });

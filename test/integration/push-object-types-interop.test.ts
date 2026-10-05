@@ -366,6 +366,38 @@ describe.skipIf(!GIT_AVAILABLE)('push interop — stale leases and atomic pushes
     });
   });
 
+  describe('Given an automatic lease over a tag and a branch with no tracking ref, both on the remote', () => {
+    describe('When both tools push them beside a new ref to identical peers', () => {
+      it('Then both expect each to be absent, reject both as stale info and move the new ref', async () => {
+        // Arrange
+        const { dir, gitPeer, peer } = buildRejectionScene();
+        const refspecs = ['refs/tags/v1', 'new', 'ahead'];
+        const git = tryRunGitWithExit([
+          '-C',
+          dir,
+          'push',
+          '--porcelain',
+          '--force-with-lease',
+          gitPeer.bare,
+          ...refspecs,
+        ]);
+        const { ctx } = capturing(dir);
+        const sut = push;
+
+        // Act
+        const result = await sut(
+          { ...ctx, transport: backendTransport(peer.root) },
+          { remote: 'origin', refspecs, forceWithLease: 'auto' },
+        );
+
+        // Assert
+        expect(git.exitCode).toBe(1);
+        expect(rejectedLines(result.pushedRefs)).toEqual(gitRejectedLines(git.stdout));
+        expect(refStateOf(peer.bare)).toBe(refStateOf(gitPeer.bare));
+      });
+    });
+  });
+
   describe('Given an atomic push of a new ref beside a non-fast-forward one', () => {
     describe('When both tools push them to identical peers', () => {
       it('Then both fail the new ref, move nothing and log the same error', async () => {
