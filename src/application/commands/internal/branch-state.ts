@@ -26,6 +26,8 @@ export type CancelReport = 'announce' | 'silent';
 
 const MERGE_BRANCH_STATE = [MERGE_HEAD, MERGE_RR, MERGE_MSG, MERGE_MODE, AUTO_MERGE] as const;
 
+const COMMITTED_STATE = [MERGE_HEAD, MERGE_MSG, MERGE_MODE, SQUASH_MSG] as const;
+
 const CANCELLED_OPERATIONS = [
   { marker: CHERRY_PICK_HEAD, warning: 'cancelling a cherry picking in progress' },
   { marker: REVERT_HEAD, warning: 'cancelling a revert in progress' },
@@ -76,4 +78,10 @@ export const removeBranchState = async (ctx: Context, report: CancelReport): Pro
   await sequencerPostCommitCleanup(ctx, report);
   await removeStateFile(ctx, SQUASH_MSG);
   await removeMergeBranchState(ctx);
+};
+
+/** git's `commit` cleanup once its commit lands; `MERGE_RR` stays for the resolution recorder. */
+export const removeCommittedState = async (ctx: Context): Promise<void> => {
+  await sequencerPostCommitCleanup(ctx, 'silent');
+  for (const name of COMMITTED_STATE) await removeStateFile(ctx, name);
 };

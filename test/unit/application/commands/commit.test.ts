@@ -459,18 +459,17 @@ describe('commit', () => {
 
   describe('Given a stray MERGE_MSG but no merge in progress', () => {
     describe('When commit succeeds', () => {
-      it('Then merge state is left untouched', async () => {
-        // Arrange — a stray MERGE_MSG with no MERGE_HEAD: mergeHead resolves to
-        // undefined, so the resolving commit must NOT clear merge state.
+      it('Then the stray MERGE_MSG is removed, as git unlinks it on every commit', async () => {
+        // Arrange
         const ctx = await seed();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_MSG`, 'leftover draft');
 
         // Act
-        await commit(ctx, { message: 'normal commit', author });
+        const result = await commit(ctx, { message: 'normal commit', author });
 
-        // Assert — kills the ConditionalExpression mutant flipping `mergeHead !==
-        // undefined` to `true` (which would unconditionally clear merge state).
-        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(true);
+        // Assert — the draft is not the message: no merge was being resolved.
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(false);
+        expect(result.parents).toHaveLength(0);
       });
     });
   });

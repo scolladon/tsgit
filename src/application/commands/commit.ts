@@ -38,7 +38,8 @@ import { resolveRef } from '../primitives/resolve-ref.js';
 import { runInformationalHook } from '../primitives/run-hook.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeTree } from '../primitives/write-tree.js';
-import { clearCherryPickHead, readCherryPickHead } from './internal/cherry-pick-state.js';
+import { removeCommittedState } from './internal/branch-state.js';
+import { readCherryPickHead } from './internal/cherry-pick-state.js';
 import {
   applyCommitMessageHooks,
   type PrepareCommitMsgSource,
@@ -50,15 +51,9 @@ import {
   sanitizeMessage,
   stripComments,
 } from './internal/commit-message.js';
-import {
-  clearMergeMsg,
-  clearMergeState,
-  readMergeHeads,
-  readMergeMsg,
-  readsNoFastForward,
-} from './internal/merge-state.js';
+import { readMergeHeads, readMergeMsg, readsNoFastForward } from './internal/merge-state.js';
 import { assertNoPendingOperation, readHeadRaw, requireWorkTree } from './internal/repo-state.js';
-import { clearRevertHead, readRevertHead } from './internal/revert-state.js';
+import { readRevertHead } from './internal/revert-state.js';
 import { resolveSignRequest, signOrThrow } from './internal/sign-request.js';
 
 export interface CommitOptions {
@@ -169,7 +164,7 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   const branch = head.kind === 'symbolic' ? head.target : undefined;
   const reflogMessage = commitReflogMessage(message, parentId, mergeHead, cherryPickHead);
   await writeCommitRef(ctx, { branch, id, parentId, reflogMessage });
-  await clearResolvedState(ctx, markers);
+  await removeCommittedState(ctx);
   // post-commit is informational — it runs after the commit lands and cannot
   // abort it (git ignores its exit code).
   await runInformationalHook(ctx, 'post-commit');
@@ -273,23 +268,6 @@ const pendingExceptOf = (m: PendingMarkers): PendingOperation | undefined => {
   if (m.cherryPickHead !== undefined) return CHERRY_PICK;
   if (m.revertHead !== undefined) return REVERT;
   return undefined;
-};
-
-/** Clear the resolved operation's on-disk state after its commit lands. */
-const clearResolvedState = async (ctx: Context, m: PendingMarkers): Promise<void> => {
-  if (m.mergeHead !== undefined) {
-    await clearMergeState(ctx);
-    return;
-  }
-  if (m.cherryPickHead !== undefined) {
-    await clearCherryPickHead(ctx);
-    await clearMergeMsg(ctx);
-    return;
-  }
-  if (m.revertHead !== undefined) {
-    await clearRevertHead(ctx);
-    await clearMergeMsg(ctx);
-  }
 };
 
 const resolveCommitMessage = async (

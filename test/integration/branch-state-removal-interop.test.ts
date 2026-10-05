@@ -81,6 +81,8 @@ describe.skipIf(!GIT_AVAILABLE)('branch-state removal interop', () => {
   const seedDivergedHistory = async (): Promise<void> => {
     runGit(['init', '-q', '-b', 'main', pair.peer]);
     gitIn(pair.peer, 'config', 'commit.gpgsign', 'false');
+    gitIn(pair.peer, 'config', 'user.name', IDENTITY.name);
+    gitIn(pair.peer, 'config', 'user.email', IDENTITY.email);
     await commitAll('f', 'base\n', 'base');
     gitIn(pair.peer, 'checkout', '-q', '-b', 'side');
     await commitAll('f', 'side\n', 'side');
@@ -233,6 +235,32 @@ describe.skipIf(!GIT_AVAILABLE)('branch-state removal interop', () => {
         const result = await readFile(path.join(pair.ours, '.git', 'ORIG_HEAD'), 'utf8');
         expect(result).toBe(await readFile(path.join(pair.peer, '.git', 'ORIG_HEAD'), 'utf8'));
         expect(result).toBe(tip);
+      });
+    });
+  });
+
+  describe.each([
+    ['a multi-pick stopped on its last pick', ['cherry-pick', 'side~1', 'side~2'], []],
+    ['a multi-pick stopped on its first pick', ['cherry-pick', 'side~2', 'side~1'], ['sequencer']],
+    ['a squash merge', ['merge', '--squash', 'side'], ['ORIG_HEAD']],
+  ])('Given %s, resolved', (_label, stop, expected) => {
+    describe('When both tools commit the resolution', () => {
+      it('Then both leave the same branch state behind', async () => {
+        // Arrange
+        await seedDivergedHistory();
+        gitIn(pair.peer, ...stop);
+        await resolveF();
+        const ours = await openOurCopy();
+        const sut = ours.commit;
+
+        // Act
+        gitIn(pair.peer, 'commit', '-q', '-m', 'resolved');
+        await sut({ message: 'resolved' });
+
+        // Assert
+        const result = stateFilesOf(pair.ours);
+        expect(result).toEqual(stateFilesOf(pair.peer));
+        expect(result).toEqual(expected);
       });
     });
   });
