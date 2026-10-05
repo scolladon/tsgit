@@ -61,7 +61,11 @@ import { REASON_SKIP_TARGET_PARENTLESS } from '../primitives/validators.js';
 import { walkCommits, walkCommitsStoppingAt } from '../primitives/walk-commits.js';
 import { removeBranchState } from './internal/branch-state.js';
 import { conflictMergeMsg } from './internal/cherry-pick-state.js';
-import { assertCleanWorkTree, stagedChangePaths } from './internal/clean-work-tree.js';
+import {
+  assertCleanWorkTree,
+  stagedChangePaths,
+  unstagedChangePaths,
+} from './internal/clean-work-tree.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import { sanitizeMessage, stripComments } from './internal/commit-message.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
@@ -518,6 +522,7 @@ export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
   requireWorkTree(ctx, 'rebase --continue');
   const state = await readRebaseState(ctx);
   if (state === undefined) throw noOperationInProgress('rebase');
+  await assertNothingUnstaged(ctx);
   await assertEverySourceLoadable(ctx);
   if (isInteractiveState(state)) return rebaseContinueInteractive(ctx, state);
   const index = await readIndex(ctx);
@@ -538,6 +543,12 @@ export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
     applied: [{ source: stopped.oid, created: resolutionId }],
     rewritten: [...rewrittenBefore, [stopped.oid, resolutionId] as const],
   });
+};
+
+/** git's `has_unstaged_changes` gate: a tracked file changed but not staged stops `--continue`. */
+const assertNothingUnstaged = async (ctx: Context): Promise<void> => {
+  const unstaged = await unstagedChangePaths(ctx);
+  if (unstaged.length > 0) throw workingTreeDirty({ localChanges: unstaged, untracked: [] });
 };
 
 const replayContextOf = (state: RebaseState): ReplayContext => ({
@@ -1104,7 +1115,7 @@ const replayInteractive = async (
     }
     if (step.kind === 'edit-stop') {
       await persistInteractiveStop(ctx, ic, i, {
-        stoppedSha: step.created,
+        stoppedSha: inst.oid,
         author: cData.author,
         message: cData.message,
         patch,

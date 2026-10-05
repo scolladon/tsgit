@@ -23,10 +23,11 @@
  *   unique:         a rebase either tool starts is resumable by the other, and both drop the same already-upstream commit
  *   interopSurface: rebaseMerge, reflog
  */
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.node.js';
 import {
   GIT_AVAILABLE,
@@ -37,6 +38,7 @@ import {
   runGitEnv,
   topReflogSubject,
   tryRunGit,
+  tryRunGitWithExit,
   writeTreeOf,
 } from './interop-helpers.js';
 
@@ -398,6 +400,11 @@ const gitRebaseInteractive = (dir: string, perlTodo: string, editor = 'true'): v
 
 const oidAt = (dir: string, rev: string): string => git(dir, 'rev-parse', rev).trim();
 
+/** The stop's `stopped-sha` and `REBASE_HEAD`, as written. */
+const stopMarkers = (dir: string): string =>
+  readFileSync(path.join(dir, '.git', 'rebase-merge', 'stopped-sha'), 'utf8') +
+  readFileSync(path.join(dir, '.git', 'REBASE_HEAD'), 'utf8');
+
 describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
   let pair: PeerPair;
   beforeEach(async () => {
@@ -452,6 +459,75 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
           expect(commitCount(pair.ours)).toBe(commitCount(pair.peer));
         },
       );
+    });
+
+    describe('When the todo drops c1 and stops to edit c2', () => {
+      it('Then both name the picked commit in stopped-sha and REBASE_HEAD', async () => {
+        // Arrange
+        buildInteractiveLinear(pair.peer);
+        buildInteractiveLinear(pair.ours);
+        gitRebaseInteractive(
+          pair.peer,
+          's/^pick (.*c1 subject)/drop $1/; s/^pick (.*c2 subject)/edit $1/',
+        );
+        const base = oidAt(pair.ours, 'HEAD~3');
+        const [c1, c2, c3] = ['HEAD~2', 'HEAD~1', 'HEAD'].map((r) => oidAt(pair.ours, r));
+        const repo = await openRepository({ cwd: pair.ours });
+        const sut = repo.rebase.run;
+
+        // Act
+        await sut({
+          upstream: base,
+          interactive: [
+            { action: 'drop', oid: c1 as string },
+            { action: 'edit', oid: c2 as string },
+            { action: 'pick', oid: c3 as string },
+          ],
+        });
+        await repo.dispose();
+
+        // Assert
+        const result = stopMarkers(pair.ours);
+        expect(result).toBe(stopMarkers(pair.peer));
+        expect(oidAt(pair.ours, 'HEAD')).toBe(oidAt(pair.peer, 'HEAD'));
+      });
+    });
+
+    describe('When the edit stop has a tracked file changed but not staged', () => {
+      it('Then both refuse to continue and keep the stop', async () => {
+        // Arrange
+        buildInteractiveLinear(pair.peer);
+        buildInteractiveLinear(pair.ours);
+        gitRebaseInteractive(pair.peer, 's/^pick (.*c1 subject)/edit $1/');
+        const base = oidAt(pair.ours, 'HEAD~3');
+        const [c1, c2, c3] = ['HEAD~2', 'HEAD~1', 'HEAD'].map((r) => oidAt(pair.ours, r));
+        const repo = await openRepository({ cwd: pair.ours });
+        await repo.rebase.run({
+          upstream: base,
+          interactive: [
+            { action: 'edit', oid: c1 as string },
+            { action: 'pick', oid: c2 as string },
+            { action: 'pick', oid: c3 as string },
+          ],
+        });
+        writeWork(pair.peer, '1.txt', 'changed\n');
+        writeWork(pair.ours, '1.txt', 'changed\n');
+        const sut = repo.rebase.continue;
+
+        // Act
+        const gitRun = tryRunGitWithExit(['-C', pair.peer, 'rebase', '--continue']);
+        const result = await sut().catch((error: unknown) => error);
+        await repo.dispose();
+
+        // Assert
+        expect(gitRun.exitCode).toBe(1);
+        expect((result as TsgitError).data).toMatchObject({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['1.txt'],
+        });
+        expect(oidAt(pair.ours, 'HEAD')).toBe(oidAt(pair.peer, 'HEAD'));
+        expect(stopMarkers(pair.ours)).toBe(stopMarkers(pair.peer));
+      });
     });
 
     describe('When the interactive todo is an all-pick no-op', () => {

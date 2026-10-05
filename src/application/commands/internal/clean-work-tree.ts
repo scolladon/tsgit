@@ -81,6 +81,12 @@ export const assertCleanWorkTree = async (ctx: Context, headTree: ObjectId): Pro
   }
 };
 
+/** Tracked paths whose working copy differs from the index, in git's raw-byte order. */
+export const unstagedChangePaths = async (ctx: Context): Promise<ReadonlyArray<FilePath>> => {
+  const { stage0 } = partitionIndex((await readIndex(ctx)).entries);
+  return [...(await unstagedDirty(ctx, stage0))].sort(comparePaths);
+};
+
 /** Paths whose index entry differs from `headTree`, in git's raw-byte order. */
 export const stagedChangePaths = async (
   ctx: Context,

@@ -2584,3 +2584,95 @@ describe('Given an alternate that fails to load', () => {
     });
   });
 });
+
+describe('rebase — stop markers and continue refusals', () => {
+  describe('Given an edit that does not fast-forward', () => {
+    describe('When the rebase stops at it', () => {
+      it('Then stopped-sha and REBASE_HEAD name the commit the todo picked', async () => {
+        // Arrange
+        const { ctx, base, c1, c2 } = await seedLinear();
+        const sut = rebaseRun;
+
+        // Act
+        await sut(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'drop', oid: c1 },
+            { action: 'edit', oid: c2 },
+          ],
+        });
+
+        // Assert
+        const result = await readMerge(ctx, 'stopped-sha');
+        expect(result).toBe(`${c2}\n`);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/REBASE_HEAD`)).toBe(`${c2}\n`);
+      });
+    });
+  });
+
+  describe('Given an edit stop with a tracked file changed but not staged', () => {
+    describe('When continue runs', () => {
+      it('Then it refuses on the unstaged path and keeps the stop', async () => {
+        // Arrange
+        const { ctx, base, c1 } = await seedLinear();
+        await rebaseRun(ctx, { upstream: base, interactive: [{ action: 'edit', oid: c1 }] });
+        await ctx.fs.writeUtf8(work(ctx, '1.txt'), 'changed\n');
+        const sut = rebaseContinue;
+
+        // Act
+        const result = await sut(ctx).catch((error: unknown) => error);
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['1.txt'],
+          untracked: [],
+        });
+        expect(await readMerge(ctx, 'amend')).toBe(`${c1}\n`);
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(c1);
+      });
+    });
+  });
+
+  describe('Given an edit stop with only an untracked file added', () => {
+    describe('When continue runs', () => {
+      it('Then the rebase completes', async () => {
+        // Arrange
+        const { ctx, base, c1 } = await seedLinear();
+        await rebaseRun(ctx, { upstream: base, interactive: [{ action: 'edit', oid: c1 }] });
+        await ctx.fs.writeUtf8(work(ctx, 'loose.txt'), 'loose\n');
+        const sut = rebaseContinue;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.kind).toBe('rebased');
+      });
+    });
+  });
+
+  describe('Given a conflict stop resolved with another tracked file left unstaged', () => {
+    describe('When continue runs', () => {
+      it('Then it refuses on the unstaged path', async () => {
+        // Arrange
+        const { ctx } = await seedTopicConflict();
+        await rebaseRun(ctx, { upstream: 'main' });
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'RESOLVED\n');
+        await add(ctx, ['f.txt']);
+        await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'changed\n');
+        const sut = rebaseContinue;
+
+        // Act
+        const result = await sut(ctx).catch((error: unknown) => error);
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['a.txt'],
+          untracked: [],
+        });
+      });
+    });
+  });
+});
