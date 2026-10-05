@@ -383,4 +383,31 @@ describe.skipIf(!GIT_AVAILABLE)('branch-state removal interop', () => {
       });
     });
   });
+
+  describe('Given stale merge files and a branch HEAD already contains', () => {
+    describe('When both tools merge it', () => {
+      it('Then both conclude up to date and drop the stale merge files', async () => {
+        // Arrange
+        await seedDivergedHistory();
+        gitIn(pair.peer, 'branch', 'old', 'main~1');
+        const tip = runGit(['-C', pair.peer, 'rev-parse', 'HEAD']);
+        for (const name of ['MERGE_MSG', 'MERGE_MODE', 'AUTO_MERGE', 'SQUASH_MSG']) {
+          await writeFile(path.join(pair.peer, '.git', name), tip);
+        }
+        const ours = await openOurCopy();
+        const sut = ours.merge.run;
+
+        // Act
+        const git = gitIn(pair.peer, 'merge', 'old');
+        const merged = await sut({ rev: 'old' });
+
+        // Assert
+        expect(git.stdout).toBe('Already up to date.\n');
+        expect(merged.kind).toBe('up-to-date');
+        const result = stateFilesOf(pair.ours);
+        expect(result).toEqual(stateFilesOf(pair.peer));
+        expect(result).toEqual(['SQUASH_MSG', 'ORIG_HEAD']);
+      });
+    });
+  });
 });

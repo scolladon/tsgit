@@ -69,6 +69,7 @@ import { runInformationalHook } from '../primitives/run-hook.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeObject } from '../primitives/write-object.js';
 import { writeTree } from '../primitives/write-tree.js';
+import { removeMergeBranchState } from './internal/branch-state.js';
 import { conflictMergeMsg } from './internal/cherry-pick-state.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import { resolveAuthor, resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
@@ -228,8 +229,13 @@ const computeMerge = async (
   }
   const ourId = await resolveRef(ctx, head.target);
   const named = await resolveRemotes(ctx, typeof input.rev === 'string' ? [input.rev] : input.rev);
-  if (named.length === 1) return twoHeadMerge(ctx, input, internal, head.target, ourId, named[0]!);
-  return manyHeadMerge(ctx, input, internal, head.target, ourId, named);
+  const result =
+    named.length === 1
+      ? await twoHeadMerge(ctx, input, internal, head.target, ourId, named[0]!)
+      : await manyHeadMerge(ctx, input, internal, head.target, ourId, named);
+  // git's `remove_merge_branch_state` on every concluded merge; a stop keeps its files.
+  if (result.kind !== 'conflict') await removeMergeBranchState(ctx);
+  return result;
 };
 
 /** git's `get_merge_parent` over each name given, in order. */
