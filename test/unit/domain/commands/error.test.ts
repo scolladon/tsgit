@@ -66,6 +66,7 @@ import {
   pathspecOutsideRepo,
   pushDefaultNothing,
   pushDetachedNoRefspec,
+  pushMultipleUpstreams,
   pushRefspecUnmatched,
   pushRejected,
   pushRemoteNotUpstream,
@@ -491,6 +492,21 @@ describe('domain commands error — factory data', () => {
           head: 'b2',
           reason: 'conflict-before-last-head',
         });
+      });
+    });
+  });
+
+  describe('Given the pushMultipleUpstreams error helper', () => {
+    describe('When called', () => {
+      it('Then data carries the branch', () => {
+        // Arrange
+        const sut = pushMultipleUpstreams;
+
+        // Act
+        const result = sut('refs/heads/main' as RefName);
+
+        // Assert
+        expect(result.data).toEqual({ code: 'PUSH_MULTIPLE_UPSTREAMS', branch: 'refs/heads/main' });
       });
     });
   });
@@ -1521,6 +1537,10 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       { code: 'OCTOPUS_MERGE_FAILED', head: 'b1', reason: 'conflict-before-last-head' },
       'OCTOPUS_MERGE_FAILED: Merge with strategy octopus failed: conflict-before-last-head at b1',
+    ],
+    [
+      { code: 'PUSH_MULTIPLE_UPSTREAMS', branch: 'refs/heads/main' as RefName },
+      'PUSH_MULTIPLE_UPSTREAMS: current branch refs/heads/main has multiple upstream branches, refusing to push',
     ],
     [
       { code: 'FAST_FORWARD_MULTIPLE_BRANCHES' },

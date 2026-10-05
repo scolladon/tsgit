@@ -63,6 +63,8 @@ export type CommandError =
     }
   /** git's `refusing to merge unrelated histories`: the heads share no commit. */
   | { readonly code: 'UNRELATED_HISTORIES' }
+  /** git's push `The current branch <b> has multiple upstream branches, refusing to push.` */
+  | { readonly code: 'PUSH_MULTIPLE_UPSTREAMS'; readonly branch: RefName }
   /** git's pull `Cannot fast-forward to multiple branches.` */
   | { readonly code: 'FAST_FORWARD_MULTIPLE_BRANCHES' }
   | {
@@ -580,6 +582,9 @@ export const octopusMergeFailed = (head: string, reason: OctopusFailureReason): 
   new TsgitError({ code: 'OCTOPUS_MERGE_FAILED', head, reason });
 
 export const unrelatedHistories = (): TsgitError => new TsgitError({ code: 'UNRELATED_HISTORIES' });
+
+export const pushMultipleUpstreams = (branch: RefName): TsgitError =>
+  new TsgitError({ code: 'PUSH_MULTIPLE_UPSTREAMS', branch });
 
 export const fastForwardMultipleBranches = (): TsgitError =>
   new TsgitError({ code: 'FAST_FORWARD_MULTIPLE_BRANCHES' });

@@ -125,6 +125,7 @@ export interface ParsedConfig {
     string,
     {
       readonly remote?: string;
+      /** The first `branch.<name>.merge` value — the upstream git's `branch_get_upstream` reads. */
       readonly merge?: string;
       /** Every `branch.<name>.merge` value, in config order — git merges them all. */
       readonly merges?: ReadonlyArray<string>;
@@ -1790,7 +1791,8 @@ const mergeBranch = (
     if (value === null) continue;
     if (key === 'remote') next.remote = value;
     else if (key === 'merge') {
-      next.merge = value;
+      // git's upstream is `merge[0]`: the first value read.
+      next.merge ??= value;
       next.merges = [...(next.merges ?? []), value];
     }
     // Git config keys are case-insensitive; compare pushRemote on the lower-cased key.

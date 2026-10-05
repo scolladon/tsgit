@@ -478,6 +478,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `Merge with strategy octopus failed: ${data.reason} at ${data.head}`;
     case 'UNRELATED_HISTORIES':
       return 'refusing to merge unrelated histories';
+    case 'PUSH_MULTIPLE_UPSTREAMS':
+      return `current branch ${data.branch} has multiple upstream branches, refusing to push`;
     case 'FAST_FORWARD_MULTIPLE_BRANCHES':
       return 'cannot fast-forward to multiple branches';
     case 'NON_FAST_FORWARD':

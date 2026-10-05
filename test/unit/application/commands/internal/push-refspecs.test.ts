@@ -157,6 +157,65 @@ describe('Given an attached branch, a central remote, and no branch.merge config
   });
 });
 
+describe('Given an attached branch on a central remote with two branch.merge values', () => {
+  describe.each(['upstream', 'simple'] as const)(
+    'When planPushRefspecs runs under push.default=%s',
+    (pushDefault) => {
+      it('Then it refuses to push with PUSH_MULTIPLE_UPSTREAMS', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const merges = ['refs/heads/main', 'refs/heads/two'];
+        const tracking = { remote: 'origin', merge: 'refs/heads/main', merges };
+        const config: ParsedConfig = {
+          push: { default: pushDefault },
+          branch: new Map([['main', tracking]]),
+        };
+        const head = await readHeadRaw(ctx);
+        const sut = planPushRefspecs;
+
+        // Act
+        const result = await sut(config, {}, head).catch((error: unknown) => error);
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'PUSH_MULTIPLE_UPSTREAMS',
+          branch: 'refs/heads/main',
+        });
+      });
+    },
+  );
+});
+
+describe('Given an attached branch with branch.merge but no branch.remote', () => {
+  describe.each(['upstream', 'simple'] as const)(
+    'When planPushRefspecs runs under push.default=%s',
+    (pushDefault) => {
+      it('Then it refuses with NO_UPSTREAM_CONFIGURED', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const tracking = { merge: 'refs/heads/main', merges: ['refs/heads/main'] };
+        const config: ParsedConfig = {
+          push: { default: pushDefault },
+          branch: new Map([['main', tracking]]),
+        };
+        const head = await readHeadRaw(ctx);
+        const sut = planPushRefspecs;
+
+        // Act
+        const result = await sut(config, {}, head).catch((error: unknown) => error);
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'NO_UPSTREAM_CONFIGURED',
+          branch: 'refs/heads/main',
+        });
+      });
+    },
+  );
+});
+
 describe('Given push.default=matching and an attached branch', () => {
   describe('When planPushRefspecs runs with no explicit refspec', () => {
     it('Then it returns a deferred matching plan, without resolving any refspec yet', async () => {

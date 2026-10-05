@@ -497,7 +497,7 @@ describe('primitives/config-read', () => {
 
   describe('Given a [branch "main"] merge key set twice, across two sections', () => {
     describe('When readConfig', () => {
-      it('Then merges keeps every value in config order and merge the last', async () => {
+      it('Then merges keeps every value in config order and merge the first, the upstream', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(
@@ -511,7 +511,7 @@ describe('primitives/config-read', () => {
 
         // Assert
         expect(result.branch?.get('main')?.merges).toEqual(['refs/heads/a', 'refs/heads/b']);
-        expect(result.branch?.get('main')?.merge).toBe('refs/heads/b');
+        expect(result.branch?.get('main')?.merge).toBe('refs/heads/a');
       });
     });
   });
@@ -1444,7 +1444,7 @@ describe('primitives/config-read', () => {
 
   describe('Given two [branch "main"] sections', () => {
     describe('When readConfig', () => {
-      it('Then later values win', async () => {
+      it('Then the later remote wins and the first merge stays the upstream', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(
@@ -1457,7 +1457,7 @@ describe('primitives/config-read', () => {
 
         // Assert
         expect(result.branch?.get('main')?.remote).toBe('b');
-        expect(result.branch?.get('main')?.merge).toBe('refs/heads/y');
+        expect(result.branch?.get('main')?.merge).toBe('refs/heads/x');
       });
     });
   });

@@ -214,3 +214,24 @@ describe('Given an unborn HEAD and an upstream that contains the branch', () => 
     });
   });
 });
+
+describe('Given a branch merging two refs, the first containing it and the second not', () => {
+  describe('When branch delete runs unforced', () => {
+    it('Then it judges the first, the upstream, and removes the ref with its warning', async () => {
+      // Arrange
+      const { ctx, logs, root, side } = await seed();
+      await plantRef(ctx, TOPIC, side);
+      await plantRef(ctx, UPSTREAM, side);
+      await plantRef(ctx, 'refs/heads/other' as RefName, root);
+      await configureUpstream(ctx, `${UPSTREAM}\n\tmerge = refs/heads/other`);
+      const sut = branchDelete;
+
+      // Act
+      const result = await sut(ctx, { name: 'topic' });
+
+      // Assert
+      expect(result).toEqual({ name: TOPIC });
+      expect(logs).toEqual([`warning: ${MERGED_TO_UPSTREAM}`]);
+    });
+  });
+});

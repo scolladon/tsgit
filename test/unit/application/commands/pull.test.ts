@@ -8,6 +8,7 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { mergeContinue } from '../../../../src/application/commands/continue-merge.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { pull } from '../../../../src/application/commands/pull.js';
+import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
@@ -1316,6 +1317,37 @@ describe('pull', () => {
           // Assert
           expect(result).toEqual({ code: 'FAST_FORWARD_MULTIPLE_BRANCHES' });
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given an upstream merging two refs the remote does not have', () => {
+      describe('When pull', () => {
+        it('Then it refuses naming the first, the upstream', async () => {
+          // Arrange
+          const { ctx, b } = await divergedRepo();
+          await updateConfigEntries(ctx, remoteEntries(ORIGIN_FETCH));
+          const path = `${ctx.layout.gitDir}/config`;
+          const twoMerges =
+            '[branch "main"]\n\tremote = origin\n\tmerge = refs/heads/n1\n\tmerge = refs/heads/n2\n';
+          await ctx.fs.writeUtf8(path, `${await ctx.fs.readUtf8(path)}${twoMerges}`);
+          invalidateConfigCache(ctx);
+          const { transport } = buildPullRemote(
+            [{ name: 'refs/heads/side', id: b }],
+            await emptyPack(ctx),
+          );
+          const sut = refusal;
+
+          // Act
+          const result = await sut(withTransport(ctx, transport));
+
+          // Assert
+          expect(result).toEqual({
+            code: 'PULL_NO_MERGE_CANDIDATES',
+            reason: 'merge-ref-not-fetched',
+            remote: 'origin',
+            ref: 'refs/heads/n1',
+          });
         });
       });
     });
