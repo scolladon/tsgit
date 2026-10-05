@@ -1,7 +1,9 @@
 import {
   branchExists,
-  branchNotFound,
+  checkoutNonCommit,
+  checkoutStartPointNotCommit,
   invalidOption,
+  pathspecNoMatch,
   revparseUnresolved,
 } from '../../domain/commands/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
@@ -123,11 +125,45 @@ const formattedBranchRef = (rev: string): RefName | undefined => {
 const resolveSwitchTarget = async (ctx: Context, arg: string): Promise<ObjectId | undefined> =>
   (await resolveRevisionName(ctx, arg)) ?? resolveRevisionExpression(ctx, arg);
 
-/** The object a switch detaches onto once no branch carries the name: git's
- *  `get_oid_mb` answer over the revision ladder. */
-const requireSwitchOid = (id: ObjectId | undefined, rev: string): ObjectId => {
-  if (id === undefined) throw branchNotFound(validateRefName(`${HEADS_PREFIX}${rev}`));
-  return id;
+/**
+ * A switch argument no revision answers: git hands it on as a pathspec, which
+ * matches nothing — or, under `-b`, names a start point no branch can come from.
+ */
+const unresolvedSwitch = (opts: CheckoutSwitchOptions) =>
+  opts.createBranch === undefined
+    ? pathspecNoMatch(opts.rev)
+    : checkoutStartPointNotCommit(opts.rev, opts.createBranch.name);
+
+/** What a switch argument names: its spelling, the branch it attaches to, and the object. */
+interface SwitchTarget {
+  readonly arg: string;
+  readonly branchName: string;
+  readonly onBranch: RefName | undefined;
+  readonly object: ObjectId;
+}
+
+/** git's `parse_branchname_arg`: the branch `refs/heads/<arg>` names, else the revision ladder. */
+const resolveSwitch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<SwitchTarget> => {
+  const arg = previousCheckoutArg(opts.rev);
+  const named = await resolveSwitchTarget(ctx, arg);
+  const branchName = await interpretBranchName(ctx, arg);
+  const onBranch = await branchRefFor(ctx, branchName);
+  if (onBranch !== undefined)
+    return { arg, branchName, onBranch, object: await resolveRef(ctx, onBranch) };
+  if (named === undefined) throw unresolvedSwitch(opts);
+  return { arg, branchName, onBranch, object: named };
+};
+
+/**
+ * git's `lookup_commit_reference_gently`: the commit the object peels to, or
+ * `undefined` for a tree — a blob or other non-tree-ish refuses here, as git's
+ * `unable to read tree` does before any branch is validated.
+ */
+const switchCommit = async (ctx: Context, object: ObjectId): Promise<ObjectId | undefined> => {
+  const { id, result } = await peelChain(ctx, object, readObject, peelTag);
+  if (result.type === 'commit') return id;
+  await readTree(ctx, object);
+  return undefined;
 };
 
 /** git's `old_desc`: the branch HEAD was on, else the full object id it named. */
@@ -172,7 +208,6 @@ const moveHead = (ctx: Context, move: HeadMove): Promise<void> => {
 };
 
 const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<CheckoutResult> => {
-  await assertBranchCreatable(ctx, opts);
   const priorHead = await readHeadRaw(ctx);
   if (priorHead.kind !== 'symbolic') await assertEverySourceLoadable(ctx);
   const oldOid = await resolveRef(ctx, 'HEAD' as RefName);
@@ -182,14 +217,13 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
   // git's own fallback does: a tag, a remote-tracking path or an object id.
   // git names the argument through `get_oid_mb` first, branch or not — its
   // warnings and its read of core.warnAmbiguousRefs happen either way.
-  const arg = previousCheckoutArg(opts.rev);
-  const named = await resolveSwitchTarget(ctx, arg);
-  const branchName = await interpretBranchName(ctx, arg);
-  const onBranch = await branchRefFor(ctx, branchName);
+  const { arg, branchName, onBranch, object } = await resolveSwitch(ctx, opts);
+  const commitId = await switchCommit(ctx, object);
+  await assertBranchCreatable(ctx, opts);
+  if (commitId === undefined) throw checkoutNonCommit(arg);
+  const oid = commitId;
   const detached = opts.detach === true || onBranch === undefined;
   const branchRef = detached ? undefined : onBranch;
-  const oid =
-    onBranch === undefined ? requireSwitchOid(named, branchName) : await resolveRef(ctx, onBranch);
 
   // Read target tree — git objects are content-addressed and immutable, so
   // this can happen outside the index lock without risk.

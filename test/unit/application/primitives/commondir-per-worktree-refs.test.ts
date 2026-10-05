@@ -358,7 +358,7 @@ describe('common-dir per-worktree-ref sweep', () => {
 
     describe('Given a worktree child Context with only an admin-dir decoy branch ref', () => {
       describe('When checkout switches to that branch', () => {
-        it('Then it throws BRANCH_NOT_FOUND — the common dir is checked, not the decoy', async () => {
+        it('Then it refuses as an unmatched pathspec — the common dir is checked, not the decoy', async () => {
           // Arrange — HEAD (admin) must resolve so switchBranch reaches the
           // branchRef existence check for 'ghost' rather than failing earlier.
           const ctx = await buildSeededContext({
@@ -373,7 +373,7 @@ describe('common-dir per-worktree-ref sweep', () => {
             await checkout(sut, { rev: 'ghost' });
             expect.unreachable();
           } catch (err) {
-            expect((err as TsgitError).data.code).toBe('BRANCH_NOT_FOUND');
+            expect((err as TsgitError).data.code).toBe('PATHSPEC_NO_MATCH');
           }
         });
       });

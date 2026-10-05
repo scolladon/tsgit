@@ -614,6 +614,10 @@ function extractDetail(data: TsgitErrorData): string {
       return 'empty commit set passed';
     case 'CANNOT_PICK_NON_COMMIT':
       return `${data.revision}: can't cherry-pick a ${data.type}`;
+    case 'CHECKOUT_NON_COMMIT':
+      return `Cannot switch branch to a non-commit '${data.revision}'`;
+    case 'CHECKOUT_START_POINT_NOT_COMMIT':
+      return `'${data.revision}' is not a commit and a branch '${data.branch}' cannot be created from it`;
     case 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM':
       return `unknown fetch negotiation algorithm '${data.value}'`;
     case 'CONFIG_INVALID_ENUM_VALUE':

@@ -18,6 +18,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { checkout } from '../../src/application/commands/checkout.js';
 import { tagCreate } from '../../src/application/commands/tag.js';
+import { errorDataCode } from '../../src/domain/error-data-code.js';
 import type { Context } from '../../src/ports/context.js';
 import {
   disableAutoMaintenance,
@@ -25,6 +26,7 @@ import {
   git,
   runGit,
   runGitEnv,
+  tryRunGitWithExit,
 } from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
@@ -258,6 +260,79 @@ describe.skipIf(!GIT_AVAILABLE)('integration — target-name parity with canonic
         // Assert
         expect(result.id).toBe(git(peer, 'rev-parse', 'HEAD').trim());
         expect(result.id).toBe(git(peer, 'rev-parse', 'refs/remotes/org/tgt').trim());
+        expect(await headState(ours)).toEqual(await headState(peer));
+      });
+    });
+  });
+
+  describe('Given a switch argument git cannot switch to', () => {
+    describe.each([
+      {
+        slug: 'no-rev',
+        gitArgs: ['nope~1'],
+        opts: { rev: 'nope~1' },
+        code: 'PATHSPEC_NO_MATCH',
+        exit: 1,
+      },
+      { slug: 'no-prior', gitArgs: ['-'], opts: { rev: '-' }, code: 'PATHSPEC_NO_MATCH', exit: 1 },
+      {
+        slug: 'tree',
+        gitArgs: ['HEAD^{tree}'],
+        opts: { rev: 'HEAD^{tree}' },
+        code: 'CHECKOUT_NON_COMMIT',
+        exit: 128,
+      },
+      {
+        slug: 'tree-detach',
+        gitArgs: ['--detach', 'main:'],
+        opts: { rev: 'main:', detach: true },
+        code: 'CHECKOUT_NON_COMMIT',
+        exit: 128,
+      },
+      {
+        slug: 'start-point',
+        gitArgs: ['-b', 'amb', 'nope'],
+        opts: { rev: 'nope', createBranch: { name: 'amb' } },
+        code: 'CHECKOUT_START_POINT_NOT_COMMIT',
+        exit: 128,
+      },
+    ])('When both tools check out $gitArgs', ({ slug, gitArgs, opts, code, exit }) => {
+      it('Then both refuse and leave HEAD, its log and the branches alike', async () => {
+        // Arrange
+        const { peer, ours, ctx } = await casePair(slug);
+        const branches = (dir: string) => git(dir, 'for-each-ref', 'refs/heads');
+        const peerRun = tryRunGitWithExit(['-C', peer, 'checkout', ...gitArgs], {
+          env: IDENTITY_ENV,
+        });
+        const sut = checkout;
+
+        // Act
+        const result = await sut(ctx, opts).then(() => undefined, errorDataCode);
+
+        // Assert
+        expect(peerRun.exitCode).toBe(exit);
+        expect(result).toBe(code);
+        expect(await headState(ours)).toEqual(await headState(peer));
+        expect(branches(ours)).toBe(branches(peer));
+      });
+    });
+  });
+
+  describe('Given an annotated tag', () => {
+    describe('When both tools switch to it', () => {
+      it('Then both detach onto the commit it tags', async () => {
+        // Arrange
+        const { peer, ours, ctx } = await casePair('annotated');
+        for (const dir of [peer, ours]) {
+          runGit(['-C', dir, 'tag', '-a', 'ann', '-m', 'ann'], { env: IDENTITY_ENV });
+        }
+        runGit(['-C', peer, 'checkout', 'ann'], { env: IDENTITY_ENV });
+        const sut = checkout;
+
+        // Act
+        await sut(ctx, { rev: 'ann' });
+
+        // Assert
         expect(await headState(ours)).toEqual(await headState(peer));
       });
     });

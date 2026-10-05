@@ -251,7 +251,7 @@ describe('checkout', () => {
 
   describe('Given a non-existent branch', () => {
     describe('When checkout', () => {
-      it('Then throws BRANCH_NOT_FOUND', async () => {
+      it('Then it refuses as an unmatched pathspec, as git does', async () => {
         // Arrange
         const { ctx } = await seedWithBranches();
 
@@ -265,7 +265,7 @@ describe('checkout', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('BRANCH_NOT_FOUND');
+        expect((caught as TsgitError).data.code).toBe('PATHSPEC_NO_MATCH');
       });
     });
   });
@@ -634,9 +634,9 @@ describe('checkout — mutation hardening', () => {
           caught = err;
         }
 
-        // Assert — resolved as a ref name → branch not found, not an oid path.
+        // Assert — resolved as a name nothing answers, not an oid path.
         expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('BRANCH_NOT_FOUND');
+        expect((caught as TsgitError).data.code).toBe('PATHSPEC_NO_MATCH');
       });
     });
   });

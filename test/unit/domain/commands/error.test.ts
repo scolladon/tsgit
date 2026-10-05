@@ -1790,6 +1790,14 @@ describe('domain commands error — extractDetail message formatting', () => {
       "CANNOT_PICK_NON_COMMIT: HEAD:d/f: can't cherry-pick a blob",
     ],
     [
+      { code: 'CHECKOUT_NON_COMMIT', revision: 'HEAD^{tree}' },
+      "CHECKOUT_NON_COMMIT: Cannot switch branch to a non-commit 'HEAD^{tree}'",
+    ],
+    [
+      { code: 'CHECKOUT_START_POINT_NOT_COMMIT', revision: 'nope', branch: 'side' },
+      "CHECKOUT_START_POINT_NOT_COMMIT: 'nope' is not a commit and a branch 'side' cannot be created from it",
+    ],
+    [
       { code: 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM', value: 'bogus' },
       "CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM: unknown fetch negotiation algorithm 'bogus'",
     ],

@@ -151,7 +151,7 @@ describe('checkout — a name no branch carries', () => {
 
   describe('Given a name no namespace carries', () => {
     describe('When checkout switches to it', () => {
-      it('Then it refuses, naming the branch it looked for', async () => {
+      it('Then it refuses as an unmatched pathspec, naming the argument', async () => {
         // Arrange
         const { ctx } = await seedAmbiguity();
         const sut = checkout;
@@ -165,10 +165,7 @@ describe('checkout — a name no branch carries', () => {
         }
 
         // Assert
-        expect((caught as TsgitError).data).toEqual({
-          code: 'BRANCH_NOT_FOUND',
-          name: `${HEADS}nope`,
-        });
+        expect((caught as TsgitError).data).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern: 'nope' });
       });
     });
   });

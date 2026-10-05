@@ -190,6 +190,8 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'FSCK_SKIP_LIST_INVALID_NAME':
     case 'EMPTY_COMMIT_SET':
     case 'CANNOT_PICK_NON_COMMIT':
+    case 'CHECKOUT_NON_COMMIT':
+    case 'CHECKOUT_START_POINT_NOT_COMMIT':
     case 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM':
     case 'CONFIG_INVALID_ENUM_VALUE':
     case 'CONFIG_BAD_ZLIB_LEVEL':

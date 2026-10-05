@@ -283,6 +283,18 @@ export type CommandError =
       readonly type: ObjectType;
     }
   | {
+      readonly code: 'CHECKOUT_NON_COMMIT';
+      /** The switch argument as given — git's `-` spelt `@{-1}`. */
+      readonly revision: string;
+    }
+  | {
+      readonly code: 'CHECKOUT_START_POINT_NOT_COMMIT';
+      /** The start point as given, which names no revision. */
+      readonly revision: string;
+      /** The branch the switch would have created. */
+      readonly branch: string;
+    }
+  | {
       readonly code: 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM';
       readonly value: string;
     }
@@ -702,6 +714,18 @@ export const emptyCommitSet = (): TsgitError => new TsgitError({ code: 'EMPTY_CO
 /** git's `sequencer_pick_revisions`: a named object that peels to no commit. */
 export const cannotPickNonCommit = (revision: string, type: ObjectType): TsgitError =>
   new TsgitError({ code: 'CANNOT_PICK_NON_COMMIT', revision, type });
+
+/** git checkout's `Cannot switch branch to a non-commit`: a tree-ish that peels to no commit. */
+export const checkoutNonCommit = (revision: string): TsgitError =>
+  new TsgitError({ code: 'CHECKOUT_NON_COMMIT', revision: sanitizeForDisplay(revision) });
+
+/** git checkout `-b`'s start point that names no revision: no branch can be created from it. */
+export const checkoutStartPointNotCommit = (revision: string, branch: string): TsgitError =>
+  new TsgitError({
+    code: 'CHECKOUT_START_POINT_NOT_COMMIT',
+    revision: sanitizeForDisplay(revision),
+    branch: sanitizeForDisplay(branch),
+  });
 
 export const invalidOption = (option: string, reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_OPTION', option, reason: sanitizeForDisplay(reason) });
