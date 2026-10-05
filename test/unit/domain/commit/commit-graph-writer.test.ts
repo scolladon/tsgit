@@ -12,6 +12,7 @@ import type {
 } from '../../../../src/domain/commit/commit-graph-writer.js';
 import {
   type CommitGraphChangedPaths,
+  computeCommitGraphGenerations,
   MAX_GENERATION_OFFSET,
   serializeCommitGraph,
 } from '../../../../src/domain/commit/commit-graph-writer.js';
@@ -594,6 +595,109 @@ describe('serializeCommitGraph', () => {
         // Assert
         expect(() => findChunkRowIndex(result, 'BIDX')).toThrow('chunk BIDX not present');
         expect(() => findChunkRowIndex(result, 'BDAT')).toThrow('chunk BDAT not present');
+      });
+    });
+  });
+});
+
+/** A walk view over `commits`, recording every id the walk parses. */
+function recordingView(commits: readonly CommitGraphWriterCommit[]): {
+  readonly parses: ObjectId[];
+  readonly view: Parameters<typeof computeCommitGraphGenerations>[2];
+} {
+  const byId = new Map(commits.map((c) => [c.id, c]));
+  const parses: ObjectId[] = [];
+  return { parses, view: { parse: (id) => parses.push(id), parsed: (id) => byId.get(id) } };
+}
+
+const NO_BASE_LAYERS: CommitGraphBase = { layerHashes: [], commitCount: 0, commits: new Map() };
+
+describe('computeCommitGraphGenerations', () => {
+  describe('Given a commit whose only parent fails to parse and sorts after it', () => {
+    describe('When the generations are computed', () => {
+      it('Then each walk parses the parent on every visit and again in its own turn', () => {
+        // Arrange
+        const broken = oid('b');
+        const child = commit('a', [broken]);
+        const { parses, view } = recordingView([child]);
+        const sut = computeCommitGraphGenerations;
+
+        // Act
+        const result = sut([child.id, broken], NO_BASE_LAYERS, view);
+
+        // Assert
+        expect({ parses, child: result.get(child.id), broken: result.get(broken) }).toEqual({
+          parses: [child.id, broken, broken, broken, child.id, broken, broken, broken],
+          child: { level: 2, correctedDate: 1_700_000_000 },
+          broken: { level: 1, correctedDate: 1 },
+        });
+      });
+    });
+  });
+
+  describe('Given a commit whose only parent fails to parse and sorts before it', () => {
+    describe('When the generations are computed', () => {
+      it('Then each walk parses the parent first, then once more under the child', () => {
+        // Arrange
+        const broken = oid('a');
+        const child = commit('b', [broken]);
+        const { parses, view } = recordingView([child]);
+        const sut = computeCommitGraphGenerations;
+
+        // Act
+        sut([broken, child.id], NO_BASE_LAYERS, view);
+
+        // Assert
+        expect(parses).toEqual([broken, child.id, broken, broken, child.id, broken]);
+      });
+    });
+  });
+
+  describe('Given a root and its child both dated zero', () => {
+    describe('When the generations are computed', () => {
+      it('Then each corrected date counts up from one, as a dateless commit does in git', () => {
+        // Arrange
+        const root = commit('a', [], { committerDate: 0 });
+        const child = commit('b', [root.id], { committerDate: 0 });
+        const { view } = recordingView([root, child]);
+        const sut = computeCommitGraphGenerations;
+
+        // Act
+        const result = sut([root.id, child.id], NO_BASE_LAYERS, view);
+
+        // Assert
+        expect([result.get(root.id), result.get(child.id)]).toEqual([
+          { level: 1, correctedDate: 1 },
+          { level: 2, correctedDate: 2 },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a commit over a base-layer parent at the topological level cap', () => {
+    describe('When the generations are computed', () => {
+      it("Then the child's level stays at the cap and its date follows the base's", () => {
+        // Arrange
+        const parent = oid('a');
+        const child = commit('b', [parent], { committerDate: 5 });
+        const base: CommitGraphBase = {
+          layerHashes: [oid('f')],
+          commitCount: 1,
+          commits: new Map([
+            [parent, { position: 0, generation: { level: 0x3fffffff, correctedDate: 9 } }],
+          ]),
+        };
+        const { parses, view } = recordingView([child]);
+        const sut = computeCommitGraphGenerations;
+
+        // Act
+        const result = sut([child.id], base, view);
+
+        // Assert
+        expect({ parses, child: result.get(child.id) }).toEqual({
+          parses: [child.id, parent, child.id, parent],
+          child: { level: 0x3fffffff, correctedDate: 10 },
+        });
       });
     });
   });

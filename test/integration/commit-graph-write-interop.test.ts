@@ -505,3 +505,100 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop', () => {
     });
   });
 });
+
+/** A repository whose `main` commit names the blob `hi` as its parent, its id sorting `order` the blob's. */
+async function buildBlobParentRepo(
+  order: 'before' | 'after',
+): Promise<{ readonly dir: string; readonly blob: string }> {
+  const dir = await initRepo(`blob-parent-${order}`);
+  const blob = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: 'hi\n' }).trim();
+  const tree = runGit(['-C', dir, 'mktree'], { input: '' }).trim();
+  const ident = 'author a <a@b> 1700000000 +0000\ncommitter a <a@b> 1700000000 +0000\n';
+  for (let i = 0; ; i += 1) {
+    const commit = runGit(
+      ['-C', dir, 'hash-object', '-t', 'commit', '-w', '--stdin', '--literally'],
+      {
+        input: `tree ${tree}\nparent ${blob}\n${ident}\nx${i}\n`,
+      },
+    ).trim();
+    if (commit < blob !== (order === 'before')) continue;
+    git(dir, 'update-ref', 'refs/heads/main', commit);
+    return { dir, blob };
+  }
+}
+
+describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop — an unparseable parent', () => {
+  describe.each([
+    ['before', 9],
+    ['after', 7],
+  ] as const)('Given a commit whose blob parent it sorts %s', (order, lines) => {
+    describe('When both tools write the single-file commit-graph', () => {
+      it('Then each parse pass logs the blob again and both die writing its entry', async () => {
+        // Arrange
+        const { dir, blob } = await buildBlobParentRepo(order);
+        const oursDir = await tmpDir(`blob-parent-${order}-ours`);
+        await cp(dir, oursDir, { recursive: true });
+        const peer = tryRunGitWithExit(['-C', dir, 'commit-graph', 'write', '--reachable']);
+        const logged: string[] = [];
+        const base = createNodeContext({ workDir: oursDir, algorithm: 'sha1' });
+        const sut = writeCommitGraph;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut({ ...base, logger: { error: (line: string) => logged.push(line) } });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; id?: string } }).data;
+        const rebuilt = `${logged.map((line) => `error: ${line}\n`).join('')}fatal: unable to parse commit ${data?.id}\n`;
+        expect(peer.exitCode).toBe(128);
+        expect({ data, lines: logged.length, stderr: rebuilt }).toEqual({
+          data: { code: 'COMMIT_PARSE_FAILED', id: blob },
+          lines,
+          stderr: peer.stderr,
+        });
+        await rm(dir, { recursive: true, force: true });
+        await rm(oursDir, { recursive: true, force: true });
+      });
+    });
+
+    describe('When both tools run the commit-graph maintenance task', () => {
+      it('Then each parse pass logs the blob again and both fail the task writing its entry', async () => {
+        // Arrange
+        const { dir, blob } = await buildBlobParentRepo(order);
+        const oursDir = await tmpDir(`blob-parent-${order}-split-ours`);
+        await cp(dir, oursDir, { recursive: true });
+        const peer = tryRunGitWithExit(['-C', dir, 'maintenance', 'run', '--task=commit-graph']);
+        const logged: string[] = [];
+        const base = createNodeContext({ workDir: oursDir, algorithm: 'sha1' });
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(
+          { ...base, logger: { error: (line: string) => logged.push(line) } },
+          { tasks: ['commit-graph'] },
+        );
+
+        // Assert
+        const [failure] = result.tasksFailed;
+        const id = failure?.data.code === 'COMMIT_PARSE_FAILED' ? failure.data.id : '';
+        const rebuilt =
+          `${logged.map((line) => `error: ${line}\n`).join('')}fatal: unable to parse commit ${id}\n` +
+          'error: failed to write commit-graph\n' +
+          "error: task 'commit-graph' failed\n";
+        expect(peer.exitCode).toBe(1);
+        expect({ task: failure?.task, id, lines: logged.length, stderr: rebuilt }).toEqual({
+          task: 'commit-graph',
+          id: blob,
+          lines,
+          stderr: peer.stderr,
+        });
+        await rm(dir, { recursive: true, force: true });
+        await rm(oursDir, { recursive: true, force: true });
+      });
+    });
+  });
+});

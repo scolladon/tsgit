@@ -18,16 +18,26 @@ import {
   type CommitGraphBase,
   type CommitGraphBaseCommit,
   type CommitGraphChangedPaths,
+  type CommitGraphGeneration,
   type CommitGraphWriterCommit,
+  computeCommitGraphGenerations,
   serializeCommitGraph,
 } from '../../domain/commit/commit-graph-writer.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
-import { isObjectNotFound, objectNotFound } from '../../domain/objects/error.js';
-import { type Commit, ObjectId } from '../../domain/objects/index.js';
+import { objectNotFound } from '../../domain/objects/error.js';
+import { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { atomicWriteFile, withLockFile } from './atomic-write.js';
 import { changedPathsRequest } from './internal/changed-paths-settings.js';
 import { hasGrafts } from './internal/commit-graph-compatible.js';
+import {
+  type CommitGraphParser,
+  closeReachable,
+  copyOidsToCommits,
+  createCommitGraphParser,
+  parsedForWrite,
+  rootCommits,
+} from './internal/commit-graph-passes.js';
 import {
   type LocalGraphLayer,
   loadLocalCommitGraphLayers,
@@ -40,7 +50,6 @@ import {
   commitGraphPath,
   commonGitDir,
 } from './path-layout.js';
-import { readObject } from './read-object.js';
 import {
   COMMIT_GRAPH_FILE_MODE,
   changedPathsFor,
@@ -80,59 +89,27 @@ function locate(layers: readonly LocalGraphLayer[], id: ObjectId): LayerSlot | u
   return undefined;
 }
 
-const writerCommit = (commit: Commit): CommitGraphWriterCommit => ({
-  id: commit.id,
-  rootTree: commit.data.tree,
-  parents: commit.data.parents,
-  committerDate: commit.data.committer.timestamp,
-});
-
-/** The commit `id` names, or `undefined` for a ref peeling to a tree or blob; a missing object refuses. */
-async function commitIfCommit(ctx: Context, id: ObjectId): Promise<Commit | undefined> {
-  const object = await readObject(ctx, id);
-  return object.type === 'commit' ? object : undefined;
-}
-
-/** git's `lookup_commit_reference_gently`: as {@link commitIfCommit}, a missing object reading as none. */
-async function survivingCommit(ctx: Context, id: ObjectId): Promise<Commit | undefined> {
-  try {
-    return await commitIfCommit(ctx, id);
-  } catch (error) {
-    if (isObjectNotFound(error)) return undefined;
-    throw error;
-  }
-}
-
-/** git's split `close_reachable`: the walk from the roots stops at any commit a layer already holds. */
+/** git's split `close_reachable` then `copy_oids_to_commits`: a commit a layer already holds is neither followed nor copied. */
 async function commitsOutsideGraph(
   ctx: Context,
+  parser: CommitGraphParser,
   layers: readonly LocalGraphLayer[],
-): Promise<readonly CommitGraphWriterCommit[]> {
-  const pending = [...(await commitGraphRoots(ctx))];
-  const seen = new Set<ObjectId>();
-  const found: CommitGraphWriterCommit[] = [];
-  for (let id = pending.pop(); id !== undefined; id = pending.pop()) {
-    if (seen.has(id) || locate(layers, id) !== undefined) continue;
-    seen.add(id);
-    const commit = await commitIfCommit(ctx, id);
-    if (commit === undefined) continue;
-    found.push(writerCommit(commit));
-    pending.push(...commit.data.parents);
-  }
-  return found;
+): Promise<readonly ObjectId[]> {
+  const inGraph = (id: ObjectId): boolean => locate(layers, id) !== undefined;
+  const roots = await rootCommits(parser, await commitGraphRoots(ctx));
+  return copyOidsToCommits(parser, await closeReachable(parser, roots, inGraph), inGraph);
 }
 
 /** git's `merge_commit_graph`: a folded layer's commits, minus any whose object is gone. */
 async function foldedCommits(
-  ctx: Context,
+  parser: CommitGraphParser,
   folded: readonly LocalGraphLayer[],
-): Promise<readonly CommitGraphWriterCommit[]> {
-  const commits: CommitGraphWriterCommit[] = [];
+): Promise<readonly ObjectId[]> {
+  const commits: ObjectId[] = [];
   for (const { layer } of folded) {
     for (let local = 0; local < layer.commitCount; local += 1) {
       const id = oidAtPosition(layer, local);
-      const commit = await survivingCommit(ctx, id);
-      if (commit !== undefined) commits.push(writerCommit(commit));
+      if ((await parser.probe(id)) !== undefined) commits.push(id);
     }
   }
   return commits;
@@ -151,10 +128,8 @@ function planSplit(layers: readonly LocalGraphLayer[], newCommitCount: number): 
   return { base: layers.slice(0, keep), folded: layers.slice(keep) };
 }
 
-/** git's `sort_and_scan_merged_commits`: one entry per commit, however many layers held it. */
-const uniqueCommits = (
-  commits: readonly CommitGraphWriterCommit[],
-): readonly CommitGraphWriterCommit[] => [...new Map(commits.map((c) => [c.id, c])).values()];
+/** git's `sort_and_scan_merged_commits`: one entry per commit in byte order, however many layers held it. */
+const mergedOrder = (ids: readonly ObjectId[]): readonly ObjectId[] => [...new Set(ids)].sort();
 
 /** A parent neither written nor in the base was a folded commit whose object is gone —
  *  git stops there too (`missing parent`), the layer being unwritable. */
@@ -169,9 +144,10 @@ function baseCommit(base: readonly LocalGraphLayer[], id: ObjectId): CommitGraph
 
 function graphBase(
   base: readonly LocalGraphLayer[],
+  order: readonly ObjectId[],
   commits: readonly CommitGraphWriterCommit[],
 ): CommitGraphBase {
-  const written = new Set(commits.map((c) => c.id));
+  const written = new Set(order);
   const entries = new Map<ObjectId, CommitGraphBaseCommit>();
   for (const parent of commits.flatMap((c) => c.parents)) {
     if (written.has(parent) || entries.has(parent)) continue;
@@ -186,8 +162,9 @@ async function serializeLayer(
   commits: readonly CommitGraphWriterCommit[],
   base: CommitGraphBase,
   changedPaths: CommitGraphChangedPaths | undefined,
+  generations: ReadonlyMap<ObjectId, CommitGraphGeneration>,
 ): Promise<{ readonly bytes: Uint8Array; readonly hash: ObjectId }> {
-  const bytes = serializeCommitGraph(commits, ctx.hashConfig, base, changedPaths);
+  const bytes = serializeCommitGraph(commits, ctx.hashConfig, base, changedPaths, generations);
   const trailerStart = bytes.length - ctx.hashConfig.digestLength;
   const digest = await ctx.hash.hash(bytes.subarray(0, trailerStart));
   bytes.set(digest, trailerStart);
@@ -277,14 +254,19 @@ export async function writeSplitCommitGraph(ctx: Context): Promise<WriteSplitCom
   if (await declinesChangedPathsVersion(ctx)) return NOTHING_WRITTEN;
 
   const layers = await loadLocalCommitGraphLayers(ctx);
-  const fresh = await commitsOutsideGraph(ctx, layers);
+  const parser = createCommitGraphParser(ctx);
+  const fresh = await commitsOutsideGraph(ctx, parser, layers);
   const chainCount = layers.reduce((sum, { layer }) => sum + layer.commitCount, 0);
   if (fresh.length === 0) return { written: false, commitCount: chainCount };
 
   const plan = planSplit(layers, fresh.length);
-  const commits = uniqueCommits([...fresh, ...(await foldedCommits(ctx, plan.folded))]);
-  const base = graphBase(plan.base, commits);
+  const order = mergedOrder([...fresh, ...(await foldedCommits(parser, plan.folded))]);
+  const parsed = order.flatMap((id) => parser.parsed(id) ?? []);
+  const base = graphBase(plan.base, order, parsed);
+  const generations = computeCommitGraphGenerations(order, base, parser);
+  const commits = parsedForWrite(parser, order);
   const changedPaths = await changedPathsFor(ctx, commits, layers, request);
-  await writeChainLayer(ctx, plan, await serializeLayer(ctx, commits, base, changedPaths));
+  const layer = await serializeLayer(ctx, commits, base, changedPaths, generations);
+  await writeChainLayer(ctx, plan, layer);
   return { written: true, commitCount: base.commitCount + commits.length };
 }

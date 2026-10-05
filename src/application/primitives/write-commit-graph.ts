@@ -2,8 +2,10 @@
  * Writes `objects/info/commit-graph`, byte-identical to
  * `git commit-graph write --reachable` for the same commit set. Sources
  * commits from every resolvable REF (`--reachable`'s root set, distinct
- * from `gc`'s `HEAD + index + reflogs` retention roots) via `walkCommits` — never from an existing graph, corrupt or not, which
- * would encode a stale generation set instead of a fresh one.
+ * from `gc`'s `HEAD + index + reflogs` retention roots) through git's parse
+ * passes, each commit read from its object — never from an existing graph,
+ * corrupt or not, which would encode a stale generation set instead of a fresh
+ * one.
  *
  * @writes
  *   surface: commitGraph
@@ -12,7 +14,10 @@
  */
 import {
   type CommitGraphChangedPaths,
+  type CommitGraphGeneration,
   type CommitGraphWriterCommit,
+  computeCommitGraphGenerations,
+  EMPTY_COMMIT_GRAPH_BASE,
   serializeCommitGraph,
 } from '../../domain/commit/commit-graph-writer.js';
 import { TsgitError } from '../../domain/error.js';
@@ -32,6 +37,13 @@ import {
   unsupportedChangedPathsWarning,
 } from './internal/commit-graph-compatible.js';
 import {
+  closeReachable,
+  copyOidsToCommits,
+  createCommitGraphParser,
+  parsedForWrite,
+  rootCommits,
+} from './internal/commit-graph-passes.js';
+import {
   type LocalGraphLayer,
   loadLocalCommitGraphLayers,
 } from './internal/local-commit-graph-layers.js';
@@ -43,7 +55,6 @@ import {
   commonGitDir,
 } from './path-layout.js';
 import { resolveRef } from './resolve-ref.js';
-import { walkCommits } from './walk-commits.js';
 
 export interface WriteCommitGraphResult {
   readonly commitCount: number;
@@ -89,21 +100,27 @@ export async function commitGraphRoots(ctx: Context): Promise<readonly ObjectId[
   return [...roots];
 }
 
+const NOT_IN_GRAPH = (): boolean => false;
+
+interface ParsedGraphCommits {
+  readonly commits: readonly CommitGraphWriterCommit[];
+  readonly generations: ReadonlyMap<ObjectId, CommitGraphGeneration>;
+}
+
+/**
+ * git's non-split passes, each commit parsed without the graph: the reachable
+ * closure, its copy in byte order, both generation walks, then the entry
+ * write that refuses the first commit that did not parse.
+ */
 async function collectCommits(
   ctx: Context,
   roots: readonly ObjectId[],
-): Promise<CommitGraphWriterCommit[]> {
-  const commits: CommitGraphWriterCommit[] = [];
-  if (roots.length === 0) return commits;
-  for await (const commit of walkCommits(ctx, { from: roots })) {
-    commits.push({
-      id: commit.id,
-      rootTree: commit.data.tree,
-      parents: commit.data.parents,
-      committerDate: commit.data.committer.timestamp,
-    });
-  }
-  return commits;
+): Promise<ParsedGraphCommits> {
+  const parser = createCommitGraphParser(ctx);
+  const closed = await closeReachable(parser, await rootCommits(parser, roots), NOT_IN_GRAPH);
+  const order = await copyOidsToCommits(parser, closed, NOT_IN_GRAPH);
+  const generations = computeCommitGraphGenerations(order, EMPTY_COMMIT_GRAPH_BASE, parser);
+  return { commits: parsedForWrite(parser, order), generations };
 }
 
 /** Warns and answers true when git would decline the write on the version alone. */
@@ -187,12 +204,18 @@ export async function writeCommitGraph(ctx: Context): Promise<WriteCommitGraphRe
   if (await declinesChangedPathsVersion(ctx)) return { commitCount: 0 };
 
   const roots = await commitGraphRoots(ctx);
-  const commits = await collectCommits(ctx, roots);
+  const { commits, generations } = await collectCommits(ctx, roots);
   if (commits.length === 0) return { commitCount: 0 };
 
   const layers = await loadLocalCommitGraphLayers(ctx);
   const changedPaths = await changedPathsFor(ctx, commits, layers, 'preserve');
-  const bytes = serializeCommitGraph(commits, ctx.hashConfig, undefined, changedPaths);
+  const bytes = serializeCommitGraph(
+    commits,
+    ctx.hashConfig,
+    EMPTY_COMMIT_GRAPH_BASE,
+    changedPaths,
+    generations,
+  );
   const trailerStart = bytes.length - ctx.hashConfig.digestLength;
   const digest = await ctx.hash.hash(bytes.subarray(0, trailerStart));
   bytes.set(digest, trailerStart);

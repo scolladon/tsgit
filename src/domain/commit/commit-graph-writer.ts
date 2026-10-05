@@ -94,7 +94,11 @@ export interface CommitGraphBase {
   readonly commits: ReadonlyMap<ObjectId, CommitGraphBaseCommit>;
 }
 
-const NO_BASE: CommitGraphBase = { layerHashes: [], commitCount: 0, commits: new Map() };
+export const EMPTY_COMMIT_GRAPH_BASE: CommitGraphBase = {
+  layerHashes: [],
+  commitCount: 0,
+  commits: new Map(),
+};
 
 /** The changed-path Bloom filters a graph carries in `BIDX`/`BDAT`. */
 export interface CommitGraphChangedPaths {
@@ -124,8 +128,9 @@ interface OverflowPlan {
 export function serializeCommitGraph(
   commits: readonly CommitGraphWriterCommit[],
   hashConfig: HashConfig,
-  base: CommitGraphBase = NO_BASE,
+  base: CommitGraphBase = EMPTY_COMMIT_GRAPH_BASE,
   changedPaths?: CommitGraphChangedPaths,
+  generations: ReadonlyMap<ObjectId, Generation> = silentGenerations(commits, base),
 ): Uint8Array {
   const hashVersion: 1 | 2 = hashConfig.digestLength === 32 ? 2 : 1;
   const hashLength = hashLengthFor(hashVersion);
@@ -134,7 +139,6 @@ export function serializeCommitGraph(
     ...[...base.commits].map(([id, entry]) => [id, entry.position] as const),
     ...sortedCommits.map((commit, i) => [commit.id, base.commitCount + i] as const),
   ]);
-  const generations = computeGenerations(sortedCommits, base);
   const overflowPlan = planOverflowGenerations(sortedCommits, generations);
 
   const edgePlan = planEdges(sortedCommits, positionOf);
@@ -208,6 +212,19 @@ function planOverflowGenerations(
   return { entries, indexByCommit };
 }
 
+/** The generations of commits that all parse, nothing observing the walk. */
+function silentGenerations(
+  commits: readonly CommitGraphWriterCommit[],
+  base: CommitGraphBase,
+): ReadonlyMap<ObjectId, Generation> {
+  const byId = new Map(commits.map((commit) => [commit.id, commit]));
+  const order = sortByOid(commits).map((commit) => commit.id);
+  return computeCommitGraphGenerations(order, base, {
+    parse: () => {},
+    parsed: (id) => byId.get(id),
+  });
+}
+
 function sortByOid(
   commits: readonly CommitGraphWriterCommit[],
 ): readonly CommitGraphWriterCommit[] {
@@ -215,78 +232,98 @@ function sortByOid(
 }
 
 /**
- * Iterative post-order (every parent memoised before its child derives its
- * own level/corrected-date) — recursion-free so a long linear history never
- * risks a call-stack overflow. Independent of `commits`' own array order:
- * each id's result depends only on its ancestors, already memoised by the
- * time a child is reached. Base-layer parents arrive pre-memoised, so the
- * walk never descends below the layer being written.
+ * Where git's `compute_reachable_generation_numbers` touches a commit:
+ * `parse` is each `repo_parse_commit` call (a failed parse is not remembered,
+ * so every call is one more attempt), `parsed` the commit as already parsed,
+ * `undefined` when it failed — a commit with no parents and no date.
  */
-function computeGenerations(
-  commits: readonly CommitGraphWriterCommit[],
-  base: CommitGraphBase,
-): ReadonlyMap<ObjectId, Generation> {
-  const byId = new Map(commits.map((commit) => [commit.id, commit]));
-  const memo = new Map<ObjectId, Generation>(
-    [...base.commits].map(([id, entry]) => [id, entry.generation]),
-  );
-  for (const commit of commits) {
-    // Stryker disable next-line ConditionalExpression: equivalent — computeFrom is idempotent: re-visiting an already-memoised id only re-derives the same generation from its (already-memoised, unchanged) parents and overwrites memo with an identical value; a redundant call wastes cycles but changes nothing observable.
-    if (!memo.has(commit.id)) computeFrom(commit.id, byId, memo);
-  }
-  return memo;
+export interface GenerationWalkView {
+  readonly parse: (id: ObjectId) => void;
+  readonly parsed: (id: ObjectId) => CommitGraphWriterCommit | undefined;
 }
 
+/** git's `GENERATION_NUMBER_V1_MAX`: the topological level CDAT's 30 bits hold. */
+const MAX_TOPOLOGICAL_LEVEL = 0x3fffffff;
+
+type DeriveGeneration = (date: number, maxParentGeneration: number) => number;
+
+/** git's `compute_generation_from_max`, version 1: one past the highest parent, capped. */
+const deriveLevel: DeriveGeneration = (_, maxParent) =>
+  Math.min(maxParent, MAX_TOPOLOGICAL_LEVEL - 1) + 1;
+
+/** Version 2: the commit's own date when it is past every parent's, else one past the highest — a dateless commit counts as none. */
+const deriveCorrectedDate: DeriveGeneration = (date, maxParent) =>
+  date > 0 && date > maxParent ? date : maxParent + 1;
+
 /**
- * Every push (the initial seed and every parent below) is guarded by
- * `!memo.has(id)`, and a frame is only ever memoised while it sits at the
- * top of the stack — so the frame this loop reads is NEVER already
- * memoised: there is no redundant-visit branch to guard against.
+ * git's two generation passes over the commits being written, in `order`:
+ * topological levels, then corrected commit dates. Base-layer commits arrive
+ * known. Each pass parses every commit in turn and, walking down from one
+ * not yet known, parses each parent it looks at, every time it looks.
  */
-function computeFrom(
-  startId: ObjectId,
-  byId: ReadonlyMap<ObjectId, CommitGraphWriterCommit>,
-  memo: Map<ObjectId, Generation>,
+export function computeCommitGraphGenerations(
+  order: readonly ObjectId[],
+  base: CommitGraphBase,
+  view: GenerationWalkView,
+): ReadonlyMap<ObjectId, Generation> {
+  const baseEntries = [...base.commits];
+  const levels = walkGenerations(order, view, deriveLevel, {
+    known: new Map(baseEntries.map(([id, entry]) => [id, entry.generation.level])),
+  });
+  const dates = walkGenerations(order, view, deriveCorrectedDate, {
+    known: new Map(baseEntries.map(([id, entry]) => [id, entry.generation.correctedDate])),
+  });
+  const generations = new Map<ObjectId, Generation>();
+  for (const [id, level] of levels) generations.set(id, { level, correctedDate: dates.get(id)! });
+  return generations;
+}
+
+/** One pass of git's `compute_reachable_generation_numbers`. */
+function walkGenerations(
+  order: readonly ObjectId[],
+  view: GenerationWalkView,
+  derive: DeriveGeneration,
+  { known }: { readonly known: Map<ObjectId, number> },
+): ReadonlyMap<ObjectId, number> {
+  for (const id of order) {
+    view.parse(id);
+    if (!known.has(id)) settleFrom(id, view, derive, known);
+  }
+  return known;
+}
+
+/** git's inner loop: the first parent not yet known is stacked, and the commit revisited once it is. */
+function settleFrom(
+  start: ObjectId,
+  view: GenerationWalkView,
+  derive: DeriveGeneration,
+  known: Map<ObjectId, number>,
 ): void {
-  const stack: { readonly id: ObjectId; parentIndex: number }[] = [{ id: startId, parentIndex: 0 }];
+  const stack = [start];
   while (stack.length > 0) {
-    const frame = stack[stack.length - 1]!;
-    const commit = byId.get(frame.id)!;
-    if (frame.parentIndex < commit.parents.length) {
-      const parentId = commit.parents[frame.parentIndex]!;
-      frame.parentIndex += 1;
-      // Stryker disable next-line ConditionalExpression: equivalent — pushing an already-memoised parent again only re-derives the same generation from its own (unchanged) already-memoised parents, an idempotent overwrite with no observable effect.
-      if (!memo.has(parentId)) stack.push({ id: parentId, parentIndex: 0 });
+    const current = stack.at(-1)!;
+    const commit = view.parsed(current);
+    const pending = firstUnknownParent(commit?.parents ?? [], view, known);
+    if (pending !== undefined) {
+      stack.push(pending);
       continue;
     }
-    memo.set(frame.id, deriveGeneration(commit, memo));
+    const maxParent = Math.max(0, ...(commit?.parents ?? []).map((parent) => known.get(parent)!));
+    known.set(current, derive(commit?.committerDate ?? 0, maxParent));
     stack.pop();
   }
 }
 
-/**
- * `generationV1` is the topological level — git's own convention starts a
- * ROOT at **1**, not 0 (confirmed empirically: a 3-commit linear chain's
- * tip carries genWord `12` = level 3 × 4, not level 2 × 4 — pinned by the
- * write interop suite). `GDA2`'s corrected date is
- * `max(committerDate, 1 + max(parents' correctedDate))`; both fall out of
- * the same fold over an empty-parents commit without a branch, because a
- * root's `1 + max(∅)` degenerates to the seed value in each case. Neither
- * is capped — an offset past `MAX_GENERATION_OFFSET` routes through GDO2
- * instead of being refused.
- */
-function deriveGeneration(
-  commit: CommitGraphWriterCommit,
-  memo: ReadonlyMap<ObjectId, Generation>,
-): Generation {
-  let level = 1;
-  let correctedDate = commit.committerDate;
-  for (const parentId of commit.parents) {
-    const parent = memo.get(parentId)!;
-    level = Math.max(level, parent.level + 1);
-    correctedDate = Math.max(correctedDate, parent.correctedDate + 1);
+function firstUnknownParent(
+  parents: readonly ObjectId[],
+  view: GenerationWalkView,
+  known: ReadonlyMap<ObjectId, number>,
+): ObjectId | undefined {
+  for (const parent of parents) {
+    view.parse(parent);
+    if (!known.has(parent)) return parent;
   }
-  return { level, correctedDate };
+  return undefined;
 }
 
 /** Positions (index 1 onward) for every commit with >2 parents, chained into

@@ -101,6 +101,13 @@ interface MaintenanceResult {
     "ran and found nothing" stays distinguishable from "declined."
   - `commitsInGraph` — the number of commits the graph now holds.
 
+  A reachable object that does not parse as a commit (a blob named as a
+  parent, an absent parent) fails the task with `COMMIT_PARSE_FAILED`
+  (`data.id`, git's `fatal: unable to parse commit <id>`). As in git, each
+  pass that reaches it first logs `Object <id> not a commit` (or
+  `Could not read <id>`) through `ctx.logger.error` — once per parse, so the
+  same line repeats.
+
 ### `gc` — the object lifecycle
 
 1. **Reachability.** Roots are every resolvable ref plus `HEAD`, the index,
