@@ -15,6 +15,7 @@ import {
   type TsgitError,
   treeCycleDetected,
   treeDepthExceeded,
+  treeUnreadable,
 } from '../../../../src/domain/objects/error.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import { assertExhaustiveSwitch } from '../exhaustiveness.js';
@@ -167,6 +168,19 @@ describe('error', () => {
 
           // Assert
           expect(result.data).toEqual({ code: 'TREE_CYCLE_DETECTED', id });
+        });
+      });
+    });
+
+    describe('Given treeUnreadable(id)', () => {
+      describe('When checking error.data', () => {
+        it('Then code and id are set', () => {
+          // Arrange & Act
+          const id = 'a'.repeat(40) as ObjectId;
+          const result = treeUnreadable(id);
+
+          // Assert
+          expect(result.data).toEqual({ code: 'TREE_UNREADABLE', id });
         });
       });
     });

@@ -12,6 +12,7 @@
  *   kind:    byte-identical
  *   format:  commit-graph-v1
  */
+import type { BloomFilterSettings } from '../../domain/commit/bloom-filter.js';
 import {
   type CommitGraphChangedPaths,
   type CommitGraphGeneration,
@@ -42,7 +43,9 @@ import {
   copyOidsToCommits,
   createCommitGraphParser,
   parsedForWrite,
+  refusalFor,
   rootCommits,
+  type UnparsedRefusal,
 } from './internal/commit-graph-passes.js';
 import { correctedDatePass } from './internal/corrected-date-pass.js';
 import {
@@ -133,12 +136,13 @@ async function collectCommits(
   ctx: Context,
   roots: readonly ObjectId[],
   pass: CorrectedDatePass,
+  refuse: UnparsedRefusal,
 ): Promise<ParsedGraphCommits> {
   const parser = createCommitGraphParser(ctx);
   const closed = await closeReachable(parser, await rootCommits(parser, roots), NOT_IN_GRAPH);
   const order = await copyOidsToCommits(parser, closed, NOT_IN_GRAPH);
   const generations = computeCommitGraphGenerations(order, EMPTY_COMMIT_GRAPH_BASE, parser, pass);
-  return { commits: parsedForWrite(parser, order), generations };
+  return { commits: parsedForWrite(parser, order, refuse), generations };
 }
 
 /** Warns and answers true when git would decline the write on the version alone. */
@@ -149,18 +153,22 @@ export async function declinesChangedPathsVersion(ctx: Context): Promise<boolean
   return true;
 }
 
-/**
- * The Bloom filters a write carries, settings from the existing graph's top
- * layer, its stored filters reused — `undefined` when the write carries none.
- */
+/** The Bloom filter settings a write carries, from the existing graph's top layer — `undefined` when it carries none. */
+export function changedPathsSettingsFor(
+  ctx: Context,
+  layers: readonly LocalGraphLayer[],
+  request: ChangedPathsRequest,
+): Promise<BloomFilterSettings | undefined> {
+  return resolveChangedPathsSettings(ctx, layers.at(-1)?.layer.bloomSettings, request);
+}
+
+/** The Bloom filters a write carries under `settings`, the existing graph's stored filters reused. */
 export async function changedPathsFor(
   ctx: Context,
   commits: readonly CommitGraphWriterCommit[],
   layers: readonly LocalGraphLayer[],
-  request: ChangedPathsRequest,
+  settings: BloomFilterSettings | undefined,
 ): Promise<CommitGraphChangedPaths | undefined> {
-  const top = layers.at(-1)?.layer.bloomSettings;
-  const settings = await resolveChangedPathsSettings(ctx, top, request);
   if (settings === undefined) return undefined;
   const stored = storedFilterLookup(layers, settings);
   return { settings, filters: await changedPathFilters(ctx, commits, settings, stored) };
@@ -224,10 +232,11 @@ export async function writeCommitGraph(ctx: Context): Promise<WriteCommitGraphRe
   const roots = await commitGraphRoots(ctx);
   const layers = await loadLocalCommitGraphLayers(ctx);
   const pass = await correctedDatePass(ctx, layers, []);
-  const { commits, generations } = await collectCommits(ctx, roots, pass);
+  const settings = await changedPathsSettingsFor(ctx, layers, 'preserve');
+  const { commits, generations } = await collectCommits(ctx, roots, pass, refusalFor(settings));
   if (commits.length === 0) return { commitCount: 0 };
 
-  const changedPaths = await changedPathsFor(ctx, commits, layers, 'preserve');
+  const changedPaths = await changedPathsFor(ctx, commits, layers, settings);
   const bytes = serializeCommitGraph(
     commits,
     ctx.hashConfig,

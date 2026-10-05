@@ -106,7 +106,9 @@ interface MaintenanceResult {
   (`data.id`, git's `fatal: unable to parse commit <id>`). As in git, each
   pass that reaches it first logs `Object <id> not a commit` (or
   `Could not read <id>`) through `ctx.logger.error` — once per parse, so the
-  same line repeats.
+  same line repeats. With changed-path Bloom filters on, the task fails
+  computing them instead, with `TREE_UNREADABLE` (`data.id`, git's
+  `fatal: unable to read tree (<id>)`); the lines logged are the same.
 
 ### `gc` — the object lifecycle
 

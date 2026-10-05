@@ -690,6 +690,41 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop — an unparseable p
         await rm(oursDir, { recursive: true, force: true });
       });
     });
+
+    describe('When both tools run the commit-graph maintenance task with changed paths on', () => {
+      it('Then each parse pass logs the blob again and both fail the task unable to read its tree', async () => {
+        // Arrange
+        const { dir, blob } = await buildBlobParentRepo(order);
+        git(dir, 'config', 'commitGraph.changedPaths', 'true');
+        const oursDir = await tmpDir(`blob-parent-${order}-bloom-ours`);
+        await cp(dir, oursDir, { recursive: true });
+        const peer = tryRunGitWithExit(['-C', dir, 'maintenance', 'run', '--task=commit-graph']);
+        const logged: string[] = [];
+        const base = createNodeContext({ workDir: oursDir, algorithm: 'sha1' });
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(
+          { ...base, logger: { error: (line: string) => logged.push(line) } },
+          { tasks: ['commit-graph'] },
+        );
+
+        // Assert
+        const [failure] = result.tasksFailed;
+        const id = failure?.data.code === 'TREE_UNREADABLE' ? failure.data.id : '';
+        const rebuilt =
+          `${logged.map((line) => `error: ${line}\n`).join('')}fatal: unable to read tree (${id})\n` +
+          'error: failed to write commit-graph\n' +
+          "error: task 'commit-graph' failed\n";
+        expect({ id, lines: logged.length, stderr: rebuilt }).toEqual({
+          id: blob,
+          lines,
+          stderr: peer.stderr,
+        });
+        await rm(dir, { recursive: true, force: true });
+        await rm(oursDir, { recursive: true, force: true });
+      });
+    });
   });
 
   describe('Given a commit whose blob parent the split write folds over a chain lacking GDA2 in a layer', () => {

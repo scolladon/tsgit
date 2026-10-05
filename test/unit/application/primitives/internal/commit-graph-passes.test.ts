@@ -6,9 +6,11 @@ import {
   copyOidsToCommits,
   createCommitGraphParser,
   parsedForWrite,
+  refusalFor,
   rootCommits,
 } from '../../../../../src/application/primitives/internal/commit-graph-passes.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
+import { DEFAULT_BLOOM_FILTER_SETTINGS } from '../../../../../src/domain/commit/bloom-filter.js';
 import { computeLooseObjectPath } from '../../../../../src/domain/index.js';
 import type { Blob, Commit, ObjectId, Tree } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
@@ -163,34 +165,40 @@ describe('commit-graph passes', () => {
     });
   });
 
-  describe('Given commits that all parsed but one', () => {
-    describe('When their entries are written', () => {
-      it('Then the first that failed refuses COMMIT_PARSE_FAILED after its line', async () => {
-        // Arrange
-        const { ctx, logged } = loggingContext();
-        const blob = await writeBlob(ctx, 'hi');
-        const tip = await writeCommit(ctx, [blob], 'tip');
-        const parser = createCommitGraphParser(ctx);
-        await copyOidsToCommits(parser, [tip, blob], NOT_IN_GRAPH);
-        logged.length = 0;
-        const sut = parsedForWrite;
+  describe.each([
+    { label: 'off', settings: undefined, code: 'COMMIT_PARSE_FAILED' },
+    { label: 'on', settings: DEFAULT_BLOOM_FILTER_SETTINGS, code: 'TREE_UNREADABLE' },
+  ] as const)(
+    'Given commits that all parsed but one, changed paths $label',
+    ({ settings, code }) => {
+      describe('When their entries are written', () => {
+        it(`Then the first that failed refuses ${code} after its line`, async () => {
+          // Arrange
+          const { ctx, logged } = loggingContext();
+          const blob = await writeBlob(ctx, 'hi');
+          const tip = await writeCommit(ctx, [blob], 'tip');
+          const parser = createCommitGraphParser(ctx);
+          await copyOidsToCommits(parser, [tip, blob], NOT_IN_GRAPH);
+          logged.length = 0;
+          const sut = parsedForWrite;
 
-        // Act
-        let caught: unknown;
-        try {
-          sut(parser, [tip, blob]);
-        } catch (error) {
-          caught = error;
-        }
+          // Act
+          let caught: unknown;
+          try {
+            sut(parser, [tip, blob], refusalFor(settings));
+          } catch (error) {
+            caught = error;
+          }
 
-        // Assert
-        expect({ data: (caught as { data?: unknown }).data, logged }).toEqual({
-          data: { code: 'COMMIT_PARSE_FAILED', id: blob },
-          logged: [`Object ${blob} not a commit`],
+          // Assert
+          expect({ data: (caught as { data?: unknown }).data, logged }).toEqual({
+            data: { code, id: blob },
+            logged: [`Object ${blob} not a commit`],
+          });
         });
       });
-    });
-  });
+    },
+  );
 
   describe('Given commits that all parsed', () => {
     describe('When their entries are written', () => {
@@ -204,7 +212,7 @@ describe('commit-graph passes', () => {
         const sut = parsedForWrite;
 
         // Act
-        const result = sut(parser, [tip, root]);
+        const result = sut(parser, [tip, root], refusalFor(undefined));
 
         // Assert
         expect(result.map((commit) => [commit.id, commit.parents, commit.committerDate])).toEqual([

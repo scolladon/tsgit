@@ -316,6 +316,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `tree cycle detected: ${data.id}`;
     case 'BAD_TREE_OBJECT':
       return `bad tree object ${data.id}`;
+    case 'TREE_UNREADABLE':
+      return `unable to read tree (${data.id})`;
     case 'TREE_ENTRY_TYPE_MISMATCH':
       return `entry '${data.entry}' in tree ${data.tree} has ${data.mode} mode, but is not a ${data.mode}`;
     case 'TREE_DEPTH_EXCEEDED':

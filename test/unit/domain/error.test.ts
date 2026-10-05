@@ -487,6 +487,18 @@ describe('domain error — AdapterError', () => {
       });
     });
 
+    describe('Given TREE_UNREADABLE', () => {
+      describe('When reading message', () => {
+        it("Then reads as git's death reading the tree", () => {
+          // Arrange & Act
+          const result = new TsgitErrorClass({ code: 'TREE_UNREADABLE', id: 'abc123' as never });
+
+          // Assert
+          expect(result.message).toBe('TREE_UNREADABLE: unable to read tree (abc123)');
+        });
+      });
+    });
+
     describe('Given TREE_DEPTH_EXCEEDED', () => {
       describe('When reading message', () => {
         it('Then contains depth', () => {

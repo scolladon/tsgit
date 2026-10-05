@@ -37,6 +37,7 @@ import {
   copyOidsToCommits,
   createCommitGraphParser,
   parsedForWrite,
+  refusalFor,
   rootCommits,
 } from './internal/commit-graph-passes.js';
 import { correctedDatePass } from './internal/corrected-date-pass.js';
@@ -55,6 +56,7 @@ import {
 import {
   COMMIT_GRAPH_FILE_MODE,
   changedPathsFor,
+  changedPathsSettingsFor,
   commitGraphLocked,
   commitGraphRoots,
   declinesChangedPathsVersion,
@@ -275,8 +277,9 @@ export async function writeSplitCommitGraph(ctx: Context): Promise<WriteSplitCom
   const base = graphBase(plan.base, order, parsed);
   const pass = await correctedDatePass(ctx, layers, plan.base);
   const generations = computeCommitGraphGenerations(order, base, parser, pass);
-  const commits = parsedForWrite(parser, order);
-  const changedPaths = await changedPathsFor(ctx, commits, layers, request);
+  const settings = await changedPathsSettingsFor(ctx, layers, request);
+  const commits = parsedForWrite(parser, order, refusalFor(settings));
+  const changedPaths = await changedPathsFor(ctx, commits, layers, settings);
   const layer = await serializeLayer(ctx, commits, base, changedPaths, generations, pass);
   await writeChainLayer(ctx, plan, layer);
   return { written: true, commitCount: base.commitCount + commits.length };

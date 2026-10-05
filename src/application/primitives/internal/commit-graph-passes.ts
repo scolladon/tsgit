@@ -6,11 +6,13 @@
  * again; a commit that parses is read once and served from then on.
  */
 import { commitParseFailed } from '../../../domain/commands/error.js';
+import type { BloomFilterSettings } from '../../../domain/commit/bloom-filter.js';
 import type {
   CommitGraphWriterCommit,
   GenerationWalkView,
 } from '../../../domain/commit/commit-graph-writer.js';
-import { isObjectNotFound } from '../../../domain/objects/error.js';
+import type { TsgitError } from '../../../domain/error.js';
+import { isObjectNotFound, treeUnreadable } from '../../../domain/objects/error.js';
 import type { GitObject, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readObject } from '../read-object.js';
@@ -122,15 +124,27 @@ export async function copyOidsToCommits(
   return commits;
 }
 
-/** git's `write_graph_chunk_data` parse: the first commit that does not parse refuses, after its line. */
+/**
+ * How the first commit that does not parse refuses the write: git's
+ * `write_graph_chunk_data` cannot parse it, or — with changed paths on —
+ * `compute_bloom_filters` reaches it first, every such commit sorting lowest,
+ * and cannot read its tree.
+ */
+export type UnparsedRefusal = (id: ObjectId) => TsgitError;
+
+export const refusalFor = (changedPaths: BloomFilterSettings | undefined): UnparsedRefusal =>
+  changedPaths === undefined ? commitParseFailed : treeUnreadable;
+
+/** The commits in `order`, the first that does not parse refusing after its line is logged once more. */
 export function parsedForWrite(
   parser: CommitGraphParser,
   order: readonly ObjectId[],
+  refuse: UnparsedRefusal,
 ): readonly CommitGraphWriterCommit[] {
   return order.map((id) => {
     const commit = parser.parsed(id);
     if (commit !== undefined) return commit;
     parser.parse(id);
-    throw commitParseFailed(id);
+    throw refuse(id);
   });
 }

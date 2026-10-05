@@ -55,6 +55,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'UNEXPECTED_OBJECT_TYPE':
     case 'TREE_CYCLE_DETECTED':
     case 'BAD_TREE_OBJECT':
+    case 'TREE_UNREADABLE':
     case 'TREE_ENTRY_TYPE_MISMATCH':
     case 'TREE_DEPTH_EXCEEDED':
     case 'TREE_ENTRY_LIMIT_EXCEEDED':
