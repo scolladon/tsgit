@@ -4947,6 +4947,29 @@ describe('merge — several heads (octopus)', () => {
 
   const MAIN_M2 = '22cb5f2099b7f48e95e0eb659e0686300bef355b';
 
+  describe.each([
+    ['c1', ['c1']],
+    ['b1 and c1', ['b1', 'c1']],
+  ])('Given merging %s conflicts', (_label, rev) => {
+    describe.each([
+      ['by default', {}, ''],
+      ['never fast-forwarding', { fastForward: 'never' as const }, 'no-ff'],
+    ])('When merge runs %s', (_mode, extra, expected) => {
+      it("Then MERGE_MODE records git's fast-forward mode", async () => {
+        // Arrange
+        const ctx = await seedConflicting();
+        const sut = mergeRun;
+
+        // Act
+        await sut(ctx, { rev, author: t, committer: t, ...extra });
+
+        // Assert
+        const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MODE`);
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
   describe('Given the last head conflicts with main', () => {
     describe('When merge is given b1, b2 and c1', () => {
       it('Then it stops with the conflict, MERGE_HEAD listing every head', async () => {
@@ -5364,6 +5387,35 @@ describe('merge — unrelated histories', () => {
         const paths = (await readIndex(ctx)).entries.map((entry) => entry.path);
         expect(paths).toEqual(['a', 'r']);
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/r`)).toBe('r\n');
+      });
+    });
+  });
+
+  describe.each([
+    ['never fast-forwarding', { fastForward: 'never' as const }, ['head', 'rel', 'orphan']],
+    ['by default', {}, ['rel', 'orphan']],
+  ])('Given rel and the orphan merged %s and stopped', (_mode, extra, expected) => {
+    describe('When the merge is committed', () => {
+      it('Then HEAD stays a parent only under no-ff, and MERGE_MODE goes', async () => {
+        // Arrange
+        const ctx = await seedUnrelated();
+        const tips: Record<string, ObjectId> = {
+          head: await resolveRef(ctx, 'HEAD' as RefName),
+          rel: await resolveRef(ctx, 'refs/heads/rel' as RefName),
+          orphan: await resolveRef(ctx, 'refs/heads/orphan' as RefName),
+        };
+        const input = { rev: ['rel', 'orphan'], allowUnrelatedHistories: true, ...extra };
+        await mergeRun(ctx, { ...input, author: t, committer: t });
+        const sut = commit;
+
+        // Act
+        const result = await sut(ctx, { message: 'done', author: t, committer: t });
+
+        // Assert
+        const committed = await readObject(ctx, result.id);
+        const parents = committed.type === 'commit' ? committed.data.parents : [];
+        expect(parents).toEqual(expected.map((name) => tips[name]));
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_MODE`)).toBe(false);
       });
     });
   });

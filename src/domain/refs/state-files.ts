@@ -8,6 +8,9 @@
 /** Records the tip(s) being merged; present while a merge is in progress. */
 export const MERGE_HEAD = 'MERGE_HEAD';
 
+/** A stopped merge's fast-forward mode: `no-ff`, or empty — read back by the resolving commit. */
+export const MERGE_MODE = 'MERGE_MODE';
+
 /** Holds the prepared merge commit message. */
 export const MERGE_MSG = 'MERGE_MSG';
 

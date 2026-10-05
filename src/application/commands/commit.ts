@@ -55,6 +55,7 @@ import {
   clearMergeState,
   readMergeHeads,
   readMergeMsg,
+  readsNoFastForward,
 } from './internal/merge-state.js';
 import { assertNoPendingOperation, readHeadRaw, requireWorkTree } from './internal/repo-state.js';
 import { clearRevertHead, readRevertHead } from './internal/revert-state.js';
@@ -328,8 +329,7 @@ const commitReflogMessage = (
 
 /**
  * git's `commit` parents: HEAD, then — resolving a merge — every MERGE_HEAD
- * line, reduced by `reduce_heads` (git skips that only under a `no-ff`
- * MERGE_MODE, which tsgit's merge never writes).
+ * line, reduced by `reduce_heads` unless MERGE_MODE reads `no-ff`.
  */
 const buildParents = async (
   ctx: Context,
@@ -338,7 +338,8 @@ const buildParents = async (
 ): Promise<ReadonlyArray<ObjectId>> => {
   const head = parentId === undefined ? [] : [parentId];
   if (mergeHeads === undefined) return head;
-  return reduceHeads(ctx, [...head, ...mergeHeads]);
+  const parents = [...head, ...mergeHeads];
+  return (await readsNoFastForward(ctx)) ? parents : reduceHeads(ctx, parents);
 };
 
 const rejectUnmergedIndex = (entries: ReadonlyArray<IndexEntry>): void => {

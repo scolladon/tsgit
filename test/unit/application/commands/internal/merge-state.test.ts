@@ -6,13 +6,67 @@ import {
   readMergeHead,
   readMergeMsg,
   readOrigHead,
+  readsNoFastForward,
   writeMergeHeads,
+  writeMergeMode,
   writeMergeMsg,
   writeOrigHead,
 } from '../../../../../src/application/commands/internal/merge-state.js';
 import type { ObjectId } from '../../../../../src/domain/objects/index.js';
 
 describe('merge-state', () => {
+  describe('readsNoFastForward', () => {
+    describe.each([
+      ['absent', undefined, false],
+      ['empty', '', false],
+      ['exactly no-ff', 'no-ff', true],
+      ['no-ff with a newline', 'no-ff\n', false],
+    ])('Given MERGE_MODE %s', (_label, content, expected) => {
+      describe('When readsNoFastForward is called', () => {
+        it("Then it answers by git's exact comparison", async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await init(ctx);
+          if (content !== undefined) {
+            await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_MODE`, content);
+          }
+          const sut = readsNoFastForward;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toBe(expected);
+        });
+      });
+    });
+  });
+
+  describe('writeMergeMode', () => {
+    describe.each([
+      ['never', 'no-ff'],
+      ['allow', ''],
+      ['only', ''],
+      [undefined, ''],
+    ] as const)('Given fastForward %s', (fastForward, expected) => {
+      describe('When writeMergeMode is called', () => {
+        it("Then MERGE_MODE holds git's bytes", async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await init(ctx);
+          const sut = writeMergeMode;
+
+          // Act
+          await sut(ctx, fastForward);
+
+          // Assert
+          const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MODE`);
+          expect(result).toBe(expected);
+        });
+      });
+    });
+  });
+
   describe('writeMergeHeads', () => {
     describe('Given several heads merged', () => {
       describe('When writeMergeHeads is called', () => {

@@ -82,10 +82,14 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — several heads', () => {
   /** Each tool merges `heads`; tsgit's result, or its refusal, is returned. */
   const mergeBoth = async (
     heads: ReadonlyArray<string>,
-    options: { readonly allowUnrelatedHistories?: boolean } = {},
+    options: {
+      readonly allowUnrelatedHistories?: boolean;
+      readonly fastForward?: 'never';
+    } = {},
   ): Promise<unknown> => {
     const allow = options.allowUnrelatedHistories === true ? ['--allow-unrelated-histories'] : [];
-    tryRunGitWithExit(['-C', pair.peer, 'merge', '-q', '--no-edit', ...allow, ...heads], {
+    const noFf = options.fastForward === 'never' ? ['--no-ff'] : [];
+    tryRunGitWithExit(['-C', pair.peer, 'merge', '-q', '--no-edit', ...allow, ...noFf, ...heads], {
       env: COMMIT_ENV,
     });
     const repo = await openRepository({ cwd: pair.ours });
@@ -268,6 +272,56 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — several heads', () => {
         expect(index).toBe(expectedIndex);
         const [status, expectedStatus] = both('status', '--porcelain');
         expect(status).toBe(expectedStatus);
+      });
+    });
+
+    describe.each([
+      ['by default', {}],
+      ['never fast-forwarding', { fastForward: 'never' as const }],
+    ])('When both tools merge ahead and the orphan %s, then commit', (_mode, extra) => {
+      it('Then MERGE_MODE and the resolving commits are identical', async () => {
+        // Arrange
+        addOrphan();
+        for (const dir of [pair.ours, pair.peer]) {
+          git(dir, 'checkout', '-q', '-b', 'ahead', 'main');
+          commitFile(dir, 'h', 'h\n');
+          git(dir, 'checkout', '-q', 'main');
+        }
+        await mergeBoth(['ahead', 'orphan'], { allowUnrelatedHistories: true, ...extra });
+        git(pair.peer, 'commit', '-q', '-m', 'resolved');
+        const repo = await openRepository({ cwd: pair.ours });
+        const sut = repo.commit;
+
+        // Act
+        try {
+          await sut({ message: 'resolved', author: IDENTITY, committer: IDENTITY });
+        } finally {
+          await repo.dispose();
+        }
+
+        // Assert
+        const [result, expected] = both('cat-file', 'commit', 'HEAD');
+        expect(result).toBe(expected);
+      });
+    });
+
+    describe('When both tools merge ahead and the orphan never fast-forwarding', () => {
+      it('Then MERGE_MODE bytes are identical', async () => {
+        // Arrange
+        addOrphan();
+        for (const dir of [pair.ours, pair.peer]) {
+          git(dir, 'checkout', '-q', '-b', 'ahead', 'main');
+          commitFile(dir, 'h', 'h\n');
+          git(dir, 'checkout', '-q', 'main');
+        }
+        const sut = mergeBoth;
+
+        // Act
+        await sut(['ahead', 'orphan'], { allowUnrelatedHistories: true, fastForward: 'never' });
+
+        // Assert
+        const [mode, expectedMode] = await gitFile('MERGE_MODE');
+        expect(mode).toBe(expectedMode);
       });
     });
   });

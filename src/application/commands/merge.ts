@@ -79,7 +79,12 @@ import {
   formatMergeMessage,
   type MergeHead,
 } from './internal/merge-message.js';
-import { writeMergeHeads, writeMergeMsg, writeOrigHead } from './internal/merge-state.js';
+import {
+  writeMergeHeads,
+  writeMergeMode,
+  writeMergeMsg,
+  writeOrigHead,
+} from './internal/merge-state.js';
 import { type OctopusRemote, type OctopusResult, octopusMerge } from './internal/octopus-merge.js';
 import {
   assertNoPendingOperation,
@@ -534,6 +539,7 @@ const persistOctopusConflict = async (
   await underIndexLock(ctx, async () => {
     await writeConflictingWorkingTree(ctx, outcomes, marked, changed, matcher);
     await writeMergeHeads(ctx, remotes);
+    await writeMergeMode(ctx, commit.opts.fastForward);
     const message = sanitizeMessage(commit.opts.message, { allowEmpty: false });
     await writeMergeMsg(ctx, conflictMergeMsg(message, sortedRecordedPaths(result.conflicts)));
     return buildConflictIndexEntries(merged, result.conflicts, matcher);
@@ -810,6 +816,7 @@ const persistConflictState = async (
   await underIndexLock(ctx, async () => {
     await writeConflictingWorkingTree(ctx, result.outcomes, result.conflicts, changed, matcher);
     await writeMergeHeads(ctx, [theirId]);
+    await writeMergeMode(ctx, opts.fastForward);
     const message = sanitizeMessage(opts.message, { allowEmpty: false });
     await writeMergeMsg(ctx, conflictMergeMsg(message, sortedRecordedPaths(result.conflicts)));
     return buildConflictIndexEntries(result.outcomes, result.conflicts, matcher);
