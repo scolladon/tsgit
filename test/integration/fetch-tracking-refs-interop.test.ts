@@ -124,4 +124,56 @@ describe.skipIf(!GIT_AVAILABLE)('fetch tracking refs interop', () => {
       });
     });
   });
+
+  describe('Given tracking refs and a tag the remote then advances, rewrites and adds', () => {
+    describe('When both tools fetch again', () => {
+      it("Then each ref's reflog records git's update action", async () => {
+        // Arrange
+        const peerRoot = path.join(root, 'reflog-peer');
+        const work = path.join(root, 'reflog-work');
+        const bare = path.join(peerRoot, 'peer.git');
+        runGit(['init', '-q', '-b', 'main', work]);
+        runGit(['-C', work, 'commit', '-q', '--allow-empty', '-m', 'a']);
+        runGit(['-C', work, 'branch', 'side']);
+        runGit(['clone', '-q', '--bare', work, bare]);
+        const dirs = {
+          ours: path.join(root, 'reflog-ours'),
+          theirs: path.join(root, 'reflog-theirs'),
+        };
+        for (const [dir, url] of [
+          [dirs.ours, PEER_URL],
+          [dirs.theirs, bare],
+        ] as const) {
+          runGit(['init', '-q', '-b', 'main', dir]);
+          runGit(['-C', dir, 'config', 'core.logAllRefUpdates', 'always']);
+          runGit(['-C', dir, 'remote', 'add', 'origin', bare]);
+          runGit(['-C', dir, 'config', '--add', 'remote.origin.fetch', '+refs/tags/*:refs/tags/*']);
+          runGit(['-C', dir, 'fetch', 'origin']);
+          runGit(['-C', dir, 'remote', 'set-url', 'origin', url]);
+        }
+        runGit(['-C', work, 'commit', '-q', '--allow-empty', '-m', 'b']);
+        runGit(['-C', work, 'tag', 'v1']);
+        runGit(['-C', work, 'checkout', '-q', '--orphan', 'other']);
+        runGit(['-C', work, 'commit', '-q', '--allow-empty', '-m', 'orphan']);
+        runGit(['-C', work, 'branch', '-f', 'side', 'other']);
+        runGit(['-C', work, 'push', '-q', '-f', bare, 'main', 'side', 'v1']);
+        const ctx = {
+          ...createNodeContext({ workDir: dirs.ours }),
+          transport: backendTransport(peerRoot),
+        };
+        const sut = fetch;
+
+        // Act
+        await sut(ctx, { remote: 'origin' });
+        runGit(['-C', dirs.theirs, 'fetch', 'origin']);
+
+        // Assert
+        const actions = (dir: string) =>
+          ['refs/remotes/origin/main', 'refs/remotes/origin/side', 'refs/tags/v1'].map((ref) =>
+            git(dir, 'reflog', 'show', '--format=%gs', ref),
+          );
+        expect(actions(dirs.ours)).toEqual(actions(dirs.theirs));
+      });
+    });
+  });
 });

@@ -9,7 +9,7 @@ import {
   commitInitialReflog,
   commitMergeReflog,
   commitReflog,
-  fetchStoringHead,
+  fetchReflogMessage,
   PUSH_UPDATE,
   REBASE_FAST_FORWARD,
   rebaseAbortReturningTo,
@@ -89,9 +89,9 @@ describe('Given the reflog message builders', () => {
       );
     });
 
-    it('Then fetchStoringHead renders "fetch <remote>: storing head"', () => {
+    it('Then fetchReflogMessage renders "fetch <remote>: <action>"', () => {
       // Arrange / Act / Assert
-      expect(fetchStoringHead('origin')).toBe('fetch origin: storing head');
+      expect(fetchReflogMessage('origin', 'fast-forward')).toBe('fetch origin: fast-forward');
     });
   });
 

@@ -47,8 +47,18 @@ export const FETCH_PRUNE_REFLOG = 'fetch: prune';
 /** `remote: remove` — the message `remote remove` deletes every tracking ref with. */
 export const REMOTE_REMOVE_REFLOG = 'remote: remove';
 
-/** `fetch <remote>: storing head`. */
-export const fetchStoringHead = (remote: string): string => `fetch ${remote}: storing head`;
+/** What git's `update_local_ref` did to one ref a fetch stored. */
+export type FetchReflogAction =
+  | 'storing head'
+  | 'storing tag'
+  | 'storing ref'
+  | 'fast-forward'
+  | 'forced-update'
+  | 'updating tag';
+
+/** `fetch <remote>: <action>` — the reflog for a ref a fetch stored. */
+export const fetchReflogMessage = (remote: string, action: FetchReflogAction): string =>
+  `fetch ${remote}: ${action}`;
 
 /** `update by push` — the reflog for a ref advanced by a push. */
 export const PUSH_UPDATE = 'update by push';

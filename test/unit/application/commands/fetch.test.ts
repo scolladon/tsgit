@@ -14,15 +14,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { fetch } from '../../../../src/application/commands/fetch.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import * as peelModule from '../../../../src/application/primitives/internal/peel-ref-to-commit.js';
 import {
   commonGitDir,
   looseObjectPath,
 } from '../../../../src/application/primitives/path-layout.js';
 import { getPackRegistry } from '../../../../src/application/primitives/read-object.js';
 import { getRefStore, type RefUpdate } from '../../../../src/application/primitives/ref-store.js';
+import { readReflog as reflogEntries } from '../../../../src/application/primitives/reflog-store.js';
 import { readShallow } from '../../../../src/application/primitives/shallow-file.js';
+import { updateRef as seedRef } from '../../../../src/application/primitives/update-ref.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/index.js';
-import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import { emptyTreeOid, type ObjectId, type RefName } from '../../../../src/domain/objects/index.js';
 import { encodePktStream } from '../../../../src/domain/protocol/pkt-line.js';
 import type {
   HttpRequest,
@@ -3158,6 +3162,192 @@ describe('fetch — wants, include-tag and tag backfill', () => {
         expect(warnings).toEqual([
           'refs/remotes/origin/b usually tracks refs/heads/b, not refs/heads/a',
         ]);
+      });
+    });
+  });
+});
+
+describe('fetch reflog actions', () => {
+  const IDENT = { name: 'Ada', email: 'ada@example.com', timestamp: 1, timezoneOffset: '+0000' };
+
+  const writeCommit = (
+    ctx: ReturnType<typeof createMemoryContext>,
+    parents: ReadonlyArray<ObjectId>,
+    message: string,
+  ): Promise<ObjectId> =>
+    writeObject(ctx, {
+      type: 'commit',
+      id: '' as ObjectId,
+      data: {
+        tree: emptyTreeOid(ctx.hashConfig),
+        parents,
+        author: IDENT,
+        committer: IDENT,
+        message,
+        extraHeaders: [],
+      },
+    });
+
+  const reflogOf = async (ctx: ReturnType<typeof createMemoryContext>, ref: string) =>
+    (await reflogEntries(ctx, ref as RefName)).map((entry) => entry.message);
+
+  /** origin maps `spec`; `local` is seeded, the remote advertises `remote`. */
+  const fetchWith = async (
+    spec: string,
+    local: Readonly<Record<string, ObjectId>>,
+    remote: ReadonlyArray<{ readonly name: string; readonly id: ObjectId }>,
+    ctx: ReturnType<typeof createMemoryContext>,
+  ): Promise<void> => {
+    await ctx.fs.writeUtf8(
+      `${ctx.layout.gitDir}/config`,
+      `[core]\n  logAllRefUpdates = always\n[remote "origin"]\n  url = https://example.com/r.git\n  fetch = ${spec}\n`,
+    );
+    for (const [name, id] of Object.entries(local)) {
+      await seedRef(ctx, name as RefName, id, { reflogMessage: 'seed' });
+    }
+    const { packBytes } = await buildOneBlobPack(ctx, 'unused\n');
+    const { transport } = fakeRemote({
+      url: 'https://example.com/r.git',
+      advertisedRefs: remote,
+      packBytes,
+    });
+    await fetch({ ...ctx, transport }, { remote: 'origin' });
+  };
+
+  describe.each([
+    ['a new tag', '+refs/tags/*:refs/tags/*', 'refs/tags/v1', 'refs/tags/v1', 'storing tag'],
+    [
+      'a new ref outside heads and tags',
+      '+refs/notes/*:refs/notes/*',
+      'refs/notes/n',
+      'refs/notes/n',
+      'storing ref',
+    ],
+    [
+      'a new branch',
+      '+refs/heads/*:refs/remotes/origin/*',
+      'refs/heads/b',
+      'refs/remotes/origin/b',
+      'storing head',
+    ],
+  ])('Given %s advertised', (_label, spec, remoteRef, localRef, action) => {
+    describe('When fetch stores it', () => {
+      it('Then the reflog names the kind of the remote ref', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const tip = await writeCommit(ctx, [], 'tip\n');
+        const sut = fetchWith;
+
+        // Act
+        await sut(spec, {}, [{ name: remoteRef, id: tip }], ctx);
+
+        // Assert
+        expect(await reflogOf(ctx, localRef)).toEqual([`fetch origin: ${action}`]);
+      });
+    });
+  });
+
+  describe('Given a remote-tracking ref behind the advertised commit', () => {
+    describe('When fetch advances it', () => {
+      it('Then the reflog records a fast-forward', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const base = await writeCommit(ctx, [], 'base\n');
+        const next = await writeCommit(ctx, [base], 'next\n');
+        const sut = fetchWith;
+
+        // Act
+        await sut(
+          '+refs/heads/*:refs/remotes/origin/*',
+          { 'refs/remotes/origin/main': base },
+          [{ name: 'refs/heads/main', id: next }],
+          ctx,
+        );
+
+        // Assert
+        expect(await reflogOf(ctx, 'refs/remotes/origin/main')).toEqual([
+          'seed',
+          'fetch origin: fast-forward',
+        ]);
+      });
+    });
+  });
+
+  describe('Given a remote-tracking ref the advertised commit does not descend from', () => {
+    describe('When a forcing refspec rewrites it', () => {
+      it('Then the reflog records a forced update', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const base = await writeCommit(ctx, [], 'base\n');
+        const other = await writeCommit(ctx, [], 'other\n');
+        const sut = fetchWith;
+
+        // Act
+        await sut(
+          '+refs/heads/*:refs/remotes/origin/*',
+          { 'refs/remotes/origin/main': base },
+          [{ name: 'refs/heads/main', id: other }],
+          ctx,
+        );
+
+        // Assert
+        expect(await reflogOf(ctx, 'refs/remotes/origin/main')).toEqual([
+          'seed',
+          'fetch origin: forced-update',
+        ]);
+      });
+    });
+  });
+
+  describe('Given an existing tag the remote moved', () => {
+    describe('When a forcing refspec rewrites it', () => {
+      it('Then the reflog records a tag update', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const base = await writeCommit(ctx, [], 'base\n');
+        const next = await writeCommit(ctx, [base], 'next\n');
+        const sut = fetchWith;
+
+        // Act
+        await sut(
+          '+refs/tags/*:refs/tags/*',
+          { 'refs/tags/v1': base },
+          [{ name: 'refs/tags/v1', id: next }],
+          ctx,
+        );
+
+        // Assert
+        expect(await reflogOf(ctx, 'refs/tags/v1')).toEqual(['seed', 'fetch origin: updating tag']);
+      });
+    });
+  });
+
+  describe('Given reading the stored commit fails for a reason other than absence', () => {
+    describe('When fetch judges the update', () => {
+      it('Then the failure propagates', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const tip = await writeCommit(ctx, [], 'tip\n');
+        const failure = new Error('object store unreadable');
+        vi.spyOn(peelModule, 'peelRefToCommit').mockRejectedValue(failure);
+        const sut = fetchWith;
+
+        // Act
+        const attempt = sut(
+          '+refs/heads/*:refs/remotes/origin/*',
+          {},
+          [{ name: 'refs/heads/b', id: tip }],
+          ctx,
+        );
+
+        // Assert
+        await expect(attempt).rejects.toBe(failure);
+        vi.restoreAllMocks();
       });
     });
   });

@@ -17,6 +17,7 @@
  *
  * Working-tree materialization is out of scope.
  */
+import { errorDataCode } from '../../domain/error-data-code.js';
 import { remoteNotConfigured } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { refspecInvalid } from '../../domain/protocol/error.js';
@@ -26,8 +27,12 @@ import {
   parseObjectFilter,
   remoteFilterUnsupported,
 } from '../../domain/protocol/index.js';
-import { FETCH_PRUNE_REFLOG, fetchStoringHead } from '../../domain/reflog/reflog-messages.js';
-import { TAGS_PREFIX } from '../../domain/refs/ref-prefixes.js';
+import {
+  FETCH_PRUNE_REFLOG,
+  type FetchReflogAction,
+  fetchReflogMessage,
+} from '../../domain/reflog/reflog-messages.js';
+import { HEADS_PREFIX, TAGS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { isSafeRefName, validateRefName } from '../../domain/refs/ref-validation.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { Context } from '../../ports/context.js';
@@ -38,6 +43,7 @@ import {
 } from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
 import { hasObject } from '../primitives/has-object.js';
+import { peelRefToCommit } from '../primitives/internal/peel-ref-to-commit.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { updateShallow } from '../primitives/shallow-file.js';
@@ -61,6 +67,7 @@ import {
   type RefMapRequest,
 } from './internal/fetch-ref-map.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
+import { isAncestor } from './internal/is-ancestor.js';
 import { assertPeerAlgorithm } from './internal/object-format-guard.js';
 import { isValidFetchRefspec } from './internal/refspec-grammar.js';
 import { readRemoteConfig } from './internal/remote-config.js';
@@ -456,6 +463,37 @@ const collectRefTips = async (ctx: Context): Promise<ReadonlyArray<ObjectId>> =>
   return ids;
 };
 
+/** The commit `id` names through its tags, or `undefined` when it names none or is absent. */
+const commitOf = async (ctx: Context, id: ObjectId): Promise<ObjectId | undefined> => {
+  try {
+    return (await peelRefToCommit(ctx, id))?.commit.id;
+  } catch (error) {
+    if (errorDataCode(error) === 'OBJECT_NOT_FOUND') return undefined;
+    throw error;
+  }
+};
+
+/** git names a ref it stores by the remote ref's own namespace. */
+const storingAction = (remoteRef: string): FetchReflogAction => {
+  if (remoteRef.startsWith(TAGS_PREFIX)) return 'storing tag';
+  if (remoteRef.startsWith(HEADS_PREFIX)) return 'storing head';
+  return 'storing ref';
+};
+
+/** git's `update_local_ref` reflog action for one ref a fetch rewrites. */
+const updateAction = async (
+  ctx: Context,
+  source: AdvertisedRef,
+  name: RefName,
+  oldId: ObjectId | undefined,
+): Promise<FetchReflogAction> => {
+  if (oldId !== undefined && name.startsWith(TAGS_PREFIX)) return 'updating tag';
+  const current = oldId === undefined ? undefined : await commitOf(ctx, oldId);
+  const updated = await commitOf(ctx, source.id);
+  if (current === undefined || updated === undefined) return storingAction(source.name);
+  return (await isAncestor(ctx, current, updated)) ? 'fast-forward' : 'forced-update';
+};
+
 const applyRemoteRefs = async (
   ctx: Context,
   remoteName: string,
@@ -469,7 +507,10 @@ const applyRemoteRefs = async (
     // An up-to-date ref is still listed, so callers tell "considered" from
     // "advanced" by comparing oldId and newId.
     if (oldId !== source.id) {
-      await updateRef(ctx, name, source.id, { reflogMessage: fetchStoringHead(remoteName) });
+      const action = await updateAction(ctx, source, name, oldId);
+      await updateRef(ctx, name, source.id, {
+        reflogMessage: fetchReflogMessage(remoteName, action),
+      });
     }
     updates.push({ name, oldId, newId: source.id });
   }
