@@ -112,6 +112,15 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
         ['branch.main.merge', 'refs/heads/side'],
       ],
     },
+    {
+      label: 'suppressed-feat',
+      branch: 'feat',
+      config: [
+        ['branch.feat.remote', 'origin'],
+        ['branch.feat.merge', 'refs/heads/side'],
+        ['merge.suppressDest', 'fe*'],
+      ],
+    },
   ] as ReadonlyArray<{
     label: string;
     branch: string;

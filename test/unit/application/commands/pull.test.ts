@@ -974,6 +974,37 @@ describe('pull', () => {
       });
     });
 
+    describe('Given merge.suppressDest matching the branch pulled into', () => {
+      describe('When pull', () => {
+        it('Then the merge message leaves the destination out', async () => {
+          // Arrange
+          const { ctx, b } = await divergedRepo();
+          await branchCreate(ctx, { name: 'feat' });
+          await checkout(ctx, { rev: 'feat' });
+          await updateConfigEntries(ctx, [
+            ...remoteEntries(ORIGIN_FETCH),
+            ...upstream('feat', 'origin', 'refs/heads/side'),
+            { section: 'merge', key: 'suppressDest', value: 'fe*' },
+          ]);
+          const { transport } = buildPullRemote(
+            [{ name: 'refs/heads/side', id: b }],
+            await emptyPack(ctx),
+          );
+          const sut = pull;
+
+          // Act
+          const result = await sut(withTransport(ctx, transport), { author });
+
+          // Assert
+          const id = result.merge.kind === 'merge' ? result.merge.id : b;
+          const obj = await readObject(ctx, id);
+          expect(obj.type === 'commit' && obj.data.message).toBe(
+            "Merge branch 'side' of https://remote.example/r\n",
+          );
+        });
+      });
+    });
+
     describe('Given a remote with no fetch refspec', () => {
       describe('When pull from it', () => {
         it("Then the remote's HEAD is merged under the url alone", async () => {
