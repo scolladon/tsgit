@@ -866,4 +866,40 @@ describe('reset — sparse checkout', () => {
       });
     });
   });
+
+  describe('Given HEAD at the second commit', () => {
+    describe.each(['soft', 'mixed', 'hard'] as const)('When reset --%s to the first', (mode) => {
+      it('Then ORIG_HEAD records the commit HEAD left', async () => {
+        // Arrange
+        const { ctx, c1, c2 } = await seedTwoCommits();
+        const sut = reset;
+
+        // Act
+        await sut(ctx, { mode, rev: c1 });
+
+        // Assert
+        const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`);
+        expect(result).toBe(`${c2}\n`);
+      });
+    });
+  });
+
+  describe('Given an unborn branch and a stale ORIG_HEAD', () => {
+    describe('When reset --hard to an existing commit', () => {
+      it('Then ORIG_HEAD is removed, as no commit was left', async () => {
+        // Arrange
+        const { ctx, c1 } = await seedTwoCommits();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`, `${c1}\n`);
+        await writeSymbolicRef(ctx, HEAD, 'refs/heads/orphan' as RefName);
+        const sut = reset;
+
+        // Act
+        await sut(ctx, { mode: 'hard', rev: c1 });
+
+        // Assert
+        const result = await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`);
+        expect(result).toBe(false);
+      });
+    });
+  });
 });

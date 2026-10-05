@@ -63,7 +63,7 @@ const plantBranchState = async (ctx: Context, oid: ObjectId): Promise<void> => {
 
 const presentStateFiles = async (ctx: Context): Promise<ReadonlyArray<string>> => {
   const present: string[] = [];
-  for (const name of [...BRANCH_STATE_FILES, 'ORIG_HEAD', 'sequencer']) {
+  for (const name of [...BRANCH_STATE_FILES, 'sequencer']) {
     if (await ctx.fs.exists(`${ctx.layout.gitDir}/${name}`)) present.push(name);
   }
   return present;
@@ -81,7 +81,7 @@ const errorDataOf = async (run: () => Promise<unknown>): Promise<unknown> => {
 describe('reset clears the branch state, as git does', () => {
   describe('Given a stopped merge carrying every branch-state file', () => {
     describe.each(['hard', 'mixed'] as const)('When reset --%s HEAD', (mode) => {
-      it('Then every branch-state file is removed and ORIG_HEAD is kept', async () => {
+      it('Then every branch-state file is removed', async () => {
         // Arrange
         const { ctx, head } = await conflictedMerge();
         await plantBranchState(ctx, head);
@@ -92,7 +92,7 @@ describe('reset clears the branch state, as git does', () => {
 
         // Assert
         const result = await presentStateFiles(ctx);
-        expect(result).toEqual(['ORIG_HEAD']);
+        expect(result).toEqual([]);
       });
     });
 
@@ -108,7 +108,7 @@ describe('reset clears the branch state, as git does', () => {
 
         // Assert
         expect(result).toEqual({ code: 'OPERATION_IN_PROGRESS', operation: 'merge' });
-        expect(await presentStateFiles(ctx)).toEqual([...BRANCH_STATE_FILES, 'ORIG_HEAD']);
+        expect(await presentStateFiles(ctx)).toEqual(BRANCH_STATE_FILES);
       });
     });
   });

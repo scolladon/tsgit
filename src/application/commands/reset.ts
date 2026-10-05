@@ -16,7 +16,7 @@ import { bareRepository } from '../../domain/index.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { resetMovingTo } from '../../domain/reflog/reflog-messages.js';
-import { MERGE_HEAD } from '../../domain/refs/state-files.js';
+import { MERGE_HEAD, ORIG_HEAD } from '../../domain/refs/state-files.js';
 import { MERGE } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import { buildIndexFromTree } from '../primitives/build-index-from-tree.js';
@@ -25,10 +25,12 @@ import { materializeTree } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
+import { resolveRefOrMissing } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { removeBranchState } from './internal/branch-state.js';
 import { checkoutMetadataFor } from './internal/checkout-metadata.js';
 import { acquireIndexLock } from './internal/index-update.js';
+import { writeOrigHead } from './internal/merge-state.js';
 import {
   assertOperationalRepository,
   readHeadRaw,
@@ -90,11 +92,20 @@ export const reset = async (ctx: Context, opts: ResetOptions): Promise<ResetResu
   // way it skips the reflog on a no-move — git's needs-commit semantics, so
   // `reset --hard HEAD` records no entry while a real move records the message.
   const branch = head.kind === 'symbolic' ? head.target : undefined;
+  await recordOrigHead(ctx);
   await updateRef(ctx, 'HEAD' as RefName, id, {
     reflogMessage: resetMovingTo(opts.rev),
   });
   await removeBranchState(ctx, 'silent');
   return { mode: opts.mode, id, branch };
+};
+
+/** git's `reset_refs`: ORIG_HEAD takes the commit HEAD leaves; an unborn HEAD drops it. */
+const recordOrigHead = async (ctx: Context): Promise<void> => {
+  const left = await resolveRefOrMissing(ctx, 'HEAD');
+  if (left !== undefined) return writeOrigHead(ctx, left);
+  const path = `${ctx.layout.gitDir}/${ORIG_HEAD}`;
+  if (await ctx.fs.exists(path)) await ctx.fs.rm(path);
 };
 
 /**

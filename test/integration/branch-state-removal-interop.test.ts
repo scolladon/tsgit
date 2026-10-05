@@ -10,7 +10,7 @@
  *   interopSurface: branch-state
  */
 import { existsSync } from 'node:fs';
-import { cp, writeFile } from 'node:fs/promises';
+import { cp, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openRepository } from '../../src/index.node.js';
@@ -44,6 +44,7 @@ const STATE_FILES = [
   'CHERRY_PICK_HEAD',
   'REVERT_HEAD',
   'AUTO_MERGE',
+  'ORIG_HEAD',
   'sequencer',
 ] as const;
 
@@ -111,7 +112,7 @@ describe.skipIf(!GIT_AVAILABLE)('branch-state removal interop', () => {
 
   describe('Given a merge stopped on a conflict', () => {
     describe('When both tools reset --hard', () => {
-      it('Then both leave no branch state', async () => {
+      it('Then both leave only ORIG_HEAD', async () => {
         // Arrange
         await seedDivergedHistory();
         gitIn(pair.peer, 'merge', 'side');
@@ -125,7 +126,7 @@ describe.skipIf(!GIT_AVAILABLE)('branch-state removal interop', () => {
         // Assert
         const result = stateFilesOf(pair.ours);
         expect(result).toEqual(stateFilesOf(pair.peer));
-        expect(result).toEqual([]);
+        expect(result).toEqual(['ORIG_HEAD']);
       });
     });
 
@@ -166,7 +167,7 @@ describe.skipIf(!GIT_AVAILABLE)('branch-state removal interop', () => {
         // Assert
         const result = stateFilesOf(pair.ours);
         expect(result).toEqual(stateFilesOf(pair.peer));
-        expect(result).toEqual(['sequencer']);
+        expect(result).toEqual(['ORIG_HEAD', 'sequencer']);
       });
     });
   });
@@ -188,7 +189,7 @@ describe.skipIf(!GIT_AVAILABLE)('branch-state removal interop', () => {
         // Assert
         const result = stateFilesOf(pair.ours);
         expect(result).toEqual(stateFilesOf(pair.peer));
-        expect(result).toEqual([]);
+        expect(result).toEqual(['ORIG_HEAD']);
       });
     });
   });
@@ -210,7 +211,28 @@ describe.skipIf(!GIT_AVAILABLE)('branch-state removal interop', () => {
         // Assert
         const result = stateFilesOf(pair.ours);
         expect(result).toEqual(stateFilesOf(pair.peer));
-        expect(result).toEqual([]);
+        expect(result).toEqual(['ORIG_HEAD']);
+      });
+    });
+  });
+
+  describe('Given a history whose tip a reset steps back from', () => {
+    describe('When both tools reset --mixed HEAD~1', () => {
+      it('Then both record the tip left behind as ORIG_HEAD', async () => {
+        // Arrange
+        await seedDivergedHistory();
+        const tip = runGit(['-C', pair.peer, 'rev-parse', 'HEAD']);
+        const ours = await openOurCopy();
+        const sut = ours.reset;
+
+        // Act
+        gitIn(pair.peer, 'reset', '-q', 'HEAD~1');
+        await sut({ mode: 'mixed', rev: 'HEAD~1' });
+
+        // Assert
+        const result = await readFile(path.join(pair.ours, '.git', 'ORIG_HEAD'), 'utf8');
+        expect(result).toBe(await readFile(path.join(pair.peer, '.git', 'ORIG_HEAD'), 'utf8'));
+        expect(result).toBe(tip);
       });
     });
   });
