@@ -347,7 +347,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
 
   describe('Given a config with [branch "main"] but no upstream keys (absent upstream)', () => {
     describe('When tsgit pull is run', () => {
-      it('Then throws NO_UPSTREAM_CONFIGURED and NOT CONFIG_MISSING_VALUE', async () => {
+      it('Then the fetch refuses the unconfigured remote, NOT CONFIG_MISSING_VALUE', async () => {
         // Arrange
         initRepo(ours);
         await writeFile(path.join(ours, '.git', 'config'), ABSENT_BRANCH_UPSTREAM_FIXTURE);
@@ -364,7 +364,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
         const data = (caught as TsgitError).data;
-        expect(data.code).toBe('NO_UPSTREAM_CONFIGURED');
+        expect(data.code).toBe('REMOTE_NOT_CONFIGURED');
         expect(data.code).not.toBe('CONFIG_MISSING_VALUE');
       });
     });

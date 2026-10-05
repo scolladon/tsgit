@@ -10,11 +10,13 @@ import {
   invalidSequencerTodo,
   noPromisorRemote,
   pathNotInTree,
+  pullNoMergeCandidates,
   pushDefaultNothing,
   pushDetachedNoRefspec,
   pushRefspecUnmatched,
   pushRemoteNotUpstream,
   pushUpstreamNameMismatch,
+  remoteRefNotFound,
   signedPushUnsupported,
   signingFailed,
   smudgeFilterFailed,
@@ -1943,6 +1945,62 @@ describe('pushRefspecUnmatched error', () => {
         // Assert
         expect(result.message).toBe(
           "PUSH_REFSPEC_UNMATCHED: failed to push some refs to 'https://example.com/r.git'",
+        );
+      });
+    });
+  });
+});
+
+describe('remoteRefNotFound error', () => {
+  describe('Given a remote ref name', () => {
+    describe('When reading .message', () => {
+      it("Then message is git's couldn't-find-remote-ref line", () => {
+        // Arrange
+        const sut = remoteRefNotFound;
+
+        // Act
+        const result = sut('nope');
+
+        // Assert
+        expect(result.message).toBe("REMOTE_REF_NOT_FOUND: couldn't find remote ref nope");
+      });
+    });
+  });
+});
+
+describe('pullNoMergeCandidates error', () => {
+  describe.each([
+    {
+      reason: 'refspec-unmatched',
+      ref: undefined,
+      expected: 'There are no candidates for merging among the refs that you just fetched.',
+    },
+    {
+      reason: 'not-default-remote',
+      ref: undefined,
+      expected: "You asked to pull from the remote 'origin', but did not specify a branch.",
+    },
+    {
+      reason: 'merge-ref-not-fetched',
+      ref: 'refs/heads/nope',
+      expected:
+        "Your configuration specifies to merge with the ref 'refs/heads/nope' from the remote, but no such ref was fetched.",
+    },
+  ] as const)('Given the $reason reason', ({ reason, ref, expected }) => {
+    describe('When reading .message and .data', () => {
+      it("Then they carry git's diagnosis", () => {
+        // Arrange
+        const sut = pullNoMergeCandidates;
+
+        // Act
+        const result = sut(reason, 'origin', ref);
+
+        // Assert
+        expect(result.message).toBe(`PULL_NO_MERGE_CANDIDATES: ${expected}`);
+        expect(result.data).toEqual(
+          ref === undefined
+            ? { code: 'PULL_NO_MERGE_CANDIDATES', reason, remote: 'origin' }
+            : { code: 'PULL_NO_MERGE_CANDIDATES', reason, remote: 'origin', ref },
         );
       });
     });

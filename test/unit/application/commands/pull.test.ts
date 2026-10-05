@@ -200,7 +200,7 @@ describe('pull', () => {
           const obj = await readObject(ctx, result.merge.id);
           expect(obj.type).toBe('commit');
           if (obj.type === 'commit') {
-            expect(obj.data.message).toBe(`Merge branch 'main' of ${REMOTE_URL}\n`);
+            expect(obj.data.message).toBe("Merge branch 'main' of https://remote.example/r\n");
           }
         }
         expect(await reflogMessages(ctx, 'refs/heads/main')).toContain(
@@ -308,7 +308,7 @@ describe('pull', () => {
 
   describe('Given branch.<cur>.merge set but no branch.<cur>.remote', () => {
     describe('When pull', () => {
-      it('Then the remote defaults to origin', async () => {
+      it('Then origin is fetched and the pull refuses, as git ignores a merge without a remote', async () => {
         // Arrange — only the merge ref is configured; origin URL is present.
         const ctx = createMemoryContext();
         await init(ctx);
@@ -329,18 +329,26 @@ describe('pull', () => {
         );
 
         // Act
-        const result = await pull(withTransport(ctx, transport));
+        let caught: unknown;
+        try {
+          await pull(withTransport(ctx, transport));
+        } catch (err) {
+          caught = err;
+        }
 
         // Assert
-        expect(result.fetch.remote).toBe('origin');
-        expect(result.merge.kind).toBe('up-to-date');
+        expect((caught as { data?: unknown }).data).toEqual({
+          code: 'NO_UPSTREAM_CONFIGURED',
+          branch: 'refs/heads/main',
+        });
+        expect(await resolveRef(ctx, 'refs/remotes/origin/main' as RefName)).toBe(a);
       });
     });
   });
 
   describe('Given branch.<cur>.merge set, no branch.<cur>.remote, and exactly one non-origin remote configured', () => {
     describe('When pull', () => {
-      it('Then the remote defaults to that sole remote', async () => {
+      it('Then solo is fetched and the pull refuses, as git ignores a merge without a remote', async () => {
         // Arrange — only the merge ref is configured; "solo" is the only remote.
         const ctx = createMemoryContext();
         await init(ctx);
@@ -361,11 +369,19 @@ describe('pull', () => {
         );
 
         // Act
-        const result = await pull(withTransport(ctx, transport));
+        let caught: unknown;
+        try {
+          await pull(withTransport(ctx, transport));
+        } catch (err) {
+          caught = err;
+        }
 
         // Assert
-        expect(result.fetch.remote).toBe('solo');
-        expect(result.merge.kind).toBe('up-to-date');
+        expect((caught as { data?: unknown }).data).toEqual({
+          code: 'NO_UPSTREAM_CONFIGURED',
+          branch: 'refs/heads/main',
+        });
+        expect(await resolveRef(ctx, 'refs/remotes/solo/main' as RefName)).toBe(a);
       });
     });
   });
@@ -376,9 +392,12 @@ describe('pull', () => {
         // Arrange — origin URL only; no branch.main.merge.
         const ctx = createMemoryContext();
         await init(ctx);
-        await commitFile(ctx, 'a.txt', 'a', 'A');
+        const a = await commitFile(ctx, 'a.txt', 'a', 'A');
         await seedConfig(ctx, { url: REMOTE_URL });
-        const { transport, requests } = buildPullRemote([], await emptyPack(ctx));
+        const { transport, requests } = buildPullRemote(
+          [{ name: 'refs/heads/main', id: a }],
+          await emptyPack(ctx),
+        );
 
         // Act
         let caught: unknown;
@@ -388,12 +407,12 @@ describe('pull', () => {
           caught = err;
         }
 
-        // Assert — failure before any network round-trip.
+        // Assert — git fetches first, then finds nothing to merge.
         expect((caught as { data?: { code?: string; branch?: string } })?.data?.code).toBe(
           'NO_UPSTREAM_CONFIGURED',
         );
         expect((caught as { data?: { branch?: string } })?.data?.branch).toBe('refs/heads/main');
-        expect(requests).toHaveLength(0);
+        expect(requests.length).toBeGreaterThan(0);
       });
     });
   });
@@ -407,7 +426,10 @@ describe('pull', () => {
         const a = await commitFile(ctx, 'a.txt', 'a', 'A');
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${a}\n`);
         await seedConfig(ctx, { url: REMOTE_URL });
-        const { transport } = buildPullRemote([], await emptyPack(ctx));
+        const { transport } = buildPullRemote(
+          [{ name: 'refs/heads/main', id: a }],
+          await emptyPack(ctx),
+        );
 
         // Act
         let caught: unknown;
@@ -436,9 +458,12 @@ describe('pull', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${a}\n`);
         await ctx.fs.writeUtf8(
           `${ctx.layout.gitDir}/config`,
-          `[remote "origin"]\n\turl = ${REMOTE_URL}\n[branch]\n\tremote\n`,
+          `[remote "origin"]\n\turl = ${REMOTE_URL}\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n[branch]\n\tremote\n`,
         );
-        const { transport } = buildPullRemote([], await emptyPack(ctx));
+        const { transport } = buildPullRemote(
+          [{ name: 'refs/heads/main', id: a }],
+          await emptyPack(ctx),
+        );
 
         // Act
         let caught: unknown;
@@ -513,7 +538,7 @@ describe('pull', () => {
 
   describe('Given the remote does not advertise the requested branch', () => {
     describe('When pull', () => {
-      it('Then throws REF_NOT_FOUND for the missing tracking ref', async () => {
+      it('Then the fetch refuses the missing remote ref', async () => {
         // Arrange — remote advertises main, but the caller asks for "nope".
         const ctx = createMemoryContext();
         await init(ctx);
@@ -533,7 +558,7 @@ describe('pull', () => {
         }
 
         // Assert
-        expect((caught as { data?: { code?: string } })?.data?.code).toBe('REF_NOT_FOUND');
+        expect((caught as { data?: { code?: string } })?.data?.code).toBe('REMOTE_REF_NOT_FOUND');
       });
     });
   });
@@ -803,7 +828,7 @@ describe('pull', () => {
 
   describe('Given no branch.main section (absent upstream)', () => {
     describe('When pull resolves the upstream', () => {
-      it('Then throws NO_UPSTREAM_CONFIGURED and NOT CONFIG_MISSING_VALUE', async () => {
+      it('Then the fetch refuses the unconfigured remote, not CONFIG_MISSING_VALUE', async () => {
         // Arrange — config with no [branch "main"] section.
         const ctx = createMemoryContext();
         await init(ctx);
@@ -813,7 +838,7 @@ describe('pull', () => {
         const result = await pullData(ctx);
 
         // Assert
-        expect(result.code).toBe('NO_UPSTREAM_CONFIGURED');
+        expect(result.code).toBe('REMOTE_NOT_CONFIGURED');
         expect(result.code).not.toBe('CONFIG_MISSING_VALUE');
       });
     });
@@ -854,6 +879,262 @@ describe('pull', () => {
             expect(obj.data.committer.name).toBe('Bob');
           }
         }
+      });
+    });
+  });
+
+  describe('pull merges what FETCH_HEAD marks for merging', () => {
+    const divergedRepo = async () => {
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await commitFile(ctx, 'a.txt', 'a', 'A');
+      await branchCreate(ctx, { name: 'side' });
+      await checkout(ctx, { rev: 'side' });
+      const b = await commitFile(ctx, 'b.txt', 'b', 'B');
+      await checkout(ctx, { rev: 'main' });
+      await commitFile(ctx, 'c.txt', 'c', 'X');
+      return { ctx, b };
+    };
+    const remoteEntries = (fetch: string) => [
+      { section: 'remote', subsection: 'origin', key: 'url', value: REMOTE_URL },
+      { section: 'remote', subsection: 'origin', key: 'fetch', value: fetch },
+    ];
+    const upstream = (branch: string, remote: string, merge: string) => [
+      { section: 'branch', subsection: branch, key: 'remote', value: remote },
+      { section: 'branch', subsection: branch, key: 'merge', value: merge },
+    ];
+    const ORIGIN_FETCH = '+refs/heads/*:refs/remotes/origin/*';
+    const refusal = async (ctx: Context, opts: Parameters<typeof pull>[1] = {}) => {
+      try {
+        await pull(ctx, opts);
+      } catch (error) {
+        return (error as { data?: unknown }).data;
+      }
+      return undefined;
+    };
+
+    describe('Given an upstream whose refspec stores it outside refs/remotes/<remote>/', () => {
+      describe('When pull', () => {
+        it('Then the fetched upstream tip is merged', async () => {
+          // Arrange
+          const { ctx, b } = await divergedRepo();
+          await updateConfigEntries(ctx, [
+            ...remoteEntries('+refs/heads/*:refs/remotes/mirror/*'),
+            ...upstream('main', 'origin', 'refs/heads/side'),
+          ]);
+          const { transport } = buildPullRemote(
+            [{ name: 'refs/heads/side', id: b }],
+            await emptyPack(ctx),
+          );
+          const sut = pull;
+
+          // Act
+          const result = await sut(withTransport(ctx, transport), { author });
+
+          // Assert
+          expect(result.merge.kind).toBe('merge');
+          if (result.merge.kind === 'merge') {
+            expect(result.merge.parents[1]).toBe(b);
+            const obj = await readObject(ctx, result.merge.id);
+            expect(obj.type === 'commit' && obj.data.message).toBe(
+              "Merge branch 'side' of https://remote.example/r\n",
+            );
+          }
+        });
+      });
+    });
+
+    describe('Given a branch other than main or master pulling its upstream', () => {
+      describe('When pull', () => {
+        it('Then the merge message names the branch merged into', async () => {
+          // Arrange
+          const { ctx, b } = await divergedRepo();
+          await branchCreate(ctx, { name: 'feat' });
+          await checkout(ctx, { rev: 'feat' });
+          await updateConfigEntries(ctx, [
+            ...remoteEntries(ORIGIN_FETCH),
+            ...upstream('feat', 'origin', 'refs/heads/side'),
+          ]);
+          const { transport } = buildPullRemote(
+            [{ name: 'refs/heads/side', id: b }],
+            await emptyPack(ctx),
+          );
+          const sut = pull;
+
+          // Act
+          const result = await sut(withTransport(ctx, transport), { author });
+
+          // Assert
+          const id = result.merge.kind === 'merge' ? result.merge.id : b;
+          const obj = await readObject(ctx, id);
+          expect(obj.type === 'commit' && obj.data.message).toBe(
+            "Merge branch 'side' of https://remote.example/r into feat\n",
+          );
+        });
+      });
+    });
+
+    describe('Given a remote with no fetch refspec', () => {
+      describe('When pull from it', () => {
+        it("Then the remote's HEAD is merged under the url alone", async () => {
+          // Arrange
+          const { ctx, b } = await divergedRepo();
+          await updateConfigEntries(ctx, [
+            { section: 'remote', subsection: 'origin', key: 'url', value: REMOTE_URL },
+          ]);
+          const { transport } = buildPullRemote([{ name: 'HEAD', id: b }], await emptyPack(ctx));
+          const sut = pull;
+
+          // Act
+          const result = await sut(withTransport(ctx, transport), { remote: 'origin', author });
+
+          // Assert
+          const id = result.merge.kind === 'merge' ? result.merge.id : b;
+          const obj = await readObject(ctx, id);
+          expect(obj.type === 'commit' && obj.data.message).toBe(
+            'Merge https://remote.example/r\n',
+          );
+        });
+      });
+    });
+
+    describe('Given a pull of an explicit ref outside heads, tags and remotes', () => {
+      describe('When pull', () => {
+        it('Then the merge message names it a commit', async () => {
+          // Arrange
+          const { ctx, b } = await divergedRepo();
+          await updateConfigEntries(ctx, remoteEntries(ORIGIN_FETCH));
+          const { transport } = buildPullRemote(
+            [{ name: 'refs/notes/n', id: b }],
+            await emptyPack(ctx),
+          );
+          const sut = pull;
+
+          // Act
+          const result = await sut(withTransport(ctx, transport), {
+            ref: 'refs/notes/n',
+            author,
+          });
+
+          // Assert
+          const id = result.merge.kind === 'merge' ? result.merge.id : b;
+          const obj = await readObject(ctx, id);
+          expect(obj.type === 'commit' && obj.data.message).toBe(
+            "Merge commit 'refs/notes/n' of https://remote.example/r\n",
+          );
+        });
+      });
+    });
+
+    describe('Given a detached HEAD pulling an explicit ref', () => {
+      describe('When pull', () => {
+        it('Then the fetch runs and merge refuses the detached HEAD', async () => {
+          // Arrange
+          const { ctx, b } = await divergedRepo();
+          const head = await resolveRef(ctx, 'refs/heads/main' as RefName);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${head}\n`);
+          await updateConfigEntries(ctx, remoteEntries(ORIGIN_FETCH));
+          const { transport } = buildPullRemote(
+            [{ name: 'refs/heads/side', id: b }],
+            await emptyPack(ctx),
+          );
+          const sut = refusal;
+
+          // Act
+          const result = await sut(withTransport(ctx, transport), { ref: 'side', author });
+
+          // Assert
+          expect(result).toEqual({
+            code: 'UNSUPPORTED_OPERATION',
+            operation: 'merge',
+            reason: 'cannot merge with detached HEAD',
+          });
+          expect(await resolveRef(ctx, 'refs/remotes/origin/side' as RefName)).toBe(b);
+        });
+      });
+    });
+
+    describe('Given an explicit ref fetching several refs for merging', () => {
+      describe('When pull', () => {
+        it('Then the octopus pull is refused', async () => {
+          // Arrange
+          const { ctx, b } = await divergedRepo();
+          await updateConfigEntries(ctx, remoteEntries(ORIGIN_FETCH));
+          const { transport } = buildPullRemote(
+            [
+              { name: 'refs/heads/side-a', id: b },
+              { name: 'refs/heads/side-b', id: b },
+            ],
+            await emptyPack(ctx),
+          );
+          const sut = refusal;
+
+          // Act
+          const result = await sut(withTransport(ctx, transport), {
+            ref: 'refs/heads/side-*:refs/remotes/s/*',
+          });
+
+          // Assert
+          expect(result).toEqual({
+            code: 'INVALID_OPTION',
+            option: 'ref',
+            reason: 'merging more than one fetched ref (an octopus pull) is not supported',
+          });
+        });
+      });
+    });
+
+    describe.each([
+      {
+        label: 'an upstream naming a ref the remote does not have',
+        config: upstream('main', 'origin', 'refs/heads/nope'),
+        opts: {},
+        expected: {
+          code: 'PULL_NO_MERGE_CANDIDATES',
+          reason: 'merge-ref-not-fetched',
+          remote: 'origin',
+          ref: 'refs/heads/nope',
+        },
+      },
+      {
+        label: 'an explicit remote other than the upstream one and no branch',
+        config: upstream('main', 'other', 'refs/heads/side'),
+        opts: { remote: 'origin' },
+        expected: {
+          code: 'PULL_NO_MERGE_CANDIDATES',
+          reason: 'not-default-remote',
+          remote: 'origin',
+        },
+      },
+      {
+        label: 'an explicit wildcard ref matching nothing',
+        config: [],
+        opts: { ref: 'refs/heads/zz*:refs/remotes/zz/*' },
+        expected: {
+          code: 'PULL_NO_MERGE_CANDIDATES',
+          reason: 'refspec-unmatched',
+          remote: 'origin',
+        },
+      },
+    ])('Given $label', ({ config, opts, expected }) => {
+      describe('When pull', () => {
+        it('Then it refuses after fetching, as git does', async () => {
+          // Arrange
+          const { ctx, b } = await divergedRepo();
+          await updateConfigEntries(ctx, [...remoteEntries(ORIGIN_FETCH), ...config]);
+          const { transport } = buildPullRemote(
+            [{ name: 'refs/heads/side', id: b }],
+            await emptyPack(ctx),
+          );
+          const sut = refusal;
+
+          // Act
+          const result = await sut(withTransport(ctx, transport), opts);
+
+          // Assert
+          expect(result).toEqual(expected);
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/FETCH_HEAD`)).toBe(true);
+        });
       });
     });
   });

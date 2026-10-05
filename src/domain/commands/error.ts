@@ -423,6 +423,13 @@ export type CommandError =
     }
   | { readonly code: 'PUSH_DETACHED_NO_REFSPEC' }
   | { readonly code: 'REMOTE_REF_NOT_FOUND'; readonly ref: string }
+  | {
+      readonly code: 'PULL_NO_MERGE_CANDIDATES';
+      readonly reason: PullNoMergeCandidatesReason;
+      readonly remote: string;
+      /** The configured `branch.<current>.merge`, for `merge-ref-not-fetched`. */
+      readonly ref?: string;
+    }
   | { readonly code: 'PUSH_DEFAULT_NOTHING' }
   | {
       readonly code: 'PUSH_REMOTE_NOT_UPSTREAM';
@@ -1287,6 +1294,24 @@ export const pushRefspecUnmatched = (
 // Refusal: a fetch refspec naming one remote ref the remote does not advertise.
 export const remoteRefNotFound = (ref: string): TsgitError =>
   new TsgitError({ code: 'REMOTE_REF_NOT_FOUND', ref });
+
+/** Why git's `die_no_merge_candidates` found nothing to merge in FETCH_HEAD. */
+export type PullNoMergeCandidatesReason =
+  | 'refspec-unmatched'
+  | 'not-default-remote'
+  | 'merge-ref-not-fetched';
+
+// Refusal: a pull whose fetch marked no ref for merging.
+export const pullNoMergeCandidates = (
+  reason: PullNoMergeCandidatesReason,
+  remote: string,
+  ref?: string,
+): TsgitError =>
+  new TsgitError(
+    ref === undefined
+      ? { code: 'PULL_NO_MERGE_CANDIDATES', reason, remote }
+      : { code: 'PULL_NO_MERGE_CANDIDATES', reason, remote, ref },
+  );
 
 // Refusal: an atomic push to a server whose advertisement carries no `atomic`
 // token. Thrown after the `pre-push` hook and before anything is sent.

@@ -244,6 +244,20 @@ function timestampRangeDetail(
 }
 
 /** git's two walk deaths: while limiting (no commit) or while walking a commit's parents. */
+const pullNoMergeCandidatesMessage = (
+  reason: Extract<CommandError, { code: 'PULL_NO_MERGE_CANDIDATES' }>['reason'],
+  remote: string,
+  ref: string | undefined,
+): string => {
+  if (reason === 'refspec-unmatched') {
+    return 'There are no candidates for merging among the refs that you just fetched.';
+  }
+  if (reason === 'not-default-remote') {
+    return `You asked to pull from the remote '${remote}', but did not specify a branch.`;
+  }
+  return `Your configuration specifies to merge with the ref '${ref}' from the remote, but no such ref was fetched.`;
+};
+
 const revisionWalkDetail = (commit: string | undefined): string =>
   commit === undefined
     ? 'revision walk setup failed'
@@ -707,6 +721,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `failed to push some refs to '${data.url}'`;
     case 'REMOTE_REF_NOT_FOUND':
       return `couldn't find remote ref ${data.ref}`;
+    case 'PULL_NO_MERGE_CANDIDATES':
+      return pullNoMergeCandidatesMessage(data.reason, data.remote, data.ref);
     case 'PUSH_DETACHED_NO_REFSPEC':
       return 'you are not currently on a branch';
     case 'PUSH_DEFAULT_NOTHING':

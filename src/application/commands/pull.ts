@@ -1,23 +1,28 @@
 /**
  * `pull` command — fetch + integrate.
  *
- * Composes `fetch` (download objects + update remote-tracking refs) with
- * `merge` (integrate the fetched tip into HEAD). Integration is merge-only:
- * there is no `rebase` mode.
+ * Composes `fetch` (download objects, update remote-tracking refs, write
+ * `FETCH_HEAD`) with `merge` of what `FETCH_HEAD` marks for merging, as git's
+ * `pull` reads it back. Integration is merge-only: there is no `rebase` mode.
  *
  * A pull that conflicts leaves the exact MERGE_HEAD / MERGE_MSG / ORIG_HEAD +
  * conflicted-index state a direct `merge` leaves, so `merge.abort` /
  * `merge.continue` resolve a pull-initiated conflict with no pull-specific code.
  */
-import { noUpstreamConfigured } from '../../domain/commands/error.js';
+import {
+  invalidOption,
+  noUpstreamConfigured,
+  pullNoMergeCandidates,
+} from '../../domain/commands/error.js';
+import type { TsgitError } from '../../domain/error.js';
 import { type AuthorIdentity, RefName } from '../../domain/objects/index.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
-import { resolveRef } from '../primitives/resolve-ref.js';
 import { type FetchResult, fetch } from './fetch.js';
 import { defaultRemoteName } from './internal/default-remote.js';
+import { type FetchHeadLine, readFetchHead } from './internal/fetch-head.js';
 import { buildRemoteTable } from './internal/remote-config.js';
 import {
   assertNoPendingOperation,
@@ -35,10 +40,11 @@ export interface PullOptions {
    */
   readonly remote?: string;
   /**
-   * Remote ref to merge — a short branch name resolved as
-   * `refs/remotes/<remote>/<ref>`. Default: short form of
-   * `branch.<current>.merge`. When neither is resolvable, pull throws
-   * `NO_UPSTREAM_CONFIGURED`.
+   * Refspec to fetch and merge — git's `git pull <remote> <ref>`. Default:
+   * what the fetch marks for merging, i.e. `branch.<current>.merge` when
+   * `branch.<current>.remote` names the remote. When nothing is marked, pull
+   * throws `NO_UPSTREAM_CONFIGURED` or `PULL_NO_MERGE_CANDIDATES` after the
+   * fetch, as git does.
    */
   readonly ref?: string;
   /**
@@ -65,19 +71,18 @@ export interface PullResult {
   readonly merge: MergeResult;
 }
 
-const shortMergeRef = (mergeRef: string | undefined): string | undefined =>
-  mergeRef === undefined ? undefined : shortBranchName(mergeRef as RefName);
-
 interface Upstream {
   readonly remote: string;
-  readonly branch: string;
+  /** `branch.<current>.remote`, when configured. */
+  readonly configuredRemote: string | undefined;
+  /** `branch.<current>.merge`, which git ignores without a `branch.<current>.remote`. */
+  readonly merge: string | undefined;
 }
 
-const resolveUpstream = async (
+const readUpstream = async (
   ctx: Context,
   currentBranch: string | undefined,
   opts: PullOptions,
-  fallbackRef: RefName,
 ): Promise<Upstream> => {
   await buildRemoteTable(ctx);
   const config = await readConfig(ctx);
@@ -85,12 +90,53 @@ const resolveUpstream = async (
     await assertNoValuelessConfig(ctx, 'branch', currentBranch, ['remote', 'merge']);
   }
   const tracking = currentBranch !== undefined ? config.branch?.get(currentBranch) : undefined;
-  const remote = defaultRemoteName(config, opts.remote, currentBranch);
-  const branch = opts.ref ?? shortMergeRef(tracking?.merge);
-  if (branch === undefined) {
-    throw noUpstreamConfigured(fallbackRef);
+  return {
+    remote: defaultRemoteName(config, opts.remote, currentBranch),
+    configuredRemote: tracking?.remote,
+    merge: tracking?.remote !== undefined ? tracking.merge : undefined,
+  };
+};
+
+/** git's `die_no_merge_candidates`, in its order of diagnosis. */
+const noMergeCandidates = (
+  opts: PullOptions,
+  upstream: Upstream,
+  branchRef: RefName | undefined,
+): TsgitError => {
+  if (opts.ref !== undefined) return pullNoMergeCandidates('refspec-unmatched', upstream.remote);
+  const elsewhere = opts.remote !== undefined && opts.remote !== upstream.configuredRemote;
+  if (branchRef !== undefined && elsewhere) {
+    return pullNoMergeCandidates('not-default-remote', upstream.remote);
   }
-  return { remote, branch };
+  if (upstream.merge === undefined) return noUpstreamConfigured(branchRef ?? RefName.from('HEAD'));
+  return pullNoMergeCandidates('merge-ref-not-fetched', upstream.remote, upstream.merge);
+};
+
+const OCTOPUS_REFUSAL = 'merging more than one fetched ref (an octopus pull) is not supported';
+/** git's `merge.suppressDest` default: a merge into these names no destination. */
+const SUPPRESSED_DESTINATIONS: ReadonlySet<string> = new Set(['main', 'master']);
+const NAMED_KINDS = ['branch ', 'tag ', 'remote-tracking branch '] as const;
+
+/** git's `fmt_merge_msg` title for one FETCH_HEAD line. */
+const mergeMessage = (line: FetchHeadLine, currentBranch: string | undefined): string => {
+  const { description } = line;
+  const named = NAMED_KINDS.some((kind) => description.startsWith(kind));
+  const title = named || !description.startsWith("'") ? description : `commit ${description}`;
+  const suppressed = currentBranch === undefined || SUPPRESSED_DESTINATIONS.has(currentBranch);
+  return `Merge ${title}${suppressed ? '' : ` into ${currentBranch}`}`;
+};
+
+const mergeHead = async (
+  ctx: Context,
+  opts: PullOptions,
+  upstream: Upstream,
+  branchRef: RefName | undefined,
+): Promise<FetchHeadLine> => {
+  const heads = (await readFetchHead(ctx)).filter((line) => line.forMerge);
+  const [head] = heads;
+  if (head === undefined) throw noMergeCandidates(opts, upstream, branchRef);
+  if (heads.length > 1) throw invalidOption('ref', OCTOPUS_REFUSAL);
+  return head;
 };
 
 export const pull = async (ctx: Context, opts: PullOptions = {}): Promise<PullResult> => {
@@ -101,26 +147,26 @@ export const pull = async (ctx: Context, opts: PullOptions = {}): Promise<PullRe
   const head = await readHeadRaw(ctx);
   const branchRef = branchRefFromHead(head);
   const currentBranch = branchRef !== undefined ? shortBranchName(branchRef) : undefined;
-  const fallbackRef = branchRef ?? RefName.from('HEAD');
-  const { remote, branch } = await resolveUpstream(ctx, currentBranch, opts, fallbackRef);
+  const upstream = await readUpstream(ctx, currentBranch, opts);
 
   const fetchResult = await fetch(ctx, {
-    remote,
+    remote: upstream.remote,
+    ...(opts.ref !== undefined ? { refspecs: [opts.ref] } : {}),
     // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ prune: opts.prune }` with `prune: undefined`, which `fetch` reads as `=== true` (false) — identical to omitting the key. The drop direction + the `!==` flip are killed by the prune-forwarding test.
     ...(opts.prune !== undefined ? { prune: opts.prune } : {}),
     // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ depth: opts.depth }` with `depth: undefined`, which `fetchPack` gates on `!== undefined` — identical to omitting the key. The drop direction + the `!==` flip are killed by the depth-forwarding test.
     ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
   });
 
-  const tip = await resolveRef(ctx, `refs/remotes/${remote}/${branch}` as RefName);
+  const fetched = await mergeHead(ctx, opts, upstream, branchRef);
 
   // git sets GIT_REFLOG_ACTION=pull for the integrate step; this is its analogue.
   const mergeInternal: MergeInternalOptions = { reflogAction: 'pull' };
   const mergeResult = await mergeRun(
     ctx,
     {
-      rev: tip,
-      message: opts.message ?? `Merge branch '${branch}' of ${fetchResult.url}`,
+      rev: fetched.id,
+      message: opts.message ?? mergeMessage(fetched, currentBranch),
       // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ fastForward: undefined }`, which `merge` reads as `!== 'never'` (so a fast-forward proceeds) and `=== 'only'` (false) — identical to omitting it. The drop direction + the `!==` flip are killed by the fastForward-forwarding tests.
       ...(opts.fastForward !== undefined ? { fastForward: opts.fastForward } : {}),
       // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ author: undefined }`, which `merge` resolves as `opts.author ?? config` — identical to omitting it. The drop direction + the `!==` flip are killed by the author-bearing merge tests.
