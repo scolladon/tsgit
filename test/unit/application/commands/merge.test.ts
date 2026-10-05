@@ -17,6 +17,7 @@ import {
   writeNestedTree,
   writeOutcomeToTree,
 } from '../../../../src/application/commands/merge.js';
+import { tagCreate } from '../../../../src/application/commands/tag.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
@@ -25,6 +26,7 @@ import { getRefStore } from '../../../../src/application/primitives/ref-store.js
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import * as streamBlobMod from '../../../../src/application/primitives/stream-blob.js';
+import { updateRef as seedRef } from '../../../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import * as writeTreeMod from '../../../../src/application/primitives/write-tree.js';
@@ -1199,7 +1201,7 @@ describe('merge.4b conflict persistence', () => {
       });
     });
     describe('When merge runs with a message', () => {
-      it('Then .git/MERGE_MSG records the message', async () => {
+      it('Then .git/MERGE_MSG records the message, then the conflicted paths block', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
@@ -1209,7 +1211,7 @@ describe('merge.4b conflict persistence', () => {
 
         // Assert
         const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`);
-        expect(result).toBe('Merge feature into main\n');
+        expect(result).toBe('Merge feature into main\n\n# Conflicts:\n#\tfile.txt\n');
       });
     });
   });
@@ -4434,8 +4436,8 @@ describe('Given an alternate that fails to load', () => {
       const loadError = await failSourceLoad(ctx);
       const sut = mergeRun;
 
-      // Act
-      const attempt = sut(ctx, { rev: main, author });
+      // Act — an explicit message, so no default-message object read precedes ORIG_HEAD
+      const attempt = sut(ctx, { rev: main, author, message: 'm' });
 
       // Assert
       await expect(attempt).rejects.toBe(loadError);
@@ -4444,6 +4446,269 @@ describe('Given an alternate that fails to load', () => {
       expected.set(`${ctx.layout.gitDir}/ORIG_HEAD`, Buffer.from(`${main}\n`).toString('base64'));
       expect(after).toEqual(expected);
       vi.restoreAllMocks();
+    });
+  });
+});
+
+describe('merge default message', () => {
+  const USER_CONFIG = '[user]\n  name = Grace\n  email = grace@example.com\n';
+
+  /** main and feature each add one file over a shared base; HEAD on `branch`. */
+  const divergedRepo = async (
+    config = '',
+    branch = 'main',
+  ): Promise<{ readonly ctx: Context; readonly feature: ObjectId }> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `${USER_CONFIG}${config}`);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'base', author });
+    await branchCreate(ctx, { name: 'feature' });
+    await checkout(ctx, { rev: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+    await add(ctx, ['b.txt']);
+    const feature = (await commit(ctx, { message: 'on-feature', author })).id;
+    await checkout(ctx, { rev: 'main' });
+    if (branch !== 'main') {
+      await branchCreate(ctx, { name: branch });
+      await checkout(ctx, { rev: branch });
+    }
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
+    await add(ctx, ['c.txt']);
+    await commit(ctx, { message: 'on-main', author });
+    return { ctx, feature };
+  };
+
+  const mergedMessage = async (ctx: Context, rev: string): Promise<string> => {
+    const result = await mergeRun(ctx, { rev, author });
+    if (result.kind !== 'merge') throw new Error(`expected a merge, got ${result.kind}`);
+    const merged = await readObject(ctx, result.id);
+    if (merged.type !== 'commit') throw new Error('not a commit');
+    return merged.data.message;
+  };
+
+  describe('Given a local branch merged into main', () => {
+    describe('When merged without a message', () => {
+      it("Then the message is git's branch title with the destination suppressed", async () => {
+        // Arrange
+        const { ctx } = await divergedRepo();
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'feature');
+
+        // Assert
+        expect(result).toBe("Merge branch 'feature'\n");
+      });
+    });
+  });
+
+  describe('Given a local branch merged into a branch git does not suppress', () => {
+    describe('When merged without a message', () => {
+      it('Then the title names the destination', async () => {
+        // Arrange
+        const { ctx } = await divergedRepo('', 'topic');
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'feature');
+
+        // Assert
+        expect(result).toBe("Merge branch 'feature' into topic\n");
+      });
+    });
+  });
+
+  describe('Given the branch named by its full ref', () => {
+    describe('When merged without a message', () => {
+      it('Then the title quotes the name as given', async () => {
+        // Arrange
+        const { ctx } = await divergedRepo();
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'refs/heads/feature');
+
+        // Assert
+        expect(result).toBe("Merge branch 'refs/heads/feature'\n");
+      });
+    });
+  });
+
+  describe('Given a lightweight tag at the feature tip', () => {
+    describe('When merged without a message', () => {
+      it('Then the title names the tag', async () => {
+        // Arrange
+        const { ctx } = await divergedRepo();
+        await tagCreate(ctx, { name: 'lt', target: 'feature' });
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'lt');
+
+        // Assert
+        expect(result).toBe("Merge tag 'lt'\n");
+      });
+    });
+  });
+
+  describe('Given an annotated tag at the feature tip', () => {
+    describe('When merged without a message', () => {
+      it("Then the tag's message follows the title", async () => {
+        // Arrange
+        const { ctx } = await divergedRepo();
+        await tagCreate(ctx, { name: 'at', target: 'feature', message: 'tag body line' });
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'at');
+
+        // Assert
+        expect(result).toBe("Merge tag 'at'\n\ntag body line\n");
+      });
+    });
+  });
+
+  describe('Given refs outside the labelled namespaces', () => {
+    describe('When an annotated tag is merged through one without a message', () => {
+      it('Then the title names a tag by that ref and its message follows', async () => {
+        // Arrange
+        const { ctx } = await divergedRepo();
+        const tag = await tagCreate(ctx, { name: 'at', target: 'feature', message: 'body' });
+        await seedRef(ctx, 'refs/custom/at' as RefName, tag.id, { reflogMessage: 'seed' });
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'refs/custom/at');
+
+        // Assert
+        expect(result).toBe("Merge tag 'refs/custom/at'\n\nbody\n");
+      });
+    });
+
+    describe('When a commit is merged through one without a message', () => {
+      it('Then the title names a commit by that ref', async () => {
+        // Arrange
+        const { ctx, feature } = await divergedRepo();
+        await seedRef(ctx, 'refs/custom/c' as RefName, feature, { reflogMessage: 'seed' });
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'refs/custom/c');
+
+        // Assert
+        expect(result).toBe("Merge commit 'refs/custom/c'\n");
+      });
+    });
+  });
+
+  describe('Given a remote-tracking branch at the feature tip', () => {
+    describe('When merged without a message', () => {
+      it('Then the title names the remote-tracking branch', async () => {
+        // Arrange
+        const { ctx, feature } = await divergedRepo();
+        await seedRef(ctx, 'refs/remotes/origin/feature' as RefName, feature, {
+          reflogMessage: 'seed',
+        });
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'origin/feature');
+
+        // Assert
+        expect(result).toBe("Merge remote-tracking branch 'origin/feature'\n");
+      });
+    });
+  });
+
+  describe('Given the feature commit named by a full and an abbreviated id', () => {
+    describe.each([
+      ['full', (id: string) => id],
+      ['abbreviated', (id: string) => id.slice(0, 7)],
+    ])('When merged by its %s id without a message', (_label, name) => {
+      it('Then the title names the commit as given', async () => {
+        // Arrange
+        const { ctx, feature } = await divergedRepo();
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, name(feature));
+
+        // Assert
+        expect(result).toBe(`Merge commit '${name(feature)}'\n`);
+      });
+    });
+  });
+
+  describe('Given merge.suppressDest patterns', () => {
+    describe.each([
+      ['a glob matching the destination', '[merge]\n  suppressDest = top*\n', 'topic', ''],
+      [
+        'a pattern list replacing the defaults',
+        '[merge]\n  suppressDest = x\n',
+        'main',
+        ' into main',
+      ],
+      ['an empty value clearing them', '[merge]\n  suppressDest =\n', 'main', ' into main'],
+      ['a glob that does not cross a slash', '[merge]\n  suppressDest = a*\n', 'a/b', ' into a/b'],
+    ])('When merging into a branch under %s', (_label, config, branch, into) => {
+      it('Then the destination is named only when no pattern matches', async () => {
+        // Arrange
+        const { ctx } = await divergedRepo(config, branch);
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'feature');
+
+        // Assert
+        expect(result).toBe(`Merge branch 'feature'${into}\n`);
+      });
+    });
+  });
+
+  describe('Given a valueless merge.suppressDest', () => {
+    describe('When merging', () => {
+      it('Then it refuses with the missing value before merging', async () => {
+        // Arrange
+        const { ctx } = await divergedRepo('[merge]\n  suppressDest\n');
+        const sut = mergeRun;
+
+        // Act
+        const error = await sut(ctx, { rev: 'feature', author }).catch((e: unknown) => e);
+
+        // Assert
+        expect((error as TsgitError).data).toMatchObject({
+          code: 'CONFIG_MISSING_VALUE',
+          key: 'merge.suppressdest',
+        });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a merge that conflicts', () => {
+    describe('When merged without a message', () => {
+      it("Then MERGE_MSG carries git's title and the conflicted paths block", async () => {
+        // Arrange
+        const { ctx } = await divergedRepo();
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'theirs');
+        await add(ctx, ['z.txt']);
+        await commit(ctx, { message: 'z theirs', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'ours');
+        await add(ctx, ['z.txt']);
+        await commit(ctx, { message: 'z ours', author });
+        const sut = mergeRun;
+
+        // Act
+        await sut(ctx, { rev: 'feature', author });
+
+        // Assert
+        const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`);
+        expect(result).toBe("Merge branch 'feature'\n\n# Conflicts:\n#\tz.txt\n");
+      });
     });
   });
 });

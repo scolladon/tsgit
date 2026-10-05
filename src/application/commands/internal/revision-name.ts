@@ -67,6 +67,14 @@ export const resolvingCandidateRefs = async (
 ): Promise<ReadonlyArray<RefName>> =>
   (await expandRef(ctx, name, resolveCandidate(ctx))).map((found) => found.ref);
 
+/** git's `dwim_ref` as a command's own call reads it: the first namespace's
+ *  unpeeled object id and the ref it ends at, warning on each skipped namespace. */
+export const dwimRefWarning = async (
+  ctx: Context,
+  name: string,
+): Promise<{ readonly id: ObjectId; readonly ref: RefName } | undefined> =>
+  (await expandRef(ctx, name, resolveCandidate(ctx)))[0];
+
 /** git's `dwim_ref` real ref as a command's own `dwim_ref` call reads it, warning on each skipped namespace. */
 export const dwimRefNameWarning = async (
   ctx: Context,

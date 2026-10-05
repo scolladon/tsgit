@@ -1,5 +1,5 @@
 import { nonFastForward, workingTreeDirty } from '../../domain/commands/error.js';
-import { conflictsToIndexEntries } from '../../domain/diff/index.js';
+import { conflictsToIndexEntries, sortedRecordedPaths } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
 import {
   type IndexEntry,
@@ -30,6 +30,7 @@ import {
   type TreeEntry,
 } from '../../domain/objects/index.js';
 import { treeEntry } from '../../domain/objects/tree.js';
+import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
 import { buildContentMerger } from '../primitives/build-content-merger.js';
@@ -63,9 +64,16 @@ import { runInformationalHook } from '../primitives/run-hook.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeObject } from '../primitives/write-object.js';
 import { writeTree } from '../primitives/write-tree.js';
+import { conflictMergeMsg } from './internal/cherry-pick-state.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import { resolveAuthor, resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
 import { acquireIndexLock } from './internal/index-update.js';
+import {
+  assertMergeMessageConfig,
+  describeMergeHead,
+  formatMergeMessage,
+  type MergeHead,
+} from './internal/merge-message.js';
 import { writeMergeHead, writeMergeMsg, writeOrigHead } from './internal/merge-state.js';
 import {
   assertNoPendingOperation,
@@ -106,7 +114,15 @@ export interface MergeInternalOptions {
    * messages (e.g. `pull` → `pull: Fast-forward`). Defaults to `merge <rev>`.
    */
   readonly reflogAction?: string;
+  /**
+   * The head merged, as FETCH_HEAD describes it — what the default message is
+   * formatted from. Defaults to `merge_name`'s description of `rev`.
+   */
+  readonly head?: MergeHead;
 }
+
+/** A merge whose message is settled — the caller's, or git's default. */
+type SettledMerge = MergeRunInput & { readonly message: string };
 
 export interface MergeConflictDescriptor {
   readonly path: FilePath;
@@ -160,12 +176,26 @@ export const mergeRun = async (
   return result;
 };
 
-const computeMerge = async (
+/** The message the merge records: the caller's, else git's `fmt_merge_msg` over the heads. */
+const settleMessage = async (
   ctx: Context,
   opts: MergeRunInput,
   internal: MergeInternalOptions,
+  branch: RefName,
+  theirId: ObjectId,
+): Promise<SettledMerge> => {
+  if (opts.message !== undefined) return { ...opts, message: opts.message };
+  const head = internal.head ?? (await describeMergeHead(ctx, opts.rev, theirId));
+  return { ...opts, message: await formatMergeMessage(ctx, head, shortBranchName(branch)) };
+};
+
+const computeMerge = async (
+  ctx: Context,
+  input: MergeRunInput,
+  internal: MergeInternalOptions,
 ): Promise<MergeResult> => {
   await assertOperationalRepositorySettingsFirst(ctx);
+  await assertMergeMessageConfig(ctx);
   requireWorkTree(ctx, 'merge');
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
@@ -173,7 +203,8 @@ const computeMerge = async (
     throw unsupportedOperation('merge', 'cannot merge with detached HEAD');
   }
   const ourId = await resolveRef(ctx, head.target);
-  const theirId = await resolveCommitIsh(ctx, opts.rev);
+  const theirId = await resolveCommitIsh(ctx, input.rev);
+  const opts = await settleMessage(ctx, input, internal, head.target, theirId);
   await writeOrigHead(ctx, ourId);
   await assertEverySourceLoadable(ctx);
   // Stryker disable next-line ConditionalExpression: equivalent — when ourId===theirId, mergeBase returns that same commit, so the `base === theirId` check below yields the identical up-to-date result.
@@ -194,7 +225,7 @@ const computeMerge = async (
 
 const fastForward = async (
   ctx: Context,
-  opts: MergeRunInput,
+  opts: SettledMerge,
   internal: MergeInternalOptions,
   branch: RefName,
   { ourId, theirId }: { readonly ourId: ObjectId; readonly theirId: ObjectId },
@@ -218,7 +249,7 @@ export const UNSUPPORTED_CONFLICT_TYPES: ReadonlySet<ConflictType> = new Set([
 
 const mergeCommit = async (
   ctx: Context,
-  opts: MergeRunInput,
+  opts: SettledMerge,
   internal: MergeInternalOptions,
   branchName: RefName,
   ourId: ObjectId,
@@ -291,7 +322,7 @@ const materialiseAndApply = async (
 
 const commitCleanMerge = async (
   ctx: Context,
-  opts: MergeRunInput,
+  opts: SettledMerge,
   internal: MergeInternalOptions,
   branchName: RefName,
   ourId: ObjectId,
@@ -300,7 +331,7 @@ const commitCleanMerge = async (
 ): Promise<MergeResult> => {
   const author = await resolveMergeAuthor(ctx, opts);
   const committer = resolveMergeCommitter(opts, author);
-  const message = sanitizeMessage(opts.message ?? `Merge ${opts.rev}`, { allowEmpty: false });
+  const message = sanitizeMessage(opts.message, { allowEmpty: false });
   const commitData: CommitData = {
     tree: mergedTree,
     parents: [ourId, theirId],
@@ -565,7 +596,7 @@ export const writeNestedTree = async (
  */
 const persistConflictState = async (
   ctx: Context,
-  opts: MergeRunInput,
+  opts: SettledMerge,
   result: Extract<MergeTreeResult, { readonly kind: 'conflict' }>,
   ourId: ObjectId,
   theirId: ObjectId,
@@ -599,8 +630,8 @@ const persistConflictState = async (
   try {
     await writeConflictingWorkingTree(ctx, result.outcomes, result.conflicts, changed, matcher);
     await writeMergeHead(ctx, theirId);
-    const message = sanitizeMessage(opts.message ?? `Merge ${opts.rev}`, { allowEmpty: false });
-    await writeMergeMsg(ctx, message);
+    const message = sanitizeMessage(opts.message, { allowEmpty: false });
+    await writeMergeMsg(ctx, conflictMergeMsg(message, sortedRecordedPaths(result.conflicts)));
     const indexEntries = buildConflictIndexEntries(result.outcomes, result.conflicts, matcher);
     await lock.commit(indexEntries);
   } finally {

@@ -828,19 +828,43 @@ const lastEntryIn = (
   section: string,
   key: string,
 ): LocatedConfigEntry | undefined => {
-  const loweredKey = key.toLowerCase();
-  let inSection = false;
   let last: LocatedConfigEntry | undefined;
+  for (const entry of entriesIn(tokens, source, section, key)) last = entry;
+  return last;
+};
+
+/** Every entry of `key` (case-insensitive) under the subsectionless `[<section>]`, in file order. */
+function* entriesIn(
+  tokens: ReadonlyArray<ConfigToken>,
+  source: string,
+  section: string,
+  key: string,
+): Generator<LocatedConfigEntry> {
+  const loweredKey = key.toLowerCase();
+  const qualifiedKey = `${section.toLowerCase()}.${loweredKey}`;
+  let inSection = false;
   for (const token of tokens) {
     if (token.kind === 'header') {
       inSection = matchesSection(token.section, token.subsection, section, undefined);
       continue;
     }
     if (!inSection || token.kind !== 'entry' || token.key.toLowerCase() !== loweredKey) continue;
-    const qualifiedKey = `${section.toLowerCase()}.${loweredKey}`;
-    last = { key: qualifiedKey, source, line: token.startLine + 1, value: token.value };
+    yield { key: qualifiedKey, source, line: token.startLine + 1, value: token.value };
   }
-  return last;
+}
+
+/**
+ * git's multi-valued read (`repo_config_get_value_multi`): every entry of
+ * `key` (case-insensitive) under the subsectionless `[<section>]`, in
+ * config-file order.
+ */
+export const findEntries = async (
+  ctx: Context,
+  section: string,
+  key: string,
+): Promise<ReadonlyArray<LocatedConfigEntry>> => {
+  const { tokens, source } = await readConfigEntry(ctx);
+  return [...entriesIn(tokens, source, section, key)];
 };
 
 const REFLOG_EXPIRE_SLOTS: Readonly<Record<string, 'total' | 'unreachable'>> = {

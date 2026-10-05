@@ -113,19 +113,6 @@ const noMergeCandidates = (
 };
 
 const OCTOPUS_REFUSAL = 'merging more than one fetched ref (an octopus pull) is not supported';
-/** git's `merge.suppressDest` default: a merge into these names no destination. */
-const SUPPRESSED_DESTINATIONS: ReadonlySet<string> = new Set(['main', 'master']);
-const NAMED_KINDS = ['branch ', 'tag ', 'remote-tracking branch '] as const;
-
-/** git's `fmt_merge_msg` title for one FETCH_HEAD line. */
-const mergeMessage = (line: FetchHeadLine, currentBranch: string | undefined): string => {
-  const { description } = line;
-  const named = NAMED_KINDS.some((kind) => description.startsWith(kind));
-  const title = named || !description.startsWith("'") ? description : `commit ${description}`;
-  const suppressed = currentBranch === undefined || SUPPRESSED_DESTINATIONS.has(currentBranch);
-  return `Merge ${title}${suppressed ? '' : ` into ${currentBranch}`}`;
-};
-
 const mergeHead = async (
   ctx: Context,
   opts: PullOptions,
@@ -161,12 +148,12 @@ export const pull = async (ctx: Context, opts: PullOptions = {}): Promise<PullRe
   const fetched = await mergeHead(ctx, opts, upstream, branchRef);
 
   // git sets GIT_REFLOG_ACTION=pull for the integrate step; this is its analogue.
-  const mergeInternal: MergeInternalOptions = { reflogAction: 'pull' };
+  const mergeInternal: MergeInternalOptions = { reflogAction: 'pull', head: fetched };
   const mergeResult = await mergeRun(
     ctx,
     {
       rev: fetched.id,
-      message: opts.message ?? mergeMessage(fetched, currentBranch),
+      ...(opts.message !== undefined ? { message: opts.message } : {}),
       // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ fastForward: undefined }`, which `merge` reads as `!== 'never'` (so a fast-forward proceeds) and `=== 'only'` (false) — identical to omitting it. The drop direction + the `!==` flip are killed by the fastForward-forwarding tests.
       ...(opts.fastForward !== undefined ? { fastForward: opts.fastForward } : {}),
       // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ author: undefined }`, which `merge` resolves as `opts.author ?? config` — identical to omitting it. The drop direction + the `!==` flip are killed by the author-bearing merge tests.

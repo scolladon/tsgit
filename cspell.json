@@ -342,6 +342,7 @@
     "SIMSCAN",
     "strcasecmp",
     "strtoumax",
+    "suppressdest",
     "trustexitcode",
     "unmodelled",
     "unreadably",
