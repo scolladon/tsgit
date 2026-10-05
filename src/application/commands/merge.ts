@@ -58,7 +58,7 @@ import {
   writeWorkingTreeFileStream,
 } from '../primitives/internal/write-working-tree-file.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
-import { mergeBasesOf, reduceHeads, tryMergeBasesOf } from '../primitives/merge-base.js';
+import { mergeBasesOf, tryMergeBasesOf, tryReduceHeads } from '../primitives/merge-base.js';
 import { assertEverySourceLoadable } from '../primitives/object-store.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -293,7 +293,7 @@ const manyHeadMerge = async (
   ourId: ObjectId,
   named: ReadonlyArray<OctopusRemote>,
 ): Promise<MergeResult> => {
-  const reduced = await reduceHeads(ctx, [ourId, ...named.map((remote) => remote.id)]);
+  const reduced = (await tryReduceHeads(ctx, [ourId, ...named.map((remote) => remote.id)])) ?? [];
   const remotes = reduced.flatMap(
     (id) => named.find((remote) => remote.id === id && id !== ourId) ?? [],
   );

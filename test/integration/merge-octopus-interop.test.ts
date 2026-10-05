@@ -325,4 +325,39 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — several heads', () => {
       });
     });
   });
+
+  describe('Given a head whose parent the store lacks, alongside b1', () => {
+    describe('When both tools merge them', () => {
+      it("Then both log the parse failure and stay up to date with git's ORIG_HEAD", async () => {
+        // Arrange
+        const tree = git(pair.peer, 'rev-parse', 'main^{tree}');
+        const body = [
+          `tree ${tree}`,
+          `parent cd${'0'.repeat(38)}`,
+          'author Ada <ada@example.com> 1700000000 +0000',
+          'committer Ada <ada@example.com> 1700000000 +0000',
+          '',
+          'broken',
+          '',
+        ].join('\n');
+        const ids = [pair.ours, pair.peer].map((dir) =>
+          runGit(['-C', dir, 'hash-object', '-t', 'commit', '-w', '--stdin'], {
+            input: body,
+            env: COMMIT_ENV,
+          }).trim(),
+        );
+        const sut = mergeBoth;
+
+        // Act
+        const result = await sut([ids[0]!, 'b1']);
+
+        // Assert
+        expect(result).toEqual({ kind: 'up-to-date', id: git(pair.ours, 'rev-parse', 'main') });
+        const [head, expectedHead] = both('rev-parse', 'HEAD');
+        expect(head).toBe(expectedHead);
+        const [origHead, expectedOrigHead] = await gitFile('ORIG_HEAD');
+        expect(origHead).toBe(expectedOrigHead);
+      });
+    });
+  });
 });

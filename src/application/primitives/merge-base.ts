@@ -696,13 +696,26 @@ const COMMIT_PARSE_FAILED = 'COMMIT_PARSE_FAILED';
  * answers `undefined` rather than refusing — `merge` reads it as no remote
  * heads left, `handle_dotdot` as no range.
  */
-export const tryMergeBasesOf = async (
+export const tryMergeBasesOf = (
   ctx: Context,
   commits: readonly ObjectId[],
   options?: MergeBaseOptions,
-): Promise<readonly ObjectId[] | undefined> => {
+): Promise<readonly ObjectId[] | undefined> =>
+  undefinedOnParseFailure(ctx, () => mergeBasesOf(ctx, commits, options));
+
+/** git's `reduce_heads` as `merge` runs it: a parent that cannot be parsed is logged and leaves no head. */
+export const tryReduceHeads = (
+  ctx: Context,
+  commits: readonly ObjectId[],
+): Promise<readonly ObjectId[] | undefined> =>
+  undefinedOnParseFailure(ctx, () => reduceHeads(ctx, commits));
+
+const undefinedOnParseFailure = async <T>(
+  ctx: Context,
+  walk: () => Promise<T>,
+): Promise<T | undefined> => {
   try {
-    return await mergeBasesOf(ctx, commits, options);
+    return await walk();
   } catch (error) {
     const id = parseFailureOf(error);
     if (id === undefined) throw error;

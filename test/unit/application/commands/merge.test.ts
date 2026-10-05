@@ -144,6 +144,48 @@ describe('merge walk parse', () => {
       });
     });
   });
+
+  describe('Given a commit whose parent the store lacks, merged alongside another head', () => {
+    describe('When merge reduces the heads', () => {
+      it("Then it logs git's lines and is up to date, as git's reduce_heads leaves none", async () => {
+        // Arrange
+        const logged: string[] = [];
+        const ctx: Context = {
+          ...createMemoryContext(),
+          logger: { error: (line: string) => logged.push(line) },
+        };
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        const head = await commit(ctx, { message: 'first', author });
+        const tree = (await readObject(ctx, head.id)) as { readonly data: { tree: ObjectId } };
+        const data = { tree: tree.data.tree, author, committer: author, extraHeaders: [] };
+        const broken = await writeObject(ctx, {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: { ...data, parents: [MISSING], message: 'broken\n' },
+        });
+        const side = await writeObject(ctx, {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: { ...data, parents: [head.id], message: 'side\n' },
+        });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: [broken, side] });
+
+        // Assert
+        expect({ result, logged, origHead: await resolveRef(ctx, 'ORIG_HEAD' as RefName) }).toEqual(
+          {
+            result: { kind: 'up-to-date', id: head.id },
+            logged: [`Could not read ${MISSING}`, `could not parse commit ${MISSING}`],
+            origHead: head.id,
+          },
+        );
+      });
+    });
+  });
 });
 
 describe('merge', () => {
