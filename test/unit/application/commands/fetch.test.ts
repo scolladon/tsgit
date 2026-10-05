@@ -3197,10 +3197,11 @@ describe('fetch reflog actions', () => {
     local: Readonly<Record<string, ObjectId>>,
     remote: ReadonlyArray<{ readonly name: string; readonly id: ObjectId }>,
     ctx: ReturnType<typeof createMemoryContext>,
+    extraConfig = '',
   ): Promise<FetchResult> => {
     await ctx.fs.writeUtf8(
       `${ctx.layout.gitDir}/config`,
-      `[core]\n  logAllRefUpdates = always\n[remote "origin"]\n  url = https://example.com/r.git\n  fetch = ${spec}\n`,
+      `[core]\n  logAllRefUpdates = always\n[remote "origin"]\n  url = https://example.com/r.git\n  fetch = ${spec}\n${extraConfig}`,
     );
     for (const [name, id] of Object.entries(local)) {
       await seedRef(ctx, name as RefName, id, { reflogMessage: 'seed' });
@@ -3529,6 +3530,115 @@ describe('fetch reflog actions', () => {
             status: 'ok',
           },
         ]);
+      });
+    });
+  });
+
+  const FORCED_UPDATES_WARNING =
+    "fetch normally indicates which branches had a forced update,\nbut that check has been disabled; to re-enable, use '--show-forced-updates'\nflag or run 'git config fetch.showForcedUpdates true'";
+
+  /** A non-forcing refspec over a tracking ref the advertised commit does not descend from. */
+  const fetchRewritten = async (extraConfig: string) => {
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, {});
+    const base = await writeCommit(ctx, [], 'base\n');
+    const other = await writeCommit(ctx, [], 'other\n');
+    const warnings: string[] = [];
+    const logged = { ...ctx, logger: { warn: (message: string) => warnings.push(message) } };
+    const result = await fetchWith(
+      'refs/heads/*:refs/remotes/origin/*',
+      { 'refs/remotes/origin/main': base },
+      [{ name: 'refs/heads/main', id: other }],
+      logged,
+      extraConfig,
+    );
+    return { ctx, base, other, warnings, result };
+  };
+
+  describe('Given fetch.showForcedUpdates is off', () => {
+    describe('When a refspec without the force flag maps a rewritten ref', () => {
+      it('Then the ref moves as a fast-forward and git warns the check is disabled', async () => {
+        // Arrange
+        const sut = fetchRewritten;
+
+        // Act
+        const { ctx, base, other, warnings, result } = await sut(
+          '[fetch]\n  showForcedUpdates = false\n',
+        );
+
+        // Assert
+        expect(result.updatedRefs).toEqual([
+          {
+            name: 'refs/remotes/origin/main',
+            source: 'refs/heads/main',
+            oldId: base,
+            newId: other,
+            status: 'ok',
+          },
+        ]);
+        expect(await reflogOf(ctx, 'refs/remotes/origin/main')).toEqual([
+          'seed',
+          'fetch origin: fast-forward',
+        ]);
+        expect(warnings).toEqual([FORCED_UPDATES_WARNING]);
+      });
+    });
+  });
+
+  describe('Given fetch.showForcedUpdates is off and its advice is disabled', () => {
+    describe('When fetch runs', () => {
+      it('Then git does not warn', async () => {
+        // Arrange
+        const sut = fetchRewritten;
+
+        // Act
+        const { warnings } = await sut(
+          '[fetch]\n  showForcedUpdates = false\n[advice]\n  fetchShowForcedUpdates = false\n',
+        );
+
+        // Assert
+        expect(warnings).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a valueless fetch.showForcedUpdates', () => {
+    describe('When a refspec without the force flag maps a rewritten ref', () => {
+      it('Then the check stays on and the update is rejected', async () => {
+        // Arrange
+        const sut = fetchRewritten;
+
+        // Act
+        const { result, warnings } = await sut('[fetch]\n  showForcedUpdates\n');
+
+        // Assert
+        expect(result.updatedRefs.map((update) => update.status)).toEqual(['rejected']);
+        expect(warnings).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a fetch.showForcedUpdates git cannot read as a boolean', () => {
+    describe('When fetch runs', () => {
+      it('Then it refuses with the bad value', async () => {
+        // Arrange
+        const sut = fetchRewritten;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut('[fetch]\n  showForcedUpdates = maybe\n');
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'fetch.showforcedupdates',
+          source: '/repo/.git/config',
+          value: 'maybe',
+        });
       });
     });
   });

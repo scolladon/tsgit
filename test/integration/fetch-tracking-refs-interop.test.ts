@@ -264,4 +264,69 @@ describe.skipIf(!GIT_AVAILABLE)('fetch tracking refs interop', () => {
       });
     });
   });
+
+  describe('Given fetch.showForcedUpdates off, a rewritten main and a tag only include-tag delivers', () => {
+    describe('When both tools fetch with a refspec without the force flag', () => {
+      it('Then refs and reflogs agree and git warns once per ref-storing round', async () => {
+        // Arrange
+        const peerRoot = path.join(root, 'unchecked-peer');
+        const work = path.join(root, 'unchecked-work');
+        const bare = path.join(peerRoot, 'peer.git');
+        runGit(['init', '-q', '-b', 'main', work]);
+        runGit(['-C', work, 'commit', '-q', '--allow-empty', '-m', 'a']);
+        runGit(['-C', work, 'commit', '-q', '--allow-empty', '-m', 'b']);
+        runGit(['clone', '-q', '--bare', work, bare]);
+        const dirs = {
+          ours: path.join(root, 'unchecked-ours'),
+          theirs: path.join(root, 'unchecked-theirs'),
+        };
+        for (const [dir, url] of [
+          [dirs.ours, PEER_URL],
+          [dirs.theirs, bare],
+        ] as const) {
+          runGit(['init', '-q', '-b', 'main', dir]);
+          runGit(['-C', dir, 'config', 'core.logAllRefUpdates', 'always']);
+          runGit(['-C', dir, 'config', 'fetch.showForcedUpdates', 'false']);
+          runGit(['-C', dir, 'remote', 'add', 'origin', bare]);
+          runGit([
+            '-C',
+            dir,
+            'config',
+            'remote.origin.fetch',
+            'refs/heads/*:refs/remotes/origin/*',
+          ]);
+          runGit(['-C', dir, 'fetch', '-q', 'origin']);
+          runGit(['-C', dir, 'remote', 'set-url', 'origin', url]);
+        }
+        runGit(['-C', work, 'reset', '-q', '--hard', 'HEAD^']);
+        runGit(['-C', work, 'commit', '-q', '--allow-empty', '-m', 'b2']);
+        runGit(['-C', work, 'commit', '-q', '--allow-empty', '-m', 'c']);
+        runGit(['-C', work, 'tag', '-a', '-m', 'mid', 'mid', 'HEAD^']);
+        runGit(['-C', work, 'push', '-q', '-f', bare, 'main', 'mid']);
+        const warnings: string[] = [];
+        const ctx = {
+          ...createNodeContext({ workDir: dirs.ours }),
+          transport: backendTransport(peerRoot),
+          logger: { warn: (message: string) => warnings.push(message) },
+        };
+        const sut = fetch;
+
+        // Act
+        await sut(ctx, { remote: 'origin' });
+        const theirs = tryRunGitWithExit(['-C', dirs.theirs, 'fetch', 'origin']);
+
+        // Assert
+        expect(theirs.exitCode).toBe(0);
+        const warned = theirs.stderr
+          .split('\n')
+          .filter((line) => line.startsWith('warning: fetch normally'));
+        expect(warned).toHaveLength(2);
+        expect(warnings.map((warning) => `warning: ${warning.split('\n')[0]}`)).toEqual(warned);
+        expect(allRefs(dirs.ours)).toBe(allRefs(dirs.theirs));
+        const reflog = (dir: string) =>
+          git(dir, 'reflog', 'show', '--format=%gs', 'refs/remotes/origin/main');
+        expect(reflog(dirs.ours)).toBe(reflog(dirs.theirs));
+      });
+    });
+  });
 });

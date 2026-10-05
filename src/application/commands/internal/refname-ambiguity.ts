@@ -20,6 +20,7 @@ import {
 } from '../../primitives/config-read.js';
 import { resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
 import type { RefCandidateOutcome } from '../../primitives/resolve-ref.js';
+import { enabledByDefault } from './default-on-setting.js';
 
 /** One candidate namespace as `expand_ref` reads it. */
 export type CandidateResolver = (candidate: RefName | 'HEAD') => Promise<RefCandidateOutcome>;
@@ -41,13 +42,6 @@ interface AmbiguitySettings {
   readonly advises: boolean;
 }
 
-/** An advice setting git defaults on; a malformed value reads as on here. */
-const enabled = (entry: LocatedConfigEntry | undefined): boolean => {
-  if (entry === undefined) return true;
-  const parsed = parseGitBoolean(entry.value);
-  return !parsed.ok || parsed.value;
-};
-
 /** git's `repo_cfg_bool` read of `core.warnAmbiguousRefs`: default on, a malformed value refused. */
 const warnsOnAmbiguity = (entry: LocatedConfigEntry | undefined): boolean => {
   if (entry?.value == null) return true;
@@ -61,7 +55,7 @@ const readSettings = async (ctx: Context): Promise<AmbiguitySettings> => {
     ['core', 'warnAmbiguousRefs'],
     ['advice', 'objectNameWarning'],
   ]);
-  return { warns: warnsOnAmbiguity(warns), advises: enabled(advises) };
+  return { warns: warnsOnAmbiguity(warns), advises: enabledByDefault(advises) };
 };
 
 const warnAmbiguous = (ctx: Context, name: string): void => {

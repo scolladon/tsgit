@@ -38,12 +38,14 @@ import { isSafeRefName, validateRefName } from '../../domain/refs/ref-validation
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { Context } from '../../ports/context.js';
 import {
+  findLastEntries,
   type ParsedConfig,
   readConfig,
   warnSlashLeadingPromisorRemotes,
 } from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
 import { hasObject } from '../primitives/has-object.js';
+import { assertValidBooleanConfig } from '../primitives/internal/boolean-config-guard.js';
 import { peelRefToCommit } from '../primitives/internal/peel-ref-to-commit.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { getRefStore } from '../primitives/ref-store.js';
@@ -51,6 +53,7 @@ import { updateShallow } from '../primitives/shallow-file.js';
 import { MAX_HAVES, MAX_WALK_SEEDS } from '../primitives/types.js';
 import { deleteRefs, updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
+import { enabledByDefault } from './internal/default-on-setting.js';
 import { assertValidRemoteName, defaultRemoteName } from './internal/default-remote.js';
 import {
   fetchHeadEntries,
@@ -145,6 +148,7 @@ const FETCH_WRITE_OBJECTS_OP = 'fetch:write-objects';
 
 export const fetch = async (ctx: Context, opts: FetchOptions = {}): Promise<FetchResult> => {
   await assertOperationalRepository(ctx);
+  const forcedUpdates = await readForcedUpdateCheck(ctx);
   const head = await readHeadRaw(ctx);
   const branchRef = branchRefFromHead(head);
   const currentBranch = branchRef !== undefined ? shortBranchName(branchRef) : undefined;
@@ -157,17 +161,47 @@ export const fetch = async (ctx: Context, opts: FetchOptions = {}): Promise<Fetc
 
   ctx.progress.start(FETCH_NEGOTIATE_OP);
   try {
-    return await fetchViaSession(ctx, opts, { name: remoteName, request }, url, filter);
+    return await fetchViaSession(
+      ctx,
+      opts,
+      { name: remoteName, request, forcedUpdates },
+      url,
+      filter,
+    );
   } finally {
     ctx.progress.end(FETCH_NEGOTIATE_OP);
   }
 };
 
-/** The remote fetched from: its name, and what maps its refs locally. */
+/** git's `fetch.showForcedUpdates` and the advice warning that it is off. */
+interface ForcedUpdateCheck {
+  readonly enabled: boolean;
+  readonly advised: boolean;
+}
+
+/** The remote fetched from: its name, what maps its refs locally, and how updates are judged. */
 interface FetchRemote {
   readonly name: string;
   readonly request: RefMapRequest;
+  readonly forcedUpdates: ForcedUpdateCheck;
 }
+
+const SHOW_FORCED_UPDATES = 'showForcedUpdates';
+const FORCED_UPDATES_DISABLED = [
+  'fetch normally indicates which branches had a forced update,',
+  "but that check has been disabled; to re-enable, use '--show-forced-updates'",
+  "flag or run 'git config fetch.showForcedUpdates true'",
+].join('\n');
+
+/** git's `git_fetch_config`: a value its boolean grammar refuses is fatal; valueless is on. */
+const readForcedUpdateCheck = async (ctx: Context): Promise<ForcedUpdateCheck> => {
+  await assertValidBooleanConfig(ctx, 'fetch', undefined, [SHOW_FORCED_UPDATES]);
+  const [setting, advice] = await findLastEntries(ctx, [
+    ['fetch', SHOW_FORCED_UPDATES],
+    ['advice', 'fetchShowForcedUpdates'],
+  ]);
+  return { enabled: enabledByDefault(setting), advised: enabledByDefault(advice) };
+};
 
 const REFSPEC_REFUSAL = 'not a valid refspec';
 
@@ -322,9 +356,10 @@ const applyRefsAndBuildResult = async (
   const { refMap } = fetched;
   const pruneSpecs = request.cliSpecs.length > 0 ? request.cliSpecs : request.configSpecs;
   const prunedRefs = opts.prune === true ? await prune(ctx, pruneSpecs, refMap) : [];
-  const updated = await applyRemoteRefs(ctx, remote.name, refMap);
+  const updated = await applyRemoteRefs(ctx, remote, refMap);
   const backfill = fetched.followTags ? await backfillTags(ctx, fetched.advertisement) : [];
-  const backfilled = await applyRemoteRefs(ctx, remote.name, backfill);
+  // git's backfill is a second `store_updated_refs` round, made only when a tag needs it.
+  const backfilled = backfill.length > 0 ? await applyRemoteRefs(ctx, remote, backfill) : [];
   const fetchHeadText = await fetchHeadContent(ctx, [refMap, backfill], fetchHeadUrl(url));
   await writeFetchHead(ctx, fetchHeadText);
   const updatedRefs = [...updated, ...backfilled];
@@ -503,12 +538,17 @@ type Judgement =
 const updating = (action: FetchReflogAction): Judgement => ({ kind: 'update', action });
 const rejecting = (rejection: FetchRejection): Judgement => ({ kind: 'reject', rejection });
 
-/** git's `update_local_ref` for an existing ref: a tag or a non-fast-forward moves only under `+`. */
+/**
+ * git's `update_local_ref` for an existing ref: a tag or a non-fast-forward
+ * moves only under `+`; with `fetch.showForcedUpdates` off, every commit
+ * update is taken for a fast-forward.
+ */
 const judgeUpdate = async (
   ctx: Context,
   { source, force }: MappedRef,
   name: RefName,
   oldId: ObjectId,
+  checksAncestry: boolean,
 ): Promise<Judgement> => {
   if (name.startsWith(TAGS_PREFIX)) {
     return force ? updating('updating tag') : rejecting('would-clobber-existing-tag');
@@ -516,7 +556,7 @@ const judgeUpdate = async (
   const current = await commitOf(ctx, oldId);
   const updated = await commitOf(ctx, source.id);
   if (current === undefined || updated === undefined) return updating(storingAction(source.name));
-  if (await isAncestor(ctx, current, updated)) return updating('fast-forward');
+  if (!checksAncestry || (await isAncestor(ctx, current, updated))) return updating('fast-forward');
   return force ? updating('forced-update') : rejecting('non-fast-forward');
 };
 
@@ -534,7 +574,7 @@ const storeUpdate = async (
 
 const applyRemoteRef = async (
   ctx: Context,
-  remoteName: string,
+  remote: FetchRemote,
   entry: MappedRef,
   name: RefName,
 ): Promise<FetchUpdate> => {
@@ -543,25 +583,28 @@ const applyRemoteRef = async (
   const oldId = await readExistingRef(ctx, name);
   if (oldId === newId) return { name, source, oldId, newId, status: 'ok' };
   if (oldId === undefined) {
-    return storeUpdate(ctx, remoteName, { name, source, oldId, newId }, storingAction(source));
+    return storeUpdate(ctx, remote.name, { name, source, oldId, newId }, storingAction(source));
   }
-  const judgement = await judgeUpdate(ctx, entry, name, oldId);
+  const judgement = await judgeUpdate(ctx, entry, name, oldId, remote.forcedUpdates.enabled);
   if (judgement.kind === 'reject') {
     return { name, source, oldId, newId, status: 'rejected', rejection: judgement.rejection };
   }
-  return storeUpdate(ctx, remoteName, { name, source, oldId, newId }, judgement.action);
+  return storeUpdate(ctx, remote.name, { name, source, oldId, newId }, judgement.action);
 };
 
+/** One git `store_updated_refs` round, ending on its warning that the forced-update check is off. */
 const applyRemoteRefs = async (
   ctx: Context,
-  remoteName: string,
+  remote: FetchRemote,
   refMap: ReadonlyArray<MappedRef>,
 ): Promise<ReadonlyArray<FetchUpdate>> => {
   const updates: FetchUpdate[] = [];
   for (const entry of refMap) {
     if (entry.target === undefined) continue;
-    updates.push(await applyRemoteRef(ctx, remoteName, entry, entry.target as RefName));
+    updates.push(await applyRemoteRef(ctx, remote, entry, entry.target as RefName));
   }
+  const { enabled, advised } = remote.forcedUpdates;
+  if (!enabled && advised) ctx.logger?.warn?.(FORCED_UPDATES_DISABLED);
   return updates;
 };
 
