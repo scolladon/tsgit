@@ -9,6 +9,7 @@
  *   unique:         merge names tag oids, ancestor spellings and @{-1} as git does, and merges into a detached HEAD
  *   interopSurface: merge
  */
+import { spawnSync } from 'node:child_process';
 import { cp, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -112,6 +113,65 @@ describe.skipIf(!GIT_AVAILABLE)('merge revision forms interop', () => {
         // Assert
         const result = tipOf(pair.ours);
         expect(result).toBe(tipOf(pair.peer));
+      });
+    });
+  });
+
+  describe.each([
+    ['renamed away from its own name', ['tag', '-d', 'v1']],
+    ['whose own name is a lightweight tag of its commit', ['tag', '-f', 'v1', 'side']],
+    ['still under its own name', ['tag', '-l']],
+  ])('Given an annotated tag also reachable as other, %s', (_label, retag) => {
+    describe('When both tools merge it into a branch it fast-forwards', () => {
+      it('Then both land HEAD on the same commit', async () => {
+        // Arrange
+        await seed();
+        gitIn(pair.peer, 'update-ref', 'refs/tags/other', 'v1');
+        gitIn(pair.peer, ...retag);
+        gitIn(pair.peer, 'checkout', '-q', '-b', 'behind', 'main~1');
+        await cp(pair.peer, pair.ours, { recursive: true });
+        repo = await openRepository({ cwd: pair.ours });
+        const sut = repo.merge.run;
+
+        // Act
+        gitIn(pair.peer, 'merge', '-q', '--no-edit', 'other');
+        await sut({ rev: 'other', author: AUTHOR, committer: AUTHOR });
+
+        // Assert
+        const result = tipOf(pair.ours);
+        expect(result).toBe(tipOf(pair.peer));
+        expect(gitIn(pair.ours, 'rev-parse', 'HEAD')).toBe(gitIn(pair.peer, 'rev-parse', 'HEAD'));
+      });
+    });
+  });
+
+  describe('Given a renamed annotated tag that conflicts with HEAD', () => {
+    describe('When both tools merge it and stop', () => {
+      it('Then both record the no-ff merge mode', async () => {
+        // Arrange
+        await seed();
+        gitIn(pair.peer, 'update-ref', 'refs/tags/other', 'v1');
+        gitIn(pair.peer, 'tag', '-d', 'v1');
+        await writeFile(path.join(pair.peer, 'g'), 'main g\n');
+        gitIn(pair.peer, 'add', 'g');
+        gitIn(pair.peer, 'commit', '-q', '-m', 'main g');
+        await cp(pair.peer, pair.ours, { recursive: true });
+        repo = await openRepository({ cwd: pair.ours });
+        const sut = repo.merge.run;
+        const mode = (dir: string): Promise<string> =>
+          readFile(path.join(dir, '.git', 'MERGE_MODE'), 'utf8');
+
+        // Act
+        const git = spawnSync('git', ['-C', pair.peer, 'merge', '-q', '--no-edit', 'other'], {
+          env: ENV,
+        });
+        const merged = await sut({ rev: 'other', author: AUTHOR, committer: AUTHOR });
+
+        // Assert
+        expect(git.status).toBe(1);
+        expect(merged.kind).toBe('conflict');
+        const result = await mode(pair.ours);
+        expect(result).toBe(await mode(pair.peer));
       });
     });
   });

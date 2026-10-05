@@ -36,6 +36,7 @@ import {
 } from '../../domain/objects/index.js';
 import { treeEntry } from '../../domain/objects/tree.js';
 import { refNotFound } from '../../domain/refs/error.js';
+import { TAGS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
@@ -66,7 +67,7 @@ import { readBlob } from '../primitives/read-blob.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
-import { resolveRef } from '../primitives/resolve-ref.js';
+import { resolveRef, resolveRefForReading } from '../primitives/resolve-ref.js';
 import { runInformationalHook } from '../primitives/run-hook.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeObject } from '../primitives/write-object.js';
@@ -225,6 +226,42 @@ const settleMessage = async (
   return { ...opts, rev, message: await formatMergeMessage(ctx, heads, into) };
 };
 
+/** What git settles before merging: the message, and `--no-ff` over a throwaway tag. */
+const settleMerge = async (
+  ctx: Context,
+  input: MergeRunInput,
+  internal: MergeInternalOptions,
+  branch: RefName | undefined,
+  remotes: ReadonlyArray<MergeRemote>,
+): Promise<SettledMerge> => {
+  const settled = await settleMessage(ctx, input, internal, branch, remotes);
+  const throwaway = await mergesThrowawayTag(ctx, settled, remotes);
+  return throwaway ? { ...settled, fastForward: NO_FAST_FORWARD } : settled;
+};
+
+const NO_FAST_FORWARD = 'never';
+
+/** git's `merging_a_throwaway_tag` over every head, which only `--ff-only` overrides. */
+const mergesThrowawayTag = async (
+  ctx: Context,
+  opts: SettledMerge,
+  remotes: ReadonlyArray<MergeRemote>,
+): Promise<boolean> => {
+  if (opts.fastForward === 'only') return false;
+  for (const remote of remotes) if (await isThrowawayTag(ctx, remote.object)) return true;
+  return false;
+};
+
+/** An annotated tag its own `refs/tags/<name>` does not point at: a contributor's
+ *  tag, whose merge git keeps as a commit so the tag is not lost. */
+const isThrowawayTag = async (ctx: Context, object: ObjectId): Promise<boolean> => {
+  const read = await readObject(ctx, object);
+  if (read.type !== 'tag') return false;
+  // A name no refname can carry resolves to nothing: a throwaway tag, as in git.
+  const ownRef = `${TAGS_PREFIX}${read.data.tagName}` as RefName;
+  return (await resolveRefForReading(ctx, ownRef)) !== object;
+};
+
 const computeMerge = async (
   ctx: Context,
   input: MergeRunInput,
@@ -292,7 +329,7 @@ const twoHeadMerge = async (
   remote: MergeRemote,
 ): Promise<MergeResult> => {
   const theirId = remote.id;
-  const opts = await settleMessage(ctx, input, internal, branch, [remote]);
+  const opts = await settleMerge(ctx, input, internal, branch, [remote]);
   await writeOrigHead(ctx, ourId);
   await assertEverySourceLoadable(ctx);
   // Stryker disable next-line ConditionalExpression: equivalent — when ourId===theirId, mergeBase returns that same commit, so the `base === theirId` check below yields the identical up-to-date result.
@@ -343,7 +380,7 @@ const manyHeadMerge = async (
     await writeOrigHead(ctx, ourId);
     return { kind: 'up-to-date', id: ourId };
   }
-  const opts = await settleMessage(ctx, input, described, branch, remotes);
+  const opts = await settleMerge(ctx, input, described, branch, remotes);
   await writeOrigHead(ctx, ourId);
   await assertEverySourceLoadable(ctx);
   assertRelated(opts, await mergeBasesOf(ctx, [ourId, ...remotes.map((r) => r.id)], OCTOPUS));

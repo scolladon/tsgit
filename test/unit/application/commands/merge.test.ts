@@ -19,7 +19,7 @@ import {
   writeOutcomeToTree,
 } from '../../../../src/application/commands/merge.js';
 import { rm } from '../../../../src/application/commands/rm.js';
-import { tagCreate } from '../../../../src/application/commands/tag.js';
+import { tagCreate, tagDelete } from '../../../../src/application/commands/tag.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
@@ -5604,6 +5604,181 @@ describe('merge — unrelated histories', () => {
         const parents = committed.type === 'commit' ? committed.data.parents : [];
         expect(parents).toEqual(expected.map((name) => tips[name]));
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_MODE`)).toBe(false);
+      });
+    });
+  });
+});
+
+describe('merge — throwaway tags', () => {
+  const TAGGER_CONFIG = '[user]\n  name = Grace\n  email = grace@example.com\n';
+
+  /** main at base; `feature` one commit ahead, tagged by an annotated `v1`. */
+  const seedTaggedAhead = async (): Promise<{
+    ctx: Context;
+    base: ObjectId;
+    ahead: ObjectId;
+    tag: ObjectId;
+  }> => {
+    const ctx = createMemoryContext();
+    await init(ctx, { initialBranch: 'main' });
+    const configPath = `${ctx.layout.gitDir}/config`;
+    await ctx.fs.writeUtf8(configPath, `${await ctx.fs.readUtf8(configPath)}${TAGGER_CONFIG}`);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    const base = await commit(ctx, { message: 'base', author });
+    await branchCreate(ctx, { name: 'feature' });
+    await checkout(ctx, { rev: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+    await add(ctx, ['b.txt']);
+    const ahead = await commit(ctx, { message: 'ahead', author });
+    const tag = await tagCreate(ctx, { name: 'v1', target: 'feature', message: 'v1' });
+    await checkout(ctx, { rev: 'main' });
+    return { ctx, base: base.id, ahead: ahead.id, tag: tag.id };
+  };
+
+  /** The tag object also reachable as `refs/tags/other`, with `refs/tags/v1` gone. */
+  const renameTag = async (ctx: Context, tag: ObjectId): Promise<void> => {
+    await seedRef(ctx, 'refs/tags/other' as RefName, tag, { reflogMessage: 'seed' });
+    await tagDelete(ctx, { name: 'v1' });
+  };
+
+  describe('Given an annotated tag its own name no longer points at', () => {
+    describe('When merge could fast-forward to it', () => {
+      it('Then it records a merge commit naming the tag instead', async () => {
+        // Arrange
+        const { ctx, base, ahead, tag } = await seedTaggedAhead();
+        await renameTag(ctx, tag);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'other', author, committer: author });
+
+        // Assert
+        expect(result).toMatchObject({ kind: 'merge', parents: [base, ahead] });
+        const made = await readObject(ctx, (result as { id: ObjectId }).id);
+        expect(made.type === 'commit' && made.data.message).toBe("Merge tag 'other'\n\nv1\n");
+      });
+    });
+
+    describe('When merge is told fast-forward only', () => {
+      it('Then it still fast-forwards', async () => {
+        // Arrange
+        const { ctx, ahead, tag } = await seedTaggedAhead();
+        await renameTag(ctx, tag);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'other', fastForward: 'only' });
+
+        // Assert
+        expect(result).toEqual({ kind: 'fast-forward', id: ahead, branch: 'refs/heads/main' });
+      });
+    });
+
+    describe('When merge is given it with another branch', () => {
+      it('Then the octopus keeps HEAD as its first parent', async () => {
+        // Arrange
+        const { ctx, base, ahead, tag } = await seedTaggedAhead();
+        await renameTag(ctx, tag);
+        await branchCreate(ctx, { name: 'other-side', startPoint: 'main' });
+        await checkout(ctx, { rev: 'other-side' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
+        await add(ctx, ['c.txt']);
+        const side = await commit(ctx, { message: 'side', author });
+        await checkout(ctx, { rev: 'main' });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: ['other', 'other-side'], author, committer: author });
+
+        // Assert
+        expect(result).toMatchObject({ kind: 'merge', parents: [base, ahead, side.id] });
+      });
+    });
+  });
+
+  describe('Given an annotated tag whose own name is a lightweight tag of the same commit', () => {
+    describe('When merge could fast-forward to it', () => {
+      it('Then it records a merge commit', async () => {
+        // Arrange
+        const { ctx, base, ahead } = await seedTaggedAhead();
+        const tagObject = await resolveRef(ctx, 'refs/tags/v1' as RefName);
+        await seedRef(ctx, 'refs/tags/other' as RefName, tagObject, { reflogMessage: 'seed' });
+        await tagCreate(ctx, { name: 'v1', target: 'feature', force: true });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'other', author, committer: author });
+
+        // Assert
+        expect(result).toMatchObject({ kind: 'merge', parents: [base, ahead] });
+      });
+    });
+  });
+
+  describe('Given an annotated tag its own name still points at', () => {
+    describe('When merge is given it under another name', () => {
+      it('Then it fast-forwards', async () => {
+        // Arrange
+        const { ctx, ahead, tag } = await seedTaggedAhead();
+        await seedRef(ctx, 'refs/tags/other' as RefName, tag, { reflogMessage: 'seed' });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'other', author, committer: author });
+
+        // Assert
+        expect(result).toEqual({ kind: 'fast-forward', id: ahead, branch: 'refs/heads/main' });
+      });
+    });
+  });
+
+  describe('Given an annotated tag whose name climbs out of refs/tags back to itself', () => {
+    describe('When merge could fast-forward to it', () => {
+      it('Then it records a merge commit, as no refname can carry that name', async () => {
+        // Arrange
+        const { ctx, base, ahead } = await seedTaggedAhead();
+        const tag = await writeObject(ctx, {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: {
+            object: ahead,
+            objectType: 'commit',
+            tagName: '../tags/other',
+            tagger: author,
+            message: 'climbs\n',
+            extraHeaders: [],
+          },
+        });
+        await seedRef(ctx, 'refs/tags/other' as RefName, tag, { reflogMessage: 'seed' });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'other', author, committer: author });
+
+        // Assert
+        expect(result).toMatchObject({ kind: 'merge', parents: [base, ahead] });
+      });
+    });
+  });
+
+  describe('Given a throwaway tag that conflicts with HEAD', () => {
+    describe('When merge stops on the conflict', () => {
+      it('Then MERGE_MODE records no-ff', async () => {
+        // Arrange
+        const { ctx, tag } = await seedTaggedAhead();
+        await renameTag(ctx, tag);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'main b');
+        await add(ctx, ['b.txt']);
+        await commit(ctx, { message: 'main b', author });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'other', author, committer: author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MODE`)).toBe('no-ff');
       });
     });
   });
