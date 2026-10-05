@@ -47,6 +47,7 @@ import {
   type LocalGraphLayer,
   loadLocalCommitGraphLayers,
 } from './internal/local-commit-graph-layers.js';
+import { peel } from './internal/peel.js';
 import { isShallowRepository } from './internal/shallow-set.js';
 import {
   commitGraphChainPath,
@@ -54,7 +55,7 @@ import {
   commitGraphPath,
   commonGitDir,
 } from './path-layout.js';
-import { resolveRef } from './resolve-ref.js';
+import { resolveRefForReading } from './resolve-ref.js';
 
 export interface WriteCommitGraphResult {
   readonly commitCount: number;
@@ -81,24 +82,38 @@ export const commitGraphLocked = (lockPath: string): TsgitError =>
   new TsgitError({ code: 'RESOURCE_LOCKED', resource: 'commit-graph', path: lockPath });
 
 /**
- * Every ref's peeled target (annotated tags follow through to the tagged
- * object, matching `--reachable`) — refs-only, not gc's wider retention
- * roots. An unresolvable ref (unborn HEAD, a dangling symref) roots
- * nothing rather than failing the whole write, mirroring fsck's own
- * `addRefRoots` tolerance for the same conditions.
+ * git's `add_ref_to_set` over `refs_for_each_ref`: every ref peeled through
+ * its tags (matching `--reachable`) that names a commit — refs-only, not
+ * gc's wider retention roots. A ref that does not resolve for reading
+ * (garbage, a dangling symref) is skipped by the iterator; a tag chain that
+ * does not peel leaves the tag, never a commit. Any other failure propagates.
  */
 export async function commitGraphRoots(ctx: Context): Promise<readonly ObjectId[]> {
   const refNames = await enumerateRefs(ctx);
   const roots = new Set<ObjectId>();
   for (const name of refNames) {
-    try {
-      roots.add(await resolveRef(ctx, name, { peel: true }));
-    } catch {
-      // Unresolvable ref — tolerated, roots nothing.
-    }
+    const id = await resolveRefForReading(ctx, name);
+    const root = id === undefined ? undefined : await peeledCommit(ctx, id);
+    if (root !== undefined) roots.add(root);
   }
   return [...roots];
 }
+
+/** Failures that leave a ref naming no commit: a missing or non-commit end, a tag that does not parse. */
+const NO_COMMIT_CODES: ReadonlySet<string> = new Set([
+  'OBJECT_NOT_FOUND',
+  'INVALID_OBJECT_ID',
+  'INVALID_TAG',
+]);
+
+const peeledCommit = async (ctx: Context, id: ObjectId): Promise<ObjectId | undefined> => {
+  try {
+    return await peel(ctx, undefined, id, 'commit');
+  } catch (error) {
+    if (NO_COMMIT_CODES.has(errorDataCode(error) ?? '')) return undefined;
+    throw error;
+  }
+};
 
 const NOT_IN_GRAPH = (): boolean => false;
 

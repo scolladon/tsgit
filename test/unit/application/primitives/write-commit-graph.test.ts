@@ -24,7 +24,7 @@ import type {
 import { zeroOid } from '../../../../src/domain/objects/index.js';
 import { serializeReflogLine } from '../../../../src/domain/reflog/index.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, writeRawObjectBytes } from './fixtures.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'Alice',
@@ -486,6 +486,84 @@ describe('commit-graph file modes', () => {
         // Assert
         expect(caught).toBe(refusal);
       });
+    });
+  });
+});
+
+const ENC = new TextEncoder();
+const MISSING_OID = '1'.repeat(40);
+
+/** Each ref shape git's ref iterator or peel skips without a word. */
+const BROKEN_REFS: ReadonlyArray<readonly [string, (ctx: Context) => Promise<string>]> = [
+  ['a loose ref holding garbage', async () => 'garbage\n'],
+  ['a symref to a missing ref', async () => 'ref: refs/heads/nowhere\n'],
+  ['a ref to a missing object', async () => `${MISSING_OID}\n`],
+  [
+    'an annotated tag of a missing object',
+    async (ctx) =>
+      `${await writeRawObjectBytes(ctx, 'tag', ENC.encode(`object ${MISSING_OID}\ntype commit\ntag t\n\nm\n`))}\n`,
+  ],
+  [
+    'a tag object whose headers are out of order',
+    async (ctx) =>
+      `${await writeRawObjectBytes(ctx, 'tag', ENC.encode(`object ${MISSING_OID}\ntag t\n\nm\n`))}\n`,
+  ],
+  [
+    'a tag object that does not parse',
+    async (ctx) => `${await writeRawObjectBytes(ctx, 'tag', ENC.encode('object zz\n'))}\n`,
+  ],
+];
+
+describe.each(BROKEN_REFS)('Given a reachable commit beside %s', (_, content) => {
+  describe('When writeCommitGraph runs', () => {
+    it('Then the broken ref roots nothing and the commit is written', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const commitId = await rootCommit(ctx, AUTHOR.timestamp, 'root');
+      await pointRef(ctx, 'refs/heads/main', commitId);
+      await ctx.fs.writeUtf8(`${commonGitDir(ctx)}/refs/heads/broken`, await content(ctx));
+      const sut = writeCommitGraph;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.commitCount).toBe(1);
+    });
+  });
+});
+
+describe('Given a ref whose object read fails unexpectedly', () => {
+  describe('When writeCommitGraph runs', () => {
+    it('Then the failure propagates', async () => {
+      // Arrange
+      const base = await buildSeededContext();
+      const commitId = await rootCommit(base, AUTHOR.timestamp, 'root');
+      await pointRef(base, 'refs/heads/main', commitId);
+      const objectPath = `objects/${commitId.slice(0, 2)}/${commitId.slice(2)}`;
+      const fault = new Error('adapter fault');
+      const fs = new Proxy(base.fs, {
+        get: (target, key) => {
+          const member = Reflect.get(target, key);
+          if (typeof member !== 'function') return member;
+          return (...args: unknown[]) =>
+            String(args[0]).endsWith(objectPath)
+              ? Promise.reject(fault)
+              : Reflect.apply(member, target, args);
+        },
+      });
+      const sut = writeCommitGraph;
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut({ ...base, fs });
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBe(fault);
     });
   });
 });

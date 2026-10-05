@@ -602,3 +602,48 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop — an unparseable p
     });
   });
 });
+
+/** A history whose refs include every shape git's `--reachable` roots skip. */
+async function buildBrokenRefsRepo(): Promise<string> {
+  const dir = await initRepo('broken-refs');
+  await addCommit(dir, 'a');
+  await addCommit(dir, 'b');
+  const missing = '1'.repeat(40);
+  const heads = path.join(dir, '.git', 'refs', 'heads');
+  await writeFile(path.join(heads, 'garbage'), 'garbage\n');
+  await writeFile(path.join(heads, 'dangling'), 'ref: refs/heads/nowhere\n');
+  await writeFile(path.join(heads, 'missing'), `${missing}\n`);
+  const tagOf = (body: string): string =>
+    runGit(['-C', dir, 'hash-object', '-t', 'tag', '-w', '--stdin', '--literally'], {
+      input: body,
+    }).trim();
+  const tags = path.join(dir, '.git', 'refs', 'tags');
+  await writeFile(
+    path.join(tags, 'of-missing'),
+    `${tagOf(`object ${missing}\ntype commit\ntag t\n\nm\n`)}\n`,
+  );
+  await writeFile(path.join(tags, 'unparsable'), `${tagOf('object zz\n')}\n`);
+  git(dir, 'update-ref', 'refs/tags/tree', 'HEAD^{tree}');
+  return dir;
+}
+
+describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop — refs that root nothing', () => {
+  describe('Given garbage, dangling, missing-object, broken-tag and non-commit refs beside a history', () => {
+    describe('When both tools write the reachable commit-graph', () => {
+      it('Then both skip those refs silently and write the same bytes', async () => {
+        // Arrange
+        const baseDir = await buildBrokenRefsRepo();
+
+        // Act
+        const twin = await writeBoth(baseDir, 'broken-refs');
+
+        // Assert
+        expect(Buffer.compare(twin.peerBytes, twin.oursBytes)).toBe(0);
+        expect(parseCommitGraphLayer(twin.oursBytes).commitCount).toBe(2);
+        for (const dir of [baseDir, twin.peerDir, twin.oursDir]) {
+          await rm(dir, { recursive: true, force: true });
+        }
+      });
+    });
+  });
+});
