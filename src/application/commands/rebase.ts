@@ -9,14 +9,12 @@
 import {
   invalidOption,
   invalidSequencerTodo,
-  mergeHasConflicts,
   noInitialCommit,
   noOperationInProgress,
   workingTreeDirty,
 } from '../../domain/commands/error.js';
 import { renderPatch, sortedRecordedPaths } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
-import type { IndexEntry } from '../../domain/git-index/index.js';
 import { type ConflictType, type MergeConflict, replayLabels } from '../../domain/merge/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
@@ -81,6 +79,7 @@ import {
   writeRebaseStop,
 } from './internal/rebase-state.js';
 import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
+import { rejectUnmergedIndex } from './internal/unmerged-index.js';
 
 export type { ConflictType } from '../../domain/merge/index.js';
 
@@ -503,14 +502,6 @@ export interface RebaseAbortResult {
 /** The branch a stop's `head-name` names, or `undefined` for a detached rebase. */
 const branchOf = (headName: string): RefName | undefined =>
   headName === 'detached HEAD' ? undefined : (headName as RefName);
-
-const rejectUnmergedIndex = (entries: ReadonlyArray<IndexEntry>): void => {
-  const unmerged = new Set<FilePath>();
-  for (const entry of entries) {
-    if (entry.flags.stage !== 0) unmerged.add(entry.path);
-  }
-  if (unmerged.size > 0) throw mergeHasConflicts(unmerged.size, [...unmerged]);
-};
 
 /**
  * Resume the rebase after the conflicted commit was resolved: commit the resolved

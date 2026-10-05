@@ -1,9 +1,8 @@
-import { mergeHasConflicts } from '../../domain/commands/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { nothingToCommit } from '../../domain/index.js';
 import type { Commit, CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
-import type { AuthorIdentity, FilePath, ObjectId, TreeEntry } from '../../domain/objects/index.js';
+import type { AuthorIdentity, ObjectId, TreeEntry } from '../../domain/objects/index.js';
 import { serializeCommitContent, zeroOid } from '../../domain/objects/index.js';
 import type { RefName } from '../../domain/objects/object-id.js';
 import { treeEntry } from '../../domain/objects/tree.js';
@@ -55,6 +54,7 @@ import { readMergeHeads, readMergeMsg, readsNoFastForward } from './internal/mer
 import { assertNoPendingOperation, readHeadRaw, requireWorkTree } from './internal/repo-state.js';
 import { readRevertHead } from './internal/revert-state.js';
 import { resolveSignRequest, signOrThrow } from './internal/sign-request.js';
+import { rejectUnmergedIndex } from './internal/unmerged-index.js';
 
 export interface CommitOptions {
   readonly message: string;
@@ -318,18 +318,6 @@ const buildParents = async (
   if (mergeHeads === undefined) return head;
   const parents = [...head, ...mergeHeads];
   return (await readsNoFastForward(ctx)) ? parents : reduceHeads(ctx, parents);
-};
-
-const rejectUnmergedIndex = (entries: ReadonlyArray<IndexEntry>): void => {
-  const unmergedPaths = new Set<FilePath>();
-  for (const entry of entries) {
-    if (entry.flags.stage !== 0) {
-      unmergedPaths.add(entry.path);
-    }
-  }
-  if (unmergedPaths.size > 0) {
-    throw mergeHasConflicts(unmergedPaths.size, [...unmergedPaths]);
-  }
 };
 
 const toAuthor = (

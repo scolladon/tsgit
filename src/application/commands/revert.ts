@@ -8,7 +8,6 @@
  * revert (no net change) stops markerless (git has no `--allow-empty`).
  */
 import {
-  mergeHasConflicts,
   noInitialCommit,
   noOperationInProgress,
   revertMergeNoMainline,
@@ -16,7 +15,6 @@ import {
 } from '../../domain/commands/error.js';
 import { sortedRecordedPaths } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
-import type { IndexEntry } from '../../domain/git-index/index.js';
 import { unsupportedOperation } from '../../domain/index.js';
 import { type ConflictType, type MergeConflict, revertLabels } from '../../domain/merge/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
@@ -70,6 +68,7 @@ import {
   writeSequencerOpts,
   writeSequencerTodo,
 } from './internal/sequencer-state.js';
+import { rejectUnmergedIndex } from './internal/unmerged-index.js';
 
 export type { ConflictType } from '../../domain/merge/index.js';
 
@@ -379,14 +378,6 @@ export const revertRun = async (ctx: Context, input: RevertRunInput): Promise<Re
     onEmpty: 'stop',
   };
   return runSequence(ctx, todo, ourId, seq);
-};
-
-const rejectUnmergedIndex = (entries: ReadonlyArray<IndexEntry>): void => {
-  const unmerged = new Set<FilePath>();
-  for (const entry of entries) {
-    if (entry.flags.stage !== 0) unmerged.add(entry.path);
-  }
-  if (unmerged.size > 0) throw mergeHasConflicts(unmerged.size, [...unmerged]);
 };
 
 /**

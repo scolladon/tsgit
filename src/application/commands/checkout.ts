@@ -34,10 +34,10 @@ import { runInformationalHook } from '../primitives/run-hook.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { walkTree } from '../primitives/walk-tree.js';
 import { type BranchTrack, branchCreate } from './branch.js';
+import { removeBranchState } from './internal/branch-state.js';
 import { checkoutMetadataFor } from './internal/checkout-metadata.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
-  assertNoPendingOperation,
   assertOperationalRepository,
   readHeadRaw,
   requireWorkTree,
@@ -45,6 +45,7 @@ import {
 import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
 import { resolveRevisionExpression } from './internal/revision-expression.js';
 import { resolveRevisionName } from './internal/revision-name.js';
+import { rejectUnmergedIndex } from './internal/unmerged-index.js';
 
 /** git's `checkout -b <name> [--track|--no-track] <rev>`: create `name` at `rev`, then switch to it. */
 export interface CheckoutCreateBranch {
@@ -200,6 +201,8 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
   let materializeResult: Awaited<ReturnType<typeof materializeTree>>;
   try {
     const currentIndex = await readIndex(ctx);
+    // git's `merge_working_tree`: only a forced switch may discard a conflict.
+    if (opts.force !== true) rejectUnmergedIndex(currentIndex.entries);
     materializeResult = await materializeTree(ctx, {
       targetTree: target.id,
       currentIndex,
@@ -226,6 +229,7 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
   const label = opts.createBranch?.name ?? opts.rev;
   const message = `checkout: moving from ${headCheckoutLabel(priorHead)} to ${label}`;
   await moveHead(ctx, { attached, oid, oldOid, message });
+  await removeBranchState(ctx, 'announce');
   // post-checkout (informational) fires after the worktree + HEAD are updated;
   // a branch checkout (changing branches / detaching) flags `1`.
   await runInformationalHook(ctx, 'post-checkout', { args: [oldOid, oid, BRANCH_FLAG] });
@@ -409,7 +413,6 @@ export const checkout = (ctx: Context, opts: CheckoutOptions): Promise<CheckoutR
 const checkoutInScope = async (ctx: Context, opts: CheckoutOptions): Promise<CheckoutResult> => {
   await assertOperationalRepository(ctx);
   requireWorkTree(ctx, 'checkout');
-  await assertNoPendingOperation(ctx);
 
   const switchMode = isSwitch(opts);
   const pathsMode = isPaths(opts);

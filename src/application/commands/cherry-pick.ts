@@ -8,14 +8,12 @@
  */
 import {
   cherryPickMergeNoMainline,
-  mergeHasConflicts,
   noInitialCommit,
   noOperationInProgress,
   workingTreeDirty,
 } from '../../domain/commands/error.js';
 import { sortedRecordedPaths } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
-import type { IndexEntry } from '../../domain/git-index/index.js';
 import { unsupportedOperation } from '../../domain/index.js';
 import { type ConflictType, type MergeConflict, replayLabels } from '../../domain/merge/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
@@ -72,6 +70,7 @@ import {
   writeSequencerOpts,
   writeSequencerTodo,
 } from './internal/sequencer-state.js';
+import { rejectUnmergedIndex } from './internal/unmerged-index.js';
 
 export type { ConflictType } from '../../domain/merge/index.js';
 
@@ -413,14 +412,6 @@ export interface CherryPickContinueInput {
   /** --allow-empty: finalise a resolution that yields no change as an empty commit. */
   readonly allowEmpty?: boolean;
 }
-
-const rejectUnmergedIndex = (entries: ReadonlyArray<IndexEntry>): void => {
-  const unmerged = new Set<FilePath>();
-  for (const entry of entries) {
-    if (entry.flags.stage !== 0) unmerged.add(entry.path);
-  }
-  if (unmerged.size > 0) throw mergeHasConflicts(unmerged.size, [...unmerged]);
-};
 
 /** Commit the resolved pick: single parent, preserved author, MERGE_MSG (comments stripped). */
 const commitResolvedPick = async (

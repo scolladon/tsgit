@@ -92,9 +92,12 @@ describe.skipIf(!GIT_AVAILABLE)('branch-state removal interop', () => {
     await commitAll('f', 'main\n', 'main');
   };
 
-  const openOurCopy = async (): Promise<Repository> => {
+  const openOurCopy = async (warnings: string[] = []): Promise<Repository> => {
     await cp(pair.peer, pair.ours, { recursive: true });
-    repo = await openRepository({ cwd: pair.ours });
+    repo = await openRepository({
+      cwd: pair.ours,
+      logger: { warn: (message: string) => warnings.push(message) },
+    });
     return repo;
   };
 
@@ -261,6 +264,52 @@ describe.skipIf(!GIT_AVAILABLE)('branch-state removal interop', () => {
         const result = stateFilesOf(pair.ours);
         expect(result).toEqual(stateFilesOf(pair.peer));
         expect(result).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a cherry-pick stopped on a conflict, resolved to HEAD', () => {
+    describe('When both tools checkout another branch', () => {
+      it('Then both switch, warn of the cancelled pick and drop its state', async () => {
+        // Arrange
+        await seedDivergedHistory();
+        gitIn(pair.peer, 'cherry-pick', 'side~2');
+        gitIn(pair.peer, 'checkout', 'HEAD', '--', 'f');
+        const warnings: string[] = [];
+        const ours = await openOurCopy(warnings);
+        const sut = ours.checkout;
+
+        // Act
+        const git = gitIn(pair.peer, 'checkout', 'side');
+        await sut({ rev: 'side' });
+
+        // Assert
+        expect(git.stderr).toContain('warning: cancelling a cherry picking in progress\n');
+        expect(warnings).toEqual(['cancelling a cherry picking in progress']);
+        const result = stateFilesOf(pair.ours);
+        expect(result).toEqual(stateFilesOf(pair.peer));
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a merge stopped on a conflict', () => {
+    describe('When both tools checkout another branch', () => {
+      it('Then both refuse until the index is resolved', async () => {
+        // Arrange
+        await seedDivergedHistory();
+        gitIn(pair.peer, 'merge', 'side');
+        const ours = await openOurCopy();
+        const sut = ours.checkout;
+
+        // Act
+        const git = gitIn(pair.peer, 'checkout', 'side');
+        const result = await codeOf(() => sut({ rev: 'side' }));
+
+        // Assert
+        expect(git.stderr).toBe('error: you need to resolve your current index first\n');
+        expect(result).toEqual({ code: 'MERGE_HAS_CONFLICTS', count: 1, paths: ['f'] });
+        expect(stateFilesOf(pair.ours)).toEqual(stateFilesOf(pair.peer));
       });
     });
   });
