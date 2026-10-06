@@ -28,8 +28,9 @@ export const wipMessage = (branch: string, abbrev: string, subject: string): str
 
 export const onMessage = (branch: string, message: string): string => `On ${branch}: ${message}`;
 
+// git's `create_stash` ends the index and untracked commit messages with a line feed, unlike the stash's own.
 export const indexMessage = (branch: string, abbrev: string, subject: string): string =>
-  `index on ${branch}: ${abbrev} ${subject}`;
+  `index on ${branch}: ${abbrev} ${subject}\n`;
 
 export const untrackedMessage = (branch: string, abbrev: string, subject: string): string =>
-  `untracked files on ${branch}: ${abbrev} ${subject}`;
+  `untracked files on ${branch}: ${abbrev} ${subject}\n`;

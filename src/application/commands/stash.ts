@@ -215,6 +215,25 @@ export const stashPush = async (
 ): Promise<StashPushResult> => {
   const workDir = await gateStash(ctx, 'stash');
   await assertNoPendingOperation(ctx);
+  return stashAndReset(ctx, workDir, opts, (w) => pushStashRef(ctx, w.stash, w.message));
+};
+
+/** git's `stash create` then `reset --hard`: the local changes as an unrecorded stash. */
+export const createAutostash = async (ctx: Context): Promise<ObjectId | undefined> => {
+  const workDir = requireWorkTree(ctx, 'rebase');
+  const result = await stashAndReset(ctx, workDir, { message: AUTOSTASH }, async () => {});
+  return result.kind === 'saved' ? result.stash : undefined;
+};
+
+const AUTOSTASH = 'autostash';
+
+/** Snapshot the local changes into stash commits, `record` them, then reset the tree. */
+const stashAndReset = async (
+  ctx: Context,
+  workDir: string,
+  opts: StashPushInput,
+  record: (w: { readonly stash: ObjectId; readonly message: string }) => Promise<void>,
+): Promise<StashPushResult> => {
   const head = await readHeadRaw(ctx);
   const base = await resolveBase(ctx, head);
 
@@ -234,7 +253,7 @@ export const stashPush = async (
     }
 
     const w = await createStashCommits(ctx, { base, iTree, working, untracked, opts });
-    await pushStashRef(ctx, w.stash, w.message);
+    await record(w);
     await resetAfterPush(ctx, lock, { base, iTree, untracked, opts });
     return { kind: 'saved', stash: w.stash, message: w.message };
   } finally {
@@ -446,7 +465,37 @@ export const stashApply = async (
 ): Promise<StashApplyResult> => {
   const workDir = await gateStash(ctx, 'stash apply');
   await assertNoPendingOperation(ctx);
-  const w = await resolveStashEntry(ctx, input.index ?? 0);
+  return applyStashCommit(ctx, workDir, await resolveStashEntry(ctx, input.index ?? 0), input);
+};
+
+/**
+ * git's `apply_autostash`: re-apply the autostash; on a conflict keep the
+ * conflicted tree and store the stash in `refs/stash` (`autostash`).
+ */
+export const applyAutostash = async (ctx: Context, w: ObjectId): Promise<void> => {
+  const workDir = requireWorkTree(ctx, 'rebase');
+  const result = await applyStashCommit(ctx, workDir, w, {});
+  if (result.kind === 'applied') {
+    ctx.logger?.info?.('Applied autostash.');
+    return;
+  }
+  await pushStashRef(ctx, w, AUTOSTASH);
+  ctx.logger?.warn?.(AUTOSTASH_CONFLICT);
+};
+
+const AUTOSTASH_CONFLICT =
+  'Your local changes are stashed, however applying them\n' +
+  'resulted in conflicts.  You can either resolve the conflicts\n' +
+  'and then discard the stash with "git stash drop", or, if you\n' +
+  'do not want to resolve them now, run "git reset --hard" and\n' +
+  'apply the local changes later by running "git stash pop".';
+
+const applyStashCommit = async (
+  ctx: Context,
+  workDir: string,
+  w: ObjectId,
+  input: StashApplyInput,
+): Promise<StashApplyResult> => {
   const parsed = await parseStashCommit(ctx, w);
   const bTree = await commitTreeOf(ctx, parsed.base);
   const uTree =

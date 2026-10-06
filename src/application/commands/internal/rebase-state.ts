@@ -262,6 +262,13 @@ export const dropFixupGroup = async (ctx: Context): Promise<void> => {
   }
 };
 
+/** `rebase-merge/autostash`: the stash a `--autostash` rebase re-applies as it ends. */
+export const writeAutostash = (ctx: Context, stash: ObjectId): Promise<void> =>
+  ctx.fs.writeUtf8(file(ctx, 'autostash'), `${stash}\n`);
+
+export const readAutostash = (ctx: Context): Promise<ObjectId | undefined> =>
+  readOptionalOidFile(ctx, file(ctx, 'autostash'));
+
 /** Remove the whole `.git/rebase-merge/` dir and `.git/REBASE_HEAD`. Idempotent. */
 export const clearRebaseState = async (ctx: Context): Promise<void> => {
   if (await ctx.fs.exists(dir(ctx))) await ctx.fs.rmRecursive(dir(ctx));

@@ -13,6 +13,7 @@ import {
   noOperationInProgress,
   workingTreeDirty,
 } from '../../domain/commands/error.js';
+import { parseGitBoolean } from '../../domain/config/config-ini.js';
 import { renderPatch, sortedRecordedPaths } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
 import { type ConflictType, type MergeConflict, replayLabels } from '../../domain/merge/index.js';
@@ -41,8 +42,11 @@ import {
   rebaseStartCheckout,
 } from '../../domain/reflog/reflog-messages.js';
 import type { Context } from '../../ports/context.js';
+import { abbreviateObjectId } from '../primitives/abbreviate-object-id.js';
+import { findLastEntry } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
 import { diffTrees } from '../primitives/diff-trees.js';
+import { assertValidBooleanConfig } from '../primitives/internal/boolean-config-guard.js';
 import {
   assertNoPendingOperation,
   assertOperationalRepositorySettingsFirst,
@@ -90,13 +94,16 @@ import {
   dropFixupGroup,
   type RebaseState,
   type RebaseStop,
+  readAutostash,
   readRebaseState,
   readRewrittenList,
   serializeRewritten,
+  writeAutostash,
   writeRebaseStop,
 } from './internal/rebase-state.js';
 import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
 import { rejectUnmergedIndex } from './internal/unmerged-index.js';
+import { applyAutostash, createAutostash } from './stash.js';
 
 export type { ConflictType } from '../../domain/merge/index.js';
 
@@ -137,6 +144,13 @@ export interface RebaseRunInput {
    * the new base too.
    */
   readonly rebaseMerges?: boolean | 'rebase-cousins' | 'no-rebase-cousins';
+  /**
+   * `--autostash` / `--no-autostash`; unset reads `rebase.autostash`. A dirty
+   * tree is stashed (`On <branch>: autostash`) and re-applied when the rebase
+   * ends or aborts; a conflicting re-apply keeps the conflict and stores the
+   * stash in `refs/stash`.
+   */
+  readonly autostash?: boolean;
 }
 
 export interface RebasedCommit {
@@ -515,7 +529,7 @@ const replayFrom = async (
   await finishRebase(ctx, rc, cur);
   await firePostRewrite(ctx, rewritten);
   await deleteRewrittenRefs(ctx, [...rc.doneBefore, ...rc.todo]);
-  await clearRebaseState(ctx);
+  await endRebaseState(ctx);
   return { kind: 'rebased', commits: applied };
 };
 
@@ -535,6 +549,35 @@ const startInteractive = async (
   await assertEverySourceLoadable(ctx);
   await firePreRebase(ctx, upstreamName);
   return rebaseRunInteractive(ctx, { ...sides, instructions, base });
+};
+
+/** git's `--autostash` / `rebase.autostash`: stash a dirty tree before the rebase. */
+const autostashIfWanted = async (
+  ctx: Context,
+  given: boolean | undefined,
+): Promise<ObjectId | undefined> => {
+  if (!(given ?? (await configuredAutostash(ctx)))) return undefined;
+  const stash = await createAutostash(ctx);
+  if (stash !== undefined) {
+    ctx.logger?.info?.(`Created autostash: ${await abbreviateObjectId(ctx, stash)}`);
+  }
+  return stash;
+};
+
+const configuredAutostash = async (ctx: Context): Promise<boolean> => {
+  await assertValidBooleanConfig(ctx, 'rebase', undefined, ['autostash']);
+  const entry = await findLastEntry(ctx, 'rebase', 'autostash');
+  if (entry === undefined) return false;
+  if (entry.value === null) return true;
+  const parsed = parseGitBoolean(entry.value);
+  return parsed.ok && parsed.value;
+};
+
+/** End the rebase's state, then re-apply its autostash, as git's `apply_autostash` does. */
+const endRebaseState = async (ctx: Context): Promise<void> => {
+  const stash = await readAutostash(ctx);
+  await clearRebaseState(ctx);
+  if (stash !== undefined) await applyAutostash(ctx, stash);
 };
 
 const rebasingMerges = (mode: RebaseRunInput['rebaseMerges']): boolean =>
@@ -567,19 +610,23 @@ export const rebaseRun = async (
   const onto = input.onto !== undefined ? await resolveCommitIsh(ctx, input.onto) : upstream;
   const ontoName = input.onto ?? upstreamName;
   const branchBase = await branchBaseOf(ctx, onto, headCommit);
-  await assertCleanWorkTree(ctx, await treeOf(ctx, headCommit));
   if (input.interactive !== undefined && rebasingMerges(input.rebaseMerges)) {
     throw invalidOption('rebaseMerges', 'interactive instructions cannot carry merges');
   }
+  const stash = await autostashIfWanted(ctx, input.autostash);
+  await assertCleanWorkTree(ctx, await treeOf(ctx, headCommit));
   if (input.interactive !== undefined) {
+    if (stash !== undefined) await writeAutostash(ctx, stash);
     const sides = { branch, headCommit, upstream, onto, ontoName };
     return startInteractive(ctx, upstreamName, input.interactive, sides);
   }
   // git fires pre-rebase only when the rebase will do work; an up-to-date rebase
   // (nothing to replay or fast-forward) returns before the hook, matching git.
   if (await canFastForward(ctx, { onto, upstream, head: headCommit, branchBase })) {
+    if (stash !== undefined) await applyAutostash(ctx, stash);
     return { kind: 'up-to-date' };
   }
+  if (stash !== undefined) await writeAutostash(ctx, stash);
   await assertEverySourceLoadable(ctx);
   await firePreRebase(ctx, upstreamName);
   const todo = await planTodo(ctx, input.rebaseMerges, { upstream, head: headCommit });
@@ -745,7 +792,7 @@ export const rebaseAbort = async (ctx: Context): Promise<RebaseAbortResult> => {
   ]);
   await removeBranchState(ctx, 'silent');
   await deleteRewrittenRefs(ctx, state.done);
-  await clearRebaseState(ctx);
+  await endRebaseState(ctx);
   return { head: state.origHead, headName: state.headName };
 };
 
@@ -1242,7 +1289,7 @@ const replayInteractive = async (
   }
   await finishRebase(ctx, { ...ic, reflogAction: REBASE_REFLOG_ACTION }, head);
   await firePostRewrite(ctx, rewritten);
-  await clearRebaseState(ctx);
+  await endRebaseState(ctx);
   return { kind: 'rebased', commits: applied };
 };
 

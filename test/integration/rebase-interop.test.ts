@@ -26,7 +26,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.node.js';
 import {
@@ -472,6 +472,10 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
         );
         const base = oidAt(pair.ours, 'HEAD~3');
         const [c1, c2, c3] = ['HEAD~2', 'HEAD~1', 'HEAD'].map((r) => oidAt(pair.ours, r));
+        // Commit on git's second, so a run straddling a second boundary still compares oids.
+        const committedAt = Number(git(pair.peer, 'log', '-1', '--format=%ct', 'HEAD').trim());
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(committedAt * 1000);
         const repo = await openRepository({ cwd: pair.ours });
         const sut = repo.rebase.run;
 
@@ -485,6 +489,7 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
           ],
         });
         await repo.dispose();
+        vi.useRealTimers();
 
         // Assert
         const result = stopMarkers(pair.ours);

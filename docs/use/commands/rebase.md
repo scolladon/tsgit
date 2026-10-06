@@ -23,6 +23,7 @@ interface RebaseNamespace {
     onto?: string; // --onto <newbase>: replay onto this base instead of `upstream`
     interactive?: ReadonlyArray<RebaseInstruction>; // present → `rebase -i`
     rebaseMerges?: boolean | 'rebase-cousins' | 'no-rebase-cousins'; // --rebase-merges[=<mode>]
+    autostash?: boolean; // --autostash / --no-autostash; unset reads rebase.autostash
   }): Promise<RebaseResult>;
 
   continue(): Promise<RebaseResult>;
@@ -87,6 +88,16 @@ type RebaseResult =
 - **Refusals.** A dirty index/working tree (`WORKING_TREE_DIRTY`), an operation
   already in progress (`OPERATION_IN_PROGRESS`), an unborn branch
   (`NO_INITIAL_COMMIT`), no work tree (`WORK_TREE_REQUIRED`).
+
+## Autostash (`--autostash`)
+
+With `autostash: true` (or `rebase.autostash`), a dirty tree is stashed as git's
+`stash create "autostash"` does (`On <branch>: autostash`, logged `Created
+autostash: <abbrev>`) and the tree reset before the rebase. The stash oid is kept in
+`.git/rebase-merge/autostash` while the rebase is stopped. When the rebase finishes,
+aborts, or turns out up to date, the stash is re-applied (`Applied autostash.`); a
+conflicting re-apply leaves the conflicted tree, stores the stash in `refs/stash`
+with the reflog message `autostash` and logs git's warning.
 
 ## Recreating merges (`--rebase-merges`)
 

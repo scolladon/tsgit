@@ -25,7 +25,7 @@ describe('stash-message builders', () => {
         const result = indexMessage('main', 'abc1234', 'initial commit');
 
         // Assert
-        expect(result).toBe('index on main: abc1234 initial commit');
+        expect(result).toBe('index on main: abc1234 initial commit\n');
       });
     });
 
@@ -35,7 +35,7 @@ describe('stash-message builders', () => {
         const result = untrackedMessage('main', 'abc1234', 'initial commit');
 
         // Assert
-        expect(result).toBe('untracked files on main: abc1234 initial commit');
+        expect(result).toBe('untracked files on main: abc1234 initial commit\n');
       });
     });
   });
