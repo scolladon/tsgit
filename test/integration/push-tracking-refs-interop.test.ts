@@ -69,6 +69,52 @@ const trackingRefs = (dir: string): string =>
   git(dir, 'for-each-ref', '--format=%(refname) %(objectname)', 'refs/remotes/mirror');
 
 describe.skipIf(!GIT_AVAILABLE)('push tracking refs interop', () => {
+  describe('Given an up-to-date main with a stale tracking ref and a new branch the peer refuses to unpack', () => {
+    describe('When both tools push main and the new branch', () => {
+      it("Then both fail yet refresh main's tracking ref alike", async () => {
+        // Arrange
+        const { ours, theirs, peerRoot } = setUp('unpack');
+        const ctx = {
+          ...createNodeContext({ workDir: ours }),
+          transport: backendTransport(peerRoot),
+        };
+        await push(ctx, { remote: 'origin', refspecs: ['main'] });
+        git(theirs, 'push', '-q', 'origin', 'main');
+        git(ours, 'checkout', '-q', '-b', 'fresh');
+        git(ours, 'commit', '-q', '--allow-empty', '-m', 'fresh');
+        git(theirs, 'fetch', '-q', ours, 'fresh:fresh');
+        for (const dir of [ours, theirs]) git(dir, 'update-ref', '-d', 'refs/remotes/mirror/main');
+        for (const bare of ['peer.git', 'twin.git']) {
+          git(path.join(peerRoot, bare), 'config', 'receive.maxInputSize', '1');
+        }
+        const sut = push;
+
+        // Act
+        let code: unknown;
+        try {
+          await sut(ctx, { remote: 'origin', refspecs: ['main', 'fresh'] });
+        } catch (error) {
+          code = (error as { data?: { code?: string } }).data?.code;
+        }
+        const theirsPush = tryRunGitWithExit([
+          '-C',
+          theirs,
+          'push',
+          '-q',
+          'origin',
+          'main',
+          'fresh',
+        ]);
+
+        // Assert
+        expect(code).toBe('PUSH_REJECTED');
+        expect(theirsPush.exitCode).toBe(1);
+        expect(trackingRefs(ours)).toBe(trackingRefs(theirs));
+        expect(trackingRefs(ours)).toContain('refs/remotes/mirror/main');
+      });
+    });
+  });
+
   describe('Given clones whose main was rewritten after it was pushed', () => {
     describe('When both tools force-push main', () => {
       it("Then tsgit reports the forced update git's porcelain flags with +", async () => {

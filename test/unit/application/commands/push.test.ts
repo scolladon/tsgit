@@ -871,6 +871,59 @@ describe('push — server responses', () => {
   });
 });
 
+describe('push — unpack failure', () => {
+  describe('Given an up-to-date branch with a stale tracking ref and a new branch the remote fails to unpack', () => {
+    describe('When push runs', () => {
+      it("Then it throws PUSH_REJECTED carrying the per-ref statuses and still refreshes the up-to-date ref's tracking ref", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'a');
+        const tip = await seedCommit(ctx, [parent.id], 'b');
+        await seedRepo(ctx, {
+          refs: {
+            'refs/heads/main': tip.id,
+            'refs/heads/new': parent.id,
+            'refs/remotes/origin/main': parent.id,
+          },
+        });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: tip.id }],
+          reportStatus: {
+            unpack: 'unpack-objects abnormal exit',
+            refs: [{ name: 'refs/heads/new', status: 'ng', reason: 'unpacker error' }],
+          },
+        });
+        const sut = push;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut({ ...ctx, transport }, { refspecs: ['main', 'new'] });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'PUSH_REJECTED',
+          ref: 'refs/heads/new',
+          reason: 'unpack-objects abnormal exit',
+          reportStatus: {
+            unpackOk: false,
+            unpackError: 'unpack-objects abnormal exit',
+            refUpdates: [{ name: 'refs/heads/new', accepted: false, reason: 'unpacker error' }],
+          },
+        });
+        expect(
+          (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`)).trim(),
+        ).toBe(tip.id);
+      });
+    });
+  });
+});
+
 describe('push — force / non-fast-forward', () => {
   describe('Given a non-FF update with no force', () => {
     describe('When push runs', () => {

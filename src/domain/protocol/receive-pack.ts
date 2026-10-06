@@ -222,8 +222,9 @@ export const parseReceivePackResponse = async (
   if (lines.length === 0) throw invalidReportStatus('');
   const [first, ...rest] = lines as [string, ...string[]];
   const unpack = parseUnpackLine(first);
-  if (!unpack.ok) {
-    return { unpackOk: false, unpackError: unpack.error, refUpdates: [] };
-  }
-  return { unpackOk: true, refUpdates: foldStatusLines(rest, hexLength) };
+  // git's `receive_status` keeps reading the per-ref statuses after a failed unpack.
+  const refUpdates = foldStatusLines(rest, hexLength);
+  return unpack.ok
+    ? { unpackOk: true, refUpdates }
+    : { unpackOk: false, unpackError: unpack.error, refUpdates };
 };

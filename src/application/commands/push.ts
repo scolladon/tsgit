@@ -25,6 +25,7 @@ import {
   sanitize,
   signedPushUnsupported,
 } from '../../domain/commands/error.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import { remoteNotConfigured } from '../../domain/index.js';
 import { type ObjectId, type RefName, zeroOid } from '../../domain/objects/index.js';
 import {
@@ -304,10 +305,29 @@ const negotiateAndSend = async (
   );
   const resolved = await resolveAllRefspecs(ctx, refspecs, adv, remote, opts);
   const movers = resolved.filter((r) => !isUpToDate(r));
+  const refresh = (): Promise<void> => updateUpToDateTracking(ctx, resolved, remote);
   const pushedRefs =
-    movers.length === 0 ? [] : await pushMovers(ctx, session, adv, movers, remote, opts, url);
-  await updateUpToDateTracking(ctx, resolved, remote);
+    movers.length === 0
+      ? []
+      : await refreshingOnUnpackFailure(
+          () => pushMovers(ctx, session, adv, movers, remote, opts, url),
+          refresh,
+        );
+  await refresh();
   return { remote: remote.name, url, pushedRefs };
+};
+
+/** git refreshes every up-to-date ref's tracking ref even when the remote failed to unpack. */
+const refreshingOnUnpackFailure = async (
+  send: () => Promise<ReadonlyArray<PushedRef>>,
+  refresh: () => Promise<void>,
+): Promise<ReadonlyArray<PushedRef>> => {
+  try {
+    return await send();
+  } catch (error) {
+    if (errorDataCode(error) === 'PUSH_REJECTED') await refresh();
+    throw error;
+  }
 };
 
 const pushMovers = async (
