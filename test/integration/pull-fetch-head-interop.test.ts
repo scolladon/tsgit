@@ -484,3 +484,105 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
     });
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)('pull into an unborn HEAD interop', () => {
+  /** One fresh repository per tool with `main` unborn and set to pull `merge` from origin. */
+  const unborn = (label: string, merges: ReadonlyArray<string>, staged: boolean) => {
+    const dirs = {
+      ours: path.join(root, `${label}-ours`),
+      theirs: path.join(root, `${label}-theirs`),
+    };
+    for (const [dir, url] of [
+      [dirs.ours, PEER_URL],
+      [dirs.theirs, peerPath],
+    ] as const) {
+      dated(['init', '-q', '-b', 'main', dir]);
+      dated(['-C', dir, 'remote', 'add', 'origin', url]);
+      dated(['-C', dir, 'config', 'branch.main.remote', 'origin']);
+      for (const merge of merges) dated(['-C', dir, 'config', '--add', 'branch.main.merge', merge]);
+      if (staged) {
+        writeFileSync(path.join(dir, 'g'), 'g\n');
+        dated(['-C', dir, 'add', 'g']);
+      }
+    }
+    return dirs;
+  };
+  const ctxFor = (ours: string) => ({
+    ...createNodeContext({ workDir: ours }),
+    transport: backendTransport(peerRoot),
+  });
+  const state = (dir: string): string =>
+    [
+      git(dir, 'rev-parse', 'HEAD'),
+      git(dir, 'reflog', '--format=%gs', 'HEAD'),
+      git(dir, 'ls-files', '-s'),
+      git(dir, 'status', '--porcelain'),
+    ].join('\n');
+
+  describe.each([
+    { label: 'unborn-clean', staged: false },
+    { label: 'unborn-staged', staged: true },
+  ])('Given the $label repository', ({ label, staged }) => {
+    describe('When both tools pull', () => {
+      it('Then both check the fetched head out on main under the reflog "initial pull"', async () => {
+        // Arrange
+        const { ours, theirs } = unborn(label, ['refs/heads/main'], staged);
+        dated(['-C', theirs, 'pull', '-q']);
+        const sut = pull;
+
+        // Act
+        await sut(ctxFor(ours));
+
+        // Assert
+        expect(state(ours)).toBe(state(theirs));
+      });
+    });
+  });
+
+  describe.each([
+    {
+      label: 'unborn-two-merges',
+      merges: ['refs/heads/main', 'refs/heads/side'],
+      staged: false,
+      rebase: false,
+      code: 'PULL_EMPTY_HEAD_MULTIPLE_BRANCHES',
+      message: 'fatal: Cannot merge multiple branches into empty head.',
+    },
+    {
+      label: 'unborn-rebase-staged',
+      merges: ['refs/heads/main'],
+      staged: true,
+      rebase: true,
+      code: 'PULL_REBASE_UNBORN_INDEX',
+      message: 'fatal: Updating an unborn branch with changes added to the index.',
+    },
+  ])('Given the $label repository', ({ label, merges, staged, rebase, code, message }) => {
+    describe('When both tools pull', () => {
+      it('Then both refuse and main stays unborn', async () => {
+        // Arrange
+        const { ours, theirs } = unborn(label, merges, staged);
+        const theirsRun = tryRunGitWithExit(
+          ['-C', theirs, 'pull', '-q', rebase ? '--rebase' : '--no-rebase'],
+          { env: DATED_ENV },
+        );
+        const sut = pull;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctxFor(ours), { rebase });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(theirsRun.exitCode).toBe(128);
+        expect(theirsRun.stderr).toContain(message);
+        expect(errorDataCode(caught)).toBe(code);
+        for (const dir of [ours, theirs]) {
+          expect(existsSync(path.join(dir, '.git', 'refs', 'heads', 'main'))).toBe(false);
+        }
+      });
+    });
+  });
+});

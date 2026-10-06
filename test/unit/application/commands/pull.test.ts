@@ -123,7 +123,202 @@ const seedConfig = async (
 const reflogMessages = async (ctx: Context, ref: string): Promise<ReadonlyArray<string>> =>
   (await readReflog(ctx, ref as RefName)).map((e) => e.message);
 
+/**
+ * A repository whose HEAD names the unborn `fresh` (empty index, clean tree)
+ * while `main`'s commit — holding `a.txt` — stays in the object store, with
+ * `fresh` set to pull `main` from origin.
+ */
+const unbornWithUpstream = async (): Promise<{ ctx: Context; main: ObjectId }> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  const main = await commitFile(ctx, 'a.txt', 'a', 'A');
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/fresh\n');
+  await ctx.fs.rm(`${ctx.layout.gitDir}/index`);
+  await ctx.fs.rm(`${ctx.layout.gitDir}/logs/HEAD`);
+  await ctx.fs.rm(`${ctx.layout.workDir}/a.txt`);
+  await seedConfig(ctx, { url: REMOTE_URL });
+  await updateConfigEntries(ctx, [
+    { section: 'branch', subsection: 'fresh', key: 'remote', value: 'origin' },
+    { section: 'branch', subsection: 'fresh', key: 'merge', value: 'refs/heads/main' },
+  ]);
+  return { ctx, main };
+};
+
+const unbornPull = async (
+  ctx: Context,
+  main: ObjectId,
+  opts: Parameters<typeof pull>[1] = {},
+): Promise<{ result: Awaited<ReturnType<typeof pull>>; requests: HttpRequest[] }> => {
+  const { transport, requests } = buildPullRemote(
+    [{ name: 'refs/heads/main', id: main }],
+    await emptyPack(ctx),
+  );
+  const sut = pull;
+  const result = await sut(withTransport(ctx, transport), opts);
+  return { result, requests };
+};
+
+const pullError = async (run: () => Promise<unknown>): Promise<TsgitError['data']> => {
+  try {
+    await run();
+  } catch (err) {
+    return (err as TsgitError).data;
+  }
+  throw new Error('expected pull to throw');
+};
+
 describe('pull', () => {
+  describe('Given HEAD names an unborn branch with a clean empty index', () => {
+    describe('When pull', () => {
+      it('Then the branch is created at the fetched head, checked out, and HEAD reflogs "initial pull"', async () => {
+        // Arrange
+        const { ctx, main } = await unbornWithUpstream();
+
+        // Act
+        const { result } = await unbornPull(ctx, main);
+
+        // Assert
+        expect(result).toMatchObject({
+          integration: 'merge',
+          merge: { kind: 'fast-forward', id: main, branch: 'refs/heads/fresh' },
+        });
+        expect(await resolveRef(ctx, 'refs/heads/fresh' as RefName)).toBe(main);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('a');
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['a.txt']);
+        expect(await reflogMessages(ctx, 'HEAD')).toEqual(['initial pull']);
+        expect(await reflogMessages(ctx, 'refs/heads/fresh')).toEqual(['initial pull']);
+      });
+    });
+  });
+
+  describe('Given HEAD names an unborn branch with an unrelated file staged', () => {
+    describe('When pull', () => {
+      it('Then the staged file is kept beside the checked-out head', async () => {
+        // Arrange
+        const { ctx, main } = await unbornWithUpstream();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/g.txt`, 'g');
+        await add(ctx, ['g.txt']);
+
+        // Act
+        await unbornPull(ctx, main);
+
+        // Assert
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['a.txt', 'g.txt']);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/g.txt`)).toBe('g');
+      });
+    });
+  });
+
+  describe('Given HEAD names an unborn branch with a staged file the fetched head also holds', () => {
+    describe('When pull', () => {
+      it('Then it refuses with WORKING_TREE_DIRTY naming the file and HEAD stays unborn', async () => {
+        // Arrange
+        const { ctx, main } = await unbornWithUpstream();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'mine');
+        await add(ctx, ['a.txt']);
+
+        // Act
+        const result = await pullError(() => unbornPull(ctx, main));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['a.txt'],
+          untracked: [],
+        });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('mine');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/fresh`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given HEAD names an unborn branch with an untracked file the fetched head holds', () => {
+    describe('When pull', () => {
+      it('Then it refuses with WORKING_TREE_DIRTY naming the untracked file', async () => {
+        // Arrange
+        const { ctx, main } = await unbornWithUpstream();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'mine');
+
+        // Act
+        const result = await pullError(() => unbornPull(ctx, main));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: [],
+          untracked: ['a.txt'],
+        });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('mine');
+      });
+    });
+  });
+
+  describe('Given HEAD names an unborn branch with two merge heads configured', () => {
+    describe('When pull', () => {
+      it('Then it refuses with PULL_EMPTY_HEAD_MULTIPLE_BRANCHES', async () => {
+        // Arrange
+        const { ctx, main } = await unbornWithUpstream();
+        await ctx.fs.appendUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[branch "fresh"]\n\tmerge = refs/heads/side\n',
+        );
+        invalidateConfigCache(ctx);
+        const { transport } = buildPullRemote(
+          [
+            { name: 'refs/heads/main', id: main },
+            { name: 'refs/heads/side', id: main },
+          ],
+          await emptyPack(ctx),
+        );
+        const sut = pull;
+
+        // Act
+        const result = await pullError(() => sut(withTransport(ctx, transport)));
+
+        // Assert
+        expect(result).toEqual({ code: 'PULL_EMPTY_HEAD_MULTIPLE_BRANCHES' });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/fresh`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given HEAD names an unborn branch with a file staged', () => {
+    describe('When pull rebases', () => {
+      it('Then it refuses with PULL_REBASE_UNBORN_INDEX before fetching', async () => {
+        // Arrange
+        const { ctx, main } = await unbornWithUpstream();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/g.txt`, 'g');
+        await add(ctx, ['g.txt']);
+        const { transport, requests } = buildPullRemote(
+          [{ name: 'refs/heads/main', id: main }],
+          await emptyPack(ctx),
+        );
+        const sut = pull;
+
+        // Act
+        const result = await pullError(() => sut(withTransport(ctx, transport), { rebase: true }));
+
+        // Assert
+        expect(result).toEqual({ code: 'PULL_REBASE_UNBORN_INDEX' });
+        expect(requests).toEqual([]);
+      });
+    });
+
+    describe('When pull rebases with a clean empty index', () => {
+      it('Then the branch is pulled into, not rebased', async () => {
+        // Arrange
+        const { ctx, main } = await unbornWithUpstream();
+
+        // Act
+        const { result } = await unbornPull(ctx, main, { rebase: true });
+
+        // Assert
+        expect(result).toMatchObject({ integration: 'merge', merge: { kind: 'fast-forward' } });
+        expect(await reflogMessages(ctx, 'HEAD')).toEqual(['initial pull']);
+      });
+    });
+  });
+
   describe('Given the remote advances the upstream branch', () => {
     describe('When pull with no arguments', () => {
       it('Then fast-forwards the current branch and reflogs "pull: Fast-forward"', async () => {

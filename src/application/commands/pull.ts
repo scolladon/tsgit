@@ -16,8 +16,10 @@ import {
   nonFastForward,
   noUpstreamConfigured,
   pullDivergentBranches,
+  pullEmptyHeadMultipleBranches,
   pullNoMergeCandidates,
   pullRebaseMultipleBranches,
+  pullRebaseUnbornIndex,
 } from '../../domain/commands/error.js';
 import type { TsgitError } from '../../domain/error.js';
 import { type AuthorIdentity, type ObjectId, RefName } from '../../domain/objects/index.js';
@@ -39,6 +41,7 @@ import { type FetchHeadLine, readFetchHead } from './internal/fetch-head.js';
 import { forkPoint } from './internal/fork-point.js';
 import { treeOf } from './internal/history-rewrite.js';
 import { acquireIndexLock } from './internal/index-update.js';
+import { pullIntoVoid } from './internal/pull-into-void.js';
 import { configuredPullRebase } from './internal/pull-rebase-config.js';
 import { refspecTrackingRef, upstreamTrackingRef } from './internal/pull-tracking-ref.js';
 import { buildRemoteTable } from './internal/remote-config.js';
@@ -330,14 +333,33 @@ export const pull = async (ctx: Context, given: PullOptions = {}): Promise<PullR
   const upstream = await readUpstream(ctx, currentBranch, settled);
   const reconciled = await settleRebase(ctx, settled, currentBranch);
   const opts = await settleAutostash(ctx, reconciled.opts);
-  const unreconciled = reconciled.unreconciled;
-  const rebase = await planRebase(ctx, opts, upstream, branchRef);
   const origHead = await resolveRefOrMissing(ctx, 'HEAD');
+  if (origHead === undefined && rebasing(opts)) await assertUnbornIndexEmpty(ctx);
+  const rebase = await planRebase(ctx, opts, upstream, branchRef);
   const fetchResult = await fetchUpstream(ctx, opts, upstream);
   assertNothingRejected(fetchResult);
   await followUpdatedHead(ctx, origHead);
   const fetched = await mergeHeads(ctx, opts, upstream, branchRef);
+  if (origHead === undefined) return pullIntoEmptyHead(ctx, fetchResult, fetched, branchRef);
+  const { unreconciled } = reconciled;
   return integrate(ctx, { opts, branchRef, fetchResult, fetched, rebase, unreconciled });
+};
+
+/** git's rebasing pull refuses an unborn HEAD whose index already holds changes. */
+const assertUnbornIndexEmpty = async (ctx: Context): Promise<void> => {
+  if ((await readIndex(ctx)).entries.length > 0) throw pullRebaseUnbornIndex();
+};
+
+/** git pull into an unborn HEAD: one fetched head is checked out, never merged or rebased. */
+const pullIntoEmptyHead = async (
+  ctx: Context,
+  fetchResult: FetchResult,
+  fetched: ReadonlyArray<FetchHeadLine>,
+  branchRef: RefName | undefined,
+): Promise<PullResult> => {
+  if (fetched.length > 1) throw pullEmptyHeadMultipleBranches();
+  const merge = await pullIntoVoid(ctx, fetched[0]!.id, branchRef);
+  return { fetch: fetchResult, integration: 'merge', merge };
 };
 
 const fetchUpstream = (ctx: Context, opts: PullOptions, upstream: Upstream): Promise<FetchResult> =>
@@ -410,13 +432,13 @@ const alreadyUpToDate = async (
   return true;
 };
 
-/** git pull refuses a divergence nothing said how to reconcile; an unborn HEAD is pulled into. */
+/** git pull refuses a divergence nothing said how to reconcile. */
 const assertReconcilable = async (
   ctx: Context,
   heads: ReadonlyArray<FetchHeadLine>,
 ): Promise<void> => {
-  const head = await resolveRefOrMissing(ctx, 'HEAD');
-  if (head === undefined || (await canFastForward(ctx, heads))) return;
+  if (await canFastForward(ctx, heads)) return;
+  const head = await resolveRef(ctx, RefName.from('HEAD'));
   if (!(await alreadyUpToDate(ctx, head, heads))) throw pullDivergentBranches();
 };
 

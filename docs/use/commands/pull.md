@@ -92,6 +92,22 @@ fetched head diverged from `HEAD`, pull refuses **after the fetch** with
 branches.`). A fast-forward or an already-contained head still integrates. Pass
 `rebase: false` for git's `--no-rebase` merge.
 
+## Pulling into an unborn branch
+
+When `HEAD` names a branch with no commit yet (a fresh `init` + `remote add`), git's
+`pull_into_void` runs instead of a merge or rebase: the one fetched head is checked
+out over the index as a two-way merge from the empty tree, then `HEAD`'s branch is
+created at it with the reflog `initial pull`. The result is
+`{ integration: 'merge', merge: { kind: 'fast-forward', id, branch } }`.
+
+- files already staged are kept; a staged or untracked file the head carries
+  differently refuses with `WORKING_TREE_DIRTY` and the branch stays unborn;
+- several fetched heads refuse with `PULL_EMPTY_HEAD_MULTIPLE_BRANCHES` (git's
+  `Cannot merge multiple branches into empty head.`) after the fetch;
+- a rebasing pull with anything in the index refuses with `PULL_REBASE_UNBORN_INDEX`
+  (git's `Updating an unborn branch with changes added to the index.`) **before**
+  the fetch; with an empty index it pulls into the branch as above.
+
 ## Rebasing
 
 With `rebase: true` (or `'merges'`, which rebases with

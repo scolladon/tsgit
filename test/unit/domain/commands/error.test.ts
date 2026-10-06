@@ -69,7 +69,9 @@ import {
   pathspecNoMatch,
   pathspecOutsideRepo,
   pullDivergentBranches,
+  pullEmptyHeadMultipleBranches,
   pullRebaseMultipleBranches,
+  pullRebaseUnbornIndex,
   pushDefaultNothing,
   pushDetachedNoRefspec,
   pushMultipleUpstreams,
@@ -529,6 +531,36 @@ describe('domain commands error — factory data', () => {
 
         // Assert
         expect(result.data).toEqual({ code: 'FAST_FORWARD_MULTIPLE_BRANCHES' });
+      });
+    });
+  });
+
+  describe('Given the pullEmptyHeadMultipleBranches error helper', () => {
+    describe('When called', () => {
+      it('Then data carries the code alone', () => {
+        // Arrange
+        const sut = pullEmptyHeadMultipleBranches;
+
+        // Act
+        const result = sut();
+
+        // Assert
+        expect(result.data).toEqual({ code: 'PULL_EMPTY_HEAD_MULTIPLE_BRANCHES' });
+      });
+    });
+  });
+
+  describe('Given the pullRebaseUnbornIndex error helper', () => {
+    describe('When called', () => {
+      it('Then data carries the code alone', () => {
+        // Arrange
+        const sut = pullRebaseUnbornIndex;
+
+        // Act
+        const result = sut();
+
+        // Assert
+        expect(result.data).toEqual({ code: 'PULL_REBASE_UNBORN_INDEX' });
       });
     });
   });
@@ -1681,6 +1713,14 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       { code: 'PULL_REBASE_MULTIPLE_BRANCHES' },
       'PULL_REBASE_MULTIPLE_BRANCHES: cannot rebase onto multiple branches',
+    ],
+    [
+      { code: 'PULL_EMPTY_HEAD_MULTIPLE_BRANCHES' },
+      'PULL_EMPTY_HEAD_MULTIPLE_BRANCHES: cannot merge multiple branches into empty head',
+    ],
+    [
+      { code: 'PULL_REBASE_UNBORN_INDEX' },
+      'PULL_REBASE_UNBORN_INDEX: updating an unborn branch with changes added to the index',
     ],
     [
       { code: 'PULL_DIVERGENT_BRANCHES' },

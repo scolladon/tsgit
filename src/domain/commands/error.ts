@@ -68,6 +68,8 @@ export type CommandError =
   /** git's pull `Cannot fast-forward to multiple branches.` */
   | { readonly code: 'FAST_FORWARD_MULTIPLE_BRANCHES' }
   | { readonly code: 'PULL_REBASE_MULTIPLE_BRANCHES' }
+  | { readonly code: 'PULL_EMPTY_HEAD_MULTIPLE_BRANCHES' }
+  | { readonly code: 'PULL_REBASE_UNBORN_INDEX' }
   | { readonly code: 'PULL_DIVERGENT_BRANCHES' }
   | {
       readonly code: 'NON_FAST_FORWARD';
@@ -644,6 +646,17 @@ export const fastForwardMultipleBranches = (): TsgitError =>
 /** git pull's `Cannot rebase onto multiple branches.`: a rebasing pull fetched several heads. */
 export const pullRebaseMultipleBranches = (): TsgitError =>
   new TsgitError({ code: 'PULL_REBASE_MULTIPLE_BRANCHES' });
+
+/** git pull's `Cannot merge multiple branches into empty head.`: an unborn HEAD fetched several heads. */
+export const pullEmptyHeadMultipleBranches = (): TsgitError =>
+  new TsgitError({ code: 'PULL_EMPTY_HEAD_MULTIPLE_BRANCHES' });
+
+/**
+ * git pull's `Updating an unborn branch with changes added to the index.`: a
+ * rebasing pull of an unborn HEAD refuses a non-empty index before it fetches.
+ */
+export const pullRebaseUnbornIndex = (): TsgitError =>
+  new TsgitError({ code: 'PULL_REBASE_UNBORN_INDEX' });
 
 /**
  * git pull's `Need to specify how to reconcile divergent branches.`: the
