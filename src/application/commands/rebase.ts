@@ -1307,10 +1307,6 @@ const rebaseRunInteractive = async (ctx: Context, plan: InteractivePlan): Promis
   return replayInteractive(ctx, ic, foldedHead, seed);
 };
 
-/** A rebase is interactive when any instruction carries a non-`pick` verb — a
- *  pure-pick stop resumes through the (identical) non-interactive path. An
- *  `amend` stop always carries a non-`pick` verb (`edit`/`squash`/`fixup`) in
- *  its todo, so the verb check subsumes an explicit `amend` test. */
 /** The stopped line's commit: a rebase stops only on a commit-carrying line. */
 const stoppedCommit = (state: RebaseState): ObjectId =>
   (state.done[state.done.length - 1] as { readonly oid: ObjectId }).oid;
@@ -1328,6 +1324,10 @@ const COMMIT_ACTIONS: ReadonlySet<string> = new Set([
   'drop',
 ]);
 
+/** A rebase is interactive when any instruction carries a non-`pick` verb — a
+ *  pure-pick stop resumes through the (identical) non-interactive path. An
+ *  `amend` stop always carries a non-`pick` verb (`edit`/`squash`/`fixup`) in
+ *  its todo, so the verb check subsumes an explicit `amend` test. */
 const isInteractiveState = (state: RebaseState): boolean =>
   [...state.done, ...state.remaining].some((e) => INTERACTIVE_VERBS.has(e.action));
 
