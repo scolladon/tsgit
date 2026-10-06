@@ -13,9 +13,8 @@ import type { ConflictMarkerOptions, ContentMergeResult, MergeFavor } from './me
 import {
   buildMergeSegments,
   changesFromHunks,
+  type LineModel,
   type MergeSegment,
-  type SideViews,
-  sideView,
 } from './region-merge.js';
 
 const LF = 0x0a;
@@ -101,11 +100,14 @@ function renderWithMarkers(
 const activeKey = (key: LineKey | undefined): LineKey | undefined =>
   key !== undefined && lineKeyIsActive(key) ? key : undefined;
 
-function sideViewsUnder(key: LineKey, oursDiff: LineDiff, theirsDiff: LineDiff): SideViews {
+function lineModel(
+  lineKey: LineKey | undefined,
+  search: SearchMode,
+  options: LineDiffOptions | undefined,
+): LineModel {
   return {
-    ours: sideView(oursDiff.hunks, oursDiff.oursLines, oursDiff.theirsLines),
-    theirs: sideView(theirsDiff.hunks, theirsDiff.oursLines, theirsDiff.theirsLines),
-    linesEqual: (a, b) => linesEqualUnder(a, b, key),
+    linesEqual: lineKey === undefined ? bytesEqual : (a, b) => linesEqualUnder(a, b, lineKey),
+    diffSides: (ours, theirs) => diffPresplitLinesForMode(ours, theirs, search, options).hunks,
   };
 }
 
@@ -129,10 +131,10 @@ function mergeFromDiffs(
   const oursDiff = diffAgainstBase(baseLines, ours, search, diffOptions);
   const theirsDiff = diffAgainstBase(baseLines, theirs, search, diffOptions);
   const segments = buildMergeSegments(
-    oursDiff.oursLines,
-    changesFromHunks(oursDiff.hunks, oursDiff.theirsLines),
-    changesFromHunks(theirsDiff.hunks, theirsDiff.theirsLines),
-    lineKey === undefined ? undefined : sideViewsUnder(lineKey, oursDiff, theirsDiff),
+    baseLines.length,
+    { lines: oursDiff.theirsLines, changes: changesFromHunks(oursDiff.hunks) },
+    { lines: theirsDiff.theirsLines, changes: changesFromHunks(theirsDiff.hunks) },
+    lineModel(lineKey, search, diffOptions),
   );
   const favor = options.favor ?? 'none';
   return favor === 'none' ? renderWithMarkers(segments, options) : renderFavoured(segments, favor);

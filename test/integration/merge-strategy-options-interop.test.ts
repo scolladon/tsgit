@@ -182,6 +182,25 @@ const heavyEdits = (): Scenario => {
   return { base: { f: base }, side: { f: resample(0.3) }, main: { f: main } };
 };
 
+/** Dense small inserts, deletes and replacements, where xdiff's region walk and refinement show. */
+const denseEdits = (seed: number, length: number): Scenario => {
+  const rand = mulberry32(seed);
+  const pick = (): string => 'abcd}'[Math.floor(rand() * 5)]!;
+  const lines = Array.from({ length }, pick);
+  const edit = (): string[] => {
+    if (rand() < 0.3) return [];
+    return rand() < 0.5 ? [pick(), pick()] : [pick()];
+  };
+  const resample = (rate: number): string =>
+    lines
+      .flatMap((line) => (rand() < rate ? edit() : [line]))
+      .map((line) => `${line}\n`)
+      .join('');
+  const base = lines.map((line) => `${line}\n`).join('');
+  const main = resample(rand() * 0.6);
+  return { base: { f: base }, side: { f: resample(rand() * 0.6) }, main: { f: main } };
+};
+
 /** Both sides adopt `text=auto`; side also strips the CRLFs, main edits a line. */
 const LINE_ENDINGS: Scenario = {
   base: { f: 'a\r\nb\r\nc\r\n' },
@@ -225,6 +244,11 @@ describe.skipIf(!GIT_AVAILABLE)('merge strategy options interop', () => {
       heavyEdits(),
       ['theirs', 'diff-algorithm=minimal'],
     ],
+    ['diff-algorithm=minimal over heavy edits', heavyEdits(), ['diff-algorithm=minimal']],
+    ['diff-algorithm=myers over heavy edits', heavyEdits(), ['diff-algorithm=myers']],
+    ['nothing over heavy edits', heavyEdits(), []],
+    ['diff-algorithm=myers over dense edits', denseEdits(4, 90), ['diff-algorithm=myers']],
+    ['diff-algorithm=myers over denser edits', denseEdits(11, 195), ['diff-algorithm=myers']],
     ['no-renormalize over line endings', LINE_ENDINGS, ['no-renormalize']],
     [
       'renormalize then no-renormalize over line endings',
