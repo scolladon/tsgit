@@ -618,6 +618,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `Could not find merge strategy '${data.strategy}'. Available strategies are: ${data.available.join(' ')}.`;
     case 'UNKNOWN_OPTION':
       return unknownOptionDetail(data.option);
+    case 'AMBIGUOUS_OPTION':
+      return `ambiguous option: ${data.option.slice(2)} (could be ${data.candidates[0]} or ${data.candidates[1]})`;
     case 'BAD_BRANCH_MERGE_OPTIONS':
       return `Bad branch.${data.branch}.mergeoptions string: ${data.reason}`;
     case 'UNKNOWN_STRATEGY_OPTION':

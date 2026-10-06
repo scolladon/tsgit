@@ -71,13 +71,16 @@ character outside them. Note git's config parser strips double quotes first, so 
 single quotes (or `\"`). The options `merge` models apply (`--ff` / `--no-ff` / `--ff-only`,
 `--[no-]squash`, `--[no-]commit`, `-s`, `-X`, `-m`, `--[no-]log[=<n>]`,
 `--[no-]allow-unrelated-histories`, `--[no-]autostash`); options that shape only git's output
-(`-n`, `--stat`, `-v`, `-q`, `--progress`, …) are accepted; the others git knows refuse with
-`UNSUPPORTED_OPERATION`. Refusals, before any merge state is written:
+(`-n`, `--stat`, `-v`, `-q`, `--progress`, …) are accepted, and so is `--no-verify`, since `merge`
+runs no `pre-merge-commit` or `commit-msg` hook; the others git knows refuse with
+`UNSUPPORTED_OPERATION`. A long option may be abbreviated to any prefix only it starts, as git's
+`parse_options` allows (`--squ` is `--squash`). Refusals, before any merge state is written:
 
 | Value | Code |
 |---|---|
 | unclosed quote / trailing `\` | `BAD_BRANCH_MERGE_OPTIONS` (`Bad branch.<b>.mergeoptions string: …`) |
 | an option git does not know | `UNKNOWN_OPTION` (`option` spelt with its dashes) |
+| an abbreviation more than one option starts | `AMBIGUOUS_OPTION` (`candidates`: the last two, as git names them) |
 | a missing or malformed value | `INVALID_OPTION` (`requires a value`, `takes no value`, …) |
 
 ## Working tree and index
@@ -306,7 +309,7 @@ switch (result.kind) {
 - `INVALID_INDEX_ENTRY` — a conflicting merge's outcome or conflict path fails git's own index-entry name rules (absolute path; `.`, `..`, or empty segment; `.git`/`.gitmodules` alias). Every path the write is about to touch is checked in one pass before any of them is written, so a hostile path anywhere in the batch refuses the whole conflict write, atomically.
 - `REF_NOT_FOUND` — `target` does not resolve.
 - `NO_OPERATION_IN_PROGRESS` — `merge.continue` / `merge.abort` called outside an in-progress merge.
-- `BAD_BRANCH_MERGE_OPTIONS` / `UNKNOWN_OPTION` / `INVALID_OPTION` — `branch.<branch>.mergeoptions` does not split or parse as git's merge command line.
+- `BAD_BRANCH_MERGE_OPTIONS` / `UNKNOWN_OPTION` / `AMBIGUOUS_OPTION` / `INVALID_OPTION` — `branch.<branch>.mergeoptions` does not split or parse as git's merge command line.
 
 ## See also
 

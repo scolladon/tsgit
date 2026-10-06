@@ -13,6 +13,7 @@
  */
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -571,6 +572,8 @@ describe.skipIf(!GIT_AVAILABLE)('merge options interop', () => {
     { options: '-X theirs', head: 'side' },
     { options: '--no-commit', head: 'clean' },
     { options: "--log=1 -m 'from branch'", head: 'clean', message: 'from caller' },
+    { options: '--squ', head: 'clean' },
+    { options: '--no-comm', head: 'clean' },
   ])('Given branch.main.mergeoptions $options', ({ options, head, message }) => {
     describe(`When both tools merge origin/${head}`, () => {
       it('Then the merge state and the commit are identical', async () => {
@@ -601,6 +604,7 @@ describe.skipIf(!GIT_AVAILABLE)('merge options interop', () => {
   describe.each([
     { options: "'--no-ff", code: 'BAD_BRANCH_MERGE_OPTIONS', exitCode: 128 },
     { options: '--no-ff --bogus', code: 'UNKNOWN_OPTION', exitCode: 129 },
+    { options: '--co', code: 'AMBIGUOUS_OPTION', exitCode: 129 },
   ])('Given branch.main.mergeoptions $options', ({ options, code, exitCode }) => {
     describe('When both tools merge', () => {
       it('Then both refuse before writing any merge state', async () => {
@@ -618,6 +622,33 @@ describe.skipIf(!GIT_AVAILABLE)('merge options interop', () => {
         expect(theirsRun.exitCode).toBe(exitCode);
         expect(result).toBe(code);
         expect(snapshot(ours)).toEqual(snapshot(theirs));
+      });
+    });
+  });
+
+  describe('Given branch.main.mergeoptions --no-verify and a pre-merge-commit hook that fails', () => {
+    describe('When both tools merge origin/clean', () => {
+      it('Then both commit the merge past the hook', async () => {
+        // Arrange
+        const { ours, theirs } = setUp([['branch.main.mergeoptions', '--no-verify']]);
+        for (const dir of [ours, theirs]) {
+          const hook = path.join(dir, '.git', 'hooks', 'pre-merge-commit');
+          mkdirSync(path.dirname(hook), { recursive: true });
+          writeFileSync(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+        }
+        const sut = mergeRun;
+        datedExit(theirs, ['merge', 'origin/clean']);
+
+        // Act
+        await sut(createNodeContext({ workDir: ours }), {
+          rev: 'origin/clean',
+          author: IDENTITY,
+          committer: IDENTITY,
+        });
+
+        // Assert
+        expect(snapshot(ours)).toEqual(snapshot(theirs));
+        expect(git(ours, 'cat-file', '-p', 'HEAD')).toBe(git(theirs, 'cat-file', '-p', 'HEAD'));
       });
     });
   });

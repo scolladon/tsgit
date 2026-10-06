@@ -95,6 +95,16 @@ describe('parseMergeCommandLine', () => {
       {},
     ],
     ['arguments that are not options', ['side', '', '-', '--', '--bogus'], {}],
+    ['an abbreviated flag', ['--squ'], { squash: true }],
+    ['an abbreviated negation', ['--no-squ'], { squash: false }],
+    [
+      'an abbreviated valued option',
+      ['--strategy-o=ours', '--strategy-opt', 'patience'],
+      { strategyOptions: ['ours', 'patience'] },
+    ],
+    ['an abbreviation one option alone starts', ['--allow'], { allowUnrelatedHistories: true }],
+    ['--no-verify, whose hooks tsgit never runs', ['--no-verify'], {}],
+    ['--no-no-verify', ['--no-no-verify'], {}],
   ] as const)('Given %s', (_, argv, expected) => {
     describe('When parsed', () => {
       it('Then it yields the options git sets', () => {
@@ -190,6 +200,50 @@ describe('parseMergeCommandLine', () => {
       'the inverse of an option tsgit does not take',
       ['--no-overwrite-ignore'],
       { code: 'UNSUPPORTED_OPERATION', operation: 'merge', reason: '--no-overwrite-ignore' },
+    ],
+    [
+      'an abbreviation several options start',
+      ['--co'],
+      { code: 'AMBIGUOUS_OPTION', option: '--co', candidates: ['--commit', '--continue'] },
+    ],
+    [
+      'an abbreviation two valued options start, with its value',
+      ['--strat=ours'],
+      {
+        code: 'AMBIGUOUS_OPTION',
+        option: '--strat=ours',
+        candidates: ['--strategy', '--strategy-option'],
+      },
+    ],
+    [
+      'a prefix of no- itself',
+      ['--no'],
+      { code: 'AMBIGUOUS_OPTION', option: '--no', candidates: ['--no-signoff', '--no-verify'] },
+    ],
+    [
+      'an abbreviation an option and a no- option start',
+      ['--ver'],
+      { code: 'AMBIGUOUS_OPTION', option: '--ver', candidates: ['--verbose', '--no-no-verify'] },
+    ],
+    [
+      'an abbreviated negation several options start',
+      ['--no-ver'],
+      { code: 'AMBIGUOUS_OPTION', option: '--no-ver', candidates: ['--no-verbose', '--no-verify'] },
+    ],
+    [
+      'an abbreviation of an option tsgit does not take',
+      ['--sig'],
+      { code: 'UNSUPPORTED_OPERATION', operation: 'merge', reason: '--signoff' },
+    ],
+    [
+      'an abbreviated negation of an option tsgit does not take',
+      ['--no-overwrite'],
+      { code: 'UNSUPPORTED_OPERATION', operation: 'merge', reason: '--no-overwrite-ignore' },
+    ],
+    [
+      'an abbreviated option missing its value',
+      ['--fi'],
+      { code: 'INVALID_OPTION', option: '--file', reason: 'requires a value' },
     ],
   ] as const)('Given %s', (_, argv, expected) => {
     describe('When parsed', () => {

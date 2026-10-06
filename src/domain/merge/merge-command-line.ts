@@ -5,7 +5,7 @@
  * others refuse until tsgit runs them. Arguments that are not options, and
  * everything after `--`, are ignored as git ignores them there.
  */
-import { invalidOption, unknownOption } from '../commands/error.js';
+import { ambiguousOption, invalidOption, unknownOption } from '../commands/error.js';
 import { GIT_C_INT_MAX, GIT_C_INT_MIN, parseGitInt } from '../config/config-ini.js';
 import { unsupportedOperation } from '../error.js';
 
@@ -131,7 +131,8 @@ const OPTIONS: ReadonlyArray<MergeOption> = [
   flag('autostash', assign('autostash', true), assign('autostash', false)),
   flag('overwrite-ignore', ignore, refuse),
   flag('signoff', refuse, ignore),
-  flag('no-verify', refuse, ignore),
+  // tsgit's merge runs no pre-merge-commit or commit-msg hook, so it already merges as `--no-verify` does.
+  flag('no-verify', ignore, ignore),
 ];
 
 /** git's `parse_options` over `argv`, as `parse_branch_merge_options` runs it. */
@@ -154,10 +155,8 @@ const parseLong = (argv: ReadonlyArray<string>, line: MergeCommandLine, at: numb
   const equals = body.indexOf('=');
   const name = equals < 0 ? body : body.slice(0, equals);
   const attached = equals < 0 ? undefined : body.slice(equals + 1);
-  const found = findLong(name);
-  if (found === undefined) throw unknownOption(argv[at]!);
-  const spelt = `--${name}`;
-  const { option, negated } = found;
+  const { option, negated } = findLong(argv[at]!, name);
+  const spelt = `--${negated ? NEGATION : ''}${option.long!}`;
   if (negated || option.value === 'none') {
     if (attached !== undefined) throw invalidOption(spelt, TAKES_NO_VALUE);
     return { line: (negated ? option.unset : option.set)(line, undefined, spelt), next: at + 1 };
@@ -168,19 +167,88 @@ const parseLong = (argv: ReadonlyArray<string>, line: MergeCommandLine, at: numb
   return takeNextValue(argv, line, at, option, spelt);
 };
 
-/** An option named outright, `--no-<name>` for a negatable one, or `<name>` undoing `no-<name>`. */
-const findLong = (
-  name: string,
-): { readonly option: MergeOption; readonly negated: boolean } | undefined => {
-  const exact = OPTIONS.find((option) => option.long === name);
-  if (exact !== undefined) return { option: exact, negated: false };
-  const positive = name.startsWith(NEGATION) ? negatable(name.slice(NEGATION.length)) : undefined;
-  const option = positive ?? negatable(`${NEGATION}${name}`);
-  return option === undefined ? undefined : { option, negated: true };
+interface LongMatch {
+  readonly option: MergeOption;
+  readonly negated: boolean;
+}
+
+/** What `--<name>` asks for once git's `parse_long_opt` peeled its `no-` prefixes. */
+interface LongName {
+  readonly rest: string;
+  readonly negated: boolean;
+  /** `--no-no-<name>`: only an option itself named `no-<name>` can match. */
+  readonly doubled: boolean;
+}
+
+const peelNegation = (name: string): LongName => {
+  if (!name.startsWith(NEGATION)) return { rest: name, negated: false, doubled: false };
+  const rest = name.slice(NEGATION.length);
+  if (!rest.startsWith(NEGATION)) return { rest, negated: true, doubled: false };
+  return { rest: rest.slice(NEGATION.length), negated: false, doubled: true };
 };
 
-const negatable = (long: string): MergeOption | undefined =>
-  OPTIONS.find((option) => option.long === long && option.negatable);
+/** git's `register_abbrev`: a second abbreviation makes the first one ambiguous. */
+interface Abbreviations {
+  readonly abbrev?: LongMatch;
+  readonly ambiguous?: LongMatch;
+}
+
+const register = ({ abbrev }: Abbreviations, match: LongMatch): Abbreviations =>
+  abbrev === undefined ? { abbrev: match } : { abbrev: match, ambiguous: abbrev };
+
+const spellMatch = ({ option, negated }: LongMatch): string =>
+  `--${negated ? NEGATION : ''}${option.long!}`;
+
+interface Reading {
+  readonly own: LongName;
+  readonly negated: boolean;
+}
+
+/** How `option` reads the wanted name, or `undefined` where git's `parse_long_opt` loop skips it. */
+const readingOf = (option: MergeOption, wanted: LongName): Reading | undefined => {
+  if (option.long === undefined) return undefined;
+  const own = peelNegation(option.long);
+  if (!own.negated && wanted.doubled) return undefined;
+  const negated = wanted.negated !== own.negated;
+  if (negated && !option.negatable) return undefined;
+  return { own, negated };
+};
+
+const exactLong = (wanted: LongName): LongMatch | undefined => {
+  for (const option of OPTIONS) {
+    const reading = readingOf(option, wanted);
+    if (reading?.own.rest === wanted.rest) return { option, negated: reading.negated };
+  }
+  return undefined;
+};
+
+/** Every option the name abbreviates; a prefix of `no-` itself abbreviates each negatable one. */
+const abbreviationsOf = (arg: string, wanted: LongName): Abbreviations => {
+  const prefixOfNegation = NEGATION.startsWith(arg.slice(2));
+  let found: Abbreviations = {};
+  for (const option of OPTIONS) {
+    const reading = readingOf(option, wanted);
+    if (reading === undefined) continue;
+    if (reading.own.rest.startsWith(wanted.rest))
+      found = register(found, { option, negated: reading.negated });
+    if (option.negatable && prefixOfNegation)
+      found = register(found, { option, negated: !reading.own.negated });
+  }
+  return found;
+};
+
+/** git's `parse_long_opt`: an exact name wins at once; otherwise a unique abbreviation. */
+const findLong = (arg: string, name: string): LongMatch => {
+  const wanted = peelNegation(name);
+  return exactLong(wanted) ?? settleAbbreviation(arg, abbreviationsOf(arg, wanted));
+};
+
+const settleAbbreviation = (arg: string, { abbrev, ambiguous }: Abbreviations): LongMatch => {
+  if (ambiguous !== undefined)
+    throw ambiguousOption(arg, [spellMatch(ambiguous), spellMatch(abbrev!)]);
+  if (abbrev === undefined) throw unknownOption(arg);
+  return abbrev;
+};
 
 /** A bundle of switches (`-nqs ours`): flags apply in turn; the first valued one takes the rest. */
 const parseShorts = (argv: ReadonlyArray<string>, start: MergeCommandLine, at: number): Parsed => {

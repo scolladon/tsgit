@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   adapterUnavailable,
+  ambiguousOption,
   atomicPushUnsupported,
   authorUnconfigured,
   badBranchMergeOptions,
@@ -1245,6 +1246,25 @@ describe('domain commands error — config factory data', () => {
     });
   });
 
+  describe('Given the ambiguousOption helper', () => {
+    describe('When called with an abbreviation two options start', () => {
+      it('Then data carries code, option and both candidates', () => {
+        // Arrange
+        const sut = ambiguousOption;
+
+        // Act
+        const result = sut('--co', ['--commit', '--continue']);
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'AMBIGUOUS_OPTION',
+          option: '--co',
+          candidates: ['--commit', '--continue'],
+        });
+      });
+    });
+  });
+
   describe('Given the unknownOption helper', () => {
     describe('When called with an option git does not know', () => {
       it('Then data carries code and option', () => {
@@ -1877,6 +1897,10 @@ describe('domain commands error — extractDetail message formatting', () => {
       "UNKNOWN_MERGE_STRATEGY: Could not find merge strategy 'x'. Available strategies are: octopus ours.",
     ],
     [{ code: 'UNKNOWN_OPTION', option: '--bogus' }, "UNKNOWN_OPTION: unknown option `bogus'"],
+    [
+      { code: 'AMBIGUOUS_OPTION', option: '--co', candidates: ['--commit', '--continue'] },
+      'AMBIGUOUS_OPTION: ambiguous option: co (could be --commit or --continue)',
+    ],
     [{ code: 'UNKNOWN_OPTION', option: '-x' }, "UNKNOWN_OPTION: unknown switch `x'"],
     [
       { code: 'BAD_BRANCH_MERGE_OPTIONS', branch: 'main', reason: 'unclosed quote' },

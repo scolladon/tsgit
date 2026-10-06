@@ -271,6 +271,11 @@ export type CommandError =
       readonly available: ReadonlyArray<string>;
     }
   | { readonly code: 'UNKNOWN_OPTION'; readonly option: string }
+  | {
+      readonly code: 'AMBIGUOUS_OPTION';
+      readonly option: string;
+      readonly candidates: readonly [string, string];
+    }
   | { readonly code: 'BAD_BRANCH_MERGE_OPTIONS'; readonly branch: string; readonly reason: string }
   | { readonly code: 'UNKNOWN_STRATEGY_OPTION'; readonly option: string }
   | { readonly code: 'MERGE_STRATEGY_FAILED'; readonly strategy: string }
@@ -982,6 +987,16 @@ export const unknownMergeStrategy = (
  */
 export const unknownOption = (option: string): TsgitError =>
   new TsgitError({ code: 'UNKNOWN_OPTION', option: sanitizeForDisplay(option) });
+
+/**
+ * git's `ambiguous option: <arg> (could be --<a> or --<b>)`: an abbreviation
+ * more than one long option starts; the candidates are the last two git saw.
+ */
+export const ambiguousOption = (
+  option: string,
+  candidates: readonly [string, string],
+): TsgitError =>
+  new TsgitError({ code: 'AMBIGUOUS_OPTION', option: sanitizeForDisplay(option), candidates });
 
 /**
  * git's `Bad branch.<branch>.mergeoptions string: <reason>`: the branch's

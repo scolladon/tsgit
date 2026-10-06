@@ -1,8 +1,8 @@
 /**
  * Property test for git's merge option grammar: every spelling of a valued
  * option (`-Xv`, `-X v`, `--strategy-option=v`, `--strategy-option v`)
- * accumulates in order, the last fast-forward flag wins, and nothing after
- * `--` is read.
+ * accumulates in order, the last fast-forward flag wins, a unique prefix of a
+ * long option reads as the option, and nothing after `--` is read.
  */
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
@@ -77,6 +77,26 @@ describe('parseMergeCommandLine properties', () => {
         fc.assert(
           fc.property(fc.array(fc.string()), (rest) => {
             expect(sut(['--squash', '--', ...rest])).toEqual({ squash: true });
+          }),
+        );
+      });
+    });
+  });
+
+  describe('Given any prefix of a long option no other option shares', () => {
+    describe('When parsed, alone and negated', () => {
+      it('Then it reads as the whole option', () => {
+        // Arrange
+        const sut = parseMergeCommandLine;
+        const SQUASH = 'squash';
+        const UNIQUE_FROM = 3;
+
+        // Act & Assert
+        fc.assert(
+          fc.property(fc.integer({ min: UNIQUE_FROM, max: SQUASH.length }), (length) => {
+            const prefix = SQUASH.slice(0, length);
+            expect(sut([`--${prefix}`])).toEqual({ squash: true });
+            expect(sut([`--no-${prefix}`])).toEqual({ squash: false });
           }),
         );
       });
