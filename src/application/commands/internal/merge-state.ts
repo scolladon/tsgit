@@ -18,7 +18,13 @@
 
 import type { ObjectId } from '../../../domain/objects/index.js';
 import { ObjectId as ObjectIdFactory } from '../../../domain/objects/index.js';
-import { MERGE_HEAD, MERGE_MODE, MERGE_MSG, ORIG_HEAD } from '../../../domain/refs/state-files.js';
+import {
+  MERGE_HEAD,
+  MERGE_MODE,
+  MERGE_MSG,
+  ORIG_HEAD,
+  SQUASH_MSG,
+} from '../../../domain/refs/state-files.js';
 import type { Context } from '../../../ports/context.js';
 
 const mergeHeadPath = (ctx: Context): string => `${ctx.layout.gitDir}/${MERGE_HEAD}`;
@@ -118,4 +124,9 @@ export const clearMergeMsg = async (ctx: Context): Promise<void> => {
   if (await ctx.fs.exists(path)) {
     await ctx.fs.rm(path);
   }
+};
+
+/** git's `squash_message` file, which the commit concluding a `--squash` merge starts from. */
+export const writeSquashMsg = async (ctx: Context, message: string): Promise<void> => {
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${SQUASH_MSG}`, message);
 };

@@ -1,0 +1,106 @@
+import { describe, expect, it } from 'vitest';
+import { squashMessage } from '../../../../src/domain/merge/squash-message.js';
+import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
+
+const author: AuthorIdentity = {
+  name: 'a',
+  email: 'a@x',
+  timestamp: 1_700_000_000,
+  timezoneOffset: '+0130',
+};
+const ONE = '8f2f9f786f12a60642c4595a9d0dd4269d014377' as ObjectId;
+const TWO = 'dfd974a2faa12ad9d530c1f3041a4b69e82f56c1' as ObjectId;
+
+describe('squashMessage', () => {
+  describe('Given two commits, the older with a multi-paragraph message', () => {
+    describe('When rendered', () => {
+      it("Then each is listed in git's medium format under the squash header", () => {
+        // Arrange
+        const sut = squashMessage;
+
+        // Act
+        const result = sut([
+          { id: TWO, mergeParents: [], author, message: 'side two\n' },
+          { id: ONE, mergeParents: [], author, message: 'side one\n\nbody para\n\n  indented\n' },
+        ]);
+
+        // Assert
+        expect(result).toBe(
+          'Squashed commit of the following:\n' +
+            `\ncommit ${TWO}\nAuthor: a <a@x>\nDate:   Tue Nov 14 23:43:20 2023 +0130\n\n    side two\n` +
+            `\ncommit ${ONE}\nAuthor: a <a@x>\nDate:   Tue Nov 14 23:43:20 2023 +0130\n\n    side one\n    \n    body para\n    \n      indented\n`,
+        );
+      });
+    });
+  });
+
+  describe('Given a merge commit', () => {
+    describe('When rendered', () => {
+      it('Then its abbreviated parents follow the commit line', () => {
+        // Arrange
+        const sut = squashMessage;
+
+        // Act
+        const result = sut([
+          { id: ONE, mergeParents: ['dfd974a', '235c22e'], author, message: 'inner merge\n' },
+        ]);
+
+        // Assert
+        expect(result).toBe(
+          `Squashed commit of the following:\n\ncommit ${ONE}\nMerge: dfd974a 235c22e\nAuthor: a <a@x>\nDate:   Tue Nov 14 23:43:20 2023 +0130\n\n    inner merge\n`,
+        );
+      });
+    });
+  });
+
+  describe('Given a message with leading blank lines, trailing spaces and trailing blank lines', () => {
+    describe('When rendered', () => {
+      it('Then the leading blanks are skipped and the trailing whitespace trimmed', () => {
+        // Arrange
+        const sut = squashMessage;
+
+        // Act
+        const result = sut([
+          { id: ONE, mergeParents: [], author, message: '\n\n  subject  \t\nbody\r\n\n\n' },
+        ]);
+
+        // Assert
+        expect(result).toBe(
+          `Squashed commit of the following:\n\ncommit ${ONE}\nAuthor: a <a@x>\nDate:   Tue Nov 14 23:43:20 2023 +0130\n\n      subject\n    body\n`,
+        );
+      });
+    });
+  });
+
+  describe('Given a commit with an empty message', () => {
+    describe('When rendered', () => {
+      it('Then the date line closes its entry', () => {
+        // Arrange
+        const sut = squashMessage;
+
+        // Act
+        const result = sut([{ id: ONE, mergeParents: [], author, message: '' }]);
+
+        // Assert
+        expect(result).toBe(
+          `Squashed commit of the following:\n\ncommit ${ONE}\nAuthor: a <a@x>\nDate:   Tue Nov 14 23:43:20 2023 +0130\n`,
+        );
+      });
+    });
+  });
+
+  describe('Given no commits', () => {
+    describe('When rendered', () => {
+      it('Then only the header is written', () => {
+        // Arrange
+        const sut = squashMessage;
+
+        // Act
+        const result = sut([]);
+
+        // Assert
+        expect(result).toBe('Squashed commit of the following:\n');
+      });
+    });
+  });
+});

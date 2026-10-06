@@ -1801,6 +1801,10 @@ describe('domain commands error — extractDetail message formatting', () => {
       'CONFIG_NEGATIVE_LENGTH: merge.log: negative length -1',
     ],
     [
+      { code: 'INCOMPATIBLE_OPTIONS', options: ['--squash', '--no-ff'] },
+      "INCOMPATIBLE_OPTIONS: options '--squash' and '--no-ff' cannot be used together",
+    ],
+    [
       { code: 'MERGE_DRIVER_MISSING_COMMAND', name: 'x' },
       'MERGE_DRIVER_MISSING_COMMAND: custom merge driver x lacks command line.',
     ],

@@ -1,4 +1,5 @@
 import {
+  incompatibleOptions,
   nonFastForward,
   unrelatedHistories,
   workingTreeDirty,
@@ -92,6 +93,7 @@ import {
   writeMergeMode,
   writeMergeMsg,
   writeOrigHead,
+  writeSquashMsg,
 } from './internal/merge-state.js';
 import { type OctopusRemote, type OctopusResult, octopusMerge } from './internal/octopus-merge.js';
 import { expandPriorCheckout } from './internal/prior-checkout.js';
@@ -103,6 +105,7 @@ import {
   requireWorkTree,
 } from './internal/repo-state.js';
 import { resolveRevisionExpression } from './internal/revision-expression.js';
+import { buildSquashMessage } from './internal/squash-message.js';
 import { applyMergeAutostash, createAutostash } from './stash.js';
 
 const PREVIOUS_BRANCH_SHORTHAND = '-';
@@ -147,6 +150,13 @@ export interface MergeRunInput {
    * negative count — it is `merge.log`'s (or `merge.summary`'s), else none.
    */
   readonly log?: boolean | number;
+  /**
+   * git's `--squash`: take the merge into the index and working tree and
+   * write `SQUASH_MSG`, without `MERGE_HEAD` and without moving HEAD — even
+   * when a fast-forward was possible. Refuses with `INCOMPATIBLE_OPTIONS`
+   * under `fastForward: 'never'` (or `merge.ff = false`).
+   */
+  readonly squash?: boolean;
   readonly author?: AuthorIdentity;
   readonly committer?: AuthorIdentity;
 }
@@ -199,10 +209,12 @@ export type MergeResult =
       /** What `MERGE_HEAD` resolves to: the first head merged. */
       readonly mergeHead: ObjectId;
       readonly origHead: ObjectId;
-    };
+    }
+  /** `squash`: the merge is staged and `SQUASH_MSG` written; HEAD still names `origHead`. */
+  | { readonly kind: 'squashed'; readonly origHead: ObjectId };
 
-/** `post-merge`'s squash-flag argument. tsgit has no `--squash`, so always off. */
-const SQUASH_FLAG_OFF = '0';
+/** `post-merge`'s squash-flag argument: `1` after a `--squash` merge, else `0`. */
+const squashFlag = (result: MergeResult): string => (result.kind === 'squashed' ? '1' : '0');
 
 /**
  * Merge `rev` into HEAD: the branch it names, or HEAD itself when detached.
@@ -227,8 +239,8 @@ export const mergeRun = async (
   // working tree (fast-forward or clean true-merge), never on up-to-date or a
   // conflict. It cannot abort the completed merge (its exit code is ignored).
   // git's `finish` then re-applies the autostash.
-  if (result.kind === 'fast-forward' || result.kind === 'merge') {
-    await runInformationalHook(ctx, 'post-merge', { args: [SQUASH_FLAG_OFF] });
+  if (result.kind === 'fast-forward' || result.kind === 'merge' || result.kind === 'squashed') {
+    await runInformationalHook(ctx, 'post-merge', { args: [squashFlag(result)] });
     await applyMergeAutostash(ctx);
   }
   // git's `remove_merge_branch_state` on every concluded merge; a stop keeps its files.
@@ -328,6 +340,7 @@ const computeMerge = async (
 ): Promise<MergeResult> => {
   await assertOperationalRepositorySettingsFirst(ctx);
   await assertMergeMessageConfig(ctx);
+  await assertSquashCompatible(ctx, input);
   requireWorkTree(ctx, 'merge');
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
@@ -337,6 +350,13 @@ const computeMerge = async (
   return named.length === 1
     ? twoHeadMerge(ctx, input, internal, branch, ourId, named[0]!)
     : manyHeadMerge(ctx, input, internal, branch, ourId, named);
+};
+
+/** git refuses `--squash` with `--no-ff` — the caller's or `merge.ff`'s — before merging. */
+const assertSquashCompatible = async (ctx: Context, input: MergeRunInput): Promise<void> => {
+  if (input.squash !== true) return;
+  const { fastForward } = await settleFastForward(ctx, input);
+  if (fastForward === NO_FAST_FORWARD) throw incompatibleOptions('--squash', '--no-ff');
 };
 
 /**
@@ -426,8 +446,10 @@ const twoHeadMerge = async (
   const [base] = bases;
   if (base === theirId) return { kind: 'up-to-date', id: ourId };
   if (base === ourId && opts.fastForward !== 'never') {
-    return underAutostash(ctx, opts, () =>
-      fastForward(ctx, opts, internal, branch, { ourId, theirId }),
+    return underAutostash(ctx, opts, async () =>
+      opts.squash === true
+        ? squashInto(ctx, await getTree(ctx, theirId), ourId, [theirId])
+        : fastForward(ctx, opts, internal, branch, { ourId, theirId }),
     );
   }
   if (opts.fastForward === 'only') {
@@ -603,6 +625,25 @@ interface MergeCommitInput {
   readonly parents: ReadonlyArray<ObjectId>;
 }
 
+/** git's `--squash` `finish`: stage `tree` and write `SQUASH_MSG`, leaving HEAD where it is. */
+const squashInto = (
+  ctx: Context,
+  tree: ObjectId,
+  ourId: ObjectId,
+  heads: ReadonlyArray<ObjectId>,
+): Promise<MergeResult> =>
+  materialiseAndApply(ctx, tree, async () => {
+    await writeSquashMsg(ctx, await buildSquashMessage(ctx, ourId, heads));
+    return { kind: 'squashed', origHead: ourId };
+  });
+
+/** A squash stops on no conflict: git's squash-with-conflicts state has no result shape yet. */
+const assertNotSquashing = (opts: SettledMerge): void => {
+  if (opts.squash === true) {
+    throw unsupportedOperation('merge', 'squash with conflicts');
+  }
+};
+
 /** git's `finish_automerge`: commit the merged tree and log `note` behind the reflog action. */
 const commitCleanMerge = async (
   ctx: Context,
@@ -610,6 +651,14 @@ const commitCleanMerge = async (
   mergedTree: ObjectId,
   note: string,
 ): Promise<MergeResult> => {
+  if (opts.squash === true) {
+    return squashInto(
+      ctx,
+      mergedTree,
+      ourId,
+      parents.filter((id) => id !== ourId),
+    );
+  }
   const author = await resolveMergeAuthor(ctx, opts);
   const committer = resolveMergeCommitter(opts, author);
   const message = sanitizeMessage(opts.message, { allowEmpty: false });
@@ -695,6 +744,7 @@ const persistOctopusConflict = async (
   result: Extract<OctopusResult, { readonly kind: 'conflict' }>,
   ours: FlatEntries,
 ): Promise<MergeResult> => {
+  assertNotSquashing(commit.opts);
   const marked = result.conflicts.filter((conflict) => conflict.conflictContent !== undefined);
   const outcomes = outcomesBetween(ours, result.worktree, new Set(marked.map((c) => c.path)));
   const changed = changedPaths(outcomes, result.conflicts, ours);
@@ -963,6 +1013,7 @@ const persistConflictState = async (
   ourId: ObjectId,
   theirId: ObjectId,
 ): Promise<MergeResult> => {
+  assertNotSquashing(opts);
   rejectUnsupportedConflicts(result.conflicts);
 
   const changed = changedPaths(result.outcomes, result.conflicts, result.ours);

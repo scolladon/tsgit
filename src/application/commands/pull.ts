@@ -108,6 +108,8 @@ export interface PullOptions {
    * message carries. Unset, it is the merge's own `merge.log`.
    */
   readonly log?: boolean | number;
+  /** git's `--squash`, forwarded to `merge`: stage the merge and write `SQUASH_MSG`, HEAD unmoved. */
+  readonly squash?: boolean;
   /** Identity for the merge commit (true-merge path only). */
   readonly author?: AuthorIdentity;
   readonly committer?: AuthorIdentity;
@@ -468,6 +470,7 @@ const integrateByMerge = async (
       ...(opts.autostash !== undefined ? { autostash: opts.autostash } : {}),
       ...(opts.message !== undefined ? { message: opts.message } : {}),
       ...(opts.log !== undefined ? { log: opts.log } : {}),
+      ...(opts.squash !== undefined ? { squash: opts.squash } : {}),
       // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ fastForward: undefined }`, which `merge` reads as `!== 'never'` (so a fast-forward proceeds) and `=== 'only'` (false) — identical to omitting it. The drop direction + the `!==` flip are killed by the fastForward-forwarding tests.
       ...(opts.fastForward !== undefined ? { fastForward: opts.fastForward } : {}),
       // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ author: undefined }`, which `merge` resolves as `opts.author ?? config` — identical to omitting it. The drop direction + the `!==` flip are killed by the author-bearing merge tests.

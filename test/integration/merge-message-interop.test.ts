@@ -10,6 +10,7 @@
  *   unique:         merge records git's fmt_merge_msg default message byte for byte
  *   interopSurface: merge
  */
+import { existsSync } from 'node:fs';
 import { cp, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -216,6 +217,74 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — default message', () => {
 
         // Assert
         expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe.each([
+    ['diverged from', 'main'],
+    ['fast-forwardable to', 'main~1'],
+  ])('Given HEAD %s a branch with two commits', (_label, start) => {
+    describe('When both tools squash-merge it and then commit', () => {
+      it('Then SQUASH_MSG, the index, HEAD and the concluding commit are identical', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) {
+          git(dir, 'checkout', '-q', 'feature');
+          git(dir, 'commit', '-q', '--allow-empty', '-m', 'second on feature', '-m', 'body');
+          git(dir, 'checkout', '-q', '-B', 'topic', start);
+        }
+        tryRunGit(['-C', pair.peer, 'merge', '-q', '--squash', 'feature'], { env: COMMIT_ENV });
+        const repo = await openRepository({ cwd: pair.ours });
+        const sut = repo.merge.run;
+
+        // Act
+        await sut({ rev: 'feature', squash: true, author: IDENTITY, committer: IDENTITY });
+        const snapshot = async (dir: string) => [
+          await readFile(path.join(dir, '.git', 'SQUASH_MSG'), 'utf8'),
+          git(dir, 'write-tree'),
+          git(dir, 'rev-parse', 'HEAD'),
+        ];
+        const [result, expected] = [await snapshot(pair.ours), await snapshot(pair.peer)];
+        git(pair.peer, 'commit', '-q', '--allow-empty', '-m', 'squashed');
+        await repo.commit({
+          message: 'squashed',
+          allowEmpty: true,
+          author: IDENTITY,
+          committer: IDENTITY,
+        });
+        await repo.dispose();
+
+        // Assert
+        expect(result).toEqual(expected);
+        expect(git(pair.ours, 'rev-parse', 'HEAD')).toBe(git(pair.peer, 'rev-parse', 'HEAD'));
+      });
+    });
+  });
+
+  describe('Given squash with --no-ff', () => {
+    describe('When both tools merge', () => {
+      it('Then both refuse before writing ORIG_HEAD', async () => {
+        // Arrange
+        const theirs = tryRunGit(['-C', pair.peer, 'merge', '--squash', '--no-ff', 'feature'], {
+          env: COMMIT_ENV,
+        });
+        const repo = await openRepository({ cwd: pair.ours });
+        const sut = repo.merge.run;
+
+        // Act
+        const result = await sut({ rev: 'feature', squash: true, fastForward: 'never' }).catch(
+          (e: unknown) => (e as { data: unknown }).data,
+        );
+        await repo.dispose();
+
+        // Assert
+        expect(theirs.stderr).toContain(
+          "options '--squash' and '--no-ff.' cannot be used together",
+        );
+        expect(result).toEqual({ code: 'INCOMPATIBLE_OPTIONS', options: ['--squash', '--no-ff'] });
+        expect(existsSync(path.join(pair.ours, '.git', 'ORIG_HEAD'))).toBe(
+          existsSync(path.join(pair.peer, '.git', 'ORIG_HEAD')),
+        );
       });
     });
   });

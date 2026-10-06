@@ -257,6 +257,7 @@ export type CommandError =
       readonly line: number;
     }
   | { readonly code: 'MERGE_DRIVER_MISSING_COMMAND'; readonly name: string }
+  | { readonly code: 'INCOMPATIBLE_OPTIONS'; readonly options: readonly [string, string] }
   | {
       readonly code: 'CONFIG_BAD_NUMERIC_VALUE';
       readonly key: string;
@@ -923,6 +924,13 @@ export const configNegativeLength = (
     source,
     line,
   });
+
+/**
+ * Two options git refuses together, named by their git flags (`--squash`,
+ * `--no-ff`): git's `options '<a>' and '<b>' cannot be used together`.
+ */
+export const incompatibleOptions = (first: string, second: string): TsgitError =>
+  new TsgitError({ code: 'INCOMPATIBLE_OPTIONS', options: [first, second] });
 
 /**
  * A `[merge "<name>"]` section is registered (`name` and/or `recursive` set) but
