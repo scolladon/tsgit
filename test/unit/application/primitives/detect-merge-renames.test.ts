@@ -306,4 +306,34 @@ describe('detectMergeRenames', () => {
       });
     });
   });
+
+  describe('Given theirs moves an untouched path exactly onto a name similar to a path ours edited', () => {
+    describe('When renames are detected', () => {
+      it('Then the exact pass claims the destination and the edited path pairs with nothing', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const [big, edited, longer] = await Promise.all(
+          [LINES, EDITED, `${LINES}9\n`].map((content) => blob(ctx, content)),
+        );
+        const sut = detectMergeRenames;
+
+        // Act
+        const result = await sut(
+          ctx,
+          flat([
+            ['big', big as ObjectId],
+            ['c', longer as ObjectId],
+          ]),
+          flat([
+            ['big', edited as ObjectId],
+            ['c', longer as ObjectId],
+          ]),
+          flat([['big2', longer as ObjectId]]),
+        );
+
+        // Assert
+        expect(result).toEqual({ ours: [], theirs: [] });
+      });
+    });
+  });
 });

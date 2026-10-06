@@ -107,13 +107,18 @@ const chmodX =
     dated(['-C', dir, 'update-index', '--chmod=+x', file]);
 
 /** `big` and `y` at the base; `side` then `main` each apply their steps in one commit. */
-const buildScenario = (sideSteps: ReadonlyArray<Step>, mainSteps: ReadonlyArray<Step>): string => {
+const buildScenario = (
+  sideSteps: ReadonlyArray<Step>,
+  mainSteps: ReadonlyArray<Step>,
+  baseSteps: ReadonlyArray<Step> = [],
+): string => {
   const dir = path.join(root, `scenario-${copies++}`);
   runGit(['init', '-q', '-b', 'main', dir]);
   runGit(['-C', dir, 'config', 'user.name', 't']);
   runGit(['-C', dir, 'config', 'user.email', 't@t']);
   writeFileSync(path.join(dir, 'big'), LINES);
   writeFileSync(path.join(dir, 'y'), 'a\nb\nc\nd\ne\nf\ng\nh\n');
+  for (const step of baseSteps) step(dir);
   commitAll(dir, 'base');
   dated(['-C', dir, 'checkout', '-q', '-b', 'side']);
   for (const step of sideSteps) step(dir);
@@ -274,6 +279,11 @@ describe.skipIf(!GIT_AVAILABLE)('merge rename detection interop', () => {
       [change('y', 'a\n', 'A\n'), change('big', '4\n', 'S\n')],
       [change('y', 'h\n', 'H\n'), change('big', '4\n', 'M\n')],
     ],
+    [
+      'rename vs delete and add at its target',
+      [mv('big', 'big2')],
+      [rm('big'), put('big2', 'x\ny\n')],
+    ],
   ] as const)('Given %s', (_label, sideSteps, mainSteps) => {
     describe('When both tools merge the side', () => {
       it("Then the tree, index stages, files and MERGE_MSG match git's", async () => {
@@ -424,6 +434,30 @@ describe.skipIf(!GIT_AVAILABLE)('merge rename detection interop', () => {
         // Assert
         expect([gitRun.exitCode, gitRun.stderr.includes(message)]).toEqual([exitCode, true]);
         expect(result).toBe(code);
+        expect(snapshot(ours)).toEqual(snapshot(theirs));
+      });
+    });
+  });
+
+  describe('Given an exact rename of an untouched path onto a name similar to an edited one', () => {
+    describe('When both tools merge the side', () => {
+      it("Then the exact pass pairs it first, as git's does", async () => {
+        // Arrange
+        const theirs = buildScenario(
+          [rm('big'), mv('c', 'big2')],
+          [change('big', '7\n', 'seven\n')],
+          [put('c', `${LINES}9\n`)],
+        );
+        const ours = await copyOf(theirs);
+        tryRunGitWithExit(['-C', theirs, 'merge', 'side'], { env: DATED_ENV });
+        const repo = await openRepository({ cwd: ours });
+        const sut = repo.merge.run;
+
+        // Act
+        await sut({ rev: 'side', author: IDENTITY, committer: IDENTITY });
+        await repo.dispose();
+
+        // Assert
         expect(snapshot(ours)).toEqual(snapshot(theirs));
       });
     });
