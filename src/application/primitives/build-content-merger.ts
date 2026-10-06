@@ -1,5 +1,6 @@
 import { configMissingValue, mergeDriverMissingCommand } from '../../domain/commands/error.js';
 import type { LineKey } from '../../domain/diff/whitespace.js';
+import type { SearchMode } from '../../domain/diff/xdiff/xdl-prepare.js';
 import {
   type ContentMergeContext,
   type ContentMergeResult,
@@ -59,6 +60,7 @@ const labelsFor = (labels: MergeLabels, mergeCtx: ContentMergeContext): MergeLab
 export interface ContentMergeSettings {
   readonly variant?: OrtVariant;
   readonly lineKey?: LineKey;
+  readonly diffSearch?: SearchMode;
 }
 
 /** git's `ll_union_merge` overrides the variant; `-merge` and `text` keep it. */
@@ -115,7 +117,8 @@ export const buildContentMerger = (
     }
     return mergeContent(base?.content, ours.content, theirs.content, {
       favor: favorFor(driver.kind, settings),
-      ...(settings.lineKey === undefined ? {} : { lineKey: settings.lineKey }),
+      lineKey: settings.lineKey,
+      diffSearch: settings.diffSearch,
       markerSize,
       labels: { ours: pathLabels.ours, theirs: pathLabels.theirs },
     });

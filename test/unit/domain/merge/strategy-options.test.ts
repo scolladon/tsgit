@@ -121,11 +121,33 @@ describe('parseOrtStrategyOptions', () => {
   });
 
   describe.each([
+    ['diff-algorithm=Minimal', ['diff-algorithm=Minimal'], { diffSearch: 'minimal' }],
+    ['diff-algorithm=myers', ['diff-algorithm=myers'], {}],
+    ['minimal then default', ['diff-algorithm=minimal', 'diff-algorithm=default'], {}],
+    ['patience then myers', ['patience', 'diff-algorithm=Myers'], {}],
+    ['histogram then minimal', ['histogram', 'diff-algorithm=minimal'], { diffSearch: 'minimal' }],
+  ] as const)('Given %s', (_label, options, algorithm) => {
+    describe('When parsed', () => {
+      it('Then the last algorithm named drives the line diffs', () => {
+        // Arrange
+        const sut = parseOrtStrategyOptions;
+
+        // Act
+        const result = sut(options);
+
+        // Assert
+        expect(result).toEqual({ renames: {}, ...algorithm });
+      });
+    });
+  });
+
+  describe.each([
     'subtree',
     'subtree=dir',
     'patience',
     'histogram',
-    'diff-algorithm=Minimal',
+    'diff-algorithm=HISTOGRAM',
+    'diff-algorithm=patience',
     'renormalize',
     'no-renormalize',
   ])('Given the option %j', (option) => {

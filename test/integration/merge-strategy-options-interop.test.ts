@@ -161,6 +161,27 @@ const CARRIAGE = whitespaceEdits(
   'AB\nl2\nl3\nl4\nc d\r\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h\r\n',
 );
 
+const mulberry32 = (initial: number): (() => number) => {
+  let seed = initial;
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+};
+/** Edits heavy enough that xdiff's Myers heuristic cuts the search short where minimal does not. */
+const heavyEdits = (): Scenario => {
+  const rand = mulberry32(7);
+  const pick = (): string => 'abcd'[Math.floor(rand() * 4)]!;
+  const lines = Array.from({ length: 3000 }, pick);
+  const resample = (rate: number): string =>
+    lines.map((line) => `${rand() < rate ? pick() : line}\n`).join('');
+  const base = lines.map((line) => `${line}\n`).join('');
+  const main = resample(0.5);
+  return { base: { f: base }, side: { f: resample(0.3) }, main: { f: main } };
+};
+
 describe.skipIf(!GIT_AVAILABLE)('merge strategy options interop', () => {
   beforeAll(() => {
     root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'tsgit-merge-x-')));
@@ -182,6 +203,21 @@ describe.skipIf(!GIT_AVAILABLE)('merge strategy options interop', () => {
     ['ignore-space-at-eol over space runs', SPACE_RUNS, ['ignore-space-at-eol']],
     ['ignore-space-at-eol over trailing spaces', TRAILING, ['ignore-space-at-eol']],
     ['ignore-cr-at-eol over carriage returns', CARRIAGE, ['ignore-cr-at-eol']],
+    [
+      'diff-algorithm=minimal and ours over heavy edits',
+      heavyEdits(),
+      ['diff-algorithm=minimal', 'ours'],
+    ],
+    [
+      'diff-algorithm=myers and ours over heavy edits',
+      heavyEdits(),
+      ['diff-algorithm=myers', 'ours'],
+    ],
+    [
+      'theirs and diff-algorithm=minimal over heavy edits',
+      heavyEdits(),
+      ['theirs', 'diff-algorithm=minimal'],
+    ],
     ['ignore-space-at-eol and ours over space runs', SPACE_RUNS, ['ignore-space-at-eol', 'ours']],
   ])('Given -X %s', (_label, scenario, options) => {
     describe('When both tools merge the side', () => {

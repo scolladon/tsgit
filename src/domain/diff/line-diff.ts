@@ -202,10 +202,9 @@ export function diffPresplitLines(
 /**
  * `diffPresplitLines`, parameterised by search mode.
  *
- * @internal — exported only for the property oracle in
- * xdiff.properties.test.ts, which needs `'minimal'` to assert the change
- * count against an independent LCS-based bound. Every production caller
- * goes through `diffPresplitLines`, which always passes `'git-default'`.
+ * @internal — the content merge picks `'minimal'` under
+ * `-X diff-algorithm=minimal`; the property oracle in xdiff.properties.test.ts
+ * uses it to assert the change count against an independent LCS-based bound.
  */
 export function diffPresplitLinesForMode(
   oursLines: ReadonlyArray<Uint8Array>,

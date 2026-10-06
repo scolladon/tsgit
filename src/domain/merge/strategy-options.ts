@@ -7,6 +7,7 @@
 import { unknownStrategyOption } from '../commands/error.js';
 import { parseRenameScore } from '../diff/rename-score.js';
 import { type LineKey, NONE_KEY, type WhitespaceMode } from '../diff/whitespace.js';
+import type { SearchMode } from '../diff/xdiff/xdl-prepare.js';
 import { unsupportedOperation } from '../error.js';
 
 /** The rename settings `-X` overrides; an absent field keeps the configured one. */
@@ -24,6 +25,8 @@ export interface OrtStrategyOptions {
   readonly variant?: OrtVariant;
   /** The whitespace the content merge's line diffs ignore (`-X ignore-*`). */
   readonly lineKey?: LineKey;
+  /** `minimal` when `-X diff-algorithm=minimal` asks for xdiff's exhaustive search. */
+  readonly diffSearch?: SearchMode;
 }
 
 /** xdiff's `xdl_recmatch` tests the flags all → change → at-eol, so the strongest set one wins. */
@@ -49,26 +52,41 @@ const isVariant = (option: string): option is OrtVariant => VARIANTS.has(option)
 
 const THRESHOLD_PREFIXES = ['find-renames=', 'rename-threshold='] as const;
 const DIFF_ALGORITHM_PREFIX = 'diff-algorithm=';
-const DIFF_ALGORITHMS: ReadonlySet<string> = new Set([
-  'myers',
-  'default',
-  'minimal',
-  'patience',
-  'histogram',
+/** xdiff's algorithm bits, cleared and reset by every algorithm option, so the last one named wins. */
+const SEARCH_BY_ALGORITHM: ReadonlyMap<string, SearchMode | undefined> = new Map([
+  ['myers', undefined],
+  ['default', undefined],
+  ['minimal', 'minimal'],
+  ['patience', undefined],
+  ['histogram', undefined],
 ]);
-const UNSUPPORTED: ReadonlySet<string> = new Set([
-  'subtree',
-  'patience',
-  'histogram',
-  'renormalize',
-  'no-renormalize',
-]);
+const UNIMPLEMENTED_ALGORITHMS: ReadonlySet<string> = new Set(['patience', 'histogram']);
+const UNSUPPORTED: ReadonlySet<string> = new Set(['subtree', 'renormalize', 'no-renormalize']);
 const SUBTREE_PREFIX = 'subtree=';
 
-const isUnsupported = (option: string): boolean => {
-  if (UNSUPPORTED.has(option) || option.startsWith(SUBTREE_PREFIX)) return true;
-  if (!option.startsWith(DIFF_ALGORITHM_PREFIX)) return false;
-  return DIFF_ALGORITHMS.has(option.slice(DIFF_ALGORITHM_PREFIX.length).toLowerCase());
+const isUnsupported = (option: string): boolean =>
+  UNSUPPORTED.has(option) || option.startsWith(SUBTREE_PREFIX);
+
+const algorithmNamed = (option: string): string | undefined => {
+  if (UNIMPLEMENTED_ALGORITHMS.has(option)) return option;
+  if (!option.startsWith(DIFF_ALGORITHM_PREFIX)) return undefined;
+  const name = option.slice(DIFF_ALGORITHM_PREFIX.length).toLowerCase();
+  return SEARCH_BY_ALGORITHM.has(name) ? name : undefined;
+};
+
+/** The settings so far, plus the option that last chose an algorithm tsgit cannot run yet. */
+interface Parsed {
+  readonly settings: OrtStrategyOptions;
+  readonly unimplemented?: string;
+}
+
+const withAlgorithm = ({ settings }: Parsed, option: string, name: string): Parsed => {
+  const { diffSearch: _replaced, ...rest } = settings;
+  const search = SEARCH_BY_ALGORITHM.get(name);
+  const next = search === undefined ? rest : { ...rest, diffSearch: search };
+  return UNIMPLEMENTED_ALGORITHMS.has(name)
+    ? { settings: next, unimplemented: option }
+    : { settings: next };
 };
 
 /** git's `rename_score`: 0 stands for the default, which an absent threshold already means. */
@@ -94,12 +112,21 @@ const applyRenameOption = (settings: OrtRenameOptions, option: string): OrtRenam
   throw unknownStrategyOption(option);
 };
 
-const applyOption = (settings: OrtStrategyOptions, option: string): OrtStrategyOptions => {
+const applySetting = (settings: OrtStrategyOptions, option: string): OrtStrategyOptions => {
   if (isVariant(option)) return { ...settings, variant: option };
   const lineKey = withWhitespace(settings.lineKey ?? NONE_KEY, option);
   if (lineKey !== undefined) return { ...settings, lineKey };
   return { ...settings, renames: applyRenameOption(settings.renames, option) };
 };
 
-export const parseOrtStrategyOptions = (options: ReadonlyArray<string>): OrtStrategyOptions =>
-  options.reduce(applyOption, { renames: {} });
+const applyOption = (parsed: Parsed, option: string): Parsed => {
+  const algorithm = algorithmNamed(option);
+  if (algorithm !== undefined) return withAlgorithm(parsed, option, algorithm);
+  return { ...parsed, settings: applySetting(parsed.settings, option) };
+};
+
+export const parseOrtStrategyOptions = (options: ReadonlyArray<string>): OrtStrategyOptions => {
+  const { settings, unimplemented } = options.reduce(applyOption, { settings: { renames: {} } });
+  if (unimplemented !== undefined) throw unsupportedOperation('merge', `-X${unimplemented}`);
+  return settings;
+};
