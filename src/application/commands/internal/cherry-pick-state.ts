@@ -40,6 +40,9 @@ export const conflictMergeMsg = (draft: string, paths: ReadonlyArray<FilePath>):
   // Trim the draft's trailing whitespace so a stripspace'd message (which ends
   // in a single LF) yields exactly one blank line before the block — git's bytes.
   const body = draft.replace(/\s+$/, '');
-  const block = paths.map((p) => `#\t${p}\n`).join('');
-  return `${body}\n\n# Conflicts:\n${block}`;
+  return `${body}\n${conflictsHint(paths)}`;
 };
+
+/** git's `append_conflicts_hint`: a blank line, then the `# Conflicts:` block. */
+export const conflictsHint = (paths: ReadonlyArray<FilePath>): string =>
+  `\n# Conflicts:\n${paths.map((p) => `#\t${p}\n`).join('')}`;

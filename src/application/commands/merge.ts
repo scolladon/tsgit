@@ -76,7 +76,7 @@ import { writeObject } from '../primitives/write-object.js';
 import { writeTree } from '../primitives/write-tree.js';
 import { configuredAutostash } from './internal/autostash-config.js';
 import { removeMergeBranchState } from './internal/branch-state.js';
-import { conflictMergeMsg } from './internal/cherry-pick-state.js';
+import { conflictMergeMsg, conflictsHint } from './internal/cherry-pick-state.js';
 import { resolveAuthor, resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
 import { configuredMergeFastForward } from './internal/fast-forward-config.js';
 import { acquireIndexLock } from './internal/index-update.js';
@@ -210,8 +210,19 @@ export type MergeResult =
       readonly mergeHead: ObjectId;
       readonly origHead: ObjectId;
     }
-  /** `squash`: the merge is staged and `SQUASH_MSG` written; HEAD still names `origHead`. */
-  | { readonly kind: 'squashed'; readonly origHead: ObjectId };
+  /**
+   * `squash`: the merge is staged and `SQUASH_MSG` written; HEAD still names
+   * `origHead`. `conflicts` is present when the merge left them to resolve.
+   */
+  | {
+      readonly kind: 'squashed';
+      readonly origHead: ObjectId;
+      readonly conflicts?: ReadonlyArray<MergeConflictDescriptor>;
+    };
+
+/** A stop the caller resolves by hand: a conflict, or a squash that left conflicts. */
+const leftToResolve = (result: MergeResult): boolean =>
+  result.kind === 'conflict' || (result.kind === 'squashed' && result.conflicts !== undefined);
 
 /** `post-merge`'s squash-flag argument: `1` after a `--squash` merge, else `0`. */
 const squashFlag = (result: MergeResult): string => (result.kind === 'squashed' ? '1' : '0');
@@ -241,10 +252,11 @@ export const mergeRun = async (
   // git's `finish` then re-applies the autostash.
   if (result.kind === 'fast-forward' || result.kind === 'merge' || result.kind === 'squashed') {
     await runInformationalHook(ctx, 'post-merge', { args: [squashFlag(result)] });
-    await applyMergeAutostash(ctx);
   }
+  if (leftToResolve(result)) return result;
+  if (result.kind !== 'up-to-date') await applyMergeAutostash(ctx);
   // git's `remove_merge_branch_state` on every concluded merge; a stop keeps its files.
-  if (result.kind !== 'conflict') await removeMergeBranchState(ctx);
+  await removeMergeBranchState(ctx);
   return result;
 };
 
@@ -372,7 +384,7 @@ const underAutostash = async (
   await stashForMerge(ctx);
   try {
     const result = await run();
-    if (result.kind === 'conflict') ctx.logger?.info?.(STASH_POP_HINT);
+    if (leftToResolve(result)) ctx.logger?.info?.(STASH_POP_HINT);
     return result;
   } catch (error) {
     await applyMergeAutostash(ctx);
@@ -637,11 +649,27 @@ const squashInto = (
     return { kind: 'squashed', origHead: ourId };
   });
 
-/** A squash stops on no conflict: git's squash-with-conflicts state has no result shape yet. */
-const assertNotSquashing = (opts: SettledMerge): void => {
+/**
+ * The state a conflicted merge stops in: `--squash` keeps `SQUASH_MSG` and a
+ * bare conflicts hint in `MERGE_MSG`, else `MERGE_HEAD`, `MERGE_MODE` and the
+ * message followed by that hint.
+ */
+const writeStopState = async (
+  ctx: Context,
+  opts: SettledMerge,
+  ourId: ObjectId,
+  heads: ReadonlyArray<ObjectId>,
+  paths: ReadonlyArray<FilePath>,
+): Promise<void> => {
   if (opts.squash === true) {
-    throw unsupportedOperation('merge', 'squash with conflicts');
+    await writeSquashMsg(ctx, await buildSquashMessage(ctx, ourId, heads));
+    await writeMergeMsg(ctx, conflictsHint(paths));
+    return;
   }
+  await writeMergeHeads(ctx, heads);
+  await writeMergeMode(ctx, opts.fastForward);
+  const message = sanitizeMessage(opts.message, { allowEmpty: false });
+  await writeMergeMsg(ctx, conflictMergeMsg(message, paths));
 };
 
 /** git's `finish_automerge`: commit the merged tree and log `note` behind the reflog action. */
@@ -744,7 +772,6 @@ const persistOctopusConflict = async (
   result: Extract<OctopusResult, { readonly kind: 'conflict' }>,
   ours: FlatEntries,
 ): Promise<MergeResult> => {
-  assertNotSquashing(commit.opts);
   const marked = result.conflicts.filter((conflict) => conflict.conflictContent !== undefined);
   const outcomes = outcomesBetween(ours, result.worktree, new Set(marked.map((c) => c.path)));
   const changed = changedPaths(outcomes, result.conflicts, ours);
@@ -755,13 +782,11 @@ const persistOctopusConflict = async (
   const remotes = commit.parents.filter((id) => id !== commit.ourId);
   await underIndexLock(ctx, async () => {
     await writeConflictingWorkingTree(ctx, outcomes, marked, changed, matcher);
-    await writeMergeHeads(ctx, remotes);
-    await writeMergeMode(ctx, commit.opts.fastForward);
-    const message = sanitizeMessage(commit.opts.message, { allowEmpty: false });
-    await writeMergeMsg(ctx, conflictMergeMsg(message, sortedRecordedPaths(result.conflicts)));
+    const paths = sortedRecordedPaths(result.conflicts);
+    await writeStopState(ctx, commit.opts, commit.ourId, remotes, paths);
     return buildConflictIndexEntries(merged, result.conflicts, matcher);
   });
-  return conflictOutcome(result.conflicts, remotes[0]!, commit.ourId);
+  return conflictOutcome(commit.opts, result.conflicts, remotes[0]!, commit.ourId);
 };
 
 type MergeTreeResult =
@@ -1013,7 +1038,6 @@ const persistConflictState = async (
   ourId: ObjectId,
   theirId: ObjectId,
 ): Promise<MergeResult> => {
-  assertNotSquashing(opts);
   rejectUnsupportedConflicts(result.conflicts);
 
   const changed = changedPaths(result.outcomes, result.conflicts, result.ours);
@@ -1033,13 +1057,10 @@ const persistConflictState = async (
   const matcher = await loadSparseMatcher(ctx);
   await underIndexLock(ctx, async () => {
     await writeConflictingWorkingTree(ctx, result.outcomes, result.conflicts, changed, matcher);
-    await writeMergeHeads(ctx, [theirId]);
-    await writeMergeMode(ctx, opts.fastForward);
-    const message = sanitizeMessage(opts.message, { allowEmpty: false });
-    await writeMergeMsg(ctx, conflictMergeMsg(message, sortedRecordedPaths(result.conflicts)));
+    await writeStopState(ctx, opts, ourId, [theirId], sortedRecordedPaths(result.conflicts));
     return buildConflictIndexEntries(result.outcomes, result.conflicts, matcher);
   });
-  return conflictOutcome(result.conflicts, theirId, ourId);
+  return conflictOutcome(opts, result.conflicts, theirId, ourId);
 };
 
 /**
@@ -1075,15 +1096,15 @@ const underIndexLock = async (
 };
 
 const conflictOutcome = (
+  opts: SettledMerge,
   conflicts: ReadonlyArray<MergeConflict>,
   mergeHead: ObjectId,
   origHead: ObjectId,
-): MergeResult => ({
-  kind: 'conflict',
-  conflicts: conflicts.map((c) => ({ path: c.path, type: c.type })),
-  mergeHead,
-  origHead,
-});
+): MergeResult => {
+  const descriptors = conflicts.map((c) => ({ path: c.path, type: c.type }));
+  if (opts.squash === true) return { kind: 'squashed', origHead, conflicts: descriptors };
+  return { kind: 'conflict', conflicts: descriptors, mergeHead, origHead };
+};
 
 /**
  * Reject conflict types that v1 cannot persist as resolvable merge state

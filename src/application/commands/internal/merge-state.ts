@@ -126,6 +126,13 @@ export const clearMergeMsg = async (ctx: Context): Promise<void> => {
   }
 };
 
+/** Read `.git/SQUASH_MSG`, or `undefined` when no `--squash` merge left one. */
+export const readSquashMsg = async (ctx: Context): Promise<string | undefined> => {
+  const path = `${ctx.layout.gitDir}/${SQUASH_MSG}`;
+  if (!(await ctx.fs.exists(path))) return undefined;
+  return ctx.fs.readUtf8(path);
+};
+
 /** git's `squash_message` file, which the commit concluding a `--squash` merge starts from. */
 export const writeSquashMsg = async (ctx: Context, message: string): Promise<void> => {
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${SQUASH_MSG}`, message);

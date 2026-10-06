@@ -152,32 +152,84 @@ describe('merge squash', () => {
   });
 
   describe('Given a squash whose merge conflicts', () => {
+    const conflicting = async (): Promise<Repo & { readonly theirs: ObjectId }> => {
+      const built = await repo();
+      const { ctx } = built;
+      await checkout(ctx, { rev: 'feature' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'theirs');
+      await add(ctx, ['a.txt']);
+      const theirs = (await commit(ctx, { message: 'theirs', author })).id;
+      await checkout(ctx, { rev: 'main' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'ours');
+      await add(ctx, ['a.txt']);
+      const main = (await commit(ctx, { message: 'ours', author })).id;
+      return { ...built, theirs, main };
+    };
+
     describe('When merged', () => {
-      it('Then it refuses as unsupported before writing the conflict', async () => {
+      it("Then git's squash state is left with the conflict stages and a squashed result", async () => {
         // Arrange
-        const { ctx } = await repo();
-        await checkout(ctx, { rev: 'feature' });
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'theirs');
-        await add(ctx, ['a.txt']);
-        await commit(ctx, { message: 'theirs', author });
-        await checkout(ctx, { rev: 'main' });
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'ours');
-        await add(ctx, ['a.txt']);
-        await commit(ctx, { message: 'ours', author });
+        const { ctx, main } = await conflicting();
         const sut = mergeRun;
 
         // Act
-        const error = await sut(ctx, { rev: 'feature', squash: true, author }).catch(
-          (e: unknown) => e,
-        );
+        const result = await sut(ctx, { rev: 'feature', squash: true, author });
 
         // Assert
-        expect((error as TsgitError).data).toEqual({
-          code: 'UNSUPPORTED_OPERATION',
-          operation: 'merge',
-          reason: 'squash with conflicts',
+        expect(result).toEqual({
+          kind: 'squashed',
+          origHead: main,
+          conflicts: [{ path: 'a.txt', type: 'content' }],
         });
+        expect(await resolveRef(ctx, HEAD)).toBe(main);
+        expect(await stateFiles(ctx)).toEqual(['MERGE_MSG', 'SQUASH_MSG', 'ORIG_HEAD']);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(
+          '\n# Conflicts:\n#\ta.txt\n',
+        );
+        const stages = (await readIndex(ctx)).entries.filter((e) => e.path === 'a.txt');
+        expect(stages.map((e) => e.flags.stage)).toEqual([1, 2, 3]);
+      });
+    });
+
+    describe('When resolved and committed without a message', () => {
+      it('Then the commit takes SQUASH_MSG then MERGE_MSG, comments stripped, on one parent', async () => {
+        // Arrange
+        const { ctx, one, two, theirs, main } = await conflicting();
+        await mergeRun(ctx, { rev: 'feature', squash: true, author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'resolved');
+        await add(ctx, ['a.txt']);
+        const sut = commit;
+
+        // Act
+        const committed = await sut(ctx, { message: '', author });
+
+        // Assert
+        const result = await readObject(ctx, committed.id);
+        expect(result.type === 'commit' && result.data.parents).toEqual([main]);
+        expect(result.type === 'commit' && result.data.message).toBe(
+          `Squashed commit of the following:\n${entry(theirs, 'theirs')}${entry(two, 'two')}${entry(one, 'one')}`,
+        );
         expect(await stateFiles(ctx)).toEqual(['ORIG_HEAD']);
+      });
+    });
+  });
+
+  describe('Given a clean squashed merge', () => {
+    describe('When committed without a message', () => {
+      it('Then the commit message is SQUASH_MSG', async () => {
+        // Arrange
+        const { ctx, one, two } = await repo();
+        await mergeRun(ctx, { rev: 'feature', squash: true, author });
+        const sut = commit;
+
+        // Act
+        const committed = await sut(ctx, { message: '', author });
+
+        // Assert
+        const result = await readObject(ctx, committed.id);
+        expect(result.type === 'commit' && result.data.message).toBe(
+          `Squashed commit of the following:\n${entry(two, 'two')}${entry(one, 'one')}`,
+        );
       });
     });
   });

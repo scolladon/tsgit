@@ -123,17 +123,20 @@ describe('mergeRun with autostash', () => {
     });
   });
 
-  describe('Given a dirty tree, When an autostash merge conflicts', () => {
+  describe.each([
+    ['merge', {}, 'conflict'],
+    ['squash merge', { squash: true }, 'squashed'],
+  ] as const)('Given a dirty tree, When an autostash %s conflicts', (_label, input, kind) => {
     it('Then MERGE_AUTOSTASH keeps the stash, the tree is clean and the pop hint is given', async () => {
       // Arrange
       const { ctx, logger } = await seed('conflict');
       const sut = mergeRun;
 
       // Act
-      const result = await sut(ctx, { rev: 'side', autostash: true });
+      const result = await sut(ctx, { rev: 'side', autostash: true, ...input });
 
       // Assert
-      expect(result.kind).toBe('conflict');
+      expect(result.kind).toBe(kind);
       expect(await ctx.fs.readUtf8(mergeAutostashFile(ctx))).toMatch(/^[0-9a-f]{40}\n$/);
       expect(await readWork(ctx, 'u')).toBe('u\n');
       expect(logger.info).toHaveBeenCalledWith(STASH_POP_HINT);

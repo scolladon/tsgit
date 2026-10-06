@@ -51,7 +51,12 @@ import {
   sanitizeMessage,
   stripComments,
 } from './internal/commit-message.js';
-import { readMergeHeads, readMergeMsg, readsNoFastForward } from './internal/merge-state.js';
+import {
+  readMergeHeads,
+  readMergeMsg,
+  readSquashMsg,
+  readsNoFastForward,
+} from './internal/merge-state.js';
 import { assertNoPendingOperation, readHeadRaw, requireWorkTree } from './internal/repo-state.js';
 import { readRevertHead } from './internal/revert-state.js';
 import { resolveSignRequest, signOrThrow } from './internal/sign-request.js';
@@ -282,15 +287,13 @@ const resolveCommitMessage = async (
   opts: CommitOptions,
   usePendingDraft: boolean,
 ): Promise<string> => {
-  if (opts.message.length > 0 || !usePendingDraft) {
-    return sanitizeMessage(opts.message, { allowEmpty: opts.allowEmptyMessage ?? false });
-  }
-  // Resolving a merge / cherry-pick with an empty user message — fall back to
-  // MERGE_MSG, stripping comment lines as git's editor cleanup does.
-  const draft = await readMergeMsg(ctx);
-  return sanitizeMessage(stripComments(draft ?? ''), {
-    allowEmpty: opts.allowEmptyMessage ?? false,
-  });
+  const allowEmpty = opts.allowEmptyMessage ?? false;
+  if (opts.message.length > 0) return sanitizeMessage(opts.message, { allowEmpty });
+  // An empty user message falls back to git's draft — SQUASH_MSG, then MERGE_MSG
+  // when resolving — stripping comment lines as git's editor cleanup does.
+  const squash = (await readSquashMsg(ctx)) ?? '';
+  const pending = usePendingDraft ? ((await readMergeMsg(ctx)) ?? '') : '';
+  return sanitizeMessage(stripComments(`${squash}${pending}`), { allowEmpty });
 };
 
 /**
