@@ -1957,6 +1957,50 @@ describe('rebaseRun (interactive squash / fixup)', () => {
   });
 
   describe('Given a squash whose meld conflicts', () => {
+    describe('When the rebase stops on it', () => {
+      it('Then amend records HEAD, the group commit the resolution amends', async () => {
+        // Arrange
+        const { ctx, t1, t2 } = await seedTopicConflict();
+        const sut = rebaseRun;
+
+        // Act
+        await sut(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'squash', oid: t2 },
+          ],
+        });
+
+        // Assert
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        expect(await readMerge(ctx, 'amend')).toBe(`${head}\n`);
+      });
+    });
+
+    describe('When the meld is skipped', () => {
+      it('Then the group commit at HEAD is kept, not dropped like an edit', async () => {
+        // Arrange
+        const { ctx, t1, t2 } = await seedTopicConflict();
+        await rebaseRun(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'squash', oid: t2 },
+          ],
+        });
+        const groupHead = await resolveRef(ctx, 'HEAD' as RefName);
+        const sut = rebaseSkip;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.kind).toBe('rebased');
+        expect(await resolveRef(ctx, 'refs/heads/topic' as RefName)).toBe(groupHead);
+      });
+    });
+
     describe('When resolved and continued', () => {
       it('Then it commits the combined group and persists the group state at the stop', async () => {
         // Arrange — t1 clean onto main; squash t2 melds a conflicting f.txt

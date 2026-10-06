@@ -1245,6 +1245,7 @@ const replayInteractive = async (
           message: conflictMergeMsg(template, sortedRecordedPaths(meld.conflicts)),
           patch,
           rewritten,
+          amend: head,
           currentFixups: [...group.fixups, { action: inst.action, oid: inst.oid }],
           rewrittenPending: [...group.pending],
           messageSquash: template,
@@ -1384,8 +1385,7 @@ const resumeInteractiveStop = async (
   currentHead: ObjectId,
 ): Promise<ObjectId> => {
   const clean = await treeMatchesCommit(ctx, tree, currentHead);
-  const byHand = clean && state.amend !== currentHead;
-  if (state.currentFixups !== undefined && !byHand) {
+  if (state.currentFixups !== undefined && !clean) {
     return commitFixupResolution(ctx, state, tree, currentHead);
   }
   if (state.currentFixups !== undefined) await dropFixupGroup(ctx);
@@ -1442,11 +1442,16 @@ const skipTargetOf = async (ctx: Context, amend: ObjectId): Promise<ObjectId> =>
   return parent;
 };
 
+/** A squash/fixup conflict stop also carries `amend` (the group commit), but
+ *  only an `edit` stop committed the stopped commit itself. */
+const isEditStop = (state: RebaseState): state is RebaseState & { readonly amend: ObjectId } =>
+  state.amend !== undefined && state.currentFixups === undefined;
+
 /** Skip the stopped instruction (drop the edit'd commit, or discard the
  *  conflicted pick) and replay the remaining todo. */
 const rebaseSkipInteractive = async (ctx: Context, state: RebaseState): Promise<RebaseResult> => {
   const currentHead = await resolveRef(ctx, HEAD);
-  const target = state.amend !== undefined ? await skipTargetOf(ctx, state.amend) : currentHead;
+  const target = isEditStop(state) ? await skipTargetOf(ctx, state.amend) : currentHead;
   // An edit stop already committed the edit'd commit, so dropping it moves the
   // detached HEAD back to its parent; a conflict stop never committed, so HEAD
   // already sits at the last good pick — writing it back to itself is a no-op.

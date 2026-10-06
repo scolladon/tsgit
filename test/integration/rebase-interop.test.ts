@@ -23,7 +23,7 @@
  *   unique:         a rebase either tool starts is resumable by the other, and both drop the same already-upstream commit
  *   interopSurface: rebaseMerge, reflog
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -614,6 +614,109 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
         // Assert
         expect(done.kind).toBe('rebased');
         expect(commitCount(dir)).toBe(4);
+      });
+    });
+  });
+
+  describe('Given a topic whose second commit conflicts with main', () => {
+    /** base f; topic c1 adds a, c2 sets f, c3 adds c; main sets f. HEAD on topic. */
+    const buildConflictingTopic = (dir: string): void => {
+      runGit(['init', '-q', '-b', 'main', dir]);
+      configGit(dir);
+      writeWork(dir, 'f.txt', 'base\n');
+      git(dir, 'add', 'f.txt');
+      gitCommit(dir, 'base');
+      git(dir, 'checkout', '-q', '-b', 'topic');
+      for (const [rel, body, title] of [
+        ['a.txt', 'a\n', 'c1'],
+        ['f.txt', 'TOPIC\n', 'c2'],
+        ['c.txt', 'c\n', 'c3'],
+      ] as const) {
+        writeWork(dir, rel, body);
+        git(dir, 'add', rel);
+        gitCommit(dir, title);
+      }
+      git(dir, 'checkout', '-q', 'main');
+      writeWork(dir, 'f.txt', 'MAIN\n');
+      git(dir, 'add', 'f.txt');
+      gitCommit(dir, 'main');
+      git(dir, 'checkout', '-q', 'topic');
+    };
+    const MARKERS = ['amend', 'current-fixups', 'rewritten-pending', 'message-squash'];
+    const markersOf = (dir: string): ReadonlyArray<string> =>
+      MARKERS.filter((name) => existsSync(path.join(dir, '.git', 'rebase-merge', name)));
+    const gitRebaseOntoMain = (dir: string, perlTodo: string): void => {
+      tryRunGit(['-C', dir, 'rebase', '-i', 'main'], {
+        env: {
+          ...runGitEnv(),
+          GIT_SEQUENCE_EDITOR: `perl -i -pe '${perlTodo}'`,
+          GIT_EDITOR: 'true',
+        },
+      });
+    };
+    const runTodo = async (dir: string, verbs: readonly [string, string]): Promise<void> => {
+      const [c1, c2, c3] = ['topic~2', 'topic~1', 'topic'].map((r) => oidAt(dir, r) as string);
+      const repo = await openRepository({ cwd: dir });
+      await repo.rebase.run({
+        upstream: 'main',
+        interactive: [
+          { action: verbs[0] as 'edit', oid: c1 as string },
+          { action: verbs[1] as 'pick', oid: c2 as string },
+          { action: 'pick', oid: c3 as string },
+        ],
+      });
+      await repo.dispose();
+    };
+    const resolveF = (dir: string): void => {
+      writeWork(dir, 'f.txt', 'RESOLVED\n');
+      git(dir, 'add', 'f.txt');
+    };
+    const subjects = (dir: string): string => git(dir, 'log', '--format=%s', 'HEAD');
+
+    describe('When `edit c1, pick c2` stops on c2 and is continued', () => {
+      it('Then the stop carries no stale amend and c2 stays its own commit, as git', async () => {
+        // Arrange
+        buildConflictingTopic(pair.peer);
+        buildConflictingTopic(pair.ours);
+        gitRebaseOntoMain(pair.peer, 's/^pick (.* c1)$/edit $1/');
+        tryRunGit(['-C', pair.peer, '-c', 'core.editor=true', 'rebase', '--continue']);
+        await runTodo(pair.ours, ['edit', 'pick']);
+        const repo = await openRepository({ cwd: pair.ours });
+        await repo.rebase.continue();
+        const sut = repo.rebase;
+
+        // Act
+        const ourMarkers = markersOf(pair.ours);
+        resolveF(pair.ours);
+        resolveF(pair.peer);
+        const result = await sut.continue();
+        await repo.dispose();
+
+        // Assert
+        expect(ourMarkers).toEqual(markersOf(pair.peer));
+        runGit(['-C', pair.peer, '-c', 'core.editor=true', 'rebase', '--continue']);
+        expect(result.kind).toBe('rebased');
+        expect(subjects(pair.ours)).toBe(subjects(pair.peer));
+      });
+    });
+
+    describe('When `pick c1, squash c2` stops on the squash', () => {
+      it('Then the stop writes the same markers as git, amend included', async () => {
+        // Arrange
+        buildConflictingTopic(pair.peer);
+        buildConflictingTopic(pair.ours);
+        gitRebaseOntoMain(pair.peer, 's/^pick (.* c2)$/squash $1/');
+        const sut = runTodo;
+
+        // Act
+        await sut(pair.ours, ['pick', 'squash']);
+
+        // Assert
+        expect(markersOf(pair.ours)).toEqual(markersOf(pair.peer));
+        const amendOf = (dir: string) =>
+          readFileSync(path.join(dir, '.git', 'rebase-merge', 'amend'), 'utf8');
+        expect(amendOf(pair.ours)).toBe(`${oidAt(pair.ours, 'HEAD')}\n`);
+        expect(amendOf(pair.peer)).toBe(`${oidAt(pair.peer, 'HEAD')}\n`);
       });
     });
   });

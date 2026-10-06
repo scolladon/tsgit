@@ -142,15 +142,35 @@ export const writeRebaseStop = async (ctx: Context, stop: RebaseStop): Promise<v
   if (labels.length > 0) {
     await write('refs-to-delete', labels.map((l) => `refs/rewritten/${l.label}\n`).join(''));
   }
-  if (stop.amend !== undefined) await write('amend', `${stop.amend}\n`);
-  if (stop.currentFixups !== undefined) {
-    await write('current-fixups', stop.currentFixups.map((f) => `${f.action} ${f.oid}\n`).join(''));
-  }
-  if (stop.rewrittenPending !== undefined) {
-    await write('rewritten-pending', stop.rewrittenPending.map((oid) => `${oid}\n`).join(''));
-  }
+  await writeStopMarkers(ctx, stop);
   if (stop.messageSquash !== undefined) await write('message-squash', stop.messageSquash);
   await ctx.fs.writeUtf8(rebaseHeadPath(ctx), `${stop.stoppedSha}\n`);
+};
+
+/** git unlinks `amend` before every step and drops `current-fixups` /
+ *  `rewritten-pending` once their group ends, so a stop leaves exactly the
+ *  markers it carries — a stale one would steer the next `continue`. */
+const writeStopMarkers = async (ctx: Context, stop: RebaseStop): Promise<void> => {
+  await writeOrRemove(ctx, 'amend', stop.amend === undefined ? undefined : `${stop.amend}\n`);
+  await writeOrRemove(
+    ctx,
+    'current-fixups',
+    stop.currentFixups?.map((f) => `${f.action} ${f.oid}\n`).join(''),
+  );
+  await writeOrRemove(
+    ctx,
+    'rewritten-pending',
+    stop.rewrittenPending?.map((oid) => `${oid}\n`).join(''),
+  );
+};
+
+const writeOrRemove = async (
+  ctx: Context,
+  name: string,
+  body: string | undefined,
+): Promise<void> => {
+  if (body !== undefined) return ctx.fs.writeUtf8(file(ctx, name), body);
+  if (await ctx.fs.exists(file(ctx, name))) await ctx.fs.rm(file(ctx, name));
 };
 
 export const readRebaseHead = (ctx: Context): Promise<ObjectId | undefined> =>

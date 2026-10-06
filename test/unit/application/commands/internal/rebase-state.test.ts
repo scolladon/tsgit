@@ -315,6 +315,26 @@ describe('rebase-state', () => {
       });
     });
 
+    describe('When a later plain conflict stop is written over it', () => {
+      it('Then amend, current-fixups and rewritten-pending are removed while message-squash stays', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await writeRebaseStop(ctx, SQUASH_STOP);
+        const sut = writeRebaseStop;
+
+        // Act
+        await sut(ctx, STOP);
+
+        // Assert
+        const exists = (name: string): Promise<boolean> =>
+          ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/${name}`);
+        expect(await exists('amend')).toBe(false);
+        expect(await exists('current-fixups')).toBe(false);
+        expect(await exists('rewritten-pending')).toBe(false);
+        expect(await read(ctx, 'message-squash')).toBe('# This is a combination of 3 commits.\n');
+      });
+    });
+
     describe('When current-fixups contains a verb with no oid', () => {
       it('Then the malformed entry is dropped, keeping only the well-formed one', async () => {
         // Arrange — a valid member plus a truncated `squash` line (no oid)
