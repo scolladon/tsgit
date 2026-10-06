@@ -53,10 +53,13 @@ import { buildPack } from '../primitives/build-pack.js';
 import {
   findFirstInvalidPushGpgSign,
   findInvalidPushDefault,
+  findLastEntries,
+  parseGitBoolean,
   readConfig,
 } from '../primitives/config-read.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { hasObject } from '../primitives/has-object.js';
+import { assertValidBooleanConfig } from '../primitives/internal/boolean-config-guard.js';
 import { type ClosureTip, computeClosure } from '../primitives/internal/closure-engine.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { lookupTypedCommitReferenceQuietly } from '../primitives/internal/lookup-commit-reference.js';
@@ -65,6 +68,7 @@ import {
   type ObjectTypeTable,
 } from '../primitives/internal/object-type-table.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
+import { readReflog } from '../primitives/reflog-store.js';
 import { resolveRef, resolveRefOrMissing } from '../primitives/resolve-ref.js';
 import { runHook } from '../primitives/run-hook.js';
 import { resolveSigningSelector } from '../primitives/sign-payload.js';
@@ -97,6 +101,13 @@ export interface PushOptions {
   readonly refspecs?: ReadonlyArray<string>;
   readonly force?: boolean;
   readonly forceWithLease?: ObjectId | 'auto';
+  /**
+   * git's `--force-if-includes`: under an `'auto'` lease, also require the
+   * remote-tracking tip to have been integrated locally — reachable from an
+   * entry of the local ref's reflog — else reject `'remote-ref-updated'`.
+   * Falls back to `push.useForceIfIncludes` when unset.
+   */
+  readonly forceIfIncludes?: boolean;
   /** Skip the `pre-push` hook (git's `--no-verify`). */
   readonly noVerify?: boolean;
   /**
@@ -118,6 +129,8 @@ export interface PushOptions {
  * anything is sent: git's `REJECT_NONFASTFORWARD`, `REJECT_NEEDS_FORCE`,
  * `REJECT_FETCH_FIRST`, `REJECT_ALREADY_EXISTS`, `REJECT_STALE` (a
  * `forceWithLease` expectation the remote no longer holds),
+ * `REJECT_REMOTE_UPDATED` (under `forceIfIncludes`, a remote-tracking tip never
+ * integrated into the local ref),
  * `REJECT_NODELETE` (a delete the server cannot take, lacking `delete-refs`)
  * and `ATOMIC_PUSH_FAILED` (a ref held back because another failed an atomic
  * push). `'remote'` is the receiving end's `ng`, whose text is kept in
@@ -129,6 +142,7 @@ export type PushRejection =
   | 'fetch-first'
   | 'already-exists'
   | 'stale-info'
+  | 'remote-ref-updated'
   | 'remote-ref-not-deletable'
   | 'atomic-push-failed'
   | 'remote';
@@ -174,7 +188,15 @@ const GIT_REF_STATUS: Readonly<Record<JudgedRejection, number>> = {
   'fetch-first': 5,
   'needs-force': 6,
   'stale-info': 7,
+  'remote-ref-updated': 8,
 };
+
+/** git's `pre_push_hook_feed` skips a non-fast-forward, stale-lease or remote-updated ref.
+ *  A predicate, not a module-level Set, so mutation testing attributes each literal. */
+const fedToPrePush = (rejection: ClientRejection | undefined): boolean =>
+  rejection !== 'non-fast-forward' &&
+  rejection !== 'stale-info' &&
+  rejection !== 'remote-ref-updated';
 
 const PUSH_ENUMERATE_OBJECTS_OP = 'push:enumerate-objects';
 const PUSH_UPLOAD_OP = 'push:upload';
@@ -204,12 +226,25 @@ const assertValidPushConfig = async (ctx: Context): Promise<void> => {
 export const push = async (ctx: Context, opts: PushOptions = {}): Promise<PushResult> => {
   await assertOperationalRepository(ctx);
   await assertValidPushConfig(ctx);
+  const forceIfIncludes = await resolveForceIfIncludes(ctx, opts);
   ctx.progress.start(PUSH_ENUMERATE_OBJECTS_OP);
   try {
-    return await pushViaSession(ctx, opts);
+    return await pushViaSession(ctx, { ...opts, forceIfIncludes });
   } finally {
     ctx.progress.end(PUSH_ENUMERATE_OBJECTS_OP);
   }
+};
+
+const USE_FORCE_IF_INCLUDES = 'useForceIfIncludes';
+
+/** `opts.forceIfIncludes` wins; otherwise `push.useForceIfIncludes`, off by default. */
+const resolveForceIfIncludes = async (ctx: Context, opts: PushOptions): Promise<boolean> => {
+  await assertValidBooleanConfig(ctx, 'push', undefined, [USE_FORCE_IF_INCLUDES]);
+  if (opts.forceIfIncludes !== undefined) return opts.forceIfIncludes;
+  const [setting] = await findLastEntries(ctx, [['push', USE_FORCE_IF_INCLUDES]]);
+  if (setting === undefined) return false;
+  const parsed = parseGitBoolean(setting.value);
+  return parsed.ok && parsed.value;
 };
 
 const pushViaSession = async (ctx: Context, opts: PushOptions): Promise<PushResult> => {
@@ -339,9 +374,9 @@ const runPrePushHook = async (
   movers: ReadonlyArray<ResolvedRefspec>,
 ): Promise<void> => {
   if (noVerify) return;
-  // git's pre-push feed skips a non-fast-forward or stale ref but lists the other rejections.
+  // git's pre-push feed skips a ref that will not be pushed but lists the other rejections.
   const stdin = movers
-    .filter((m) => m.rejection !== 'non-fast-forward' && m.rejection !== 'stale-info')
+    .filter((m) => fedToPrePush(m.rejection))
     .map(prePushLine)
     .join('');
   await runHook(ctx, 'pre-push', { args: [remoteName, url], stdin });
@@ -456,10 +491,65 @@ const judgeUpdate = async (
   scope: RefspecScope,
 ): Promise<JudgedRejection | undefined> => {
   const lease = await resolveLease(ctx, ref.parsed, scope.remote.trackingSpecs, scope.opts);
-  const stale = lease !== undefined && lease !== ref.remoteOid;
-  const rejection = stale ? 'stale-info' : await measureUpdate(ctx, scope.table, ref);
-  const forced = (lease !== undefined && !stale) || isForced(ref.parsed, scope.opts);
+  const leaseRejection = lease === undefined ? undefined : await judgeLease(ctx, ref, scope, lease);
+  const rejection = leaseRejection ?? (await measureUpdate(ctx, scope.table, ref));
+  const forced =
+    (lease !== undefined && leaseRejection === undefined) || isForced(ref.parsed, scope.opts);
   return forced ? undefined : rejection;
+};
+
+/** A lease the remote no longer holds is stale; one that holds may still find the
+ *  remote-tracking tip never integrated locally (`forceIfIncludes`). */
+const judgeLease = async (
+  ctx: Context,
+  ref: ResolvedRefspec,
+  scope: RefspecScope,
+  lease: ObjectId,
+): Promise<'stale-info' | 'remote-ref-updated' | undefined> => {
+  if (lease !== ref.remoteOid) return 'stale-info';
+  return (await updatedSinceCheckout(ctx, ref, scope)) ? 'remote-ref-updated' : undefined;
+};
+
+/** git's `check_if_includes_upstream`: run only for an automatic lease whose
+ *  remote-tracking ref exists. */
+const updatedSinceCheckout = async (
+  ctx: Context,
+  { parsed, remoteOid }: ResolvedRefspec,
+  scope: RefspecScope,
+): Promise<boolean> => {
+  if (scope.opts.forceWithLease !== 'auto' || scope.opts.forceIfIncludes !== true) return false;
+  const trackingRef = findTrackingRef(scope.remote.trackingSpecs, parsed.dst);
+  if (trackingRef === undefined || (await resolveRefOrMissing(ctx, trackingRef)) === undefined) {
+    return false;
+  }
+  const remote = await lookupTypedCommitReferenceQuietly(ctx, scope.table, remoteOid);
+  if (remote === undefined) return true;
+  return !(await reachableInReflog(ctx, scope.table, parsed.dst as RefName, remote, trackingRef));
+};
+
+/**
+ * git's `is_reachable_in_reflog`: walk the local ref's reflog newest first — an
+ * entry naming the remote tip settles it — collecting each entry's commit until
+ * one predates the remote-tracking ref's latest reflog entry, then ask whether
+ * any collected commit descends from the remote tip.
+ */
+const reachableInReflog = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  local: RefName,
+  remote: ObjectId,
+  trackingRef: RefName,
+): Promise<boolean> => {
+  const since = (await readReflog(ctx, trackingRef)).at(-1)?.identity.timestamp ?? 0;
+  const collected: ObjectId[] = [];
+  for (const entry of [...(await readReflog(ctx, local))].reverse()) {
+    if (entry.newId === remote) return true;
+    const commit = await lookupTypedCommitReferenceQuietly(ctx, table, entry.newId);
+    if (commit !== undefined) collected.push(commit);
+    if (entry.identity.timestamp < since) break;
+  }
+  for (const commit of collected) if (await isAncestor(ctx, remote, commit, table)) return true;
+  return false;
 };
 
 const isForced = (parsed: ParsedRefspec, opts: PushOptions): boolean =>

@@ -132,5 +132,56 @@ describe.skipIf(!GIT_AVAILABLE)('push tracking refs interop', () => {
         expect(theirsOut.stdout).toContain('[rejected] (stale info)');
       });
     });
+
+    describe('When the peer advanced past a mirror ref main never integrated, then main was amended', () => {
+      it('Then an automatic lease with force-if-includes rejects it in both tools', async () => {
+        // Arrange
+        const { ours, theirs, peerRoot } = setUp('includes');
+        const ctx = {
+          ...createNodeContext({ workDir: ours }),
+          transport: backendTransport(peerRoot),
+        };
+        await push(ctx, { remote: 'origin', refspecs: ['main'] });
+        git(theirs, 'push', '-q', 'origin', 'main');
+        const advanced = new Map<string, string>();
+        for (const [dir, bare] of [
+          [ours, 'peer.git'],
+          [theirs, 'twin.git'],
+        ] as const) {
+          const other = git(dir, 'commit-tree', '-p', 'HEAD', '-m', 'other', 'HEAD^{tree}').trim();
+          git(dir, 'push', '-q', path.join(peerRoot, bare), `${other}:refs/heads/main`);
+          git(dir, 'update-ref', 'refs/remotes/mirror/main', other);
+          git(dir, 'commit', '-q', '--amend', '--allow-empty', '-m', 'mine');
+          advanced.set(dir, other);
+        }
+        const sut = push;
+
+        // Act
+        const result = await sut(ctx, {
+          remote: 'origin',
+          refspecs: ['main'],
+          forceWithLease: 'auto',
+          forceIfIncludes: true,
+        });
+        const theirsOut = tryRunGitWithExit([
+          '-C',
+          theirs,
+          'push',
+          '--porcelain',
+          '--force-with-lease',
+          '--force-if-includes',
+          'origin',
+          'main',
+        ]);
+
+        // Assert
+        expect(result.pushedRefs.map((ref) => ref.rejection)).toEqual(['remote-ref-updated']);
+        expect(theirsOut.stdout).toContain('[rejected] (remote ref updated since checkout)');
+        const peerMain = (bare: string) =>
+          git(path.join(peerRoot, bare), 'rev-parse', 'refs/heads/main').trim();
+        expect(peerMain('peer.git')).toBe(advanced.get(ours));
+        expect(peerMain('twin.git')).toBe(advanced.get(theirs));
+      });
+    });
   });
 });

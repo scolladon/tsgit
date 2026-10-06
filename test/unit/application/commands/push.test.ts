@@ -27,6 +27,7 @@ import { push } from '../../../../src/application/commands/push.js';
 import * as buildPackMod from '../../../../src/application/primitives/build-pack.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import * as closureMod from '../../../../src/application/primitives/internal/closure-engine.js';
+import { appendReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { computeLooseObjectPath, TsgitError } from '../../../../src/domain/index.js';
@@ -4151,4 +4152,190 @@ describe('push — report-status-v2 ref rewrites', () => {
       });
     });
   });
+});
+
+describe('push force-if-includes', () => {
+  const ZERO = '0000000000000000000000000000000000000000' as ObjectId;
+  const logAt = (oldId: ObjectId, newId: ObjectId, timestamp: number) => ({
+    oldId,
+    newId,
+    identity: { name: 'A', email: 'a@a', timestamp, timezoneOffset: '+0000' },
+    message: 'm',
+  });
+  /** Tracking ref and server at `remote`; local main at `local` with `mainLog` as its reflog. */
+  const arrange = async (
+    config: string,
+    build: (ctx: ReturnType<typeof createMemoryContext>) => Promise<{
+      readonly remote: ObjectId;
+      readonly local: ObjectId;
+      readonly mainLog: ReadonlyArray<ReturnType<typeof logAt>>;
+    }>,
+  ) => {
+    const ctx = createMemoryContext();
+    const { remote, local, mainLog } = await build(ctx);
+    await seedRepo(ctx, {
+      refs: { 'refs/heads/main': local, 'refs/remotes/origin/main': remote },
+    });
+    await writeOriginConfig(ctx);
+    if (config !== '') {
+      const path = `${ctx.layout.gitDir}/config`;
+      await ctx.fs.writeUtf8(path, `${await ctx.fs.readUtf8(path)}${config}`);
+    }
+    __resetConfigCacheForTests();
+    for (const entry of mainLog) await appendReflog(ctx, 'refs/heads/main' as RefName, entry);
+    await appendReflog(ctx, 'refs/remotes/origin/main' as RefName, logAt(ZERO, remote, 150));
+    const { transport, requests } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/main', id: remote }],
+      reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+    });
+    return { ctx: { ...ctx, transport }, requests, local, remote };
+  };
+  /** The remote tip was fetched but never integrated: main was rewritten from scratch. */
+  const rewrittenWithoutRemote = async (ctx: ReturnType<typeof createMemoryContext>) => {
+    const remote = (await seedCommit(ctx, [], 'theirs')).id;
+    const local = (await seedCommit(ctx, [], 'mine')).id;
+    return { remote, local, mainLog: [logAt(ZERO, local, 200)] };
+  };
+
+  describe('Given an auto lease, forceIfIncludes, and a remote tip the local reflog never held', () => {
+    describe('When push runs', () => {
+      it('Then the ref is rejected as remote-ref-updated and nothing is posted', async () => {
+        // Arrange
+        const { ctx, requests, local, remote } = await arrange('', rewrittenWithoutRemote);
+        const sut = push;
+
+        // Act
+        const result = await sut(ctx, { forceWithLease: 'auto', forceIfIncludes: true });
+
+        // Assert
+        expect(result.pushedRefs).toEqual([
+          {
+            name: 'refs/heads/main',
+            oldId: remote,
+            newId: local,
+            status: 'rejected',
+            rejection: 'remote-ref-updated',
+          },
+        ]);
+        expect(requests.map((r) => r.method)).toEqual(['GET']);
+      });
+    });
+  });
+
+  describe.each([
+    ['push.useForceIfIncludes is true', '[push]\n  useForceIfIncludes = true\n', {}, 'rejected'],
+    [
+      'forceIfIncludes false overrides the config',
+      '[push]\n  useForceIfIncludes\n',
+      { forceIfIncludes: false },
+      'ok',
+    ],
+    ['no forceIfIncludes and no config', '', {}, 'ok'],
+    ['force overrides it', '', { forceIfIncludes: true, force: true }, 'ok'],
+  ] as const)(
+    'Given an auto lease over a never-integrated remote tip and %s',
+    (_label, config, extra, status) => {
+      describe('When push runs', () => {
+        it(`Then the ref is ${status}`, async () => {
+          // Arrange
+          const { ctx } = await arrange(config, rewrittenWithoutRemote);
+          const sut = push;
+
+          // Act
+          const result = await sut(ctx, { forceWithLease: 'auto', ...extra });
+
+          // Assert
+          expect(result.pushedRefs[0]?.status).toBe(status);
+        });
+      });
+    },
+  );
+
+  describe('Given a ref rejected as remote-ref-updated and a pre-push hook', () => {
+    describe('When push runs', () => {
+      it('Then the hook is fed nothing for it, as git skips refs that will not be pushed', async () => {
+        // Arrange
+        const { ctx } = await arrange('', rewrittenWithoutRemote);
+        const hooks = new MemoryHookRunner();
+        const sut = push;
+
+        // Act
+        await sut({ ...ctx, hooks }, { forceWithLease: 'auto', forceIfIncludes: true });
+
+        // Assert
+        expect(hooks.calls[0]?.stdin).toBe('');
+      });
+    });
+  });
+
+  describe('Given an explicit lease and forceIfIncludes over a never-integrated remote tip', () => {
+    describe('When push runs', () => {
+      it('Then no reflog check applies and the lease forces the update', async () => {
+        // Arrange
+        const { ctx, remote } = await arrange('', rewrittenWithoutRemote);
+        const sut = push;
+
+        // Act
+        const result = await sut(ctx, { forceWithLease: remote, forceIfIncludes: true });
+
+        // Assert
+        expect(result.pushedRefs[0]?.status).toBe('ok');
+      });
+    });
+  });
+
+  describe.each([
+    [
+      'held the remote tip itself',
+      async (ctx: ReturnType<typeof createMemoryContext>) => {
+        const remote = (await seedCommit(ctx, [], 'theirs')).id;
+        const local = (await seedCommit(ctx, [], 'mine')).id;
+        return { remote, local, mainLog: [logAt(ZERO, remote, 100), logAt(remote, local, 200)] };
+      },
+      'ok',
+    ],
+    [
+      'held a descendant of the remote tip',
+      async (ctx: ReturnType<typeof createMemoryContext>) => {
+        const remote = (await seedCommit(ctx, [], 'theirs')).id;
+        const local = (await seedCommit(ctx, [remote], 'mine')).id;
+        return { remote, local, mainLog: [logAt(ZERO, local, 200)] };
+      },
+      'ok',
+    ],
+    [
+      'held a descendant only before the remote-tracking ref last moved',
+      async (ctx: ReturnType<typeof createMemoryContext>) => {
+        const remote = (await seedCommit(ctx, [], 'theirs')).id;
+        const merged = (await seedCommit(ctx, [remote], 'merged')).id;
+        const reset = (await seedCommit(ctx, [], 'reset')).id;
+        const local = (await seedCommit(ctx, [], 'mine')).id;
+        const mainLog = [
+          logAt(ZERO, merged, 120),
+          logAt(merged, reset, 130),
+          logAt(reset, local, 200),
+        ];
+        return { remote, local, mainLog };
+      },
+      'rejected',
+    ],
+  ] as const)(
+    'Given an auto lease and forceIfIncludes where the local reflog %s',
+    (_label, build, status) => {
+      describe('When push runs', () => {
+        it(`Then the ref is ${status}`, async () => {
+          // Arrange
+          const { ctx } = await arrange('', build);
+          const sut = push;
+
+          // Act
+          const result = await sut(ctx, { forceWithLease: 'auto', forceIfIncludes: true });
+
+          // Assert
+          expect(result.pushedRefs[0]?.status).toBe(status);
+        });
+      });
+    },
+  );
 });
