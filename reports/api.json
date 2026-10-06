@@ -108635,7 +108635,15 @@
 									},
 									{
 										"kind": "text",
-										"text": " (the last algorithm named wins);\n"
+										"text": " (the last algorithm named wins),\nand "
+									},
+									{
+										"kind": "code",
+										"text": "`no-renormalize`"
+									},
+									{
+										"kind": "text",
+										"text": "; "
 									},
 									{
 										"kind": "code",
@@ -108648,6 +108656,14 @@
 									{
 										"kind": "code",
 										"text": "`histogram`"
+									},
+									{
+										"kind": "text",
+										"text": ", a standing\n"
+									},
+									{
+										"kind": "code",
+										"text": "`renormalize`"
 									},
 									{
 										"kind": "text",

@@ -182,6 +182,13 @@ const heavyEdits = (): Scenario => {
   return { base: { f: base }, side: { f: resample(0.3) }, main: { f: main } };
 };
 
+/** Both sides adopt `text=auto`; side also strips the CRLFs, main edits a line. */
+const LINE_ENDINGS: Scenario = {
+  base: { f: 'a\r\nb\r\nc\r\n' },
+  side: { '.gitattributes': '* text=auto\n', f: 'a\nb\nc\n' },
+  main: { '.gitattributes': '* text=auto\n', f: 'a\r\nB\r\nc\r\n' },
+};
+
 describe.skipIf(!GIT_AVAILABLE)('merge strategy options interop', () => {
   beforeAll(() => {
     root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'tsgit-merge-x-')));
@@ -217,6 +224,12 @@ describe.skipIf(!GIT_AVAILABLE)('merge strategy options interop', () => {
       'theirs and diff-algorithm=minimal over heavy edits',
       heavyEdits(),
       ['theirs', 'diff-algorithm=minimal'],
+    ],
+    ['no-renormalize over line endings', LINE_ENDINGS, ['no-renormalize']],
+    [
+      'renormalize then no-renormalize over line endings',
+      LINE_ENDINGS,
+      ['renormalize', 'no-renormalize'],
     ],
     ['ignore-space-at-eol and ours over space runs', SPACE_RUNS, ['ignore-space-at-eol', 'ours']],
   ])('Given -X %s', (_label, scenario, options) => {

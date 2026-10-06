@@ -61,7 +61,9 @@ const SEARCH_BY_ALGORITHM: ReadonlyMap<string, SearchMode | undefined> = new Map
   ['histogram', undefined],
 ]);
 const UNIMPLEMENTED_ALGORITHMS: ReadonlySet<string> = new Set(['patience', 'histogram']);
-const UNSUPPORTED: ReadonlySet<string> = new Set(['subtree', 'renormalize', 'no-renormalize']);
+const UNSUPPORTED: ReadonlySet<string> = new Set(['subtree']);
+const RENORMALIZE = 'renormalize';
+const NO_RENORMALIZE = 'no-renormalize';
 const SUBTREE_PREFIX = 'subtree=';
 
 const isUnsupported = (option: string): boolean =>
@@ -74,20 +76,27 @@ const algorithmNamed = (option: string): string | undefined => {
   return SEARCH_BY_ALGORITHM.has(name) ? name : undefined;
 };
 
-/** The settings so far, plus the option that last chose an algorithm tsgit cannot run yet. */
+/**
+ * The settings so far, plus the last-wins choices tsgit cannot run yet: the
+ * option that last chose such an algorithm, and a standing renormalization.
+ */
 interface Parsed {
   readonly settings: OrtStrategyOptions;
   readonly unimplemented?: string;
+  readonly renormalize?: boolean;
 }
 
-const withAlgorithm = ({ settings }: Parsed, option: string, name: string): Parsed => {
-  const { diffSearch: _replaced, ...rest } = settings;
+const withAlgorithm = (parsed: Parsed, option: string, name: string): Parsed => {
+  const { diffSearch: _replaced, ...rest } = parsed.settings;
   const search = SEARCH_BY_ALGORITHM.get(name);
-  const next = search === undefined ? rest : { ...rest, diffSearch: search };
-  return UNIMPLEMENTED_ALGORITHMS.has(name)
-    ? { settings: next, unimplemented: option }
-    : { settings: next };
+  const { unimplemented: _dropped, ...kept } = parsed;
+  const next = { ...kept, settings: search === undefined ? rest : { ...rest, diffSearch: search } };
+  return UNIMPLEMENTED_ALGORITHMS.has(name) ? { ...next, unimplemented: option } : next;
 };
+
+/** `-X renormalize` runs every merged blob through attribute conversion; tsgit has no eol conversion. */
+const refusalOf = ({ unimplemented, renormalize }: Parsed): string | undefined =>
+  unimplemented ?? (renormalize === true ? RENORMALIZE : undefined);
 
 /** git's `rename_score`: 0 stands for the default, which an absent threshold already means. */
 const withThreshold = (settings: OrtRenameOptions, score: number): OrtRenameOptions => {
@@ -122,11 +131,15 @@ const applySetting = (settings: OrtStrategyOptions, option: string): OrtStrategy
 const applyOption = (parsed: Parsed, option: string): Parsed => {
   const algorithm = algorithmNamed(option);
   if (algorithm !== undefined) return withAlgorithm(parsed, option, algorithm);
+  if (option === RENORMALIZE || option === NO_RENORMALIZE) {
+    return { ...parsed, renormalize: option === RENORMALIZE };
+  }
   return { ...parsed, settings: applySetting(parsed.settings, option) };
 };
 
 export const parseOrtStrategyOptions = (options: ReadonlyArray<string>): OrtStrategyOptions => {
-  const { settings, unimplemented } = options.reduce(applyOption, { settings: { renames: {} } });
-  if (unimplemented !== undefined) throw unsupportedOperation('merge', `-X${unimplemented}`);
-  return settings;
+  const parsed = options.reduce(applyOption, { settings: { renames: {} } });
+  const refusal = refusalOf(parsed);
+  if (refusal !== undefined) throw unsupportedOperation('merge', `-X${refusal}`);
+  return parsed.settings;
 };

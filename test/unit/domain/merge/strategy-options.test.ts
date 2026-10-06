@@ -142,6 +142,43 @@ describe('parseOrtStrategyOptions', () => {
   });
 
   describe.each([
+    ['no-renormalize', ['no-renormalize']],
+    ['renormalize then no-renormalize', ['renormalize', 'no-renormalize']],
+  ])('Given %s', (_label, options) => {
+    describe('When parsed', () => {
+      it('Then the merge keeps git’s default of no renormalization', () => {
+        // Arrange
+        const sut = parseOrtStrategyOptions;
+
+        // Act
+        const result = sut(options);
+
+        // Assert
+        expect(result).toEqual({ renames: {} });
+      });
+    });
+  });
+
+  describe('Given no-renormalize then renormalize', () => {
+    describe('When parsed', () => {
+      it('Then it refuses the renormalization that stands', () => {
+        // Arrange
+        const options = ['no-renormalize', 'renormalize'];
+
+        // Act
+        const result = failureOf(options);
+
+        // Assert
+        expect(result).toEqual({
+          code: 'UNSUPPORTED_OPERATION',
+          operation: 'merge',
+          reason: '-Xrenormalize',
+        });
+      });
+    });
+  });
+
+  describe.each([
     'subtree',
     'subtree=dir',
     'patience',
@@ -149,7 +186,6 @@ describe('parseOrtStrategyOptions', () => {
     'diff-algorithm=HISTOGRAM',
     'diff-algorithm=patience',
     'renormalize',
-    'no-renormalize',
   ])('Given the option %j', (option) => {
     describe('When parsed', () => {
       it('Then it refuses as not yet supported', () => {
