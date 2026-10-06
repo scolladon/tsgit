@@ -52,7 +52,14 @@ import { readBlob } from './read-blob.js';
 import { synthesizeTreeFromIndex } from './synthesize-tree-from-index.js';
 import { writeObject } from './write-object.js';
 
-const UNSUPPORTED_CONFLICT_TYPES: ReadonlySet<ConflictType> = new Set(['rename-rename', 'gitlink']);
+const UNSUPPORTED_CONFLICT_TYPES: ReadonlySet<ConflictType> = new Set(['gitlink']);
+
+/** Conflicts whose working-tree file is the one side that still holds the path. */
+const SURVIVOR_CONFLICT_TYPES: ReadonlySet<ConflictType> = new Set([
+  'modify-delete',
+  'rename-delete',
+  'rename-rename',
+]);
 
 export interface ApplyMergeInput {
   readonly baseTree: ObjectId | undefined;
@@ -117,7 +124,7 @@ const conflictBytes = async (
 ): Promise<Uint8Array | undefined> => {
   // Covers markered `content` conflicts and content-merged `add-add` (both carry `conflictContent`).
   if (conflict.conflictContent !== undefined) return conflict.conflictContent;
-  if (conflict.type === 'modify-delete') {
+  if (SURVIVOR_CONFLICT_TYPES.has(conflict.type)) {
     const survivorId = conflict.ourId ?? conflict.theirId;
     if (survivorId !== undefined) {
       // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.

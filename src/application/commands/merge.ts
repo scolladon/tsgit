@@ -763,9 +763,13 @@ const fastForward = async (
 
 const MERGE_WRITE_FILES_OP = 'merge:write-files';
 
-export const UNSUPPORTED_CONFLICT_TYPES: ReadonlySet<ConflictType> = new Set([
+export const UNSUPPORTED_CONFLICT_TYPES: ReadonlySet<ConflictType> = new Set(['gitlink']);
+
+/** Conflicts whose working-tree file is the one side that still holds the path. */
+const SURVIVOR_CONFLICT_TYPES: ReadonlySet<ConflictType> = new Set([
+  'modify-delete',
+  'rename-delete',
   'rename-rename',
-  'gitlink',
 ]);
 
 /**
@@ -1482,7 +1486,7 @@ export const materialiseConflictBytes = async (
   if (conflict.type === 'add-add') return materialiseMarkedOrOurs(ctx, conflict);
   if (conflict.type === 'binary') return readOursBlob(ctx, conflict);
   if (conflict.type === 'type-change') return readOursBlob(ctx, conflict);
-  if (conflict.type === 'modify-delete') {
+  if (SURVIVOR_CONFLICT_TYPES.has(conflict.type)) {
     // Preserve the surviving side's bytes (whichever has an id).
     const survivorId = conflict.ourId ?? conflict.theirId;
     if (survivorId === undefined) return undefined;

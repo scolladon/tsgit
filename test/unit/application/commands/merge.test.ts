@@ -1376,9 +1376,30 @@ describe('merge.4b conflict persistence', () => {
   });
 
   describe('rejectUnsupportedConflicts (direct)', () => {
+    describe.each(['rename-rename', 'rename-delete'] as const)(
+      'Given a %s MergeConflict',
+      (type) => {
+        describe('When rejectUnsupportedConflicts is called', () => {
+          it('Then it is accepted, as git stops on it', async () => {
+            // Arrange
+            const { rejectUnsupportedConflicts } = await import(
+              '../../../../src/application/commands/merge.js'
+            );
+            const sut = rejectUnsupportedConflicts;
+
+            // Act
+            const result = (): void => sut([{ type, path: 'p' as never }]);
+
+            // Assert
+            expect(result).not.toThrow();
+          });
+        });
+      },
+    );
+
     describe('Given a %s MergeConflict', () => {
       describe('When rejectUnsupportedConflicts is called', () => {
-        it.each(['rename-rename', 'gitlink'] as const)(
+        it.each(['gitlink'] as const)(
           'Then throws UNSUPPORTED_OPERATION with operation=merge',
           async (conflictType) => {
             // Arrange

@@ -534,6 +534,11 @@ export async function mergeTrees(
 
   const outcomes: MergeOutcome[] = [];
   for (const path of sortedPaths) {
+    const forced = renamed.forced.get(path);
+    if (forced !== undefined) {
+      outcomes.push(conflictOutcome(forced));
+      continue;
+    }
     const result = resolvePath(
       path,
       renamed.base?.entries.get(path),

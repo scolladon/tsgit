@@ -83,6 +83,47 @@ const buildHistory = (sideEdit?: readonly [string, string]): string => {
   return dir;
 };
 
+type Step = (dir: string) => void;
+
+const mv =
+  (from: string, to: string): Step =>
+  (dir) =>
+    dated(['-C', dir, 'mv', from, to]);
+const rm =
+  (file: string): Step =>
+  (dir) =>
+    dated(['-C', dir, 'rm', '-q', file]);
+const put =
+  (file: string, content: string): Step =>
+  (dir) =>
+    writeFileSync(path.join(dir, file), content);
+const change =
+  (file: string, from: string, to: string): Step =>
+  (dir) =>
+    edit(dir, file, from, to);
+const chmodX =
+  (file: string): Step =>
+  (dir) =>
+    dated(['-C', dir, 'update-index', '--chmod=+x', file]);
+
+/** `big` and `y` at the base; `side` then `main` each apply their steps in one commit. */
+const buildScenario = (sideSteps: ReadonlyArray<Step>, mainSteps: ReadonlyArray<Step>): string => {
+  const dir = path.join(root, `scenario-${copies++}`);
+  runGit(['init', '-q', '-b', 'main', dir]);
+  runGit(['-C', dir, 'config', 'user.name', 't']);
+  runGit(['-C', dir, 'config', 'user.email', 't@t']);
+  writeFileSync(path.join(dir, 'big'), LINES);
+  writeFileSync(path.join(dir, 'y'), 'a\nb\nc\nd\ne\nf\ng\nh\n');
+  commitAll(dir, 'base');
+  dated(['-C', dir, 'checkout', '-q', '-b', 'side']);
+  for (const step of sideSteps) step(dir);
+  commitAll(dir, 'side');
+  dated(['-C', dir, 'checkout', '-q', 'main']);
+  for (const step of mainSteps) step(dir);
+  commitAll(dir, 'main');
+  return dir;
+};
+
 const copyOf = async (dir: string): Promise<string> => {
   const target = path.join(root, `copy-${copies++}`);
   await cp(dir, target, { recursive: true });
@@ -200,6 +241,69 @@ describe.skipIf(!GIT_AVAILABLE)('merge rename detection interop', () => {
 
         // Act
         await sut({ upstream: 'side' });
+        await repo.dispose();
+
+        // Assert
+        expect(snapshot(ours)).toEqual(snapshot(theirs));
+      });
+    });
+  });
+  describe.each([
+    ['rename+edit vs delete', [mv('big', 'big2'), change('big2', '1\n', 'one\n')], [rm('big')]],
+    ['delete vs rename', [rm('big')], [mv('big', 'big2')]],
+    [
+      'rename vs add at its target',
+      [mv('big', 'big2')],
+      [put('big2', 'x\ny\n'), change('big', '7\n', 'seven\n')],
+    ],
+    ['rename vs add at its target, source kept', [mv('big', 'big2')], [put('big2', 'x\ny\n')]],
+    ['rename/rename to two paths', [mv('big', 'b')], [mv('big', 'a')]],
+    ['rename/rename from two paths', [mv('y', 'c')], [mv('big', 'c')]],
+    [
+      'the same rename with different edits',
+      [mv('big', 'big2'), change('big2', '1\n', 'one\n')],
+      [mv('big', 'big2'), change('big2', '7\n', 'seven\n')],
+    ],
+    [
+      'rename with a mode change vs a conflicting edit',
+      [mv('big', 'big2'), chmodX('big2'), change('big2', '4\n', 'S\n')],
+      [change('big', '4\n', 'M\n')],
+    ],
+  ] as const)('Given %s', (_label, sideSteps, mainSteps) => {
+    describe('When both tools merge the side', () => {
+      it("Then the tree, index stages, files and MERGE_MSG match git's", async () => {
+        // Arrange
+        const theirs = buildScenario(sideSteps, mainSteps);
+        const ours = await copyOf(theirs);
+        tryRunGitWithExit(['-C', theirs, 'merge', 'side'], { env: DATED_ENV });
+        const repo = await openRepository({ cwd: ours });
+        const sut = repo.merge.run;
+
+        // Act
+        await sut({ rev: 'side', author: IDENTITY, committer: IDENTITY });
+        await repo.dispose();
+
+        // Assert
+        expect(snapshot(ours)).toEqual(snapshot(theirs));
+      });
+    });
+  });
+
+  describe.each([
+    ['rename vs delete', [mv('big', 'big2')], [rm('big')]],
+    ['rename/rename to two paths', [mv('big', 'b')], [mv('big', 'a')]],
+  ] as const)('Given %s', (_label, sideSteps, mainSteps) => {
+    describe('When both tools cherry-pick the side', () => {
+      it("Then the tree, index stages, files and stop state match git's", async () => {
+        // Arrange
+        const theirs = buildScenario(sideSteps, mainSteps);
+        const ours = await copyOf(theirs);
+        tryRunGitWithExit(['-C', theirs, 'cherry-pick', 'side'], { env: DATED_ENV });
+        const repo = await openRepository({ cwd: ours });
+        const sut = repo.cherryPick.run;
+
+        // Act
+        await sut({ commits: ['side'] });
         await repo.dispose();
 
         // Assert

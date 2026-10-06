@@ -1,7 +1,7 @@
 /**
  * Properties of moving renamed paths before the three-way merge: the move is
- * symmetric in its two sides, and it only relocates entries — every tree keeps
- * the same versions it held.
+ * symmetric in its two sides, a vacated source leaves every tree, and the base
+ * only relocates the versions it held.
  */
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
@@ -12,6 +12,7 @@ import {
   type MergeRenames,
   type RenamedMergeInput,
 } from '../../../../src/domain/merge/merge-renames.js';
+import type { MergeConflict } from '../../../../src/domain/merge/merge-types.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 
 const SOURCES = ['f', 'g', 'h'] as const;
@@ -74,7 +75,17 @@ const swapped = (renames: MergeRenames): MergeRenames => ({
   theirs: renames.ours,
 });
 
+const mirroredConflict = (conflict: MergeConflict): MergeConflict => {
+  const { ourId, ourMode, theirId, theirMode, ...rest } = conflict;
+  return {
+    ...rest,
+    ...(theirId === undefined ? {} : { ourId: theirId, ourMode: theirMode }),
+    ...(ourId === undefined ? {} : { theirId: ourId, theirMode: ourMode }),
+  };
+};
+
 const mirrored = (input: RenamedMergeInput) => ({
+  forced: new Map([...input.forced].map(([path, conflict]) => [path, mirroredConflict(conflict)])),
   base: input.base,
   ours: input.theirs,
   theirs: input.ours,
@@ -106,7 +117,7 @@ describe('applyMergeRenames properties', () => {
     });
 
     describe('When the renames are applied', () => {
-      it('Then every tree keeps the versions it held', () => {
+      it('Then every vacated source is gone and the base only relocates its versions', () => {
         // Arrange
         const sut = applyMergeRenames;
 
@@ -114,9 +125,16 @@ describe('applyMergeRenames properties', () => {
         fc.assert(
           fc.property(scenario, ({ base, ours, theirs, renames }) => {
             const result = sut(base, ours, theirs, renames);
-            expect(versions(result.base)).toEqual(versions(base));
-            expect(versions(result.ours)).toEqual(versions(ours));
-            expect(versions(result.theirs)).toEqual(versions(theirs));
+            for (const path of result.vacated) {
+              expect(result.base?.entries.has(path)).toBe(false);
+              expect(result.ours?.entries.has(path)).toBe(false);
+              expect(result.theirs?.entries.has(path)).toBe(false);
+            }
+            const remaining = [...versions(base)];
+            for (const version of versions(result.base)) {
+              expect(remaining).toContain(version);
+              remaining.splice(remaining.indexOf(version), 1);
+            }
           }),
         );
       });

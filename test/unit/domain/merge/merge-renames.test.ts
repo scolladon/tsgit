@@ -64,7 +64,7 @@ describe('applyMergeRenames', () => {
         // Assert
         expect(listed(result.base)).toEqual([[NEW, entry(ID_BASE)]]);
         expect(listed(result.ours)).toEqual([[NEW, entry(ID_EDIT)]]);
-        expect(result.theirs).toBe(theirs);
+        expect(listed(result.theirs)).toEqual([[NEW, entry(ID_BASE)]]);
         expect([...result.vacated]).toEqual([OLD]);
         expect(result.sidePaths.get(NEW)).toEqual({ base: OLD, ours: OLD, theirs: NEW });
         expect(listed(base)).toEqual([[OLD, entry(ID_BASE)]]);
@@ -87,7 +87,7 @@ describe('applyMergeRenames', () => {
 
         // Assert
         expect(listed(result.base)).toEqual([[NEW, entry(ID_BASE)]]);
-        expect(result.ours).toBe(ours);
+        expect(listed(result.ours)).toEqual([[NEW, entry(ID_BASE)]]);
         expect(listed(result.theirs)).toEqual([[NEW, entry(ID_EDIT)]]);
         expect([...result.vacated]).toEqual([OLD]);
         expect(result.sidePaths.get(NEW)).toEqual({ base: OLD, ours: NEW, theirs: OLD });
@@ -97,11 +97,11 @@ describe('applyMergeRenames', () => {
 
   describe('Given a rename whose source the other side deleted', () => {
     describe('When the renames are applied', () => {
-      it('Then the rename is left for its own conflict handling', () => {
+      it('Then the base moves to the new path and a rename/delete conflict is forced there', () => {
         // Arrange
         const base = tree([[OLD, ID_BASE]]);
         const ours = tree([]);
-        const theirs = tree([[NEW, ID_BASE]]);
+        const theirs = tree([[NEW, ID_EDIT]]);
         const renames: MergeRenames = { ours: [], theirs: RENAME };
         const sut = applyMergeRenames;
 
@@ -109,15 +109,51 @@ describe('applyMergeRenames', () => {
         const result = sut(base, ours, theirs, renames);
 
         // Assert
-        expect(listed(result.base)).toEqual([[OLD, entry(ID_BASE)]]);
-        expect(result.vacated.size).toBe(0);
+        expect(listed(result.base)).toEqual([[NEW, entry(ID_BASE)]]);
+        expect([...result.vacated]).toEqual([OLD]);
+        expect([...result.forced]).toEqual([
+          [
+            NEW,
+            {
+              type: 'rename-delete',
+              path: NEW,
+              baseId: ID_BASE,
+              baseMode: FILE_MODE.REGULAR,
+              theirId: ID_EDIT,
+              theirMode: FILE_MODE.REGULAR,
+            },
+          ],
+        ]);
+      });
+    });
+  });
+
+  describe('Given ours renames a source theirs deleted', () => {
+    describe('When the renames are applied', () => {
+      it('Then the rename/delete conflict carries our side', () => {
+        // Arrange
+        const base = tree([[OLD, ID_BASE]]);
+        const sut = applyMergeRenames;
+
+        // Act
+        const result = sut(base, tree([[NEW, ID_BASE]]), tree([]), { ours: RENAME, theirs: [] });
+
+        // Assert
+        expect(result.forced.get(NEW)).toEqual({
+          type: 'rename-delete',
+          path: NEW,
+          baseId: ID_BASE,
+          baseMode: FILE_MODE.REGULAR,
+          ourId: ID_BASE,
+          ourMode: FILE_MODE.REGULAR,
+        });
       });
     });
   });
 
   describe('Given a rename whose destination the other side also added', () => {
     describe('When the renames are applied', () => {
-      it('Then the rename is left for its own conflict handling', () => {
+      it("Then the other side's edit of the source replaces the unchanged rename for an add/add", () => {
         // Arrange
         const base = tree([[OLD, ID_BASE]]);
         const ours = tree([
@@ -132,22 +168,65 @@ describe('applyMergeRenames', () => {
         const result = sut(base, ours, theirs, renames);
 
         // Assert
-        expect(listed(result.ours)).toEqual([
-          [NEW, entry(ID_OTHER)],
-          [OLD, entry(ID_EDIT)],
+        expect(listed(result.base)).toEqual([]);
+        expect(listed(result.ours)).toEqual([[NEW, entry(ID_OTHER)]]);
+        expect(listed(result.theirs)).toEqual([[NEW, entry(ID_EDIT)]]);
+        expect([...result.vacated]).toEqual([OLD]);
+      });
+    });
+  });
+
+  describe('Given a renamed-and-edited destination the other side also added', () => {
+    describe('When the renames are applied', () => {
+      it('Then the edited rename joins the add/add as it is', () => {
+        // Arrange
+        const base = tree([[OLD, ID_BASE]]);
+        const ours = tree([
+          [NEW, ID_OTHER],
+          [OLD, ID_BASE],
         ]);
+        const theirs = tree([[NEW, ID_EDIT]]);
+        const sut = applyMergeRenames;
+
+        // Act
+        const result = sut(base, ours, theirs, { ours: [], theirs: RENAME });
+
+        // Assert
+        expect(listed(result.theirs)).toEqual([[NEW, entry(ID_EDIT)]]);
+        expect([...result.vacated]).toEqual([OLD]);
+      });
+    });
+  });
+
+  describe('Given an edited rename onto a path the other side added over its own edit', () => {
+    describe('When the renames are applied', () => {
+      it('Then the rename is left untouched', () => {
+        // Arrange
+        const base = tree([[OLD, ID_BASE]]);
+        const ours = tree([
+          [NEW, ID_OTHER],
+          [OLD, ID_EDIT],
+        ]);
+        const theirs = tree([[NEW, ID_OTHER]]);
+        const sut = applyMergeRenames;
+
+        // Act
+        const result = sut(base, ours, theirs, { ours: [], theirs: RENAME });
+
+        // Assert
+        expect(listed(result.base)).toEqual([[OLD, entry(ID_BASE)]]);
         expect(result.vacated.size).toBe(0);
       });
     });
   });
 
-  describe('Given both sides rename the same source', () => {
+  describe('Given both sides rename the same source to different paths', () => {
     describe('When the renames are applied', () => {
-      it('Then neither rename moves the base', () => {
+      it('Then a rename/rename conflict is forced on the source and both destinations', () => {
         // Arrange
         const base = tree([[OLD, ID_BASE]]);
-        const ours = tree([[NEW, ID_BASE]]);
-        const theirs = tree([['other' as FilePath, ID_BASE]]);
+        const ours = tree([[NEW, ID_EDIT]]);
+        const theirs = tree([['other' as FilePath, ID_OTHER]]);
         const renames: MergeRenames = {
           ours: RENAME,
           theirs: [{ oldPath: OLD, newPath: 'other' as FilePath }],
@@ -158,8 +237,39 @@ describe('applyMergeRenames', () => {
         const result = sut(base, ours, theirs, renames);
 
         // Assert
-        expect(listed(result.base)).toEqual([[OLD, entry(ID_BASE)]]);
+        const regular = FILE_MODE.REGULAR;
+        expect([...result.forced]).toEqual([
+          [OLD, { type: 'rename-rename', path: OLD, baseId: ID_BASE, baseMode: regular }],
+          [NEW, { type: 'rename-rename', path: NEW, ourId: ID_EDIT, ourMode: regular }],
+          [
+            'other',
+            { type: 'rename-rename', path: 'other', theirId: ID_OTHER, theirMode: regular },
+          ],
+        ]);
         expect(result.vacated.size).toBe(0);
+      });
+    });
+  });
+
+  describe('Given both sides rename the same source to the same path', () => {
+    describe('When the renames are applied', () => {
+      it('Then only the base moves, for a three-way merge at the new path', () => {
+        // Arrange
+        const base = tree([[OLD, ID_BASE]]);
+        const ours = tree([[NEW, ID_EDIT]]);
+        const theirs = tree([[NEW, ID_OTHER]]);
+        const sut = applyMergeRenames;
+
+        // Act
+        const result = sut(base, ours, theirs, { ours: RENAME, theirs: RENAME });
+
+        // Assert
+        expect(listed(result.base)).toEqual([[NEW, entry(ID_BASE)]]);
+        expect(listed(result.ours)).toEqual([[NEW, entry(ID_EDIT)]]);
+        expect(listed(result.theirs)).toEqual([[NEW, entry(ID_OTHER)]]);
+        expect([...result.vacated]).toEqual([OLD]);
+        expect(result.sidePaths.get(NEW)).toEqual({ base: OLD, ours: NEW, theirs: NEW });
+        expect(result.forced.size).toBe(0);
       });
     });
   });
@@ -198,7 +308,6 @@ describe('applyMergeRenames — absent inputs', () => {
 
         // Assert
         expect(result.ours).toBeUndefined();
-        expect(result.vacated.size).toBe(0);
       });
     });
   });
@@ -216,6 +325,26 @@ describe('applyMergeRenames — absent inputs', () => {
 
         // Assert
         expect(listed(result.theirs)).toEqual([[OLD, entry(ID_EDIT)]]);
+        expect(result.vacated.size).toBe(0);
+      });
+    });
+  });
+});
+
+describe('applyMergeRenames — rename onto an addition over a deleted source', () => {
+  describe('Given theirs renames a source ours deleted while adding the target', () => {
+    describe('When the renames are applied', () => {
+      it('Then the rename is left untouched', () => {
+        // Arrange
+        const base = tree([[OLD, ID_BASE]]);
+        const ours = tree([[NEW, ID_OTHER]]);
+        const sut = applyMergeRenames;
+
+        // Act
+        const result = sut(base, ours, tree([[NEW, ID_BASE]]), { ours: [], theirs: RENAME });
+
+        // Assert
+        expect(listed(result.base)).toEqual([[OLD, entry(ID_BASE)]]);
         expect(result.vacated.size).toBe(0);
       });
     });

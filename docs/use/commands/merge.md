@@ -80,7 +80,7 @@ When the merge cannot resolve cleanly, `run` returns `{ kind: 'conflict', confli
 
 Resolve the working-tree files, `repo.add` the resolved paths, then `repo.merge.continue({ message })` (equivalently `repo.commit({ message })`, which reads `MERGE_HEAD` for the second parent and clears the merge-state files atomically).
 
-Unsupported conflict types (`rename-rename`, `gitlink`) reject upfront with `UNSUPPORTED_OPERATION` before any disk write.
+Unsupported conflict types (`gitlink`) reject upfront with `UNSUPPORTED_OPERATION` before any disk write.
 
 ### Renames
 
@@ -95,6 +95,16 @@ puts the sides at different paths, each conflict-marker label carries its side's
 (`<<<<<<< HEAD:old`, `>>>>>>> side:new`), as git writes them. The same detection runs under
 `pull`, `cherry-pick`, `revert`, `rebase` and `stash apply`; the `resolve` and `octopus`
 strategies never detect renames.
+
+Rename conflicts stop the merge with git's index stages and files:
+
+- **rename/delete** — one side renamed, the other deleted the source: a `rename-delete` conflict at
+  the new path, stage 1 the base and the renaming side's stage, its file left in the tree.
+- **rename/rename (1 to 2)** — both sides renamed the source to different paths: a `rename-rename`
+  conflict on each of the three paths, stage 1 at the source, stage 2 and 3 at each side's target.
+- **rename/add** and **rename/rename (2 to 1)** — the renamed file meets another file at its
+  target: an `add-add` conflict between the two, the source deleted.
+- Both sides renaming the source to the **same path** merge it there, three-way.
 
 ### Content-conflict boundaries follow git's line-diff engine
 

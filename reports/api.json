@@ -41447,6 +41447,10 @@
 							},
 							{
 								"type": "literal",
+								"value": "rename-delete"
+							},
+							{
+								"type": "literal",
 								"value": "type-change"
 							},
 							{

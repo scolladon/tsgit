@@ -6,6 +6,7 @@ export type ConflictType =
   | 'add-add'
   | 'distinct-types'
   | 'modify-delete'
+  | 'rename-delete'
   | 'type-change'
   | 'rename-rename'
   | 'gitlink'

@@ -1940,3 +1940,38 @@ describe('mergeTrees — renames', () => {
     });
   });
 });
+
+describe('mergeTrees — forced rename conflicts', () => {
+  describe('Given theirs renamed an unchanged path ours deleted', () => {
+    describe('When mergeTrees is called with the rename', () => {
+      it('Then a rename/delete conflict stands at the new path and the source is deleted', async () => {
+        // Arrange
+        const base = tree([['old', entry(ID_A)]]);
+        const theirs = tree([['new', entry(ID_A)]]);
+        const renames = {
+          ours: [],
+          theirs: [{ oldPath: 'old' as FilePath, newPath: 'new' as FilePath }],
+        };
+        const sut = mergeTrees;
+
+        // Act
+        const result = await sut(base, tree([]), theirs, noopMerger, DEFAULT_MERGE_LABELS, renames);
+
+        // Assert
+        const conflict = {
+          type: 'rename-delete',
+          path: 'new',
+          baseId: ID_A,
+          baseMode: FILE_MODE.REGULAR,
+          theirId: ID_A,
+          theirMode: FILE_MODE.REGULAR,
+        };
+        expect(result.outcomes).toEqual([
+          { status: 'conflict', conflict },
+          { status: 'resolved-deleted', path: 'old' },
+        ]);
+        expect(result.cleanMerge).toBe(false);
+      });
+    });
+  });
+});
