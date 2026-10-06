@@ -264,6 +264,7 @@ export type CommandError =
       readonly available: ReadonlyArray<string>;
     }
   | { readonly code: 'MERGE_STRATEGY_FAILED'; readonly strategy: string }
+  | { readonly code: 'NO_MERGE_STRATEGY_HANDLED'; readonly strategies: ReadonlyArray<string> }
   | {
       readonly code: 'CONFIG_BAD_NUMERIC_VALUE';
       readonly key: string;
@@ -947,6 +948,10 @@ export const unknownMergeStrategy = (
 /** git's `Merge with strategy <s> failed.`: the strategy does not handle this merge. */
 export const mergeStrategyFailed = (strategy: string): TsgitError =>
   new TsgitError({ code: 'MERGE_STRATEGY_FAILED', strategy });
+
+/** git's `No merge strategy handled the merge.`: none of several strategies handles this merge. */
+export const noMergeStrategyHandled = (strategies: ReadonlyArray<string>): TsgitError =>
+  new TsgitError({ code: 'NO_MERGE_STRATEGY_HANDLED', strategies });
 
 /**
  * A `[merge "<name>"]` section is registered (`name` and/or `recursive` set) but

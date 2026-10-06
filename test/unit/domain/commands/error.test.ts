@@ -1813,6 +1813,10 @@ describe('domain commands error — extractDetail message formatting', () => {
       'MERGE_STRATEGY_FAILED: Merge with strategy ort failed.',
     ],
     [
+      { code: 'NO_MERGE_STRATEGY_HANDLED', strategies: ['resolve', 'ort'] },
+      'NO_MERGE_STRATEGY_HANDLED: No merge strategy handled the merge.',
+    ],
+    [
       { code: 'MERGE_DRIVER_MISSING_COMMAND', name: 'x' },
       'MERGE_DRIVER_MISSING_COMMAND: custom merge driver x lacks command line.',
     ],

@@ -610,6 +610,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `Could not find merge strategy '${data.strategy}'. Available strategies are: ${data.available.join(' ')}.`;
     case 'MERGE_STRATEGY_FAILED':
       return `Merge with strategy ${data.strategy} failed.`;
+    case 'NO_MERGE_STRATEGY_HANDLED':
+      return 'No merge strategy handled the merge.';
     case 'MERGE_DRIVER_MISSING_COMMAND':
       return `custom merge driver ${data.name} lacks command line.`;
     case 'CONFIG_BAD_NUMERIC_VALUE':

@@ -112,8 +112,8 @@ export interface PullOptions {
   readonly squash?: boolean;
   /** git's `--commit` / `--no-commit`, forwarded to `merge`: `false` stops before the merge commit. */
   readonly commit?: boolean;
-  /** git's `-s <strategy>`, forwarded to `merge`. */
-  readonly strategy?: string;
+  /** git's `-s <strategy>`, once or several times, forwarded to `merge`. */
+  readonly strategy?: string | ReadonlyArray<string>;
   /** Identity for the merge commit (true-merge path only). */
   readonly author?: AuthorIdentity;
   readonly committer?: AuthorIdentity;

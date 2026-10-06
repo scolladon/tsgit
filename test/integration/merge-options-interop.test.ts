@@ -458,6 +458,79 @@ describe.skipIf(!GIT_AVAILABLE)('merge options interop', () => {
     });
   });
 
+  describe.each([
+    [['octopus', 'ort'], 'main', ['origin/clean'], [], 0, 0],
+    [['resolve', 'octopus'], 'start', ['origin/clean'], [], 0, 0],
+    [['ort', 'ours'], 'start', ['origin/clean'], [], 0, 0],
+    [['resolve', 'ort'], 'main', ['origin/side'], [], 1, 0],
+    [['ort', 'resolve'], 'main', ['origin/side'], [], 1, 0],
+    [['octopus', 'octopus'], 'main', ['origin/side'], [], 2, 'NO_MERGE_STRATEGY_HANDLED'],
+    [undefined, 'main', ['origin/clean'], [['pull.twohead', 'ours resolve']], 0, 0],
+    [undefined, 'main', ['origin/clean'], [['pull.twohead', 'resolve']], 0, 0],
+    [undefined, 'main', ['origin/clean'], [['pull.twohead', 'bogus']], 1, 'UNKNOWN_MERGE_STRATEGY'],
+    [['ort'], 'main', ['origin/clean'], [['pull.twohead', 'ours']], 0, 0],
+    [undefined, 'main', ['origin/clean', 'origin/edits'], [['pull.octopus', 'ours']], 0, 0],
+  ] as const)(
+    'Given strategies %j from %s merging %j under %j',
+    (strategies, start, revs, config, exitCode, outcome) => {
+      describe('When both tools merge', () => {
+        it('Then the chosen strategy, commit, state files and index are identical', async () => {
+          // Arrange
+          const { ours, theirs } = setUp(config);
+          for (const dir of [ours, theirs])
+            dated(['-C', dir, 'checkout', '-q', '-B', 'topic', start]);
+          const flags = (strategies ?? []).flatMap((strategy) => ['-s', strategy]);
+          const theirsRun = datedExit(theirs, ['merge', ...flags, ...revs]);
+          const repo = await openRepository({ cwd: ours });
+          const sut = repo.merge.run;
+          const strategy = strategies === undefined ? {} : { strategy: strategies };
+
+          // Act
+          const result = await sut({
+            rev: revs,
+            ...strategy,
+            author: IDENTITY,
+            committer: IDENTITY,
+          })
+            .then(() => 0)
+            .catch((e: unknown) => (e as { data: { code: string } }).data.code);
+          await repo.dispose();
+
+          // Assert
+          expect(snapshot(ours)).toEqual(snapshot(theirs));
+          expect(theirsRun.exitCode).toBe(exitCode);
+          expect(result).toBe(outcome);
+        });
+      });
+    },
+  );
+
+  describe('Given pull.twohead ours', () => {
+    describe('When both tools pull a true merge', () => {
+      it('Then both merge with the configured strategy', async () => {
+        // Arrange
+        const { ours, theirs } = setUp([['pull.twohead', 'ours']]);
+        const sut = pull;
+        datedExit(theirs, ['pull', '-q', '--no-rebase', 'origin', 'clean']);
+
+        // Act
+        await sut(contextOf(ours), {
+          remote: 'origin',
+          ref: 'clean',
+          rebase: false,
+          author: IDENTITY,
+          committer: IDENTITY,
+        });
+
+        // Assert
+        const tree = (dir: string) => git(dir, 'rev-parse', 'HEAD^{tree}');
+        expect(tree(ours)).toBe(tree(theirs));
+        const note = (dir: string) => git(dir, 'reflog', '-1', '--format=%gs').split(': ')[1];
+        expect(note(ours)).toBe(note(theirs));
+      });
+    });
+  });
+
   describe('Given a pull with strategy ours over a true merge', () => {
     describe('When both tools pull the head', () => {
       it("Then the merge commit and the reflog's strategy note are identical", async () => {

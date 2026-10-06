@@ -1,8 +1,8 @@
 import {
   incompatibleOptions,
   mergeStrategyFailed,
+  noMergeStrategyHandled,
   nonFastForward,
-  unknownMergeStrategy,
   unrelatedHistories,
   workingTreeDirty,
 } from '../../domain/commands/error.js';
@@ -99,6 +99,15 @@ import {
   writeSquashMsg,
 } from './internal/merge-state.js';
 import {
+  allowsTrivialMerge,
+  assertStrategyConfig,
+  conflictWeight,
+  explicitStrategies,
+  forbidsFastForward,
+  preferConflict,
+  settleStrategies,
+} from './internal/merge-strategies.js';
+import {
   type OctopusRemote,
   type OctopusResult,
   octopusMerge,
@@ -174,15 +183,18 @@ export interface MergeRunInput {
    */
   readonly commit?: boolean;
   /**
-   * git's `-s <strategy>`: `ort` (one head's default), `recursive` (run as
-   * `ort`), `resolve`, `octopus` (several heads' default), `ours` (HEAD's tree,
-   * whatever the heads hold); `ours` never fast-forwards; `resolve` and
-   * `octopus` first try git's trivial in-index merge. `subtree` refuses with
-   * `UNSUPPORTED_OPERATION`. Any other name refuses with
-   * `UNKNOWN_MERGE_STRATEGY`; a strategy that does not handle the merge fails
-   * with `MERGE_STRATEGY_FAILED`.
+   * git's `-s <strategy>`, once or several times: `ort` (one head's default),
+   * `recursive` (run as `ort`), `resolve`, `octopus` (several heads' default),
+   * `ours` (HEAD's tree, whatever the heads hold); unset, `pull.twohead` /
+   * `pull.octopus` name them. Several are tried in turn: the first clean merge
+   * commits, else the one leaving the fewest conflicts prepares the
+   * resolution. `ours` never fast-forwards; git's trivial in-index merge is
+   * tried first when every strategy is `resolve` or `octopus`. `subtree`
+   * refuses with `UNSUPPORTED_OPERATION`. Any other name refuses with
+   * `UNKNOWN_MERGE_STRATEGY`; a merge no strategy handles fails with
+   * `MERGE_STRATEGY_FAILED` (one strategy) or `NO_MERGE_STRATEGY_HANDLED`.
    */
-  readonly strategy?: string;
+  readonly strategy?: string | ReadonlyArray<string>;
   readonly author?: AuthorIdentity;
   readonly committer?: AuthorIdentity;
 }
@@ -208,10 +220,12 @@ export interface MergeInternalOptions {
 }
 
 /** A merge whose message and autostash are settled — the caller's, or git's default. */
-type SettledMerge = Omit<MergeRunInput, 'rev' | 'autostash'> & {
+type SettledMerge = Omit<MergeRunInput, 'rev' | 'autostash' | 'strategy'> & {
   readonly rev: string;
   readonly message: string;
   readonly autostash: boolean;
+  /** The strategies tried in turn: the caller's, `pull.twohead`'s / `pull.octopus`'s, or git's default. */
+  readonly strategies: ReadonlyArray<string>;
 };
 
 export interface MergeConflictDescriptor {
@@ -327,7 +341,7 @@ const settleMessage = async (
   internal: MergeInternalOptions,
   target: MergeTarget,
   remotes: ReadonlyArray<MergeRemote>,
-): Promise<SettledMerge> => {
+): Promise<Omit<SettledMerge, 'strategies'>> => {
   const rev = remotes.map((remote) => remote.name).join(' ');
   const autostash = opts.autostash ?? (await configuredAutostash(ctx, 'merge')) ?? false;
   const log = await settleMergeLog(ctx, opts.log);
@@ -362,10 +376,13 @@ const settleMerge = async (
   remotes: ReadonlyArray<MergeRemote>,
 ): Promise<SettledMerge> => {
   const policy = await settleFastForward(ctx, input);
-  const strategic: MergeRunInput = NO_FAST_FORWARD_STRATEGIES.has(input.strategy ?? '')
+  const explicit = explicitStrategies(input.strategy);
+  const strategies = await settleStrategies(ctx, explicit, remotes.length);
+  const strategic: MergeRunInput = forbidsFastForward(strategies)
     ? { ...policy, fastForward: NO_FAST_FORWARD }
     : policy;
-  const settled = await settleMessage(ctx, strategic, internal, target, remotes);
+  const message = await settleMessage(ctx, strategic, internal, target, remotes);
+  const settled = { ...message, strategies };
   const throwaway = await mergesThrowawayTag(ctx, settled, remotes);
   return throwaway ? { ...settled, fastForward: NO_FAST_FORWARD } : settled;
 };
@@ -405,7 +422,8 @@ const computeMerge = async (
   internal: MergeInternalOptions,
 ): Promise<MergeEnding> => {
   await assertOperationalRepositorySettingsFirst(ctx);
-  assertKnownStrategy(input.strategy);
+  await assertStrategyConfig(ctx);
+  explicitStrategies(input.strategy);
   await assertMergeMessageConfig(ctx);
   await assertSquashCompatible(ctx, input);
   requireWorkTree(ctx, 'merge');
@@ -419,26 +437,9 @@ const computeMerge = async (
     : manyHeadMerge(ctx, input, internal, branch, ourId, named);
 };
 
-/** git's built-in strategies, as its refusal lists them; `ort` is built in without a command. */
-const AVAILABLE_STRATEGIES = ['octopus', 'ours', 'recursive', 'resolve', 'subtree'] as const;
-const KNOWN_STRATEGIES: ReadonlySet<string> = new Set([...AVAILABLE_STRATEGIES, 'ort']);
-/** Strategies git marks `NO_FAST_FORWARD`. */
-const NO_FAST_FORWARD_STRATEGIES: ReadonlySet<string> = new Set(['ours']);
 /** Strategies git runs in-process as `ort`. */
 const ORT_STRATEGIES: ReadonlySet<string> = new Set(['ort', 'recursive']);
 const IN_INDEX_MERGE = 'In-index merge';
-
-/** Strategies known to git that tsgit does not run yet: `subtree` needs git's `shift_tree`. */
-const UNSUPPORTED_STRATEGIES: ReadonlySet<string> = new Set(['subtree']);
-
-/** git's `get_strategy`: an unknown strategy refuses before anything else. */
-const assertKnownStrategy = (strategy: string | undefined): void => {
-  if (strategy === undefined) return;
-  if (!KNOWN_STRATEGIES.has(strategy)) throw unknownMergeStrategy(strategy, AVAILABLE_STRATEGIES);
-  if (UNSUPPORTED_STRATEGIES.has(strategy)) {
-    throw unsupportedOperation('merge', `${strategy} strategy`);
-  }
-};
 
 const mergeMadeBy = (strategy: string): string => `Merge made by the '${strategy}' strategy.`;
 
@@ -550,25 +551,99 @@ const twoHeadMerge = async (
   return underAutostash(ctx, opts, () => twoHeadStrategy(ctx, commit, remote, bases));
 };
 
-/** git's `try_merge_strategy` for one head, after its trivial in-index merge where allowed. */
+/** git's trivial in-index merge where every strategy allows it, then its strategy loop for one head. */
 const twoHeadStrategy = async (
   ctx: Context,
   commit: MergeCommitInput,
   remote: MergeRemote,
   bases: ReadonlyArray<ObjectId>,
 ): Promise<MergeEnding> => {
-  const strategy = commit.opts.strategy ?? 'ort';
-  if (strategy === 'ours') return oursMerge(ctx, commit);
-  if (ORT_STRATEGIES.has(strategy)) {
-    const { opts, internal, branch, ourId } = commit;
-    return mergeCommit(ctx, opts, internal, branch, ourId, remote.id, bases[0], strategy);
+  if (allowsTrivialMerge(commit.opts.strategies)) {
+    const trivial = await tryTrivialMerge(ctx, commit, remote.id, bases);
+    if (trivial !== undefined) return trivial;
   }
-  // git-merge-resolve gives up on a baseless merge; octopus on any single head the trivial merge left.
-  if (strategy === 'resolve' && bases.length === 0) throw mergeStrategyFailed(strategy);
-  const trivial = await tryTrivialMerge(ctx, commit, remote.id, bases);
-  if (trivial !== undefined) return trivial;
-  if (strategy === 'octopus') throw mergeStrategyFailed(strategy);
-  return octopus(ctx, commit, [remote], mergeMadeBy(strategy));
+  return tryStrategies(ctx, commit, (strategy) =>
+    twoHeadAttempt(ctx, commit, { remote, bases, strategy }),
+  );
+};
+
+/** What one strategy makes of the merge, before anything is written. */
+type StrategyAttempt =
+  | { readonly kind: 'clean'; readonly tree: ObjectId; readonly note: string }
+  | ConflictAttempt
+  | { readonly kind: 'failed' };
+
+interface ConflictAttempt {
+  readonly kind: 'conflict';
+  /** git's `evaluate_result`: each unmerged path's diff-files record and its index stages. */
+  readonly weight: number;
+  readonly persist: () => Promise<MergeEnding>;
+}
+
+const FAILED: StrategyAttempt = { kind: 'failed' };
+
+/**
+ * git's strategy loop: the first strategy to merge cleanly commits; else the
+ * last of those leaving the fewest conflicts writes them; else none handled it.
+ */
+const tryStrategies = async (
+  ctx: Context,
+  commit: MergeCommitInput,
+  attempt: (strategy: string) => Promise<StrategyAttempt>,
+): Promise<MergeEnding> => {
+  const { strategies } = commit.opts;
+  let best: ConflictAttempt | undefined;
+  ctx.progress.start(MERGE_WRITE_FILES_OP);
+  try {
+    for (const strategy of strategies) {
+      const tried = await attempt(strategy);
+      if (tried.kind === 'clean')
+        return await commitCleanMerge(ctx, commit, tried.tree, tried.note);
+      if (tried.kind === 'conflict') best = preferConflict(best, tried);
+    }
+    if (best !== undefined) return await best.persist();
+  } finally {
+    ctx.progress.end(MERGE_WRITE_FILES_OP);
+  }
+  throw strategies.length === 1
+    ? mergeStrategyFailed(strategies[0]!)
+    : noMergeStrategyHandled(strategies);
+};
+
+interface TwoHeadTry {
+  readonly remote: MergeRemote;
+  readonly bases: ReadonlyArray<ObjectId>;
+  readonly strategy: string;
+}
+
+/** git's `try_merge_strategy` for one head: git-merge-resolve gives up on a baseless merge, octopus on one head. */
+const twoHeadAttempt = (
+  ctx: Context,
+  commit: MergeCommitInput,
+  { remote, bases, strategy }: TwoHeadTry,
+): Promise<StrategyAttempt> => {
+  if (strategy === 'ours') return oursAttempt(ctx, commit);
+  if (ORT_STRATEGIES.has(strategy)) return ortAttempt(ctx, commit, remote.id, bases[0], strategy);
+  if (strategy === 'octopus' || bases.length === 0) return Promise.resolve(FAILED);
+  return octopusAttempt(ctx, commit, [remote], strategy);
+};
+
+const ortAttempt = async (
+  ctx: Context,
+  commit: MergeCommitInput,
+  theirId: ObjectId,
+  baseId: ObjectId | undefined,
+  strategy: string,
+): Promise<StrategyAttempt> => {
+  const { opts, ourId } = commit;
+  const result = await computeMergeTreeResult(ctx, ourId, theirId, baseId, opts.rev);
+  if (result.kind === 'clean')
+    return { kind: 'clean', tree: result.tree, note: mergeMadeBy(strategy) };
+  return {
+    kind: 'conflict',
+    weight: conflictWeight(result.conflicts),
+    persist: () => persistConflictState(ctx, opts, result, ourId, theirId),
+  };
 };
 
 /**
@@ -594,10 +669,10 @@ const tryTrivialMerge = async (
 };
 
 /** git's `ours` strategy: HEAD's tree is the result, once the index matches it. */
-const oursMerge = async (ctx: Context, commit: MergeCommitInput): Promise<MergeEnding> => {
+const oursAttempt = async (ctx: Context, commit: MergeCommitInput): Promise<StrategyAttempt> => {
   const tree = await getTree(ctx, commit.ourId);
   await assertIndexMatches(ctx, (await flattenTree(ctx, tree)).entries);
-  return commitCleanMerge(ctx, commit, tree, mergeMadeBy('ours'));
+  return { kind: 'clean', tree, note: mergeMadeBy('ours') };
 };
 
 /** git's `refusing to merge unrelated histories`, unless `--allow-unrelated-histories`. */
@@ -647,12 +722,12 @@ const manyHeadStrategy = (
   ctx: Context,
   commit: MergeCommitInput,
   remotes: ReadonlyArray<OctopusRemote>,
-): Promise<MergeEnding> => {
-  const strategy = commit.opts.strategy ?? 'octopus';
-  if (strategy === 'ours') return oursMerge(ctx, commit);
-  if (strategy !== 'octopus') throw mergeStrategyFailed(strategy);
-  return octopus(ctx, commit, remotes, MERGE_MADE_BY_OCTOPUS);
-};
+): Promise<MergeEnding> =>
+  tryStrategies(ctx, commit, (strategy) => {
+    if (strategy === 'ours') return oursAttempt(ctx, commit);
+    if (strategy !== 'octopus') return Promise.resolve(FAILED);
+    return octopusAttempt(ctx, commit, remotes, strategy);
+  });
 
 /**
  * `fmt_merge_msg`'s `find_merge_parents`: a described head (a FETCH_HEAD line)
@@ -691,29 +766,6 @@ export const UNSUPPORTED_CONFLICT_TYPES: ReadonlySet<ConflictType> = new Set([
   'rename-rename',
   'gitlink',
 ]);
-
-const mergeCommit = async (
-  ctx: Context,
-  opts: SettledMerge,
-  internal: MergeInternalOptions,
-  branchName: RefName | undefined,
-  ourId: ObjectId,
-  theirId: ObjectId,
-  baseId: ObjectId | undefined,
-  strategy: string,
-): Promise<MergeEnding> => {
-  ctx.progress.start(MERGE_WRITE_FILES_OP);
-  try {
-    const treeResult = await computeMergeTreeResult(ctx, ourId, theirId, baseId, opts.rev);
-    if (treeResult.kind === 'conflict') {
-      return persistConflictState(ctx, opts, treeResult, ourId, theirId);
-    }
-    const commit = { opts, internal, branch: branchName, ourId, parents: [ourId, theirId] };
-    return commitCleanMerge(ctx, commit, treeResult.tree, mergeMadeBy(strategy));
-  } finally {
-    ctx.progress.end(MERGE_WRITE_FILES_OP);
-  }
-};
 
 /**
  * Map `materializeTree`'s checkout-flavoured dirty refusal to the merge-family
@@ -859,29 +911,28 @@ const commitCleanMerge = async (
   });
 };
 
-/** git's `finish` reflog note for a merge of several heads, which its `octopus` strategy makes. */
-const MERGE_MADE_BY_OCTOPUS = "Merge made by the 'octopus' strategy.";
-
 /**
- * git's `octopus` strategy: the index must match `HEAD`; a clean result is
- * committed, a conflict on the last head is left to be resolved by hand.
+ * git's `octopus` strategy, which `resolve` runs as `git-merge-one-file` does:
+ * the index must match `HEAD`; a conflict on the last head is left to resolve.
  */
-const octopus = async (
+const octopusAttempt = async (
   ctx: Context,
   commit: MergeCommitInput,
   remotes: ReadonlyArray<OctopusRemote>,
-  note: string,
-): Promise<MergeEnding> => {
+  strategy: string,
+): Promise<StrategyAttempt> => {
   const ours = await flattenTree(ctx, await getTree(ctx, commit.ourId));
   await assertIndexMatches(ctx, ours.entries);
   const result = await octopusMerge(ctx, commit.ourId, remotes);
-  if (result.kind === 'clean') {
-    return commitCleanMerge(ctx, commit, result.tree, note);
-  }
-  return persistOctopusConflict(ctx, commit, result, ours.entries);
+  if (result.kind === 'clean')
+    return { kind: 'clean', tree: result.tree, note: mergeMadeBy(strategy) };
+  return {
+    kind: 'conflict',
+    weight: conflictWeight(result.conflicts),
+    persist: () => persistOctopusConflict(ctx, commit, result, ours.entries),
+  };
 };
 
-/** `git-merge-octopus`'s `diff-index --cached HEAD`: staged changes refuse the strategy. */
 const assertIndexMatches = async (ctx: Context, ours: FlatEntries): Promise<void> => {
   const { entries } = await readIndex(ctx);
   const indexed = new Set(entries.map((entry) => entry.path));
