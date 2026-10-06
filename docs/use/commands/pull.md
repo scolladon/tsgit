@@ -17,6 +17,7 @@ interface PullOptions {
   readonly ref?: string;           // refspec to fetch and merge (git pull <remote> <ref>); default: FETCH_HEAD's merge heads
   readonly fastForward?: 'only' | 'never' | 'allow'; // default 'allow'; forwarded to merge
   readonly rebase?: boolean | 'merges'; // git's --rebase / --rebase=merges / --no-rebase
+  readonly autostash?: boolean;    // git's --autostash / --no-autostash
   readonly prune?: boolean;        // forwarded to fetch
   readonly depth?: number;         // forwarded to fetch
   readonly message?: string;       // override the merge-commit message / MERGE_MSG
@@ -68,6 +69,13 @@ As git's `pull`: with no `rebase` given, pull reads `branch.<current>.rebase`
 editor); any other value refuses with `CONFIG_INVALID_ENUM_VALUE` before the fetch.
 With no `fastForward` given, `pull.ff` is read; a configured `only` reads as
 `'allow'` once `rebase` is given.
+
+With no `autostash` given, `pull.autostash` is read; a rebasing pull then falls
+back to `rebase.autostash`, a merging one leaves it to the merge's
+`merge.autostash`. A dirty tree is stashed before the integrate step and
+re-applied after it; a rebasing pull without autostash refuses a dirty tree
+with `WORKING_TREE_DIRTY` before the fetch. Both keys are read on every pull, so
+an invalid value refuses with `CONFIG_BAD_BOOLEAN_VALUE`.
 
 When nothing — option or config, `merge.ff` aside — says how to reconcile and the
 fetched head diverged from `HEAD`, pull refuses **after the fetch** with

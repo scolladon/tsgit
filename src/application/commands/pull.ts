@@ -31,6 +31,7 @@ import { readIndex } from '../primitives/read-index.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { resolveRef, resolveRefOrMissing } from '../primitives/resolve-ref.js';
 import { type FetchResult, type FetchUpdate, fetchWith } from './fetch.js';
+import { configuredAutostash } from './internal/autostash-config.js';
 import { assertCleanWorkTree } from './internal/clean-work-tree.js';
 import { defaultRemoteName } from './internal/default-remote.js';
 import { configuredPullFastForward } from './internal/fast-forward-config.js';
@@ -82,6 +83,14 @@ export interface PullOptions {
    * the merge, as git does; `fastForward: 'only'` wins over a rebase.
    */
   readonly rebase?: boolean | 'merges';
+  /**
+   * git's `--autostash` / `--no-autostash`: stash a dirty tree before the
+   * integrate step and re-apply it afterwards. Unset, it is `pull.autostash`'s;
+   * a rebasing pull then falls back to `rebase.autostash`, a merging one leaves
+   * it to the merge's own `merge.autostash`. A rebasing pull without it refuses
+   * a dirty tree.
+   */
+  readonly autostash?: boolean;
   /**
    * git's `--allow-unrelated-histories`, forwarded to `merge`: integrate a
    * head that shares no commit with `HEAD` instead of refusing with
@@ -230,14 +239,29 @@ interface RebasePlan {
   readonly fork: ObjectId | undefined;
   /** `--rebase=merges`: the rebase recreates local merges. */
   readonly rebaseMerges: boolean;
+  /** The dirty tree is stashed around the rebase instead of refused. */
+  readonly autostash: boolean;
 }
 
 /** git pull's `opt_rebase` truthiness: `true` and `'merges'` rebase. */
 const rebasing = (opts: PullOptions): boolean => opts.rebase !== undefined && opts.rebase !== false;
 
 /**
- * git's pre-fetch rebase preparation: refuse a dirty tree (`require_clean_work_tree`,
- * as no autostash is configured), then find the fork point of the current branch
+ * git pull's `opt_autostash`: the caller's, else `pull.autostash`; a rebasing
+ * pull falls back to `rebase.autostash`. git reads both keys on every pull, so
+ * an invalid value refuses either way.
+ */
+const settleAutostash = async (ctx: Context, opts: PullOptions): Promise<PullOptions> => {
+  const configured = await configuredAutostash(ctx, 'pull');
+  const rebased = await configuredAutostash(ctx, 'rebase');
+  const pulled = opts.autostash ?? configured;
+  const chosen = rebasing(opts) ? (pulled ?? rebased ?? false) : pulled;
+  return chosen === undefined ? opts : { ...opts, autostash: chosen };
+};
+
+/**
+ * git's pre-fetch rebase preparation: refuse a dirty tree (`require_clean_work_tree`)
+ * unless autostash is on, then find the fork point of the current branch
  * from the upstream the fetch is about to update. An unborn HEAD is pulled into,
  * never rebased.
  */
@@ -249,12 +273,13 @@ const planRebase = async (
 ): Promise<RebasePlan | undefined> => {
   const head = rebasing(opts) ? await resolveRefOrMissing(ctx, 'HEAD') : undefined;
   if (head === undefined) return undefined;
-  await assertCleanWorkTree(ctx, await treeOf(ctx, head));
+  const autostash = opts.autostash === true;
+  if (!autostash) await assertCleanWorkTree(ctx, await treeOf(ctx, head));
   const tracking =
     opts.ref !== undefined ? refspecTrackingRef(upstream.remote, opts.ref) : upstream.trackingRef;
-  const rebaseMerges = opts.rebase === 'merges';
-  if (branchRef === undefined || tracking === undefined) return { fork: undefined, rebaseMerges };
-  return { fork: await forkPoint(ctx, tracking, head), rebaseMerges };
+  const shape = { rebaseMerges: opts.rebase === 'merges', autostash };
+  if (branchRef === undefined || tracking === undefined) return { fork: undefined, ...shape };
+  return { fork: await forkPoint(ctx, tracking, head), ...shape };
 };
 
 /**
@@ -292,7 +317,9 @@ export const pull = async (ctx: Context, given: PullOptions = {}): Promise<PullR
   const branchRef = branchRefFromHead(await readHeadRaw(ctx));
   const currentBranch = branchRef !== undefined ? shortBranchName(branchRef) : undefined;
   const upstream = await readUpstream(ctx, currentBranch, settled);
-  const { opts, unreconciled } = await settleRebase(ctx, settled, currentBranch);
+  const reconciled = await settleRebase(ctx, settled, currentBranch);
+  const opts = await settleAutostash(ctx, reconciled.opts);
+  const unreconciled = reconciled.unreconciled;
   const rebase = await planRebase(ctx, opts, upstream, branchRef);
   const origHead = await resolveRefOrMissing(ctx, 'HEAD');
   const fetchResult = await fetchUpstream(ctx, opts, upstream);
@@ -405,13 +432,13 @@ const integrate = async (ctx: Context, run: Integration): Promise<PullResult> =>
 const rebaseOnto = async (
   ctx: Context,
   theirs: ObjectId,
-  { fork, rebaseMerges }: RebasePlan,
+  { fork, rebaseMerges, autostash }: RebasePlan,
 ): Promise<RebaseResult> => {
   const head = await resolveRef(ctx, RefName.from('HEAD'));
   const upstream = await rebaseUpstream(ctx, head, theirs, fork);
   return rebaseRun(
     ctx,
-    { upstream, onto: theirs, rebaseMerges },
+    { upstream, onto: theirs, rebaseMerges, autostash },
     { reflogAction: PULL_REFLOG_ACTION },
   );
 };

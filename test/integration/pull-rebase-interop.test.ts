@@ -131,6 +131,35 @@ describe.skipIf(!GIT_AVAILABLE)('pull rebase interop', () => {
     });
   });
 
+  describe('Given rebase.autostash and a dirty tree under a diverging local commit', () => {
+    describe('When both tools pull rebasing', () => {
+      it('Then both stash, rebase and re-apply the local change alike', async () => {
+        // Arrange
+        const { ours, theirs, work, peerRoot, peerPath } = setUp('autostash');
+        for (const dir of [ours, theirs]) {
+          commitFile(dir, 'l.txt', 'l');
+          dated(['-C', dir, 'config', 'rebase.autostash', 'true']);
+          writeFileSync(path.join(dir, 'a.txt'), 'dirty\n');
+        }
+        commitFile(work, 'v.txt', 'v');
+        publish(work, peerPath);
+        const sut = pullBoth;
+
+        // Act
+        await sut(ours, theirs, peerRoot);
+
+        // Assert
+        const dirtyState = (dir: string) => ({
+          ...state(dir),
+          status: git(dir, 'status', '--porcelain'),
+          stash: git(dir, 'stash', 'list'),
+        });
+        expect(dirtyState(ours)).toEqual(dirtyState(theirs));
+        expect(readFileSync(path.join(ours, 'a.txt'), 'utf8')).toBe('dirty\n');
+      });
+    });
+  });
+
   describe('Given an upstream rewritten under the local commit', () => {
     describe('When both tools pull rebasing', () => {
       it('Then both replay only the commits after the fork point', async () => {

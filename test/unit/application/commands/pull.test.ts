@@ -1889,6 +1889,100 @@ describe('pull rebasing onto the fetched head', () => {
     });
   });
 
+  describe('Given rebase.autostash and a dirty tree', () => {
+    describe('When pull rebasing', () => {
+      it('Then it stashes and re-applies the local changes around the rebase', async () => {
+        // Arrange
+        const { ctx, b } = await divergedPull();
+        await ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, '[rebase]\n\tautostash = true\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'dirty\n');
+        const sut = pull;
+
+        // Act
+        const result = await sut(ctx, { rebase: true });
+
+        // Assert
+        expect(result.integration === 'rebase' && result.rebase.kind).toBe('rebased');
+        const tip = await readObject(ctx, await resolveRef(ctx, 'refs/heads/main' as RefName));
+        expect(tip.type === 'commit' && tip.data.parents).toEqual([b]);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('dirty\n');
+      });
+    });
+  });
+
+  describe.each([
+    [
+      'pull.autostash over rebase.autostash',
+      '[pull]\n\tautostash = true\n[rebase]\n\tautostash = false\n',
+      {},
+    ],
+    [
+      'the autostash option over pull.autostash',
+      '[pull]\n\tautostash = false\n',
+      { autostash: true },
+    ],
+  ] as const)('Given %s and a dirty tree', (_, config, given) => {
+    describe('When pull rebasing', () => {
+      it('Then it stashes and re-applies the local change', async () => {
+        // Arrange
+        const { ctx } = await divergedPull();
+        await ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, config);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'dirty\n');
+        const sut = pull;
+
+        // Act
+        const result = await sut(ctx, { rebase: true, ...given });
+
+        // Assert
+        expect(result.integration === 'rebase' && result.rebase.kind).toBe('rebased');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('dirty\n');
+      });
+    });
+  });
+
+  describe('Given rebase.autostash and the autostash option off, When pull rebasing a dirty tree', () => {
+    it('Then the option wins and it refuses the dirty tree', async () => {
+      // Arrange
+      const { ctx } = await divergedPull();
+      await ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, '[rebase]\n\tautostash = true\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'dirty\n');
+
+      // Act
+      const result = await pullData(ctx, { rebase: true, autostash: false });
+
+      // Assert
+      expect(result).toEqual({
+        code: 'WORKING_TREE_DIRTY',
+        localChanges: ['a.txt'],
+        untracked: [],
+      });
+    });
+  });
+
+  describe.each([['pull'], ['rebase']] as const)(
+    'Given an invalid %s.autostash, When pull without a rebase',
+    (section) => {
+      it('Then it refuses the bad boolean, as git reads the key on every pull', async () => {
+        // Arrange
+        const { ctx } = await divergedPull();
+        await ctx.fs.appendUtf8(
+          `${ctx.layout.gitDir}/config`,
+          `[${section}]\n\tautostash = maybe\n`,
+        );
+
+        // Act
+        const result = await pullData(ctx, { rebase: false, autostash: true });
+
+        // Assert
+        expect(result).toMatchObject({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: `${section}.autostash`,
+          value: 'maybe',
+        });
+      });
+    },
+  );
+
   describe('Given diverged histories, When pull with rebase true and fastForward only', () => {
     it('Then fast-forward-only wins and refuses the divergence', async () => {
       // Arrange

@@ -12,7 +12,6 @@ import {
   noOperationInProgress,
   workingTreeDirty,
 } from '../../domain/commands/error.js';
-import { parseGitBoolean } from '../../domain/config/config-ini.js';
 import { renderPatch, sortedRecordedPaths } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
 import { type ConflictType, type MergeConflict, replayLabels } from '../../domain/merge/index.js';
@@ -42,10 +41,8 @@ import {
 } from '../../domain/reflog/reflog-messages.js';
 import type { Context } from '../../ports/context.js';
 import { abbreviateObjectId } from '../primitives/abbreviate-object-id.js';
-import { findLastEntry } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
 import { diffTrees } from '../primitives/diff-trees.js';
-import { assertValidBooleanConfig } from '../primitives/internal/boolean-config-guard.js';
 import {
   assertNoPendingOperation,
   assertOperationalRepositorySettingsFirst,
@@ -63,6 +60,7 @@ import { runHook, runInformationalHook } from '../primitives/run-hook.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { walkCommits, walkCommitsStoppingAt } from '../primitives/walk-commits.js';
+import { configuredAutostash } from './internal/autostash-config.js';
 import { removeBranchState, removeCommittedState } from './internal/branch-state.js';
 import { conflictMergeMsg } from './internal/cherry-pick-state.js';
 import {
@@ -554,21 +552,12 @@ const autostashIfWanted = async (
   ctx: Context,
   given: boolean | undefined,
 ): Promise<ObjectId | undefined> => {
-  if (!(given ?? (await configuredAutostash(ctx)))) return undefined;
+  if (!(given ?? (await configuredAutostash(ctx, 'rebase')) ?? false)) return undefined;
   const stash = await createAutostash(ctx);
   if (stash !== undefined) {
     ctx.logger?.info?.(`Created autostash: ${await abbreviateObjectId(ctx, stash)}`);
   }
   return stash;
-};
-
-const configuredAutostash = async (ctx: Context): Promise<boolean> => {
-  await assertValidBooleanConfig(ctx, 'rebase', undefined, ['autostash']);
-  const entry = await findLastEntry(ctx, 'rebase', 'autostash');
-  if (entry === undefined) return false;
-  if (entry.value === null) return true;
-  const parsed = parseGitBoolean(entry.value);
-  return parsed.ok && parsed.value;
 };
 
 /** End the rebase's state, then re-apply its autostash, as git's `apply_autostash` does. */
