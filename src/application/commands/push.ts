@@ -77,8 +77,10 @@ import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { assertValidRemoteName, resolvePushRemote } from './internal/default-remote.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
 import { isAncestor } from './internal/is-ancestor.js';
+import { readLocalPushRefs } from './internal/local-push-refs.js';
 import { assertPeerAlgorithm } from './internal/object-format-guard.js';
 import { matchDeleteTarget } from './internal/push-delete-target.js';
+import { type LocalPushRefs, matchExplicitPush } from './internal/push-explicit-match.js';
 import {
   finalizePushRefspecs,
   type PushRefspecPlan,
@@ -285,7 +287,15 @@ const negotiateAndSend = async (
       ? // Stryker disable next-line MethodExpression: equivalent — finalizePushRefspecs intersects localHeads with the head-only advertised set, so dropping this refs/heads/ pre-filter cannot change the resolved refspecs.
         (await enumerateRefs(ctx)).filter((ref) => ref.startsWith(HEADS_PREFIX))
       : [];
-  const refspecs = matchDeleteTargets(ctx, finalizePushRefspecs(plan, adv, localHeads), adv, url);
+  const refspecs = await matchExplicitTargets(
+    ctx,
+    {
+      refspecs: finalizePushRefspecs(plan, adv, localHeads),
+      written: plan.kind === 'explicit' ? plan.written : [],
+    },
+    adv,
+    url,
+  );
   const resolved = await resolveAllRefspecs(ctx, refspecs, adv, remote, opts);
   const movers = resolved.filter((r) => !isUpToDate(r));
   const pushedRefs =
@@ -311,32 +321,66 @@ const pushMovers = async (
 const isUpToDate = (ref: ResolvedRefspec): boolean =>
   !ref.parsed.isDelete && ref.localOid === ref.remoteOid;
 
+/** One refspec once `match_explicit` resolved it, or the destination it could not. */
+type TargetOutcome =
+  | { readonly parsed: ParsedRefspec }
+  | { readonly unmatched: PushUnmatchedRefspec };
+
+const deleteOutcome = (parsed: ParsedRefspec, names: ReadonlyArray<string>): TargetOutcome => {
+  const match = matchDeleteTarget(parsed.dst, names);
+  return match.kind === 'matched'
+    ? { parsed: { ...parsed, dst: match.name } }
+    : { unmatched: { dst: parsed.dst, reason: match.reason } };
+};
+
+const explicitOutcome = (
+  parsed: ParsedRefspec,
+  written: string,
+  local: LocalPushRefs,
+  names: ReadonlyArray<string>,
+): TargetOutcome => {
+  const match = matchExplicitPush(written, parsed, local, names);
+  return match.kind === 'matched'
+    ? { parsed: { ...parsed, src: match.src, dst: match.dst } }
+    : { unmatched: { dst: match.dst, reason: match.reason } };
+};
+
+/** The refspecs to resolve, and how the user wrote them — none for a `push.default` plan. */
+interface ExplicitTargets {
+  readonly refspecs: ReadonlyArray<ParsedRefspec>;
+  readonly written: ReadonlyArray<string>;
+}
+
 /**
- * git's `match_explicit_refs` for the deletes: each destination resolves to the
- * one remote ref it names; any that resolves to none is reported, and then
- * nothing at all is sent.
+ * git's `match_explicit_refs`: each refspec as written resolves its source
+ * against the local refs and its destination against the remote's; any
+ * destination that resolves to no single ref is reported, and then nothing at
+ * all is sent.
  */
-const matchDeleteTargets = (
+const matchExplicitTargets = async (
   ctx: Context,
-  refspecs: ReadonlyArray<ParsedRefspec>,
+  { refspecs, written }: ExplicitTargets,
   adv: Advertisement,
   url: string,
-): ReadonlyArray<ParsedRefspec> => {
+): Promise<ReadonlyArray<ParsedRefspec>> => {
   const names = adv.refs.map((ref) => ref.name).filter((name) => name !== HAVE_LINE);
-  const matched = refspecs.map((parsed) =>
-    parsed.isDelete ? { parsed, match: matchDeleteTarget(parsed.dst, names) } : { parsed },
-  );
-  const unmatched = matched.flatMap(({ parsed, match }) =>
-    match?.kind === 'unmatched' ? [{ dst: parsed.dst, reason: match.reason }] : [],
+  const local = written.length > 0 ? await readLocalPushRefs(ctx) : NO_LOCAL_REFS;
+  const outcomes = refspecs.map((parsed, at): TargetOutcome => {
+    if (parsed.isDelete) return deleteOutcome(parsed, names);
+    const spelled = written[at];
+    return spelled === undefined ? { parsed } : explicitOutcome(parsed, spelled, local, names);
+  });
+  const unmatched = outcomes.flatMap((outcome) =>
+    'unmatched' in outcome ? [outcome.unmatched] : [],
   );
   if (unmatched.length === 0) {
-    return matched.map(({ parsed, match }) =>
-      match?.kind === 'matched' ? { ...parsed, dst: match.name } : parsed,
-    );
+    return outcomes.flatMap((outcome) => ('parsed' in outcome ? [outcome.parsed] : []));
   }
   for (const entry of unmatched) logUnmatched(ctx, entry);
   throw pushRefspecUnmatched(anonymizeRemoteUrl(url), unmatched);
 };
+
+const NO_LOCAL_REFS: LocalPushRefs = { names: [], symrefs: new Map() };
 
 const logUnmatched = (ctx: Context, { dst, reason }: PushUnmatchedRefspec): void => {
   const message =

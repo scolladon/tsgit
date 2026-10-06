@@ -107,6 +107,7 @@ describe('Given explicit refspecs and push.default=current with a detached HEAD'
             isDelete: false,
           },
         ],
+        written: ['refs/heads/feature:refs/heads/feature'],
       });
     });
   });
@@ -321,6 +322,7 @@ describe('Given explicit refspecs and push.default=nothing', () => {
             isDelete: false,
           },
         ],
+        written: ['refs/heads/feature:refs/heads/feature'],
       });
     });
   });

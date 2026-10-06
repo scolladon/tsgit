@@ -2016,6 +2016,44 @@ describe('push — delete refspec', () => {
     });
   });
 
+  describe('Given a short destination naming both a remote branch and a remote tag', () => {
+    describe('When push sends a branch to it', () => {
+      it("Then nothing is sent and the push fails naming git's ambiguity error", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        const { transport, requests } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: ['refs/heads/x', 'refs/tags/x'].map((name) => ({ name, id: parent.id })),
+          reportStatus: CLEAN_REPORT,
+        });
+        const errors: string[] = [];
+        const logger = { error: (text: string) => errors.push(text) };
+        await writeOriginConfig(ctx);
+        const sut = push;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut({ ...ctx, transport, logger }, { refspecs: ['main:x'] });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'PUSH_REFSPEC_UNMATCHED',
+          url: 'https://example.com/r.git',
+          unmatched: [{ dst: 'x', reason: 'ambiguous' }],
+        });
+        expect(errors).toEqual(['dst refspec x matches more than one']);
+        expect(requests.filter((req) => req.method === 'POST')).toEqual([]);
+      });
+    });
+  });
+
   describe.each([
     { label: 'a tag', advertised: 'refs/tags/t1', dst: 't1' },
     { label: 'a lone weakly matched ref', advertised: 'refs/remotes/t1', dst: 't1' },

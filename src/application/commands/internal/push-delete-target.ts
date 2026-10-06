@@ -24,7 +24,10 @@ const isStrongMatch = (dst: string, name: string): boolean =>
   name.startsWith(TAGS_PREFIX);
 
 /** git's `count_refspec_match`: the strong matches when any, else the weak ones. */
-const refspecMatches = (dst: string, names: ReadonlyArray<string>): ReadonlyArray<string> => {
+export const refspecMatches = (
+  dst: string,
+  names: ReadonlyArray<string>,
+): ReadonlyArray<string> => {
   const candidates = new Set<string>(refCandidates(dst));
   const matched = names.filter((name) => candidates.has(name));
   const strong = matched.filter((name) => isStrongMatch(dst, name));

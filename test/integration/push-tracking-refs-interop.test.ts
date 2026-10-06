@@ -69,6 +69,38 @@ const trackingRefs = (dir: string): string =>
   git(dir, 'for-each-ref', '--format=%(refname) %(objectname)', 'refs/remotes/mirror');
 
 describe.skipIf(!GIT_AVAILABLE)('push tracking refs interop', () => {
+  describe('Given clones holding tags lt and t0 and a peer carrying main and t0', () => {
+    describe('When both tools push main:t0 and lt:newname', () => {
+      it('Then the destinations resolve against the remote refs and the pushed tag, as git does', async () => {
+        // Arrange
+        const { ours, theirs, peerRoot } = setUp('dwim');
+        const ctx = {
+          ...createNodeContext({ workDir: ours }),
+          transport: backendTransport(peerRoot),
+        };
+        for (const dir of [ours, theirs]) for (const tag of ['lt', 't0']) git(dir, 'tag', tag);
+        const seed = ['main', 'refs/tags/t0:refs/tags/t0'];
+        await push(ctx, { remote: 'origin', refspecs: seed });
+        git(theirs, 'push', '-q', 'origin', ...seed);
+        const refspecs = ['main:t0', 'lt:newname'];
+        const sut = push;
+
+        // Act
+        await sut(ctx, { remote: 'origin', refspecs });
+        git(theirs, 'push', '-q', 'origin', ...refspecs);
+
+        // Assert
+        const remoteRefs = (bare: string) =>
+          git(path.join(peerRoot, bare), 'for-each-ref', '--format=%(refname) %(objectname)');
+        expect(remoteRefs('peer.git')).toBe(remoteRefs('twin.git'));
+        expect(remoteRefs('peer.git')).toContain('refs/tags/newname');
+        expect(git(ours, 'for-each-ref', 'refs/remotes')).toBe(
+          git(theirs, 'for-each-ref', 'refs/remotes'),
+        );
+      });
+    });
+  });
+
   describe('Given clones whose origin maps branches under refs/remotes/mirror/', () => {
     describe('When both tools push, delete, then re-push an up-to-date branch', () => {
       it('Then the mirror tracking refs agree', async () => {

@@ -26,7 +26,12 @@ import { defaultRemoteName, resolvePushRemote } from './default-remote.js';
 import { type ParsedRefspec, parseRefspec } from './refspec.js';
 
 export type PushRefspecPlan =
-  | { readonly kind: 'explicit'; readonly refspecs: ReadonlyArray<ParsedRefspec> }
+  | {
+      readonly kind: 'explicit';
+      readonly refspecs: ReadonlyArray<ParsedRefspec>;
+      /** Each refspec as written, which `match_explicit` resolves against the refs. */
+      readonly written: ReadonlyArray<string>;
+    }
   | { readonly kind: 'fixed'; readonly refspecs: ReadonlyArray<ParsedRefspec> }
   | { readonly kind: 'matching' };
 
@@ -64,7 +69,7 @@ export const planPushRefspecs = async (
   head: HeadState,
 ): Promise<PushRefspecPlan> => {
   if (opts.refspecs !== undefined && opts.refspecs.length > 0) {
-    return { kind: 'explicit', refspecs: opts.refspecs.map(parseRefspec) };
+    return { kind: 'explicit', refspecs: opts.refspecs.map(parseRefspec), written: opts.refspecs };
   }
   if (config.push?.default === 'current') {
     return planCurrent(head);
