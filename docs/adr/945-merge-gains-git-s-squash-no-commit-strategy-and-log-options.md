@@ -42,6 +42,9 @@ options, which win, as on git's command line. An option git does not know refuse
 (`--squash`: `SQUASH_MSG` written, no `MERGE_HEAD`, HEAD not moved, even when a fast-forward was
 possible) and `{ kind: 'stopped', mergeHead, origHead }` (`--no-commit`: `MERGE_HEAD` + `MERGE_MSG`
 kept for the caller's commit; a fast-forward still fast-forwards unless `fastForward: 'never'`).
+A squash that conflicts keeps git's squash state (`SQUASH_MSG`, no `MERGE_HEAD`, `ORIG_HEAD`, conflict
+stages, `MERGE_MSG` carrying the `# Conflicts:` block) and reports `{ kind: 'squashed', origHead,
+conflicts }` — the same variant, with the conflicted paths present.
 
 ## Consequences
 
