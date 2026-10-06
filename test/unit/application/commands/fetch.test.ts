@@ -1084,6 +1084,42 @@ describe('fetch', () => {
       });
     });
 
+    describe('Given a tracking ref that is a symref onto another tracking ref', () => {
+      describe('When fetch maps the remote branch onto it', () => {
+        it('Then that branch is skipped and the symref target only takes its own branch', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, { refs: { 'refs/remotes/origin/main': FAKE_OID('a') } });
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/refs/remotes/origin/foo`,
+            'ref: refs/remotes/origin/main\n',
+          );
+          await writeOriginConfig(ctx);
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'symref target\n');
+          const { transport } = fakeRemote({
+            url: 'https://example.com/r.git',
+            advertisedRefs: [
+              { name: 'refs/heads/foo', id: FAKE_OID('f') },
+              { name: 'refs/heads/main', id: blobId },
+            ],
+            packBytes,
+          });
+          const sut = fetch;
+
+          // Act
+          const result = await sut({ ...ctx, transport }, {});
+
+          // Assert
+          expect(result.updatedRefs.map((update) => [update.name, update.newId])).toEqual([
+            ['refs/remotes/origin/main', blobId],
+          ]);
+          expect(
+            await getRefStore(ctx).resolveDirect('refs/remotes/origin/foo' as RefName),
+          ).toEqual({ kind: 'symbolic', target: 'refs/remotes/origin/main' });
+        });
+      });
+    });
+
     describe('Given prune=true and HEAD symbolically naming a stale remote-tracking ref', () => {
       describe('When fetch', () => {
         it('Then the pruned ref\'s coupled HEAD entry carries git\'s "fetch: prune" message', async () => {
@@ -2591,10 +2627,10 @@ describe('fetch — everything local', () => {
 
   describe('Given every wanted oid is already local and a remote-tracking ref directory exists', () => {
     describe('When fetch', () => {
-      it('Then the have-derivation walk never reads that directory', async () => {
+      it('Then only the local-state listing reads that directory, never the have-derivation walk', async () => {
         // Arrange — the fast path must return before `deriveHaves` runs, so a
-        // `readdir` call on the (pre-seeded, genuinely existing) remote-tracking
-        // ref directory would prove the have-walk still ran.
+        // second `readdir` call on the (pre-seeded, genuinely existing)
+        // remote-tracking ref directory would prove the have-walk still ran.
         const ctx = createMemoryContext();
         await seedRepo(ctx, {
           head: 'refs/heads/main',
@@ -2610,23 +2646,23 @@ describe('fetch — everything local', () => {
           advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
           packBytes,
         });
-        const poisonPath = `${ctx.layout.gitDir}/refs/remotes/origin`;
-        const poisonedFs = {
+        const watchedPath = `${ctx.layout.gitDir}/refs/remotes/origin`;
+        const reads: string[] = [];
+        const watchedFs = {
           ...ctx.fs,
           readdir: (dir: string): ReturnType<typeof ctx.fs.readdir> => {
-            if (dir === poisonPath) {
-              throw new Error('poison: the everything-local fast path must skip the have-walk');
-            }
+            if (dir === watchedPath) reads.push(dir);
             return ctx.fs.readdir(dir);
           },
         };
 
         // Act
-        const result = await fetch({ ...ctx, fs: poisonedFs, transport });
+        const result = await fetch({ ...ctx, fs: watchedFs, transport });
 
         // Assert
         const update = result.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
         expect(update?.newId).toBe(blobId);
+        expect(reads).toEqual([watchedPath]);
       });
     });
   });

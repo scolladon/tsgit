@@ -49,9 +49,11 @@ export interface LocalState {
   readonly refs: ReadonlySet<string>;
   /** The advertised tag objects and their peeled targets present locally. */
   readonly objects: ReadonlySet<ObjectId>;
+  /** Every local symbolic ref name; a pattern refspec never maps a ref onto one. */
+  readonly symrefs: ReadonlySet<string>;
 }
 
-const NOTHING_LOCAL: LocalState = { refs: new Set(), objects: new Set() };
+const NOTHING_LOCAL: LocalState = { refs: new Set(), objects: new Set(), symrefs: new Set() };
 
 interface PlannedMap {
   readonly head: ReadonlyArray<MappedRef>;
@@ -59,6 +61,9 @@ interface PlannedMap {
 }
 
 type MissingRef = 'refuse' | 'allow';
+
+/** An exact source maps no pattern, so no symref check applies. */
+const NO_SYMREFS: ReadonlySet<string> = new Set();
 
 const STAR = '*';
 const PEELED_MARK = '^';
@@ -91,16 +96,18 @@ const localRef = (dst: string | undefined): string | undefined => {
   return `refs/heads/${dst}`;
 };
 
+/** git's `get_expanded_map`: a ref mapped onto an existing local symref is skipped. */
 const expandedMap = (
   { src, dst, force }: RefspecSides,
   refs: ReadonlyArray<AdvertisedRef>,
+  symrefs: ReadonlySet<string>,
 ): ReadonlyArray<MappedRef> => {
   if (dst === undefined) return [];
   return refs
     .filter((ref) => !ref.name.includes(PEELED_MARK))
     .flatMap((source) => {
       const target = expandPattern(src, source.name, dst);
-      if (target === undefined) return [];
+      if (target === undefined || symrefs.has(target)) return [];
       return [{ source, target, status: 'not-for-merge' as const, force }];
     });
 };
@@ -110,9 +117,10 @@ const getFetchMap = (
   refs: ReadonlyArray<AdvertisedRef>,
   sides: RefspecSides,
   missing: MissingRef,
+  symrefs: ReadonlySet<string>,
 ): ReadonlyArray<MappedRef> => {
   if (sides.negative) return [];
-  if (sides.src.includes(STAR)) return expandedMap(sides, refs);
+  if (sides.src.includes(STAR)) return expandedMap(sides, refs, symrefs);
   const name = sides.src === '' ? HEAD : sides.src;
   const source = findRefByNameAbbrev(refs, name);
   if (source !== undefined) {
@@ -139,16 +147,17 @@ const commandLineMap = (
   request: RefMapRequest,
   cli: ReadonlyArray<RefspecSides>,
   refs: ReadonlyArray<AdvertisedRef>,
+  symrefs: ReadonlySet<string>,
 ): PlannedMap => {
   const head = withStatus(
-    cli.flatMap((sides) => getFetchMap(refs, sides, 'refuse')),
+    cli.flatMap((sides) => getFetchMap(refs, sides, 'refuse', symrefs)),
     'merge',
   );
   const mapSpecs = request.refmap.length > 0 ? request.refmap : request.configSpecs;
   const sources = head.map((entry) => entry.source);
   const opportunistic = mapSpecs
     .map(splitSides)
-    .flatMap((sides) => getFetchMap(sources, sides, 'allow'));
+    .flatMap((sides) => getFetchMap(sources, sides, 'allow', symrefs));
   return { head, opportunistic: withStatus(opportunistic, 'ignore') };
 };
 
@@ -163,6 +172,7 @@ const mergeOne = (
     refs,
     { negative: false, force: false, src, dst: undefined },
     'allow',
+    NO_SYMREFS,
   );
   return list.concat(withStatus(fetched, 'merge'));
 };
@@ -190,7 +200,11 @@ const markFirstForMerge = (
   return markForMerge(mapped, 0);
 };
 
-const defaultMap = (request: RefMapRequest, refs: ReadonlyArray<AdvertisedRef>): PlannedMap => {
+const defaultMap = (
+  request: RefMapRequest,
+  refs: ReadonlyArray<AdvertisedRef>,
+  symrefs: ReadonlySet<string>,
+): PlannedMap => {
   const hasMerge = request.merge.length > 0;
   const mergesHere = hasMerge && request.mergesFromRemote;
   if (request.configSpecs.length === 0 && !mergesHere) {
@@ -198,11 +212,12 @@ const defaultMap = (request: RefMapRequest, refs: ReadonlyArray<AdvertisedRef>):
       refs,
       { negative: false, force: false, src: HEAD, dst: undefined },
       'refuse',
+      NO_SYMREFS,
     );
     return { head: withStatus(head, 'merge'), opportunistic: [] };
   }
   const specs = request.configSpecs.map(splitSides);
-  const mapped = specs.flatMap((sides) => getFetchMap(refs, sides, 'refuse'));
+  const mapped = specs.flatMap((sides) => getFetchMap(refs, sides, 'refuse', symrefs));
   const marked = hasMerge ? mapped : markFirstForMerge(specs[0], mapped);
   return {
     head: mergesHere ? addMergeConfig(marked, request.merge, refs) : marked,
@@ -285,7 +300,10 @@ export const getRefMap = (
   if (cli.length === 0 && request.refmap.length > 0) {
     throw invalidOption('refmap', REFMAP_WITHOUT_REFSPEC);
   }
-  const planned = cli.length > 0 ? commandLineMap(request, cli, refs) : defaultMap(request, refs);
+  const planned =
+    cli.length > 0
+      ? commandLineMap(request, cli, refs, local.symrefs)
+      : defaultMap(request, refs, local.symrefs);
   const tags = autoFollowsTags(request) ? findNonLocalTags(refs, planned.head, local) : [];
   const negatives = cli.length > 0 ? request.cliSpecs : request.configSpecs;
   const combined = [...planned.head, ...tags, ...planned.opportunistic];

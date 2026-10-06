@@ -380,4 +380,64 @@ describe.skipIf(!GIT_AVAILABLE)('fetch tracking refs interop', () => {
       });
     });
   });
+
+  describe('Given a local tracking ref that is a symref onto another tracking ref', () => {
+    describe('When both tools fetch the remote branch it would track', () => {
+      it('Then the symref is skipped, not written through, and refs, reflogs and FETCH_HEAD agree', async () => {
+        // Arrange
+        const peerRoot = path.join(root, 'symref-peer');
+        const work = path.join(root, 'symref-work');
+        const bare = path.join(peerRoot, 'peer.git');
+        runGit(['init', '-q', '-b', 'main', work]);
+        runGit(['-C', work, 'commit', '-q', '--allow-empty', '-m', 'a']);
+        runGit(['clone', '-q', '--bare', work, bare]);
+        runGit(['-C', work, 'checkout', '-q', '-b', 'foo']);
+        runGit(['-C', work, 'commit', '-q', '--allow-empty', '-m', 'b']);
+        runGit(['-C', work, 'push', '-q', bare, 'foo']);
+        const dirs = {
+          ours: path.join(root, 'symref-ours'),
+          theirs: path.join(root, 'symref-theirs'),
+        };
+        for (const [dir, url] of [
+          [dirs.ours, PEER_URL],
+          [dirs.theirs, bare],
+        ] as const) {
+          runGit(['init', '-q', '-b', 'main', dir]);
+          runGit(['-C', dir, 'config', 'core.logAllRefUpdates', 'always']);
+          runGit(['-C', dir, 'remote', 'add', 'origin', url]);
+          runGit(['-C', dir, 'fetch', '-q', bare, 'main:refs/remotes/origin/main']);
+          runGit([
+            '-C',
+            dir,
+            'symbolic-ref',
+            'refs/remotes/origin/foo',
+            'refs/remotes/origin/main',
+          ]);
+        }
+        const ctx = {
+          ...createNodeContext({ workDir: dirs.ours }),
+          transport: backendTransport(peerRoot),
+        };
+        const sut = fetch;
+
+        // Act
+        await sut(ctx, { remote: 'origin' });
+        runGit(['-C', dirs.theirs, 'fetch', 'origin']);
+
+        // Assert
+        const symrefs = (dir: string) =>
+          git(dir, 'for-each-ref', '--format=%(refname) %(objectname) %(symref)');
+        const reflog = (dir: string) =>
+          git(dir, 'reflog', 'show', '--format=%H %gs', 'refs/remotes/origin/main');
+        const fetchHead = (dir: string) =>
+          readFileSync(path.join(dir, '.git', 'FETCH_HEAD'), 'utf8').replaceAll(
+            bare.replace(/\.git$/, ''),
+            PEER_URL.replace(/\.git$/, ''),
+          );
+        expect(symrefs(dirs.ours)).toBe(symrefs(dirs.theirs));
+        expect(reflog(dirs.ours)).toBe(reflog(dirs.theirs));
+        expect(fetchHead(dirs.ours)).toBe(fetchHead(dirs.theirs));
+      });
+    });
+  });
 });

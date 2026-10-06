@@ -428,7 +428,6 @@ interface FetchedMap {
 }
 
 const INCLUDE_TAG = 'include-tag';
-const NOTHING_LOCAL: LocalState = { refs: new Set(), objects: new Set() };
 
 /** git asks for `include-tag` only when it follows tags. */
 const tagFollowingCapabilities = (
@@ -439,15 +438,24 @@ const tagFollowingCapabilities = (
   return includeTag ? [INCLUDE_TAG, ...without] : without;
 };
 
-/** The local refs, and which advertised tag objects and peeled commits are present. */
+/** The local refs and symrefs, and which advertised tag objects and peeled commits are present. */
 const localState = async (
   ctx: Context,
   refs: ReadonlyArray<AdvertisedRef>,
 ): Promise<LocalState> => {
-  // With no tag advertised, no tag can follow, and the local refs go unread.
-  if (!refs.some((ref) => ref.name.startsWith(TAGS_PREFIX))) return NOTHING_LOCAL;
   const listed = await getRefStore(ctx).listRefs(REFS_PREFIX as RefName);
   const names = new Set<string>(listed.map((entry) => entry.name));
+  const symrefs = new Set<string>();
+  for (const entry of listed) if (entry.value.kind === 'symbolic') symrefs.add(entry.name);
+  return { refs: names, objects: await presentTagObjects(ctx, refs, names), symrefs };
+};
+
+/** The advertised tags' objects and peeled commits present locally, for tags not yet held. */
+const presentTagObjects = async (
+  ctx: Context,
+  refs: ReadonlyArray<AdvertisedRef>,
+  names: ReadonlySet<string>,
+): Promise<ReadonlySet<ObjectId>> => {
   const objects = new Set<ObjectId>();
   for (const ref of refs) {
     if (!ref.name.startsWith(TAGS_PREFIX) || names.has(ref.name)) continue;
@@ -455,7 +463,7 @@ const localState = async (
       if (id !== undefined && (await hasObject(ctx, id))) objects.add(id);
     }
   }
-  return { refs: names, objects };
+  return objects;
 };
 
 /**
@@ -467,6 +475,8 @@ const backfillTags = async (
   ctx: Context,
   advertisement: Advertisement,
 ): Promise<ReadonlyArray<MappedRef>> => {
+  // With no tag advertised, no tag can follow, and the local refs go unread.
+  if (!advertisement.refs.some((ref) => ref.name.startsWith(TAGS_PREFIX))) return [];
   const local = await localState(ctx, advertisement.refs);
   const arrived = findNonLocalTags(advertisement.refs, [], local).filter((entry) =>
     local.objects.has(entry.source.id),

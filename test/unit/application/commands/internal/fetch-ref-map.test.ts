@@ -333,7 +333,7 @@ describe('getRefMap', () => {
         { name: 'refs/heads/main', id: OID },
         { name: 'refs/tags/v1', id: OID },
       ],
-      local: { refs: new Set<string>(), objects: new Set<ObjectId>() },
+      local: { refs: new Set<string>(), objects: new Set<ObjectId>(), symrefs: new Set<string>() },
       expected: ['refs/tags/v1'],
     },
     {
@@ -342,7 +342,7 @@ describe('getRefMap', () => {
         { name: 'refs/heads/main', id: OID },
         { name: 'refs/tags/far', id: OTHER },
       ],
-      local: { refs: new Set<string>(), objects: new Set<ObjectId>() },
+      local: { refs: new Set<string>(), objects: new Set<ObjectId>(), symrefs: new Set<string>() },
       expected: [],
     },
     {
@@ -351,7 +351,11 @@ describe('getRefMap', () => {
         { name: 'refs/heads/main', id: OID },
         { name: 'refs/tags/far', id: OTHER },
       ],
-      local: { refs: new Set<string>(), objects: new Set<ObjectId>([OTHER]) },
+      local: {
+        refs: new Set<string>(),
+        objects: new Set<ObjectId>([OTHER]),
+        symrefs: new Set<string>(),
+      },
       expected: ['refs/tags/far'],
     },
     {
@@ -360,7 +364,11 @@ describe('getRefMap', () => {
         { name: 'refs/heads/main', id: OID },
         { name: 'refs/tags/v1', id: OID },
       ],
-      local: { refs: new Set<string>(['refs/tags/v1']), objects: new Set<ObjectId>() },
+      local: {
+        refs: new Set<string>(['refs/tags/v1']),
+        objects: new Set<ObjectId>(),
+        symrefs: new Set<string>(),
+      },
       expected: [],
     },
     {
@@ -369,7 +377,7 @@ describe('getRefMap', () => {
         { name: 'refs/heads/main', id: OID },
         { name: 'refs/tags/va', id: OTHER, peeled: OID },
       ],
-      local: { refs: new Set<string>(), objects: new Set<ObjectId>() },
+      local: { refs: new Set<string>(), objects: new Set<ObjectId>(), symrefs: new Set<string>() },
       expected: ['refs/tags/va'],
     },
     {
@@ -378,7 +386,11 @@ describe('getRefMap', () => {
         { name: 'refs/heads/main', id: OID },
         { name: 'refs/tags/va', id: OTHER, peeled: THIRD },
       ],
-      local: { refs: new Set<string>(), objects: new Set<ObjectId>([THIRD]) },
+      local: {
+        refs: new Set<string>(),
+        objects: new Set<ObjectId>([THIRD]),
+        symrefs: new Set<string>(),
+      },
       expected: ['refs/tags/va'],
     },
     {
@@ -387,7 +399,7 @@ describe('getRefMap', () => {
         { name: 'refs/heads/main', id: OID },
         { name: 'refs/tags/va', id: OTHER, peeled: THIRD },
       ],
-      local: { refs: new Set<string>(), objects: new Set<ObjectId>() },
+      local: { refs: new Set<string>(), objects: new Set<ObjectId>(), symrefs: new Set<string>() },
       expected: [],
     },
     {
@@ -398,7 +410,7 @@ describe('getRefMap', () => {
         { name: 'refs/tags/c', id: OID },
         { name: 'refs/tags/a', id: OID },
       ],
-      local: { refs: new Set<string>(), objects: new Set<ObjectId>() },
+      local: { refs: new Set<string>(), objects: new Set<ObjectId>(), symrefs: new Set<string>() },
       expected: ['refs/tags/a', 'refs/tags/b', 'refs/tags/c'],
     },
   ] as ReadonlyArray<{
@@ -449,6 +461,46 @@ describe('getRefMap', () => {
         expect(warnings).toEqual([
           'refs/remotes/origin/b usually tracks refs/heads/b, not refs/heads/a',
         ]);
+      });
+    });
+  });
+
+  describe.each([
+    {
+      label: 'a pattern refspec mapping a remote ref onto a local symref',
+      request: configured(ORIGIN_HEADS),
+      expected: [['refs/heads/main', 'refs/remotes/origin/main']],
+    },
+    {
+      label: 'a command-line pattern whose tracking refspec maps onto a local symref',
+      request: fromCli(['refs/heads/*:refs/remotes/mirror/*']),
+      expected: [
+        ['refs/heads/foo', 'refs/remotes/mirror/foo'],
+        ['refs/heads/main', 'refs/remotes/mirror/main'],
+        ['refs/heads/main', 'refs/remotes/origin/main'],
+      ],
+    },
+    {
+      label: 'an exact refspec storing into a local symref',
+      request: configured('refs/heads/foo:refs/remotes/origin/foo'),
+      expected: [['refs/heads/foo', 'refs/remotes/origin/foo']],
+    },
+  ])('Given $label', ({ request, expected }) => {
+    describe('When the ref map is built', () => {
+      it('Then only a pattern skips the local ref that is a symref', () => {
+        // Arrange
+        const sut = getRefMap;
+        const local: LocalState = {
+          refs: new Set<string>(['refs/remotes/origin/foo']),
+          objects: new Set<ObjectId>(),
+          symrefs: new Set<string>(['refs/remotes/origin/foo']),
+        };
+
+        // Act
+        const result = sut(request, advertised('refs/heads/foo', 'refs/heads/main'), local);
+
+        // Assert
+        expect(result.map((entry) => [entry.source.name, entry.target])).toEqual(expected);
       });
     });
   });
