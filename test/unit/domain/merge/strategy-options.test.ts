@@ -42,7 +42,7 @@ describe('parseOrtStrategyOptions', () => {
         const result = sut(options);
 
         // Assert
-        expect(result).toEqual(expected);
+        expect(result).toEqual({ renames: expected });
       });
     });
   });
@@ -66,8 +66,26 @@ describe('parseOrtStrategyOptions', () => {
   );
 
   describe.each([
-    'ours',
-    'theirs',
+    ['ours', ['ours'], 'ours'],
+    ['theirs', ['theirs'], 'theirs'],
+    ['ours then theirs', ['ours', 'theirs'], 'theirs'],
+    ['theirs then ours', ['theirs', 'ours'], 'ours'],
+  ] as const)('Given %s', (_label, options, variant) => {
+    describe('When parsed', () => {
+      it('Then the last side wins every overlapping hunk', () => {
+        // Arrange
+        const sut = parseOrtStrategyOptions;
+
+        // Act
+        const result = sut(options);
+
+        // Assert
+        expect(result).toEqual({ renames: {}, variant });
+      });
+    });
+  });
+
+  describe.each([
     'subtree',
     'subtree=dir',
     'patience',

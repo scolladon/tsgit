@@ -5,9 +5,12 @@ import {
   type ContentMerger,
   DEFAULT_MERGE_LABELS,
   MAX_CONFLICT_OUTPUT_BYTES,
+  type MergeFavor,
   type MergeLabels,
   mergeContent,
 } from '../../domain/merge/index.js';
+import type { OrtVariant } from '../../domain/merge/strategy-options.js';
+import { mergeBinary } from '../../domain/merge/three-way-content.js';
 import type { Context } from '../../ports/context.js';
 import { findFirstValuelessInSection } from './config-read.js';
 import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
@@ -51,9 +54,19 @@ const labelsFor = (labels: MergeLabels, mergeCtx: ContentMergeContext): MergeLab
   };
 };
 
+/** The `-X` settings that steer the built-in merge of every path. */
+export interface ContentMergeSettings {
+  readonly variant?: OrtVariant;
+}
+
+/** git's `ll_union_merge` overrides the variant; `-merge` and `text` keep it. */
+const favorFor = (driverKind: string, settings: ContentMergeSettings): MergeFavor =>
+  driverKind === 'union' ? 'union' : (settings.variant ?? 'none');
+
 export const buildContentMerger = (
   ctx: Context,
   labels: MergeLabels = DEFAULT_MERGE_LABELS,
+  settings: ContentMergeSettings = {},
 ): ContentMerger => {
   let providerPromise: Promise<AttributeProvider> | undefined;
   const provider = (): Promise<AttributeProvider> =>
@@ -84,7 +97,7 @@ export const buildContentMerger = (
       throw mergeDriverMissingCommand(driver.name);
     }
     if (driver.kind === 'binary') {
-      return { status: 'conflict', conflictType: 'binary', markedBytes: ours.content };
+      return mergeBinary(ours.content, theirs.content, settings.variant);
     }
     const pathLabels = labelsFor(labels, mergeCtx);
     if (driver.kind === 'external' && ctx.command !== undefined) {
@@ -99,7 +112,7 @@ export const buildContentMerger = (
       });
     }
     return mergeContent(base?.content, ours.content, theirs.content, {
-      favor: driver.kind === 'union' ? 'union' : 'none',
+      favor: favorFor(driver.kind, settings),
       markerSize,
       labels: { ours: pathLabels.ours, theirs: pathLabels.theirs },
     });

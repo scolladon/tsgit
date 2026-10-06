@@ -997,4 +997,45 @@ describe('mergeContent', () => {
       });
     });
   });
+  describe.each([
+    ['ours', '1\nM2\nM2b\n3\n4\n5\n6\n7\n8\nS9\n'],
+    ['theirs', '1\nS2\n3\n4\n5\n6\n7\n8\nS9\n'],
+  ] as const)(
+    'Given an overlapping hunk and a one-sided hunk under favor %s',
+    (favor, expected) => {
+      describe('When mergeContent called', () => {
+        it('Then the overlap takes that side and the other hunk still merges', () => {
+          // Arrange
+          const sut = mergeContent;
+          const base = enc('1\n2\n3\n4\n5\n6\n7\n8\n9\n');
+          const ours = enc('1\nM2\nM2b\n3\n4\n5\n6\n7\n8\n9\n');
+          const theirs = enc('1\nS2\n3\n4\n5\n6\n7\n8\nS9\n');
+
+          // Act
+          const result = sut(base, ours, theirs, { favor });
+
+          // Assert
+          assertClean(result, expected);
+        });
+      });
+    },
+  );
+
+  describe.each([
+    ['ours', 'm\0\n'],
+    ['theirs', 's\0\n'],
+  ] as const)('Given binary sides under favor %s', (favor, expected) => {
+    describe('When mergeContent called', () => {
+      it('Then that side is taken cleanly', () => {
+        // Arrange
+        const sut = mergeContent;
+
+        // Act
+        const result = sut(enc('b\n'), enc('m\0\n'), enc('s\0\n'), { favor });
+
+        // Assert
+        assertClean(result, expected);
+      });
+    });
+  });
 });

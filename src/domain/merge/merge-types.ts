@@ -88,8 +88,12 @@ export interface ContentMergeContext {
   readonly extraMarkerSize?: number;
 }
 
-/** How an overlapping region is resolved: `none` → conflict markers, `union` → both sides concatenated. */
-export type MergeFavor = 'none' | 'union';
+/**
+ * How an overlapping region is resolved: `none` → conflict markers, `union` →
+ * both sides concatenated, `ours` / `theirs` → that side alone (git's `-X ours`
+ * / `-X theirs`, which also settle a binary merge on that side).
+ */
+export type MergeFavor = 'none' | 'union' | 'ours' | 'theirs';
 
 export interface ConflictMarkerOptions {
   readonly labels?: {

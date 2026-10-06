@@ -603,4 +603,59 @@ describe('buildContentMerger', () => {
       });
     });
   });
+  describe.each([
+    ['ours', 'O\n'],
+    ['theirs', 'T\n'],
+  ] as const)('Given the %s variant and an overlapping change', (variant, expected) => {
+    describe('When the built-in merge runs', () => {
+      it('Then the overlap resolves cleanly to that side', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = buildContentMerger(ctx, undefined, { variant });
+        const mergeCtx = await mergeCtxFor(ctx, { base: 'B\n', ours: 'O\n', theirs: 'T\n' });
+
+        // Act
+        const result = await sut(mergeCtx, undefined, new Uint8Array(0), new Uint8Array(0));
+
+        // Assert
+        expect(result.status === 'clean' && dec(result.bytes)).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given the theirs variant and the merge attribute unset (`-merge`)', () => {
+    describe('When merging', () => {
+      it('Then the binary merge settles on theirs', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* -merge\n');
+        const sut = buildContentMerger(ctx, undefined, { variant: 'theirs' });
+        const mergeCtx = await mergeCtxFor(ctx, { base: 'b', ours: 'OURS', theirs: 'THEIRS' });
+
+        // Act
+        const result = await sut(mergeCtx, undefined, new Uint8Array(0), new Uint8Array(0));
+
+        // Assert
+        expect(result.status === 'clean' && dec(result.bytes)).toBe('THEIRS');
+      });
+    });
+  });
+
+  describe('Given the ours variant and merge=union on an overlapping change', () => {
+    describe('When merging', () => {
+      it('Then union still concatenates both sides', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* merge=union\n');
+        const sut = buildContentMerger(ctx, undefined, { variant: 'ours' });
+        const mergeCtx = await mergeCtxFor(ctx, { base: 'B\n', ours: 'O\n', theirs: 'T\n' });
+
+        // Act
+        const result = await sut(mergeCtx, undefined, new Uint8Array(0), new Uint8Array(0));
+
+        // Assert
+        expect(result.status === 'clean' && dec(result.bytes)).toBe('O\nT\n');
+      });
+    });
+  });
 });

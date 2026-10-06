@@ -45,6 +45,22 @@ const renameVsEdit = async (moved: string, config = ''): Promise<Context> => {
   return ctx;
 };
 
+/** Both sides rewrite line 7 of `big`: `side` to SEVEN, main to seven. */
+const bothEditLineSeven = async (): Promise<Context> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await write(ctx, 'big', LINES);
+  await commitAll(ctx, ['big'], 'base');
+  await branchCreate(ctx, { name: 'side' });
+  await checkout(ctx, { rev: 'side' });
+  await write(ctx, 'big', LINES.replace('7\n', 'SEVEN\n'));
+  await commitAll(ctx, ['big'], 'side');
+  await checkout(ctx, { rev: 'main' });
+  await write(ctx, 'big', LINES.replace('7\n', 'seven\n'));
+  await commitAll(ctx, ['big'], 'main');
+  return ctx;
+};
+
 const SIMILAR = LINES.replace('1\n', 'one\n');
 
 const errorData = (run: Promise<unknown>): Promise<unknown> =>
@@ -113,6 +129,26 @@ describe('merge strategy options', () => {
     });
   });
 
+  describe.each([
+    ['ours', LINES.replace('7\n', 'seven\n')],
+    ['theirs', LINES.replace('7\n', 'SEVEN\n')],
+  ])('Given -X %s over an edit both sides made to one line', (option, expected) => {
+    describe('When merged', () => {
+      it('Then the merge commits that side of the line', async () => {
+        // Arrange
+        const ctx = await bothEditLineSeven();
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', strategyOptions: [option], author });
+
+        // Assert
+        expect(result.kind).toBe('merge');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/big`)).toBe(expected);
+      });
+    });
+  });
+
   describe('Given an option git knows that tsgit does not run yet', () => {
     describe('When ort merges', () => {
       it('Then it refuses as unsupported', async () => {
@@ -122,14 +158,14 @@ describe('merge strategy options', () => {
 
         // Act
         const result = await errorData(
-          sut(ctx, { rev: 'side', strategyOptions: ['ours'], author }),
+          sut(ctx, { rev: 'side', strategyOptions: ['subtree'], author }),
         );
 
         // Assert
         expect(result).toEqual({
           code: 'UNSUPPORTED_OPERATION',
           operation: 'merge',
-          reason: '-Xours',
+          reason: '-Xsubtree',
         });
       });
     });

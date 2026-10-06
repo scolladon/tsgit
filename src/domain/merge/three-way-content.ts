@@ -35,14 +35,25 @@ function joinLinesEnsuringInteriorLf(lines: ReadonlyArray<Uint8Array>): Uint8Arr
   return out;
 }
 
-function renderUnion(segments: ReadonlyArray<MergeSegment>): ContentMergeResult {
+type ResolvingFavor = Exclude<MergeFavor, 'none'>;
+
+function resolvedLines(
+  segment: Exclude<MergeSegment, { kind: 'clean' }>,
+  favor: ResolvingFavor,
+): ReadonlyArray<Uint8Array> {
+  if (favor === 'ours') return segment.ours;
+  if (favor === 'theirs') return segment.theirs;
+  return [...segment.ours, ...segment.theirs];
+}
+
+/** xdiff's favoured fill: every overlapping region becomes the favoured side(s), so the merge is clean. */
+function renderFavoured(
+  segments: ReadonlyArray<MergeSegment>,
+  favor: ResolvingFavor,
+): ContentMergeResult {
   const lines: Uint8Array[] = [];
   for (const segment of segments) {
-    if (segment.kind === 'clean') {
-      lines.push(...segment.lines);
-    } else {
-      lines.push(...segment.ours, ...segment.theirs);
-    }
+    lines.push(...(segment.kind === 'clean' ? segment.lines : resolvedLines(segment, favor)));
   }
   return { status: 'clean', bytes: joinLinesEnsuringInteriorLf(lines) };
 }
@@ -80,15 +91,27 @@ function mergeFromDiffs(
     changesFromHunks(oursDiff.hunks, oursDiff.theirsLines),
     changesFromHunks(theirsDiff.hunks, theirsDiff.theirsLines),
   );
-  return options.favor === 'union' ? renderUnion(segments) : renderWithMarkers(segments, options);
+  const favor = options.favor ?? 'none';
+  return favor === 'none' ? renderWithMarkers(segments, options) : renderFavoured(segments, favor);
+}
+
+/** git's `ll_binary_merge`: ours with a conflict, unless `-X ours` / `-X theirs` settles it. */
+export function mergeBinary(
+  ours: Uint8Array,
+  theirs: Uint8Array,
+  favor?: MergeFavor,
+): ContentMergeResult {
+  if (favor === 'ours') return { status: 'clean', bytes: ours };
+  if (favor === 'theirs') return { status: 'clean', bytes: theirs };
+  return { status: 'conflict', conflictType: 'binary', markedBytes: ours };
 }
 
 /**
  * Three-way line merge. Produces git-faithful per-region output: clean runs are
  * applied directly, and each overlapping region is rendered by `favor` —
  * `none` (default) wraps it in conflict markers, `union` concatenates both
- * sides with no markers (always clean). Binary content falls back to a single
- * whole-file region.
+ * sides with no markers (always clean), `ours` / `theirs` keep that side.
+ * Binary content falls back to a single whole-file region.
  */
 export function mergeContent(
   base: Uint8Array | undefined,
@@ -97,7 +120,7 @@ export function mergeContent(
   options: MergeContentOptions = {},
 ): ContentMergeResult {
   if (isBinary(ours) || isBinary(theirs) || (base !== undefined && isBinary(base))) {
-    return { status: 'conflict', conflictType: 'binary', markedBytes: ours };
+    return mergeBinary(ours, theirs, options.favor);
   }
 
   if (base === undefined) {

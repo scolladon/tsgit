@@ -27,7 +27,7 @@ import {
   mergeTrees,
 } from '../../domain/merge/index.js';
 import {
-  type OrtRenameOptions,
+  type OrtStrategyOptions,
   parseOrtStrategyOptions,
 } from '../../domain/merge/strategy-options.js';
 import { trivialMerge } from '../../domain/merge/trivial-merge.js';
@@ -206,7 +206,8 @@ export interface MergeRunInput {
    * git's `-X <option>`, in order, read when a strategy runs (a fast-forward
    * never reads them). `ort` / `recursive` honour `no-renames`,
    * `find-renames[=<n>]` and `rename-threshold=<n>` over `merge.renames` /
-   * `diff.renames`; the other options git knows refuse with
+   * `diff.renames`, and `ours` / `theirs` (that side wins every overlapping
+   * hunk and every binary merge); the other options git knows refuse with
    * `UNSUPPORTED_OPERATION`, any other with `UNKNOWN_STRATEGY_OPTION`.
    * `resolve` fails on any option, as git's `read-tree` refuses them;
    * `octopus` and `ours` ignore them.
@@ -657,8 +658,12 @@ const ortAttempt = async (
   strategy: string,
 ): Promise<StrategyAttempt> => {
   const { opts, ourId } = commit;
-  const renames = parseOrtStrategyOptions(opts.strategyOptions ?? []);
-  const result = await computeMergeTreeResult(ctx, { ourId, theirId, baseId, renames }, opts.rev);
+  const xOptions = parseOrtStrategyOptions(opts.strategyOptions ?? []);
+  const result = await computeMergeTreeResult(
+    ctx,
+    { ourId, theirId, baseId, strategy: xOptions },
+    opts.rev,
+  );
   if (result.kind === 'clean')
     return { kind: 'clean', tree: result.tree, note: mergeMadeBy(strategy) };
   return {
@@ -1028,12 +1033,12 @@ interface MergeTreeInput {
   readonly ourId: ObjectId;
   readonly theirId: ObjectId;
   readonly baseId: ObjectId | undefined;
-  readonly renames: OrtRenameOptions;
+  readonly strategy: OrtStrategyOptions;
 }
 
 const computeMergeTreeResult = async (
   ctx: Context,
-  { ourId, theirId, baseId, renames: renameOptions }: MergeTreeInput,
+  { ourId, theirId, baseId, strategy }: MergeTreeInput,
   revName: string,
 ): Promise<MergeTreeResult> => {
   const ourTreeId = await getTree(ctx, ourId);
@@ -1047,8 +1052,8 @@ const computeMergeTreeResult = async (
   ]);
 
   const labels: MergeLabels = mergeLabels(revName, baseId);
-  const contentMerger = buildContentMerger(ctx, labels);
-  const detected = await detectMergeRenames(ctx, baseFlat, ourFlat, theirFlat, renameOptions);
+  const contentMerger = buildContentMerger(ctx, labels, strategy);
+  const detected = await detectMergeRenames(ctx, baseFlat, ourFlat, theirFlat, strategy.renames);
   const trees = { base: baseFlat, ours: ourFlat, theirs: theirFlat };
   const renames = await mergeCollidingRenameSources(ctx, trees, detected, contentMerger);
   const result = await mergeTrees(baseFlat, ourFlat, theirFlat, contentMerger, labels, renames);

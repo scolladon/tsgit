@@ -42658,7 +42658,39 @@
 							},
 							{
 								"kind": "text",
-								"text": " → both sides concatenated."
+								"text": " →\nboth sides concatenated, "
+							},
+							{
+								"kind": "code",
+								"text": "`ours`"
+							},
+							{
+								"kind": "text",
+								"text": " / "
+							},
+							{
+								"kind": "code",
+								"text": "`theirs`"
+							},
+							{
+								"kind": "text",
+								"text": " → that side alone (git's "
+							},
+							{
+								"kind": "code",
+								"text": "`-X ours`"
+							},
+							{
+								"kind": "text",
+								"text": "\n/ "
+							},
+							{
+								"kind": "code",
+								"text": "`-X theirs`"
+							},
+							{
+								"kind": "text",
+								"text": ", which also settle a binary merge on that side)."
 							}
 						]
 					},
@@ -42672,6 +42704,14 @@
 							{
 								"type": "literal",
 								"value": "union"
+							},
+							{
+								"type": "literal",
+								"value": "ours"
+							},
+							{
+								"type": "literal",
+								"value": "theirs"
 							}
 						]
 					}
@@ -55198,7 +55238,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " concatenates both\nsides with no markers (always clean). Binary content falls back to a single\nwhole-file region."
+										"text": " concatenates both\nsides with no markers (always clean), "
+									},
+									{
+										"kind": "code",
+										"text": "`ours`"
+									},
+									{
+										"kind": "text",
+										"text": " / "
+									},
+									{
+										"kind": "code",
+										"text": "`theirs`"
+									},
+									{
+										"kind": "text",
+										"text": " keep that side.\nBinary content falls back to a single whole-file region."
 									}
 								]
 							},
@@ -108445,7 +108501,23 @@
 									},
 									{
 										"kind": "text",
-										"text": "; the other options git knows refuse with\n"
+										"text": ", and "
+									},
+									{
+										"kind": "code",
+										"text": "`ours`"
+									},
+									{
+										"kind": "text",
+										"text": " / "
+									},
+									{
+										"kind": "code",
+										"text": "`theirs`"
+									},
+									{
+										"kind": "text",
+										"text": " (that side wins every overlapping\nhunk and every binary merge); the other options git knows refuse with\n"
 									},
 									{
 										"kind": "code",

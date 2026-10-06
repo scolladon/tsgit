@@ -1,7 +1,8 @@
 /**
  * git's `parse_merge_opt` (`merge-ort.c`) for the `-X` values ort reads. The
- * rename ones are honoured; the others git knows refuse until tsgit runs them,
- * and anything else refuses as git's `unknown strategy option` does.
+ * rename and side-favouring ones are honoured; the others git knows refuse
+ * until tsgit runs them, and anything else refuses as git's `unknown strategy
+ * option` does.
  */
 import { unknownStrategyOption } from '../commands/error.js';
 import { parseRenameScore } from '../diff/rename-score.js';
@@ -14,6 +15,17 @@ export interface OrtRenameOptions {
   readonly threshold?: number;
 }
 
+/** The side `-X ours` / `-X theirs` keeps for every overlapping hunk. */
+export type OrtVariant = 'ours' | 'theirs';
+
+export interface OrtStrategyOptions {
+  readonly renames: OrtRenameOptions;
+  readonly variant?: OrtVariant;
+}
+
+const VARIANTS: ReadonlySet<string> = new Set<OrtVariant>(['ours', 'theirs']);
+const isVariant = (option: string): option is OrtVariant => VARIANTS.has(option);
+
 const THRESHOLD_PREFIXES = ['find-renames=', 'rename-threshold='] as const;
 const DIFF_ALGORITHM_PREFIX = 'diff-algorithm=';
 const DIFF_ALGORITHMS: ReadonlySet<string> = new Set([
@@ -24,8 +36,6 @@ const DIFF_ALGORITHMS: ReadonlySet<string> = new Set([
   'histogram',
 ]);
 const UNSUPPORTED: ReadonlySet<string> = new Set([
-  'ours',
-  'theirs',
   'subtree',
   'patience',
   'histogram',
@@ -55,7 +65,7 @@ const thresholdText = (option: string): string | undefined => {
   return prefix === undefined ? undefined : option.slice(prefix.length);
 };
 
-const applyOption = (settings: OrtRenameOptions, option: string): OrtRenameOptions => {
+const applyRenameOption = (settings: OrtRenameOptions, option: string): OrtRenameOptions => {
   if (option === 'no-renames') return { ...settings, detect: false };
   if (option === 'find-renames') return withThreshold(settings, 0);
   const text = thresholdText(option);
@@ -67,5 +77,10 @@ const applyOption = (settings: OrtRenameOptions, option: string): OrtRenameOptio
   throw unknownStrategyOption(option);
 };
 
-export const parseOrtStrategyOptions = (options: ReadonlyArray<string>): OrtRenameOptions =>
-  options.reduce(applyOption, {});
+const applyOption = (settings: OrtStrategyOptions, option: string): OrtStrategyOptions => {
+  if (isVariant(option)) return { ...settings, variant: option };
+  return { ...settings, renames: applyRenameOption(settings.renames, option) };
+};
+
+export const parseOrtStrategyOptions = (options: ReadonlyArray<string>): OrtStrategyOptions =>
+  options.reduce(applyOption, { renames: {} });
