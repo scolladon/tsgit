@@ -32,6 +32,7 @@ import { backendTransport } from './http-backend-transport.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 
 const PEER_URL = 'https://example.com/peer.git';
+const SHORT_URL = 'https://example.com/peer';
 const EPOCH = 1_700_000_000;
 const IDENTITY: AuthorIdentity = {
   name: 't',
@@ -128,6 +129,12 @@ const snapshot = (dir: string) => ({
   head: git(dir, 'rev-parse', 'HEAD'),
 });
 
+/** git's snapshot after a pull, its peer path spelt as the url tsgit fetched from. */
+const pulledSnapshot = (dir: string) =>
+  JSON.parse(
+    JSON.stringify(snapshot(dir)).replaceAll(peerPath.slice(0, -'.git'.length), SHORT_URL),
+  );
+
 describe.skipIf(!GIT_AVAILABLE)('merge options interop', () => {
   describe('Given a squash merge that conflicts', () => {
     describe('When both tools squash-merge the head', () => {
@@ -199,7 +206,109 @@ describe.skipIf(!GIT_AVAILABLE)('merge options interop', () => {
         // Assert
         expect(theirsRun.exitCode).toBe(1);
         expect(result.integration === 'merge' && result.merge.kind).toBe('squashed');
+        expect(snapshot(ours)).toEqual(pulledSnapshot(theirs));
+      });
+    });
+  });
+
+  describe.each([
+    ['HEAD diverged from one head', 'main', ['origin/clean'], {}],
+    ['HEAD fast-forwardable to one head', 'main~1', ['origin/clean'], {}],
+    [
+      'fastForward never over a fast-forwardable head',
+      'main~1',
+      ['origin/clean'],
+      { fastForward: 'never' },
+    ],
+    ['two heads', 'main~1', ['origin/clean', 'origin/side'], {}],
+  ] as const)('Given %s', (_label, start, revs, input) => {
+    describe('When both tools merge with commit false', () => {
+      it('Then the stop state, the index and HEAD are identical', async () => {
+        // Arrange
+        const { ours, theirs } = setUp();
+        for (const dir of [ours, theirs])
+          dated(['-C', dir, 'checkout', '-q', '-B', 'topic', start]);
+        const flags = 'fastForward' in input ? ['--no-ff'] : [];
+        datedExit(theirs, ['merge', '--no-commit', ...flags, ...revs]);
+        const repo = await openRepository({ cwd: ours });
+        const sut = repo.merge.run;
+
+        // Act
+        await sut({ rev: revs, commit: false, ...input, author: IDENTITY });
+        await repo.dispose();
+
+        // Assert
         expect(snapshot(ours)).toEqual(snapshot(theirs));
+      });
+    });
+  });
+
+  describe('Given a merge stopped by commit false', () => {
+    describe('When both tools commit it without a message', () => {
+      it('Then the concluding merge commit is identical', async () => {
+        // Arrange
+        const { ours, theirs } = setUp();
+        datedExit(theirs, ['merge', '--no-commit', 'origin/clean']);
+        dated(['-C', theirs, 'commit', '-q', '--no-edit']);
+        const repo = await openRepository({ cwd: ours });
+        await repo.merge.run({ rev: 'origin/clean', commit: false, author: IDENTITY });
+        const sut = repo.commit;
+
+        // Act
+        await sut({ message: '', author: IDENTITY, committer: IDENTITY });
+        await repo.dispose();
+
+        // Assert
+        expect(snapshot(ours)).toEqual(snapshot(theirs));
+      });
+    });
+  });
+
+  describe('Given squash with commit true', () => {
+    describe('When both tools merge', () => {
+      it('Then both refuse before writing ORIG_HEAD', async () => {
+        // Arrange
+        const { ours, theirs } = setUp();
+        const theirsRun = datedExit(theirs, ['merge', '--squash', '--commit', 'origin/clean']);
+        const repo = await openRepository({ cwd: ours });
+        const sut = repo.merge.run;
+
+        // Act
+        const result = await sut({ rev: 'origin/clean', squash: true, commit: true }).catch(
+          (e: unknown) => (e as { data: unknown }).data,
+        );
+        await repo.dispose();
+
+        // Assert
+        expect(theirsRun.stderr).toContain(
+          "options '--squash' and '--commit.' cannot be used together",
+        );
+        expect(result).toEqual({ code: 'INCOMPATIBLE_OPTIONS', options: ['--squash', '--commit'] });
+        expect(snapshot(ours)).toEqual(snapshot(theirs));
+      });
+    });
+  });
+
+  describe('Given a pull with commit false over a true merge', () => {
+    describe('When both tools pull the head', () => {
+      it('Then the stop state, the index and HEAD are identical', async () => {
+        // Arrange
+        const { ours, theirs } = setUp();
+        const sut = pull;
+        datedExit(theirs, ['pull', '-q', '--no-rebase', '--no-commit', 'origin', 'clean']);
+
+        // Act
+        const result = await sut(contextOf(ours), {
+          remote: 'origin',
+          ref: 'clean',
+          rebase: false,
+          commit: false,
+          author: IDENTITY,
+        });
+
+        // Assert
+        expect(result.integration === 'merge' && result.merge.kind).toBe('stopped');
+        expect(snapshot(ours)).toEqual(pulledSnapshot(theirs));
       });
     });
   });

@@ -110,6 +110,8 @@ export interface PullOptions {
   readonly log?: boolean | number;
   /** git's `--squash`, forwarded to `merge`: stage the merge and write `SQUASH_MSG`, HEAD unmoved. */
   readonly squash?: boolean;
+  /** git's `--commit` / `--no-commit`, forwarded to `merge`: `false` stops before the merge commit. */
+  readonly commit?: boolean;
   /** Identity for the merge commit (true-merge path only). */
   readonly author?: AuthorIdentity;
   readonly committer?: AuthorIdentity;
@@ -471,6 +473,7 @@ const integrateByMerge = async (
       ...(opts.message !== undefined ? { message: opts.message } : {}),
       ...(opts.log !== undefined ? { log: opts.log } : {}),
       ...(opts.squash !== undefined ? { squash: opts.squash } : {}),
+      ...(opts.commit !== undefined ? { commit: opts.commit } : {}),
       // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ fastForward: undefined }`, which `merge` reads as `!== 'never'` (so a fast-forward proceeds) and `=== 'only'` (false) — identical to omitting it. The drop direction + the `!==` flip are killed by the fastForward-forwarding tests.
       ...(opts.fastForward !== undefined ? { fastForward: opts.fastForward } : {}),
       // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ author: undefined }`, which `merge` resolves as `opts.author ?? config` — identical to omitting it. The drop direction + the `!==` flip are killed by the author-bearing merge tests.

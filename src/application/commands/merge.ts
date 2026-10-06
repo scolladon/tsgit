@@ -157,6 +157,14 @@ export interface MergeRunInput {
    * under `fastForward: 'never'` (or `merge.ff = false`).
    */
   readonly squash?: boolean;
+  /**
+   * git's `--commit` / `--no-commit`. `false` stops a merge that would commit
+   * with `MERGE_HEAD`, `MERGE_MSG` and `MERGE_MODE` kept for a later `commit`
+   * and HEAD unmoved; a fast-forward still fast-forwards unless
+   * `fastForward: 'never'`. `true` with `squash` refuses with
+   * `INCOMPATIBLE_OPTIONS`.
+   */
+  readonly commit?: boolean;
   readonly author?: AuthorIdentity;
   readonly committer?: AuthorIdentity;
 }
@@ -218,11 +226,15 @@ export type MergeResult =
       readonly kind: 'squashed';
       readonly origHead: ObjectId;
       readonly conflicts?: ReadonlyArray<MergeConflictDescriptor>;
-    };
+    }
+  /** `commit: false`: the merge is staged with its state kept; HEAD still names `origHead`. */
+  | { readonly kind: 'stopped'; readonly mergeHead: ObjectId; readonly origHead: ObjectId };
 
-/** A stop the caller resolves by hand: a conflict, or a squash that left conflicts. */
+/** A stop the caller concludes by hand: a conflict, a squash that left conflicts, or `commit: false`. */
 const leftToResolve = (result: MergeResult): boolean =>
-  result.kind === 'conflict' || (result.kind === 'squashed' && result.conflicts !== undefined);
+  result.kind === 'conflict' ||
+  result.kind === 'stopped' ||
+  (result.kind === 'squashed' && result.conflicts !== undefined);
 
 /** `post-merge`'s squash-flag argument: `1` after a `--squash` merge, else `0`. */
 const squashFlag = (result: MergeResult): string => (result.kind === 'squashed' ? '1' : '0');
@@ -364,11 +376,12 @@ const computeMerge = async (
     : manyHeadMerge(ctx, input, internal, branch, ourId, named);
 };
 
-/** git refuses `--squash` with `--no-ff` — the caller's or `merge.ff`'s — before merging. */
+/** git refuses `--squash` with `--no-ff` (the caller's or `merge.ff`'s), then with `--commit`. */
 const assertSquashCompatible = async (ctx: Context, input: MergeRunInput): Promise<void> => {
   if (input.squash !== true) return;
   const { fastForward } = await settleFastForward(ctx, input);
   if (fastForward === NO_FAST_FORWARD) throw incompatibleOptions('--squash', '--no-ff');
+  if (input.commit === true) throw incompatibleOptions('--squash', '--commit');
 };
 
 /**
@@ -672,6 +685,21 @@ const writeStopState = async (
   await writeMergeMsg(ctx, conflictMergeMsg(message, paths));
 };
 
+/** git's `--no-commit`: stage `tree` and keep `write_merge_state`'s files, leaving HEAD where it is. */
+const stopBeforeCommit = (
+  ctx: Context,
+  opts: SettledMerge,
+  tree: ObjectId,
+  ourId: ObjectId,
+  heads: ReadonlyArray<ObjectId>,
+): Promise<MergeResult> =>
+  materialiseAndApply(ctx, tree, async () => {
+    await writeMergeHeads(ctx, heads);
+    await writeMergeMode(ctx, opts.fastForward);
+    await writeMergeMsg(ctx, sanitizeMessage(opts.message, { allowEmpty: false }));
+    return { kind: 'stopped', mergeHead: heads[0]!, origHead: ourId };
+  });
+
 /** git's `finish_automerge`: commit the merged tree and log `note` behind the reflog action. */
 const commitCleanMerge = async (
   ctx: Context,
@@ -679,14 +707,9 @@ const commitCleanMerge = async (
   mergedTree: ObjectId,
   note: string,
 ): Promise<MergeResult> => {
-  if (opts.squash === true) {
-    return squashInto(
-      ctx,
-      mergedTree,
-      ourId,
-      parents.filter((id) => id !== ourId),
-    );
-  }
+  const heads = parents.filter((id) => id !== ourId);
+  if (opts.squash === true) return squashInto(ctx, mergedTree, ourId, heads);
+  if (opts.commit === false) return stopBeforeCommit(ctx, opts, mergedTree, ourId, heads);
   const author = await resolveMergeAuthor(ctx, opts);
   const committer = resolveMergeCommitter(opts, author);
   const message = sanitizeMessage(opts.message, { allowEmpty: false });

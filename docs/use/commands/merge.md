@@ -16,6 +16,7 @@ interface MergeRunInput {
   readonly autostash?: boolean; // git's --autostash / --no-autostash; default merge.autostash
   readonly log?: boolean | number; // git's --log[=<n>] / --no-log; default merge.log
   readonly squash?: boolean; // git's --squash
+  readonly commit?: boolean; // git's --commit / --no-commit
   readonly author?: AuthorIdentity;
   readonly committer?: AuthorIdentity;
 }
@@ -29,7 +30,8 @@ type MergeResult =
       mergeHead: ObjectId;
       origHead: ObjectId;
     }
-  | { kind: 'squashed'; origHead: ObjectId; conflicts?: ReadonlyArray<MergeConflictDescriptor> };
+  | { kind: 'squashed'; origHead: ObjectId; conflicts?: ReadonlyArray<MergeConflictDescriptor> }
+  | { kind: 'stopped'; mergeHead: ObjectId; origHead: ObjectId };
 ```
 
 ## Options (`run`)
@@ -42,6 +44,7 @@ type MergeResult =
 | `autostash` | `boolean` | `merge.autostash` | Stash a dirty tree before the merge (`MERGE_AUTOSTASH`) and re-apply it when the merge concludes, or on the `commit` / `merge.abort` that ends a conflict stop; a `reset` or `checkout` that drops the merge state files it in the stash list (`autostash`) instead. |
 | `log` | `boolean \| number` | `merge.log` / `merge.summary` | Follow the message (the default title, or `message`) with git's shortlog of each head: `* <head>:` then the subjects of the commits it brings in over HEAD, newest first, merges skipped. `true` lists 20, a number at most that many (`(<n> commits)` and `...` past it), `false` / `0` none; a negative count defers to the config. `merge.branchdesc` adds a local branch's `branch.<name>.description` under its header. A negative `merge.log` refuses with `CONFIG_NEGATIVE_LENGTH`, a non-integer with `CONFIG_BAD_NUMERIC_VALUE`. |
 | `squash` | `boolean` | `false` | git's `--squash`: the merge (or the fast-forward) is checked out into the index and working tree and `SQUASH_MSG` lists every commit brought in, in git's `medium` format; no `MERGE_HEAD`, HEAD not moved, `{ kind: 'squashed', origHead }` returned and `post-merge` run with `1`. A later `commit` concludes it as a single-parent commit and removes `SQUASH_MSG`. Refuses with `INCOMPATIBLE_OPTIONS` (`['--squash', '--no-ff']`) under `fastForward: 'never'` or `merge.ff = false`. A squash whose merge conflicts keeps git's squash state — conflict stages and marked files, `SQUASH_MSG`, `MERGE_MSG` holding only the `# Conflicts:` block, `ORIG_HEAD`, no `MERGE_HEAD` — and returns `{ kind: 'squashed', origHead, conflicts }`; an autostash stays in `MERGE_AUTOSTASH`. A `commit` with an empty message after resolving takes `SQUASH_MSG` then `MERGE_MSG`, comment lines stripped, as git's editor does. |
+| `commit` | `boolean` | `true` | git's `--commit` / `--no-commit`. `false` stops a merge that would commit: the merged tree is staged and checked out, `MERGE_HEAD`, `MERGE_MSG` and `MERGE_MODE` are kept, HEAD is not moved, no `post-merge` runs and an autostash stays in `MERGE_AUTOSTASH`; `{ kind: 'stopped', mergeHead, origHead }` is returned. A fast-forward still fast-forwards unless `fastForward: 'never'`. A later `commit` (an empty message takes `MERGE_MSG`) concludes it. `true` with `squash` refuses with `INCOMPATIBLE_OPTIONS` (`['--squash', '--commit']`). |
 | `author` / `committer` | `AuthorIdentity` | from config | Identities for the merge commit. |
 
 ### `fastForward`
