@@ -42,9 +42,8 @@ const outcomeChangesOurs = (
   // extra clean path in the guard simply passes (it is not dirty). Hence the
   // sub-conditions below are equivalent mutants — the wrong-but-superset
   // classification yields the identical working tree + index.
-  // Stryker disable next-line ConditionalExpression,BooleanLiteral: equivalent — see above.
-  if (outcome.status === 'unchanged') return false;
-  if (outcome.status === 'resolved-known') {
+  // An unchanged outcome ours lacks is a rename both sides kept: it still moves into place.
+  if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
     const o = ours.get(outcome.path);
     // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — see above (a superset `changed` set is observationally identical).
     return o === undefined || o.id !== outcome.id || o.mode !== outcome.mode;

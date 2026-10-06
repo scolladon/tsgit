@@ -791,6 +791,7 @@ const SURVIVOR_CONFLICT_TYPES: ReadonlySet<ConflictType> = new Set([
   'modify-delete',
   'rename-delete',
   'rename-rename',
+  'file-location',
 ]);
 
 /**

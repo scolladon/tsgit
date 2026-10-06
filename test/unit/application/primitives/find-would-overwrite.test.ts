@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
-import { findWouldOverwrite } from '../../../../src/application/primitives/find-would-overwrite.js';
+import {
+  changedPaths,
+  findWouldOverwrite,
+} from '../../../../src/application/primitives/find-would-overwrite.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
@@ -204,6 +207,30 @@ describe('findWouldOverwrite', () => {
         // Assert
         expect(result.localChanges).toEqual([]);
         expect(result.untracked).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('changedPaths', () => {
+  describe('Given an unchanged outcome at a path ours does not hold', () => {
+    describe('When the changed paths are listed', () => {
+      it('Then the path is listed, as a rename both sides kept moves it into place', () => {
+        // Arrange
+        const id = 'a'.repeat(40) as ObjectId;
+        const outcome = {
+          status: 'unchanged',
+          path: 'newdir/a' as FilePath,
+          id,
+          mode: FILE_MODE.REGULAR,
+        } as const;
+        const sut = changedPaths;
+
+        // Act
+        const result = sut([outcome], [], new Map());
+
+        // Assert
+        expect([...result]).toEqual(['newdir/a']);
       });
     });
   });

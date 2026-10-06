@@ -60,6 +60,7 @@ const SURVIVOR_CONFLICT_TYPES: ReadonlySet<ConflictType> = new Set([
   'modify-delete',
   'rename-delete',
   'rename-rename',
+  'file-location',
 ]);
 
 export interface ApplyMergeInput {
@@ -196,10 +197,8 @@ const writeChangedOutcome = async (
     await writeWorkingTreeFile(ctx, outcome.path, outcome.bytes, scanner);
     return;
   }
-  // Stryker disable next-line ConditionalExpression: equivalent — only `resolved-known` reaches here after the deleted/merged guards; the `if(true)` variant changes nothing (the remaining outcomes are resolved-known), and `if(false)` is killed by the clean-side-written assertion.
-  if (outcome.status === 'resolved-known') {
-    await writeWorkingTreeFileStream(ctx, outcome.path, outcome.id, scanner);
-  }
+  // Known and unchanged outcomes alike: an unchanged one is changed only once a rename moved it.
+  await writeWorkingTreeFileStream(ctx, outcome.path, outcome.id, scanner);
 };
 
 /**

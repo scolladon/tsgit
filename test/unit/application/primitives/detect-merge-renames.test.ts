@@ -56,7 +56,7 @@ describe('detectMergeRenames', () => {
         const result = await sut(ctx, base, ours, theirs);
 
         // Assert
-        expect(result).toEqual({ ours: [], theirs: BIG_TO_BIG2 });
+        expect(result).toMatchObject({ ours: [], theirs: BIG_TO_BIG2 });
       });
     });
   });
@@ -73,7 +73,7 @@ describe('detectMergeRenames', () => {
         const result = await sut(ctx, base, theirs, ours);
 
         // Assert
-        expect(result).toEqual({ ours: BIG_TO_BIG2, theirs: [] });
+        expect(result).toMatchObject({ ours: BIG_TO_BIG2, theirs: [] });
       });
     });
   });
@@ -90,7 +90,7 @@ describe('detectMergeRenames', () => {
         const result = await sut(ctx, base, base, theirs);
 
         // Assert
-        expect(result).toEqual({ ours: [], theirs: [] });
+        expect(result).toMatchObject({ ours: [], theirs: [] });
       });
     });
   });
@@ -107,7 +107,7 @@ describe('detectMergeRenames', () => {
         const result = await sut(ctx, base, flat([]), theirs);
 
         // Assert
-        expect(result).toEqual({ ours: [], theirs: BIG_TO_BIG2 });
+        expect(result).toMatchObject({ ours: [], theirs: BIG_TO_BIG2 });
       });
     });
   });
@@ -130,7 +130,7 @@ describe('detectMergeRenames', () => {
         );
 
         // Assert
-        expect(result).toEqual({ ours: [], theirs: [] });
+        expect(result).toMatchObject({ ours: [], theirs: [] });
       });
     });
   });
@@ -169,7 +169,7 @@ describe('detectMergeRenames', () => {
         const result = await sut(ctx, undefined, ours, theirs);
 
         // Assert
-        expect(result).toEqual({ ours: [], theirs: [] });
+        expect(result).toMatchObject({ ours: [], theirs: [] });
       });
     });
   });
@@ -186,7 +186,7 @@ describe('detectMergeRenames', () => {
         const result = await sut(ctx, base, ours, flat([]));
 
         // Assert
-        expect(result).toEqual({ ours: [], theirs: [] });
+        expect(result).toMatchObject({ ours: [], theirs: [] });
       });
     });
   });
@@ -332,7 +332,7 @@ describe('detectMergeRenames', () => {
         );
 
         // Assert
-        expect(result).toEqual({ ours: [], theirs: [] });
+        expect(result).toMatchObject({ ours: [], theirs: [] });
       });
     });
   });
@@ -379,6 +379,80 @@ describe('detectMergeRenames', () => {
 
         // Assert
         expect(warnings).toEqual(expected);
+      });
+    });
+  });
+
+  describe.each([
+    ['unset', '', 'conflict'],
+    ['true', '[merge]\n  directoryRenames = true\n', 'apply'],
+    ['false', '[merge]\n  directoryRenames = false\n', 'none'],
+    ['conflict in any case', '[merge]\n  directoryRenames = CONFLICT\n', 'conflict'],
+    ['a value from a future git', '[merge]\n  directoryRenames = later\n', 'conflict'],
+  ] as const)('Given merge.directoryRenames %s', (_label, config, expected) => {
+    describe('When renames are detected', () => {
+      it('Then the directory rename mode is carried with them', async () => {
+        // Arrange
+        const ctx = await withConfig(createMemoryContext(), config);
+        const { base, ours, theirs } = await renameVsModify(ctx);
+        const sut = detectMergeRenames;
+
+        // Act
+        const result = await sut(ctx, base, ours, theirs);
+
+        // Assert
+        expect(result.directoryRenames).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a valueless merge.directoryRenames', () => {
+    describe('When renames are detected', () => {
+      it('Then the missing value is refused', async () => {
+        // Arrange
+        const ctx = await withConfig(createMemoryContext(), '[merge]\n  directoryRenames\n');
+        const { base, ours, theirs } = await renameVsModify(ctx);
+        const sut = detectMergeRenames;
+
+        // Act
+        const result = await sut(ctx, base, ours, theirs).catch((error: unknown) => error);
+
+        // Assert
+        expect((result as { data: { code: string; key: string } }).data).toMatchObject({
+          code: 'CONFIG_MISSING_VALUE',
+          key: 'merge.directoryRenames'.toLowerCase(),
+        });
+      });
+    });
+  });
+
+  describe('Given theirs moved a directory ours added a file into, its files untouched by ours', () => {
+    describe.each([
+      [
+        'directory renames on',
+        '',
+        BIG_TO_BIG2.map(() => ({ oldPath: 'dir/a', newPath: 'newdir/a' })),
+      ],
+      ['directory renames off', '[merge]\n  directoryRenames = false\n', []],
+    ] as const)('When renames are detected with %s', (_label, config, expected) => {
+      it('Then the moved files are paired only when their location matters', async () => {
+        // Arrange
+        const ctx = await withConfig(createMemoryContext(), config);
+        const original = await blob(ctx, LINES);
+        const added = await blob(ctx, OTHER_LINES);
+        const base = flat([['dir/a', original]]);
+        const ours = flat([
+          ['dir/a', original],
+          ['dir/c', added],
+        ]);
+        const theirs = flat([['newdir/a', original]]);
+        const sut = detectMergeRenames;
+
+        // Act
+        const result = await sut(ctx, base, ours, theirs);
+
+        // Assert
+        expect(result.theirs).toEqual(expected);
       });
     });
   });

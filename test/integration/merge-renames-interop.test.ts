@@ -12,11 +12,13 @@
  */
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { cp } from 'node:fs/promises';
@@ -95,8 +97,14 @@ const rm =
     dated(['-C', dir, 'rm', '-q', file]);
 const put =
   (file: string, content: string): Step =>
-  (dir) =>
+  (dir) => {
+    mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
     writeFileSync(path.join(dir, file), content);
+  };
+const configure =
+  (key: string, value: string): Step =>
+  (dir) =>
+    dated(['-C', dir, 'config', key, value]);
 const change =
   (file: string, from: string, to: string): Step =>
   (dir) =>
@@ -137,8 +145,8 @@ const copyOf = async (dir: string): Promise<string> => {
 
 const worktreeFiles = (dir: string): Record<string, string> =>
   Object.fromEntries(
-    readdirSync(dir)
-      .filter((name) => name !== '.git')
+    readdirSync(dir, { recursive: true, encoding: 'utf8' })
+      .filter((name) => !name.startsWith('.git') && statSync(path.join(dir, name)).isFile())
       .sort()
       .map((name) => [name, readFileSync(path.join(dir, name), 'utf8')]),
   );
@@ -311,6 +319,83 @@ describe.skipIf(!GIT_AVAILABLE)('merge rename detection interop', () => {
 
         // Act
         await sut({ rev: 'side', author: IDENTITY, committer: IDENTITY });
+        await repo.dispose();
+
+        // Assert
+        expect(snapshot(ours)).toEqual(snapshot(theirs));
+      });
+    });
+  });
+
+  const IN_DIR = [put('dir/a', LINES), put('dir/b', 'a\nb\nc\nd\ne\nf\ng\nh\n')] as const;
+  describe.each([
+    [
+      'an addition into a directory the side renamed',
+      [mv('dir', 'newdir')],
+      [put('dir/c', 'c\n')],
+      [],
+    ],
+    [
+      'an addition into a renamed directory, directoryRenames=true',
+      [mv('dir', 'newdir')],
+      [put('dir/c', 'c\n')],
+      [configure('merge.directoryRenames', 'true')],
+    ],
+    [
+      'an addition into a renamed directory, directoryRenames=false',
+      [mv('dir', 'newdir')],
+      [put('dir/c', 'c\n')],
+      [configure('merge.directoryRenames', 'false')],
+    ],
+    [
+      'a directory renamed by HEAD the side added into',
+      [put('dir/c', 'c\n')],
+      [mv('dir', 'newdir')],
+      [],
+    ],
+    ['a rename into a directory the side renamed', [mv('dir', 'newdir')], [mv('y', 'dir/y')], []],
+    [
+      'a rename into a renamed directory, directoryRenames=true',
+      [mv('dir', 'newdir')],
+      [mv('y', 'dir/y')],
+      [configure('merge.directoryRenames', 'true')],
+    ],
+    [
+      'an addition moved onto the side addition, directoryRenames=true',
+      [mv('dir', 'newdir'), put('newdir/c', 'other\n')],
+      [put('dir/c', 'c\n')],
+      [configure('merge.directoryRenames', 'true')],
+    ],
+  ] as const)('Given %s', (_label, sideSteps, mainSteps, config) => {
+    describe('When both tools merge the side', () => {
+      it("Then the tree, index stages, files and MERGE_MSG match git's", async () => {
+        // Arrange
+        const theirs = buildScenario(sideSteps, mainSteps, [...IN_DIR, ...config]);
+        const ours = await copyOf(theirs);
+        tryRunGitWithExit(['-C', theirs, 'merge', 'side'], { env: DATED_ENV });
+        const repo = await openRepository({ cwd: ours });
+        const sut = repo.merge.run;
+
+        // Act
+        await sut({ rev: 'side', author: IDENTITY, committer: IDENTITY });
+        await repo.dispose();
+
+        // Assert
+        expect(snapshot(ours)).toEqual(snapshot(theirs));
+      });
+    });
+
+    describe('When both tools cherry-pick the side', () => {
+      it("Then the tree, index stages, files and stop state match git's", async () => {
+        // Arrange
+        const theirs = buildScenario(sideSteps, mainSteps, [...IN_DIR, ...config]);
+        const ours = await copyOf(theirs);
+        tryRunGitWithExit(['-C', theirs, 'cherry-pick', 'side'], { env: DATED_ENV });
+        const repo = await openRepository({ cwd: ours });
+        const sut = repo.cherryPick.run;
+
+        // Act
+        await sut({ commits: ['side'] });
         await repo.dispose();
 
         // Assert

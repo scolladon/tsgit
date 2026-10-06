@@ -1,5 +1,6 @@
 import type { FlatTree, FlatTreeEntry } from '../diff/flat-tree.js';
 import type { FileMode, FilePath } from '../objects/index.js';
+import type { DirectoryRenameMode } from './directory-renames.js';
 import type { ContentMergeContext, MergeConflict } from './merge-types.js';
 
 /** One side's rename of a merge-base path, as git's ort pairs it. */
@@ -18,6 +19,8 @@ export interface MergeRename {
 export interface MergeRenames {
   readonly ours: ReadonlyArray<MergeRename>;
   readonly theirs: ReadonlyArray<MergeRename>;
+  /** How a directory one side renamed carries the other side's paths along; `none` when absent. */
+  readonly directoryRenames?: DirectoryRenameMode;
 }
 
 export const NO_MERGE_RENAMES: MergeRenames = { ours: [], theirs: [] };

@@ -4,6 +4,7 @@ import { isSameKind, kindOf } from '../diff/mode-kind.js';
 import { sortByPath } from '../diff/path-compare.js';
 import type { FileMode, FilePath } from '../objects/index.js';
 import { FILE_MODE } from '../objects/index.js';
+import { applyDirectoryRenames } from './directory-renames.js';
 import { invalidMergeInput, invalidMergeTree } from './error.js';
 import { DEFAULT_MERGE_LABELS, type MergeLabels } from './merge-labels.js';
 import {
@@ -493,6 +494,46 @@ function resolvePath(
   return resolveBothPresent(path, base, our, their, contentMerger, labels, reserved);
 }
 
+const sideIdsAt = (side: 'base' | 'our' | 'their', entry: FlatTreeEntry | undefined) =>
+  entry === undefined ? {} : { [`${side}Id`]: entry.id, [`${side}Mode`]: entry.mode };
+
+/** ort's `path_conflict` from a suggested directory rename: the moved path never merges clean. */
+function asFileLocation(
+  outcome: MergeOutcome,
+  path: FilePath,
+  entries: ReadonlyArray<FlatTreeEntry | undefined>,
+): MergeOutcome {
+  if (outcome.status === 'conflict') return outcome;
+  const [base, our, their] = entries;
+  return conflictOutcome({
+    type: 'file-location',
+    path,
+    ...sideIdsAt('base', base),
+    ...sideIdsAt('our', our),
+    ...sideIdsAt('their', their),
+  });
+}
+
+/** Directory renames move paths before file renames pair them; a side-less merge has none. */
+function withDirectoryRenames(
+  base: FlatTree | undefined,
+  ours: FlatTree | undefined,
+  theirs: FlatTree | undefined,
+  renames: MergeRenames,
+) {
+  if (ours === undefined || theirs === undefined) {
+    return {
+      ours,
+      theirs,
+      renames,
+      fileLocations: new Set<FilePath>(),
+      vacated: new Set<FilePath>(),
+      sidePaths: new Map<FilePath, SidePaths>(),
+    };
+  }
+  return applyDirectoryRenames(base, ours, theirs, renames);
+}
+
 function extractConflicts(outcomes: ReadonlyArray<MergeOutcome>): ReadonlyArray<MergeConflict> {
   const out: MergeConflict[] = [];
   for (const outcome of outcomes) {
@@ -526,11 +567,20 @@ export async function mergeTrees(
   enforcePerInputCap(ours, 'ours');
   enforcePerInputCap(theirs, 'theirs');
 
-  const renamed = applyMergeRenames(base, ours, theirs, renames);
-  const paths = buildUnionPaths(renamed.base, renamed.ours, renamed.theirs, renamed.vacated);
+  const located = withDirectoryRenames(base, ours, theirs, renames);
+  const renamed = applyMergeRenames(base, located.ours, located.theirs, located.renames);
+  const vacated =
+    located.vacated.size === 0
+      ? renamed.vacated
+      : new Set([...renamed.vacated, ...located.vacated]);
+  const paths = buildUnionPaths(renamed.base, renamed.ours, renamed.theirs, vacated);
   const sortedPaths = sortByPath([...paths], (p) => p);
   const reserved = new Set<FilePath>(paths);
-  const merger = withSidePaths(contentMerger, renamed.sidePaths);
+  const sidePaths =
+    located.sidePaths.size === 0
+      ? renamed.sidePaths
+      : new Map([...located.sidePaths, ...renamed.sidePaths]);
+  const merger = withSidePaths(contentMerger, sidePaths);
 
   const outcomes: MergeOutcome[] = [];
   for (const path of sortedPaths) {
@@ -539,17 +589,16 @@ export async function mergeTrees(
       outcomes.push(conflictOutcome(forced));
       continue;
     }
-    const result = resolvePath(
-      path,
+    const entries = [
       renamed.base?.entries.get(path),
       renamed.ours?.entries.get(path),
       renamed.theirs?.entries.get(path),
-      merger,
-      labels,
-      reserved,
-    );
+    ] as const;
+    const result = resolvePath(path, ...entries, merger, labels, reserved);
     const outcome = result instanceof Promise ? await result : result;
-    outcomes.push(outcome);
+    outcomes.push(
+      located.fileLocations.has(path) ? asFileLocation(outcome, path, entries) : outcome,
+    );
   }
 
   const conflicts = extractConflicts(outcomes);

@@ -9,6 +9,7 @@ export type ConflictType =
   | 'rename-delete'
   | 'type-change'
   | 'rename-rename'
+  | 'file-location'
   | 'gitlink'
   | 'binary';
 

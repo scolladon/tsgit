@@ -17,6 +17,10 @@ import type {
 import type { FlatTree } from '../../domain/diff/flat-tree.js';
 import { sortByPath } from '../../domain/diff/path-compare.js';
 import { detectRenames, type RenameDetectOptions } from '../../domain/diff/rename-detect.js';
+import {
+  type DirectoryRenameMode,
+  locationRelevantDirectories,
+} from '../../domain/merge/directory-renames.js';
 import { type MergeRename, type MergeRenames, NO_MERGE_RENAMES } from '../../domain/merge/index.js';
 import type { OrtRenameOptions } from '../../domain/merge/strategy-options.js';
 import { emptyBlobOid, type FilePath, type ObjectId } from '../../domain/objects/index.js';
@@ -31,7 +35,23 @@ interface SidePass {
   readonly empty: ObjectId;
   readonly limit: number;
   readonly threshold: number | undefined;
+  readonly directoryRenames: DirectoryRenameMode;
 }
+
+const NO_DIRECTORIES: ReadonlySet<string> = new Set();
+
+/** ort's location relevance: the directories this side removed that the other side added into. */
+const locationRelevant = (pass: SidePass): ReadonlySet<string> =>
+  pass.directoryRenames === 'none'
+    ? NO_DIRECTORIES
+    : locationRelevantDirectories(pass.base, pass.side, pass.other);
+
+const underAny = (path: FilePath, directories: ReadonlySet<string>): boolean => {
+  for (let slash = path.lastIndexOf('/'); slash > 0; slash = path.lastIndexOf('/', slash - 1)) {
+    if (directories.has(path.slice(0, slash))) return true;
+  }
+  return false;
+};
 
 /** Every merge-base path this side deleted — the empty blob never a source. */
 const deletions = ({ base, side, empty }: SidePass): DeleteChange[] => {
@@ -44,9 +64,16 @@ const deletions = ({ base, side, empty }: SidePass): DeleteChange[] => {
 };
 
 /** ort's content relevance: the other side changed (or deleted) what this side deleted. */
-const isRelevant = ({ other }: SidePass, deleted: DeleteChange): boolean => {
+const isContentRelevant = ({ other }: SidePass, deleted: DeleteChange): boolean => {
   const kept = other.entries.get(deleted.oldPath);
   return kept === undefined || kept.id !== deleted.oldId || kept.mode !== deleted.oldMode;
+};
+
+const relevantSources = (pass: SidePass, deletes: ReadonlyArray<DeleteChange>): Set<FilePath> => {
+  const located = deletes.length > 0 ? locationRelevant(pass) : NO_DIRECTORIES;
+  const relevant = (deleted: DeleteChange): boolean =>
+    isContentRelevant(pass, deleted) || underAny(deleted.oldPath, located);
+  return new Set(deletes.filter(relevant).map(sourcePath));
 };
 
 const additions = ({ base, side, empty }: SidePass): AddChange[] => {
@@ -90,7 +117,7 @@ const similarityOptions = ({ limit, threshold }: SidePass): RenameDetectOptions 
  */
 const sideRenames = async (ctx: Context, pass: SidePass): Promise<SideRenames> => {
   const deletes = deletions(pass);
-  const relevant = new Set(deletes.filter((deleted) => isRelevant(pass, deleted)).map(sourcePath));
+  const relevant = relevantSources(pass, deletes);
   const adds = relevant.size > 0 ? additions(pass) : [];
   if (adds.length === 0) return NO_SIDE_RENAMES;
   const changes = sortByPath<DiffChange>([...deletes, ...adds], primaryPath);
@@ -132,9 +159,14 @@ export const detectMergeRenames = async (
     empty: emptyBlobOid(ctx.hashConfig),
     limit: config.limit,
     threshold: overrides.threshold,
+    directoryRenames: config.directoryRenames,
   };
   const oursSide = await sideRenames(ctx, { ...shared, side: ours, other: theirs });
   const theirsSide = await sideRenames(ctx, { ...shared, side: theirs, other: ours });
   warnRenameLimit(ctx, Math.max(oursSide.neededLimit, theirsSide.neededLimit));
-  return { ours: oursSide.renames, theirs: theirsSide.renames };
+  return {
+    ours: oursSide.renames,
+    theirs: theirsSide.renames,
+    directoryRenames: config.directoryRenames,
+  };
 };

@@ -9,6 +9,7 @@ import {
   parseGitBoolean,
   parseGitInt,
 } from '../../../domain/config/config-ini.js';
+import type { DirectoryRenameMode } from '../../../domain/merge/directory-renames.js';
 import type { Context } from '../../../ports/context.js';
 import { findLastEntry, type LocatedConfigEntry } from '../config-read.js';
 
@@ -20,6 +21,7 @@ const COPY_WORDS = new Set(['copies', 'copy']);
 export interface MergeRenameConfig {
   readonly detect: boolean;
   readonly limit: number;
+  readonly directoryRenames: DirectoryRenameMode;
 }
 
 type Located = LocatedConfigEntry & { readonly value: string };
@@ -52,6 +54,17 @@ const parseRenames = (entry: LocatedConfigEntry | undefined): boolean | undefine
 };
 
 /**
+ * `merge.directoryRenames`: a boolean applies or skips them; `conflict` — and,
+ * as git tolerates values from future versions, anything else — keeps the default.
+ */
+const parseDirectoryRenames = (entry: LocatedConfigEntry | undefined): DirectoryRenameMode => {
+  if (entry === undefined) return 'conflict';
+  const parsed = parseGitBoolean(requireValue(entry).value);
+  if (!parsed.ok) return 'conflict';
+  return parsed.value ? 'apply' : 'none';
+};
+
+/**
  * git's `merge_recursive_config` for renames: `merge.renameLimit` over
  * `diff.renameLimit` (a non-positive limit is ort's 7000), `merge.renames`
  * over `diff.renames` (on by default) — parsed in git's order, so the first
@@ -62,9 +75,13 @@ export const readMergeRenameConfig = async (ctx: Context): Promise<MergeRenameCo
   const mergeLimit = parseLimit(await findLastEntry(ctx, 'merge', 'renameLimit'));
   const diffRenames = parseRenames(await findLastEntry(ctx, 'diff', 'renames'));
   const mergeRenames = parseRenames(await findLastEntry(ctx, 'merge', 'renames'));
+  const directoryRenames = parseDirectoryRenames(
+    await findLastEntry(ctx, 'merge', 'directoryRenames'),
+  );
   const limit = mergeLimit ?? diffLimit ?? 0;
   return {
     detect: mergeRenames ?? diffRenames ?? true,
     limit: limit > 0 ? limit : DEFAULT_MERGE_RENAME_LIMIT,
+    directoryRenames,
   };
 };

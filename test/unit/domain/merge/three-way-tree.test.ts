@@ -1975,3 +1975,89 @@ describe('mergeTrees — forced rename conflicts', () => {
     });
   });
 });
+
+describe('mergeTrees — directory renames', () => {
+  const DIR_MOVE = [
+    { oldPath: 'dir/a' as FilePath, newPath: 'newdir/a' as FilePath },
+    { oldPath: 'dir/b' as FilePath, newPath: 'newdir/b' as FilePath },
+  ];
+  const base = tree([
+    ['dir/a', entry(ID_A)],
+    ['dir/b', entry(ID_B)],
+  ]);
+  const ours = tree([
+    ['dir/a', entry(ID_A)],
+    ['dir/b', entry(ID_B)],
+    ['dir/c', entry(ID_C)],
+  ]);
+  const theirs = tree([
+    ['newdir/a', entry(ID_A)],
+    ['newdir/b', entry(ID_B)],
+  ]);
+
+  describe('Given theirs renamed a directory ours added into, in conflict mode', () => {
+    describe('When mergeTrees is called', () => {
+      it('Then our addition sits at its moved path as a file-location conflict', async () => {
+        // Arrange
+        const renames = { ours: [], theirs: DIR_MOVE, directoryRenames: 'conflict' } as const;
+        const sut = mergeTrees;
+
+        // Act
+        const result = await sut(base, ours, theirs, noopMerger, DEFAULT_MERGE_LABELS, renames);
+
+        // Assert
+        expect(result.conflicts).toEqual([
+          {
+            type: 'file-location',
+            path: 'newdir/c',
+            ourId: ID_C,
+            ourMode: FILE_MODE.REGULAR,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given theirs renamed a directory ours added into, applied outright', () => {
+    describe('When mergeTrees is called', () => {
+      it('Then our addition merges cleanly at its moved path', async () => {
+        // Arrange
+        const renames = { ours: [], theirs: DIR_MOVE, directoryRenames: 'apply' } as const;
+        const sut = mergeTrees;
+
+        // Act
+        const result = await sut(base, ours, theirs, noopMerger, DEFAULT_MERGE_LABELS, renames);
+
+        // Assert
+        expect(result.cleanMerge).toBe(true);
+        expect(
+          result.outcomes.map((outcome) => (outcome.status === 'conflict' ? '' : outcome.path)),
+        ).toContain('newdir/c');
+      });
+    });
+  });
+
+  describe('Given the moved addition meets one the other side made there, in conflict mode', () => {
+    describe('When mergeTrees is called', () => {
+      it('Then the add/add conflict stands', async () => {
+        // Arrange
+        const renames = { ours: [], theirs: DIR_MOVE, directoryRenames: 'conflict' } as const;
+        const added = tree([...theirs.entries, ['newdir/c', entry(ID_D)]]);
+        const sut = mergeTrees;
+        const conflicting: ContentMerger = () => ({
+          status: 'conflict',
+          conflictType: 'content',
+          markedBytes: new Uint8Array(0),
+        });
+
+        // Act
+        const result = await sut(base, ours, added, conflicting, DEFAULT_MERGE_LABELS, renames);
+
+        // Assert
+        expect(result.conflicts.map((conflict) => [conflict.type, conflict.path])).toEqual([
+          ['add-add', 'newdir/c'],
+        ]);
+      });
+    });
+  });
+});
