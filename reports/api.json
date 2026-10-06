@@ -120483,6 +120483,30 @@
 							"flags": {
 								"isReadonly": true
 							},
+							"comment": {
+								"summary": [
+									{
+										"kind": "text",
+										"text": "Branches merging from this remote: every "
+									},
+									{
+										"kind": "code",
+										"text": "`branch.<b>.merge`"
+									},
+									{
+										"kind": "text",
+										"text": " value, each split on spaces\n as git's "
+									},
+									{
+										"kind": "code",
+										"text": "`remote show`"
+									},
+									{
+										"kind": "text",
+										"text": " reads it; a branch configuring no merge is omitted."
+									}
+								]
+							},
 							"type": {
 								"type": "typeOperator",
 								"operator": "readonly",
@@ -120521,17 +120545,15 @@
 														"isReadonly": true
 													},
 													"type": {
-														"type": "union",
-														"types": [
-															{
+														"type": "typeOperator",
+														"operator": "readonly",
+														"target": {
+															"type": "array",
+															"elementType": {
 																"type": "intrinsic",
 																"name": "string"
-															},
-															{
-																"type": "intrinsic",
-																"name": "undefined"
 															}
-														]
+														}
 													}
 												}
 											],

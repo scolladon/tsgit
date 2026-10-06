@@ -65,6 +65,8 @@ export interface BranchReferrer {
   readonly branch: string;
   readonly ref: RefName;
   readonly merge: string | undefined;
+  /** Every `branch.<X>.merge` value, in config order. */
+  readonly merges: ReadonlyArray<string>;
 }
 
 /**
@@ -83,6 +85,7 @@ export const listBranchReferrers = (
       branch: branchName,
       ref: `refs/heads/${branchName}` as RefName,
       merge: entry.merge,
+      merges: entry.merges ?? [],
     });
   }
   return referrers;

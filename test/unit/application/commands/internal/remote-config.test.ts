@@ -15,7 +15,9 @@ import type { RefName } from '../../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
 const buildBranch = (
-  entries: ReadonlyArray<readonly [string, { remote?: string; merge?: string }]>,
+  entries: ReadonlyArray<
+    readonly [string, { remote?: string; merge?: string; merges?: ReadonlyArray<string> }]
+  >,
 ): NonNullable<ParsedConfig['branch']> => new Map(entries);
 
 const buildRemote = (
@@ -264,10 +266,20 @@ describe('application/commands/internal/remote-config', () => {
           },
           {
             config: {
-              branch: buildBranch([['main', { remote: 'origin', merge: 'refs/heads/main' }]]),
+              branch: buildBranch([
+                [
+                  'main',
+                  { remote: 'origin', merge: 'refs/heads/main', merges: ['refs/heads/main'] },
+                ],
+              ]),
             } as ParsedConfig,
             expected: [
-              { branch: 'main', ref: 'refs/heads/main' as RefName, merge: 'refs/heads/main' },
+              {
+                branch: 'main',
+                ref: 'refs/heads/main' as RefName,
+                merge: 'refs/heads/main',
+                merges: ['refs/heads/main'],
+              },
             ],
             label:
               'one branch tracking the named remote returns that branch with the paired merge value',
@@ -276,8 +288,11 @@ describe('application/commands/internal/remote-config', () => {
             config: {
               branch: buildBranch([['main', { remote: 'origin' }]]),
             } as ParsedConfig,
-            expected: [{ branch: 'main', ref: 'refs/heads/main' as RefName, merge: undefined }],
-            label: 'a branch with `remote = <name>` but no merge leaves merge undefined',
+            expected: [
+              { branch: 'main', ref: 'refs/heads/main' as RefName, merge: undefined, merges: [] },
+            ],
+            label:
+              'a branch with `remote = <name>` but no merge leaves merge undefined and merges empty',
           },
           {
             config: {
