@@ -20,31 +20,6 @@ import { readBlob } from './read-blob.js';
 import { resolvePathMergeSpec } from './resolve-merge-driver.js';
 import { runMergeDriver } from './run-merge-driver.js';
 
-/**
- * The single `ContentMerger` used by every 3-way consumer (`merge` directly,
- * and `cherry-pick` / `revert` / `rebase` / `stash` via `applyMergeToWorktree`).
- * For each path whose two sides changed differently it reads the three blobs,
- * resolves the per-path merge driver (`.gitattributes` `merge=<driver>` +
- * `[merge "<driver>"]`), and dispatches:
- *
- * - `text`     → the built-in line merge (`mergeContent`) — the default.
- * - `union`    → the built-in line merge with overlaps concatenated, no markers.
- * - `binary`   → take `ours` and declare a conflict (git's `-merge`).
- * - `external` → run the configured command (when a `CommandRunner` is wired);
- *                otherwise fall back to the built-in line merge.
- *
- * The attribute provider is built once, lazily, on the first content merge, so
- * a merge with no content-level conflicts reads no `.gitattributes`.
- *
- * The three blob reads are capped at `MAX_CONFLICT_OUTPUT_BYTES`; a hostile
- * oversize blob is rejected upfront by `readBlob` (`OBJECT_TOO_LARGE`) before
- * reaching the line-diff path. The Promise.all keeps the reads concurrent.
- *
- * `labels` are the per-operation conflict labels (`ours`/`theirs`/`base`), the
- * same for every path; the per-path `conflict-marker-size` is resolved here
- * alongside the driver. Both feed the built-in markers and the external driver's
- * `%L`/`%S`/`%X`/`%Y`.
- */
 /** git's ort labels each side `<label>:<path>` once a rename puts the sides at different paths. */
 const labelsFor = (labels: MergeLabels, mergeCtx: ContentMergeContext): MergeLabels => {
   const paths = mergeCtx.sidePaths;
@@ -70,6 +45,31 @@ const ORT_DIFF_ALGORITHM: DiffAlgorithm = 'histogram';
 const favorFor = (driverKind: string, settings: ContentMergeSettings): MergeFavor =>
   driverKind === 'union' ? 'union' : (settings.variant ?? 'none');
 
+/**
+ * The single `ContentMerger` used by every 3-way consumer (`merge` directly,
+ * and `cherry-pick` / `revert` / `rebase` / `stash` via `applyMergeToWorktree`).
+ * For each path whose two sides changed differently it reads the three blobs,
+ * resolves the per-path merge driver (`.gitattributes` `merge=<driver>` +
+ * `[merge "<driver>"]`), and dispatches:
+ *
+ * - `text`     → the built-in line merge (`mergeContent`) — the default.
+ * - `union`    → the built-in line merge with overlaps concatenated, no markers.
+ * - `binary`   → take `ours` and declare a conflict (git's `-merge`).
+ * - `external` → run the configured command (when a `CommandRunner` is wired);
+ *                otherwise fall back to the built-in line merge.
+ *
+ * The attribute provider is built once, lazily, on the first content merge, so
+ * a merge with no content-level conflicts reads no `.gitattributes`.
+ *
+ * The three blob reads are capped at `MAX_CONFLICT_OUTPUT_BYTES`; a hostile
+ * oversize blob is rejected upfront by `readBlob` (`OBJECT_TOO_LARGE`) before
+ * reaching the line-diff path. The Promise.all keeps the reads concurrent.
+ *
+ * `labels` are the per-operation conflict labels (`ours`/`theirs`/`base`), the
+ * same for every path; the per-path `conflict-marker-size` is resolved here
+ * alongside the driver. Both feed the built-in markers and the external driver's
+ * `%L`/`%S`/`%X`/`%Y`.
+ */
 export const buildContentMerger = (
   ctx: Context,
   labels: MergeLabels = DEFAULT_MERGE_LABELS,

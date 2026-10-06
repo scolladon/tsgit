@@ -190,6 +190,23 @@ describe('makeScriptWithMerges', () => {
       });
     });
 
+    describe('When the suffixed label is taken as well', () => {
+      it('Then the suffix counts on past it as git does', () => {
+        // Arrange
+        const commits = [
+          ...mergeOf('onto'),
+          commit('s2', ['base']),
+          commit('M2', ['M', 's2'], 'onto'),
+        ];
+
+        // Act
+        const result = mergeLabelOf(input({ commits }));
+
+        // Assert
+        expect(result).toEqual(['onto-3']);
+      });
+    });
+
     describe('When the merged parent is outside the range', () => {
       it('Then its abbreviation labels it, lengthened past a clashing label', () => {
         // Arrange

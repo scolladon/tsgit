@@ -27,13 +27,13 @@ function scoreMissing(mode: FileMode): number {
   return isLink(mode) ? -500 : -50;
 }
 
+// Tree order sorts a directory as `name/`, so a paired entry never mixes a
+// directory with a non-directory: git's directory-mismatch scores are unreachable.
 function scoreDiffers(a: FileMode, b: FileMode): number {
-  if (isDir(a) !== isDir(b)) return -100;
   return isLink(a) !== isLink(b) ? -50 : -5;
 }
 
 function scoreMatches(a: FileMode, b: FileMode): number {
-  if (isDir(a) !== isDir(b)) return -100;
   if (isLink(a) !== isLink(b)) return -50;
   if (isDir(a)) return 1000;
   return isLink(a) ? 500 : 250;

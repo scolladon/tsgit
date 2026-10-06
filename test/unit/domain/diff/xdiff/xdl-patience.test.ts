@@ -136,4 +136,21 @@ describe('the patience line diff', () => {
       });
     });
   });
+
+  describe('Given a unique line that undercuts the longest run so far', () => {
+    describe('When diffing with the patience algorithm', () => {
+      it('Then it keeps the run git diff --patience keeps', () => {
+        // Arrange
+        const sut = diffPresplitLinesForMode;
+        const ours = linesOf(['a', 'b', 'c']);
+        const theirs = linesOf(['x', 'a', 'c', 'y', 'b']);
+
+        // Act
+        const result = sut(ours, theirs, 'patience');
+
+        // Assert
+        expect(changedLines(result.hunks)).toEqual({ deleted: [2], inserted: [1, 4, 5] });
+      });
+    });
+  });
 });

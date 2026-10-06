@@ -66,6 +66,10 @@ describe('match-trees', () => {
     lib: [dir('sub', 'project')],
     project: PROJECT,
     side: [file('a', 'ba2'), file('b', 'bb'), file('c', 'bc')],
+    deep: [dir('a', 'outer')],
+    outer: [dir('b', 'middle')],
+    middle: [dir('c', 'inner')],
+    inner: [dir('d', 'project')],
   };
 
   describe.each([
@@ -82,6 +86,7 @@ describe('match-trees', () => {
       { kind: 'remove', prefix: 'lib/sub' },
     ],
     ['the trees already line up', 'host', 'host', { kind: 'none' }],
+    ['the side lies one level past git’s search depth', 'deep', 'project', { kind: 'none' }],
     ['the side is the empty tree', 'host', undefined, { kind: 'add', prefix: 'lib/sub' }],
   ] as const)('Given %s', (_label, one, two, expected) => {
     describe('When shiftTree guesses the shift', () => {
