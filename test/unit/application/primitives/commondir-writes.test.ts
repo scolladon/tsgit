@@ -58,9 +58,12 @@ const asWorktreeChild = (ctx: Context): Context => ({
   layout: { ...ctx.layout, gitDir: adminDir(ctx), commonDir: ctx.layout.gitDir },
 });
 
-/** Give the child's own (admin) gitdir the `HEAD` file `assertOperationalRepository` requires. */
-const seedAdminHead = (ctx: Context): Promise<void> =>
-  ctx.fs.writeUtf8(`${adminDir(ctx)}/HEAD`, 'ref: refs/heads/main\n');
+/** Give the child's own (admin) gitdir the `HEAD` file `assertOperationalRepository` requires,
+ *  and the `gitdir` pointer every registered worktree carries. */
+const seedAdminHead = async (ctx: Context): Promise<void> => {
+  await ctx.fs.writeUtf8(`${adminDir(ctx)}/HEAD`, 'ref: refs/heads/main\n');
+  await ctx.fs.writeUtf8(`${adminDir(ctx)}/gitdir`, `${ctx.layout.workDir}/wt/.git\n`);
+};
 
 const forbiddenTransport = (): HttpTransport => ({
   request: async (): Promise<HttpResponse> => {

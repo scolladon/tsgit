@@ -27,7 +27,7 @@ import { readConfig } from '../primitives/config-read.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { inMergeBases, mergeBasesOf, reduceHeads } from '../primitives/merge-base.js';
 import { resolveRef, resolveRefOrMissing } from '../primitives/resolve-ref.js';
-import { type FetchResult, type FetchUpdate, fetch } from './fetch.js';
+import { type FetchResult, type FetchUpdate, fetchWith } from './fetch.js';
 import { assertCleanWorkTree } from './internal/clean-work-tree.js';
 import { defaultRemoteName } from './internal/default-remote.js';
 import { configuredPullFastForward } from './internal/fast-forward-config.js';
@@ -297,14 +297,21 @@ export const pull = async (ctx: Context, given: PullOptions = {}): Promise<PullR
 };
 
 const fetchUpstream = (ctx: Context, opts: PullOptions, upstream: Upstream): Promise<FetchResult> =>
-  fetch(ctx, {
-    remote: upstream.remote,
-    ...(opts.ref !== undefined ? { refspecs: [opts.ref] } : {}),
-    // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ prune: opts.prune }` with `prune: undefined`, which `fetch` reads as `=== true` (false) — identical to omitting the key. The drop direction + the `!==` flip are killed by the prune-forwarding test.
-    ...(opts.prune !== undefined ? { prune: opts.prune } : {}),
-    // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ depth: opts.depth }` with `depth: undefined`, which `fetchPack` gates on `!== undefined` — identical to omitting the key. The drop direction + the `!==` flip are killed by the depth-forwarding test.
-    ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
-  });
+  fetchWith(
+    ctx,
+    {
+      remote: upstream.remote,
+      ...(opts.ref !== undefined ? { refspecs: [opts.ref] } : {}),
+      // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ prune: opts.prune }` with `prune: undefined`, which `fetch` reads as `=== true` (false) — identical to omitting the key. The drop direction + the `!==` flip are killed by the prune-forwarding test.
+      ...(opts.prune !== undefined ? { prune: opts.prune } : {}),
+      // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ depth: opts.depth }` with `depth: undefined`, which `fetchPack` gates on `!== undefined` — identical to omitting the key. The drop direction + the `!==` flip are killed by the depth-forwarding test.
+      ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
+    },
+    PULL_FETCH,
+  );
+
+// git pull runs its fetch with `--update-head-ok`.
+const PULL_FETCH = { updateHeadOk: true } as const;
 
 interface Integration {
   readonly opts: PullOptions;

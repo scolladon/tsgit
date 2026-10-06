@@ -753,6 +753,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `couldn't find remote ref ${data.ref}`;
     case 'FETCH_REFSPEC_CONFLICT':
       return fetchRefspecConflictMessage(data);
+    case 'FETCH_INTO_CHECKED_OUT_BRANCH':
+      return `refusing to fetch into branch '${data.branch}' checked out at '${data.path}'`;
     case 'FETCH_REJECTED':
       return `fetch from ${data.remote} rejected ${data.rejected.map(rejectedUpdate).join(', ')}`;
     case 'PULL_NO_MERGE_CANDIDATES':

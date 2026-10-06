@@ -469,6 +469,12 @@ export type CommandError =
       readonly target: string;
       readonly sources: readonly [string, string];
     }
+  /** git fetch's `refusing to fetch into branch '<branch>' checked out at '<path>'`. */
+  | {
+      readonly code: 'FETCH_INTO_CHECKED_OUT_BRANCH';
+      readonly branch: RefName;
+      readonly path: string;
+    }
   | {
       readonly code: 'FETCH_REJECTED';
       readonly remote: string;
@@ -1398,6 +1404,10 @@ export const fetchRefspecConflict = (
   target: string,
   sources: readonly [string, string],
 ): TsgitError => new TsgitError({ code: 'FETCH_REFSPEC_CONFLICT', reason, target, sources });
+
+// Refusal: git's `check_not_current_branch` — a refspec writes a branch a worktree holds.
+export const fetchIntoCheckedOutBranch = (branch: RefName, path: string): TsgitError =>
+  new TsgitError({ code: 'FETCH_INTO_CHECKED_OUT_BRANCH', branch, path });
 
 /** Why git's `die_no_merge_candidates` found nothing to merge in FETCH_HEAD. */
 // Refusal: a pull whose fetch rejected a ref update, as git's pull stops on fetch's exit 1.

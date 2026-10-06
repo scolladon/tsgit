@@ -320,6 +320,37 @@ describe('pull', () => {
     });
   });
 
+  describe('Given a refspec writing the checked-out branch', () => {
+    describe('When pull', () => {
+      it('Then its fetch may update the branch, as git pull passes --update-head-ok', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'a', 'A');
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        const b = await commitFile(ctx, 'b.txt', 'b', 'B');
+        await checkout(ctx, { rev: 'main' });
+        await seedConfig(ctx, { url: REMOTE_URL });
+        const { transport } = buildPullRemote(
+          [{ name: 'refs/heads/main', id: b }],
+          await emptyPack(ctx),
+        );
+        const sut = pull;
+
+        // Act
+        const result = await sut(withTransport(ctx, transport), {
+          remote: 'origin',
+          ref: 'main:main',
+        });
+
+        // Assert
+        const branch = result.fetch.updatedRefs.find((u) => u.name === 'refs/heads/main');
+        expect(branch).toMatchObject({ status: 'ok', newId: b });
+      });
+    });
+  });
+
   describe('Given branch.<cur>.merge set but no branch.<cur>.remote', () => {
     describe('When pull', () => {
       it('Then origin is fetched and the pull refuses, as git ignores a merge without a remote', async () => {

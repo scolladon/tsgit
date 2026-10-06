@@ -2891,6 +2891,78 @@ describe('fetch — FETCH_HEAD and command-line refspecs', () => {
     });
   });
 
+  describe.each([
+    ['born', 'main', 'refs/heads/main'],
+    ['unborn', 'fresh', 'refs/heads/fresh'],
+  ])('Given HEAD on the %s branch a command-line refspec writes into', (_state, branch, ref) => {
+    describe('When fetch runs', () => {
+      it('Then it refuses before writing any ref or FETCH_HEAD line', async () => {
+        // Arrange
+        const { ctx } = await arrange(ORIGIN_FETCH, ['refs/heads/main']);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `ref: ${ref}\n`);
+        const before = await getRefStore(ctx).resolveDirect(ref as RefName);
+        const sut = fetch;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, { refspecs: [`main:${branch}`] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'FETCH_INTO_CHECKED_OUT_BRANCH',
+          branch: ref,
+          path: ctx.layout.workDir,
+        });
+        expect((caught as TsgitError).message).toContain(
+          `refusing to fetch into branch '${ref}' checked out at '${ctx.layout.workDir}'`,
+        );
+        expect(await getRefStore(ctx).resolveDirect(ref as RefName)).toEqual(before);
+        expect(await fetchHead(ctx)).toBe('');
+        const tracking = 'refs/remotes/origin/main' as RefName;
+        expect((await getRefStore(ctx).resolveDirect(tracking)).kind).toBe('missing');
+      });
+    });
+  });
+
+  describe('Given HEAD naming the remote-tracking ref the fetch writes', () => {
+    describe('When fetch runs', () => {
+      it('Then the ref is written, as only a branch is guarded', async () => {
+        // Arrange
+        const { ctx, tip } = await arrange(ORIGIN_FETCH, ['refs/heads/main']);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/remotes/origin/main\n');
+        const sut = fetch;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const tracking = 'refs/remotes/origin/main' as RefName;
+        expect(await getRefStore(ctx).resolveDirect(tracking)).toEqual({ kind: 'direct', id: tip });
+      });
+    });
+  });
+
+  describe('Given HEAD on main and a command-line refspec writing another branch', () => {
+    describe('When fetch runs', () => {
+      it('Then the other branch is written', async () => {
+        // Arrange
+        const { ctx, tip } = await arrange(ORIGIN_FETCH, ['refs/heads/main']);
+        const sut = fetch;
+
+        // Act
+        await sut(ctx, { refspecs: ['main:other'] });
+
+        // Assert
+        const other = await getRefStore(ctx).resolveDirect('refs/heads/other' as RefName);
+        expect(other).toEqual({ kind: 'direct', id: tip });
+      });
+    });
+  });
+
   describe('Given a command-line refspec git cannot parse', () => {
     describe('When fetch runs', () => {
       it('Then it refuses the refspec before touching FETCH_HEAD', async () => {

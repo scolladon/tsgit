@@ -329,4 +329,55 @@ describe.skipIf(!GIT_AVAILABLE)('fetch tracking refs interop', () => {
       });
     });
   });
+
+  describe.each(['unborn', 'born'])('Given main checked out %s in both repositories', (state) => {
+    describe('When both tools fetch main:main', () => {
+      it('Then both refuse to fetch into the checked-out branch and write nothing', async () => {
+        // Arrange
+        const caseRoot = path.join(root, `checked-out-${state}`);
+        const peerRoot = path.join(caseRoot, 'peer');
+        const work = path.join(caseRoot, 'work');
+        runGit(['init', '-q', '-b', 'main', work]);
+        runGit(['-C', work, 'commit', '-q', '--allow-empty', '-m', 'a']);
+        runGit(['clone', '-q', '--bare', work, path.join(peerRoot, 'peer.git')]);
+        const dirs = { ours: path.join(caseRoot, 'ours'), theirs: path.join(caseRoot, 'theirs') };
+        for (const [dir, url] of [
+          [dirs.ours, PEER_URL],
+          [dirs.theirs, path.join(peerRoot, 'peer.git')],
+        ] as const) {
+          runGit(['init', '-q', '-b', 'main', dir]);
+          runGit(['-C', dir, 'remote', 'add', 'origin', url]);
+          if (state === 'born') runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'mine']);
+        }
+        const ctx = {
+          ...createNodeContext({ workDir: dirs.ours }),
+          transport: backendTransport(peerRoot),
+        };
+        const before = allRefs(dirs.ours);
+        let message = '';
+
+        // Act
+        try {
+          await fetch(ctx, { remote: 'origin', refspecs: ['main:main'] });
+        } catch (error) {
+          message = (error as Error).message;
+        }
+        const theirs = tryRunGitWithExit(['-C', dirs.theirs, 'fetch', 'origin', 'main:main']);
+
+        // Assert
+        expect(theirs.exitCode).toBe(128);
+        expect(theirs.stderr).toBe(
+          `fatal: refusing to fetch into branch 'refs/heads/main' checked out at '${dirs.theirs}'\n`,
+        );
+        expect(message).toContain(
+          `refusing to fetch into branch 'refs/heads/main' checked out at '${dirs.ours}'`,
+        );
+        expect(allRefs(dirs.ours)).toBe(before);
+        const fetchHead = (dir: string) =>
+          readFileSync(path.join(dir, '.git', 'FETCH_HEAD'), 'utf8');
+        expect(fetchHead(dirs.ours)).toBe(fetchHead(dirs.theirs));
+        expect(fetchHead(dirs.ours)).toBe('');
+      });
+    });
+  });
 });

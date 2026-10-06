@@ -17,7 +17,7 @@
  *
  * Working-tree materialization is out of scope.
  */
-import type { FetchRejection } from '../../domain/commands/error.js';
+import { type FetchRejection, fetchIntoCheckedOutBranch } from '../../domain/commands/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import { remoteNotConfigured } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
@@ -53,6 +53,7 @@ import { updateShallow } from '../primitives/shallow-file.js';
 import { MAX_HAVES, MAX_WALK_SEEDS } from '../primitives/types.js';
 import { deleteRefs, updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
+import { heldBranches } from './internal/checked-out-branches.js';
 import { enabledByDefault } from './internal/default-on-setting.js';
 import { assertValidRemoteName, defaultRemoteName } from './internal/default-remote.js';
 import {
@@ -146,7 +147,24 @@ const FETCH_NEGOTIATE_OP = 'fetch:negotiate';
 const REFS_PREFIX = 'refs/';
 const FETCH_WRITE_OBJECTS_OP = 'fetch:write-objects';
 
-export const fetch = async (ctx: Context, opts: FetchOptions = {}): Promise<FetchResult> => {
+/**
+ * Options only tsgit's own commands pass — never end users. Deliberately **not**
+ * re-exported from the commands barrel, so it stays off the public API surface.
+ */
+export interface FetchInternalOptions {
+  /** git's `--update-head-ok`, which only `git pull` passes: a refspec may write
+   *  a branch a worktree holds. */
+  readonly updateHeadOk?: boolean;
+}
+
+export const fetch = (ctx: Context, opts: FetchOptions = {}): Promise<FetchResult> =>
+  fetchWith(ctx, opts, {});
+
+export const fetchWith = async (
+  ctx: Context,
+  opts: FetchOptions,
+  internal: FetchInternalOptions,
+): Promise<FetchResult> => {
   await assertOperationalRepository(ctx);
   const forcedUpdates = await readForcedUpdateCheck(ctx);
   const head = await readHeadRaw(ctx);
@@ -164,7 +182,7 @@ export const fetch = async (ctx: Context, opts: FetchOptions = {}): Promise<Fetc
     return await fetchViaSession(
       ctx,
       opts,
-      { name: remoteName, request, forcedUpdates },
+      { name: remoteName, request, forcedUpdates, updateHeadOk: internal.updateHeadOk === true },
       url,
       filter,
     );
@@ -184,6 +202,7 @@ interface FetchRemote {
   readonly name: string;
   readonly request: RefMapRequest;
   readonly forcedUpdates: ForcedUpdateCheck;
+  readonly updateHeadOk: boolean;
 }
 
 const SHOW_FORCED_UPDATES = 'showForcedUpdates';
@@ -272,6 +291,7 @@ const negotiateAndApply = async (
   const warn = (message: string): void => ctx.logger?.warn?.(message);
   const mapped = getRefMap(remote.request, advertisement.refs, local, warn);
   const refMap = storableRefMap(ctx, mapped);
+  if (!remote.updateHeadOk) await assertNoCheckedOutTarget(ctx, refMap);
   const wants = uniqueRefOids(refMap.map((entry) => entry.source));
 
   // A partial repo's wanted objects may be legitimately promised-absent (the
@@ -327,6 +347,19 @@ const negotiateAndApply = async (
     packResult.shallow,
     packResult.unshallow,
   );
+};
+
+/** git's `check_not_current_branch`: no refspec may write a branch a worktree holds. */
+const assertNoCheckedOutTarget = async (
+  ctx: Context,
+  refMap: ReadonlyArray<MappedRef>,
+): Promise<void> => {
+  const held = await heldBranches(ctx);
+  for (const { target } of refMap) {
+    if (target?.startsWith(HEADS_PREFIX) !== true) continue;
+    const path = held.get(target as RefName);
+    if (path !== undefined) throw fetchIntoCheckedOutBranch(target as RefName, path);
+  }
 };
 
 const isEverythingLocal = async (

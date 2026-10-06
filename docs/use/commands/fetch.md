@@ -80,6 +80,7 @@ console.log(result.prunedRefs);
 - `NETWORK_ERROR` — transport failure (reason varies; SSH surfaces the `ssh` child's exit code).
 - `REFSPEC_INVALID` — a `refspecs` or `refmap` entry git's fetch refspec grammar refuses (`reason: 'not a valid refspec'`).
 - `FETCH_REFSPEC_CONFLICT` — two remote refs map onto one local ref (git's `ref_remove_duplicates`); a command-line ref beside the tracking update it displaces only warns through `ctx.logger.warn`.
+- `FETCH_INTO_CHECKED_OUT_BRANCH` — a refspec writes a branch some worktree holds — its HEAD's branch (born or unborn), or the branch an in-progress rebase or bisect will return to (git's `refusing to fetch into branch '<branch>' checked out at '<path>'`; `data.branch`, `data.path`). Checked before any object is fetched or ref written; `FETCH_HEAD` is left truncated. `pull` is exempt, as git's pull passes `--update-head-ok`.
 - `REMOTE_REF_NOT_FOUND` — an exact `refspecs` or configured `remote.<name>.fetch` source, or the `HEAD` a remote with no fetch refspec is fetched by, names no advertised ref (git's `couldn't find remote ref <name>`). `FETCH_HEAD` is left truncated.
 - `INVALID_OPTION` — `refmap` given without `refspecs` (`option: 'refmap'`).
 - `REMOTE_FILTER_UNSUPPORTED` — the repo's stored `partialclonefilter` can't be re-applied because the server's capabilities lack `filter` support (v1 capability list or v2 `fetch` command's sub-features).
