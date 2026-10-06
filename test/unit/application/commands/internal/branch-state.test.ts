@@ -9,7 +9,10 @@ const OID = '1234567890123456789012345678901234567890';
 
 const loggingContext = (): { readonly ctx: Context; readonly logged: Logged[] } => {
   const logged: Logged[] = [];
-  const logger = { warn: (message: string) => logged.push(['warn', message]) };
+  const logger = {
+    warn: (message: string) => logged.push(['warn', message]),
+    error: (message: string) => logged.push(['error', message]),
+  };
   return { ctx: { ...createMemoryContext(), logger }, logged };
 };
 
@@ -89,6 +92,48 @@ describe('removeBranchState', () => {
 
         // Assert
         const result = await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`);
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an AUTO_MERGE that holds no object id', () => {
+    describe('When the branch state is removed', () => {
+      it('Then git reports the broken ref once per cleanup that deletes it, and leaves it in place', async () => {
+        // Arrange
+        const { ctx, logged } = loggingContext();
+        await plant(ctx, 'AUTO_MERGE', 'garbage\n');
+        const sut = removeBranchState;
+
+        // Act
+        await sut(ctx, 'silent');
+
+        // Assert
+        const broken =
+          "cannot lock ref 'AUTO_MERGE': unable to resolve reference 'AUTO_MERGE': reference broken";
+        expect(logged).toEqual([
+          ['error', broken],
+          ['error', broken],
+        ]);
+        const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`);
+        expect(result).toBe('garbage\n');
+      });
+    });
+  });
+
+  describe('Given an AUTO_MERGE naming a tree', () => {
+    describe('When the branch state is removed', () => {
+      it('Then AUTO_MERGE is gone', async () => {
+        // Arrange
+        const { ctx } = loggingContext();
+        await plant(ctx, 'AUTO_MERGE');
+        const sut = removeBranchState;
+
+        // Act
+        await sut(ctx, 'silent');
+
+        // Assert
+        const result = await ctx.fs.exists(`${ctx.layout.gitDir}/AUTO_MERGE`);
         expect(result).toBe(false);
       });
     });

@@ -1694,3 +1694,23 @@ describe('Given an alternate that fails to load', () => {
     });
   });
 });
+
+describe('revert AUTO_MERGE lifecycle', () => {
+  describe('Given a conflicted revert resolved with `add`', () => {
+    describe('When continue commits the resolution', () => {
+      it('Then AUTO_MERGE is gone, as the commit git runs removes it', async () => {
+        // Arrange
+        const { ctx } = await seedConflictStop();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'a\nRESOLVED\nc\n');
+        await add(ctx, ['f.txt']);
+        const sut = revertContinue;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe(false);
+      });
+    });
+  });
+});

@@ -30,6 +30,7 @@ import {
 import type { Context } from '../../ports/context.js';
 import { applyMergeToWorktree } from '../primitives/apply-merge-to-worktree.js';
 import { createCommit } from '../primitives/create-commit.js';
+import { removeAutoMerge } from '../primitives/internal/auto-merge-ref.js';
 import {
   assertNoPendingOperation,
   assertOperationalRepository,
@@ -469,6 +470,7 @@ const finaliseInProgressPick = async (
   const created = await commitResolvedPick(ctx, source, ourId, indexTree);
   await clearCherryPickHead(ctx);
   await clearMergeMsg(ctx);
+  await removeAutoMerge(ctx);
   return { created };
 };
 

@@ -2773,3 +2773,85 @@ describe('rebase — stop markers and continue refusals', () => {
     });
   });
 });
+
+describe('rebase AUTO_MERGE lifecycle', () => {
+  describe('Given a stop on the last pick resolved with `add`', () => {
+    describe('When continued', () => {
+      it('Then AUTO_MERGE is gone once the resolution is committed', async () => {
+        // Arrange
+        const ctx = await seedConflict();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nRESOLVED\n');
+        await add(ctx, ['f.txt']);
+        const sut = rebaseContinue;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a topic whose picks each merge cleanly', () => {
+    describe('When rebased', () => {
+      it("Then AUTO_MERGE names the last pick's result tree", async () => {
+        // Arrange
+        const { ctx } = await seedDivergent();
+        const sut = rebaseRun;
+
+        // Act
+        await sut(ctx, { upstream: 'main' });
+
+        // Assert
+        const tip = await readCommit(ctx, await resolveRef(ctx, 'refs/heads/topic' as RefName));
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe(`${tip.tree}\n`);
+      });
+    });
+  });
+
+  describe('Given a stale AUTO_MERGE and a branch already on its upstream', () => {
+    describe('When rebased', () => {
+      it("Then AUTO_MERGE is gone, as git's up-to-date finish drops it", async () => {
+        // Arrange
+        const { ctx, mainTip } = await seedDivergent();
+        const [base] = (await readCommit(ctx, mainTip)).parents;
+        const stale = await resolveRef(ctx, 'HEAD' as RefName);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`, `${stale}\n`);
+        const sut = rebaseRun;
+
+        // Act
+        await sut(ctx, { upstream: base! });
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe(false);
+      });
+    });
+  });
+  describe('Given a last pick whose change upstream already made', () => {
+    describe('When rebased', () => {
+      it('Then AUTO_MERGE is gone, as git drops it with the emptied pick', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await writeAddCommit(ctx, 'base.txt', 'base\n', 'base');
+        await branchCreate(ctx, { name: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
+        await writeAddCommit(ctx, 't1.txt', 't1\n', 't1');
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(work(ctx, 'm1.txt'), 'm1\n');
+        await add(ctx, ['m1.txt']);
+        await writeAddCommit(ctx, 't1.txt', 't1\n', 'm1');
+        await checkout(ctx, { rev: 'topic' });
+        const sut = rebaseRun;
+
+        // Act
+        await sut(ctx, { upstream: 'main' });
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe(false);
+      });
+    });
+  });
+});

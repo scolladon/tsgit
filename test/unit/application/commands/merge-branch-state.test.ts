@@ -6,6 +6,7 @@ import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
+import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
@@ -37,6 +38,9 @@ const seed = async (onMain: boolean): Promise<Context> => {
   for (const name of [...STALE_MERGE_STATE, 'SQUASH_MSG']) {
     await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${name}`, 'stale\n');
   }
+  // AUTO_MERGE is a ref: a stale one names a real tree, as a broken one would refuse the merge.
+  const staleTree = await writeTree(ctx, []);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`, `${staleTree}\n`);
   return ctx;
 };
 

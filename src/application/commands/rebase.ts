@@ -43,6 +43,7 @@ import type { Context } from '../../ports/context.js';
 import { abbreviateObjectId } from '../primitives/abbreviate-object-id.js';
 import { createCommit } from '../primitives/create-commit.js';
 import { diffTrees } from '../primitives/diff-trees.js';
+import { removeAutoMerge } from '../primitives/internal/auto-merge-ref.js';
 import {
   assertNoPendingOperation,
   assertOperationalRepositorySettingsFirst,
@@ -511,11 +512,14 @@ const replayFrom = async (
   const rewritten: Array<readonly [ObjectId, ObjectId]> = [...seed.rewritten];
   for (let i = 0; i < rc.todo.length; i += 1) {
     const line = rc.todo[i]!;
+    await removeAutoMerge(ctx);
     const outcome = await replayLine(ctx, rc, line, cur);
     if (outcome.kind === 'moved') cur = outcome.head;
+    // git's dropped empty pick takes its AUTO_MERGE with it.
+    else if (outcome.kind === 'empty') await removeAutoMerge(ctx);
     else if (outcome.kind === 'conflict') {
       return stopOnConflict(ctx, rc, { index: i, cur }, outcome.conflicts, rewritten);
-    } else if (outcome.kind !== 'empty' && 'oid' in line) {
+    } else if ('oid' in line) {
       const created = outcome.kind === 'committed' ? outcome.id : cur;
       if (outcome.kind === 'committed') applied.push({ source: line.oid, created });
       rewritten.push([line.oid, created]);
@@ -610,6 +614,8 @@ export const rebaseRun = async (
   // git fires pre-rebase only when the rebase will do work; an up-to-date rebase
   // (nothing to replay or fast-forward) returns before the hook, matching git.
   if (await canFastForward(ctx, { onto, upstream, head: headCommit, branchBase })) {
+    // git's `finish_rebase`, which the merge backend's own pick loop never reaches.
+    await removeAutoMerge(ctx);
     if (stash !== undefined) await applyAutostash(ctx, stash);
     return { kind: 'up-to-date' };
   }
@@ -677,6 +683,7 @@ export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
     head: currentHead,
     mergeHead,
   });
+  await removeAutoMerge(ctx);
   return replayFrom(ctx, rc, resolutionId, {
     applied: [{ source: stopped, created: resolutionId }],
     rewritten: [...rewrittenBefore, [stopped, resolutionId] as const],
@@ -1215,6 +1222,7 @@ const replayInteractive = async (
   };
   for (let i = 0; i < ic.todo.length; i += 1) {
     const inst = ic.todo[i]!;
+    await removeAutoMerge(ctx);
     if (inst.action === 'drop') continue;
     const cData = await readCommitData(ctx, inst.oid);
     const patch = await renderCommitPatch(ctx, cData);
@@ -1358,6 +1366,8 @@ const rebaseContinueInteractive = async (
   const tree = await synthesizeTreeFromIndex(ctx, index.entries);
   const currentHead = await resolveRef(ctx, HEAD);
   const resumeHead = await resumeInteractiveStop(ctx, state, tree, currentHead);
+  // git's `commit_staged_changes` drops AUTO_MERGE once it commits the stop.
+  if (resumeHead !== currentHead) await removeAutoMerge(ctx);
   rewritten.push([stoppedCommit(state), resumeHead]);
   return replayInteractive(ctx, ic, resumeHead, { applied: [], rewritten });
 };

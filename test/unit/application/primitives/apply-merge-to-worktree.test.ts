@@ -203,6 +203,67 @@ describe('applyMergeToWorktree', () => {
     });
   });
 
+  describe('Given non-overlapping edits on both sides and an AUTO_MERGE state file', () => {
+    const cleanMerge = async (ctx: Context) => {
+      const b = await writeBlob(ctx, 'a\nb\nc\n');
+      const o = await writeBlob(ctx, 'A\nb\nc\n');
+      const t = await writeBlob(ctx, 'a\nb\nC\n');
+      const tree = (id: ObjectId) =>
+        treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, id)]);
+      await ctx.fs.write(`${ctx.layout.workDir}/f`, new TextEncoder().encode('A\nb\nc\n'));
+      return {
+        baseTree: await tree(b),
+        oursTree: await tree(o),
+        theirsTree: await tree(t),
+        currentIndex: index([indexEntry('f', o)]),
+      };
+    };
+
+    describe('When the clean merge is applied', () => {
+      it('Then AUTO_MERGE names the merged tree', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const input = await cleanMerge(ctx);
+        const sut = applyMergeToWorktree;
+
+        // Act
+        const result = await sut(ctx, input);
+
+        // Assert
+        if (result.kind !== 'clean') throw new Error('expected a clean merge');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe(
+          `${result.mergedTree}\n`,
+        );
+      });
+    });
+
+    describe('When AUTO_MERGE holds no object id', () => {
+      it('Then it refuses with INVALID_REF and leaves AUTO_MERGE as it was', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const input = await cleanMerge(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`, 'garbage\n');
+        const sut = applyMergeToWorktree;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, input);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_REF',
+          reason: 'AUTO_MERGE is broken',
+        });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe('garbage\n');
+      });
+    });
+  });
+
   describe('Given a file the stash deletes', () => {
     describe('When the merge is applied', () => {
       it('Then it cleanly removes the file from the working tree', async () => {

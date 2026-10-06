@@ -28,6 +28,7 @@ import { getRefStore } from '../../../../src/application/primitives/ref-store.js
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import * as streamBlobMod from '../../../../src/application/primitives/stream-blob.js';
+import { synthesizeTreeFromIndex } from '../../../../src/application/primitives/synthesize-tree-from-index.js';
 import { updateRef as seedRef } from '../../../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
@@ -919,6 +920,91 @@ describe('merge', () => {
         const content = new TextDecoder().decode(blob.content);
         expect(content).toBe('MAIN\nline2\nFEATURE\n');
       });
+    });
+  });
+
+  describe('Given an AUTO_MERGE that holds no object id', () => {
+    /** base → feature edits `feature.txt` (and `file.txt` when `conflicting`), main edits `file.txt`. */
+    const diverged = async (conflicting: boolean): Promise<Context> => {
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'shared\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/feature.txt`, 'one\n');
+      await add(ctx, ['file.txt', 'feature.txt']);
+      await commit(ctx, { message: 'base', author });
+      await branchCreate(ctx, { name: 'feature' });
+      await checkout(ctx, { rev: 'feature' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/feature.txt`, 'two\n');
+      if (conflicting) await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE\n');
+      await add(ctx, ['file.txt', 'feature.txt']);
+      await commit(ctx, { message: 'on-feature', author });
+      await checkout(ctx, { rev: 'main' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
+      await add(ctx, ['file.txt']);
+      await commit(ctx, { message: 'on-main', author });
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`, 'garbage\n');
+      return ctx;
+    };
+
+    const refusal = async (ctx: Context): Promise<unknown> => {
+      try {
+        await mergeRun(ctx, { rev: 'feature', author });
+      } catch (error) {
+        return error;
+      }
+      return undefined;
+    };
+
+    describe.each([
+      { label: 'conflicting', conflicting: true },
+      { label: 'clean', conflicting: false },
+    ])('When a $label ort merge runs', ({ conflicting }) => {
+      it('Then it refuses with INVALID_REF before the merge touches the working tree or MERGE_HEAD', async () => {
+        // Arrange
+        const ctx = await diverged(conflicting);
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+
+        // Act
+        const result = await refusal(ctx);
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'INVALID_REF',
+          reason: 'AUTO_MERGE is broken',
+        });
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(head);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/feature.txt`)).toBe('one\n');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe('garbage\n');
+      });
+    });
+  });
+
+  describe('Given a clean ort merge, When it stops before committing', () => {
+    it('Then AUTO_MERGE names the merged tree the index holds', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a\n');
+      await add(ctx, ['a.txt']);
+      await commit(ctx, { message: 'base', author });
+      await branchCreate(ctx, { name: 'feature' });
+      await checkout(ctx, { rev: 'feature' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b\n');
+      await add(ctx, ['b.txt']);
+      await commit(ctx, { message: 'on-feature', author });
+      await checkout(ctx, { rev: 'main' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c\n');
+      await add(ctx, ['c.txt']);
+      await commit(ctx, { message: 'on-main', author });
+      const sut = mergeRun;
+
+      // Act
+      await sut(ctx, { rev: 'feature', author, commit: false });
+
+      // Assert
+      const expected = await synthesizeTreeFromIndex(ctx, (await readIndex(ctx)).entries);
+      expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe(`${expected}\n`);
     });
   });
 

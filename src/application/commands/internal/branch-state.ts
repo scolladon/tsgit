@@ -9,7 +9,6 @@
  *   format:  git-merge-state-files
  */
 import {
-  AUTO_MERGE,
   CHERRY_PICK_HEAD,
   MERGE_HEAD,
   MERGE_MODE,
@@ -19,13 +18,14 @@ import {
   SQUASH_MSG,
 } from '../../../domain/refs/state-files.js';
 import type { Context } from '../../../ports/context.js';
+import { removeAutoMerge } from '../../primitives/internal/auto-merge-ref.js';
 import { saveMergeAutostash } from './merge-autostash.js';
 import { clearSequencer } from './sequencer-state.js';
 
 /** Whether a cancelled pick or revert is reported, as a non-quiet `checkout` does. */
 export type CancelReport = 'announce' | 'silent';
 
-const MERGE_BRANCH_STATE = [MERGE_HEAD, MERGE_RR, MERGE_MSG, MERGE_MODE, AUTO_MERGE] as const;
+const MERGE_BRANCH_STATE = [MERGE_HEAD, MERGE_RR, MERGE_MSG, MERGE_MODE] as const;
 
 const COMMITTED_STATE = [MERGE_HEAD, MERGE_MSG, MERGE_MODE, SQUASH_MSG] as const;
 
@@ -45,6 +45,7 @@ const removeStateFile = async (ctx: Context, name: string): Promise<boolean> => 
 /** git's `remove_merge_branch_state`: the stopped merge's files; its autostash goes to the stash list. */
 export const removeMergeBranchState = async (ctx: Context): Promise<void> => {
   for (const name of MERGE_BRANCH_STATE) await removeStateFile(ctx, name);
+  await removeAutoMerge(ctx);
   await saveMergeAutostash(ctx);
 };
 
@@ -71,7 +72,7 @@ export const sequencerPostCommitCleanup = async (
     if (report === 'announce') ctx.logger?.warn?.(warning);
     cancelled = true;
   }
-  await removeStateFile(ctx, AUTO_MERGE);
+  await removeAutoMerge(ctx);
   if (cancelled && (await haveFinishedTheLastPick(ctx))) await clearSequencer(ctx);
 };
 

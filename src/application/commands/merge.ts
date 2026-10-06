@@ -51,13 +51,14 @@ import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
 import { abbreviateObjectId } from '../primitives/abbreviate-object-id.js';
-import { conflictResultTree, writeAutoMerge } from '../primitives/apply-merge-to-worktree.js';
+import { conflictResultTree } from '../primitives/apply-merge-to-worktree.js';
 import { buildContentMerger } from '../primitives/build-content-merger.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
 import { detectMergeRenames } from '../primitives/detect-merge-renames.js';
 import { changedPaths, findWouldOverwrite } from '../primitives/find-would-overwrite.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
+import { writeAutoMerge } from '../primitives/internal/auto-merge-ref.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { readUiDiffAlgorithm } from '../primitives/internal/merge-rename-config.js';
 import { mergedBlobEntries } from '../primitives/internal/merged-blob-entries.js';
@@ -658,7 +659,13 @@ const twoHeadStrategy = async (
 
 /** What one strategy makes of the merge, before anything is written. */
 type StrategyAttempt =
-  | { readonly kind: 'clean'; readonly tree: ObjectId; readonly note: string }
+  | {
+      readonly kind: 'clean';
+      readonly tree: ObjectId;
+      readonly note: string;
+      /** The tree an ort merge records in `AUTO_MERGE` as it switches to its result. */
+      readonly autoMerge?: ObjectId;
+    }
   | ConflictAttempt
   | { readonly kind: 'failed' };
 
@@ -686,8 +693,7 @@ const tryStrategies = async (
   try {
     for (const strategy of strategies) {
       const tried = await attempt(strategy);
-      if (tried.kind === 'clean')
-        return await commitCleanMerge(ctx, commit, tried.tree, tried.note);
+      if (tried.kind === 'clean') return await commitCleanAttempt(ctx, commit, tried);
       if (tried.kind === 'conflict') best = preferConflict(best, tried);
     }
     if (best !== undefined) return await best.persist();
@@ -697,6 +703,16 @@ const tryStrategies = async (
   throw strategies.length === 1
     ? mergeStrategyFailed(strategies[0]!)
     : noMergeStrategyHandled(strategies);
+};
+
+/** Commit a clean attempt; an ort result is recorded in `AUTO_MERGE` before anything else is written. */
+const commitCleanAttempt = async (
+  ctx: Context,
+  commit: MergeCommitInput,
+  tried: Extract<StrategyAttempt, { readonly kind: 'clean' }>,
+): Promise<MergeEnding> => {
+  if (tried.autoMerge !== undefined) await writeAutoMerge(ctx, tried.autoMerge);
+  return commitCleanMerge(ctx, commit, tried.tree, tried.note);
 };
 
 interface TwoHeadTry {
@@ -748,8 +764,14 @@ const ortAttempt = async (
     { ourId, theirId, baseId, strategy: settings },
     opts.rev,
   );
-  if (result.kind === 'clean')
-    return { kind: 'clean', tree: result.tree, note: mergeMadeBy(strategy) };
+  if (result.kind === 'clean') {
+    return {
+      kind: 'clean',
+      tree: result.tree,
+      note: mergeMadeBy(strategy),
+      autoMerge: result.tree,
+    };
+  }
   return {
     kind: 'conflict',
     weight: conflictWeight(result.conflicts),
@@ -1443,11 +1465,14 @@ const persistConflictState = async (
   // and marks their stage-0 conflict-state entries skip-worktree.
   const matcher = await loadSparseMatcher(ctx);
   const merged = await mergedBlobEntries(ctx, result.outcomes);
+  // Recorded before the first write: a broken AUTO_MERGE fails the merge as git's does.
+  await writeAutoMerge(
+    ctx,
+    await conflictResultTree(ctx, result.outcomes, result.conflicts, merged),
+  );
   await underIndexLock(ctx, async () => {
     await writeConflictingWorkingTree(ctx, result.outcomes, result.conflicts, changed, matcher);
     await writeStopState(ctx, opts, ourId, [theirId], sortedRecordedPaths(result.conflicts));
-    const autoMerge = await conflictResultTree(ctx, result.outcomes, result.conflicts, merged);
-    await writeAutoMerge(ctx, autoMerge);
     return buildConflictIndexEntries(result.outcomes, result.conflicts, matcher, merged);
   });
   return conflictOutcome(opts, result.conflicts, theirId, ourId);

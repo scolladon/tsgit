@@ -1816,3 +1816,23 @@ describe('Given an alternate that fails to load', () => {
     });
   });
 });
+
+describe('cherryPick AUTO_MERGE lifecycle', () => {
+  describe('Given a conflicted pick resolved with `add`', () => {
+    describe('When continue commits the resolution', () => {
+      it('Then AUTO_MERGE is gone, as the commit git runs removes it', async () => {
+        // Arrange
+        const { ctx } = await seedConflictPick();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nBOTH\n');
+        await add(ctx, ['f.txt']);
+        const sut = cherryPickContinue;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe(false);
+      });
+    });
+  });
+});

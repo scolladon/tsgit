@@ -29,12 +29,12 @@ import {
   mergeTrees,
 } from '../../domain/merge/index.js';
 import { FILE_MODE, type FilePath, type ObjectId } from '../../domain/objects/index.js';
-import { AUTO_MERGE } from '../../domain/refs/state-files.js';
 import type { Context } from '../../ports/context.js';
 import { buildContentMerger } from './build-content-merger.js';
 import { detectMergeRenames } from './detect-merge-renames.js';
 import { changedPaths, findWouldOverwrite } from './find-would-overwrite.js';
 import { flattenTree } from './flatten-tree.js';
+import { writeAutoMerge } from './internal/auto-merge-ref.js';
 import { readUiDiffAlgorithm } from './internal/merge-rename-config.js';
 import { mergedBlobEntries } from './internal/merged-blob-entries.js';
 import {
@@ -335,11 +335,6 @@ export const conflictResultTree = async (
   return synthesizeResultTree(ctx, leaves);
 };
 
-/** git's `merge_switch_to_result`: `AUTO_MERGE` names the result tree it checked out. */
-export const writeAutoMerge = async (ctx: Context, tree: ObjectId): Promise<void> => {
-  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${AUTO_MERGE}`, `${tree}\n`);
-};
-
 /** Materialise a conflicted merge: working tree, `AUTO_MERGE`, and the unmerged index it stages. */
 const materialiseConflict = async (
   ctx: Context,
@@ -403,6 +398,7 @@ export const applyMergeToWorktree = async (
       // Stryker disable next-line BooleanLiteral: equivalent — `findWouldOverwrite` has already returned every dirty path as `would-overwrite` above, so by here no changed path is dirty and `force: false` would behave identically (nothing to refuse).
       force: true,
     });
+    await writeAutoMerge(ctx, mergedTree);
     return { kind: 'clean', mergedTree, result };
   }
   return materialiseConflict(ctx, merged, changed);
