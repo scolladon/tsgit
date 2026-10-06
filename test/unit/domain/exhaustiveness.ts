@@ -185,6 +185,8 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'CONFIG_UNKNOWN_VALUE':
     case 'INCOMPATIBLE_OPTIONS':
     case 'UNKNOWN_MERGE_STRATEGY':
+    case 'UNKNOWN_OPTION':
+    case 'BAD_BRANCH_MERGE_OPTIONS':
     case 'UNKNOWN_STRATEGY_OPTION':
     case 'MERGE_STRATEGY_FAILED':
     case 'NO_MERGE_STRATEGY_HANDLED':

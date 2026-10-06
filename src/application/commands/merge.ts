@@ -27,6 +27,7 @@ import {
   mergeLabels,
   mergeTrees,
 } from '../../domain/merge/index.js';
+import type { MergeCommandLine } from '../../domain/merge/merge-command-line.js';
 import {
   type OrtStrategyOptions,
   parseOrtStrategyOptions,
@@ -88,6 +89,7 @@ import { updateRef } from '../primitives/update-ref.js';
 import { writeObject } from '../primitives/write-object.js';
 import { writeTree } from '../primitives/write-tree.js';
 import { configuredAutostash } from './internal/autostash-config.js';
+import { branchMergeOptions } from './internal/branch-merge-options.js';
 import { removeMergeBranchState } from './internal/branch-state.js';
 import { conflictMergeMsg, conflictsHint } from './internal/cherry-pick-state.js';
 import { resolveAuthor, resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
@@ -446,25 +448,57 @@ const isThrowawayTag = async (ctx: Context, object: ObjectId): Promise<boolean> 
 
 const computeMerge = async (
   ctx: Context,
-  input: MergeRunInput,
+  given: MergeRunInput,
   internal: MergeInternalOptions,
 ): Promise<MergeEnding> => {
   await assertOperationalRepositorySettingsFirst(ctx);
   await assertStrategyConfig(ctx);
-  explicitStrategies(input.strategy);
   await assertMergeMessageConfig(ctx);
   // git's merge reads `diff.algorithm` with its whole config, so a bad one refuses first.
   await readUiDiffAlgorithm(ctx);
+  const head = await readHeadRaw(ctx);
+  const branch = branchRefFromHead(head);
+  const input = overBranchOptions(await branchMergeOptions(ctx, branch), given);
   await assertSquashCompatible(ctx, input);
   requireWorkTree(ctx, 'merge');
   await assertNoPendingOperation(ctx);
-  const head = await readHeadRaw(ctx);
-  const branch = branchRefFromHead(head);
   const ourId = head.kind === 'symbolic' ? await resolveRef(ctx, head.target) : head.id;
   const named = await resolveRemotes(ctx, mergeArguments(input.rev));
   return named.length === 1
     ? twoHeadMerge(ctx, input, internal, branch, ourId, named[0]!)
     : manyHeadMerge(ctx, input, internal, branch, ourId, named);
+};
+
+/**
+ * git parses `branch.<b>.mergeoptions` before the caller's options: a
+ * caller's option wins, while `-s`, `-X` and `-m` add to the branch's.
+ */
+const overBranchOptions = (branch: MergeCommandLine, given: MergeRunInput): MergeRunInput => {
+  const givenStrategies = given.strategy === undefined ? [] : [given.strategy].flat();
+  const strategy = explicitStrategies([...(branch.strategy ?? []), ...givenStrategies])!;
+  const strategyOptions = [...(branch.strategyOptions ?? []), ...(given.strategyOptions ?? [])];
+  return {
+    ...branch,
+    ...definedFields(given),
+    ...(strategy.length === 0 ? {} : { strategy }),
+    ...(strategyOptions.length === 0 ? {} : { strategyOptions }),
+    ...joinedMessage(branch.message, given.message),
+  };
+};
+
+/** A field set to `undefined` is one the caller did not give. */
+const definedFields = (given: MergeRunInput): MergeRunInput =>
+  Object.fromEntries(
+    Object.entries(given).filter(([, value]) => value !== undefined),
+  ) as MergeRunInput;
+
+/** git's `option_parse_message`: each `-m` after the first opens a new paragraph. */
+const joinedMessage = (
+  branch: string | undefined,
+  given: string | undefined,
+): { readonly message?: string } => {
+  if (given === undefined) return branch === undefined ? {} : { message: branch };
+  return { message: branch ? `${branch}\n\n${given}` : given };
 };
 
 /** Strategies git runs in-process as `ort`. */

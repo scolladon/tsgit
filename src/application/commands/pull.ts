@@ -469,7 +469,8 @@ const integrateByMerge = async (
     ctx,
     {
       rev: fetched.map((line) => line.id),
-      allowUnrelatedHistories: opts.allowUnrelatedHistories === true,
+      // git passes `--allow-unrelated-histories` only when asked, leaving `branch.<b>.mergeoptions` its say.
+      ...(opts.allowUnrelatedHistories === true ? { allowUnrelatedHistories: true } : {}),
       // git passes `--autostash` / `--no-autostash` only when pull settled one.
       ...(opts.autostash !== undefined ? { autostash: opts.autostash } : {}),
       ...(opts.message !== undefined ? { message: opts.message } : {}),

@@ -61,6 +61,25 @@ type MergeResult =
 
 When the walk between HEAD and the merged commit reaches a parent that fails to parse (absent, or another kind of object), `run` logs git's two `error:` lines through `ctx.logger.error` and answers `up-to-date` in every mode: git's `reduce_heads` comes back empty, so `git merge` prints `Already up to date.` and exits 0. `ORIG_HEAD` is still written.
 
+### `branch.<branch>.mergeoptions`
+
+git's per-branch merge command line applies to every merge onto that branch (and to `pull`'s merge),
+read before the caller's options: a caller's option wins, while its `strategy`, `strategyOptions`
+and `message` add to the branch's (`-s` / `-X` in order, each `-m` a paragraph of its own). The value
+is split as git's `split_cmdline` does — single quotes literal, a backslash escaping the next
+character outside them. Note git's config parser strips double quotes first, so quote a word with
+single quotes (or `\"`). The options `merge` models apply (`--ff` / `--no-ff` / `--ff-only`,
+`--[no-]squash`, `--[no-]commit`, `-s`, `-X`, `-m`, `--[no-]log[=<n>]`,
+`--[no-]allow-unrelated-histories`, `--[no-]autostash`); options that shape only git's output
+(`-n`, `--stat`, `-v`, `-q`, `--progress`, …) are accepted; the others git knows refuse with
+`UNSUPPORTED_OPERATION`. Refusals, before any merge state is written:
+
+| Value | Code |
+|---|---|
+| unclosed quote / trailing `\` | `BAD_BRANCH_MERGE_OPTIONS` (`Bad branch.<b>.mergeoptions string: …`) |
+| an option git does not know | `UNKNOWN_OPTION` (`option` spelt with its dashes) |
+| a missing or malformed value | `INVALID_OPTION` (`requires a value`, `takes no value`, …) |
+
 ## Working tree and index
 
 A **fast-forward** and a **clean true-merge** both check the result out: the working tree and index advance to the merged tree, exactly like `git merge` (a true merge additionally creates the merge commit on top). If a path the merge would change has uncommitted working-tree modifications — or an untracked file would be clobbered by an incoming add — `run` refuses with `WORKING_TREE_DIRTY` and leaves HEAD, the index, and the working tree untouched. A **conflicting** true-merge refuses the same way: before any conflict is materialised, every path the merge would change is checked, and `run` refuses with `WORKING_TREE_DIRTY` if writing the conflict would overwrite a tracked-and-modified or untracked path — atomically and pre-write, so HEAD, the index, and the working tree are untouched and no `MERGE_HEAD` is written. The offending paths are split across the error's two arrays: `localChanges` for tracked-dirty paths, `untracked` for untracked clashes.
@@ -287,6 +306,7 @@ switch (result.kind) {
 - `INVALID_INDEX_ENTRY` — a conflicting merge's outcome or conflict path fails git's own index-entry name rules (absolute path; `.`, `..`, or empty segment; `.git`/`.gitmodules` alias). Every path the write is about to touch is checked in one pass before any of them is written, so a hostile path anywhere in the batch refuses the whole conflict write, atomically.
 - `REF_NOT_FOUND` — `target` does not resolve.
 - `NO_OPERATION_IN_PROGRESS` — `merge.continue` / `merge.abort` called outside an in-progress merge.
+- `BAD_BRANCH_MERGE_OPTIONS` / `UNKNOWN_OPTION` / `INVALID_OPTION` — `branch.<branch>.mergeoptions` does not split or parse as git's merge command line.
 
 ## See also
 

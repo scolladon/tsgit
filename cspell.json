@@ -1020,6 +1020,7 @@
     "repositoryformatversion",
     "repr",
     "reprepare",
+    "rerere",
     "rerun",
     "rescan",
     "reserialise",

@@ -4,6 +4,7 @@ import {
   adapterUnavailable,
   atomicPushUnsupported,
   authorUnconfigured,
+  badBranchMergeOptions,
   blockedHost,
   branchExists,
   branchNotFound,
@@ -94,6 +95,7 @@ import {
   targetDirectoryNotEmpty,
   timestampOutOfRange,
   tooManyRedirects,
+  unknownOption,
   unrelatedHistories,
   unsupportedScheme,
   workingTreeDirty,
@@ -1243,6 +1245,40 @@ describe('domain commands error — config factory data', () => {
     });
   });
 
+  describe('Given the unknownOption helper', () => {
+    describe('When called with an option git does not know', () => {
+      it('Then data carries code and option', () => {
+        // Arrange
+        const sut = unknownOption;
+
+        // Act
+        const result = sut('--bogus');
+
+        // Assert
+        expect(result.data).toEqual({ code: 'UNKNOWN_OPTION', option: '--bogus' });
+      });
+    });
+  });
+
+  describe('Given the badBranchMergeOptions helper', () => {
+    describe('When called with a branch and split_cmdline reason', () => {
+      it('Then data carries code, branch and reason', () => {
+        // Arrange
+        const sut = badBranchMergeOptions;
+
+        // Act
+        const result = sut('main', 'unclosed quote');
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'BAD_BRANCH_MERGE_OPTIONS',
+          branch: 'main',
+          reason: 'unclosed quote',
+        });
+      });
+    });
+  });
+
   describe('Given the configUnknownValue helper', () => {
     describe('When called with an unknown diff.algorithm entry', () => {
       it('Then data carries code, key, value, source and line', () => {
@@ -1839,6 +1875,12 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       { code: 'UNKNOWN_MERGE_STRATEGY', strategy: 'x', available: ['octopus', 'ours'] },
       "UNKNOWN_MERGE_STRATEGY: Could not find merge strategy 'x'. Available strategies are: octopus ours.",
+    ],
+    [{ code: 'UNKNOWN_OPTION', option: '--bogus' }, "UNKNOWN_OPTION: unknown option `bogus'"],
+    [{ code: 'UNKNOWN_OPTION', option: '-x' }, "UNKNOWN_OPTION: unknown switch `x'"],
+    [
+      { code: 'BAD_BRANCH_MERGE_OPTIONS', branch: 'main', reason: 'unclosed quote' },
+      'BAD_BRANCH_MERGE_OPTIONS: Bad branch.main.mergeoptions string: unclosed quote',
     ],
     [
       { code: 'UNKNOWN_STRATEGY_OPTION', option: 'bogus' },

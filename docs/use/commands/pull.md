@@ -65,6 +65,11 @@ upstream needs an explicit `repo.pull({ ref })`.
 
 The fetch runs with git's `--update-head-ok`, so a `ref` such as `main:main` may move the checked-out branch itself. When it does, the index and working tree — still at the old commit — are fast-forwarded to the new one (a two-way checkout that keeps local changes and refuses those it would overwrite), after `ctx.logger.warn` reports `fetch updated the current branch head.` as git does; the merge then finds the branch up to date.
 
+A merging pull reads `branch.<branch>.mergeoptions` through `merge`, as git's `git merge` child
+does: only the options the pull itself settles (`fastForward`, `squash`, `commit`, `strategy`,
+`message`, `log`, `autostash`, `allowUnrelatedHistories: true`) are passed over them. See
+[merge](merge.md#branchbranchmergeoptions).
+
 ## Choosing how to reconcile
 
 As git's `pull`: with no `rebase` given, pull reads `branch.<current>.rebase`

@@ -24,7 +24,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { mergeRun } from '../../src/application/commands/merge.js';
 import { pull } from '../../src/application/commands/pull.js';
+import type { TsgitError } from '../../src/domain/error.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Context } from '../../src/ports/context.js';
@@ -85,7 +87,10 @@ beforeAll(() => {
   dated(['-C', work, 'checkout', '-q', '-b', 'side', 'main']);
   commitFile(work, 's1', 's1\n', 'side one');
   commitFile(work, 'f', 'side\n', 'conflicting');
-  dated(['-C', work, 'checkout', '-q', 'main']);
+  dated(['-C', work, 'checkout', '-q', '--orphan', 'orphan']);
+  dated(['-C', work, 'rm', '-q', '-r', '--cached', '.']);
+  commitFile(work, 'o', 'o\n', 'orphan');
+  dated(['-C', work, 'checkout', '-q', '-f', 'main']);
   commitFile(work, 'f', 'main\n', 'main');
   commitFile(work, 'big', LINES.replace('7\n', 'seven\n'), 'edit seven');
   dated(['clone', '-q', '--bare', work, peerPath]);
@@ -558,6 +563,94 @@ describe.skipIf(!GIT_AVAILABLE)('merge options interop', () => {
         );
         const note = (dir: string) => git(dir, 'reflog', '-1', '--format=%gs').split(': ')[1];
         expect(note(ours)).toBe(note(theirs));
+      });
+    });
+  });
+
+  describe.each([
+    { options: '-X theirs', head: 'side' },
+    { options: '--no-commit', head: 'clean' },
+    { options: "--log=1 -m 'from branch'", head: 'clean', message: 'from caller' },
+  ])('Given branch.main.mergeoptions $options', ({ options, head, message }) => {
+    describe(`When both tools merge origin/${head}`, () => {
+      it('Then the merge state and the commit are identical', async () => {
+        // Arrange
+        const { ours, theirs } = setUp([['branch.main.mergeoptions', options]]);
+        const sut = mergeRun;
+        datedExit(theirs, [
+          'merge',
+          ...(message === undefined ? [] : ['-m', message]),
+          `origin/${head}`,
+        ]);
+
+        // Act
+        await sut(createNodeContext({ workDir: ours }), {
+          rev: `origin/${head}`,
+          ...(message === undefined ? {} : { message }),
+          author: IDENTITY,
+          committer: IDENTITY,
+        });
+
+        // Assert
+        expect(snapshot(ours)).toEqual(snapshot(theirs));
+        expect(git(ours, 'cat-file', '-p', 'HEAD')).toBe(git(theirs, 'cat-file', '-p', 'HEAD'));
+      });
+    });
+  });
+
+  describe.each([
+    { options: "'--no-ff", code: 'BAD_BRANCH_MERGE_OPTIONS', exitCode: 128 },
+    { options: '--no-ff --bogus', code: 'UNKNOWN_OPTION', exitCode: 129 },
+  ])('Given branch.main.mergeoptions $options', ({ options, code, exitCode }) => {
+    describe('When both tools merge', () => {
+      it('Then both refuse before writing any merge state', async () => {
+        // Arrange
+        const { ours, theirs } = setUp([['branch.main.mergeoptions', options]]);
+        const sut = mergeRun;
+        const theirsRun = datedExit(theirs, ['merge', 'origin/clean']);
+
+        // Act
+        const result = await sut(createNodeContext({ workDir: ours }), { rev: 'origin/clean' })
+          .then(() => undefined)
+          .catch((e: unknown) => (e as TsgitError).data.code);
+
+        // Assert
+        expect(theirsRun.exitCode).toBe(exitCode);
+        expect(result).toBe(code);
+        expect(snapshot(ours)).toEqual(snapshot(theirs));
+      });
+    });
+  });
+
+  describe.each([
+    { options: '--no-commit', head: 'clean' },
+    { options: '--allow-unrelated-histories', head: 'orphan' },
+  ])('Given branch.main.mergeoptions $options', ({ options, head }) => {
+    describe(`When both tools pull ${head}`, () => {
+      it('Then the pull merges under them alike', async () => {
+        // Arrange
+        const { ours, theirs } = setUp([['branch.main.mergeoptions', options]]);
+        const sut = pull;
+        datedExit(theirs, ['pull', '-q', '--no-rebase', 'origin', head]);
+
+        // Act
+        await sut(contextOf(ours), {
+          remote: 'origin',
+          ref: head,
+          rebase: false,
+          author: IDENTITY,
+          committer: IDENTITY,
+        });
+
+        // Assert
+        const { state, index } = pulledSnapshot(theirs);
+        expect(snapshot(ours)).toMatchObject({ state, index });
+        expect(git(ours, 'cat-file', 'commit', 'HEAD')).toBe(
+          git(theirs, 'cat-file', 'commit', 'HEAD').replaceAll(
+            peerPath.slice(0, -'.git'.length),
+            SHORT_URL,
+          ),
+        );
       });
     });
   });

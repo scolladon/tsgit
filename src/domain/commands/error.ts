@@ -270,6 +270,8 @@ export type CommandError =
       readonly strategy: string;
       readonly available: ReadonlyArray<string>;
     }
+  | { readonly code: 'UNKNOWN_OPTION'; readonly option: string }
+  | { readonly code: 'BAD_BRANCH_MERGE_OPTIONS'; readonly branch: string; readonly reason: string }
   | { readonly code: 'UNKNOWN_STRATEGY_OPTION'; readonly option: string }
   | { readonly code: 'MERGE_STRATEGY_FAILED'; readonly strategy: string }
   | { readonly code: 'NO_MERGE_STRATEGY_HANDLED'; readonly strategies: ReadonlyArray<string> }
@@ -973,6 +975,25 @@ export const unknownMergeStrategy = (
   strategy: string,
   available: ReadonlyArray<string>,
 ): TsgitError => new TsgitError({ code: 'UNKNOWN_MERGE_STRATEGY', strategy, available });
+
+/**
+ * git's `unknown option `<name>'` / `unknown switch `<c>'` (exit 129): a
+ * command-line option git's option table does not hold, spelt with its dashes.
+ */
+export const unknownOption = (option: string): TsgitError =>
+  new TsgitError({ code: 'UNKNOWN_OPTION', option: sanitizeForDisplay(option) });
+
+/**
+ * git's `Bad branch.<branch>.mergeoptions string: <reason>`: the branch's
+ * mergeoptions do not split into a command line (`unclosed quote`,
+ * `cmdline ends with \`).
+ */
+export const badBranchMergeOptions = (branch: string, reason: string): TsgitError =>
+  new TsgitError({
+    code: 'BAD_BRANCH_MERGE_OPTIONS',
+    branch: sanitizeForDisplay(branch),
+    reason,
+  });
 
 /** git's `unknown strategy option: -X<option>`: a `-X` value the merge strategy does not parse. */
 export const unknownStrategyOption = (option: string): TsgitError =>

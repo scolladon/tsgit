@@ -275,6 +275,12 @@ const revisionWalkDetail = (commit: string | undefined): string =>
     ? 'revision walk setup failed'
     : `Failed to traverse parents of commit ${commit}`;
 
+/** parse-options names a long option without its dashes, a switch by its letter. */
+const unknownOptionDetail = (option: string): string =>
+  option.startsWith('--')
+    ? `unknown option \`${option.slice(2)}'`
+    : `unknown switch \`${option.slice(1)}'`;
+
 function extractDetail(data: TsgitErrorData): string {
   switch (data.code) {
     case 'INVALID_OBJECT_ID':
@@ -610,6 +616,10 @@ function extractDetail(data: TsgitErrorData): string {
       return `options '${data.options[0]}' and '${data.options[1]}' cannot be used together`;
     case 'UNKNOWN_MERGE_STRATEGY':
       return `Could not find merge strategy '${data.strategy}'. Available strategies are: ${data.available.join(' ')}.`;
+    case 'UNKNOWN_OPTION':
+      return unknownOptionDetail(data.option);
+    case 'BAD_BRANCH_MERGE_OPTIONS':
+      return `Bad branch.${data.branch}.mergeoptions string: ${data.reason}`;
     case 'UNKNOWN_STRATEGY_OPTION':
       return `unknown strategy option: -X${data.option}`;
     case 'MERGE_STRATEGY_FAILED':
