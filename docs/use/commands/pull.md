@@ -58,6 +58,8 @@ upstream needs an explicit `repo.pull({ ref })`.
 | Diverged, clean | `merge` | Two-parent commit titled from the `FETCH_HEAD` line as git's `fmt_merge_msg` titles it — `Merge branch '<branch>' of <url>` (`tag`, `remote-tracking branch`, `commit '<ref>'`, or the url alone for a remote `HEAD`), the url shortened as `FETCH_HEAD` records it, then ` into <current>` unless the current branch is `main` or `master`; reflog `pull: Merge made by the 'ort' strategy.`. |
 | Diverged, clashing | `conflict` | `MERGE_HEAD`/`MERGE_MSG`/`ORIG_HEAD` + conflicted index written. |
 
+The fetch runs with git's `--update-head-ok`, so a `ref` such as `main:main` may move the checked-out branch itself. When it does, the index and working tree — still at the old commit — are fast-forwarded to the new one (a two-way checkout that keeps local changes and refuses those it would overwrite), after `ctx.logger.warn` reports `fetch updated the current branch head.` as git does; the merge then finds the branch up to date.
+
 ## Choosing how to reconcile
 
 As git's `pull`: with no `rebase` given, pull reads `branch.<current>.rebase`

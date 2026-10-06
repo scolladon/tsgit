@@ -10,6 +10,7 @@ import { init } from '../../../../src/application/commands/init.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { pull } from '../../../../src/application/commands/pull.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
+import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
@@ -347,6 +348,72 @@ describe('pull', () => {
         // Assert
         const branch = result.fetch.updatedRefs.find((u) => u.name === 'refs/heads/main');
         expect(branch).toMatchObject({ status: 'ok', newId: b });
+      });
+    });
+
+    describe('When pull moves the branch under the working tree', () => {
+      it('Then it warns and fast-forwards the index and working tree from the old head', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const a = await commitFile(ctx, 'a.txt', 'a', 'A');
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        const b = await commitFile(ctx, 'b.txt', 'b', 'B');
+        await checkout(ctx, { rev: 'main' });
+        await seedConfig(ctx, { url: REMOTE_URL });
+        const { transport } = buildPullRemote(
+          [{ name: 'refs/heads/main', id: b }],
+          await emptyPack(ctx),
+        );
+        const warnings: string[] = [];
+        const logger = { warn: (message: string) => warnings.push(message) };
+        const sut = pull;
+
+        // Act
+        const result = mergedPull(
+          await sut(
+            { ...withTransport(ctx, transport), logger },
+            { remote: 'origin', ref: 'main:main' },
+          ),
+        );
+
+        // Assert
+        expect(warnings).toContain(
+          `fetch updated the current branch head.\nfast-forwarding your working tree from\ncommit ${a}.`,
+        );
+        expect(result.merge.kind).toBe('up-to-date');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/b.txt`)).toBe('b');
+        const index = await readIndex(ctx);
+        expect(index.entries.map((e) => e.path)).toEqual(['a.txt', 'b.txt']);
+      });
+    });
+
+    describe('When pull fetches into the unborn checked-out branch', () => {
+      it('Then no head-update warning is given, as nothing was checked out', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const b = await commitFile(ctx, 'b.txt', 'b', 'B');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/fresh\n');
+        await seedConfig(ctx, { url: REMOTE_URL });
+        const { transport } = buildPullRemote(
+          [{ name: 'refs/heads/main', id: b }],
+          await emptyPack(ctx),
+        );
+        const warnings: string[] = [];
+        const logger = { warn: (message: string) => warnings.push(message) };
+        const sut = pull;
+
+        // Act
+        await sut(
+          { ...withTransport(ctx, transport), logger },
+          { remote: 'origin', ref: 'main:fresh' },
+        );
+
+        // Assert
+        expect(warnings.filter((w) => w.startsWith('fetch updated'))).toEqual([]);
+        expect(await resolveRef(ctx, 'refs/heads/fresh' as RefName)).toBe(b);
       });
     });
   });

@@ -12,7 +12,14 @@
  *   unique:         pull merges the FETCH_HEAD merge heads under git's merge message
  */
 
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -385,6 +392,62 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
         expect(git(ours, 'rev-parse', 'HEAD')).toBe(git(theirs, 'rev-parse', 'HEAD'));
         const fetched = (dir: string) => existsSync(path.join(dir, '.git', 'FETCH_HEAD'));
         expect(fetched(ours)).toBe(fetched(theirs));
+      });
+    });
+  });
+
+  describe('Given a clone whose main the remote has advanced with a file change', () => {
+    describe('When both tools pull origin main:main', () => {
+      it('Then both warn and fast-forward the index and working tree to the fetched head', async () => {
+        // Arrange
+        const caseRoot = path.join(root, 'head-updated');
+        const work = path.join(caseRoot, 'work');
+        const bare = path.join(caseRoot, 'peer', 'peer.git');
+        dated(['init', '-q', '-b', 'main', work]);
+        writeFileSync(path.join(work, 'f'), 'old\n');
+        dated(['-C', work, 'add', 'f']);
+        dated(['-C', work, 'commit', '-q', '-m', 'a']);
+        dated(['clone', '-q', '--bare', work, bare]);
+        const dirs = { ours: path.join(caseRoot, 'ours'), theirs: path.join(caseRoot, 'theirs') };
+        for (const [dir, url] of [
+          [dirs.ours, PEER_URL],
+          [dirs.theirs, bare],
+        ] as const) {
+          dated(['clone', '-q', bare, dir]);
+          dated(['-C', dir, 'remote', 'set-url', 'origin', url]);
+        }
+        const orig = git(dirs.ours, 'rev-parse', 'HEAD').trim();
+        writeFileSync(path.join(work, 'f'), 'new\n');
+        dated(['-C', work, 'commit', '-q', '-am', 'b']);
+        dated(['-C', work, 'push', '-q', bare, 'main']);
+        const warnings: string[] = [];
+        const ctx = {
+          ...createNodeContext({ workDir: dirs.ours }),
+          transport: backendTransport(path.join(caseRoot, 'peer')),
+          logger: { warn: (message: string) => warnings.push(message) },
+        };
+
+        // Act
+        await pull(ctx, {
+          remote: 'origin',
+          ref: 'main:main',
+          author: IDENTITY,
+          committer: IDENTITY,
+        });
+        const theirsRun = tryRunGitWithExit(['-C', dirs.theirs, 'pull', 'origin', 'main:main'], {
+          env: DATED_ENV,
+        });
+
+        // Assert
+        expect(theirsRun.exitCode).toBe(0);
+        const gitWarning = theirsRun.stderr.slice(theirsRun.stderr.indexOf('warning: '));
+        expect(`warning: ${warnings[0]}\n`).toBe(gitWarning);
+        expect(gitWarning).toContain(`commit ${orig}.`);
+        expect(git(dirs.ours, 'status', '--porcelain')).toBe('');
+        expect(git(dirs.theirs, 'status', '--porcelain')).toBe('');
+        const stage = (dir: string) => git(dir, 'ls-files', '-s');
+        expect(stage(dirs.ours)).toBe(stage(dirs.theirs));
+        expect(readFileSync(path.join(dirs.ours, 'f'), 'utf8')).toBe('new\n');
       });
     });
   });

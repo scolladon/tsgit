@@ -25,7 +25,10 @@ import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from '../primitives/config-read.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
+import { materializeTree } from '../primitives/materialize-tree.js';
 import { inMergeBases, mergeBasesOf, reduceHeads } from '../primitives/merge-base.js';
+import { readIndex } from '../primitives/read-index.js';
+import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { resolveRef, resolveRefOrMissing } from '../primitives/resolve-ref.js';
 import { type FetchResult, type FetchUpdate, fetchWith } from './fetch.js';
 import { assertCleanWorkTree } from './internal/clean-work-tree.js';
@@ -34,6 +37,7 @@ import { configuredPullFastForward } from './internal/fast-forward-config.js';
 import { type FetchHeadLine, readFetchHead } from './internal/fetch-head.js';
 import { forkPoint } from './internal/fork-point.js';
 import { treeOf } from './internal/history-rewrite.js';
+import { acquireIndexLock } from './internal/index-update.js';
 import { configuredPullRebase } from './internal/pull-rebase-config.js';
 import { refspecTrackingRef, upstreamTrackingRef } from './internal/pull-tracking-ref.js';
 import { buildRemoteTable } from './internal/remote-config.js';
@@ -290,8 +294,10 @@ export const pull = async (ctx: Context, given: PullOptions = {}): Promise<PullR
   const upstream = await readUpstream(ctx, currentBranch, settled);
   const { opts, unreconciled } = await settleRebase(ctx, settled, currentBranch);
   const rebase = await planRebase(ctx, opts, upstream, branchRef);
+  const origHead = await resolveRefOrMissing(ctx, 'HEAD');
   const fetchResult = await fetchUpstream(ctx, opts, upstream);
   assertNothingRejected(fetchResult);
+  await followUpdatedHead(ctx, origHead);
   const fetched = await mergeHeads(ctx, opts, upstream, branchRef);
   return integrate(ctx, { opts, branchRef, fetchResult, fetched, rebase, unreconciled });
 };
@@ -312,6 +318,39 @@ const fetchUpstream = (ctx: Context, opts: PullOptions, upstream: Upstream): Pro
 
 // git pull runs its fetch with `--update-head-ok`.
 const PULL_FETCH = { updateHeadOk: true } as const;
+
+/**
+ * git pull after a fetch that moved HEAD's own branch: the index and working
+ * tree still hold the old commit, so fast-forward them to the new one. An
+ * unborn HEAD has nothing checked out to follow.
+ */
+const followUpdatedHead = async (ctx: Context, origHead: ObjectId | undefined): Promise<void> => {
+  if (origHead === undefined) return;
+  const currHead = await resolveRef(ctx, RefName.from('HEAD'));
+  if (currHead === origHead) return;
+  ctx.logger?.warn?.(
+    `fetch updated the current branch head.\nfast-forwarding your working tree from\ncommit ${origHead}.`,
+  );
+  await fastForwardWorkTree(ctx, currHead);
+};
+
+/** git's `checkout_fast_forward`: a two-way checkout keeping local changes and
+ *  refusing those it would overwrite. */
+const fastForwardWorkTree = async (ctx: Context, target: ObjectId): Promise<void> => {
+  const lock = await acquireIndexLock(ctx);
+  try {
+    const matcher = await loadSparseMatcher(ctx);
+    const result = await materializeTree(ctx, {
+      targetTree: await treeOf(ctx, target),
+      currentIndex: await readIndex(ctx),
+      force: false,
+      ...(matcher !== undefined ? { sparse: matcher } : {}),
+    });
+    await lock.commit(result.newIndexEntries);
+  } finally {
+    await lock.release();
+  }
+};
 
 interface Integration {
   readonly opts: PullOptions;
