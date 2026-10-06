@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { tablesListLockPath } from '../../../../src/application/primitives/path-layout.js';
+import { createRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { createReftableRefStore } from '../../../../src/application/primitives/reftable-ref-store.js';
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
 import { fileNotFound, permissionDenied } from '../../../../src/domain/error.js';
@@ -1306,6 +1307,40 @@ describe('reftable-ref-store', () => {
         // Assert
         expect(await sut.resolveDirect(ref('refs/heads/main'))).toEqual({ kind: 'missing' });
         expect(await sut.hasReflog(ref('refs/heads/main'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a reftable repository with MERGE_HEAD and CHERRY_PICK_HEAD files in the git dir', () => {
+    describe('When the repository ref store resolves MERGE_HEAD', () => {
+      it('Then it reads the file, as git reads a pseudoref', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        await seedTwoTableStack(ctx, commonReftableDir(ctx));
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${hexOid(0x05)}\n`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect(ref('MERGE_HEAD'));
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id: hexOid(0x05) });
+      });
+    });
+
+    describe('When the repository ref store resolves CHERRY_PICK_HEAD', () => {
+      it('Then it ignores the file, since the stack holds that ref', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        await seedTwoTableStack(ctx, commonReftableDir(ctx));
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/CHERRY_PICK_HEAD`, `${hexOid(0x05)}\n`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect(ref('CHERRY_PICK_HEAD'));
+
+        // Assert
+        expect(result).toEqual({ kind: 'missing' });
       });
     });
   });

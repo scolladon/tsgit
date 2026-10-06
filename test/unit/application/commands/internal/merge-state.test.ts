@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { init } from '../../../../../src/application/commands/init.js';
 import {
@@ -12,6 +12,17 @@ import {
   writeOrigHead,
 } from '../../../../../src/application/commands/internal/merge-state.js';
 import type { ObjectId } from '../../../../../src/domain/objects/index.js';
+
+// Object verification is updateRef's concern; these suites pin the state layout with ids no store holds.
+vi.mock(
+  '../../../../../src/application/primitives/internal/ref-target.js',
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import('../../../../../src/application/primitives/internal/ref-target.js')
+    >()),
+    assertRefTargetValid: async () => undefined,
+  }),
+);
 
 describe('merge-state', () => {
   describe('readsNoFastForward', () => {
@@ -316,26 +327,17 @@ describe('merge-state', () => {
 
     describe('Given a malformed (non-hex) ORIG_HEAD', () => {
       describe('When readOrigHead is called', () => {
-        it('Then throws INVALID_OBJECT_ID with the offending value', async () => {
-          // Arrange — a corrupt ORIG_HEAD must NOT silently route mergeAbort
-          // to an invalid commit. The factory rejection guards downstream
-          // consumers that resolve to a tree.
+        it('Then reads as absent, as git reads a broken ref', async () => {
+          // Arrange
           const ctx = createMemoryContext();
           await init(ctx);
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`, 'not-a-hex-oid\n');
 
           // Act
-          let caught: unknown;
-          try {
-            await readOrigHead(ctx);
-          } catch (err) {
-            caught = err;
-          }
+          const result = await readOrigHead(ctx);
 
           // Assert
-          const data = (caught as { data?: { code?: string; value?: string } })?.data;
-          expect(data?.code).toBe('INVALID_OBJECT_ID');
-          expect(data?.value).toBe('not-a-hex-oid');
+          expect(result).toBeUndefined();
         });
       });
     });

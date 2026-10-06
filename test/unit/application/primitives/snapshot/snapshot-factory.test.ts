@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createFsWorkdirEnumerator } from '../../../../../src/adapters/snapshot-resolvers/fs-workdir-enumerator.js';
 import { createRawIndexResolver } from '../../../../../src/adapters/snapshot-resolvers/raw-index-resolver.js';
 import { createRawTreeResolver } from '../../../../../src/adapters/snapshot-resolvers/raw-tree-resolver.js';
+import { writeRootRef } from '../../../../../src/application/primitives/internal/root-ref.js';
 import { createSnapshotFactory } from '../../../../../src/application/primitives/snapshot/snapshot-factory.js';
 import { pushStashRef } from '../../../../../src/application/primitives/stash-ref.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
@@ -12,6 +13,7 @@ import type {
   FileMode,
   FilePath,
   ObjectId,
+  RefName,
 } from '../../../../../src/domain/objects/index.js';
 import { FILE_MODE, ZERO_OID } from '../../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../../src/domain/objects/tree.js';
@@ -88,6 +90,29 @@ const factoryFor = (ctx: Context) =>
   });
 
 describe('createSnapshotFactory', () => {
+  describe('Given a reftable repository whose stack holds CHERRY_PICK_HEAD', () => {
+    describe('When sut.cherryPickHead() is awaited and iterated', () => {
+      it('Then it yields the picked tree leaves, with no loose file to find', async () => {
+        // Arrange
+        const seeded = await buildSeededContext();
+        const ctx: Context = { ...seeded, layout: { ...seeded.layout, refStorage: 'reftable' } };
+        const blobId = await writeBlob(ctx, new Uint8Array([7]));
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR as FileMode, 'p.txt', blobId),
+        ]);
+        await writeRootRef(ctx, 'CHERRY_PICK_HEAD' as RefName, await writeCommit(ctx, treeId));
+        const sut = factoryFor(ctx);
+
+        // Act
+        const snapshot = await sut.cherryPickHead();
+        const rows = snapshot === null ? [] : await collect(snapshot.entries());
+
+        // Assert
+        expect(rows.map((r) => r.path)).toEqual(['p.txt']);
+      });
+    });
+  });
+
   describe('Given a repo with HEAD pointing at a commit', () => {
     describe('When sut.head() is iterated', () => {
       it('Then it yields the commit tree leaves', async () => {

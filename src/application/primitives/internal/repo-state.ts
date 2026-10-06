@@ -10,6 +10,7 @@ import { notARepository, workTreeConfigInvalid, workTreeRequired } from '../../.
 import { RefName } from '../../../domain/objects/index.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import { refNotFound } from '../../../domain/refs/error.js';
+import { isPseudoRef } from '../../../domain/refs/per-worktree-ref.js';
 import {
   CHERRY_PICK_HEAD,
   MERGE_HEAD,
@@ -51,6 +52,7 @@ import {
 import { getRefStore, type ResolveDirectResult } from '../ref-store.js';
 import { validateHead } from './head-file.js';
 import { assertRepoSettingsValid } from './repo-settings-gate.js';
+import { rootRefExists } from './root-ref.js';
 
 const HEAD_REF = RefName.from('HEAD');
 
@@ -446,14 +448,18 @@ export const currentBranchRef = async (ctx: Context): Promise<RefName | undefine
   branchRefFromHead(await readHeadRaw(ctx));
 
 const PENDING_MARKERS: ReadonlyArray<{
-  readonly file: string;
+  readonly name: RefName;
   readonly operation: PendingOperation;
 }> = [
-  { file: MERGE_HEAD, operation: MERGE },
-  { file: CHERRY_PICK_HEAD, operation: CHERRY_PICK },
-  { file: REVERT_HEAD, operation: REVERT },
-  { file: REBASE_HEAD, operation: REBASE },
+  { name: MERGE_HEAD as RefName, operation: MERGE },
+  { name: CHERRY_PICK_HEAD as RefName, operation: CHERRY_PICK },
+  { name: REVERT_HEAD as RefName, operation: REVERT },
+  { name: REBASE_HEAD as RefName, operation: REBASE },
 ];
+
+/** git's `MERGE_HEAD` is a file beside the ref backend; every other marker is a root ref. */
+const markerPresent = (ctx: Context, name: RefName): Promise<boolean> =>
+  isPseudoRef(name) ? ctx.fs.exists(`${ctx.layout.gitDir}/${name}`) : rootRefExists(ctx, name);
 
 /**
  * Reject mutations when an in-progress operation has left a marker file behind.
@@ -471,9 +477,7 @@ export const assertNoPendingOperation = async (
   const except = options.except;
   const isExcepted = (op: PendingOperation): boolean =>
     Array.isArray(except) ? except.includes(op) : except === op;
-  const flags = await Promise.all(
-    PENDING_MARKERS.map((m) => ctx.fs.exists(`${ctx.layout.gitDir}/${m.file}`)),
-  );
+  const flags = await Promise.all(PENDING_MARKERS.map((m) => markerPresent(ctx, m.name)));
   // Stryker disable next-line EqualityOperator: equivalent — relaxing the bound to `i <= length` adds one iteration at `i === PENDING_MARKERS.length`, where `PENDING_MARKERS[i]` is `undefined`; the `marker === undefined` guard below immediately `continue`s, so no extra check or throw occurs.
   for (let i = 0; i < PENDING_MARKERS.length; i += 1) {
     const marker = PENDING_MARKERS[i];

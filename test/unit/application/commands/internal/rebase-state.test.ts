@@ -12,6 +12,17 @@ import type { AuthorIdentity, ObjectId } from '../../../../../src/domain/objects
 import { rebaseTodoBackup } from '../../../../../src/domain/rebase/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
+// Object verification is updateRef's concern; these suites pin the state layout with ids no store holds.
+vi.mock(
+  '../../../../../src/application/primitives/internal/ref-target.js',
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import('../../../../../src/application/primitives/internal/ref-target.js')
+    >()),
+    assertRefTargetValid: async () => undefined,
+  }),
+);
+
 const ONTO = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as ObjectId;
 const ORIG = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' as ObjectId;
 const T1 = '1111111111111111111111111111111111111111' as ObjectId;

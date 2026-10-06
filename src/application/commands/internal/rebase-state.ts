@@ -13,7 +13,7 @@
  */
 
 import { invalidSequencerTodo } from '../../../domain/commands/error.js';
-import type { ObjectId } from '../../../domain/objects/index.js';
+import type { ObjectId, RefName } from '../../../domain/objects/index.js';
 import {
   type AuthorIdentity,
   parseAuthorScript,
@@ -27,8 +27,9 @@ import {
   serializeAuthorScript,
   serializeRebaseTodo,
 } from '../../../domain/rebase/index.js';
-import { MERGE_MSG } from '../../../domain/refs/state-files.js';
+import { MERGE_MSG, REBASE_HEAD } from '../../../domain/refs/state-files.js';
 import type { Context } from '../../../ports/context.js';
+import { deleteRootRef, readRootRef, writeRootRef } from '../../primitives/internal/root-ref.js';
 import { resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
 import { readOptionalOidFile } from './oid-file.js';
 
@@ -111,7 +112,7 @@ export interface RebaseState {
 
 const dir = (ctx: Context): string => `${ctx.layout.gitDir}/rebase-merge`;
 const file = (ctx: Context, name: string): string => `${dir(ctx)}/${name}`;
-const rebaseHeadPath = (ctx: Context): string => `${ctx.layout.gitDir}/REBASE_HEAD`;
+const REBASE_HEAD_REF = REBASE_HEAD as RefName;
 const mergeMsgPath = (ctx: Context): string => `${ctx.layout.gitDir}/${MERGE_MSG}`;
 
 /**
@@ -151,7 +152,7 @@ export const writeRebaseStop = async (ctx: Context, stop: RebaseStop): Promise<v
   await writeStopMarkers(ctx, stop);
   if (stop.messageSquash !== undefined) await write('message-squash', stop.messageSquash);
   if (stop.mergeMsg !== undefined) await ctx.fs.writeUtf8(mergeMsgPath(ctx), stop.mergeMsg);
-  await ctx.fs.writeUtf8(rebaseHeadPath(ctx), `${stop.stoppedSha}\n`);
+  await writeRootRef(ctx, REBASE_HEAD_REF, stop.stoppedSha);
 };
 
 /** git unlinks `amend` before every step and drops `current-fixups` /
@@ -182,7 +183,7 @@ const writeOrRemove = async (
 };
 
 export const readRebaseHead = (ctx: Context): Promise<ObjectId | undefined> =>
-  readOptionalOidFile(ctx, rebaseHeadPath(ctx));
+  readRootRef(ctx, REBASE_HEAD_REF);
 
 export const rebaseInProgress = (ctx: Context): Promise<boolean> => ctx.fs.exists(dir(ctx));
 
@@ -300,5 +301,5 @@ export const readAutostash = (ctx: Context): Promise<ObjectId | undefined> =>
 /** Remove the whole `.git/rebase-merge/` dir and `.git/REBASE_HEAD`. Idempotent. */
 export const clearRebaseState = async (ctx: Context): Promise<void> => {
   if (await ctx.fs.exists(dir(ctx))) await ctx.fs.rmRecursive(dir(ctx));
-  if (await ctx.fs.exists(rebaseHeadPath(ctx))) await ctx.fs.rm(rebaseHeadPath(ctx));
+  await deleteRootRef(ctx, REBASE_HEAD_REF);
 };

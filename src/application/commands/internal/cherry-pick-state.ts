@@ -1,36 +1,28 @@
 /**
- * Persisted single-pick state for `cherry-pick`. `.git/CHERRY_PICK_HEAD` records
+ * Persisted single-pick state for `cherry-pick`. The `CHERRY_PICK_HEAD` root ref records
  * the commit currently being picked; it is the parallel of `.git/MERGE_HEAD` but
  * is **never** promoted to a second parent (cherry-pick stays single-parent).
  * `commit` reads it to allow the resolving commit and clears it on success.
  * `MERGE_MSG` is shared with the merge machine (`internal/merge-state.ts`).
  */
-import type { FilePath, ObjectId } from '../../../domain/objects/index.js';
+import type { FilePath, ObjectId, RefName } from '../../../domain/objects/index.js';
+import { CHERRY_PICK_HEAD } from '../../../domain/refs/state-files.js';
 import type { Context } from '../../../ports/context.js';
-import { readOptionalOidFile } from './oid-file.js';
+import { deleteRootRef, readRootRef, writeRootRef } from '../../primitives/internal/root-ref.js';
 
-const cherryPickHeadPath = (ctx: Context): string => `${ctx.layout.gitDir}/CHERRY_PICK_HEAD`;
+const CHERRY_PICK_HEAD_REF = CHERRY_PICK_HEAD as RefName;
 
-/** Write `.git/CHERRY_PICK_HEAD` containing the picked commit id + LF. */
-export const writeCherryPickHead = async (ctx: Context, pickedId: ObjectId): Promise<void> => {
-  await ctx.fs.writeUtf8(cherryPickHeadPath(ctx), `${pickedId}\n`);
-};
+/** Record the picked commit in `CHERRY_PICK_HEAD`. */
+export const writeCherryPickHead = (ctx: Context, pickedId: ObjectId): Promise<void> =>
+  writeRootRef(ctx, CHERRY_PICK_HEAD_REF, pickedId);
 
-/**
- * Read `.git/CHERRY_PICK_HEAD` and return the picked commit id, or `undefined`
- * when absent/empty. A corrupt (non-40-hex) value throws `INVALID_OBJECT_ID`
- * via the ObjectId factory — a mid-write crash must not yield a malformed pick.
- */
+/** The picked commit id, or `undefined` when `CHERRY_PICK_HEAD` is absent or broken (git's reading). */
 export const readCherryPickHead = (ctx: Context): Promise<ObjectId | undefined> =>
-  readOptionalOidFile(ctx, cherryPickHeadPath(ctx));
+  readRootRef(ctx, CHERRY_PICK_HEAD_REF);
 
-/** Remove `.git/CHERRY_PICK_HEAD`. Idempotent — missing is not an error. */
-export const clearCherryPickHead = async (ctx: Context): Promise<void> => {
-  const path = cherryPickHeadPath(ctx);
-  if (await ctx.fs.exists(path)) {
-    await ctx.fs.rm(path);
-  }
-};
+/** Drop `CHERRY_PICK_HEAD`. Idempotent — missing is not an error. */
+export const clearCherryPickHead = (ctx: Context): Promise<void> =>
+  deleteRootRef(ctx, CHERRY_PICK_HEAD_REF);
 
 /**
  * Build the `MERGE_MSG` draft for a conflicted pick: the source message, a blank

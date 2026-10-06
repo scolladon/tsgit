@@ -566,6 +566,25 @@ describe('internal/repo-state', () => {
       });
     });
 
+    describe('Given a pending-operation marker that holds no object id', () => {
+      describe('When called', () => {
+        it.each(['CHERRY_PICK_HEAD', 'REVERT_HEAD', 'REBASE_HEAD'])(
+          'Then a broken %s does not count as in progress, as git reads it',
+          async (marker) => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${marker}`, 'oid\n');
+
+            // Act
+            const result = await assertNoPendingOperation(ctx);
+
+            // Assert
+            expect(result).toBeUndefined();
+          },
+        );
+      });
+    });
+
     describe('Given a single pending-operation marker file exists', () => {
       describe('When called', () => {
         it.each([
@@ -575,7 +594,7 @@ describe('internal/repo-state', () => {
         ])('Then .git/$label throws with operation $operation', async ({ marker, operation }) => {
           // Arrange
           const ctx = createMemoryContext();
-          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${marker}`, 'oid\n');
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${marker}`, `${'a'.repeat(40)}\n`);
 
           // Act
           let caught: unknown;

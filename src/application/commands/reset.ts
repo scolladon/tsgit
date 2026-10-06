@@ -16,7 +16,7 @@ import { bareRepository } from '../../domain/index.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { resetMovingTo } from '../../domain/reflog/reflog-messages.js';
-import { MERGE_HEAD, ORIG_HEAD } from '../../domain/refs/state-files.js';
+import { MERGE_HEAD } from '../../domain/refs/state-files.js';
 import { MERGE } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import { buildIndexFromTree } from '../primitives/build-index-from-tree.js';
@@ -30,7 +30,7 @@ import { updateRef } from '../primitives/update-ref.js';
 import { removeBranchState } from './internal/branch-state.js';
 import { checkoutMetadataFor } from './internal/checkout-metadata.js';
 import { acquireIndexLock } from './internal/index-update.js';
-import { writeOrigHead } from './internal/merge-state.js';
+import { clearOrigHead, writeOrigHead } from './internal/merge-state.js';
 import {
   assertOperationalRepository,
   readHeadRaw,
@@ -104,8 +104,7 @@ export const reset = async (ctx: Context, opts: ResetOptions): Promise<ResetResu
 const recordOrigHead = async (ctx: Context): Promise<void> => {
   const left = await resolveRefOrMissing(ctx, 'HEAD');
   if (left !== undefined) return writeOrigHead(ctx, left);
-  const path = `${ctx.layout.gitDir}/${ORIG_HEAD}`;
-  if (await ctx.fs.exists(path)) await ctx.fs.rm(path);
+  await clearOrigHead(ctx);
 };
 
 /**

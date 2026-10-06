@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
   clearCherryPickHead,
@@ -6,8 +6,18 @@ import {
   readCherryPickHead,
   writeCherryPickHead,
 } from '../../../../../src/application/commands/internal/cherry-pick-state.js';
-import type { TsgitError } from '../../../../../src/domain/error.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/index.js';
+
+// Object verification is updateRef's concern; these suites pin the state layout with ids no store holds.
+vi.mock(
+  '../../../../../src/application/primitives/internal/ref-target.js',
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import('../../../../../src/application/primitives/internal/ref-target.js')
+    >()),
+    assertRefTargetValid: async () => undefined,
+  }),
+);
 
 const OID = 'a'.repeat(40) as ObjectId;
 const headPath = (ctx: ReturnType<typeof createMemoryContext>): string =>
@@ -72,21 +82,16 @@ describe('cherry-pick-state', () => {
     });
 
     describe('When CHERRY_PICK_HEAD is corrupt', () => {
-      it('Then throws INVALID_OBJECT_ID', async () => {
+      it('Then reads as absent, as git reads a broken ref', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await ctx.fs.writeUtf8(headPath(ctx), 'not-a-valid-oid\n');
 
         // Act
-        let caught: TsgitError | undefined;
-        try {
-          await readCherryPickHead(ctx);
-        } catch (err) {
-          caught = err as TsgitError;
-        }
+        const result = await readCherryPickHead(ctx);
 
         // Assert
-        expect(caught?.data.code).toBe('INVALID_OBJECT_ID');
+        expect(result).toBeUndefined();
       });
     });
   });

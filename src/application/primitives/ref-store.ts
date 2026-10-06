@@ -38,6 +38,7 @@ import {
   serializeSymbolicRef,
 } from '../../domain/refs/index.js';
 import { packedRefsWithout } from '../../domain/refs/packed-refs.js';
+import { isPseudoRef } from '../../domain/refs/per-worktree-ref.js';
 import {
   firstRefNameConflict,
   type RefNameFacts,
@@ -602,10 +603,16 @@ const byPackedRefName = (a: PackedRefEntry, b: PackedRefEntry): number =>
  *  implementation. `getRefStore`'s `Context`-keyed memo (below) is what
  *  keeps this a one-shot decision per Context. */
 export function createRefStore(ctx: Context): RefStore {
-  return ctx.layout.refStorage === 'reftable'
-    ? createReftableRefStore(ctx)
-    : createFilesRefStore(ctx);
+  if (ctx.layout.refStorage !== 'reftable') return createFilesRefStore(ctx);
+  return withPseudoRefFiles(createReftableRefStore(ctx), createFilesRefStore(ctx));
 }
+
+/** git's `refs_read_raw_ref`: a pseudoref (`MERGE_HEAD`, `FETCH_HEAD`) is read
+ *  from its file in the git dir, whatever backend holds every other ref. */
+const withPseudoRefFiles = (backend: RefStore, files: RefStore): RefStore => ({
+  ...backend,
+  resolveDirect: (name) => (isPseudoRef(name) ? files : backend).resolveDirect(name),
+});
 
 /** A packed snapshot's point lookup — git's `find_reference_location`. */
 interface PackedNameIndex {

@@ -36,6 +36,7 @@ import { resolveWorktreePath, worktreePathBasename } from '../../domain/worktree
 import type { Context } from '../../ports/context.js';
 import { acquireIndexLock } from '../primitives/internal/index-lock.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
+import { writeRootRef } from '../primitives/internal/root-ref.js';
 import {
   deriveWorktreeContext,
   worktreeScopedFs,
@@ -179,7 +180,7 @@ const writeAdmin = async (
   await ctx.fs.writeUtf8(`${admin}/gitdir`, `${worktreeGitdirPointer(worktreePath)}\n`);
   const child = deriveWorktreeContext(ctx, id, worktreePath);
   await getRefStore(child).applyRefUpdates([adminHeadUpdate(head)]);
-  await ctx.fs.writeUtf8(`${admin}/${ORIG_HEAD}`, `${oid}\n`);
+  await writeRootRef(child, ORIG_HEAD as RefName, oid);
   await worktreeScopedFs(ctx, worktreePath).writeUtf8(
     `${worktreePath}/.git`,
     `${worktreeGitfile(admin)}\n`,

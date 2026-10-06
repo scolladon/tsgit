@@ -8,6 +8,8 @@
  *   kind:    byte-identical
  *   format:  git-merge-state-files
  */
+
+import type { RefName } from '../../../domain/objects/index.js';
 import {
   CHERRY_PICK_HEAD,
   MERGE_HEAD,
@@ -19,6 +21,7 @@ import {
 } from '../../../domain/refs/state-files.js';
 import type { Context } from '../../../ports/context.js';
 import { removeAutoMerge } from '../../primitives/internal/auto-merge-ref.js';
+import { deleteRootRef, rootRefExists } from '../../primitives/internal/root-ref.js';
 import { saveMergeAutostash } from './merge-autostash.js';
 import { clearSequencer } from './sequencer-state.js';
 
@@ -30,8 +33,8 @@ const MERGE_BRANCH_STATE = [MERGE_HEAD, MERGE_RR, MERGE_MSG, MERGE_MODE] as cons
 const COMMITTED_STATE = [MERGE_HEAD, MERGE_MSG, MERGE_MODE, SQUASH_MSG] as const;
 
 const CANCELLED_OPERATIONS = [
-  { marker: CHERRY_PICK_HEAD, warning: 'cancelling a cherry picking in progress' },
-  { marker: REVERT_HEAD, warning: 'cancelling a revert in progress' },
+  { marker: CHERRY_PICK_HEAD as RefName, warning: 'cancelling a cherry picking in progress' },
+  { marker: REVERT_HEAD as RefName, warning: 'cancelling a revert in progress' },
 ] as const;
 
 /** Remove `<gitDir>/<name>`; whether it was there. */
@@ -68,7 +71,8 @@ export const sequencerPostCommitCleanup = async (
 ): Promise<void> => {
   let cancelled = false;
   for (const { marker, warning } of CANCELLED_OPERATIONS) {
-    if (!(await removeStateFile(ctx, marker))) continue;
+    if (!(await rootRefExists(ctx, marker))) continue;
+    await deleteRootRef(ctx, marker);
     if (report === 'announce') ctx.logger?.warn?.(warning);
     cancelled = true;
   }

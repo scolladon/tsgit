@@ -1,8 +1,8 @@
 /**
  * Persisted merge-state writers.
  *
- * `.git/MERGE_HEAD`, `.git/MERGE_MODE`, `.git/MERGE_MSG`, `.git/ORIG_HEAD`
- * are the canonical git markers that record "a merge is in progress". `merge`
+ * `.git/MERGE_HEAD`, `.git/MERGE_MODE`, `.git/MERGE_MSG` and the `ORIG_HEAD`
+ * root ref are the canonical git markers that record "a merge is in progress". `merge`
  * writes them when conflicts are detected; `commit` reads MERGE_HEAD (and
  * MERGE_MODE) for the parents; `branch-state.ts` removes them.
  *
@@ -16,7 +16,7 @@
  *   format:  git-merge-state-files
  */
 
-import type { ObjectId } from '../../../domain/objects/index.js';
+import type { ObjectId, RefName } from '../../../domain/objects/index.js';
 import { ObjectId as ObjectIdFactory } from '../../../domain/objects/index.js';
 import {
   MERGE_HEAD,
@@ -26,6 +26,7 @@ import {
   SQUASH_MSG,
 } from '../../../domain/refs/state-files.js';
 import type { Context } from '../../../ports/context.js';
+import { deleteRootRef, readRootRef, writeRootRef } from '../../primitives/internal/root-ref.js';
 
 const mergeHeadPath = (ctx: Context): string => `${ctx.layout.gitDir}/${MERGE_HEAD}`;
 const mergeMsgPath = (ctx: Context): string => `${ctx.layout.gitDir}/${MERGE_MSG}`;
@@ -35,7 +36,7 @@ const mergeModePath = (ctx: Context): string => `${ctx.layout.gitDir}/${MERGE_MO
 export type MergeMode = '' | typeof NO_FAST_FORWARD;
 
 const NO_FAST_FORWARD = 'no-ff';
-const origHeadPath = (ctx: Context): string => `${ctx.layout.gitDir}/${ORIG_HEAD}`;
+const ORIG_HEAD_REF = ORIG_HEAD as RefName;
 
 /** Write `.git/MERGE_HEAD`: each head merged's commit id + LF, in merge order. */
 export const writeMergeHeads = async (
@@ -66,10 +67,12 @@ export const writeMergeMsg = async (ctx: Context, message: string): Promise<void
   await ctx.fs.writeUtf8(mergeMsgPath(ctx), message);
 };
 
-/** Write `.git/ORIG_HEAD` containing the pre-merge HEAD commit id + LF. */
-export const writeOrigHead = async (ctx: Context, oldHeadId: ObjectId): Promise<void> => {
-  await ctx.fs.writeUtf8(origHeadPath(ctx), `${oldHeadId}\n`);
-};
+/** Record the pre-merge HEAD commit in the `ORIG_HEAD` root ref. */
+export const writeOrigHead = (ctx: Context, oldHeadId: ObjectId): Promise<void> =>
+  writeRootRef(ctx, ORIG_HEAD_REF, oldHeadId);
+
+/** Drop the `ORIG_HEAD` root ref. Idempotent — missing is not an error. */
+export const clearOrigHead = (ctx: Context): Promise<void> => deleteRootRef(ctx, ORIG_HEAD_REF);
 
 /**
  * Read every `.git/MERGE_HEAD` line — one per head merged, in merge order —
@@ -92,20 +95,12 @@ export const readMergeHead = async (ctx: Context): Promise<ObjectId | undefined>
   (await readMergeHeads(ctx))?.[0];
 
 /**
- * Read `.git/ORIG_HEAD` and return the recorded pre-merge ObjectId,
- * or `undefined` when the file is absent. Used by `mergeAbort` to
- * restore the working tree, index, and branch ref to the pre-merge
- * commit. Validation via the ObjectId factory rejects a corrupt
- * `ORIG_HEAD` (mid-write crash) with `INVALID_OBJECT_ID`.
+ * The pre-merge commit `ORIG_HEAD` names, or `undefined` when it is absent or
+ * broken (git's reading). Used by `mergeAbort` to restore the working tree,
+ * index, and branch ref to the pre-merge commit.
  */
-export const readOrigHead = async (ctx: Context): Promise<ObjectId | undefined> => {
-  const path = origHeadPath(ctx);
-  if (!(await ctx.fs.exists(path))) return undefined;
-  const content = await ctx.fs.readUtf8(path);
-  const trimmed = content.trim();
-  if (trimmed.length === 0) return undefined;
-  return ObjectIdFactory.from(trimmed);
-};
+export const readOrigHead = (ctx: Context): Promise<ObjectId | undefined> =>
+  readRootRef(ctx, ORIG_HEAD_REF);
 
 /**
  * Read `.git/MERGE_MSG` and return its content, or `undefined` when
