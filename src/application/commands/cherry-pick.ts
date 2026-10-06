@@ -320,13 +320,9 @@ const persistStop = async (
 ): Promise<void> => {
   await writeCherryPickHead(ctx, source);
   const draft = messageDraft(cData.message, source, opts.recordOrigin);
+  // An unclean pick with nothing unmerged (a directory rename split) still gets git's empty block.
   const message =
-    // equivalent-mutant (`>= 0`): a conflict outcome always carries at least one
-    // conflict, so `length > 0` and `length >= 0` are indistinguishable here; the
-    // `!== undefined` guard is what separates the conflict path from the empty stop.
-    conflicts !== undefined && conflicts.length > 0
-      ? conflictMergeMsg(draft, sortedRecordedPaths(conflicts))
-      : draft;
+    conflicts !== undefined ? conflictMergeMsg(draft, sortedRecordedPaths(conflicts)) : draft;
   await writeMergeMsg(ctx, message);
 };
 

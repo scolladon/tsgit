@@ -559,6 +559,7 @@ function withDirectoryRenames(
       fileLocations: new Set<FilePath>(),
       vacated: new Set<FilePath>(),
       sidePaths: new Map<FilePath, SidePaths>(),
+      clean: true,
     };
   }
   return applyDirectoryRenames(base, ours, theirs, renames);
@@ -693,5 +694,5 @@ export async function mergeTrees(
   }
 
   const conflicts = extractConflicts(outcomes);
-  return { outcomes, conflicts, cleanMerge: conflicts.length === 0 };
+  return { outcomes, conflicts, cleanMerge: conflicts.length === 0 && located.clean };
 }

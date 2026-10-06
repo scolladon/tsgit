@@ -117,6 +117,33 @@ const majority = (targets: ReadonlyMap<string, number>): string | undefined => {
   return tied ? undefined : best;
 };
 
+/** One side's directory renames, and whether a relevant directory split with no majority. */
+interface ProvisionalRenames {
+  readonly renames: DirectoryRenames;
+  /** `CONFLICT (directory rename split)`: the merge is not clean, though nothing is staged. */
+  readonly split: boolean;
+}
+
+const provisionalRenamesOf = (
+  base: FlatTree,
+  side: FlatTree,
+  other: FlatTree,
+  renames: ReadonlyArray<MergeRename>,
+): ProvisionalRenames => {
+  const removed = removedDirectories(base, side, locationRelevantDirectories(base, side, other));
+  const counts: Counts = new Map();
+  for (const rename of renames) countRename(counts, removed, rename);
+  const directoryRenames = new Map<string, string>();
+  let split = false;
+  for (const [source, targets] of counts) {
+    if (removed.get(source) === 'none') continue;
+    const target = majority(targets);
+    if (target === undefined) split = true;
+    else directoryRenames.set(source, target);
+  }
+  return { renames: directoryRenames, split };
+};
+
 /** The directories `side` renamed, each to the destination most of its files moved into. */
 export function directoryRenamesOf(
   base: FlatTree,
@@ -124,16 +151,7 @@ export function directoryRenamesOf(
   other: FlatTree,
   renames: ReadonlyArray<MergeRename>,
 ): DirectoryRenames {
-  const removed = removedDirectories(base, side, locationRelevantDirectories(base, side, other));
-  const counts: Counts = new Map();
-  for (const rename of renames) countRename(counts, removed, rename);
-  const directoryRenames = new Map<string, string>();
-  for (const [source, targets] of counts) {
-    const target = majority(targets);
-    if (removed.get(source) !== 'none' && target !== undefined)
-      directoryRenames.set(source, target);
-  }
-  return directoryRenames;
+  return provisionalRenamesOf(base, side, other, renames).renames;
 }
 
 /** The trees, renames and moved paths once directory renames carried each side's paths along. */
@@ -147,6 +165,8 @@ export interface DirectoryRenamedInput {
   readonly vacated: ReadonlySet<FilePath>;
   /** Where each side held a moved path, for git's `<label>:<path>` markers. */
   readonly sidePaths: ReadonlyMap<FilePath, SidePaths>;
+  /** `false` when a directory rename split, collided or met a path in the way — nothing staged for it. */
+  readonly clean: boolean;
 }
 
 const movedSidePaths = (
@@ -216,8 +236,11 @@ interface SideMove {
 const inTheWay = ({ base, side }: SideMove, path: FilePath): boolean =>
   side.entries.has(path) || base.entries.has(path);
 
-/** `check_for_directory_rename` + `handle_path_level_conflicts`, collisions and renamed-again destinations skipped. */
-const destinationOf = (move: SideMove, path: FilePath): FilePath | undefined => {
+/** `handle_path_level_conflicts` refusing a move: a collision or a path in the way. */
+const BLOCKED = Symbol('blocked');
+
+/** `check_for_directory_rename` + `handle_path_level_conflicts`; renamed-again destinations are skipped clean. */
+const destinationOf = (move: SideMove, path: FilePath): FilePath | typeof BLOCKED | undefined => {
   if (move.otherCollisions.has(path)) return undefined;
   const from = renamedDirectoryOf(path, move.directoryRenames);
   if (from === undefined) return undefined;
@@ -225,17 +248,24 @@ const destinationOf = (move: SideMove, path: FilePath): FilePath | undefined => 
   if (move.exclusions.has(to)) return undefined;
   const moved = movedPath(path, from, to);
   const sources = move.collisions.get(moved) as ReadonlyArray<FilePath>;
-  if (sources.length > 1 || inTheWay(move, moved)) return undefined;
+  if (sources.length > 1 || inTheWay(move, moved)) return BLOCKED;
   return moved;
 };
 
-const moves = (move: SideMove): ReadonlyMap<FilePath, FilePath> => {
+interface SideMoves {
+  readonly found: ReadonlyMap<FilePath, FilePath>;
+  readonly clean: boolean;
+}
+
+const moves = (move: SideMove): SideMoves => {
   const found = new Map<FilePath, FilePath>();
+  let clean = true;
   for (const path of pairedPaths(move.base, move.side)) {
     const destination = destinationOf(move, path);
-    if (destination !== undefined) found.set(path, destination);
+    if (destination === BLOCKED) clean = false;
+    else if (destination !== undefined) found.set(path, destination);
   }
-  return found;
+  return { found, clean };
 };
 
 const movedTree = (tree: FlatTree, moved: ReadonlyMap<FilePath, FilePath>): FlatTree => {
@@ -271,7 +301,64 @@ const unchanged = (
   fileLocations: new Set(),
   vacated: new Set(),
   sidePaths: new Map(),
+  clean: true,
 });
+
+interface BothSidesMoves {
+  readonly ours: SideMoves;
+  readonly theirs: SideMoves;
+}
+
+/** `collect_renames` for each side, against the other side's surviving directory renames. */
+const bothSidesMoves = (
+  base: FlatTree,
+  sides: { readonly ours: FlatTree; readonly theirs: FlatTree },
+  byOurs: DirectoryRenames,
+  byTheirs: DirectoryRenames,
+): BothSidesMoves => {
+  const ourCollisions = collisionsOf(pairedPaths(base, sides.ours), byTheirs);
+  const theirCollisions = collisionsOf(pairedPaths(base, sides.theirs), byOurs);
+  return {
+    ours: moves({
+      base,
+      side: sides.ours,
+      directoryRenames: byTheirs,
+      exclusions: byOurs,
+      collisions: ourCollisions,
+      otherCollisions: theirCollisions,
+    }),
+    theirs: moves({
+      base,
+      side: sides.theirs,
+      directoryRenames: byOurs,
+      exclusions: byTheirs,
+      collisions: theirCollisions,
+      otherCollisions: ourCollisions,
+    }),
+  };
+};
+
+const movedInput = (
+  { ours, theirs, renames }: Pick<DirectoryRenamedInput, 'ours' | 'theirs' | 'renames'>,
+  sideMoves: BothSidesMoves,
+  provisionalClean: boolean,
+): DirectoryRenamedInput => {
+  const [ourMoves, theirMoves] = [sideMoves.ours.found, sideMoves.theirs.found];
+  const moved = [...ourMoves.values(), ...theirMoves.values()];
+  return {
+    ours: movedTree(ours, ourMoves),
+    theirs: movedTree(theirs, theirMoves),
+    renames: {
+      ...renames,
+      ours: movedRenames(renames.ours, ourMoves),
+      theirs: movedRenames(renames.theirs, theirMoves),
+    },
+    fileLocations: new Set(renames.directoryRenames === 'conflict' ? moved : []),
+    vacated: new Set([...ourMoves.keys(), ...theirMoves.keys()]),
+    sidePaths: movedSidePaths(ourMoves, theirMoves),
+    clean: provisionalClean && sideMoves.ours.clean && sideMoves.theirs.clean,
+  };
+};
 
 /**
  * Moves each side's additions and rename targets inside a directory the other
@@ -284,42 +371,13 @@ export function applyDirectoryRenames(
   theirs: FlatTree,
   renames: MergeRenames,
 ): DirectoryRenamedInput {
-  const mode = renames.directoryRenames ?? 'none';
-  if (base === undefined || mode === 'none') return unchanged(ours, theirs, renames);
-  const oursRenamed = directoryRenamesOf(base, ours, theirs, renames.ours);
-  const theirsRenamed = directoryRenamesOf(base, theirs, ours, renames.theirs);
-  const byOurs = withoutShared(oursRenamed, theirsRenamed);
-  const byTheirs = withoutShared(theirsRenamed, oursRenamed);
-  const ourCollisions = collisionsOf(pairedPaths(base, ours), byTheirs);
-  const theirCollisions = collisionsOf(pairedPaths(base, theirs), byOurs);
-  const shared = { base };
-  const ourMoves = moves({
-    ...shared,
-    side: ours,
-    directoryRenames: byTheirs,
-    exclusions: byOurs,
-    collisions: ourCollisions,
-    otherCollisions: theirCollisions,
-  });
-  const theirMoves = moves({
-    ...shared,
-    side: theirs,
-    directoryRenames: byOurs,
-    exclusions: byTheirs,
-    collisions: theirCollisions,
-    otherCollisions: ourCollisions,
-  });
-  const moved = [...ourMoves.values(), ...theirMoves.values()];
-  return {
-    ours: movedTree(ours, ourMoves),
-    theirs: movedTree(theirs, theirMoves),
-    renames: {
-      ...renames,
-      ours: movedRenames(renames.ours, ourMoves),
-      theirs: movedRenames(renames.theirs, theirMoves),
-    },
-    fileLocations: new Set(mode === 'conflict' ? moved : []),
-    vacated: new Set([...ourMoves.keys(), ...theirMoves.keys()]),
-    sidePaths: movedSidePaths(ourMoves, theirMoves),
-  };
+  if (base === undefined || (renames.directoryRenames ?? 'none') === 'none')
+    return unchanged(ours, theirs, renames);
+  const oursRenamed = provisionalRenamesOf(base, ours, theirs, renames.ours);
+  const theirsRenamed = provisionalRenamesOf(base, theirs, ours, renames.theirs);
+  const byOurs = withoutShared(oursRenamed.renames, theirsRenamed.renames);
+  const byTheirs = withoutShared(theirsRenamed.renames, oursRenamed.renames);
+  const sideMoves = bothSidesMoves(base, { ours, theirs }, byOurs, byTheirs);
+  const provisionalClean = !oursRenamed.split && !theirsRenamed.split;
+  return movedInput({ ours, theirs, renames }, sideMoves, provisionalClean);
 }

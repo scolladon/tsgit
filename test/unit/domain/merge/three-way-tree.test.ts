@@ -2097,6 +2097,34 @@ describe('mergeTrees — directory renames', () => {
       });
     });
   });
+
+  describe('Given theirs split the directory ours added into between two destinations', () => {
+    describe('When mergeTrees is called', () => {
+      it('Then the merge is unclean with nothing to stage', async () => {
+        // Arrange
+        const split = tree([
+          ['n1/a', entry(ID_A)],
+          ['n2/b', entry(ID_B)],
+        ]);
+        const renames = {
+          ours: [],
+          theirs: [
+            { oldPath: 'dir/a' as FilePath, newPath: 'n1/a' as FilePath },
+            { oldPath: 'dir/b' as FilePath, newPath: 'n2/b' as FilePath },
+          ],
+          directoryRenames: 'apply',
+        } as const;
+        const sut = mergeTrees;
+
+        // Act
+        const result = await sut(base, ours, split, noopMerger, DEFAULT_MERGE_LABELS, renames);
+
+        // Assert
+        expect(result.cleanMerge).toBe(false);
+        expect(result.conflicts).toEqual([]);
+      });
+    });
+  });
 });
 
 describe('mergeTrees — rename/rename to two paths', () => {

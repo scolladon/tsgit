@@ -112,24 +112,29 @@ describe('directoryRenamesOf', () => {
     });
   });
 
-  describe('Given a majority of the files renamed into one directory', () => {
-    describe('When the directory renames are computed', () => {
-      it('Then the majority destination wins', () => {
-        // Arrange
-        const base = tree('dir/a', 'dir/b', 'dir/d');
-        const side = tree('n1/a', 'n2/b', 'n2/d');
-        const other = tree('dir/a', 'dir/b', 'dir/d', 'dir/c');
-        const renames = [rename('dir/a', 'n1/a'), rename('dir/b', 'n2/b'), rename('dir/d', 'n2/d')];
-        const sut = directoryRenamesOf;
+  describe.each([
+    ['after', [rename('dir/a', 'n1/a'), rename('dir/b', 'n2/b'), rename('dir/d', 'n2/d')]],
+    ['before', [rename('dir/b', 'n2/b'), rename('dir/d', 'n2/d'), rename('dir/a', 'n1/a')]],
+  ])(
+    'Given a majority of the files renamed into one directory, counted %s the minority',
+    (_label, renames) => {
+      describe('When the directory renames are computed', () => {
+        it('Then the majority destination wins', () => {
+          // Arrange
+          const base = tree('dir/a', 'dir/b', 'dir/d');
+          const side = tree('n1/a', 'n2/b', 'n2/d');
+          const other = tree('dir/a', 'dir/b', 'dir/d', 'dir/c');
+          const sut = directoryRenamesOf;
 
-        // Act
-        const result = sut(base, side, other, renames);
+          // Act
+          const result = sut(base, side, other, renames);
 
-        // Assert
-        expect([...result]).toEqual([['dir', 'n2']]);
+          // Assert
+          expect([...result]).toEqual([['dir', 'n2']]);
+        });
       });
-    });
-  });
+    },
+  );
 
   describe('Given a nested directory renamed with its parent', () => {
     describe('When the directory renames are computed', () => {
@@ -445,6 +450,102 @@ describe('applyDirectoryRenames', () => {
 
         // Assert
         expect(result.ours).toBe(ours);
+      });
+    });
+  });
+});
+
+describe('applyDirectoryRenames cleanliness', () => {
+  const SPLIT = tree('n1/a', 'n2/b', 'x');
+  const SPLIT_RENAMES = [rename('dir/a', 'n1/a'), rename('dir/b', 'n2/b')];
+  const COLLIDING_BASE = tree('dir/a', 'dir/b', 'd2/a', 'd2/b');
+  const COLLIDING_RENAMES = [
+    rename('dir/a', 'n/a'),
+    rename('dir/b', 'n/b'),
+    rename('d2/a', 'n/a2'),
+    rename('d2/b', 'n/b2'),
+  ];
+  describe.each([
+    {
+      label: 'a directory theirs split evenly that ours added into',
+      input: [BASE, ADDED_IN_DIR, SPLIT, { ours: [], theirs: SPLIT_RENAMES }],
+      clean: false,
+    },
+    {
+      label: 'a directory ours split evenly that theirs added into',
+      input: [BASE, SPLIT, ADDED_IN_DIR, { ours: SPLIT_RENAMES, theirs: [] }],
+      clean: false,
+    },
+    {
+      label: 'a directory split evenly that nobody added into',
+      input: [BASE, BASE, SPLIT, { ours: [], theirs: SPLIT_RENAMES }],
+      clean: true,
+    },
+    {
+      label: 'two additions a directory rename maps onto one path',
+      input: [
+        COLLIDING_BASE,
+        tree('dir/a', 'dir/b', 'd2/a', 'd2/b', 'dir/c', 'd2/c'),
+        tree('n/a', 'n/b', 'n/a2', 'n/b2'),
+        { ours: [], theirs: COLLIDING_RENAMES },
+      ],
+      clean: false,
+    },
+    {
+      label: 'an addition a directory rename moves onto a path ours holds',
+      input: [
+        BASE,
+        tree('dir/a', 'dir/b', 'dir/c', 'newdir/c', 'x'),
+        MOVED,
+        { ours: [], theirs: DIR_MOVE },
+      ],
+      clean: false,
+    },
+    {
+      label: 'an addition a directory rename moves to a free path',
+      input: [BASE, ADDED_IN_DIR, MOVED, { ours: [], theirs: DIR_MOVE }],
+      clean: true,
+    },
+    {
+      label: 'a directory rename into a directory the adding side renamed again',
+      input: [
+        tree('dir/a', 'dir/b', 'newdir/k', 'newdir/l'),
+        tree('dir/a', 'dir/b', 'dir/c', 'other/k', 'other/l'),
+        tree('newdir/a', 'newdir/b', 'newdir/k', 'newdir/l'),
+        { ours: [rename('newdir/k', 'other/k'), rename('newdir/l', 'other/l')], theirs: DIR_MOVE },
+      ],
+      clean: true,
+    },
+  ] as const)('Given $label', ({ input: [base, ours, theirs, renames], clean }) => {
+    describe('When the directory renames are applied', () => {
+      it(`Then the result is ${clean ? 'clean' : 'unclean'}`, () => {
+        // Arrange
+        const sut = applyDirectoryRenames;
+
+        // Act
+        const result = sut(base, ours, theirs, { ...renames, directoryRenames: 'apply' });
+
+        // Assert
+        expect(result.clean).toBe(clean);
+      });
+    });
+  });
+
+  describe('Given an evenly split directory with directory renames off', () => {
+    describe('When the directory renames are applied', () => {
+      it('Then the result is clean', () => {
+        // Arrange
+        const sut = applyDirectoryRenames;
+
+        // Act
+        const result = sut(BASE, ADDED_IN_DIR, SPLIT, {
+          ours: [],
+          theirs: SPLIT_RENAMES,
+          directoryRenames: 'none',
+        });
+
+        // Assert
+        expect(result.clean).toBe(true);
       });
     });
   });

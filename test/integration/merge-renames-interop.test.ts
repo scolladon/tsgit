@@ -381,6 +381,24 @@ describe.skipIf(!GIT_AVAILABLE)('merge rename detection interop', () => {
       [put('dir/c', 'c\n')],
       [configure('merge.directoryRenames', 'true')],
     ],
+    [
+      'an addition into a directory HEAD split between two destinations',
+      [put('dir/c', 'c\n')],
+      [put('x/a', LINES), rm('dir/a'), put('z/b', 'a\nb\nc\nd\ne\nf\ng\nh\n'), rm('dir/b')],
+      [],
+    ],
+    [
+      'two additions an implicit directory rename maps onto one path',
+      [put('dir/c', 'c\n'), put('dir2/c', 'c2\n')],
+      [mv('dir', 'newdir'), mv('dir2/a2', 'newdir/a2'), mv('dir2/b2', 'newdir/b2')],
+      [put('dir2/a2', 'p\nq\nr\ns\nt\nu\nv\nw\n'), put('dir2/b2', 'P\nQ\nR\nS\nT\nU\nV\nW\n')],
+    ],
+    [
+      'an addition an implicit directory rename moves onto an existing path',
+      [put('dir/c', 'c\n'), put('newdir/c', 'other\n')],
+      [mv('dir', 'newdir')],
+      [],
+    ],
   ] as const)('Given %s', (_label, sideSteps, mainSteps, config) => {
     describe('When both tools merge the side', () => {
       it("Then the tree, index stages, files and MERGE_MSG match git's", async () => {
