@@ -15,7 +15,7 @@
  *   unique:         rm porcelain index+worktree state matches canonical git rm
  *   interopSurface: rm
  */
-import { stat, writeFile } from 'node:fs/promises';
+import { mkdir, stat, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { TsgitError } from '../../src/domain/error.js';
@@ -264,6 +264,53 @@ describe.skipIf(!GIT_AVAILABLE)('rm porcelain interop', () => {
         // Assert
         expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
         await expect(pathExists(pair.ours, 'a.txt')).resolves.toBe(false);
+      });
+    });
+  });
+
+  describe('Given a committed directory d in both repos', () => {
+    const seedDirectory = async (): Promise<void> => {
+      await mkdir(path.join(pair.peer, 'd'));
+      await mkdir(path.join(pair.ours, 'd'));
+      await seedCommitted('d/a', 'a\n');
+    };
+
+    describe('When repo.rm and git rm name d without -r', () => {
+      it('Then both refuse with the same message and remove nothing', async () => {
+        // Arrange
+        await seedDirectory();
+        const before = lsStage(pair.ours);
+        let message = '';
+
+        // Act
+        const peerRun = tryRunGit(['-C', pair.peer, 'rm', 'd']);
+        try {
+          await repo.rm(['d']);
+        } catch (error) {
+          message = (error as TsgitError).message;
+        }
+
+        // Assert
+        expect(peerRun.stderr).toBe("fatal: not removing 'd' recursively without -r\n");
+        expect(message).toContain("not removing 'd' recursively without -r");
+        expect(lsStage(pair.ours)).toBe(before);
+        expect(lsStage(pair.peer)).toBe(before);
+      });
+    });
+
+    describe('When repo.rm recursive and git rm -r name d', () => {
+      it('Then both drop the directory from the index and the working tree', async () => {
+        // Arrange
+        await seedDirectory();
+
+        // Act
+        await repo.rm(['d'], { recursive: true });
+        runGit(['-C', pair.peer, 'rm', '-r', '-q', 'd']);
+        const result = lsStage(pair.ours);
+
+        // Assert
+        expect(result).toBe(lsStage(pair.peer));
+        await expect(pathExists(pair.ours, 'd/a')).resolves.toBe(false);
       });
     });
   });

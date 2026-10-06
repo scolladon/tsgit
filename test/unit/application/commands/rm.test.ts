@@ -118,6 +118,111 @@ describe('Given a tracked file and a pathspec spelled with a `./` component', ()
   });
 });
 
+describe('Given a tracked directory d holding d/a and d/b', () => {
+  const seedDirectory = (): Promise<Context> =>
+    seedAndStage({ 'd/a': 'a\n', 'd/b': 'b\n', 'top.txt': 't\n' });
+  const trackedPaths = async (ctx: Context): Promise<ReadonlyArray<string>> =>
+    (await readIndex(ctx)).entries.map((e) => e.path);
+
+  describe.each([
+    ['d', 'd'],
+    ['d/', 'd/'],
+    ['./d', './d'],
+    ['.', '.'],
+  ])('When rm names %s without recursive', (pathspec, spelled) => {
+    it('Then it refuses with RM_RECURSIVE_WITHOUT_R naming the pathspec and removes nothing', async () => {
+      // Arrange
+      const ctx = await seedDirectory();
+      const sut = rm;
+
+      // Act
+      const err = await expectError(() => sut(ctx, [pathspec]), 'RM_RECURSIVE_WITHOUT_R');
+
+      // Assert
+      expect(err.data).toEqual({ code: 'RM_RECURSIVE_WITHOUT_R', pattern: spelled });
+      expect(err.message).toContain(`not removing '${spelled}' recursively without -r`);
+      expect(await trackedPaths(ctx)).toEqual(['d/a', 'd/b', 'top.txt']);
+      expect(await ctx.fs.exists(work(ctx, 'd/a'))).toBe(true);
+    });
+  });
+
+  describe('When rm names a file and the directory without recursive', () => {
+    it('Then the directory pathspec is refused and the file is kept', async () => {
+      // Arrange
+      const ctx = await seedDirectory();
+      const sut = rm;
+
+      // Act
+      const err = await expectError(() => sut(ctx, ['top.txt', 'd']), 'RM_RECURSIVE_WITHOUT_R');
+
+      // Assert
+      expect(err.data).toEqual({ code: 'RM_RECURSIVE_WITHOUT_R', pattern: 'd' });
+      expect(await trackedPaths(ctx)).toEqual(['d/a', 'd/b', 'top.txt']);
+    });
+  });
+
+  describe('When rm names the directory then an unmatched path without recursive', () => {
+    it('Then the directory refusal comes first, as git checks pathspecs in order', async () => {
+      // Arrange
+      const ctx = await seedDirectory();
+      const sut = rm;
+
+      // Act
+      const err = await expectError(() => sut(ctx, ['d', 'nomatch']), 'RM_RECURSIVE_WITHOUT_R');
+
+      // Assert
+      expect(err.data).toEqual({ code: 'RM_RECURSIVE_WITHOUT_R', pattern: 'd' });
+    });
+  });
+
+  describe('When rm names the directory with recursive', () => {
+    it('Then both files leave the index and the working tree', async () => {
+      // Arrange
+      const ctx = await seedDirectory();
+      const sut = rm;
+
+      // Act
+      const result = await sut(ctx, ['d'], { recursive: true });
+
+      // Assert
+      expect(result.removed).toEqual(['d/a', 'd/b']);
+      expect(await trackedPaths(ctx)).toEqual(['top.txt']);
+      expect(await ctx.fs.exists(work(ctx, 'd/b'))).toBe(false);
+    });
+  });
+
+  describe('When rm names the directory with recursive explicitly false', () => {
+    it('Then it refuses like the default', async () => {
+      // Arrange
+      const ctx = await seedDirectory();
+      const sut = rm;
+
+      // Act
+      const err = await expectError(
+        () => sut(ctx, ['d'], { recursive: false }),
+        'RM_RECURSIVE_WITHOUT_R',
+      );
+
+      // Assert
+      expect(err.data).toEqual({ code: 'RM_RECURSIVE_WITHOUT_R', pattern: 'd' });
+    });
+  });
+
+  describe('When rm names a glob reaching into the directory without recursive', () => {
+    it('Then the glob removes its matches, as git does for an fnmatch', async () => {
+      // Arrange
+      const ctx = await seedDirectory();
+      const sut = rm;
+
+      // Act
+      const result = await sut(ctx, ['d/*']);
+
+      // Assert
+      expect(result.removed).toEqual(['d/a', 'd/b']);
+    });
+  });
+});
+
 // Committed `a.txt`, then a staged edit (index ≠ HEAD, working tree == index).
 const seedStaged = async (): Promise<Context> => {
   const ctx = await seedAndStage({ 'a.txt': 'v1\n' });

@@ -14,6 +14,7 @@
  */
 import {
   rmLocalModifications,
+  rmRecursiveWithoutR,
   rmStagedAndLocalChanges,
   rmStagedChanges,
 } from '../../domain/commands/error.js';
@@ -50,6 +51,8 @@ export interface RmOptions {
   readonly cached?: boolean;
   /** Override the safety valve (`-f`) — remove even staged / locally-modified paths. */
   readonly force?: boolean;
+  /** Allow a pathspec to remove a whole directory (`-r`); without it, git refuses. */
+  readonly recursive?: boolean;
 }
 
 export interface RmResult {
@@ -69,7 +72,7 @@ export const rm = async (
   requireWorkTree(ctx, 'rm');
   await assertNoPendingOperation(ctx);
   if (paths.length === 0) throw emptyPathspec();
-  const { matcher, literalMustMatch, literalSpellings } = resolvePathspec(paths);
+  const { matcher, literalSpellings } = resolvePathspec(paths);
   const lock = await acquireIndexLock(ctx);
   try {
     const index = await readIndex(ctx).catch((err: unknown) => {
@@ -88,7 +91,7 @@ export const rm = async (
         removedEntries.push(entry);
       }
     }
-    enforceLiteralMustMatch(literalMustMatch, removed, literalSpellings);
+    enforceLiteralMatches(literalSpellings, removed, opts.recursive === true);
     if (opts.force !== true) {
       await enforceSafetyValve(ctx, removedEntries, opts.cached === true);
     }
@@ -106,6 +109,23 @@ export const rm = async (
     return { removed };
   } finally {
     await lock.release();
+  }
+};
+
+/**
+ * git rm's per-pathspec check, in pathspec order: a literal must match, and
+ * unless `recursive`, it must name a tracked path itself — one that only reached
+ * paths beneath it is a directory removal git refuses without `-r`.
+ */
+const enforceLiteralMatches = (
+  spellings: ReadonlyMap<FilePath, string>,
+  removed: ReadonlyArray<FilePath>,
+  recursive: boolean,
+): void => {
+  const exact = new Set<string>(removed);
+  for (const [literal, spelled] of spellings) {
+    enforceLiteralMustMatch([literal], removed, spellings);
+    if (!recursive && !exact.has(literal)) throw rmRecursiveWithoutR(spelled);
   }
 };
 

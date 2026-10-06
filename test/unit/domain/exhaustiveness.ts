@@ -213,6 +213,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'RM_STAGED_CHANGES':
     case 'RM_LOCAL_MODIFICATIONS':
     case 'RM_STAGED_AND_LOCAL_CHANGES':
+    case 'RM_RECURSIVE_WITHOUT_R':
     case 'NO_INITIAL_COMMIT':
     case 'STASH_NOT_FOUND':
     case 'STASH_APPLY_WOULD_OVERWRITE':

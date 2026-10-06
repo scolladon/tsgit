@@ -393,6 +393,8 @@ export type CommandError =
   | { readonly code: 'RM_STAGED_CHANGES'; readonly paths: ReadonlyArray<FilePath> }
   | { readonly code: 'RM_LOCAL_MODIFICATIONS'; readonly paths: ReadonlyArray<FilePath> }
   | { readonly code: 'RM_STAGED_AND_LOCAL_CHANGES'; readonly paths: ReadonlyArray<FilePath> }
+  /** git rm's `not removing '<pathspec>' recursively without -r`. */
+  | { readonly code: 'RM_RECURSIVE_WITHOUT_R'; readonly pattern: string }
   | { readonly code: 'NO_INITIAL_COMMIT' }
   | { readonly code: 'STASH_NOT_FOUND'; readonly index: number; readonly stackSize: number }
   | { readonly code: 'STASH_APPLY_WOULD_OVERWRITE'; readonly paths: ReadonlyArray<FilePath> }
@@ -1141,6 +1143,11 @@ export const rmLocalModifications = (paths: ReadonlyArray<FilePath>): TsgitError
 
 export const rmStagedAndLocalChanges = (paths: ReadonlyArray<FilePath>): TsgitError =>
   new TsgitError({ code: 'RM_STAGED_AND_LOCAL_CHANGES', paths });
+
+/** A pathspec that only reached paths beneath a directory, without `-r`. `pattern`
+ *  is the pathspec as the caller spelled it. */
+export const rmRecursiveWithoutR = (pattern: string): TsgitError =>
+  new TsgitError({ code: 'RM_RECURSIVE_WITHOUT_R', pattern });
 
 // `stash` errors. `NO_INITIAL_COMMIT` mirrors git's refusal to stash on an
 // unborn branch; `STASH_NOT_FOUND` carries the selector index + stack size so
