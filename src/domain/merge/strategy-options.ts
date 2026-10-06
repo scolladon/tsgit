@@ -6,6 +6,7 @@
  */
 import { unknownStrategyOption } from '../commands/error.js';
 import { parseRenameScore } from '../diff/rename-score.js';
+import { type LineKey, NONE_KEY, type WhitespaceMode } from '../diff/whitespace.js';
 import { unsupportedOperation } from '../error.js';
 
 /** The rename settings `-X` overrides; an absent field keeps the configured one. */
@@ -21,7 +22,27 @@ export type OrtVariant = 'ours' | 'theirs';
 export interface OrtStrategyOptions {
   readonly renames: OrtRenameOptions;
   readonly variant?: OrtVariant;
+  /** The whitespace the content merge's line diffs ignore (`-X ignore-*`). */
+  readonly lineKey?: LineKey;
 }
+
+/** xdiff's `xdl_recmatch` tests the flags all → change → at-eol, so the strongest set one wins. */
+const WHITESPACE_STRENGTH: ReadonlyArray<WhitespaceMode> = ['none', 'at-eol', 'change', 'all'];
+const WHITESPACE_OPTIONS: ReadonlyMap<string, WhitespaceMode> = new Map([
+  ['ignore-space-at-eol', 'at-eol'],
+  ['ignore-space-change', 'change'],
+  ['ignore-all-space', 'all'],
+]);
+const IGNORE_CR_AT_EOL = 'ignore-cr-at-eol';
+
+const strongerMode = (a: WhitespaceMode, b: WhitespaceMode): WhitespaceMode =>
+  WHITESPACE_STRENGTH.indexOf(a) >= WHITESPACE_STRENGTH.indexOf(b) ? a : b;
+
+const withWhitespace = (key: LineKey, option: string): LineKey | undefined => {
+  if (option === IGNORE_CR_AT_EOL) return { ...key, ignoreCrAtEol: true };
+  const mode = WHITESPACE_OPTIONS.get(option);
+  return mode === undefined ? undefined : { ...key, mode: strongerMode(key.mode, mode) };
+};
 
 const VARIANTS: ReadonlySet<string> = new Set<OrtVariant>(['ours', 'theirs']);
 const isVariant = (option: string): option is OrtVariant => VARIANTS.has(option);
@@ -39,10 +60,6 @@ const UNSUPPORTED: ReadonlySet<string> = new Set([
   'subtree',
   'patience',
   'histogram',
-  'ignore-space-change',
-  'ignore-all-space',
-  'ignore-space-at-eol',
-  'ignore-cr-at-eol',
   'renormalize',
   'no-renormalize',
 ]);
@@ -79,6 +96,8 @@ const applyRenameOption = (settings: OrtRenameOptions, option: string): OrtRenam
 
 const applyOption = (settings: OrtStrategyOptions, option: string): OrtStrategyOptions => {
   if (isVariant(option)) return { ...settings, variant: option };
+  const lineKey = withWhitespace(settings.lineKey ?? NONE_KEY, option);
+  if (lineKey !== undefined) return { ...settings, lineKey };
   return { ...settings, renames: applyRenameOption(settings.renames, option) };
 };
 

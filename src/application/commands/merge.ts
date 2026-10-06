@@ -207,7 +207,10 @@ export interface MergeRunInput {
    * never reads them). `ort` / `recursive` honour `no-renames`,
    * `find-renames[=<n>]` and `rename-threshold=<n>` over `merge.renames` /
    * `diff.renames`, and `ours` / `theirs` (that side wins every overlapping
-   * hunk and every binary merge); the other options git knows refuse with
+   * hunk and every binary merge), and `ignore-space-change`,
+   * `ignore-all-space`, `ignore-space-at-eol`, `ignore-cr-at-eol` (a line
+   * whose change is whitespace-only yields to the other side's); the other
+   * options git knows refuse with
    * `UNSUPPORTED_OPERATION`, any other with `UNKNOWN_STRATEGY_OPTION`.
    * `resolve` fails on any option, as git's `read-tree` refuses them;
    * `octopus` and `ours` ignore them.

@@ -137,6 +137,30 @@ const UNSET_MERGE: Scenario = {
   main: { f: 'm\n' },
 };
 
+const WS_BASE = 'a b\nl2\nl3\nl4\nc d\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h\n';
+/** `side` edits line 5 for real and line 1 / 13 in whitespace only; main the reverse. */
+const whitespaceEdits = (side: string, main: string): Scenario => ({
+  base: { f: WS_BASE },
+  side: { f: side },
+  main: { f: main },
+});
+const SPACE_RUNS = whitespaceEdits(
+  'a  b\nl2\nl3\nl4\nCD\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng\th\n',
+  'AB\nl2\nl3\nl4\nc   d\nl6\nl7\nl8\ne f \nl10\nl11\nl12\ng  h\n',
+);
+const TRAILING = whitespaceEdits(
+  'a b \nl2\nl3\nl4\nCD\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h  \n',
+  'AB\nl2\nl3\nl4\nc d \nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h \n',
+);
+const SQUEEZED = whitespaceEdits(
+  'ab\nl2\nl3\nl4\nCD\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ngh\n',
+  'AB\nl2\nl3\nl4\ncd\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h\t\n',
+);
+const CARRIAGE = whitespaceEdits(
+  'a b\r\nl2\nl3\nl4\nCD\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h\r\n',
+  'AB\nl2\nl3\nl4\nc d\r\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h\r\n',
+);
+
 describe.skipIf(!GIT_AVAILABLE)('merge strategy options interop', () => {
   beforeAll(() => {
     root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'tsgit-merge-x-')));
@@ -150,6 +174,15 @@ describe.skipIf(!GIT_AVAILABLE)('merge strategy options interop', () => {
     ['ours over an overlapping text hunk and a binary file', OVERLAP, ['ours']],
     ['theirs over an overlapping text hunk and a binary file', OVERLAP, ['theirs']],
     ['theirs over a file whose merge attribute is unset', UNSET_MERGE, ['theirs']],
+    ['ignore-space-change over space runs', SPACE_RUNS, ['ignore-space-change']],
+    ['ignore-space-change over trailing spaces', TRAILING, ['ignore-space-change']],
+    ['ignore-space-change over a squeezed space', SQUEEZED, ['ignore-space-change']],
+    ['ignore-all-space over space runs', SPACE_RUNS, ['ignore-all-space']],
+    ['ignore-all-space over a squeezed space', SQUEEZED, ['ignore-all-space']],
+    ['ignore-space-at-eol over space runs', SPACE_RUNS, ['ignore-space-at-eol']],
+    ['ignore-space-at-eol over trailing spaces', TRAILING, ['ignore-space-at-eol']],
+    ['ignore-cr-at-eol over carriage returns', CARRIAGE, ['ignore-cr-at-eol']],
+    ['ignore-space-at-eol and ours over space runs', SPACE_RUNS, ['ignore-space-at-eol', 'ours']],
   ])('Given -X %s', (_label, scenario, options) => {
     describe('When both tools merge the side', () => {
       it("Then the merge commit, index, files and stop state match git's", async () => {

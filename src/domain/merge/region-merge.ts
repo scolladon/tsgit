@@ -21,13 +21,47 @@ export type MergeSegment =
       readonly theirs: ReadonlyArray<Uint8Array>;
     };
 
+type LinesEqual = (a: Uint8Array, b: Uint8Array) => boolean;
+
+/**
+ * Each side's reading of the base: base line `i` as that side holds it where its
+ * diff left it unchanged. They differ from the base only when the diffs ignore
+ * whitespace, and xdiff copies an unchanged line from ours, a conflict side from
+ * that side — so the merge emits the sides' bytes, never the base's.
+ */
+export interface SideViews {
+  readonly ours: ReadonlyArray<Uint8Array>;
+  readonly theirs: ReadonlyArray<Uint8Array>;
+  readonly linesEqual: LinesEqual;
+}
+
+/** The base lines, with every line the side's diff matched replaced by the side's own bytes. */
+export function sideView(
+  hunks: ReadonlyArray<LineHunk>,
+  baseLines: ReadonlyArray<Uint8Array>,
+  sideLines: ReadonlyArray<Uint8Array>,
+): ReadonlyArray<Uint8Array> {
+  const view = [...baseLines];
+  for (const hunk of hunks) {
+    if (hunk.kind !== 'common') continue;
+    for (let i = hunk.oursStart; i < hunk.oursEnd; i++) {
+      view[i] = sideLines[hunk.theirsStart + i - hunk.oursStart]!;
+    }
+  }
+  return view;
+}
+
 /** git coalesces two conflict regions separated by at most this many base lines. */
 export const MAX_CONFLICT_COALESCE_GAP = 3;
 
-function lineArraysEqual(a: ReadonlyArray<Uint8Array>, b: ReadonlyArray<Uint8Array>): boolean {
+function lineArraysEqual(
+  a: ReadonlyArray<Uint8Array>,
+  b: ReadonlyArray<Uint8Array>,
+  linesEqual: LinesEqual,
+): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
-    if (!bytesEqual(a[i]!, b[i]!)) return false;
+    if (!linesEqual(a[i]!, b[i]!)) return false;
   }
   return true;
 }
@@ -114,14 +148,15 @@ interface TrimmedConflict {
 export function trimCommonEdges(
   ours: ReadonlyArray<Uint8Array>,
   theirs: ReadonlyArray<Uint8Array>,
+  linesEqual: LinesEqual = bytesEqual,
 ): TrimmedConflict {
   const bound = Math.min(ours.length, theirs.length);
   let prefix = 0;
-  while (prefix < bound && bytesEqual(ours[prefix]!, theirs[prefix]!)) prefix++;
+  while (prefix < bound && linesEqual(ours[prefix]!, theirs[prefix]!)) prefix++;
   let suffix = 0;
   while (
     suffix < bound - prefix &&
-    bytesEqual(ours[ours.length - 1 - suffix]!, theirs[theirs.length - 1 - suffix]!)
+    linesEqual(ours[ours.length - 1 - suffix]!, theirs[theirs.length - 1 - suffix]!)
   ) {
     suffix++;
   }
@@ -198,7 +233,7 @@ function groupByOverlap(changes: ReadonlyArray<SidedChange>): RawGroup[] {
   return groups;
 }
 
-function classify(group: RawGroup): Classification {
+function classify(group: RawGroup, linesEqual: LinesEqual): Classification {
   const hasOurs = group.ours.length > 0;
   const hasTheirs = group.theirs.length > 0;
   if (!hasOurs) return 'clean-theirs';
@@ -218,7 +253,7 @@ function classify(group: RawGroup): Classification {
     group.theirs.length === 1 &&
     oc!.baseStart === tc!.baseStart &&
     oc!.baseEnd === tc!.baseEnd &&
-    lineArraysEqual(oc!.replacement, tc!.replacement);
+    lineArraysEqual(oc!.replacement, tc!.replacement, linesEqual);
   return isTwin ? 'clean-twin' : 'conflict';
 }
 
@@ -275,10 +310,11 @@ export function buildMergeSegments(
   baseLines: ReadonlyArray<Uint8Array>,
   oursChanges: ReadonlyArray<ChangeRange>,
   theirsChanges: ReadonlyArray<ChangeRange>,
+  views: SideViews = { ours: baseLines, theirs: baseLines, linesEqual: bytesEqual },
 ): MergeSegment[] {
   const groups = groupByOverlap(mergeSorted(oursChanges, theirsChanges)).map((g) => ({
     ...g,
-    classification: classify(g),
+    classification: classify(g, views.linesEqual),
   }));
   const regions = coalesce(groups);
 
@@ -288,19 +324,19 @@ export function buildMergeSegments(
   };
   let cursor = 0;
   for (const region of regions) {
-    pushClean(baseLines.slice(cursor, region.start));
+    pushClean(views.ours.slice(cursor, region.start));
     if (region.kind === 'clean') {
       pushClean(region.replacement);
     } else {
-      const ours = applyChangesToSpan(baseLines, region.start, region.end, region.ours);
-      const theirs = applyChangesToSpan(baseLines, region.start, region.end, region.theirs);
-      const trimmed = trimCommonEdges(ours, theirs);
+      const ours = applyChangesToSpan(views.ours, region.start, region.end, region.ours);
+      const theirs = applyChangesToSpan(views.theirs, region.start, region.end, region.theirs);
+      const trimmed = trimCommonEdges(ours, theirs, views.linesEqual);
       pushClean(trimmed.prefix);
       segments.push({ kind: 'conflict', ours: trimmed.oursMid, theirs: trimmed.theirsMid });
       pushClean(trimmed.suffix);
     }
     cursor = region.end;
   }
-  pushClean(baseLines.slice(cursor));
+  pushClean(views.ours.slice(cursor));
   return segments;
 }

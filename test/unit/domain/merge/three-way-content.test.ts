@@ -1,5 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import type { LineKey } from '../../../../src/domain/diff/whitespace.js';
 import { mergeContent } from '../../../../src/domain/merge/three-way-content.js';
 
 const encoder = new TextEncoder();
@@ -1035,6 +1036,79 @@ describe('mergeContent', () => {
 
         // Assert
         assertClean(result, expected);
+      });
+    });
+  });
+
+  describe('whitespace-insensitive merge', () => {
+    const base = 'a b\nl2\nl3\nl4\nc d\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h\n';
+    const key = (mode: LineKey['mode'], ignoreCrAtEol = false): LineKey => ({
+      mode,
+      ignoreCrAtEol,
+    });
+    describe.each([
+      [
+        'space runs',
+        key('change'),
+        'AB\nl2\nl3\nl4\nc   d\nl6\nl7\nl8\ne f \nl10\nl11\nl12\ng  h\n',
+        'a  b\nl2\nl3\nl4\nCD\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng\th\n',
+        'AB\nl2\nl3\nl4\nCD\nl6\nl7\nl8\ne f \nl10\nl11\nl12\ng  h\n',
+      ],
+      [
+        'all spaces',
+        key('all'),
+        'AB\nl2\nl3\nl4\ncd\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h\t\n',
+        'ab\nl2\nl3\nl4\nCD\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ngh\n',
+        'AB\nl2\nl3\nl4\nCD\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h\t\n',
+      ],
+      [
+        'trailing spaces',
+        key('at-eol'),
+        'AB\nl2\nl3\nl4\nc d \nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h \n',
+        'a b \nl2\nl3\nl4\nCD\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h  \n',
+        'AB\nl2\nl3\nl4\nCD\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h \n',
+      ],
+      [
+        'carriage returns',
+        key('none', true),
+        'AB\nl2\nl3\nl4\nc d\r\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h\r\n',
+        'a b\r\nl2\nl3\nl4\nCD\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h\r\n',
+        'AB\nl2\nl3\nl4\nCD\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h\r\n',
+      ],
+    ])(
+      'Given whitespace-only edits under ignored %s',
+      (_label, lineKey, ours, theirs, expected) => {
+        describe('When mergeContent called', () => {
+          it('Then each line takes the side whose change is not whitespace-only', () => {
+            // Arrange
+            const sut = mergeContent;
+
+            // Act
+            const result = sut(enc(base), enc(ours), enc(theirs), { lineKey });
+
+            // Assert
+            assertClean(result, expected);
+          });
+        });
+      },
+    );
+
+    describe('Given a squeezed space against ignored space runs', () => {
+      describe('When mergeContent called', () => {
+        it('Then the line whose change is real on both sides conflicts', () => {
+          // Arrange
+          const sut = mergeContent;
+          const ours = 'AB\nl2\nl3\nl4\ncd\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h\t\n';
+          const theirs = 'ab\nl2\nl3\nl4\nCD\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ngh\n';
+
+          // Act
+          const result = sut(enc(base), enc(ours), enc(theirs), { lineKey: key('change') });
+
+          // Assert
+          expect(result.status === 'conflict' && decoder.decode(result.markedBytes)).toBe(
+            '<<<<<<< ours\nAB\nl2\nl3\nl4\ncd\n=======\nab\nl2\nl3\nl4\nCD\n>>>>>>> theirs\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ngh\n',
+          );
+        });
       });
     });
   });

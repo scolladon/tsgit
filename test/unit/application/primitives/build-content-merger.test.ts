@@ -658,4 +658,22 @@ describe('buildContentMerger', () => {
       });
     });
   });
+
+  describe('Given ignored space changes and a whitespace-only edit on ours', () => {
+    describe('When the built-in merge runs', () => {
+      it("Then theirs' real edit wins the line cleanly", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const lineKey = { mode: 'change', ignoreCrAtEol: false } as const;
+        const sut = buildContentMerger(ctx, undefined, { lineKey });
+        const mergeCtx = await mergeCtxFor(ctx, { base: 'a b\n', ours: 'a  b\n', theirs: 'AB\n' });
+
+        // Act
+        const result = await sut(mergeCtx, undefined, new Uint8Array(0), new Uint8Array(0));
+
+        // Assert
+        expect(result.status === 'clean' && dec(result.bytes)).toBe('AB\n');
+      });
+    });
+  });
 });

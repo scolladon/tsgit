@@ -1,12 +1,23 @@
-import { diffLines, isBinary } from '../diff/line-diff.js';
+import { diffLines, isBinary, type LineDiff } from '../diff/line-diff.js';
+import { type LineKey, lineKeyIsActive, linesEqualUnder } from '../diff/whitespace.js';
 import { bytesEqual, concatBytes } from '../objects/encoding.js';
 import { writeConflictMarkers } from './conflict-markers.js';
 import type { ConflictMarkerOptions, ContentMergeResult, MergeFavor } from './merge-types.js';
-import { buildMergeSegments, changesFromHunks, type MergeSegment } from './region-merge.js';
+import {
+  buildMergeSegments,
+  changesFromHunks,
+  type MergeSegment,
+  type SideViews,
+  sideView,
+} from './region-merge.js';
 
 const LF = 0x0a;
 
-export type MergeContentOptions = ConflictMarkerOptions & { readonly favor?: MergeFavor };
+export type MergeContentOptions = ConflictMarkerOptions & {
+  readonly favor?: MergeFavor;
+  /** The whitespace the line diffs ignore (git's `-X ignore-*`); absent compares bytes. */
+  readonly lineKey?: LineKey;
+};
 
 function endsWithLf(line: Uint8Array): boolean {
   // Stryker disable next-line EqualityOperator: equivalent — length >= 0 always holds; at length 0 line[-1] is undefined !== LF, so both forms short-circuit to false
@@ -78,18 +89,32 @@ function renderWithMarkers(
     : { status: 'clean', bytes };
 }
 
+const activeKey = (key: LineKey | undefined): LineKey | undefined =>
+  key !== undefined && lineKeyIsActive(key) ? key : undefined;
+
+function sideViewsUnder(key: LineKey, oursDiff: LineDiff, theirsDiff: LineDiff): SideViews {
+  return {
+    ours: sideView(oursDiff.hunks, oursDiff.oursLines, oursDiff.theirsLines),
+    theirs: sideView(theirsDiff.hunks, theirsDiff.oursLines, theirsDiff.theirsLines),
+    linesEqual: (a, b) => linesEqualUnder(a, b, key),
+  };
+}
+
 function mergeFromDiffs(
   base: Uint8Array,
   ours: Uint8Array,
   theirs: Uint8Array,
   options: MergeContentOptions,
 ): ContentMergeResult {
-  const oursDiff = diffLines(base, ours);
-  const theirsDiff = diffLines(base, theirs);
+  const lineKey = activeKey(options.lineKey);
+  const diffOptions = lineKey === undefined ? undefined : { lineKey };
+  const oursDiff = diffLines(base, ours, diffOptions);
+  const theirsDiff = diffLines(base, theirs, diffOptions);
   const segments = buildMergeSegments(
     oursDiff.oursLines,
     changesFromHunks(oursDiff.hunks, oursDiff.theirsLines),
     changesFromHunks(theirsDiff.hunks, theirsDiff.theirsLines),
+    lineKey === undefined ? undefined : sideViewsUnder(lineKey, oursDiff, theirsDiff),
   );
   const favor = options.favor ?? 'none';
   return favor === 'none' ? renderWithMarkers(segments, options) : renderFavoured(segments, favor);

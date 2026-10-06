@@ -86,15 +86,46 @@ describe('parseOrtStrategyOptions', () => {
   });
 
   describe.each([
+    ['ignore-space-change', ['ignore-space-change'], { mode: 'change', ignoreCrAtEol: false }],
+    ['ignore-all-space', ['ignore-all-space'], { mode: 'all', ignoreCrAtEol: false }],
+    ['ignore-space-at-eol', ['ignore-space-at-eol'], { mode: 'at-eol', ignoreCrAtEol: false }],
+    ['ignore-cr-at-eol', ['ignore-cr-at-eol'], { mode: 'none', ignoreCrAtEol: true }],
+    [
+      'ignore-all-space then ignore-space-at-eol',
+      ['ignore-all-space', 'ignore-space-at-eol'],
+      { mode: 'all', ignoreCrAtEol: false },
+    ],
+    [
+      'ignore-space-at-eol then ignore-space-change',
+      ['ignore-space-at-eol', 'ignore-space-change'],
+      { mode: 'change', ignoreCrAtEol: false },
+    ],
+    [
+      'ignore-space-change then ignore-cr-at-eol',
+      ['ignore-space-change', 'ignore-cr-at-eol'],
+      { mode: 'change', ignoreCrAtEol: true },
+    ],
+  ] as const)('Given %s', (_label, options, lineKey) => {
+    describe('When parsed', () => {
+      it('Then the content merge ignores the strongest whitespace class set', () => {
+        // Arrange
+        const sut = parseOrtStrategyOptions;
+
+        // Act
+        const result = sut(options);
+
+        // Assert
+        expect(result).toEqual({ renames: {}, lineKey });
+      });
+    });
+  });
+
+  describe.each([
     'subtree',
     'subtree=dir',
     'patience',
     'histogram',
     'diff-algorithm=Minimal',
-    'ignore-space-change',
-    'ignore-all-space',
-    'ignore-space-at-eol',
-    'ignore-cr-at-eol',
     'renormalize',
     'no-renormalize',
   ])('Given the option %j', (option) => {
