@@ -8,10 +8,10 @@ export const runPreCommitHook = async (ctx: Context, noVerify: boolean): Promise
   await runHook(ctx, 'pre-commit');
 };
 
-/** git's `prepare-commit-msg` message source (the hook's 2nd argument). tsgit
- *  only ever produces `message` (a supplied message) or `merge` (a merge /
- *  cherry-pick / revert resolution, where `MERGE_MSG` exists). */
-export type PrepareCommitMsgSource = 'message' | 'merge';
+/** git's `prepare-commit-msg` message source (the hook's 2nd argument): `message`
+ *  (a supplied message), `squash` (a `SQUASH_MSG` draft) or `merge` (a merge /
+ *  cherry-pick / revert resolution's `MERGE_MSG` draft). */
+export type PrepareCommitMsgSource = 'message' | 'merge' | 'squash';
 
 interface CommitMessageHookOptions {
   readonly noVerify: boolean;

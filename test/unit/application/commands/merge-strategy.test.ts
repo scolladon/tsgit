@@ -6,9 +6,11 @@ import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
+import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
+import { updateRef } from '../../../../src/application/primitives/update-ref.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -176,6 +178,30 @@ describe('merge strategy', () => {
 
         // Assert
         expect(result).toEqual({ code: 'MERGE_STRATEGY_FAILED', strategy: 'octopus' });
+        expect(await resolveRef(ctx, HEAD)).toBe(main);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given unrelated histories and strategy resolve', () => {
+    describe('When merged with allowUnrelatedHistories', () => {
+      it('Then the strategy fails as git-merge-resolve does on a baseless merge', async () => {
+        // Arrange
+        const { ctx, main, one } = await repo();
+        const tree = (await treeOf(ctx, one))!;
+        const root = { tree, parents: [], author, committer: author, message: 'root\n' };
+        const other = await createCommit(ctx, { ...root, extraHeaders: [] });
+        await updateRef(ctx, 'refs/heads/other' as RefName, other, { reflogMessage: 'root' });
+        const sut = mergeRun;
+
+        // Act
+        const result = await errorData(
+          sut(ctx, { rev: 'other', strategy: 'resolve', allowUnrelatedHistories: true, author }),
+        );
+
+        // Assert
+        expect(result).toEqual({ code: 'MERGE_STRATEGY_FAILED', strategy: 'resolve' });
         expect(await resolveRef(ctx, HEAD)).toBe(main);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
       });

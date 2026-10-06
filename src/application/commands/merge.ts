@@ -248,11 +248,31 @@ export type MergeResult =
   /** `commit: false`: the merge is staged with its state kept; HEAD still names `origHead`. */
   | { readonly kind: 'stopped'; readonly mergeHead: ObjectId; readonly origHead: ObjectId };
 
-/** A stop the caller concludes by hand: a conflict, a squash that left conflicts, or `commit: false`. */
-const leftToResolve = (result: MergeResult): boolean =>
-  result.kind === 'conflict' ||
-  result.kind === 'stopped' ||
-  (result.kind === 'squashed' && result.conflicts !== undefined);
+type SquashedResult = Extract<MergeResult, { readonly kind: 'squashed' }>;
+
+/**
+ * git's `finish` without a new head: a squash the strategies merged, clean or
+ * not, which keeps the autostash and ends as a stop does.
+ */
+interface HeadlessSquash {
+  readonly kind: 'headless-squash';
+  readonly result: SquashedResult;
+}
+
+/** How the merge machinery ends: a result, or a squash that ends without a new head. */
+type MergeEnding = MergeResult | HeadlessSquash;
+
+const headless = async (squashed: Promise<SquashedResult>): Promise<HeadlessSquash> => ({
+  kind: 'headless-squash',
+  result: await squashed,
+});
+
+const resultOf = (ending: MergeEnding): MergeResult =>
+  ending.kind === 'headless-squash' ? ending.result : ending;
+
+/** A stop the caller concludes by hand: a conflict, a squash the strategies merged, or `commit: false`. */
+const leftToResolve = (ending: MergeEnding): boolean =>
+  ending.kind === 'conflict' || ending.kind === 'stopped' || ending.kind === 'headless-squash';
 
 /** `post-merge`'s squash-flag argument: `1` after a `--squash` merge, else `0`. */
 const squashFlag = (result: MergeResult): string => (result.kind === 'squashed' ? '1' : '0');
@@ -275,7 +295,8 @@ export const mergeRun = async (
   opts: MergeRunInput,
   internal: MergeInternalOptions = {},
 ): Promise<MergeResult> => {
-  const result = await computeMerge(ctx, opts, internal);
+  const ending = await computeMerge(ctx, opts, internal);
+  const result = resultOf(ending);
   // post-merge is informational — git fires it after a merge that updates the
   // working tree (fast-forward or clean true-merge), never on up-to-date or a
   // conflict. It cannot abort the completed merge (its exit code is ignored).
@@ -283,7 +304,7 @@ export const mergeRun = async (
   if (result.kind === 'fast-forward' || result.kind === 'merge' || result.kind === 'squashed') {
     await runInformationalHook(ctx, 'post-merge', { args: [squashFlag(result)] });
   }
-  if (leftToResolve(result)) return result;
+  if (leftToResolve(ending)) return result;
   if (result.kind !== 'up-to-date') await applyMergeAutostash(ctx);
   // git's `remove_merge_branch_state` on every concluded merge; a stop keeps its files.
   await removeMergeBranchState(ctx);
@@ -382,7 +403,7 @@ const computeMerge = async (
   ctx: Context,
   input: MergeRunInput,
   internal: MergeInternalOptions,
-): Promise<MergeResult> => {
+): Promise<MergeEnding> => {
   await assertOperationalRepositorySettingsFirst(ctx);
   assertKnownStrategy(input.strategy);
   await assertMergeMessageConfig(ctx);
@@ -436,8 +457,8 @@ const assertSquashCompatible = async (ctx: Context, input: MergeRunInput): Promi
 const underAutostash = async (
   ctx: Context,
   opts: SettledMerge,
-  run: () => Promise<MergeResult>,
-): Promise<MergeResult> => {
+  run: () => Promise<MergeEnding>,
+): Promise<MergeEnding> => {
   if (!opts.autostash) return run();
   await stashForMerge(ctx);
   try {
@@ -502,7 +523,7 @@ const twoHeadMerge = async (
   branch: RefName | undefined,
   ourId: ObjectId,
   remote: MergeRemote,
-): Promise<MergeResult> => {
+): Promise<MergeEnding> => {
   const theirId = remote.id;
   const opts = await settleMerge(ctx, input, internal, { branch, ourId }, [remote]);
   await writeOrigHead(ctx, ourId);
@@ -535,13 +556,15 @@ const twoHeadStrategy = async (
   commit: MergeCommitInput,
   remote: MergeRemote,
   bases: ReadonlyArray<ObjectId>,
-): Promise<MergeResult> => {
+): Promise<MergeEnding> => {
   const strategy = commit.opts.strategy ?? 'ort';
   if (strategy === 'ours') return oursMerge(ctx, commit);
   if (ORT_STRATEGIES.has(strategy)) {
     const { opts, internal, branch, ourId } = commit;
     return mergeCommit(ctx, opts, internal, branch, ourId, remote.id, bases[0], strategy);
   }
+  // git-merge-resolve gives up on a baseless merge; octopus on any single head the trivial merge left.
+  if (strategy === 'resolve' && bases.length === 0) throw mergeStrategyFailed(strategy);
   const trivial = await tryTrivialMerge(ctx, commit, remote.id, bases);
   if (trivial !== undefined) return trivial;
   if (strategy === 'octopus') throw mergeStrategyFailed(strategy);
@@ -558,7 +581,7 @@ const tryTrivialMerge = async (
   commit: MergeCommitInput,
   theirId: ObjectId,
   bases: ReadonlyArray<ObjectId>,
-): Promise<MergeResult | undefined> => {
+): Promise<MergeEnding | undefined> => {
   const { opts, ourId } = commit;
   if (bases.length !== 1 || opts.squash === true || opts.commit === false) return undefined;
   const [base, ours, theirs] = await Promise.all(
@@ -571,7 +594,7 @@ const tryTrivialMerge = async (
 };
 
 /** git's `ours` strategy: HEAD's tree is the result, once the index matches it. */
-const oursMerge = async (ctx: Context, commit: MergeCommitInput): Promise<MergeResult> => {
+const oursMerge = async (ctx: Context, commit: MergeCommitInput): Promise<MergeEnding> => {
   const tree = await getTree(ctx, commit.ourId);
   await assertIndexMatches(ctx, (await flattenTree(ctx, tree)).entries);
   return commitCleanMerge(ctx, commit, tree, mergeMadeBy('ours'));
@@ -597,7 +620,7 @@ const manyHeadMerge = async (
   branch: RefName | undefined,
   ourId: ObjectId,
   named: ReadonlyArray<MergeRemote>,
-): Promise<MergeResult> => {
+): Promise<MergeEnding> => {
   const reduced = (await tryReduceHeads(ctx, [ourId, ...named.map((remote) => remote.id)])) ?? [];
   const remotes = reduced.flatMap(
     (id) => named.find((remote) => remote.id === id && id !== ourId) ?? [],
@@ -624,7 +647,7 @@ const manyHeadStrategy = (
   ctx: Context,
   commit: MergeCommitInput,
   remotes: ReadonlyArray<OctopusRemote>,
-): Promise<MergeResult> => {
+): Promise<MergeEnding> => {
   const strategy = commit.opts.strategy ?? 'octopus';
   if (strategy === 'ours') return oursMerge(ctx, commit);
   if (strategy !== 'octopus') throw mergeStrategyFailed(strategy);
@@ -652,7 +675,7 @@ const fastForward = async (
   internal: MergeInternalOptions,
   branch: RefName | undefined,
   { ourId, theirId }: { readonly ourId: ObjectId; readonly theirId: ObjectId },
-): Promise<MergeResult> =>
+): Promise<MergeEnding> =>
   materialiseAndApply(ctx, await getTree(ctx, theirId), async () => {
     // Written through the literal `HEAD`: the branch it names, or HEAD itself when detached.
     await updateRef(ctx, HEAD, theirId, {
@@ -678,7 +701,7 @@ const mergeCommit = async (
   theirId: ObjectId,
   baseId: ObjectId | undefined,
   strategy: string,
-): Promise<MergeResult> => {
+): Promise<MergeEnding> => {
   ctx.progress.start(MERGE_WRITE_FILES_OP);
   try {
     const treeResult = await computeMergeTreeResult(ctx, ourId, theirId, baseId, opts.rev);
@@ -729,11 +752,11 @@ const materialiseNonConflictTree = async (
  * its result — releasing the lock either way. Shared by the clean true-merge and
  * fast-forward branches so the lock ceremony lives in one place.
  */
-const materialiseAndApply = async (
+const materialiseAndApply = async <T extends MergeEnding>(
   ctx: Context,
   targetTree: ObjectId,
-  apply: () => Promise<MergeResult>,
-): Promise<MergeResult> => {
+  apply: () => Promise<T>,
+): Promise<T> => {
   const lock = await acquireIndexLock(ctx);
   try {
     const entries = await materialiseNonConflictTree(ctx, targetTree);
@@ -760,7 +783,7 @@ const squashInto = (
   tree: ObjectId,
   ourId: ObjectId,
   heads: ReadonlyArray<ObjectId>,
-): Promise<MergeResult> =>
+): Promise<SquashedResult> =>
   materialiseAndApply(ctx, tree, async () => {
     await writeSquashMsg(ctx, await buildSquashMessage(ctx, ourId, heads));
     return { kind: 'squashed', origHead: ourId };
@@ -796,7 +819,7 @@ const stopBeforeCommit = (
   tree: ObjectId,
   ourId: ObjectId,
   heads: ReadonlyArray<ObjectId>,
-): Promise<MergeResult> =>
+): Promise<MergeEnding> =>
   materialiseAndApply(ctx, tree, async () => {
     await writeMergeHeads(ctx, heads);
     await writeMergeMode(ctx, opts.fastForward);
@@ -810,9 +833,9 @@ const commitCleanMerge = async (
   { opts, internal, branch, ourId, parents }: MergeCommitInput,
   mergedTree: ObjectId,
   note: string,
-): Promise<MergeResult> => {
+): Promise<MergeEnding> => {
   const heads = parents.filter((id) => id !== ourId);
-  if (opts.squash === true) return squashInto(ctx, mergedTree, ourId, heads);
+  if (opts.squash === true) return headless(squashInto(ctx, mergedTree, ourId, heads));
   if (opts.commit === false) return stopBeforeCommit(ctx, opts, mergedTree, ourId, heads);
   const author = await resolveMergeAuthor(ctx, opts);
   const committer = resolveMergeCommitter(opts, author);
@@ -848,7 +871,7 @@ const octopus = async (
   commit: MergeCommitInput,
   remotes: ReadonlyArray<OctopusRemote>,
   note: string,
-): Promise<MergeResult> => {
+): Promise<MergeEnding> => {
   const ours = await flattenTree(ctx, await getTree(ctx, commit.ourId));
   await assertIndexMatches(ctx, ours.entries);
   const result = await octopusMerge(ctx, commit.ourId, remotes);
@@ -896,7 +919,7 @@ const persistOctopusConflict = async (
   commit: MergeCommitInput,
   result: Extract<OctopusResult, { readonly kind: 'conflict' }>,
   ours: FlatEntries,
-): Promise<MergeResult> => {
+): Promise<MergeEnding> => {
   const marked = result.conflicts.filter((conflict) => conflict.conflictContent !== undefined);
   const outcomes = outcomesBetween(ours, result.worktree, new Set(marked.map((c) => c.path)));
   const changed = changedPaths(outcomes, result.conflicts, ours);
@@ -1162,7 +1185,7 @@ const persistConflictState = async (
   result: Extract<MergeTreeResult, { readonly kind: 'conflict' }>,
   ourId: ObjectId,
   theirId: ObjectId,
-): Promise<MergeResult> => {
+): Promise<MergeEnding> => {
   rejectUnsupportedConflicts(result.conflicts);
 
   const changed = changedPaths(result.outcomes, result.conflicts, result.ours);
@@ -1225,9 +1248,14 @@ const conflictOutcome = (
   conflicts: ReadonlyArray<MergeConflict>,
   mergeHead: ObjectId,
   origHead: ObjectId,
-): MergeResult => {
+): MergeEnding => {
   const descriptors = conflicts.map((c) => ({ path: c.path, type: c.type }));
-  if (opts.squash === true) return { kind: 'squashed', origHead, conflicts: descriptors };
+  if (opts.squash === true) {
+    return {
+      kind: 'headless-squash',
+      result: { kind: 'squashed', origHead, conflicts: descriptors },
+    };
+  }
   return { kind: 'conflict', conflicts: descriptors, mergeHead, origHead };
 };
 

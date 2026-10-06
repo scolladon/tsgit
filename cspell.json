@@ -1218,6 +1218,7 @@
     "tsconfig",
     "tsgit",
     "TSGITTESTKEY",
+    "twohead",
     "typechange",
     "typechecks",
     "typeflag",

@@ -143,6 +143,40 @@ describe('mergeRun with autostash', () => {
     });
   });
 
+  describe('Given a dirty tree, When an autostash squash merges cleanly without a fast-forward', () => {
+    it('Then MERGE_AUTOSTASH keeps the stash for the commit and the pop hint is given', async () => {
+      // Arrange
+      const { ctx, logger } = await seed('clean');
+      const sut = mergeRun;
+
+      // Act
+      const result = await sut(ctx, { rev: 'side', autostash: true, squash: true });
+
+      // Assert
+      expect(result).toEqual({ kind: 'squashed', origHead: expect.any(String) });
+      expect(await ctx.fs.readUtf8(mergeAutostashFile(ctx))).toMatch(/^[0-9a-f]{40}\n$/);
+      expect(await readWork(ctx, 'u')).toBe('u\n');
+      expect(await stashRef(ctx)).toBe('missing');
+      expect(logger.info).toHaveBeenCalledWith(STASH_POP_HINT);
+    });
+  });
+
+  describe('Given a dirty tree, When an autostash squash fast-forwards', () => {
+    it('Then the autostash is re-applied at once', async () => {
+      // Arrange
+      const { ctx, logger } = await seed('fast-forward');
+      const sut = mergeRun;
+
+      // Act
+      await sut(ctx, { rev: 'side', autostash: true, squash: true });
+
+      // Assert
+      expect(await readWork(ctx, 'u')).toBe('dirty\n');
+      expect(await ctx.fs.exists(mergeAutostashFile(ctx))).toBe(false);
+      expect(logger.info).toHaveBeenCalledWith('Applied autostash.');
+    });
+  });
+
   describe('Given an autostash merge stopped on a conflict', () => {
     const conflicted = async () => {
       const seeded = await seed('conflict');

@@ -19,7 +19,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { chmod, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -357,6 +357,102 @@ describe.skipIf(!GIT_AVAILABLE)('merge options interop', () => {
         await repo.dispose();
 
         // Assert
+        expect(snapshot(ours)).toEqual(snapshot(theirs));
+      });
+    });
+  });
+
+  describe('Given a dirty tree and a squash that merges without a fast-forward', () => {
+    describe('When both tools squash-merge with autostash', () => {
+      it('Then MERGE_AUTOSTASH holds the change for the commit in both', async () => {
+        // Arrange
+        const { ours, theirs } = setUp();
+        for (const dir of [ours, theirs]) writeFileSync(path.join(dir, 'f'), 'dirty\n');
+        datedExit(theirs, ['merge', '--squash', '--autostash', 'origin/clean']);
+        const repo = await openRepository({ cwd: ours });
+        const sut = repo.merge.run;
+
+        // Act
+        await sut({ rev: 'origin/clean', squash: true, autostash: true, author: IDENTITY });
+        await repo.dispose();
+
+        // Assert
+        const kept = (dir: string) => ({
+          ...snapshot(dir),
+          autostash: existsSync(path.join(dir, '.git', 'MERGE_AUTOSTASH')),
+          stashes: git(dir, 'stash', 'list'),
+          f: readFileSync(path.join(dir, 'f'), 'utf8'),
+        });
+        expect(kept(ours)).toEqual(kept(theirs));
+        expect(kept(ours).autostash).toBe(true);
+      });
+    });
+  });
+
+  describe.each([
+    ['a squash committed with a message', ['--squash', 'origin/clean'], 'squashed', 'message'],
+    ['a squash committed from its draft', ['--squash', 'origin/clean'], '', 'squash'],
+    ['a conflict resolved with a message', ['origin/side'], 'resolved', 'message'],
+    ['a conflict resolved from its draft', ['origin/side'], '', 'merge'],
+  ] as const)('Given %s', (_label, mergeArgs, message, source) => {
+    describe('When both tools commit under a prepare-commit-msg hook', () => {
+      it(`Then both hooks receive the ${source} source`, async () => {
+        // Arrange
+        const { ours, theirs } = setUp();
+        const hook = '#!/bin/sh\necho "$2" >> source.log\n';
+        for (const dir of [ours, theirs]) {
+          const hookPath = path.join(dir, '.git', 'hooks', 'prepare-commit-msg');
+          await writeFile(hookPath, hook);
+          await chmod(hookPath, 0o755);
+          datedExit(dir, ['merge', '-q', ...mergeArgs]);
+          await writeFile(path.join(dir, 'f'), 'resolved\n');
+          dated(['-C', dir, 'add', 'f']);
+        }
+        dated(['-C', theirs, 'commit', '-q', ...(message === '' ? [] : ['-m', message])]);
+        const repo = await openRepository({ cwd: ours });
+        const sut = repo.commit;
+
+        // Act
+        await sut({ message, author: IDENTITY, committer: IDENTITY });
+        await repo.dispose();
+
+        // Assert
+        const logged = (dir: string) => readFileSync(path.join(dir, 'source.log'), 'utf8');
+        expect(logged(ours)).toBe(logged(theirs));
+        expect(logged(ours)).toBe(`${source}\n`);
+      });
+    });
+  });
+
+  describe('Given unrelated histories and strategy resolve', () => {
+    describe('When both tools merge allowing unrelated histories', () => {
+      it('Then both fail the strategy and leave HEAD and the index alone', async () => {
+        // Arrange
+        const { ours, theirs } = setUp();
+        for (const dir of [ours, theirs]) {
+          dated(['-C', dir, 'checkout', '-q', '--orphan', 'other']);
+          dated(['-C', dir, 'rm', '-rqf', '.']);
+          commitFile(dir, 'o', 'o\n', 'other root');
+          dated(['-C', dir, 'checkout', '-q', 'main']);
+        }
+        const args = ['-s', 'resolve', '--allow-unrelated-histories', 'other'];
+        const theirsRun = datedExit(theirs, ['merge', ...args]);
+        const repo = await openRepository({ cwd: ours });
+        const sut = repo.merge.run;
+
+        // Act
+        const result = await sut({
+          rev: 'other',
+          strategy: 'resolve',
+          allowUnrelatedHistories: true,
+          author: IDENTITY,
+        }).catch((e: unknown) => (e as { data: unknown }).data);
+        await repo.dispose();
+
+        // Assert
+        expect(theirsRun.exitCode).toBe(2);
+        expect(theirsRun.stderr).toContain('Merge with strategy resolve failed.');
+        expect(result).toEqual({ code: 'MERGE_STRATEGY_FAILED', strategy: 'resolve' });
         expect(snapshot(ours)).toEqual(snapshot(theirs));
       });
     });

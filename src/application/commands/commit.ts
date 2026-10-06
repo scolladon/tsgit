@@ -116,12 +116,13 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   // pre-commit runs before the index is read, so a hook that re-stages files
   // (e.g. a formatter) is reflected in the committed tree.
   await runPreCommitHook(ctx, noVerify);
-  // A resolution commit for a pending merge / cherry-pick / revert reuses
-  // MERGE_MSG as its draft — git's `merge` message source for prepare-commit-msg.
+  // A resolution commit for a pending merge / cherry-pick / revert reuses MERGE_MSG as its draft.
   const resolvingPending =
     mergeHead !== undefined || cherryPickHead !== undefined || revertHead !== undefined;
-  const messageSource: PrepareCommitMsgSource = resolvingPending ? 'merge' : 'message';
-  const resolved = await resolveCommitMessage(ctx, opts, resolvingPending);
+  // A given message never reads the drafts, as git's `-m` does not.
+  const squashDraft = opts.message.length > 0 ? undefined : await readSquashMsg(ctx);
+  const messageSource = messageSourceOf(opts.message, resolvingPending, squashDraft);
+  const resolved = await resolveCommitMessage(ctx, opts, resolvingPending, squashDraft);
   const config = await readConfig(ctx);
   const configUser = toAuthor(config.user);
   if (opts.author === undefined && configUser === undefined) {
@@ -286,14 +287,28 @@ const resolveCommitMessage = async (
   ctx: Context,
   opts: CommitOptions,
   usePendingDraft: boolean,
+  squashDraft: string | undefined,
 ): Promise<string> => {
   const allowEmpty = opts.allowEmptyMessage ?? false;
   if (opts.message.length > 0) return sanitizeMessage(opts.message, { allowEmpty });
   // An empty user message falls back to git's draft — SQUASH_MSG, then MERGE_MSG
   // when resolving — stripping comment lines as git's editor cleanup does.
-  const squash = (await readSquashMsg(ctx)) ?? '';
   const pending = usePendingDraft ? ((await readMergeMsg(ctx)) ?? '') : '';
-  return sanitizeMessage(stripComments(`${squash}${pending}`), { allowEmpty });
+  return sanitizeMessage(stripComments(`${squashDraft ?? ''}${pending}`), { allowEmpty });
+};
+
+/**
+ * git's `prepare-commit-msg` source: `message` for a given message (`-m`),
+ * else `squash` over a `SQUASH_MSG` draft, else `merge` over a resolution's.
+ */
+const messageSourceOf = (
+  message: string,
+  resolvingPending: boolean,
+  squashDraft: string | undefined,
+): PrepareCommitMsgSource => {
+  if (message.length > 0) return 'message';
+  if (squashDraft !== undefined) return 'squash';
+  return resolvingPending ? 'merge' : 'message';
 };
 
 /**

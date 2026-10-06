@@ -743,24 +743,37 @@ describe('commit — hooks', () => {
     });
   });
 
-  describe('Given a merge resolution commit', () => {
+  describe.each([
+    ['a merge resolution given a message', 'resolve', ['MERGE_HEAD'], 'message'],
+    ['a merge resolution drafted from MERGE_MSG', '', ['MERGE_HEAD', 'MERGE_MSG'], 'merge'],
+    ['a squash drafted from SQUASH_MSG', '', ['SQUASH_MSG'], 'squash'],
+    ['a squash given a message', 'squashed', ['SQUASH_MSG'], 'message'],
+    ['a conflicted squash drafted from its messages', '', ['SQUASH_MSG', 'MERGE_MSG'], 'squash'],
+  ] as const)('Given %s', (_label, message, stateFiles, source) => {
     describe('When commit fires prepare-commit-msg', () => {
-      it('Then the message source argument is "merge"', async () => {
-        // Arrange — a populated MERGE_HEAD makes this a merge resolution.
+      it(`Then the message source argument is "${source}"`, async () => {
+        // Arrange
         const runner = new MemoryHookRunner();
         const ctx = createMemoryContext({ hooks: runner });
         await init(ctx);
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'first', author });
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${await sideCommit(ctx)}\n`);
+        const side = `${await sideCommit(ctx)}\n`;
+        for (const file of stateFiles) {
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/${file}`,
+            file === 'MERGE_HEAD' ? side : 'draft\n',
+          );
+        }
+        const sut = commit;
 
         // Act
-        await commit(ctx, { message: 'resolve', author });
+        await sut(ctx, { message, author, allowEmpty: true });
 
         // Assert
         const prepares = runner.calls.filter((c) => c.name === 'prepare-commit-msg');
-        expect(prepares[prepares.length - 1]?.args[1]).toBe('merge');
+        expect(prepares.at(-1)?.args[1]).toBe(source);
       });
     });
   });
