@@ -318,6 +318,38 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
     });
   });
 
+  describe('Given an upstream bringing in a commit', () => {
+    const SIDE = [
+      ['branch.main.remote', 'origin'],
+      ['branch.main.merge', 'refs/heads/side'],
+    ] as const;
+
+    describe.each([
+      { label: 'log-flag', flags: ['--log'], opts: { log: true }, config: SIDE },
+      { label: 'log-config', flags: [], opts: {}, config: [...SIDE, ['merge.log', '1']] },
+    ] as const)(
+      'When both tools pull it with a shortlog ($label)',
+      ({ label, flags, opts, config }) => {
+        it('Then the merge commits agree', async () => {
+          // Arrange
+          const { ours, theirs } = setUp(label, 'main', config);
+          dated(['-C', theirs, 'pull', '-q', '--no-rebase', '--no-edit', ...flags]);
+          const expected = head(theirs).replaceAll(peerPath.slice(0, -'.git'.length), SHORT_URL);
+          const sut = pull;
+
+          // Act
+          await sut(
+            { ...createNodeContext({ workDir: ours }), transport: backendTransport(peerRoot) },
+            { ...opts, rebase: false, author: IDENTITY, committer: IDENTITY },
+          );
+
+          // Assert
+          expect(head(ours)).toBe(expected);
+        });
+      },
+    );
+  });
+
   describe('Given fast-forward configuration', () => {
     const UPSTREAM = [
       ['branch.main.remote', 'origin'],

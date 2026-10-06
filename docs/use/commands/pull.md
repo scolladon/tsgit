@@ -21,6 +21,7 @@ interface PullOptions {
   readonly prune?: boolean;        // forwarded to fetch
   readonly depth?: number;         // forwarded to fetch
   readonly message?: string;       // override the merge-commit message / MERGE_MSG
+  readonly log?: boolean | number; // git's --log[=<n>] / --no-log, forwarded to merge
   readonly author?: AuthorIdentity;
   readonly committer?: AuthorIdentity;
 }

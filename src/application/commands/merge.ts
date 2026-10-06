@@ -80,6 +80,7 @@ import { resolveAuthor, resolveCommitter, sanitizeMessage } from './internal/com
 import { configuredMergeFastForward } from './internal/fast-forward-config.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { writeMergeAutostash } from './internal/merge-autostash.js';
+import { mergeShortlog, settleMergeLog } from './internal/merge-log.js';
 import {
   assertMergeMessageConfig,
   describeMergeHead,
@@ -140,6 +141,12 @@ export interface MergeRunInput {
    * keeps it in the stash list instead.
    */
   readonly autostash?: boolean;
+  /**
+   * git's `--log[=<n>]` / `--no-log`: follow the message with a shortlog of
+   * (at most `n`, `true` for 20) commits each head brings in. Unset — or a
+   * negative count — it is `merge.log`'s (or `merge.summary`'s), else none.
+   */
+  readonly log?: boolean | number;
   readonly author?: AuthorIdentity;
   readonly committer?: AuthorIdentity;
 }
@@ -229,25 +236,44 @@ export const mergeRun = async (
   return result;
 };
 
-/** The message the merge records: the caller's, else git's `fmt_merge_msg` over the heads. */
+/** The branch merged into (`undefined` when HEAD is detached) and the commit HEAD names. */
+interface MergeTarget {
+  readonly branch: RefName | undefined;
+  readonly ourId: ObjectId;
+}
+
+/**
+ * The message the merge records: the caller's, else git's `fmt_merge_msg`
+ * over the heads — either followed by the shortlog `log` asks for.
+ */
 const settleMessage = async (
   ctx: Context,
   opts: MergeRunInput,
   internal: MergeInternalOptions,
-  branch: RefName | undefined,
+  target: MergeTarget,
   remotes: ReadonlyArray<MergeRemote>,
 ): Promise<SettledMerge> => {
   const rev = remotes.map((remote) => remote.name).join(' ');
   const autostash = opts.autostash ?? (await configuredAutostash(ctx, 'merge')) ?? false;
-  if (opts.message !== undefined) return { ...opts, rev, autostash, message: opts.message };
+  const log = await settleMergeLog(ctx, opts.log);
+  if (opts.message !== undefined && log.length === 0) {
+    return { ...opts, rev, autostash, message: opts.message };
+  }
   const heads =
     internal.heads ??
     (await Promise.all(
       remotes.map((remote) => describeMergeHead(ctx, remote.spelt, remote.id, remote.object)),
     ));
-  const into = shortBranchName(branch ?? HEAD);
-  return { ...opts, rev, autostash, message: await formatMergeMessage(ctx, heads, into) };
+  const into = shortBranchName(target.branch ?? HEAD);
+  const formatted = await formatMergeMessage(ctx, heads, into, opts.message);
+  if (log.length === 0) return { ...opts, rev, autostash, message: formatted };
+  const shortlog = await mergeShortlog(ctx, heads, target.ourId, log);
+  return { ...opts, rev, autostash, message: `${completeLine(formatted)}${shortlog}` };
 };
+
+/** git's `strbuf_complete_line`: a non-empty text ends with a newline. */
+const completeLine = (text: string): string =>
+  text === '' || text.endsWith('\n') ? text : `${text}\n`;
 
 /**
  * What git settles before merging: the fast-forward policy (the caller's, else
@@ -257,11 +283,11 @@ const settleMerge = async (
   ctx: Context,
   input: MergeRunInput,
   internal: MergeInternalOptions,
-  branch: RefName | undefined,
+  target: MergeTarget,
   remotes: ReadonlyArray<MergeRemote>,
 ): Promise<SettledMerge> => {
   const policy = await settleFastForward(ctx, input);
-  const settled = await settleMessage(ctx, policy, internal, branch, remotes);
+  const settled = await settleMessage(ctx, policy, internal, target, remotes);
   const throwaway = await mergesThrowawayTag(ctx, settled, remotes);
   return throwaway ? { ...settled, fastForward: NO_FAST_FORWARD } : settled;
 };
@@ -388,7 +414,7 @@ const twoHeadMerge = async (
   remote: MergeRemote,
 ): Promise<MergeResult> => {
   const theirId = remote.id;
-  const opts = await settleMerge(ctx, input, internal, branch, [remote]);
+  const opts = await settleMerge(ctx, input, internal, { branch, ourId }, [remote]);
   await writeOrigHead(ctx, ourId);
   await assertEverySourceLoadable(ctx);
   // Stryker disable next-line ConditionalExpression: equivalent — when ourId===theirId, mergeBase returns that same commit, so the `base === theirId` check below yields the identical up-to-date result.
@@ -443,7 +469,7 @@ const manyHeadMerge = async (
     await writeOrigHead(ctx, ourId);
     return { kind: 'up-to-date', id: ourId };
   }
-  const opts = await settleMerge(ctx, input, described, branch, remotes);
+  const opts = await settleMerge(ctx, input, described, { branch, ourId }, remotes);
   await writeOrigHead(ctx, ourId);
   await assertEverySourceLoadable(ctx);
   assertRelated(opts, await mergeBasesOf(ctx, [ourId, ...remotes.map((r) => r.id)], OCTOPUS));

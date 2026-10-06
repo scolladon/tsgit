@@ -14,6 +14,7 @@ interface MergeRunInput {
   readonly message?: string;
   readonly fastForward?: 'only' | 'never' | 'allow'; // default 'allow'
   readonly autostash?: boolean; // git's --autostash / --no-autostash; default merge.autostash
+  readonly log?: boolean | number; // git's --log[=<n>] / --no-log; default merge.log
   readonly author?: AuthorIdentity;
   readonly committer?: AuthorIdentity;
 }
@@ -37,6 +38,7 @@ type MergeResult =
 | `message` | `string` | auto | Override the merge-commit message. |
 | `fastForward` | `'only' \| 'never' \| 'allow'` | `'allow'` | Fast-forward policy (see below). |
 | `autostash` | `boolean` | `merge.autostash` | Stash a dirty tree before the merge (`MERGE_AUTOSTASH`) and re-apply it when the merge concludes, or on the `commit` / `merge.abort` that ends a conflict stop; a `reset` or `checkout` that drops the merge state files it in the stash list (`autostash`) instead. |
+| `log` | `boolean \| number` | `merge.log` / `merge.summary` | Follow the message (the default title, or `message`) with git's shortlog of each head: `* <head>:` then the subjects of the commits it brings in over HEAD, newest first, merges skipped. `true` lists 20, a number at most that many (`(<n> commits)` and `...` past it), `false` / `0` none; a negative count defers to the config. `merge.branchdesc` adds a local branch's `branch.<name>.description` under its header. A negative `merge.log` refuses with `CONFIG_NEGATIVE_LENGTH`, a non-integer with `CONFIG_BAD_NUMERIC_VALUE`. |
 | `author` / `committer` | `AuthorIdentity` | from config | Identities for the merge commit. |
 
 ### `fastForward`

@@ -249,6 +249,13 @@ export type CommandError =
       readonly source: string;
       readonly line: number;
     }
+  | {
+      readonly code: 'CONFIG_NEGATIVE_LENGTH';
+      readonly key: string;
+      readonly value: string;
+      readonly source: string;
+      readonly line: number;
+    }
   | { readonly code: 'MERGE_DRIVER_MISSING_COMMAND'; readonly name: string }
   | {
       readonly code: 'CONFIG_BAD_NUMERIC_VALUE';
@@ -897,6 +904,25 @@ export const configParseError = (
  */
 export const configMissingValue = (key: string, source: string, line: number): TsgitError =>
   new TsgitError({ code: 'CONFIG_MISSING_VALUE', key: sanitizeForDisplay(key), source, line });
+
+/**
+ * A length-typed config key (`merge.log`, `merge.summary`) holds a negative
+ * integer at the 1-based `line` of `source`: git's `<key>: negative length
+ * <value>` error, which fails the config read as a `bad config variable`.
+ */
+export const configNegativeLength = (
+  key: string,
+  value: string,
+  source: string,
+  line: number,
+): TsgitError =>
+  new TsgitError({
+    code: 'CONFIG_NEGATIVE_LENGTH',
+    key: sanitizeForDisplay(key),
+    value: sanitizeForDisplay(value),
+    source,
+    line,
+  });
 
 /**
  * A `[merge "<name>"]` section is registered (`name` and/or `recursive` set) but

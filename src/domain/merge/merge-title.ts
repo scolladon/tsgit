@@ -9,7 +9,7 @@ const LOCAL_SOURCE = '.';
 
 type NamedKind = 'branch' | 'remoteBranch' | 'tag' | 'generic';
 
-interface ParsedHead {
+export interface ParsedHead {
   readonly source: string;
   readonly kind: NamedKind | 'head';
   /** The head's name as the title lists it (quoted, as described). */
@@ -23,7 +23,7 @@ const KIND_PREFIXES: ReadonlyArray<readonly [prefix: string, kind: NamedKind]> =
 ];
 
 /** git's `handle_line` split of one description into its source and kind. */
-const parseHead = (description: string): ParsedHead => {
+export const parseHead = (description: string): ParsedHead => {
   const at = description.indexOf(SOURCE_SEPARATOR);
   if (at < 0) return { source: description, kind: 'head', name: description };
   const line = description.slice(0, at);

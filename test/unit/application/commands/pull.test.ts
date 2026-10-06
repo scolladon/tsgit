@@ -819,6 +819,41 @@ describe('pull', () => {
     });
   });
 
+  describe('Given log: true', () => {
+    describe('When pull over a true merge', () => {
+      it("Then the merge commit carries the fetched head's shortlog", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'a', 'A');
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        const b = await commitFile(ctx, 'b.txt', 'b', 'B');
+        await checkout(ctx, { rev: 'main' });
+        await commitFile(ctx, 'c.txt', 'c', 'X');
+        await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
+        const { transport } = buildPullRemote(
+          [{ name: 'refs/heads/main', id: b }],
+          await emptyPack(ctx),
+        );
+        const sut = pull;
+
+        // Act
+        const pulled = mergedPull(
+          await sut(withTransport(ctx, transport), { rebase: false, log: true, author }),
+        );
+
+        // Assert
+        if (pulled.merge.kind !== 'merge')
+          throw new Error(`expected a merge, got ${pulled.merge.kind}`);
+        const result = await readObject(ctx, pulled.merge.id);
+        expect(result.type === 'commit' && result.data.message).toBe(
+          "Merge branch 'main' of https://remote.example/r\n\n* 'main' of https://remote.example/r:\n  B\n",
+        );
+      });
+    });
+  });
+
   describe('Given a depth argument', () => {
     describe('When pull', () => {
       it('Then forwards a deepen request to the fetch step', async () => {

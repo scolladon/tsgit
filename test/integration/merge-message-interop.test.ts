@@ -159,6 +159,67 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — default message', () => {
     });
   });
 
+  /** HEAD after each tool merges `rev` into main, git with `args`, tsgit with `input`. */
+  const mergeBothWith = async (
+    rev: string,
+    args: ReadonlyArray<string>,
+    input: { readonly message?: string; readonly log?: boolean | number },
+  ): Promise<readonly [string, string]> => {
+    git(pair.peer, 'merge', '-q', '--no-edit', ...args, rev);
+    const repo = await openRepository({ cwd: pair.ours });
+    try {
+      await repo.merge.run({ rev, ...input, author: IDENTITY, committer: IDENTITY });
+    } finally {
+      await repo.dispose();
+    }
+    return [git(pair.ours, 'rev-parse', 'HEAD'), git(pair.peer, 'rev-parse', 'HEAD')];
+  };
+
+  describe.each([
+    ['merge.log = true', [['merge.log', 'true']], 'feature', [], {}],
+    ['merge.summary = 1', [['merge.summary', '1']], 'feature', [], {}],
+    ['log: 1 over two commits', [], 'feature', ['--log=1'], { log: 1 }],
+    ['log: false over merge.log', [['merge.log', 'true']], 'feature', ['--no-log'], { log: false }],
+    [
+      'a message and log: true',
+      [],
+      'feature',
+      ['-m', 'custom', '--log'],
+      { message: 'custom', log: true },
+    ],
+    [
+      'merge.branchdesc and a description',
+      [
+        ['merge.branchdesc', 'true'],
+        ['branch.feature.description', 'line1\nline2'],
+      ],
+      'feature',
+      ['--log'],
+      { log: true },
+    ],
+    ['an annotated tag and log: true', [], 'at', ['--log'], { log: true }],
+    ['an ancestor spelling and log: true', [], 'feature~1', ['--log'], { log: true }],
+  ] as const)('Given %s', (_label, config, rev, args, input) => {
+    describe('When both tools merge with a shortlog', () => {
+      it('Then the merge commits are identical', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) {
+          for (const [key, value] of config) git(dir, 'config', key, value);
+          git(dir, 'checkout', '-q', 'feature');
+          git(dir, 'commit', '-q', '--allow-empty', '-m', 'second on feature');
+          git(dir, 'checkout', '-q', 'main');
+        }
+        const sut = mergeBothWith;
+
+        // Act
+        const [result, expected] = await sut(rev, args, input);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
   describe('Given both sides change the same file', () => {
     describe('When both tools merge without a message and conflict', () => {
       it('Then MERGE_MSG is byte-identical', async () => {

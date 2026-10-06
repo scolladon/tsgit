@@ -12,6 +12,7 @@ import type { Context } from '../../../ports/context.js';
 import { findEntries, type LocatedConfigEntry } from '../../primitives/config-read.js';
 import { readObject } from '../../primitives/read-object.js';
 import { refResolvesForReading } from '../../primitives/resolve-ref.js';
+import { settleMergeLog } from './merge-log.js';
 import { dwimRefWarning } from './revision-name.js';
 
 /** One head merged, described as a FETCH_HEAD line describes it. */
@@ -47,6 +48,7 @@ const readSuppressedPatterns = async (ctx: Context): Promise<ReadonlyArray<strin
 /** git reads `merge.suppressDest` with its other merge settings, before merging. */
 export const assertMergeMessageConfig = async (ctx: Context): Promise<void> => {
   await readSuppressedPatterns(ctx);
+  await settleMergeLog(ctx, undefined);
 };
 
 /** The branch the title merges into, or `undefined` when a pattern suppresses it. */
@@ -65,8 +67,8 @@ const tagBlock = async (ctx: Context, head: MergeHead): Promise<string> => {
   return object.type === 'tag' ? `\n${object.data.message}` : '';
 };
 
-/** git's `fmt_merge_msg` with a title: the message a merge of `heads` into `branch` records. */
-export const formatMergeMessage = async (
+/** git's `fmt_merge_msg_title`: the title over every head merged into `branch`. */
+const titleLine = async (
   ctx: Context,
   heads: ReadonlyArray<MergeHead>,
   branch: string,
@@ -75,8 +77,22 @@ export const formatMergeMessage = async (
     heads.map((head) => head.description),
     await destination(ctx, branch),
   );
+  return `${title}\n`;
+};
+
+/**
+ * git's `fmt_merge_msg`: the message a merge of `heads` into `branch` records —
+ * the caller's `message` in place of the title when given — then each tag's.
+ */
+export const formatMergeMessage = async (
+  ctx: Context,
+  heads: ReadonlyArray<MergeHead>,
+  branch: string,
+  message?: string,
+): Promise<string> => {
+  const lead = message ?? (await titleLine(ctx, heads, branch));
   const tags = await Promise.all(heads.map((head) => tagBlock(ctx, head)));
-  return `${title}\n${tags.join('')}`;
+  return `${lead}${tags.join('')}`;
 };
 
 /** The kind `merge_name` labels a ref with, when it is one it labels. */

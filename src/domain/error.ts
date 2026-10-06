@@ -602,6 +602,8 @@ function extractDetail(data: TsgitErrorData): string {
         : `bad config line ${data.line} in file ${data.source}`;
     case 'CONFIG_MISSING_VALUE':
       return `missing value for '${data.key}' in file '${data.source}' at line ${data.line}`;
+    case 'CONFIG_NEGATIVE_LENGTH':
+      return `${data.key}: negative length ${data.value}`;
     case 'MERGE_DRIVER_MISSING_COMMAND':
       return `custom merge driver ${data.name} lacks command line.`;
     case 'CONFIG_BAD_NUMERIC_VALUE':

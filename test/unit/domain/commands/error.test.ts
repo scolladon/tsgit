@@ -22,6 +22,7 @@ import {
   configKeyInvalid,
   configMissingValue,
   configMultipleValues,
+  configNegativeLength,
   configScopeNotAvailable,
   configSectionNotFound,
   configSystemPathUnresolved,
@@ -1241,6 +1242,27 @@ describe('domain commands error — config factory data', () => {
     });
   });
 
+  describe('Given the configNegativeLength helper', () => {
+    describe('When called with a negative merge.log entry', () => {
+      it('Then data carries code, key, value, source and line', () => {
+        // Arrange
+        const sut = configNegativeLength;
+
+        // Act
+        const result = sut('merge.log', '-1', '/abs/.git/config', 11);
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'CONFIG_NEGATIVE_LENGTH',
+          key: 'merge.log',
+          value: '-1',
+          source: '/abs/.git/config',
+          line: 11,
+        });
+      });
+    });
+  });
+
   describe('Given the configBadNumericValue helper', () => {
     describe("When called with key='core.loosecompression', source='/abs/.git/config', value='', reason='invalid unit'", () => {
       it('Then data carries code, key, source, value, and reason individually', () => {
@@ -1767,6 +1789,16 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       { code: 'CONFIG_MISSING_VALUE', key: 'user.name', source: '/repo/.git/config', line: 2 },
       "CONFIG_MISSING_VALUE: missing value for 'user.name' in file '/repo/.git/config' at line 2",
+    ],
+    [
+      {
+        code: 'CONFIG_NEGATIVE_LENGTH',
+        key: 'merge.log',
+        value: '-1',
+        source: '/repo/.git/config',
+        line: 11,
+      },
+      'CONFIG_NEGATIVE_LENGTH: merge.log: negative length -1',
     ],
     [
       { code: 'MERGE_DRIVER_MISSING_COMMAND', name: 'x' },
