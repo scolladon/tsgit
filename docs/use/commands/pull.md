@@ -75,7 +75,8 @@ branches.`). A fast-forward or an already-contained head still integrates. Pass
 
 ## Rebasing
 
-With `rebase: true` (or `'merges'`), git's `pull --rebase`:
+With `rebase: true` (or `'merges'`, which rebases with
+[`rebaseMerges`](rebase.md#recreating-merges---rebase-merges)), git's `pull --rebase`:
 
 - a dirty tree refuses with `WORKING_TREE_DIRTY` **before** the fetch;
 - several fetched heads refuse with `PULL_REBASE_MULTIPLE_BRANCHES`;

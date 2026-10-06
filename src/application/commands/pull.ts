@@ -224,6 +224,8 @@ const settleRebase = async (
 /** A rebasing pull of a born HEAD, with the fork point found before the fetch. */
 interface RebasePlan {
   readonly fork: ObjectId | undefined;
+  /** `--rebase=merges`: the rebase recreates local merges. */
+  readonly rebaseMerges: boolean;
 }
 
 /** git pull's `opt_rebase` truthiness: `true` and `'merges'` rebase. */
@@ -246,8 +248,9 @@ const planRebase = async (
   await assertCleanWorkTree(ctx, await treeOf(ctx, head));
   const tracking =
     opts.ref !== undefined ? refspecTrackingRef(upstream.remote, opts.ref) : upstream.trackingRef;
-  if (branchRef === undefined || tracking === undefined) return { fork: undefined };
-  return { fork: await forkPoint(ctx, tracking, head) };
+  const rebaseMerges = opts.rebase === 'merges';
+  if (branchRef === undefined || tracking === undefined) return { fork: undefined, rebaseMerges };
+  return { fork: await forkPoint(ctx, tracking, head), rebaseMerges };
 };
 
 /**
@@ -348,7 +351,7 @@ const integrate = async (ctx: Context, run: Integration): Promise<PullResult> =>
   if (await canFastForward(ctx, fetched)) {
     return integrateByMerge(ctx, fetchResult, fetched, { ...opts, fastForward: 'only' });
   }
-  const result = await rebaseOnto(ctx, fetched[0]!.id, rebase.fork);
+  const result = await rebaseOnto(ctx, fetched[0]!.id, rebase);
   return { fetch: fetchResult, integration: 'rebase', rebase: result };
 };
 
@@ -356,11 +359,15 @@ const integrate = async (ctx: Context, run: Integration): Promise<PullResult> =>
 const rebaseOnto = async (
   ctx: Context,
   theirs: ObjectId,
-  fork: ObjectId | undefined,
+  { fork, rebaseMerges }: RebasePlan,
 ): Promise<RebaseResult> => {
   const head = await resolveRef(ctx, RefName.from('HEAD'));
   const upstream = await rebaseUpstream(ctx, head, theirs, fork);
-  return rebaseRun(ctx, { upstream, onto: theirs }, { reflogAction: PULL_REFLOG_ACTION });
+  return rebaseRun(
+    ctx,
+    { upstream, onto: theirs, rebaseMerges },
+    { reflogAction: PULL_REFLOG_ACTION },
+  );
 };
 
 // git sets GIT_REFLOG_ACTION=pull for the integrate step; this is its analogue.

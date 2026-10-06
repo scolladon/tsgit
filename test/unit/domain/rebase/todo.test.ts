@@ -3,6 +3,7 @@ import type { TsgitError } from '../../../../src/domain/error.js';
 import {
   parseRebaseTodo,
   type RebaseTodoEntry,
+  type RebaseTodoLine,
   serializeRebaseTodo,
 } from '../../../../src/domain/rebase/index.js';
 
@@ -95,11 +96,11 @@ describe('rebase todo grammar', () => {
 
     describe('When a line uses a git verb outside the supported six', () => {
       it('Then throws INVALID_SEQUENCER_TODO carrying the offending line', () => {
-        // Arrange + Act — `reset` is a real `rebase -i` verb (label/reset/merge),
-        // but it is outside tsgit's supported set, so it must be rejected.
+        // Arrange + Act — `exec` is a real `rebase -i` verb outside tsgit's
+        // supported set, so it must be rejected.
         let caught: TsgitError | undefined;
         try {
-          parseRebaseTodo('pick aaaaaaa # ok\nreset bbbbbbb # onto a label\n');
+          parseRebaseTodo('pick aaaaaaa # ok\nexec make test\n');
         } catch (err) {
           caught = err as TsgitError;
         }
@@ -107,7 +108,7 @@ describe('rebase todo grammar', () => {
         // Assert
         expect(caught?.data.code).toBe('INVALID_SEQUENCER_TODO');
         if (caught?.data.code === 'INVALID_SEQUENCER_TODO') {
-          expect(caught.data.reason).toContain('reset bbbbbbb # onto a label');
+          expect(caught.data.reason).toContain('exec make test');
         }
       });
     });
@@ -124,6 +125,72 @@ describe('rebase todo grammar', () => {
 
         // Assert
         expect(caught?.data.code).toBe('INVALID_SEQUENCER_TODO');
+      });
+    });
+  });
+
+  describe('Given a --rebase-merges todo', () => {
+    const lines: ReadonlyArray<RebaseTodoLine> = [
+      { action: 'label', label: 'onto' },
+      { action: 'reset', label: 'onto' },
+      pick('38b400e', 'c1'),
+      { action: 'label', label: 'branch-point' },
+      { action: 'reset', label: 'branch-point', subject: 'c1' },
+      {
+        action: 'merge',
+        oid: '5cc0be3',
+        labels: ['side', 'other'],
+        subject: "Merge branch 'side'",
+      },
+    ];
+    const text =
+      'label onto\n\nreset onto\npick 38b400e # c1\nlabel branch-point\n\n' +
+      "reset branch-point # c1\nmerge -C 5cc0be3 side other # Merge branch 'side'\n";
+
+    describe('When serialized', () => {
+      it('Then each block opens on a blank line before its reset, as git writes it', () => {
+        // Arrange
+        const sut = serializeRebaseTodo;
+
+        // Act
+        const result = sut(lines);
+
+        // Assert
+        expect(result).toBe(text);
+      });
+    });
+
+    describe('When parsed', () => {
+      it('Then label, reset and merge lines read back as their instructions', () => {
+        // Arrange
+        const sut = parseRebaseTodo;
+
+        // Act
+        const result = sut(`${text}reset [new root]\n`);
+
+        // Assert
+        expect(result).toEqual([...lines, { action: 'reset', label: '[new root]' }]);
+      });
+    });
+
+    describe('When a merge line names no label', () => {
+      it('Then throws INVALID_SEQUENCER_TODO carrying the line', () => {
+        // Arrange
+        const sut = parseRebaseTodo;
+        let caught: TsgitError | undefined;
+
+        // Act
+        try {
+          sut('merge -C 5cc0be3 # Merge\n');
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data.code).toBe('INVALID_SEQUENCER_TODO');
+        if (caught?.data.code === 'INVALID_SEQUENCER_TODO') {
+          expect(caught.data.reason).toBe('merge -C 5cc0be3 # Merge');
+        }
       });
     });
   });

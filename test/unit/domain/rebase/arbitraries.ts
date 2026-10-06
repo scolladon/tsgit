@@ -1,5 +1,9 @@
 import fc from 'fast-check';
-import type { AuthorIdentity, RebaseTodoEntry } from '../../../../src/domain/rebase/index.js';
+import type {
+  AuthorIdentity,
+  RebaseTodoEntry,
+  RebaseTodoLine,
+} from '../../../../src/domain/rebase/index.js';
 
 const HEX = '0123456789abcdef'.split('');
 // Subject charset deliberately excludes LF/CR (single-line subjects) and keeps a
@@ -26,6 +30,35 @@ export const arbRebaseTodoEntry = (): fc.Arbitrary<RebaseTodoEntry> =>
 
 export const arbRebaseTodoList = (): fc.Arbitrary<ReadonlyArray<RebaseTodoEntry>> =>
   fc.array(arbRebaseTodoEntry(), { maxLength: 12 });
+
+// A sanitized `--rebase-merges` label: alphanumerics and dashes, never whitespace or `#`.
+const arbLabel = (): fc.Arbitrary<string> =>
+  fc
+    .array(fc.constantFrom(...'abcXYZ019-'.split('')), { minLength: 1, maxLength: 12 })
+    .map((a) => a.join(''));
+
+const arbMergesLine = (): fc.Arbitrary<RebaseTodoLine> =>
+  fc.oneof(
+    arbRebaseTodoEntry(),
+    fc.record({ action: fc.constant('label' as const), label: arbLabel() }),
+    fc.record(
+      {
+        action: fc.constant('reset' as const),
+        label: fc.oneof(arbLabel(), fc.constant('[new root]')),
+        subject: arbSubject(),
+      },
+      { requiredKeys: ['action', 'label'] },
+    ),
+    fc.record({
+      action: fc.constant('merge' as const),
+      oid: arbOid(),
+      labels: fc.array(arbLabel(), { minLength: 1, maxLength: 3 }),
+      subject: arbSubject(),
+    }),
+  );
+
+export const arbRebaseMergesTodo = (): fc.Arbitrary<ReadonlyArray<RebaseTodoLine>> =>
+  fc.array(arbMergesLine(), { maxLength: 12 });
 
 // Identity charset includes the single quote (the char sq_quote must escape) and
 // a backslash, but excludes LF/CR/NUL (which a commit's author line cannot carry

@@ -21,25 +21,47 @@ export const resolveRebaseReplay = async (
   ctx: Context,
   input: RebaseReplayInput,
 ): Promise<ReadonlyArray<ObjectId>> => {
-  const walked = sortInTopologicalOrder(await walkBothSides(ctx, input), 'graph');
+  const range = await walkRebaseRange(ctx, input);
+  const replayed: ObjectId[] = [];
+  for (const commit of range.headSide) {
+    if (!isMerge(commit) && !(await range.isUpstream(commit))) replayed.push(commit.id);
+  }
+  return replayed;
+};
+
+/** The walked `<upstream>...<head>` range: the head side oldest first, merges included. */
+export interface RebaseRange {
+  readonly headSide: ReadonlyArray<Commit>;
+  /** git's `--cherry-mark` patch-same mark: a non-merge whose patch upstream already carries. */
+  readonly isUpstream: (commit: Commit) => Promise<boolean>;
+  /** The merge bases the walk stopped at (git's `BOTTOM` revisions), first one first. */
+  readonly bases: ReadonlyArray<ObjectId>;
+}
+
+export const walkRebaseRange = async (
+  ctx: Context,
+  input: RebaseReplayInput,
+): Promise<RebaseRange> => {
+  const bases = await mergeBasesOf(ctx, [input.upstream, input.head], { all: true });
+  const walked = sortInTopologicalOrder(await walkBothSides(ctx, input, bases), 'graph');
   const upstreamSide = reachableWithin(walked, input.upstream);
   const upstreamPatches = await patchIdsOf(
     ctx,
     walked.filter((commit) => upstreamSide.has(commit.id) && !isMerge(commit)),
   );
-  const headSide = walked.filter((commit) => !upstreamSide.has(commit.id) && !isMerge(commit));
-  const replayed: ObjectId[] = [];
-  for (const commit of headSide) {
-    if (!upstreamPatches.has(await computePatchId(ctx, commit.id))) replayed.push(commit.id);
-  }
-  return replayed.reverse();
+  return {
+    headSide: walked.filter((commit) => !upstreamSide.has(commit.id)).reverse(),
+    isUpstream: async (commit) =>
+      !isMerge(commit) && upstreamPatches.has(await computePatchId(ctx, commit.id)),
+    bases,
+  };
 };
 
 const walkBothSides = async (
   ctx: Context,
   input: RebaseReplayInput,
+  bases: ReadonlyArray<ObjectId>,
 ): Promise<ReadonlyArray<Commit>> => {
-  const bases = await mergeBasesOf(ctx, [input.upstream, input.head], { all: true });
   const options = await resolveLimitOptions(
     ctx,
     { from: [input.upstream, input.head] },

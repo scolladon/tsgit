@@ -269,4 +269,36 @@ describe.skipIf(!GIT_AVAILABLE)('pull rebase interop', () => {
       });
     });
   });
+
+  describe.each([
+    { label: 'pull.rebase=merges', value: 'merges' },
+    { label: 'pull.rebase=true', value: 'true' },
+  ])('Given a local merge diverging from the advanced upstream and $label', ({ value }) => {
+    describe('When both tools pull', () => {
+      it('Then the merge is recreated or flattened alike, with the same commits and reflogs', async () => {
+        // Arrange
+        const dirs = setUp(`local-merge-${value}`);
+        for (const dir of [dirs.ours, dirs.theirs]) {
+          dated(['-C', dir, 'checkout', '-q', '-b', 'side']);
+          commitFile(dir, 's.txt', 's');
+          dated(['-C', dir, 'checkout', '-q', 'main']);
+          commitFile(dir, 'l.txt', 'l');
+          dated(['-C', dir, 'merge', '-q', '--no-ff', 'side', '-m', "Merge branch 'side'"]);
+        }
+        commitFile(dirs.work, 'v.txt', 'v');
+        publish(dirs.work, dirs.peerPath);
+        const sut = pullConfigured;
+
+        // Act
+        const result = await sut(dirs, [['pull.rebase', value]]);
+
+        // Assert
+        expect(result).toEqual({ exitCode: 0, code: undefined });
+        const history = (dir: string) => git(dir, 'log', '--format=%H %P %s', 'HEAD');
+        expect(history(dirs.ours)).toBe(history(dirs.theirs));
+        const log = (dir: string) => git(dir, 'reflog', '-8', '--format=%H %gs', 'HEAD');
+        expect(log(dirs.ours)).toBe(log(dirs.theirs));
+      });
+    });
+  });
 });

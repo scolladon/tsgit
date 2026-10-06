@@ -81,4 +81,28 @@ describe('rebase todo-help', () => {
       });
     });
   });
+
+  describe('Given a --rebase-merges todo whose block opens on a labelled tip', () => {
+    describe('When the backup is assembled', () => {
+      it("Then the block keeps git's `# Branch` header and the count skips it", () => {
+        // Arrange
+        const sut = rebaseTodoBackup;
+        const lines = [
+          { action: 'label', label: 'onto' },
+          { action: 'reset', label: 'onto', branch: 'side' },
+          { action: 'pick', oid: OID_A, subject: 's1' },
+          { action: 'label', label: 'side' },
+        ] as const;
+
+        // Act
+        const result = sut(lines, { shortUpstream: 'u', shortOrigHead: 'h', shortOnto: 'o' });
+
+        // Assert
+        expect(result).toBe(
+          `label onto\n\n# Branch side\nreset onto\npick ${OID_A} # s1\nlabel side\n\n` +
+            `# Rebase u..h onto o (4 commands)\n${HELP_BODY}`,
+        );
+      });
+    });
+  });
 });

@@ -7,7 +7,7 @@
  * consumed by `--continue` (git reads the live `git-rebase-todo`), so its only
  * role is that an inspector — or `git rebase --edit-todo` — sees git's bytes.
  */
-import { type RebaseTodoEntry, serializeRebaseTodo } from './todo.js';
+import { type RebaseTodoLine, serializeRebaseScript } from './todo.js';
 
 export interface RebaseBackupHeader {
   readonly shortUpstream: string;
@@ -48,11 +48,11 @@ const HELP_BODY =
   '#\n';
 
 export const rebaseTodoBackup = (
-  picks: ReadonlyArray<RebaseTodoEntry>,
+  picks: ReadonlyArray<RebaseTodoLine>,
   header: RebaseBackupHeader,
 ): string => {
   const count = picks.length;
   const plural = count === 1 ? 'command' : 'commands';
   const headerLine = `# Rebase ${header.shortUpstream}..${header.shortOrigHead} onto ${header.shortOnto} (${count} ${plural})\n`;
-  return `${serializeRebaseTodo(picks)}\n${headerLine}${HELP_BODY}`;
+  return `${serializeRebaseScript(picks)}\n${headerLine}${HELP_BODY}`;
 };

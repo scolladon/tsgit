@@ -7,6 +7,7 @@ import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { mergeContinue } from '../../../../src/application/commands/continue-merge.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { pull } from '../../../../src/application/commands/pull.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
@@ -1719,6 +1720,28 @@ describe('pull rebasing onto the fetched head', () => {
       expect((await reflogMessages(ctx, 'refs/heads/main')).at(-1)).toBe(
         `pull (finish): refs/heads/main onto ${b}`,
       );
+    });
+  });
+
+  describe("Given a local merge diverged from the fetched head, When pull with rebase 'merges'", () => {
+    it('Then the merge is recreated on the fetched head instead of flattened', async () => {
+      // Arrange
+      const { ctx } = await divergedPull();
+      await branchCreate(ctx, { name: 'side' });
+      await checkout(ctx, { rev: 'side' });
+      await commitFile(ctx, 's.txt', 's\n', 'S');
+      await checkout(ctx, { rev: 'main' });
+      await commitFile(ctx, 'y.txt', 'y\n', 'Y');
+      await mergeRun(ctx, { rev: 'side', fastForward: 'never' });
+      const sut = pull;
+
+      // Act
+      await sut(ctx, { rebase: 'merges' });
+
+      // Assert
+      const tip = await readObject(ctx, await resolveRef(ctx, 'refs/heads/main' as RefName));
+      expect(tip.type === 'commit' && tip.data.parents).toHaveLength(2);
+      expect((await reflogMessages(ctx, 'HEAD')).at(-2)).toBe("pull (merge): Merge branch 'side'");
     });
   });
 

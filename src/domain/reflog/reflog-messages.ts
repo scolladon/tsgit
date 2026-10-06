@@ -111,5 +111,17 @@ export const rebaseFinishReturningTo = (branch: string, action = REBASE_REFLOG_A
 export const rebaseAbortReturningTo = (target: string): string =>
   `rebase (abort): returning to ${target}`;
 
+/** `<action> (reset): '<label>'` — a `--rebase-merges` `reset` to a label. */
+export const rebaseResetReflog = (label: string, action = REBASE_REFLOG_ACTION): string =>
+  `${action} (reset): '${label}'`;
+
+/** `<action> (merge): <subject>` — a merge recreated by `--rebase-merges`. */
+export const rebaseMergeReflog = (subject: string, action = REBASE_REFLOG_ACTION): string =>
+  `${action} (merge): ${subject}`;
+
+/** `<action>: fast-forward` — a rebase instruction that kept its commit. */
+export const rebaseFastForwardReflog = (action = REBASE_REFLOG_ACTION): string =>
+  `${action}: fast-forward`;
+
 /** `rebase: fast-forward` — a rebase that reduced to a fast-forward. */
 export const REBASE_FAST_FORWARD = 'rebase: fast-forward';

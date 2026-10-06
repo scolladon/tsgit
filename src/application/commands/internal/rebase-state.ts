@@ -19,8 +19,10 @@ import {
   parseAuthorScript,
   parseRebaseTodo,
   type RebaseBackupHeader,
+  type RebaseLabelLine,
+  type RebaseResetLine,
   type RebaseTodoAction,
-  type RebaseTodoEntry,
+  type RebaseTodoLine,
   rebaseTodoBackup,
   serializeAuthorScript,
   serializeRebaseTodo,
@@ -29,12 +31,21 @@ import type { Context } from '../../../ports/context.js';
 import { resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
 import { readOptionalOidFile } from './oid-file.js';
 
-/** A todo/done entry with its oid resolved to a full ObjectId. */
-export interface ResolvedRebaseTodoEntry {
-  readonly action: RebaseTodoAction;
-  readonly oid: ObjectId;
-  readonly subject: string;
-}
+/** A todo/done line with its oid resolved to a full ObjectId. */
+export type ResolvedRebaseTodoEntry =
+  | {
+      readonly action: RebaseTodoAction;
+      readonly oid: ObjectId;
+      readonly subject: string;
+    }
+  | {
+      readonly action: 'merge';
+      readonly oid: ObjectId;
+      readonly labels: ReadonlyArray<string>;
+      readonly subject: string;
+    }
+  | RebaseLabelLine
+  | RebaseResetLine;
 
 /** One melded member of an in-flight squash/fixup group (`current-fixups`). */
 export interface CurrentFixup {
@@ -48,9 +59,9 @@ export interface RebaseStop {
   readonly onto: ObjectId;
   readonly origHead: ObjectId;
   /** Completed instructions, including the stopped one (last). */
-  readonly done: ReadonlyArray<RebaseTodoEntry>;
+  readonly done: ReadonlyArray<RebaseTodoLine>;
   /** Instructions still to apply (the live `git-rebase-todo`). */
-  readonly remaining: ReadonlyArray<RebaseTodoEntry>;
+  readonly remaining: ReadonlyArray<RebaseTodoLine>;
   readonly stoppedSha: ObjectId;
   readonly stoppedAuthor: AuthorIdentity;
   readonly message: string;
@@ -127,6 +138,10 @@ export const writeRebaseStop = async (ctx: Context, stop: RebaseStop): Promise<v
   await write('drop_redundant_commits', '');
   await write('no-reschedule-failed-exec', '');
   await write('stopped-sha', `${stop.stoppedSha}\n`);
+  const labels = stop.done.filter((line) => line.action === 'label');
+  if (labels.length > 0) {
+    await write('refs-to-delete', labels.map((l) => `refs/rewritten/${l.label}\n`).join(''));
+  }
   if (stop.amend !== undefined) await write('amend', `${stop.amend}\n`);
   if (stop.currentFixups !== undefined) {
     await write('current-fixups', stop.currentFixups.map((f) => `${f.action} ${f.oid}\n`).join(''));
@@ -144,16 +159,22 @@ export const readRebaseHead = (ctx: Context): Promise<ObjectId | undefined> =>
 export const rebaseInProgress = (ctx: Context): Promise<boolean> => ctx.fs.exists(dir(ctx));
 
 /** Resolve each parsed todo entry's (possibly abbreviated) oid to a full ObjectId. */
+const resolveEntry = async (
+  ctx: Context,
+  entry: RebaseTodoLine,
+): Promise<ResolvedRebaseTodoEntry> => {
+  if (entry.action === 'label' || entry.action === 'reset') return entry;
+  const oid = await resolveOidPrefix(ctx, entry.oid);
+  if (oid === undefined) throw invalidSequencerTodo(`cannot resolve commit ${entry.oid}`);
+  return { ...entry, oid };
+};
+
 const resolveEntries = async (
   ctx: Context,
-  entries: ReadonlyArray<RebaseTodoEntry>,
+  entries: ReadonlyArray<RebaseTodoLine>,
 ): Promise<ReadonlyArray<ResolvedRebaseTodoEntry>> => {
   const resolved: ResolvedRebaseTodoEntry[] = [];
-  for (const entry of entries) {
-    const oid = await resolveOidPrefix(ctx, entry.oid);
-    if (oid === undefined) throw invalidSequencerTodo(`cannot resolve commit ${entry.oid}`);
-    resolved.push({ action: entry.action, oid, subject: entry.subject });
-  }
+  for (const entry of entries) resolved.push(await resolveEntry(ctx, entry));
   return resolved;
 };
 
