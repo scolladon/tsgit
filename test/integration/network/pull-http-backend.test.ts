@@ -30,6 +30,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { __resetConfigCacheForTests } from '../../../src/application/primitives/config-read.js';
 import type { ObjectId, RefName } from '../../../src/domain/objects/object-id.js';
 import type { Repository } from '../../../src/index.node.js';
+import { mergedPull } from '../../fixtures/merged-pull.js';
 import { git, gitAsync, runGit, runGitEnv } from '../interop-helpers.js';
 import { trackedRepositories } from '../repository-lifecycle.js';
 
@@ -203,7 +204,7 @@ describe.skipIf(SKIP_REASON !== false)('pull — end-to-end against git-http-bac
       await repo.clone({ url });
 
       // Act
-      const result = await repo.pull();
+      const result = mergedPull(await repo.pull());
 
       // Assert — fetch ran against the real backend and merge integrated cleanly.
       expect(result.fetch.remote).toBe('origin');
@@ -245,7 +246,7 @@ describe.skipIf(SKIP_REASON !== false)('pull — end-to-end against git-http-bac
       const c1 = git(seedDir, 'rev-parse', 'HEAD').trim() as ObjectId;
 
       // Act
-      const result = await repo.pull();
+      const result = mergedPull(await repo.pull());
 
       // Assert — fetch delivered exactly the new commit and merge
       // fast-forwarded the local branch onto it (no `pull` code change needed

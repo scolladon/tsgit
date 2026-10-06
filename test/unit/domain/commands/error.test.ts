@@ -64,6 +64,7 @@ import {
   pathspecBeyondSymlink,
   pathspecNoMatch,
   pathspecOutsideRepo,
+  pullRebaseMultipleBranches,
   pushDefaultNothing,
   pushDetachedNoRefspec,
   pushMultipleUpstreams,
@@ -522,6 +523,21 @@ describe('domain commands error — factory data', () => {
 
         // Assert
         expect(result.data).toEqual({ code: 'FAST_FORWARD_MULTIPLE_BRANCHES' });
+      });
+    });
+  });
+
+  describe('Given the pullRebaseMultipleBranches error helper', () => {
+    describe('When called', () => {
+      it('Then data carries the code alone', () => {
+        // Arrange
+        const sut = pullRebaseMultipleBranches;
+
+        // Act
+        const result = sut();
+
+        // Assert
+        expect(result.data).toEqual({ code: 'PULL_REBASE_MULTIPLE_BRANCHES' });
       });
     });
   });
@@ -1545,6 +1561,10 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       { code: 'FAST_FORWARD_MULTIPLE_BRANCHES' },
       'FAST_FORWARD_MULTIPLE_BRANCHES: cannot fast-forward to multiple branches',
+    ],
+    [
+      { code: 'PULL_REBASE_MULTIPLE_BRANCHES' },
+      'PULL_REBASE_MULTIPLE_BRANCHES: cannot rebase onto multiple branches',
     ],
     [{ code: 'UNRELATED_HISTORIES' }, 'UNRELATED_HISTORIES: refusing to merge unrelated histories'],
     [

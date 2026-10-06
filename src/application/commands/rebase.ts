@@ -27,6 +27,7 @@ import {
 } from '../../domain/rebase/index.js';
 import {
   REBASE_FAST_FORWARD,
+  REBASE_REFLOG_ACTION,
   rebaseAbortReturningTo,
   rebaseActionReflog,
   rebaseContinueReflog,
@@ -105,6 +106,12 @@ export interface RebaseInstruction {
   /** reword: the new message (required). squash: the combined message
    *  (optional — defaults to git's combination template). Ignored otherwise. */
   readonly message?: string;
+}
+
+/** What `pull` threads into the rebase it runs — not part of the public surface. */
+export interface RebaseInternalOptions {
+  /** git's `GIT_REFLOG_ACTION`: the action prefix of every reflog entry this run writes. */
+  readonly reflogAction: string;
 }
 
 export interface RebaseRunInput {
@@ -214,13 +221,18 @@ const detachHead = async (
   fromHead: ObjectId,
   onto: ObjectId,
   ontoName: string,
+  reflogAction: string,
 ): Promise<void> => {
   await getRefStore(ctx).applyRefUpdates([
     {
       kind: 'set',
       name: HEAD,
       id: onto,
-      reflog: { oldId: fromHead, newId: onto, message: rebaseStartCheckout(ontoName) },
+      reflog: {
+        oldId: fromHead,
+        newId: onto,
+        message: rebaseStartCheckout(ontoName, reflogAction),
+      },
     },
   ]);
   await hardResetWorktreeToCommit(ctx, onto);
@@ -275,6 +287,7 @@ const replayOne = async (
   source: ObjectId,
   cData: CommitData,
   ourId: ObjectId,
+  reflogAction: string,
 ): Promise<ReplayOutcome> => {
   const outcome = await mergeUnderLock(ctx, source, cData, ourId);
   if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
@@ -290,7 +303,7 @@ const replayOne = async (
   });
   await updateRef(ctx, HEAD, id, {
     expected: ourId,
-    reflogMessage: rebasePickReflog(subjectLine(cData.message)),
+    reflogMessage: rebasePickReflog(subjectLine(cData.message), reflogAction),
   });
   return { kind: 'committed', id };
 };
@@ -307,12 +320,17 @@ const renderCommitPatch = async (ctx: Context, cData: CommitData): Promise<strin
   return renderPatch(files, { contextLines: 3, pathPrefix: { old: 'a/', new: 'b/' } });
 };
 
-/** The shared context a replay loop needs to stop or finish. `branch` is
- *  `undefined` for a detached-HEAD rebase (head-name = `detached HEAD`). */
-interface ReplayContext {
+/** What finishing a rebase moves: the branch (none when detached) from its original tip. */
+interface FinishSides {
   readonly branch: RefName | undefined;
   readonly onto: ObjectId;
   readonly origHead: ObjectId;
+  readonly reflogAction: string;
+}
+
+/** The shared context a replay loop needs to stop or finish. `branch` is
+ *  `undefined` for a detached-HEAD rebase (head-name = `detached HEAD`). */
+interface ReplayContext extends FinishSides {
   /** Instructions completed before this loop (a stop's `done` prepends these). */
   readonly doneBefore: ReadonlyArray<PlannedPick>;
   /** Instructions to replay in this loop (the live `git-rebase-todo`). */
@@ -361,22 +379,24 @@ const persistStop = async (
  */
 const finishRebase = async (
   ctx: Context,
-  branch: RefName | undefined,
-  origHead: ObjectId,
+  { branch, origHead, onto, reflogAction }: FinishSides,
   newTip: ObjectId,
-  onto: ObjectId,
 ): Promise<void> => {
   if (branch === undefined) return;
   await updateRef(ctx, branch, newTip, {
     expected: origHead,
-    reflogMessage: rebaseFinishOnto(branch, onto),
+    reflogMessage: rebaseFinishOnto(branch, onto, reflogAction),
   });
   await getRefStore(ctx).applyRefUpdates([
     {
       kind: 'setSymbolic',
       name: HEAD,
       target: branch,
-      reflog: { oldId: newTip, newId: newTip, message: rebaseFinishReturningTo(branch) },
+      reflog: {
+        oldId: newTip,
+        newId: newTip,
+        message: rebaseFinishReturningTo(branch, reflogAction),
+      },
     },
   ]);
 };
@@ -419,7 +439,7 @@ const replayFrom = async (
   for (let i = 0; i < rc.todo.length; i += 1) {
     const source = rc.todo[i]!.oid;
     const cData = await readCommitData(ctx, source);
-    const outcome = await replayOne(ctx, source, cData, cur);
+    const outcome = await replayOne(ctx, source, cData, cur, rc.reflogAction);
     if (outcome.kind === 'committed') {
       applied.push({ source, created: outcome.id });
       rewritten.push([source, outcome.id]);
@@ -435,7 +455,7 @@ const replayFrom = async (
       remaining: rc.todo.length - (i + 1),
     };
   }
-  await finishRebase(ctx, rc.branch, rc.origHead, cur, rc.onto);
+  await finishRebase(ctx, rc, cur);
   await firePostRewrite(ctx, rewritten);
   await clearRebaseState(ctx);
   return { kind: 'rebased', commits: applied };
@@ -459,7 +479,11 @@ const startInteractive = async (
   return rebaseRunInteractive(ctx, { ...sides, instructions, base });
 };
 
-export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<RebaseResult> => {
+export const rebaseRun = async (
+  ctx: Context,
+  input: RebaseRunInput,
+  { reflogAction }: RebaseInternalOptions = { reflogAction: REBASE_REFLOG_ACTION },
+): Promise<RebaseResult> => {
   await assertOperationalRepositorySettingsFirst(ctx);
   requireWorkTree(ctx, 'rebase');
   await assertNoPendingOperation(ctx);
@@ -486,10 +510,11 @@ export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<Re
   const toReplay = await resolveRebaseReplay(ctx, { upstream, head: headCommit });
   const todo = await buildTodoEntries(ctx, toReplay);
   await writeOrigHead(ctx, headCommit);
-  await detachHead(ctx, headCommit, onto, ontoName);
+  await detachHead(ctx, headCommit, onto, ontoName, reflogAction);
   const rc: ReplayContext = {
     branch,
     onto,
+    reflogAction,
     origHead: headCommit,
     doneBefore: [],
     todo,
@@ -553,6 +578,7 @@ const assertNothingUnstaged = async (ctx: Context): Promise<void> => {
 };
 
 const replayContextOf = (state: RebaseState): ReplayContext => ({
+  reflogAction: REBASE_REFLOG_ACTION,
   branch: branchOf(state.headName),
   onto: state.onto,
   origHead: state.origHead,
@@ -599,14 +625,7 @@ export const rebaseSkip = async (ctx: Context): Promise<RebaseResult> => {
   const currentHead = await resolveRef(ctx, HEAD);
   await hardResetWorktreeToCommit(ctx, currentHead);
   await removeBranchState(ctx, 'silent');
-  const rc: ReplayContext = {
-    branch: branchOf(state.headName),
-    onto: state.onto,
-    origHead: state.origHead,
-    doneBefore: state.done,
-    todo: state.remaining,
-  };
-  return replayFrom(ctx, rc, currentHead, {
+  return replayFrom(ctx, replayContextOf(state), currentHead, {
     applied: [],
     rewritten: await readRewrittenList(ctx),
   });
@@ -1134,7 +1153,7 @@ const replayInteractive = async (
     group.pending = [step.created];
     group.inline = undefined;
   }
-  await finishRebase(ctx, ic.branch, ic.origHead, head, ic.onto);
+  await finishRebase(ctx, { ...ic, reflogAction: REBASE_REFLOG_ACTION }, head);
   await firePostRewrite(ctx, rewritten);
   await clearRebaseState(ctx);
   return { kind: 'rebased', commits: applied };

@@ -482,6 +482,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `current branch ${data.branch} has multiple upstream branches, refusing to push`;
     case 'FAST_FORWARD_MULTIPLE_BRANCHES':
       return 'cannot fast-forward to multiple branches';
+    case 'PULL_REBASE_MULTIPLE_BRANCHES':
+      return 'cannot rebase onto multiple branches';
     case 'NON_FAST_FORWARD':
       return `non-fast-forward update for ${data.ref}: local=${data.local} remote=${data.remote}`;
     case 'PUSH_REJECTED':

@@ -1,11 +1,11 @@
 # `pull`
 
 Integrate a remote branch into the current branch: `fetch` the remote, then
-`merge` the fetched tip into `HEAD`. Returns the underlying `fetch` and `merge`
-results — **conflicts do not throw**; `pull` inherits `merge`'s state machine, so
-`merge.abort` / `merge.continue` resolve a pull-initiated conflict unchanged.
-
-Integration is merge-only; the `rebase` mode is added when `rebase` lands.
+`merge` the fetched tip into `HEAD` — or, with `rebase`, rebase the current branch
+onto it. Returns the underlying `fetch` result with the `merge` or `rebase` one —
+**conflicts do not throw**; `pull` inherits `merge`'s and `rebase`'s state
+machines, so `merge.abort` / `merge.continue` and `rebase.continue` /
+`rebase.skip` / `rebase.abort` resolve a pull-initiated conflict unchanged.
 
 ## Signature
 
@@ -16,6 +16,7 @@ interface PullOptions {
   readonly remote?: string;        // default: branch.<current>.remote ?? sole configured remote ?? 'origin'
   readonly ref?: string;           // refspec to fetch and merge (git pull <remote> <ref>); default: FETCH_HEAD's merge heads
   readonly fastForward?: 'only' | 'never' | 'allow'; // default 'allow'; forwarded to merge
+  readonly rebase?: boolean | 'merges'; // git's --rebase / --rebase=merges / --no-rebase
   readonly prune?: boolean;        // forwarded to fetch
   readonly depth?: number;         // forwarded to fetch
   readonly message?: string;       // override the merge-commit message / MERGE_MSG
@@ -23,10 +24,9 @@ interface PullOptions {
   readonly committer?: AuthorIdentity;
 }
 
-interface PullResult {
-  readonly fetch: FetchResult;     // url, updatedRefs, prunedRefs, shallow, …
-  readonly merge: MergeResult;     // up-to-date | fast-forward | merge | conflict
-}
+type PullResult =
+  | { readonly fetch: FetchResult; readonly integration: 'merge'; readonly merge: MergeResult }
+  | { readonly fetch: FetchResult; readonly integration: 'rebase'; readonly rebase: RebaseResult };
 ```
 
 ## Upstream resolution
@@ -57,6 +57,23 @@ upstream needs an explicit `repo.pull({ ref })`.
 | Behind upstream | `fast-forward` | Branch advances; reflog `pull: Fast-forward`. |
 | Diverged, clean | `merge` | Two-parent commit titled from the `FETCH_HEAD` line as git's `fmt_merge_msg` titles it — `Merge branch '<branch>' of <url>` (`tag`, `remote-tracking branch`, `commit '<ref>'`, or the url alone for a remote `HEAD`), the url shortened as `FETCH_HEAD` records it, then ` into <current>` unless the current branch is `main` or `master`; reflog `pull: Merge made by the 'ort' strategy.`. |
 | Diverged, clashing | `conflict` | `MERGE_HEAD`/`MERGE_MSG`/`ORIG_HEAD` + conflicted index written. |
+
+## Rebasing
+
+With `rebase: true` (or `'merges'`), git's `pull --rebase`:
+
+- a dirty tree refuses with `WORKING_TREE_DIRTY` **before** the fetch;
+- several fetched heads refuse with `PULL_REBASE_MULTIPLE_BRANCHES`;
+- `fastForward: 'only'` wins: a divergence refuses with `NON_FAST_FORWARD`, otherwise
+  the pull fast-forwards through the merge;
+- a head `HEAD` can fast-forward to fast-forwards through the merge
+  (`integration: 'merge'`, reflog `pull: Fast-forward`), as git does without
+  invoking rebase;
+- otherwise the branch is rebased onto the fetched head (`integration: 'rebase'`),
+  replaying from git's fork point — the commit the remote-tracking ref's reflog says
+  the branch was built on — so commits an upstream rewrite dropped are not
+  resurrected. Reflogs read `pull (start): checkout <head>`, `pull (pick): …`,
+  `pull (finish): …`; `ORIG_HEAD` is the pre-pull tip.
 
 The reflog action is `pull` (git-faithful), achieved via `merge`'s internal
 reflog-action channel (the `GIT_REFLOG_ACTION` analogue), not a public option.

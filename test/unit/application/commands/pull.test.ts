@@ -24,6 +24,7 @@ import type {
   HttpResponse,
   HttpTransport,
 } from '../../../../src/ports/http-transport.js';
+import { mergedPull } from '../../../fixtures/merged-pull.js';
 import {
   buildDiscoveryBody,
   buildUploadPackResponseBody,
@@ -139,7 +140,7 @@ describe('pull', () => {
         );
 
         // Act
-        const result = await pull(withTransport(ctx, transport));
+        const result = mergedPull(await pull(withTransport(ctx, transport)));
 
         // Assert
         expect(result.merge.kind).toBe('fast-forward');
@@ -168,7 +169,7 @@ describe('pull', () => {
         );
 
         // Act
-        const result = await pull(withTransport(ctx, transport));
+        const result = mergedPull(await pull(withTransport(ctx, transport)));
 
         // Assert
         expect(result.merge.kind).toBe('up-to-date');
@@ -195,7 +196,7 @@ describe('pull', () => {
         );
 
         // Act
-        const result = await pull(withTransport(ctx, transport), { author });
+        const result = mergedPull(await pull(withTransport(ctx, transport), { author }));
 
         // Assert
         expect(result.merge.kind).toBe('merge');
@@ -233,7 +234,7 @@ describe('pull', () => {
         );
 
         // Act
-        const result = await pull(withTransport(ctx, transport), { author });
+        const result = mergedPull(await pull(withTransport(ctx, transport), { author }));
 
         // Assert — conflict state persisted, then mergeAbort restores ORIG_HEAD.
         expect(result.merge.kind).toBe('conflict');
@@ -262,7 +263,7 @@ describe('pull', () => {
           [{ name: 'refs/heads/main', id: b }],
           await emptyPack(ctx),
         );
-        const conflicted = await pull(withTransport(ctx, transport), { author });
+        const conflicted = mergedPull(await pull(withTransport(ctx, transport), { author }));
         expect(conflicted.merge.kind).toBe('conflict');
 
         // Act — resolve the file, stage it, and continue.
@@ -298,10 +299,12 @@ describe('pull', () => {
         );
 
         // Act
-        const result = await pull(withTransport(ctx, transport), {
-          remote: 'upstream',
-          ref: 'main',
-        });
+        const result = mergedPull(
+          await pull(withTransport(ctx, transport), {
+            remote: 'upstream',
+            ref: 'main',
+          }),
+        );
 
         // Assert
         expect(result.merge.kind).toBe('fast-forward');
@@ -640,7 +643,7 @@ describe('pull', () => {
         const sut = pull;
 
         // Act
-        const result = await sut(ctx, { allowUnrelatedHistories: true, author });
+        const result = mergedPull(await sut(ctx, { allowUnrelatedHistories: true, author }));
 
         // Assert
         expect(result.merge).toMatchObject({ kind: 'merge', parents: [head, orphan] });
@@ -689,10 +692,12 @@ describe('pull', () => {
         );
 
         // Act
-        const result = await pull(withTransport(ctx, transport), {
-          message: 'custom pull message',
-          author,
-        });
+        const result = mergedPull(
+          await pull(withTransport(ctx, transport), {
+            message: 'custom pull message',
+            author,
+          }),
+        );
 
         // Assert
         expect(result.merge.kind).toBe('merge');
@@ -771,7 +776,9 @@ describe('pull', () => {
         );
 
         // Act
-        const result = await pull(withTransport(ctx, transport), { fastForward: 'never', author });
+        const result = mergedPull(
+          await pull(withTransport(ctx, transport), { fastForward: 'never', author }),
+        );
 
         // Assert — a true merge commit, not a fast-forward.
         expect(result.merge.kind).toBe('merge');
@@ -944,7 +951,7 @@ describe('pull', () => {
         );
 
         // Act
-        const result = await pull(withTransport(ctx, transport), { author, committer });
+        const result = mergedPull(await pull(withTransport(ctx, transport), { author, committer }));
 
         // Assert
         expect(result.merge.kind).toBe('merge');
@@ -1004,7 +1011,7 @@ describe('pull', () => {
           const sut = pull;
 
           // Act
-          const result = await sut(withTransport(ctx, transport), { author });
+          const result = mergedPull(await sut(withTransport(ctx, transport), { author }));
 
           // Assert
           expect(result.merge.kind).toBe('merge');
@@ -1037,7 +1044,7 @@ describe('pull', () => {
           const sut = pull;
 
           // Act
-          const result = await sut(withTransport(ctx, transport), { author });
+          const result = mergedPull(await sut(withTransport(ctx, transport), { author }));
 
           // Assert
           const id = result.merge.kind === 'merge' ? result.merge.id : b;
@@ -1068,7 +1075,7 @@ describe('pull', () => {
           const sut = pull;
 
           // Act
-          const result = await sut(withTransport(ctx, transport), { author });
+          const result = mergedPull(await sut(withTransport(ctx, transport), { author }));
 
           // Assert
           const id = result.merge.kind === 'merge' ? result.merge.id : b;
@@ -1092,7 +1099,9 @@ describe('pull', () => {
           const sut = pull;
 
           // Act
-          const result = await sut(withTransport(ctx, transport), { remote: 'origin', author });
+          const result = mergedPull(
+            await sut(withTransport(ctx, transport), { remote: 'origin', author }),
+          );
 
           // Assert
           const id = result.merge.kind === 'merge' ? result.merge.id : b;
@@ -1117,10 +1126,12 @@ describe('pull', () => {
           const sut = pull;
 
           // Act
-          const result = await sut(withTransport(ctx, transport), {
-            ref: 'refs/notes/n',
-            author,
-          });
+          const result = mergedPull(
+            await sut(withTransport(ctx, transport), {
+              ref: 'refs/notes/n',
+              author,
+            }),
+          );
 
           // Assert
           const id = result.merge.kind === 'merge' ? result.merge.id : b;
@@ -1147,7 +1158,9 @@ describe('pull', () => {
           const sut = pull;
 
           // Act
-          const result = await sut(withTransport(ctx, transport), { ref: 'side', author });
+          const result = mergedPull(
+            await sut(withTransport(ctx, transport), { ref: 'side', author }),
+          );
 
           // Assert
           expect(result.merge).toMatchObject({
@@ -1210,10 +1223,12 @@ describe('pull', () => {
           const sut = pull;
 
           // Act
-          const result = await sut(withTransport(ctx, transport), {
-            ref: 'refs/heads/side-*:refs/remotes/s/*',
-            author,
-          });
+          const result = mergedPull(
+            await sut(withTransport(ctx, transport), {
+              ref: 'refs/heads/side-*:refs/remotes/s/*',
+              author,
+            }),
+          );
 
           // Assert
           const id = result.merge.kind === 'merge' ? result.merge.id : b;
@@ -1242,10 +1257,12 @@ describe('pull', () => {
           const sut = pull;
 
           // Act
-          const result = await sut(withTransport(ctx, transport), {
-            ref: 'refs/heads/side-*:refs/remotes/s/*',
-            author,
-          });
+          const result = mergedPull(
+            await sut(withTransport(ctx, transport), {
+              ref: 'refs/heads/side-*:refs/remotes/s/*',
+              author,
+            }),
+          );
 
           // Assert
           const merged = result.merge.kind === 'merge' ? result.merge : undefined;
@@ -1285,11 +1302,13 @@ describe('pull', () => {
           const sut = pull;
 
           // Act
-          const result = await sut(withTransport(ctx, transport), {
-            ref: 'refs/heads/s*:refs/remotes/s/*',
-            fastForward: 'only',
-            author,
-          });
+          const result = mergedPull(
+            await sut(withTransport(ctx, transport), {
+              ref: 'refs/heads/s*:refs/remotes/s/*',
+              fastForward: 'only',
+              author,
+            }),
+          );
 
           // Assert
           expect(result.merge.kind).toBe(kind);
@@ -1536,7 +1555,7 @@ describe('pull', () => {
           const sut = pull;
 
           // Act
-          const result = await sut(ctx, { author });
+          const result = mergedPull(await sut(ctx, { author }));
 
           // Assert
           expect(result.merge.kind).toBe(kind);
@@ -1556,7 +1575,7 @@ describe('pull', () => {
           const sut = pull;
 
           // Act
-          const result = await sut(ctx, { author });
+          const result = mergedPull(await sut(ctx, { author }));
 
           // Assert
           expect(result.merge.kind).toBe('fast-forward');
@@ -1612,12 +1631,254 @@ describe('pull', () => {
           const sut = pull;
 
           // Act
-          const result = await sut(ctx, { fastForward: 'allow', author });
+          const result = mergedPull(await sut(ctx, { fastForward: 'allow', author }));
 
           // Assert
           expect(result.merge.kind).toBe('fast-forward');
         });
       });
+    });
+  });
+});
+
+describe('pull rebasing onto the fetched head', () => {
+  const USER = '\n[user]\n\tname = Ada\n\temail = ada@example.com\n';
+
+  /** main at A→X (c.txt), the remote's main at A→B (b.txt); upstream configured. */
+  const divergedPull = async (
+    theirs: { path: string; content: string } = { path: 'b.txt', content: 'b' },
+  ) => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, USER);
+    const a = await commitFile(ctx, 'a.txt', 'a\n', 'A');
+    await branchCreate(ctx, { name: 'feature' });
+    await checkout(ctx, { rev: 'feature' });
+    const b = await commitFile(ctx, theirs.path, theirs.content, 'B');
+    await checkout(ctx, { rev: 'main' });
+    const x = await commitFile(ctx, 'c.txt', 'c', 'X');
+    await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
+    const remote = buildPullRemote([{ name: 'refs/heads/main', id: b }], await emptyPack(ctx));
+    return { ctx: withTransport(ctx, remote.transport), requests: remote.requests, a, b, x };
+  };
+
+  const pullData = async (ctx: Context, opts: Parameters<typeof pull>[1]) => {
+    try {
+      await pull(ctx, opts);
+    } catch (error) {
+      return (error as TsgitError).data;
+    }
+    return undefined;
+  };
+
+  describe.each([
+    ['rebase true', true],
+    ["rebase 'merges'", 'merges'],
+  ] as const)('Given diverged histories, When pull with %s', (_, rebase) => {
+    it('Then the local commit is replayed onto the fetched head with pull reflogs and ORIG_HEAD', async () => {
+      // Arrange
+      const { ctx, b, x } = await divergedPull();
+      const sut = pull;
+
+      // Act
+      const result = await sut(ctx, { rebase });
+
+      // Assert
+      const tip = await resolveRef(ctx, 'refs/heads/main' as RefName);
+      const obj = await readObject(ctx, tip);
+      expect(obj.type === 'commit' && obj.data.parents).toEqual([b]);
+      expect(obj.type === 'commit' && obj.data.message).toBe('X\n');
+      expect(result.integration).toBe('rebase');
+      expect(result.integration === 'rebase' && result.rebase.kind).toBe('rebased');
+      expect((await ctx.fs.readUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`)).trim()).toBe(x);
+      expect((await reflogMessages(ctx, 'HEAD')).slice(-3)).toEqual([
+        `pull (start): checkout ${b}`,
+        'pull (pick): X',
+        'pull (finish): returning to refs/heads/main',
+      ]);
+      expect((await reflogMessages(ctx, 'refs/heads/main')).at(-1)).toBe(
+        `pull (finish): refs/heads/main onto ${b}`,
+      );
+    });
+  });
+
+  describe('Given a fast-forwardable head, When pull with rebase true', () => {
+    it('Then it fast-forwards through the merge, as git does without invoking rebase', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await commitFile(ctx, 'a.txt', 'a', 'A');
+      await branchCreate(ctx, { name: 'feature' });
+      await checkout(ctx, { rev: 'feature' });
+      const b = await commitFile(ctx, 'b.txt', 'b', 'B');
+      await checkout(ctx, { rev: 'main' });
+      await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
+      const { transport } = buildPullRemote(
+        [{ name: 'refs/heads/main', id: b }],
+        await emptyPack(ctx),
+      );
+      const sut = pull;
+
+      // Act
+      const result = await sut(withTransport(ctx, transport), { rebase: true });
+
+      // Assert
+      expect(result.integration === 'merge' && result.merge.kind).toBe('fast-forward');
+      expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(b);
+      expect((await reflogMessages(ctx, 'refs/heads/main')).at(-1)).toBe('pull: Fast-forward');
+    });
+  });
+
+  describe('Given unstaged changes, When pull with rebase true', () => {
+    it('Then it refuses before fetching anything', async () => {
+      // Arrange
+      const { ctx, requests } = await divergedPull();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'dirty\n');
+
+      // Act
+      const result = await pullData(ctx, { rebase: true });
+
+      // Assert
+      expect(result).toEqual({
+        code: 'WORKING_TREE_DIRTY',
+        localChanges: ['a.txt'],
+        untracked: [],
+      });
+      expect(requests).toHaveLength(0);
+    });
+  });
+
+  describe('Given diverged histories, When pull with rebase true and fastForward only', () => {
+    it('Then fast-forward-only wins and refuses the divergence', async () => {
+      // Arrange
+      const { ctx, b, x } = await divergedPull();
+
+      // Act
+      const result = await pullData(ctx, { rebase: true, fastForward: 'only' });
+
+      // Assert
+      expect(result).toEqual({
+        code: 'NON_FAST_FORWARD',
+        ref: 'refs/heads/main',
+        local: x,
+        remote: b,
+      });
+    });
+  });
+
+  describe('Given two fetched heads, When pull with rebase true', () => {
+    it('Then it refuses to rebase onto multiple branches', async () => {
+      // Arrange
+      const { ctx, b } = await divergedPull();
+      const remote = buildPullRemote(
+        [
+          { name: 'refs/heads/s0', id: b },
+          { name: 'refs/heads/s1', id: b },
+        ],
+        await emptyPack(ctx),
+      );
+
+      // Act
+      const result = await pullData(withTransport(ctx, remote.transport), {
+        ref: 'refs/heads/s*:refs/remotes/s/*',
+        rebase: true,
+      });
+
+      // Assert
+      expect(result).toEqual({ code: 'PULL_REBASE_MULTIPLE_BRANCHES' });
+    });
+  });
+
+  describe('Given the local commit conflicts with the fetched head, When pull with rebase true', () => {
+    it('Then the rebase stops on the conflict with its state on disk', async () => {
+      // Arrange
+      const { ctx } = await divergedPull({ path: 'c.txt', content: 'theirs' });
+
+      // Act
+      const result = await pull(ctx, { rebase: true });
+
+      // Assert
+      expect(result.integration === 'rebase' && result.rebase.kind).toBe('conflict');
+      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/REBASE_HEAD`)).toBe(true);
+    });
+  });
+
+  describe('Given an upstream rewritten since the local branch forked from it, When pull with rebase true', () => {
+    it('Then only the commits after the fork point are replayed', async () => {
+      // Arrange — origin/main once at X (fetched), local Y on X; the remote rewrites main to B.
+      const { ctx, a, b, x } = await divergedPull();
+      await updateRef(ctx, 'refs/remotes/origin/main' as RefName, x, {
+        reflogMessage: 'fetch: fast-forward',
+      });
+      const y = await commitFile(ctx, 'd.txt', 'd', 'Y');
+      const sut = pull;
+
+      // Act
+      await sut(ctx, { rebase: true });
+
+      // Assert
+      const tip = await resolveRef(ctx, 'refs/heads/main' as RefName);
+      const obj = await readObject(ctx, tip);
+      expect(obj.type === 'commit' && obj.data.parents).toEqual([b]);
+      expect(obj.type === 'commit' && obj.data.message).toBe('Y\n');
+      expect([a, y]).not.toContain(tip);
+    });
+  });
+});
+
+describe('pull rebasing, edge states', () => {
+  const USER = '\n[user]\n\tname = Ada\n\temail = ada@example.com\n';
+
+  const seed = async () => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, USER);
+    const a = await commitFile(ctx, 'a.txt', 'a\n', 'A');
+    await branchCreate(ctx, { name: 'feature' });
+    await checkout(ctx, { rev: 'feature' });
+    const b = await commitFile(ctx, 'b.txt', 'b', 'B');
+    await checkout(ctx, { rev: 'main' });
+    await commitFile(ctx, 'c.txt', 'c', 'X');
+    await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
+    const remote = buildPullRemote([{ name: 'refs/heads/main', id: b }], await emptyPack(ctx));
+    return { ctx: withTransport(ctx, remote.transport), a, b };
+  };
+
+  const parentsOfTip = async (ctx: Context) => {
+    const obj = await readObject(ctx, await resolveRef(ctx, 'refs/heads/main' as RefName));
+    return obj.type === 'commit' ? obj.data.parents : [];
+  };
+
+  describe('Given the remote-tracking ref already at the fork, When pull with rebase true', () => {
+    it('Then the fork point is the merge base and the rebase starts from the fetched head', async () => {
+      // Arrange
+      const { ctx, a, b } = await seed();
+      await updateRef(ctx, 'refs/remotes/origin/main' as RefName, a, { reflogMessage: 'fetch' });
+      const sut = pull;
+
+      // Act
+      await sut(ctx, { rebase: true });
+
+      // Assert
+      expect(await parentsOfTip(ctx)).toEqual([b]);
+    });
+  });
+
+  describe('Given a detached HEAD, When pull with rebase true and an explicit ref', () => {
+    it('Then the detached HEAD is rebased onto the fetched head', async () => {
+      // Arrange
+      const { ctx, b } = await seed();
+      const x = await resolveRef(ctx, 'refs/heads/main' as RefName);
+      await checkout(ctx, { rev: x, detach: true });
+      const sut = pull;
+
+      // Act
+      const result = await sut(ctx, { rebase: true, ref: 'refs/heads/main' });
+
+      // Assert
+      expect(result.integration === 'rebase' && result.rebase.kind).toBe('rebased');
+      const head = await readObject(ctx, await resolveRef(ctx, 'HEAD' as RefName));
+      expect(head.type === 'commit' && head.data.parents).toEqual([b]);
     });
   });
 });

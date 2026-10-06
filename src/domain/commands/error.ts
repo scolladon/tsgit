@@ -67,6 +67,7 @@ export type CommandError =
   | { readonly code: 'PUSH_MULTIPLE_UPSTREAMS'; readonly branch: RefName }
   /** git's pull `Cannot fast-forward to multiple branches.` */
   | { readonly code: 'FAST_FORWARD_MULTIPLE_BRANCHES' }
+  | { readonly code: 'PULL_REBASE_MULTIPLE_BRANCHES' }
   | {
       readonly code: 'NON_FAST_FORWARD';
       readonly ref: RefName;
@@ -600,6 +601,10 @@ export const pushMultipleUpstreams = (branch: RefName): TsgitError =>
 
 export const fastForwardMultipleBranches = (): TsgitError =>
   new TsgitError({ code: 'FAST_FORWARD_MULTIPLE_BRANCHES' });
+
+/** git pull's `Cannot rebase onto multiple branches.`: a rebasing pull fetched several heads. */
+export const pullRebaseMultipleBranches = (): TsgitError =>
+  new TsgitError({ code: 'PULL_REBASE_MULTIPLE_BRANCHES' });
 
 export const nonFastForward = (ref: RefName, local: ObjectId, remote: ObjectId): TsgitError =>
   new TsgitError({ code: 'NON_FAST_FORWARD', ref, local, remote });

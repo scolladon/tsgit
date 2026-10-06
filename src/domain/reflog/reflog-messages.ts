@@ -69,8 +69,12 @@ export const cherryPickReflog = (subject: string): string => `cherry-pick: ${sub
 /** `revert: <subject>` — a revert step's reflog on HEAD. */
 export const revertReflog = (subject: string): string => `revert: ${subject}`;
 
-/** `rebase (start): checkout <onto>` — detaching HEAD onto the rebase base. */
-export const rebaseStartCheckout = (onto: string): string => `rebase (start): checkout ${onto}`;
+/** git's default `GIT_REFLOG_ACTION` for a rebase; `pull` runs its rebase under its own. */
+export const REBASE_REFLOG_ACTION = 'rebase';
+
+/** `<action> (start): checkout <onto>` — detaching HEAD onto the rebase base. */
+export const rebaseStartCheckout = (onto: string, action = REBASE_REFLOG_ACTION): string =>
+  `${action} (start): checkout ${onto}`;
 
 /**
  * `rebase (<action>): <subject>` — the generic form for an interactive-rebase step whose
@@ -79,8 +83,9 @@ export const rebaseStartCheckout = (onto: string): string => `rebase (start): ch
 export const rebaseActionReflog = (action: string, subject: string): string =>
   `rebase (${action}): ${subject}`;
 
-/** `rebase (pick): <subject>` — a replayed pick. */
-export const rebasePickReflog = (subject: string): string => `rebase (pick): ${subject}`;
+/** `<action> (pick): <subject>` — a replayed pick. */
+export const rebasePickReflog = (subject: string, action = REBASE_REFLOG_ACTION): string =>
+  `${action} (pick): ${subject}`;
 
 /** `rebase (edit): <subject>` — a stopped edit step. */
 export const rebaseEditReflog = (subject: string): string => `rebase (edit): ${subject}`;
@@ -91,13 +96,16 @@ export const rebaseRewordReflog = (subject: string): string => `rebase (reword):
 /** `rebase (continue): <subject>` — a step replayed after a conflict was resolved. */
 export const rebaseContinueReflog = (subject: string): string => `rebase (continue): ${subject}`;
 
-/** `rebase (finish): <branch> onto <onto>` — the finishing move of the branch ref. */
-export const rebaseFinishOnto = (branch: string, onto: string): string =>
-  `rebase (finish): ${branch} onto ${onto}`;
+/** `<action> (finish): <branch> onto <onto>` — the finishing move of the branch ref. */
+export const rebaseFinishOnto = (
+  branch: string,
+  onto: string,
+  action = REBASE_REFLOG_ACTION,
+): string => `${action} (finish): ${branch} onto ${onto}`;
 
-/** `rebase (finish): returning to <branch>` — reattaching HEAD after a finished rebase. */
-export const rebaseFinishReturningTo = (branch: string): string =>
-  `rebase (finish): returning to ${branch}`;
+/** `<action> (finish): returning to <branch>` — reattaching HEAD after a finished rebase. */
+export const rebaseFinishReturningTo = (branch: string, action = REBASE_REFLOG_ACTION): string =>
+  `${action} (finish): returning to ${branch}`;
 
 /** `rebase (abort): returning to <target>` — reattaching HEAD after an aborted rebase. */
 export const rebaseAbortReturningTo = (target: string): string =>
