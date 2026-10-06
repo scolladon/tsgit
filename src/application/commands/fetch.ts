@@ -71,6 +71,7 @@ import {
   type MappedRef,
   type RefMapRequest,
 } from './internal/fetch-ref-map.js';
+import { followRemoteHead, readRemoteHeadPolicy } from './internal/fetch-remote-head.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
 import { isAncestor } from './internal/is-ancestor.js';
 import { assertPeerAlgorithm } from './internal/object-format-guard.js';
@@ -395,6 +396,7 @@ const applyRefsAndBuildResult = async (
   const backfilled = backfill.length > 0 ? await applyRemoteRefs(ctx, remote, backfill) : [];
   const fetchHeadText = await fetchHeadContent(ctx, [refMap, backfill], fetchHeadUrl(url));
   await writeFetchHead(ctx, fetchHeadText);
+  if (followsRemoteHead(request)) await setRemoteHead(ctx, remote.name, fetched.advertisement);
   const updatedRefs = [...updated, ...backfilled];
 
   return {
@@ -406,6 +408,17 @@ const applyRefsAndBuildResult = async (
     unshallow,
   };
 };
+
+/** git sets the remote HEAD only on a fetch by the remote's own configured refspecs. */
+const followsRemoteHead = ({ cliSpecs, configSpecs }: RefMapRequest): boolean =>
+  cliSpecs.length === 0 && configSpecs.length > 0;
+
+const setRemoteHead = async (
+  ctx: Context,
+  remote: string,
+  advertisement: Advertisement,
+): Promise<void> =>
+  followRemoteHead(ctx, remote, advertisement, await readRemoteHeadPolicy(ctx, remote));
 
 /** The ref map a fetch applies, and what its tag backfill reads. */
 interface FetchedMap {

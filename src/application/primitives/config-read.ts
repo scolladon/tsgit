@@ -832,6 +832,17 @@ export const findLastSubsectionEntry = async (
   return last;
 };
 
+/** Every entry of `key` under `[<section> "<subsection>"]`, in config-file order — git's per-entry config callback. */
+export const findSubsectionEntries = async (
+  ctx: Context,
+  section: string,
+  subsection: string,
+  key: string,
+): Promise<ReadonlyArray<LocatedConfigEntry>> => {
+  const { tokens, source } = await readConfigEntry(ctx);
+  return [...entriesIn(tokens, source, section, key, subsection)];
+};
+
 /** {@link findLastEntry} for each `[section, key]`, in order, from ONE config read. */
 export const findLastEntries = async (
   ctx: Context,

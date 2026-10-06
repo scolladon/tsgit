@@ -57,6 +57,16 @@ type FetchRejection = 'non-fast-forward' | 'would-clobber-existing-tag';
 - **Reflog:** updates land in `.git/logs/` via the standard `recordRefUpdate` writer.
 - **Shallow boundaries:** after a shallow fetch, commit traversals (e.g. [`walkCommits`](../primitives/walk-commits.md)) automatically stop at the recorded `.git/shallow` boundaries — no caller action needed.
 
+### Remote HEAD
+
+A fetch by the remote's own configured refspecs (no `refspecs` given) points
+`refs/remotes/<remote>/HEAD` at the tracking ref of the branch the remote's HEAD
+names, as git's `remote.<remote>.followRemoteHEAD` says: `create` (the default)
+writes it only when absent, `always` rewrites it on every fetch, `warn` (or
+`warn-if-not-<branch>`) behaves like `create` and logs a local HEAD that differs,
+`never` leaves it alone. The reflog entry reads `fetch`; an unrecognised value is
+ignored with a warning, as git does.
+
 ## Examples
 
 ```ts

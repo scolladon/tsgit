@@ -15,7 +15,7 @@
  *   bucket:         cross-tool-interop
  *   unique:         fetch writes FETCH_HEAD and honours command-line refspecs and refmap
  */
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -83,6 +83,17 @@ const trackingRefs = (dir: string): string =>
     'refs/tags',
   );
 
+/** `refs/remotes/origin/HEAD`'s symref target and its reflog's old/new oids and message. */
+const remoteHeadLog = (dir: string): ReadonlyArray<string> => {
+  const log = path.join(dir, '.git', 'logs', 'refs', 'remotes', 'origin', 'HEAD');
+  if (!existsSync(log)) return [];
+  const entries = readFileSync(log, 'utf8')
+    .split('\n')
+    .filter((line) => line.length > 0);
+  const target = git(dir, 'symbolic-ref', 'refs/remotes/origin/HEAD');
+  return [target, ...entries.map((line) => `${line.slice(0, 81)} ${line.split('\t')[1]}`)];
+};
+
 describe.skipIf(!GIT_AVAILABLE)('fetch FETCH_HEAD interop', () => {
   describe.each([
     { label: 'default', config: [], opts: {}, args: [] },
@@ -101,6 +112,12 @@ describe.skipIf(!GIT_AVAILABLE)('fetch FETCH_HEAD interop', () => {
         ['remote.origin.fetch', 'refs/heads/b2:refs/remotes/origin/b2'],
         ['remote.origin.fetch', 'refs/heads/main:refs/remotes/origin/main'],
       ],
+      opts: {},
+      args: [],
+    },
+    {
+      label: 'follow-never',
+      config: [['remote.origin.followRemoteHEAD', 'never']],
       opts: {},
       args: [],
     },
@@ -146,9 +163,8 @@ describe.skipIf(!GIT_AVAILABLE)('fetch FETCH_HEAD interop', () => {
 
         // Assert
         expect(fetchHead(ours)).toBe(expected);
-        expect(trackingRefs(ours)).toBe(
-          trackingRefs(theirs).replace(/refs\/remotes\/origin\/HEAD [0-9a-f]+\n?/, ''),
-        );
+        expect(trackingRefs(ours)).toBe(trackingRefs(theirs));
+        expect(remoteHeadLog(ours)).toEqual(remoteHeadLog(theirs));
       });
     });
   });
