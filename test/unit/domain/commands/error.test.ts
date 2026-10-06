@@ -1809,6 +1809,10 @@ describe('domain commands error — extractDetail message formatting', () => {
       "UNKNOWN_MERGE_STRATEGY: Could not find merge strategy 'x'. Available strategies are: octopus ours.",
     ],
     [
+      { code: 'UNKNOWN_STRATEGY_OPTION', option: 'bogus' },
+      'UNKNOWN_STRATEGY_OPTION: unknown strategy option: -Xbogus',
+    ],
+    [
       { code: 'MERGE_STRATEGY_FAILED', strategy: 'ort' },
       'MERGE_STRATEGY_FAILED: Merge with strategy ort failed.',
     ],

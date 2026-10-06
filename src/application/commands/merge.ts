@@ -26,6 +26,10 @@ import {
   mergeLabels,
   mergeTrees,
 } from '../../domain/merge/index.js';
+import {
+  type OrtRenameOptions,
+  parseOrtStrategyOptions,
+} from '../../domain/merge/strategy-options.js';
 import { trivialMerge } from '../../domain/merge/trivial-merge.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { treeDepthExceeded, unexpectedObjectType } from '../../domain/objects/error.js';
@@ -197,6 +201,16 @@ export interface MergeRunInput {
    * `MERGE_STRATEGY_FAILED` (one strategy) or `NO_MERGE_STRATEGY_HANDLED`.
    */
   readonly strategy?: string | ReadonlyArray<string>;
+  /**
+   * git's `-X <option>`, in order, read when a strategy runs (a fast-forward
+   * never reads them). `ort` / `recursive` honour `no-renames`,
+   * `find-renames[=<n>]` and `rename-threshold=<n>` over `merge.renames` /
+   * `diff.renames`; the other options git knows refuse with
+   * `UNSUPPORTED_OPERATION`, any other with `UNKNOWN_STRATEGY_OPTION`.
+   * `resolve` fails on any option, as git's `read-tree` refuses them;
+   * `octopus` and `ours` ignore them.
+   */
+  readonly strategyOptions?: ReadonlyArray<string>;
   readonly author?: AuthorIdentity;
   readonly committer?: AuthorIdentity;
 }
@@ -618,6 +632,9 @@ interface TwoHeadTry {
   readonly strategy: string;
 }
 
+/** git-merge-resolve hands `-X` values to `read-tree` as options, which refuses them. */
+const hasStrategyOptions = (opts: SettledMerge): boolean => (opts.strategyOptions?.length ?? 0) > 0;
+
 /** git's `try_merge_strategy` for one head: git-merge-resolve gives up on a baseless merge, octopus on one head. */
 const twoHeadAttempt = (
   ctx: Context,
@@ -627,6 +644,7 @@ const twoHeadAttempt = (
   if (strategy === 'ours') return oursAttempt(ctx, commit);
   if (ORT_STRATEGIES.has(strategy)) return ortAttempt(ctx, commit, remote.id, bases[0], strategy);
   if (strategy === 'octopus' || bases.length === 0) return Promise.resolve(FAILED);
+  if (hasStrategyOptions(commit.opts)) return Promise.resolve(FAILED);
   return octopusAttempt(ctx, commit, [remote], strategy);
 };
 
@@ -638,7 +656,8 @@ const ortAttempt = async (
   strategy: string,
 ): Promise<StrategyAttempt> => {
   const { opts, ourId } = commit;
-  const result = await computeMergeTreeResult(ctx, ourId, theirId, baseId, opts.rev);
+  const renames = parseOrtStrategyOptions(opts.strategyOptions ?? []);
+  const result = await computeMergeTreeResult(ctx, { ourId, theirId, baseId, renames }, opts.rev);
   if (result.kind === 'clean')
     return { kind: 'clean', tree: result.tree, note: mergeMadeBy(strategy) };
   return {
@@ -1003,11 +1022,16 @@ type MergeTreeResult =
       readonly ours: ReadonlyMap<FilePath, { readonly id: ObjectId; readonly mode: FileMode }>;
     };
 
+interface MergeTreeInput {
+  readonly ourId: ObjectId;
+  readonly theirId: ObjectId;
+  readonly baseId: ObjectId | undefined;
+  readonly renames: OrtRenameOptions;
+}
+
 const computeMergeTreeResult = async (
   ctx: Context,
-  ourId: ObjectId,
-  theirId: ObjectId,
-  baseId: ObjectId | undefined,
+  { ourId, theirId, baseId, renames: renameOptions }: MergeTreeInput,
   revName: string,
 ): Promise<MergeTreeResult> => {
   const ourTreeId = await getTree(ctx, ourId);
@@ -1022,7 +1046,7 @@ const computeMergeTreeResult = async (
 
   const labels: MergeLabels = mergeLabels(revName, baseId);
   const contentMerger = buildContentMerger(ctx, labels);
-  const renames = await detectMergeRenames(ctx, baseFlat, ourFlat, theirFlat);
+  const renames = await detectMergeRenames(ctx, baseFlat, ourFlat, theirFlat, renameOptions);
   const result = await mergeTrees(baseFlat, ourFlat, theirFlat, contentMerger, labels, renames);
 
   if (result.cleanMerge) {

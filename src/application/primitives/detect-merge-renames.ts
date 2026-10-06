@@ -4,7 +4,8 @@
  * are paired with the paths it added, renames only — no copies, no breaks, the
  * empty blob never a candidate. A deleted path is a source only when the other
  * side changed it (ort's relevant sources), and a side with no relevant source
- * or no addition skips detection entirely.
+ * or no addition skips detection entirely. `-X` overrides (`overrides`) win over
+ * `merge.renames` / `diff.renames` and set the similarity threshold.
  */
 import { primaryPath } from '../../domain/diff/change-path.js';
 import type {
@@ -16,6 +17,7 @@ import type {
 import type { FlatTree, FlatTreeEntry } from '../../domain/diff/flat-tree.js';
 import { sortByPath } from '../../domain/diff/path-compare.js';
 import { type MergeRename, type MergeRenames, NO_MERGE_RENAMES } from '../../domain/merge/index.js';
+import type { OrtRenameOptions } from '../../domain/merge/strategy-options.js';
 import { emptyBlobOid, type ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { detectSimilarityRenames } from './detect-similarity-renames.js';
@@ -27,6 +29,7 @@ interface SidePass {
   readonly other: FlatTree;
   readonly empty: ObjectId;
   readonly limit: number;
+  readonly threshold: number | undefined;
 }
 
 const sameEntry = (a: FlatTreeEntry, b: FlatTreeEntry): boolean =>
@@ -60,7 +63,11 @@ const sideRenames = async (ctx: Context, pass: SidePass): Promise<ReadonlyArray<
   const adds = deletes.length === 0 ? [] : additions(pass);
   if (adds.length === 0) return [];
   const changes = sortByPath<DiffChange>([...deletes, ...adds], primaryPath);
-  const paired = await detectSimilarityRenames(ctx, { changes }, { limit: pass.limit });
+  const options = {
+    limit: pass.limit,
+    ...(pass.threshold === undefined ? {} : { threshold: pass.threshold }),
+  };
+  const paired = await detectSimilarityRenames(ctx, { changes }, options);
   return paired.changes.filter(isRename).map(({ oldPath, newPath }) => ({ oldPath, newPath }));
 };
 
@@ -69,11 +76,17 @@ export const detectMergeRenames = async (
   base: FlatTree | undefined,
   ours: FlatTree,
   theirs: FlatTree,
+  overrides: OrtRenameOptions = {},
 ): Promise<MergeRenames> => {
-  const { detect, limit } = await readMergeRenameConfig(ctx);
-  if (!detect || base === undefined) return NO_MERGE_RENAMES;
-  const empty = emptyBlobOid(ctx.hashConfig);
-  const oursRenames = await sideRenames(ctx, { base, side: ours, other: theirs, empty, limit });
-  const theirsRenames = await sideRenames(ctx, { base, side: theirs, other: ours, empty, limit });
+  const config = await readMergeRenameConfig(ctx);
+  if (!(overrides.detect ?? config.detect) || base === undefined) return NO_MERGE_RENAMES;
+  const shared = {
+    base,
+    empty: emptyBlobOid(ctx.hashConfig),
+    limit: config.limit,
+    threshold: overrides.threshold,
+  };
+  const oursRenames = await sideRenames(ctx, { ...shared, side: ours, other: theirs });
+  const theirsRenames = await sideRenames(ctx, { ...shared, side: theirs, other: ours });
   return { ours: oursRenames, theirs: theirsRenames };
 };

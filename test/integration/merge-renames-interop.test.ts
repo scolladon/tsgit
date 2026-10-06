@@ -350,4 +350,82 @@ describe.skipIf(!GIT_AVAILABLE)('merge rename detection interop', () => {
       });
     });
   });
+
+  describe.each([
+    ['find-renames=77', ['1\n', 'one\n'] as const, undefined],
+    ['find-renames=78', ['1\n', 'one\n'] as const, undefined],
+    ['rename-threshold=70', ['1\n', 'one\n'] as const, undefined],
+    ['find-renames=0.77', ['1\n', 'one\n'] as const, undefined],
+    ['find-renames=7.5', ['1\n', 'one\n'] as const, undefined],
+    ['no-renames', undefined, undefined],
+    ['find-renames', undefined, 'false'],
+  ])('Given -X %s over a rename and merge.renames=%s', (option, sideEdit, renames) => {
+    describe('When both tools merge the side', () => {
+      it("Then the merge, index, files and stop state match git's", async () => {
+        // Arrange
+        const theirs = buildHistory(sideEdit);
+        if (renames !== undefined) runGit(['-C', theirs, 'config', 'merge.renames', renames]);
+        const ours = await copyOf(theirs);
+        tryRunGitWithExit(['-C', theirs, 'merge', '-X', option, 'side'], { env: DATED_ENV });
+        const repo = await openRepository({ cwd: ours });
+        const sut = repo.merge.run;
+
+        // Act
+        await sut({
+          rev: 'side',
+          strategyOptions: [option],
+          author: IDENTITY,
+          committer: IDENTITY,
+        });
+        await repo.dispose();
+
+        // Assert
+        expect(snapshot(ours)).toEqual(snapshot(theirs));
+        expect(git(ours, 'rev-parse', 'HEAD')).toBe(git(theirs, 'rev-parse', 'HEAD'));
+      });
+    });
+  });
+
+  describe.each([
+    [[], ['bogus'], 128, 'fatal: unknown strategy option: -Xbogus', 'UNKNOWN_STRATEGY_OPTION'],
+    [
+      ['-s', 'resolve'],
+      ['no-renames'],
+      2,
+      'Merge with strategy resolve failed.',
+      'MERGE_STRATEGY_FAILED',
+    ],
+  ] as const)('Given %j with -X %j', (strategyArgs, options, exitCode, message, code) => {
+    describe('When both tools merge a rename against an edit', () => {
+      it('Then both refuse and leave the tree as it was', async () => {
+        // Arrange
+        const theirs = buildHistory();
+        const ours = await copyOf(theirs);
+        const xargs = options.flatMap((option) => ['-X', option]);
+        const gitRun = tryRunGitWithExit(
+          ['-C', theirs, 'merge', ...strategyArgs, ...xargs, 'side'],
+          {
+            env: DATED_ENV,
+          },
+        );
+        const repo = await openRepository({ cwd: ours });
+        const strategy = strategyArgs[1];
+        const sut = repo.merge.run;
+
+        // Act
+        const result = await sut({
+          rev: 'side',
+          ...(strategy === undefined ? {} : { strategy }),
+          strategyOptions: options,
+          author: IDENTITY,
+        }).catch((error: unknown) => (error as { data: { code: string } }).data.code);
+        await repo.dispose();
+
+        // Assert
+        expect([gitRun.exitCode, gitRun.stderr.includes(message)]).toEqual([exitCode, true]);
+        expect(result).toBe(code);
+        expect(snapshot(ours)).toEqual(snapshot(theirs));
+      });
+    });
+  });
 });

@@ -1,0 +1,100 @@
+import { describe, expect, it } from 'vitest';
+import { TsgitError } from '../../../../src/domain/error.js';
+import { parseOrtStrategyOptions } from '../../../../src/domain/merge/strategy-options.js';
+
+const failureOf = (options: ReadonlyArray<string>): unknown => {
+  try {
+    parseOrtStrategyOptions(options);
+  } catch (error) {
+    return error instanceof TsgitError ? error.data : error;
+  }
+  throw new Error('expected a refusal');
+};
+
+describe('parseOrtStrategyOptions', () => {
+  describe.each([
+    ['no option', [], {}],
+    ['no-renames', ['no-renames'], { detect: false }],
+    ['find-renames', ['find-renames'], { detect: true }],
+    ['find-renames=', ['find-renames='], { detect: true }],
+    ['find-renames=0', ['find-renames=0'], { detect: true }],
+    ['find-renames=77', ['find-renames=77'], { detect: true, threshold: 46200 }],
+    ['rename-threshold=70%', ['rename-threshold=70%'], { detect: true, threshold: 42000 }],
+    ['find-renames=90 then find-renames', ['find-renames=90', 'find-renames'], { detect: true }],
+    ['find-renames then no-renames', ['find-renames', 'no-renames'], { detect: false }],
+    [
+      'no-renames then find-renames=90',
+      ['no-renames', 'find-renames=90'],
+      { detect: true, threshold: 54000 },
+    ],
+    [
+      'find-renames=90 then no-renames',
+      ['find-renames=90', 'no-renames'],
+      { detect: false, threshold: 54000 },
+    ],
+  ])('Given %s', (_label, options, expected) => {
+    describe('When parsed', () => {
+      it('Then the rename settings are git’s', () => {
+        // Arrange
+        const sut = parseOrtStrategyOptions;
+
+        // Act
+        const result = sut(options);
+
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
+  });
+
+  describe.each(['bogus', '', 'find-renames=abc', 'find-renames=5x', 'diff-algorithm=bogus'])(
+    'Given the option %j',
+    (option) => {
+      describe('When parsed', () => {
+        it('Then it refuses as an unknown strategy option', () => {
+          // Arrange
+          const options = ['find-renames', option];
+
+          // Act
+          const result = failureOf(options);
+
+          // Assert
+          expect(result).toEqual({ code: 'UNKNOWN_STRATEGY_OPTION', option });
+        });
+      });
+    },
+  );
+
+  describe.each([
+    'ours',
+    'theirs',
+    'subtree',
+    'subtree=dir',
+    'patience',
+    'histogram',
+    'diff-algorithm=Minimal',
+    'ignore-space-change',
+    'ignore-all-space',
+    'ignore-space-at-eol',
+    'ignore-cr-at-eol',
+    'renormalize',
+    'no-renormalize',
+  ])('Given the option %j', (option) => {
+    describe('When parsed', () => {
+      it('Then it refuses as not yet supported', () => {
+        // Arrange
+        const options = [option];
+
+        // Act
+        const result = failureOf(options);
+
+        // Assert
+        expect(result).toEqual({
+          code: 'UNSUPPORTED_OPERATION',
+          operation: 'merge',
+          reason: `-X${option}`,
+        });
+      });
+    });
+  });
+});

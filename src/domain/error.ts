@@ -608,6 +608,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `options '${data.options[0]}' and '${data.options[1]}' cannot be used together`;
     case 'UNKNOWN_MERGE_STRATEGY':
       return `Could not find merge strategy '${data.strategy}'. Available strategies are: ${data.available.join(' ')}.`;
+    case 'UNKNOWN_STRATEGY_OPTION':
+      return `unknown strategy option: -X${data.option}`;
     case 'MERGE_STRATEGY_FAILED':
       return `Merge with strategy ${data.strategy} failed.`;
     case 'NO_MERGE_STRATEGY_HANDLED':

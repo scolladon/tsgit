@@ -263,6 +263,7 @@ export type CommandError =
       readonly strategy: string;
       readonly available: ReadonlyArray<string>;
     }
+  | { readonly code: 'UNKNOWN_STRATEGY_OPTION'; readonly option: string }
   | { readonly code: 'MERGE_STRATEGY_FAILED'; readonly strategy: string }
   | { readonly code: 'NO_MERGE_STRATEGY_HANDLED'; readonly strategies: ReadonlyArray<string> }
   | {
@@ -944,6 +945,10 @@ export const unknownMergeStrategy = (
   strategy: string,
   available: ReadonlyArray<string>,
 ): TsgitError => new TsgitError({ code: 'UNKNOWN_MERGE_STRATEGY', strategy, available });
+
+/** git's `unknown strategy option: -X<option>`: a `-X` value the merge strategy does not parse. */
+export const unknownStrategyOption = (option: string): TsgitError =>
+  new TsgitError({ code: 'UNKNOWN_STRATEGY_OPTION', option });
 
 /** git's `Merge with strategy <s> failed.`: the strategy does not handle this merge. */
 export const mergeStrategyFailed = (strategy: string): TsgitError =>

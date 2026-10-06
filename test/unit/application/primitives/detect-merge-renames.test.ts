@@ -284,4 +284,26 @@ describe('detectMergeRenames', () => {
       });
     });
   });
+
+  describe.each([
+    ['', { detect: false }, []],
+    ['[merge]\n\trenames = false\n', { detect: true }, BIG_TO_BIG2],
+    ['', { detect: true, threshold: 46200 }, BIG_TO_BIG2],
+    ['', { detect: true, threshold: 46800 }, []],
+  ])('Given the config %j and the overrides %j', (config, overrides, expected) => {
+    describe('When a 77%-similar rename is detected', () => {
+      it('Then the overrides decide over the config', async () => {
+        // Arrange
+        const ctx = await withConfig(createMemoryContext(), config);
+        const { base, ours, theirs } = await renameVsModify(ctx, 'one\n2\n3\n4\n5\n6\n7\n8\n');
+        const sut = detectMergeRenames;
+
+        // Act
+        const result = await sut(ctx, base, ours, theirs, overrides);
+
+        // Assert
+        expect(result.theirs).toEqual(expected);
+      });
+    });
+  });
 });
