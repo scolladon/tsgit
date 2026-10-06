@@ -177,6 +177,41 @@ describe('buildContentMerger', () => {
     });
   });
 
+  describe.each([
+    [
+      'no diff algorithm, so ort’s histogram',
+      {},
+      '<<<<<<< o\n=======\nb\nd\nb\nb\n}\nc\nb\nd\na\nd\n>>>>>>> t\n}\nd\n<<<<<<< o\nb\na\nb\nc\n}\n}\nd\nb\nd\n=======\n}\n}\n>>>>>>> t\nd\n',
+    ],
+    [
+      'diff-algorithm=myers',
+      { diffAlgorithm: 'myers' },
+      '<<<<<<< o\n}\n=======\nb\nd\nb\nb\n}\nc\n>>>>>>> t\nb\nd\nb\na\n<<<<<<< o\nb\nc\n}\n}\nd\nb\n=======\nd\n}\n>>>>>>> t\nd\n}\n}\nd\n',
+    ],
+  ] as const)(
+    'Given %s and sides the algorithms anchor differently',
+    (_label, settings, expected) => {
+      describe('When the built-in merge conflicts', () => {
+        it('Then the conflict regions sit where git’s merge puts them', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const sut = buildContentMerger(ctx, { ours: 'o', theirs: 't', base: 'b' }, settings);
+          const mergeCtx = await mergeCtxFor(ctx, {
+            base: 'd\nd\nb\nd\na\nc\nd\nc\n}\nb\nd\nd\n',
+            ours: '}\nb\nd\nb\na\nb\nc\n}\n}\nd\nb\nd\nd\n',
+            theirs: 'b\nd\nb\nb\n}\nc\nb\nd\na\nd\n}\nd\n}\n}\nd\n',
+          });
+
+          // Act
+          const result = await sut(mergeCtx, undefined, new Uint8Array(0), new Uint8Array(0));
+
+          // Assert
+          expect(result.status === 'conflict' && dec(result.markedBytes)).toBe(expected);
+        });
+      });
+    },
+  );
+
   describe('Given a renamed path whose sides held it at different paths', () => {
     describe('When the built-in merge conflicts', () => {
       it('Then each marker label names its side path', async () => {

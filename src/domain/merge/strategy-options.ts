@@ -5,9 +5,9 @@
  * option` does.
  */
 import { unknownStrategyOption } from '../commands/error.js';
+import type { DiffAlgorithm } from '../diff/line-diff.js';
 import { parseRenameScore } from '../diff/rename-score.js';
 import { type LineKey, NONE_KEY, type WhitespaceMode } from '../diff/whitespace.js';
-import type { SearchMode } from '../diff/xdiff/xdl-prepare.js';
 import { unsupportedOperation } from '../error.js';
 
 /** The rename settings `-X` overrides; an absent field keeps the configured one. */
@@ -25,8 +25,8 @@ export interface OrtStrategyOptions {
   readonly variant?: OrtVariant;
   /** The whitespace the content merge's line diffs ignore (`-X ignore-*`). */
   readonly lineKey?: LineKey;
-  /** `minimal` when `-X diff-algorithm=minimal` asks for xdiff's exhaustive search. */
-  readonly diffSearch?: SearchMode;
+  /** The last `-X` algorithm named; absent keeps ort's default, `histogram`. */
+  readonly diffAlgorithm?: DiffAlgorithm;
 }
 
 /** xdiff's `xdl_recmatch` tests the flags all → change → at-eol, so the strongest set one wins. */
@@ -53,14 +53,14 @@ const isVariant = (option: string): option is OrtVariant => VARIANTS.has(option)
 const THRESHOLD_PREFIXES = ['find-renames=', 'rename-threshold='] as const;
 const DIFF_ALGORITHM_PREFIX = 'diff-algorithm=';
 /** xdiff's algorithm bits, cleared and reset by every algorithm option, so the last one named wins. */
-const SEARCH_BY_ALGORITHM: ReadonlyMap<string, SearchMode | undefined> = new Map([
-  ['myers', undefined],
-  ['default', undefined],
+const ALGORITHMS: ReadonlyMap<string, DiffAlgorithm | undefined> = new Map([
+  ['myers', 'myers'],
+  ['default', 'myers'],
   ['minimal', 'minimal'],
   ['patience', undefined],
-  ['histogram', undefined],
+  ['histogram', 'histogram'],
 ]);
-const UNIMPLEMENTED_ALGORITHMS: ReadonlySet<string> = new Set(['patience', 'histogram']);
+const SHORTHAND_ALGORITHMS: ReadonlySet<string> = new Set(['patience', 'histogram']);
 const UNSUPPORTED: ReadonlySet<string> = new Set(['subtree']);
 const RENORMALIZE = 'renormalize';
 const NO_RENORMALIZE = 'no-renormalize';
@@ -70,10 +70,10 @@ const isUnsupported = (option: string): boolean =>
   UNSUPPORTED.has(option) || option.startsWith(SUBTREE_PREFIX);
 
 const algorithmNamed = (option: string): string | undefined => {
-  if (UNIMPLEMENTED_ALGORITHMS.has(option)) return option;
+  if (SHORTHAND_ALGORITHMS.has(option)) return option;
   if (!option.startsWith(DIFF_ALGORITHM_PREFIX)) return undefined;
   const name = option.slice(DIFF_ALGORITHM_PREFIX.length).toLowerCase();
-  return SEARCH_BY_ALGORITHM.has(name) ? name : undefined;
+  return ALGORITHMS.has(name) ? name : undefined;
 };
 
 /**
@@ -87,11 +87,10 @@ interface Parsed {
 }
 
 const withAlgorithm = (parsed: Parsed, option: string, name: string): Parsed => {
-  const { diffSearch: _replaced, ...rest } = parsed.settings;
-  const search = SEARCH_BY_ALGORITHM.get(name);
   const { unimplemented: _dropped, ...kept } = parsed;
-  const next = { ...kept, settings: search === undefined ? rest : { ...rest, diffSearch: search } };
-  return UNIMPLEMENTED_ALGORITHMS.has(name) ? { ...next, unimplemented: option } : next;
+  const algorithm = ALGORITHMS.get(name);
+  if (algorithm === undefined) return { ...kept, unimplemented: option };
+  return { ...kept, settings: { ...parsed.settings, diffAlgorithm: algorithm } };
 };
 
 /** `-X renormalize` runs every merged blob through attribute conversion; tsgit has no eol conversion. */

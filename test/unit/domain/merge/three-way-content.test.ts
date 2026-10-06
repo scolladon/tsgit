@@ -1139,7 +1139,7 @@ describe('mergeContent', () => {
         const heuristic = sut(base, ours, theirs);
 
         // Act
-        const result = sut(base, ours, theirs, { diffSearch: 'minimal' });
+        const result = sut(base, ours, theirs, { diffAlgorithm: 'minimal' });
 
         // Assert
         expect(result).not.toEqual(heuristic);

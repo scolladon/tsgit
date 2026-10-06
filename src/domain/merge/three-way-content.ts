@@ -1,4 +1,5 @@
 import {
+  type DiffAlgorithm,
   diffPresplitLinesForMode,
   isBinary,
   type LineDiff,
@@ -6,7 +7,6 @@ import {
   splitLines,
 } from '../diff/line-diff.js';
 import { type LineKey, lineKeyIsActive, linesEqualUnder } from '../diff/whitespace.js';
-import type { SearchMode } from '../diff/xdiff/xdl-prepare.js';
 import { bytesEqual, concatBytes } from '../objects/encoding.js';
 import { writeConflictMarkers } from './conflict-markers.js';
 import type { ConflictMarkerOptions, ContentMergeResult, MergeFavor } from './merge-types.js';
@@ -23,8 +23,8 @@ export type MergeContentOptions = ConflictMarkerOptions & {
   readonly favor?: MergeFavor;
   /** The whitespace the line diffs ignore (git's `-X ignore-*`); absent compares bytes. */
   readonly lineKey?: LineKey | undefined;
-  /** xdiff's search: `minimal` (`-X diff-algorithm=minimal`) never cuts a costly diff short. */
-  readonly diffSearch?: SearchMode | undefined;
+  /** xdiff's line-matching algorithm; absent is `myers`, xdiff's own default (ort asks for `histogram`). */
+  readonly diffAlgorithm?: DiffAlgorithm | undefined;
 };
 
 function endsWithLf(line: Uint8Array): boolean {
@@ -102,7 +102,7 @@ const activeKey = (key: LineKey | undefined): LineKey | undefined =>
 
 function lineModel(
   lineKey: LineKey | undefined,
-  search: SearchMode,
+  search: DiffAlgorithm,
   options: LineDiffOptions | undefined,
 ): LineModel {
   return {
@@ -114,7 +114,7 @@ function lineModel(
 const diffAgainstBase = (
   baseLines: ReadonlyArray<Uint8Array>,
   side: Uint8Array,
-  search: SearchMode,
+  search: DiffAlgorithm,
   options: LineDiffOptions | undefined,
 ): LineDiff => diffPresplitLinesForMode(baseLines, splitLines(side), search, options);
 
@@ -126,7 +126,7 @@ function mergeFromDiffs(
 ): ContentMergeResult {
   const lineKey = activeKey(options.lineKey);
   const diffOptions = lineKey === undefined ? undefined : { lineKey };
-  const search = options.diffSearch ?? 'git-default';
+  const search = options.diffAlgorithm ?? 'myers';
   const baseLines = splitLines(base);
   const oursDiff = diffAgainstBase(baseLines, ours, search, diffOptions);
   const theirsDiff = diffAgainstBase(baseLines, theirs, search, diffOptions);

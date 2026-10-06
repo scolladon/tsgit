@@ -44,7 +44,7 @@ export interface LineModel {
 
 const BYTE_EXACT: LineModel = {
   linesEqual: bytesEqual,
-  diffSides: (ours, theirs) => diffPresplitLinesForMode(ours, theirs, 'git-default').hunks,
+  diffSides: (ours, theirs) => diffPresplitLinesForMode(ours, theirs, 'myers').hunks,
 };
 
 /** git coalesces two conflicts separated by at most this many unchanged lines. */

@@ -1,6 +1,6 @@
 import { configMissingValue, mergeDriverMissingCommand } from '../../domain/commands/error.js';
+import type { DiffAlgorithm } from '../../domain/diff/line-diff.js';
 import type { LineKey } from '../../domain/diff/whitespace.js';
-import type { SearchMode } from '../../domain/diff/xdiff/xdl-prepare.js';
 import {
   type ContentMergeContext,
   type ContentMergeResult,
@@ -60,8 +60,11 @@ const labelsFor = (labels: MergeLabels, mergeCtx: ContentMergeContext): MergeLab
 export interface ContentMergeSettings {
   readonly variant?: OrtVariant;
   readonly lineKey?: LineKey;
-  readonly diffSearch?: SearchMode;
+  readonly diffAlgorithm?: DiffAlgorithm;
 }
+
+/** merge-ort's `init_basic_merge_options`: ort diffs with histogram unless `-X` names another. */
+const ORT_DIFF_ALGORITHM: DiffAlgorithm = 'histogram';
 
 /** git's `ll_union_merge` overrides the variant; `-merge` and `text` keep it. */
 const favorFor = (driverKind: string, settings: ContentMergeSettings): MergeFavor =>
@@ -118,7 +121,7 @@ export const buildContentMerger = (
     return mergeContent(base?.content, ours.content, theirs.content, {
       favor: favorFor(driver.kind, settings),
       lineKey: settings.lineKey,
-      diffSearch: settings.diffSearch,
+      diffAlgorithm: settings.diffAlgorithm ?? ORT_DIFF_ALGORITHM,
       markerSize,
       labels: { ours: pathLabels.ours, theirs: pathLabels.theirs },
     });

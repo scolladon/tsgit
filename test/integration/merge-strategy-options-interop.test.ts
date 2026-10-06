@@ -249,6 +249,20 @@ describe.skipIf(!GIT_AVAILABLE)('merge strategy options interop', () => {
     ['nothing over heavy edits', heavyEdits(), []],
     ['diff-algorithm=myers over dense edits', denseEdits(4, 90), ['diff-algorithm=myers']],
     ['diff-algorithm=myers over denser edits', denseEdits(11, 195), ['diff-algorithm=myers']],
+    ['nothing over dense edits', denseEdits(4, 90), []],
+    ['nothing over denser edits', denseEdits(11, 195), []],
+    ['histogram over dense edits', denseEdits(4, 90), ['histogram']],
+    [
+      'diff-algorithm=histogram over denser edits',
+      denseEdits(11, 195),
+      ['diff-algorithm=histogram'],
+    ],
+    [
+      'diff-algorithm=minimal then histogram over dense edits',
+      denseEdits(4, 90),
+      ['diff-algorithm=minimal', 'histogram'],
+    ],
+    ['histogram over heavy edits', heavyEdits(), ['histogram']],
     ['no-renormalize over line endings', LINE_ENDINGS, ['no-renormalize']],
     [
       'renormalize then no-renormalize over line endings',

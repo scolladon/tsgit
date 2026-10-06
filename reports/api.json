@@ -42498,7 +42498,7 @@
 									"children": [
 										{
 											"id": 8978,
-											"name": "diffSearch",
+											"name": "diffAlgorithm",
 											"variant": "declaration",
 											"kind": 1024,
 											"flags": {
@@ -42509,23 +42509,23 @@
 												"summary": [
 													{
 														"kind": "text",
-														"text": "xdiff's search: "
+														"text": "xdiff's line-matching algorithm; absent is "
 													},
 													{
 														"kind": "code",
-														"text": "`minimal`"
+														"text": "`myers`"
 													},
 													{
 														"kind": "text",
-														"text": " ("
+														"text": ", xdiff's own default (ort asks for "
 													},
 													{
 														"kind": "code",
-														"text": "`-X diff-algorithm=minimal`"
+														"text": "`histogram`"
 													},
 													{
 														"kind": "text",
-														"text": ") never cuts a costly diff short."
+														"text": ")."
 													}
 												]
 											},
@@ -42533,10 +42533,10 @@
 												"type": "reference",
 												"target": {
 													"packageName": "@scolladon/tsgit",
-													"packagePath": "src/domain/diff/xdiff/xdl-prepare.ts",
-													"qualifiedName": "SearchMode"
+													"packagePath": "src/domain/diff/line-diff.ts",
+													"qualifiedName": "DiffAlgorithm"
 												},
-												"name": "SearchMode",
+												"name": "DiffAlgorithm",
 												"package": "@scolladon/tsgit"
 											}
 										},
@@ -108631,11 +108631,19 @@
 									},
 									{
 										"kind": "code",
-										"text": "`diff-algorithm=myers|default|minimal`"
+										"text": "`histogram`"
 									},
 									{
 										"kind": "text",
-										"text": " (the last algorithm named wins),\nand "
+										"text": " and "
+									},
+									{
+										"kind": "code",
+										"text": "`diff-algorithm=myers|default|minimal|histogram`"
+									},
+									{
+										"kind": "text",
+										"text": " (the\nlast algorithm named wins; ort's own default is histogram), and\n"
 									},
 									{
 										"kind": "code",
@@ -108648,14 +108656,6 @@
 									{
 										"kind": "code",
 										"text": "`patience`"
-									},
-									{
-										"kind": "text",
-										"text": " / "
-									},
-									{
-										"kind": "code",
-										"text": "`histogram`"
 									},
 									{
 										"kind": "text",
@@ -156399,30 +156399,6 @@
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
-							"comment": {
-								"summary": [
-									{
-										"kind": "text",
-										"text": "git's xdiff line diff of "
-									},
-									{
-										"kind": "code",
-										"text": "`ours`"
-									},
-									{
-										"kind": "text",
-										"text": " against "
-									},
-									{
-										"kind": "code",
-										"text": "`theirs`"
-									},
-									{
-										"kind": "text",
-										"text": ": classify, run the\nlinear-space divide-and-conquer Myers search, then slide the resulting\nchange groups like git's own compaction pass. Never degrades to a\nwhole-file replace, however large the pair's true edit distance is."
-									}
-								]
-							},
 							"parameters": [
 								{
 									"id": 902,
@@ -230453,7 +230429,7 @@
 		"8978": {
 			"packageName": "@scolladon/tsgit",
 			"packagePath": "src/domain/merge/three-way-content.ts",
-			"qualifiedName": "__type.diffSearch"
+			"qualifiedName": "__type.diffAlgorithm"
 		},
 		"8979": {
 			"packageName": "@scolladon/tsgit",

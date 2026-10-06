@@ -1,8 +1,15 @@
 import type { LineKey } from './whitespace.js';
-import { classifyLines, hashLineSide } from './xdiff/xdl-classify.js';
-import { compactChanges } from './xdiff/xdl-compact.js';
+import { classifyLines, hashLineSide, type LineClasses } from './xdiff/xdl-classify.js';
+import { compactChanges, type GroupFallback } from './xdiff/xdl-compact.js';
+import { type HistogramRegion, markHistogramChanges } from './xdiff/xdl-histogram.js';
 import { cleanupRecords, type SearchMode, trimEnds } from './xdiff/xdl-prepare.js';
 import { markChanges } from './xdiff/xdl-split.js';
+
+/**
+ * xdiff's line-matching algorithm (`--diff-algorithm`): `myers` and its
+ * exhaustive `minimal` search, or `histogram`'s rarest-common-line anchoring.
+ */
+export type DiffAlgorithm = 'myers' | 'minimal' | 'histogram';
 
 export interface LineHunk {
   readonly kind: 'common' | 'ours-only' | 'theirs-only';
@@ -167,6 +174,77 @@ function buildHunksFromChanged(
  * change groups like git's own compaction pass. Never degrades to a
  * whole-file replace, however large the pair's true edit distance is.
  */
+interface ChangedMaps {
+  readonly ours: Uint8Array;
+  readonly theirs: Uint8Array;
+}
+
+interface ChangeSide {
+  readonly lines: ReadonlyArray<Uint8Array>;
+  readonly changed: Uint8Array;
+}
+
+const searchModeOf = (algorithm: DiffAlgorithm): SearchMode =>
+  algorithm === 'minimal' ? 'minimal' : 'git-default';
+
+/** xdiff's classic pipeline: trim, discard, then the divide-and-conquer Myers search. */
+function classicChanged(classes: LineClasses, mode: SearchMode): ChangedMaps {
+  const prepared = cleanupRecords(classes, trimEnds(classes.ours, classes.theirs), mode);
+  markChanges(classes, prepared, mode);
+  return { ours: prepared.ours.changed, theirs: prepared.theirs.changed };
+}
+
+/**
+ * xutils.c's `xdl_fall_back_diff`: a fresh classic diff of just the region's
+ * lines (its own classifier, trimming and discards), copied into both maps.
+ */
+function markClassicRegion(
+  a: ChangeSide,
+  b: ChangeSide,
+  lineKey: LineKey | undefined,
+  region: HistogramRegion,
+): void {
+  const aLines = a.lines.slice(region.line1 - 1, region.line1 - 1 + region.count1);
+  const bLines = b.lines.slice(region.line2 - 1, region.line2 - 1 + region.count2);
+  const classes = classifyLines(
+    aLines,
+    bLines,
+    lineKey,
+    hashLineSide(aLines, lineKey, undefined),
+    hashLineSide(bLines, lineKey, undefined),
+    undefined,
+    undefined,
+  );
+  const changed = classicChanged(classes, 'git-default');
+  a.changed.set(changed.ours, region.line1 - 1);
+  b.changed.set(changed.theirs, region.line2 - 1);
+}
+
+/** xdiffi.c's post-slide `xdl_fall_back_diff`, with this pass's side as file 1. */
+const groupFallback =
+  (side: ChangeSide, other: ChangeSide, lineKey: LineKey | undefined): GroupFallback =>
+  (group, otherGroup) =>
+    markClassicRegion(side, other, lineKey, {
+      line1: group.start + 1,
+      count1: group.end - group.start,
+      line2: otherGroup.start + 1,
+      count2: otherGroup.end - otherGroup.start,
+    });
+
+function histogramChanged(
+  classes: LineClasses,
+  oursLines: ReadonlyArray<Uint8Array>,
+  theirsLines: ReadonlyArray<Uint8Array>,
+  lineKey: LineKey | undefined,
+): ChangedMaps {
+  const ours: ChangeSide = { lines: oursLines, changed: new Uint8Array(oursLines.length) };
+  const theirs: ChangeSide = { lines: theirsLines, changed: new Uint8Array(theirsLines.length) };
+  markHistogramChanges(classes, ours.changed, theirs.changed, (region) =>
+    markClassicRegion(ours, theirs, lineKey, region),
+  );
+  return { ours: ours.changed, theirs: theirs.changed };
+}
+
 export function diffLines(
   ours: Uint8Array,
   theirs: Uint8Array,
@@ -190,26 +268,20 @@ export function diffPresplitLines(
   options?: LineDiffOptions,
   precomputedHashes?: PrecomputedLineHashes,
 ): LineDiffWithHashes {
-  return diffPresplitLinesForMode(
-    oursLines,
-    theirsLines,
-    'git-default',
-    options,
-    precomputedHashes,
-  );
+  return diffPresplitLinesForMode(oursLines, theirsLines, 'myers', options, precomputedHashes);
 }
 
 /**
- * `diffPresplitLines`, parameterised by search mode.
+ * `diffPresplitLines`, parameterised by algorithm.
  *
- * @internal — the content merge picks `'minimal'` under
- * `-X diff-algorithm=minimal`; the property oracle in xdiff.properties.test.ts
- * uses it to assert the change count against an independent LCS-based bound.
+ * @internal — the content merge picks its algorithm from `-X diff-algorithm`
+ * (ort defaults to `histogram`); the property oracle in xdiff.properties.test.ts
+ * uses `minimal` to assert the change count against an independent LCS bound.
  */
 export function diffPresplitLinesForMode(
   oursLines: ReadonlyArray<Uint8Array>,
   theirsLines: ReadonlyArray<Uint8Array>,
-  mode: SearchMode,
+  algorithm: DiffAlgorithm,
   options?: LineDiffOptions,
   precomputedHashes?: PrecomputedLineHashes,
 ): LineDiffWithHashes {
@@ -243,16 +315,32 @@ export function diffPresplitLinesForMode(
     oursNormalized,
     theirsNormalized,
   );
-  const trimmed = trimEnds(classes.ours, classes.theirs);
-  const prepared = cleanupRecords(classes, trimmed, mode);
-  markChanges(classes, prepared, mode);
+  const changed =
+    algorithm === 'histogram'
+      ? histogramChanged(classes, oursLines, theirsLines, lineKey)
+      : classicChanged(classes, searchModeOf(algorithm));
+  const ours: ChangeSide = { lines: oursLines, changed: changed.ours };
+  const theirs: ChangeSide = { lines: theirsLines, changed: changed.theirs };
+  const histogram = algorithm === 'histogram';
   // git's own order (xdl_diff, xdiffi.c): compact ours against theirs, then
   // theirs against ours — a group that merges on the first pass can free up
   // a slide on the second.
-  compactChanges(prepared.ours.changed, prepared.theirs.changed, classes.ours, oursLines);
-  compactChanges(prepared.theirs.changed, prepared.ours.changed, classes.theirs, theirsLines);
+  compactChanges(
+    changed.ours,
+    changed.theirs,
+    classes.ours,
+    oursLines,
+    histogram ? groupFallback(ours, theirs, lineKey) : undefined,
+  );
+  compactChanges(
+    changed.theirs,
+    changed.ours,
+    classes.theirs,
+    theirsLines,
+    histogram ? groupFallback(theirs, ours, lineKey) : undefined,
+  );
   return {
-    hunks: buildHunksFromChanged(prepared.ours.changed, prepared.theirs.changed),
+    hunks: buildHunksFromChanged(changed.ours, changed.theirs),
     oursLines,
     theirsLines,
     oursHashes,

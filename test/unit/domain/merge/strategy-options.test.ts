@@ -121,11 +121,26 @@ describe('parseOrtStrategyOptions', () => {
   });
 
   describe.each([
-    ['diff-algorithm=Minimal', ['diff-algorithm=Minimal'], { diffSearch: 'minimal' }],
-    ['diff-algorithm=myers', ['diff-algorithm=myers'], {}],
-    ['minimal then default', ['diff-algorithm=minimal', 'diff-algorithm=default'], {}],
-    ['patience then myers', ['patience', 'diff-algorithm=Myers'], {}],
-    ['histogram then minimal', ['histogram', 'diff-algorithm=minimal'], { diffSearch: 'minimal' }],
+    ['diff-algorithm=Minimal', ['diff-algorithm=Minimal'], { diffAlgorithm: 'minimal' }],
+    ['diff-algorithm=myers', ['diff-algorithm=myers'], { diffAlgorithm: 'myers' }],
+    [
+      'minimal then default',
+      ['diff-algorithm=minimal', 'diff-algorithm=default'],
+      { diffAlgorithm: 'myers' },
+    ],
+    ['patience then myers', ['patience', 'diff-algorithm=Myers'], { diffAlgorithm: 'myers' }],
+    [
+      'histogram then minimal',
+      ['histogram', 'diff-algorithm=minimal'],
+      { diffAlgorithm: 'minimal' },
+    ],
+    ['histogram', ['histogram'], { diffAlgorithm: 'histogram' }],
+    ['diff-algorithm=HISTOGRAM', ['diff-algorithm=HISTOGRAM'], { diffAlgorithm: 'histogram' }],
+    [
+      'minimal then histogram',
+      ['diff-algorithm=minimal', 'histogram'],
+      { diffAlgorithm: 'histogram' },
+    ],
   ] as const)('Given %s', (_label, options, algorithm) => {
     describe('When parsed', () => {
       it('Then the last algorithm named drives the line diffs', () => {
@@ -178,30 +193,25 @@ describe('parseOrtStrategyOptions', () => {
     });
   });
 
-  describe.each([
-    'subtree',
-    'subtree=dir',
-    'patience',
-    'histogram',
-    'diff-algorithm=HISTOGRAM',
-    'diff-algorithm=patience',
-    'renormalize',
-  ])('Given the option %j', (option) => {
-    describe('When parsed', () => {
-      it('Then it refuses as not yet supported', () => {
-        // Arrange
-        const options = [option];
+  describe.each(['subtree', 'subtree=dir', 'patience', 'diff-algorithm=patience', 'renormalize'])(
+    'Given the option %j',
+    (option) => {
+      describe('When parsed', () => {
+        it('Then it refuses as not yet supported', () => {
+          // Arrange
+          const options = [option];
 
-        // Act
-        const result = failureOf(options);
+          // Act
+          const result = failureOf(options);
 
-        // Assert
-        expect(result).toEqual({
-          code: 'UNSUPPORTED_OPERATION',
-          operation: 'merge',
-          reason: `-X${option}`,
+          // Assert
+          expect(result).toEqual({
+            code: 'UNSUPPORTED_OPERATION',
+            operation: 'merge',
+            reason: `-X${option}`,
+          });
         });
       });
-    });
-  });
+    },
+  );
 });
