@@ -160,6 +160,25 @@ describe('parseOrtStrategyOptions', () => {
   });
 
   describe.each([
+    ['subtree', ['subtree'], ''],
+    ['subtree=dir', ['subtree=dir'], 'dir'],
+    ['subtree=dir then subtree', ['subtree=dir', 'subtree'], ''],
+  ] as const)('Given %s', (_label, options, subtreeShift) => {
+    describe('When parsed', () => {
+      it('Then the other side shifts by the last subtree named', () => {
+        // Arrange
+        const sut = parseOrtStrategyOptions;
+
+        // Act
+        const result = sut(options);
+
+        // Assert
+        expect(result).toEqual({ renames: {}, subtreeShift });
+      });
+    });
+  });
+
+  describe.each([
     ['no-renormalize', ['no-renormalize']],
     ['renormalize then no-renormalize', ['renormalize', 'no-renormalize']],
   ])('Given %s', (_label, options) => {
@@ -196,7 +215,7 @@ describe('parseOrtStrategyOptions', () => {
     });
   });
 
-  describe.each(['subtree', 'subtree=dir', 'renormalize'])('Given the option %j', (option) => {
+  describe.each(['renormalize'])('Given the option %j', (option) => {
     describe('When parsed', () => {
       it('Then it refuses as not yet supported', () => {
         // Arrange

@@ -250,23 +250,18 @@ describe('merge strategy', () => {
     });
   });
 
-  describe('Given strategy subtree', () => {
+  describe('Given strategy subtree over sides that already line up', () => {
     describe('When merged', () => {
-      it('Then it refuses as unsupported before writing anything', async () => {
+      it('Then ort merges them without a shift, as git does', async () => {
         // Arrange
         const { ctx } = await repo();
         const sut = mergeRun;
 
         // Act
-        const result = await errorData(sut(ctx, { rev: 'feature', strategy: 'subtree', author }));
+        const result = await sut(ctx, { rev: 'feature', strategy: 'subtree', author });
 
         // Assert
-        expect(result).toEqual({
-          code: 'UNSUPPORTED_OPERATION',
-          operation: 'merge',
-          reason: 'subtree strategy',
-        });
-        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(false);
+        expect(result.kind).toBe('merge');
       });
     });
   });

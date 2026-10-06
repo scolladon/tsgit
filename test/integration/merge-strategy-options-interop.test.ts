@@ -68,8 +68,12 @@ const dated = (args: ReadonlyArray<string>): void => {
 /** A file whose content starts with this is written as a symlink to the rest. */
 const SYMLINK = '-> ';
 
+/** A file whose content is this is deleted. */
+const DELETED = '<deleted>';
+
 const writeEntry = (target: string, content: string): void => {
   rmSync(target, { force: true });
+  if (content === DELETED) return;
   if (content.startsWith(SYMLINK)) symlinkSync(content.slice(SYMLINK.length), target);
   else writeFileSync(target, content);
 };
@@ -125,14 +129,16 @@ const snapshot = (dir: string) => ({
   state: STATE_FILES.filter((name) => existsSync(path.join(dir, '.git', name))),
 });
 
-const mergeBoth = async (scenario: Scenario, options: ReadonlyArray<string>) => {
+const mergeBoth = async (scenario: Scenario, options: ReadonlyArray<string>, strategy?: string) => {
   const theirs = buildScenario(scenario);
   const ours = await copyOf(theirs);
   const xArgs = options.flatMap((option) => ['-X', option]);
-  tryRunGitWithExit(['-C', theirs, 'merge', ...xArgs, 'side'], { env: DATED_ENV });
+  const sArgs = strategy === undefined ? [] : ['-s', strategy];
+  tryRunGitWithExit(['-C', theirs, 'merge', ...sArgs, ...xArgs, 'side'], { env: DATED_ENV });
   const repo = await openRepository({ cwd: ours });
   await repo.merge.run({
     rev: 'side',
+    ...(strategy === undefined ? {} : { strategy }),
     strategyOptions: options,
     author: IDENTITY,
     committer: IDENTITY,
@@ -215,6 +221,22 @@ const denseEdits = (seed: number, length: number): Scenario => {
   const base = lines.map((line) => `${line}\n`).join('');
   const main = resample(rand() * 0.6);
   return { base: { f: base }, side: { f: resample(rand() * 0.6) }, main: { f: main } };
+};
+
+/** Side turns into the subproject that main keeps under `lib/sub/`; main edits around it. */
+const SUBPROJECT: Scenario = {
+  base: { 'lib/sub/a': '1\n2\n3\n', 'lib/sub/b': 'b\n', 'lib/sub/c': 'c\n', top: 't\n' },
+  side: {
+    'lib/sub/a': DELETED,
+    'lib/sub/b': DELETED,
+    'lib/sub/c': DELETED,
+    top: DELETED,
+    a: '1\n2\nS3\n',
+    b: 'b\n',
+    c: 'c\n',
+    d: 'new\n',
+  },
+  main: { 'lib/sub/a': 'M1\n2\n3\n', top: 'T\n', other: 'o\n' },
 };
 
 /** Both sides retarget one symlink and add another at the same path. */
@@ -300,6 +322,10 @@ describe.skipIf(!GIT_AVAILABLE)('merge strategy options interop', () => {
     ['nothing over symlinks both sides changed', SYMLINKS, []],
     ['ours over symlinks both sides changed', SYMLINKS, ['ours']],
     ['theirs over symlinks both sides changed', SYMLINKS, ['theirs']],
+    ['subtree over a subproject', SUBPROJECT, ['subtree']],
+    ['subtree=lib/sub over a subproject', SUBPROJECT, ['subtree=lib/sub']],
+    ['subtree=lib/sub/ over a subproject', SUBPROJECT, ['subtree=lib/sub/']],
+    ['subtree=other over a subproject', SUBPROJECT, ['subtree=other']],
   ])('Given -X %s', (_label, scenario, options) => {
     describe('When both tools merge the side', () => {
       it("Then the merge commit, index, files and stop state match git's", async () => {
@@ -308,6 +334,24 @@ describe.skipIf(!GIT_AVAILABLE)('merge strategy options interop', () => {
 
         // Act
         const result = await sut(scenario, options);
+
+        // Assert
+        expect(result.ours).toEqual(result.theirs);
+      });
+    });
+  });
+
+  describe.each([
+    ['nothing', []],
+    ['subtree=lib/sub', ['subtree=lib/sub']],
+  ] as const)('Given -s subtree and -X %s over a subproject', (_label, options) => {
+    describe('When both tools merge the side', () => {
+      it("Then the merge commit, index, files and stop state match git's", async () => {
+        // Arrange
+        const sut = mergeBoth;
+
+        // Act
+        const result = await sut(SUBPROJECT, options, 'subtree');
 
         // Assert
         expect(result.ours).toEqual(result.theirs);

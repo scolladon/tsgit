@@ -27,6 +27,8 @@ export interface OrtStrategyOptions {
   readonly lineKey?: LineKey;
   /** The last `-X` algorithm named; absent keeps ort's default, `histogram`. */
   readonly diffAlgorithm?: DiffAlgorithm;
+  /** `-X subtree[=<path>]`: the prefix to shift the other side by; empty guesses it. */
+  readonly subtreeShift?: string;
 }
 
 /** xdiff's `xdl_recmatch` tests the flags all → change → at-eol, so the strongest set one wins. */
@@ -62,13 +64,16 @@ const ALGORITHMS: ReadonlyMap<string, DiffAlgorithm> = new Map<string, DiffAlgor
 ]);
 /** `-X patience` / `-X histogram`, spelled without `diff-algorithm=`. */
 const SHORTHAND_ALGORITHMS: ReadonlySet<string> = new Set(['patience', 'histogram']);
-const UNSUPPORTED: ReadonlySet<string> = new Set(['subtree']);
+const SUBTREE = 'subtree';
 const RENORMALIZE = 'renormalize';
 const NO_RENORMALIZE = 'no-renormalize';
 const SUBTREE_PREFIX = 'subtree=';
 
-const isUnsupported = (option: string): boolean =>
-  UNSUPPORTED.has(option) || option.startsWith(SUBTREE_PREFIX);
+/** merge-ort.c's `parse_merge_opt`: `subtree` guesses the shift, `subtree=<path>` names it. */
+const subtreeShiftOf = (option: string): string | undefined => {
+  if (option === SUBTREE) return '';
+  return option.startsWith(SUBTREE_PREFIX) ? option.slice(SUBTREE_PREFIX.length) : undefined;
+};
 
 const algorithmNamed = (option: string): DiffAlgorithm | undefined => {
   if (SHORTHAND_ALGORITHMS.has(option)) return ALGORITHMS.get(option);
@@ -101,12 +106,13 @@ const applyRenameOption = (settings: OrtRenameOptions, option: string): OrtRenam
     const { score, rest } = parseRenameScore(text);
     if (rest === '') return withThreshold(settings, score);
   }
-  if (isUnsupported(option)) throw unsupportedOperation('merge', `-X${option}`);
   throw unknownStrategyOption(option);
 };
 
 const applySetting = (settings: OrtStrategyOptions, option: string): OrtStrategyOptions => {
   if (isVariant(option)) return { ...settings, variant: option };
+  const subtreeShift = subtreeShiftOf(option);
+  if (subtreeShift !== undefined) return { ...settings, subtreeShift };
   const lineKey = withWhitespace(settings.lineKey ?? NONE_KEY, option);
   if (lineKey !== undefined) return { ...settings, lineKey };
   return { ...settings, renames: applyRenameOption(settings.renames, option) };

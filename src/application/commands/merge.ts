@@ -81,6 +81,7 @@ import { readObject } from '../primitives/read-object.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { resolveRef, resolveRefForReading } from '../primitives/resolve-ref.js';
 import { runInformationalHook } from '../primitives/run-hook.js';
+import { shiftMergeSide } from '../primitives/shift-merge-side.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeObject } from '../primitives/write-object.js';
 import { writeTree } from '../primitives/write-tree.js';
@@ -463,7 +464,8 @@ const computeMerge = async (
 };
 
 /** Strategies git runs in-process as `ort`. */
-const ORT_STRATEGIES: ReadonlySet<string> = new Set(['ort', 'recursive']);
+const SUBTREE_STRATEGY = 'subtree';
+const ORT_STRATEGIES: ReadonlySet<string> = new Set(['ort', 'recursive', SUBTREE_STRATEGY]);
 const IN_INDEX_MERGE = 'In-index merge';
 
 const mergeMadeBy = (strategy: string): string => `Merge made by the '${strategy}' strategy.`;
@@ -665,7 +667,9 @@ const ortAttempt = async (
   strategy: string,
 ): Promise<StrategyAttempt> => {
   const { opts, ourId } = commit;
-  const xOptions = parseOrtStrategyOptions(opts.strategyOptions ?? []);
+  // builtin/merge.c sets `subtree_shift = ""` for `-s subtree` before reading `-X`.
+  const implied = strategy === SUBTREE_STRATEGY ? [SUBTREE_STRATEGY] : [];
+  const xOptions = parseOrtStrategyOptions([...implied, ...(opts.strategyOptions ?? [])]);
   const result = await computeMergeTreeResult(
     ctx,
     { ourId, theirId, baseId, strategy: xOptions },
@@ -1052,12 +1056,21 @@ const computeMergeTreeResult = async (
   const theirTreeId = await getTree(ctx, theirId);
   const baseTreeId = baseId !== undefined ? await getTree(ctx, baseId) : undefined;
 
-  const [ourFlat, theirFlat, baseFlat] = await Promise.all([
+  const [ourFlat, theirSide, baseSide] = await Promise.all([
     flattenTree(ctx, ourTreeId),
     flattenTree(ctx, theirTreeId),
     baseTreeId !== undefined ? flattenTree(ctx, baseTreeId) : Promise.resolve(undefined),
   ]);
 
+  const ours = { tree: ourTreeId, flat: ourFlat };
+  const shift = strategy.subtreeShift;
+  const [theirFlat, baseFlat] =
+    shift === undefined
+      ? [theirSide, baseSide]
+      : await Promise.all([
+          shiftMergeSide(ctx, ours, { tree: theirTreeId, flat: theirSide }, shift),
+          shiftMergeSide(ctx, ours, { tree: baseTreeId, flat: baseSide }, shift),
+        ]);
   const labels: MergeLabels = mergeLabels(revName, baseId);
   const contentMerger = buildContentMerger(ctx, labels, strategy);
   const detected = await detectMergeRenames(ctx, baseFlat, ourFlat, theirFlat, strategy.renames);

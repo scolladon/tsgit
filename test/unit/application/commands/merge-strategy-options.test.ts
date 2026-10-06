@@ -158,14 +158,14 @@ describe('merge strategy options', () => {
 
         // Act
         const result = await errorData(
-          sut(ctx, { rev: 'side', strategyOptions: ['subtree'], author }),
+          sut(ctx, { rev: 'side', strategyOptions: ['renormalize'], author }),
         );
 
         // Assert
         expect(result).toEqual({
           code: 'UNSUPPORTED_OPERATION',
           operation: 'merge',
-          reason: '-Xsubtree',
+          reason: '-Xrenormalize',
         });
       });
     });

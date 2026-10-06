@@ -1,5 +1,4 @@
 import { unknownMergeStrategy } from '../../../domain/commands/error.js';
-import { unsupportedOperation } from '../../../domain/index.js';
 import type { MergeConflict } from '../../../domain/merge/index.js';
 import type { Context } from '../../../ports/context.js';
 import { findLastEntry } from '../../primitives/config-read.js';
@@ -12,8 +11,6 @@ const KNOWN_STRATEGIES: ReadonlySet<string> = new Set([...AVAILABLE_STRATEGIES, 
 const NO_FAST_FORWARD_STRATEGIES: ReadonlySet<string> = new Set(['ours', 'subtree']);
 /** Strategies git does not mark `NO_TRIVIAL`: only they allow its trivial in-index merge. */
 const TRIVIAL_STRATEGIES: ReadonlySet<string> = new Set(['octopus', 'resolve']);
-/** Strategies known to git that tsgit does not run yet: `subtree` needs git's `shift_tree`. */
-const UNSUPPORTED_STRATEGIES: ReadonlySet<string> = new Set(['subtree']);
 
 const DEFAULT_TWO_HEAD = ['ort'] as const;
 const DEFAULT_OCTOPUS = ['octopus'] as const;
@@ -22,9 +19,6 @@ const STRATEGY_SEPARATOR = ' ';
 /** git's `get_strategy`: an unknown strategy refuses before anything else. */
 const assertKnownStrategy = (strategy: string): void => {
   if (!KNOWN_STRATEGIES.has(strategy)) throw unknownMergeStrategy(strategy, AVAILABLE_STRATEGIES);
-  if (UNSUPPORTED_STRATEGIES.has(strategy)) {
-    throw unsupportedOperation('merge', `${strategy} strategy`);
-  }
 };
 
 /** The caller's `-s` strategies, in order, each refused as git's `get_strategy` refuses it. */
