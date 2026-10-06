@@ -263,6 +263,10 @@ describe.skipIf(!GIT_AVAILABLE)('merge strategy options interop', () => {
       ['diff-algorithm=minimal', 'histogram'],
     ],
     ['histogram over heavy edits', heavyEdits(), ['histogram']],
+    ['patience over dense edits', denseEdits(4, 90), ['patience']],
+    ['diff-algorithm=patience over denser edits', denseEdits(11, 195), ['diff-algorithm=patience']],
+    ['patience over heavy edits', heavyEdits(), ['patience']],
+    ['patience then histogram over dense edits', denseEdits(4, 90), ['patience', 'histogram']],
     ['no-renormalize over line endings', LINE_ENDINGS, ['no-renormalize']],
     [
       'renormalize then no-renormalize over line endings',

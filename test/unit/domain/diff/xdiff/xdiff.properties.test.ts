@@ -22,7 +22,7 @@ function arbLines(): fc.Arbitrary<ReadonlyArray<string>> {
 }
 
 function arbMode(): fc.Arbitrary<DiffAlgorithm> {
-  return fc.constantFrom<DiffAlgorithm>('myers', 'minimal', 'histogram');
+  return fc.constantFrom<DiffAlgorithm>('myers', 'minimal', 'patience', 'histogram');
 }
 
 function encodeAll(lines: ReadonlyArray<string>): ReadonlyArray<Uint8Array> {

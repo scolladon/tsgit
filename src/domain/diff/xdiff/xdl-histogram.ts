@@ -5,21 +5,16 @@
 // the probed line, so only the chain-length cap (an allocation-failure path in
 // git) could observe the difference.
 import type { LineClasses } from './xdl-classify.js';
+import {
+  type ClassicFallback,
+  type LineRegion,
+  markRegion,
+  type RegionSink,
+} from './xdl-region.js';
 
 /** xhistogram.c's `max_chain_length`: a region whose every common line repeats
  *  more often than this is handed to the classic (Myers) diff instead. */
 const MAX_CHAIN_LENGTH = 64;
-
-/** A 1-based `[line, line + count)` window of each side. */
-export interface HistogramRegion {
-  readonly line1: number;
-  readonly count1: number;
-  readonly line2: number;
-  readonly count2: number;
-}
-
-/** Marks a region with the classic diff — xhistogram.c's `fall_back_to_classic_diff`. */
-export type ClassicFallback = (region: HistogramRegion) => void;
 
 interface HistogramIndex {
   readonly a: Int32Array;
@@ -70,7 +65,7 @@ const countAt = (index: HistogramIndex, ptr: number): number =>
 /** Grows the match at `(as, bPtr)` both ways, tracking the rarest count it spans. */
 function extendMatch(
   index: HistogramIndex,
-  region: HistogramRegion,
+  region: LineRegion,
   start: { readonly as: number; readonly bs: number },
   recordCount: number,
 ): Match {
@@ -115,7 +110,7 @@ function tryLcs(
   index: HistogramIndex,
   search: LcsSearch,
   bPtr: number,
-  region: HistogramRegion,
+  region: LineRegion,
 ): number {
   let bNext = bPtr + 1;
   const cls = index.b[bPtr - 1]!;
@@ -133,7 +128,7 @@ function tryLcs(
   return bNext;
 }
 
-function findLcs(index: HistogramIndex, region: HistogramRegion): LcsSearch {
+function findLcs(index: HistogramIndex, region: LineRegion): LcsSearch {
   index.generation++;
   scanA(index, region.line1, region.count1);
   const search: LcsSearch = {
@@ -149,26 +144,15 @@ function findLcs(index: HistogramIndex, region: HistogramRegion): LcsSearch {
   return search;
 }
 
-function markRun(changed: Uint8Array, line: number, count: number): void {
-  changed.fill(1, line - 1, line - 1 + count);
-}
-
-interface HistogramSink {
-  readonly oursChanged: Uint8Array;
-  readonly theirsChanged: Uint8Array;
-  readonly fallback: ClassicFallback;
-}
-
 /** One `histogram_diff` step: marks what it settles, returns the sub-regions left to diff. */
 function splitRegion(
   index: HistogramIndex,
-  region: HistogramRegion,
-  sink: HistogramSink,
-): ReadonlyArray<HistogramRegion> {
+  region: LineRegion,
+  sink: RegionSink,
+): ReadonlyArray<LineRegion> {
   const { line1, count1, line2, count2 } = region;
   if (count1 === 0 || count2 === 0) {
-    markRun(sink.oursChanged, line1, count1);
-    markRun(sink.theirsChanged, line2, count2);
+    markRegion(sink, region);
     return [];
   }
   const lcs = findLcs(index, region);
@@ -177,8 +161,7 @@ function splitRegion(
     return [];
   }
   if (lcs.begin1 === 0 && lcs.begin2 === 0) {
-    markRun(sink.oursChanged, line1, count1);
-    markRun(sink.theirsChanged, line2, count2);
+    markRegion(sink, region);
     return [];
   }
   return [
@@ -214,8 +197,8 @@ export function markHistogramChanges(
     nextPtr: new Int32Array(classes.ours.length),
     generation: 0,
   };
-  const sink: HistogramSink = { oursChanged, theirsChanged, fallback };
-  const pending: HistogramRegion[] = [
+  const sink: RegionSink = { oursChanged, theirsChanged, fallback };
+  const pending: LineRegion[] = [
     { line1: 1, count1: classes.ours.length, line2: 1, count2: classes.theirs.length },
   ];
   for (let region = pending.pop(); region !== undefined; region = pending.pop()) {

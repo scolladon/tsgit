@@ -53,13 +53,14 @@ const isVariant = (option: string): option is OrtVariant => VARIANTS.has(option)
 const THRESHOLD_PREFIXES = ['find-renames=', 'rename-threshold='] as const;
 const DIFF_ALGORITHM_PREFIX = 'diff-algorithm=';
 /** xdiff's algorithm bits, cleared and reset by every algorithm option, so the last one named wins. */
-const ALGORITHMS: ReadonlyMap<string, DiffAlgorithm | undefined> = new Map([
+const ALGORITHMS: ReadonlyMap<string, DiffAlgorithm> = new Map<string, DiffAlgorithm>([
   ['myers', 'myers'],
   ['default', 'myers'],
   ['minimal', 'minimal'],
-  ['patience', undefined],
+  ['patience', 'patience'],
   ['histogram', 'histogram'],
 ]);
+/** `-X patience` / `-X histogram`, spelled without `diff-algorithm=`. */
 const SHORTHAND_ALGORITHMS: ReadonlySet<string> = new Set(['patience', 'histogram']);
 const UNSUPPORTED: ReadonlySet<string> = new Set(['subtree']);
 const RENORMALIZE = 'renormalize';
@@ -69,33 +70,17 @@ const SUBTREE_PREFIX = 'subtree=';
 const isUnsupported = (option: string): boolean =>
   UNSUPPORTED.has(option) || option.startsWith(SUBTREE_PREFIX);
 
-const algorithmNamed = (option: string): string | undefined => {
-  if (SHORTHAND_ALGORITHMS.has(option)) return option;
+const algorithmNamed = (option: string): DiffAlgorithm | undefined => {
+  if (SHORTHAND_ALGORITHMS.has(option)) return ALGORITHMS.get(option);
   if (!option.startsWith(DIFF_ALGORITHM_PREFIX)) return undefined;
-  const name = option.slice(DIFF_ALGORITHM_PREFIX.length).toLowerCase();
-  return ALGORITHMS.has(name) ? name : undefined;
+  return ALGORITHMS.get(option.slice(DIFF_ALGORITHM_PREFIX.length).toLowerCase());
 };
 
-/**
- * The settings so far, plus the last-wins choices tsgit cannot run yet: the
- * option that last chose such an algorithm, and a standing renormalization.
- */
+/** The settings so far, plus whether a renormalization tsgit cannot run stands. */
 interface Parsed {
   readonly settings: OrtStrategyOptions;
-  readonly unimplemented?: string;
   readonly renormalize?: boolean;
 }
-
-const withAlgorithm = (parsed: Parsed, option: string, name: string): Parsed => {
-  const { unimplemented: _dropped, ...kept } = parsed;
-  const algorithm = ALGORITHMS.get(name);
-  if (algorithm === undefined) return { ...kept, unimplemented: option };
-  return { ...kept, settings: { ...parsed.settings, diffAlgorithm: algorithm } };
-};
-
-/** `-X renormalize` runs every merged blob through attribute conversion; tsgit has no eol conversion. */
-const refusalOf = ({ unimplemented, renormalize }: Parsed): string | undefined =>
-  unimplemented ?? (renormalize === true ? RENORMALIZE : undefined);
 
 /** git's `rename_score`: 0 stands for the default, which an absent threshold already means. */
 const withThreshold = (settings: OrtRenameOptions, score: number): OrtRenameOptions => {
@@ -129,7 +114,9 @@ const applySetting = (settings: OrtStrategyOptions, option: string): OrtStrategy
 
 const applyOption = (parsed: Parsed, option: string): Parsed => {
   const algorithm = algorithmNamed(option);
-  if (algorithm !== undefined) return withAlgorithm(parsed, option, algorithm);
+  if (algorithm !== undefined) {
+    return { ...parsed, settings: { ...parsed.settings, diffAlgorithm: algorithm } };
+  }
   if (option === RENORMALIZE || option === NO_RENORMALIZE) {
     return { ...parsed, renormalize: option === RENORMALIZE };
   }
@@ -138,7 +125,7 @@ const applyOption = (parsed: Parsed, option: string): Parsed => {
 
 export const parseOrtStrategyOptions = (options: ReadonlyArray<string>): OrtStrategyOptions => {
   const parsed = options.reduce(applyOption, { settings: { renames: {} } });
-  const refusal = refusalOf(parsed);
-  if (refusal !== undefined) throw unsupportedOperation('merge', `-X${refusal}`);
+  // `-X renormalize` runs every merged blob through attribute conversion; tsgit has no eol conversion.
+  if (parsed.renormalize === true) throw unsupportedOperation('merge', `-X${RENORMALIZE}`);
   return parsed.settings;
 };

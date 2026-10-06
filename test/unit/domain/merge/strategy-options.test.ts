@@ -135,6 +135,9 @@ describe('parseOrtStrategyOptions', () => {
       { diffAlgorithm: 'minimal' },
     ],
     ['histogram', ['histogram'], { diffAlgorithm: 'histogram' }],
+    ['patience', ['patience'], { diffAlgorithm: 'patience' }],
+    ['diff-algorithm=Patience', ['diff-algorithm=Patience'], { diffAlgorithm: 'patience' }],
+    ['histogram then patience', ['histogram', 'patience'], { diffAlgorithm: 'patience' }],
     ['diff-algorithm=HISTOGRAM', ['diff-algorithm=HISTOGRAM'], { diffAlgorithm: 'histogram' }],
     [
       'minimal then histogram',
@@ -193,25 +196,22 @@ describe('parseOrtStrategyOptions', () => {
     });
   });
 
-  describe.each(['subtree', 'subtree=dir', 'patience', 'diff-algorithm=patience', 'renormalize'])(
-    'Given the option %j',
-    (option) => {
-      describe('When parsed', () => {
-        it('Then it refuses as not yet supported', () => {
-          // Arrange
-          const options = [option];
+  describe.each(['subtree', 'subtree=dir', 'renormalize'])('Given the option %j', (option) => {
+    describe('When parsed', () => {
+      it('Then it refuses as not yet supported', () => {
+        // Arrange
+        const options = [option];
 
-          // Act
-          const result = failureOf(options);
+        // Act
+        const result = failureOf(options);
 
-          // Assert
-          expect(result).toEqual({
-            code: 'UNSUPPORTED_OPERATION',
-            operation: 'merge',
-            reason: `-X${option}`,
-          });
+        // Assert
+        expect(result).toEqual({
+          code: 'UNSUPPORTED_OPERATION',
+          operation: 'merge',
+          reason: `-X${option}`,
         });
       });
-    },
-  );
+    });
+  });
 });

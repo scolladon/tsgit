@@ -210,9 +210,10 @@ export interface MergeRunInput {
    * hunk and every binary merge), and `ignore-space-change`,
    * `ignore-all-space`, `ignore-space-at-eol`, `ignore-cr-at-eol` (a line
    * whose change is whitespace-only yields to the other side's), and
-   * `histogram` and `diff-algorithm=myers|default|minimal|histogram` (the
-   * last algorithm named wins; ort's own default is histogram), and
-   * `no-renormalize`; `patience`, a standing
+   * `patience`, `histogram` and
+   * `diff-algorithm=myers|default|minimal|patience|histogram` (the last
+   * algorithm named wins; ort's own default is histogram), and
+   * `no-renormalize`; a standing
    * `renormalize` and the other options git knows refuse with
    * `UNSUPPORTED_OPERATION`, any other with `UNKNOWN_STRATEGY_OPTION`.
    * `resolve` fails on any option, as git's `read-tree` refuses them;

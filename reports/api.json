@@ -108631,19 +108631,27 @@
 									},
 									{
 										"kind": "code",
+										"text": "`patience`"
+									},
+									{
+										"kind": "text",
+										"text": ", "
+									},
+									{
+										"kind": "code",
 										"text": "`histogram`"
 									},
 									{
 										"kind": "text",
-										"text": " and "
+										"text": " and\n"
 									},
 									{
 										"kind": "code",
-										"text": "`diff-algorithm=myers|default|minimal|histogram`"
+										"text": "`diff-algorithm=myers|default|minimal|patience|histogram`"
 									},
 									{
 										"kind": "text",
-										"text": " (the\nlast algorithm named wins; ort's own default is histogram), and\n"
+										"text": " (the last\nalgorithm named wins; ort's own default is histogram), and\n"
 									},
 									{
 										"kind": "code",
@@ -108651,15 +108659,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "; "
-									},
-									{
-										"kind": "code",
-										"text": "`patience`"
-									},
-									{
-										"kind": "text",
-										"text": ", a standing\n"
+										"text": "; a standing\n"
 									},
 									{
 										"kind": "code",

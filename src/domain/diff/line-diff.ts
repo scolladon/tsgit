@@ -1,15 +1,18 @@
 import type { LineKey } from './whitespace.js';
 import { classifyLines, hashLineSide, type LineClasses } from './xdiff/xdl-classify.js';
 import { compactChanges, type GroupFallback } from './xdiff/xdl-compact.js';
-import { type HistogramRegion, markHistogramChanges } from './xdiff/xdl-histogram.js';
+import { markHistogramChanges } from './xdiff/xdl-histogram.js';
+import { markPatienceChanges } from './xdiff/xdl-patience.js';
 import { cleanupRecords, type SearchMode, trimEnds } from './xdiff/xdl-prepare.js';
+import type { ClassicFallback, LineRegion } from './xdiff/xdl-region.js';
 import { markChanges } from './xdiff/xdl-split.js';
 
 /**
  * xdiff's line-matching algorithm (`--diff-algorithm`): `myers` and its
- * exhaustive `minimal` search, or `histogram`'s rarest-common-line anchoring.
+ * exhaustive `minimal` search, `patience`'s unique-line anchoring, or
+ * `histogram`'s rarest-common-line anchoring.
  */
-export type DiffAlgorithm = 'myers' | 'minimal' | 'histogram';
+export type DiffAlgorithm = 'myers' | 'minimal' | 'patience' | 'histogram';
 
 export interface LineHunk {
   readonly kind: 'common' | 'ours-only' | 'theirs-only';
@@ -202,7 +205,7 @@ function markClassicRegion(
   a: ChangeSide,
   b: ChangeSide,
   lineKey: LineKey | undefined,
-  region: HistogramRegion,
+  region: LineRegion,
 ): void {
   const aLines = a.lines.slice(region.line1 - 1, region.line1 - 1 + region.count1);
   const bLines = b.lines.slice(region.line2 - 1, region.line2 - 1 + region.count2);
@@ -231,18 +234,39 @@ const groupFallback =
       count2: otherGroup.end - otherGroup.start,
     });
 
-function histogramChanged(
+type RecursiveMarker = (
   classes: LineClasses,
-  oursLines: ReadonlyArray<Uint8Array>,
-  theirsLines: ReadonlyArray<Uint8Array>,
+  oursChanged: Uint8Array,
+  theirsChanged: Uint8Array,
+  fallback: ClassicFallback,
+) => void;
+
+/** Runs histogram or patience over fresh maps, with the classic diff as their fallback. */
+function recursiveChanged(
+  marker: RecursiveMarker,
+  classes: LineClasses,
+  sides: { readonly ours: ReadonlyArray<Uint8Array>; readonly theirs: ReadonlyArray<Uint8Array> },
   lineKey: LineKey | undefined,
 ): ChangedMaps {
-  const ours: ChangeSide = { lines: oursLines, changed: new Uint8Array(oursLines.length) };
-  const theirs: ChangeSide = { lines: theirsLines, changed: new Uint8Array(theirsLines.length) };
-  markHistogramChanges(classes, ours.changed, theirs.changed, (region) =>
+  const ours: ChangeSide = { lines: sides.ours, changed: new Uint8Array(sides.ours.length) };
+  const theirs: ChangeSide = { lines: sides.theirs, changed: new Uint8Array(sides.theirs.length) };
+  marker(classes, ours.changed, theirs.changed, (region) =>
     markClassicRegion(ours, theirs, lineKey, region),
   );
   return { ours: ours.changed, theirs: theirs.changed };
+}
+
+function changedFor(
+  algorithm: DiffAlgorithm,
+  classes: LineClasses,
+  sides: { readonly ours: ReadonlyArray<Uint8Array>; readonly theirs: ReadonlyArray<Uint8Array> },
+  lineKey: LineKey | undefined,
+): ChangedMaps {
+  if (algorithm === 'histogram')
+    return recursiveChanged(markHistogramChanges, classes, sides, lineKey);
+  if (algorithm === 'patience')
+    return recursiveChanged(markPatienceChanges, classes, sides, lineKey);
+  return classicChanged(classes, searchModeOf(algorithm));
 }
 
 export function diffLines(
@@ -315,10 +339,7 @@ export function diffPresplitLinesForMode(
     oursNormalized,
     theirsNormalized,
   );
-  const changed =
-    algorithm === 'histogram'
-      ? histogramChanged(classes, oursLines, theirsLines, lineKey)
-      : classicChanged(classes, searchModeOf(algorithm));
+  const changed = changedFor(algorithm, classes, { ours: oursLines, theirs: theirsLines }, lineKey);
   const ours: ChangeSide = { lines: oursLines, changed: changed.ours };
   const theirs: ChangeSide = { lines: theirsLines, changed: changed.theirs };
   const histogram = algorithm === 'histogram';
