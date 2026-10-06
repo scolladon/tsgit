@@ -467,4 +467,43 @@ describe.skipIf(!GIT_AVAILABLE)('merge rename detection interop', () => {
       });
     });
   });
+
+  describe('Given two inexact renames against edits and merge.renameLimit=1', () => {
+    describe('When both tools merge the side', () => {
+      it("Then both skip the similarity pass and tsgit warns with git's lines", async () => {
+        // Arrange
+        const theirs = buildScenario(
+          [
+            mv('big', 'big2'),
+            change('big2', '1\n', 'one\n'),
+            mv('y', 'y2'),
+            change('y2', 'a\n', 'A\n'),
+          ],
+          [change('big', '7\n', 'seven\n'), change('y', 'h\n', 'H\n')],
+        );
+        runGit(['-C', theirs, 'config', 'merge.renameLimit', '1']);
+        const ours = await copyOf(theirs);
+        const gitRun = tryRunGitWithExit(['-C', theirs, 'merge', 'side'], { env: DATED_ENV });
+        const warnings: string[] = [];
+        const repo = await openRepository({
+          cwd: ours,
+          logger: { warn: (line) => warnings.push(line) },
+        });
+        const sut = repo.merge.run;
+
+        // Act
+        await sut({ rev: 'side', author: IDENTITY, committer: IDENTITY });
+        await repo.dispose();
+
+        // Assert
+        expect(snapshot(ours)).toEqual(snapshot(theirs));
+        const gitWarnings = gitRun.stderr
+          .split('\n')
+          .filter((line) => line.startsWith('warning: '))
+          .map((line) => line.slice('warning: '.length));
+        expect(gitWarnings).toHaveLength(2);
+        expect(warnings).toEqual(gitWarnings);
+      });
+    });
+  });
 });

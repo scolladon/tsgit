@@ -60,6 +60,23 @@ const additions = ({ base, side, empty }: SidePass): AddChange[] => {
 
 const isRename = (change: DiffChange): change is RenameChange => change.type === 'rename';
 
+interface SideRenames {
+  readonly renames: ReadonlyArray<MergeRename>;
+  /** git's `needed_rename_limit`: what the similarity pass needed, 0 when it ran. */
+  readonly neededLimit: number;
+}
+
+const NO_SIDE_RENAMES: SideRenames = { renames: [], neededLimit: 0 };
+
+const RENAME_LIMIT_WARNING = 'exhaustive rename detection was skipped due to too many files.';
+
+/** git's `too_many_rename_candidates` over the sources and destinations the exact pass left. */
+const neededLimit = (left: ReadonlyArray<DiffChange>, limit: number): number => {
+  const sources = left.filter((change) => change.type === 'delete').length;
+  const destinations = left.length - sources;
+  return sources * destinations > limit * limit ? Math.max(sources, destinations) : 0;
+};
+
 const toMergeRename = ({ oldPath, newPath }: RenameChange): MergeRename => ({ oldPath, newPath });
 
 const sourcePath = ({ oldPath }: DeleteChange): FilePath => oldPath;
@@ -71,11 +88,11 @@ const similarityOptions = ({ limit, threshold }: SidePass): RenameDetectOptions 
  * `diffcore_rename_extended`: the exact pass pairs every deleted path, then
  * only the relevant sources it left go on to the similarity pass.
  */
-const sideRenames = async (ctx: Context, pass: SidePass): Promise<ReadonlyArray<MergeRename>> => {
+const sideRenames = async (ctx: Context, pass: SidePass): Promise<SideRenames> => {
   const deletes = deletions(pass);
   const relevant = new Set(deletes.filter((deleted) => isRelevant(pass, deleted)).map(sourcePath));
   const adds = relevant.size > 0 ? additions(pass) : [];
-  if (adds.length === 0) return [];
+  if (adds.length === 0) return NO_SIDE_RENAMES;
   const changes = sortByPath<DiffChange>([...deletes, ...adds], primaryPath);
   const exact = detectRenames({ changes });
   const left = exact.changes.filter(
@@ -86,7 +103,19 @@ const sideRenames = async (ctx: Context, pass: SidePass): Promise<ReadonlyArray<
   const renames = [...exact.changes, ...similar.changes]
     .filter(isRename)
     .filter((rename) => relevant.has(rename.oldPath));
-  return sortByPath(renames, primaryPath).map(toMergeRename);
+  return {
+    renames: sortByPath(renames, primaryPath).map(toMergeRename),
+    neededLimit: neededLimit(left, pass.limit),
+  };
+};
+
+/** git's `diff_warn_rename_limit`, once for the whole merge. */
+const warnRenameLimit = (ctx: Context, needed: number): void => {
+  if (needed === 0) return;
+  ctx.logger?.warn?.(RENAME_LIMIT_WARNING);
+  ctx.logger?.warn?.(
+    `you may want to set your merge.renamelimit variable to at least ${needed} and retry the command.`,
+  );
 };
 
 export const detectMergeRenames = async (
@@ -104,7 +133,8 @@ export const detectMergeRenames = async (
     limit: config.limit,
     threshold: overrides.threshold,
   };
-  const oursRenames = await sideRenames(ctx, { ...shared, side: ours, other: theirs });
-  const theirsRenames = await sideRenames(ctx, { ...shared, side: theirs, other: ours });
-  return { ours: oursRenames, theirs: theirsRenames };
+  const oursSide = await sideRenames(ctx, { ...shared, side: ours, other: theirs });
+  const theirsSide = await sideRenames(ctx, { ...shared, side: theirs, other: ours });
+  warnRenameLimit(ctx, Math.max(oursSide.neededLimit, theirsSide.neededLimit));
+  return { ours: oursSide.renames, theirs: theirsSide.renames };
 };

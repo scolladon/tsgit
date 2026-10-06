@@ -336,4 +336,50 @@ describe('detectMergeRenames', () => {
       });
     });
   });
+
+  describe.each([
+    [
+      '[merge]\n\trenameLimit = 1\n',
+      [
+        'exhaustive rename detection was skipped due to too many files.',
+        'you may want to set your merge.renamelimit variable to at least 2 and retry the command.',
+      ],
+    ],
+    ['[merge]\n\trenameLimit = 2\n', []],
+  ] as const)('Given two inexact renames and the config %j', (config, expected) => {
+    describe('When renames are detected', () => {
+      it("Then git's rename-limit warnings are logged when the limit cut the pass", async () => {
+        // Arrange
+        const warnings: string[] = [];
+        const base = await withConfig(createMemoryContext(), config);
+        const ctx: Context = { ...base, logger: { warn: (line) => warnings.push(line) } };
+        const [big, other, bigEdit, otherEdit, bigMoved, otherMoved] = await Promise.all(
+          [LINES, OTHER_LINES, EDITED, `${OTHER_LINES}i\n`, `0\n${LINES}`, `z\n${OTHER_LINES}`].map(
+            (content) => blob(ctx, content),
+          ),
+        );
+        const sut = detectMergeRenames;
+
+        // Act
+        await sut(
+          ctx,
+          flat([
+            ['big', big as ObjectId],
+            ['x', other as ObjectId],
+          ]),
+          flat([
+            ['big', bigEdit as ObjectId],
+            ['x', otherEdit as ObjectId],
+          ]),
+          flat([
+            ['big2', bigMoved as ObjectId],
+            ['x2', otherMoved as ObjectId],
+          ]),
+        );
+
+        // Assert
+        expect(warnings).toEqual(expected);
+      });
+    });
+  });
 });
