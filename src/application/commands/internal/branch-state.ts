@@ -19,6 +19,7 @@ import {
   SQUASH_MSG,
 } from '../../../domain/refs/state-files.js';
 import type { Context } from '../../../ports/context.js';
+import { saveMergeAutostash } from './merge-autostash.js';
 import { clearSequencer } from './sequencer-state.js';
 
 /** Whether a cancelled pick or revert is reported, as a non-quiet `checkout` does. */
@@ -41,9 +42,10 @@ const removeStateFile = async (ctx: Context, name: string): Promise<boolean> => 
   return true;
 };
 
-/** git's `remove_merge_branch_state`: the stopped merge's files. */
+/** git's `remove_merge_branch_state`: the stopped merge's files; its autostash goes to the stash list. */
 export const removeMergeBranchState = async (ctx: Context): Promise<void> => {
   for (const name of MERGE_BRANCH_STATE) await removeStateFile(ctx, name);
+  await saveMergeAutostash(ctx);
 };
 
 /** git's `have_finished_the_last_pick`: the todo holds at most the current line. */

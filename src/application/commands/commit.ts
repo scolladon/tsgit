@@ -56,6 +56,7 @@ import { assertNoPendingOperation, readHeadRaw, requireWorkTree } from './intern
 import { readRevertHead } from './internal/revert-state.js';
 import { resolveSignRequest, signOrThrow } from './internal/sign-request.js';
 import { rejectUnmergedIndex } from './internal/unmerged-index.js';
+import { applyMergeAutostash } from './stash.js';
 
 export interface CommitOptions {
   readonly message: string;
@@ -168,6 +169,7 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   // post-commit is informational — it runs after the commit lands and cannot
   // abort it (git ignores its exit code).
   await runInformationalHook(ctx, 'post-commit');
+  await applyMergeAutostash(ctx);
   return { id, tree: treeId, branch, parents };
 };
 

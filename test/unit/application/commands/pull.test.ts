@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { mergeAbort } from '../../../../src/application/commands/abort-merge.js';
 import { add } from '../../../../src/application/commands/add.js';
@@ -1982,6 +1982,31 @@ describe('pull rebasing onto the fetched head', () => {
       });
     },
   );
+
+  describe.each([
+    ['pull.autostash', '[pull]\n\tautostash = true\n'],
+    ['merge.autostash', '[merge]\n\tautostash = true\n'],
+  ] as const)('Given %s and a dirty tree under diverged histories', (_, config) => {
+    describe('When pull merging', () => {
+      it('Then the merge stashes and re-applies the change', async () => {
+        // Arrange
+        const { ctx: seeded } = await divergedPull();
+        const info = vi.fn();
+        const ctx = { ...seeded, logger: { ...seeded.logger, info } };
+        await ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, config);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'dirty\n');
+        const sut = pull;
+
+        // Act
+        const result = await sut(ctx, { rebase: false });
+
+        // Assert
+        expect(result.integration === 'merge' && result.merge.kind).toBe('merge');
+        expect(info).toHaveBeenCalledWith('Applied autostash.');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('dirty\n');
+      });
+    });
+  });
 
   describe('Given diverged histories, When pull with rebase true and fastForward only', () => {
     it('Then fast-forward-only wins and refuses the divergence', async () => {

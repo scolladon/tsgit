@@ -6,6 +6,7 @@ import { MERGE, MERGE_ABORT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { removeBranchState } from './internal/branch-state.js';
+import { takeMergeAutostash } from './internal/merge-autostash.js';
 import { readMergeHead, readOrigHead } from './internal/merge-state.js';
 import {
   assertOperationalRepositorySettingsFirst,
@@ -13,6 +14,7 @@ import {
   requireWorkTree,
 } from './internal/repo-state.js';
 import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
+import { applyAutostash } from './stash.js';
 
 export interface MergeAbortResult {
   /** The commit `ORIG_HEAD` recorded; HEAD now points at this id. */
@@ -49,6 +51,8 @@ export const mergeAbort = async (ctx: Context): Promise<MergeAbortResult> => {
   if (head.kind !== 'symbolic') {
     throw unsupportedOperation(MERGE_ABORT, 'cannot abort with detached HEAD');
   }
+  // git takes MERGE_AUTOSTASH before its reset, so the reset cannot file it away.
+  const autostash = await takeMergeAutostash(ctx);
   await hardResetWorktreeToCommit(ctx, origHead);
   // git's `merge --abort` delegates to a `reset` whose rev argument is the
   // symbolic `HEAD`, so the coupled-HEAD reflog reads `reset: moving to HEAD`
@@ -56,5 +60,6 @@ export const mergeAbort = async (ctx: Context): Promise<MergeAbortResult> => {
   // the literal `HEAD` too, as git's own reset does.
   await updateRef(ctx, 'HEAD' as RefName, origHead, { reflogMessage: resetMovingTo('HEAD') });
   await removeBranchState(ctx, 'silent');
+  if (autostash !== undefined) await applyAutostash(ctx, autostash);
   return { origHead, branch: head.target };
 };

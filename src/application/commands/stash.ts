@@ -59,6 +59,7 @@ import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-inde
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { acquireIndexLock } from './internal/index-update.js';
+import { takeMergeAutostash } from './internal/merge-autostash.js';
 import {
   indexMessage,
   onMessage,
@@ -481,6 +482,12 @@ export const applyAutostash = async (ctx: Context, w: ObjectId): Promise<void> =
   }
   await pushStashRef(ctx, w, AUTOSTASH);
   ctx.logger?.warn?.(AUTOSTASH_CONFLICT);
+};
+
+/** git's `apply_autostash_ref(MERGE_AUTOSTASH)`: re-apply a merge's autostash, if any. */
+export const applyMergeAutostash = async (ctx: Context): Promise<void> => {
+  const stash = await takeMergeAutostash(ctx);
+  if (stash !== undefined) await applyAutostash(ctx, stash);
 };
 
 const AUTOSTASH_CONFLICT =

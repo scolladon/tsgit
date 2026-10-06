@@ -13,6 +13,7 @@ interface MergeRunInput {
   readonly rev: string;
   readonly message?: string;
   readonly fastForward?: 'only' | 'never' | 'allow'; // default 'allow'
+  readonly autostash?: boolean; // git's --autostash / --no-autostash; default merge.autostash
   readonly author?: AuthorIdentity;
   readonly committer?: AuthorIdentity;
 }
@@ -35,6 +36,7 @@ type MergeResult =
 | `target` | `string` | (required) | Ref name, oid, or `'HEAD'` of the branch to merge in. |
 | `message` | `string` | auto | Override the merge-commit message. |
 | `fastForward` | `'only' \| 'never' \| 'allow'` | `'allow'` | Fast-forward policy (see below). |
+| `autostash` | `boolean` | `merge.autostash` | Stash a dirty tree before the merge (`MERGE_AUTOSTASH`) and re-apply it when the merge concludes, or on the `commit` / `merge.abort` that ends a conflict stop; a `reset` or `checkout` that drops the merge state files it in the stash list (`autostash`) instead. |
 | `author` / `committer` | `AuthorIdentity` | from config | Identities for the merge commit. |
 
 ### `fastForward`

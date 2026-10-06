@@ -300,6 +300,42 @@ describe.skipIf(!GIT_AVAILABLE)('pull rebase interop', () => {
   });
 
   describe.each([
+    { label: 'pull.autostash', key: 'pull.autostash' },
+    { label: 'merge.autostash', key: 'merge.autostash' },
+  ])('Given a dirty tree under a divergence and $label', ({ label, key }) => {
+    describe('When both tools pull merging', () => {
+      it('Then both stash around the merge and re-apply the change alike', async () => {
+        // Arrange
+        const dirs = setUp(`merge-autostash-${label.replace(/[^a-z]+/g, '-')}`);
+        for (const dir of [dirs.ours, dirs.theirs]) {
+          commitFile(dir, 'l.txt', 'l');
+          writeFileSync(path.join(dir, 'a.txt'), 'dirty\n');
+        }
+        commitFile(dirs.work, 'v.txt', 'v');
+        publish(dirs.work, dirs.peerPath);
+        const sut = pullConfigured;
+
+        // Act
+        const result = await sut(dirs, [
+          ['pull.rebase', 'false'],
+          [key, 'true'],
+        ]);
+
+        // Assert
+        expect(result).toEqual({ exitCode: 0, code: undefined });
+        const tree = (dir: string) => ({
+          status: git(dir, 'status', '--porcelain'),
+          stash: git(dir, 'stash', 'list'),
+          head: git(dir, 'rev-parse', 'HEAD^{tree}'),
+          a: readFileSync(path.join(dir, 'a.txt'), 'utf8'),
+        });
+        expect(tree(dirs.ours)).toEqual(tree(dirs.theirs));
+        expect(tree(dirs.ours).a).toBe('dirty\n');
+      });
+    });
+  });
+
+  describe.each([
     { label: 'pull.rebase=merges', value: 'merges' },
     { label: 'pull.rebase=true', value: 'true' },
   ])('Given a local merge diverging from the advanced upstream and $label', ({ value }) => {

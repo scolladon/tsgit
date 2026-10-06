@@ -37,3 +37,6 @@ export const AUTO_MERGE = 'AUTO_MERGE';
 
 /** The prepared message of a `merge --squash` awaiting its commit. */
 export const SQUASH_MSG = 'SQUASH_MSG';
+
+/** The stash a `merge --autostash` re-applies once the merge concludes. */
+export const MERGE_AUTOSTASH = 'MERGE_AUTOSTASH';

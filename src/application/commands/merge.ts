@@ -40,6 +40,7 @@ import { TAGS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
+import { abbreviateObjectId } from '../primitives/abbreviate-object-id.js';
 import { buildContentMerger } from '../primitives/build-content-merger.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
@@ -72,11 +73,13 @@ import { runInformationalHook } from '../primitives/run-hook.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeObject } from '../primitives/write-object.js';
 import { writeTree } from '../primitives/write-tree.js';
+import { configuredAutostash } from './internal/autostash-config.js';
 import { removeMergeBranchState } from './internal/branch-state.js';
 import { conflictMergeMsg } from './internal/cherry-pick-state.js';
 import { resolveAuthor, resolveCommitter, sanitizeMessage } from './internal/commit-message.js';
 import { configuredMergeFastForward } from './internal/fast-forward-config.js';
 import { acquireIndexLock } from './internal/index-update.js';
+import { writeMergeAutostash } from './internal/merge-autostash.js';
 import {
   assertMergeMessageConfig,
   describeMergeHead,
@@ -99,6 +102,7 @@ import {
   requireWorkTree,
 } from './internal/repo-state.js';
 import { resolveRevisionExpression } from './internal/revision-expression.js';
+import { applyMergeAutostash, createAutostash } from './stash.js';
 
 const PREVIOUS_BRANCH_SHORTHAND = '-';
 const PREVIOUS_BRANCH = '@{-1}';
@@ -128,6 +132,14 @@ export interface MergeRunInput {
    * `HEAD`, which otherwise refuse with `UNRELATED_HISTORIES`.
    */
   readonly allowUnrelatedHistories?: boolean;
+  /**
+   * git's `--autostash` / `--no-autostash`; unset, it is `merge.autostash`'s.
+   * A dirty tree is stashed before the merge touches it (`MERGE_AUTOSTASH`)
+   * and re-applied when the merge concludes — at once, or on the commit or
+   * abort that ends a conflict stop; any other removal of the merge state
+   * keeps it in the stash list instead.
+   */
+  readonly autostash?: boolean;
   readonly author?: AuthorIdentity;
   readonly committer?: AuthorIdentity;
 }
@@ -152,8 +164,12 @@ export interface MergeInternalOptions {
   readonly heads?: ReadonlyArray<MergeHead>;
 }
 
-/** A merge whose message is settled — the caller's, or git's default. */
-type SettledMerge = Omit<MergeRunInput, 'rev'> & { readonly rev: string; readonly message: string };
+/** A merge whose message and autostash are settled — the caller's, or git's default. */
+type SettledMerge = Omit<MergeRunInput, 'rev' | 'autostash'> & {
+  readonly rev: string;
+  readonly message: string;
+  readonly autostash: boolean;
+};
 
 export interface MergeConflictDescriptor {
   readonly path: FilePath;
@@ -203,9 +219,13 @@ export const mergeRun = async (
   // post-merge is informational — git fires it after a merge that updates the
   // working tree (fast-forward or clean true-merge), never on up-to-date or a
   // conflict. It cannot abort the completed merge (its exit code is ignored).
+  // git's `finish` then re-applies the autostash.
   if (result.kind === 'fast-forward' || result.kind === 'merge') {
     await runInformationalHook(ctx, 'post-merge', { args: [SQUASH_FLAG_OFF] });
+    await applyMergeAutostash(ctx);
   }
+  // git's `remove_merge_branch_state` on every concluded merge; a stop keeps its files.
+  if (result.kind !== 'conflict') await removeMergeBranchState(ctx);
   return result;
 };
 
@@ -218,14 +238,15 @@ const settleMessage = async (
   remotes: ReadonlyArray<MergeRemote>,
 ): Promise<SettledMerge> => {
   const rev = remotes.map((remote) => remote.name).join(' ');
-  if (opts.message !== undefined) return { ...opts, rev, message: opts.message };
+  const autostash = opts.autostash ?? (await configuredAutostash(ctx, 'merge')) ?? false;
+  if (opts.message !== undefined) return { ...opts, rev, autostash, message: opts.message };
   const heads =
     internal.heads ??
     (await Promise.all(
       remotes.map((remote) => describeMergeHead(ctx, remote.spelt, remote.id, remote.object)),
     ));
   const into = shortBranchName(branch ?? HEAD);
-  return { ...opts, rev, message: await formatMergeMessage(ctx, heads, into) };
+  return { ...opts, rev, autostash, message: await formatMergeMessage(ctx, heads, into) };
 };
 
 /**
@@ -287,13 +308,39 @@ const computeMerge = async (
   const branch = branchRefFromHead(head);
   const ourId = head.kind === 'symbolic' ? await resolveRef(ctx, head.target) : head.id;
   const named = await resolveRemotes(ctx, mergeArguments(input.rev));
-  const result =
-    named.length === 1
-      ? await twoHeadMerge(ctx, input, internal, branch, ourId, named[0]!)
-      : await manyHeadMerge(ctx, input, internal, branch, ourId, named);
-  // git's `remove_merge_branch_state` on every concluded merge; a stop keeps its files.
-  if (result.kind !== 'conflict') await removeMergeBranchState(ctx);
-  return result;
+  return named.length === 1
+    ? twoHeadMerge(ctx, input, internal, branch, ourId, named[0]!)
+    : manyHeadMerge(ctx, input, internal, branch, ourId, named);
+};
+
+/**
+ * git's `create_autostash_ref(MERGE_AUTOSTASH)` before the merge touches the
+ * tree: a failed merge re-applies it at once, a conflict stop keeps it.
+ */
+const underAutostash = async (
+  ctx: Context,
+  opts: SettledMerge,
+  run: () => Promise<MergeResult>,
+): Promise<MergeResult> => {
+  if (!opts.autostash) return run();
+  await stashForMerge(ctx);
+  try {
+    const result = await run();
+    if (result.kind === 'conflict') ctx.logger?.info?.(STASH_POP_HINT);
+    return result;
+  } catch (error) {
+    await applyMergeAutostash(ctx);
+    throw error;
+  }
+};
+
+const STASH_POP_HINT = 'When finished, apply stashed changes with `git stash pop`';
+
+const stashForMerge = async (ctx: Context): Promise<void> => {
+  const stash = await createAutostash(ctx);
+  if (stash === undefined) return;
+  await writeMergeAutostash(ctx, stash);
+  ctx.logger?.info?.(`Created autostash: ${await abbreviateObjectId(ctx, stash)}`);
 };
 
 /** git's `merge -`: a lone `-` names the previous branch, `@{-1}`. */
@@ -353,12 +400,16 @@ const twoHeadMerge = async (
   const [base] = bases;
   if (base === theirId) return { kind: 'up-to-date', id: ourId };
   if (base === ourId && opts.fastForward !== 'never') {
-    return fastForward(ctx, opts, internal, branch, { ourId, theirId });
+    return underAutostash(ctx, opts, () =>
+      fastForward(ctx, opts, internal, branch, { ourId, theirId }),
+    );
   }
   if (opts.fastForward === 'only') {
     throw nonFastForward(branch ?? HEAD, ourId, theirId);
   }
-  return mergeCommit(ctx, opts, internal, branch, ourId, theirId, base);
+  return underAutostash(ctx, opts, () =>
+    mergeCommit(ctx, opts, internal, branch, ourId, theirId, base),
+  );
 };
 
 /** git's `refusing to merge unrelated histories`, unless `--allow-unrelated-histories`. */
@@ -399,7 +450,9 @@ const manyHeadMerge = async (
   if (opts.fastForward === 'only') throw nonFastForward(branch ?? HEAD, ourId, remotes[0]!.id);
   const keepsHead = reduced.includes(ourId) || opts.fastForward === 'never';
   const parents = [...(keepsHead ? [ourId] : []), ...remotes.map((remote) => remote.id)];
-  return octopus(ctx, { opts, internal, branch, ourId, parents }, remotes);
+  return underAutostash(ctx, opts, () =>
+    octopus(ctx, { opts, internal, branch, ourId, parents }, remotes),
+  );
 };
 
 /**
