@@ -11,6 +11,7 @@ const SHA_ANY_RE = /^[0-9a-f]{40}([0-9a-f]{24})?$/i;
 const SYMREF_TARGET_PREFIX = 'symref-target:';
 const PEELED_PREFIX = 'peeled:';
 const UNBORN_OID = 'unborn';
+const HEAD = 'HEAD';
 
 export interface LsRefsRequestOptions {
   readonly symrefs?: boolean;
@@ -70,24 +71,12 @@ const validateOidString = (token: string, line: string): ObjectId => {
 };
 
 /**
- * Mirrors `findHead` (v1's `upload-pack.ts`): a direct `HEAD` ref entry (a
- * detached HEAD, carrying no `symref-target` attribute) wins; otherwise the
- * recorded symref target is looked up among the parsed refs. An unresolved
- * target (including the unborn-HEAD case, where the branch does not exist
- * yet) yields no head at all — the same "no oid" outcome v1 produces for a
- * broken `symref=HEAD:` capability.
+ * git's `process_ref_v2` lists every ref line — a symref one included, under
+ * its own name and the oid on its line — except an `unborn` symref, which
+ * only names the branch an empty remote's HEAD points at.
  */
-const findLsRefsHead = (
-  refs: ReadonlyArray<AdvertisedRef>,
-  headSymrefTarget: string | undefined,
-): AdvertisedRef | undefined => {
-  const directHead = refs.find((ref) => ref.name === 'HEAD');
-  if (directHead) return directHead;
-  // Stryker disable next-line ConditionalExpression: equivalent — AdvertisedRef.name is typed string (never undefined), so with headSymrefTarget undefined the .find() below can never match; forcing this guard false yields the identical undefined result via one extra no-op array scan.
-  if (headSymrefTarget === undefined) return undefined;
-  const targetRef = refs.find((ref) => ref.name === headSymrefTarget);
-  return targetRef === undefined ? undefined : { name: 'HEAD', id: targetRef.id };
-};
+const isUnbornSymref = (parsed: ParsedRefLine): boolean =>
+  parsed.symrefTarget !== undefined && parsed.oidToken === UNBORN_OID;
 
 /**
  * Bounds the ref count before appending, mirroring v1's `collectRefs` cap: a
@@ -121,15 +110,14 @@ export const parseLsRefsResponse = async (
       assertNotRemoteError(line);
       const parsed = parseRefLine(line);
 
-      if (parsed.symrefTarget !== undefined) {
-        if (parsed.name === 'HEAD') headSymrefTarget = parsed.symrefTarget;
-      } else {
-        pushAdvertisedRef(refs, parsed, line);
+      if (parsed.symrefTarget !== undefined && parsed.name === HEAD) {
+        headSymrefTarget = parsed.symrefTarget;
       }
+      if (!isUnbornSymref(parsed)) pushAdvertisedRef(refs, parsed, line);
       pkt = await iter.next();
     }
 
-    const head = findLsRefsHead(refs, headSymrefTarget);
+    const head = refs.find((ref) => ref.name === HEAD);
     const capabilities = headSymrefTarget === undefined ? [] : [`symref=HEAD:${headSymrefTarget}`];
     return head === undefined ? { capabilities, refs } : { capabilities, refs, head };
   } finally {

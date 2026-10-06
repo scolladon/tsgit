@@ -1,7 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
-import type { ObjectId } from '../../../../../src/domain/objects/object-id.js';
 import { AGENT } from '../../../../../src/domain/protocol/capabilities.js';
 import {
   decodePktStream,
@@ -44,10 +43,9 @@ const refLine = (ref: RefFixture): string =>
 
 /**
  * Serializes a model (refs + head mode) into the wire bytes an `ls-refs`
- * response carries. The symref case deliberately writes a `wireId` on the
- * HEAD line that differs from the target's real oid — the parser must
- * derive `head` by looking up the target ref, never by trusting the oid
- * token sitting on the symref-target line itself.
+ * response carries. The symref case writes a `wireId` on the HEAD line that
+ * may differ from the target's oid — git lists the symref under the oid on its
+ * own line, so that is the oid the parsed HEAD must carry.
  */
 const serializeLsRefsResponse = (
   refs: ReadonlyArray<RefFixture>,
@@ -61,14 +59,6 @@ const serializeLsRefsResponse = (
   }
   for (const ref of refs) lines.push(refLine(ref));
   return decodePktStream(asyncOf([encodePktStream(lines.map(bytesOf))]), { v2: true });
-};
-
-const findRefId = (refs: ReadonlyArray<RefFixture>, name: string): ObjectId => {
-  const found = refs.find((ref) => ref.name === name);
-  if (found === undefined) {
-    throw new Error(`fixture invariant violated: ${name} is not among the generated refs`);
-  }
-  return found.id;
 };
 
 const expectedAdvertisement = (
@@ -88,11 +78,10 @@ const expectedAdvertisement = (
     };
   }
   if (head.kind === 'symref') {
-    const targetId = findRefId(refs, head.target);
     return {
       capabilities: [`symref=HEAD:${head.target}`],
-      refs: baseRefs,
-      head: { name: 'HEAD', id: targetId },
+      refs: [{ name: 'HEAD', id: head.wireId }, ...baseRefs],
+      head: { name: 'HEAD', id: head.wireId },
     };
   }
   return { capabilities: [], refs: baseRefs };
@@ -100,7 +89,7 @@ const expectedAdvertisement = (
 
 describe('Given an arbitrary set of refs and a head mode', () => {
   describe('When serialized to ls-refs response bytes and parsed', () => {
-    it('Then the resulting Advertisement round-trips (refs/peeled/head, modulo the HEAD symref-target wire oid)', async () => {
+    it('Then the resulting Advertisement round-trips (refs/peeled/head, HEAD carrying its own wire oid)', async () => {
       // Arrange & Act & Assert
       await fc.assert(
         fc.asyncProperty(

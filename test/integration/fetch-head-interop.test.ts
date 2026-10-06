@@ -21,7 +21,7 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { type FetchOptions, fetch } from '../../src/application/commands/fetch.js';
-import { backendTransport } from './http-backend-transport.js';
+import { backendTransport, protocolV2BackendTransport } from './http-backend-transport.js';
 import { GIT_AVAILABLE, git, runGit } from './interop-helpers.js';
 
 const PEER_URL = 'https://example.com/peer.git';
@@ -149,6 +149,43 @@ describe.skipIf(!GIT_AVAILABLE)('fetch FETCH_HEAD interop', () => {
         expect(trackingRefs(ours)).toBe(
           trackingRefs(theirs).replace(/refs\/remotes\/origin\/HEAD [0-9a-f]+\n?/, ''),
         );
+      });
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('fetch of the remote HEAD over protocol v2 interop', () => {
+  describe.each([
+    { label: 'v2-head-cli', unset: false, opts: { refspecs: ['HEAD'] }, args: ['HEAD'] },
+    { label: 'v2-no-fetch-refspec', unset: true, opts: {}, args: [] },
+  ] as ReadonlyArray<{
+    label: string;
+    unset: boolean;
+    opts: FetchOptions;
+    args: ReadonlyArray<string>;
+  }>)('Given the $label fetch over protocol v2', ({ label, unset, opts, args }) => {
+    describe('When both tools fetch from origin', () => {
+      it('Then FETCH_HEAD lists the remote HEAD as git lists it', async () => {
+        // Arrange
+        const { ours, theirs } = setUp(label, []);
+        if (unset) {
+          for (const dir of [ours, theirs]) {
+            runGit(['-C', dir, 'config', '--unset', 'remote.origin.fetch']);
+          }
+        }
+        const ctx = {
+          ...createNodeContext({ workDir: ours }),
+          transport: protocolV2BackendTransport(peerRoot),
+        };
+        const sut = fetch;
+        git(theirs, '-c', 'protocol.version=2', 'fetch', '-q', 'origin', ...args);
+        const expected = fetchHead(theirs).replaceAll(peerPath.slice(0, -'.git'.length), SHORT_URL);
+
+        // Act
+        await sut(ctx, { remote: 'origin', ...opts });
+
+        // Assert
+        expect(fetchHead(ours)).toBe(expected);
       });
     });
   });

@@ -24,14 +24,16 @@ const cgiResponse = (output: Buffer): HttpResponse => {
   };
 };
 
-export const backendTransport = (projectRoot: string): HttpTransport => ({
-  request: async (req: HttpRequest): Promise<HttpResponse> => {
+const backendRequest =
+  (projectRoot: string, protocolEnv: (req: HttpRequest) => Record<string, string>) =>
+  async (req: HttpRequest): Promise<HttpResponse> => {
     const url = new URL(req.url);
     const body = req.body ?? new Uint8Array(0);
     const result = spawnSync('git', ['http-backend'], {
       input: body,
       env: {
         ...runGitEnv(),
+        ...protocolEnv(req),
         PATH_INFO: url.pathname,
         QUERY_STRING: url.search.slice(1),
         REQUEST_METHOD: req.method,
@@ -43,5 +45,16 @@ export const backendTransport = (projectRoot: string): HttpTransport => ({
       },
     });
     return cgiResponse(result.stdout);
-  },
+  };
+
+/** A protocol v0 peer: the client's `Git-Protocol` header is not passed on. */
+export const backendTransport = (projectRoot: string): HttpTransport => ({
+  request: backendRequest(projectRoot, () => ({})),
+});
+
+/** A peer that honours the client's `Git-Protocol` header, as a web server fronting http-backend does. */
+export const protocolV2BackendTransport = (projectRoot: string): HttpTransport => ({
+  request: backendRequest(projectRoot, (req) => ({
+    GIT_PROTOCOL: req.headers['git-protocol'] ?? '',
+  })),
 });
