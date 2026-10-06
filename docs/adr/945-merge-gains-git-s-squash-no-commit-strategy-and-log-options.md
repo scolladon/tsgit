@@ -45,6 +45,9 @@ kept for the caller's commit; a fast-forward still fast-forwards unless `fastFor
 A squash that conflicts keeps git's squash state (`SQUASH_MSG`, no `MERGE_HEAD`, `ORIG_HEAD`, conflict
 stages, `MERGE_MSG` carrying the `# Conflicts:` block) and reports `{ kind: 'squashed', origHead,
 conflicts }` — the same variant, with the conflicted paths present.
+`strategy` accepts one strategy or a list (`string | readonly string[]`), tried in turn as git does
+with several `-s`; `pull.twohead` / `pull.octopus` pick the default as in git; `subtree` shifts trees
+with git's `match-trees` algorithm.
 
 ## Consequences
 
