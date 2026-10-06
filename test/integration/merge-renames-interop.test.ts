@@ -269,6 +269,11 @@ describe.skipIf(!GIT_AVAILABLE)('merge rename detection interop', () => {
       [mv('big', 'big2'), chmodX('big2'), change('big2', '4\n', 'S\n')],
       [change('big', '4\n', 'M\n')],
     ],
+    [
+      'a content-merged path beside a conflicting one',
+      [change('y', 'a\n', 'A\n'), change('big', '4\n', 'S\n')],
+      [change('y', 'h\n', 'H\n'), change('big', '4\n', 'M\n')],
+    ],
   ] as const)('Given %s', (_label, sideSteps, mainSteps) => {
     describe('When both tools merge the side', () => {
       it("Then the tree, index stages, files and MERGE_MSG match git's", async () => {
@@ -292,6 +297,11 @@ describe.skipIf(!GIT_AVAILABLE)('merge rename detection interop', () => {
   describe.each([
     ['rename vs delete', [mv('big', 'big2')], [rm('big')]],
     ['rename/rename to two paths', [mv('big', 'b')], [mv('big', 'a')]],
+    [
+      'a content-merged path beside a conflicting one',
+      [change('y', 'a\n', 'A\n'), change('big', '4\n', 'S\n')],
+      [change('y', 'h\n', 'H\n'), change('big', '4\n', 'M\n')],
+    ],
   ] as const)('Given %s', (_label, sideSteps, mainSteps) => {
     describe('When both tools cherry-pick the side', () => {
       it("Then the tree, index stages, files and stop state match git's", async () => {
@@ -308,6 +318,35 @@ describe.skipIf(!GIT_AVAILABLE)('merge rename detection interop', () => {
 
         // Assert
         expect(snapshot(ours)).toEqual(snapshot(theirs));
+      });
+    });
+  });
+
+  describe('Given a content-merged path beside a conflicting one', () => {
+    describe('When both tools resolve the conflict and commit the merge', () => {
+      it("Then the committed tree keeps the merged path as git's does", async () => {
+        // Arrange
+        const theirs = buildScenario(
+          [change('y', 'a\n', 'A\n'), change('big', '4\n', 'S\n')],
+          [change('y', 'h\n', 'H\n'), change('big', '4\n', 'M\n')],
+        );
+        const ours = await copyOf(theirs);
+        tryRunGitWithExit(['-C', theirs, 'merge', 'side'], { env: DATED_ENV });
+        writeFileSync(path.join(theirs, 'big'), LINES);
+        dated(['-C', theirs, 'add', 'big']);
+        dated(['-C', theirs, 'commit', '-q', '-m', 'resolved']);
+        const repo = await openRepository({ cwd: ours });
+        await repo.merge.run({ rev: 'side', author: IDENTITY, committer: IDENTITY });
+        writeFileSync(path.join(ours, 'big'), LINES);
+        await repo.add(['big']);
+        const sut = repo.merge.continue;
+
+        // Act
+        await sut({ message: 'resolved', author: IDENTITY, committer: IDENTITY });
+        await repo.dispose();
+
+        // Assert
+        expect(git(ours, 'rev-parse', 'HEAD^{tree}')).toBe(git(theirs, 'rev-parse', 'HEAD^{tree}'));
       });
     });
   });

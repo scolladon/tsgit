@@ -1176,6 +1176,41 @@ describe('merge.4b conflict persistence', () => {
     return { preMergeMain: mainTip.id, featureTip: featureTip.id };
   };
 
+  describe('Given a content conflict beside a path both sides edit in different hunks', () => {
+    describe('When merge runs', () => {
+      it('Then the line-merged path is staged at stage 0 with its merged blob', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const commitBoth = async (conflicting: string, merged: string, message: string) => {
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, conflicting);
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/merged.txt`, merged);
+          await add(ctx, ['file.txt', 'merged.txt']);
+          await commit(ctx, { message, author });
+        };
+        await init(ctx);
+        await commitBoth('base\n', 'a\nb\nc\n', 'base');
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        await commitBoth('FEATURE\n', 'a\nb\nC\n', 'on-feature');
+        await checkout(ctx, { rev: 'main' });
+        await commitBoth('MAIN\n', 'A\nb\nc\n', 'on-main');
+        const mergedId = await writeObject(ctx, {
+          type: 'blob',
+          content: new TextEncoder().encode('A\nb\nC\n'),
+          id: '' as ObjectId,
+        });
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', author });
+
+        // Assert
+        const result = (await readIndex(ctx)).entries.find((e) => e.path === 'merged.txt');
+        expect(result?.flags.stage).toBe(0);
+        expect(result?.id).toBe(mergedId);
+      });
+    });
+  });
+
   describe('Given a content conflict', () => {
     describe('When merge runs', () => {
       it('Then the working-tree file contains the <<<<<<< / ======= / >>>>>>> marker block', async () => {
@@ -3172,7 +3207,7 @@ describe('buildConflictIndexEntries (direct)', () => {
         ];
 
         // Act
-        const result = buildConflictIndexEntries(outcomes, [], undefined);
+        const result = buildConflictIndexEntries(outcomes, [], undefined, []);
 
         // Assert
         expect(result).toHaveLength(1);
@@ -3196,7 +3231,7 @@ describe('buildConflictIndexEntries (direct)', () => {
         ];
 
         // Act
-        const result = buildConflictIndexEntries(outcomes, [], undefined);
+        const result = buildConflictIndexEntries(outcomes, [], undefined, []);
 
         // Assert
         expect(result).toHaveLength(1);
@@ -3209,13 +3244,13 @@ describe('buildConflictIndexEntries (direct)', () => {
   describe('Given a resolved-deleted outcome', () => {
     describe('When buildConflictIndexEntries runs', () => {
       it('Then no stage-0 entry is produced', () => {
-        // Arrange — resolved-deleted/resolved-merged are excluded from stage-0.
+        // Arrange — resolved-deleted contributes no stage-0 entry.
         const outcomes: MergeOutcome[] = [
           { status: 'resolved-deleted', path: 'd.txt' as FilePath },
         ];
 
         // Act
-        const result = buildConflictIndexEntries(outcomes, [], undefined);
+        const result = buildConflictIndexEntries(outcomes, [], undefined, []);
 
         // Assert
         expect(result).toEqual([]);
@@ -3237,7 +3272,7 @@ describe('buildConflictIndexEntries (direct)', () => {
         ];
 
         // Act
-        const result = buildConflictIndexEntries(outcomes, [], undefined);
+        const result = buildConflictIndexEntries(outcomes, [], undefined, []);
 
         // Assert — every flag is literally false.
         expect(result[0]?.flags.assumeValid).toBe(false);
@@ -3281,7 +3316,7 @@ describe('buildConflictIndexEntries (direct)', () => {
         ];
 
         // Act
-        const result = buildConflictIndexEntries(outcomes, conflicts, undefined);
+        const result = buildConflictIndexEntries(outcomes, conflicts, undefined, []);
 
         // Assert — fully sorted by path, then by stage within `mmm.txt`.
         const order = result.map((e) => `${e.path}@${e.flags.stage}`);
@@ -3417,7 +3452,7 @@ describe('merge — sparse checkout', () => {
         ];
 
         // Act
-        const result = buildConflictIndexEntries(outcomes, [], excludesDrop);
+        const result = buildConflictIndexEntries(outcomes, [], excludesDrop, []);
 
         // Assert
         expect(result).toHaveLength(1);
@@ -3442,7 +3477,7 @@ describe('merge — sparse checkout', () => {
         ];
 
         // Act
-        const result = buildConflictIndexEntries(outcomes, [], excludesDrop);
+        const result = buildConflictIndexEntries(outcomes, [], excludesDrop, []);
 
         // Assert
         expect(result[0]?.flags.skipWorktree).toBe(true);
@@ -3464,7 +3499,7 @@ describe('merge — sparse checkout', () => {
         ];
 
         // Act
-        const result = buildConflictIndexEntries(outcomes, [], excludesDrop);
+        const result = buildConflictIndexEntries(outcomes, [], excludesDrop, []);
 
         // Assert
         expect(result[0]?.flags.skipWorktree).toBe(false);

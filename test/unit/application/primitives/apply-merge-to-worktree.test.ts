@@ -208,6 +208,47 @@ describe('applyMergeToWorktree', () => {
     });
   });
 
+  describe('Given a path that line-merges cleanly beside a conflicting one', () => {
+    describe('When the merge is applied', () => {
+      it('Then the merged blob is written and staged at stage 0', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const conflictBase = await writeBlob(ctx, 'base\n');
+        const conflictOurs = await writeBlob(ctx, 'ours\n');
+        const conflictTheirs = await writeBlob(ctx, 'theirs\n');
+        const mergeBase = await writeBlob(ctx, 'a\nb\nc\n');
+        const mergeOurs = await writeBlob(ctx, 'A\nb\nc\n');
+        const mergeTheirs = await writeBlob(ctx, 'a\nb\nC\n');
+        const merged = await writeBlob(ctx, 'A\nb\nC\n');
+        const tree = (conflict: ObjectId, clean: ObjectId) =>
+          treeWith(ctx, [
+            treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, conflict),
+            treeEntry(FILE_MODE.REGULAR, 'm' as FilePath, clean),
+          ]);
+        const oursTree = await tree(conflictOurs, mergeOurs);
+        await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('ours\n'));
+        await ctx.fs.write(`${ctx.layout.workDir}/m`, new TextEncoder().encode('A\nb\nc\n'));
+
+        // Act
+        const result = await applyMergeToWorktree(ctx, {
+          baseTree: await tree(conflictBase, mergeBase),
+          oursTree,
+          theirsTree: await tree(conflictTheirs, mergeTheirs),
+          currentIndex: index([indexEntry('a', conflictOurs), indexEntry('m', mergeOurs)]),
+        });
+
+        // Assert
+        if (result.kind !== 'conflict') throw new Error(`expected conflict, got ${result.kind}`);
+        expect(result.indexEntries.map((e) => [e.path, e.flags.stage, e.id])).toEqual([
+          ['a', 1, conflictBase],
+          ['a', 2, conflictOurs],
+          ['a', 3, conflictTheirs],
+          ['m', 0, merged],
+        ]);
+      });
+    });
+  });
+
   describe('Given supplied labels and a content conflict', () => {
     describe('When the merge is applied', () => {
       it('Then the working-tree markers carry the ours / theirs labels', async () => {

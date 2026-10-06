@@ -34,6 +34,7 @@ import { buildContentMerger } from './build-content-merger.js';
 import { detectMergeRenames } from './detect-merge-renames.js';
 import { changedPaths, findWouldOverwrite } from './find-would-overwrite.js';
 import { flattenTree } from './flatten-tree.js';
+import { mergedBlobEntries } from './internal/merged-blob-entries.js';
 import {
   createLeadingPathScanner,
   type LeadingPathScanner,
@@ -50,7 +51,6 @@ import {
 import { type MaterializeTreeResult, materializeTree } from './materialize-tree.js';
 import { readBlob } from './read-blob.js';
 import { synthesizeTreeFromIndex } from './synthesize-tree-from-index.js';
-import { writeObject } from './write-object.js';
 
 const UNSUPPORTED_CONFLICT_TYPES: ReadonlySet<ConflictType> = new Set(['gitlink']);
 
@@ -87,25 +87,20 @@ export type ApplyMergeResult =
       readonly untracked: ReadonlyArray<FilePath>;
     };
 
+/** Stage-0 entries for the clean outcomes a committed blob already backs. */
+const blobBackedEntries = (outcomes: ReadonlyArray<MergeOutcome>): ReadonlyArray<IndexEntry> =>
+  outcomes.flatMap((outcome) =>
+    outcome.status === 'unchanged' || outcome.status === 'resolved-known'
+      ? [stage0Entry(outcome.path, outcome.id, outcome.mode)]
+      : [],
+  );
+
 /** Write the clean outcomes' merged blobs and synthesise the merged root tree. */
 const synthesiseMergedTree = async (
   ctx: Context,
   outcomes: ReadonlyArray<MergeOutcome>,
 ): Promise<ObjectId> => {
-  const leaves: IndexEntry[] = [];
-  for (const outcome of outcomes) {
-    if (outcome.status === 'resolved-deleted' || outcome.status === 'conflict') continue;
-    if (outcome.status === 'resolved-merged') {
-      const id = await writeObject(ctx, {
-        type: 'blob',
-        content: outcome.bytes,
-        id: '' as ObjectId,
-      });
-      leaves.push(stage0Entry(outcome.path, id, outcome.mode));
-      continue;
-    }
-    leaves.push(stage0Entry(outcome.path, outcome.id, outcome.mode));
-  }
+  const leaves = [...blobBackedEntries(outcomes), ...(await mergedBlobEntries(ctx, outcomes))];
   return synthesizeTreeFromIndex(ctx, leaves);
 };
 
@@ -259,14 +254,9 @@ const writeConflictWorktree = async (
 const buildUnmergedIndex = (
   outcomes: ReadonlyArray<MergeOutcome>,
   conflicts: ReadonlyArray<MergeConflict>,
+  merged: ReadonlyArray<IndexEntry>,
 ): ReadonlyArray<IndexEntry> => {
-  const stage0: IndexEntry[] = [];
-  for (const outcome of outcomes) {
-    // Stryker disable next-line ConditionalExpression: equivalent — `unchanged`/`resolved-known` are the only blob-backed clean outcomes; an `unchanged` stage-0 entry equals the current index (committing it is a no-op), so dropping that half of the disjunction is observationally identical to the index the caller commits.
-    if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
-      stage0.push(stage0Entry(outcome.path, outcome.id, outcome.mode));
-    }
-  }
+  const stage0 = [...blobBackedEntries(outcomes), ...merged];
   const combined = [...stage0, ...conflictsToIndexEntries(conflicts, zeroStat)];
   combined.sort((a, b) => {
     if (a.path < b.path) return -1;
@@ -338,7 +328,11 @@ export const applyMergeToWorktree = async (
   return {
     kind: 'conflict',
     conflicts: merged.conflicts,
-    indexEntries: buildUnmergedIndex(merged.outcomes, merged.conflicts),
+    indexEntries: buildUnmergedIndex(
+      merged.outcomes,
+      merged.conflicts,
+      await mergedBlobEntries(ctx, merged.outcomes),
+    ),
   };
 };
 

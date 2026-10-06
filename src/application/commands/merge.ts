@@ -52,6 +52,7 @@ import { detectMergeRenames } from '../primitives/detect-merge-renames.js';
 import { changedPaths, findWouldOverwrite } from '../primitives/find-would-overwrite.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
+import { mergedBlobEntries } from '../primitives/internal/merged-blob-entries.js';
 import { peelChain } from '../primitives/internal/peel-chain.js';
 import { resolveMaxTreeDepth } from '../primitives/internal/resolve-max-tree-depth.js';
 import {
@@ -988,7 +989,7 @@ const persistOctopusConflict = async (
     await writeConflictingWorkingTree(ctx, outcomes, marked, changed, matcher);
     const paths = sortedRecordedPaths(result.conflicts);
     await writeStopState(ctx, commit.opts, commit.ourId, remotes, paths);
-    return buildConflictIndexEntries(merged, result.conflicts, matcher);
+    return buildConflictIndexEntries(merged, result.conflicts, matcher, []);
   });
   return conflictOutcome(commit.opts, result.conflicts, remotes[0]!, commit.ourId);
 };
@@ -1260,10 +1261,11 @@ const persistConflictState = async (
   // defined matcher keeps excluded blob-backed paths out of the working tree
   // and marks their stage-0 conflict-state entries skip-worktree.
   const matcher = await loadSparseMatcher(ctx);
+  const merged = await mergedBlobEntries(ctx, result.outcomes);
   await underIndexLock(ctx, async () => {
     await writeConflictingWorkingTree(ctx, result.outcomes, result.conflicts, changed, matcher);
     await writeStopState(ctx, opts, ourId, [theirId], sortedRecordedPaths(result.conflicts));
-    return buildConflictIndexEntries(result.outcomes, result.conflicts, matcher);
+    return buildConflictIndexEntries(result.outcomes, result.conflicts, matcher, merged);
   });
   return conflictOutcome(opts, result.conflicts, theirId, ourId);
 };
@@ -1513,16 +1515,11 @@ export const buildConflictIndexEntries = (
   outcomes: ReadonlyArray<MergeOutcome>,
   conflicts: ReadonlyArray<MergeConflict>,
   matcher: SparseMatcher | undefined,
+  merged: ReadonlyArray<IndexEntry>,
 ): ReadonlyArray<IndexEntry> => {
-  // Stage-0 entries from clean outcomes (resolved-deleted contributes
-  // nothing). resolved-merged needs its bytes hashed but we already wrote
-  // them — we'll re-derive the id by computing it lazily. For simplicity,
-  // resolved-merged outcomes are EXCLUDED from the conflict-state index:
-  // the path is left unmerged (user must add it manually) when it sits
-  // alongside conflicts. This avoids needing writeObject under the index
-  // lock with attendant complexity. Pure clean outcomes (unchanged /
-  // resolved-known) keep their stage-0 entries.
-  const stage0: IndexEntry[] = [];
+  // Blob-backed clean outcomes stage here; `merged` carries the line-merged
+  // paths, already written as blobs (resolved-deleted contributes nothing).
+  const stage0: IndexEntry[] = [...merged];
   for (const outcome of outcomes) {
     if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
       // An excluded clean path is recorded skip-worktree so `status` does not
