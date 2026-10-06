@@ -1,5 +1,6 @@
 import { configMissingValue, mergeDriverMissingCommand } from '../../domain/commands/error.js';
 import {
+  type ContentMergeContext,
   type ContentMergeResult,
   type ContentMerger,
   DEFAULT_MERGE_LABELS,
@@ -39,6 +40,17 @@ import { runMergeDriver } from './run-merge-driver.js';
  * alongside the driver. Both feed the built-in markers and the external driver's
  * `%L`/`%S`/`%X`/`%Y`.
  */
+/** git's ort labels each side `<label>:<path>` once a rename puts the sides at different paths. */
+const labelsFor = (labels: MergeLabels, mergeCtx: ContentMergeContext): MergeLabels => {
+  const paths = mergeCtx.sidePaths;
+  if (paths === undefined) return labels;
+  return {
+    ours: `${labels.ours}:${paths.ours}`,
+    theirs: `${labels.theirs}:${paths.theirs}`,
+    base: `${labels.base}:${paths.base}`,
+  };
+};
+
 export const buildContentMerger = (
   ctx: Context,
   labels: MergeLabels = DEFAULT_MERGE_LABELS,
@@ -72,6 +84,7 @@ export const buildContentMerger = (
     if (driver.kind === 'binary') {
       return { status: 'conflict', conflictType: 'binary', markedBytes: ours.content };
     }
+    const pathLabels = labelsFor(labels, mergeCtx);
     if (driver.kind === 'external' && ctx.command !== undefined) {
       return runMergeDriver(ctx, ctx.command, {
         command: driver.command,
@@ -80,13 +93,13 @@ export const buildContentMerger = (
         theirs: theirs.content,
         path: mergeCtx.path,
         markerSize,
-        labels,
+        labels: pathLabels,
       });
     }
     return mergeContent(base?.content, ours.content, theirs.content, {
       favor: driver.kind === 'union' ? 'union' : 'none',
       markerSize,
-      labels: { ours: labels.ours, theirs: labels.theirs },
+      labels: { ours: pathLabels.ours, theirs: pathLabels.theirs },
     });
   };
 };

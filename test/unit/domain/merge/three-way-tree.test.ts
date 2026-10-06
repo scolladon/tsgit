@@ -1868,3 +1868,75 @@ describe('mergeTrees — distinct-types add/add rename conflict', () => {
     });
   });
 });
+
+describe('mergeTrees — renames', () => {
+  const OLD = 'old' as FilePath;
+  const NEW = 'new' as FilePath;
+
+  describe('Given theirs renamed a path ours modified', () => {
+    describe('When mergeTrees is called with the rename', () => {
+      it('Then the source is deleted and the three versions merge at the new path', async () => {
+        // Arrange
+        const base = tree([[OLD, entry(ID_A)]]);
+        const ours = tree([[OLD, entry(ID_B)]]);
+        const theirs = tree([[NEW, entry(ID_C)]]);
+        const merger = spyMerger({ status: 'clean', bytes: new Uint8Array([1]) });
+        const renames = { ours: [], theirs: [{ oldPath: OLD, newPath: NEW }] };
+        const sut = mergeTrees;
+
+        // Act
+        const result = await sut(base, ours, theirs, merger.fn, DEFAULT_MERGE_LABELS, renames);
+
+        // Assert
+        expect(result.outcomes).toEqual([
+          {
+            status: 'resolved-merged',
+            path: NEW,
+            bytes: new Uint8Array([1]),
+            mode: FILE_MODE.REGULAR,
+          },
+          { status: 'resolved-deleted', path: OLD },
+        ]);
+        expect(merger.ctxs).toEqual([
+          expect.objectContaining({
+            path: NEW,
+            baseId: ID_A,
+            ourId: ID_B,
+            theirId: ID_C,
+            sidePaths: { base: OLD, ours: OLD, theirs: NEW },
+          }),
+        ]);
+      });
+    });
+  });
+
+  describe('Given a content merge on a path no rename touched', () => {
+    describe('When mergeTrees is called with an unrelated rename', () => {
+      it('Then the merger context carries no side paths', async () => {
+        // Arrange
+        const base = tree([
+          [OLD, entry(ID_A)],
+          ['p', entry(ID_A)],
+        ]);
+        const ours = tree([
+          [OLD, entry(ID_A)],
+          ['p', entry(ID_B)],
+        ]);
+        const theirs = tree([
+          [NEW, entry(ID_A)],
+          ['p', entry(ID_C)],
+        ]);
+        const merger = spyMerger({ status: 'clean', bytes: new Uint8Array([1]) });
+        const renames = { ours: [], theirs: [{ oldPath: OLD, newPath: NEW }] };
+        const sut = mergeTrees;
+
+        // Act
+        await sut(base, ours, theirs, merger.fn, DEFAULT_MERGE_LABELS, renames);
+
+        // Assert
+        expect(merger.ctxs.map((ctx) => ctx.path)).toEqual(['p']);
+        expect(merger.ctxs[0]).not.toHaveProperty('sidePaths');
+      });
+    });
+  });
+});

@@ -177,6 +177,75 @@ describe('buildContentMerger', () => {
     });
   });
 
+  describe('Given a renamed path whose sides held it at different paths', () => {
+    describe('When the built-in merge conflicts', () => {
+      it('Then each marker label names its side path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = buildContentMerger(ctx, { ours: 'HEAD', theirs: 'side', base: 'abc1234' });
+        const mergeCtx = await mergeCtxFor(ctx, {
+          base: 'a\nb\nc\n',
+          ours: 'a\nX\nc\n',
+          theirs: 'a\nY\nc\n',
+          path: 'big2',
+        });
+        const sidePaths = {
+          base: 'big' as FilePath,
+          ours: 'big' as FilePath,
+          theirs: 'big2' as FilePath,
+        };
+
+        // Act
+        const result = await sut(
+          { ...mergeCtx, sidePaths },
+          undefined,
+          new Uint8Array(0),
+          new Uint8Array(0),
+        );
+
+        // Assert
+        const text = result.status === 'conflict' ? dec(result.markedBytes) : '';
+        expect(text).toContain('<<<<<<< HEAD:big\n');
+        expect(text).toContain('>>>>>>> side:big2\n');
+      });
+    });
+  });
+
+  describe('Given an external driver and a renamed path', () => {
+    describe('When merging', () => {
+      it('Then the driver receives each side label with its path', async () => {
+        // Arrange
+        let captured = '';
+        const ctx = createMemoryContext({
+          command: new MemoryCommandRunner(async (req) => {
+            captured = req.command;
+            const a = req.command.split(' ')[0] as string;
+            await ctx.fs.write(a, enc('done'));
+            return 0;
+          }),
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* merge=custom\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[merge "custom"]\n  driver = %A | %S | %X | %Y\n',
+        );
+        const sut = buildContentMerger(ctx, { ours: 'HEAD', theirs: 'feat', base: 'main' });
+        const mergeCtx = await mergeCtxFor(ctx, { base: 'B', ours: 'O', theirs: 'T' });
+        const sidePaths = {
+          base: 'old' as FilePath,
+          ours: 'new' as FilePath,
+          theirs: 'old' as FilePath,
+        };
+
+        // Act
+        await sut({ ...mergeCtx, sidePaths }, undefined, new Uint8Array(0), new Uint8Array(0));
+
+        // Assert
+        expect(captured.endsWith(' | main:old | HEAD:new | feat:old')).toBe(true);
+      });
+    });
+  });
+
   describe('Given conflict-marker-size=2 and an overlapping change', () => {
     describe('When the built-in merge conflicts', () => {
       it('Then the markers are two characters long', async () => {

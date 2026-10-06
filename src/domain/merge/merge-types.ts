@@ -1,4 +1,5 @@
 import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
+import type { SidePaths } from './merge-renames.js';
 
 export type ConflictType =
   | 'content'
@@ -79,6 +80,8 @@ export interface ContentMergeContext {
   readonly baseMode?: FileMode;
   readonly ourMode: FileMode;
   readonly theirMode: FileMode;
+  /** Where base, ours and theirs held the path, present only when a rename makes them differ. */
+  readonly sidePaths?: SidePaths;
 }
 
 /** How an overlapping region is resolved: `none` → conflict markers, `union` → both sides concatenated. */

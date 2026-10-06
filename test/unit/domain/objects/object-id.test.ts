@@ -6,6 +6,7 @@ import { TsgitError } from '../../../../src/domain/objects/error.js';
 import { SHA1_CONFIG, SHA256_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 import {
   EMPTY_TREE_OID,
+  emptyBlobOid,
   emptyTreeOid,
   FilePath,
   ObjectId,
@@ -450,6 +451,26 @@ describe('object-id', () => {
 
           // Assert
           expect(result).toBe('0000000000000000000000000000000000000000000000000000000000000000');
+        });
+      });
+    });
+  });
+
+  describe('emptyBlobOid', () => {
+    describe.each([
+      [SHA1_CONFIG, 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391'],
+      [SHA256_CONFIG, '473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813'],
+    ])('Given %o', (config, expected) => {
+      describe('When emptyBlobOid is called', () => {
+        it("Then it returns git's empty-blob oid for that hash", () => {
+          // Arrange
+          const sut = emptyBlobOid;
+
+          // Act
+          const result = sut(config);
+
+          // Assert
+          expect(result).toBe(expected);
         });
       });
     });

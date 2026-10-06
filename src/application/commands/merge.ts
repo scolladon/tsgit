@@ -48,6 +48,7 @@ import { abbreviateObjectId } from '../primitives/abbreviate-object-id.js';
 import { buildContentMerger } from '../primitives/build-content-merger.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
+import { detectMergeRenames } from '../primitives/detect-merge-renames.js';
 import { changedPaths, findWouldOverwrite } from '../primitives/find-would-overwrite.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
@@ -1016,7 +1017,8 @@ const computeMergeTreeResult = async (
 
   const labels: MergeLabels = mergeLabels(revName, baseId);
   const contentMerger = buildContentMerger(ctx, labels);
-  const result = await mergeTrees(baseFlat, ourFlat, theirFlat, contentMerger, labels);
+  const renames = await detectMergeRenames(ctx, baseFlat, ourFlat, theirFlat);
+  const result = await mergeTrees(baseFlat, ourFlat, theirFlat, contentMerger, labels, renames);
 
   if (result.cleanMerge) {
     const tree = await synthesiseMergedTree(ctx, result.outcomes);

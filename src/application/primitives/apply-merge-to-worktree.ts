@@ -31,6 +31,7 @@ import {
 import { FILE_MODE, type FilePath, type ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { buildContentMerger } from './build-content-merger.js';
+import { detectMergeRenames } from './detect-merge-renames.js';
 import { changedPaths, findWouldOverwrite } from './find-would-overwrite.js';
 import { flattenTree } from './flatten-tree.js';
 import {
@@ -290,12 +291,14 @@ export const applyMergeToWorktree = async (
     flattenTree(ctx, input.oursTree),
     flattenTree(ctx, input.theirsTree),
   ]);
+  const renames = await detectMergeRenames(ctx, base, ours, theirs);
   const merged = await mergeTrees(
     base,
     ours,
     theirs,
     buildContentMerger(ctx, input.labels),
     input.labels,
+    renames,
   );
   // Stryker disable next-line ConditionalExpression: equivalent — `rejectUnsupported` over an empty conflict list is a no-op, so the `if(true)` variant behaves identically on a clean merge; `if(false)` is killed by the gitlink-rejection test.
   if (!merged.cleanMerge) rejectUnsupported(merged.conflicts);

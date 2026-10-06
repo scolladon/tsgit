@@ -6,6 +6,12 @@ import type { FileMode, FilePath } from '../objects/index.js';
 import { FILE_MODE } from '../objects/index.js';
 import { invalidMergeInput, invalidMergeTree } from './error.js';
 import { DEFAULT_MERGE_LABELS, type MergeLabels } from './merge-labels.js';
+import {
+  applyMergeRenames,
+  type MergeRenames,
+  NO_MERGE_RENAMES,
+  type SidePaths,
+} from './merge-renames.js';
 import type {
   ContentMergeContext,
   ContentMergeResult,
@@ -44,8 +50,9 @@ function buildUnionPaths(
   base: FlatTree | undefined,
   ours: FlatTree | undefined,
   theirs: FlatTree | undefined,
+  vacated: ReadonlySet<FilePath>,
 ): Set<FilePath> {
-  const paths = new Set<FilePath>();
+  const paths = new Set<FilePath>(vacated);
   for (const tree of [base, ours, theirs]) {
     if (tree === undefined) continue;
     for (const path of tree.entries.keys()) paths.add(path);
@@ -494,29 +501,45 @@ function extractConflicts(outcomes: ReadonlyArray<MergeOutcome>): ReadonlyArray<
   return out;
 }
 
+/** A rename's content merge learns where each side held the path, for git's `<label>:<path>` markers. */
+function withSidePaths(
+  contentMerger: ContentMerger,
+  sidePaths: ReadonlyMap<FilePath, SidePaths>,
+): ContentMerger {
+  if (sidePaths.size === 0) return contentMerger;
+  return (ctx, base, ours, theirs) => {
+    const paths = sidePaths.get(ctx.path);
+    const located = paths === undefined ? ctx : { ...ctx, sidePaths: paths };
+    return contentMerger(located, base, ours, theirs);
+  };
+}
+
 export async function mergeTrees(
   base: FlatTree | undefined,
   ours: FlatTree | undefined,
   theirs: FlatTree | undefined,
   contentMerger: ContentMerger,
   labels: MergeLabels = DEFAULT_MERGE_LABELS,
+  renames: MergeRenames = NO_MERGE_RENAMES,
 ): Promise<TreeMergeResult> {
   enforcePerInputCap(base, 'base');
   enforcePerInputCap(ours, 'ours');
   enforcePerInputCap(theirs, 'theirs');
 
-  const paths = buildUnionPaths(base, ours, theirs);
+  const renamed = applyMergeRenames(base, ours, theirs, renames);
+  const paths = buildUnionPaths(renamed.base, renamed.ours, renamed.theirs, renamed.vacated);
   const sortedPaths = sortByPath([...paths], (p) => p);
   const reserved = new Set<FilePath>(paths);
+  const merger = withSidePaths(contentMerger, renamed.sidePaths);
 
   const outcomes: MergeOutcome[] = [];
   for (const path of sortedPaths) {
     const result = resolvePath(
       path,
-      base?.entries.get(path),
-      ours?.entries.get(path),
-      theirs?.entries.get(path),
-      contentMerger,
+      renamed.base?.entries.get(path),
+      renamed.ours?.entries.get(path),
+      renamed.theirs?.entries.get(path),
+      merger,
       labels,
       reserved,
     );

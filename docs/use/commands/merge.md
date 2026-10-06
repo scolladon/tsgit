@@ -82,6 +82,20 @@ Resolve the working-tree files, `repo.add` the resolved paths, then `repo.merge.
 
 Unsupported conflict types (`rename-rename`, `gitlink`) reject upfront with `UNSUPPORTED_OPERATION` before any disk write.
 
+### Renames
+
+As git's `ort` strategy does, the merge first pairs the paths each side deleted with the paths it added
+(exact matches, then content similarity at git's 50% default), and a file renamed on one side and
+edited on the other merges into the renamed path. Only paths the other side changed are rename
+sources, and the empty file never is. `merge.renames` (falling back to `diff.renames`, on by default)
+turns detection off; `merge.renameLimit` (falling back to `diff.renameLimit`; a non-positive value
+means 7000) caps the similarity pass. A malformed value refuses the merge with
+`CONFIG_BAD_BOOLEAN_VALUE`, `CONFIG_BAD_NUMERIC_VALUE` or `CONFIG_MISSING_VALUE`. When a rename
+puts the sides at different paths, each conflict-marker label carries its side's path
+(`<<<<<<< HEAD:old`, `>>>>>>> side:new`), as git writes them. The same detection runs under
+`pull`, `cherry-pick`, `revert`, `rebase` and `stash apply`; the `resolve` and `octopus`
+strategies never detect renames.
+
 ### Content-conflict boundaries follow git's line-diff engine
 
 The built-in 3-way line merge derives each side's changed base ranges from the

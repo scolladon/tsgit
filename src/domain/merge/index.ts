@@ -15,6 +15,12 @@ export {
   revertLabels,
   STASH_LABELS,
 } from './merge-labels.js';
+export {
+  type MergeRename,
+  type MergeRenames,
+  NO_MERGE_RENAMES,
+  type SidePaths,
+} from './merge-renames.js';
 export type {
   ConflictMarkerOptions,
   ConflictType,
