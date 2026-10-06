@@ -26,6 +26,8 @@ export type MergeSegment =
       readonly kind: 'conflict';
       readonly ours: ReadonlyArray<Uint8Array>;
       readonly theirs: ReadonlyArray<Uint8Array>;
+      /** The base lines both sides replaced — present only for a base-showing style. */
+      readonly base?: ReadonlyArray<Uint8Array>;
     };
 
 type LinesEqual = (a: Uint8Array, b: Uint8Array) => boolean;
@@ -74,9 +76,11 @@ const TAKE_THEIRS = 2;
 /** A conflict whose two sides refinement found identical: it emits nothing of its own. */
 const IDENTICAL = 4;
 
-/** xdiff's merge record, minus the base span only the unsupported diff3 style reads. */
+/** xdiff's merge record: base `[i0, i0 + chg0)`, ours `[i1, i1 + chg1)`, theirs `[i2, i2 + chg2)`. */
 interface MergeRecord {
   readonly mode: number;
+  readonly i0: number;
+  readonly chg0: number;
   readonly i1: number;
   readonly chg1: number;
   readonly i2: number;
@@ -97,6 +101,8 @@ function appendRecord(records: MergeRecord[], next: MergeRecord): void {
   }
   records[records.length - 1] = {
     mode: next.mode === last.mode ? last.mode : CONFLICT,
+    i0: last.i0,
+    chg0: next.i0 + next.chg0 - last.i0,
     i1: last.i1,
     chg1: next.i1 + next.chg1 - last.i1,
     i2: last.i2,
@@ -108,6 +114,8 @@ function appendRecord(records: MergeRecord[], next: MergeRecord): void {
 function oursRecord(change: LineChange, theirsOffset: number): MergeRecord {
   return {
     mode: TAKE_OURS,
+    i0: change.i1,
+    chg0: change.chg1,
     i1: change.i2,
     chg1: change.chg2,
     i2: change.i1 + theirsOffset,
@@ -118,6 +126,8 @@ function oursRecord(change: LineChange, theirsOffset: number): MergeRecord {
 function theirsRecord(change: LineChange, oursOffset: number): MergeRecord {
   return {
     mode: TAKE_THEIRS,
+    i0: change.i1,
+    chg0: change.chg1,
     i1: change.i1 + oursOffset,
     chg1: change.chg1,
     i2: change.i2,
@@ -129,12 +139,16 @@ function theirsRecord(change: LineChange, oursOffset: number): MergeRecord {
 function conflictRecord(ours: LineChange, theirs: LineChange): MergeRecord {
   const off = ours.i1 - theirs.i1;
   const ffo = off + ours.chg1 - theirs.chg1;
+  const i0 = off > 0 ? ours.i1 - off : ours.i1;
+  const chg0 = ours.i1 + ours.chg1 - i0;
   const i1 = off > 0 ? ours.i2 - off : ours.i2;
   const i2 = off > 0 ? theirs.i2 : theirs.i2 + off;
   const chg1 = ours.i2 + ours.chg2 - i1;
   const chg2 = theirs.i2 + theirs.chg2 - i2;
   return {
     mode: CONFLICT,
+    i0,
+    chg0: ffo < 0 ? chg0 - ffo : chg0,
     i1,
     chg1: ffo < 0 ? chg1 - ffo : chg1,
     i2,
@@ -219,6 +233,7 @@ function refineConflict(record: MergeRecord, sides: SidePair, model: LineModel):
   const runs = changesFromHunks(hunks);
   if (runs.length === 0) return [{ ...record, mode: IDENTICAL }];
   return runs.map((run) => ({
+    ...record,
     mode: CONFLICT,
     i1: record.i1 + run.i1,
     chg1: run.chg1,
@@ -253,8 +268,23 @@ function coalesceNearConflicts(records: ReadonlyArray<MergeRecord>): MergeRecord
   return out;
 }
 
+/** A conflict segment, with the base lines it replaced when the style shows them. */
+function conflictSegment(
+  record: MergeRecord,
+  ours: ReadonlyArray<Uint8Array>,
+  theirs: ReadonlyArray<Uint8Array>,
+  base: ReadonlyArray<Uint8Array> | undefined,
+): MergeSegment {
+  if (base === undefined) return { kind: 'conflict', ours, theirs };
+  return { kind: 'conflict', ours, theirs, base: base.slice(record.i0, record.i0 + record.chg0) };
+}
+
 /** xdiff's `xdl_fill_merge_buffer`: ours' lines between records, each record's own lines. */
-function toSegments(records: ReadonlyArray<MergeRecord>, sides: SidePair): MergeSegment[] {
+function toSegments(
+  records: ReadonlyArray<MergeRecord>,
+  sides: SidePair,
+  base?: ReadonlyArray<Uint8Array>,
+): MergeSegment[] {
   const ours = sides.ours.lines;
   const theirs = sides.theirs.lines;
   const segments: MergeSegment[] = [];
@@ -268,7 +298,7 @@ function toSegments(records: ReadonlyArray<MergeRecord>, sides: SidePair): Merge
     const oursLines = ours.slice(record.i1, record.i1 + record.chg1);
     const theirsLines = theirs.slice(record.i2, record.i2 + record.chg2);
     if (record.mode === CONFLICT) {
-      segments.push({ kind: 'conflict', ours: oursLines, theirs: theirsLines });
+      segments.push(conflictSegment(record, oursLines, theirsLines, base));
     } else {
       pushClean(record.mode === TAKE_OURS ? oursLines : theirsLines);
     }
@@ -297,4 +327,50 @@ export function buildMergeSegments(
     refineConflict(record, sides, model),
   );
   return toSegments(coalesceNearConflicts(refined), sides);
+}
+
+/** git's base-showing conflict styles (`merge.conflictStyle`). */
+export type BaseShowingStyle = 'diff3' | 'zdiff3';
+
+/** xdiff's `xdl_refine_zdiff3_conflicts`: a conflict's common leading and trailing lines leave it. */
+function trimCommonEdges(record: MergeRecord, sides: SidePair, model: LineModel): MergeRecord {
+  if (record.mode !== CONFLICT) return record;
+  const same = (k1: number, k2: number): boolean =>
+    model.linesEqual(sides.ours.lines[k1]!, sides.theirs.lines[k2]!);
+  let { i1, chg1, i2, chg2 } = record;
+  while (chg1 > 0 && chg2 > 0 && same(i1, i2)) {
+    i1++;
+    i2++;
+    chg1--;
+    chg2--;
+  }
+  while (chg1 > 0 && chg2 > 0 && same(i1 + chg1 - 1, i2 + chg2 - 1)) {
+    chg1--;
+    chg2--;
+  }
+  return { ...record, i1, chg1, i2, chg2 };
+}
+
+/**
+ * The merge segments of a base-showing style, as xdiff's `xdl_do_merge` builds
+ * them: the level capped at eager (identical changes still merge), no conflict
+ * refinement nor coalescing; `zdiff3` only trims each conflict's common edges.
+ * Every conflict carries the base lines it replaced.
+ */
+export function buildBaseShowingSegments(
+  base: ReadonlyArray<Uint8Array>,
+  ours: SideEdit,
+  theirs: SideEdit,
+  options: { readonly style: BaseShowingStyle; readonly model?: LineModel },
+): MergeSegment[] {
+  if (ours.changes.length === 0) return [{ kind: 'clean', lines: theirs.lines }];
+  if (theirs.changes.length === 0) return [{ kind: 'clean', lines: ours.lines }];
+  const model = options.model ?? BYTE_EXACT;
+  const sides = { ours, theirs };
+  const records = buildRecords(base.length, sides, model);
+  const refined =
+    options.style === 'zdiff3'
+      ? records.map((record) => trimCommonEdges(record, sides, model))
+      : records;
+  return toSegments(refined, sides, base);
 }

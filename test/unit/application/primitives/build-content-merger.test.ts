@@ -712,3 +712,62 @@ describe('buildContentMerger', () => {
     });
   });
 });
+
+describe('buildContentMerger conflict style', () => {
+  const LABELS = { ours: 'HEAD', theirs: 'side', base: 'b8cdee5' };
+  const conflictOf = async (config: string): Promise<unknown> => {
+    const ctx = createMemoryContext();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+    const sut = buildContentMerger(ctx, LABELS);
+    const mergeCtx = await mergeCtxFor(ctx, { base: 'a\nx\n', ours: 'A1\nx\n', theirs: 'A2\nx\n' });
+    const result = await Promise.resolve()
+      .then(() => sut(mergeCtx, undefined, new Uint8Array(0), new Uint8Array(0)))
+      .catch((error: unknown) => error);
+    return 'markedBytes' in (result as object)
+      ? dec((result as { markedBytes: Uint8Array }).markedBytes)
+      : (result as { data?: unknown }).data;
+  };
+
+  describe('Given merge.conflictStyle = diff3, When the built-in merge conflicts', () => {
+    it('Then the markers carry the base section under the base label', async () => {
+      // Arrange
+      const config = '[merge]\n  conflictStyle = diff3\n';
+
+      // Act
+      const result = await conflictOf(config);
+
+      // Assert
+      expect(result).toBe('<<<<<<< HEAD\nA1\n||||||| b8cdee5\na\n=======\nA2\n>>>>>>> side\nx\n');
+    });
+  });
+
+  describe('Given merge.conflictStyle holding a style git does not know, When the merge runs', () => {
+    it('Then it refuses the value, as git dies on it', async () => {
+      // Arrange
+      const config = '[merge]\n  conflictStyle = bogus\n';
+
+      // Act
+      const result = await conflictOf(config);
+
+      // Assert
+      expect(result).toMatchObject({
+        code: 'CONFIG_UNKNOWN_VALUE',
+        key: 'merge.conflictstyle',
+        value: 'bogus',
+      });
+    });
+  });
+
+  describe('Given a valueless merge.conflictStyle, When the merge runs', () => {
+    it('Then it refuses the missing value', async () => {
+      // Arrange
+      const config = '[merge]\n  conflictStyle\n';
+
+      // Act
+      const result = await conflictOf(config);
+
+      // Assert
+      expect(result).toMatchObject({ code: 'CONFIG_MISSING_VALUE', key: 'merge.conflictstyle' });
+    });
+  });
+});

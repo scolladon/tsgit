@@ -17,6 +17,7 @@ import { unexpectedObjectType } from '../../../domain/objects/error.js';
 import type { FilePath, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { flattenTree } from '../../primitives/flatten-tree.js';
+import { readConflictStyle } from '../../primitives/internal/merge-rename-config.js';
 import { stage0Entry } from '../../primitives/internal/synthetic-index-entry.js';
 import { mergeBasesOf } from '../../primitives/merge-base.js';
 import { readBlob } from '../../primitives/read-blob.js';
@@ -88,13 +89,14 @@ const mergeOneFile = async (
   remoteName: string,
 ): Promise<PathOutcome> => {
   const { base, head, remote } = sides;
-  const [baseBytes, ours, theirs] = await Promise.all([
+  const [baseBytes, ours, theirs, style] = await Promise.all([
     blobBytes(ctx, base),
     blobBytes(ctx, head),
     blobBytes(ctx, remote),
+    readConflictStyle(ctx),
   ]);
   const labels = mergeLabels(remoteName, base?.id);
-  const result = mergeContent(baseBytes, ours, theirs, { labels });
+  const result = mergeContent(baseBytes, ours, theirs, { labels, conflictStyle: style ?? 'merge' });
   const bytes = result.status === 'clean' ? result.bytes : result.markedBytes;
   if (result.status === 'clean' && base !== undefined && head.mode === remote.mode) {
     return { kind: 'merged', entry: { id: await writeBlob(ctx, bytes), mode: head.mode } };

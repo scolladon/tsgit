@@ -8,9 +8,10 @@ import {
 } from '../diff/line-diff.js';
 import { type LineKey, lineKeyIsActive, linesEqualUnder } from '../diff/whitespace.js';
 import { bytesEqual, concatBytes } from '../objects/encoding.js';
-import { writeConflictMarkers } from './conflict-markers.js';
+import { writeBaseShowingConflictMarkers, writeConflictMarkers } from './conflict-markers.js';
 import type { ConflictMarkerOptions, ContentMergeResult, MergeFavor } from './merge-types.js';
 import {
+  buildBaseShowingSegments,
   buildMergeSegments,
   changesFromHunks,
   type LineModel,
@@ -77,6 +78,15 @@ function renderFavoured(
   return { status: 'clean', bytes: joinLinesEnsuringInteriorLf(lines) };
 }
 
+function conflictBytes(
+  segment: Exclude<MergeSegment, { kind: 'clean' }>,
+  options: ConflictMarkerOptions,
+): Uint8Array {
+  if (segment.base === undefined)
+    return writeConflictMarkers(segment.ours, segment.theirs, options);
+  return writeBaseShowingConflictMarkers(segment.ours, segment.base, segment.theirs, options);
+}
+
 function renderWithMarkers(
   segments: ReadonlyArray<MergeSegment>,
   options: ConflictMarkerOptions,
@@ -88,7 +98,7 @@ function renderWithMarkers(
       parts.push(...segment.lines);
     } else {
       conflicted = true;
-      parts.push(writeConflictMarkers(segment.ours, segment.theirs, options));
+      parts.push(conflictBytes(segment, options));
     }
   }
   const bytes = concatBytes(parts);
@@ -130,12 +140,14 @@ function mergeFromDiffs(
   const baseLines = splitLines(base);
   const oursDiff = diffAgainstBase(baseLines, ours, search, diffOptions);
   const theirsDiff = diffAgainstBase(baseLines, theirs, search, diffOptions);
-  const segments = buildMergeSegments(
-    baseLines.length,
-    { lines: oursDiff.theirsLines, changes: changesFromHunks(oursDiff.hunks) },
-    { lines: theirsDiff.theirsLines, changes: changesFromHunks(theirsDiff.hunks) },
-    lineModel(lineKey, search, diffOptions),
-  );
+  const oursEdit = { lines: oursDiff.theirsLines, changes: changesFromHunks(oursDiff.hunks) };
+  const theirsEdit = { lines: theirsDiff.theirsLines, changes: changesFromHunks(theirsDiff.hunks) };
+  const model = lineModel(lineKey, search, diffOptions);
+  const style = options.conflictStyle ?? 'merge';
+  const segments =
+    style === 'merge'
+      ? buildMergeSegments(baseLines.length, oursEdit, theirsEdit, model)
+      : buildBaseShowingSegments(baseLines, oursEdit, theirsEdit, { style, model });
   const favor = options.favor ?? 'none';
   return favor === 'none' ? renderWithMarkers(segments, options) : renderFavoured(segments, favor);
 }

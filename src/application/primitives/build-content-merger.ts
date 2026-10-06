@@ -2,6 +2,7 @@ import { configMissingValue, mergeDriverMissingCommand } from '../../domain/comm
 import type { DiffAlgorithm } from '../../domain/diff/line-diff.js';
 import type { LineKey } from '../../domain/diff/whitespace.js';
 import {
+  type ConflictStyle,
   type ContentMergeContext,
   type ContentMergeResult,
   type ContentMerger,
@@ -15,6 +16,7 @@ import type { OrtVariant } from '../../domain/merge/strategy-options.js';
 import { mergeBinary } from '../../domain/merge/three-way-content.js';
 import type { Context } from '../../ports/context.js';
 import { findFirstValuelessInSection } from './config-read.js';
+import { readConflictStyle } from './internal/merge-rename-config.js';
 import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
 import { readBlob } from './read-blob.js';
 import { resolvePathMergeSpec } from './resolve-merge-driver.js';
@@ -85,6 +87,9 @@ export const buildContentMerger = (
     }).then((found) => {
       if (found !== undefined) throw configMissingValue(found.key, found.source, found.line);
     }));
+  let stylePromise: Promise<ConflictStyle | undefined> | undefined;
+  const conflictStyle = (): Promise<ConflictStyle | undefined> =>
+    (stylePromise ??= readConflictStyle(ctx));
   return async (mergeCtx): Promise<ContentMergeResult> => {
     await ensureNoValuelessMergeDriver();
     const [ours, theirs, base] = await Promise.all([
@@ -123,7 +128,8 @@ export const buildContentMerger = (
       lineKey: settings.lineKey,
       diffAlgorithm: settings.diffAlgorithm ?? ORT_DIFF_ALGORITHM,
       markerSize,
-      labels: { ours: pathLabels.ours, theirs: pathLabels.theirs },
+      labels: pathLabels,
+      conflictStyle: (await conflictStyle()) ?? 'merge',
     });
   };
 };

@@ -1,7 +1,12 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { diffLines } from '../../../../src/domain/diff/line-diff.js';
-import { buildMergeSegments, changesFromHunks } from '../../../../src/domain/merge/region-merge.js';
+import {
+  type BaseShowingStyle,
+  buildBaseShowingSegments,
+  buildMergeSegments,
+  changesFromHunks,
+} from '../../../../src/domain/merge/region-merge.js';
 import { mergeContent } from '../../../../src/domain/merge/three-way-content.js';
 import { arbDisjointThreeWay, arbThreeWay } from './arbitraries.js';
 
@@ -78,6 +83,64 @@ describe('region-merge properties', () => {
             .map((segment) => joined(segment.kind === 'clean' ? segment.lines : segment.ours))
             .join('');
           expect(rebuilt).toBe(ours);
+        }),
+        { numRuns: RUNS },
+      );
+    });
+  });
+});
+
+const baseShowingSegmentsOf = (
+  base: string,
+  ours: string,
+  theirs: string,
+  style: BaseShowingStyle,
+) => {
+  const oursDiff = diffLines(enc(base), enc(ours));
+  const theirsDiff = diffLines(enc(base), enc(theirs));
+  return buildBaseShowingSegments(
+    oursDiff.oursLines,
+    { lines: oursDiff.theirsLines, changes: changesFromHunks(oursDiff.hunks) },
+    { lines: theirsDiff.theirsLines, changes: changesFromHunks(theirsDiff.hunks) },
+    { style },
+  );
+};
+
+describe('region-merge base-showing properties', () => {
+  describe.each(['ours', 'theirs'] as const)(
+    'Given an arbitrary 3-way input, When every conflict resolves to %s',
+    (side) => {
+      it('Then zdiff3 and diff3 give the same bytes: trimming only moves shared lines out', () => {
+        // Arrange
+        const resolve = (
+          style: BaseShowingStyle,
+          input: { base: string; ours: string; theirs: string },
+        ) =>
+          baseShowingSegmentsOf(input.base, input.ours, input.theirs, style)
+            .map((s) => joined(s.kind === 'clean' ? s.lines : s[side]))
+            .join('');
+
+        // Act + Assert
+        fc.assert(
+          fc.property(arbThreeWay(), (input) => {
+            expect(resolve('zdiff3', input)).toBe(resolve('diff3', input));
+          }),
+          { numRuns: RUNS },
+        );
+      });
+    },
+  );
+
+  describe('Given an arbitrary 3-way input, When merged in zdiff3 style', () => {
+    it('Then no conflict keeps a leading or trailing line both sides share', () => {
+      // Arrange + Act + Assert
+      fc.assert(
+        fc.property(arbThreeWay(), ({ base, ours, theirs }) => {
+          for (const s of baseShowingSegmentsOf(base, ours, theirs, 'zdiff3')) {
+            if (s.kind === 'clean' || s.ours.length === 0 || s.theirs.length === 0) continue;
+            expect(dec(s.ours[0]!)).not.toBe(dec(s.theirs[0]!));
+            expect(dec(s.ours.at(-1)!)).not.toBe(dec(s.theirs.at(-1)!));
+          }
         }),
         { numRuns: RUNS },
       );

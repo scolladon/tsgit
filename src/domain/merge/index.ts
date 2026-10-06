@@ -25,6 +25,7 @@ export {
 } from './merge-renames.js';
 export type {
   ConflictMarkerOptions,
+  ConflictStyle,
   ConflictType,
   ContentMergeContext,
   ContentMergeResult,

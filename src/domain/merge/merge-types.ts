@@ -95,13 +95,16 @@ export interface ContentMergeContext {
  */
 export type MergeFavor = 'none' | 'union' | 'ours' | 'theirs';
 
+/** git's `merge.conflictStyle`: plain markers, or a `|||||||` base section (`zdiff3` trims common edges). */
+export type ConflictStyle = 'merge' | 'diff3' | 'zdiff3';
+
 export interface ConflictMarkerOptions {
   readonly labels?: {
     readonly ours?: string;
     readonly base?: string;
     readonly theirs?: string;
   };
-  readonly conflictStyle?: 'merge' | 'diff3';
+  readonly conflictStyle?: ConflictStyle;
   /** Marker run length (git's `conflict-marker-size`); defaults to 7 when omitted. */
   readonly markerSize?: number;
 }

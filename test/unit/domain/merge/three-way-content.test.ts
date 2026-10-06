@@ -1147,3 +1147,94 @@ describe('mergeContent', () => {
     });
   });
 });
+
+describe('mergeContent conflict styles', () => {
+  const LABELS = { ours: 'O', base: 'B', theirs: 'T' };
+  const marked = (result: ReturnType<typeof mergeContent>): string =>
+    result.status === 'conflict' ? decoder.decode(result.markedBytes) : 'clean';
+
+  describe.each([
+    {
+      style: 'diff3' as const,
+      expected:
+        '<<<<<<< O\nA1\n||||||| B\na\n=======\nA2\n>>>>>>> T\n}\n<<<<<<< O\nC1\n||||||| B\nc\n=======\nC2\n>>>>>>> T\nd\ne\n',
+    },
+    {
+      style: 'zdiff3' as const,
+      expected:
+        '<<<<<<< O\nA1\n||||||| B\na\n=======\nA2\n>>>>>>> T\n}\n<<<<<<< O\nC1\n||||||| B\nc\n=======\nC2\n>>>>>>> T\nd\ne\n',
+    },
+  ])(
+    'Given two conflicts around a shared line, When merged in $style style',
+    ({ style, expected }) => {
+      it('Then each conflict shows its base section and none are coalesced, as git merge-file does', () => {
+        // Arrange
+        const sut = mergeContent;
+
+        // Act
+        const result = sut(
+          enc('a\n}\nc\nd\ne\n'),
+          enc('A1\n}\nC1\nd\ne\n'),
+          enc('A2\n}\nC2\nd\ne\n'),
+          {
+            labels: LABELS,
+            conflictStyle: style,
+          },
+        );
+
+        // Assert
+        expect(marked(result)).toBe(expected);
+      });
+    },
+  );
+
+  describe.each([
+    {
+      style: 'diff3' as const,
+      expected: 'x\n<<<<<<< O\ns1\ns2\nm\ns3\n|||||||\nb\n=======\ns1\ns2\nn\ns3\n>>>>>>> T\ny\n',
+    },
+    {
+      style: 'zdiff3' as const,
+      expected: 'x\ns1\ns2\n<<<<<<< O\nm\n|||||||\nb\n=======\nn\n>>>>>>> T\ns3\ny\n',
+    },
+  ])(
+    'Given sides sharing their edges and no base label, When merged in $style style',
+    ({ style, expected }) => {
+      it('Then diff3 keeps the edges conflicted and zdiff3 moves them out, as git merge-file does', () => {
+        // Arrange
+        const sut = mergeContent;
+
+        // Act
+        const result = sut(
+          enc('x\nb\ny\n'),
+          enc('x\ns1\ns2\nm\ns3\ny\n'),
+          enc('x\ns1\ns2\nn\ns3\ny\n'),
+          {
+            labels: { ours: 'O', base: '', theirs: 'T' },
+            conflictStyle: style,
+          },
+        );
+
+        // Assert
+        expect(marked(result)).toBe(expected);
+      });
+    },
+  );
+});
+
+describe('mergeContent conflict styles without labels', () => {
+  describe('Given no labels, When an overlapping change merges in diff3 style', () => {
+    it('Then the base marker carries no label and the sides keep the default ones', () => {
+      // Arrange
+      const sut = mergeContent;
+
+      // Act
+      const result = sut(enc('a\n'), enc('b\n'), enc('c\n'), { conflictStyle: 'diff3' });
+
+      // Assert
+      expect(result.status === 'conflict' && decoder.decode(result.markedBytes)).toBe(
+        '<<<<<<< ours\nb\n|||||||\na\n=======\nc\n>>>>>>> theirs\n',
+      );
+    });
+  });
+});

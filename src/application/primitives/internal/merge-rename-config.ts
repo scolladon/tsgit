@@ -12,6 +12,7 @@ import {
 } from '../../../domain/config/config-ini.js';
 import type { DiffAlgorithm } from '../../../domain/diff/line-diff.js';
 import type { DirectoryRenameMode } from '../../../domain/merge/directory-renames.js';
+import type { ConflictStyle } from '../../../domain/merge/merge-types.js';
 import { diffAlgorithmValue } from '../../../domain/merge/strategy-options.js';
 import type { Context } from '../../../ports/context.js';
 import { findLastEntry, type LocatedConfigEntry } from '../config-read.js';
@@ -100,4 +101,15 @@ export const readUiDiffAlgorithm = async (ctx: Context): Promise<DiffAlgorithm |
   const algorithm = diffAlgorithmValue(value);
   if (algorithm === undefined) throw configUnknownValue(key, value, source, line);
   return algorithm;
+};
+
+const CONFLICT_STYLES: ReadonlySet<string> = new Set<ConflictStyle>(['merge', 'diff3', 'zdiff3']);
+
+/** git's `git_xmerge_config`: `merge.conflictStyle` names a style, and an unknown one dies. */
+export const readConflictStyle = async (ctx: Context): Promise<ConflictStyle | undefined> => {
+  const entry = await findLastEntry(ctx, 'merge', 'conflictstyle');
+  if (entry === undefined) return undefined;
+  const { key, source, value, line } = requireValue(entry);
+  if (!CONFLICT_STYLES.has(value)) throw configUnknownValue(key, value, source, line);
+  return value as ConflictStyle;
 };
