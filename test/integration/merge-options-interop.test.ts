@@ -50,6 +50,7 @@ const DATED_ENV: NodeJS.ProcessEnv = {
   GIT_COMMITTER_DATE: `${EPOCH} +0000`,
   GIT_EDITOR: 'true',
 };
+const LINES = '1\n2\n3\n4\n5\n6\n7\n8\n';
 const STATE_FILES = ['MERGE_HEAD', 'MERGE_MSG', 'MERGE_MODE', 'SQUASH_MSG', 'ORIG_HEAD'];
 
 let root: string;
@@ -75,13 +76,18 @@ beforeAll(() => {
   const work = path.join(root, 'work');
   dated(['init', '-q', '-b', 'main', work]);
   commitFile(work, 'f', 'base\n', 'base');
-  dated(['-C', work, 'checkout', '-q', '-b', 'clean']);
+  commitFile(work, 'big', LINES, 'lines');
+  dated(['-C', work, 'tag', 'start']);
+  dated(['-C', work, 'checkout', '-q', '-b', 'edits']);
+  commitFile(work, 'big', LINES.replace('2\n', 'two\n'), 'edit two');
+  dated(['-C', work, 'checkout', '-q', '-b', 'clean', 'main']);
   commitFile(work, 's2', 's2\n', 'clean one');
   dated(['-C', work, 'checkout', '-q', '-b', 'side', 'main']);
   commitFile(work, 's1', 's1\n', 'side one');
   commitFile(work, 'f', 'side\n', 'conflicting');
   dated(['-C', work, 'checkout', '-q', 'main']);
   commitFile(work, 'f', 'main\n', 'main');
+  commitFile(work, 'big', LINES.replace('7\n', 'seven\n'), 'edit seven');
   dated(['clone', '-q', '--bare', work, peerPath]);
 });
 
@@ -127,13 +133,19 @@ const snapshot = (dir: string) => ({
   state: Object.fromEntries(STATE_FILES.map((name) => [name, stateFile(dir, name)])),
   index: git(dir, 'ls-files', '--stage'),
   head: git(dir, 'rev-parse', 'HEAD'),
+  note: git(dir, 'reflog', '-1', '--format=%gs'),
 });
 
-/** git's snapshot after a pull, its peer path spelt as the url tsgit fetched from. */
-const pulledSnapshot = (dir: string) =>
-  JSON.parse(
-    JSON.stringify(snapshot(dir)).replaceAll(peerPath.slice(0, -'.git'.length), SHORT_URL),
-  );
+/** git's snapshot after a pull, its state files spelling the peer as the url tsgit fetched from. */
+const pulledSnapshot = (dir: string) => {
+  const taken = snapshot(dir);
+  const spelt = peerPath.slice(0, -'.git'.length);
+  const state = Object.entries(taken.state).map(([name, bytes]) => [
+    name,
+    bytes?.replaceAll(spelt, SHORT_URL),
+  ]);
+  return { ...taken, state: Object.fromEntries(state) };
+};
 
 describe.skipIf(!GIT_AVAILABLE)('merge options interop', () => {
   describe('Given a squash merge that conflicts', () => {
@@ -213,14 +225,14 @@ describe.skipIf(!GIT_AVAILABLE)('merge options interop', () => {
 
   describe.each([
     ['HEAD diverged from one head', 'main', ['origin/clean'], {}],
-    ['HEAD fast-forwardable to one head', 'main~1', ['origin/clean'], {}],
+    ['HEAD fast-forwardable to one head', 'start', ['origin/clean'], {}],
     [
       'fastForward never over a fast-forwardable head',
-      'main~1',
+      'start',
       ['origin/clean'],
       { fastForward: 'never' },
     ],
-    ['two heads', 'main~1', ['origin/clean', 'origin/side'], {}],
+    ['two heads', 'start', ['origin/clean', 'origin/side'], {}],
   ] as const)('Given %s', (_label, start, revs, input) => {
     describe('When both tools merge with commit false', () => {
       it('Then the stop state, the index and HEAD are identical', async () => {
@@ -309,6 +321,74 @@ describe.skipIf(!GIT_AVAILABLE)('merge options interop', () => {
         // Assert
         expect(result.integration === 'merge' && result.merge.kind).toBe('stopped');
         expect(snapshot(ours)).toEqual(pulledSnapshot(theirs));
+      });
+    });
+  });
+
+  describe.each([
+    ['ort', 'main', ['origin/clean']],
+    ['recursive', 'main', ['origin/clean']],
+    ['resolve', 'main', ['origin/clean']],
+    ['octopus', 'main', ['origin/clean']],
+    ['ours', 'main', ['origin/clean']],
+    ['ours', 'start', ['origin/clean']],
+    ['resolve', 'start', ['origin/clean']],
+    ['resolve', 'main', ['origin/edits']],
+    ['resolve', 'main', ['origin/side']],
+    ['octopus', 'main', ['origin/edits']],
+    ['ort', 'main', ['origin/clean', 'origin/edits']],
+    ['ours', 'main', ['origin/clean', 'origin/edits']],
+    ['bogus', 'main', ['origin/clean']],
+  ] as const)('Given strategy %s from %s merging %j', (strategy, start, revs) => {
+    describe('When both tools merge', () => {
+      it('Then the commit, reflog note, state files and index are identical', async () => {
+        // Arrange
+        const { ours, theirs } = setUp();
+        for (const dir of [ours, theirs])
+          dated(['-C', dir, 'checkout', '-q', '-B', 'topic', start]);
+        datedExit(theirs, ['merge', '-s', strategy, ...revs]);
+        const repo = await openRepository({ cwd: ours });
+        const sut = repo.merge.run;
+
+        // Act
+        await sut({ rev: revs, strategy, author: IDENTITY, committer: IDENTITY }).catch(
+          (e: unknown) => e,
+        );
+        await repo.dispose();
+
+        // Assert
+        expect(snapshot(ours)).toEqual(snapshot(theirs));
+      });
+    });
+  });
+
+  describe('Given a pull with strategy ours over a true merge', () => {
+    describe('When both tools pull the head', () => {
+      it("Then the merge commit and the reflog's strategy note are identical", async () => {
+        // Arrange
+        const { ours, theirs } = setUp();
+        const sut = pull;
+        datedExit(theirs, ['pull', '-q', '--no-rebase', '-s', 'ours', 'origin', 'clean']);
+
+        // Act
+        await sut(contextOf(ours), {
+          remote: 'origin',
+          ref: 'clean',
+          rebase: false,
+          strategy: 'ours',
+          author: IDENTITY,
+          committer: IDENTITY,
+        });
+
+        // Assert
+        expect(git(ours, 'cat-file', 'commit', 'HEAD')).toBe(
+          git(theirs, 'cat-file', 'commit', 'HEAD').replaceAll(
+            peerPath.slice(0, -'.git'.length),
+            SHORT_URL,
+          ),
+        );
+        const note = (dir: string) => git(dir, 'reflog', '-1', '--format=%gs').split(': ')[1];
+        expect(note(ours)).toBe(note(theirs));
       });
     });
   });

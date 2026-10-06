@@ -259,6 +259,12 @@ export type CommandError =
   | { readonly code: 'MERGE_DRIVER_MISSING_COMMAND'; readonly name: string }
   | { readonly code: 'INCOMPATIBLE_OPTIONS'; readonly options: readonly [string, string] }
   | {
+      readonly code: 'UNKNOWN_MERGE_STRATEGY';
+      readonly strategy: string;
+      readonly available: ReadonlyArray<string>;
+    }
+  | { readonly code: 'MERGE_STRATEGY_FAILED'; readonly strategy: string }
+  | {
       readonly code: 'CONFIG_BAD_NUMERIC_VALUE';
       readonly key: string;
       readonly source: string;
@@ -931,6 +937,16 @@ export const configNegativeLength = (
  */
 export const incompatibleOptions = (first: string, second: string): TsgitError =>
   new TsgitError({ code: 'INCOMPATIBLE_OPTIONS', options: [first, second] });
+
+/** git's `get_strategy` refusal: `strategy` is none of the `available` ones. */
+export const unknownMergeStrategy = (
+  strategy: string,
+  available: ReadonlyArray<string>,
+): TsgitError => new TsgitError({ code: 'UNKNOWN_MERGE_STRATEGY', strategy, available });
+
+/** git's `Merge with strategy <s> failed.`: the strategy does not handle this merge. */
+export const mergeStrategyFailed = (strategy: string): TsgitError =>
+  new TsgitError({ code: 'MERGE_STRATEGY_FAILED', strategy });
 
 /**
  * A `[merge "<name>"]` section is registered (`name` and/or `recursive` set) but

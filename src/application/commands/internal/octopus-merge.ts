@@ -180,7 +180,8 @@ const mergeStep = async (ctx: Context, input: StepInput): Promise<StepResult> =>
   return { merged, kept, conflicts };
 };
 
-const writeFlatTree = (ctx: Context, entries: FlatEntries): Promise<ObjectId> =>
+/** git's `write-tree` over flat entries. */
+export const writeFlatTree = (ctx: Context, entries: FlatEntries): Promise<ObjectId> =>
   synthesizeTreeFromIndex(
     ctx,
     [...entries].map(([path, entry]) => stage0Entry(path, entry.id, entry.mode)),

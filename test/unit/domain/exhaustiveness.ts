@@ -183,6 +183,8 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'CONFIG_MISSING_VALUE':
     case 'CONFIG_NEGATIVE_LENGTH':
     case 'INCOMPATIBLE_OPTIONS':
+    case 'UNKNOWN_MERGE_STRATEGY':
+    case 'MERGE_STRATEGY_FAILED':
     case 'MERGE_DRIVER_MISSING_COMMAND':
     case 'CONFIG_BAD_NUMERIC_VALUE':
     case 'CONFIG_BAD_BOOLEAN_VALUE':

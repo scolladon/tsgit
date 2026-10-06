@@ -1805,6 +1805,14 @@ describe('domain commands error — extractDetail message formatting', () => {
       "INCOMPATIBLE_OPTIONS: options '--squash' and '--no-ff' cannot be used together",
     ],
     [
+      { code: 'UNKNOWN_MERGE_STRATEGY', strategy: 'x', available: ['octopus', 'ours'] },
+      "UNKNOWN_MERGE_STRATEGY: Could not find merge strategy 'x'. Available strategies are: octopus ours.",
+    ],
+    [
+      { code: 'MERGE_STRATEGY_FAILED', strategy: 'ort' },
+      'MERGE_STRATEGY_FAILED: Merge with strategy ort failed.',
+    ],
+    [
       { code: 'MERGE_DRIVER_MISSING_COMMAND', name: 'x' },
       'MERGE_DRIVER_MISSING_COMMAND: custom merge driver x lacks command line.',
     ],

@@ -914,6 +914,37 @@ describe('pull', () => {
     });
   });
 
+  describe('Given strategy ours', () => {
+    describe('When pull over a true merge', () => {
+      it("Then the merge commit keeps HEAD's tree", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'a', 'A');
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        const b = await commitFile(ctx, 'b.txt', 'b', 'B');
+        await checkout(ctx, { rev: 'main' });
+        const head = await commitFile(ctx, 'c.txt', 'c', 'X');
+        await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
+        const { transport } = buildPullRemote(
+          [{ name: 'refs/heads/main', id: b }],
+          await emptyPack(ctx),
+        );
+        const sut = pull;
+
+        // Act
+        const result = mergedPull(
+          await sut(withTransport(ctx, transport), { rebase: false, strategy: 'ours', author }),
+        );
+
+        // Assert
+        expect(result.merge.kind === 'merge' && result.merge.parents).toEqual([head, b]);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/b.txt`)).toBe(false);
+      });
+    });
+  });
+
   describe('Given a depth argument', () => {
     describe('When pull', () => {
       it('Then forwards a deepen request to the fetch step', async () => {

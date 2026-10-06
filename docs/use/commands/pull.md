@@ -24,6 +24,7 @@ interface PullOptions {
   readonly log?: boolean | number; // git's --log[=<n>] / --no-log, forwarded to merge
   readonly squash?: boolean;      // git's --squash, forwarded to merge
   readonly commit?: boolean;      // git's --commit / --no-commit, forwarded to merge
+  readonly strategy?: string;     // git's -s <strategy>, forwarded to merge
   readonly author?: AuthorIdentity;
   readonly committer?: AuthorIdentity;
 }
