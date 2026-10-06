@@ -12,13 +12,15 @@
  */
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   rmSync,
-  statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { cp } from 'node:fs/promises';
@@ -63,10 +65,19 @@ const dated = (args: ReadonlyArray<string>): void => {
   runGit(args, { env: DATED_ENV });
 };
 
+/** A file whose content starts with this is written as a symlink to the rest. */
+const SYMLINK = '-> ';
+
+const writeEntry = (target: string, content: string): void => {
+  rmSync(target, { force: true });
+  if (content.startsWith(SYMLINK)) symlinkSync(content.slice(SYMLINK.length), target);
+  else writeFileSync(target, content);
+};
+
 const writeAll = (dir: string, files: Files): void => {
   for (const [name, content] of Object.entries(files)) {
     mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
-    writeFileSync(path.join(dir, name), content);
+    writeEntry(path.join(dir, name), content);
   }
 };
 
@@ -89,17 +100,22 @@ const buildScenario = ({ base, side, main }: Scenario): string => {
 
 const copyOf = async (dir: string): Promise<string> => {
   const target = path.join(root, `copy-${copies++}`);
-  await cp(dir, target, { recursive: true });
+  await cp(dir, target, { recursive: true, verbatimSymlinks: true });
   return target;
 };
+
+const readEntry = (target: string): string =>
+  lstatSync(target).isSymbolicLink()
+    ? `${SYMLINK}${readlinkSync(target)}`
+    : readFileSync(target, 'latin1');
 
 const worktreeFiles = (dir: string): Record<string, string> =>
   Object.fromEntries(
     readdirSync(dir, { recursive: true, encoding: 'utf8' })
       .filter((name) => !name.startsWith('.git/') && name !== '.git')
-      .filter((name) => statSync(path.join(dir, name)).isFile())
+      .filter((name) => !lstatSync(path.join(dir, name)).isDirectory())
       .sort()
-      .map((name) => [name, readFileSync(path.join(dir, name), 'latin1')]),
+      .map((name) => [name, readEntry(path.join(dir, name))]),
   );
 
 const snapshot = (dir: string) => ({
@@ -201,6 +217,13 @@ const denseEdits = (seed: number, length: number): Scenario => {
   return { base: { f: base }, side: { f: resample(rand() * 0.6) }, main: { f: main } };
 };
 
+/** Both sides retarget one symlink and add another at the same path. */
+const SYMLINKS: Scenario = {
+  base: { f: 'x\n', l: '-> base' },
+  side: { l: '-> theirs', added: '-> t2' },
+  main: { l: '-> ours', added: '-> o2' },
+};
+
 /** Both sides adopt `text=auto`; side also strips the CRLFs, main edits a line. */
 const LINE_ENDINGS: Scenario = {
   base: { f: 'a\r\nb\r\nc\r\n' },
@@ -274,6 +297,9 @@ describe.skipIf(!GIT_AVAILABLE)('merge strategy options interop', () => {
       ['renormalize', 'no-renormalize'],
     ],
     ['ignore-space-at-eol and ours over space runs', SPACE_RUNS, ['ignore-space-at-eol', 'ours']],
+    ['nothing over symlinks both sides changed', SYMLINKS, []],
+    ['ours over symlinks both sides changed', SYMLINKS, ['ours']],
+    ['theirs over symlinks both sides changed', SYMLINKS, ['theirs']],
   ])('Given -X %s', (_label, scenario, options) => {
     describe('When both tools merge the side', () => {
       it("Then the merge commit, index, files and stop state match git's", async () => {

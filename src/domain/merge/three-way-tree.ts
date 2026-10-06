@@ -22,6 +22,7 @@ import type {
   TreeMergeResult,
 } from './merge-types.js';
 import { MAX_CONFLICT_OUTPUT_BYTES } from './merge-types.js';
+import type { OrtVariant } from './strategy-options.js';
 
 export type ContentMerger = (
   ctx: ContentMergeContext,
@@ -212,8 +213,7 @@ function resolveKindDispatch(
   our: FlatTreeEntry,
   their: FlatTreeEntry,
   contentMerger: ContentMerger,
-  labels: MergeLabels,
-  reserved: Set<FilePath>,
+  scope: PathScope,
 ): MergeOutcome | Promise<MergeOutcome> {
   if (isGitlink(our.mode) || isGitlink(their.mode)) {
     if (isGitlink(our.mode) && isGitlink(their.mode) && isGitlink(base.mode)) {
@@ -224,13 +224,13 @@ function resolveKindDispatch(
   const ourSymlink = isSymlinkKind(our.mode);
   const theirSymlink = isSymlinkKind(their.mode);
   if (ourSymlink && theirSymlink) {
-    return symlinkPairConflict(path, base, our, their);
+    return symlinkPair(path, base, our, their, scope.variant);
   }
   if (ourSymlink || theirSymlink) {
     if (isGitlink(base.mode)) {
       return typeChangeConflict(path, base, our, their);
     }
-    return distinctTypesConflict(path, our, their, labels, reserved, base);
+    return distinctTypesConflict(path, our, their, scope.labels, scope.reserved, base);
   }
   if (!isSameKind(base.mode, our.mode)) {
     return resolveKindChangedBase(path, base, our, their, contentMerger);
@@ -245,8 +245,7 @@ async function resolveBothPresent(
   our: FlatTreeEntry,
   their: FlatTreeEntry,
   contentMerger: ContentMerger,
-  labels: MergeLabels,
-  reserved: Set<FilePath>,
+  scope: PathScope,
 ): Promise<MergeOutcome> {
   const ourUnchanged = entriesEqual(base, our);
   const theirUnchanged = entriesEqual(base, their);
@@ -262,7 +261,7 @@ async function resolveBothPresent(
   if (entriesEqual(our, their)) {
     return { status: 'resolved-known', path, id: our.id, mode: our.mode };
   }
-  return resolveKindDispatch(path, base, our, their, contentMerger, labels, reserved);
+  return resolveKindDispatch(path, base, our, their, contentMerger, scope);
 }
 
 function isRegularKind(mode: FileMode): boolean {
@@ -328,6 +327,28 @@ function distinctTypesConflict(
     ourPath,
     theirPath,
   });
+}
+
+/** merge-ort.c's `merge_3way` symlink case: `-X ours` / `-X theirs` keep that side's link cleanly. */
+function favouredSymlink(
+  path: FilePath,
+  our: FlatTreeEntry,
+  their: FlatTreeEntry,
+  variant: OrtVariant,
+): MergeOutcome {
+  const kept = variant === 'ours' ? our : their;
+  return { status: 'resolved-known', path, id: kept.id, mode: kept.mode };
+}
+
+function symlinkPair(
+  path: FilePath,
+  base: FlatTreeEntry,
+  our: FlatTreeEntry,
+  their: FlatTreeEntry,
+  variant: OrtVariant | undefined,
+): MergeOutcome {
+  if (variant !== undefined) return favouredSymlink(path, our, their, variant);
+  return symlinkPairConflict(path, base, our, their);
 }
 
 function symlinkPairConflict(
@@ -441,8 +462,7 @@ async function resolveAddAdd(
   our: FlatTreeEntry,
   their: FlatTreeEntry,
   contentMerger: ContentMerger,
-  labels: MergeLabels,
-  reserved: Set<FilePath>,
+  scope: PathScope,
 ): Promise<MergeOutcome> {
   if (entriesEqual(our, their)) {
     return { status: 'resolved-known', path, id: our.id, mode: our.mode };
@@ -452,7 +472,10 @@ async function resolveAddAdd(
   const ourSymlink = isSymlinkKind(our.mode);
   const theirSymlink = isSymlinkKind(their.mode);
   if ((ourRegular && theirSymlink) || (ourSymlink && theirRegular)) {
-    return distinctTypesConflict(path, our, their, labels, reserved);
+    return distinctTypesConflict(path, our, their, scope.labels, scope.reserved);
+  }
+  if (ourSymlink && theirSymlink && scope.variant !== undefined) {
+    return favouredSymlink(path, our, their, scope.variant);
   }
   if (!ourRegular || !theirRegular) {
     return addAddConflict(path, our, their);
@@ -471,14 +494,20 @@ async function resolveAddAdd(
   });
 }
 
+/** What every path's resolution shares: marker labels, taken paths, and the `-X` side. */
+interface PathScope {
+  readonly labels: MergeLabels;
+  readonly reserved: Set<FilePath>;
+  readonly variant: OrtVariant | undefined;
+}
+
 function resolvePath(
   path: FilePath,
   base: FlatTreeEntry | undefined,
   our: FlatTreeEntry | undefined,
   their: FlatTreeEntry | undefined,
   contentMerger: ContentMerger,
-  labels: MergeLabels,
-  reserved: Set<FilePath>,
+  scope: PathScope,
 ): MergeOutcome | Promise<MergeOutcome> {
   if (our === undefined && their === undefined) {
     return { status: 'resolved-deleted', path };
@@ -490,9 +519,9 @@ function resolvePath(
     return resolveOneSideAbsent(path, base, our, 'our');
   }
   if (base === undefined) {
-    return resolveAddAdd(path, our, their, contentMerger, labels, reserved);
+    return resolveAddAdd(path, our, their, contentMerger, scope);
   }
-  return resolveBothPresent(path, base, our, their, contentMerger, labels, reserved);
+  return resolveBothPresent(path, base, our, their, contentMerger, scope);
 }
 
 const sideIdsAt = (side: 'base' | 'our' | 'their', entry: FlatTreeEntry | undefined) =>
@@ -618,6 +647,7 @@ export async function mergeTrees(
   contentMerger: ContentMerger,
   labels: MergeLabels = DEFAULT_MERGE_LABELS,
   renames: MergeRenames = NO_MERGE_RENAMES,
+  variant?: OrtVariant,
 ): Promise<TreeMergeResult> {
   enforcePerInputCap(base, 'base');
   enforcePerInputCap(ours, 'ours');
@@ -631,7 +661,7 @@ export async function mergeTrees(
       : new Set([...renamed.vacated, ...located.vacated]);
   const paths = buildUnionPaths(renamed.base, renamed.ours, renamed.theirs, vacated);
   const sortedPaths = sortByPath([...paths], (p) => p);
-  const reserved = new Set<FilePath>(paths);
+  const scope: PathScope = { labels, reserved: new Set<FilePath>(paths), variant };
   const sidePaths =
     located.sidePaths.size === 0
       ? renamed.sidePaths
@@ -655,7 +685,7 @@ export async function mergeTrees(
       renamed.ours?.entries.get(path),
       renamed.theirs?.entries.get(path),
     ] as const;
-    const result = resolvePath(path, ...entries, merger, labels, reserved);
+    const result = resolvePath(path, ...entries, merger, scope);
     const outcome = result instanceof Promise ? await result : result;
     outcomes.push(
       located.fileLocations.has(path) ? asFileLocation(outcome, path, entries) : outcome,

@@ -1015,6 +1015,43 @@ describe('mergeTrees — mode handling', () => {
     });
   });
 
+  describe.each([
+    { variant: 'ours', expectedId: ID_B },
+    { variant: 'theirs', expectedId: ID_C },
+  ] as const)(
+    'Given both sides changed a symlink under the $variant variant',
+    ({ variant, expectedId }) => {
+      describe.each([
+        { label: 'from a base symlink', base: tree([['p', entry(ID_A, FILE_MODE.SYMLINK)]]) },
+        { label: 'with no base (add/add)', base: tree([]) },
+      ])('When mergeTrees merges them $label', ({ base }) => {
+        it('Then that side’s symlink wins cleanly', async () => {
+          // Arrange
+          const sut = mergeTrees;
+          const ours = tree([['p', entry(ID_B, FILE_MODE.SYMLINK)]]);
+          const theirs = tree([['p', entry(ID_C, FILE_MODE.SYMLINK)]]);
+
+          // Act
+          const result = await sut(
+            base,
+            ours,
+            theirs,
+            noopMerger,
+            DEFAULT_MERGE_LABELS,
+            undefined,
+            variant,
+          );
+
+          // Assert
+          expect(result.cleanMerge).toBe(true);
+          expect(result.outcomes).toEqual([
+            { status: 'resolved-known', path: 'p', id: expectedId, mode: FILE_MODE.SYMLINK },
+          ]);
+        });
+      });
+    },
+  );
+
   describe('Given base symlink and both sides regular with different ids, through the ctx-taking shape', () => {
     describe('When merger returns a content conflict', () => {
       it('Then merger called once with no baseId/baseMode in ctx, conflict carries base fields', async () => {

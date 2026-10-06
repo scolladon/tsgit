@@ -207,7 +207,7 @@ export interface MergeRunInput {
    * never reads them). `ort` / `recursive` honour `no-renames`,
    * `find-renames[=<n>]` and `rename-threshold=<n>` over `merge.renames` /
    * `diff.renames`, and `ours` / `theirs` (that side wins every overlapping
-   * hunk and every binary merge), and `ignore-space-change`,
+   * hunk, every binary merge and every symlink both sides changed), and `ignore-space-change`,
    * `ignore-all-space`, `ignore-space-at-eol`, `ignore-cr-at-eol` (a line
    * whose change is whitespace-only yields to the other side's), and
    * `patience`, `histogram` and
@@ -1063,7 +1063,15 @@ const computeMergeTreeResult = async (
   const detected = await detectMergeRenames(ctx, baseFlat, ourFlat, theirFlat, strategy.renames);
   const trees = { base: baseFlat, ours: ourFlat, theirs: theirFlat };
   const renames = await mergeCollidingRenameSources(ctx, trees, detected, contentMerger);
-  const result = await mergeTrees(baseFlat, ourFlat, theirFlat, contentMerger, labels, renames);
+  const result = await mergeTrees(
+    baseFlat,
+    ourFlat,
+    theirFlat,
+    contentMerger,
+    labels,
+    renames,
+    strategy.variant,
+  );
 
   if (result.cleanMerge) {
     const tree = await synthesiseMergedTree(ctx, result.outcomes);
