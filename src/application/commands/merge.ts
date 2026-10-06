@@ -134,6 +134,7 @@ import {
   requireWorkTree,
 } from './internal/repo-state.js';
 import { resolveRevisionExpression } from './internal/revision-expression.js';
+import { signCommitData } from './internal/sign-request.js';
 import { buildSquashMessage } from './internal/squash-message.js';
 import { applyMergeAutostash, createAutostash } from './stash.js';
 
@@ -227,6 +228,13 @@ export interface MergeRunInput {
   readonly strategyOptions?: ReadonlyArray<string>;
   readonly author?: AuthorIdentity;
   readonly committer?: AuthorIdentity;
+  /**
+   * Sign the merge commit (git's `-S`). Tri-state against `commit.gpgSign`:
+   * an explicit `true`/`false` wins; `undefined` falls back to the config.
+   */
+  readonly sign?: boolean;
+  /** Signing key override (git's `-S<keyid>`); falls back to `user.signingKey`. */
+  readonly signKey?: string;
 }
 
 /**
@@ -477,14 +485,25 @@ const overBranchOptions = (branch: MergeCommandLine, given: MergeRunInput): Merg
   const givenStrategies = given.strategy === undefined ? [] : [given.strategy].flat();
   const strategy = explicitStrategies([...(branch.strategy ?? []), ...givenStrategies])!;
   const strategyOptions = [...(branch.strategyOptions ?? []), ...(given.strategyOptions ?? [])];
+  const { sign: _sign, signKey: _signKey, ...branchOptions } = branch;
   return {
-    ...branch,
+    ...branchOptions,
     ...definedFields(given),
+    ...signingOf(given.sign === undefined && given.signKey === undefined ? branch : given),
     ...(strategy.length === 0 ? {} : { strategy }),
     ...(strategyOptions.length === 0 ? {} : { strategyOptions }),
     ...joinedMessage(branch.message, given.message),
   };
 };
+
+/** git reads `-S` afresh on the command line: a caller's signing drops the branch's key. */
+const signingOf = ({
+  sign,
+  signKey,
+}: Pick<MergeRunInput, 'sign' | 'signKey'>): Pick<MergeRunInput, 'sign' | 'signKey'> => ({
+  ...(sign === undefined ? {} : { sign }),
+  ...(signKey === undefined ? {} : { signKey }),
+});
 
 /** A field set to `undefined` is one the caller did not give. */
 const definedFields = (given: MergeRunInput): MergeRunInput =>
@@ -967,13 +986,25 @@ const stopBeforeCommit = (
   tree: ObjectId,
   ourId: ObjectId,
   heads: ReadonlyArray<ObjectId>,
+  message: string = sanitizeMessage(opts.message, { allowEmpty: false }),
 ): Promise<MergeEnding> =>
   materialiseAndApply(ctx, tree, async () => {
     await writeMergeHeads(ctx, heads);
     await writeMergeMode(ctx, opts.fastForward);
-    await writeMergeMsg(ctx, sanitizeMessage(opts.message, { allowEmpty: false }));
+    await writeMergeMsg(ctx, message);
     return { kind: 'stopped', mergeHead: heads[0]!, origHead: ourId };
   });
+
+/** git's `sign_commit`: `-S` / `--no-gpg-sign`, else `commit.gpgSign`. */
+const mergeSignature = async (
+  ctx: Context,
+  opts: SettledMerge,
+  data: CommitData,
+): Promise<string | undefined> => {
+  const config = await readConfig(ctx);
+  if (!(opts.sign ?? config.commit?.gpgSign === true)) return undefined;
+  return signCommitData(ctx, config, data, opts.signKey);
+};
 
 /** git's `finish_automerge`: commit the merged tree and log `note` behind the reflog action. */
 const commitCleanMerge = async (
@@ -996,8 +1027,17 @@ const commitCleanMerge = async (
     message,
     extraHeaders: [],
   };
+  // git dies on a failed signing with the merge materialised and its state kept, MERGE_MSG
+  // as `prepare_to_commit` wrote it: the message without its final newline.
+  const gpgSignature = await mergeSignature(ctx, opts, commitData).catch(async (error: unknown) => {
+    await stopBeforeCommit(ctx, opts, mergedTree, ourId, heads, message.slice(0, -1));
+    throw error;
+  });
   return materialiseAndApply(ctx, mergedTree, async () => {
-    const id = await createCommit(ctx, commitData);
+    const id = await createCommit(ctx, {
+      ...commitData,
+      ...(gpgSignature === undefined ? {} : { gpgSignature }),
+    });
     // Written through the literal `HEAD`: the branch it names, or HEAD itself when detached.
     await updateRef(ctx, HEAD, id, {
       expected: ourId,

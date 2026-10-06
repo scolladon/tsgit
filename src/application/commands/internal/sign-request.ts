@@ -1,5 +1,10 @@
 import { signingFailed } from '../../../domain/commands/error.js';
-import type { AuthorIdentity } from '../../../domain/objects/index.js';
+import type { Commit, CommitData } from '../../../domain/objects/commit.js';
+import {
+  type AuthorIdentity,
+  type ObjectId,
+  serializeCommitContent,
+} from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import type { ParsedConfig } from '../../primitives/config-read.js';
 import {
@@ -51,4 +56,22 @@ export const signOrThrow = async (
       : signingFailed(result.reason, request.format);
   }
   return result.armor;
+};
+
+/**
+ * Sign the unsigned commit payload (the commit object without a `gpgsig`
+ * header) as its committer. Throws `SIGNING_FAILED` atomically on any signer
+ * refusal — the caller must not write the commit when this throws.
+ */
+export const signCommitData = async (
+  ctx: Context,
+  config: ParsedConfig,
+  data: CommitData,
+  signKey: string | undefined,
+): Promise<string> => {
+  const request = resolveSignRequest(config, data.committer, signKey);
+  const unsigned: Commit = { type: 'commit', id: '' as ObjectId, data };
+  const armor = await signOrThrow(ctx, serializeCommitContent(unsigned), request);
+  // Signers end their armor with a newline the gpgsig header encoder would read as an extra line.
+  return armor.endsWith('\n') ? armor.slice(0, -1) : armor;
 };

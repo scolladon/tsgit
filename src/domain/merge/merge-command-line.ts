@@ -20,6 +20,8 @@ export interface MergeCommandLine {
   readonly log?: boolean | number;
   readonly allowUnrelatedHistories?: boolean;
   readonly autostash?: boolean;
+  readonly sign?: boolean;
+  readonly signKey?: string;
 }
 
 type Apply = (line: MergeCommandLine, value: string | undefined, spelt: string) => MergeCommandLine;
@@ -82,6 +84,16 @@ const setLog: Apply = (line, value, spelt) => {
   return { ...line, log: parsed.value };
 };
 
+const withoutSignKey = ({ signKey: _dropped, ...line }: MergeCommandLine): MergeCommandLine => line;
+
+/** `-S` alone, or with an empty key, signs with the default key; `-S<key>` names one. */
+const setSign: Apply = (line, value) =>
+  value === undefined || value === ''
+    ? { ...withoutSignKey(line), sign: true }
+    : { ...line, sign: true, signKey: value };
+
+const unsetSign: Apply = (line) => ({ ...withoutSignKey(line), sign: false });
+
 const flag = (long: string, set: Apply, unset: Apply, short?: string): MergeOption => ({
   long,
   ...(short === undefined ? {} : { short }),
@@ -127,7 +139,7 @@ const OPTIONS: ReadonlyArray<MergeOption> = [
     assign('allowUnrelatedHistories', false),
   ),
   flag('progress', ignore, ignore),
-  { ...flag('gpg-sign', refuse, ignore, 'S'), value: 'optional' },
+  { ...flag('gpg-sign', setSign, unsetSign, 'S'), value: 'optional' },
   flag('autostash', assign('autostash', true), assign('autostash', false)),
   flag('overwrite-ignore', ignore, refuse),
   flag('signoff', refuse, ignore),

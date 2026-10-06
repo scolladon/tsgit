@@ -626,6 +626,42 @@ describe.skipIf(!GIT_AVAILABLE)('merge options interop', () => {
     });
   });
 
+  describe.each([
+    {
+      signer:
+        "#!/bin/sh\ncat >/dev/null\necho '[GNUPG:] SIG_CREATED D 22 10 00 1700000000 F' >&2\nprintf '%s' '-----BEGIN PGP SIGNATURE-----\n\nCANNED==\n-----END PGP SIGNATURE-----\n'\n",
+      code: undefined,
+    },
+    { signer: '#!/bin/sh\nexit 1\n', code: 'SIGNING_FAILED' },
+  ])('Given branch.main.mergeoptions -SKEY and a signer', ({ signer, code }) => {
+    describe('When both tools merge origin/clean', () => {
+      it('Then the signed commit, or the state a failed signing leaves, is identical', async () => {
+        // Arrange
+        const { ours, theirs } = setUp([['branch.main.mergeoptions', '-SKEY']]);
+        const program = path.join(root, `signer-${code ?? 'ok'}.sh`);
+        writeFileSync(program, signer, { mode: 0o755 });
+        for (const dir of [ours, theirs]) runGit(['-C', dir, 'config', 'gpg.program', program]);
+        const sut = mergeRun;
+        const theirsRun = datedExit(theirs, ['merge', 'origin/clean']);
+
+        // Act
+        const result = await sut(createNodeContext({ workDir: ours }), {
+          rev: 'origin/clean',
+          author: IDENTITY,
+          committer: IDENTITY,
+        })
+          .then(() => undefined)
+          .catch((e: unknown) => (e as TsgitError).data.code);
+
+        // Assert
+        expect(result).toBe(code);
+        expect(theirsRun.exitCode).toBe(code === undefined ? 0 : 128);
+        expect(snapshot(ours)).toEqual(snapshot(theirs));
+        expect(git(ours, 'cat-file', '-p', 'HEAD')).toBe(git(theirs, 'cat-file', '-p', 'HEAD'));
+      });
+    });
+  });
+
   describe('Given branch.main.mergeoptions --no-verify and a pre-merge-commit hook that fails', () => {
     describe('When both tools merge origin/clean', () => {
       it('Then both commit the merge past the hook', async () => {

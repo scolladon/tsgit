@@ -1,9 +1,9 @@
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { nothingToCommit } from '../../domain/index.js';
-import type { Commit, CommitData } from '../../domain/objects/commit.js';
+import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import type { AuthorIdentity, ObjectId, TreeEntry } from '../../domain/objects/index.js';
-import { serializeCommitContent, zeroOid } from '../../domain/objects/index.js';
+import { zeroOid } from '../../domain/objects/index.js';
 import type { RefName } from '../../domain/objects/object-id.js';
 import { treeEntry } from '../../domain/objects/tree.js';
 import {
@@ -59,7 +59,7 @@ import {
 } from './internal/merge-state.js';
 import { assertNoPendingOperation, readHeadRaw, requireWorkTree } from './internal/repo-state.js';
 import { readRevertHead } from './internal/revert-state.js';
-import { resolveSignRequest, signOrThrow } from './internal/sign-request.js';
+import { signCommitData } from './internal/sign-request.js';
 import { rejectUnmergedIndex } from './internal/unmerged-index.js';
 import { applyMergeAutostash } from './stash.js';
 
@@ -180,29 +180,6 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
 };
 
 /**
- * Sign the unsigned commit payload (the commit object without a `gpgsig`
- * header). Throws `SIGNING_FAILED` atomically on any signer refusal — the
- * caller must not proceed to `createCommit` when this throws.
- */
-const signCommit = async (
-  ctx: Context,
-  config: ParsedConfig,
-  data: CommitData,
-  committer: AuthorIdentity,
-  signKey: string | undefined,
-): Promise<string> => {
-  const request = resolveSignRequest(config, committer, signKey);
-  const unsigned: Commit = { type: 'commit', id: '' as ObjectId, data };
-  const payload = serializeCommitContent(unsigned);
-  const armor = await signOrThrow(ctx, payload, request);
-  // Signers terminate their armor block with a trailing newline; the header
-  // encoder (formatContinuationHeader) treats a trailing newline in a header
-  // value as an extra blank continuation line rather than a line terminator,
-  // so it is stripped here to match the stored gpgSignature convention.
-  return armor.endsWith('\n') ? armor.slice(0, -1) : armor;
-};
-
-/**
  * Tri-state signing decision: an explicit `opts.sign` always wins; leaving it
  * `undefined` falls back to `commit.gpgsign` from config. Returns `undefined`
  * when signing is off, otherwise the resolved armor (or throws).
@@ -216,7 +193,7 @@ const resolveGpgSignature = async (
 ): Promise<string | undefined> => {
   const wantSign = opts.sign ?? config.commit?.gpgSign === true;
   if (!wantSign) return undefined;
-  return signCommit(ctx, config, commitData, committer, opts.signKey);
+  return signCommitData(ctx, config, { ...commitData, committer }, opts.signKey);
 };
 
 interface CommitRefUpdate {

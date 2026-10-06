@@ -87,7 +87,6 @@ describe('parseMergeCommandLine', () => {
         '--no-abort',
         '--no-quit',
         '--no-continue',
-        '--no-gpg-sign',
         '--overwrite-ignore',
         '--no-signoff',
         '--verify',
@@ -105,6 +104,10 @@ describe('parseMergeCommandLine', () => {
     ['an abbreviation one option alone starts', ['--allow'], { allowUnrelatedHistories: true }],
     ['--no-verify, whose hooks tsgit never runs', ['--no-verify'], {}],
     ['--no-no-verify', ['--no-no-verify'], {}],
+    ['-S', ['-S'], { sign: true }],
+    ['-S with a key', ['-SKEY'], { sign: true, signKey: 'KEY' }],
+    ['--gpg-sign with a key, then without', ['--gpg-sign=KEY', '--gpg-sign'], { sign: true }],
+    ['--no-gpg-sign', ['-SKEY', '--no-gpg-sign'], { sign: false }],
   ] as const)('Given %s', (_, argv, expected) => {
     describe('When parsed', () => {
       it('Then it yields the options git sets', () => {
@@ -185,11 +188,6 @@ describe('parseMergeCommandLine', () => {
       'a switch tsgit does not take',
       ['-e'],
       { code: 'UNSUPPORTED_OPERATION', operation: 'merge', reason: '-e' },
-    ],
-    [
-      'a switch with an optional value tsgit does not take',
-      ['-S'],
-      { code: 'UNSUPPORTED_OPERATION', operation: 'merge', reason: '-S' },
     ],
     [
       'a valued option tsgit does not take',

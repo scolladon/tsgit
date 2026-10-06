@@ -61,6 +61,14 @@ type MergeResult =
 
 When the walk between HEAD and the merged commit reaches a parent that fails to parse (absent, or another kind of object), `run` logs git's two `error:` lines through `ctx.logger.error` and answers `up-to-date` in every mode: git's `reduce_heads` comes back empty, so `git merge` prints `Already up to date.` and exits 0. `ORIG_HEAD` is still written.
 
+### Signing
+
+`sign: true` signs the merge commit as `git merge -S` does, with `signKey` naming the key
+(`-S<keyid>`, else `user.signingKey`); `sign: false` is `--no-gpg-sign`, and leaving it unset
+follows `commit.gpgSign`. A signer refusal throws `SIGNING_FAILED` after the merge is
+materialised, leaving `MERGE_HEAD`, `MERGE_MODE` and `MERGE_MSG` (without its final newline) for
+a `commit` to finish, as git's merge dies there.
+
 ### `branch.<branch>.mergeoptions`
 
 git's per-branch merge command line applies to every merge onto that branch (and to `pull`'s merge),
@@ -70,7 +78,7 @@ is split as git's `split_cmdline` does — single quotes literal, a backslash es
 character outside them. Note git's config parser strips double quotes first, so quote a word with
 single quotes (or `\"`). The options `merge` models apply (`--ff` / `--no-ff` / `--ff-only`,
 `--[no-]squash`, `--[no-]commit`, `-s`, `-X`, `-m`, `--[no-]log[=<n>]`,
-`--[no-]allow-unrelated-histories`, `--[no-]autostash`); options that shape only git's output
+`--[no-]allow-unrelated-histories`, `--[no-]autostash`, `-S[<key>]` / `--[no-]gpg-sign`); options that shape only git's output
 (`-n`, `--stat`, `-v`, `-q`, `--progress`, …) are accepted, and so is `--no-verify`, since `merge`
 runs no `pre-merge-commit` or `commit-msg` hook; the others git knows refuse with
 `UNSUPPORTED_OPERATION`. A long option may be abbreviated to any prefix only it starts, as git's
