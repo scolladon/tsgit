@@ -273,6 +273,21 @@ describe.skipIf(!GIT_AVAILABLE)('merge rename detection interop', () => {
     ['rename/rename to two paths', [mv('big', 'b')], [mv('big', 'a')]],
     ['rename/rename from two paths', [mv('y', 'c')], [mv('big', 'c')]],
     [
+      'rename/rename to two paths, both edited',
+      [mv('big', 'b'), change('b', '7\n', 'SEVEN\n')],
+      [mv('big', 'a'), change('a', '7\n', 'seven\n')],
+    ],
+    [
+      'rename/rename to two paths, both edited apart',
+      [mv('big', 'b'), change('b', '1\n', 'one\n')],
+      [mv('big', 'a'), change('a', '7\n', 'seven\n')],
+    ],
+    [
+      'rename/rename to two paths, one edited',
+      [mv('big', 'b'), change('b', '1\n', 'one\n')],
+      [mv('big', 'a')],
+    ],
+    [
       'the same rename with different edits',
       [mv('big', 'big2'), change('big2', '1\n', 'one\n')],
       [mv('big', 'big2'), change('big2', '7\n', 'seven\n')],

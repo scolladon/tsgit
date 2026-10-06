@@ -11,6 +11,7 @@ import {
   type MergeRename,
   type MergeRenames,
   type RenamedMergeInput,
+  type SplitRename,
 } from '../../../../src/domain/merge/merge-renames.js';
 import type { MergeConflict } from '../../../../src/domain/merge/merge-types.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
@@ -84,7 +85,19 @@ const mirroredConflict = (conflict: MergeConflict): MergeConflict => {
   };
 };
 
+const mirroredSplit = (split: SplitRename): SplitRename => ({
+  base: split.base,
+  paths: { base: split.paths.base, ours: split.paths.theirs, theirs: split.paths.ours },
+  ours: split.theirs,
+  theirs: split.ours,
+});
+
+// Each side's pass meets the splits in its own rename order; the set is what mirrors.
+const bySource = (splits: ReadonlyArray<SplitRename>): ReadonlyArray<SplitRename> =>
+  [...splits].sort((a, b) => a.paths.base.localeCompare(b.paths.base));
+
 const mirrored = (input: RenamedMergeInput) => ({
+  splitRenames: bySource(input.splitRenames.map(mirroredSplit)),
   forced: new Map([...input.forced].map(([path, conflict]) => [path, mirroredConflict(conflict)])),
   base: input.base,
   ours: input.theirs,
@@ -110,7 +123,10 @@ describe('applyMergeRenames properties', () => {
           fc.property(scenario, ({ base, ours, theirs, renames }) => {
             const result = sut(base, ours, theirs, renames);
             const swappedResult = sut(base, theirs, ours, swapped(renames));
-            expect(swappedResult).toEqual(mirrored(result));
+            expect({
+              ...swappedResult,
+              splitRenames: bySource(swappedResult.splitRenames),
+            }).toEqual(mirrored(result));
           }),
         );
       });

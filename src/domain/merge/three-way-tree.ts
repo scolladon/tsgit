@@ -2,7 +2,7 @@ import type { FlatTree, FlatTreeEntry } from '../diff/flat-tree.js';
 import { MAX_FLAT_TREE_ENTRIES } from '../diff/flat-tree.js';
 import { isSameKind, kindOf } from '../diff/mode-kind.js';
 import { sortByPath } from '../diff/path-compare.js';
-import type { FileMode, FilePath } from '../objects/index.js';
+import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
 import { FILE_MODE } from '../objects/index.js';
 import { applyDirectoryRenames } from './directory-renames.js';
 import { invalidMergeInput, invalidMergeTree } from './error.js';
@@ -12,6 +12,7 @@ import {
   type MergeRenames,
   NO_MERGE_RENAMES,
   type SidePaths,
+  type SplitRename,
 } from './merge-renames.js';
 import type {
   ContentMergeContext,
@@ -555,6 +556,61 @@ function withSidePaths(
   };
 }
 
+/** git's `merge_modes` for a split: a side that kept the base mode yields the other's. */
+const splitMode = ({ base, ours, theirs }: SplitRename): FileMode =>
+  ours.mode === base.mode ? theirs.mode : ours.mode;
+
+type SplitContent = { readonly id: ObjectId } | { readonly bytes: Uint8Array };
+
+/** ort's `handle_content_merge`: an unchanged side yields the other, else the sides merge. */
+async function splitContent(
+  split: SplitRename,
+  contentMerger: ContentMerger,
+): Promise<SplitContent> {
+  const { base, ours, theirs } = split;
+  if (ours.id === theirs.id || ours.id === base.id) return { id: theirs.id };
+  if (theirs.id === base.id) return { id: ours.id };
+  const ctx: ContentMergeContext = {
+    path: split.paths.base,
+    baseId: base.id,
+    ourId: ours.id,
+    theirId: theirs.id,
+    baseMode: base.mode,
+    ourMode: ours.mode,
+    theirMode: theirs.mode,
+    sidePaths: split.paths,
+    extraMarkerSize: 1,
+  };
+  const result = await contentMerger(ctx, undefined, EMPTY_BYTES, EMPTY_BYTES);
+  if (result.status === 'conflict') return { bytes: result.markedBytes };
+  return result.id === undefined ? { bytes: result.bytes } : { id: result.id };
+}
+
+/**
+ * ort stages a rename/rename(1to2)'s merged content at both destinations; a
+ * merged blob the domain cannot name rides as `conflictContent` for the caller
+ * to write.
+ */
+async function settleSplitRenames(
+  forced: ReadonlyMap<FilePath, MergeConflict>,
+  splits: ReadonlyArray<SplitRename>,
+  contentMerger: ContentMerger,
+): Promise<ReadonlyMap<FilePath, MergeConflict>> {
+  if (splits.length === 0) return forced;
+  const settled = new Map(forced);
+  for (const split of splits) {
+    const content = await splitContent(split, contentMerger);
+    const mode = splitMode(split);
+    const staged = (id: 'ourId' | 'theirId') =>
+      'id' in content ? { [id]: content.id } : { conflictContent: content.bytes };
+    const ours = settled.get(split.paths.ours) as MergeConflict;
+    const theirs = settled.get(split.paths.theirs) as MergeConflict;
+    settled.set(split.paths.ours, { ...ours, ourMode: mode, ...staged('ourId') });
+    settled.set(split.paths.theirs, { ...theirs, theirMode: mode, ...staged('theirId') });
+  }
+  return settled;
+}
+
 export async function mergeTrees(
   base: FlatTree | undefined,
   ours: FlatTree | undefined,
@@ -581,10 +637,15 @@ export async function mergeTrees(
       ? renamed.sidePaths
       : new Map([...located.sidePaths, ...renamed.sidePaths]);
   const merger = withSidePaths(contentMerger, sidePaths);
+  const forcedConflicts = await settleSplitRenames(
+    renamed.forced,
+    renamed.splitRenames,
+    contentMerger,
+  );
 
   const outcomes: MergeOutcome[] = [];
   for (const path of sortedPaths) {
-    const forced = renamed.forced.get(path);
+    const forced = forcedConflicts.get(path);
     if (forced !== undefined) {
       outcomes.push(conflictOutcome(forced));
       continue;

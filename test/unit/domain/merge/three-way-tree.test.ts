@@ -2061,3 +2061,152 @@ describe('mergeTrees — directory renames', () => {
     });
   });
 });
+
+describe('mergeTrees — rename/rename to two paths', () => {
+  const SOURCE = 'src' as FilePath;
+  const MINE = 'mine' as FilePath;
+  const YOURS = 'yours' as FilePath;
+  const SPLIT = {
+    ours: [{ oldPath: SOURCE, newPath: MINE }],
+    theirs: [{ oldPath: SOURCE, newPath: YOURS }],
+  };
+  const MARKED = new Uint8Array([60, 10]);
+  const split = (ours: FlatTreeEntry, theirs: FlatTreeEntry, merger: ContentMerger) =>
+    mergeTrees(
+      tree([[SOURCE, entry(ID_A)]]),
+      tree([[MINE, ours]]),
+      tree([[YOURS, theirs]]),
+      merger,
+      DEFAULT_MERGE_LABELS,
+      SPLIT,
+    );
+  const destinations = (result: {
+    readonly conflicts: ReadonlyArray<{ readonly path: FilePath }>;
+  }) => result.conflicts.filter((conflict) => conflict.path !== SOURCE);
+
+  describe('Given both sides edited the content', () => {
+    describe('When the merge conflicts', () => {
+      it('Then both destinations carry the marked content, merged with the split paths and one extra marker', async () => {
+        // Arrange
+        const merger = spyMerger({
+          status: 'conflict',
+          markedBytes: MARKED,
+          conflictType: 'content',
+        });
+        const sut = split;
+
+        // Act
+        const result = await sut(entry(ID_B), entry(ID_C), merger.fn);
+
+        // Assert
+        const regular = FILE_MODE.REGULAR;
+        expect(destinations(result)).toEqual([
+          {
+            type: 'rename-rename',
+            path: MINE,
+            ourId: ID_B,
+            ourMode: regular,
+            conflictContent: MARKED,
+          },
+          {
+            type: 'rename-rename',
+            path: YOURS,
+            theirId: ID_C,
+            theirMode: regular,
+            conflictContent: MARKED,
+          },
+        ]);
+        expect(merger.ctxs).toEqual([
+          {
+            path: SOURCE,
+            baseId: ID_A,
+            ourId: ID_B,
+            theirId: ID_C,
+            baseMode: regular,
+            ourMode: regular,
+            theirMode: regular,
+            sidePaths: { base: SOURCE, ours: MINE, theirs: YOURS },
+            extraMarkerSize: 1,
+          },
+        ]);
+      });
+    });
+
+    describe('When the merge is clean and names its blob', () => {
+      it('Then both destinations stage that blob', async () => {
+        // Arrange
+        const merger = spyMerger({ status: 'clean', bytes: MARKED, id: ID_D });
+        const sut = split;
+
+        // Act
+        const result = await sut(entry(ID_B), entry(ID_C), merger.fn);
+
+        // Assert
+        expect(destinations(result)).toMatchObject([{ ourId: ID_D }, { theirId: ID_D }]);
+        expect(destinations(result)).not.toContainEqual(
+          expect.objectContaining({ conflictContent: MARKED }),
+        );
+      });
+    });
+
+    describe('When the merge is clean without a blob name', () => {
+      it('Then both destinations carry the merged bytes', async () => {
+        // Arrange
+        const merger = spyMerger({ status: 'clean', bytes: MARKED });
+        const sut = split;
+
+        // Act
+        const result = await sut(entry(ID_B), entry(ID_C), merger.fn);
+
+        // Assert
+        expect(destinations(result)).toMatchObject([
+          { ourId: ID_B, conflictContent: MARKED },
+          { theirId: ID_C, conflictContent: MARKED },
+        ]);
+      });
+    });
+  });
+
+  describe.each([
+    ['ours kept the base content', entry(ID_A), entry(ID_C), ID_C],
+    ['theirs kept the base content', entry(ID_B), entry(ID_A), ID_B],
+    ['both sides hold the same content', entry(ID_B), entry(ID_B), ID_B],
+  ])('Given %s', (_label, ours, theirs, staged) => {
+    describe('When merged', () => {
+      it('Then both destinations stage the changed content without a content merge', async () => {
+        // Arrange
+        const merger = spyMerger({ status: 'clean', bytes: MARKED });
+        const sut = split;
+
+        // Act
+        const result = await sut(ours, theirs, merger.fn);
+
+        // Assert
+        expect(destinations(result)).toMatchObject([{ ourId: staged }, { theirId: staged }]);
+        expect(merger.ctxs).toEqual([]);
+      });
+    });
+  });
+
+  describe.each([
+    ['ours made it executable', FILE_MODE.EXECUTABLE, FILE_MODE.REGULAR],
+    ['theirs made it executable', FILE_MODE.REGULAR, FILE_MODE.EXECUTABLE],
+  ])('Given %s', (_label, ourMode, theirMode) => {
+    describe('When merged', () => {
+      it('Then both destinations stage the executable mode', async () => {
+        // Arrange
+        const sut = split;
+
+        // Act
+        const result = await sut(entry(ID_B, ourMode), entry(ID_B, theirMode), noopMerger);
+
+        // Assert
+        const executable = FILE_MODE.EXECUTABLE;
+        expect(destinations(result)).toMatchObject([
+          { ourMode: executable },
+          { theirMode: executable },
+        ]);
+      });
+    });
+  });
+});

@@ -5839,3 +5839,49 @@ describe('merge — throwaway tags', () => {
     });
   });
 });
+
+describe('merge — rename/rename to two paths', () => {
+  const LINES = '1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n';
+  const renameAndEdit = async (ctx: Context, to: string, seven: string): Promise<void> => {
+    await rm(ctx, ['f']);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${to}`, LINES.replace('7\n', `${seven}\n`));
+    await add(ctx, [to]);
+    await commit(ctx, { message: to, author });
+  };
+
+  describe('Given both sides rename one file apart and edit the same line', () => {
+    describe('When merge runs', () => {
+      it('Then the marked merge is staged at both destinations and written to both', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, LINES);
+        await add(ctx, ['f']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'side' });
+        await checkout(ctx, { rev: 'side' });
+        await renameAndEdit(ctx, 'b', 'SEVEN');
+        await checkout(ctx, { rev: 'main' });
+        await renameAndEdit(ctx, 'a', 'seven');
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        const marked = await ctx.fs.readUtf8(`${ctx.layout.workDir}/a`);
+        expect(marked).toContain('<<<<<<<< HEAD:a\nseven\n========\nSEVEN\n>>>>>>>> side:b\n');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/b`)).toBe(marked);
+        const index = await readIndex(ctx);
+        const staged = index.entries.filter((e) => e.path === 'a' || e.path === 'b');
+        expect(staged.map((e) => [e.path, e.flags.stage])).toEqual([
+          ['a', 2],
+          ['b', 3],
+        ]);
+        expect(staged[0]?.id).toBe(staged[1]?.id);
+        expect(new TextDecoder().decode((await readBlob(ctx, staged[0]!.id)).content)).toBe(marked);
+      });
+    });
+  });
+});

@@ -278,6 +278,39 @@ describe('applyMergeRenames', () => {
           ],
         ]);
         expect(result.vacated.size).toBe(0);
+        expect(result.splitRenames).toEqual([
+          {
+            base: entry(ID_BASE),
+            paths: { base: OLD, ours: NEW, theirs: 'other' },
+            ours: entry(ID_EDIT),
+            theirs: entry(ID_OTHER),
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given both sides rename one source apart and theirs also adds at our destination', () => {
+    describe('When the renames are applied', () => {
+      it('Then no split is recorded for a content merge', () => {
+        // Arrange
+        const base = tree([[OLD, ID_BASE]]);
+        const ours = tree([[NEW, ID_EDIT]]);
+        const theirs = tree([
+          ['other', ID_OTHER],
+          [NEW, ID_ADDED],
+        ]);
+        const renames: MergeRenames = {
+          ours: RENAME,
+          theirs: [{ oldPath: OLD, newPath: 'other' as FilePath }],
+        };
+        const sut = applyMergeRenames;
+
+        // Act
+        const result = sut(base, ours, theirs, renames);
+
+        // Assert
+        expect(result.splitRenames).toEqual([]);
       });
     });
   });
@@ -306,6 +339,7 @@ describe('applyMergeRenames', () => {
         expect([...result.forced.keys()]).toEqual([OLD, NEW]);
         expect(result.ours?.entries.get('other' as FilePath)?.id).toBe(ID_ADDED);
         expect(result.theirs?.entries.get('other' as FilePath)?.id).toBe(ID_OTHER);
+        expect(result.splitRenames).toEqual([]);
       });
     });
   });

@@ -1067,12 +1067,38 @@ const computeMergeTreeResult = async (
     const tree = await synthesiseMergedTree(ctx, result.outcomes);
     return { kind: 'clean', tree };
   }
+  const staged = await stageSplitRenameBlobs(ctx, result.conflicts);
   return {
     kind: 'conflict',
-    outcomes: result.outcomes,
-    conflicts: result.conflicts,
+    outcomes: result.outcomes.map((outcome) =>
+      outcome.status === 'conflict'
+        ? { ...outcome, conflict: staged.get(outcome.conflict) ?? outcome.conflict }
+        : outcome,
+    ),
+    conflicts: result.conflicts.map((conflict) => staged.get(conflict) ?? conflict),
     ours: ourFlat.entries,
   };
+};
+
+/**
+ * A rename/rename(1to2)'s merged content is staged at both destinations: write
+ * that blob and stage it in place of the side's own.
+ */
+const stageSplitRenameBlobs = async (
+  ctx: Context,
+  conflicts: ReadonlyArray<MergeConflict>,
+): Promise<ReadonlyMap<MergeConflict, MergeConflict>> => {
+  const staged = new Map<MergeConflict, MergeConflict>();
+  for (const conflict of conflicts) {
+    if (conflict.type !== 'rename-rename' || conflict.conflictContent === undefined) continue;
+    const blob = { type: 'blob', content: conflict.conflictContent, id: '' as ObjectId } as const;
+    const id = await writeObject(ctx, blob);
+    staged.set(
+      conflict,
+      conflict.ourId === undefined ? { ...conflict, theirId: id } : { ...conflict, ourId: id },
+    );
+  }
+  return staged;
 };
 
 interface LeafRecord {

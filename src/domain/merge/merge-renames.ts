@@ -32,6 +32,14 @@ export interface SidePaths {
   readonly theirs: FilePath;
 }
 
+/** A rename/rename(1to2) whose two destinations both stand: ort stages one merged blob at each. */
+export interface SplitRename {
+  readonly base: FlatTreeEntry;
+  readonly paths: SidePaths;
+  readonly ours: FlatTreeEntry;
+  readonly theirs: FlatTreeEntry;
+}
+
 /** The three trees with every rename's base and other-side entries moved to its new path. */
 export interface RenamedMergeInput {
   readonly base: FlatTree | undefined;
@@ -42,6 +50,7 @@ export interface RenamedMergeInput {
   readonly sidePaths: ReadonlyMap<FilePath, SidePaths>;
   /** Paths ort always conflicts on once renames pair them (rename/delete, rename/rename). */
   readonly forced: ReadonlyMap<FilePath, MergeConflict>;
+  readonly splitRenames: ReadonlyArray<SplitRename>;
 }
 
 type Entries = Map<FilePath, FlatTreeEntry>;
@@ -57,6 +66,7 @@ interface Moving {
   readonly vacated: Set<FilePath>;
   readonly sidePaths: Map<FilePath, SidePaths>;
   readonly forced: Map<FilePath, MergeConflict>;
+  readonly splitRenames: SplitRename[];
 }
 
 const hasRenames = (renames: MergeRenames): boolean =>
@@ -158,6 +168,25 @@ const renameRename = (moving: Moving, rename: MergeRename, original: FlatTreeEnt
   at(rename.oldPath, { baseId: original.id, baseMode: original.mode });
   forceUnlessAdded('ours', ours, theirs.entries);
   forceUnlessAdded('theirs', theirs, ours.entries);
+  // Both sides' renames reach here; record the split once, from ours' pass.
+  if (moving.side === 'ours') recordSplit(moving, { ours, theirs }, rename.oldPath, original);
+};
+
+/** A split both of whose destinations stand, neither taken by the opposite side's add. */
+const recordSplit = (
+  moving: Moving,
+  destinations: { readonly ours: Destination; readonly theirs: Destination },
+  source: FilePath,
+  original: FlatTreeEntry,
+): void => {
+  const { ours, theirs } = destinations;
+  if (theirs.entries.has(ours.path) || ours.entries.has(theirs.path)) return;
+  moving.splitRenames.push({
+    base: original,
+    paths: { base: source, ours: ours.path, theirs: theirs.path },
+    ours: ours.entries.get(ours.path) as FlatTreeEntry,
+    theirs: theirs.entries.get(theirs.path) as FlatTreeEntry,
+  });
 };
 
 type RenameHandler = (moving: Moving, rename: MergeRename, original: FlatTreeEntry) => void;
@@ -194,7 +223,7 @@ const bothRenamedAlike = (moving: Moving, rename: MergeRename, original: FlatTre
 const asTree = (entries: Entries, original: FlatTree | undefined): FlatTree | undefined =>
   original === undefined ? undefined : { entries };
 
-type Shared = Pick<Moving, 'base' | 'vacated' | 'sidePaths' | 'forced'>;
+type Shared = Pick<Moving, 'base' | 'vacated' | 'sidePaths' | 'forced' | 'splitRenames'>;
 
 const movingFor = (
   shared: Shared,
@@ -216,7 +245,8 @@ export function applyMergeRenames(
   renames: MergeRenames,
 ): RenamedMergeInput {
   if (base === undefined || !hasRenames(renames)) {
-    return { base, ours, theirs, vacated: new Set(), sidePaths: new Map(), forced: new Map() };
+    const none = { vacated: new Set<FilePath>(), sidePaths: new Map(), forced: new Map() };
+    return { base, ours, theirs, ...none, splitRenames: [] };
   }
   const ourEntries: Entries = new Map(ours?.entries);
   const theirEntries: Entries = new Map(theirs?.entries);
@@ -225,6 +255,7 @@ export function applyMergeRenames(
     vacated: new Set(),
     sidePaths: new Map(),
     forced: new Map(),
+    splitRenames: [],
   };
   const intoOurs = { renamingSide: ourEntries, other: theirEntries };
   const intoTheirs = { renamingSide: theirEntries, other: ourEntries };
@@ -232,9 +263,9 @@ export function applyMergeRenames(
   const theirsMoving = movingFor(shared, 'theirs', intoTheirs, renames.ours);
   for (const rename of renames.ours) applyRename(oursMoving, rename);
   for (const rename of renames.theirs) applyRename(theirsMoving, rename);
-  const { vacated, sidePaths, forced } = shared;
+  const { vacated, sidePaths, forced, splitRenames } = shared;
   const moved = { ours: asTree(ourEntries, ours), theirs: asTree(theirEntries, theirs) };
-  return { base: { entries: shared.base }, ...moved, vacated, sidePaths, forced };
+  return { base: { entries: shared.base }, ...moved, vacated, sidePaths, forced, splitRenames };
 }
 
 /** A rename/add whose source both sides changed: ort content-merges that source first. */
