@@ -21,10 +21,9 @@ import { readObject } from '../../../../src/application/primitives/read-object.j
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
-import { REASON_SKIP_TARGET_PARENTLESS } from '../../../../src/application/primitives/validators.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
-import { TsgitError } from '../../../../src/domain/error.js';
+import type { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type {
   AuthorIdentity,
@@ -1592,7 +1591,7 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
 
   describe('Given an edit stop that is skipped', () => {
     describe('When skip is called', () => {
-      it('Then the edit commit is dropped and the rest replays onto its parent', async () => {
+      it('Then the already-made edit commit is kept and the rest replays on top of it', async () => {
         // Arrange
         const { ctx, base, c1, c2 } = await seedLinear();
         await rebaseRun(ctx, {
@@ -1602,15 +1601,17 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
             { action: 'pick', oid: c2 },
           ],
         });
+        await ctx.fs.writeUtf8(work(ctx, 'scratch.txt'), 'discarded\n');
+        await add(ctx, ['scratch.txt']);
 
         // Act
         const result = await rebaseSkip(ctx);
 
-        // Assert — c1 dropped; c2 reparented onto base
+        // Assert — skip discards the staged change only; c1 stays, c2 fast-forwards onto it
         expect(result.kind).toBe('rebased');
-        const tip = await readCommit(ctx, await mainTipOid(ctx));
-        expect(tip.message).toBe('c2 subject\n');
-        expect(tip.parents).toEqual([base]);
+        expect(await mainTipOid(ctx)).toBe(c2);
+        expect((await readCommit(ctx, c2)).parents).toEqual([c1]);
+        expect(await ctx.fs.exists(work(ctx, 'scratch.txt'))).toBe(false);
       });
     });
   });
@@ -2550,30 +2551,19 @@ describe('rebase — hooks', () => {
 describe('rebase at a shallow boundary', () => {
   describe('Given an edit stop whose amend commit is a masked shallow boundary', () => {
     describe('When skip is called', () => {
-      it('Then refuses INVALID_SEQUENCER_TODO: there is no parent to return to', async () => {
-        // Arrange — masking the edit'd commit makes it parentless, so "drop
-        // the commit and move HEAD to its parent" has no destination.
+      it('Then it keeps the boundary commit and finishes — skip never needs its parent', async () => {
+        // Arrange
         const { ctx, base, c1 } = await seedLinear();
         await rebaseRun(ctx, { upstream: base, interactive: [{ action: 'edit', oid: c1 }] });
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${c1}\n`);
         invalidateShallowSet(ctx);
 
         // Act
-        let caught: unknown;
-        try {
-          await rebaseSkip(ctx);
-          expect.unreachable();
-        } catch (err) {
-          caught = err;
-        }
+        const result = await rebaseSkip(ctx);
 
         // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        if (!(caught instanceof TsgitError)) throw caught;
-        expect(caught.data.code).toBe('INVALID_SEQUENCER_TODO');
-        expect(caught.data.code === 'INVALID_SEQUENCER_TODO' && caught.data.reason).toBe(
-          REASON_SKIP_TARGET_PARENTLESS,
-        );
+        expect(result.kind).toBe('rebased');
+        expect(await mainTipOid(ctx)).toBe(c1);
       });
     });
 

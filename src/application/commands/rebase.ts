@@ -8,7 +8,6 @@
  */
 import {
   invalidOption,
-  invalidSequencerTodo,
   noInitialCommit,
   noOperationInProgress,
   workingTreeDirty,
@@ -63,7 +62,6 @@ import { resolveRef } from '../primitives/resolve-ref.js';
 import { runHook, runInformationalHook } from '../primitives/run-hook.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { updateRef } from '../primitives/update-ref.js';
-import { REASON_SKIP_TARGET_PARENTLESS } from '../primitives/validators.js';
 import { walkCommits, walkCommitsStoppingAt } from '../primitives/walk-commits.js';
 import { removeBranchState, removeCommittedState } from './internal/branch-state.js';
 import { conflictMergeMsg } from './internal/cherry-pick-state.js';
@@ -1433,30 +1431,18 @@ const commitFixupResolution = async (
   });
 };
 
-/** Dropping an edit'd commit moves HEAD to that commit's first parent. A
- *  parentless amend target (a masked shallow boundary edited in place) has no
- *  parent to return to — refuse rather than write an undefined ref target. */
-const skipTargetOf = async (ctx: Context, amend: ObjectId): Promise<ObjectId> => {
-  const parent = (await readCommitData(ctx, amend)).parents[0];
-  if (parent === undefined) throw invalidSequencerTodo(REASON_SKIP_TARGET_PARENTLESS);
-  return parent;
-};
-
 /** A squash/fixup conflict stop also carries `amend` (the group commit), but
  *  only an `edit` stop committed the stopped commit itself. */
 const isEditStop = (state: RebaseState): state is RebaseState & { readonly amend: ObjectId } =>
   state.amend !== undefined && state.currentFixups === undefined;
 
-/** Skip the stopped instruction (drop the edit'd commit, or discard the
- *  conflicted pick) and replay the remaining todo. */
+/** git's skip is `reset --hard HEAD` then continue: an edit stop's commit is
+ *  already made, so it stays and the remaining todo replays on top of it; a
+ *  conflict stop never committed, so HEAD already sits at the last good pick. */
 const rebaseSkipInteractive = async (ctx: Context, state: RebaseState): Promise<RebaseResult> => {
-  const currentHead = await resolveRef(ctx, HEAD);
-  const target = isEditStop(state) ? await skipTargetOf(ctx, state.amend) : currentHead;
-  // An edit stop already committed the edit'd commit, so dropping it moves the
-  // detached HEAD back to its parent; a conflict stop never committed, so HEAD
-  // already sits at the last good pick — writing it back to itself is a no-op.
-  await getRefStore(ctx).applyRefUpdates([{ kind: 'set', name: HEAD, id: target }]);
+  const target = await resolveRef(ctx, HEAD);
   await hardResetWorktreeToCommit(ctx, target);
+  if (isEditStop(state)) return rebaseContinueInteractive(ctx, state);
   const ic: InteractiveContext = {
     branch: branchOf(state.headName),
     onto: state.onto,

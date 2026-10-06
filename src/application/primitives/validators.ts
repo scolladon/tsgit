@@ -50,11 +50,6 @@ export const REASON_EXTRA_HEADER_KEY_INVALID =
   'extraHeader key contains forbidden characters' as const;
 export const REASON_PARENT_INVALID = 'parent is not a well-formed object id' as const;
 
-/* ──────────────── rebase ──────────────── */
-
-export const REASON_SKIP_TARGET_PARENTLESS =
-  'cannot skip: the stopped commit has no parent' as const;
-
 /** Last-gate parent check before commit serialisation: `ObjectId` is a branded
  *  string, so a single bad cast upstream would otherwise flow a non-oid (or
  *  `undefined`) verbatim into a `parent <x>` header. Checked against the

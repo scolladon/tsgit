@@ -498,6 +498,37 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
       });
     });
 
+    describe('When the rebase stops to edit c1 and is then skipped', () => {
+      it('Then both keep c1 and replay the rest on top of it', async () => {
+        // Arrange
+        buildInteractiveLinear(pair.peer);
+        buildInteractiveLinear(pair.ours);
+        gitRebaseInteractive(pair.peer, 's/^pick (.*c1 subject)/edit $1/');
+        git(pair.peer, 'rebase', '--skip');
+        const base = oidAt(pair.ours, 'HEAD~3');
+        const [c1, c2, c3] = ['HEAD~2', 'HEAD~1', 'HEAD'].map((r) => oidAt(pair.ours, r));
+        const repo = await openRepository({ cwd: pair.ours });
+        await repo.rebase.run({
+          upstream: base,
+          interactive: [
+            { action: 'edit', oid: c1 as string },
+            { action: 'pick', oid: c2 as string },
+            { action: 'pick', oid: c3 as string },
+          ],
+        });
+        const sut = repo.rebase.skip;
+
+        // Act
+        const result = await sut();
+        await repo.dispose();
+
+        // Assert
+        expect(result.kind).toBe('rebased');
+        expect(oidAt(pair.ours, 'main')).toBe(oidAt(pair.peer, 'main'));
+        expect(commitCount(pair.ours)).toBe(commitCount(pair.peer));
+      });
+    });
+
     describe('When the edit stop has a tracked file changed but not staged', () => {
       it('Then both refuse to continue and keep the stop', async () => {
         // Arrange
