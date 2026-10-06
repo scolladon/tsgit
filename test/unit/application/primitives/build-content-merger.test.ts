@@ -306,6 +306,80 @@ describe('buildContentMerger', () => {
     });
   });
 
+  describe('Given a merge context asking for one extra marker character', () => {
+    describe('When the built-in merge conflicts', () => {
+      it('Then the markers are one character longer than the attribute size', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.workDir}/.gitattributes`,
+          '* conflict-marker-size=2\n',
+        );
+        const sut = buildContentMerger(ctx, { ours: 'HEAD', theirs: 'feature', base: 'main' });
+        const mergeCtx = await mergeCtxFor(ctx, {
+          base: 'a\nb\nc\n',
+          ours: 'a\nX\nc\n',
+          theirs: 'a\nY\nc\n',
+        });
+
+        // Act
+        const result = await sut(
+          { ...mergeCtx, extraMarkerSize: 1 },
+          undefined,
+          new Uint8Array(0),
+          new Uint8Array(0),
+        );
+
+        // Assert
+        const text = result.status === 'conflict' ? dec(result.markedBytes) : '';
+        expect(text.split('\n')).toEqual([
+          'a',
+          '<<< HEAD',
+          'X',
+          '===',
+          'Y',
+          '>>> feature',
+          'c',
+          '',
+        ]);
+      });
+    });
+  });
+
+  describe('Given an external driver and a merge context asking for one extra marker character', () => {
+    describe('When merging', () => {
+      it('Then the driver receives the enlarged %L', async () => {
+        // Arrange
+        let captured = '';
+        const ctx = createMemoryContext({
+          command: new MemoryCommandRunner(async (req) => {
+            captured = req.command;
+            await ctx.fs.write(req.command.split(' ')[0] as string, enc('done'));
+            return 0;
+          }),
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* merge=custom\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[merge "custom"]\n  driver = %A | %L\n',
+        );
+        const sut = buildContentMerger(ctx);
+        const mergeCtx = await mergeCtxFor(ctx, { base: 'B', ours: 'O', theirs: 'T' });
+
+        // Act
+        await sut(
+          { ...mergeCtx, extraMarkerSize: 1 },
+          undefined,
+          new Uint8Array(0),
+          new Uint8Array(0),
+        );
+
+        // Assert
+        expect(captured.endsWith(' | 8')).toBe(true);
+      });
+    });
+  });
+
   describe('Given the merger is invoked for two paths', () => {
     describe('When merging twice', () => {
       it('Then the attribute provider is reused (both lookups resolve)', async () => {

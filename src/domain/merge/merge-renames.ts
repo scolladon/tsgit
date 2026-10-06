@@ -1,11 +1,17 @@
 import type { FlatTree, FlatTreeEntry } from '../diff/flat-tree.js';
-import type { FilePath } from '../objects/index.js';
-import type { MergeConflict } from './merge-types.js';
+import type { FileMode, FilePath } from '../objects/index.js';
+import type { ContentMergeContext, MergeConflict } from './merge-types.js';
 
 /** One side's rename of a merge-base path, as git's ort pairs it. */
 export interface MergeRename {
   readonly oldPath: FilePath;
   readonly newPath: FilePath;
+  /**
+   * The source's three-way result, content-merged by the caller when both
+   * sides changed it and the other side added the destination (ort's
+   * rename/add): it meets that addition as an add/add.
+   */
+  readonly mergedSource?: FlatTreeEntry;
 }
 
 /** The renames each side made from the merge base. */
@@ -97,19 +103,31 @@ const renameDelete = (moving: Moving, rename: MergeRename, original: FlatTreeEnt
   });
 };
 
+/** The source's three-way result: the side that changed it, else the caller's content merge. */
+const sourceResult = (
+  rename: MergeRename,
+  original: FlatTreeEntry,
+  kept: FlatTreeEntry,
+  renamed: FlatTreeEntry,
+): FlatTreeEntry | undefined => {
+  if (sameEntry(kept, original)) return renamed;
+  if (sameEntry(renamed, original)) return kept;
+  return rename.mergedSource;
+};
+
 /**
  * ort's rename/add: the source's three-way result replaces the renaming
- * side's entry and meets the other side's addition as an add/add. Only a
- * result one side alone decides is taken; a content-merged one is left as is.
+ * side's entry and meets the other side's addition as an add/add. A source
+ * both sides changed is taken only once the caller content-merged it.
  */
 const renameAdd = (moving: Moving, rename: MergeRename, original: FlatTreeEntry): void => {
   const kept = moving.other.get(rename.oldPath);
-  const renamed = moving.renamingSide.get(rename.newPath) as FlatTreeEntry;
   if (kept === undefined) return;
-  const keptUnchanged = sameEntry(kept, original);
-  if (!keptUnchanged && !sameEntry(renamed, original)) return;
+  const renamed = moving.renamingSide.get(rename.newPath) as FlatTreeEntry;
+  const result = sourceResult(rename, original, kept, renamed);
+  if (result === undefined) return;
   vacate(moving, rename.oldPath);
-  moving.renamingSide.set(rename.newPath, keptUnchanged ? renamed : kept);
+  moving.renamingSide.set(rename.newPath, result);
 };
 
 interface Destination {
@@ -214,4 +232,103 @@ export function applyMergeRenames(
   const { vacated, sidePaths, forced } = shared;
   const moved = { ours: asTree(ourEntries, ours), theirs: asTree(theirEntries, theirs) };
   return { base: { entries: shared.base }, ...moved, vacated, sidePaths, forced };
+}
+
+/** A rename/add whose source both sides changed: ort content-merges that source first. */
+export interface CollidingSourceMerge {
+  readonly rename: MergeRename;
+  /** The source's merge, at its old path, each side read where it holds it. */
+  readonly merge: ContentMergeContext;
+  /** The source's three-way mode. */
+  readonly mode: FileMode;
+}
+
+interface SideTrees {
+  readonly side: Side;
+  readonly base: FlatTree;
+  readonly renaming: FlatTree;
+  readonly other: FlatTree;
+  readonly otherRenames: ReadonlyMap<FilePath, FilePath>;
+}
+
+// ort's `1 + 2 * call_depth` at the outermost merge: the source's markers outgrow the add/add's.
+const SOURCE_MERGE_EXTRA_MARKER_SIZE = 1;
+
+const threeWayMode = (base: FlatTreeEntry, our: FlatTreeEntry, their: FlatTreeEntry): FileMode =>
+  our.mode === base.mode ? their.mode : our.mode;
+
+const sourceMerge = (
+  trees: SideTrees,
+  rename: MergeRename,
+  original: FlatTreeEntry,
+  kept: FlatTreeEntry,
+): CollidingSourceMerge => {
+  const renamed = trees.renaming.entries.get(rename.newPath) as FlatTreeEntry;
+  const [our, their] = trees.side === 'ours' ? [renamed, kept] : [kept, renamed];
+  const merge: ContentMergeContext = {
+    path: rename.oldPath,
+    baseId: original.id,
+    ourId: our.id,
+    theirId: their.id,
+    baseMode: original.mode,
+    ourMode: our.mode,
+    theirMode: their.mode,
+    sidePaths: sidePathsFor(trees.side, rename),
+    extraMarkerSize: SOURCE_MERGE_EXTRA_MARKER_SIZE,
+  };
+  return { rename, merge, mode: threeWayMode(original, our, their) };
+};
+
+const collidesWithAddition = (trees: SideTrees, rename: MergeRename): boolean =>
+  !trees.otherRenames.has(rename.oldPath) && trees.other.entries.has(rename.newPath);
+
+const sideCollisions = (
+  trees: SideTrees,
+  renames: ReadonlyArray<MergeRename>,
+): CollidingSourceMerge[] =>
+  renames.flatMap((rename) => {
+    const original = trees.base.entries.get(rename.oldPath);
+    const kept = trees.other.entries.get(rename.oldPath);
+    if (original === undefined || kept === undefined) return [];
+    if (!collidesWithAddition(trees, rename)) return [];
+    const renamed = trees.renaming.entries.get(rename.newPath) as FlatTreeEntry;
+    if (sourceResult(rename, original, kept, renamed) !== undefined) return [];
+    return [sourceMerge(trees, rename, original, kept)];
+  });
+
+/**
+ * The rename/add sources both sides changed, which ort content-merges before
+ * the add/add at the destination; the caller runs each merge, stores the
+ * result and hands it back as the rename's `mergedSource`.
+ */
+export function collidingSourceMerges(
+  base: FlatTree | undefined,
+  ours: FlatTree,
+  theirs: FlatTree,
+  renames: MergeRenames,
+): ReadonlyArray<CollidingSourceMerge> {
+  if (base === undefined) return [];
+  const shared = { base };
+  return [
+    ...sideCollisions(
+      {
+        ...shared,
+        side: 'ours',
+        renaming: ours,
+        other: theirs,
+        otherRenames: byOldPath(renames.theirs),
+      },
+      renames.ours,
+    ),
+    ...sideCollisions(
+      {
+        ...shared,
+        side: 'theirs',
+        renaming: theirs,
+        other: ours,
+        otherRenames: byOldPath(renames.ours),
+      },
+      renames.theirs,
+    ),
+  ];
 }

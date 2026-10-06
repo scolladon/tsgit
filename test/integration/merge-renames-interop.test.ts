@@ -275,9 +275,19 @@ describe.skipIf(!GIT_AVAILABLE)('merge rename detection interop', () => {
       [change('big', '4\n', 'M\n')],
     ],
     [
+      'rename+edit vs add at its target with an edit of the source',
+      [mv('big', 'big2'), change('big2', '1\n', 'one\n')],
+      [put('big2', 'x\ny\n'), change('big', '7\n', 'seven\n')],
+    ],
+    [
       'rename/rename to two paths, one added',
       [mv('big', 'b')],
       [mv('big', 'a'), put('b', 'x\ny\n')],
+    ],
+    [
+      'rename+edit vs add at its target with a conflicting edit of the source',
+      [mv('big', 'big2'), change('big2', '1\n', 'one\n')],
+      [put('big2', 'x\ny\n'), change('big', '1\n', 'uno\n')],
     ],
     [
       'a content-merged path beside a conflicting one',
@@ -316,6 +326,11 @@ describe.skipIf(!GIT_AVAILABLE)('merge rename detection interop', () => {
       'a content-merged path beside a conflicting one',
       [change('y', 'a\n', 'A\n'), change('big', '4\n', 'S\n')],
       [change('y', 'h\n', 'H\n'), change('big', '4\n', 'M\n')],
+    ],
+    [
+      'rename+edit vs add at its target with an edit of the source',
+      [mv('big', 'big2'), change('big2', '1\n', 'one\n')],
+      [put('big2', 'x\ny\n'), change('big', '7\n', 'seven\n')],
     ],
   ] as const)('Given %s', (_label, sideSteps, mainSteps) => {
     describe('When both tools cherry-pick the side', () => {

@@ -73,6 +73,7 @@ import {
 } from '../primitives/internal/write-working-tree-file.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { mergeBasesOf, tryMergeBasesOf, tryReduceHeads } from '../primitives/merge-base.js';
+import { mergeCollidingRenameSources } from '../primitives/merge-colliding-rename-sources.js';
 import { assertEverySourceLoadable } from '../primitives/object-store.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -1046,7 +1047,9 @@ const computeMergeTreeResult = async (
 
   const labels: MergeLabels = mergeLabels(revName, baseId);
   const contentMerger = buildContentMerger(ctx, labels);
-  const renames = await detectMergeRenames(ctx, baseFlat, ourFlat, theirFlat, renameOptions);
+  const detected = await detectMergeRenames(ctx, baseFlat, ourFlat, theirFlat, renameOptions);
+  const trees = { base: baseFlat, ours: ourFlat, theirs: theirFlat };
+  const renames = await mergeCollidingRenameSources(ctx, trees, detected, contentMerger);
   const result = await mergeTrees(baseFlat, ourFlat, theirFlat, contentMerger, labels, renames);
 
   if (result.cleanMerge) {

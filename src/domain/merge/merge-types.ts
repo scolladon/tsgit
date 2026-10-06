@@ -83,6 +83,8 @@ export interface ContentMergeContext {
   readonly theirMode: FileMode;
   /** Where base, ours and theirs held the path, present only when a rename makes them differ. */
   readonly sidePaths?: SidePaths;
+  /** Characters added to the path's conflict-marker-size, so a nested merge's markers outgrow the outer ones. */
+  readonly extraMarkerSize?: number;
 }
 
 /** How an overlapping region is resolved: `none` → conflict markers, `union` → both sides concatenated. */

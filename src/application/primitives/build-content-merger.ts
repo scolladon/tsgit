@@ -77,7 +77,9 @@ export const buildContentMerger = (
           readBlob(ctx, mergeCtx.baseId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })
         : Promise.resolve(undefined),
     ]);
-    const { driver, markerSize } = await resolvePathMergeSpec(ctx, await provider(), mergeCtx.path);
+    const spec = await resolvePathMergeSpec(ctx, await provider(), mergeCtx.path);
+    const { driver } = spec;
+    const markerSize = spec.markerSize + (mergeCtx.extraMarkerSize ?? 0);
     if (driver.kind === 'missing-command') {
       throw mergeDriverMissingCommand(driver.name);
     }

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { FlatTree, FlatTreeEntry } from '../../../../src/domain/diff/flat-tree.js';
 import {
   applyMergeRenames,
+  collidingSourceMerges,
   type MergeRenames,
   NO_MERGE_RENAMES,
 } from '../../../../src/domain/merge/merge-renames.js';
@@ -11,6 +12,8 @@ import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 const ID_BASE = 'a'.repeat(40) as ObjectId;
 const ID_EDIT = 'b'.repeat(40) as ObjectId;
 const ID_OTHER = 'c'.repeat(40) as ObjectId;
+const ID_MERGED = 'd'.repeat(40) as ObjectId;
+const ID_ADDED = 'e'.repeat(40) as ObjectId;
 
 const entry = (id: ObjectId): FlatTreeEntry => ({ id, mode: FILE_MODE.REGULAR });
 
@@ -220,6 +223,34 @@ describe('applyMergeRenames', () => {
     });
   });
 
+  describe('Given an edited rename onto an addition whose source the caller content-merged', () => {
+    describe('When the renames are applied', () => {
+      it('Then the merged source replaces the rename for the add/add and the source is vacated', () => {
+        // Arrange
+        const base = tree([[OLD, ID_BASE]]);
+        const ours = tree([
+          [NEW, ID_ADDED],
+          [OLD, ID_EDIT],
+        ]);
+        const theirs = tree([[NEW, ID_OTHER]]);
+        const renames: MergeRenames = {
+          ours: [],
+          theirs: [{ oldPath: OLD, newPath: NEW, mergedSource: entry(ID_MERGED) }],
+        };
+        const sut = applyMergeRenames;
+
+        // Act
+        const result = sut(base, ours, theirs, renames);
+
+        // Assert
+        expect(listed(result.base)).toEqual([]);
+        expect(listed(result.ours)).toEqual([[NEW, entry(ID_ADDED)]]);
+        expect(listed(result.theirs)).toEqual([[NEW, entry(ID_MERGED)]]);
+        expect([...result.vacated]).toEqual([OLD]);
+      });
+    });
+  });
+
   describe('Given both sides rename the same source to different paths', () => {
     describe('When the renames are applied', () => {
       it('Then a rename/rename conflict is forced on the source and both destinations', () => {
@@ -374,6 +405,206 @@ describe('applyMergeRenames — rename onto an addition over a deleted source', 
         // Assert
         expect(listed(result.base)).toEqual([[OLD, entry(ID_BASE)]]);
         expect(result.vacated.size).toBe(0);
+      });
+    });
+  });
+});
+
+describe('collidingSourceMerges', () => {
+  describe('Given theirs renames and edits a source ours edited and whose destination ours added', () => {
+    describe('When the source merges are listed', () => {
+      it('Then the source is merged at its old path with each side at the path it holds', () => {
+        // Arrange
+        const base = tree([[OLD, ID_BASE]]);
+        const ours = tree([
+          [NEW, ID_ADDED],
+          [OLD, ID_EDIT],
+        ]);
+        const theirs = tree([[NEW, ID_OTHER]]);
+        const renames: MergeRenames = { ours: [], theirs: RENAME };
+        const sut = collidingSourceMerges;
+
+        // Act
+        const result = sut(base, ours, theirs, renames);
+
+        // Assert
+        expect(result).toEqual([
+          {
+            rename: RENAME[0],
+            mode: FILE_MODE.REGULAR,
+            merge: {
+              path: OLD,
+              baseId: ID_BASE,
+              ourId: ID_EDIT,
+              theirId: ID_OTHER,
+              baseMode: FILE_MODE.REGULAR,
+              ourMode: FILE_MODE.REGULAR,
+              theirMode: FILE_MODE.REGULAR,
+              sidePaths: { base: OLD, ours: OLD, theirs: NEW },
+              extraMarkerSize: 1,
+            },
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given ours renames and edits a source theirs edited and whose destination theirs added', () => {
+    describe('When the source merges are listed', () => {
+      it('Then our renamed entry is merged as ours and theirs keeps the old path', () => {
+        // Arrange
+        const base = tree([[OLD, ID_BASE]]);
+        const ours = tree([[NEW, ID_OTHER]]);
+        const theirs = {
+          entries: new Map([
+            [NEW, entry(ID_ADDED)],
+            [OLD, { id: ID_EDIT, mode: FILE_MODE.EXECUTABLE }],
+          ]),
+        };
+        const sut = collidingSourceMerges;
+
+        // Act
+        const result = sut(base, ours, theirs, { ours: RENAME, theirs: [] });
+
+        // Assert
+        expect(result).toEqual([
+          {
+            rename: RENAME[0],
+            mode: FILE_MODE.EXECUTABLE,
+            merge: {
+              path: OLD,
+              baseId: ID_BASE,
+              ourId: ID_OTHER,
+              theirId: ID_EDIT,
+              baseMode: FILE_MODE.REGULAR,
+              ourMode: FILE_MODE.REGULAR,
+              theirMode: FILE_MODE.EXECUTABLE,
+              sidePaths: { base: OLD, ours: NEW, theirs: OLD },
+              extraMarkerSize: 1,
+            },
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given ours renames a source into an executable while theirs edits it', () => {
+    describe('When the source merges are listed', () => {
+      it("Then the source's mode is the mode ours changed it to", () => {
+        // Arrange
+        const base = tree([[OLD, ID_BASE]]);
+        const ours = { entries: new Map([[NEW, { id: ID_OTHER, mode: FILE_MODE.EXECUTABLE }]]) };
+        const theirs = tree([
+          [NEW, ID_ADDED],
+          [OLD, ID_EDIT],
+        ]);
+        const sut = collidingSourceMerges;
+
+        // Act
+        const result = sut(base, ours, theirs, { ours: RENAME, theirs: [] });
+
+        // Assert
+        expect(result.map((merge) => merge.mode)).toEqual([FILE_MODE.EXECUTABLE]);
+      });
+    });
+  });
+
+  describe.each([
+    ['the rename is unedited', ID_BASE, ID_EDIT, [NEW, ID_ADDED]],
+    ['the other side left the source unedited', ID_OTHER, ID_BASE, [NEW, ID_ADDED]],
+    ['the other side did not add the destination', ID_OTHER, ID_EDIT, ['elsewhere', ID_ADDED]],
+  ] as const)('Given %s', (_label, renamedId, keptId, added) => {
+    describe('When the source merges are listed', () => {
+      it('Then none is listed', () => {
+        // Arrange
+        const base = tree([[OLD, ID_BASE]]);
+        const ours = tree([added, [OLD, keptId]]);
+        const theirs = tree([[NEW, renamedId]]);
+        const sut = collidingSourceMerges;
+
+        // Act
+        const result = sut(base, ours, theirs, { ours: [], theirs: RENAME });
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe.each([
+    ['both sides rename the source alike', [NEW]],
+    ['both sides rename the source apart', ['other' as FilePath]],
+  ] as const)('Given %s', (_label, ourTargets) => {
+    describe('When the source merges are listed', () => {
+      it('Then none is listed', () => {
+        // Arrange
+        const base = tree([[OLD, ID_BASE]]);
+        const ours = tree([
+          [ourTargets[0], ID_EDIT],
+          [NEW, ID_ADDED],
+        ]);
+        const theirs = tree([[NEW, ID_OTHER]]);
+        const ourRenames = ourTargets.map((newPath) => ({ oldPath: OLD, newPath }));
+        const sut = collidingSourceMerges;
+
+        // Act
+        const result = sut(base, ours, theirs, { ours: ourRenames, theirs: RENAME });
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a rename whose source the other side deleted while adding its destination', () => {
+    describe('When the source merges are listed', () => {
+      it('Then none is listed', () => {
+        // Arrange
+        const base = tree([[OLD, ID_BASE]]);
+        const ours = tree([[NEW, ID_ADDED]]);
+        const theirs = tree([[NEW, ID_OTHER]]);
+        const sut = collidingSourceMerges;
+
+        // Act
+        const result = sut(base, ours, theirs, { ours: [], theirs: RENAME });
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a rename whose source the base lacks', () => {
+    describe('When the source merges are listed', () => {
+      it('Then none is listed', () => {
+        // Arrange
+        const ours = tree([
+          [NEW, ID_ADDED],
+          [OLD, ID_EDIT],
+        ]);
+        const theirs = tree([[NEW, ID_OTHER]]);
+        const sut = collidingSourceMerges;
+
+        // Act
+        const result = sut(tree([]), ours, theirs, { ours: [], theirs: RENAME });
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given no base tree', () => {
+    describe('When the source merges are listed', () => {
+      it('Then none is listed', () => {
+        // Arrange
+        const sut = collidingSourceMerges;
+
+        // Act
+        const result = sut(undefined, tree([]), tree([]), { ours: [], theirs: RENAME });
+
+        // Assert
+        expect(result).toEqual([]);
       });
     });
   });

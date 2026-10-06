@@ -16,6 +16,8 @@ export {
   STASH_LABELS,
 } from './merge-labels.js';
 export {
+  type CollidingSourceMerge,
+  collidingSourceMerges,
   type MergeRename,
   type MergeRenames,
   NO_MERGE_RENAMES,
