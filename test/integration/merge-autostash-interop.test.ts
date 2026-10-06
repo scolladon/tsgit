@@ -1,8 +1,9 @@
 /**
  * Cross-tool `merge --autostash` interop: both tools stash a dirty tree under a
  * pinned clock (byte-identical stash commits) as `MERGE_AUTOSTASH`, then
- * re-apply it when the merge concludes, commits or aborts, or file it in the
- * stash list when a hard reset drops the merge state.
+ * re-apply it when the merge concludes, commits, aborts or no strategy handles
+ * it, keep it when the merge dies on an unknown `-X`, or file it in the stash
+ * list when a hard reset drops the merge state.
  *
  * @writes
  *   surface: branch-state
@@ -147,6 +148,43 @@ describe.skipIf(!GIT_AVAILABLE)('merge --autostash interop', () => {
       });
     });
   });
+
+  describe.each([
+    {
+      label: 'an option no strategy parses',
+      kind: 'clean' as const,
+      gitArgs: ['-X', 'bogus'],
+      input: { strategyOptions: ['bogus'] },
+    },
+    {
+      label: 'the only strategy failing',
+      kind: 'conflict' as const,
+      gitArgs: ['-s', 'resolve', '-X', 'ours'],
+      input: { strategy: 'resolve', strategyOptions: ['ours'] },
+    },
+  ])(
+    'Given a dirty tree and an autostash merge refused by $label',
+    ({ label, kind, gitArgs, input }) => {
+      describe('When both tools merge', () => {
+        it('Then the autostash is kept or re-applied as git does', async () => {
+          // Arrange
+          const dirs = setUp(`merge-refused-${label.split(' ').at(-1)}`, kind);
+          tryRunGitWithExit(['-C', dirs.theirs, 'merge', '--autostash', ...gitArgs, 'side'], {
+            env: DATED_ENV,
+          });
+          const sut = mergeRun;
+
+          // Act
+          await sut(tsgitAt(dirs.ours), { rev: 'side', autostash: true, ...input }).catch(
+            () => undefined,
+          );
+
+          // Assert
+          expect(state(dirs.ours)).toEqual(state(dirs.theirs));
+        });
+      });
+    },
+  );
 
   describe.each([
     {

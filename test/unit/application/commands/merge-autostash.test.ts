@@ -239,19 +239,60 @@ describe('mergeRun with autostash', () => {
     });
   });
 
-  describe('Given a dirty tree, When an autostash merge names an option no strategy parses', () => {
-    it('Then the refusal reaches the caller', async () => {
-      // Arrange
-      const { ctx } = await seed('clean');
-      const sut = mergeRun;
+  describe('Given a dirty tree', () => {
+    describe('When an autostash merge names an option no strategy parses', () => {
+      it('Then the refusal reaches the caller', async () => {
+        // Arrange
+        const { ctx } = await seed('clean');
+        const sut = mergeRun;
 
-      // Act
-      const result = await sut(ctx, { rev: 'side', autostash: true, strategyOptions: ['bogus'] })
-        .then(() => undefined)
-        .catch((e: unknown) => (e as TsgitError).data);
+        // Act
+        const result = await sut(ctx, { rev: 'side', autostash: true, strategyOptions: ['bogus'] })
+          .then(() => undefined)
+          .catch((e: unknown) => (e as TsgitError).data);
 
-      // Assert
-      expect(result).toEqual({ code: 'UNKNOWN_STRATEGY_OPTION', option: 'bogus' });
+        // Assert
+        expect(result).toEqual({ code: 'UNKNOWN_STRATEGY_OPTION', option: 'bogus' });
+      });
+
+      it('Then MERGE_AUTOSTASH keeps the stash and the tree stays clean, as git dies', async () => {
+        // Arrange
+        const { ctx } = await seed('clean');
+        const sut = mergeRun;
+
+        // Act
+        await sut(ctx, { rev: 'side', autostash: true, strategyOptions: ['bogus'] }).catch(
+          () => undefined,
+        );
+
+        // Assert
+        expect(await ctx.fs.exists(mergeAutostashFile(ctx))).toBe(true);
+        expect(await readWork(ctx, 'u')).toBe('u\n');
+        expect(await stashRef(ctx)).toBe('missing');
+      });
+    });
+
+    describe('When the only strategy fails the autostash merge', () => {
+      it('Then the autostash is re-applied at once', async () => {
+        // Arrange
+        const { ctx } = await seed('conflict');
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, {
+          rev: 'side',
+          autostash: true,
+          strategy: 'resolve',
+          strategyOptions: ['ours'],
+        })
+          .then(() => undefined)
+          .catch((e: unknown) => (e as TsgitError).data.code);
+
+        // Assert
+        expect(result).toBe('MERGE_STRATEGY_FAILED');
+        expect(await ctx.fs.exists(mergeAutostashFile(ctx))).toBe(false);
+        expect(await readWork(ctx, 'u')).toBe('dirty\n');
+      });
     });
   });
 });

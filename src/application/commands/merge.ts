@@ -9,6 +9,7 @@ import {
 import type { FlatTreeEntry } from '../../domain/diff/flat-tree.js';
 import { conflictsToIndexEntries, sortedRecordedPaths } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import {
   type IndexEntry,
   STAGE0_FLAGS,
@@ -483,7 +484,8 @@ const assertSquashCompatible = async (ctx: Context, input: MergeRunInput): Promi
 
 /**
  * git's `create_autostash_ref(MERGE_AUTOSTASH)` before the merge touches the
- * tree: a failed merge re-applies it at once, a conflict stop keeps it.
+ * tree: a failed merge re-applies it at once, a conflict stop keeps it, and so
+ * does a refusal git `die`s on inside the strategy.
  */
 const underAutostash = async (
   ctx: Context,
@@ -497,10 +499,13 @@ const underAutostash = async (
     if (leftToResolve(result)) ctx.logger?.info?.(STASH_POP_HINT);
     return result;
   } catch (error) {
-    await applyMergeAutostash(ctx);
+    if (!DIES_INSIDE_STRATEGY.has(errorDataCode(error) ?? '')) await applyMergeAutostash(ctx);
     throw error;
   }
 };
+
+/** Refusals git `die`s on past `create_autostash_ref`, which leave the stash in `MERGE_AUTOSTASH`. */
+const DIES_INSIDE_STRATEGY: ReadonlySet<string> = new Set(['UNKNOWN_STRATEGY_OPTION']);
 
 const STASH_POP_HINT = 'When finished, apply stashed changes with `git stash pop`';
 
