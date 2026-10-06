@@ -238,4 +238,20 @@ describe('mergeRun with autostash', () => {
       });
     });
   });
+
+  describe('Given a dirty tree, When an autostash merge names an option no strategy parses', () => {
+    it('Then the refusal reaches the caller', async () => {
+      // Arrange
+      const { ctx } = await seed('clean');
+      const sut = mergeRun;
+
+      // Act
+      const result = await sut(ctx, { rev: 'side', autostash: true, strategyOptions: ['bogus'] })
+        .then(() => undefined)
+        .catch((e: unknown) => (e as TsgitError).data);
+
+      // Assert
+      expect(result).toEqual({ code: 'UNKNOWN_STRATEGY_OPTION', option: 'bogus' });
+    });
+  });
 });

@@ -182,6 +182,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'CONFIG_PARSE_ERROR':
     case 'CONFIG_MISSING_VALUE':
     case 'CONFIG_NEGATIVE_LENGTH':
+    case 'CONFIG_UNKNOWN_VALUE':
     case 'INCOMPATIBLE_OPTIONS':
     case 'UNKNOWN_MERGE_STRATEGY':
     case 'UNKNOWN_STRATEGY_OPTION':

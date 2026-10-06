@@ -75,10 +75,14 @@ const subtreeShiftOf = (option: string): string | undefined => {
   return option.startsWith(SUBTREE_PREFIX) ? option.slice(SUBTREE_PREFIX.length) : undefined;
 };
 
+/** diff.c's `parse_algorithm_value`: an algorithm name, matched case-insensitively. */
+export const diffAlgorithmValue = (value: string): DiffAlgorithm | undefined =>
+  ALGORITHMS.get(value.toLowerCase());
+
 const algorithmNamed = (option: string): DiffAlgorithm | undefined => {
   if (SHORTHAND_ALGORITHMS.has(option)) return ALGORITHMS.get(option);
   if (!option.startsWith(DIFF_ALGORITHM_PREFIX)) return undefined;
-  return ALGORITHMS.get(option.slice(DIFF_ALGORITHM_PREFIX.length).toLowerCase());
+  return diffAlgorithmValue(option.slice(DIFF_ALGORITHM_PREFIX.length));
 };
 
 /** The settings so far, plus whether a renormalization tsgit cannot run stands. */

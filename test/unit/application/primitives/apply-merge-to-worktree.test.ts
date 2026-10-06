@@ -63,6 +63,91 @@ const readWork = async (ctx: Context, path: string): Promise<string> =>
   new TextDecoder().decode(await ctx.fs.read(`${ctx.layout.workDir}/${path}`));
 
 describe('applyMergeToWorktree', () => {
+  /** A file whose merge histogram, myers and patience each settle differently. */
+  const algorithmSensitive = async (ctx: Context) => {
+    const blob = (lines: string) => writeBlob(ctx, `${lines.split(' ').join('\n')}\n`);
+    const tree = async (lines: string) =>
+      treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, await blob(lines))]);
+    await ctx.fs.write(`${ctx.layout.workDir}/f`, new TextEncoder().encode('b\na\na\nc\na\nb\n'));
+    return {
+      baseTree: await tree('b a c a b'),
+      oursTree: await tree('b a a c a b'),
+      theirsTree: await tree('a a a b c'),
+      currentIndex: index([indexEntry('f', await blob('b a a c a b'))]),
+    };
+  };
+
+  describe('Given each side renames the same file to a different path', () => {
+    describe('When the merge is applied', () => {
+      it('Then the source path, holding only its base stage, leaves the working tree', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blob = await writeBlob(ctx, 'one\ntwo\nthree\nfour\n');
+        const at = (name: string) =>
+          treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, name as FilePath, blob)]);
+        await ctx.fs.write(
+          `${ctx.layout.workDir}/a`,
+          new TextEncoder().encode('one\ntwo\nthree\nfour\n'),
+        );
+        const input = {
+          baseTree: await at('f'),
+          oursTree: await at('a'),
+          theirsTree: await at('b'),
+          currentIndex: index([indexEntry('a', blob)]),
+        };
+
+        // Act
+        const result = await applyMergeToWorktree(ctx, input);
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/f`)).toBe(false);
+        expect(await readWork(ctx, 'b')).toBe('one\ntwo\nthree\nfour\n');
+      });
+    });
+  });
+
+  describe('Given diff.algorithm names patience', () => {
+    describe('When a content merge is applied', () => {
+      it('Then the line diffs follow patience over ort’s histogram', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[diff]\n\talgorithm = patience\n');
+        const input = await algorithmSensitive(ctx);
+
+        // Act
+        await applyMergeToWorktree(ctx, input);
+
+        // Assert
+        const result = (await readWork(ctx, 'f')).split('\n').slice(0, 5);
+        expect(result).toEqual(['a', 'a', 'a', 'b', '<<<<<<< ours']);
+      });
+    });
+  });
+
+  describe('Given diff.algorithm names no algorithm', () => {
+    describe('When a merge is applied', () => {
+      it('Then it refuses naming the key and value', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[diff]\n\talgorithm = bogus\n');
+        const input = await algorithmSensitive(ctx);
+
+        // Act
+        const result = await applyMergeToWorktree(ctx, input).catch((e: unknown) => e);
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'CONFIG_UNKNOWN_VALUE',
+          key: 'diff.algorithm',
+          value: 'bogus',
+          source: `${ctx.layout.gitDir}/config`,
+          line: 2,
+        });
+      });
+    });
+  });
+
   describe('Given a stash that changes a clean tracked file', () => {
     describe('When the merge is applied', () => {
       it('Then it is clean and the working tree takes the stashed content', async () => {

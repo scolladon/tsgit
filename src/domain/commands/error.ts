@@ -256,6 +256,13 @@ export type CommandError =
       readonly source: string;
       readonly line: number;
     }
+  | {
+      readonly code: 'CONFIG_UNKNOWN_VALUE';
+      readonly key: string;
+      readonly value: string;
+      readonly source: string;
+      readonly line: number;
+    }
   | { readonly code: 'MERGE_DRIVER_MISSING_COMMAND'; readonly name: string }
   | { readonly code: 'INCOMPATIBLE_OPTIONS'; readonly options: readonly [string, string] }
   | {
@@ -927,6 +934,27 @@ export const configNegativeLength = (
 ): TsgitError =>
   new TsgitError({
     code: 'CONFIG_NEGATIVE_LENGTH',
+    key: sanitizeForDisplay(key),
+    value: sanitizeForDisplay(value),
+    source,
+    line,
+  });
+
+/**
+ * A config key restricted to a set of names (`diff.algorithm`) holds none of
+ * them, at the 1-based `line` of `source`: git's `unknown value for config
+ * '<key>': <value>` — fatal on its own, or followed by `bad config variable
+ * '<key>' in file '<source>' at line <line>` when the key is read with the
+ * command's whole config.
+ */
+export const configUnknownValue = (
+  key: string,
+  value: string,
+  source: string,
+  line: number,
+): TsgitError =>
+  new TsgitError({
+    code: 'CONFIG_UNKNOWN_VALUE',
     key: sanitizeForDisplay(key),
     value: sanitizeForDisplay(value),
     source,

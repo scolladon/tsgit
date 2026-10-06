@@ -56,6 +56,7 @@ import { detectMergeRenames } from '../primitives/detect-merge-renames.js';
 import { changedPaths, findWouldOverwrite } from '../primitives/find-would-overwrite.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
+import { readUiDiffAlgorithm } from '../primitives/internal/merge-rename-config.js';
 import { mergedBlobEntries } from '../primitives/internal/merged-blob-entries.js';
 import { peelChain } from '../primitives/internal/peel-chain.js';
 import { resolveMaxTreeDepth } from '../primitives/internal/resolve-max-tree-depth.js';
@@ -451,6 +452,8 @@ const computeMerge = async (
   await assertStrategyConfig(ctx);
   explicitStrategies(input.strategy);
   await assertMergeMessageConfig(ctx);
+  // git's merge reads `diff.algorithm` with its whole config, so a bad one refuses first.
+  await readUiDiffAlgorithm(ctx);
   await assertSquashCompatible(ctx, input);
   requireWorkTree(ctx, 'merge');
   await assertNoPendingOperation(ctx);
@@ -659,6 +662,19 @@ const twoHeadAttempt = (
   return octopusAttempt(ctx, commit, [remote], strategy);
 };
 
+/** ort's settings for a porcelain merge: `diff.algorithm` first, then the `-X` options over it. */
+const ortSettings = async (
+  ctx: Context,
+  strategy: string,
+  opts: SettledMerge,
+): Promise<OrtStrategyOptions> => {
+  // builtin/merge.c sets `subtree_shift = ""` for `-s subtree` before reading `-X`.
+  const implied = strategy === SUBTREE_STRATEGY ? [SUBTREE_STRATEGY] : [];
+  const xOptions = parseOrtStrategyOptions([...implied, ...(opts.strategyOptions ?? [])]);
+  const configured = await readUiDiffAlgorithm(ctx);
+  return configured === undefined ? xOptions : { diffAlgorithm: configured, ...xOptions };
+};
+
 const ortAttempt = async (
   ctx: Context,
   commit: MergeCommitInput,
@@ -667,12 +683,10 @@ const ortAttempt = async (
   strategy: string,
 ): Promise<StrategyAttempt> => {
   const { opts, ourId } = commit;
-  // builtin/merge.c sets `subtree_shift = ""` for `-s subtree` before reading `-X`.
-  const implied = strategy === SUBTREE_STRATEGY ? [SUBTREE_STRATEGY] : [];
-  const xOptions = parseOrtStrategyOptions([...implied, ...(opts.strategyOptions ?? [])]);
+  const settings = await ortSettings(ctx, strategy, opts);
   const result = await computeMergeTreeResult(
     ctx,
-    { ourId, theirId, baseId, strategy: xOptions },
+    { ourId, theirId, baseId, strategy: settings },
     opts.rev,
   );
   if (result.kind === 'clean')

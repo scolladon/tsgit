@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { TsgitError } from '../../../../src/domain/error.js';
-import { parseOrtStrategyOptions } from '../../../../src/domain/merge/strategy-options.js';
+import {
+  diffAlgorithmValue,
+  parseOrtStrategyOptions,
+} from '../../../../src/domain/merge/strategy-options.js';
 
 const failureOf = (options: ReadonlyArray<string>): unknown => {
   try {
@@ -233,4 +236,49 @@ describe('parseOrtStrategyOptions', () => {
       });
     });
   });
+});
+
+describe('diffAlgorithmValue', () => {
+  describe.each([
+    ['myers', 'myers'],
+    ['default', 'myers'],
+    ['Default', 'myers'],
+    ['minimal', 'minimal'],
+    ['MINIMAL', 'minimal'],
+    ['patience', 'patience'],
+    ['PATIENCE', 'patience'],
+    ['histogram', 'histogram'],
+    ['Histogram', 'histogram'],
+  ] as const)('Given the config value %j', (value, expected) => {
+    describe('When read as git reads diff.algorithm', () => {
+      it(`Then it names ${expected}`, () => {
+        // Arrange
+        const sut = diffAlgorithmValue;
+
+        // Act
+        const result = sut(value);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe.each(['bogus', '', 'myers ', 'diff-algorithm=myers'])(
+    'Given the config value %j',
+    (value) => {
+      describe('When read as git reads diff.algorithm', () => {
+        it('Then it names no algorithm', () => {
+          // Arrange
+          const sut = diffAlgorithmValue;
+
+          // Act
+          const result = sut(value);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    },
+  );
 });

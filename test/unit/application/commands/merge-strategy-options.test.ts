@@ -61,6 +61,27 @@ const bothEditLineSeven = async (): Promise<Context> => {
   return ctx;
 };
 
+/** A seed whose content merge differs under histogram, myers and patience. */
+const algorithmSensitive = async (config: string): Promise<Context> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+  await write(ctx, 'f', 'b\na\nc\na\nb\n');
+  await commitAll(ctx, ['f'], 'base');
+  await branchCreate(ctx, { name: 'side' });
+  await checkout(ctx, { rev: 'side' });
+  await write(ctx, 'f', 'a\na\na\nb\nc\n');
+  await commitAll(ctx, ['f'], 'side');
+  await checkout(ctx, { rev: 'main' });
+  await write(ctx, 'f', 'b\na\na\nc\na\nb\n');
+  await commitAll(ctx, ['f'], 'main');
+  return ctx;
+};
+
+const HISTOGRAM_MERGE = 'a\na\n<<<<<<< HEAD\n=======\na\nb\n>>>>>>> side\nc\n';
+const MYERS_MERGE = 'a\na\n<<<<<<< HEAD\nc\n=======\n>>>>>>> side\na\nb\nc\n';
+const PATIENCE_MERGE = 'a\na\na\nb\n<<<<<<< HEAD\na\na\n=======\n>>>>>>> side\nc\n';
+
 const SIMILAR = LINES.replace('1\n', 'one\n');
 
 const errorData = (run: Promise<unknown>): Promise<unknown> =>
@@ -185,6 +206,75 @@ describe('merge strategy options', () => {
 
         // Assert
         expect(result).toEqual({ code: 'MERGE_STRATEGY_FAILED', strategy: 'resolve' });
+      });
+    });
+  });
+
+  describe.each([
+    ['unset', '', [], HISTOGRAM_MERGE],
+    ['myers', '[diff]\n\talgorithm = myers\n', [], MYERS_MERGE],
+    ['Default', '[diff]\n\talgorithm = Default\n', [], MYERS_MERGE],
+    ['PATIENCE', '[diff]\n\talgorithm = PATIENCE\n', [], PATIENCE_MERGE],
+    ['myers under -X histogram', '[diff]\n\talgorithm = myers\n', ['histogram'], HISTOGRAM_MERGE],
+  ] as const)('Given diff.algorithm %s', (_label, config, strategyOptions, expected) => {
+    describe('When ort merges content both sides changed', () => {
+      it('Then the content merge diffs with the algorithm git picks', async () => {
+        // Arrange
+        const ctx = await algorithmSensitive(config);
+        const sut = mergeRun;
+
+        // Act
+        await sut(ctx, { rev: 'side', strategyOptions, author });
+
+        // Assert
+        const result = await ctx.fs.readUtf8(`${ctx.layout.workDir}/f`);
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given diff.algorithm names no algorithm', () => {
+    describe('When merged', () => {
+      it('Then it refuses naming the key, value and line, before any merge state', async () => {
+        // Arrange
+        const ctx = await algorithmSensitive(
+          '[core]\n\tbare = false\n[diff]\n\talgorithm = bogus\n',
+        );
+        const sut = mergeRun;
+
+        // Act
+        const result = await errorData(sut(ctx, { rev: 'side', author }));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'CONFIG_UNKNOWN_VALUE',
+          key: 'diff.algorithm',
+          value: 'bogus',
+          source: `${ctx.layout.gitDir}/config`,
+          line: 4,
+        });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a valueless diff.algorithm', () => {
+    describe('When merged', () => {
+      it('Then it refuses as a missing value', async () => {
+        // Arrange
+        const ctx = await algorithmSensitive('[diff]\n\talgorithm\n');
+        const sut = mergeRun;
+
+        // Act
+        const result = await errorData(sut(ctx, { rev: 'side', author }));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'CONFIG_MISSING_VALUE',
+          key: 'diff.algorithm',
+          source: `${ctx.layout.gitDir}/config`,
+          line: 2,
+        });
       });
     });
   });

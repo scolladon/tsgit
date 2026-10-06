@@ -34,6 +34,7 @@ import { buildContentMerger } from './build-content-merger.js';
 import { detectMergeRenames } from './detect-merge-renames.js';
 import { changedPaths, findWouldOverwrite } from './find-would-overwrite.js';
 import { flattenTree } from './flatten-tree.js';
+import { readUiDiffAlgorithm } from './internal/merge-rename-config.js';
 import { mergedBlobEntries } from './internal/merged-blob-entries.js';
 import {
   createLeadingPathScanner,
@@ -288,8 +289,10 @@ export const applyMergeToWorktree = async (
     flattenTree(ctx, input.oursTree),
     flattenTree(ctx, input.theirsTree),
   ]);
-  const contentMerger = buildContentMerger(ctx, input.labels);
   const detected = await detectMergeRenames(ctx, base, ours, theirs);
+  const diffAlgorithm = await readUiDiffAlgorithm(ctx);
+  const settings = diffAlgorithm === undefined ? {} : { diffAlgorithm };
+  const contentMerger = buildContentMerger(ctx, input.labels, settings);
   const trees = { base, ours, theirs };
   const renames = await mergeCollidingRenameSources(ctx, trees, detected, contentMerger);
   const merged = await mergeTrees(base, ours, theirs, contentMerger, input.labels, renames);

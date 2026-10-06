@@ -27,6 +27,7 @@ import {
   configSectionNotFound,
   configSystemPathUnresolved,
   configUnknownNegotiationAlgorithm,
+  configUnknownValue,
   configValueInvalid,
   emptyCommitMessage,
   emptyPathspec,
@@ -1242,6 +1243,27 @@ describe('domain commands error — config factory data', () => {
     });
   });
 
+  describe('Given the configUnknownValue helper', () => {
+    describe('When called with an unknown diff.algorithm entry', () => {
+      it('Then data carries code, key, value, source and line', () => {
+        // Arrange
+        const sut = configUnknownValue;
+
+        // Act
+        const result = sut('diff.algorithm', 'bogus', '/abs/.git/config', 4);
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'CONFIG_UNKNOWN_VALUE',
+          key: 'diff.algorithm',
+          value: 'bogus',
+          source: '/abs/.git/config',
+          line: 4,
+        });
+      });
+    });
+  });
+
   describe('Given the configNegativeLength helper', () => {
     describe('When called with a negative merge.log entry', () => {
       it('Then data carries code, key, value, source and line', () => {
@@ -1799,6 +1821,16 @@ describe('domain commands error — extractDetail message formatting', () => {
         line: 11,
       },
       'CONFIG_NEGATIVE_LENGTH: merge.log: negative length -1',
+    ],
+    [
+      {
+        code: 'CONFIG_UNKNOWN_VALUE',
+        key: 'diff.algorithm',
+        value: 'bogus',
+        source: '/repo/.git/config',
+        line: 4,
+      },
+      "CONFIG_UNKNOWN_VALUE: unknown value for config 'diff.algorithm': bogus",
     ],
     [
       { code: 'INCOMPATIBLE_OPTIONS', options: ['--squash', '--no-ff'] },

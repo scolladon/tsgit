@@ -2,6 +2,7 @@ import {
   configBadBooleanValue,
   configBadNumericValue,
   configMissingValue,
+  configUnknownValue,
 } from '../../../domain/commands/error.js';
 import {
   GIT_C_INT_MAX,
@@ -9,7 +10,9 @@ import {
   parseGitBoolean,
   parseGitInt,
 } from '../../../domain/config/config-ini.js';
+import type { DiffAlgorithm } from '../../../domain/diff/line-diff.js';
 import type { DirectoryRenameMode } from '../../../domain/merge/directory-renames.js';
+import { diffAlgorithmValue } from '../../../domain/merge/strategy-options.js';
 import type { Context } from '../../../ports/context.js';
 import { findLastEntry, type LocatedConfigEntry } from '../config-read.js';
 
@@ -84,4 +87,17 @@ export const readMergeRenameConfig = async (ctx: Context): Promise<MergeRenameCo
     limit: limit > 0 ? limit : DEFAULT_MERGE_RENAME_LIMIT,
     directoryRenames,
   };
+};
+
+/**
+ * merge-ort's `merge_recursive_config` for a porcelain (`ui`) merge:
+ * `diff.algorithm` replaces ort's histogram, and a name git does not know dies.
+ */
+export const readUiDiffAlgorithm = async (ctx: Context): Promise<DiffAlgorithm | undefined> => {
+  const entry = await findLastEntry(ctx, 'diff', 'algorithm');
+  if (entry === undefined) return undefined;
+  const { key, source, value, line } = requireValue(entry);
+  const algorithm = diffAlgorithmValue(value);
+  if (algorithm === undefined) throw configUnknownValue(key, value, source, line);
+  return algorithm;
 };

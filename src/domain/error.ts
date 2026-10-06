@@ -604,6 +604,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `missing value for '${data.key}' in file '${data.source}' at line ${data.line}`;
     case 'CONFIG_NEGATIVE_LENGTH':
       return `${data.key}: negative length ${data.value}`;
+    case 'CONFIG_UNKNOWN_VALUE':
+      return `unknown value for config '${data.key}': ${data.value}`;
     case 'INCOMPATIBLE_OPTIONS':
       return `options '${data.options[0]}' and '${data.options[1]}' cannot be used together`;
     case 'UNKNOWN_MERGE_STRATEGY':

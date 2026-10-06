@@ -147,6 +147,52 @@ const mergeBoth = async (scenario: Scenario, options: ReadonlyArray<string>, str
   return { ours: snapshot(ours), theirs: snapshot(theirs) };
 };
 
+/** A scenario repository with `diff.algorithm` set, as both tools read it. */
+const configuredScenario = (scenario: Scenario, algorithm: string): string => {
+  const dir = buildScenario(scenario);
+  runGit(['-C', dir, 'config', 'diff.algorithm', algorithm]);
+  return dir;
+};
+
+const errorCodeOf = (run: Promise<unknown>): Promise<unknown> =>
+  run.then(
+    () => undefined,
+    (e: unknown) => (e as { readonly data: { readonly code: string } }).data.code,
+  );
+
+/** Both tools merge — or cherry-pick — `side` under a configured `diff.algorithm`. */
+const runConfigured = async (
+  scenario: Scenario,
+  algorithm: string,
+  command: 'merge' | 'cherry-pick',
+  options: ReadonlyArray<string> = [],
+) => {
+  const theirs = configuredScenario(scenario, algorithm);
+  const ours = await copyOf(theirs);
+  const xArgs = options.flatMap((option) => ['-X', option]);
+  const exit = tryRunGitWithExit(['-C', theirs, command, ...xArgs, 'side'], { env: DATED_ENV });
+  const repo = await openRepository({ cwd: ours });
+  const refusal = await errorCodeOf(
+    command === 'merge'
+      ? repo.merge.run({
+          rev: 'side',
+          strategyOptions: options,
+          author: IDENTITY,
+          committer: IDENTITY,
+        })
+      : repo.cherryPick.run({ commits: ['side'] }),
+  );
+  await repo.dispose();
+  return { ours: snapshot(ours), theirs: snapshot(theirs), exit: exit.exitCode, refusal };
+};
+
+/** Each side edits `f` so histogram, myers and patience each merge it differently. */
+const ALGORITHM_SENSITIVE: Scenario = {
+  base: { f: 'b\na\nc\na\nb\n' },
+  side: { f: 'a\na\na\nb\nc\n' },
+  main: { f: 'b\na\na\nc\na\nb\n' },
+};
+
 const NINE = '1\n2\n3\n4\n5\n6\n7\n8\n9\n';
 const OVERLAP: Scenario = {
   base: { f: NINE, bin: 'b\n' },
@@ -358,4 +404,50 @@ describe.skipIf(!GIT_AVAILABLE)('merge strategy options interop', () => {
       });
     });
   });
+
+  describe.each([
+    ['myers', 'merge', []],
+    ['default', 'merge', []],
+    ['minimal', 'merge', []],
+    ['patience', 'merge', []],
+    ['PATIENCE', 'merge', []],
+    ['Histogram', 'merge', []],
+    ['myers', 'merge', ['histogram']],
+    ['patience', 'merge', ['diff-algorithm=myers']],
+    ['patience', 'cherry-pick', []],
+    ['myers', 'cherry-pick', []],
+  ] as const)('Given diff.algorithm=%s', (algorithm, command, options) => {
+    describe(`When both tools ${command} the side with -X [${options.join(', ')}]`, () => {
+      it("Then the commit, index, files and stop state match git's", async () => {
+        // Arrange
+        const sut = runConfigured;
+
+        // Act
+        const result = await sut(ALGORITHM_SENSITIVE, algorithm, command, options);
+
+        // Assert
+        expect(result.ours).toEqual(result.theirs);
+      });
+    });
+  });
+
+  describe.each(['merge', 'cherry-pick'] as const)(
+    'Given diff.algorithm names no algorithm',
+    (command) => {
+      describe(`When both tools ${command} the side`, () => {
+        it('Then both refuse and leave the repository as it was', async () => {
+          // Arrange
+          const sut = runConfigured;
+
+          // Act
+          const result = await sut(ALGORITHM_SENSITIVE, 'bogus', command);
+
+          // Assert
+          expect(result.ours).toEqual(result.theirs);
+          expect(result.exit).toBe(128);
+          expect(result.refusal).toBe('CONFIG_UNKNOWN_VALUE');
+        });
+      });
+    },
+  );
 });
