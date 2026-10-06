@@ -251,6 +251,34 @@ describe('applyMergeRenames', () => {
     });
   });
 
+  describe('Given both sides rename one source apart and ours also adds at their destination', () => {
+    describe('When the renames are applied', () => {
+      it('Then their destination is left to merge as an add/add, the rest forced', () => {
+        // Arrange
+        const ID_ADDED = 'd'.repeat(40) as ObjectId;
+        const base = tree([[OLD, ID_BASE]]);
+        const ours = tree([
+          [NEW, ID_EDIT],
+          ['other', ID_ADDED],
+        ]);
+        const theirs = tree([['other' as FilePath, ID_OTHER]]);
+        const renames: MergeRenames = {
+          ours: RENAME,
+          theirs: [{ oldPath: OLD, newPath: 'other' as FilePath }],
+        };
+        const sut = applyMergeRenames;
+
+        // Act
+        const result = sut(base, ours, theirs, renames);
+
+        // Assert
+        expect([...result.forced.keys()]).toEqual([OLD, NEW]);
+        expect(result.ours?.entries.get('other' as FilePath)?.id).toBe(ID_ADDED);
+        expect(result.theirs?.entries.get('other' as FilePath)?.id).toBe(ID_OTHER);
+      });
+    });
+  });
+
   describe('Given both sides rename the same source to the same path', () => {
     describe('When the renames are applied', () => {
       it('Then only the base moves, for a three-way merge at the new path', () => {

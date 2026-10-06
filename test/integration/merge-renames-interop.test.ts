@@ -275,6 +275,11 @@ describe.skipIf(!GIT_AVAILABLE)('merge rename detection interop', () => {
       [change('big', '4\n', 'M\n')],
     ],
     [
+      'rename/rename to two paths, one added',
+      [mv('big', 'b')],
+      [mv('big', 'a'), put('b', 'x\ny\n')],
+    ],
+    [
       'a content-merged path beside a conflicting one',
       [change('y', 'a\n', 'A\n'), change('big', '4\n', 'S\n')],
       [change('y', 'h\n', 'H\n'), change('big', '4\n', 'M\n')],

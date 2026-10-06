@@ -112,7 +112,16 @@ const renameAdd = (moving: Moving, rename: MergeRename, original: FlatTreeEntry)
   moving.renamingSide.set(rename.newPath, keptUnchanged ? renamed : kept);
 };
 
-/** ort's rename/rename(1to2): the source and both destinations each keep their one stage. */
+interface Destination {
+  readonly path: FilePath;
+  readonly entries: Entries;
+}
+
+/**
+ * ort's rename/rename(1to2): the source and both destinations each keep their
+ * one stage — but a destination the opposite side also added there is left
+ * to merge as that add/add, as ort's collision handling does.
+ */
 const renameRename = (moving: Moving, rename: MergeRename, original: FlatTreeEntry): void => {
   const otherPath = moving.otherRenames.get(rename.oldPath) as FilePath;
   const renaming = { path: rename.newPath, entries: moving.renamingSide };
@@ -121,9 +130,13 @@ const renameRename = (moving: Moving, rename: MergeRename, original: FlatTreeEnt
   const at = (path: FilePath, ids: object): void => {
     moving.forced.set(path, { type: 'rename-rename', path, ...ids });
   };
+  const forceUnlessAdded = (side: Side, destination: Destination, opposite: Entries): void => {
+    if (opposite.has(destination.path)) return;
+    at(destination.path, sideIds(side, destination.entries.get(destination.path) as FlatTreeEntry));
+  };
   at(rename.oldPath, { baseId: original.id, baseMode: original.mode });
-  at(ours.path, sideIds('ours', ours.entries.get(ours.path) as FlatTreeEntry));
-  at(theirs.path, sideIds('theirs', theirs.entries.get(theirs.path) as FlatTreeEntry));
+  forceUnlessAdded('ours', ours, theirs.entries);
+  forceUnlessAdded('theirs', theirs, ours.entries);
 };
 
 type RenameHandler = (moving: Moving, rename: MergeRename, original: FlatTreeEntry) => void;
