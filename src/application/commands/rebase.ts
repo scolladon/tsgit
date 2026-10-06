@@ -73,7 +73,7 @@ import { resolveCommitIsh } from './internal/commit-ish.js';
 import { sanitizeMessage, stripComments } from './internal/commit-message.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { readCommitData, treeOf } from './internal/history-rewrite.js';
-import { readMergeHead, writeOrigHead } from './internal/merge-state.js';
+import { clearMergeMsg, readMergeHead, writeOrigHead } from './internal/merge-state.js';
 import { previousCheckoutArg } from './internal/prior-checkout.js';
 import { branchBaseOf, canFastForward } from './internal/rebase-fast-forward.js';
 import {
@@ -390,6 +390,7 @@ const persistStop = async (
     patch: cData.parents.length > 1 ? '' : await renderCommitPatch(ctx, cData),
     // Stryker disable next-line ConditionalExpression: equivalent — on a continue/skip re-stop `rc.backupHeader` is `undefined`, so forcing this to `true` spreads `{ backupHeader: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
     ...(rc.backupHeader !== undefined ? { backupHeader: rc.backupHeader } : {}),
+    ...(cData.parents.length > 1 ? {} : { mergeMsg: message }),
   };
   await writeRebaseStop(ctx, stop);
 };
@@ -683,7 +684,7 @@ export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
     head: currentHead,
     mergeHead,
   });
-  await removeAutoMerge(ctx);
+  await concludeStopCommit(ctx);
   return replayFrom(ctx, rc, resolutionId, {
     applied: [{ source: stopped, created: resolutionId }],
     rewritten: [...rewrittenBefore, [stopped, resolutionId] as const],
@@ -1089,6 +1090,8 @@ interface StopFields {
   }>;
   readonly rewrittenPending?: ReadonlyArray<ObjectId>;
   readonly messageSquash?: string;
+  readonly messageFixup?: string;
+  readonly mergeMsg?: string;
 }
 
 /** Persist a byte-faithful interactive stop. `done` is `doneBefore` + the
@@ -1120,8 +1123,17 @@ const persistInteractiveStop = async (
     ...(fields.rewrittenPending !== undefined ? { rewrittenPending: fields.rewrittenPending } : {}),
     // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ messageSquash: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
     ...(fields.messageSquash !== undefined ? { messageSquash: fields.messageSquash } : {}),
+    ...(fields.messageFixup !== undefined ? { messageFixup: fields.messageFixup } : {}),
+    ...(fields.mergeMsg !== undefined ? { mergeMsg: fields.mergeMsg } : {}),
   });
 };
+
+/** git keeps the group base's message in `message-fixup` until a squash joins the group. */
+const fixupOnlyMessage = (
+  members: ReadonlyArray<{ readonly action: 'squash' | 'fixup' }>,
+  baseMessage: string,
+): { readonly messageFixup?: string } =>
+  members.every((member) => member.action === 'fixup') ? { messageFixup: baseMessage } : {};
 
 /** Whether the instruction at `index + 1` continues a squash/fixup group. */
 const meldContinues = (todo: ReadonlyArray<PlannedInstruction>, index: number): boolean => {
@@ -1234,16 +1246,19 @@ const replayInteractive = async (
           ...group.members,
           { message: cData.message, skip: inst.action === 'fixup' },
         ]);
+        const currentFixups = [...group.fixups, { action: inst.action, oid: inst.oid }];
         await persistInteractiveStop(ctx, ic, i, {
           stoppedSha: inst.oid,
           author: cData.author,
-          message: conflictMergeMsg(template, sortedRecordedPaths(meld.conflicts)),
+          message: template,
           patch,
           rewritten,
           amend: head,
-          currentFixups: [...group.fixups, { action: inst.action, oid: inst.oid }],
+          currentFixups,
           rewrittenPending: [...group.pending],
           messageSquash: template,
+          ...fixupOnlyMessage(currentFixups, group.baseMessage),
+          mergeMsg: template,
         });
         return conflictResult(inst.oid, meld.conflicts, ic.todo.length - (i + 1));
       }
@@ -1254,12 +1269,14 @@ const replayInteractive = async (
     }
     const step = await stepInstruction(ctx, inst, cData, head);
     if (step.kind === 'conflict') {
+      const message = conflictMergeMsg(cData.message, sortedRecordedPaths(step.conflicts));
       await persistInteractiveStop(ctx, ic, i, {
         stoppedSha: inst.oid,
         author: cData.author,
-        message: conflictMergeMsg(cData.message, sortedRecordedPaths(step.conflicts)),
+        message,
         patch,
         rewritten,
+        mergeMsg: message,
       });
       return conflictResult(inst.oid, step.conflicts, ic.todo.length - (i + 1));
     }
@@ -1367,9 +1384,15 @@ const rebaseContinueInteractive = async (
   const currentHead = await resolveRef(ctx, HEAD);
   const resumeHead = await resumeInteractiveStop(ctx, state, tree, currentHead);
   // git's `commit_staged_changes` drops AUTO_MERGE once it commits the stop.
-  if (resumeHead !== currentHead) await removeAutoMerge(ctx);
+  if (resumeHead !== currentHead) await concludeStopCommit(ctx);
   rewritten.push([stoppedCommit(state), resumeHead]);
   return replayInteractive(ctx, ic, resumeHead, { applied: [], rewritten });
+};
+
+/** The commit that concludes a stop takes its `AUTO_MERGE` and `MERGE_MSG` with it. */
+const concludeStopCommit = async (ctx: Context): Promise<void> => {
+  await removeAutoMerge(ctx);
+  await clearMergeMsg(ctx);
 };
 
 /** git's `commit_staged_changes`: nothing staged against HEAD → keep HEAD (the

@@ -2050,7 +2050,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
 
   describe('Given a squash whose meld produces a distinct-types conflict', () => {
     describe('When the meld stops', () => {
-      it('Then MERGE_MSG lists recorded paths from the distinct-types conflict', async () => {
+      it('Then message and MERGE_MSG carry message-squash, with no conflicts list as git writes', async () => {
         // Arrange — base has `p` regular; t1 adds unrelated a.txt; t2 squashes
         // and changes `p` regular; main replaces `p` with a symlink.
         // Squash meld of t1+t2 onto main hits distinct-types on `p`.
@@ -2082,14 +2082,12 @@ describe('rebaseRun (interactive squash / fixup)', () => {
           ],
         });
 
-        // Assert — conflict; message lists both recorded paths
+        // Assert — a meld stop keeps the combined message as is
         expect(stop.kind).toBe('conflict');
         const msg = await readMerge(ctx, 'message');
-        expect(msg).toContain('# Conflicts:\n');
-        expect(msg).toContain('#\tp\n');
-        // The regular side (theirs = t2) is renamed p~<t2-abbrev> (t2 sub)
-        const abbrev = t2.slice(0, 7);
-        expect(msg).toContain(`#\tp~${abbrev} (t2 sub)\n`);
+        expect(msg).toBe(await readMerge(ctx, 'message-squash'));
+        expect(msg).not.toContain('# Conflicts:');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(msg);
       });
     });
   });
@@ -2207,6 +2205,55 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         expect(await readMerge(ctx, 'message-squash')).toContain(
           '# The commit message #2 will be skipped:',
         );
+      });
+    });
+  });
+
+  describe('Given a fixup that follows its pick and whose meld conflicts', () => {
+    describe('When the stop state is persisted', () => {
+      it("Then message-fixup holds the group base's message and message and MERGE_MSG carry message-squash", async () => {
+        // Arrange
+        const { ctx, t1, t2, t3 } = await seedTopicConflict();
+        const sut = rebaseRun;
+
+        // Act
+        await sut(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'fixup', oid: t2 },
+            { action: 'drop', oid: t3 },
+          ],
+        });
+
+        // Assert
+        const squash = await readMerge(ctx, 'message-squash');
+        expect(await readMerge(ctx, 'message-fixup')).toBe((await readCommit(ctx, t1)).message);
+        expect(await readMerge(ctx, 'message')).toBe(squash);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(squash);
+      });
+    });
+  });
+
+  describe('Given a squash then a fixup whose meld conflicts', () => {
+    describe('When the stop state is persisted', () => {
+      it('Then no message-fixup is left, as a squash in the group drops it', async () => {
+        // Arrange
+        const { ctx, t1, t2, t3 } = await seedTopicConflict();
+        const sut = rebaseRun;
+
+        // Act
+        await sut(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'squash', oid: t2 },
+            { action: 'fixup', oid: t3 },
+          ],
+        });
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/message-fixup`)).toBe(false);
       });
     });
   });
@@ -2851,6 +2898,38 @@ describe('rebase AUTO_MERGE lifecycle', () => {
 
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe(false);
+      });
+    });
+  });
+  describe('Given a pick that conflicts', () => {
+    describe('When the rebase stops on it', () => {
+      it('Then MERGE_MSG holds the stop message, as git leaves it for the commit', async () => {
+        // Arrange
+        const sut = seedConflict;
+
+        // Act
+        const ctx = await sut();
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(
+          await readMerge(ctx, 'message'),
+        );
+      });
+    });
+
+    describe('When the resolution is continued', () => {
+      it('Then MERGE_MSG is gone with the commit', async () => {
+        // Arrange
+        const ctx = await seedConflict();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nRESOLVED\n');
+        await add(ctx, ['f.txt']);
+        const sut = rebaseContinue;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(false);
       });
     });
   });

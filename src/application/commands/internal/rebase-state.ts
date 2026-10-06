@@ -27,6 +27,7 @@ import {
   serializeAuthorScript,
   serializeRebaseTodo,
 } from '../../../domain/rebase/index.js';
+import { MERGE_MSG } from '../../../domain/refs/state-files.js';
 import type { Context } from '../../../ports/context.js';
 import { resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
 import { readOptionalOidFile } from './oid-file.js';
@@ -83,6 +84,10 @@ export interface RebaseStop {
   readonly rewrittenPending?: ReadonlyArray<ObjectId>;
   /** Backup of the running combined message (`message-squash`). */
   readonly messageSquash?: string;
+  /** The group base's message while every melded member is a plain fixup (`message-fixup`). */
+  readonly messageFixup?: string;
+  /** The message a conflict stop leaves in `MERGE_MSG` for the resolving commit. */
+  readonly mergeMsg?: string;
 }
 
 /** The aggregated read used by `continue` / `skip` / `abort`. */
@@ -107,6 +112,7 @@ export interface RebaseState {
 const dir = (ctx: Context): string => `${ctx.layout.gitDir}/rebase-merge`;
 const file = (ctx: Context, name: string): string => `${dir(ctx)}/${name}`;
 const rebaseHeadPath = (ctx: Context): string => `${ctx.layout.gitDir}/REBASE_HEAD`;
+const mergeMsgPath = (ctx: Context): string => `${ctx.layout.gitDir}/${MERGE_MSG}`;
 
 /**
  * Serialise rewritten `[old, new]` pairs to git's `<old> SP <new> LF` lines —
@@ -144,6 +150,7 @@ export const writeRebaseStop = async (ctx: Context, stop: RebaseStop): Promise<v
   }
   await writeStopMarkers(ctx, stop);
   if (stop.messageSquash !== undefined) await write('message-squash', stop.messageSquash);
+  if (stop.mergeMsg !== undefined) await ctx.fs.writeUtf8(mergeMsgPath(ctx), stop.mergeMsg);
   await ctx.fs.writeUtf8(rebaseHeadPath(ctx), `${stop.stoppedSha}\n`);
 };
 
@@ -152,6 +159,7 @@ export const writeRebaseStop = async (ctx: Context, stop: RebaseStop): Promise<v
  *  markers it carries — a stale one would steer the next `continue`. */
 const writeStopMarkers = async (ctx: Context, stop: RebaseStop): Promise<void> => {
   await writeOrRemove(ctx, 'amend', stop.amend === undefined ? undefined : `${stop.amend}\n`);
+  await writeOrRemove(ctx, 'message-fixup', stop.messageFixup);
   await writeOrRemove(
     ctx,
     'current-fixups',
