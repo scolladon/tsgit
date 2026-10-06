@@ -167,7 +167,7 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
         const expected = head(theirs).replaceAll(peerPath.slice(0, -'.git'.length), SHORT_URL);
 
         // Act
-        await sut(ctx, { author: IDENTITY, committer: IDENTITY });
+        await sut(ctx, { rebase: false, author: IDENTITY, committer: IDENTITY });
 
         // Assert
         expect(head(ours)).toBe(expected);
@@ -205,7 +205,7 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
 
         // Act
         try {
-          await sut(ctx, { author: IDENTITY, committer: IDENTITY });
+          await sut(ctx, { rebase: false, author: IDENTITY, committer: IDENTITY });
         } catch (error) {
           caught = error;
         }
@@ -264,7 +264,12 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
           const sut = pull;
 
           // Act
-          const result = await sut(ctxFor(ours), { ...opts, author: IDENTITY, committer: IDENTITY })
+          const result = await sut(ctxFor(ours), {
+            ...opts,
+            rebase: false,
+            author: IDENTITY,
+            committer: IDENTITY,
+          })
             .then(() => undefined)
             .catch(errorDataCode);
 
@@ -294,6 +299,7 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
 
         // Act
         await sut(ctxFor(ours), {
+          rebase: false,
           allowUnrelatedHistories: true,
           author: IDENTITY,
           committer: IDENTITY,
@@ -341,7 +347,7 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
         const sut = pull;
 
         // Act
-        await sut(ctxFor(ours), { author: IDENTITY, committer: IDENTITY });
+        await sut(ctxFor(ours), { rebase: false, author: IDENTITY, committer: IDENTITY });
 
         // Assert
         expect(head(ours)).toBe(expected);
@@ -365,7 +371,11 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
         const sut = pull;
 
         // Act
-        const result = await sut(ctxFor(ours), { author: IDENTITY, committer: IDENTITY })
+        const result = await sut(ctxFor(ours), {
+          rebase: false,
+          author: IDENTITY,
+          committer: IDENTITY,
+        })
           .then(() => undefined)
           .catch(errorDataCode);
 

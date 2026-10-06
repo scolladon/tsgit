@@ -64,6 +64,7 @@ import {
   pathspecBeyondSymlink,
   pathspecNoMatch,
   pathspecOutsideRepo,
+  pullDivergentBranches,
   pullRebaseMultipleBranches,
   pushDefaultNothing,
   pushDetachedNoRefspec,
@@ -538,6 +539,21 @@ describe('domain commands error — factory data', () => {
 
         // Assert
         expect(result.data).toEqual({ code: 'PULL_REBASE_MULTIPLE_BRANCHES' });
+      });
+    });
+  });
+
+  describe('Given the pullDivergentBranches error helper', () => {
+    describe('When called', () => {
+      it('Then data carries the code alone', () => {
+        // Arrange
+        const sut = pullDivergentBranches;
+
+        // Act
+        const result = sut();
+
+        // Assert
+        expect(result.data).toEqual({ code: 'PULL_DIVERGENT_BRANCHES' });
       });
     });
   });
@@ -1565,6 +1581,10 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       { code: 'PULL_REBASE_MULTIPLE_BRANCHES' },
       'PULL_REBASE_MULTIPLE_BRANCHES: cannot rebase onto multiple branches',
+    ],
+    [
+      { code: 'PULL_DIVERGENT_BRANCHES' },
+      'PULL_DIVERGENT_BRANCHES: need to specify how to reconcile divergent branches',
     ],
     [{ code: 'UNRELATED_HISTORIES' }, 'UNRELATED_HISTORIES: refusing to merge unrelated histories'],
     [

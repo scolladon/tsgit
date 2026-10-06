@@ -58,6 +58,21 @@ upstream needs an explicit `repo.pull({ ref })`.
 | Diverged, clean | `merge` | Two-parent commit titled from the `FETCH_HEAD` line as git's `fmt_merge_msg` titles it — `Merge branch '<branch>' of <url>` (`tag`, `remote-tracking branch`, `commit '<ref>'`, or the url alone for a remote `HEAD`), the url shortened as `FETCH_HEAD` records it, then ` into <current>` unless the current branch is `main` or `master`; reflog `pull: Merge made by the 'ort' strategy.`. |
 | Diverged, clashing | `conflict` | `MERGE_HEAD`/`MERGE_MSG`/`ORIG_HEAD` + conflicted index written. |
 
+## Choosing how to reconcile
+
+As git's `pull`: with no `rebase` given, pull reads `branch.<current>.rebase`
+(not when detached), then `pull.rebase` — `true`, `false`, `merges`/`m`, or
+`interactive`/`i` (run with the todo git would offer, unedited, as tsgit has no
+editor); any other value refuses with `CONFIG_INVALID_ENUM_VALUE` before the fetch.
+With no `fastForward` given, `pull.ff` is read; a configured `only` reads as
+`'allow'` once `rebase` is given.
+
+When nothing — option or config, `merge.ff` aside — says how to reconcile and the
+fetched head diverged from `HEAD`, pull refuses **after the fetch** with
+`PULL_DIVERGENT_BRANCHES` (git's `Need to specify how to reconcile divergent
+branches.`). A fast-forward or an already-contained head still integrates. Pass
+`rebase: false` for git's `--no-rebase` merge.
+
 ## Rebasing
 
 With `rebase: true` (or `'merges'`), git's `pull --rebase`:

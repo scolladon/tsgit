@@ -122,6 +122,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'UNRELATED_HISTORIES':
     case 'FAST_FORWARD_MULTIPLE_BRANCHES':
     case 'PULL_REBASE_MULTIPLE_BRANCHES':
+    case 'PULL_DIVERGENT_BRANCHES':
     case 'PUSH_MULTIPLE_UPSTREAMS':
     case 'NON_FAST_FORWARD':
     case 'PUSH_REJECTED':

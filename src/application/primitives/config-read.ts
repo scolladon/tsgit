@@ -816,6 +816,22 @@ export const findLastEntry = async (
   return lastEntryIn(tokens, source, section, key);
 };
 
+/**
+ * {@link findLastEntry} under `[<section> "<subsection>"]` — the subsection
+ * matched case-sensitively, as git matches it — keyed `<section>.<subsection>.<key>`.
+ */
+export const findLastSubsectionEntry = async (
+  ctx: Context,
+  section: string,
+  subsection: string,
+  key: string,
+): Promise<LocatedConfigEntry | undefined> => {
+  const { tokens, source } = await readConfigEntry(ctx);
+  let last: LocatedConfigEntry | undefined;
+  for (const entry of entriesIn(tokens, source, section, key, subsection)) last = entry;
+  return last;
+};
+
 /** {@link findLastEntry} for each `[section, key]`, in order, from ONE config read. */
 export const findLastEntries = async (
   ctx: Context,
@@ -836,19 +852,22 @@ const lastEntryIn = (
   return last;
 };
 
-/** Every entry of `key` (case-insensitive) under the subsectionless `[<section>]`, in file order. */
+/** Every entry of `key` (case-insensitive) under `[<section>]` (or its `subsection`), in file order. */
 function* entriesIn(
   tokens: ReadonlyArray<ConfigToken>,
   source: string,
   section: string,
   key: string,
+  subsection?: string,
 ): Generator<LocatedConfigEntry> {
   const loweredKey = key.toLowerCase();
-  const qualifiedKey = `${section.toLowerCase()}.${loweredKey}`;
+  const qualifiedSection =
+    subsection === undefined ? section.toLowerCase() : `${section.toLowerCase()}.${subsection}`;
+  const qualifiedKey = `${qualifiedSection}.${loweredKey}`;
   let inSection = false;
   for (const token of tokens) {
     if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, section, undefined);
+      inSection = matchesSection(token.section, token.subsection, section, subsection);
       continue;
     }
     if (!inSection || token.kind !== 'entry' || token.key.toLowerCase() !== loweredKey) continue;

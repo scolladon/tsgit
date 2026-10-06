@@ -18,8 +18,9 @@ import * as path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { pull } from '../../src/application/commands/pull.js';
+import { errorDataCode } from '../../src/domain/error-data-code.js';
 import { backendTransport } from './http-backend-transport.js';
-import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
+import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 
 const PEER_URL = 'https://example.com/peer.git';
 const EPOCH = 1_700_000_000;
@@ -166,6 +167,105 @@ describe.skipIf(!GIT_AVAILABLE)('pull rebase interop', () => {
 
         // Assert
         expect(state(ours)).toEqual(state(theirs));
+      });
+    });
+  });
+
+  /** Configure both clones alike, then let each tool pull with no reconcile option. */
+  const pullConfigured = async (
+    dirs: { readonly ours: string; readonly theirs: string; readonly peerRoot: string },
+    config: ReadonlyArray<readonly [string, string]>,
+  ) => {
+    for (const dir of [dirs.ours, dirs.theirs]) {
+      for (const [key, value] of config) dated(['-C', dir, 'config', key, value]);
+    }
+    const exitCode = tryRunGitWithExit(['-C', dirs.theirs, 'pull'], { env: DATED_ENV }).exitCode;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(EPOCH * 1000);
+    const ctx = {
+      ...createNodeContext({ workDir: dirs.ours }),
+      transport: backendTransport(dirs.peerRoot),
+    };
+    const code = await pull(ctx, {}).then(
+      () => undefined,
+      (error: unknown) => errorDataCode(error),
+    );
+    return { exitCode, code };
+  };
+
+  describe.each([
+    { label: 'nothing configured', config: [], exitCode: 128, code: 'PULL_DIVERGENT_BRANCHES' },
+    {
+      label: 'merge.ff=false alone',
+      config: [['merge.ff', 'false']],
+      exitCode: 128,
+      code: 'PULL_DIVERGENT_BRANCHES',
+    },
+    {
+      label: 'pull.ff=only',
+      config: [['pull.ff', 'only']],
+      exitCode: 128,
+      code: 'NON_FAST_FORWARD',
+    },
+    {
+      label: 'pull.rebase=bogus',
+      config: [['pull.rebase', 'bogus']],
+      exitCode: 128,
+      code: 'CONFIG_INVALID_ENUM_VALUE',
+    },
+    { label: 'pull.rebase=true', config: [['pull.rebase', 'true']], exitCode: 0, code: undefined },
+    {
+      label: 'pull.rebase=merges',
+      config: [['pull.rebase', 'merges']],
+      exitCode: 0,
+      code: undefined,
+    },
+    {
+      label: 'pull.rebase=false',
+      config: [['pull.rebase', 'false']],
+      exitCode: 0,
+      code: undefined,
+    },
+    { label: 'pull.ff=true', config: [['pull.ff', 'true']], exitCode: 0, code: undefined },
+    {
+      label: 'branch.main.rebase=true over pull.rebase=false',
+      config: [
+        ['pull.rebase', 'false'],
+        ['branch.main.rebase', 'true'],
+      ],
+      exitCode: 0,
+      code: undefined,
+    },
+  ] as ReadonlyArray<{
+    label: string;
+    config: ReadonlyArray<readonly [string, string]>;
+    exitCode: number;
+    code: string | undefined;
+  }>)('Given a divergence and $label', ({ label, config, exitCode, code }) => {
+    describe('When both tools pull with no reconcile option', () => {
+      it('Then both integrate or refuse alike and leave the same commits and reflogs', async () => {
+        // Arrange
+        const dirs = setUp(`configured-${label.replace(/[^a-z]+/g, '-')}`);
+        commitFile(dirs.ours, 'l.txt', 'l');
+        commitFile(dirs.theirs, 'l.txt', 'l');
+        commitFile(dirs.work, 'v.txt', 'v');
+        publish(dirs.work, dirs.peerPath);
+        const sut = pullConfigured;
+
+        // Act
+        const result = await sut(dirs, config);
+
+        // Assert
+        expect(result).toEqual({ exitCode, code });
+        const peerUrl = dirs.peerPath.slice(0, -'.git'.length);
+        const commitOf = (dir: string) =>
+          git(dir, 'cat-file', 'commit', 'HEAD').replaceAll(
+            peerUrl,
+            PEER_URL.slice(0, -'.git'.length),
+          );
+        expect(commitOf(dirs.ours)).toBe(commitOf(dirs.theirs));
+        const log = (dir: string) => git(dir, 'reflog', '-4', '--format=%gs', 'HEAD');
+        expect(log(dirs.ours)).toBe(log(dirs.theirs));
       });
     });
   });

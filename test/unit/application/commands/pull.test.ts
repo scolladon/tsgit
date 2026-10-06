@@ -196,7 +196,9 @@ describe('pull', () => {
         );
 
         // Act
-        const result = mergedPull(await pull(withTransport(ctx, transport), { author }));
+        const result = mergedPull(
+          await pull(withTransport(ctx, transport), { rebase: false, author }),
+        );
 
         // Assert
         expect(result.merge.kind).toBe('merge');
@@ -234,7 +236,9 @@ describe('pull', () => {
         );
 
         // Act
-        const result = mergedPull(await pull(withTransport(ctx, transport), { author }));
+        const result = mergedPull(
+          await pull(withTransport(ctx, transport), { rebase: false, author }),
+        );
 
         // Assert — conflict state persisted, then mergeAbort restores ORIG_HEAD.
         expect(result.merge.kind).toBe('conflict');
@@ -263,7 +267,9 @@ describe('pull', () => {
           [{ name: 'refs/heads/main', id: b }],
           await emptyPack(ctx),
         );
-        const conflicted = mergedPull(await pull(withTransport(ctx, transport), { author }));
+        const conflicted = mergedPull(
+          await pull(withTransport(ctx, transport), { rebase: false, author }),
+        );
         expect(conflicted.merge.kind).toBe('conflict');
 
         // Act — resolve the file, stage it, and continue.
@@ -629,7 +635,7 @@ describe('pull', () => {
         const sut = pull;
 
         // Act
-        const result = await sut(ctx, { author }).catch((error: unknown) => error);
+        const result = await sut(ctx, { rebase: false, author }).catch((error: unknown) => error);
 
         // Assert
         expect((result as TsgitError).data).toEqual({ code: 'UNRELATED_HISTORIES' });
@@ -643,7 +649,9 @@ describe('pull', () => {
         const sut = pull;
 
         // Act
-        const result = mergedPull(await sut(ctx, { allowUnrelatedHistories: true, author }));
+        const result = mergedPull(
+          await sut(ctx, { rebase: false, allowUnrelatedHistories: true, author }),
+        );
 
         // Assert
         expect(result.merge).toMatchObject({ kind: 'merge', parents: [head, orphan] });
@@ -694,6 +702,7 @@ describe('pull', () => {
         // Act
         const result = mergedPull(
           await pull(withTransport(ctx, transport), {
+            rebase: false,
             message: 'custom pull message',
             author,
           }),
@@ -951,7 +960,9 @@ describe('pull', () => {
         );
 
         // Act
-        const result = mergedPull(await pull(withTransport(ctx, transport), { author, committer }));
+        const result = mergedPull(
+          await pull(withTransport(ctx, transport), { rebase: false, author, committer }),
+        );
 
         // Assert
         expect(result.merge.kind).toBe('merge');
@@ -1011,7 +1022,9 @@ describe('pull', () => {
           const sut = pull;
 
           // Act
-          const result = mergedPull(await sut(withTransport(ctx, transport), { author }));
+          const result = mergedPull(
+            await sut(withTransport(ctx, transport), { rebase: false, author }),
+          );
 
           // Assert
           expect(result.merge.kind).toBe('merge');
@@ -1044,7 +1057,9 @@ describe('pull', () => {
           const sut = pull;
 
           // Act
-          const result = mergedPull(await sut(withTransport(ctx, transport), { author }));
+          const result = mergedPull(
+            await sut(withTransport(ctx, transport), { rebase: false, author }),
+          );
 
           // Assert
           const id = result.merge.kind === 'merge' ? result.merge.id : b;
@@ -1075,7 +1090,9 @@ describe('pull', () => {
           const sut = pull;
 
           // Act
-          const result = mergedPull(await sut(withTransport(ctx, transport), { author }));
+          const result = mergedPull(
+            await sut(withTransport(ctx, transport), { rebase: false, author }),
+          );
 
           // Assert
           const id = result.merge.kind === 'merge' ? result.merge.id : b;
@@ -1100,7 +1117,7 @@ describe('pull', () => {
 
           // Act
           const result = mergedPull(
-            await sut(withTransport(ctx, transport), { remote: 'origin', author }),
+            await sut(withTransport(ctx, transport), { rebase: false, remote: 'origin', author }),
           );
 
           // Assert
@@ -1128,6 +1145,7 @@ describe('pull', () => {
           // Act
           const result = mergedPull(
             await sut(withTransport(ctx, transport), {
+              rebase: false,
               ref: 'refs/notes/n',
               author,
             }),
@@ -1159,7 +1177,7 @@ describe('pull', () => {
 
           // Act
           const result = mergedPull(
-            await sut(withTransport(ctx, transport), { ref: 'side', author }),
+            await sut(withTransport(ctx, transport), { rebase: false, ref: 'side', author }),
           );
 
           // Assert
@@ -1225,6 +1243,7 @@ describe('pull', () => {
           // Act
           const result = mergedPull(
             await sut(withTransport(ctx, transport), {
+              rebase: false,
               ref: 'refs/heads/side-*:refs/remotes/s/*',
               author,
             }),
@@ -1259,6 +1278,7 @@ describe('pull', () => {
           // Act
           const result = mergedPull(
             await sut(withTransport(ctx, transport), {
+              rebase: false,
               ref: 'refs/heads/side-*:refs/remotes/s/*',
               author,
             }),
@@ -1547,7 +1567,7 @@ describe('pull', () => {
       ],
       ['merge.ff=false and no pull.ff', false, [['merge.ff', 'false']], 'merge'],
     ] as const)('Given %s', (_label, diverged, entries, kind) => {
-      describe('When pull runs without a fast-forward policy', () => {
+      describe('When pull runs merging without a fast-forward policy', () => {
         it(`Then the integration concludes as a ${kind}`, async () => {
           // Arrange
           const { ctx } = await seedPull(diverged);
@@ -1555,7 +1575,7 @@ describe('pull', () => {
           const sut = pull;
 
           // Act
-          const result = mergedPull(await sut(ctx, { author }));
+          const result = mergedPull(await sut(ctx, { rebase: false, author }));
 
           // Assert
           expect(result.merge.kind).toBe(kind);
@@ -1592,7 +1612,7 @@ describe('pull', () => {
           const sut = pull;
 
           // Act
-          const result = await sut(ctx, { author }).catch((error: unknown) => error);
+          const result = await sut(ctx, { rebase: false, author }).catch((error: unknown) => error);
 
           // Assert
           expect((result as TsgitError).data).toMatchObject({ code: 'NON_FAST_FORWARD' });
@@ -1641,27 +1661,27 @@ describe('pull', () => {
   });
 });
 
+const USER = '\n[user]\n\tname = Ada\n\temail = ada@example.com\n';
+
+/** main at A→X (c.txt), the remote's main at A→B (b.txt); upstream configured. */
+const divergedPull = async (
+  theirs: { path: string; content: string } = { path: 'b.txt', content: 'b' },
+) => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, USER);
+  const a = await commitFile(ctx, 'a.txt', 'a\n', 'A');
+  await branchCreate(ctx, { name: 'feature' });
+  await checkout(ctx, { rev: 'feature' });
+  const b = await commitFile(ctx, theirs.path, theirs.content, 'B');
+  await checkout(ctx, { rev: 'main' });
+  const x = await commitFile(ctx, 'c.txt', 'c', 'X');
+  await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
+  const remote = buildPullRemote([{ name: 'refs/heads/main', id: b }], await emptyPack(ctx));
+  return { ctx: withTransport(ctx, remote.transport), requests: remote.requests, a, b, x };
+};
+
 describe('pull rebasing onto the fetched head', () => {
-  const USER = '\n[user]\n\tname = Ada\n\temail = ada@example.com\n';
-
-  /** main at A→X (c.txt), the remote's main at A→B (b.txt); upstream configured. */
-  const divergedPull = async (
-    theirs: { path: string; content: string } = { path: 'b.txt', content: 'b' },
-  ) => {
-    const ctx = createMemoryContext();
-    await init(ctx);
-    await ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, USER);
-    const a = await commitFile(ctx, 'a.txt', 'a\n', 'A');
-    await branchCreate(ctx, { name: 'feature' });
-    await checkout(ctx, { rev: 'feature' });
-    const b = await commitFile(ctx, theirs.path, theirs.content, 'B');
-    await checkout(ctx, { rev: 'main' });
-    const x = await commitFile(ctx, 'c.txt', 'c', 'X');
-    await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
-    const remote = buildPullRemote([{ name: 'refs/heads/main', id: b }], await emptyPack(ctx));
-    return { ctx: withTransport(ctx, remote.transport), requests: remote.requests, a, b, x };
-  };
-
   const pullData = async (ctx: Context, opts: Parameters<typeof pull>[1]) => {
     try {
       await pull(ctx, opts);
@@ -1827,8 +1847,6 @@ describe('pull rebasing onto the fetched head', () => {
 });
 
 describe('pull rebasing, edge states', () => {
-  const USER = '\n[user]\n\tname = Ada\n\temail = ada@example.com\n';
-
   const seed = async () => {
     const ctx = createMemoryContext();
     await init(ctx);
@@ -1879,6 +1897,159 @@ describe('pull rebasing, edge states', () => {
       expect(result.integration === 'rebase' && result.rebase.kind).toBe('rebased');
       const head = await readObject(ctx, await resolveRef(ctx, 'HEAD' as RefName));
       expect(head.type === 'commit' && head.data.parents).toEqual([b]);
+    });
+  });
+});
+
+describe('pull choosing how to reconcile', () => {
+  const settle = (ctx: Context, entries: ReadonlyArray<readonly [string, string, string | null]>) =>
+    ctx.fs.appendUtf8(
+      `${ctx.layout.gitDir}/config`,
+      entries
+        .map(([section, key, value]) =>
+          value === null ? `[${section}]\n\t${key}\n` : `[${section}]\n\t${key} = ${value}\n`,
+        )
+        .join(''),
+    );
+
+  const outcome = async (ctx: Context, opts: Parameters<typeof pull>[1]) => {
+    try {
+      const result = await pull(ctx, opts);
+      return result.integration === 'merge' ? result.merge.kind : `rebase:${result.rebase.kind}`;
+    } catch (error) {
+      return (error as TsgitError).data.code;
+    }
+  };
+
+  describe.each([
+    ['nothing chosen', [], {}, 'PULL_DIVERGENT_BRANCHES'],
+    ['pull.rebase=true', [['pull', 'rebase', 'true']], {}, 'rebase:rebased'],
+    ['a valueless pull.rebase', [['pull', 'rebase', null]], {}, 'rebase:rebased'],
+    ['pull.rebase=merges', [['pull', 'rebase', 'merges']], {}, 'rebase:rebased'],
+    ['pull.rebase=m', [['pull', 'rebase', 'm']], {}, 'rebase:rebased'],
+    ['pull.rebase=interactive', [['pull', 'rebase', 'interactive']], {}, 'rebase:rebased'],
+    ['pull.rebase=false', [['pull', 'rebase', 'false']], {}, 'merge'],
+    ['pull.rebase=bogus', [['pull', 'rebase', 'bogus']], {}, 'CONFIG_INVALID_ENUM_VALUE'],
+    ['pull.rebase=preserve', [['pull', 'rebase', 'preserve']], {}, 'CONFIG_INVALID_ENUM_VALUE'],
+    [
+      'branch.main.rebase=true over pull.rebase=false',
+      [
+        ['pull', 'rebase', 'false'],
+        ['branch "main"', 'rebase', 'true'],
+      ],
+      {},
+      'rebase:rebased',
+    ],
+    ['branch.main.rebase=false', [['branch "main"', 'rebase', 'false']], {}, 'merge'],
+    ['pull.ff=true', [['pull', 'ff', 'true']], {}, 'merge'],
+    ['pull.ff=false', [['pull', 'ff', 'false']], {}, 'merge'],
+    ['pull.ff=only', [['pull', 'ff', 'only']], {}, 'NON_FAST_FORWARD'],
+    ['pull.ff=only with rebase true', [['pull', 'ff', 'only']], { rebase: true }, 'rebase:rebased'],
+    ['pull.ff=only with rebase false', [['pull', 'ff', 'only']], { rebase: false }, 'merge'],
+    [
+      'pull.ff=only over pull.rebase=true',
+      [
+        ['pull', 'ff', 'only'],
+        ['pull', 'rebase', 'true'],
+      ],
+      {},
+      'NON_FAST_FORWARD',
+    ],
+    ['fastForward allow', [], { fastForward: 'allow' }, 'merge'],
+    ['rebase false', [], { rebase: false }, 'merge'],
+    [
+      'rebase false over pull.rebase=true',
+      [['pull', 'rebase', 'true']],
+      { rebase: false },
+      'merge',
+    ],
+    ['merge.ff=false alone', [['merge', 'ff', 'false']], {}, 'PULL_DIVERGENT_BRANCHES'],
+  ] as const)('Given diverged histories and %s, When pull', (_, entries, opts, expected) => {
+    it(`Then it integrates as git does: ${expected}`, async () => {
+      // Arrange
+      const { ctx } = await divergedPull();
+      await settle(ctx, entries);
+      const sut = outcome;
+
+      // Act
+      const result = await sut(ctx, opts);
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe('Given diverged histories and nothing chosen, When pull', () => {
+    it('Then it refuses after the fetch and leaves the branch alone', async () => {
+      // Arrange
+      const { ctx, requests, x } = await divergedPull();
+
+      // Act
+      const result = await outcome(ctx, {});
+
+      // Assert
+      expect(result).toBe('PULL_DIVERGENT_BRANCHES');
+      expect(requests.length).toBeGreaterThan(0);
+      expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(x);
+      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(false);
+    });
+  });
+
+  describe('Given an invalid branch.main.rebase, When pull', () => {
+    it('Then it refuses before fetching, naming the branch key', async () => {
+      // Arrange
+      const { ctx, requests } = await divergedPull();
+      await settle(ctx, [['branch "main"', 'rebase', 'bogus']]);
+
+      // Act
+      let data: unknown;
+      try {
+        await pull(ctx, {});
+      } catch (error) {
+        data = (error as TsgitError).data;
+      }
+
+      // Assert
+      expect(data).toEqual({
+        code: 'CONFIG_INVALID_ENUM_VALUE',
+        key: 'branch.main.rebase',
+        source: `${ctx.layout.gitDir}/config`,
+        value: 'bogus',
+        line: expect.any(Number),
+      });
+      expect(requests).toHaveLength(0);
+    });
+  });
+
+  describe('Given a detached HEAD on diverged histories and branch.main.rebase=true, When pull of a ref', () => {
+    it('Then the branch key is not read and it refuses the divergence', async () => {
+      // Arrange
+      const { ctx } = await divergedPull();
+      await settle(ctx, [['branch "main"', 'rebase', 'true']]);
+      await checkout(ctx, {
+        rev: await resolveRef(ctx, 'refs/heads/main' as RefName),
+        detach: true,
+      });
+
+      // Act
+      const result = await outcome(ctx, { ref: 'refs/heads/main' });
+
+      // Assert
+      expect(result).toBe('PULL_DIVERGENT_BRANCHES');
+    });
+  });
+
+  describe('Given HEAD already containing the fetched head and nothing chosen, When pull', () => {
+    it('Then it is up to date, not refused', async () => {
+      // Arrange
+      const { ctx, a } = await divergedPull();
+      const remote = buildPullRemote([{ name: 'refs/heads/main', id: a }], await emptyPack(ctx));
+
+      // Act
+      const result = await outcome(withTransport(ctx, remote.transport), {});
+
+      // Assert
+      expect(result).toBe('up-to-date');
     });
   });
 });

@@ -484,6 +484,8 @@ function extractDetail(data: TsgitErrorData): string {
       return 'cannot fast-forward to multiple branches';
     case 'PULL_REBASE_MULTIPLE_BRANCHES':
       return 'cannot rebase onto multiple branches';
+    case 'PULL_DIVERGENT_BRANCHES':
+      return 'need to specify how to reconcile divergent branches';
     case 'NON_FAST_FORWARD':
       return `non-fast-forward update for ${data.ref}: local=${data.local} remote=${data.remote}`;
     case 'PUSH_REJECTED':

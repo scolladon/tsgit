@@ -31,10 +31,8 @@ export const configuredMergeFastForward = async (
 };
 
 /**
- * git pull's `config_get_ff` under `--no-rebase`: `pull.ff`'s policy, or
- * `undefined` when unset. An unknown value refuses the pull; `only` turns into
- * a plain fast-forward-or-merge, as git does whenever the rebase choice is
- * given — tsgit's pull always integrates by merge.
+ * git pull's `config_get_ff`: `pull.ff`'s policy, or `undefined` when unset.
+ * An unknown value refuses the pull.
  */
 export const configuredPullFastForward = async (
   ctx: Context,
@@ -46,5 +44,5 @@ export const configuredPullFastForward = async (
   if (policy === undefined) {
     throw configInvalidEnumValue(entry.key, entry.source, entry.value, entry.line);
   }
-  return policy === ONLY ? 'allow' : policy;
+  return policy;
 };

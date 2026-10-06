@@ -15,6 +15,7 @@ import {
   fetchRejected,
   nonFastForward,
   noUpstreamConfigured,
+  pullDivergentBranches,
   pullNoMergeCandidates,
   pullRebaseMultipleBranches,
 } from '../../domain/commands/error.js';
@@ -33,6 +34,7 @@ import { configuredPullFastForward } from './internal/fast-forward-config.js';
 import { type FetchHeadLine, readFetchHead } from './internal/fetch-head.js';
 import { forkPoint } from './internal/fork-point.js';
 import { treeOf } from './internal/history-rewrite.js';
+import { configuredPullRebase } from './internal/pull-rebase-config.js';
 import { refspecTrackingRef, upstreamTrackingRef } from './internal/pull-tracking-ref.js';
 import { buildRemoteTable } from './internal/remote-config.js';
 import {
@@ -191,11 +193,32 @@ const assertFastForwardable = async (
   }
 };
 
-/** git's `config_get_ff`: an unset policy takes `pull.ff`, else leaves `merge.ff` to the merge. */
+/**
+ * git's `config_get_ff`: an unset policy takes `pull.ff`, else leaves `merge.ff`
+ * to the merge — a configured `only` reading as a plain fast-forward-or-merge
+ * once the caller chose whether to rebase.
+ */
 const settleFastForward = async (ctx: Context, opts: PullOptions): Promise<PullOptions> => {
   if (opts.fastForward !== undefined) return opts;
   const configured = await configuredPullFastForward(ctx);
-  return configured === undefined ? opts : { ...opts, fastForward: configured };
+  if (configured === undefined) return opts;
+  const chosen = configured === 'only' && opts.rebase !== undefined ? 'allow' : configured;
+  return { ...opts, fastForward: chosen };
+};
+
+/**
+ * git's `config_get_rebase`: an unset choice takes `branch.<current>.rebase`,
+ * else `pull.rebase`; `unreconciled` when neither says, for the divergence refusal.
+ */
+const settleRebase = async (
+  ctx: Context,
+  opts: PullOptions,
+  currentBranch: string | undefined,
+): Promise<{ readonly opts: PullOptions; readonly unreconciled: boolean }> => {
+  if (opts.rebase !== undefined) return { opts, unreconciled: false };
+  const configured = await configuredPullRebase(ctx, currentBranch);
+  if (configured === undefined) return { opts, unreconciled: true };
+  return { opts: { ...opts, rebase: configured }, unreconciled: false };
 };
 
 /** A rebasing pull of a born HEAD, with the fork point found before the fetch. */
@@ -256,16 +279,22 @@ const canFastForward = async (
 export const pull = async (ctx: Context, given: PullOptions = {}): Promise<PullResult> => {
   await assertOperationalRepository(ctx);
   requireWorkTree(ctx, 'pull');
-  const opts = await settleFastForward(ctx, given);
+  const settled = await settleFastForward(ctx, given);
   await assertNoPendingOperation(ctx);
 
-  const head = await readHeadRaw(ctx);
-  const branchRef = branchRefFromHead(head);
+  const branchRef = branchRefFromHead(await readHeadRaw(ctx));
   const currentBranch = branchRef !== undefined ? shortBranchName(branchRef) : undefined;
-  const upstream = await readUpstream(ctx, currentBranch, opts);
+  const upstream = await readUpstream(ctx, currentBranch, settled);
+  const { opts, unreconciled } = await settleRebase(ctx, settled, currentBranch);
   const rebase = await planRebase(ctx, opts, upstream, branchRef);
+  const fetchResult = await fetchUpstream(ctx, opts, upstream);
+  assertNothingRejected(fetchResult);
+  const fetched = await mergeHeads(ctx, opts, upstream, branchRef);
+  return integrate(ctx, { opts, branchRef, fetchResult, fetched, rebase, unreconciled });
+};
 
-  const fetchResult = await fetch(ctx, {
+const fetchUpstream = (ctx: Context, opts: PullOptions, upstream: Upstream): Promise<FetchResult> =>
+  fetch(ctx, {
     remote: upstream.remote,
     ...(opts.ref !== undefined ? { refspecs: [opts.ref] } : {}),
     // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ prune: opts.prune }` with `prune: undefined`, which `fetch` reads as `=== true` (false) — identical to omitting the key. The drop direction + the `!==` flip are killed by the prune-forwarding test.
@@ -274,18 +303,35 @@ export const pull = async (ctx: Context, given: PullOptions = {}): Promise<PullR
     ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
   });
 
-  assertNothingRejected(fetchResult);
-  const fetched = await mergeHeads(ctx, opts, upstream, branchRef);
-  return integrate(ctx, { opts, branchRef, fetchResult, fetched, rebase });
-};
-
 interface Integration {
   readonly opts: PullOptions;
   readonly branchRef: RefName | undefined;
   readonly fetchResult: FetchResult;
   readonly fetched: ReadonlyArray<FetchHeadLine>;
   readonly rebase: RebasePlan | undefined;
+  /** No rebase choice was given or configured. */
+  readonly unreconciled: boolean;
 }
+
+/** git's `already_up_to_date`: HEAD descends from every fetched head. */
+const alreadyUpToDate = async (
+  ctx: Context,
+  head: ObjectId,
+  heads: ReadonlyArray<FetchHeadLine>,
+): Promise<boolean> => {
+  for (const line of heads) if (!(await inMergeBases(ctx, line.id, head))) return false;
+  return true;
+};
+
+/** git pull refuses a divergence nothing said how to reconcile; an unborn HEAD is pulled into. */
+const assertReconcilable = async (
+  ctx: Context,
+  heads: ReadonlyArray<FetchHeadLine>,
+): Promise<void> => {
+  const head = await resolveRefOrMissing(ctx, 'HEAD');
+  if (head === undefined || (await canFastForward(ctx, heads))) return;
+  if (!(await alreadyUpToDate(ctx, head, heads))) throw pullDivergentBranches();
+};
 
 /**
  * git pull's integrate step: fast-forward-only wins over a rebase; a rebasing
@@ -295,6 +341,7 @@ const integrate = async (ctx: Context, run: Integration): Promise<PullResult> =>
   const { opts, fetched, fetchResult, rebase } = run;
   if (rebase !== undefined && fetched.length > 1) throw pullRebaseMultipleBranches();
   await assertFastForwardable(ctx, opts, run.branchRef, fetched);
+  if (run.unreconciled && opts.fastForward === undefined) await assertReconcilable(ctx, fetched);
   if (rebase === undefined || opts.fastForward === 'only') {
     return integrateByMerge(ctx, fetchResult, fetched, opts);
   }

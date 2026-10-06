@@ -68,6 +68,7 @@ export type CommandError =
   /** git's pull `Cannot fast-forward to multiple branches.` */
   | { readonly code: 'FAST_FORWARD_MULTIPLE_BRANCHES' }
   | { readonly code: 'PULL_REBASE_MULTIPLE_BRANCHES' }
+  | { readonly code: 'PULL_DIVERGENT_BRANCHES' }
   | {
       readonly code: 'NON_FAST_FORWARD';
       readonly ref: RefName;
@@ -605,6 +606,14 @@ export const fastForwardMultipleBranches = (): TsgitError =>
 /** git pull's `Cannot rebase onto multiple branches.`: a rebasing pull fetched several heads. */
 export const pullRebaseMultipleBranches = (): TsgitError =>
   new TsgitError({ code: 'PULL_REBASE_MULTIPLE_BRANCHES' });
+
+/**
+ * git pull's `Need to specify how to reconcile divergent branches.`: the
+ * branches diverged and neither a rebase choice nor a fast-forward policy —
+ * given or configured — says how to integrate them.
+ */
+export const pullDivergentBranches = (): TsgitError =>
+  new TsgitError({ code: 'PULL_DIVERGENT_BRANCHES' });
 
 export const nonFastForward = (ref: RefName, local: ObjectId, remote: ObjectId): TsgitError =>
   new TsgitError({ code: 'NON_FAST_FORWARD', ref, local, remote });
