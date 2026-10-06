@@ -37,6 +37,12 @@ options, each with git's exact semantics and on-disk effects:
 `branch.<b>.mergeoptions` is parsed with git's `split_cmdline` and applied before the caller's own
 options, which win, as on git's command line. An option git does not know refuses as git does.
 
+**Amendment (2026-10-06) — result shape.** A merge that ends without a commit reports one of two new
+`MergeResult` variants, mirroring git's two distinct on-disk states: `{ kind: 'squashed', origHead }`
+(`--squash`: `SQUASH_MSG` written, no `MERGE_HEAD`, HEAD not moved, even when a fast-forward was
+possible) and `{ kind: 'stopped', mergeHead, origHead }` (`--no-commit`: `MERGE_HEAD` + `MERGE_MSG`
+kept for the caller's commit; a fast-forward still fast-forwards unless `fastForward: 'never'`).
+
 ## Consequences
 
 - Breaking-safe additive public options (`feat(merge)!` where error codes are added);
