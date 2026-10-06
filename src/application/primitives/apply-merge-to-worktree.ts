@@ -29,6 +29,7 @@ import {
   mergeTrees,
 } from '../../domain/merge/index.js';
 import { FILE_MODE, type FilePath, type ObjectId } from '../../domain/objects/index.js';
+import { AUTO_MERGE } from '../../domain/refs/state-files.js';
 import type { Context } from '../../ports/context.js';
 import { buildContentMerger } from './build-content-merger.js';
 import { detectMergeRenames } from './detect-merge-renames.js';
@@ -52,7 +53,8 @@ import {
 import { type MaterializeTreeResult, materializeTree } from './materialize-tree.js';
 import { mergeCollidingRenameSources } from './merge-colliding-rename-sources.js';
 import { readBlob } from './read-blob.js';
-import { synthesizeTreeFromIndex } from './synthesize-tree-from-index.js';
+import { synthesizeResultTree, synthesizeTreeFromIndex } from './synthesize-tree-from-index.js';
+import { writeObject } from './write-object.js';
 
 const UNSUPPORTED_CONFLICT_TYPES: ReadonlySet<ConflictType> = new Set(['gitlink']);
 
@@ -280,6 +282,90 @@ const rejectUnsupported = (conflicts: ReadonlyArray<MergeConflict>): void => {
   }
 };
 
+/** The blob a conflicted path holds in the result tree: the bytes its working-tree file gets. */
+const conflictBlobId = async (
+  ctx: Context,
+  conflict: MergeConflict,
+): Promise<ObjectId | undefined> => {
+  if (conflict.conflictContent !== undefined) {
+    const blob = { type: 'blob', content: conflict.conflictContent, id: '' as ObjectId } as const;
+    return writeObject(ctx, blob);
+  }
+  if (SURVIVOR_CONFLICT_TYPES.has(conflict.type)) return conflict.ourId ?? conflict.theirId;
+  return conflict.ourId;
+};
+
+/** A distinct-types conflict keeps each side at its own recorded path. */
+const distinctTypesLeaves = (conflict: MergeConflict): ReadonlyArray<IndexEntry> => {
+  const { ourPath, ourId, ourMode, theirPath, theirId, theirMode } = conflict;
+  const ourSide =
+    ourPath !== undefined && ourId !== undefined && ourMode !== undefined
+      ? [stage0Entry(ourPath, ourId, ourMode)]
+      : [];
+  const theirSide =
+    theirPath !== undefined && theirId !== undefined && theirMode !== undefined
+      ? [stage0Entry(theirPath, theirId, theirMode)]
+      : [];
+  return [...ourSide, ...theirSide];
+};
+
+const conflictLeaves = async (
+  ctx: Context,
+  conflict: MergeConflict,
+): Promise<ReadonlyArray<IndexEntry>> => {
+  if (conflict.type === 'distinct-types') return distinctTypesLeaves(conflict);
+  const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
+  const id = await conflictBlobId(ctx, conflict);
+  return mode === undefined || id === undefined ? [] : [stage0Entry(conflict.path, id, mode)];
+};
+
+/**
+ * git's ort result tree for a conflicted merge: every clean entry (`merged`
+ * carries the line-merged blobs) plus each conflicted path as its working-tree
+ * file holds it.
+ */
+export const conflictResultTree = async (
+  ctx: Context,
+  outcomes: ReadonlyArray<MergeOutcome>,
+  conflicts: ReadonlyArray<MergeConflict>,
+  merged: ReadonlyArray<IndexEntry>,
+): Promise<ObjectId> => {
+  const leaves = [...blobBackedEntries(outcomes), ...merged];
+  for (const conflict of conflicts) leaves.push(...(await conflictLeaves(ctx, conflict)));
+  return synthesizeResultTree(ctx, leaves);
+};
+
+/** git's `merge_switch_to_result`: `AUTO_MERGE` names the result tree it checked out. */
+export const writeAutoMerge = async (ctx: Context, tree: ObjectId): Promise<void> => {
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${AUTO_MERGE}`, `${tree}\n`);
+};
+
+/** Materialise a conflicted merge: working tree, `AUTO_MERGE`, and the unmerged index it stages. */
+const materialiseConflict = async (
+  ctx: Context,
+  merged: {
+    readonly outcomes: ReadonlyArray<MergeOutcome>;
+    readonly conflicts: ReadonlyArray<MergeConflict>;
+  },
+  changed: ReadonlySet<FilePath>,
+): Promise<ApplyMergeResult> => {
+  // Whole-set path gate, hoisted above the write wave: a hostile name
+  // anywhere in the batch refuses before the FIRST byte is written, not
+  // partway through it.
+  validateMergeWritePaths(merged.outcomes, merged.conflicts, changed);
+  await writeConflictWorktree(ctx, merged.outcomes, merged.conflicts, changed);
+  const mergedBlobs = await mergedBlobEntries(ctx, merged.outcomes);
+  await writeAutoMerge(
+    ctx,
+    await conflictResultTree(ctx, merged.outcomes, merged.conflicts, mergedBlobs),
+  );
+  return {
+    kind: 'conflict',
+    conflicts: merged.conflicts,
+    indexEntries: buildUnmergedIndex(merged.outcomes, merged.conflicts, mergedBlobs),
+  };
+};
+
 export const applyMergeToWorktree = async (
   ctx: Context,
   input: ApplyMergeInput,
@@ -319,20 +405,7 @@ export const applyMergeToWorktree = async (
     });
     return { kind: 'clean', mergedTree, result };
   }
-  // Whole-set path gate, hoisted above the write wave: a hostile name
-  // anywhere in the batch refuses before the FIRST byte is written, not
-  // partway through it.
-  validateMergeWritePaths(merged.outcomes, merged.conflicts, changed);
-  await writeConflictWorktree(ctx, merged.outcomes, merged.conflicts, changed);
-  return {
-    kind: 'conflict',
-    conflicts: merged.conflicts,
-    indexEntries: buildUnmergedIndex(
-      merged.outcomes,
-      merged.conflicts,
-      await mergedBlobEntries(ctx, merged.outcomes),
-    ),
-  };
+  return materialiseConflict(ctx, merged, changed);
 };
 
 export type MergeTreesResult =

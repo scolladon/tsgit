@@ -334,6 +334,49 @@ describe('applyMergeToWorktree', () => {
     });
   });
 
+  describe('Given a content conflict beside a path that line-merges cleanly', () => {
+    describe('When the merge is applied', () => {
+      it("Then AUTO_MERGE names the result tree: the merged blob and the conflicted file's marked bytes", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobs = await Promise.all(
+          ['base\n', 'ours\n', 'theirs\n', 'a\nb\nc\n', 'A\nb\nc\n', 'a\nb\nC\n'].map((content) =>
+            writeBlob(ctx, content),
+          ),
+        );
+        const [aBase, aOurs, aTheirs, mBase, mOurs, mTheirs] = blobs as [
+          ObjectId,
+          ObjectId,
+          ObjectId,
+          ObjectId,
+          ObjectId,
+          ObjectId,
+        ];
+        const tree = (conflict: ObjectId, clean: ObjectId) =>
+          treeWith(ctx, [
+            treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, conflict),
+            treeEntry(FILE_MODE.REGULAR, 'm' as FilePath, clean),
+          ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('ours\n'));
+        await ctx.fs.write(`${ctx.layout.workDir}/m`, new TextEncoder().encode('A\nb\nc\n'));
+        const sut = applyMergeToWorktree;
+
+        // Act
+        await sut(ctx, {
+          baseTree: await tree(aBase, mBase),
+          oursTree: await tree(aOurs, mOurs),
+          theirsTree: await tree(aTheirs, mTheirs),
+          currentIndex: index([indexEntry('a', aOurs), indexEntry('m', mOurs)]),
+        });
+
+        // Assert
+        const marked = await writeBlob(ctx, await readWork(ctx, 'a'));
+        const expected = await tree(marked, await writeBlob(ctx, 'A\nb\nC\n'));
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe(`${expected}\n`);
+      });
+    });
+  });
+
   describe('Given supplied labels and a content conflict', () => {
     describe('When the merge is applied', () => {
       it('Then the working-tree markers carry the ours / theirs labels', async () => {

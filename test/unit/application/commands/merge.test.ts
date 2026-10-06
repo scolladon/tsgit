@@ -922,6 +922,42 @@ describe('merge', () => {
     });
   });
 
+  describe('Given conflicting modifications to the same file, When merge stops on them', () => {
+    it("Then AUTO_MERGE names a tree holding the conflicted file's marked bytes", async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'shared\n');
+      await add(ctx, ['file.txt']);
+      await commit(ctx, { message: 'base', author });
+      await branchCreate(ctx, { name: 'feature' });
+      await checkout(ctx, { rev: 'feature' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE-CHANGE\n');
+      await add(ctx, ['file.txt']);
+      await commit(ctx, { message: 'on-feature', author });
+      await checkout(ctx, { rev: 'main' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN-CHANGE\n');
+      await add(ctx, ['file.txt']);
+      await commit(ctx, { message: 'on-main', author });
+      const sut = mergeRun;
+
+      // Act
+      await sut(ctx, { rev: 'feature', author });
+
+      // Assert
+      const tree = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`)).trim() as ObjectId;
+      const object = await readObject(ctx, tree);
+      if (object.type !== 'tree') throw new Error('AUTO_MERGE must name a tree');
+      const [entry] = object.entries;
+      if (entry === undefined) throw new Error('expected one entry');
+      const blob = await readObject(ctx, entry.id);
+      if (blob.type !== 'blob') throw new Error('expected a blob');
+      expect(new TextDecoder().decode(blob.content)).toBe(
+        await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`),
+      );
+    });
+  });
+
   describe('Given conflicting modifications to the same file', () => {
     describe('When merge runs', () => {
       it('Then returns kind=conflict with the conflicting path and HEAD does NOT advance', async () => {

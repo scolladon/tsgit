@@ -51,6 +51,7 @@ import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
 import { abbreviateObjectId } from '../primitives/abbreviate-object-id.js';
+import { conflictResultTree, writeAutoMerge } from '../primitives/apply-merge-to-worktree.js';
 import { buildContentMerger } from '../primitives/build-content-merger.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createCommit } from '../primitives/create-commit.js';
@@ -1445,6 +1446,8 @@ const persistConflictState = async (
   await underIndexLock(ctx, async () => {
     await writeConflictingWorkingTree(ctx, result.outcomes, result.conflicts, changed, matcher);
     await writeStopState(ctx, opts, ourId, [theirId], sortedRecordedPaths(result.conflicts));
+    const autoMerge = await conflictResultTree(ctx, result.outcomes, result.conflicts, merged);
+    await writeAutoMerge(ctx, autoMerge);
     return buildConflictIndexEntries(result.outcomes, result.conflicts, matcher, merged);
   });
   return conflictOutcome(opts, result.conflicts, theirId, ourId);

@@ -130,7 +130,12 @@ describe('checkout clears the branch state, as git does', () => {
 
         // Assert
         expect(result).toEqual({ code: 'MERGE_HAS_CONFLICTS', count: 1, paths: ['file.txt'] });
-        expect(await presentStateFiles(ctx)).toEqual(['MERGE_HEAD', 'MERGE_MSG', 'MERGE_MODE']);
+        expect(await presentStateFiles(ctx)).toEqual([
+          'MERGE_HEAD',
+          'MERGE_MSG',
+          'MERGE_MODE',
+          'AUTO_MERGE',
+        ]);
       });
     });
 
