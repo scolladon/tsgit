@@ -5,6 +5,7 @@ import {
   type RefMapRequest,
 } from '../../../../../src/application/commands/internal/fetch-ref-map.js';
 import type { TsgitError } from '../../../../../src/domain/index.js';
+import { SHA1_CONFIG, SHA256_CONFIG } from '../../../../../src/domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../../src/domain/objects/index.js';
 import type { AdvertisedRef } from '../../../../../src/domain/protocol/index.js';
 
@@ -15,6 +16,7 @@ const advertised = (...names: string[]): ReadonlyArray<AdvertisedRef> =>
   names.map((name) => ({ name, id: OID }));
 const ORIGIN_HEADS = '+refs/heads/*:refs/remotes/origin/*';
 const configured = (...configSpecs: string[]): RefMapRequest => ({
+  hashConfig: SHA1_CONFIG,
   cliSpecs: [],
   refmap: [],
   configSpecs,
@@ -461,6 +463,62 @@ describe('getRefMap', () => {
         expect(warnings).toEqual([
           'refs/remotes/origin/b usually tracks refs/heads/b, not refs/heads/a',
         ]);
+      });
+    });
+  });
+
+  describe.each([
+    {
+      label: 'a command-line refspec naming an object id',
+      request: fromCli([THIRD]),
+      expected: [[THIRD, THIRD, undefined, 'merge']],
+    },
+    {
+      label: 'a command-line refspec storing an object id into a branch',
+      request: fromCli([`${THIRD}:refs/heads/x`]),
+      expected: [[THIRD, THIRD, 'refs/heads/x', 'merge']],
+    },
+    {
+      label: 'a command-line refspec naming an object id in upper case',
+      request: fromCli([THIRD.toUpperCase()]),
+      expected: [[THIRD.toUpperCase(), THIRD, undefined, 'merge']],
+    },
+    {
+      label: 'a configured refspec naming an object id',
+      request: configured(`${THIRD}:refs/remotes/origin/pinned`),
+      expected: [[THIRD, THIRD, 'refs/remotes/origin/pinned', 'merge']],
+    },
+  ])('Given $label', ({ request, expected }) => {
+    describe('When the ref map is built', () => {
+      it('Then the object id is fetched as the source itself, advertised or not', () => {
+        // Arrange
+        const sut = getRefMap;
+
+        // Act
+        const result = sut(request, advertised('refs/heads/main'));
+
+        // Assert
+        expect(
+          result.map((entry) => [entry.source.name, entry.source.id, entry.target, entry.status]),
+        ).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a sha256 repository and a command-line refspec of forty hex digits', () => {
+    describe('When the ref map is built', () => {
+      it('Then the digits are no object id and name a remote ref that does not exist', () => {
+        // Arrange
+        const sut = refusal;
+
+        // Act
+        const result = sut(
+          { ...fromCli([THIRD]), hashConfig: SHA256_CONFIG },
+          advertised('refs/heads/main'),
+        );
+
+        // Assert
+        expect(result).toEqual({ code: 'REMOTE_REF_NOT_FOUND', ref: THIRD });
       });
     });
   });

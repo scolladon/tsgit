@@ -12,7 +12,9 @@ import {
   invalidOption,
   remoteRefNotFound,
 } from '../../../domain/commands/error.js';
+import type { HashConfig } from '../../../domain/objects/hash-config.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
+import { isOid } from '../../../domain/objects/oid-pattern.js';
 import type { AdvertisedRef } from '../../../domain/protocol/index.js';
 import { refCandidates } from '../../../domain/refs/ref-candidates.js';
 import { TAGS_PREFIX } from '../../../domain/refs/ref-prefixes.js';
@@ -33,6 +35,8 @@ export interface MappedRef {
 
 /** Everything `get_ref_map` reads besides the advertisement. */
 export interface RefMapRequest {
+  /** The repository's hash, which decides what spells a full object id. */
+  readonly hashConfig: HashConfig;
   readonly cliSpecs: ReadonlyArray<string>;
   /** One `--refmap` value per entry; `['']` maps the command-line refs nowhere. */
   readonly refmap: ReadonlyArray<string>;
@@ -62,8 +66,11 @@ interface PlannedMap {
 
 type MissingRef = 'refuse' | 'allow';
 
-/** An exact source maps no pattern, so no symref check applies. */
-const NO_SYMREFS: ReadonlySet<string> = new Set();
+/** What every refspec of one ref map is read against besides the remote refs. */
+interface MapScope {
+  readonly symrefs: ReadonlySet<string>;
+  readonly hashConfig: HashConfig;
+}
 
 const STAR = '*';
 const PEELED_MARK = '^';
@@ -112,17 +119,26 @@ const expandedMap = (
     });
 };
 
-/** git's `get_fetch_map` for one refspec; an exact source is matched as an abbreviation. */
+/** git's `exact_sha1` source: a full object id of the repository's hash, in either case. */
+const exactObject = (name: string, hashConfig: HashConfig): AdvertisedRef | undefined => {
+  const id = name.toLowerCase();
+  return isOid(id, hashConfig) ? { name, id: id as ObjectId } : undefined;
+};
+
+/**
+ * git's `get_fetch_map` for one refspec: an object id is fetched as itself,
+ * any other exact source is matched as an abbreviation.
+ */
 const getFetchMap = (
   refs: ReadonlyArray<AdvertisedRef>,
   sides: RefspecSides,
   missing: MissingRef,
-  symrefs: ReadonlySet<string>,
+  scope: MapScope,
 ): ReadonlyArray<MappedRef> => {
   if (sides.negative) return [];
-  if (sides.src.includes(STAR)) return expandedMap(sides, refs, symrefs);
+  if (sides.src.includes(STAR)) return expandedMap(sides, refs, scope.symrefs);
   const name = sides.src === '' ? HEAD : sides.src;
-  const source = findRefByNameAbbrev(refs, name);
+  const source = exactObject(name, scope.hashConfig) ?? findRefByNameAbbrev(refs, name);
   if (source !== undefined) {
     const target = localRef(sides.dst);
     return [
@@ -147,17 +163,17 @@ const commandLineMap = (
   request: RefMapRequest,
   cli: ReadonlyArray<RefspecSides>,
   refs: ReadonlyArray<AdvertisedRef>,
-  symrefs: ReadonlySet<string>,
+  scope: MapScope,
 ): PlannedMap => {
   const head = withStatus(
-    cli.flatMap((sides) => getFetchMap(refs, sides, 'refuse', symrefs)),
+    cli.flatMap((sides) => getFetchMap(refs, sides, 'refuse', scope)),
     'merge',
   );
   const mapSpecs = request.refmap.length > 0 ? request.refmap : request.configSpecs;
   const sources = head.map((entry) => entry.source);
   const opportunistic = mapSpecs
     .map(splitSides)
-    .flatMap((sides) => getFetchMap(sources, sides, 'allow', symrefs));
+    .flatMap((sides) => getFetchMap(sources, sides, 'allow', scope));
   return { head, opportunistic: withStatus(opportunistic, 'ignore') };
 };
 
@@ -165,6 +181,7 @@ const mergeOne = (
   list: ReadonlyArray<MappedRef>,
   src: string,
   refs: ReadonlyArray<AdvertisedRef>,
+  scope: MapScope,
 ): ReadonlyArray<MappedRef> => {
   const index = list.findIndex((entry) => refnameMatch(src, entry.source.name));
   if (index !== -1) return markForMerge(list, index);
@@ -172,7 +189,7 @@ const mergeOne = (
     refs,
     { negative: false, force: false, src, dst: undefined },
     'allow',
-    NO_SYMREFS,
+    scope,
   );
   return list.concat(withStatus(fetched, 'merge'));
 };
@@ -182,9 +199,10 @@ const addMergeConfig = (
   mapped: ReadonlyArray<MappedRef>,
   merge: ReadonlyArray<string>,
   refs: ReadonlyArray<AdvertisedRef>,
+  scope: MapScope,
 ): ReadonlyArray<MappedRef> => {
   let list = mapped;
-  for (const src of merge) list = mergeOne(list, src, refs);
+  for (const src of merge) list = mergeOne(list, src, refs, scope);
   return list;
 };
 
@@ -203,7 +221,7 @@ const markFirstForMerge = (
 const defaultMap = (
   request: RefMapRequest,
   refs: ReadonlyArray<AdvertisedRef>,
-  symrefs: ReadonlySet<string>,
+  scope: MapScope,
 ): PlannedMap => {
   const hasMerge = request.merge.length > 0;
   const mergesHere = hasMerge && request.mergesFromRemote;
@@ -212,15 +230,15 @@ const defaultMap = (
       refs,
       { negative: false, force: false, src: HEAD, dst: undefined },
       'refuse',
-      NO_SYMREFS,
+      scope,
     );
     return { head: withStatus(head, 'merge'), opportunistic: [] };
   }
   const specs = request.configSpecs.map(splitSides);
-  const mapped = specs.flatMap((sides) => getFetchMap(refs, sides, 'refuse', symrefs));
+  const mapped = specs.flatMap((sides) => getFetchMap(refs, sides, 'refuse', scope));
   const marked = hasMerge ? mapped : markFirstForMerge(specs[0], mapped);
   return {
-    head: mergesHere ? addMergeConfig(marked, request.merge, refs) : marked,
+    head: mergesHere ? addMergeConfig(marked, request.merge, refs, scope) : marked,
     opportunistic: [],
   };
 };
@@ -300,10 +318,9 @@ export const getRefMap = (
   if (cli.length === 0 && request.refmap.length > 0) {
     throw invalidOption('refmap', REFMAP_WITHOUT_REFSPEC);
   }
+  const scope = { symrefs: local.symrefs, hashConfig: request.hashConfig };
   const planned =
-    cli.length > 0
-      ? commandLineMap(request, cli, refs, local.symrefs)
-      : defaultMap(request, refs, local.symrefs);
+    cli.length > 0 ? commandLineMap(request, cli, refs, scope) : defaultMap(request, refs, scope);
   const tags = autoFollowsTags(request) ? findNonLocalTags(refs, planned.head, local) : [];
   const negatives = cli.length > 0 ? request.cliSpecs : request.configSpecs;
   const combined = [...planned.head, ...tags, ...planned.opportunistic];

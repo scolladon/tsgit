@@ -2911,6 +2911,55 @@ describe('fetch — FETCH_HEAD and command-line refspecs', () => {
     });
   });
 
+  describe.each([
+    { words: ['tag', 'v1'], tag: 'v1' },
+    { words: ['tag', 'tag'], tag: 'tag' },
+  ])("Given the command-line words 'tag' and the tag name $tag", ({ words, tag }) => {
+    describe('When fetch runs', () => {
+      it('Then the tag is fetched into its own name and listed for merging', async () => {
+        // Arrange
+        const ref = `refs/tags/${tag}`;
+        const { ctx, tip } = await arrange(ORIGIN_FETCH, ['refs/heads/main', ref]);
+        const sut = fetch;
+
+        // Act
+        const result = await sut(ctx, { refspecs: words });
+
+        // Assert
+        expect(await fetchHead(ctx)).toBe(`${tip}\t\ttag '${tag}' of https://example.com/r\n`);
+        expect(result.updatedRefs.map((update) => [update.source, update.name])).toEqual([
+          [ref, ref],
+        ]);
+      });
+    });
+  });
+
+  describe("Given the command-line word 'tag' with no tag name after it", () => {
+    describe('When fetch runs', () => {
+      it('Then it refuses as git does before touching FETCH_HEAD', async () => {
+        // Arrange
+        const { ctx } = await arrange(ORIGIN_FETCH, ['refs/heads/main']);
+        const sut = fetch;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, { refspecs: ['main', 'tag'] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_OPTION',
+          option: 'refspecs',
+          reason: 'you need to specify a tag name',
+        });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/FETCH_HEAD`)).toBe(false);
+      });
+    });
+  });
+
   describe('Given command-line refspecs and an empty refmap', () => {
     describe('When fetch runs', () => {
       it('Then no tracking ref is updated', async () => {

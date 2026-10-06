@@ -140,6 +140,7 @@ describe.skipIf(!GIT_AVAILABLE)('fetch FETCH_HEAD interop', () => {
       opts: { refspecs: ['main'], refmap: [''] },
       args: ['--refmap=', 'main'],
     },
+    { label: 'cli-tag-word', config: [], opts: { refspecs: ['tag', 'v1'] }, args: ['tag', 'v1'] },
   ] as ReadonlyArray<{
     label: string;
     config: ReadonlyArray<readonly [string, string]>;
@@ -165,6 +166,35 @@ describe.skipIf(!GIT_AVAILABLE)('fetch FETCH_HEAD interop', () => {
         expect(fetchHead(ours)).toBe(expected);
         expect(trackingRefs(ours)).toBe(trackingRefs(theirs));
         expect(remoteHeadLog(ours)).toEqual(remoteHeadLog(theirs));
+      });
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('fetch of an object id interop', () => {
+  describe.each([
+    { label: 'oid-alone', specs: (oid: string) => [oid] },
+    { label: 'oid-storing', specs: (oid: string) => [`${oid}:refs/heads/x`] },
+  ])('Given the $label command-line refspec', ({ label, specs }) => {
+    describe('When both tools fetch it from origin', () => {
+      it('Then FETCH_HEAD, the stored refs and the followed tags agree', async () => {
+        // Arrange
+        const { ours, theirs } = setUp(label, []);
+        const refspecs = specs(git(peerPath, 'rev-parse', 'main').trim());
+        const ctx = {
+          ...createNodeContext({ workDir: ours }),
+          transport: backendTransport(peerRoot),
+        };
+        const sut = fetch;
+        git(theirs, 'fetch', '-q', 'origin', ...refspecs);
+        const expected = fetchHead(theirs).replaceAll(peerPath.slice(0, -'.git'.length), SHORT_URL);
+
+        // Act
+        await sut(ctx, { remote: 'origin', refspecs });
+
+        // Assert
+        expect(fetchHead(ours)).toBe(expected);
+        expect(trackingRefs(ours)).toBe(trackingRefs(theirs));
       });
     });
   });

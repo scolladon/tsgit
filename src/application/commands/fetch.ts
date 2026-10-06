@@ -17,7 +17,11 @@
  *
  * Working-tree materialization is out of scope.
  */
-import { type FetchRejection, fetchIntoCheckedOutBranch } from '../../domain/commands/error.js';
+import {
+  type FetchRejection,
+  fetchIntoCheckedOutBranch,
+  invalidOption,
+} from '../../domain/commands/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import { remoteNotConfigured } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
@@ -173,7 +177,7 @@ export const fetchWith = async (
   const currentBranch = branchRef !== undefined ? shortBranchName(branchRef) : undefined;
   const config = await readRemoteConfig(ctx);
   const remoteName = defaultRemoteName(config, opts.remote, currentBranch);
-  const request = refMapRequest(config, opts, remoteName, currentBranch);
+  const request = refMapRequest(ctx, config, opts, { remoteName, currentBranch });
   // git's single-remote fetch asks `repo_has_promisor_remote` before it fetches.
   await warnSlashLeadingPromisorRemotes(ctx);
   const { url, filter } = await resolveRemoteUrl(ctx, remoteName);
@@ -224,6 +228,21 @@ const readForcedUpdateCheck = async (ctx: Context): Promise<ForcedUpdateCheck> =
 };
 
 const REFSPEC_REFUSAL = 'not a valid refspec';
+const TAG_WORD = 'tag';
+const TAG_NAME_MISSING = 'you need to specify a tag name';
+
+/** git's fetch argv: the word `tag` and the name after it spell `refs/tags/<name>:refs/tags/<name>`. */
+const expandTagWords = (specs: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const expanded: string[] = [];
+  let tagNamePending = false;
+  for (const spec of specs) {
+    if (tagNamePending) expanded.push(`${TAGS_PREFIX}${spec}:${TAGS_PREFIX}${spec}`);
+    else if (spec !== TAG_WORD) expanded.push(spec);
+    tagNamePending = !tagNamePending && spec === TAG_WORD;
+  }
+  if (tagNamePending) throw invalidOption('refspecs', TAG_NAME_MISSING);
+  return expanded;
+};
 
 /** git's `refspec_append` over the command line: an unusable spec is fatal. */
 const assertFetchRefspecs = (specs: ReadonlyArray<string>): ReadonlyArray<string> => {
@@ -232,16 +251,23 @@ const assertFetchRefspecs = (specs: ReadonlyArray<string>): ReadonlyArray<string
   return specs;
 };
 
+/** The remote a fetch reads and the branch checked out when it does. */
+interface FetchTarget {
+  readonly remoteName: string;
+  readonly currentBranch: string | undefined;
+}
+
 const refMapRequest = (
+  ctx: Context,
   config: ParsedConfig,
   opts: FetchOptions,
-  remoteName: string,
-  currentBranch: string | undefined,
+  { remoteName, currentBranch }: FetchTarget,
 ): RefMapRequest => {
   const branch = currentBranch === undefined ? undefined : config.branch?.get(currentBranch);
   const merge = branch?.remote !== undefined ? (branch.merges ?? []) : [];
   return {
-    cliSpecs: assertFetchRefspecs(opts.refspecs ?? []),
+    hashConfig: ctx.hashConfig,
+    cliSpecs: assertFetchRefspecs(expandTagWords(opts.refspecs ?? [])),
     refmap: assertFetchRefspecs(opts.refmap ?? []),
     configSpecs: config.remote?.get(remoteName)?.fetch ?? [],
     merge,
