@@ -117276,7 +117276,23 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Set when the receiving end's "
+										"text": "Set when a force — "
+									},
+									{
+										"kind": "code",
+										"text": "`force`"
+									},
+									{
+										"kind": "text",
+										"text": ", a "
+									},
+									{
+										"kind": "code",
+										"text": "`+`"
+									},
+									{
+										"kind": "text",
+										"text": " refspec or a holding lease — overrode a\nrejection the update earned, or when the receiving end's\n"
 									},
 									{
 										"kind": "code",

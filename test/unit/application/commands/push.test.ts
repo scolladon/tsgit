@@ -908,7 +908,7 @@ describe('push — force / non-fast-forward', () => {
 
   describe('Given a non-FF update with force=true', () => {
     describe('When push runs', () => {
-      it('Then the update is sent (no NON_FAST_FORWARD)', async () => {
+      it('Then the update is sent as a forced update (no NON_FAST_FORWARD)', async () => {
         // Arrange
         const ctx = createMemoryContext();
         const branchA = await seedCommit(ctx, [], 'branch-a');
@@ -926,6 +926,34 @@ describe('push — force / non-fast-forward', () => {
 
         // Assert
         expect(result.pushedRefs[0]?.status).toBe('ok');
+        expect(result.pushedRefs[0]?.forcedUpdate).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a fast-forward update with force=true', () => {
+    describe('When push runs', () => {
+      it('Then the update is sent with no forced update to report', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'parent');
+        const tip = await seedCommit(ctx, [parent.id], 'tip');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut({ ...ctx, transport }, { force: true });
+
+        // Assert
+        expect(result.pushedRefs).toEqual([
+          { name: 'refs/heads/main', oldId: parent.id, newId: tip.id, status: 'ok' },
+        ]);
       });
     });
   });
@@ -1062,7 +1090,7 @@ describe('push — client-side rejections per ref', () => {
   describe('Given an advertised end that is a tree', () => {
     describe.each([
       ['unforced', {}, { status: 'rejected', rejection: 'needs-force' }],
-      ['forced', { force: true }, { status: 'ok' }],
+      ['forced', { force: true }, { status: 'ok', forcedUpdate: true }],
     ] as const)('When push runs %s', (_, opts, outcome) => {
       it('Then the needs-force verdict follows the force', async () => {
         // Arrange

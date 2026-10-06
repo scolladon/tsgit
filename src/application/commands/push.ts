@@ -161,7 +161,11 @@ export interface PushedRef {
   /** Set exactly when `status` is `'rejected'`. */
   readonly rejection?: PushRejection;
   readonly reason?: string;
-  /** Set when the receiving end's `report-status-v2` reports the ref as force-updated. */
+  /**
+   * Set when a force — `force`, a `+` refspec or a holding lease — overrode a
+   * rejection the update earned, or when the receiving end's
+   * `report-status-v2` reports the ref as force-updated.
+   */
   readonly forcedUpdate?: boolean;
 }
 
@@ -176,6 +180,8 @@ interface ResolvedRefspec {
   readonly localOid: ObjectId;
   readonly remoteOid: ObjectId;
   readonly rejection?: JudgedRejection;
+  /** git's `forced_update`: a force overrode a rejection the update earned. */
+  readonly forced?: boolean;
 }
 
 interface SettledRefspec extends Omit<ResolvedRefspec, 'rejection'> {
@@ -519,9 +525,16 @@ const judgeRefspec = async (
 ): Promise<ResolvedRefspec> => {
   // git settles an up-to-date ref before the lease or any lookup.
   if (isUpToDate(ref)) return ref;
-  const rejection = await judgeUpdate(ctx, ref, scope);
-  return rejection === undefined ? ref : { ...ref, rejection };
+  const verdict = await judgeUpdate(ctx, ref, scope);
+  if (verdict.rejection === undefined) return ref;
+  return verdict.forced ? { ...ref, forced: true } : { ...ref, rejection: verdict.rejection };
 };
+
+/** The rejection an update earned, and whether a force overrides it. */
+interface UpdateVerdict {
+  readonly rejection: JudgedRejection | undefined;
+  readonly forced: boolean;
+}
 
 /**
  * git's `set_ref_status_for_push`: a stale lease is rejected as stale info;
@@ -533,13 +546,13 @@ const judgeUpdate = async (
   ctx: Context,
   ref: ResolvedRefspec,
   scope: RefspecScope,
-): Promise<JudgedRejection | undefined> => {
+): Promise<UpdateVerdict> => {
   const lease = await resolveLease(ctx, ref.parsed, scope.remote.trackingSpecs, scope.opts);
   const leaseRejection = lease === undefined ? undefined : await judgeLease(ctx, ref, scope, lease);
   const rejection = leaseRejection ?? (await measureUpdate(ctx, scope.table, ref));
   const forced =
     (lease !== undefined && leaseRejection === undefined) || isForced(ref.parsed, scope.opts);
-  return forced ? undefined : rejection;
+  return { rejection, forced };
 };
 
 /** A lease the remote no longer holds is stale; one that holds may still find the
@@ -957,10 +970,11 @@ const reportRef = async (
   const final = statuses[statuses.length - 1];
   if (final?.accepted !== true) return [remoteRejection(ref, final)];
   const reports = statuses.flatMap((status) => status.report ?? []);
+  const forced = m.forced === true ? { forcedUpdate: true } : {};
   const pushed =
     reports.length === 0
-      ? [{ ...ref, status: 'ok' as const }]
-      : reports.map((report) => rewritten(ref, report));
+      ? [{ ...ref, status: 'ok' as const, ...forced }]
+      : reports.map((report) => ({ ...forced, ...rewritten(ref, report) }));
   for (const entry of pushed) await updateTrackingRef(ctx, entry, trackingSpecs);
   return pushed;
 };

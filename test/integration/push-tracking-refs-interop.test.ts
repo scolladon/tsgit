@@ -69,6 +69,38 @@ const trackingRefs = (dir: string): string =>
   git(dir, 'for-each-ref', '--format=%(refname) %(objectname)', 'refs/remotes/mirror');
 
 describe.skipIf(!GIT_AVAILABLE)('push tracking refs interop', () => {
+  describe('Given clones whose main was rewritten after it was pushed', () => {
+    describe('When both tools force-push main', () => {
+      it("Then tsgit reports the forced update git's porcelain flags with +", async () => {
+        // Arrange
+        const { ours, theirs, peerRoot } = setUp('forced');
+        const ctx = {
+          ...createNodeContext({ workDir: ours }),
+          transport: backendTransport(peerRoot),
+        };
+        await push(ctx, { remote: 'origin', refspecs: ['main'] });
+        git(theirs, 'push', '-q', 'origin', 'main');
+        git(ours, 'commit', '-q', '--amend', '--allow-empty', '-m', 'rewritten');
+        git(theirs, 'fetch', '-q', ours, 'main');
+        git(theirs, 'reset', '-q', '--hard', 'FETCH_HEAD');
+        const sut = push;
+
+        // Act
+        const result = await sut(ctx, { remote: 'origin', refspecs: ['main'], force: true });
+        const porcelain = git(theirs, 'push', '--porcelain', '--force', 'origin', 'main');
+
+        // Assert
+        const gitFlags = porcelain
+          .split('\n')
+          .filter((line) => line.includes('refs/heads/main:'))
+          .map((line) => line[0]);
+        const ourFlags = result.pushedRefs.map((ref) => (ref.forcedUpdate === true ? '+' : ' '));
+        expect(ourFlags).toEqual(gitFlags);
+        expect(ourFlags).toEqual(['+']);
+      });
+    });
+  });
+
   describe('Given clones holding tags lt and t0 and a peer carrying main and t0', () => {
     describe('When both tools push main:t0 and lt:newname', () => {
       it('Then the destinations resolve against the remote refs and the pushed tag, as git does', async () => {
