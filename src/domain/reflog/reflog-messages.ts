@@ -56,9 +56,10 @@ export type FetchReflogAction =
   | 'forced-update'
   | 'updating tag';
 
-/** `fetch <remote>: <action>` — the reflog for a ref a fetch stored. */
-export const fetchReflogMessage = (remote: string, action: FetchReflogAction): string =>
-  `fetch ${remote}: ${action}`;
+/** `<reflog action>: <action>` — the reflog for a ref a fetch stored, under the
+ *  action its invocation names (`fetch origin`, `pull origin main`, …). */
+export const fetchReflogMessage = (reflogAction: string, action: FetchReflogAction): string =>
+  `${reflogAction}: ${action}`;
 
 /** `update by push` — the reflog for a ref advanced by a push. */
 export const PUSH_UPDATE = 'update by push';

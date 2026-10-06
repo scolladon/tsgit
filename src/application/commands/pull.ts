@@ -44,6 +44,7 @@ import { acquireIndexLock } from './internal/index-update.js';
 import { pullIntoVoid } from './internal/pull-into-void.js';
 import { configuredPullRebase } from './internal/pull-rebase-config.js';
 import { refspecTrackingRef, upstreamTrackingRef } from './internal/pull-tracking-ref.js';
+import { argvReflogAction } from './internal/reflog-action.js';
 import { buildRemoteTable } from './internal/remote-config.js';
 import {
   assertNoPendingOperation,
@@ -135,7 +136,16 @@ interface Upstream {
   readonly merge: string | undefined;
   /** git's `get_upstream_branch`: the ref the remote's fetch refspecs store `merge` in. */
   readonly trackingRef: RefName | undefined;
+  /** pull's argv-derived `GIT_REFLOG_ACTION`, which its fetch, merge and rebase inherit. */
+  readonly reflogAction: string;
 }
+
+const pullArgvAction = (opts: PullOptions, remote: string): string =>
+  argvReflogAction('pull', {
+    named: opts.remote,
+    resolved: remote,
+    refspecs: opts.ref !== undefined ? [opts.ref] : [],
+  });
 
 const readUpstream = async (
   ctx: Context,
@@ -158,6 +168,7 @@ const readUpstream = async (
     trackingRef: ownRemote
       ? upstreamTrackingRef(remote, merge, config.remote?.get(remote)?.fetch)
       : undefined,
+    reflogAction: pullArgvAction(opts, remote),
   };
 };
 
@@ -342,7 +353,16 @@ export const pull = async (ctx: Context, given: PullOptions = {}): Promise<PullR
   const fetched = await mergeHeads(ctx, opts, upstream, branchRef);
   if (origHead === undefined) return pullIntoEmptyHead(ctx, fetchResult, fetched, branchRef);
   const { unreconciled } = reconciled;
-  return integrate(ctx, { opts, branchRef, fetchResult, fetched, rebase, unreconciled });
+  const { reflogAction } = upstream;
+  return integrate(ctx, {
+    opts,
+    branchRef,
+    fetchResult,
+    fetched,
+    reflogAction,
+    rebase,
+    unreconciled,
+  });
 };
 
 /** git's rebasing pull refuses an unborn HEAD whose index already holds changes. */
@@ -373,11 +393,9 @@ const fetchUpstream = (ctx: Context, opts: PullOptions, upstream: Upstream): Pro
       // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ depth: opts.depth }` with `depth: undefined`, which `fetchPack` gates on `!== undefined` — identical to omitting the key. The drop direction + the `!==` flip are killed by the depth-forwarding test.
       ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
     },
-    PULL_FETCH,
+    // git pull runs its fetch with `--update-head-ok`.
+    { updateHeadOk: true, reflogAction: upstream.reflogAction },
   );
-
-// git pull runs its fetch with `--update-head-ok`.
-const PULL_FETCH = { updateHeadOk: true } as const;
 
 /**
  * git pull after a fetch that moved HEAD's own branch: the index and working
@@ -417,6 +435,7 @@ interface Integration {
   readonly branchRef: RefName | undefined;
   readonly fetchResult: FetchResult;
   readonly fetched: ReadonlyArray<FetchHeadLine>;
+  readonly reflogAction: string;
   readonly rebase: RebasePlan | undefined;
   /** No rebase choice was given or configured. */
   readonly unreconciled: boolean;
@@ -452,12 +471,12 @@ const integrate = async (ctx: Context, run: Integration): Promise<PullResult> =>
   await assertFastForwardable(ctx, opts, run.branchRef, fetched);
   if (run.unreconciled && opts.fastForward === undefined) await assertReconcilable(ctx, fetched);
   if (rebase === undefined || opts.fastForward === 'only') {
-    return integrateByMerge(ctx, fetchResult, fetched, opts);
+    return integrateByMerge(ctx, run, opts);
   }
   if (await canFastForward(ctx, fetched)) {
-    return integrateByMerge(ctx, fetchResult, fetched, { ...opts, fastForward: 'only' });
+    return integrateByMerge(ctx, run, { ...opts, fastForward: 'only' });
   }
-  const result = await rebaseOnto(ctx, fetched[0]!.id, rebase);
+  const result = await rebaseOnto(ctx, fetched[0]!.id, rebase, run.reflogAction);
   return { fetch: fetchResult, integration: 'rebase', rebase: result };
 };
 
@@ -466,27 +485,20 @@ const rebaseOnto = async (
   ctx: Context,
   theirs: ObjectId,
   { fork, rebaseMerges, autostash }: RebasePlan,
+  reflogAction: string,
 ): Promise<RebaseResult> => {
   const head = await resolveRef(ctx, RefName.from('HEAD'));
   const upstream = await rebaseUpstream(ctx, head, theirs, fork);
-  return rebaseRun(
-    ctx,
-    { upstream, onto: theirs, rebaseMerges, autostash },
-    { reflogAction: PULL_REFLOG_ACTION },
-  );
+  return rebaseRun(ctx, { upstream, onto: theirs, rebaseMerges, autostash }, { reflogAction });
 };
-
-// git sets GIT_REFLOG_ACTION=pull for the integrate step; this is its analogue.
-const PULL_REFLOG_ACTION = 'pull';
 
 /** git's `run_merge` of every fetched head. */
 const integrateByMerge = async (
   ctx: Context,
-  fetchResult: FetchResult,
-  fetched: ReadonlyArray<FetchHeadLine>,
+  { fetchResult, fetched, reflogAction }: Integration,
   opts: PullOptions,
 ): Promise<PullResult> => {
-  const mergeInternal: MergeInternalOptions = { reflogAction: PULL_REFLOG_ACTION, heads: fetched };
+  const mergeInternal: MergeInternalOptions = { reflogAction, heads: fetched };
   const mergeResult = await mergeRun(
     ctx,
     {

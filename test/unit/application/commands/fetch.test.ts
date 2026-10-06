@@ -450,7 +450,7 @@ describe('fetch', () => {
           ).trim();
           expect(onDisk).toBe(blobId);
         });
-        it('Then the remote-tracking ref reflog records a "fetch <remote>: storing head" entry', async () => {
+        it('Then the remote-tracking ref reflog records a bare "fetch: storing head" entry', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seedRepo(ctx, {});
@@ -465,12 +465,12 @@ describe('fetch', () => {
           // Act
           await fetch({ ...ctx, transport });
 
-          // Assert — the reflog message must name the remote, not be empty.
+          // Assert — git's action is its argv, and no remote was named.
           const { readReflog } = await import(
             '../../../../src/application/primitives/reflog-store.js'
           );
           const entries = await readReflog(ctx, 'refs/remotes/origin/main' as RefName);
-          expect(entries.map((e) => e.message)).toEqual(['fetch origin: storing head']);
+          expect(entries.map((e) => e.message)).toEqual(['fetch: storing head']);
         });
       });
     });
@@ -3027,6 +3027,34 @@ describe('fetch — FETCH_HEAD and command-line refspecs', () => {
         // Assert
         const tracking = 'refs/remotes/origin/main' as RefName;
         expect(await getRefStore(ctx).resolveDirect(tracking)).toEqual({ kind: 'direct', id: tip });
+      });
+    });
+  });
+
+  describe.each([
+    {
+      label: 'refspecs and no remote',
+      opts: { refspecs: ['main:other'] },
+      expected: 'fetch origin main:other: storing head',
+    },
+    {
+      label: 'the remote and refspecs',
+      opts: { remote: 'origin', refspecs: ['main:other'] },
+      expected: 'fetch origin main:other: storing head',
+    },
+  ])('Given $label', ({ opts, expected }) => {
+    describe('When fetch stores the refspec destination', () => {
+      it('Then its reflog action spells the repository and refspecs as git argv would', async () => {
+        // Arrange
+        const { ctx } = await arrange(ORIGIN_FETCH, ['refs/heads/main']);
+        const sut = fetch;
+
+        // Act
+        await sut(ctx, opts);
+
+        // Assert
+        const entries = await reflogEntries(ctx, 'refs/heads/other' as RefName);
+        expect(entries.map((entry) => entry.message)).toEqual([expected]);
       });
     });
   });

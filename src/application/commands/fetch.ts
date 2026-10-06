@@ -79,6 +79,7 @@ import { followRemoteHead, readRemoteHeadPolicy } from './internal/fetch-remote-
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
 import { isAncestor } from './internal/is-ancestor.js';
 import { assertPeerAlgorithm } from './internal/object-format-guard.js';
+import { argvReflogAction } from './internal/reflog-action.js';
 import { isValidFetchRefspec } from './internal/refspec-grammar.js';
 import { readRemoteConfig } from './internal/remote-config.js';
 import { findTrackedSources } from './internal/remote-tracking-ref.js';
@@ -160,6 +161,8 @@ export interface FetchInternalOptions {
   /** git's `--update-head-ok`, which only `git pull` passes: a refspec may write
    *  a branch a worktree holds. */
   readonly updateHeadOk?: boolean;
+  /** git's inherited `GIT_REFLOG_ACTION`: `pull` runs its fetch under its own argv. */
+  readonly reflogAction?: string;
 }
 
 export const fetch = (ctx: Context, opts: FetchOptions = {}): Promise<FetchResult> =>
@@ -187,7 +190,13 @@ export const fetchWith = async (
     return await fetchViaSession(
       ctx,
       opts,
-      { name: remoteName, request, forcedUpdates, updateHeadOk: internal.updateHeadOk === true },
+      {
+        name: remoteName,
+        request,
+        forcedUpdates,
+        updateHeadOk: internal.updateHeadOk === true,
+        reflogAction: internal.reflogAction ?? fetchArgvAction(opts, remoteName),
+      },
       url,
       filter,
     );
@@ -195,6 +204,13 @@ export const fetchWith = async (
     ctx.progress.end(FETCH_NEGOTIATE_OP);
   }
 };
+
+const fetchArgvAction = (opts: FetchOptions, remoteName: string): string =>
+  argvReflogAction('fetch', {
+    named: opts.remote,
+    resolved: remoteName,
+    refspecs: opts.refspecs ?? [],
+  });
 
 /** git's `fetch.showForcedUpdates` and the advice warning that it is off. */
 interface ForcedUpdateCheck {
@@ -208,6 +224,8 @@ interface FetchRemote {
   readonly request: RefMapRequest;
   readonly forcedUpdates: ForcedUpdateCheck;
   readonly updateHeadOk: boolean;
+  /** The action every ref this fetch stores is logged under. */
+  readonly reflogAction: string;
 }
 
 const SHOW_FORCED_UPDATES = 'showForcedUpdates';
@@ -644,12 +662,12 @@ const judgeUpdate = async (
 
 const storeUpdate = async (
   ctx: Context,
-  remoteName: string,
+  reflogAction: string,
   update: RefMove & { readonly oldId: ObjectId | undefined },
   action: FetchReflogAction,
 ): Promise<FetchUpdate> => {
   await updateRef(ctx, update.name, update.newId, {
-    reflogMessage: fetchReflogMessage(remoteName, action),
+    reflogMessage: fetchReflogMessage(reflogAction, action),
   });
   return { ...update, status: 'ok' };
 };
@@ -665,13 +683,18 @@ const applyRemoteRef = async (
   const oldId = await readExistingRef(ctx, name);
   if (oldId === newId) return { name, source, oldId, newId, status: 'ok' };
   if (oldId === undefined) {
-    return storeUpdate(ctx, remote.name, { name, source, oldId, newId }, storingAction(source));
+    return storeUpdate(
+      ctx,
+      remote.reflogAction,
+      { name, source, oldId, newId },
+      storingAction(source),
+    );
   }
   const judgement = await judgeUpdate(ctx, entry, name, oldId, remote.forcedUpdates.enabled);
   if (judgement.kind === 'reject') {
     return { name, source, oldId, newId, status: 'rejected', rejection: judgement.rejection };
   }
-  return storeUpdate(ctx, remote.name, { name, source, oldId, newId }, judgement.action);
+  return storeUpdate(ctx, remote.reflogAction, { name, source, oldId, newId }, judgement.action);
 };
 
 /** One git `store_updated_refs` round, ending on its warning that the forced-update check is off. */

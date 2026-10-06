@@ -89,9 +89,15 @@ describe('Given the reflog message builders', () => {
       );
     });
 
-    it('Then fetchReflogMessage renders "fetch <remote>: <action>"', () => {
-      // Arrange / Act / Assert
-      expect(fetchReflogMessage('origin', 'fast-forward')).toBe('fetch origin: fast-forward');
+    it('Then fetchReflogMessage renders "<reflog action>: <action>"', () => {
+      // Arrange
+      const sut = fetchReflogMessage;
+
+      // Act
+      const result = sut('fetch origin main:x', 'fast-forward');
+
+      // Assert
+      expect(result).toBe('fetch origin main:x: fast-forward');
     });
   });
 

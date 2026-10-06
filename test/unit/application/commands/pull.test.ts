@@ -352,6 +352,43 @@ describe('pull', () => {
     });
   });
 
+  describe.each([
+    { label: 'no arguments', opts: {}, action: 'pull' },
+    { label: 'the remote', opts: { remote: 'origin' }, action: 'pull origin' },
+    {
+      label: 'the remote and a branch',
+      opts: { remote: 'origin', ref: 'main' },
+      action: 'pull origin main',
+    },
+    { label: 'a branch only', opts: { ref: 'main' }, action: 'pull origin main' },
+  ])('Given the remote advances the upstream branch, When pull with $label', ({ opts, action }) => {
+    it('Then the tracking ref, the branch and HEAD record git argv reflog action', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await commitFile(ctx, 'a.txt', 'a', 'A');
+      await branchCreate(ctx, { name: 'feature' });
+      await checkout(ctx, { rev: 'feature' });
+      const b = await commitFile(ctx, 'b.txt', 'b', 'B');
+      await checkout(ctx, { rev: 'main' });
+      await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
+      const { transport } = buildPullRemote(
+        [{ name: 'refs/heads/main', id: b }],
+        await emptyPack(ctx),
+      );
+      const sut = pull;
+
+      // Act
+      await sut(withTransport(ctx, transport), opts);
+
+      // Assert
+      const newest = async (ref: string) => (await reflogMessages(ctx, ref)).at(-1);
+      expect(await newest('refs/remotes/origin/main')).toBe(`${action}: storing head`);
+      expect(await newest('refs/heads/main')).toBe(`${action}: Fast-forward`);
+      expect(await newest('HEAD')).toBe(`${action}: Fast-forward`);
+    });
+  });
+
   describe('Given the remote is at the same commit as HEAD', () => {
     describe('When pull', () => {
       it('Then reports up-to-date', async () => {
@@ -2110,6 +2147,24 @@ describe('pull rebasing onto the fetched head', () => {
     }
     return undefined;
   };
+
+  describe('Given diverged histories, When pull rebasing names the remote and a branch', () => {
+    it('Then the rebase reflogs carry the pull argv action', async () => {
+      // Arrange
+      const { ctx, b } = await divergedPull();
+      const sut = pull;
+
+      // Act
+      await sut(ctx, { rebase: true, remote: 'origin', ref: 'main' });
+
+      // Assert
+      expect((await reflogMessages(ctx, 'HEAD')).slice(-3)).toEqual([
+        `pull origin main (start): checkout ${b}`,
+        'pull origin main (pick): X',
+        'pull origin main (finish): returning to refs/heads/main',
+      ]);
+    });
+  });
 
   describe.each([
     ['rebase true', true],

@@ -126,8 +126,12 @@ With `rebase: true` (or `'merges'`, which rebases with
   resurrected. Reflogs read `pull (start): checkout <head>`, `pull (pick): …`,
   `pull (finish): …`; `ORIG_HEAD` is the pre-pull tip.
 
-The reflog action is `pull` (git-faithful), achieved via `merge`'s internal
-reflog-action channel (the `GIT_REFLOG_ACTION` analogue), not a public option.
+The reflog action is git's argv for the pull: `pull`, then the remote when
+`remote` or `ref` is given, then `ref` (`pull origin main: Fast-forward`). The
+fetch, merge and rebase steps all log under it, the remote-tracking refs the fetch
+moves included (`pull: fast-forward`), as they inherit git's `GIT_REFLOG_ACTION`.
+Option flags are not part of the reconstructed action. It travels through the
+internal reflog-action channel, not a public option.
 
 `pull` does **not** materialise the working tree on the fast-forward / clean
 paths — it delegates integration to `merge`, inheriting its contract exactly.
