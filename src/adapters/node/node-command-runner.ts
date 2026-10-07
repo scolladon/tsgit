@@ -164,17 +164,14 @@ const spawnCommand = (
 
 const awaitChild = (child: CommandChild, request: CommandRequest): Promise<CommandResult> =>
   new Promise<CommandResult>((resolve) => {
-    const exit = new Promise<number>((settle) => {
-      child.on('error', () => settle(SPAWN_ERROR_EXIT));
-      child.on('close', (code) => settle(code ?? SIGNAL_KILLED_EXIT));
-    });
+    const exit = exitOf(child);
     killOnAbort(child, exit, request.signal);
     const stdout = collect(child.stdout);
     const stderr = child.stderr === null ? undefined : collect(child.stderr);
-    // `error` and `close` can both fire on a failed spawn; `resolve` is
+    // A failed stdin write and the exit can both finish the run; `resolve` is
     // idempotent, so the first result wins and any second call is a no-op.
     const finish = (exitCode: number): void => resolve(resultOf(exitCode, stdout(), stderr));
-    void exit.then(finish);
+    void exit.then(({ exitCode }) => finish(exitCode));
     if (request.stdin !== undefined)
       feedStdin(child, request.stdin, () => finish(SPAWN_ERROR_EXIT));
   });
@@ -188,70 +185,98 @@ interface ChunkQueue {
   readonly chunks: AsyncIterable<Uint8Array>;
 }
 
+/** Tracks the bytes waiting for the consumer, pausing the child's stdout while they pile up. */
+interface FlowControl {
+  readonly added: (bytes: number) => void;
+  readonly taken: (bytes: number) => void;
+  /** Lifts the high-water mark for good. */
+  readonly release: () => void;
+}
+
+const shouldPause = (buffered: number, mark: number): boolean => buffered > mark;
+
 /**
  * Pauses `source` while more than {@link OUTPUT_HIGH_WATER_MARK} bytes wait
  * for the consumer, and resumes it once they drain back under the mark.
  */
-const createFlowControl = (source: ChildOutput) => {
+const createFlowControl = (source: ChildOutput): FlowControl => {
   let buffered = 0;
   let mark = OUTPUT_HIGH_WATER_MARK;
   let paused = false;
   const settle = (): void => {
-    if (paused === buffered > mark) return;
+    if (paused === shouldPause(buffered, mark)) return;
     paused = !paused;
     if (paused) source.pause();
     else source.resume();
   };
+  const adjust = (delta: number): void => {
+    buffered += delta;
+    settle();
+  };
   return {
-    added: (bytes: number): void => {
-      buffered += bytes;
-      settle();
-    },
-    taken: (bytes: number): void => {
-      buffered -= bytes;
-      settle();
-    },
-    release: (): void => {
+    added: adjust,
+    taken: (bytes) => adjust(-bytes),
+    release: () => {
       mark = Number.POSITIVE_INFINITY;
       settle();
     },
   };
 };
 
+/** A wake-up the consumer awaits while the queue is empty. */
+interface Waker {
+  readonly wait: () => Promise<void>;
+  readonly notify: () => void;
+}
+
+const createWaker = (): Waker => {
+  let wake: (() => void) | undefined;
+  return {
+    wait: () =>
+      new Promise<void>((resolve) => {
+        wake = resolve;
+      }),
+    notify: () => {
+      wake?.();
+      wake = undefined;
+    },
+  };
+};
+
+/** Yields `pending` chunks as they arrive, until the queue has ended and emptied. */
+async function* drainChunks(
+  pending: Uint8Array[],
+  flow: FlowControl,
+  waker: Waker,
+  hasEnded: () => boolean,
+): AsyncGenerator<Uint8Array> {
+  for (;;) {
+    const next = pending.shift();
+    if (next !== undefined) {
+      flow.taken(next.length);
+      yield next;
+    } else if (hasEnded()) return;
+    else await waker.wait();
+  }
+}
+
 const createChunkQueue = (source: ChildOutput): ChunkQueue => {
   const pending: Uint8Array[] = [];
   const flow = createFlowControl(source);
+  const waker = createWaker();
   let ended = false;
-  let wake: (() => void) | undefined;
-  const notify = (): void => {
-    wake?.();
-    wake = undefined;
-  };
-  async function* drain(): AsyncGenerator<Uint8Array> {
-    for (;;) {
-      const next = pending.shift();
-      if (next !== undefined) {
-        flow.taken(next.length);
-        yield next;
-      } else if (ended) return;
-      else
-        await new Promise<void>((resolve) => {
-          wake = resolve;
-        });
-    }
-  }
   return {
     push: (chunk) => {
       pending.push(chunk);
       flow.added(chunk.length);
-      notify();
+      waker.notify();
     },
     end: () => {
       ended = true;
-      notify();
+      waker.notify();
     },
     release: flow.release,
-    chunks: { [Symbol.asyncIterator]: drain },
+    chunks: { [Symbol.asyncIterator]: () => drainChunks(pending, flow, waker, () => ended) },
   };
 };
 

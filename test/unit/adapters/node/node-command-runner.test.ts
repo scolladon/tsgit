@@ -27,10 +27,10 @@ class FakeStdin extends EventEmitter {
   }
 }
 
-/** Build a stream error carrying `code`, mirroring Node's `ErrnoException`. */
 /** The buffered-output bound past which the runner pauses the child's stdout (1 MiB). */
 const OUTPUT_HIGH_WATER_MARK = 1024 * 1024;
 
+/** Build a stream error carrying `code`, mirroring Node's `ErrnoException`. */
 const streamError = (code: string): NodeJS.ErrnoException =>
   Object.assign(new Error(`write ${code}`), { code });
 
