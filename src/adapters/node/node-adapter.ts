@@ -13,6 +13,7 @@ import {
 import type { AlternatePathProbe } from '../../ports/object-source-access.js';
 import { noopProgress } from '../../progress.js';
 import { layoutRootsOf } from '../../repository/layout-roots.js';
+import { createObjectSourceAccess } from '../../repository/object-source-access.js';
 import { createWorktreeFs } from '../../repository/worktree-fs.js';
 import { NodeCommandRunner } from './node-command-runner.js';
 import { NodeCompressor } from './node-compressor.js';
@@ -133,6 +134,9 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     worktreeFs: createWorktreeFs(
       layoutRootsOf(layout),
       nodeWorktreeFileSystem(workDir, syncIoOptions(syncIo)),
+    ),
+    objectSourceAccess: createObjectSourceAccess(
+      (objectsDir) => new NodeFileSystem([objectsDir], syncIoOptions(syncIo)),
     ),
     alternatePathProbe: (path: string): AlternatePathProbe =>
       metadataProbe(new NodeFileSystem(nodePath.parse(path).root, syncIoOptions(syncIo))),

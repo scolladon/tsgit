@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { MemoryFileSystem } from '../../../src/adapters/memory/memory-file-system.js';
 import { nodeFilenameProbe } from '../../../src/adapters/node/node-filename-probe.js';
 import { nativePolicy } from '../../../src/adapters/node/path-policy.js';
 import {
@@ -14,6 +15,7 @@ import { openRepository as openMemoryRepository } from '../../../src/index.defau
 import { openRepository } from '../../../src/index.node.js';
 import type { ObjectSourceAccess } from '../../../src/ports/object-source-access.js';
 import { filesystemRootOf } from '../../../src/repository/filesystem-root.js';
+import { createObjectSourceAccess } from '../../../src/repository/object-source-access.js';
 
 const ACCESS_MEMBERS: ReadonlyArray<keyof ObjectSourceAccess> = [
   'exists',
@@ -286,6 +288,57 @@ describe('filesystemRootOf', () => {
 
         // Assert
         expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('createObjectSourceAccess', () => {
+  const objectsDir = '/alt/objects';
+  const storeFs = (): MemoryFileSystem =>
+    new MemoryFileSystem({
+      rootDir: objectsDir,
+      files: { [`${objectsDir}/info/packs`]: encode('P pack-1.pack\n') },
+    });
+
+  describe('Given a confine hook', () => {
+    describe('When access to an objects dir is built', () => {
+      it('Then the hook is asked for exactly that objects dir and reads go through its fs', async () => {
+        // Arrange
+        const asked: string[] = [];
+        const confine = (dir: string): MemoryFileSystem => {
+          asked.push(dir);
+          return storeFs();
+        };
+        const sut = createObjectSourceAccess;
+
+        // Act
+        const result = await sut(confine)(objectsDir).readUtf8(`${objectsDir}/info/packs`);
+
+        // Assert
+        expect(asked).toEqual([objectsDir]);
+        expect(result).toBe('P pack-1.pack\n');
+      });
+    });
+
+    describe('When the same objects dir is asked for twice', () => {
+      it('Then the hook runs once and the first access is handed back', () => {
+        // Arrange
+        const asked: string[] = [];
+        const confine = (dir: string): MemoryFileSystem => {
+          asked.push(dir);
+          return storeFs();
+        };
+        const sut = createObjectSourceAccess;
+
+        // Act
+        const accessFor = sut(confine);
+        const first = accessFor(objectsDir);
+        const result = accessFor(objectsDir);
+
+        // Assert
+        expect(result).toBe(first);
+        expect(asked).toEqual([objectsDir]);
       });
     });
   });

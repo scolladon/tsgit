@@ -33,7 +33,12 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import type { FsckFinding, FsckOptions } from '../../src/application/commands/fsck.js';
+import { log } from '../../src/application/commands/log.js';
+import { maintenance } from '../../src/application/commands/maintenance.js';
+import { readObject } from '../../src/application/primitives/read-object.js';
+import type { ObjectId } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import {
   disableAutoMaintenance,
@@ -44,6 +49,7 @@ import {
 
 const ROW_TIMEOUT = 30_000;
 const LOCAL_COMMIT_COUNT = 1;
+const DONOR_COMMIT_COUNT = 3;
 const YEAR_2001_SECONDS = 978_307_200;
 const OID_RE = /^[0-9a-f]{40}$/;
 const OID_HEX_LENGTH = 40;
@@ -89,7 +95,7 @@ const donorWithPackedHistory = (slug: string): string => {
   const donor = path.join(root, `${slug}-donor`);
   runGit(['init', '-q', '-b', 'main', donor]);
   configure(donor);
-  for (const n of [1, 2, 3]) commitFile(donor, `d${n}.txt`, `donor ${n}`);
+  for (let n = 1; n <= DONOR_COMMIT_COUNT; n++) commitFile(donor, `d${n}.txt`, `donor ${n}`);
   runGit(['-C', donor, 'gc', '-q']);
   return donor;
 };
@@ -443,6 +449,86 @@ const refusalOf = async (
   }
   throw new Error('expected a refusal');
 };
+
+/** Every file of the borrower's split commit-graph chain, by name, with its bytes. */
+const commitGraphFiles = (
+  worktree: string,
+): ReadonlyArray<{ readonly name: string; readonly bytes: Buffer }> => {
+  const dir = path.join(objectsOf(worktree), 'info', 'commit-graphs');
+  return readdirSync(dir)
+    .sort()
+    .map((name) => ({ name, bytes: readFileSync(path.join(dir, name)) }));
+};
+
+describe.skipIf(!GIT_AVAILABLE)('alternates interop — the direct node context', () => {
+  describe('Given a clone --shared borrower whose history lives in the donor', () => {
+    describe('When createNodeContext reads a donor-only blob (N1)', () => {
+      it(
+        'Then it returns the bytes git cat-file returns',
+        async () => {
+          // Arrange
+          const pair = pairOf('n1');
+          const { oid } = donorPackedBlob(pair.donor);
+          const expected = runGit(['-C', pair.gitSide, 'cat-file', 'blob', oid]);
+          const sut = createNodeContext;
+
+          // Act
+          const result = await readObject(sut({ workDir: pair.tsgitSide }), oid as ObjectId);
+
+          // Assert
+          expect(result).toMatchObject({
+            type: 'blob',
+            content: new TextEncoder().encode(expected),
+          });
+        },
+        ROW_TIMEOUT,
+      );
+    });
+
+    describe('When createNodeContext logs HEAD across the donor history (N2)', () => {
+      it(
+        'Then it lists the commits git log lists, in the same order',
+        async () => {
+          // Arrange
+          const pair = pairOf('n2');
+          const expected = runGit(['-C', pair.gitSide, 'log', '--format=%H'])
+            .split('\n')
+            .filter((line) => line !== '');
+          const sut = createNodeContext;
+
+          // Act
+          const result = await log(sut({ workDir: pair.tsgitSide }));
+
+          // Assert
+          expect(result.map((entry) => entry.id)).toEqual(expected);
+          expect(expected).toHaveLength(DONOR_COMMIT_COUNT + LOCAL_COMMIT_COUNT);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+
+    describe('When createNodeContext runs the commit-graph task on a twin copy (N3)', () => {
+      it(
+        'Then it writes the alternate-aware chain git writes, byte for byte',
+        async () => {
+          // Arrange
+          const pair = pairOf('n3');
+          const sut = createNodeContext;
+
+          // Act
+          runGit(['-C', pair.gitSide, 'maintenance', 'run', '--task=commit-graph']);
+          await maintenance(sut({ workDir: pair.tsgitSide }), { tasks: ['commit-graph'] });
+
+          // Assert
+          const expected = commitGraphFiles(pair.gitSide);
+          expect(commitGraphFiles(pair.tsgitSide)).toEqual(expected);
+          expect(expected.length).toBeGreaterThan(1);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+});
 
 describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is audited', () => {
   describe('Given a clean --shared borrower holding no local object', () => {

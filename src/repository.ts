@@ -10,10 +10,7 @@ import * as commands from './application/commands/index.js';
 import * as primitives from './application/primitives/index.js';
 import { gitPathSyntaxOf } from './application/primitives/internal/git-path-syntax.js';
 import { invalidateShallowSet } from './application/primitives/internal/shallow-set.js';
-import {
-  narrowAlternatePathProbe,
-  narrowObjectSourceAccess,
-} from './application/primitives/object-store.js';
+import { narrowAlternatePathProbe } from './application/primitives/object-store.js';
 import { invalidateIndexCache } from './application/primitives/read-index.js';
 import { disposePackRegistry } from './application/primitives/read-object.js';
 import {
@@ -41,7 +38,7 @@ import type { HashService } from './ports/hash-service.js';
 import type { HookRunner } from './ports/hook-runner.js';
 import type { HttpTransport } from './ports/http-transport.js';
 import { type Logger, wrapLoggerSanitizer } from './ports/logger.js';
-import type { AlternatePathProbe, ObjectSourceAccess } from './ports/object-source-access.js';
+import type { AlternatePathProbe } from './ports/object-source-access.js';
 import type { ProgressReporter } from './ports/progress-reporter.js';
 import type { PromisorRemote } from './ports/promisor.js';
 import type { SshTransport } from './ports/ssh-channel.js';
@@ -52,6 +49,7 @@ import { defaultCwd } from './repository/default-cwd.js';
 import { filesystemRootOf } from './repository/filesystem-root.js';
 import type { RepositoryLayoutInput } from './repository/layout-input.js';
 import { layoutRootsOf } from './repository/layout-roots.js';
+import { createObjectSourceAccess } from './repository/object-source-access.js';
 import { resolveAlgorithm } from './repository/resolve-algorithm.js';
 import { validateOptions } from './repository/validate-options.js';
 import { createWorktreeFs } from './repository/worktree-fs.js';
@@ -640,15 +638,9 @@ export const openRepository = async (
   });
   // Narrowing is not containment: the raw fs comes from the runtime hook rooted at
   // exactly the alternate's objects dir, so `unsafeRawAdapters` still narrows.
-  const objectSourceAccessCache = new Map<string, ObjectSourceAccess>();
-  const objectSourceAccess = (objectsDir: string): ObjectSourceAccess => {
-    const cached = objectSourceAccessCache.get(objectsDir);
-    if (cached !== undefined) return cached;
-    const raw = fallback.makeConfinedFs?.([objectsDir]) ?? detected.fs;
-    const built = narrowObjectSourceAccess(raw, objectsDir);
-    objectSourceAccessCache.set(objectsDir, built);
-    return built;
-  };
+  const objectSourceAccess = createObjectSourceAccess(
+    (objectsDir) => fallback.makeConfinedFs?.([objectsDir]) ?? detected.fs,
+  );
   const pathSyntax = gitPathSyntaxOf(fallback);
   const alternatePathProbe = (path: string): AlternatePathProbe =>
     narrowAlternatePathProbe(

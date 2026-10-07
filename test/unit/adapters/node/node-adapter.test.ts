@@ -16,8 +16,11 @@ import { NodeHookRunner } from '../../../../src/adapters/node/node-hook-runner.j
 import { NodeHttpTransport } from '../../../../src/adapters/node/node-http-transport.js';
 import { NodeSshTransport } from '../../../../src/adapters/node/node-ssh-transport.js';
 import { parsedObjectMemoFor } from '../../../../src/application/primitives/internal/object-caches.js';
+import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import { SHA1_CONFIG, SHA256_CONFIG } from '../../../../src/domain/objects/hash-config.js';
+import type { ObjectId } from '../../../../src/domain/objects/index.js';
 
 describe('createNodeContext', () => {
   describe('Given workDir only', () => {
@@ -129,6 +132,78 @@ describe('createNodeContext', () => {
         // Assert
         expect(result).toBeDefined();
         expect(sut?.(worktree)).toBe(result);
+      });
+    });
+  });
+
+  describe('Given a repository whose objects/info/alternates names a store outside workDir', () => {
+    const borrowerOfAlternate = async (): Promise<{
+      readonly base: string;
+      readonly borrower: string;
+      readonly alternateObjects: string;
+    }> => {
+      const base = await realpath(await mkdtemp(nodePath.join(tmpdir(), 'tsgit-node-alt-')));
+      const borrower = nodePath.join(base, 'borrower');
+      const alternateObjects = nodePath.join(base, 'source', '.git', 'objects');
+      await mkdir(nodePath.join(borrower, '.git', 'objects', 'info'), { recursive: true });
+      await mkdir(alternateObjects, { recursive: true });
+      await writeFile(
+        nodePath.join(borrower, '.git', 'objects', 'info', 'alternates'),
+        `${alternateObjects}\n`,
+      );
+      return { base, borrower, alternateObjects };
+    };
+
+    describe('When it reads an object only the alternate holds', () => {
+      it('Then it returns that object', async () => {
+        // Arrange
+        const { base, borrower } = await borrowerOfAlternate();
+        const content = new TextEncoder().encode('borrowed\n');
+        const source = createNodeContext({ workDir: nodePath.join(base, 'source') });
+        const id = await writeObject(source, { type: 'blob', content, id: '' as ObjectId });
+        const sut = createNodeContext;
+
+        // Act
+        const result = await readObject(sut({ workDir: borrower }), id);
+
+        // Assert
+        expect(result).toMatchObject({ type: 'blob', content });
+      });
+    });
+
+    describe('When its object source access reads outside that store', () => {
+      it('Then it refuses the path with PERMISSION_DENIED', async () => {
+        // Arrange
+        const { base, alternateObjects } = await borrowerOfAlternate();
+        const outside = nodePath.join(base, 'outside');
+        await writeFile(outside, 'secret');
+        const sut = createNodeContext;
+
+        // Act
+        const result = await sut({ workDir: nodePath.join(base, 'borrower') })
+          .objectSourceAccess?.(alternateObjects)
+          .read(outside)
+          .catch((error: unknown) => error);
+
+        // Assert
+        expect((result as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+
+    describe('When the same store is asked for twice', () => {
+      it('Then it hands back the access it built first', async () => {
+        // Arrange
+        const { base, alternateObjects } = await borrowerOfAlternate();
+        const sut = createNodeContext;
+
+        // Act
+        const ctx = sut({ workDir: nodePath.join(base, 'borrower') });
+        const first = ctx.objectSourceAccess?.(alternateObjects);
+        const result = ctx.objectSourceAccess?.(alternateObjects);
+
+        // Assert
+        expect(result).toBeDefined();
+        expect(result).toBe(first);
       });
     });
   });
