@@ -102,4 +102,51 @@ describe('stageTempFile', () => {
       });
     });
   });
+
+  describe('Given a write that creates the file then fails part-way', () => {
+    describe('When bytes are staged', () => {
+      it('Then the partial file is removed and the write failure propagates', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const stem = `${ctx.layout.gitDir}/.tmp`;
+        const failure = new TsgitError({ code: 'PERMISSION_DENIED', path: '/x' });
+        vi.spyOn(Math, 'random').mockReturnValue(LAST);
+        vi.spyOn(ctx.fs, 'writeExclusive').mockImplementation(async (path) => {
+          await ctx.fs.write(path, enc('si'));
+          throw failure;
+        });
+        const sut = stageTempFile;
+
+        // Act
+        const result = await sut(ctx, stem, enc('sig')).catch((error: unknown) => error);
+
+        // Assert
+        expect(result).toBe(failure);
+        expect(await ctx.fs.exists(`${stem}999999`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a failed write whose cleanup also fails for a reason other than a missing file', () => {
+    describe('When bytes are staged', () => {
+      it('Then the cleanup failure propagates', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const cleanupFailure = new TsgitError({ code: 'PERMISSION_DENIED', path: '/y' });
+        vi.spyOn(ctx.fs, 'writeExclusive').mockRejectedValue(
+          new TsgitError({ code: 'PERMISSION_DENIED', path: '/x' }),
+        );
+        vi.spyOn(ctx.fs, 'rm').mockRejectedValue(cleanupFailure);
+        const sut = stageTempFile;
+
+        // Act
+        const result = await sut(ctx, `${ctx.layout.gitDir}/.tmp`, enc('sig')).catch(
+          (error: unknown) => error,
+        );
+
+        // Assert
+        expect(result).toBe(cleanupFailure);
+      });
+    });
+  });
 });

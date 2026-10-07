@@ -11,13 +11,12 @@
  *   kind:    equivalent-under-readback
  *   format:  detached-signature-buffer
  */
-import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { CommandRunner } from '../../../ports/command-runner.js';
 import type { Context } from '../../../ports/context.js';
 import type { ParsedConfig } from '../config-read.js';
 import { getSpawnCwd } from '../path-layout.js';
 import { DEFAULT_OPENPGP_PROGRAM, DEFAULT_SSH_PROGRAM } from '../sign-payload.js';
-import { stageTempFile } from './stage-temp-file.js';
+import { removeIgnoringMissing, stageTempFile } from './stage-temp-file.js';
 
 /** git's `mks_tempfile_t(".git_vtag_tmpXXXXXX")` stem. */
 const VERIFY_BUFFER_STEM = '.git_vtag_tmp';
@@ -98,14 +97,6 @@ type RunTool = (
 ) => Promise<ToolRun>;
 
 const CANNOT_EXEC: ToolRun = { exitCode: -1, stdout: '', stderr: '' };
-
-const removeIgnoringMissing = async (ctx: Context, path: string): Promise<void> => {
-  try {
-    await ctx.fs.rm(path);
-  } catch (error) {
-    if (errorDataCode(error) !== 'FILE_NOT_FOUND') throw error;
-  }
-};
 
 const spawnOrNothing = async (
   ctx: Context,

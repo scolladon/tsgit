@@ -18,10 +18,23 @@ const randomSuffix = (): string => {
   return suffix;
 };
 
+/** git's `delete_tempfile`: removes a staged file, which may be partly written or never created. */
+export const removeIgnoringMissing = async (ctx: Context, path: string): Promise<void> => {
+  try {
+    await ctx.fs.rm(path);
+  } catch (error) {
+    if (errorDataCode(error) !== 'FILE_NOT_FOUND') throw error;
+  }
+};
+
 /**
  * git's `mks_tempfile`: writes `data` to `<stem><6 random characters>`,
  * created exclusively — an existing file or a planted symbolic link at the
- * name is never opened, a fresh name is drawn instead. Returns the path.
+ * name is never opened, a fresh name is drawn instead. A write failing for
+ * any other reason removes what it may have left before the failure
+ * propagates. Returns the path. The file takes the file system's default mode:
+ * the `FileSystem` port's exclusive write carries no mode, so git's `0600` is
+ * not applied.
  */
 export const stageTempFile = async (
   ctx: Context,
@@ -34,7 +47,9 @@ export const stageTempFile = async (
       await ctx.fs.writeExclusive(candidate, data);
       return candidate;
     } catch (error) {
-      if (errorDataCode(error) !== 'FILE_EXISTS') throw error;
+      if (errorDataCode(error) === 'FILE_EXISTS') continue;
+      await removeIgnoringMissing(ctx, candidate);
+      throw error;
     }
   }
   throw fileExists(`${stem}${TEMPLATE_SUFFIX}`);

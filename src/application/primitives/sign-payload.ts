@@ -1,7 +1,7 @@
 import { TsgitError } from '../../domain/error.js';
 import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
-import { stageTempFile } from './internal/stage-temp-file.js';
+import { removeIgnoringMissing, stageTempFile } from './internal/stage-temp-file.js';
 import { getSpawnCwd } from './path-layout.js';
 
 export const DEFAULT_OPENPGP_PROGRAM = 'gpg';
@@ -65,14 +65,6 @@ const signerFailed = (stderr: Uint8Array | undefined): SignPayloadResult => ({
 
 const isFileNotFound = (error: unknown): boolean =>
   error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND';
-
-const removeIgnoringMissing = async (ctx: Context, path: string): Promise<void> => {
-  try {
-    await ctx.fs.rm(path);
-  } catch (error) {
-    if (!isFileNotFound(error)) throw error;
-  }
-};
 
 const readArmorIfPresent = async (ctx: Context, path: string): Promise<string | undefined> => {
   try {
