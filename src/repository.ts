@@ -10,7 +10,6 @@ import * as commands from './application/commands/index.js';
 import * as primitives from './application/primitives/index.js';
 import { gitPathSyntaxOf } from './application/primitives/internal/git-path-syntax.js';
 import { invalidateShallowSet } from './application/primitives/internal/shallow-set.js';
-import { narrowAlternatePathProbe } from './application/primitives/object-store.js';
 import { invalidateIndexCache } from './application/primitives/read-index.js';
 import { disposePackRegistry } from './application/primitives/read-object.js';
 import {
@@ -38,7 +37,6 @@ import type { HashService } from './ports/hash-service.js';
 import type { HookRunner } from './ports/hook-runner.js';
 import type { HttpTransport } from './ports/http-transport.js';
 import { type Logger, wrapLoggerSanitizer } from './ports/logger.js';
-import type { AlternatePathProbe } from './ports/object-source-access.js';
 import type { ProgressReporter } from './ports/progress-reporter.js';
 import type { PromisorRemote } from './ports/promisor.js';
 import type { SshTransport } from './ports/ssh-channel.js';
@@ -46,10 +44,12 @@ import { noopProgress } from './progress.js';
 import { composeAdapters, isFirstPartyFs } from './repository/compose-adapters.js';
 import { deepFreeze } from './repository/deep-freeze.js';
 import { defaultCwd } from './repository/default-cwd.js';
-import { filesystemRootOf } from './repository/filesystem-root.js';
 import type { RepositoryLayoutInput } from './repository/layout-input.js';
 import { layoutRootsOf } from './repository/layout-roots.js';
-import { createObjectSourceAccess } from './repository/object-source-access.js';
+import {
+  createAlternatePathProbe,
+  createObjectSourceAccess,
+} from './repository/object-source-access.js';
 import { resolveAlgorithm } from './repository/resolve-algorithm.js';
 import { validateOptions } from './repository/validate-options.js';
 import { createWorktreeFs } from './repository/worktree-fs.js';
@@ -578,6 +578,18 @@ const forgetSessionCaches = (ctx: Context): void => {
   invalidateIndexCache(ctx);
 };
 
+/** The runtime's host-reaching capabilities: each one bypasses `detected.fs`. */
+type HostHooks = Pick<RuntimeFallback, 'makeConfinedFs' | 'makeWorktreeFs' | 'filenameProbe'>;
+
+const NO_HOST_HOOKS: HostHooks = {};
+
+/**
+ * The host hooks are the runtime's own reach, so they serve only the runtime's own fs: a caller
+ * who supplied `opts.fs` bounded every read to it, and a hook would read the host behind its back.
+ */
+const hostHooksFor = (opts: OpenRepositoryOptions, fallback: RuntimeFallback): HostHooks =>
+  opts.fs === undefined ? fallback : NO_HOST_HOOKS;
+
 /**
  * Factory for the Repository handle. The runtime fallback (adapters + layout)
  * is supplied by the calling shim — `openRepository` itself is runtime-agnostic.
@@ -622,14 +634,15 @@ export const openRepository = async (
   // confines it with a multi-root validator to exactly those subtrees (or
   // returns the raw fs when containment is opted out).
   //
-  // `fallback.makeWorktreeFs`, when present, is ALWAYS a first-party adapter —
+  // `hostHooks.makeWorktreeFs`, when present, is ALWAYS a first-party adapter —
   // it is a runtime capability (never something `opts` can supply), so its
   // output carries the same "own read path enforces containment" guarantee
   // `fsIsFirstParty` establishes for `detected.fs`. When absent, `worktreeFs`
   // falls back to `detected.fs` itself, whose provenance is `fsIsFirstParty`.
-  const worktreeRawIsFirstParty = fallback.makeWorktreeFs !== undefined || fsIsFirstParty;
+  const hostHooks = hostHooksFor(opts, fallback);
+  const worktreeRawIsFirstParty = hostHooks.makeWorktreeFs !== undefined || fsIsFirstParty;
   const worktreeFs = createWorktreeFs(layoutRoots, (roots) => {
-    const raw = fallback.makeWorktreeFs?.(roots) ?? detected.fs;
+    const raw = hostHooks.makeWorktreeFs?.(roots) ?? detected.fs;
     return opts.unsafeRawAdapters === true
       ? raw
       : wrapFsValidator(raw, roots, computeConfigScopePaths(raw), {
@@ -639,13 +652,12 @@ export const openRepository = async (
   // Narrowing is not containment: the raw fs comes from the runtime hook rooted at
   // exactly the alternate's objects dir, so `unsafeRawAdapters` still narrows.
   const objectSourceAccess = createObjectSourceAccess(
-    (objectsDir) => fallback.makeConfinedFs?.([objectsDir]) ?? detected.fs,
+    (objectsDir) => hostHooks.makeConfinedFs?.([objectsDir]) ?? detected.fs,
   );
-  const pathSyntax = gitPathSyntaxOf(fallback);
-  const alternatePathProbe = (path: string): AlternatePathProbe =>
-    narrowAlternatePathProbe(
-      fallback.makeConfinedFs?.([filesystemRootOf(pathSyntax, path)]) ?? detected.fs,
-    );
+  const alternatePathProbe = createAlternatePathProbe(
+    (root) => hostHooks.makeConfinedFs?.([root]) ?? detected.fs,
+    gitPathSyntaxOf(fallback),
+  );
   const config = opts.config !== undefined ? deepFreeze({ ...opts.config }) : undefined;
   const controller = new AbortController();
   const signal =
@@ -718,7 +730,7 @@ export const openRepository = async (
       concurrency: fallback.concurrency,
       cacheBudgets: fallback.cacheBudgets,
       windowsPathSyntax: fallback.windowsPathSyntax,
-      filenameProbe: fallback.filenameProbe,
+      filenameProbe: hostHooks.filenameProbe,
     }),
     promisor,
     session: createSession(),

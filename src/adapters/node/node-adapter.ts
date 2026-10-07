@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import * as nodePath from 'node:path';
+import { gitPathSyntaxOf } from '../../application/primitives/internal/git-path-syntax.js';
 import { deriveLimits } from '../../domain/concurrency/derive-limits.js';
 import { configFor } from '../../domain/objects/hash-config.js';
 import type { ObjectContent } from '../../domain/objects/index.js';
@@ -10,10 +11,12 @@ import {
   createContext,
   type RepositoryLayout,
 } from '../../ports/context.js';
-import type { AlternatePathProbe } from '../../ports/object-source-access.js';
 import { noopProgress } from '../../progress.js';
 import { layoutRootsOf } from '../../repository/layout-roots.js';
-import { createObjectSourceAccess } from '../../repository/object-source-access.js';
+import {
+  createAlternatePathProbe,
+  createObjectSourceAccess,
+} from '../../repository/object-source-access.js';
 import { createWorktreeFs } from '../../repository/worktree-fs.js';
 import { NodeCommandRunner } from './node-command-runner.js';
 import { NodeCompressor } from './node-compressor.js';
@@ -26,6 +29,7 @@ import { NodeHookRunner } from './node-hook-runner.js';
 import { NodeHttpTransport } from './node-http-transport.js';
 import { NodeSshTransport } from './node-ssh-transport.js';
 import { nodeWorktreeFileSystem } from './node-worktree-fs.js';
+import { nativePolicy } from './path-policy.js';
 import { type SyncIoPolicy, syncIoPolicyFor } from './sync-io-budget.js';
 
 const DEFAULT_DELTA_CACHE_BYTES = 16 * 1024 * 1024;
@@ -84,13 +88,6 @@ export interface NodeAdapterOptions {
 const syncIoOptions = (syncIo: SyncIoPolicy | undefined): { readonly syncIo?: SyncIoPolicy } =>
   syncIo === undefined ? {} : { syncIo };
 
-/** A metadata-only view, so a path is resolved wherever it lives without reading content. */
-const metadataProbe = (fs: NodeFileSystem): AlternatePathProbe => ({
-  lstat: fs.lstat.bind(fs),
-  readlink: fs.readlink.bind(fs),
-  stat: fs.stat.bind(fs),
-});
-
 export function createNodeContext(options: NodeAdapterOptions): Context {
   const workDir = nodePath.resolve(options.workDir);
   const gitDir =
@@ -138,9 +135,12 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     objectSourceAccess: createObjectSourceAccess(
       (objectsDir) => new NodeFileSystem([objectsDir], syncIoOptions(syncIo)),
     ),
-    alternatePathProbe: (path: string): AlternatePathProbe =>
-      metadataProbe(new NodeFileSystem(nodePath.parse(path).root, syncIoOptions(syncIo))),
+    alternatePathProbe: createAlternatePathProbe(
+      (root) => new NodeFileSystem(root, syncIoOptions(syncIo)),
+      gitPathSyntaxOf({ windowsPathSyntax: nativePolicy.windowsSyntax }),
+    ),
     filenameProbe: nodeFilenameProbe,
+    windowsPathSyntax: nativePolicy.windowsSyntax,
   };
   return createContext(parts);
 }

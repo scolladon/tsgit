@@ -15,7 +15,10 @@ import { openRepository as openMemoryRepository } from '../../../src/index.defau
 import { openRepository } from '../../../src/index.node.js';
 import type { ObjectSourceAccess } from '../../../src/ports/object-source-access.js';
 import { filesystemRootOf } from '../../../src/repository/filesystem-root.js';
-import { createObjectSourceAccess } from '../../../src/repository/object-source-access.js';
+import {
+  createAlternatePathProbe,
+  createObjectSourceAccess,
+} from '../../../src/repository/object-source-access.js';
 
 const ACCESS_MEMBERS: ReadonlyArray<keyof ObjectSourceAccess> = [
   'exists',
@@ -339,6 +342,69 @@ describe('createObjectSourceAccess', () => {
         // Assert
         expect(result).toBe(first);
         expect(asked).toEqual([objectsDir]);
+      });
+    });
+  });
+});
+
+describe('createAlternatePathProbe', () => {
+  const recordingConfine = (asked: string[]) => (root: string) => {
+    asked.push(root);
+    return new MemoryFileSystem({ rootDir: '/alt' });
+  };
+
+  describe('Given POSIX path syntax', () => {
+    describe('When two paths under one root are probed', () => {
+      it('Then the confine hook is asked for that root once and the first probe is handed back', () => {
+        // Arrange
+        const asked: string[] = [];
+        const sut = createAlternatePathProbe;
+
+        // Act
+        const probeFor = sut(recordingConfine(asked), posixGitPathSyntax);
+        const first = probeFor('/alt/objects');
+        const result = probeFor('/other/objects');
+
+        // Assert
+        expect(result).toBe(first);
+        expect(asked).toEqual(['/']);
+        expect(Object.keys(result).sort()).toEqual(['lstat', 'readlink', 'stat']);
+      });
+    });
+  });
+
+  describe('Given Windows path syntax', () => {
+    describe('When paths on two drives are probed', () => {
+      it('Then each drive root gets its own probe', () => {
+        // Arrange
+        const asked: string[] = [];
+        const sut = createAlternatePathProbe;
+
+        // Act
+        const probeFor = sut(recordingConfine(asked), windowsGitPathSyntax);
+        const first = probeFor('C:\\x\\objects');
+        const result = probeFor('D:\\y\\objects');
+
+        // Assert
+        expect(result).not.toBe(first);
+        expect(asked).toEqual(['C:\\', 'D:\\']);
+      });
+    });
+  });
+
+  describe('Given a probe built over a confined fs', () => {
+    describe('When a path is probed', () => {
+      it('Then the metadata is read through that fs', async () => {
+        // Arrange
+        const fs = new MemoryFileSystem({ rootDir: '/alt' });
+        await fs.writeUtf8('/alt/objects/marker', 'x');
+        const sut = createAlternatePathProbe;
+
+        // Act
+        const result = await sut(() => fs, posixGitPathSyntax)('/alt/objects').stat('/alt/objects');
+
+        // Assert
+        expect(result.isDirectory).toBe(true);
       });
     });
   });
