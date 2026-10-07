@@ -569,6 +569,44 @@ const resolutionScenarios: ReadonlyArray<Scenario> = [
     diagnostics: ['not-a-directory', 'not-a-directory', 'not-a-directory'],
     readable: [false],
   },
+  {
+    id: 'R12',
+    title: 'a regular file component walked back out of with .. resolves',
+    build: () => {
+      const f = middleAndLeaf('R12');
+      alternatesOf(f.borrower, `${f.middle.dir}/HEAD/../objects`);
+      return { borrower: f.borrower.dir, blobs: f.blobs };
+    },
+    alternates: 1,
+    diagnostics: [],
+    readable: [true, false],
+  },
+  {
+    id: 'R13',
+    title: 'a separator after a missing last component is unresolvable',
+    build: () => {
+      const f = middleAndLeaf('R13');
+      alternatesOf(f.borrower, `${f.middle.dir}/missing-objects/`, f.middle.objects);
+      return { borrower: f.borrower.dir, blobs: f.blobs };
+    },
+    alternates: 1,
+    diagnostics: ['unresolvable'],
+    readable: [true, false],
+  },
+  {
+    id: 'R14',
+    title: 'a symlink whose target ends in a separator after a missing component is unresolvable',
+    build: () => {
+      const f = middleAndLeaf('R14');
+      const link = linkTo(`${f.middle.dir}/missing-objects/`, path.join(root, 'R14', 'dangling'));
+      alternatesOf(f.borrower, link, f.middle.objects);
+      return { borrower: f.borrower.dir, blobs: f.blobs };
+    },
+    runnable: POSIX,
+    alternates: 1,
+    diagnostics: ['unresolvable'],
+    readable: [true, false],
+  },
 ];
 
 const nestingScenarios: ReadonlyArray<Scenario> = [

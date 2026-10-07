@@ -56,7 +56,7 @@ describe.each(syntaxes)('$name git path syntax properties', ({ syntax, separator
     });
 
     describe('When components', () => {
-      it('Then every name is non-empty and separator-free, and joining them keeps the text', () => {
+      it('Then every name is separator-free and only a trailing separator yields a final empty one', () => {
         fc.assert(
           fc.property(arbPath(), (path) => {
             // Arrange
@@ -66,7 +66,10 @@ describe.each(syntaxes)('$name git path syntax properties', ({ syntax, separator
             const names = sut(path);
 
             // Assert
-            expect(names.every((name) => name !== '' && !separators.test(name))).toBe(true);
+            const trailing = path !== '' && separators.test(path.slice(-1));
+            const named = trailing ? names.slice(0, -1) : names;
+            expect(named.every((name) => name !== '' && !separators.test(name))).toBe(true);
+            expect(trailing ? names.at(-1) : '').toBe('');
             expect(names.join('')).toBe(path.split(separators).join(''));
           }),
           { numRuns: INVARIANT_RUNS },

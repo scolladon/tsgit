@@ -46,8 +46,10 @@ describe('posixGitPathSyntax', () => {
 
     describe('When components', () => {
       it.each([
-        { path: 'a//b/', expected: ['a', 'b'] },
+        { path: 'a//b/', expected: ['a', 'b', ''] },
         { path: 'a\\b/c', expected: ['a\\b', 'c'] },
+        { path: '//a', expected: ['a'] },
+        { path: '/', expected: [''] },
         { path: '', expected: [] },
       ])('Then $path yields $expected', ({ path, expected }) => {
         // Arrange
@@ -123,7 +125,8 @@ describe('windowsGitPathSyntax', () => {
 
     describe('When components', () => {
       it.each([
-        { path: 'a\\\\b/c\\', expected: ['a', 'b', 'c'] },
+        { path: 'a\\\\b/c\\', expected: ['a', 'b', 'c', ''] },
+        { path: 'a\\b', expected: ['a', 'b'] },
         { path: '', expected: [] },
       ])('Then $path yields $expected', ({ path, expected }) => {
         // Arrange

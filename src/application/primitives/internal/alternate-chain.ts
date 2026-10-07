@@ -16,14 +16,14 @@ const FILE_NOT_FOUND = 'FILE_NOT_FOUND';
 const NOT_A_DIRECTORY = 'NOT_A_DIRECTORY';
 
 type Lookup =
-  | { readonly kind: 'found'; readonly isLink: boolean; readonly isDirectory: boolean }
+  | { readonly kind: 'found'; readonly isLink: boolean }
   | { readonly kind: 'absent' }
   | { readonly kind: 'blocked' };
 
 const lookup = async (probe: AlternatePathProbe, path: string): Promise<Lookup> => {
   try {
     const stat = await probe.lstat(path);
-    return { kind: 'found', isLink: stat.isSymbolicLink, isDirectory: stat.isDirectory };
+    return { kind: 'found', isLink: stat.isSymbolicLink };
   } catch (error) {
     const code = errorDataCode(error);
     if (code === FILE_NOT_FOUND) return { kind: 'absent' };
@@ -31,6 +31,10 @@ const lookup = async (probe: AlternatePathProbe, path: string): Promise<Lookup> 
     throw error;
   }
 };
+
+const CURRENT_DIRECTORY = '.';
+/** The empty name a trailing separator leaves: nothing to append, but it is still "remaining". */
+const TRAILING_SEPARATOR = '';
 
 interface Walk {
   readonly syntax: GitPathSyntax;
@@ -70,22 +74,22 @@ const descend = async (
   walk: Walk,
   segment: string,
 ): Promise<boolean> => {
-  if (segment === '.') return true;
+  if (segment === CURRENT_DIRECTORY || segment === TRAILING_SEPARATOR) return true;
   if (segment === '..') {
     walk.names.pop();
     return true;
   }
   const candidate = joinedPath(walk.root, [...walk.names, segment]);
   const found = await lookup(probe, candidate);
-  const isLast = walk.pending.length === 0;
   if (found.kind === 'blocked') return false;
   if (found.kind === 'absent') {
     walk.names.push(segment);
-    return isLast;
+    return walk.pending.length === 0;
   }
   if (found.isLink) return follow(probe, walk, candidate);
+  // git appends any non-link without a directory check: a later `..` walks back out of a file.
   walk.names.push(segment);
-  return found.isDirectory || isLast;
+  return true;
 };
 
 /** git's realpath starts a rootless path (a share-less `\\server`) from its cwd. */
@@ -98,8 +102,8 @@ const startAt = (walk: Walk, path: string, cwd: string): boolean => {
 
 /**
  * git's `strbuf_realpath(…, die_on_error=0)` over the port: every component is resolved and only
- * the last may be missing. `undefined` when a middle component is absent, links loop, or a link
- * names a rootless target.
+ * the last may be missing, with no separator after it. `undefined` when a middle component is
+ * absent or under a file, links loop, or a link names a rootless target.
  */
 export const realpathAllowingMissingLeaf = async (
   syntax: GitPathSyntax,
@@ -298,6 +302,24 @@ const visit = async (
   }
 };
 
+/**
+ * The primary's realpath, `undefined` when it cannot be resolved: an adapter confined below the
+ * filesystem root refuses the primary's ancestors with a coded fault, and the primary itself is
+ * still readable through it, so the walk's failure is not the store's.
+ */
+const primaryRealpath = async (
+  io: AlternateChainIo,
+  raw: string,
+  cwd: string,
+): Promise<string | undefined> => {
+  try {
+    return await realpathAllowingMissingLeaf(io.pathSyntax, io.probe(raw), raw, cwd);
+  } catch (error) {
+    if (errorDataCode(error) === undefined) throw error;
+    return undefined;
+  }
+};
+
 /** git's `odb_prepare_alternates`: the primary, then every reachable alternate in DFS pre-order. */
 export const resolveObjectSources = async (
   ctx: Context,
@@ -308,8 +330,7 @@ export const resolveObjectSources = async (
 }> => {
   const raw = `${commonGitDir(ctx)}/objects`;
   const cwd = ctx.layout.workDir ?? ctx.cwd;
-  const primary =
-    (await realpathAllowingMissingLeaf(io.pathSyntax, io.probe(raw), raw, cwd)) ?? raw;
+  const primary = (await primaryRealpath(io, raw, cwd)) ?? raw;
   const key = (await readIgnoreCase(ctx)) ? asciiLower : (path: string) => path;
   const resolution: Resolution = {
     ctx,

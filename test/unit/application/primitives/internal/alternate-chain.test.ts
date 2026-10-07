@@ -120,6 +120,66 @@ describe('realpathAllowingMissingLeaf', () => {
     });
   });
 
+  describe('Given a path walking back out of a regular file with ..', () => {
+    describe('When realpathAllowingMissingLeaf', () => {
+      it('Then the file is walked through lexically, as git does', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ files: { '/repo/d/HEAD': new Uint8Array() } });
+
+        // Act
+        const result = await realpathAllowingMissingLeaf(
+          posixGitPathSyntax,
+          ctx.fs,
+          '/repo/d/HEAD/../objects',
+          CWD,
+        );
+
+        // Assert
+        expect(result).toBe('/repo/d/objects');
+      });
+    });
+  });
+
+  describe('Given a separator after a missing last component', () => {
+    describe('When realpathAllowingMissingLeaf', () => {
+      it('Then it is undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ files: { '/repo/d/HEAD': new Uint8Array() } });
+
+        // Act
+        const result = await realpathAllowingMissingLeaf(
+          posixGitPathSyntax,
+          ctx.fs,
+          '/repo/d/missing/',
+          CWD,
+        );
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a separator after an existing last component', () => {
+    describe('When realpathAllowingMissingLeaf', () => {
+      it('Then the separator is dropped', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ files: { '/repo/d/HEAD': new Uint8Array() } });
+
+        // Act
+        const result = await realpathAllowingMissingLeaf(
+          posixGitPathSyntax,
+          ctx.fs,
+          '/repo/d/HEAD//',
+          CWD,
+        );
+
+        // Assert
+        expect(result).toBe('/repo/d/HEAD');
+      });
+    });
+  });
+
   describe('Given a symlink loop', () => {
     describe('When realpathAllowingMissingLeaf', () => {
       it('Then it is undefined', async () => {
@@ -246,6 +306,52 @@ describe('resolveObjectSources', () => {
           sources: [{ objectsDir: PRIMARY, local: true, depth: -1 }],
           diagnostics: [],
         });
+      });
+    });
+  });
+
+  describe("Given a probe refusing an ancestor of the primary's path", () => {
+    const refusingAncestor =
+      (ctx: Context, fault: unknown): AlternateChainIo['probe'] =>
+      (path) =>
+        path === PRIMARY
+          ? {
+              stat: ctx.fs.stat.bind(ctx.fs),
+              readlink: ctx.fs.readlink.bind(ctx.fs),
+              lstat: (probed) => (probed === CWD ? Promise.reject(fault) : ctx.fs.lstat(probed)),
+            }
+          : ctx.fs;
+
+    describe('When the chain is resolved and the refusal is coded', () => {
+      it('Then the raw primary is kept and its list still resolves', async () => {
+        // Arrange
+        const ctx = contextWith({ [PRIMARY]: '/repo/store/a\n', '/repo/store/a': '' });
+        const io = { ...ioOf(ctx), probe: refusingAncestor(ctx, permissionDenied(CWD)) };
+
+        // Act
+        const result = await resolveObjectSources(ctx, io);
+
+        // Assert
+        expect(result.sources.map((source) => source.objectsDir)).toEqual([
+          PRIMARY,
+          '/repo/store/a',
+        ]);
+        expect(result.diagnostics).toEqual([]);
+      });
+    });
+
+    describe('When the chain is resolved and the refusal carries no code', () => {
+      it('Then the refusal propagates', async () => {
+        // Arrange
+        const ctx = contextWith({});
+        const defect = new Error('probe defect');
+        const io = { ...ioOf(ctx), probe: refusingAncestor(ctx, defect) };
+
+        // Act
+        const result = await resolveObjectSources(ctx, io).catch((error: unknown) => error);
+
+        // Assert
+        expect(result).toBe(defect);
       });
     });
   });

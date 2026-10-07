@@ -10,7 +10,10 @@ export interface GitPathSyntax {
   readonly isAbsolute: (path: string) => boolean;
   /** git's `get_root_part`: the root (converted to `/` separators) and what follows it. */
   readonly splitRoot: (path: string) => RootedPath;
-  /** git's `get_next_component` loop: the non-empty names between separators. */
+  /**
+   * git's `get_next_component` loop: the names between separator runs, plus the final empty name
+   * a trailing run leaves — git's "a component is still remaining" test sees it.
+   */
   readonly components: (path: string) => string[];
 }
 
@@ -24,6 +27,14 @@ const NON_ASCII_RUN = /^[\u0080-\uffff]+/;
 const MAX_DRIVE_LETTER_BYTES = 4;
 
 const nonEmpty = (name: string): boolean => name !== '';
+const TRAILING_NAME = '';
+
+/** `split`'s names with the empty ones dropped, but a trailing separator kept as one empty name. */
+const namesOf = (split: ReadonlyArray<string>): string[] => {
+  const names = split.filter(nonEmpty);
+  const trailing = split.length > 1 && split.at(-1) === TRAILING_NAME;
+  return trailing ? [...names, TRAILING_NAME] : names;
+};
 const utf8 = new TextEncoder();
 
 export const posixGitPathSyntax: GitPathSyntax = {
@@ -32,7 +43,7 @@ export const posixGitPathSyntax: GitPathSyntax = {
     path.startsWith(POSIX_SEPARATOR)
       ? { root: POSIX_SEPARATOR, rest: path.slice(1) }
       : { root: '', rest: path },
-  components: (path) => path.split(POSIX_SEPARATOR).filter(nonEmpty),
+  components: (path) => namesOf(path.split(POSIX_SEPARATOR)),
 };
 
 const isWindowsSeparator = (char: string | undefined): boolean => char === '/' || char === '\\';
@@ -76,7 +87,7 @@ export const windowsGitPathSyntax: GitPathSyntax = {
       rest: path.slice(length),
     };
   },
-  components: (path) => path.split(WINDOWS_SEPARATORS).filter(nonEmpty),
+  components: (path) => namesOf(path.split(WINDOWS_SEPARATORS)),
 };
 
 /** The syntax of the git build a host emulates: Windows when it says so, POSIX otherwise. */
