@@ -778,4 +778,43 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
       });
     });
   });
+
+  describe('Given tag A wrapping a newer inner tag of a commit, and tag B of the same commit dated between them', () => {
+    let dir = '';
+    let ctx: Context;
+    let tagged = '';
+
+    const mktag = (target: string, type: string, name: string, epoch: number): string =>
+      runGit(['-C', dir, 'mktag'], {
+        input: `object ${target}\ntype ${type}\ntag ${name}\ntagger A <a@x> ${epoch} +0000\n\n${name}\n`,
+      }).trim();
+
+    beforeAll(async () => {
+      dir = await makeRepo('innermost-date');
+      tagged = await commitFile(dir, 'c1');
+      await commitFile(dir, 'c2');
+      const inner = mktag(tagged, 'commit', 'inner', 5000);
+      git(dir, 'update-ref', 'refs/tags/A', mktag(inner, 'tag', 'A', 1000));
+      git(dir, 'update-ref', 'refs/tags/B', mktag(tagged, 'commit', 'B', 3000));
+      ctx = createNodeContext({ workDir: dir });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    describe('When nameRevCmd names the tagged commit', () => {
+      it('Then the innermost tagger date ranks the chains, as git does', async () => {
+        // Arrange
+        const sut = nameRevCmd;
+
+        // Act
+        const result = renderNameRev(await sut(ctx, tagged));
+
+        // Assert
+        expect(result).toBe(gitNameRev(dir, tagged));
+        expect(result).toBe('tags/B^0');
+      });
+    });
+  });
 });

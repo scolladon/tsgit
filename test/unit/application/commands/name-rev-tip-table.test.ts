@@ -55,16 +55,26 @@ const seed = async (): Promise<Seeded> => {
 const plantRef = (ctx: Context, name: string, target: ObjectId): Promise<void> =>
   ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${name}`, `${target}\n`);
 
-const annotatedTag = async (ctx: Context, name: string, target: ObjectId): Promise<ObjectId> => {
+const writeTag = (
+  ctx: Context,
+  name: string,
+  target: ObjectId,
+  objectType: TagData['objectType'],
+  taggerTime: number,
+): Promise<ObjectId> => {
   const data: TagData = {
     object: target,
-    objectType: 'commit',
+    objectType,
     tagName: name,
-    tagger: ident(COMMIT_TIME),
+    tagger: ident(taggerTime),
     message: `${name}\n`,
     extraHeaders: [],
   };
-  const id = await writeObject(ctx, { type: 'tag', id: '' as ObjectId, data });
+  return writeObject(ctx, { type: 'tag', id: '' as ObjectId, data });
+};
+
+const annotatedTag = async (ctx: Context, name: string, target: ObjectId): Promise<ObjectId> => {
+  const id = await writeTag(ctx, name, target, 'commit', COMMIT_TIME);
   await plantRef(ctx, `refs/tags/${name}`, id);
   return id;
 };
@@ -262,6 +272,25 @@ describe('nameRev tip table', () => {
 
         // Assert
         expect(result).toEqual({ oid: blob, ref: undefined, tagDeref: false, steps: [] });
+      });
+    });
+  });
+
+  describe('Given a tag whose outer tagger is oldest but whose innermost tagger is newest', () => {
+    describe('When nameRev names the commit both tag chains reach', () => {
+      it('Then it ranks the chain by its innermost tagger date, as git does', async () => {
+        // Arrange
+        const { ctx, head } = await seed();
+        const inner = await writeTag(ctx, 'inner', head, 'commit', 5000);
+        await plantRef(ctx, 'refs/tags/A', await writeTag(ctx, 'A', inner, 'tag', 1000));
+        await plantRef(ctx, 'refs/tags/B', await writeTag(ctx, 'B', head, 'commit', 3000));
+        const sut = nameRev;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result?.ref).toBe('refs/tags/B');
       });
     });
   });

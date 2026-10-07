@@ -14,7 +14,7 @@ export interface NameRevTip {
   readonly commit: Commit | undefined;
   /** The ref named a tag object (an annotated tag), not the object it peels to. */
   readonly deref: boolean;
-  /** Outermost annotated-tag tagger timestamp; `0` when not reached via a tag. */
+  /** Innermost annotated-tag tagger timestamp (git keeps the last tag peeled); `0` when not via a tag. */
   readonly taggerDate: number;
 }
 
@@ -53,7 +53,7 @@ export const peelLoadedTip = async (
   const seen = new Set<ObjectId>([oid]);
   while (current?.type === 'tag' && !seen.has(current.data.object)) {
     seen.add(current.data.object);
-    if (!deref) taggerDate = current.data.tagger?.timestamp ?? 0;
+    taggerDate = current.data.tagger?.timestamp ?? 0;
     deref = true;
     current = await parseObjectGently(ctx, current.data.object);
   }
