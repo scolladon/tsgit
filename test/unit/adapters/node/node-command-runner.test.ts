@@ -38,6 +38,8 @@ class FakeChild extends EventEmitter {
   killed = false;
   readonly stdin = new FakeStdin();
   readonly stdout = new FakeStdout();
+  stderr: FakeStdout | null = null;
+  readonly pipedStderr = new FakeStdout();
   kill(): void {
     this.killed = true;
   }
@@ -48,8 +50,10 @@ interface SpawnCall {
   readonly args: ReadonlyArray<string>;
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
-  readonly stdio: ['pipe', 'pipe', 'inherit'];
+  readonly stdio: ['pipe', 'pipe', 'inherit' | 'pipe'];
 }
+
+type SpawnOptions = Omit<SpawnCall, 'command' | 'args'>;
 
 const makeHarness = (
   platform: NodeJS.Platform = 'linux',
@@ -57,8 +61,9 @@ const makeHarness = (
   const child = new FakeChild();
   const calls: SpawnCall[] = [];
   const ops: CommandRunnerOps = {
-    spawn: (command, args, options) => {
+    spawn: (command: string, args: ReadonlyArray<string>, options: SpawnOptions) => {
       calls.push({ command, args, cwd: options.cwd, env: options.env, stdio: options.stdio });
+      child.stderr = options.stdio[2] === 'pipe' ? child.pipedStderr : null;
       return child;
     },
   };
@@ -310,6 +315,85 @@ describe('NodeCommandRunner', () => {
 
         // Assert
         expect(result.stdout).toEqual(new Uint8Array([1, 2, 3, 4, 5, 6]));
+      });
+    });
+  });
+
+  describe('Given a request naming its program and arguments', () => {
+    describe.each(['linux', 'win32'] as const)('When run on %s', (platform) => {
+      it('Then spawns the program directly with those arguments, no shell', async () => {
+        // Arrange
+        const { runner, child, calls } = makeHarness(platform);
+        const sut = runner.run.bind(runner);
+
+        // Act
+        const promise = sut(baseRequest({ command: 'gpg', args: ['--verify', "it's", '-'] }));
+        child.emit('close', 0);
+        await promise;
+
+        // Assert
+        expect(calls[0]?.command).toBe('gpg');
+        expect(calls[0]?.args).toEqual(['--verify', "it's", '-']);
+      });
+    });
+  });
+
+  describe('Given a request capturing stderr', () => {
+    describe('When the child writes to stderr', () => {
+      it('Then pipes stderr and returns its bytes apart from stdout', async () => {
+        // Arrange
+        const { runner, child, calls } = makeHarness();
+        const sut = runner.run.bind(runner);
+
+        // Act
+        const promise = sut(baseRequest({ stderr: 'capture' }));
+        child.pipedStderr.emit('data', new Uint8Array([1, 2]));
+        child.pipedStderr.emit('data', new Uint8Array([3]));
+        child.stdout.emit('data', new Uint8Array([9]));
+        child.emit('close', 0);
+        const result = await promise;
+
+        // Assert
+        expect(calls[0]?.stdio).toEqual(['pipe', 'pipe', 'pipe']);
+        expect(result).toEqual({
+          exitCode: 0,
+          stdout: new Uint8Array([9]),
+          stderr: new Uint8Array([1, 2, 3]),
+        });
+      });
+    });
+
+    describe('When the child writes nothing', () => {
+      it('Then returns empty stderr bytes', async () => {
+        // Arrange
+        const { runner, child } = makeHarness();
+        const sut = runner.run.bind(runner);
+
+        // Act
+        const promise = sut(baseRequest({ stderr: 'capture' }));
+        child.emit('close', 3);
+        const result = await promise;
+
+        // Assert
+        expect(result).toEqual({ exitCode: 3, stderr: new Uint8Array(0) });
+      });
+    });
+  });
+
+  describe('Given a request leaving stderr inherited', () => {
+    describe('When the child exits', () => {
+      it('Then the result carries no stderr', async () => {
+        // Arrange
+        const { runner, child } = makeHarness();
+        const sut = runner.run.bind(runner);
+
+        // Act
+        const promise = sut(baseRequest({ stderr: 'inherit' }));
+        child.emit('close', 0);
+        const result = await promise;
+
+        // Assert
+        expect(result).toEqual({ exitCode: 0 });
       });
     });
   });

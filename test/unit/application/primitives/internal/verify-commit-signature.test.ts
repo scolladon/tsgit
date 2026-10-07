@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { verifyCommitSignature } from '../../../../../src/application/primitives/internal/verify-commit-signature.js';
@@ -26,30 +26,47 @@ interface Scripted {
 interface Harness {
   readonly ctx: Context;
   readonly requests: CommandRequest[];
+  /** The first staged buffer path a verifier was handed. */
   readonly bufferPath: string;
   readonly seenBuffer: string[];
 }
 
+const STAGED_BUFFER = /\/\.git_vtag_tmp[A-Za-z0-9]{6}$/;
+
+/** The program and its arguments, space-joined — for matching a scripted step. */
+const commandLine = (request: CommandRequest): string =>
+  [request.command, ...(request.args ?? [])].join(' ');
+
 const harness = (script: (request: CommandRequest) => Scripted | 'throw'): Harness => {
   const requests: CommandRequest[] = [];
   const seenBuffer: string[] = [];
+  const stagedPaths: string[] = [];
   const holder: { ctx?: Context } = {};
   const runner: CommandRunner = {
     async run(request): Promise<CommandResult> {
       requests.push(request);
-      const gitDir = holder.ctx?.layout.gitDir ?? '';
-      seenBuffer.push(
-        new TextDecoder().decode(await holder.ctx?.fs.read(`${gitDir}/GIT_VERIFY_BUFFER`)),
-      );
+      const staged = request.args?.find((arg) => STAGED_BUFFER.test(arg)) ?? '';
+      stagedPaths.push(staged);
+      seenBuffer.push(new TextDecoder().decode(await holder.ctx?.fs.read(staged)));
       const scripted = script(request);
       if (scripted === 'throw') throw new Error('spawn failed');
-      await holder.ctx?.fs.write(`${gitDir}/GIT_VERIFY_BUFFER.err`, enc(scripted.stderr ?? ''));
-      return { exitCode: scripted.exitCode ?? 0, stdout: enc(scripted.stdout ?? '') };
+      return {
+        exitCode: scripted.exitCode ?? 0,
+        stdout: enc(scripted.stdout ?? ''),
+        stderr: enc(scripted.stderr ?? ''),
+      };
     },
   };
   const ctx = createMemoryContext({ command: runner });
   holder.ctx = ctx;
-  return { ctx, requests, bufferPath: `${ctx.layout.gitDir}/GIT_VERIFY_BUFFER`, seenBuffer };
+  return {
+    ctx,
+    requests,
+    get bufferPath() {
+      return stagedPaths[0] ?? '';
+    },
+    seenBuffer,
+  };
 };
 
 const status = (...lines: string[]): string => lines.map((l) => `[GNUPG:] ${l}\n`).join('');
@@ -58,6 +75,10 @@ const gpgContext = (stdout: string, stderr = ''): Context =>
   harness(() => ({ stdout, stderr })).ctx;
 
 const GPG_INPUT = { payload: PAYLOAD, signature: PGP_SIG };
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('verifyCommitSignature', () => {
   describe.each([
@@ -208,9 +229,12 @@ describe('verifyCommitSignature', () => {
 
         // Assert
         expect(rig.requests).toHaveLength(1);
-        expect(rig.requests[0]?.command).toBe(
-          `'my gpg'\\''s' --keyid-format=long --status-fd=1 --verify '${rig.bufferPath}' - 2> '${rig.bufferPath}.err'`,
-        );
+        expect(rig.requests[0]).toMatchObject({
+          command: "my gpg's",
+          args: ['--keyid-format=long', '--status-fd=1', '--verify', rig.bufferPath, '-'],
+          stderr: 'capture',
+        });
+        expect(rig.bufferPath).toMatch(new RegExp(`^${rig.ctx.layout.gitDir}/\\.git_vtag_tmp`));
         expect(rig.requests[0]?.stdin).toBe(PAYLOAD);
         expect(rig.requests[0]?.env).toEqual({ GIT_DIR: rig.ctx.layout.gitDir });
         expect(rig.seenBuffer).toEqual([PGP_SIG]);
@@ -228,7 +252,7 @@ describe('verifyCommitSignature', () => {
         await verifyCommitSignature(rig.ctx, { payload: PAYLOAD, signature: PGP_SIG });
 
         // Assert
-        expect(rig.requests[0]?.command.startsWith("'gpg' --keyid-format=long")).toBe(true);
+        expect(commandLine(rig.requests[0] as CommandRequest)).toMatch(/^gpg --keyid-format=long /);
       });
     });
   });
@@ -247,7 +271,9 @@ describe('verifyCommitSignature', () => {
         });
 
         // Assert
-        expect(rig.requests[0]?.command.startsWith("'gpgsm' --keyid-format=long")).toBe(true);
+        expect(commandLine(rig.requests[0] as CommandRequest)).toMatch(
+          /^gpgsm --keyid-format=long /,
+        );
         expect(result.result).toBe('G');
       });
     });
@@ -258,7 +284,7 @@ describe('verifyCommitSignature', () => {
       it('Then the result is G with the principal, the fully trust and the fingerprint', async () => {
         // Arrange
         const rig = harness((request) =>
-          request.command.includes('find-principals')
+          commandLine(request).includes('find-principals')
             ? { stdout: 'a@b.c\n' }
             : { stdout: `Good "git" signature for a@b.c with ED25519 key ${FPR}\n` },
         );
@@ -280,9 +306,30 @@ describe('verifyCommitSignature', () => {
           primaryKeyFingerprint: '',
           output: `Good "git" signature for a@b.c with ED25519 key ${FPR}\n`,
         });
-        expect(rig.requests.map((r) => r.command)).toEqual([
-          `'ssh-keygen' -Y find-principals -f '/allowed' -s '${rig.bufferPath}' 2> '${rig.bufferPath}.err'`,
-          `'ssh-keygen' -Y verify -n git -f '/allowed' -I 'a@b.c' -s '${rig.bufferPath}' -r '/revoked' 2> '${rig.bufferPath}.err'`,
+        expect(rig.requests.map((r) => [r.command, r.args, r.stderr])).toEqual([
+          [
+            'ssh-keygen',
+            ['-Y', 'find-principals', '-f', '/allowed', '-s', rig.bufferPath],
+            'capture',
+          ],
+          [
+            'ssh-keygen',
+            [
+              '-Y',
+              'verify',
+              '-n',
+              'git',
+              '-f',
+              '/allowed',
+              '-I',
+              'a@b.c',
+              '-s',
+              rig.bufferPath,
+              '-r',
+              '/revoked',
+            ],
+            'capture',
+          ],
         ]);
         expect(rig.requests[0]?.stdin).toBeUndefined();
         expect(rig.requests[1]?.stdin).toBe(PAYLOAD);
@@ -295,7 +342,9 @@ describe('verifyCommitSignature', () => {
       it('Then the verify command has no -r and uses the program', async () => {
         // Arrange
         const rig = harness((request) =>
-          request.command.includes('find-principals') ? { stdout: 'a@b.c\n' } : { stdout: 'Good' },
+          commandLine(request).includes('find-principals')
+            ? { stdout: 'a@b.c\n' }
+            : { stdout: 'Good' },
         );
 
         // Act
@@ -306,9 +355,21 @@ describe('verifyCommitSignature', () => {
         });
 
         // Assert
-        expect(rig.requests[1]?.command).toBe(
-          `'sk' -Y verify -n git -f '/allowed' -I 'a@b.c' -s '${rig.bufferPath}' 2> '${rig.bufferPath}.err'`,
-        );
+        expect(rig.requests[1]).toMatchObject({
+          command: 'sk',
+          args: [
+            '-Y',
+            'verify',
+            '-n',
+            'git',
+            '-f',
+            '/allowed',
+            '-I',
+            'a@b.c',
+            '-s',
+            rig.bufferPath,
+          ],
+        });
       });
     });
   });
@@ -318,8 +379,8 @@ describe('verifyCommitSignature', () => {
       it('Then both are tried and the second one is reported', async () => {
         // Arrange
         const rig = harness((request) => {
-          if (request.command.includes('find-principals')) return { stdout: 'a@b.c\nd@e.f\n' };
-          return request.command.includes("'d@e.f'")
+          if (commandLine(request).includes('find-principals')) return { stdout: 'a@b.c\nd@e.f\n' };
+          return commandLine(request).includes('d@e.f')
             ? { stdout: `Good "git" signature for d@e.f with ED25519 key ${FPR}\n` }
             : { exitCode: 255, stdout: 'Could not verify signature.\n' };
         });
@@ -343,7 +404,7 @@ describe('verifyCommitSignature', () => {
       it('Then the first verifying principal stops the search', async () => {
         // Arrange
         const rig = harness((request) =>
-          request.command.includes('find-principals')
+          commandLine(request).includes('find-principals')
             ? { stdout: 'a@b.c\nd@e.f\n' }
             : { stdout: `Good "git" signature for a@b.c with ED25519 key ${FPR}\n` },
         );
@@ -366,7 +427,7 @@ describe('verifyCommitSignature', () => {
       it('Then the result is B with the never trust and both outputs', async () => {
         // Arrange
         const rig = harness((request) =>
-          request.command.includes('find-principals')
+          commandLine(request).includes('find-principals')
             ? { stdout: 'a@b.c\n' }
             : {
                 exitCode: 255,
@@ -400,7 +461,7 @@ describe('verifyCommitSignature', () => {
       it('Then the key is reported with the undefined trust and the no-principal notice', async () => {
         // Arrange
         const rig = harness((request) => {
-          if (request.command.includes('find-principals')) {
+          if (commandLine(request).includes('find-principals')) {
             return { exitCode: 255, stderr: 'sig_find_principals: not found\n' };
           }
           return { stdout: `Good "git" signature with ED25519 key ${FPR}\n` };
@@ -423,9 +484,10 @@ describe('verifyCommitSignature', () => {
           primaryKeyFingerprint: '',
           output: `Good "git" signature with ED25519 key ${FPR}\nsig_find_principals: not found\nNo principal matched.\n`,
         });
-        expect(rig.requests[1]?.command).toBe(
-          `'ssh-keygen' -Y check-novalidate -n git -s '${rig.bufferPath}' 2> '${rig.bufferPath}.err'`,
-        );
+        expect(rig.requests[1]).toMatchObject({
+          command: 'ssh-keygen',
+          args: ['-Y', 'check-novalidate', '-n', 'git', '-s', rig.bufferPath],
+        });
         expect(rig.requests[1]?.stdin).toBe(PAYLOAD);
       });
     });
@@ -436,7 +498,7 @@ describe('verifyCommitSignature', () => {
       it('Then the result is B with the never trust', async () => {
         // Arrange
         const rig = harness((request) =>
-          request.command.includes('find-principals')
+          commandLine(request).includes('find-principals')
             ? { stdout: '' }
             : { exitCode: 255, stdout: 'Could not verify signature.\n', stderr: 'bad\n' },
         );
@@ -615,16 +677,17 @@ describe('verifyCommitSignature', () => {
 
   describe('Given a successful verification', () => {
     describe('When it completes', () => {
-      it('Then neither the buffer nor the stderr capture file remain', async () => {
+      it('Then the git dir holds exactly what it held before', async () => {
         // Arrange
         const rig = harness(() => ({ stdout: status('GOODSIG K Who'), stderr: 'note\n' }));
+        await rig.ctx.fs.write(`${rig.ctx.layout.gitDir}/HEAD`, enc('ref: refs/heads/main\n'));
+        const before = await rig.ctx.fs.readdir(rig.ctx.layout.gitDir);
 
         // Act
         await verifyCommitSignature(rig.ctx, { payload: PAYLOAD, signature: PGP_SIG });
 
         // Assert
-        expect(await rig.ctx.fs.exists(rig.bufferPath)).toBe(false);
-        expect(await rig.ctx.fs.exists(`${rig.bufferPath}.err`)).toBe(false);
+        expect(await rig.ctx.fs.readdir(rig.ctx.layout.gitDir)).toEqual(before);
       });
     });
   });
@@ -639,7 +702,7 @@ describe('verifyCommitSignature', () => {
           fs: {
             ...rig.ctx.fs,
             read: rig.ctx.fs.read.bind(rig.ctx.fs),
-            write: rig.ctx.fs.write.bind(rig.ctx.fs),
+            writeExclusive: rig.ctx.fs.writeExclusive.bind(rig.ctx.fs),
             rm: async () => {
               throw new Error('disk on fire');
             },
@@ -655,7 +718,7 @@ describe('verifyCommitSignature', () => {
     });
   });
 
-  describe('Given a runner that leaves no stderr capture file', () => {
+  describe('Given a runner returning no stderr', () => {
     describe('When the signature is verified', () => {
       it('Then the output is empty', async () => {
         // Arrange
@@ -672,30 +735,23 @@ describe('verifyCommitSignature', () => {
     });
   });
 
-  describe('Given a stderr capture file that cannot be read', () => {
+  describe('Given a file planted at the first name drawn for the buffer', () => {
     describe('When the signature is verified', () => {
-      it('Then the read error surfaces rather than being swallowed', async () => {
+      it('Then the planted file stays untouched and the verifier reads the signature elsewhere', async () => {
         // Arrange
-        const base = createMemoryContext({
-          command: { run: async () => ({ exitCode: 0, stdout: enc('') }) },
-        });
-        const failing = {
-          ...base,
-          fs: {
-            ...base.fs,
-            write: base.fs.write.bind(base.fs),
-            rm: base.fs.rm.bind(base.fs),
-            read: async () => {
-              throw new Error('unreadable');
-            },
-          },
-        } as Context;
+        const rig = harness(() => ({ stdout: status('GOODSIG K Who') }));
+        const planted = `${rig.ctx.layout.gitDir}/.git_vtag_tmpAAAAAA`;
+        await rig.ctx.fs.write(planted, enc('precious'));
+        const draws = [0, 0, 0, 0, 0, 0];
+        vi.spyOn(Math, 'random').mockImplementation(() => draws.shift() ?? 0.5);
 
         // Act
-        const act = verifyCommitSignature(failing, { payload: PAYLOAD, signature: PGP_SIG });
+        await verifyCommitSignature(rig.ctx, GPG_INPUT);
 
         // Assert
-        await expect(act).rejects.toThrow('unreadable');
+        expect(new TextDecoder().decode(await rig.ctx.fs.read(planted))).toBe('precious');
+        expect(rig.bufferPath).toBe(planted.replace('AAAAAA', 'f'.repeat(6)));
+        expect(rig.seenBuffer).toEqual([PGP_SIG]);
       });
     });
   });

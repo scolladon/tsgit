@@ -4931,12 +4931,10 @@ describe('merge default message', () => {
     };
 
     /** A verifier that reports `report` on the stderr file the command line redirects to. */
-    const reportingRunner = (ctx: Context, report: string, commands: string[]): CommandRunner => ({
+    const reportingRunner = (report: string, commands: string[]): CommandRunner => ({
       run: async (request) => {
         commands.push(request.command);
-        const errPath = /2> '([^']+)'$/.exec(request.command)?.[1] ?? '';
-        await ctx.fs.writeUtf8(errPath, report);
-        return { exitCode: 1, stdout: new Uint8Array(0) };
+        return { exitCode: 1, stdout: new Uint8Array(0), stderr: new TextEncoder().encode(report) };
       },
     });
 
@@ -4977,7 +4975,7 @@ describe('merge default message', () => {
         // Arrange
         const { ctx: base, feature } = await divergedRepo('[gpg]\n  program = stub-gpg\n');
         const commands: string[] = [];
-        const ctx: Context = { ...base, command: reportingRunner(base, 'gpg: stub\n', commands) };
+        const ctx: Context = { ...base, command: reportingRunner('gpg: stub\n', commands) };
         await signedTag(ctx, feature, TAGGER);
         const sut = mergedMessage;
 
@@ -4986,7 +4984,7 @@ describe('merge default message', () => {
 
         // Assert
         expect(result).toBe(`Merge tag 'st'\n\nsigned body\n\n${COMMENTED}# gpg: stub\n`);
-        expect(commands.map((command) => command.split(' ')[0])).toEqual(["'stub-gpg'"]);
+        expect(commands).toEqual(['stub-gpg']);
       });
     });
   });

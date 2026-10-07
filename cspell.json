@@ -1350,6 +1350,7 @@
     "vneg",
     "Volgenant",
     "voverflow",
+    "vtag",
     "warnambiguousrefs",
     "warntoblock",
     "webcrypto",

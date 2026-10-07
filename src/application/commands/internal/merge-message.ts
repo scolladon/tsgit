@@ -93,10 +93,17 @@ const tagMessage = async (ctx: Context, head: MergeHead): Promise<TagMessage | u
   return { origin, body: message, signature: `${gpgSignature}${report}` };
 };
 
-/** git's `fmt_merge_msg_sigs` over every head merged. */
+/**
+ * git's `fmt_merge_msg_sigs` over every head merged, one at a time in head
+ * order — git runs one verifier, then the next, never two at once.
+ */
 const tagMessages = async (ctx: Context, heads: ReadonlyArray<MergeHead>): Promise<string> => {
-  const tags = await Promise.all(heads.map((head) => tagMessage(ctx, head)));
-  return formatTagMessages(tags.filter((tag): tag is TagMessage => tag !== undefined));
+  const tags: TagMessage[] = [];
+  for (const head of heads) {
+    const tag = await tagMessage(ctx, head);
+    if (tag !== undefined) tags.push(tag);
+  }
+  return formatTagMessages(tags);
 };
 
 /** git's `fmt_merge_msg_title`: the title over every head merged into `branch`. */

@@ -1,8 +1,10 @@
 /**
  * git's `check_signature`: verify a detached commit signature by running the
- * system verifier (`gpg`, `gpgsm`, `ssh-keygen`) through `ctx.command`. The
- * signature is staged in a transient file because the verifiers read it by
- * path; the file is removed on every exit.
+ * system verifier (`gpg`, `gpgsm`, `ssh-keygen`) through `ctx.command`, by
+ * argv with no shell between, its stderr captured through a pipe. The
+ * signature is staged in a transient file — git's `.git_vtag_tmpXXXXXX`,
+ * created exclusively — because the verifiers read it by path; the file is
+ * removed on every exit.
  *
  * @writes
  *   surface: verifyBuffer
@@ -15,9 +17,10 @@ import type { Context } from '../../../ports/context.js';
 import type { ParsedConfig } from '../config-read.js';
 import { getSpawnCwd } from '../path-layout.js';
 import { DEFAULT_OPENPGP_PROGRAM, DEFAULT_SSH_PROGRAM } from '../sign-payload.js';
-import { sqQuote } from './shell-quote.js';
+import { stageTempFile } from './stage-temp-file.js';
 
-const VERIFY_BUFFER_NAME = 'GIT_VERIFY_BUFFER';
+/** git's `mks_tempfile_t(".git_vtag_tmpXXXXXX")` stem. */
+const VERIFY_BUFFER_STEM = '.git_vtag_tmp';
 const DEFAULT_X509_PROGRAM = 'gpgsm';
 const SHELL_NOT_EXECUTABLE = 126;
 const SHELL_NOT_FOUND = 127;
@@ -88,18 +91,13 @@ interface ToolRun {
   readonly stderr: string;
 }
 
-type RunTool = (command: string, stdin?: Uint8Array) => Promise<ToolRun>;
+type RunTool = (
+  program: string,
+  args: ReadonlyArray<string>,
+  stdin?: Uint8Array,
+) => Promise<ToolRun>;
 
 const CANNOT_EXEC: ToolRun = { exitCode: -1, stdout: '', stderr: '' };
-
-const readTextIfPresent = async (ctx: Context, path: string): Promise<string> => {
-  try {
-    return DECODER.decode(await ctx.fs.read(path));
-  } catch (error) {
-    if (errorDataCode(error) === 'FILE_NOT_FOUND') return '';
-    throw error;
-  }
-};
 
 const removeIgnoringMissing = async (ctx: Context, path: string): Promise<void> => {
   try {
@@ -112,12 +110,14 @@ const removeIgnoringMissing = async (ctx: Context, path: string): Promise<void> 
 const spawnOrNothing = async (
   ctx: Context,
   runner: CommandRunner,
-  command: string,
+  [command, args]: readonly [string, ReadonlyArray<string>],
   stdin: Uint8Array | undefined,
 ) => {
   try {
     return await runner.run({
       command,
+      args,
+      stderr: 'capture',
       cwd: getSpawnCwd(ctx.layout),
       env: { GIT_DIR: ctx.layout.gitDir },
       ...(stdin !== undefined ? { stdin } : {}),
@@ -132,15 +132,17 @@ const spawnOrNothing = async (
 const isCannotExec = (exitCode: number): boolean =>
   exitCode === SHELL_NOT_FOUND || exitCode === SHELL_NOT_EXECUTABLE;
 
+const EMPTY = new Uint8Array(0);
+
 const makeRunTool =
-  (ctx: Context, runner: CommandRunner, errPath: string): RunTool =>
-  async (command, stdin) => {
-    const result = await spawnOrNothing(ctx, runner, `${command} 2> ${sqQuote(errPath)}`, stdin);
+  (ctx: Context, runner: CommandRunner): RunTool =>
+  async (program, args, stdin) => {
+    const result = await spawnOrNothing(ctx, runner, [program, args], stdin);
     if (result === undefined || isCannotExec(result.exitCode)) return CANNOT_EXEC;
     return {
       exitCode: result.exitCode,
-      stdout: DECODER.decode(result.stdout ?? new Uint8Array(0)),
-      stderr: await readTextIfPresent(ctx, errPath),
+      stdout: DECODER.decode(result.stdout ?? EMPTY),
+      stderr: DECODER.decode(result.stderr ?? EMPTY),
     };
   };
 
@@ -179,7 +181,8 @@ const verifyWithGpgFamily = async (
   payload: Uint8Array,
 ): Promise<SignatureVerdict> => {
   const tool = await run(
-    `${sqQuote(program)} --keyid-format=long --status-fd=1 --verify ${sqQuote(sigPath)} -`,
+    program,
+    ['--keyid-format=long', '--status-fd=1', '--verify', sigPath, '-'],
     payload,
   );
   return parseGpgStatus(tool.stdout, tool.stderr);
@@ -206,21 +209,26 @@ const parseSshOutput = (output: string): SignatureVerdict => {
   };
 };
 
-const sshVerifyArgs = (sigPath: string, allowed: string, principal: string, revocation?: string) =>
-  `-Y verify -n git -f ${sqQuote(allowed)} -I ${sqQuote(principal)} -s ${sqQuote(sigPath)}${
-    revocation !== undefined ? ` -r ${sqQuote(revocation)}` : ''
-  }`;
+const sshVerifyArgs = (
+  sigPath: string,
+  allowed: string,
+  principal: string,
+  revocation?: string,
+): ReadonlyArray<string> => [
+  ...['-Y', 'verify', '-n', 'git', '-f', allowed, '-I', principal, '-s', sigPath],
+  ...(revocation !== undefined ? ['-r', revocation] : []),
+];
 
 const verifyPrincipals = async (
   run: RunTool,
   program: string,
   principals: readonly string[],
-  buildArgs: (principal: string) => string,
+  buildArgs: (principal: string) => ReadonlyArray<string>,
   payload: Uint8Array,
 ): Promise<ToolRun> => {
   let last: ToolRun = CANNOT_EXEC;
   for (const principal of principals) {
-    last = await run(`${sqQuote(program)} ${buildArgs(principal)}`, payload);
+    last = await run(program, buildArgs(principal), payload);
     if (last.exitCode === 0 && last.stdout.startsWith(SSH_GOOD_PREFIX)) break;
   }
   return last;
@@ -233,10 +241,7 @@ const verifyWithoutPrincipal = async (
   payload: Uint8Array,
   principalsStderr: string,
 ): Promise<SignatureVerdict> => {
-  const tool = await run(
-    `${sqQuote(program)} -Y check-novalidate -n git -s ${sqQuote(sigPath)}`,
-    payload,
-  );
+  const tool = await run(program, ['-Y', 'check-novalidate', '-n', 'git', '-s', sigPath], payload);
   if (tool.exitCode !== 0) return parseSshOutput(tool.stdout + tool.stderr);
   const verdict = parseSshOutput(
     tool.stdout + principalsStderr + NO_PRINCIPAL_NOTICE + tool.stderr,
@@ -253,9 +258,7 @@ const verifyWithSsh = async (
   const allowed = gpg?.allowedSignersFile;
   if (allowed === undefined) return NOT_VERIFIED;
   const program = gpg?.program ?? DEFAULT_SSH_PROGRAM;
-  const found = await run(
-    `${sqQuote(program)} -Y find-principals -f ${sqQuote(allowed)} -s ${sqQuote(sigPath)}`,
-  );
+  const found = await run(program, ['-Y', 'find-principals', '-f', allowed, '-s', sigPath]);
   if (found.exitCode !== 0 && found.stderr.includes(SSH_USAGE_MARKER)) return NOT_VERIFIED;
   const principals = found.exitCode === 0 ? found.stdout.split('\n').filter((p) => p !== '') : [];
   if (principals.length === 0) {
@@ -306,13 +309,14 @@ export const verifyCommitSignature = async (
   const runner = ctx.command;
   const format = detectFormat(input.signature);
   if (runner === undefined || format === undefined) return NOT_VERIFIED;
-  const sigPath = `${ctx.layout.gitDir}/${VERIFY_BUFFER_NAME}`;
-  const errPath = `${sigPath}.err`;
+  const sigPath = await stageTempFile(
+    ctx,
+    `${ctx.layout.gitDir}/${VERIFY_BUFFER_STEM}`,
+    new TextEncoder().encode(input.signature),
+  );
   try {
-    await ctx.fs.write(sigPath, new TextEncoder().encode(input.signature));
-    return await dispatch(makeRunTool(ctx, runner, errPath), format, input, sigPath);
+    return await dispatch(makeRunTool(ctx, runner), format, input, sigPath);
   } finally {
     await removeIgnoringMissing(ctx, sigPath);
-    await removeIgnoringMissing(ctx, errPath);
   }
 };

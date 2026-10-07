@@ -3,8 +3,17 @@
  * adapter needs to run the command travels in this request.
  */
 export interface CommandRequest {
-  /** Shell command line, executed through the platform shell (`sh -c` / `cmd /c`). */
+  /**
+   * Shell command line, executed through the platform shell (`sh -c` / `cmd /c`)
+   * — or, when `args` is present, the program run directly.
+   */
   readonly command: string;
+  /**
+   * Arguments for `command` run directly, with no shell between — git's
+   * `start_command` with `use_shell` off. Each argument reaches the program
+   * verbatim, whatever its quotes or spaces.
+   */
+  readonly args?: ReadonlyArray<string>;
   /** Working directory for the spawned process. */
   readonly cwd: string;
   /** Environment additions merged onto the parent environment by the adapter. */
@@ -13,7 +22,12 @@ export interface CommandRequest {
   readonly signal?: AbortSignal;
   /** Bytes fed to the child's stdin (clean/smudge input). When absent, stdin is not written. */
   readonly stdin?: Uint8Array;
+  /** Where the child's stderr goes: inherited by default; `capture` returns it on `result.stderr`. */
+  readonly stderr?: StderrMode;
 }
+
+/** `inherit` shares the parent's stderr; `capture` pipes it back to the caller. */
+export type StderrMode = 'inherit' | 'capture';
 
 /**
  * Outcome of a command. Two output conventions are carried by one port:
@@ -26,6 +40,8 @@ export interface CommandResult {
   readonly exitCode: number;
   /** Bytes captured from the child's stdout (textconv/filter output). Absent when not captured. */
   readonly stdout?: Uint8Array;
+  /** Bytes captured from the child's stderr when the request captured it. Absent otherwise. */
+  readonly stderr?: Uint8Array;
 }
 
 /**

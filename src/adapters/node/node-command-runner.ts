@@ -13,6 +13,13 @@ const SPAWN_ERROR_EXIT = 127;
 const SIGNAL_KILLED_EXIT = 128;
 /** `errno` code raised when writing to a pipe whose reader has already gone. */
 const BROKEN_PIPE = 'EPIPE';
+const POSIX_SHELL: Shell = ['sh', '-c'];
+const WINDOWS_SHELL: Shell = ['cmd', '/c'];
+
+/** A readable child stream, as far as `NodeCommandRunner` consumes it. */
+interface ChildOutput {
+  on(event: 'data', listener: (chunk: Uint8Array) => void): void;
+}
 
 /** Minimal child-process surface `NodeCommandRunner` consumes. */
 interface CommandChild {
@@ -24,9 +31,16 @@ interface CommandChild {
     write(chunk: Uint8Array, callback?: (error?: Error | null) => void): void;
     end(): void;
   };
-  readonly stdout: {
-    on(event: 'data', listener: (chunk: Uint8Array) => void): void;
-  };
+  readonly stdout: ChildOutput;
+  /** Present when stderr is piped; `null` when inherited. */
+  readonly stderr: ChildOutput | null;
+}
+
+/** Spawn options: stdin and stdout piped, stderr inherited or piped. */
+interface ChildOptions<Stderr extends 'inherit' | 'pipe'> {
+  readonly cwd: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly stdio: ['pipe', 'pipe', Stderr];
 }
 
 /**
@@ -35,18 +49,18 @@ interface CommandChild {
  * process (mirrors `HookRunnerOps`).
  */
 export interface CommandRunnerOps {
-  readonly spawn: (
+  spawn(
     command: string,
     args: ReadonlyArray<string>,
-    options: {
-      readonly cwd: string;
-      readonly env: NodeJS.ProcessEnv;
-      readonly stdio: ['pipe', 'pipe', 'inherit'];
-    },
-  ) => CommandChild;
+    options: ChildOptions<'inherit'>,
+  ): CommandChild;
+  spawn(command: string, args: ReadonlyArray<string>, options: ChildOptions<'pipe'>): CommandChild;
 }
 
 export const realCommandRunnerOps: CommandRunnerOps = { spawn };
+
+/** The platform shell and its "run this line" flag. */
+type Shell = readonly [string, string];
 
 const concatChunks = (chunks: Uint8Array[]): Uint8Array => {
   const totalLength = chunks.reduce((acc, c) => acc + c.length, 0);
@@ -59,56 +73,73 @@ const concatChunks = (chunks: Uint8Array[]): Uint8Array => {
   return result;
 };
 
+/** Spawns `request` directly when it names its arguments, else through `shell`. */
+const startChild = (
+  ops: CommandRunnerOps,
+  [shell, flag]: Shell,
+  request: CommandRequest,
+): CommandChild => {
+  const file = request.args === undefined ? shell : request.command;
+  const args = request.args ?? [flag, request.command];
+  const env = { ...process.env, ...request.env };
+  return request.stderr === 'capture'
+    ? ops.spawn(file, args, { cwd: request.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
+    : ops.spawn(file, args, { cwd: request.cwd, env, stdio: ['pipe', 'pipe', 'inherit'] });
+};
+
+/** Every chunk `stream` emits, joined on demand. */
+const collect = (stream: ChildOutput): (() => Uint8Array) => {
+  const chunks: Uint8Array[] = [];
+  stream.on('data', (chunk: Uint8Array) => {
+    chunks.push(chunk);
+  });
+  return () => concatChunks(chunks);
+};
+
+const resultOf = (
+  exitCode: number,
+  stdout: Uint8Array,
+  stderr: (() => Uint8Array) | undefined,
+): CommandResult => ({
+  exitCode,
+  ...(stdout.length > 0 ? { stdout } : {}),
+  ...(stderr !== undefined ? { stderr: stderr() } : {}),
+});
+
+/** Pipes `stdin` to the child, tolerating a child that exits without reading it. */
+const feedStdin = (child: CommandChild, stdin: Uint8Array, fail: () => void): void => {
+  // A command that exits before draining stdin leaves the pipe broken.
+  // Refusing without reading input is the command's prerogative — git does
+  // the same and reads the exit status — so a broken pipe is not a failure
+  // here; `close` still delivers the real exit code. Any other write error
+  // is genuine and surfaces the same way a failed spawn does.
+  child.stdin.on('error', (error) => {
+    if (error.code !== BROKEN_PIPE) fail();
+  });
+  child.stdin.write(stdin);
+  child.stdin.end();
+};
+
 const spawnCommand = (
   ops: CommandRunnerOps,
-  shell: string,
-  flag: string,
+  shell: Shell,
   request: CommandRequest,
 ): Promise<CommandResult> =>
   new Promise<CommandResult>((resolve) => {
-    const child = ops.spawn(shell, [flag, request.command], {
-      cwd: request.cwd,
-      env: { ...process.env, ...request.env },
-      stdio: ['pipe', 'pipe', 'inherit'] as ['pipe', 'pipe', 'inherit'],
+    const child = startChild(ops, shell, request);
+    const exit = new Promise<number>((settle) => {
+      child.on('error', () => settle(SPAWN_ERROR_EXIT));
+      child.on('close', (code) => settle(code ?? SIGNAL_KILLED_EXIT));
     });
-    const signal = request.signal;
-    const onAbort = (): void => {
-      child.kill();
-    };
-    signal?.addEventListener('abort', onAbort);
-    if (signal?.aborted === true) child.kill();
-    const stdoutChunks: Uint8Array[] = [];
-    child.stdout.on('data', (chunk: Uint8Array) => {
-      stdoutChunks.push(chunk);
-    });
+    killOnAbort(child, exit, request.signal);
+    const stdout = collect(child.stdout);
+    const stderr = child.stderr === null ? undefined : collect(child.stderr);
     // `error` and `close` can both fire on a failed spawn; `resolve` is
     // idempotent, so the first result wins and any second call is a no-op.
-    const finish = (exitCode: number): void => {
-      signal?.removeEventListener('abort', onAbort);
-      if (stdoutChunks.length > 0) {
-        resolve({ exitCode, stdout: concatChunks(stdoutChunks) });
-      } else {
-        resolve({ exitCode });
-      }
-    };
-    child.on('error', () => {
-      finish(SPAWN_ERROR_EXIT);
-    });
-    child.on('close', (code) => {
-      finish(code ?? SIGNAL_KILLED_EXIT);
-    });
-    if (request.stdin !== undefined) {
-      // A command that exits before draining stdin leaves the pipe broken.
-      // Refusing without reading input is the command's prerogative — git does
-      // the same and reads the exit status — so a broken pipe is not a failure
-      // here; `close` still delivers the real exit code. Any other write error
-      // is genuine and surfaces the same way a failed spawn does.
-      child.stdin.on('error', (error) => {
-        if (error.code !== BROKEN_PIPE) finish(SPAWN_ERROR_EXIT);
-      });
-      child.stdin.write(request.stdin);
-      child.stdin.end();
-    }
+    const finish = (exitCode: number): void => resolve(resultOf(exitCode, stdout(), stderr));
+    void exit.then(finish);
+    if (request.stdin !== undefined)
+      feedStdin(child, request.stdin, () => finish(SPAWN_ERROR_EXIT));
   });
 
 /** Chunks pushed by the child, replayed to one async consumer in order. */
@@ -170,16 +201,8 @@ const killOnAbort = (child: CommandChild, exit: Promise<unknown>, signal?: Abort
   void exit.then(() => signal?.removeEventListener('abort', onAbort));
 };
 
-const converse = (
-  ops: CommandRunnerOps,
-  [shell, flag]: readonly [string, string],
-  request: CommandRequest,
-): CommandProcess => {
-  const child = ops.spawn(shell, [flag, request.command], {
-    cwd: request.cwd,
-    env: { ...process.env, ...request.env },
-    stdio: ['pipe', 'pipe', 'inherit'] as ['pipe', 'pipe', 'inherit'],
-  });
+const converse = (ops: CommandRunnerOps, shell: Shell, request: CommandRequest): CommandProcess => {
+  const child = startChild(ops, shell, request);
   const output = createChunkQueue();
   child.stdout.on('data', output.push);
   const exit = exitOf(child);
@@ -218,12 +241,14 @@ export class NodeCommandRunner implements CommandRunner {
   }
 
   run(request: CommandRequest): Promise<CommandResult> {
-    const shell = this.isWindows ? 'cmd' : 'sh';
-    const flag = this.isWindows ? '/c' : '-c';
-    return spawnCommand(this.ops, shell, flag, request);
+    return spawnCommand(this.ops, this.shell(), request);
   }
 
   /** Starts `request.command` through the platform shell, kept open for a conversation. */
   readonly spawn = (request: CommandRequest): CommandProcess =>
-    converse(this.ops, this.isWindows ? ['cmd', '/c'] : ['sh', '-c'], request);
+    converse(this.ops, this.shell(), request);
+
+  private shell(): Shell {
+    return this.isWindows ? WINDOWS_SHELL : POSIX_SHELL;
+  }
 }

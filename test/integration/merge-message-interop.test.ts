@@ -299,6 +299,18 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — default message', () => {
       '',
     ].join('\n');
     const TAGGER = 'tagger T <t@x> 1700000000 +0000\n';
+    /** Logs each run's start and end around a pause, and reports the signature it was handed. */
+    const RECORDING_VERIFIER = [
+      '#!/bin/sh',
+      'while [ $# -gt 0 ]; do [ "$1" = --verify ] && sig="$2"; shift; done',
+      'body=$(sed -n 3p "$sig")',
+      'echo "start $body" >> .git/verify.log',
+      'sleep 0.3',
+      'echo "end $body" >> .git/verify.log',
+      'echo "gpg: report for $body" >&2',
+      'exit 1',
+      '',
+    ].join('\n');
 
     const signedTag = (dir: string, name: string, target: string, tagger: string): void => {
       const object = git(dir, 'rev-parse', target);
@@ -347,6 +359,32 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — default message', () => {
         await repo.dispose();
 
         // Assert
+        expect(git(pair.ours, 'rev-parse', 'HEAD')).toBe(git(pair.peer, 'rev-parse', 'HEAD'));
+      });
+    });
+
+    describe('When both tools merge two signed tags under a slow recording verifier', () => {
+      it('Then each verification runs alone on its own signature and the merges are identical', async () => {
+        // Arrange
+        await tagBoth();
+        const recorder = path.join(pair.peer, '.git', 'recording-gpg');
+        await writeFile(recorder, RECORDING_VERIFIER, { mode: 0o755 });
+        for (const dir of [pair.peer, pair.ours]) {
+          git(dir, 'config', 'gpg.program', recorder);
+          signedTag(dir, 't4', 's2', TAGGER);
+        }
+        const repo = await openRepository({ cwd: pair.ours });
+        const sut = repo.merge.run;
+        const log = (dir: string) => readFile(path.join(dir, '.git', 'verify.log'), 'utf8');
+
+        // Act
+        git(pair.peer, 'merge', '-q', '--no-edit', 't1', 't4');
+        await sut({ rev: ['t1', 't4'], author: IDENTITY, committer: IDENTITY });
+        await repo.dispose();
+
+        // Assert
+        expect(await log(pair.peer)).toBe('start AAAAt1\nend AAAAt1\nstart AAAAt4\nend AAAAt4\n');
+        expect(await log(pair.ours)).toBe(await log(pair.peer));
         expect(git(pair.ours, 'rev-parse', 'HEAD')).toBe(git(pair.peer, 'rev-parse', 'HEAD'));
       });
     });

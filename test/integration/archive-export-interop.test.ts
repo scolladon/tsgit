@@ -1155,6 +1155,28 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-subst interop', () => {
       });
     });
 
+    describe('When symbolic links are planted at fixed staging names in the git dir', () => {
+      it('Then their targets stay untouched and the verifier stderr still reaches %GG', async () => {
+        // Arrange
+        const dir = await signedRepo('sig-planted');
+        const script = writeScript(
+          dir,
+          'fake-gpg',
+          'cat >/dev/null\necho "verifier: no" >&2\nexit 1\n',
+        );
+        git(dir, 'config', 'gpg.program', script);
+        const target = path.join(dir, 'precious');
+        writeFileSync(target, 'precious\n');
+        for (const name of ['GIT_VERIFY_BUFFER', 'GIT_VERIFY_BUFFER.err']) {
+          symlinkSync(target, path.join(dir, '.git', name));
+        }
+
+        // Act / Assert
+        await expectSameExpansion(dir, 'HEAD', { f: '[N|verifier: no\n|||||undefined]' });
+        expect(readFileSync(target, 'utf8')).toBe('precious\n');
+      });
+    });
+
     describe('When the verifier reports a good signature', () => {
       it('Then every %G field reads the verifier status lines', async () => {
         // Arrange
