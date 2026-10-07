@@ -3340,6 +3340,56 @@ describe('maintenance', () => {
     });
   });
 
+  describe('Given gc.cruftPacks=false and a fresh unreachable object also held by a pack gc supersedes', () => {
+    describe('When gc runs', () => {
+      it('Then its loose copy outlives the retired pack and still reads back', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const content = 'loose-and-in-a-superseded-pack';
+        const blobId = await writeLooseBlob(ctx, content);
+        await writeSyntheticPack(ctx, 'superseded-twin', [
+          { kind: 'base', type: 'blob', content: enc.encode(content) },
+        ]);
+        await appendConfig(ctx, '\n[gc]\n\tcruftPacks = false\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.packsRetired).toBe(1);
+        expect(await isLoose(ctx, blobId)).toBe(true);
+        const readBack = await readObject(ctx, blobId, { verifyHash: true });
+        expect(readBack.id).toBe(blobId);
+      });
+    });
+  });
+
+  describe('Given a normal pack whose bytes are exactly the cruft pack gc is about to write', () => {
+    describe('When gc runs', () => {
+      it('Then that pack is kept as the cruft pack and its object still reads back', async () => {
+        // Arrange — a cruft pack stripped of its `.mtimes` reads as a normal
+        // pack holding exactly the bytes the next cruft build reproduces.
+        const ctx = await seedOneCommit();
+        const blobId = await writeLooseBlob(ctx, 'cruft-twin-of-a-normal-pack');
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        const packDir = packDirOf(ctx);
+        await ctx.fs.rm(`${packDir}/pack-${first.cruftPackId}.mtimes`);
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.cruftPackId).toBe(first.cruftPackId);
+        expect(await ctx.fs.exists(`${packDir}/pack-${first.cruftPackId}.pack`)).toBe(true);
+        expect(await ctx.fs.exists(`${packDir}/pack-${first.cruftPackId}.mtimes`)).toBe(true);
+        const readBack = await readObject(ctx, blobId, { verifyHash: true });
+        expect(readBack.id).toBe(blobId);
+      });
+    });
+  });
+
   // ---------------------------------------------------------------------
   // Loose-prune fault tolerance
   // ---------------------------------------------------------------------
@@ -4866,13 +4916,13 @@ describe('maintenance', () => {
     });
   });
 
-  describe('Given a pack retirement following the post-write verify and prune-packable scan', () => {
+  describe('Given a pack retirement following the post-write verify scan', () => {
     describe('When gc runs', () => {
       it("Then refresh drains that scan's own handles before settleRefresh, ahead of any pack unlink", async () => {
         // Arrange — force a normal-pack retirement on the second run, so
-        // this run's own step-8 verify loop and step-9 `packedAnywhere`
-        // scan open pack-read handles that must be drained before the
-        // superseded pack's files are unlinked (Windows-unlink safety).
+        // this run's own post-write verify loop opens pack-read handles that
+        // must be drained before the superseded pack's files are unlinked
+        // (Windows-unlink safety).
         const ctx = await seedOneCommit();
         const sut = maintenance;
         const first = await sut(ctx, { tasks: ['gc'] });
@@ -4892,17 +4942,9 @@ describe('maintenance', () => {
 
         // Assert
         expect(second.packsRetired).toBeGreaterThan(0);
-        const lastLookupOrder = Math.max(-1, ...lookupSpy.mock.invocationCallOrder);
-        const drainOrders = refreshSpy.mock.invocationCallOrder.filter(
-          (order) => order > lastLookupOrder,
-        );
-        expect(drainOrders.length).toBeGreaterThan(0);
-        const drainOrder = Math.min(...drainOrders);
-        const settleOrder = Math.min(...settleSpy.mock.invocationCallOrder);
-        expect(settleOrder).toBeGreaterThan(drainOrder);
         // Only the RETIRED (first) pack's own unlinks — a fresh pack's
         // stale-sibling cleanup in the quarantine writer also touches
-        // `/pack-` paths, but under the NEW sha and long before step 8.
+        // `/pack-` paths, but under the NEW sha and long before the verify.
         const retiredPackUnlinkOrders = rmSpy.mock.calls
           .map((call, i) => ({ path: call[0] as string, order: rmSpy.mock.invocationCallOrder[i] }))
           .filter(
@@ -4911,7 +4953,19 @@ describe('maintenance', () => {
           )
           .map((entry) => entry.order);
         expect(retiredPackUnlinkOrders.length).toBeGreaterThan(0);
-        expect(Math.min(...retiredPackUnlinkOrders)).toBeGreaterThan(settleOrder);
+        const firstUnlinkOrder = Math.min(...retiredPackUnlinkOrders);
+        const lastLookupOrder = Math.max(
+          -1,
+          ...lookupSpy.mock.invocationCallOrder.filter((order) => order < firstUnlinkOrder),
+        );
+        const drainOrders = refreshSpy.mock.invocationCallOrder.filter(
+          (order) => order > lastLookupOrder,
+        );
+        expect(drainOrders.length).toBeGreaterThan(0);
+        const drainOrder = Math.min(...drainOrders);
+        const settleOrder = Math.min(...settleSpy.mock.invocationCallOrder);
+        expect(settleOrder).toBeGreaterThan(drainOrder);
+        expect(firstUnlinkOrder).toBeGreaterThan(settleOrder);
       });
     });
   });

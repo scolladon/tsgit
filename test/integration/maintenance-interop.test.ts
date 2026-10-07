@@ -332,6 +332,15 @@ async function peerPackNamesContaining(dir: string, oid: string): Promise<Readon
   return hits;
 }
 
+/** `git pack-objects` over exactly `oids` into the repository's own pack directory. */
+function packOidsGit(dir: string, oids: ReadonlyArray<string>): string {
+  return execFileSync(
+    'git',
+    ['-C', dir, 'pack-objects', '--non-empty', path.join(dir, '.git', 'objects', 'pack', 'pack')],
+    { input: `${oids.join('\n')}\n`, encoding: 'utf8', env: runGitEnv() },
+  ).trim();
+}
+
 /**
  * Builds a pack from exactly `oids` via `git pack-objects` and marks it with
  * `suffix` (`.promisor`, `.keep`, …) — the same manual-construction shape
@@ -346,11 +355,7 @@ async function buildMarkedPack(
   oids: ReadonlyArray<string>,
   suffix: string,
 ): Promise<string> {
-  const packSha = execFileSync(
-    'git',
-    ['-C', dir, 'pack-objects', '--non-empty', path.join(dir, '.git', 'objects', 'pack', 'pack')],
-    { input: `${oids.join('\n')}\n`, encoding: 'utf8', env: runGitEnv() },
-  ).trim();
+  const packSha = packOidsGit(dir, oids);
   await writeFile(path.join(dir, '.git', 'objects', 'pack', `pack-${packSha}${suffix}`), '');
   return packSha;
 }
@@ -2030,6 +2035,81 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       expect(result.packBytesBefore).toBeGreaterThan(0);
       expect(result.packBytesAfter).toBeGreaterThan(0);
       expect(result.packBytesAfter).toBeLessThan(result.packBytesBefore * 2);
+      await disposeTwin(twin);
+    });
+  });
+
+  describe('Given a normal pack holding exactly the one fresh unreachable blob, When gc runs on both twins', () => {
+    let baseDir: string;
+    let blobId: string;
+    let handPackSha: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('cruft-name-collision');
+      await addCommit(baseDir, 'c0');
+      git(baseDir, 'gc', '-q');
+      blobId = writeLooseBlobGit(baseDir, 'parked-by-hand');
+      handPackSha = packOidsGit(baseDir, [blobId]);
+      await rm(looseGitPath(baseDir, blobId));
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then both tools keep that pack under its own name as the cruft pack, the blob still readable', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'cruft-name-collision');
+
+      // Act
+      const { result } = await runBothGc(twin);
+
+      // Assert
+      const placementOf = async (dir: string) => ({
+        readable: catFileExists(dir, blobId),
+        packs: await peerPackNamesContaining(dir, blobId),
+        mtimes: (await packDirEntries(dir)).includes(`pack-${handPackSha}.mtimes`),
+      });
+      const expected = { readable: true, packs: [`pack-${handPackSha}.pack`], mtimes: true };
+      expect(await placementOf(twin.peerDir)).toEqual(expected);
+      expect(await placementOf(twin.oursDir)).toEqual(expected);
+      expect(result.cruftPackId).toBe(handPackSha);
+      await disposeTwin(twin);
+    });
+  });
+
+  describe('Given gc.cruftPacks=false and a fresh unreachable blob both loose and in a superseded pack, When gc runs on both twins', () => {
+    let baseDir: string;
+    let blobId: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('loosened-duplicate');
+      await addCommit(baseDir, 'c0');
+      git(baseDir, 'gc', '-q');
+      blobId = writeLooseBlobGit(baseDir, 'loose-and-packed');
+      packOidsGit(baseDir, [blobId]);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then both tools keep it loose and in no pack', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'loosened-duplicate');
+
+      // Act
+      await runBothGc(twin, ['gc.cruftPacks=false']);
+
+      // Assert
+      const placementOf = async (dir: string) => ({
+        readable: catFileExists(dir, blobId),
+        loose: existsSync(looseGitPath(dir, blobId)),
+        packs: await peerPackNamesContaining(dir, blobId),
+      });
+      const expected = { readable: true, loose: true, packs: [] };
+      expect(await placementOf(twin.peerDir)).toEqual(expected);
+      expect(await placementOf(twin.oursDir)).toEqual(expected);
       await disposeTwin(twin);
     });
   });
