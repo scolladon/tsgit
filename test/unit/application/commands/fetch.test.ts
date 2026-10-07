@@ -1695,6 +1695,42 @@ describe('fetch', () => {
     });
   });
 
+  describe('Given a server advertising a branch whose name carries a newline', () => {
+    describe('When fetch', () => {
+      it('Then the branch is ignored as a funny ref and FETCH_HEAD holds no line for it', async () => {
+        // Arrange — git's get_fetch_map drops the mapped name; nothing of it reaches FETCH_HEAD.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await writeOriginConfig(ctx);
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'safe\n');
+        const { transport } = fakeRemote({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [
+            { name: 'refs/heads/main', id: blobId },
+            { name: 'refs/heads/ev\nil', id: blobId },
+          ],
+          packBytes,
+        });
+        const errors: unknown[][] = [];
+        const logger = { error: (...entry: unknown[]) => errors.push(entry) };
+
+        // Act
+        await fetch({ ...ctx, transport, logger });
+
+        // Assert
+        const fetchHead = new TextDecoder().decode(
+          await ctx.fs.read(`${ctx.layout.gitDir}/FETCH_HEAD`),
+        );
+        expect(fetchHead).toBe(
+          `${blobId}\tnot-for-merge\tbranch 'main' of https://example.com/r\n`,
+        );
+        expect(errors).toEqual([
+          ['Ignoring funny ref locally', { ref: 'refs/remotes/origin/ev\nil' }],
+        ]);
+      });
+    });
+  });
+
   describe('shallow fetch', () => {
     describe('Given depth=1 and a server emitting shallow <oid>', () => {
       describe('When fetch', () => {
