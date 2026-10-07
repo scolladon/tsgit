@@ -192,6 +192,55 @@ describe('getObjectStore', () => {
     });
   });
 
+  describe('Given a held alternate whose own list gains an entry after the first resolution', () => {
+    describe('When refresh then getObjectStore', () => {
+      it('Then the held list is not re-read, so the nested entry is not added', async () => {
+        // Arrange
+        const ctx = contextWithAlternates('/repo/a/objects\n');
+        await ctx.fs.mkdir('/repo/a/objects');
+        await ctx.fs.mkdir('/repo/b/objects');
+        const sut = getObjectStore;
+        const store = await sut(ctx);
+        await ctx.fs.writeUtf8('/repo/a/objects/info/alternates', '/repo/b/objects\n');
+
+        // Act
+        store.refresh();
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.sources.map((s) => s.objectsDir)).toEqual([PRIMARY, '/repo/a/objects']);
+      });
+    });
+  });
+
+  describe('Given core.ignoreCase and a held alternate re-listed in another case', () => {
+    const caseFolding = (fs: FileSystem): AlternatePathProbe => ({
+      lstat: (path) => fs.lstat(path.toLowerCase()),
+      readlink: (path) => fs.readlink(path.toLowerCase()),
+      stat: (path) => fs.stat(path.toLowerCase()),
+    });
+
+    describe('When refresh then getObjectStore', () => {
+      it('Then the re-listed spelling is the held source, not a second one', async () => {
+        // Arrange
+        const base = contextWithAlternates('/repo/a/objects\n');
+        await base.fs.mkdir('/repo/a/objects');
+        await base.fs.writeUtf8('/repo/.git/config', '[core]\n\tignoreCase = true\n');
+        const ctx: Context = { ...base, alternatePathProbe: () => caseFolding(base.fs) };
+        const sut = getObjectStore;
+        const store = await sut(ctx);
+        await ctx.fs.writeUtf8(LIST, '/repo/A/objects\n');
+
+        // Act
+        store.refresh();
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.sources.map((s) => s.objectsDir)).toEqual([PRIMARY, '/repo/a/objects']);
+      });
+    });
+  });
+
   describe('Given a refresh and no list change', () => {
     describe('When getObjectStore twice', () => {
       it('Then the list is resolved once per refresh', async () => {

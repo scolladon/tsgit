@@ -118,9 +118,13 @@ interface Discovery {
   readonly diagnostics: ReadonlyArray<AlternateDiagnostic>;
 }
 
-const discover = async (ctx: Context, objectsDir: string): Promise<Discovery> => {
+const discover = async (
+  ctx: Context,
+  objectsDir: string,
+  held: ReadonlyArray<string> = [],
+): Promise<Discovery> => {
   if (!(await hasAlternatesList(ctx, objectsDir))) return { alternates: [], diagnostics: [] };
-  const { sources, diagnostics } = await resolveObjectSources(ctx, chainIo(ctx));
+  const { sources, diagnostics } = await resolveObjectSources(ctx, chainIo(ctx), held);
   const alternates = sources.filter((s) => !s.local).map((s) => s.objectsDir);
   return { alternates, diagnostics };
 };
@@ -142,12 +146,10 @@ interface StoreState {
 /** Add-only: a source already held keeps its registry even when the list no longer names it. */
 const appendDiscovered = async (ctx: Context, state: StoreState): Promise<void> => {
   const [primary] = state.sources as readonly [ObjectSource, ...ObjectSource[]];
-  const found = await discover(ctx, primary.objectsDir);
-  const known = new Set(state.sources.map((s) => s.objectsDir));
+  const held = state.sources.map((source) => source.objectsDir);
+  const found = await discover(ctx, primary.objectsDir, held);
   const added: ObjectSource[] = [];
-  for (const dir of found.alternates.filter((d) => !known.has(d))) {
-    added.push(await buildSource(ctx, dir, false));
-  }
+  for (const dir of found.alternates) added.push(await buildSource(ctx, dir, false));
   state.sources = [...state.sources, ...added];
   state.diagnostics = found.diagnostics;
 };

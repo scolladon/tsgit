@@ -320,10 +320,15 @@ const primaryRealpath = async (
   }
 };
 
-/** git's `odb_prepare_alternates`: the primary, then every reachable alternate in DFS pre-order. */
+/**
+ * git's `odb_prepare_alternates`: the primary, then every reachable alternate in DFS pre-order.
+ * `held` are the sources an earlier preparation linked: git's `alt_odb_usable` refuses a path it
+ * already holds, so neither it nor the list it holds is visited again — only new sources are.
+ */
 export const resolveObjectSources = async (
   ctx: Context,
   io: AlternateChainIo,
+  held: ReadonlyArray<string> = [],
 ): Promise<{
   readonly sources: ReadonlyArray<ObjectSourceSpec>;
   readonly diagnostics: ReadonlyArray<AlternateDiagnostic>;
@@ -337,7 +342,7 @@ export const resolveObjectSources = async (
     io,
     key,
     cwd,
-    seen: new Set([key(primary)]),
+    seen: new Set([primary, ...held].map(key)),
     sources: [{ objectsDir: primary, local: true, depth: PRIMARY_DEPTH }],
     diagnostics: [],
   };
