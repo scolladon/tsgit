@@ -69,6 +69,11 @@ const withFs = (ctx: Context, overrides: Partial<Context['fs']>): Context => ({
   fs: { ...ctx.fs, ...overrides },
 });
 
+async function moveFile(ctx: Context, from: string, to: string): Promise<void> {
+  await ctx.fs.write(to, await ctx.fs.read(from));
+  await ctx.fs.rm(from);
+}
+
 async function caughtFrom(run: () => Promise<unknown>): Promise<unknown> {
   try {
     await run();
@@ -654,6 +659,81 @@ describe('writeSplitCommitGraph', () => {
           code: 'CONFIG_BAD_BOOLEAN_VALUE',
           value: 'x',
         });
+      });
+    });
+  });
+
+  describe('Given an alternate whose chain holds the history and one new local commit', () => {
+    describe('When the split write runs', () => {
+      it("Then the new layer sits on the alternate's layer, which is never merged", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const gitDir = commonGitDir(ctx);
+        const altObjects = '/repo/alt/objects';
+        await ctx.fs.mkdir(`${altObjects}/info/commit-graphs`);
+        await ctx.fs.writeUtf8(`${gitDir}/objects/info/alternates`, `${altObjects}\n`);
+        const ids = await linearHistory(ctx, 2);
+        await pointRef(ctx, 'refs/heads/main', ids[1]!);
+        await writeSplitCommitGraph(ctx);
+        const [altHash] = await chainHashes(ctx);
+        const layerName = `graph-${altHash}.graph`;
+        await moveFile(
+          ctx,
+          `${commitGraphLayersDir(gitDir)}/${layerName}`,
+          `${altObjects}/info/commit-graphs/${layerName}`,
+        );
+        await moveFile(
+          ctx,
+          commitGraphChainPath(gitDir),
+          `${altObjects}/info/commit-graphs/commit-graph-chain`,
+        );
+        const next = await commitOn(ctx, [ids[1]!], 'next');
+        await pointRef(ctx, 'refs/heads/next', next);
+        const sut = writeSplitCommitGraph;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        const hashes = await chainHashes(ctx);
+        const layer = await readLayer(ctx, hashes[1]!);
+        expect(result).toEqual({ written: true, commitCount: 3 });
+        expect(hashes[0]).toBe(altHash);
+        expect(hashes).toHaveLength(2);
+        expect(layer.commitCount).toBe(1);
+        expect(positionOf(layer, next)).toBeDefined();
+        expect(await ctx.fs.exists(`${altObjects}/info/commit-graphs/${layerName}`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an alternate holding a single commit-graph file and one new local commit', () => {
+    describe('When the split write runs', () => {
+      it("Then the new layer stands alone over every commit, the alternate's file untouched", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const gitDir = commonGitDir(ctx);
+        const altObjects = '/repo/alt/objects';
+        await ctx.fs.mkdir(`${altObjects}/info`);
+        await ctx.fs.writeUtf8(`${gitDir}/objects/info/alternates`, `${altObjects}\n`);
+        const ids = await linearHistory(ctx, 2);
+        await pointRef(ctx, 'refs/heads/main', ids[1]!);
+        await writeCommitGraph(ctx);
+        await moveFile(ctx, commitGraphPath(gitDir), `${altObjects}/info/commit-graph`);
+        const next = await commitOn(ctx, [ids[1]!], 'next');
+        await pointRef(ctx, 'refs/heads/next', next);
+        const sut = writeSplitCommitGraph;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        const hashes = await chainHashes(ctx);
+        const layer = await readLayer(ctx, hashes[0]!);
+        expect(result).toEqual({ written: true, commitCount: 3 });
+        expect(hashes).toHaveLength(1);
+        expect(layer.commitCount).toBe(3);
+        expect(await ctx.fs.exists(`${altObjects}/info/commit-graph`)).toBe(true);
       });
     });
   });

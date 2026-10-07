@@ -34,6 +34,7 @@ import { commitGraphPath } from '../../src/application/primitives/path-layout.js
 import { writeCommitGraph } from '../../src/application/primitives/write-commit-graph.js';
 import { parseCommitGraphLayer, positionOf } from '../../src/domain/commit/commit-graph.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
+import { openRepository } from '../../src/index.node.js';
 import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
@@ -414,10 +415,73 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop', () => {
 
     const runBoth = async (peerDir: string, oursDir: string): Promise<void> => {
       git(peerDir, 'maintenance', 'run', '--task=commit-graph');
-      await maintenance(createNodeContext({ workDir: oursDir, algorithm: 'sha1' }), {
-        tasks: ['commit-graph'],
-      });
+      const repo = await openRepository({ cwd: oursDir });
+      await repo.maintenance({ tasks: ['commit-graph'] });
+      await repo.dispose();
     };
+
+    describe.each([
+      { shape: 'split chain', writeArgs: ['--split'], chainLength: 2 },
+      { shape: 'single commit-graph file', writeArgs: [], chainLength: 1 },
+    ])(
+      'Given two shared clones over a source whose $shape holds the history',
+      ({ writeArgs, chainLength }) => {
+        const commitEmpty = (dir: string, message: string, epoch: number): void => {
+          runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', message], {
+            env: datedEnv(epoch),
+          });
+        };
+
+        const sharedClone = (source: string, dir: string): void => {
+          runGit(['clone', '-q', '--shared', source, dir]);
+          disableAutoMaintenance(dir);
+          commitEmpty(dir, 'c4', 1_700_000_400);
+          commitEmpty(dir, 'c5', 1_700_000_500);
+        };
+
+        let source = '';
+        let peerDir = '';
+        let oursDir = '';
+
+        beforeAll(async () => {
+          source = await initRepo('alt-source');
+          for (const n of [1, 2, 3]) commitEmpty(source, `c${n}`, 1_700_000_000 + n * 100);
+          git(source, 'commit-graph', 'write', ...writeArgs, '--reachable');
+          peerDir = path.join(await tmpDir('alt-peer'), 'clone');
+          oursDir = path.join(await tmpDir('alt-ours'), 'clone');
+          sharedClone(source, peerDir);
+          sharedClone(source, oursDir);
+        }, SETUP_TIMEOUT);
+
+        afterAll(async () => {
+          for (const dir of [source, path.dirname(peerDir), path.dirname(oursDir)]) {
+            await rm(dir, { recursive: true, force: true });
+          }
+        });
+
+        describe('When git and tsgit each run the commit-graph task', () => {
+          it('Then tsgit writes the alternate-aware chain git writes, byte for byte', async () => {
+            // Arrange
+            const sut = runBoth;
+
+            // Act
+            await sut(peerDir, oursDir);
+
+            // Assert
+            const chain = path.join(
+              '.git',
+              'objects',
+              'info',
+              'commit-graphs',
+              'commit-graph-chain',
+            );
+            const peerChain = await readFile(path.join(peerDir, chain), 'utf8');
+            expect(peerChain.trim().split('\n')).toHaveLength(chainLength);
+            expect(await graphFiles(oursDir)).toEqual(await graphFiles(peerDir));
+          });
+        });
+      },
+    );
 
     describe.each([
       { label: 'no graph yet', commits: 2, priorGraph: 'none', parents: [], layers: 1 },

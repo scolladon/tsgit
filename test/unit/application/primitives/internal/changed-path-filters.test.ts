@@ -258,7 +258,7 @@ describe('storedFilterLookup', () => {
     const commit = { id, rootTree: id, parents: [], committerDate: 1 };
     const changedPaths = settings && { settings, filters: new Map([[id, filter]]) };
     const bytes = serializeCommitGraph([commit], SHA1_CONFIG, undefined, changedPaths);
-    return { hash: id, path: `graph-${id}`, layer: parseCommitGraphLayer(bytes) };
+    return { hash: id, path: `graph-${id}`, layer: parseCommitGraphLayer(bytes), local: true };
   };
 
   describe('Given a base layer at other settings under a top layer at the written ones', () => {

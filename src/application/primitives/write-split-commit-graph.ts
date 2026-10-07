@@ -43,7 +43,7 @@ import {
 import { correctedDatePass } from './internal/corrected-date-pass.js';
 import {
   type LocalGraphLayer,
-  loadLocalCommitGraphLayers,
+  loadCommitGraphBaseLayers,
 } from './internal/local-commit-graph-layers.js';
 import { isShallowRepository } from './internal/shallow-set.js';
 import {
@@ -126,8 +126,16 @@ interface SplitPlan {
   readonly folded: readonly LocalGraphLayer[];
 }
 
+/** Where the run of local layers ending at the tip begins. */
+function localTipStart(layers: readonly LocalGraphLayer[]): number {
+  let start = layers.length;
+  while (start > 0 && layers[start - 1]?.local === true) start -= 1;
+  return start;
+}
+
+/** git's merge walk stops at the first layer from another object source: only the local tip run folds. */
 function planSplit(layers: readonly LocalGraphLayer[], newCommitCount: number): SplitPlan {
-  const counts = layers.map(({ layer }) => layer.commitCount);
+  const counts = layers.slice(localTipStart(layers)).map(({ layer }) => layer.commitCount);
   const keep = layers.length - mergedLayerCount(counts, newCommitCount);
   return { base: layers.slice(0, keep), folded: layers.slice(keep) };
 }
@@ -265,7 +273,7 @@ export async function writeSplitCommitGraph(ctx: Context): Promise<WriteSplitCom
   if (await hasGrafts(ctx)) return NOTHING_WRITTEN;
   if (await declinesChangedPathsVersion(ctx)) return NOTHING_WRITTEN;
 
-  const layers = await loadLocalCommitGraphLayers(ctx);
+  const layers = await loadCommitGraphBaseLayers(ctx);
   const parser = createCommitGraphParser(ctx);
   const fresh = await commitsOutsideGraph(ctx, parser, layers);
   const chainCount = layers.reduce((sum, { layer }) => sum + layer.commitCount, 0);

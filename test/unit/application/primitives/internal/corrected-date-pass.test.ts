@@ -17,7 +17,7 @@ const id = (digit: string): ObjectId => digit.repeat(40) as ObjectId;
 function layerWritten(pass: CorrectedDatePass): LocalGraphLayer {
   const commit = { id: id('a'), rootTree: id('b'), parents: [], committerDate: 1 };
   const bytes = serializeCommitGraph([commit], SHA1_CONFIG, undefined, undefined, undefined, pass);
-  return { hash: id('c'), path: 'graph', layer: parseCommitGraphLayer(bytes) };
+  return { hash: id('c'), path: 'graph', layer: parseCommitGraphLayer(bytes), local: true };
 }
 
 const WITH_DATES = layerWritten('trusted');

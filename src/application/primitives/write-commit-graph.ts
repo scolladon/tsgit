@@ -50,7 +50,7 @@ import {
 import { correctedDatePass } from './internal/corrected-date-pass.js';
 import {
   type LocalGraphLayer,
-  loadLocalCommitGraphLayers,
+  loadCommitGraphBaseLayers,
 } from './internal/local-commit-graph-layers.js';
 import { peel } from './internal/peel.js';
 import { isShallowRepository } from './internal/shallow-set.js';
@@ -230,7 +230,7 @@ export async function writeCommitGraph(ctx: Context): Promise<WriteCommitGraphRe
   if (await declinesChangedPathsVersion(ctx)) return { commitCount: 0 };
 
   const roots = await commitGraphRoots(ctx);
-  const layers = await loadLocalCommitGraphLayers(ctx);
+  const layers = await loadCommitGraphBaseLayers(ctx);
   const pass = await correctedDatePass(ctx, layers, []);
   const settings = await changedPathsSettingsFor(ctx, layers, 'preserve');
   const { commits, generations } = await collectCommits(ctx, roots, pass, refusalFor(settings));
