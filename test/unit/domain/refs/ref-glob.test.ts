@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { compileRefGlob, matchRefGlob } from '../../../../src/domain/refs/ref-glob.js';
+import {
+  compilePathnameGlob,
+  compileRefGlob,
+  matchRefGlob,
+} from '../../../../src/domain/refs/ref-glob.js';
 
 const CLASS_MEMBERSHIP_ROWS = [
   { className: 'alnum', members: ['a', '9'], nonMembers: ['_'] },
@@ -384,6 +388,52 @@ describe('matchRefGlob', () => {
         expect(sut('refs/heads/main')).toBe(true);
         expect(sut('refs/heads/moin')).toBe(true);
         expect(sut('refs/heads/mMin')).toBe(false);
+      });
+    });
+  });
+});
+
+describe('compilePathnameGlob', () => {
+  describe.each([
+    ['feat*', 'feat/x', false],
+    ['feat*', 'feature', true],
+    ['feat/*', 'feat/x', true],
+    ['feat**', 'feat/x', false],
+    ['feat**', 'feature', true],
+    ['a?b', 'a/b', false],
+    ['a?b', 'axb', true],
+    ['a[/]b', 'a/b', false],
+    ['a[!x]b', 'a/b', false],
+    ['ma[i]n2', 'main2', true],
+    ['ma[!x]n2', 'main2', true],
+    ['ma[[:alpha:]]n2', 'main2', true],
+    ['ma\\in2', 'main2', true],
+    ['a/**/c', 'a/c', true],
+    ['a/**/c', 'a/b/c', true],
+    ['a/**/c', 'a/b/d/c', true],
+    ['a/**/c', 'a/bc', false],
+    ['**/c', 'c', true],
+    ['**/c', 'x/y/c', true],
+    ['a/**', 'a/b/c', true],
+    ['**', 'a/b', true],
+    ['x**/c', 'xy/z/c', false],
+    ['**\\/c', 'x/y/c', true],
+    ['**\\/c', 'c', false],
+    ['a/**\\/c', 'a/x/c', true],
+    ['*/c', 'x/c', true],
+    ['*/c', 'x/y/c', false],
+    ['ma[', 'ma[', false],
+  ] as const)('Given the pattern %j and the text %j', (pattern, text, expected) => {
+    describe('When matched under WM_PATHNAME', () => {
+      it(`Then it reports ${expected}`, () => {
+        // Arrange
+        const sut = compilePathnameGlob;
+
+        // Act
+        const result = sut(pattern)(text);
+
+        // Assert
+        expect(result).toBe(expected);
       });
     });
   });

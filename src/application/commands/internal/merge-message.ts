@@ -9,7 +9,7 @@ import { shortlogOrigin } from '../../../domain/merge/merge-shortlog.js';
 import { formatTagMessages, type TagMessage } from '../../../domain/merge/merge-signatures.js';
 import { mergeTitle } from '../../../domain/merge/merge-title.js';
 import type { ObjectId, RefName, Tag } from '../../../domain/objects/index.js';
-import { compileGlob } from '../../../domain/pathspec/compile-glob.js';
+import { compilePathnameGlob } from '../../../domain/refs/ref-glob.js';
 import type { Context } from '../../../ports/context.js';
 import { findEntries, type LocatedConfigEntry, readConfig } from '../../primitives/config-read.js';
 import { verifyCommitSignature } from '../../primitives/internal/verify-commit-signature.js';
@@ -57,9 +57,7 @@ export const assertMergeMessageConfig = async (ctx: Context): Promise<void> => {
 /** The branch the title merges into, or `undefined` when a pattern suppresses it. */
 const destination = async (ctx: Context, branch: string): Promise<string | undefined> => {
   const patterns = await readSuppressedPatterns(ctx);
-  const suppressed = patterns.some((pattern) =>
-    compileGlob(pattern, { anchored: true }).test(branch),
-  );
+  const suppressed = patterns.some((pattern) => compilePathnameGlob(pattern)(branch));
   return suppressed ? undefined : branch;
 };
 

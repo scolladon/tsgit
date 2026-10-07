@@ -261,6 +261,32 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — default message', () => {
     });
   });
 
+  describe.each([
+    ['feat**', 'feat/x'],
+    ['feat*', 'feat/x'],
+    ['ma[i]n2', 'main2'],
+    ['ma[!x]n2', 'main2'],
+    ['ma[[:alpha:]]n2', 'main2'],
+    ['ma\\in2', 'main2'],
+    ['a[/]b', 'a/b'],
+    ['a/**/c', 'a/c'],
+    ['**/c', 'x/y/c'],
+  ])('Given merge.suppressDest %j and the destination %j', (pattern, branch) => {
+    describe('When both tools merge into it without a message', () => {
+      it('Then the merge commits are identical', async () => {
+        // Arrange
+        for (const dir of [pair.peer, pair.ours]) git(dir, 'config', 'merge.suppressDest', pattern);
+        const sut = mergeBoth;
+
+        // Act
+        const [result, expected] = await sut('feature', branch);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
   describe('Given signed and unsigned annotated tags verified by a stub gpg program', () => {
     const STUB_VERIFIER = '#!/bin/sh\necho "gpg: stub verifier report" >&2\nexit 1\n';
     const TAGGER = 'tagger T <t@x> 1700000000 +0000\n';
