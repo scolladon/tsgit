@@ -9,6 +9,7 @@ import { mergeContinue } from '../../../../src/application/commands/continue-mer
 import { init } from '../../../../src/application/commands/init.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { pull } from '../../../../src/application/commands/pull.js';
+import { rm } from '../../../../src/application/commands/rm.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
@@ -304,7 +305,30 @@ describe('pull', () => {
       });
     });
 
-    describe('When pull rebases with a clean empty index', () => {
+    describe('When pull rebases after the file is unstaged, leaving an index file with no entries', () => {
+      it('Then it still refuses with PULL_REBASE_UNBORN_INDEX before fetching', async () => {
+        // Arrange
+        const { ctx, main } = await unbornWithUpstream();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/g.txt`, 'g');
+        await add(ctx, ['g.txt']);
+        await rm(ctx, ['g.txt'], { cached: true });
+        const { transport, requests } = buildPullRemote(
+          [{ name: 'refs/heads/main', id: main }],
+          await emptyPack(ctx),
+        );
+        const sut = pull;
+
+        // Act
+        const result = await pullError(() => sut(withTransport(ctx, transport), { rebase: true }));
+
+        // Assert
+        expect((await readIndex(ctx)).entries).toEqual([]);
+        expect(result).toEqual({ code: 'PULL_REBASE_UNBORN_INDEX' });
+        expect(requests).toEqual([]);
+      });
+    });
+
+    describe('When pull rebases with no index file', () => {
       it('Then the branch is pulled into, not rebased', async () => {
         // Arrange
         const { ctx, main } = await unbornWithUpstream();

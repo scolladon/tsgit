@@ -29,6 +29,7 @@ import { readConfig } from '../primitives/config-read.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { inMergeBases, mergeBasesOf, reduceHeads } from '../primitives/merge-base.js';
+import { indexPath } from '../primitives/path-layout.js';
 import { readIndex } from '../primitives/read-index.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { resolveRef, resolveRefOrMissing } from '../primitives/resolve-ref.js';
@@ -345,7 +346,7 @@ export const pull = async (ctx: Context, given: PullOptions = {}): Promise<PullR
   const reconciled = await settleRebase(ctx, settled, currentBranch);
   const opts = await settleAutostash(ctx, reconciled.opts);
   const origHead = await resolveRefOrMissing(ctx, 'HEAD');
-  if (origHead === undefined && rebasing(opts)) await assertUnbornIndexEmpty(ctx);
+  if (origHead === undefined && rebasing(opts)) await assertIndexUnborn(ctx);
   const rebase = await planRebase(ctx, opts, upstream, branchRef);
   const fetchResult = await fetchUpstream(ctx, opts, upstream);
   assertNothingRejected(fetchResult);
@@ -365,9 +366,12 @@ export const pull = async (ctx: Context, given: PullOptions = {}): Promise<PullR
   });
 };
 
-/** git's rebasing pull refuses an unborn HEAD whose index already holds changes. */
-const assertUnbornIndexEmpty = async (ctx: Context): Promise<void> => {
-  if ((await readIndex(ctx)).entries.length > 0) throw pullRebaseUnbornIndex();
+/**
+ * git's rebasing pull refuses an unborn HEAD unless its index is unborn too
+ * (`is_index_unborn`): an index file with no entries already counts as changes.
+ */
+const assertIndexUnborn = async (ctx: Context): Promise<void> => {
+  if (await ctx.fs.exists(indexPath(ctx.layout.gitDir))) throw pullRebaseUnbornIndex();
 };
 
 /** git pull into an unborn HEAD: one fetched head is checked out, never merged or rebased. */

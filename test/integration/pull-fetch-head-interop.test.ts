@@ -499,9 +499,12 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
   });
 });
 
+/** The index an unborn repository starts from: none, one staged file, or a file with no entries. */
+type UnbornIndex = 'absent' | 'staged' | 'empty-file';
+
 describe.skipIf(!GIT_AVAILABLE)('pull into an unborn HEAD interop', () => {
   /** One fresh repository per tool with `main` unborn and set to pull `merge` from origin. */
-  const unborn = (label: string, merges: ReadonlyArray<string>, staged: boolean) => {
+  const unborn = (label: string, merges: ReadonlyArray<string>, index: UnbornIndex) => {
     const dirs = {
       ours: path.join(root, `${label}-ours`),
       theirs: path.join(root, `${label}-theirs`),
@@ -514,10 +517,11 @@ describe.skipIf(!GIT_AVAILABLE)('pull into an unborn HEAD interop', () => {
       dated(['-C', dir, 'remote', 'add', 'origin', url]);
       dated(['-C', dir, 'config', 'branch.main.remote', 'origin']);
       for (const merge of merges) dated(['-C', dir, 'config', '--add', 'branch.main.merge', merge]);
-      if (staged) {
+      if (index === 'staged') {
         writeFileSync(path.join(dir, 'g'), 'g\n');
         dated(['-C', dir, 'add', 'g']);
       }
+      if (index === 'empty-file') dated(['-C', dir, 'read-tree', '--empty']);
     }
     return dirs;
   };
@@ -534,13 +538,14 @@ describe.skipIf(!GIT_AVAILABLE)('pull into an unborn HEAD interop', () => {
     ].join('\n');
 
   describe.each([
-    { label: 'unborn-clean', staged: false },
-    { label: 'unborn-staged', staged: true },
-  ])('Given the $label repository', ({ label, staged }) => {
+    { label: 'unborn-clean', index: 'absent' },
+    { label: 'unborn-staged', index: 'staged' },
+    { label: 'unborn-empty-index-merge', index: 'empty-file' },
+  ] as const)('Given the $label repository', ({ label, index }) => {
     describe('When both tools pull', () => {
       it('Then both check the fetched head out on main under the reflog "initial pull"', async () => {
         // Arrange
-        const { ours, theirs } = unborn(label, ['refs/heads/main'], staged);
+        const { ours, theirs } = unborn(label, ['refs/heads/main'], index);
         dated(['-C', theirs, 'pull', '-q']);
         const sut = pull;
 
@@ -557,7 +562,7 @@ describe.skipIf(!GIT_AVAILABLE)('pull into an unborn HEAD interop', () => {
     {
       label: 'unborn-two-merges',
       merges: ['refs/heads/main', 'refs/heads/side'],
-      staged: false,
+      index: 'absent',
       rebase: false,
       code: 'PULL_EMPTY_HEAD_MULTIPLE_BRANCHES',
       message: 'fatal: Cannot merge multiple branches into empty head.',
@@ -565,16 +570,24 @@ describe.skipIf(!GIT_AVAILABLE)('pull into an unborn HEAD interop', () => {
     {
       label: 'unborn-rebase-staged',
       merges: ['refs/heads/main'],
-      staged: true,
+      index: 'staged',
       rebase: true,
       code: 'PULL_REBASE_UNBORN_INDEX',
       message: 'fatal: Updating an unborn branch with changes added to the index.',
     },
-  ])('Given the $label repository', ({ label, merges, staged, rebase, code, message }) => {
+    {
+      label: 'unborn-rebase-empty-index',
+      merges: ['refs/heads/main'],
+      index: 'empty-file',
+      rebase: true,
+      code: 'PULL_REBASE_UNBORN_INDEX',
+      message: 'fatal: Updating an unborn branch with changes added to the index.',
+    },
+  ] as const)('Given the $label repository', ({ label, merges, index, rebase, code, message }) => {
     describe('When both tools pull', () => {
       it('Then both refuse and main stays unborn', async () => {
         // Arrange
-        const { ours, theirs } = unborn(label, merges, staged);
+        const { ours, theirs } = unborn(label, merges, index);
         const theirsRun = tryRunGitWithExit(
           ['-C', theirs, 'pull', '-q', rebase ? '--rebase' : '--no-rebase'],
           { env: DATED_ENV },
