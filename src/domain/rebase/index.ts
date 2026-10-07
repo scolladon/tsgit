@@ -12,7 +12,6 @@ export { buildCombinedMessage, type CombinedMessageEntry } from './squash-messag
 export {
   parseRebaseTodo,
   type RebaseLabelLine,
-  type RebaseMergeLine,
   type RebaseResetLine,
   type RebaseTodoAction,
   type RebaseTodoEntry,
