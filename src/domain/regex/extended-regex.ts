@@ -13,7 +13,9 @@
  *
  * A pattern without back-references runs as a Thompson automaton, in time
  * linear in the subject; one with back-references needs backtracking and runs
- * as its ECMAScript translation, exponential at worst — as regexec is there.
+ * as its ECMAScript translation, exponential at worst where glibc's regexec
+ * is not. The automaton first refuses, in linear time, a subject such a
+ * pattern cannot match even with each back-reference read as any text.
  * A subject lacking text every match must contain is refused before the
  * automaton runs, and a pattern spelling one of a few plain texts is a
  * substring search.
@@ -226,8 +228,8 @@ export const compileExtendedRegex = (pattern: string): ExtendedRegex | undefined
   };
   const piece = parseAlternation(cursor, 0);
   if (piece === undefined) return undefined;
-  if (cursor.backreferences) return backtracking(new RegExp(piece.source, FLAGS));
-  return sizeOf(piece.fragment) > MAX_PROGRAM_SIZE ? undefined : matcherOf(piece);
+  if (sizeOf(piece.fragment) > MAX_PROGRAM_SIZE) return undefined;
+  return cursor.backreferences ? backtracking(piece) : matcherOf(piece);
 };
 
 /** A lone surrogate is one character to the automaton but half of one to a substring search. */
@@ -236,10 +238,18 @@ const LONE_SURROGATE = /\p{Cs}/u;
 const isPlainText = (exact: Spelt): exact is ReadonlyArray<string> =>
   exact !== undefined && !exact.some((text) => LONE_SURROGATE.test(text));
 
-const backtracking = (pattern: RegExp): ExtendedRegex => ({
-  engine: 'backtracking',
-  test: (subject) => pattern.test(subject),
-});
+/**
+ * The automaton reads each back-reference as any text: a subject it refuses
+ * cannot match, and is refused in linear time before the backtracking.
+ */
+const backtracking = (piece: Piece): ExtendedRegex => {
+  const pattern = new RegExp(piece.source, FLAGS);
+  const { test } = matcherOf(piece);
+  return {
+    engine: 'backtracking',
+    test: (subject, check) => test(subject, check) && pattern.test(subject),
+  };
+};
 
 const linear = (test: ExtendedRegex['test']): ExtendedRegex => ({ engine: 'linear', test });
 
@@ -418,12 +428,18 @@ const parseEscape = (c: Cursor): Translation => {
   return escapedClass === undefined ? literalPiece(ch) : characterPiece(escapedClass);
 };
 
-/** A back-reference must name a group already closed; the pattern then needs backtracking. */
+/**
+ * A back-reference must name a group already closed; the pattern then needs
+ * backtracking, and the automaton reads the reference as any text.
+ */
 const parseBackreference = (c: Cursor, digit: string): Translation => {
   if (!c.closedGroups.has(Number(digit))) return undefined;
   c.backreferences = true;
-  return { source: `(?:\\${digit})`, fragment: EMPTY, literals: OPAQUE };
+  const fragment = repeatFragment(characterPiece('.').fragment, ANY_RUN);
+  return { source: `(?:\\${digit})`, fragment, literals: OPAQUE };
 };
+
+const ANY_RUN: Bounds = { min: 0, max: Number.POSITIVE_INFINITY };
 
 /** A repeated piece and the repetition still to apply to it. */
 interface PendingRepetition {
@@ -586,7 +602,6 @@ const rangeSource = (start: BracketMember, end: BracketMember): string | undefin
   return start.codePoint > end.codePoint ? undefined : `${start.source}-${end.source}`;
 };
 
-const EMPTY: Sequence = { size: 0, parts: [] };
 const START = 0;
 
 const sizeOf = (fragment: Fragment): number => ('parts' in fragment ? fragment.size : 1);

@@ -23,6 +23,20 @@ const FULL_BUDGET = `${'a{0,32767}'.repeat(2)}aaaa`;
 const matches = (pattern: string, subject: string): boolean | undefined =>
   compileExtendedRegex(pattern)?.test(subject);
 
+const BACKREFERENCE = '\\1';
+
+/** Lets RegExp tests run but those of a back-reference pattern; the sources of those asked to run. */
+const refuseBacktracking = (): ReadonlyArray<string> => {
+  const run = RegExp.prototype.test;
+  const backtracked: string[] = [];
+  vi.spyOn(RegExp.prototype, 'test').mockImplementation(function (this: RegExp, subject: string) {
+    if (!this.source.includes(BACKREFERENCE)) return run.call(this, subject);
+    backtracked.push(this.source);
+    return false;
+  });
+  return backtracked;
+};
+
 const nested = (depth: number): string => `${'('.repeat(depth)}a${')'.repeat(depth)}`;
 
 describe('compileExtendedRegex', () => {
@@ -276,6 +290,26 @@ describe('compileExtendedRegex', () => {
         // Assert
         expect(result?.engine).toBe('linear');
         expect(result?.test(`${'a'.repeat(LONG_RUN)}b`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a back-reference pattern a backtracking matcher takes exponential time on', () => {
+    describe('When a long run cannot match even reading the reference as any text', () => {
+      it.each([
+        ['(x*)*y\\1', 'x'.repeat(LONG_RUN)],
+        ['(x+x+)+y\\1z', `${'x'.repeat(LONG_RUN)}zy`],
+      ])('Then /%s/ answers false without backtracking', (pattern, subject) => {
+        // Arrange
+        const sut = matches;
+        const backtracked = refuseBacktracking();
+
+        // Act
+        const result = sut(pattern, subject);
+
+        // Assert
+        expect(result).toBe(false);
+        expect(backtracked).toEqual([]);
       });
     });
   });

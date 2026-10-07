@@ -24,54 +24,98 @@ const ERE_SPECIALS = new Set([
 const escapeLiterally = (text: string): string =>
   Array.from(text, (ch) => (ERE_SPECIALS.has(ch) ? `\\${ch}` : ch)).join('');
 
-const QUANTIFIER = fc.constantFrom('*', '+', '?', '{2}', '{0,2}', '{1,}', '{,1}', '{0}', '{1}');
+const QUANTIFIERS = ['*', '+', '?', '{2}', '{0,2}', '{1,}', '{,1}', '{0}', '{1}'];
+const QUANTIFIER = fc.constantFrom(...QUANTIFIERS);
 
 const alphanumeric = fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789');
 
-const LEAF_ATOM = fc.constantFrom(
-  'a',
-  'b',
-  'é',
-  '\u{1F600}',
-  '.',
-  '[ab]',
-  '[^a]',
-  '\\w',
-  '\\W',
-  '\\s',
+/** A small pattern and its ECMAScript spelling, written apart from the parser under test. */
+interface Spelling {
+  readonly ere: string;
+  readonly ecma: string;
+}
+
+const spelt = (ere: string, ecma = ere): Spelling => ({ ere, ecma });
+
+const joined =
+  (separator: string) =>
+  (spellings: ReadonlyArray<Spelling>): Spelling =>
+    spelt(
+      spellings.map(({ ere }) => ere).join(separator),
+      spellings.map(({ ecma }) => ecma).join(separator),
+    );
+
+const WORD = '[\\p{L}\\p{N}_]';
+const WORD_START = `(?<!${WORD})(?=${WORD})`;
+const WORD_END = `(?<=${WORD})(?!${WORD})`;
+
+const SPELT_QUANTIFIER = fc.constantFrom(
+  ...QUANTIFIERS.map((quantifier) => spelt(quantifier, quantifier.replace('{,', '{0,'))),
 );
-const ANCHOR = fc.constantFrom('^', '$', '\\<', '\\>', '\\b', '\\B');
+const LEAF_ATOM = fc.constantFrom(
+  spelt('a'),
+  spelt('b'),
+  spelt('é'),
+  spelt('\u{1F600}'),
+  spelt('.'),
+  spelt('[ab]'),
+  spelt('[^a]'),
+  spelt('\\w', WORD),
+  spelt('\\W', '[^\\p{L}\\p{N}_]'),
+  spelt('\\s'),
+);
+const ANCHOR = fc.constantFrom(
+  spelt('^'),
+  spelt('$'),
+  spelt('\\<', WORD_START),
+  spelt('\\>', WORD_END),
+  spelt('\\b', `(?:${WORD_START}|${WORD_END})`),
+  spelt('\\B', `(?:(?<=${WORD})(?=${WORD})|(?<!${WORD})(?!${WORD}))`),
+);
 const NESTING = 2;
+/**
+ * Repetitions stacked on one atom. RegExp backtracks through every nested
+ * loop, so deeper stacks time it out on a subject; stacking itself has its own
+ * property below.
+ */
+const MAX_STACKED = 1;
+
+/** Each repetition applies to everything before it: `a*?` is `(?:(?:a)*)?`. */
+const repeated = ([atom, quantifiers]: [Spelling, ReadonlyArray<Spelling>]): Spelling =>
+  quantifiers.reduce(
+    (inner, quantifier) =>
+      spelt(`${inner.ere}${quantifier.ere}`, `(?:${inner.ecma})${quantifier.ecma}`),
+    atom,
+  );
 
 /** Small extended regexes without back-references, over a few letters, groups nested up to `depth`. */
-const smallPattern = (depth: number): fc.Arbitrary<string> => {
+const smallPattern = (depth: number): fc.Arbitrary<Spelling> => {
   const atom =
     depth === 0
       ? LEAF_ATOM
       : fc.oneof(
           LEAF_ATOM,
-          smallPattern(depth - 1).map((inner) => `(${inner})`),
+          smallPattern(depth - 1).map(({ ere, ecma }) => spelt(`(${ere})`, `(${ecma})`)),
         );
   const expression = fc.oneof(
     { arbitrary: ANCHOR, weight: 1 },
     {
       arbitrary: fc
-        .tuple(atom, fc.array(QUANTIFIER, { maxLength: 2 }))
-        .map(([repeated, quantifiers]) => `${repeated}${quantifiers.join('')}`),
+        .tuple(atom, fc.array(SPELT_QUANTIFIER, { maxLength: MAX_STACKED }))
+        .map(repeated),
       weight: 4,
     },
   );
-  const branch = fc.array(expression, { maxLength: 4 }).map((pieces) => pieces.join(''));
-  return fc.array(branch, { minLength: 1, maxLength: 3 }).map((branches) => branches.join('|'));
+  const branch = fc.array(expression, { maxLength: 4 }).map(joined(''));
+  return fc.array(branch, { minLength: 1, maxLength: 3 }).map(joined('|'));
 };
+
+const answers = (ecma: string, subject: string): boolean => new RegExp(ecma, 'su').test(subject);
 
 /** A subject over the characters the small patterns tell apart, a word character past the BMP among them. */
 const smallSubject = fc
   .array(fc.constantFrom('a', 'b', 'é', '\u{1F600}', '\u{1D400}', ' ', '\n'), { maxLength: 8 })
   .map((characters) => characters.join(''));
-
-/** The same pattern with a back-reference in front, so it runs as its ECMAScript translation. */
-const backtracking = (pattern: string): string => `()\\1(${pattern})`;
 
 describe('compileExtendedRegex properties', () => {
   describe('Given an arbitrary pattern', () => {
@@ -146,18 +190,36 @@ describe('compileExtendedRegex properties', () => {
   });
 
   describe('Given a small pattern without back-references and a small subject', () => {
-    describe('When the automaton and the backtracking translation match it', () => {
+    describe('When the compiled matcher and RegExp match it', () => {
       it('Then both answer alike', () => {
         // Arrange
         const sut = compileExtendedRegex;
 
         // Act / Assert
         fc.assert(
-          fc.property(smallPattern(NESTING), smallSubject, (pattern, subject) => {
-            const result = sut(pattern)?.test(subject);
-            return result === sut(backtracking(pattern))?.test(subject);
+          fc.property(smallPattern(NESTING), smallSubject, ({ ere, ecma }, subject) => {
+            const result = sut(ere)?.test(subject);
+            return result === answers(ecma, subject);
           }),
           { numRuns: 200 },
+        );
+      });
+    });
+  });
+
+  describe('Given a small pattern followed by a back-reference to it and a small subject', () => {
+    describe('When the compiled matcher and RegExp match it', () => {
+      it('Then both answer alike', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+
+        // Act / Assert
+        fc.assert(
+          fc.property(smallPattern(NESTING), smallSubject, ({ ere, ecma }, subject) => {
+            const result = sut(`(${ere})\\1`)?.test(subject);
+            return result === answers(`(${ecma})\\1`, subject);
+          }),
+          { numRuns: 100 },
         );
       });
     });
