@@ -1,11 +1,12 @@
 import { EventEmitter } from 'node:events';
+import { expectTypeOf } from 'expect-type';
 import { describe, expect, it } from 'vitest';
 
 import {
   type CommandRunnerOps,
   NodeCommandRunner,
 } from '../../../../src/adapters/node/node-command-runner.js';
-import type { CommandRequest } from '../../../../src/ports/command-runner.js';
+import type { CommandRequest, CommandRunner } from '../../../../src/ports/command-runner.js';
 
 /**
  * Writable side of the fake child stdin — records written bytes and end() calls.
@@ -81,6 +82,21 @@ const makeHarness = (
   return { runner: new NodeCommandRunner(platform, ops), child, calls };
 };
 
+/** Every byte a conversation's output yields, in order. */
+const collect = async (output: AsyncIterable<Uint8Array>): Promise<number[]> => {
+  const bytes: number[] = [];
+  for await (const chunk of output) bytes.push(...chunk);
+  return bytes;
+};
+
+/** A runner whose spawn throws at once, as Node does for a `.bat`/`.cmd` program run without a shell. */
+const throwingRunner = (): NodeCommandRunner =>
+  new NodeCommandRunner('win32', {
+    spawn: () => {
+      throw Object.assign(new Error('spawn EINVAL'), { code: 'EINVAL' });
+    },
+  });
+
 const baseRequest = (over: Partial<CommandRequest> = {}): CommandRequest => ({
   command: 'merge a b',
   cwd: '/repo',
@@ -141,6 +157,59 @@ describe('NodeCommandRunner', () => {
 
         // Assert
         expect(result.exitCode).toBe(expectedExitCode);
+      });
+    });
+  });
+
+  describe('Given a program whose spawn throws synchronously', () => {
+    describe('When run', () => {
+      it('Then resolves with the spawn-error exit code instead of rejecting', async () => {
+        // Arrange
+        const runner = throwingRunner();
+        const sut = runner.run.bind(runner);
+
+        // Act
+        const result = await sut(baseRequest({ command: 'signer.bat', args: [] }));
+
+        // Assert
+        expect(result).toEqual({ exitCode: 127 });
+      });
+    });
+
+    describe('When run capturing stderr', () => {
+      it('Then the spawn-error result carries empty stderr bytes', async () => {
+        // Arrange
+        const runner = throwingRunner();
+        const sut = runner.run.bind(runner);
+
+        // Act
+        const result = await sut(
+          baseRequest({ command: 'signer.bat', args: [], stderr: 'capture' }),
+        );
+
+        // Assert
+        expect(result).toEqual({ exitCode: 127, stderr: new Uint8Array() });
+      });
+    });
+
+    describe('When spawned for a conversation', () => {
+      it('Then the write rejects with the spawn error, the output ends empty and close reports the spawn-error exit', async () => {
+        // Arrange
+        const runner = throwingRunner();
+        const sut = runner.spawn;
+
+        // Act
+        const conversation = sut(baseRequest({ command: 'filter.cmd', args: [] }));
+        const written = await conversation
+          .write(new Uint8Array([1]))
+          .catch((error: unknown) => error);
+        const output = await collect(conversation.output);
+        const exit = await conversation.close();
+
+        // Assert
+        expect((written as NodeJS.ErrnoException).code).toBe('EINVAL');
+        expect(output).toEqual([]);
+        expect(exit).toEqual({ exitCode: 127 });
       });
     });
   });
@@ -409,13 +478,18 @@ describe('NodeCommandRunner', () => {
     });
   });
 
-  describe('Given a spawned conversation', () => {
-    const collect = async (output: AsyncIterable<Uint8Array>): Promise<number[]> => {
-      const bytes: number[] = [];
-      for await (const chunk of output) bytes.push(...chunk);
-      return bytes;
-    };
+  describe('Given the request a conversation starts from', () => {
+    describe('When a caller would capture its stderr or feed it stdin', () => {
+      it('Then the type offers neither, so no undrained stderr pipe can stall the child', () => {
+        // Arrange + Assert (type-level)
+        type ConversationStart = Parameters<NonNullable<CommandRunner['spawn']>>[0];
+        expectTypeOf<ConversationStart>().not.toHaveProperty('stderr');
+        expectTypeOf<ConversationStart>().not.toHaveProperty('stdin');
+      });
+    });
+  });
 
+  describe('Given a spawned conversation', () => {
     describe('When bytes are written and the child answers, then exits', () => {
       it('Then the writes reach stdin, the output streams in order and close reports the exit', async () => {
         // Arrange

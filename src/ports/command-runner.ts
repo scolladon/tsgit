@@ -69,11 +69,18 @@ export interface CommandRunner {
    * Starts a long-running command the caller converses with — a
    * `filter.<driver>.process` speaking git's filter protocol. Optional: a
    * runtime that cannot keep a process open omits it, and a process driver
-   * then cannot start. The request's `stdin` is ignored; bytes travel
-   * through {@link CommandProcess.write}.
+   * then cannot start.
    */
-  readonly spawn?: (request: CommandRequest) => CommandProcess;
+  readonly spawn?: (request: ConversationRequest) => CommandProcess;
 }
+
+/**
+ * A command started for a conversation. It carries no `stdin` — bytes travel
+ * through {@link CommandProcess.write} — and no `stderr` mode: its stderr is
+ * always inherited, since a captured stderr nobody drains while the
+ * conversation runs would fill its pipe and stall the child.
+ */
+export type ConversationRequest = Omit<CommandRequest, 'stdin' | 'stderr'>;
 
 /** The exit of a conversed-with command, once it has finished. */
 export interface CommandExit {

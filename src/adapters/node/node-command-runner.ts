@@ -5,6 +5,7 @@ import type {
   CommandRequest,
   CommandResult,
   CommandRunner,
+  ConversationRequest,
 } from '../../ports/command-runner.js';
 
 /** Conventional exit code for "command could not be spawned". */
@@ -77,18 +78,36 @@ const concatChunks = (chunks: Uint8Array[]): Uint8Array => {
   return result;
 };
 
+/**
+ * A started child, or the error a spawn threw before any child existed — Node
+ * refuses some programs synchronously, e.g. a `.bat`/`.cmd` run without a shell.
+ */
+type Started =
+  | { readonly child: CommandChild; readonly error?: never }
+  | { readonly child?: never; readonly error: unknown };
+
 /** Spawns `request` directly when it names its arguments, else through `shell`. */
 const startChild = (
   ops: CommandRunnerOps,
   [shell, flag]: Shell,
   request: CommandRequest,
-): CommandChild => {
+): Started => {
   const file = request.args === undefined ? shell : request.command;
   const args = request.args ?? [flag, request.command];
   const env = { ...process.env, ...request.env };
-  return request.stderr === 'capture'
-    ? ops.spawn(file, args, { cwd: request.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
-    : ops.spawn(file, args, { cwd: request.cwd, env, stdio: ['pipe', 'pipe', 'inherit'] });
+  try {
+    return request.stderr === 'capture'
+      ? { child: ops.spawn(file, args, { cwd: request.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] }) }
+      : {
+          child: ops.spawn(file, args, {
+            cwd: request.cwd,
+            env,
+            stdio: ['pipe', 'pipe', 'inherit'],
+          }),
+        };
+  } catch (error) {
+    return { error };
+  }
 };
 
 /** Every chunk `stream` emits, joined on demand. */
@@ -124,13 +143,27 @@ const feedStdin = (child: CommandChild, stdin: Uint8Array, fail: () => void): vo
   child.stdin.end();
 };
 
+/** The result of a command that never started: the spawn-failure exit, with no output. */
+const failedStartResult = (request: CommandRequest): CommandResult =>
+  resultOf(
+    SPAWN_ERROR_EXIT,
+    new Uint8Array(),
+    request.stderr === 'capture' ? () => new Uint8Array() : undefined,
+  );
+
 const spawnCommand = (
   ops: CommandRunnerOps,
   shell: Shell,
   request: CommandRequest,
-): Promise<CommandResult> =>
+): Promise<CommandResult> => {
+  const { child } = startChild(ops, shell, request);
+  return child === undefined
+    ? Promise.resolve(failedStartResult(request))
+    : awaitChild(child, request);
+};
+
+const awaitChild = (child: CommandChild, request: CommandRequest): Promise<CommandResult> =>
   new Promise<CommandResult>((resolve) => {
-    const child = startChild(ops, shell, request);
     const exit = new Promise<number>((settle) => {
       child.on('error', () => settle(SPAWN_ERROR_EXIT));
       child.on('close', (code) => settle(code ?? SIGNAL_KILLED_EXIT));
@@ -242,8 +275,29 @@ const killOnAbort = (child: CommandChild, exit: Promise<unknown>, signal?: Abort
   void exit.then(() => signal?.removeEventListener('abort', onAbort));
 };
 
-const converse = (ops: CommandRunnerOps, shell: Shell, request: CommandRequest): CommandProcess => {
-  const child = startChild(ops, shell, request);
+/** A conversation with a command that never started: it behaves as one that exited at once. */
+const failedStartProcess = (error: unknown): CommandProcess => ({
+  write: () => Promise.reject(error),
+  output: {
+    [Symbol.asyncIterator]: () => ({
+      next: () => Promise.resolve({ done: true, value: undefined }),
+    }),
+  },
+  close: () => Promise.resolve({ exitCode: SPAWN_ERROR_EXIT }),
+});
+
+const converse = (
+  ops: CommandRunnerOps,
+  shell: Shell,
+  request: ConversationRequest,
+): CommandProcess => {
+  const started = startChild(ops, shell, request);
+  return started.child === undefined
+    ? failedStartProcess(started.error)
+    : conversation(started.child, request);
+};
+
+const conversation = (child: CommandChild, request: ConversationRequest): CommandProcess => {
   const output = createChunkQueue(child.stdout);
   child.stdout.on('data', output.push);
   const exit = exitOf(child);
@@ -287,7 +341,7 @@ export class NodeCommandRunner implements CommandRunner {
   }
 
   /** Starts `request.command` through the platform shell, kept open for a conversation. */
-  readonly spawn = (request: CommandRequest): CommandProcess =>
+  readonly spawn = (request: ConversationRequest): CommandProcess =>
     converse(this.ops, this.shell(), request);
 
   private shell(): Shell {
