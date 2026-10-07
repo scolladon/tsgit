@@ -656,6 +656,59 @@ describe('verifyCommitSignature', () => {
     });
   });
 
+  describe('Given an ssh verification whose signal aborts while the first verifier runs', () => {
+    describe('When the signature is verified', () => {
+      it('Then it rejects with the abort reason, spawns nothing further and removes the buffer', async () => {
+        // Arrange
+        const controller = new AbortController();
+        const reason = new Error('stop');
+        const rig = harness(() => {
+          controller.abort(reason);
+          return { exitCode: 128 };
+        });
+        const sut = verifyCommitSignature;
+
+        // Act
+        const result = await sut(
+          { ...rig.ctx, signal: controller.signal },
+          {
+            payload: PAYLOAD,
+            signature: SSH_SIG,
+            gpg: { ssh: { allowedSignersFile: '/allowed' } },
+          },
+        ).catch((error: unknown) => error);
+
+        // Assert
+        expect(result).toBe(reason);
+        expect(rig.requests).toHaveLength(1);
+        expect(await rig.ctx.fs.exists(rig.bufferPath)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a signal that aborted before verification', () => {
+    describe('When the signature is verified', () => {
+      it('Then it rejects with the abort reason without spawning a verifier', async () => {
+        // Arrange
+        const controller = new AbortController();
+        const reason = new Error('stop');
+        controller.abort(reason);
+        const rig = harness(() => ({}));
+        const sut = verifyCommitSignature;
+
+        // Act
+        const result = await sut(
+          { ...rig.ctx, signal: controller.signal },
+          { payload: PAYLOAD, signature: PGP_SIG },
+        ).catch((error: unknown) => error);
+
+        // Assert
+        expect(result).toBe(reason);
+        expect(rig.requests).toEqual([]);
+      });
+    });
+  });
+
   describe('Given a context signal', () => {
     describe('When the signature is verified', () => {
       it('Then the signal is passed to the runner', async () => {

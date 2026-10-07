@@ -134,10 +134,17 @@ const isCannotExec = (exitCode: number): boolean =>
 
 const EMPTY = new Uint8Array(0);
 
+/**
+ * An aborted runner resolves with the signal exit rather than rejecting, so the
+ * signal is checked around every spawn: a cancelled verification stops at once
+ * instead of spawning its next verifier and reporting a bad signature.
+ */
 const makeRunTool =
   (ctx: Context, runner: CommandRunner): RunTool =>
   async (program, args, stdin) => {
+    ctx.signal?.throwIfAborted();
     const result = await spawnOrNothing(ctx, runner, [program, args], stdin);
+    ctx.signal?.throwIfAborted();
     if (result === undefined || isCannotExec(result.exitCode)) return CANNOT_EXEC;
     return {
       exitCode: result.exitCode,
