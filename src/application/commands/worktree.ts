@@ -19,6 +19,8 @@ import { resetMovingTo } from '../../domain/reflog/reflog-messages.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { ORIG_HEAD } from '../../domain/refs/state-files.js';
 import {
+  PLACEHOLDER_HEAD_STUB,
+  REFTABLE_REFS_HEADS_STUB,
   WORKTREE_COMMONDIR,
   type WorktreeHead,
   worktreeGitdirPointer,
@@ -167,6 +169,13 @@ const adminHeadUpdate = (head: WorktreeHead): RefUpdate =>
     ? { kind: 'setSymbolic', name: HEAD_REF, target: head.ref }
     : { kind: 'set', name: HEAD_REF, id: head.oid };
 
+/** A reftable admin dir carries git's ref-directory stubs, or git refuses it as a repository. */
+const writeRefDirectoryStubs = async (ctx: Context, admin: string): Promise<void> => {
+  if (ctx.layout.refStorage !== 'reftable') return;
+  await ctx.fs.writeUtf8(`${admin}/HEAD`, `${PLACEHOLDER_HEAD_STUB}\n`);
+  await ctx.fs.writeUtf8(`${admin}/refs/heads`, `${REFTABLE_REFS_HEADS_STUB}\n`);
+};
+
 /** Write the admin pointer files + the worktree `.git` gitfile. Returns the admin dir. */
 const writeAdmin = async (
   ctx: Context,
@@ -178,6 +187,7 @@ const writeAdmin = async (
   const admin = `${commonGitDir(ctx)}/worktrees/${id}`;
   await ctx.fs.writeUtf8(`${admin}/commondir`, `${WORKTREE_COMMONDIR}\n`);
   await ctx.fs.writeUtf8(`${admin}/gitdir`, `${worktreeGitdirPointer(worktreePath)}\n`);
+  await writeRefDirectoryStubs(ctx, admin);
   const child = deriveWorktreeContext(ctx, id, worktreePath);
   await getRefStore(child).applyRefUpdates([adminHeadUpdate(head)]);
   await writeRootRef(child, ORIG_HEAD as RefName, oid);

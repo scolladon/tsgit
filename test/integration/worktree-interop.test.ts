@@ -235,6 +235,58 @@ describe.skipIf(!GIT_AVAILABLE)('worktree interop', () => {
     });
   });
 
+  describe('Given a reftable repository on each tool', () => {
+    const TABLE_NAME = /0x[0-9a-f]{12}-0x[0-9a-f]{12}-[0-9a-f]{8}\.ref$/;
+
+    const reftableRepo = (dir: string): void => {
+      runGit(['init', '-q', '-b', 'main', '--ref-format=reftable', dir]);
+      runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'seed'], { env: COMMIT_ENV });
+    };
+
+    /** Admin-dir listing, directories suffixed `/`, reftable table names normalised. */
+    const adminListing = async (admin: string): Promise<ReadonlyArray<string>> =>
+      (await readdir(admin, { recursive: true, withFileTypes: true }))
+        .map((entry) => {
+          const rel = path.relative(admin, path.join(entry.parentPath, entry.name));
+          return `${rel.replace(TABLE_NAME, '<table>.ref')}${entry.isDirectory() ? '/' : ''}`;
+        })
+        .sort();
+
+    describe('When tsgit worktree.add creates the linked worktree', () => {
+      it('Then git operates in it and the admin dir matches git', async () => {
+        // Arrange
+        const peer = sibling('rt-peer');
+        const tsRoot = sibling('rt-ours');
+        reftableRepo(peer);
+        reftableRepo(tsRoot);
+        runGit(['-C', peer, 'worktree', 'add', '-q', `${peer}-wt`]);
+        created.push(`${peer}-wt`);
+        const wt = sibling('rt-ours-wt');
+        const sut = await openRepository({ cwd: tsRoot });
+
+        // Act
+        await sut.worktree.add({ path: wt });
+        await sut.dispose();
+
+        // Assert
+        const ourAdmin = path.join(tsRoot, '.git', 'worktrees', path.basename(wt));
+        const peerAdmin = path.join(peer, '.git', 'worktrees', `${path.basename(peer)}-wt`);
+        expect(await adminListing(ourAdmin)).toEqual(await adminListing(peerAdmin));
+        for (const stub of ['HEAD', 'refs/heads']) {
+          expect(await readFile(path.join(ourAdmin, stub))).toEqual(
+            await readFile(path.join(peerAdmin, stub)),
+          );
+        }
+        expect(git(wt, 'rev-parse', 'HEAD').trim()).toBe(git(tsRoot, 'rev-parse', 'HEAD').trim());
+        expect(git(wt, 'status', '--porcelain')).toBe('');
+        runGit(['-C', wt, 'commit', '-q', '--allow-empty', '-m', 'in wt'], { env: COMMIT_ENV });
+        expect(
+          git(tsRoot, 'log', '-1', '--format=%s', `refs/heads/${path.basename(wt)}`).trim(),
+        ).toBe('in wt');
+      });
+    });
+  });
+
   describe('Given a canonical-git peer', () => {
     describe('When add targets a branch already checked out', () => {
       it('Then both tools refuse', async () => {

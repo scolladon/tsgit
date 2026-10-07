@@ -11,11 +11,13 @@ import {
   worktreeRemove,
 } from '../../../../src/application/commands/worktree.js';
 import { readTree } from '../../../../src/application/primitives/read-tree.js';
+import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext, seedMaxTreeDepth } from '../primitives/fixtures.js';
+import { withReftableStorage } from '../primitives/reftable-fixtures.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -342,6 +344,49 @@ describe('worktreeAdd', () => {
 
         // Assert
         expect(result.id).toBe('Stryker was here');
+      });
+    });
+  });
+
+  describe('Given a reftable repository', () => {
+    describe('When worktreeAdd lays down the admin dir', () => {
+      it('Then it writes the HEAD and refs/heads stubs git needs to recognise it', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        await init(ctx);
+        await getRefStore(ctx).applyRefUpdates([
+          { kind: 'setSymbolic', name: 'HEAD' as RefName, target: 'refs/heads/main' as RefName },
+        ]);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        const { id: commitId } = await commit(ctx, { message: 'first', author });
+
+        // Act
+        const result = await worktreeAdd(ctx, { path: 'wt-reftable' });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(adminFile(ctx, result.id, 'HEAD'))).toBe(
+          'ref: refs/heads/.invalid\n',
+        );
+        expect(await ctx.fs.readUtf8(adminFile(ctx, result.id, 'refs/heads'))).toBe(
+          'this repository uses the reftable format\n',
+        );
+        expect(result.head).toBe(commitId);
+      });
+    });
+  });
+
+  describe('Given a files repository', () => {
+    describe('When worktreeAdd lays down the admin dir', () => {
+      it('Then it writes no refs/heads stub', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+
+        // Act
+        const result = await worktreeAdd(ctx, { path: 'wt-files' });
+
+        // Assert
+        expect(await ctx.fs.exists(adminFile(ctx, result.id, 'refs/heads'))).toBe(false);
       });
     });
   });
