@@ -13,7 +13,8 @@
  * A merge is required so the order assertion distinguishes the all-parents reach
  * from a first-parent walk. The dates are strictly distinct and causally ordered
  * (parent older than child) — the regime where the lazy walk is byte-for-byte
- * `--date-order` (ADR-261). Strict ordering under forged reverse-causal dates is
+ * `--date-order`, as a lazy walk cannot see a later commit dated before its
+ * parent the way git's full sort does. Strict ordering under forged reverse-causal dates is
  * out of scope. A second history puts every commit at ONE date and walks from
  * several seeds, pinning git's queue tie-break against plain `rev-list`: seeds
  * in the order given, parents in parent order.

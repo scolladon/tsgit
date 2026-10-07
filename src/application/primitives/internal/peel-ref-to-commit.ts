@@ -1,7 +1,7 @@
 /**
  * Peel a ref target through its annotated-tag chain, to any depth as git does,
- * to the commit it names. Shared by `describe` and `name-rev`, which both
- * build a commit→ref map and need the outermost tagger date for tie-breaking.
+ * to the commit it names, noting whether a tag was crossed and the outermost
+ * tagger date — what a caller ranking refs by tag needs to break ties.
  * Returns `undefined` when the chain loops (a store whose objects do not hash
  * to their names) or terminates at a non-commit.
  */

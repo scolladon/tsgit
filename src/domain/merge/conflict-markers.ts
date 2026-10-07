@@ -75,7 +75,7 @@ function conflictHunk(
 /**
  * Serialise a two-way conflict region. Labels are written **verbatim**, exactly
  * as git does — the library emits the bytes git would and leaves any display-time
- * sanitisation to the consumer (ADR-249). Only the content-size cap and a
+ * sanitisation to the consumer, rendering being the caller's concern. Only the content-size cap and a
  * base-showing style (which needs the base lines this writer is not given) are
  * refused; the markers scale to `options.markerSize` (git's `conflict-marker-size`, default 7).
  */

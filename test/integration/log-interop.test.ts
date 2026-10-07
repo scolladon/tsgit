@@ -14,7 +14,8 @@
  *      `git rev-list HEAD~2..HEAD` (a linear boundary where `until` ≡ git's `^`).
  *
  * Dates are strictly distinct and causally ordered, the regime where the lazy
- * `walkCommitsByDate` is byte-for-byte `--date-order` (ADR-261). A second
+ * `walkCommitsByDate` is byte-for-byte `--date-order`, as a lazy walk cannot
+ * see a later commit dated before its parent the way git's full sort does. A second
  * history puts every commit at ONE date, with and without a commit-graph, so
  * the order rests on git's queue tie-break alone (first enqueued pops first).
  *
