@@ -87,11 +87,18 @@ export function murmur3Seeded(seed: number, data: Uint8Array, version: BloomHash
   return finalMix(hash ^ data.length);
 }
 
-/** git's `bloom_key_fill`: probe `i` is `hash0 + i * hash1`, wrapping at 32 bits. */
-export function bloomKeyHashes(path: Uint8Array, settings: BloomFilterSettings): number[] {
+/**
+ * git's `bloom_key_fill`: probe `i` is `hash0 + i * hash1`, wrapping at 32 bits.
+ * Drawn on demand — `numHashes` is read unchecked from a graph's `BDAT`
+ * header, as git reads it, so it must never size an allocation.
+ */
+export function* bloomKeyHashes(
+  path: Uint8Array,
+  settings: BloomFilterSettings,
+): Generator<number, void, undefined> {
   const hash0 = murmur3Seeded(SEED_0, path, settings.hashVersion);
   const hash1 = murmur3Seeded(SEED_1, path, settings.hashVersion);
-  return Array.from({ length: settings.numHashes }, (_, i) => (hash0 + Math.imul(i, hash1)) >>> 0);
+  for (let i = 0; i < settings.numHashes; i += 1) yield (hash0 + Math.imul(i, hash1)) >>> 0;
 }
 
 const binaryKey = (path: Uint8Array): string => {
@@ -113,7 +120,7 @@ function distinctPathsWithDirectories(changedPaths: readonly Uint8Array[]): Uint
   return [...distinct.values()];
 }
 
-function addKey(filter: Uint8Array, hashes: readonly number[]): void {
+function addKey(filter: Uint8Array, hashes: Iterable<number>): void {
   const bitCount = filter.length * BITS_PER_WORD;
   for (const hash of hashes) {
     const bit = hash % bitCount;

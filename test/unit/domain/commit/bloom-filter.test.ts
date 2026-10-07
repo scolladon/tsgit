@@ -79,7 +79,7 @@ describe('bloomKeyHashes', () => {
         const sut = bloomKeyHashes;
 
         // Act
-        const result = sut(bytes('file.txt'), DEFAULT_BLOOM_FILTER_SETTINGS);
+        const result = [...sut(bytes('file.txt'), DEFAULT_BLOOM_FILTER_SETTINGS)];
 
         // Assert
         expect(result).toEqual([
@@ -97,10 +97,29 @@ describe('bloomKeyHashes', () => {
         const path = bytes('été');
 
         // Act
-        const result = [sut(path, DEFAULT_BLOOM_FILTER_SETTINGS)[0], sut(path, V2_SETTINGS)[0]];
+        const result = [
+          [...sut(path, DEFAULT_BLOOM_FILTER_SETTINGS)][0],
+          [...sut(path, V2_SETTINGS)][0],
+        ];
 
         // Assert
         expect(result).toEqual([0x386209cd, 0x274724fb]);
+      });
+    });
+  });
+  describe('Given settings read from a graph naming the largest 32-bit hash count', () => {
+    describe('When the first two probes are drawn', () => {
+      it('Then they are computed on demand, the count never sizing an allocation', () => {
+        // Arrange
+        const sut = bloomKeyHashes;
+        const hostile = { ...DEFAULT_BLOOM_FILTER_SETTINGS, numHashes: 0xffffffff };
+
+        // Act
+        const probes = sut(bytes('file.txt'), hostile)[Symbol.iterator]();
+        const result = [probes.next().value, probes.next().value];
+
+        // Assert
+        expect(result).toEqual([0x20ab385b, 0xf5237fe2]);
       });
     });
   });

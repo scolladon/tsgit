@@ -71,7 +71,9 @@ describe('Given an arbitrary set of changed paths', () => {
 
           // Assert
           for (const path of paths.flatMap((p) => [p, ...leadingDirectories(p)])) {
-            expect(bloomKeyHashes(path, V2_SETTINGS).every((h) => bitIsSet(result, h))).toBe(true);
+            expect([...bloomKeyHashes(path, V2_SETTINGS)].every((h) => bitIsSet(result, h))).toBe(
+              true,
+            );
           }
         }),
         { numRuns: 100 },
