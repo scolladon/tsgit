@@ -45,12 +45,14 @@ const ABSENT_LIST_CODES: ReadonlySet<string | undefined> = new Set([
   'NOT_A_DIRECTORY',
 ]);
 
-const hasAlternatesList = async (ctx: Context, objectsDir: string): Promise<boolean> => {
+/** The primary's alternates file: its bytes, absent, or unreadable — resolution then reports why. */
+type PrimaryList = Uint8Array | 'absent' | 'unreadable';
+
+const readPrimaryList = async (ctx: Context, objectsDir: string): Promise<PrimaryList> => {
   try {
-    await ctx.fs.read(`${objectsDir}/info/alternates`);
-    return true;
+    return await ctx.fs.read(`${objectsDir}/info/alternates`);
   } catch (error) {
-    return !ABSENT_LIST_CODES.has(errorDataCode(error));
+    return ABSENT_LIST_CODES.has(errorDataCode(error)) ? 'absent' : 'unreadable';
   }
 };
 
@@ -113,6 +115,13 @@ const buildSource = async (
   return { objectsDir, fs, local, registry: await createPackRegistry(ctx, { objectsDir, fs }) };
 };
 
+/** Each alternate's registry, built concurrently, in list order. */
+const buildAlternates = (
+  ctx: Context,
+  dirs: ReadonlyArray<string>,
+): Promise<ReadonlyArray<ObjectSource>> =>
+  Promise.all(dirs.map((dir) => buildSource(ctx, dir, false)));
+
 interface Discovery {
   readonly alternates: ReadonlyArray<string>;
   readonly diagnostics: ReadonlyArray<AlternateDiagnostic>;
@@ -123,8 +132,13 @@ const discover = async (
   objectsDir: string,
   held: ReadonlyArray<string> = [],
 ): Promise<Discovery> => {
-  if (!(await hasAlternatesList(ctx, objectsDir))) return { alternates: [], diagnostics: [] };
-  const { sources, diagnostics } = await resolveObjectSources(ctx, chainIo(ctx), held);
+  const list = await readPrimaryList(ctx, objectsDir);
+  if (list === 'absent') return { alternates: [], diagnostics: [] };
+  const primaryList = list === 'unreadable' ? {} : { primaryList: list };
+  const { sources, diagnostics } = await resolveObjectSources(ctx, chainIo(ctx), {
+    held,
+    ...primaryList,
+  });
   const alternates = sources.filter((s) => !s.local).map((s) => s.objectsDir);
   return { alternates, diagnostics };
 };
@@ -148,8 +162,7 @@ const appendDiscovered = async (ctx: Context, state: StoreState): Promise<void> 
   const [primary] = state.sources as readonly [ObjectSource, ...ObjectSource[]];
   const held = state.sources.map((source) => source.objectsDir);
   const found = await discover(ctx, primary.objectsDir, held);
-  const added: ObjectSource[] = [];
-  for (const dir of found.alternates) added.push(await buildSource(ctx, dir, false));
+  const added = await buildAlternates(ctx, found.alternates);
   state.sources = [...state.sources, ...added];
   state.diagnostics = found.diagnostics;
 };
@@ -214,8 +227,7 @@ const buildHandle = async (ctx: Context): Promise<StoreHandle> => {
     discover(ctx, objectsDir),
     readBigFileThreshold(ctx),
   ]);
-  const alternates: ObjectSource[] = [];
-  for (const dir of discovery.alternates) alternates.push(await buildSource(ctx, dir, false));
+  const alternates = await buildAlternates(ctx, discovery.alternates);
   return createHandle(ctx, primary, discovery, alternates, bigFileThreshold);
 };
 

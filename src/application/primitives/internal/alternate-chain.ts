@@ -286,8 +286,8 @@ const visit = async (
   resolution: Resolution,
   holder: string,
   holderDepth: number,
+  entries: ReadonlyArray<Uint8Array>,
 ): Promise<void> => {
-  const entries = await readList(resolution, holder);
   const paths = await normaliseAll(resolution, entries, holder);
   if (holderDepth + 1 > MAX_ALTERNATE_DEPTH && paths.length > 0) {
     report(resolution, { reason: 'nesting-too-deep', path: holder, listedIn: holder });
@@ -298,7 +298,7 @@ const visit = async (
     if (resolution.seen.has(resolution.key(path))) continue;
     resolution.seen.add(resolution.key(path));
     resolution.sources.push({ objectsDir: path, local: false, depth: holderDepth + 1 });
-    await visit(resolution, path, holderDepth + 1);
+    await visit(resolution, path, holderDepth + 1, await readList(resolution, path));
   }
 };
 
@@ -320,15 +320,21 @@ const primaryRealpath = async (
   }
 };
 
-/**
- * git's `odb_prepare_alternates`: the primary, then every reachable alternate in DFS pre-order.
- * `held` are the sources an earlier preparation linked: git's `alt_odb_usable` refuses a path it
- * already holds, so neither it nor the list it holds is visited again — only new sources are.
- */
+export interface ResolveOptions {
+  /**
+   * The sources an earlier preparation linked: git's `alt_odb_usable` refuses a path it already
+   * holds, so neither it nor the list it holds is visited again — only new sources are.
+   */
+  readonly held?: ReadonlyArray<string>;
+  /** The primary's alternates file, when the caller already read it; read through `io` otherwise. */
+  readonly primaryList?: Uint8Array;
+}
+
+/** git's `odb_prepare_alternates`: the primary, then every reachable alternate in DFS pre-order. */
 export const resolveObjectSources = async (
   ctx: Context,
   io: AlternateChainIo,
-  held: ReadonlyArray<string> = [],
+  options: ResolveOptions = {},
 ): Promise<{
   readonly sources: ReadonlyArray<ObjectSourceSpec>;
   readonly diagnostics: ReadonlyArray<AlternateDiagnostic>;
@@ -342,10 +348,14 @@ export const resolveObjectSources = async (
     io,
     key,
     cwd,
-    seen: new Set([primary, ...held].map(key)),
+    seen: new Set([primary, ...(options.held ?? [])].map(key)),
     sources: [{ objectsDir: primary, local: true, depth: PRIMARY_DEPTH }],
     diagnostics: [],
   };
-  await visit(resolution, primary, PRIMARY_DEPTH);
+  const entries =
+    options.primaryList === undefined
+      ? await readList(resolution, primary)
+      : parseAlternatesFile(options.primaryList);
+  await visit(resolution, primary, PRIMARY_DEPTH, entries);
   return { sources: resolution.sources, diagnostics: resolution.diagnostics };
 };

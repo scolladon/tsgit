@@ -9,6 +9,7 @@ import {
   objectSources,
   peekObjectStore,
 } from '../../../../src/application/primitives/object-store.js';
+import * as packRegistryMod from '../../../../src/application/primitives/pack-registry.js';
 import {
   disposePackRegistry,
   getPackRegistry,
@@ -70,6 +71,66 @@ describe('getObjectStore', () => {
           ['/repo/alt/objects', false],
         ]);
         expect(result.sources[1]?.registry).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given one alternate listed', () => {
+    describe('When getObjectStore', () => {
+      it('Then the list is read once', async () => {
+        // Arrange
+        const ctx = contextWithAlternates('/repo/alt/objects\n');
+        await ctx.fs.mkdir('/repo/alt/objects');
+        const read = vi.spyOn(ctx.fs, 'read');
+        const sut = getObjectStore;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(read.mock.calls.filter(([path]) => path === LIST)).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given two alternates whose first registry is slow to build', () => {
+    describe('When getObjectStore', () => {
+      it('Then the second registry is built meanwhile and the sources keep list order', async () => {
+        // Arrange
+        const ctx = contextWithAlternates('/repo/a/objects\n/repo/b/objects\n');
+        await ctx.fs.mkdir('/repo/a/objects');
+        await ctx.fs.mkdir('/repo/b/objects');
+        const built: string[] = [];
+        let release: () => void = () => undefined;
+        const slow = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const real = packRegistryMod.createPackRegistry;
+        vi.spyOn(packRegistryMod, 'createPackRegistry').mockImplementation(
+          async (context, location) => {
+            built.push(location?.objectsDir ?? PRIMARY);
+            if (location?.objectsDir === '/repo/a/objects') await slow;
+            return real(context, location);
+          },
+        );
+        const sut = getObjectStore;
+
+        // Act
+        const pending = sut(ctx);
+        const overlapped = await vi
+          .waitFor(() => expect(built).toContain('/repo/b/objects'), { timeout: 200 })
+          .then(() => true)
+          .catch(() => false);
+        release();
+        const result = await pending;
+
+        // Assert
+        expect(overlapped).toBe(true);
+        expect(result.sources.map((s) => s.objectsDir)).toEqual([
+          PRIMARY,
+          '/repo/a/objects',
+          '/repo/b/objects',
+        ]);
       });
     });
   });

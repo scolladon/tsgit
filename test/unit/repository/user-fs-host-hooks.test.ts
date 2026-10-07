@@ -132,7 +132,7 @@ describe('openRepository host hooks', () => {
 
   describe('Given a node runtime opened over its own fs', () => {
     describe('When the object store resolves its sources', () => {
-      it('Then each store is reached through the host hooks', async () => {
+      it('Then the host alternate is resolved and read through the host hooks', async () => {
         // Arrange
         const hooks = hostHooks();
         const fallback = { ...nodeFallback(hooks), fs: await userFsListing(hostObjects) };
@@ -140,10 +140,14 @@ describe('openRepository host hooks', () => {
         const sut = objectSources;
 
         // Act
-        await sut(repo.ctx);
+        const result = await sut(repo.ctx);
 
         // Assert
-        expect(hooks.makeConfinedFs).toHaveBeenCalledWith([`${REPO}/.git/objects`]);
+        expect(result.sources).toEqual([
+          { objectsDir: `${REPO}/.git/objects`, local: true },
+          { objectsDir: hostObjects, local: false },
+        ]);
+        expect(hooks.makeConfinedFs).toHaveBeenCalledWith([hostObjects]);
         expect(repo.ctx.filenameProbe).toBe(hooks.filenameProbe);
         await repo.dispose();
       });
