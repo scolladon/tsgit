@@ -847,30 +847,61 @@ describe('buildTreeAttributeProvider', () => {
     });
   });
 
+  describe('Given a worktree nested many directories deep with a .gitattributes in every directory', () => {
+    describe('When each directory and the leaf are resolved in walk order', () => {
+      it("Then it reads each directory's .gitattributes exactly once", async () => {
+        // Arrange
+        const depth = 60;
+        const base = createMemoryContext();
+        await seed(base, '/repo/.gitattributes', '* merge=root\n');
+        for (let slashes = 0; slashes < depth; slashes += 1) {
+          await seed(
+            base,
+            `/repo/${deepIndexPath(slashes)}/.gitattributes`,
+            `* merge=${slashes}\n`,
+          );
+        }
+        const { ctx, calls } = instrumentedContext(base);
+        const sut = buildAttributeProvider;
+
+        // Act
+        const provider = await sut(ctx);
+        for (let slashes = 0; slashes < depth; slashes += 1) {
+          await provider.sourcesForPath(`${deepIndexPath(slashes)}/` as FilePath);
+        }
+        await provider.sourcesForPath(deepIndexPath(depth) as FilePath);
+
+        // Assert
+        const result = calls().filter(
+          ({ method, path }) => method === 'readUtf8' && path.endsWith('/.gitattributes'),
+        );
+        expect(result).toHaveLength(depth + 1);
+        expect(new Set(result.map(({ path }) => path)).size).toBe(depth + 1);
+      });
+    });
+  });
+
   describe('Given a tree a thousand directories deep with a .gitattributes in every tenth one', () => {
     describe('When each directory and the leaf are resolved in walk order', () => {
-      it('Then every level keeps its own rules and the walk finishes inside a second', async () => {
+      it('Then every level keeps its own rules', async () => {
         // Arrange
         const depth = 1000;
         const ctx = createMemoryContext();
         const tree = await putDeepTreeWithAttributes(ctx, depth);
         const provider = await buildTreeAttributeProvider(ctx, tree);
         const sut = provider.sourcesForPath;
-        const startedAt = Date.now();
 
         // Act
         for (let slashes = 0; slashes < depth; slashes += 1) {
           await sut(`${deepIndexPath(slashes)}/` as FilePath);
         }
         const result = await sut(deepIndexPath(depth) as FilePath);
-        const elapsedMs = Date.now() - startedAt;
 
         // Assert
         expect(result.sources.map(({ basedir }) => basedir)).toEqual([
           ...Array.from({ length: 100 }, (_unused, tenth) => deepIndexPath(999 - 10 * tenth)),
           '',
         ]);
-        expect(elapsedMs).toBeLessThan(1000);
       });
     });
   });

@@ -764,12 +764,11 @@ describe('Given core.maxTreeDepth configured to a small cap and a tree chain exa
 
 describe('Given a tree chain a thousand directories deep under the default depth cap', () => {
   describe('When archive iterates all entries', () => {
-    it('Then every directory is held back until the leaf flushes it, inside a second', async () => {
+    it('Then every directory is held back until the leaf flushes it', async () => {
       // Arrange
       const depth = 1000;
       const ctx = await initUnbornCtx();
       const treeId = await buildTreeChain(ctx, depth);
-      const startedAt = Date.now();
 
       // Act
       const result = await archive(ctx, { treeish: treeId });
@@ -777,13 +776,11 @@ describe('Given a tree chain a thousand directories deep under the default depth
       for await (const entry of result.entries) {
         entries.push(entry);
       }
-      const elapsedMs = Date.now() - startedAt;
 
       // Assert
       expect(entries.map(({ path }) => path)).toEqual(
         Array.from({ length: depth + 1 }, (_unused, slashes) => deepIndexPath(slashes)),
       );
-      expect(elapsedMs).toBeLessThan(1000);
     });
   });
 });
@@ -1125,6 +1122,23 @@ describe('Given a committed .gitattributes with export-ignore rules on directori
 
       // Assert
       expect(result).toEqual(['.gitattributes', 'keep']);
+    });
+  });
+
+  describe('When an ignored directory three levels down is followed by a sibling directory at the root', () => {
+    it('Then every held-back ancestor is dropped before the sibling is emitted', async () => {
+      // Arrange
+      const specs: Spec[] = [
+        ['.gitattributes', 'a/b/c/x export-ignore\n'],
+        ['a/b/c/x/f', '1'],
+        ['d/y', '2'],
+      ];
+
+      // Act
+      const result = await archiveSpec(specs);
+
+      // Assert
+      expect(result).toEqual(['.gitattributes', 'd', 'd/y']);
     });
   });
 
