@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { FlatTree } from '../../../../src/domain/diff/flat-tree.js';
 import {
   applyDirectoryRenames,
   directoryRenamesOf,
   locationRelevantDirectories,
+  scanMergeTrees,
 } from '../../../../src/domain/merge/directory-renames.js';
 import type { MergeRename } from '../../../../src/domain/merge/merge-renames.js';
 import { FILE_MODE, type FilePath, type ObjectId } from '../../../../src/domain/objects/index.js';
@@ -35,7 +36,7 @@ describe('locationRelevantDirectories', () => {
         const sut = locationRelevantDirectories;
 
         // Act
-        const result = sut(BASE, MOVED, ADDED_IN_DIR);
+        const result = sut(scanMergeTrees(BASE), MOVED, ADDED_IN_DIR);
 
         // Assert
         expect([...result]).toEqual(['dir']);
@@ -53,7 +54,7 @@ describe('locationRelevantDirectories', () => {
         const sut = locationRelevantDirectories;
 
         // Act
-        const result = sut(BASE, MOVED, other);
+        const result = sut(scanMergeTrees(BASE), MOVED, other);
 
         // Assert
         expect([...result]).toEqual([]);
@@ -68,7 +69,7 @@ describe('locationRelevantDirectories', () => {
         const sut = locationRelevantDirectories;
 
         // Act
-        const result = sut(BASE, tree('dir/a', 'x'), ADDED_IN_DIR);
+        const result = sut(scanMergeTrees(BASE), tree('dir/a', 'x'), ADDED_IN_DIR);
 
         // Assert
         expect([...result]).toEqual([]);
@@ -546,6 +547,57 @@ describe('applyDirectoryRenames cleanliness', () => {
 
         // Assert
         expect(result.clean).toBe(true);
+      });
+    });
+  });
+});
+
+describe('applyDirectoryRenames scanning', () => {
+  const scanCounters = (...trees: ReadonlyArray<FlatTree>) =>
+    trees.map((flat) => vi.spyOn(flat.entries as Map<FilePath, unknown>, 'keys'));
+
+  describe('Given neither side renamed a file', () => {
+    describe('When the directory renames are applied', () => {
+      it('Then no tree is scanned and both sides come back unchanged', () => {
+        // Arrange
+        const [base, ours, theirs] = [tree('dir/a', 'x'), tree('dir/a', 'dir/c'), tree('y')];
+        const counters = scanCounters(base, ours, theirs);
+        const renames = { ours: [], theirs: [], directoryRenames: 'apply' } as const;
+        const sut = applyDirectoryRenames;
+
+        // Act
+        const result = sut(base, ours, theirs, renames);
+
+        // Assert
+        expect(counters.map((counter) => counter.mock.calls.length)).toEqual([0, 0, 0]);
+        expect(result).toEqual({
+          ours,
+          theirs,
+          renames,
+          fileLocations: new Set(),
+          vacated: new Set(),
+          sidePaths: new Map(),
+          clean: true,
+        });
+      });
+    });
+  });
+
+  describe('Given theirs renamed a directory ours added a file into', () => {
+    describe('When the directory renames are applied', () => {
+      it('Then each tree is scanned for its directories and additions once', () => {
+        // Arrange
+        const [base, ours, theirs] = [tree('dir/a', 'dir/b', 'x'), ADDED_IN_DIR, MOVED];
+        const counters = scanCounters(base, ours, theirs);
+        const renames = { ours: [], theirs: DIR_MOVE, directoryRenames: 'apply' } as const;
+        const sut = applyDirectoryRenames;
+
+        // Act
+        const result = sut(base, ours, theirs, renames);
+
+        // Assert
+        expect(counters.map((counter) => counter.mock.calls.length)).toEqual([1, 2, 2]);
+        expect(paths(result.ours)).toEqual(['dir/a', 'dir/b', 'newdir/c', 'x']);
       });
     });
   });

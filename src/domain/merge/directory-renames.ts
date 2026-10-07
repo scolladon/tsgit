@@ -39,23 +39,51 @@ const directoriesOf = (tree: FlatTree): Set<string> => {
   return directories;
 };
 
-const addedPaths = (base: FlatTree, side: FlatTree): FilePath[] =>
+const addedPaths = (base: FlatTree, side: FlatTree): ReadonlyArray<FilePath> =>
   [...side.entries.keys()].filter((path) => !base.entries.has(path));
+
+/**
+ * One merge's per-tree scans, each computed once however many passes ask:
+ * every directory a tree holds, and the paths a side added over `base`.
+ */
+export interface MergeTreeScans {
+  readonly base: FlatTree;
+  readonly directoriesOf: (tree: FlatTree) => ReadonlySet<string>;
+  readonly addedPaths: (side: FlatTree) => ReadonlyArray<FilePath>;
+}
+
+const memoisedPerTree = <T>(compute: (tree: FlatTree) => T): ((tree: FlatTree) => T) => {
+  const scanned = new WeakMap<FlatTree, T>();
+  return (tree) => {
+    const known = scanned.get(tree);
+    if (known !== undefined) return known;
+    const fresh = compute(tree);
+    scanned.set(tree, fresh);
+    return fresh;
+  };
+};
+
+/** Fresh scans over `base` for one merge; the caller owns and drops them with it. */
+export const scanMergeTrees = (base: FlatTree): MergeTreeScans => ({
+  base,
+  directoriesOf: memoisedPerTree(directoriesOf),
+  addedPaths: memoisedPerTree((side) => addedPaths(base, side)),
+});
 
 /**
  * The directories `side` removed that `other` added a file directly into —
  * ort's `RELEVANT_FOR_SELF`: every source under them matters for its location.
  */
 export function locationRelevantDirectories(
-  base: FlatTree,
+  scans: MergeTreeScans,
   side: FlatTree,
   other: FlatTree,
 ): ReadonlySet<string> {
-  const sideDirectories = directoriesOf(side);
-  const baseDirectories = directoriesOf(base);
+  const sideDirectories = scans.directoriesOf(side);
+  const baseDirectories = scans.directoriesOf(scans.base);
   const removed = (directory: string): boolean =>
     baseDirectories.has(directory) && !sideDirectories.has(directory);
-  return new Set(addedPaths(base, other).map(parentOf).filter(removed));
+  return new Set(scans.addedPaths(other).map(parentOf).filter(removed));
 }
 
 const hasAncestorIn = (directory: string, directories: ReadonlySet<string>): boolean => {
@@ -66,13 +94,13 @@ const hasAncestorIn = (directory: string, directories: ReadonlySet<string>): boo
 };
 
 const removedDirectories = (
-  base: FlatTree,
+  scans: MergeTreeScans,
   side: FlatTree,
   relevant: ReadonlySet<string>,
 ): ReadonlyMap<string, Relevance> => {
-  const sideDirectories = directoriesOf(side);
+  const sideDirectories = scans.directoriesOf(side);
   const removed = new Map<string, Relevance>();
-  for (const directory of directoriesOf(base)) {
+  for (const directory of scans.directoriesOf(scans.base)) {
     if (sideDirectories.has(directory)) continue;
     if (relevant.has(directory)) removed.set(directory, 'self');
     else removed.set(directory, hasAncestorIn(directory, relevant) ? 'ancestor' : 'none');
@@ -125,12 +153,12 @@ interface ProvisionalRenames {
 }
 
 const provisionalRenamesOf = (
-  base: FlatTree,
+  scans: MergeTreeScans,
   side: FlatTree,
   other: FlatTree,
   renames: ReadonlyArray<MergeRename>,
 ): ProvisionalRenames => {
-  const removed = removedDirectories(base, side, locationRelevantDirectories(base, side, other));
+  const removed = removedDirectories(scans, side, locationRelevantDirectories(scans, side, other));
   const counts: Counts = new Map();
   for (const rename of renames) countRename(counts, removed, rename);
   const directoryRenames = new Map<string, string>();
@@ -151,7 +179,7 @@ export function directoryRenamesOf(
   other: FlatTree,
   renames: ReadonlyArray<MergeRename>,
 ): DirectoryRenames {
-  return provisionalRenamesOf(base, side, other, renames).renames;
+  return provisionalRenamesOf(scanMergeTrees(base), side, other, renames).renames;
 }
 
 /** The trees, renames and moved paths once directory renames carried each side's paths along. */
@@ -205,9 +233,6 @@ const throughDirectoryRenames = (
   return movedPath(path, from, directoryRenames.get(from) as string);
 };
 
-/** One side's additions and rename targets — ort's `A` and `R` pairs. */
-const pairedPaths = (base: FlatTree, side: FlatTree): FilePath[] => addedPaths(base, side);
-
 /** `compute_collisions`: each moved path with every path the directory renames send there. */
 const collisionsOf = (
   paths: ReadonlyArray<FilePath>,
@@ -222,7 +247,7 @@ const collisionsOf = (
 };
 
 interface SideMove {
-  readonly base: FlatTree;
+  readonly scans: MergeTreeScans;
   readonly side: FlatTree;
   /** The other side's directory renames, applied to this side's paths. */
   readonly directoryRenames: DirectoryRenames;
@@ -233,8 +258,8 @@ interface SideMove {
 }
 
 /** `path_in_way`, for a path this side or the base already holds. */
-const inTheWay = ({ base, side }: SideMove, path: FilePath): boolean =>
-  side.entries.has(path) || base.entries.has(path);
+const inTheWay = ({ scans, side }: SideMove, path: FilePath): boolean =>
+  side.entries.has(path) || scans.base.entries.has(path);
 
 /** `handle_path_level_conflicts` refusing a move: a collision or a path in the way. */
 const BLOCKED = Symbol('blocked');
@@ -260,7 +285,8 @@ interface SideMoves {
 const moves = (move: SideMove): SideMoves => {
   const found = new Map<FilePath, FilePath>();
   let clean = true;
-  for (const path of pairedPaths(move.base, move.side)) {
+  // A side's additions are its rename targets too — ort's `A` and `R` pairs.
+  for (const path of move.scans.addedPaths(move.side)) {
     const destination = destinationOf(move, path);
     if (destination === BLOCKED) clean = false;
     else if (destination !== undefined) found.set(path, destination);
@@ -311,16 +337,16 @@ interface BothSidesMoves {
 
 /** `collect_renames` for each side, against the other side's surviving directory renames. */
 const bothSidesMoves = (
-  base: FlatTree,
+  scans: MergeTreeScans,
   sides: { readonly ours: FlatTree; readonly theirs: FlatTree },
   byOurs: DirectoryRenames,
   byTheirs: DirectoryRenames,
 ): BothSidesMoves => {
-  const ourCollisions = collisionsOf(pairedPaths(base, sides.ours), byTheirs);
-  const theirCollisions = collisionsOf(pairedPaths(base, sides.theirs), byOurs);
+  const ourCollisions = collisionsOf(scans.addedPaths(sides.ours), byTheirs);
+  const theirCollisions = collisionsOf(scans.addedPaths(sides.theirs), byOurs);
   return {
     ours: moves({
-      base,
+      scans,
       side: sides.ours,
       directoryRenames: byTheirs,
       exclusions: byOurs,
@@ -328,7 +354,7 @@ const bothSidesMoves = (
       otherCollisions: theirCollisions,
     }),
     theirs: moves({
-      base,
+      scans,
       side: sides.theirs,
       directoryRenames: byOurs,
       exclusions: byTheirs,
@@ -372,11 +398,15 @@ export function applyDirectoryRenames(
 ): DirectoryRenamedInput {
   if (base === undefined || (renames.directoryRenames ?? 'none') === 'none')
     return unchanged(ours, theirs, renames);
-  const oursRenamed = provisionalRenamesOf(base, ours, theirs, renames.ours);
-  const theirsRenamed = provisionalRenamesOf(base, theirs, ours, renames.theirs);
+  // No file rename casts a vote, so no directory is renamed, split, or moves a path.
+  if (renames.ours.length === 0 && renames.theirs.length === 0)
+    return unchanged(ours, theirs, renames);
+  const scans = scanMergeTrees(base);
+  const oursRenamed = provisionalRenamesOf(scans, ours, theirs, renames.ours);
+  const theirsRenamed = provisionalRenamesOf(scans, theirs, ours, renames.theirs);
   const byOurs = withoutShared(oursRenamed.renames, theirsRenamed.renames);
   const byTheirs = withoutShared(theirsRenamed.renames, oursRenamed.renames);
-  const sideMoves = bothSidesMoves(base, { ours, theirs }, byOurs, byTheirs);
+  const sideMoves = bothSidesMoves(scans, { ours, theirs }, byOurs, byTheirs);
   const moved = movedInput({ ours, theirs, renames }, sideMoves);
   return oursRenamed.split || theirsRenamed.split ? { ...moved, clean: false } : moved;
 }

@@ -20,6 +20,8 @@ import { detectRenames, type RenameDetectOptions } from '../../domain/diff/renam
 import {
   type DirectoryRenameMode,
   locationRelevantDirectories,
+  type MergeTreeScans,
+  scanMergeTrees,
 } from '../../domain/merge/directory-renames.js';
 import { type MergeRename, type MergeRenames, NO_MERGE_RENAMES } from '../../domain/merge/index.js';
 import type { OrtRenameOptions } from '../../domain/merge/strategy-options.js';
@@ -32,6 +34,8 @@ interface SidePass {
   readonly base: FlatTree;
   readonly side: FlatTree;
   readonly other: FlatTree;
+  /** Shared by both sides' passes, so each tree is scanned once per merge. */
+  readonly scans: MergeTreeScans;
   readonly empty: ObjectId;
   readonly limit: number;
   readonly threshold: number | undefined;
@@ -44,7 +48,7 @@ const NO_DIRECTORIES: ReadonlySet<string> = new Set();
 const locationRelevant = (pass: SidePass): ReadonlySet<string> =>
   pass.directoryRenames === 'none'
     ? NO_DIRECTORIES
-    : locationRelevantDirectories(pass.base, pass.side, pass.other);
+    : locationRelevantDirectories(pass.scans, pass.side, pass.other);
 
 const underAny = (path: FilePath, directories: ReadonlySet<string>): boolean => {
   for (let slash = path.lastIndexOf('/'); slash > 0; slash = path.lastIndexOf('/', slash - 1)) {
@@ -156,6 +160,7 @@ export const detectMergeRenames = async (
   if (!(overrides.detect ?? config.detect) || base === undefined) return NO_MERGE_RENAMES;
   const shared = {
     base,
+    scans: scanMergeTrees(base),
     empty: emptyBlobOid(ctx.hashConfig),
     limit: config.limit,
     threshold: overrides.threshold,
