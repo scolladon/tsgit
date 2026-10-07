@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
+import { describe as describeCommand } from '../../../../src/application/commands/describe.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { nameRev } from '../../../../src/application/commands/name-rev.js';
+import { evaluateRevision } from '../../../../src/application/commands/rev-parse.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { errorDataCode } from '../../../../src/domain/error-data-code.js';
 import type { AuthorIdentity, ObjectId, TagData } from '../../../../src/domain/objects/index.js';
@@ -33,7 +35,10 @@ const seed = async (): Promise<Seeded> => {
   const logs: string[] = [];
   const ctx = {
     ...createMemoryContext(),
-    logger: { error: (message: string) => logs.push(`error: ${message}`) },
+    logger: {
+      info: (message: string) => logs.push(message),
+      error: (message: string) => logs.push(`error: ${message}`),
+    },
   } as Context;
   await init(ctx);
   await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a\n');
@@ -140,6 +145,123 @@ describe('nameRev tip table', () => {
 
         // Assert
         expect(result?.ref).toBe('refs/tags/b-undated');
+      });
+    });
+  });
+
+  describe('Given an annotated tag of a commit', () => {
+    describe('When nameRev names the tag object', () => {
+      it('Then it names the tag itself by its exact ref, not the commit', async () => {
+        // Arrange
+        const { ctx, head } = await seed();
+        const tag = await annotatedTag(ctx, 'tc', head);
+        const sut = nameRev;
+
+        // Act
+        const result = await sut(ctx, 'tc');
+
+        // Assert
+        expect(result).toEqual({
+          oid: tag,
+          ref: RefName.from('refs/tags/tc'),
+          tagDeref: false,
+          steps: [],
+        });
+      });
+    });
+  });
+
+  describe('Given a lightweight tag of a tree', () => {
+    describe('When nameRev names the tree by its id', () => {
+      it('Then it names the tree by the tag pointing straight at it', async () => {
+        // Arrange
+        const { ctx } = await seed();
+        const tree = await evaluateRevision(ctx, 'HEAD^{tree}');
+        await plantRef(ctx, 'refs/tags/lt', tree);
+        const sut = nameRev;
+
+        // Act
+        const result = await sut(ctx, tree);
+
+        // Assert
+        expect(result).toEqual({
+          oid: tree,
+          ref: RefName.from('refs/tags/lt'),
+          tagDeref: false,
+          steps: [],
+        });
+      });
+    });
+
+    describe('When nameRev names it under a refs filter the tag fails', () => {
+      it('Then the tree is unnamed, as the filter drops the tag from the tip table', async () => {
+        // Arrange
+        const { ctx } = await seed();
+        const tree = await evaluateRevision(ctx, 'HEAD^{tree}');
+        await plantRef(ctx, 'refs/tags/lt', tree);
+        const sut = nameRev;
+
+        // Act
+        const result = await sut(ctx, tree, { refs: 'refs/heads/*' });
+
+        // Assert
+        expect(result).toEqual({ oid: tree, ref: undefined, tagDeref: false, steps: [] });
+      });
+    });
+
+    describe('When describe --contains names the tree', () => {
+      it('Then it skips the tree with the note git prints for a rev with no commit', async () => {
+        // Arrange
+        const { ctx, logs } = await seed();
+        const tree = await evaluateRevision(ctx, 'HEAD^{tree}');
+        await plantRef(ctx, 'refs/tags/lt', tree);
+        const sut = describeCommand;
+
+        // Act
+        const result = await sut(ctx, 'lt', { contains: true });
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect(logs).toEqual(['Could not get commit for lt. Skipping.']);
+      });
+    });
+  });
+
+  describe('Given an annotated tag of HEAD', () => {
+    describe('When describe --contains runs with no revision', () => {
+      it('Then it names HEAD through the peeled tag', async () => {
+        // Arrange
+        const { ctx, head } = await seed();
+        await annotatedTag(ctx, 'tc', head);
+        const sut = describeCommand;
+
+        // Act
+        const result = await sut(ctx, undefined, { contains: true });
+
+        // Assert
+        expect(result).toEqual({
+          oid: head,
+          ref: RefName.from('refs/tags/tc'),
+          tagDeref: true,
+          steps: [],
+        });
+      });
+    });
+  });
+
+  describe('Given a blob no ref points at', () => {
+    describe('When nameRev names it', () => {
+      it('Then it answers the blob unnamed', async () => {
+        // Arrange
+        const { ctx } = await seed();
+        const blob = await evaluateRevision(ctx, 'HEAD:a.txt');
+        const sut = nameRev;
+
+        // Act
+        const result = await sut(ctx, blob);
+
+        // Assert
+        expect(result).toEqual({ oid: blob, ref: undefined, tagDeref: false, steps: [] });
       });
     });
   });

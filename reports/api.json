@@ -110669,7 +110669,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Full 40-hex oid of the named commit."
+										"text": "Full 40-hex oid of the named object — a commit, or a tag, tree or blob named by exact ref match."
 									}
 								]
 							},
@@ -162740,7 +162740,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ", as git prints nothing for it and exits 0."
+										"text": ", as git prints nothing for it and exits 0. A tag,\ntree or blob is named only by a ref pointing straight at it — git's exact\nref match — never by the commit a tag peels to."
 									}
 								]
 							},

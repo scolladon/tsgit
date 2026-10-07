@@ -42,7 +42,7 @@ import {
   type ResolvedDescribePlan,
 } from './internal/describe-options.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
-import { type NameRevResult, nameRev } from './name-rev.js';
+import { type NameRevResult, nameRevPeeled } from './name-rev.js';
 import { status } from './status.js';
 
 export type { DescribeOptions };
@@ -120,7 +120,7 @@ const describeContains = async (
   // default mode each pattern is scoped to `refs/tags/`.
   const scope = (patterns: ReadonlyArray<string>): ReadonlyArray<string> =>
     useTags ? patterns.map((pattern) => `${TAGS_PREFIX}${pattern}`) : [];
-  const result = await nameRev(ctx, rev, {
+  const result = await nameRevPeeled(ctx, rev, {
     tags: useTags,
     refs: scope(plan.include),
     exclude: scope(plan.exclude),

@@ -21,7 +21,11 @@ export interface NameRevTip {
 /** The refusals of an object found but not parsed — git's `parse_object` NULL after its `error:`. */
 const UNPARSED_CODES: ReadonlySet<string | undefined> = new Set(['INVALID_TAG', 'INVALID_COMMIT']);
 
-const parseObjectGently = async (ctx: Context, id: ObjectId): Promise<GitObject | undefined> => {
+/** git's `parse_object`: `undefined` for an absent object, or one found but unparsed (logged). */
+export const parseObjectGently = async (
+  ctx: Context,
+  id: ObjectId,
+): Promise<GitObject | undefined> => {
   try {
     return await readObject(ctx, id);
   } catch (error) {
@@ -34,8 +38,16 @@ const parseObjectGently = async (ctx: Context, id: ObjectId): Promise<GitObject 
 };
 
 /** Peel `oid` through its tag chain; a revisited link (a store not hashing to names) ends it. */
-export const peelNameRevTip = async (ctx: Context, oid: ObjectId): Promise<NameRevTip> => {
-  let current = await parseObjectGently(ctx, oid);
+export const peelNameRevTip = async (ctx: Context, oid: ObjectId): Promise<NameRevTip> =>
+  peelLoadedTip(ctx, oid, await parseObjectGently(ctx, oid));
+
+/** {@link peelNameRevTip} from `oid`'s already-loaded object — git's `deref_tag` of a parsed object. */
+export const peelLoadedTip = async (
+  ctx: Context,
+  oid: ObjectId,
+  object: GitObject | undefined,
+): Promise<NameRevTip> => {
+  let current = object;
   let deref = false;
   let taggerDate = 0;
   const seen = new Set<ObjectId>([oid]);

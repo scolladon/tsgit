@@ -693,4 +693,89 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
       });
     });
   });
+
+  describe('Given tags of a commit, a tree and a blob, and a lightweight tag of the tree', () => {
+    let dir = '';
+    let ctx: Context;
+
+    beforeAll(async () => {
+      dir = await makeRepo('non-commit');
+      await commitFile(dir, 'c1');
+      await commitFile(dir, 'c2');
+      runGit(['-C', dir, 'tag', '-a', 'tc', '-m', 'tc', 'HEAD~1'], { env: datedEnv(clock) });
+      runGit(['-C', dir, 'tag', '-a', 'tt', '-m', 'tt', 'HEAD^{tree}'], { env: datedEnv(clock) });
+      git(dir, 'tag', 'lt', 'HEAD^{tree}');
+      runGit(['-C', dir, 'tag', '-a', 'tb', '-m', 'tb', 'HEAD:c1.txt'], { env: datedEnv(clock) });
+      ctx = createNodeContext({ workDir: dir });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    const NON_COMMIT_MATRIX: ReadonlyArray<{ label: string; rev: () => string; named: string }> = [
+      { label: 'an annotated tag of a commit', rev: () => 'tc', named: 'tags/tc' },
+      { label: 'an annotated tag of a tree', rev: () => 'tt', named: 'tags/tt' },
+      { label: 'a lightweight tag of a tree', rev: () => 'lt', named: 'tags/lt' },
+      { label: 'an annotated tag of a blob', rev: () => 'tb', named: 'tags/tb' },
+      {
+        label: 'a tag object by its id',
+        rev: () => git(dir, 'rev-parse', 'tc').trim(),
+        named: 'tags/tc',
+      },
+      {
+        label: 'a tree by its id',
+        rev: () => git(dir, 'rev-parse', 'HEAD^{tree}').trim(),
+        named: 'tags/lt',
+      },
+      { label: 'an untagged blob', rev: () => 'HEAD:c2.txt', named: 'undefined' },
+      { label: 'an untagged tree', rev: () => 'HEAD~1^{tree}', named: 'undefined' },
+    ];
+
+    describe('When nameRevCmd names each object', () => {
+      it.each(NON_COMMIT_MATRIX)(
+        'Then $label is named by exact ref match as git does',
+        async ({ rev, named }) => {
+          // Arrange
+          const sut = nameRevCmd;
+
+          // Act
+          const result = renderNameRev(await sut(ctx, rev()));
+
+          // Assert
+          expect(result).toBe(gitNameRev(dir, rev()));
+          expect(result).toBe(named);
+        },
+      );
+    });
+
+    describe('When describeCmd runs with --contains on the tag of a tree', () => {
+      it('Then it skips the tag with the note git prints and describes nothing', async () => {
+        // Arrange
+        const notes: string[] = [];
+        const noted = { ...ctx, logger: { info: (message: string) => notes.push(message) } };
+        const gitRun = tryRunGitWithExit(['-C', dir, 'describe', '--contains', 'tt']);
+        const sut = describeCmd;
+
+        // Act
+        const result = await sut(noted, 'tt', { contains: true });
+
+        // Assert
+        expect(gitRun.exitCode).toBe(0);
+        expect(renderContains(result)).toBe(gitRun.stdout.trim());
+        expect(notes.map((note) => `${note}\n`).join('')).toBe(gitRun.stderr);
+      });
+    });
+
+    describe('When describeCmd runs with --contains on the tag of a commit', () => {
+      it('Then it still names the peeled commit, as git passes --peel-tag', async () => {
+        // Arrange & Act
+        const result = renderContains(await describeCmd(ctx, 'tc', { contains: true }));
+
+        // Assert
+        expect(result).toBe(git(dir, 'describe', '--contains', 'tc').trim());
+        expect(result).toBe('tc^0');
+      });
+    });
+  });
 });

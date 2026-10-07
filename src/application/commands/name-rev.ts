@@ -23,10 +23,8 @@ import {
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
-import { hasObject } from '../primitives/has-object.js';
 import type { BoundedReader } from '../primitives/internal/bounded-reader.js';
 import { boundedReaderFor } from '../primitives/internal/concurrency.js';
-import { peel } from '../primitives/internal/peel.js';
 import {
   type CommitMeta,
   commitMetaOf,
@@ -35,14 +33,14 @@ import {
 import { getRefStore } from '../primitives/ref-store.js';
 import { reportAmbiguousOid } from './internal/ambiguous-oid-report.js';
 import { type NameRevOptions, parseNameRevOptions } from './internal/name-rev-options.js';
-import { peelNameRevTip } from './internal/name-rev-tip.js';
+import { parseObjectGently, peelLoadedTip, peelNameRevTip } from './internal/name-rev-tip.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import { evaluateRevision } from './rev-parse.js';
 
 export type { NameRevOptions, NameRevStep };
 
 export interface NameRevResult {
-  /** Full 40-hex oid of the named commit. */
+  /** Full 40-hex oid of the named object — a commit, or a tag, tree or blob named by exact ref match. */
   readonly oid: ObjectId;
   /** Naming ref (full name, e.g. `refs/tags/v1.0`); `undefined` when unnameable. */
   readonly ref: RefName | undefined;
@@ -65,30 +63,70 @@ type MetaReader = BoundedReader<CommitMeta | undefined>;
 /**
  * Name `rev` (default `HEAD`). An argument git's `repo_get_oid` cannot read, or
  * whose object `parse_object` cannot load, is skipped with git's note rather
- * than refused — `undefined`, as git prints nothing for it and exits 0.
+ * than refused — `undefined`, as git prints nothing for it and exits 0. A tag,
+ * tree or blob is named only by a ref pointing straight at it — git's exact
+ * ref match — never by the commit a tag peels to.
  */
-export const nameRev = async (
+export const nameRev = (
   ctx: Context,
   rev?: string,
   opts: NameRevOptions = {},
+): Promise<NameRevResult | undefined> => nameRevOf(ctx, rev ?? DEFAULT_REV, opts, 'object');
+
+/** git `name-rev --peel-tag`, as `describe --contains` runs it: a tag names its commit. */
+export const nameRevPeeled = (
+  ctx: Context,
+  rev: string | undefined,
+  opts: NameRevOptions,
+): Promise<NameRevResult | undefined> => nameRevOf(ctx, rev ?? DEFAULT_REV, opts, 'peel');
+
+const nameRevOf = async (
+  ctx: Context,
+  rev: string,
+  opts: NameRevOptions,
+  tags: TagArgument,
 ): Promise<NameRevResult | undefined> => {
   await assertOperationalRepository(ctx);
-  const target = await readTarget(ctx, rev ?? DEFAULT_REV);
+  const target = await readTarget(ctx, rev, tags);
   if (target === undefined) return undefined;
-  const targetMeta = (await readCommitMeta(ctx, target)) as CommitMeta;
-  const cutoff = nameRevCutoff(targetMeta);
   const filter = buildRefFilter(parseNameRevOptions(opts));
   // Stryker disable next-line MethodExpression: equivalent — `listRefNames` already
   // returns refs in name order, so this `.sort()` is a defensive no-op (the
   // reverse-alphabetical tie test names the same ref with or without it).
   const refs = [...(await enumerateRefs(ctx))].filter((ref) => filter.qualifies(ref)).sort();
+  if (!target.isCommit) return exactRefMatch(ctx, refs, target.id);
+  return nameCommit(ctx, refs, target.id);
+};
+
+/** Flood every naming ref down to `target` and fold the best name it received. */
+const nameCommit = async (
+  ctx: Context,
+  refs: ReadonlyArray<RefName>,
+  target: ObjectId,
+): Promise<NameRevResult> => {
+  const cutoff = nameRevCutoff((await readCommitMeta(ctx, target)) as CommitMeta);
   const revNames = new Map<ObjectId, RevName>();
   const metas: MetaReader = boundedReaderFor(ctx, 'ioBound', (id) => readCommitMeta(ctx, id));
   for (const ref of refs) await walkRef(ctx, ref, revNames, cutoff, metas);
-
   const name = revNames.get(target);
   if (name === undefined) return { oid: target, ref: undefined, tagDeref: false, steps: [] };
   return { oid: target, ref: name.ref, tagDeref: name.tagDeref, steps: foldSteps(name) };
+};
+
+/** git's `get_exact_ref_match`: the first naming ref whose own value is `target`. */
+const exactRefMatch = async (
+  ctx: Context,
+  refs: ReadonlyArray<RefName>,
+  target: ObjectId,
+): Promise<NameRevResult> => {
+  const store = getRefStore(ctx);
+  for (const ref of refs) {
+    const resolved = await store.resolveDirect(ref);
+    if (resolved.kind === 'direct' && resolved.id === target) {
+      return { oid: target, ref, tagDeref: false, steps: [] };
+    }
+  }
+  return { oid: target, ref: undefined, tagDeref: false, steps: [] };
 };
 
 /** The codes a `repo_get_oid` that read no object refuses with. */
@@ -99,13 +137,27 @@ const UNREAD_ARGUMENT_CODES: ReadonlySet<string | undefined> = new Set([
   'AMBIGUOUS_OID_PREFIX',
 ]);
 
-const readTarget = async (ctx: Context, rev: string): Promise<ObjectId | undefined> => {
+/** Which object a tag argument names: the tag itself, or (git's `--peel-tag`) its commit. */
+type TagArgument = 'object' | 'peel';
+
+interface NameRevTarget {
+  readonly id: ObjectId;
+  readonly isCommit: boolean;
+}
+
+const readTarget = async (
+  ctx: Context,
+  rev: string,
+  tags: TagArgument,
+): Promise<NameRevTarget | undefined> => {
   const id = await readArgumentOid(ctx, rev);
   if (id === undefined) return skipArgument(ctx, `Could not get sha1 for ${rev}. Skipping.`);
-  if (!(await hasObject(ctx, id))) {
-    return skipArgument(ctx, `Could not get object for ${rev}. Skipping.`);
-  }
-  return peel(ctx, undefined, id, 'commit');
+  const object = await parseObjectGently(ctx, id);
+  if (object === undefined) return skipArgument(ctx, `Could not get object for ${rev}. Skipping.`);
+  if (tags === 'object') return { id, isCommit: object.type === 'commit' };
+  const { commit } = await peelLoadedTip(ctx, id, object);
+  if (commit === undefined) return skipArgument(ctx, `Could not get commit for ${rev}. Skipping.`);
+  return { id: commit.id, isCommit: true };
 };
 
 const readArgumentOid = async (ctx: Context, rev: string): Promise<ObjectId | undefined> => {
