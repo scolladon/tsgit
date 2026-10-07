@@ -533,6 +533,47 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
       );
     });
 
+    describe.each([
+      ['reword', 'X', 'HEAD~1'],
+      ['fixup', 'Y', 'HEAD'],
+    ] as const)(
+      'When the todo %ss %s over a commit carrying extra headers',
+      (action, target, carrier) => {
+        it('Then the amended commit keeps the same extra headers as git', async () => {
+          // Arrange
+          buildHeadered(pair.peer);
+          buildHeadered(pair.ours);
+          runGit(['-C', pair.peer, 'rebase', '-i', 'HEAD~2'], {
+            env: {
+              ...runGitEnv(),
+              GIT_SEQUENCE_EDITOR: `perl -i -pe 's/^pick (.*${target} subject)/${action} $1/'`,
+              GIT_EDITOR: "perl -i -pe 's/X subject/reworded/'",
+            },
+          });
+          const x = oidAt(pair.ours, 'HEAD~1');
+          const y = oidAt(pair.ours, 'HEAD');
+          const repo = await openRepository({ cwd: pair.ours });
+          const first =
+            action === 'reword'
+              ? { action, oid: x, message: 'reworded' }
+              : { action: 'pick' as const, oid: x };
+          const second =
+            action === 'fixup' ? { action, oid: y } : { action: 'pick' as const, oid: y };
+
+          // Act
+          await repo.rebase.run({
+            upstream: oidAt(pair.ours, 'HEAD~2'),
+            interactive: [first, second],
+          });
+          await repo.dispose();
+
+          // Assert
+          expect(extraHeaderLines(pair.ours, carrier)).toBe(extraHeaderLines(pair.peer, carrier));
+          expect(extraHeaderLines(pair.peer, carrier)).toContain('x-custom hello');
+        });
+      },
+    );
+
     describe('When the todo drops c1 and stops to edit c2', () => {
       it('Then both name the picked commit in stopped-sha and REBASE_HEAD', async () => {
         // Arrange
@@ -903,4 +944,32 @@ function commitFileNamed(dir: string, name: string): void {
   writeWork(dir, name, `${name}\n`);
   git(dir, 'add', name);
   gitCommit(dir, name);
+}
+
+/** base; X on base carries a mergetag and a custom header; Y on X. HEAD left on main. */
+function buildHeadered(dir: string): void {
+  runGit(['init', '-q', '-b', 'main', dir]);
+  configGit(dir);
+  commitFileNamed(dir, 'base');
+  const base = git(dir, 'rev-parse', 'HEAD').trim();
+  const tree = git(dir, 'write-tree').trim();
+  const identity = 'Ada <ada@example.com> 1700000000 +0000';
+  const raw = `tree ${tree}\nparent ${base}\nauthor ${identity}\ncommitter ${identity}\nmergetag object ${base}\n type commit\n tag t\n tagger T <t@x> 1700000000 +0000\n \n t\nx-custom hello\n\nX subject\n`;
+  const x = runGit(['-C', dir, 'hash-object', '-t', 'commit', '-w', '--literally', '--stdin'], {
+    input: raw,
+  }).trim();
+  git(dir, 'update-ref', 'refs/heads/main', x);
+  writeWork(dir, 'y.txt', 'y\n');
+  git(dir, 'add', 'y.txt');
+  gitCommit(dir, 'Y subject');
+}
+
+/** A commit's headers past `committer`, as written. */
+function extraHeaderLines(dir: string, rev: string): string {
+  const raw = git(dir, 'cat-file', 'commit', rev);
+  return raw
+    .slice(0, raw.indexOf('\n\n'))
+    .split('\n')
+    .filter((line) => !/^(tree|parent|author|committer) /.test(line))
+    .join('\n');
 }

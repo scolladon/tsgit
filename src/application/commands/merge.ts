@@ -55,7 +55,7 @@ import { abbreviateObjectId } from '../primitives/abbreviate-object-id.js';
 import { conflictResultTree } from '../primitives/apply-merge-to-worktree.js';
 import { buildContentMerger } from '../primitives/build-content-merger.js';
 import { readConfig } from '../primitives/config-read.js';
-import { createMergeCommit } from '../primitives/create-commit.js';
+import { createCommitWithStoredHeaders } from '../primitives/create-commit.js';
 import { detectMergeRenames } from '../primitives/detect-merge-renames.js';
 import { changedPaths, findWouldOverwrite } from '../primitives/find-would-overwrite.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
@@ -1096,7 +1096,7 @@ const commitCleanMerge = async (
   return materialiseAndApply(ctx, mergedTree, async () => {
     const { extraHeaders, ...unsigned } = commitData;
     const signed = gpgSignature === undefined ? unsigned : { ...unsigned, gpgSignature };
-    const id = await createMergeCommit(ctx, signed, extraHeaders);
+    const id = await createCommitWithStoredHeaders(ctx, signed, extraHeaders);
     // Written through the literal `HEAD`: the branch it names, or HEAD itself when detached.
     await updateRef(ctx, HEAD, id, {
       expected: ourId,

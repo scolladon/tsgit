@@ -15,7 +15,8 @@ import {
 import { renderPatch, sortedRecordedPaths } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
 import { type ConflictType, type MergeConflict, replayLabels } from '../../domain/merge/index.js';
-import type { CommitData } from '../../domain/objects/commit.js';
+import { amendedExtraHeaders } from '../../domain/objects/amend-headers.js';
+import type { CommitData, ExtraHeader } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
 import {
@@ -41,7 +42,7 @@ import {
 } from '../../domain/reflog/reflog-messages.js';
 import type { Context } from '../../ports/context.js';
 import { abbreviateObjectId } from '../primitives/abbreviate-object-id.js';
-import { createCommit } from '../primitives/create-commit.js';
+import { createCommit, createCommitWithStoredHeaders } from '../primitives/create-commit.js';
 import { diffTrees } from '../primitives/diff-trees.js';
 import { removeAutoMerge } from '../primitives/internal/auto-merge-ref.js';
 import {
@@ -931,17 +932,19 @@ const commitAndAdvance = async (
     readonly author: CommitData['author'];
     readonly message: string;
     readonly reflog: string;
+    /** An amend's headers carried from the commit it replaces. */
+    readonly carried?: ReadonlyArray<ExtraHeader>;
   },
 ): Promise<ObjectId> => {
   const committer = await resolveCurrentIdentity(ctx);
-  const created = await createCommit(ctx, {
+  const commit = {
     tree: spec.tree,
     parents: [spec.parent, spec.mergeParent].filter((p) => p !== undefined),
     author: spec.author,
     committer,
     message: spec.message,
-    extraHeaders: [],
-  });
+  };
+  const created = await createCommitWithStoredHeaders(ctx, commit, spec.carried ?? []);
   await updateRef(ctx, HEAD, created, { expected: spec.expected, reflogMessage: spec.reflog });
   return created;
 };
@@ -1050,6 +1053,7 @@ const stepReword = async (
     author: producedData.author,
     message,
     reflog: rebaseRewordReflog(subjectLine(message)),
+    carried: amendedExtraHeaders(producedData.extraHeaders),
   });
   return { kind: 'advanced', created };
 };
@@ -1209,6 +1213,7 @@ const meldGroupMember = async (
     author: headData.author,
     message,
     reflog: rebaseActionReflog(inst.action, subjectLine(message)),
+    carried: amendedExtraHeaders(headData.extraHeaders),
   });
   return { kind: 'committed', created, message };
 };
@@ -1422,6 +1427,7 @@ const resumeInteractiveStop = async (
     author: state.author,
     message: amendCommit.message,
     reflog: rebaseContinueReflog(subjectLine(amendCommit.message)),
+    carried: amendedExtraHeaders(amendCommit.extraHeaders),
   });
 };
 
@@ -1450,6 +1456,7 @@ const commitFixupResolution = async (
     author: baseData.author,
     message,
     reflog: rebaseContinueReflog(subjectLine(message)),
+    carried: amendedExtraHeaders(baseData.extraHeaders),
   });
 };
 

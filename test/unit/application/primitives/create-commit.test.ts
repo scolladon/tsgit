@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createCommit,
-  createMergeCommit,
+  createCommitWithStoredHeaders,
 } from '../../../../src/application/primitives/create-commit.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -511,7 +511,7 @@ describe('createCommit', () => {
   });
 });
 
-describe('createMergeCommit', () => {
+describe('createCommitWithStoredHeaders', () => {
   const MERGE_TAG = { key: 'mergetag', value: 'object abc\ntype commit\n\nbody\r\n-----BEGIN' };
 
   describe('Given a mergetag header holding a blank line and a CR', () => {
@@ -520,7 +520,7 @@ describe('createMergeCommit', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const tree = await emptyTreeId(ctx);
-        const sut = createMergeCommit;
+        const sut = createCommitWithStoredHeaders;
 
         // Act
         const id = await sut(
@@ -542,7 +542,7 @@ describe('createMergeCommit', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const tree = await emptyTreeId(ctx);
-        const sut = createMergeCommit;
+        const sut = createCommitWithStoredHeaders;
 
         // Act
         const result = await sut(

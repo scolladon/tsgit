@@ -74,17 +74,18 @@ export async function createCommit(ctx: Context, input: CreateCommitInput): Prom
 }
 
 /**
- * git's `commit_tree_extended` for a merge: `mergeTags` are the `mergetag`
- * headers `append_merge_tag_headers` copies verbatim from tag objects already
- * stored — not caller input, so the header-value guard does not apply to them.
+ * git's `commit_tree_extended` with headers copied verbatim from objects
+ * already stored — a merge's `mergetag` headers (`append_merge_tag_headers`),
+ * an amend's carried headers (`read_commit_extra_headers`) — not caller
+ * input, so the header-value guard does not apply to them.
  */
-export async function createMergeCommit(
+export async function createCommitWithStoredHeaders(
   ctx: Context,
   input: CreateCommitInput,
-  mergeTags: ReadonlyArray<ExtraHeader>,
+  storedHeaders: ReadonlyArray<ExtraHeader>,
 ): Promise<ObjectId> {
   assertCommitInput(ctx, input);
-  return writeCommit(ctx, input, [...(input.extraHeaders ?? []), ...mergeTags]);
+  return writeCommit(ctx, input, [...(input.extraHeaders ?? []), ...storedHeaders]);
 }
 
 function writeCommit(
