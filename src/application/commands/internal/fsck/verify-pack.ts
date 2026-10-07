@@ -174,7 +174,7 @@ export async function runVerifyPackPass(
     const attribution = attributeTo(store, source);
     for (const pack of packs) {
       const own = await verifyOnePack(ctx, { store, source, pack, catalogue });
-      findings.push(...own.findings.map((finding) => ({ ...finding, ...attribution })));
+      for (const finding of own.findings) findings.push({ ...finding, ...attribution });
       for (const id of own.ids) copies.push({ id, pack: pack.name, ...attribution });
       exitBit |= own.exitBit;
     }

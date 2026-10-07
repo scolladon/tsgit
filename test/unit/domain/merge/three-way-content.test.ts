@@ -1238,3 +1238,43 @@ describe('mergeContent conflict styles without labels', () => {
     });
   });
 });
+
+describe('Given a 200k-line file where ours edits the first line and theirs the last', () => {
+  const LINE_COUNT = 200_000;
+  const body = (first: string, last: string): Uint8Array => {
+    const lines = Array.from({ length: LINE_COUNT }, (_, i) => `line ${i}`);
+    lines[0] = first;
+    lines[LINE_COUNT - 1] = last;
+    return enc(`${lines.join('\n')}\n`);
+  };
+  const base = body('line 0', `line ${LINE_COUNT - 1}`);
+  const ours = body('ours edit', `line ${LINE_COUNT - 1}`);
+  const theirs = body('line 0', 'theirs edit');
+  const merged = decoder.decode(body('ours edit', 'theirs edit'));
+
+  describe('When merged with conflict markers', () => {
+    it('Then the unchanged region carries through clean', () => {
+      // Arrange
+      const sut = mergeContent;
+
+      // Act
+      const result = sut(base, ours, theirs);
+
+      // Assert
+      assertClean(result, merged);
+    });
+  });
+
+  describe('When merged favouring ours', () => {
+    it('Then the unchanged region carries through clean', () => {
+      // Arrange
+      const sut = mergeContent;
+
+      // Act
+      const result = sut(base, ours, theirs, { favor: 'ours' });
+
+      // Assert
+      assertClean(result, merged);
+    });
+  });
+});

@@ -57,6 +57,11 @@ function joinLinesEnsuringInteriorLf(lines: ReadonlyArray<Uint8Array>): Uint8Arr
 
 type ResolvingFavor = Exclude<MergeFavor, 'none'>;
 
+// A spread push passes every element as a call argument, which overflows the stack on a long region.
+function appendAll<T>(target: T[], source: ReadonlyArray<T>): void {
+  for (const item of source) target.push(item);
+}
+
 function resolvedLines(
   segment: Exclude<MergeSegment, { kind: 'clean' }>,
   favor: ResolvingFavor,
@@ -73,7 +78,7 @@ function renderFavoured(
 ): ContentMergeResult {
   const lines: Uint8Array[] = [];
   for (const segment of segments) {
-    lines.push(...(segment.kind === 'clean' ? segment.lines : resolvedLines(segment, favor)));
+    appendAll(lines, segment.kind === 'clean' ? segment.lines : resolvedLines(segment, favor));
   }
   return { status: 'clean', bytes: joinLinesEnsuringInteriorLf(lines) };
 }
@@ -95,7 +100,7 @@ function renderWithMarkers(
   let conflicted = false;
   for (const segment of segments) {
     if (segment.kind === 'clean') {
-      parts.push(...segment.lines);
+      appendAll(parts, segment.lines);
     } else {
       conflicted = true;
       parts.push(conflictBytes(segment, options));
