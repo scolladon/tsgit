@@ -14,6 +14,8 @@
  * A pattern without back-references runs as a Thompson automaton, in time
  * linear in the subject; one with back-references needs backtracking and runs
  * as its ECMAScript translation, exponential at worst — as regexec is there.
+ * A subject lacking text every match must contain is refused before the
+ * automaton runs, and a pattern that is plain text is a substring search.
  */
 
 /** GNU's `RE_DUP_MAX`: the largest bound an interval accepts. */
@@ -55,10 +57,23 @@ interface Sequence {
 
 type Fragment = Instruction | Sequence;
 
-/** A parsed expression: its ECMAScript source and its automaton. */
+/** The text a piece's matches are known to spell. */
+interface Literals {
+  /** What every match spells, when the piece only ever matches that text. */
+  readonly exact: string | undefined;
+  /** Texts known to lie inside every match, each a run of literal characters. */
+  readonly required: ReadonlyArray<string>;
+  /** Where a match may start: anywhere, or only where the subject starts. */
+  readonly starts: Starts;
+}
+
+type Starts = 'anywhere' | 'subject-start';
+
+/** A parsed expression: its ECMAScript source, its automaton and its literal text. */
 interface Piece {
   readonly source: string;
   readonly fragment: Fragment;
+  readonly literals: Literals;
 }
 
 interface Bounds {
@@ -66,12 +81,19 @@ interface Bounds {
   readonly max: number;
 }
 
-const anchor = (source: string, holds: Assertion): Piece => ({
+/** Nothing known: a piece matching varied text, or a zero-width one a substring search cannot place. */
+const OPAQUE: Literals = { exact: undefined, required: [], starts: 'anywhere' };
+
+const anchor = (source: string, holds: Assertion, literals = OPAQUE): Piece => ({
   source,
   fragment: { op: 'assert', holds },
+  literals,
 });
 
-const SUBJECT_START = anchor('^', (before) => before === undefined);
+const SUBJECT_START = anchor('^', (before) => before === undefined, {
+  ...OPAQUE,
+  starts: 'subject-start',
+});
 const SUBJECT_END = anchor('$', (_before, after) => after === undefined);
 
 const PLAIN_ANCHORS: ReadonlyMap<string, Piece> = new Map([
@@ -167,7 +189,24 @@ export const compileExtendedRegex = (pattern: string): ExtendedRegex | undefined
   const piece = parseAlternation(cursor, 0);
   if (piece === undefined) return undefined;
   if (cursor.backreferences) return new RegExp(piece.source, FLAGS);
-  return sizeOf(piece.fragment) > MAX_PROGRAM_SIZE ? undefined : automaton(piece.fragment);
+  return sizeOf(piece.fragment) > MAX_PROGRAM_SIZE ? undefined : matcherOf(piece);
+};
+
+/** A lone surrogate is one character to the automaton but half of one to a substring search. */
+const LONE_SURROGATE = /\p{Cs}/u;
+
+const isPlainText = (exact: string | undefined): exact is string =>
+  exact !== undefined && !LONE_SURROGATE.test(exact);
+
+const matcherOf = ({ fragment, literals }: Piece): ExtendedRegex => {
+  const { exact, required, starts } = literals;
+  if (isPlainText(exact)) return { test: (subject) => subject.includes(exact) };
+  const matcher = automaton(fragment, starts);
+  const texts = required.filter((text) => text !== '');
+  if (texts.length === 0) return matcher;
+  return {
+    test: (subject) => texts.every((text) => subject.includes(text)) && matcher.test(subject),
+  };
 };
 
 const peek = (c: Cursor, offset = 0): string | undefined => c.chars[c.pos + offset];
@@ -184,12 +223,17 @@ const literal = (ch: string): string =>
 /** An expression consuming one character `source` matches. */
 const characterPiece = (source: string): Piece => {
   const pattern = new RegExp(source, FLAGS);
-  return { source, fragment: { op: 'char', matches: (character) => pattern.test(character) } };
+  return {
+    source,
+    fragment: { op: 'char', matches: (character) => pattern.test(character) },
+    literals: OPAQUE,
+  };
 };
 
 const literalPiece = (ch: string): Piece => ({
   source: literal(ch),
   fragment: { op: 'char', matches: (character) => character === ch },
+  literals: { exact: ch, required: [ch], starts: 'anywhere' },
 });
 
 const parseAlternation = (c: Cursor, nesting: number): Translation => {
@@ -203,9 +247,16 @@ const parseAlternation = (c: Cursor, nesting: number): Translation => {
   }
 };
 
+/** Alternatives share no known text, but start at the subject's start when each of them does. */
+const alternativeLiterals = (branches: ReadonlyArray<Piece>): Literals =>
+  branches.every((branch) => branch.literals.starts === 'subject-start')
+    ? { ...OPAQUE, starts: 'subject-start' }
+    : OPAQUE;
+
 const alternatePieces = (branches: ReadonlyArray<Piece>): Piece => ({
   source: branches.map((branch) => branch.source).join('|'),
   fragment: alternate(branches.map((branch) => branch.fragment)),
+  literals: branches.length === 1 ? (branches[0] as Piece).literals : alternativeLiterals(branches),
 });
 
 /** A `)` closes a branch only inside a group; at the top it is an ordinary character. */
@@ -224,7 +275,26 @@ const parseBranch = (c: Cursor, nesting: number): Translation => {
   return {
     source: pieces.map((piece) => piece.source).join(''),
     fragment: sequence(pieces.map((piece) => piece.fragment)),
+    literals: concatenatedLiterals(pieces.map((piece) => piece.literals)),
   };
+};
+
+/** Adjacent exact pieces spell one run; every run and every inner requirement is required. */
+const concatenatedLiterals = (parts: ReadonlyArray<Literals>): Literals => {
+  const required: string[] = [];
+  let [run, allExact] = ['', true];
+  for (const { exact, required: inner } of parts) {
+    if (exact !== undefined) {
+      run += exact;
+      continue;
+    }
+    required.push(run);
+    for (const text of inner) required.push(text);
+    [run, allExact] = ['', false];
+  }
+  required.push(run);
+  const starts = parts[0]?.starts ?? 'anywhere';
+  return { exact: allExact ? run : undefined, required, starts };
 };
 
 /** A repetition opening an expression is refused; an anchor takes no repetition. */
@@ -265,7 +335,7 @@ const parseGroup = (c: Cursor, nesting: number): Translation => {
   const inner = parseAlternation(c, nesting + 1);
   if (inner === undefined || next(c) !== ')') return undefined;
   c.closedGroups.add(index);
-  return { source: `(${inner.source})`, fragment: inner.fragment };
+  return { source: `(${inner.source})`, fragment: inner.fragment, literals: inner.literals };
 };
 
 /** A trailing `\` is refused. */
@@ -281,7 +351,7 @@ const parseEscape = (c: Cursor): Translation => {
 const parseBackreference = (c: Cursor, digit: string): Translation => {
   if (!c.closedGroups.has(Number(digit))) return undefined;
   c.backreferences = true;
-  return { source: `(?:\\${digit})`, fragment: EMPTY };
+  return { source: `(?:\\${digit})`, fragment: EMPTY, literals: OPAQUE };
 };
 
 /** A repeated piece and the repetition still to apply to it. */
@@ -328,6 +398,8 @@ const repeat = (piece: Piece, bounds: Bounds): Translation => {
   return {
     source: `(?:${piece.source}){${min},${max === Number.POSITIVE_INFINITY ? '' : max}}`,
     fragment,
+    // Whatever one copy requires, a repetition holding a copy requires too.
+    literals: min === 0 ? OPAQUE : { ...piece.literals, exact: undefined },
   };
 };
 
@@ -484,10 +556,10 @@ const repeatFragment = (body: Fragment, { min, max }: Bounds): Fragment | undefi
   return sequence([...copies, ...rest]);
 };
 
-const automaton = (fragment: Fragment): ExtendedRegex => {
+const automaton = (fragment: Fragment, starts: Starts): ExtendedRegex => {
   const program: Instruction[] = [];
   flatten(fragment, program);
-  return { test: (subject) => run(program, subject) };
+  return { test: (subject) => run(program, subject, starts) };
 };
 
 const flatten = (fragment: Fragment, program: Instruction[]): void => {
@@ -501,33 +573,49 @@ const flatten = (fragment: Fragment, program: Instruction[]): void => {
 /** A simulation over a program: the step at which each instruction last joined the threads. */
 interface Simulation {
   readonly program: ReadonlyArray<Instruction>;
-  readonly characters: ReadonlyArray<string>;
   readonly joined: Int32Array;
 }
 
-/** Threads start at every position and step together, one code point at a time. */
-const run = (program: ReadonlyArray<Instruction>, subject: string): boolean => {
-  const characters = Array.from(subject);
-  const simulation = { program, characters, joined: new Int32Array(program.length).fill(-1) };
-  let pending = [START];
-  for (let at = 0; ; at += 1) {
-    const ready = follow(simulation, pending, at);
+/** A step of the subject: its index, and the code points either side of it. */
+interface Step {
+  readonly at: number;
+  readonly before: string | undefined;
+  readonly after: string | undefined;
+}
+
+/**
+ * Threads start at every position — or only the first, where no later start
+ * can match — and step together, one code point at a time.
+ */
+const run = (program: ReadonlyArray<Instruction>, subject: string, starts: Starts): boolean => {
+  const codePoints = subject[Symbol.iterator]();
+  const simulation = { program, joined: new Int32Array(program.length).fill(-1) };
+  let step: Step = {
+    at: 0,
+    before: undefined,
+    after: codePoints.next().value as string | undefined,
+  };
+  for (let pending = [START]; pending.length > 0; ) {
+    const ready = follow(simulation, pending, step);
     if (ready.includes(program.length)) return true;
-    const character = characters[at];
-    if (character === undefined) return false;
-    pending = advance(program, ready, character);
+    const { at, after } = step;
+    if (after === undefined) return false;
+    pending = advance(program, ready, after, starts);
+    step = { at: at + 1, before: after, after: codePoints.next().value as string | undefined };
   }
+  return false;
 };
 
 type CharInstruction = Extract<Instruction, { readonly op: 'char' }>;
 
-/** The ready threads that consume `character`, one step on, and a thread starting afresh. */
+/** The ready threads that consume `character`, one step on, and a thread starting afresh where one may. */
 const advance = (
   program: ReadonlyArray<Instruction>,
   ready: ReadonlyArray<number>,
   character: string,
+  starts: Starts,
 ): number[] => {
-  const pending = [START];
+  const pending = starts === 'anywhere' ? [START] : [];
   for (const pc of ready) {
     if ((program[pc] as CharInstruction).matches(character)) pending.push(pc + 1);
   }
@@ -538,8 +626,9 @@ const advance = (
  * Drains `pending` through forks and holding assertions, each instruction
  * once per step, into the threads ready at a character or at the match.
  */
-const follow = (simulation: Simulation, pending: number[], at: number): number[] => {
-  const { program, characters, joined } = simulation;
+const follow = (simulation: Simulation, pending: number[], step: Step): number[] => {
+  const { program, joined } = simulation;
+  const { at, before, after } = step;
   const ready: number[] = [];
   for (let pc = pending.pop(); pc !== undefined; pc = pending.pop()) {
     if (joined[pc] === at) continue;
@@ -547,7 +636,7 @@ const follow = (simulation: Simulation, pending: number[], at: number): number[]
     const instruction = program[pc];
     if (instruction === undefined || instruction.op === 'char') ready.push(pc);
     else if (instruction.op === 'fork') pending.push(pc + instruction.to, pc + instruction.or);
-    else if (instruction.holds(characters[at - 1], characters[at])) pending.push(pc + 1);
+    else if (instruction.holds(before, after)) pending.push(pc + 1);
   }
   return ready;
 };
