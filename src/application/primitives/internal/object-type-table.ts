@@ -37,7 +37,8 @@ export const assignObjectType = (
   type: ObjectType,
 ): boolean => {
   const known = table?.get(id);
-  if (known === undefined || known === type) {
+  if (known === type) return true;
+  if (known === undefined) {
     table?.set(id, type);
     return true;
   }

@@ -85,17 +85,21 @@ const gitattributesPathIn = (dir: string): string =>
  * reached any other way is left to the root descent, which owns the
  * prefix-boundary fallback.
  */
+// Pending lookups are cached too, so concurrent lookups of one directory share a read.
 const createDirTreeIndex = (tree: ObjectId) => {
-  const dirTrees = new Map<string, ObjectId>([['', tree]]);
-  return async (ctx: Context, dir: string): Promise<ObjectId | undefined> => {
-    const cached = dirTrees.get(dir);
-    if (cached !== undefined) return cached;
-    const parent = dirTrees.get(parentDir(dir));
+  const dirTrees = new Map<string, Promise<ObjectId | undefined>>([['', Promise.resolve(tree)]]);
+  const lookUp = async (ctx: Context, dir: string): Promise<ObjectId | undefined> => {
+    const parent = await dirTrees.get(parentDir(dir));
     if (parent === undefined) return undefined;
     const entry = await findTreeEntry(ctx, parent, dir.slice(dir.lastIndexOf('/') + 1));
-    if (entry === undefined || !isDirectory(entry.mode)) return undefined;
-    dirTrees.set(dir, entry.id);
-    return entry.id;
+    return entry !== undefined && isDirectory(entry.mode) ? entry.id : undefined;
+  };
+  return (ctx: Context, dir: string): Promise<ObjectId | undefined> => {
+    const cached = dirTrees.get(dir);
+    if (cached !== undefined) return cached;
+    const pending = lookUp(ctx, dir);
+    dirTrees.set(dir, pending);
+    return pending;
   };
 };
 
@@ -174,15 +178,21 @@ const createDirectoryStacks = (
   loadDir: DirLoader,
   rootStack: ReadonlyArray<AttributeSource>,
 ): ((dir: string) => Promise<ReadonlyArray<AttributeSource>>) => {
-  const stacks = new Map<string, ReadonlyArray<AttributeSource>>([['', rootStack]]);
-  const stackOf = async (dir: string): Promise<ReadonlyArray<AttributeSource>> => {
-    const cached = stacks.get(dir);
-    if (cached !== undefined) return cached;
+  // Pending loads are cached too, so concurrent lookups under one directory share its read.
+  const stacks = new Map<string, Promise<ReadonlyArray<AttributeSource>>>([
+    ['', Promise.resolve(rootStack)],
+  ]);
+  const load = async (dir: string): Promise<ReadonlyArray<AttributeSource>> => {
     const parsed = await loadDir(dir);
     const above = await stackOf(parentDir(dir));
-    const stack = parsed === undefined ? above : [{ basedir: dir, rules: parsed.rules }, ...above];
-    stacks.set(dir, stack);
-    return stack;
+    return parsed === undefined ? above : [{ basedir: dir, rules: parsed.rules }, ...above];
+  };
+  const stackOf = (dir: string): Promise<ReadonlyArray<AttributeSource>> => {
+    const cached = stacks.get(dir);
+    if (cached !== undefined) return cached;
+    const pending = load(dir);
+    stacks.set(dir, pending);
+    return pending;
   };
   return stackOf;
 };

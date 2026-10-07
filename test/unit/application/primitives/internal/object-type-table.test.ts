@@ -41,6 +41,28 @@ describe('assignObjectType', () => {
       });
     });
 
+    describe('When the same table types it a blob again', () => {
+      it('Then it agrees without writing the table', () => {
+        // Arrange
+        const { ctx, logged } = logging();
+        const table = createObjectTypeTable();
+        const sut = assignObjectType;
+        sut(ctx, table, ID, 'blob');
+        const writes = vi.spyOn(table, 'set');
+
+        // Act
+        const result = sut(ctx, table, ID, 'blob');
+
+        // Assert
+        expect({ result, logged, writes: writes.mock.calls.length }).toEqual({
+          result: true,
+          logged: [],
+          writes: 0,
+        });
+        expect(table.get(ID)).toBe('blob');
+      });
+    });
+
     describe('When another table types it a commit', () => {
       it('Then the earlier typing does not carry over', () => {
         // Arrange

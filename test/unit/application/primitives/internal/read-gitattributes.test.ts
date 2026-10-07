@@ -334,6 +334,26 @@ describe('buildAttributeProvider', () => {
     });
   });
 
+  describe('Given concurrent lookups under one uncached directory', () => {
+    describe('When sourcesForPath runs for two of its files at once', () => {
+      it('Then that directory `.gitattributes` is read once', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '/repo/a/.gitattributes', '* merge=a\n');
+        const provider = await buildAttributeProvider(ctx);
+        const spy = vi.spyOn(ctx.fs, 'readUtf8');
+        const sut = provider.sourcesForPath;
+
+        // Act
+        await Promise.all([sut('a/x.txt' as FilePath), sut('a/y.txt' as FilePath)]);
+
+        // Assert
+        const reads = spy.mock.calls.filter(([path]) => path === '/repo/a/.gitattributes');
+        expect(reads).toHaveLength(1);
+      });
+    });
+  });
+
   describe('Given a root .gitattributes', () => {
     describe('When resolving a top-level file', () => {
       it('Then it touches the file system no further than the build did', async () => {

@@ -110,11 +110,13 @@ export const expandRef = async (
   resolve: CandidateResolver,
 ): Promise<ReadonlyArray<FoundCandidate>> => {
   const found: FoundCandidate[] = [];
+  let warns: boolean | undefined;
   for (const candidate of refCandidates(name)) {
     const outcome = await readFound(ctx, candidate, resolve);
     if (outcome === undefined) continue;
     found.push(outcome);
-    if (!(await readSettings(ctx)).warns) break;
+    warns ??= (await readSettings(ctx)).warns;
+    if (!warns) break;
   }
   return found;
 };
