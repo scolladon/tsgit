@@ -28,7 +28,11 @@ import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { atomicWriteFile } from './atomic-write.js';
 import { enumerateRefs } from './enumerate-refs.js';
-import { changedPathFilters, storedFilterLookup } from './internal/changed-path-filters.js';
+import {
+  changedPathFilters,
+  type NewFilterBudget,
+  storedFilterLookup,
+} from './internal/changed-path-filters.js';
 import {
   type ChangedPathsRequest,
   resolveChangedPathsSettings,
@@ -168,10 +172,11 @@ export async function changedPathsFor(
   commits: readonly CommitGraphWriterCommit[],
   layers: readonly LocalGraphLayer[],
   settings: BloomFilterSettings | undefined,
+  budget?: NewFilterBudget,
 ): Promise<CommitGraphChangedPaths | undefined> {
   if (settings === undefined) return undefined;
   const stored = storedFilterLookup(layers, settings);
-  return { settings, filters: await changedPathFilters(ctx, commits, settings, stored) };
+  return { settings, filters: await changedPathFilters(ctx, commits, settings, stored, budget) };
 }
 
 const GRAPH_LAYER_SUFFIX = '.graph';

@@ -22,12 +22,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { maintenance } from '../../src/application/commands/maintenance.js';
 import { writeCommitGraph } from '../../src/application/primitives/write-commit-graph.js';
+import { parseCommitGraphLayer, storedBloomFilter } from '../../src/domain/commit/commit-graph.js';
 import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
   git,
   runGit,
   runGitEnv,
+  tryRunGitWithExit,
 } from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 120_000;
@@ -157,6 +159,38 @@ async function corruptFirstStoredFilter(dir: string): Promise<void> {
   }
   await chmod(file, 0o644);
   await writeFile(file, bytes);
+}
+
+/** How many of a layer's commits carry a filter — git writes a zero-length one for each it never computed. */
+function nonEmptyFilterCount(bytes: Uint8Array): number {
+  const layer = parseCommitGraphLayer(bytes);
+  const positions = Array.from({ length: layer.commitCount }, (_, at) => at);
+  return positions.filter((at) => (storedBloomFilter(layer, at)?.length ?? 0) > 0).length;
+}
+
+/** A parent committed after its child's date — generation and date orders disagree — with a one-filter budget. */
+async function skewedPairRepo(generationVersion: string): Promise<string> {
+  const dir = await tmpDir(`skew-v${generationVersion}`);
+  git(dir, 'init', '-q', '-b', 'main');
+  disableAutoMaintenance(dir);
+  for (const [name, epoch] of [
+    ['parent', 1_700_001_000],
+    ['child', 1_700_000_500],
+  ] as const) {
+    await writeFiles(dir, { [name]: `${name}\n` });
+    const date = `@${epoch} +0000`;
+    runGit(['-C', dir, 'commit', '-q', '-m', name], {
+      env: { ...runGitEnv(), GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+    });
+  }
+  for (const [key, value] of [
+    ['commitGraph.generationVersion', generationVersion],
+    ['commitGraph.changedPaths', 'true'],
+    ['commitGraph.maxNewFilters', '1'],
+  ]) {
+    git(dir, 'config', key!, value!);
+  }
+  return dir;
 }
 
 async function disposeTwin(twin: Twin): Promise<void> {
@@ -315,6 +349,96 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph changed-path filters interop', () 
 
         // Assert
         expect(await graphFiles(twin.oursDir)).toEqual(await graphFiles(twin.peerDir));
+        await disposeTwin(twin);
+      });
+    });
+  });
+
+  describe.each([
+    { budget: '3', computed: 3 },
+    { budget: '0', computed: 0 },
+  ])(
+    'Given commitGraph.maxNewFilters $budget over a history no graph holds',
+    ({ budget, computed }) => {
+      describe('When both tools run the commit-graph maintenance task with changed paths', () => {
+        it('Then only the budgeted filters are computed, the layer byte-identical', async () => {
+          // Arrange
+          const twin = await twinWithNewCommit(baseDir, `budget-${budget}`, (dir) => {
+            git(dir, 'config', 'commitGraph.changedPaths', 'true');
+            git(dir, 'config', 'commitGraph.maxNewFilters', budget);
+          });
+          git(twin.peerDir, 'maintenance', 'run', '--task=commit-graph');
+          const sut = maintenance;
+
+          // Act
+          await sut(ours(twin), { tasks: ['commit-graph'] });
+
+          // Assert
+          const peer = await graphFiles(twin.peerDir);
+          const layer = Object.entries(peer).find(([name]) => name.endsWith('.graph'))![1];
+          expect(nonEmptyFilterCount(Buffer.from(layer, 'hex'))).toBe(computed);
+          expect(await graphFiles(twin.oursDir)).toEqual(peer);
+          await disposeTwin(twin);
+        });
+      });
+    },
+  );
+
+  describe.each([
+    { version: '2', filtered: 'parent' },
+    { version: '1', filtered: 'child' },
+  ])('Given a budget of one filter and generation version $version', ({ version, filtered }) => {
+    describe('When both tools write a newer parent and its older child', () => {
+      it(`Then the ${filtered} alone gets the filter, the layer byte-identical`, async () => {
+        // Arrange
+        const skewed = await skewedPairRepo(version);
+        const twin = await twinWithNewCommit(skewed, `skew-v${version}`, () => undefined);
+        git(twin.peerDir, 'maintenance', 'run', '--task=commit-graph');
+        const sut = maintenance;
+
+        // Act
+        await sut(ours(twin), { tasks: ['commit-graph'] });
+
+        // Assert
+        expect(await graphFiles(twin.oursDir)).toEqual(await graphFiles(twin.peerDir));
+        await disposeTwin(twin);
+        await rm(skewed, { recursive: true, force: true });
+      });
+    });
+  });
+
+  describe('Given commitGraph.maxNewFilters holding a word', () => {
+    describe('When both tools run the commit-graph maintenance task', () => {
+      it('Then both fail the task on the bad numeric value', async () => {
+        // Arrange
+        const twin = await twinWithNewCommit(baseDir, 'budget-word', (dir) =>
+          git(dir, 'config', 'commitGraph.maxNewFilters', 'x'),
+        );
+        const peer = tryRunGitWithExit([
+          '-C',
+          twin.peerDir,
+          'maintenance',
+          'run',
+          '--task=commit-graph',
+        ]);
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ours(twin), { tasks: ['commit-graph'] });
+
+        // Assert
+        expect(peer.exitCode).not.toBe(0);
+        expect(peer.stderr).toContain(
+          "bad numeric config value 'x' for 'commitgraph.maxnewfilters'",
+        );
+        expect(peer.stderr).toContain('invalid unit');
+        const [failure] = result.tasksFailed;
+        expect(failure?.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect(failure?.data).toMatchObject({
+          key: 'commitgraph.maxnewfilters',
+          value: 'x',
+          reason: 'invalid unit',
+        });
         await disposeTwin(twin);
       });
     });

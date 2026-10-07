@@ -29,7 +29,8 @@ import { objectNotFound } from '../../domain/objects/error.js';
 import { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { atomicWriteFile, withLockFile } from './atomic-write.js';
-import { changedPathsRequest } from './internal/changed-paths-settings.js';
+import type { NewFilterBudget } from './internal/changed-path-filters.js';
+import { changedPathsRequest, configuredMaxNewFilters } from './internal/changed-paths-settings.js';
 import { hasGrafts } from './internal/commit-graph-compatible.js';
 import {
   type CommitGraphParser,
@@ -262,6 +263,24 @@ async function writeChainLayer(
 }
 
 /**
+ * git's `commit_gen_cmp` key for `commitGraph.maxNewFilters`: the generation
+ * the write computes — or, when it computes none, the level a folded commit's
+ * graph entry carries and zero for a commit no graph holds yet.
+ */
+function filterBudget(
+  limit: number,
+  fresh: ReadonlySet<ObjectId>,
+  generations: ReadonlyMap<ObjectId, CommitGraphGeneration>,
+  pass: CorrectedDatePass,
+): NewFilterBudget {
+  const generationOf =
+    pass === 'skipped'
+      ? (id: ObjectId) => (fresh.has(id) ? 0 : generations.get(id)!.level)
+      : (id: ObjectId) => generations.get(id)!.correctedDate;
+  return { limit, generationOf };
+}
+
+/**
  * No layer is written for a shallow repository or one with a registered
  * graft — git's `commit_graph_compatible` — nor when every reachable commit
  * is already in the graph. Changed-path Bloom filters follow the chain's top
@@ -269,6 +288,7 @@ async function writeChainLayer(
  */
 export async function writeSplitCommitGraph(ctx: Context): Promise<WriteSplitCommitGraphResult> {
   const request = await changedPathsRequest(ctx);
+  const maxNewFilters = await configuredMaxNewFilters(ctx);
   if (await isShallowRepository(ctx)) return NOTHING_WRITTEN;
   if (await hasGrafts(ctx)) return NOTHING_WRITTEN;
   if (await declinesChangedPathsVersion(ctx)) return NOTHING_WRITTEN;
@@ -287,7 +307,8 @@ export async function writeSplitCommitGraph(ctx: Context): Promise<WriteSplitCom
   const generations = computeCommitGraphGenerations(order, base, parser, pass);
   const settings = await changedPathsSettingsFor(ctx, layers, request);
   const commits = parsedForWrite(parser, order, refusalFor(settings));
-  const changedPaths = await changedPathsFor(ctx, commits, layers, settings);
+  const budget = filterBudget(maxNewFilters, new Set(fresh), generations, pass);
+  const changedPaths = await changedPathsFor(ctx, commits, layers, settings, budget);
   const layer = await serializeLayer(ctx, commits, base, changedPaths, generations, pass);
   await writeChainLayer(ctx, plan, layer);
   return { written: true, commitCount: base.commitCount + commits.length };

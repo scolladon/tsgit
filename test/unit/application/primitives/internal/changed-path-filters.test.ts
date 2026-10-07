@@ -330,3 +330,102 @@ describe('changedPathFilters, with stored filters', () => {
     });
   });
 });
+
+describe('changedPathFilters, under a new-filter budget', () => {
+  const idOf = (char: string): ObjectId => char.repeat(40) as ObjectId;
+  const NOTHING_STORED = () => undefined;
+
+  /** Root commits over one shared tree, keyed by id, each with its committer date. */
+  const rootCommits = async (ctx: Context, dates: Readonly<Record<string, number>>) => {
+    const tree = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f', await blob(ctx, 'x'))]);
+    return Object.entries(dates).map(([char, committerDate]) => ({
+      id: idOf(char),
+      rootTree: tree,
+      parents: [],
+      committerDate,
+    }));
+  };
+
+  describe.each([
+    {
+      label: 'generations falling in oid order',
+      generations: { a: 3, b: 2, c: 1 },
+      dates: { a: 1, b: 1, c: 1 },
+      computed: ['c'],
+    },
+    {
+      label: 'equal generations and committer dates falling in oid order',
+      generations: { a: 1, b: 1, c: 1 },
+      dates: { a: 3, b: 2, c: 1 },
+      computed: ['c'],
+    },
+    {
+      label: 'equal generations and committer dates',
+      generations: { a: 1, b: 1, c: 1 },
+      dates: { a: 1, b: 1, c: 1 },
+      computed: ['a'],
+    },
+  ])('Given three commits with $label and a budget of one', ({ generations, dates, computed }) => {
+    describe('When their filters are computed', () => {
+      it('Then only the first in generation, then date, order gets one', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const commits = await rootCommits(ctx, dates);
+        const generationOf = (id: ObjectId): number =>
+          generations[id[0] as keyof typeof generations];
+        const sut = changedPathFilters;
+
+        // Act
+        const result = await sut(ctx, commits, DEFAULT_BLOOM_FILTER_SETTINGS, NOTHING_STORED, {
+          limit: 1,
+          generationOf,
+        });
+
+        // Assert
+        expect([...result.keys()]).toEqual(computed.map(idOf));
+      });
+    });
+  });
+
+  describe('Given a commit with a stored filter before one without, and a budget of one', () => {
+    describe('When their filters are computed', () => {
+      it('Then the stored filter is copied without spending the budget', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const commits = await rootCommits(ctx, { a: 1, b: 2 });
+        const stored = (id: ObjectId) => (id === idOf('a') ? Uint8Array.of(0xab) : undefined);
+        const sut = changedPathFilters;
+
+        // Act
+        const result = await sut(ctx, commits, DEFAULT_BLOOM_FILTER_SETTINGS, stored, {
+          limit: 1,
+          generationOf: () => 1,
+        });
+
+        // Assert
+        expect([...result.get(idOf('a'))!]).toEqual([0xab]);
+        expect(result.has(idOf('b'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a commit without a stored filter and a budget of zero', () => {
+    describe('When its filter is computed', () => {
+      it('Then none is computed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const commits = await rootCommits(ctx, { a: 1 });
+        const sut = changedPathFilters;
+
+        // Act
+        const result = await sut(ctx, commits, DEFAULT_BLOOM_FILTER_SETTINGS, NOTHING_STORED, {
+          limit: 0,
+          generationOf: () => 1,
+        });
+
+        // Assert
+        expect(result.size).toBe(0);
+      });
+    });
+  });
+});

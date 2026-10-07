@@ -161,29 +161,63 @@ export function storedFilterLookup(
   };
 }
 
-/** One filter per commit, keyed by its id; a non-empty stored filter is reused, as git does. */
+/** git's `commitGraph.maxNewFilters`: at most `limit` filters computed, lowest generation first. */
+export interface NewFilterBudget {
+  readonly limit: number;
+  /** The generation `commit_gen_cmp` orders by; equal ones fall back to the committer date. */
+  readonly generationOf: (id: ObjectId) => number;
+}
+
+const UNLIMITED: NewFilterBudget = { limit: Number.POSITIVE_INFINITY, generationOf: () => 0 };
+
+/** git's `compute_bloom_filters` order, ties kept in oid order. */
+const inBudgetOrder = (
+  commits: readonly CommitGraphWriterCommit[],
+  { generationOf }: NewFilterBudget,
+): readonly CommitGraphWriterCommit[] =>
+  [...commits].sort(
+    (a, b) => generationOf(a.id) - generationOf(b.id) || a.committerDate - b.committerDate,
+  );
+
+async function computedFilter(
+  ctx: Context,
+  commit: CommitGraphWriterCommit,
+  treeOf: ReadonlyMap<ObjectId, ObjectId>,
+  settings: BloomFilterSettings,
+): Promise<Uint8Array> {
+  const parentTree = await firstParentTree(ctx, commit, treeOf);
+  const paths = await firstParentChangedPaths(
+    ctx,
+    commit.rootTree,
+    parentTree,
+    settings.maxChangedPaths,
+  );
+  return changedPathFilter(paths, settings);
+}
+
+/**
+ * One filter per commit, keyed by its id; a non-empty stored filter is reused,
+ * as git does, without spending the budget. A commit past it gets none.
+ */
 export async function changedPathFilters(
   ctx: Context,
   commits: readonly CommitGraphWriterCommit[],
   settings: BloomFilterSettings,
   stored: StoredFilterLookup = NOTHING_STORED,
+  budget: NewFilterBudget = UNLIMITED,
 ): Promise<ReadonlyMap<ObjectId, Uint8Array>> {
   const treeOf = new Map(commits.map((commit) => [commit.id, commit.rootTree]));
   const filters = new Map<ObjectId, Uint8Array>();
-  for (const commit of commits) {
+  let computed = 0;
+  for (const commit of inBudgetOrder(commits, budget)) {
     const reused = stored(commit.id);
     if (reused !== undefined && reused.length > 0) {
       filters.set(commit.id, reused);
       continue;
     }
-    const parentTree = await firstParentTree(ctx, commit, treeOf);
-    const paths = await firstParentChangedPaths(
-      ctx,
-      commit.rootTree,
-      parentTree,
-      settings.maxChangedPaths,
-    );
-    filters.set(commit.id, changedPathFilter(paths, settings));
+    if (computed >= budget.limit) continue;
+    computed += 1;
+    filters.set(commit.id, await computedFilter(ctx, commit, treeOf, settings));
   }
   return filters;
 }

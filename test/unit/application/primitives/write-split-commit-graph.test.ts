@@ -13,7 +13,11 @@ import {
 import { writeCommitGraph } from '../../../../src/application/primitives/write-commit-graph.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeSplitCommitGraph } from '../../../../src/application/primitives/write-split-commit-graph.js';
-import { parseCommitGraphLayer, positionOf } from '../../../../src/domain/commit/commit-graph.js';
+import {
+  parseCommitGraphLayer,
+  positionOf,
+  storedBloomFilter,
+} from '../../../../src/domain/commit/commit-graph.js';
 import { fileNotFound, permissionDenied, TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -32,13 +36,14 @@ async function commitOn(
   ctx: Context,
   parents: readonly ObjectId[],
   message: string,
+  identity: AuthorIdentity = AUTHOR,
 ): Promise<ObjectId> {
   const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
   return createCommit(ctx, {
     tree: await writeObject(ctx, tree),
     parents,
-    author: AUTHOR,
-    committer: AUTHOR,
+    author: identity,
+    committer: identity,
     message,
   });
 }
@@ -633,6 +638,132 @@ describe('writeSplitCommitGraph', () => {
         const hashes = await chainHashes(ctx);
         expect(hashes).toHaveLength(2);
         expect((await readLayer(ctx, hashes[1]!)).bloomSettings?.hashVersion).toBe(2);
+      });
+    });
+  });
+
+  describe('Given commitGraph.changedPaths set, commitGraph.maxNewFilters 1 and a linear history', () => {
+    describe('When the split write runs', () => {
+      it('Then only the lowest-generation commit gets a filter, the others a zero-length one', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await linearHistory(ctx, 3);
+        await pointRef(ctx, 'refs/heads/main', ids[2]!);
+        await ctx.fs.appendUtf8(
+          `${commonGitDir(ctx)}/config`,
+          '[commitGraph]\n\tchangedPaths\n\tmaxNewFilters = 1\n',
+        );
+        const sut = writeSplitCommitGraph;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const [hash] = await chainHashes(ctx);
+        const layer = await readLayer(ctx, hash!);
+        const lengths = ids.map((id) => storedBloomFilter(layer, positionOf(layer, id)!)?.length);
+        expect(lengths).toEqual([1, 0, 0]);
+      });
+    });
+  });
+
+  describe('Given a budget of one filter over commits whose dates run against their generations', () => {
+    const datedCommit = (
+      ctx: Context,
+      parents: readonly ObjectId[],
+      timestamp: number,
+    ): Promise<ObjectId> => commitOn(ctx, parents, `at ${timestamp}`, { ...AUTHOR, timestamp });
+
+    const filterLengths = async (ctx: Context, ids: readonly ObjectId[]) => {
+      const hashes = await chainHashes(ctx);
+      const layer = await readLayer(ctx, hashes.at(-1)!);
+      return ids.map((id) => storedBloomFilter(layer, positionOf(layer, id)!)?.length);
+    };
+
+    describe.each([
+      { version: 2, expected: [1, 0] },
+      { version: 1, expected: [0, 1] },
+    ])(
+      'When generation version $version writes a newer parent and its older child',
+      ({ version, expected }) => {
+        it('Then the lowest generation, else the oldest date, gets the filter', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const parent = await datedCommit(ctx, [], 1_700_001_000);
+          const child = await datedCommit(ctx, [parent], 1_700_000_500);
+          await pointRef(ctx, 'refs/heads/main', child);
+          await ctx.fs.appendUtf8(
+            `${commonGitDir(ctx)}/config`,
+            `[commitGraph]\n\tchangedPaths\n\tmaxNewFilters = 1\n\tgenerationVersion = ${version}\n`,
+          );
+          const sut = writeSplitCommitGraph;
+
+          // Act
+          await sut(ctx);
+
+          // Assert
+          expect(await filterLengths(ctx, [parent, child])).toEqual(expected);
+        });
+      },
+    );
+
+    describe.each([
+      { version: 2, expected: [1, 0, 0, 0] },
+      { version: 1, expected: [0, 0, 1, 0] },
+    ])(
+      'When generation version $version folds an older layer into the new commits',
+      ({ version, expected }) => {
+        it('Then a folded commit keys by its corrected date, else by its level after every new one', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const config = `${commonGitDir(ctx)}/config`;
+          await ctx.fs.appendUtf8(config, `[commitGraph]\n\tgenerationVersion = ${version}\n`);
+          const ids: ObjectId[] = [];
+          for (const offset of [100, 200])
+            ids.push(await datedCommit(ctx, ids.slice(-1), 1_700_000_000 + offset));
+          await pointRef(ctx, 'refs/heads/main', ids[1]!);
+          await writeSplitCommitGraph(ctx);
+          for (const offset of [300, 400])
+            ids.push(await datedCommit(ctx, ids.slice(-1), 1_700_000_000 + offset));
+          await pointRef(ctx, 'refs/heads/main', ids[3]!);
+          await ctx.fs.appendUtf8(config, '\tchangedPaths\n\tmaxNewFilters = 1\n');
+          const sut = writeSplitCommitGraph;
+
+          // Act
+          await sut(ctx);
+
+          // Assert
+          expect(await chainHashes(ctx)).toHaveLength(1);
+          expect(await filterLengths(ctx, ids)).toEqual(expected);
+        });
+      },
+    );
+  });
+
+  describe('Given a malformed commitGraph.maxNewFilters in a shallow repository', () => {
+    describe('When the split write runs', () => {
+      it('Then it refuses on the config before declining for the shallow boundary', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await linearHistory(ctx, 1);
+        await pointRef(ctx, 'refs/heads/main', ids[0]!);
+        await ctx.fs.writeUtf8(shallowFilePath(commonGitDir(ctx)), `${ids[0]}\n`);
+        await ctx.fs.appendUtf8(
+          `${commonGitDir(ctx)}/config`,
+          '[commitGraph]\n\tmaxNewFilters = x\n',
+        );
+        const sut = writeSplitCommitGraph;
+
+        // Act
+        const result = await caughtFrom(() => sut(ctx));
+
+        // Assert
+        expect((result as TsgitError).data).toMatchObject({
+          code: 'CONFIG_BAD_NUMERIC_VALUE',
+          key: 'commitgraph.maxnewfilters',
+          value: 'x',
+          reason: 'invalid unit',
+        });
       });
     });
   });

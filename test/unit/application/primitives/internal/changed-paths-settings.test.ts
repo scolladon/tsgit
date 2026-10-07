@@ -3,6 +3,7 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import { init } from '../../../../../src/application/commands/init.js';
 import {
   changedPathsRequest,
+  configuredMaxNewFilters,
   resolveChangedPathsSettings,
 } from '../../../../../src/application/primitives/internal/changed-paths-settings.js';
 import type { CommitGraphBloomSettings } from '../../../../../src/domain/commit/commit-graph.js';
@@ -145,6 +146,93 @@ describe('changedPathsRequest', () => {
 
         // Assert
         expect(result).toMatchObject({ code: 'CONFIG_BAD_BOOLEAN_VALUE', value: 'maybe' });
+      });
+    });
+  });
+});
+
+describe('configuredMaxNewFilters', () => {
+  describe.each([
+    { label: 'no commitGraph.maxNewFilters', config: '', expected: Number.POSITIVE_INFINITY },
+    { label: 'a count of three', config: '\tmaxNewFilters = 3\n', expected: 3 },
+    { label: 'a count of zero', config: '\tmaxNewFilters = 0\n', expected: 0 },
+    {
+      label: 'a negative count',
+      config: '\tmaxNewFilters = -1\n',
+      expected: Number.POSITIVE_INFINITY,
+    },
+    {
+      label: 'two counts',
+      config: '\tmaxNewFilters = 1\n\tmaxNewFilters = 2\n',
+      expected: 2,
+    },
+    { label: 'the largest int', config: '\tmaxNewFilters = 2147483647\n', expected: 2147483647 },
+    {
+      label: 'the smallest int',
+      config: '\tmaxNewFilters = -2147483648\n',
+      expected: Number.POSITIVE_INFINITY,
+    },
+  ])('Given $label', ({ config, expected }) => {
+    describe('When the budget is read', () => {
+      it(`Then it is ${expected}`, async () => {
+        // Arrange
+        const ctx = await contextWith(config);
+        const sut = configuredMaxNewFilters;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'a word', config: '\tmaxNewFilters = x\n', value: 'x', reason: 'invalid unit' },
+    {
+      label: 'a count past int',
+      config: '\tmaxNewFilters = 5g\n',
+      value: '5g',
+      reason: 'out of range',
+    },
+    {
+      label: 'one past the largest int',
+      config: '\tmaxNewFilters = 2147483648\n',
+      value: '2147483648',
+      reason: 'out of range',
+    },
+    {
+      label: 'one below the smallest int',
+      config: '\tmaxNewFilters = -2147483649\n',
+      value: '-2147483649',
+      reason: 'out of range',
+    },
+    { label: 'no value', config: '\tmaxNewFilters\n', value: '', reason: 'invalid unit' },
+    {
+      label: 'a word before a count',
+      config: '\tmaxNewFilters = x\n\tmaxNewFilters = 2\n',
+      value: 'x',
+      reason: 'invalid unit',
+    },
+  ])('Given commitGraph.maxNewFilters holding $label', ({ config, value, reason }) => {
+    describe('When the budget is read', () => {
+      it('Then it refuses with the bad numeric value', async () => {
+        // Arrange
+        const ctx = await contextWith(config);
+        const sut = configuredMaxNewFilters;
+
+        // Act
+        const result = await sut(ctx).catch((error: TsgitError) => error.data);
+
+        // Assert
+        expect(result).toEqual({
+          code: 'CONFIG_BAD_NUMERIC_VALUE',
+          key: 'commitgraph.maxnewfilters',
+          source: `${ctx.layout.gitDir}/config`,
+          value,
+          reason,
+        });
       });
     });
   });
