@@ -613,7 +613,34 @@ describe('resolveObjectSources', () => {
         ]);
         expect(result.sources.map((s) => s.objectsDir)).toEqual([PRIMARY, '/repo/s/a']);
         expect(warn).toHaveBeenCalledOnce();
-        expect(warn.mock.calls[0]?.[0]).toBe('alternate object store unresolvable: /repo/absent/x');
+        expect(warn).toHaveBeenCalledWith('objectStore: unusable alternate', {
+          reason: 'unresolvable',
+          path: '/repo/absent/x',
+          listedIn: PRIMARY,
+        });
+      });
+    });
+  });
+
+  describe('Given a quoted entry whose path carries a newline', () => {
+    describe('When the chain is resolved', () => {
+      it('Then the warning text stays constant and the path travels only in the context', async () => {
+        // Arrange
+        const warn = vi.fn();
+        const ctx = {
+          ...contextWith({ [PRIMARY]: '"/repo/absent/x\\nforged: line"\n' }),
+          logger: { warn },
+        };
+
+        // Act
+        await resolveObjectSources(ctx, ioOf(ctx));
+
+        // Assert
+        expect(warn).toHaveBeenCalledWith('objectStore: unusable alternate', {
+          reason: 'unresolvable',
+          path: '/repo/absent/x\nforged: line',
+          listedIn: PRIMARY,
+        });
       });
     });
   });

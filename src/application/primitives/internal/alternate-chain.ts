@@ -171,11 +171,12 @@ const lossyUtf8 = new TextDecoder();
 const readIgnoreCase = async (ctx: Context): Promise<boolean> =>
   (await readConfig(ctx)).core?.ignoreCase === true;
 
+/** Constant: an entry's path is repository-controlled text, so it travels in the context only. */
+const UNUSABLE_ALTERNATE = 'objectStore: unusable alternate';
+
 const report = (resolution: Resolution, diagnostic: AlternateDiagnostic): void => {
   resolution.diagnostics.push(diagnostic);
-  resolution.ctx.logger?.warn?.(`alternate object store ${diagnostic.reason}: ${diagnostic.path}`, {
-    ...diagnostic,
-  });
+  resolution.ctx.logger?.warn?.(UNUSABLE_ALTERNATE, { ...diagnostic });
 };
 
 const readList = async (

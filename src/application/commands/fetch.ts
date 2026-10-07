@@ -721,9 +721,12 @@ const applyRemoteRefs = async (
 const storableRefMap = (ctx: Context, refMap: ReadonlyArray<MappedRef>): ReadonlyArray<MappedRef> =>
   refMap.filter(({ target }) => target === undefined || isStorableRef(ctx, target));
 
+/** Constant: the name is server-controlled text, so it travels in the context only. */
+const FUNNY_REF_IGNORED = 'Ignoring funny ref locally';
+
 const isStorableRef = (ctx: Context, target: string): boolean => {
   if (target.startsWith(REFS_PREFIX) && isSafeRefName(target)) return true;
-  ctx.logger?.error?.(`* Ignoring funny ref '${target}' locally`, { ref: target });
+  ctx.logger?.error?.(FUNNY_REF_IGNORED, { ref: target });
   return false;
 };
 

@@ -1679,16 +1679,16 @@ describe('fetch', () => {
             packBytes,
           });
 
-          const errors: string[] = [];
-          const logger = { error: (message: string) => errors.push(message) };
+          const errors: unknown[][] = [];
+          const logger = { error: (...entry: unknown[]) => errors.push(entry) };
 
           // Act
           const result = await fetch({ ...ctx, transport, logger });
 
-          // Assert — only the safe ref made it through.
+          // Assert — only the safe ref made it through, its hostile name kept out of the text.
           expect(result.updatedRefs.map((r) => r.name)).toEqual(['refs/remotes/origin/main']);
           expect(errors).toEqual([
-            "* Ignoring funny ref 'refs/remotes/origin/../../config' locally",
+            ['Ignoring funny ref locally', { ref: 'refs/remotes/origin/../../config' }],
           ]);
         });
       });
