@@ -336,6 +336,134 @@ describe.skipIf(!GIT_AVAILABLE)('alternates gc interop — local-only packing', 
       );
     });
   });
+
+  describe('Given a borrower holding a loose copy of a reachable object the donor holds loose', () => {
+    const DONOR_LOOSE = 'donor loose';
+
+    const withDonorLooseCopy = (borrower: string, donor: string): void => {
+      commitFile(donor, 'loose.txt', DONOR_LOOSE);
+      const oid = runGit(['-C', donor, 'rev-parse', 'HEAD:loose.txt']).trim();
+      writeLooseCopy(objectsOf(borrower), oid, DONOR_LOOSE);
+      commitFile(borrower, 'loose.txt', DONOR_LOOSE);
+    };
+
+    describe('When git repack -a -d -l runs against tsgit gc (G7)', () => {
+      it(
+        'Then neither packs the copy and both keep it loose',
+        async () => {
+          // Arrange
+          const pair = pairOf('g7', withDonorLooseCopy);
+          const oid = runGit(['-C', pair.donor, 'rev-parse', 'HEAD:loose.txt']).trim();
+          const sut = tsgitGc;
+
+          // Act
+          runGit(['-C', pair.gitSide, 'repack', '-a', '-d', '-l', '-q']);
+          await sut(pair.tsgitSide);
+
+          // Assert
+          const expectedPacked = [...packedOids(objectsOf(pair.gitSide))].sort();
+          expect(expectedPacked).not.toContain(oid);
+          expect([...packedOids(objectsOf(pair.tsgitSide))].sort()).toEqual(expectedPacked);
+          expect(looseOids(objectsOf(pair.gitSide))).toEqual([oid]);
+          expect(looseOids(objectsOf(pair.tsgitSide))).toEqual([oid]);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a borrower holding loose unreachable copies of objects the donor holds loose', () => {
+    const RECENT_GARBAGE = 'donor loose recent garbage';
+    const EXPIRED_GARBAGE = 'donor loose expired garbage';
+
+    const withDonorLooseGarbageCopies = (borrower: string, donor: string): void => {
+      for (const content of [RECENT_GARBAGE, EXPIRED_GARBAGE]) {
+        const oid = runGit(['-C', donor, 'hash-object', '-w', '--stdin'], { input: content });
+        writeLooseCopy(objectsOf(borrower), oid.trim(), content);
+      }
+    };
+
+    const garbageOid = (pair: Pair, content: string): string =>
+      runGit(['-C', pair.donor, 'hash-object', '--stdin'], { input: content }).trim();
+
+    describe('When gc runs on twin copies (G8)', () => {
+      it(
+        'Then neither crufts them, the recent copy stays loose and the expired one is pruned',
+        async () => {
+          // Arrange
+          const pair = pairOf('g8', withDonorLooseGarbageCopies);
+          const recent = garbageOid(pair, RECENT_GARBAGE);
+          const expired = garbageOid(pair, EXPIRED_GARBAGE);
+          for (const side of [pair.gitSide, pair.tsgitSide]) {
+            utimesSync(looseFile(objectsOf(side), expired), YEAR_2001_SECONDS, YEAR_2001_SECONDS);
+          }
+          const sut = tsgitGc;
+
+          // Act
+          runGit(['-C', pair.gitSide, 'gc', '-q']);
+          await sut(pair.tsgitSide);
+
+          // Assert
+          expect(cruftOids(pair.gitSide)).toEqual([]);
+          expect(cruftOids(pair.tsgitSide)).toEqual([]);
+          expect(looseOids(objectsOf(pair.gitSide))).toEqual([recent]);
+          expect(looseOids(objectsOf(pair.tsgitSide))).toEqual([recent]);
+          expect(localObjects(pair.tsgitSide)).toEqual(localObjects(pair.gitSide));
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a borrower pack holding an unreachable object the donor holds loose', () => {
+    const DONOR_GARBAGE = 'donor loose packed garbage';
+    const LOCAL_GARBAGE = 'borrower packed garbage';
+
+    const withLocallyPackedGarbage = (borrower: string, donor: string): void => {
+      const donorHeld = runGit(['-C', donor, 'hash-object', '-w', '--stdin'], {
+        input: DONOR_GARBAGE,
+      });
+      const localOnly = runGit(['-C', borrower, 'hash-object', '-w', '--stdin'], {
+        input: LOCAL_GARBAGE,
+      });
+      const packBase = path.join(objectsOf(borrower), 'pack', 'pack');
+      runGit(['-C', borrower, 'pack-objects', '-q', packBase], {
+        input: `${donorHeld}${localOnly}`,
+      });
+      runGit(['-C', borrower, 'prune-packed']);
+    };
+
+    describe.each([
+      ['true', 'G9'],
+      ['false', 'G10'],
+    ])('When gc runs on twin copies with gc.cruftPacks=%s (%s)', (cruftPacks, slug) => {
+      it(
+        'Then both drop the donor-held object and keep only the local garbage',
+        async () => {
+          // Arrange
+          const pair = pairOf(slug.toLowerCase(), withLocallyPackedGarbage);
+          const hashOf = (content: string): string =>
+            runGit(['-C', pair.donor, 'hash-object', '--stdin'], { input: content }).trim();
+          for (const side of [pair.gitSide, pair.tsgitSide]) {
+            runGit(['-C', side, 'config', 'gc.cruftPacks', cruftPacks]);
+          }
+          const sut = tsgitGc;
+
+          // Act
+          runGit(['-C', pair.gitSide, 'gc', '-q']);
+          await sut(pair.tsgitSide);
+
+          // Assert
+          const expected = localObjects(pair.gitSide);
+          expect(expected).not.toContain(hashOf(DONOR_GARBAGE));
+          expect(expected).toContain(hashOf(LOCAL_GARBAGE));
+          expect(localObjects(pair.tsgitSide)).toEqual(expected);
+          expect(cruftOids(pair.tsgitSide)).toEqual(cruftOids(pair.gitSide));
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
 });
 
 interface Borrower {

@@ -5930,5 +5930,63 @@ describe('maintenance', () => {
         expect(local).not.toContain(donorPacked);
       });
     });
+
+    describe('When gc and the borrower holds a loose copy of a reachable donor-loose object', () => {
+      it('Then the copy stays loose and out of the local pack', async () => {
+        // Arrange
+        const ctx = await borrower();
+        const donorLoose = await looseInDonor(ctx, 'donor-loose');
+        const looseCopy = await writeLooseObject(ctx, makeBlob('donor-loose'));
+        await commitTreeOf(ctx, donorLoose);
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await isLoose(ctx, looseCopy)).toBe(true);
+        const packed = await packMemberOids(ctx, result.packId as string);
+        expect(packed.size).toBe(2);
+        expect(packed.has(donorLoose)).toBe(false);
+        expect(result.cruftPackId).toBeUndefined();
+      });
+    });
+
+    describe('When gc and the borrower holds a loose copy of an unreachable donor-loose object', () => {
+      it('Then a copy inside the grace period stays loose and is never crufted', async () => {
+        // Arrange
+        const ctx = await borrower();
+        await looseInDonor(ctx, 'donor-garbage');
+        const looseCopy = await writeLooseObject(ctx, makeBlob('donor-garbage'));
+        await commitTreeOf(ctx, await writeObject(ctx, makeBlob('other')));
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await isLoose(ctx, looseCopy)).toBe(true);
+        expect(result.cruftPackId).toBeUndefined();
+        expect(result.cruftObjectsExpired).toBe(0);
+      });
+
+      it('Then an expired copy is pruned', async () => {
+        // Arrange
+        const ctx = await borrower();
+        await looseInDonor(ctx, 'donor-garbage');
+        const looseCopy = await writeLooseObject(ctx, makeBlob('donor-garbage'));
+        await commitTreeOf(ctx, await writeObject(ctx, makeBlob('other')));
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = now\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await isLoose(ctx, looseCopy)).toBe(false);
+        expect(result.cruftPackId).toBeUndefined();
+        expect(result.cruftObjectsExpired).toBe(1);
+      });
+    });
   });
 });

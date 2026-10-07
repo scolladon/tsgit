@@ -33,7 +33,7 @@ import {
   assertValidTrailingGcConfig,
   readGcExpiryCutoff,
 } from '../../primitives/internal/gc-config-guard.js';
-import { forgetLooseOidPrefix } from '../../primitives/internal/loose-oid-cache.js';
+import { forgetLooseOidPrefix, probeLooseOid } from '../../primitives/internal/loose-oid-cache.js';
 import { forgetParsedObjectMemo } from '../../primitives/internal/object-caches.js';
 import { createObjectTypeTable } from '../../primitives/internal/object-type-table.js';
 import {
@@ -857,16 +857,42 @@ async function packedInSources(
   return new Set(hits.filter((id): id is ObjectId => id !== undefined));
 }
 
-async function packedInAlternates(
+const NO_MTIMES: ReadonlyMap<ObjectId, number> = new Map();
+
+/** Which of `ids` an alternate holds: in one of its packs, else only as a loose object. */
+interface AlternateHeld {
+  readonly packed: ReadonlySet<ObjectId>;
+  readonly loose: ReadonlySet<ObjectId>;
+}
+
+type AlternateHolding = 'packed' | 'loose' | 'absent';
+
+async function alternateHolding(
   ctx: Context,
-  ids: ReadonlySet<ObjectId>,
-): Promise<ReadonlySet<ObjectId>> {
+  alternates: ReadonlyArray<ObjectSource>,
+  id: ObjectId,
+): Promise<AlternateHolding> {
+  for (const source of alternates) {
+    if ((await source.registry.lookup(id)) !== undefined) return 'packed';
+  }
+  for (const source of alternates) {
+    if (await probeLooseOid(ctx, id, source)) return 'loose';
+  }
+  return 'absent';
+}
+
+/** git's `pack-objects --local` leaves out an object an alternate holds, packed or loose
+ *  (`has_loose_object_nonlocal`). */
+async function heldByAlternates(ctx: Context, ids: ReadonlySet<ObjectId>): Promise<AlternateHeld> {
   const store = await getObjectStore(ctx);
-  return packedInSources(
-    ctx,
-    store.sources.filter((source) => !source.local),
-    ids,
+  const alternates = store.sources.filter((source) => !source.local);
+  const idArray = [...ids];
+  const holdings = await boundedMapFor(ctx, 'ioBound', idArray, (id) =>
+    alternateHolding(ctx, alternates, id),
   );
+  const heldAs = (holding: AlternateHolding): ReadonlySet<ObjectId> =>
+    new Set(idArray.filter((_, index) => holdings[index] === holding));
+  return { packed: heldAs('packed'), loose: heldAs('loose') };
 }
 
 async function packedAnywhere(
@@ -951,15 +977,24 @@ export async function runGcTask(
   // --- step 3/4: retention roots, reachability, the widened partition ---
   const owned = new Set<ObjectId>([...looseSet, ...existingCruft.mtimes.keys(), ...normalOids]);
   const { reachable } = await computeReachable(ctx);
-  // `repack -l` leaves out an object an alternate already packs, exactly as
+  // `repack -l` leaves out an object an alternate already holds, exactly as
   // it leaves out a kept one, even when a local copy exists.
-  const leftOutOids = new Set([...keptOids, ...(await packedInAlternates(ctx, owned))]);
+  const alternateHeld = await heldByAlternates(ctx, owned);
+  const leftOutOids = new Set([...keptOids, ...alternateHeld.packed, ...alternateHeld.loose]);
   const { toNormalPack, cruftCandidates } = partitionOwned(
     reachable,
     owned,
     leftOutOids,
     ownedPromisor,
   );
+  // Kept out of every pack, the loose copy of an unreachable object an alternate
+  // holds only loose is still expired by git's `prune`, which reads that copy alone.
+  const expiryOnly = cruftCandidatesOf(
+    reachable,
+    alternateHeld.loose,
+    keptOids,
+    ownedPromisor,
+  ).filter((id) => looseSet.has(id));
   // toPromisorPack is the WHOLE promisor set, never intersected with
   // `reachable`: a promisor pack has no way to carry a "still needed
   // locally" flag per object, so an unreachable member can only be carried
@@ -1008,8 +1043,15 @@ export async function runGcTask(
     existingCruft.mtimes,
     normalPackMtimeOf,
   );
+  const looseMtimes = await computeCruftMtimes(ctx, expiryOnly, looseSet, NO_MTIMES, NO_MTIMES);
   // --- step 5: the expiry cutoff ---
-  const { survivors, doomed } = partitionByCutoff(cruftCandidates, mtimes, settings.pruneCutoff);
+  const { survivors, doomed: cruftDoomed } = partitionByCutoff(
+    cruftCandidates,
+    mtimes,
+    settings.pruneCutoff,
+  );
+  const expired = partitionByCutoff(expiryOnly, looseMtimes, settings.pruneCutoff).doomed;
+  const doomed = [...cruftDoomed, ...expired];
 
   // --- every write starts here; every refusal above leaves the store untouched ---
   const normalPack = await buildAndWriteNormalPack(
