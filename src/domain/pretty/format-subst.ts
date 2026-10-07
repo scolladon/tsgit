@@ -1,4 +1,4 @@
-import { encodeFromUtf8, isUtf8Label } from './reencode.js';
+import { type CharsetEncoders, encodeFromUtf8, isUtf8Label } from './reencode.js';
 
 const DOLLAR = 0x24;
 const NUL = 0;
@@ -36,11 +36,14 @@ const cutAtNul = (fmt: Uint8Array): Uint8Array => {
 const latin1 = (bytes: Uint8Array): string => new TextDecoder('latin1').decode(bytes);
 
 /** git re-encodes the whole buffer so far, and leaves it as is when `iconv` fails. */
-const settle = ({ bytes, parsedHeader, encoding }: Expansion): Uint8Array => {
+const settle = (
+  { bytes, parsedHeader, encoding }: Expansion,
+  encoders: CharsetEncoders,
+): Uint8Array => {
   if (!parsedHeader || encoding === undefined) return bytes;
   const label = latin1(encoding);
   if (isUtf8Label(label)) return bytes;
-  return encodeFromUtf8(label, bytes) ?? bytes;
+  return encodeFromUtf8(label, bytes, encoders) ?? bytes;
 };
 
 /**
@@ -49,7 +52,11 @@ const settle = ({ bytes, parsedHeader, encoding }: Expansion): Uint8Array => {
  * NUL, and an unterminated tail is kept verbatim. After an occurrence that parsed the commit
  * header of a non-UTF-8 commit, the whole buffer so far is transcoded to that encoding.
  */
-export const expandFormatSubst = (blob: Uint8Array, expandOne: ExpandOne): Uint8Array => {
+export const expandFormatSubst = (
+  blob: Uint8Array,
+  expandOne: ExpandOne,
+  encoders: CharsetEncoders,
+): Uint8Array => {
   let accumulated: Uint8Array = new Uint8Array(0);
   let cursor = 0;
   for (;;) {
@@ -58,7 +65,8 @@ export const expandFormatSubst = (blob: Uint8Array, expandOne: ExpandOne): Uint8
     const terminator = marker === -1 ? -1 : blob.indexOf(DOLLAR, formatStart);
     if (terminator === -1) return concat(accumulated, blob.subarray(cursor));
     accumulated = concat(accumulated, blob.subarray(cursor, marker));
-    accumulated = settle(expandOne(accumulated, cutAtNul(blob.subarray(formatStart, terminator))));
+    const fmt = cutAtNul(blob.subarray(formatStart, terminator));
+    accumulated = settle(expandOne(accumulated, fmt), encoders);
     cursor = terminator + 1;
   }
 };

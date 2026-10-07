@@ -22,6 +22,7 @@ import {
   type TreeEntry,
 } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
+import { buildCharsetEncoder } from '../../../../src/domain/pretty/reencode.js';
 import { type Context, createSession } from '../../../../src/ports/context.js';
 import {
   buildTreeChain,
@@ -81,6 +82,11 @@ vi.mock('../../../../src/application/commands/describe.js', async (importOrigina
   const actual =
     await importOriginal<typeof import('../../../../src/application/commands/describe.js')>();
   return { ...actual, describe: vi.fn(actual.describe) };
+});
+
+vi.mock('../../../../src/domain/pretty/reencode.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../../src/domain/pretty/reencode.js')>();
+  return { ...actual, buildCharsetEncoder: vi.fn(actual.buildCharsetEncoder) };
 });
 
 vi.mock('../../../../src/application/primitives/read-blob.js', async (importOriginal) => {
@@ -1454,6 +1460,43 @@ describe('archive export-subst routing', () => {
 
         // Assert
         expect(result.link).toBe('$Format:%H$');
+      });
+    });
+  });
+
+  describe('Given two export-subst files of a commit encoded in ISO-8859-1', () => {
+    describe('When the entries are iterated', () => {
+      it('Then both are transcoded with one encoder built for the archive', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const tree = await writeSpecTree(ctx, [
+          ['.gitattributes', SUBST_ALL],
+          ['a', 'é $Format:%s$'],
+          ['b', 'é $Format:%s$'],
+        ]);
+        const commit = makeCommit(tree);
+        const encoded = {
+          ...commit,
+          data: { ...commit.data, extraHeaders: [{ key: 'encoding', value: 'ISO-8859-1' }] },
+        };
+        const commitId = await writeObject(ctx, encoded);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+        vi.mocked(buildCharsetEncoder).mockClear();
+        const sut = archive;
+
+        // Act
+        const result = await sut(ctx, { treeish: 'HEAD' });
+        const contents = new Map<string, ReadonlyArray<number>>();
+        for await (const entry of result.entries) {
+          if (entry.content) contents.set(entry.path, [...entry.content]);
+        }
+
+        // Assert
+        const latin1 = [0xe9, ...new TextEncoder().encode(' commit')];
+        expect(contents.get('a')).toEqual(latin1);
+        expect(contents.get('b')).toEqual(latin1);
+        expect(vi.mocked(buildCharsetEncoder).mock.calls).toEqual([['iso-8859-1']]);
       });
     });
   });

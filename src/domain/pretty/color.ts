@@ -17,7 +17,16 @@ const C_SPACES = /[ \t\n\v\f\r]+/;
 /** Renders one colour as SGR parameters; `offset` moves it from foreground to background. */
 type Color = (offset: number) => string;
 
-const ANSI_NAMES = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white'];
+const ANSI_NAMES: ReadonlyArray<string> = [
+  'black',
+  'red',
+  'green',
+  'yellow',
+  'blue',
+  'magenta',
+  'cyan',
+  'white',
+];
 
 const ATTRIBUTES: ReadonlyMap<string, { readonly on: number; readonly off: number }> = new Map([
   ['bold', { on: 1, off: 22 }],
@@ -133,7 +142,7 @@ export const parseColorSpec = (spec: string): string | undefined => {
 const LEFT_PAREN = 0x28;
 const RIGHT_PAREN = 0x29;
 const ALWAYS_PREFIX = 'always,';
-const BASIC_NAMES = ['red', 'green', 'blue', 'reset'];
+const BASIC_NAMES: ReadonlyArray<string> = ['red', 'green', 'blue', 'reset'];
 const NO_BYTES = new Uint8Array();
 
 export interface ParsedColorPlaceholder {

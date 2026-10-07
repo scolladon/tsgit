@@ -32,7 +32,7 @@ const PREFIXES = {
   author: encodePrefix('author '),
   committer: encodePrefix('committer '),
   encoding: encodePrefix('encoding '),
-};
+} as const;
 
 const lineEnd = (buf: Uint8Array, from: number): number => {
   const found = buf.indexOf(LINE_FEED, from);

@@ -26,7 +26,7 @@ export interface DecorationOptions {
 }
 
 const encoder = new TextEncoder();
-const SHORTENED_PREFIXES = ['refs/heads/', 'refs/tags/', 'refs/remotes/'];
+const SHORTENED_PREFIXES: ReadonlyArray<string> = ['refs/heads/', 'refs/tags/', 'refs/remotes/'];
 const NO_BYTES = new Uint8Array();
 
 const DEFAULTS = {
@@ -35,7 +35,7 @@ const DEFAULTS = {
   separator: encoder.encode(', '),
   pointer: encoder.encode(' -> '),
   tag: encoder.encode('tag: '),
-};
+} as const;
 
 const shortName = (name: string): string => {
   const prefix = SHORTENED_PREFIXES.find((candidate) => name.startsWith(candidate));

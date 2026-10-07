@@ -19,8 +19,8 @@ const SEPARATOR = ',';
 const ASSIGN = '=';
 const ARG_LIST = ':';
 const STRTOL_DECIMAL = /^[\t\n\v\f\r ]*[+-]?\d+$/;
-const TRUE_WORDS = ['true', 'yes', 'on'];
-const FALSE_WORDS = ['false', 'no', 'off', ''];
+const TRUE_WORDS: ReadonlyArray<string> = ['true', 'yes', 'on'];
+const FALSE_WORDS: ReadonlyArray<string> = ['false', 'no', 'off', ''];
 const GIT_INTEGER = /^[\t\n\v\f\r ]*[+-]?(?:0x([0-9a-f]+)|(0[0-7]*)|([1-9]\d*))[kmg]?$/i;
 const NON_ZERO_DIGIT = /[1-9a-f]/i;
 

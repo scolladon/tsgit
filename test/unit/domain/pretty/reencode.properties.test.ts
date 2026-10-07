@@ -1,6 +1,10 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { decodeToUtf8, encodeFromUtf8 } from '../../../../src/domain/pretty/reencode.js';
+import {
+  buildCharsetEncoder,
+  decodeToUtf8,
+  encodeFromUtf8,
+} from '../../../../src/domain/pretty/reencode.js';
 
 const ROUND_TRIP_RUNS = 200;
 const MAX_LENGTH = 64;
@@ -29,7 +33,7 @@ describe('Given bytes a single-byte decoder accepts, When decoding then encoding
           const sut = encodeFromUtf8;
 
           // Act
-          const result = sut(label, decoded as Uint8Array);
+          const result = sut(label, decoded as Uint8Array, buildCharsetEncoder);
 
           // Assert
           expect(result).toEqual(bytes);

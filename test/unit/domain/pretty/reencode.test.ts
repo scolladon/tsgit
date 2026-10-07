@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildCharsetEncoder,
   decodeToUtf8,
   encodeFromUtf8,
   isUtf8Label,
@@ -17,7 +18,7 @@ describe('reencode', () => {
 
       // Act
       const decoded = decodeToUtf8('ISO-8859-1', latin1);
-      const result = encodeFromUtf8('ISO-8859-1', decoded as Uint8Array);
+      const result = encodeFromUtf8('ISO-8859-1', decoded as Uint8Array, buildCharsetEncoder);
 
       // Assert
       expect(decoded).toEqual(utf8('café subj'));
@@ -42,7 +43,7 @@ describe('reencode', () => {
     it('Then both directions are unconverted', () => {
       // Arrange / Act
       const decoded = decodeToUtf8('x-nonexistent-9', bytesOf(0x41));
-      const encoded = encodeFromUtf8('x-nonexistent-9', utf8('A'));
+      const encoded = encodeFromUtf8('x-nonexistent-9', utf8('A'), buildCharsetEncoder);
 
       // Assert
       expect(decoded).toBeUndefined();
@@ -59,7 +60,7 @@ describe('reencode', () => {
           const sut = encodeFromUtf8;
 
           // Act
-          const result = sut(label, utf8('A'));
+          const result = sut(label, utf8('A'), buildCharsetEncoder);
 
           // Assert
           expect(result).toBeUndefined();
@@ -77,7 +78,7 @@ describe('reencode', () => {
       const sut = encodeFromUtf8;
 
       // Act
-      const result = sut(label, utf8('pé😀'));
+      const result = sut(label, utf8('pé😀'), buildCharsetEncoder);
 
       // Assert
       expect(result).toEqual(bytesOf(...expected));
@@ -106,7 +107,7 @@ describe('reencode', () => {
         const sut = encodeFromUtf8;
 
         // Act
-        const result = sut('ISO-2022-JP', utf8(text));
+        const result = sut('ISO-2022-JP', utf8(text), buildCharsetEncoder);
 
         // Assert
         expect(result).toEqual(bytesOf(...expected));
@@ -119,7 +120,7 @@ describe('reencode', () => {
         const sut = encodeFromUtf8;
 
         // Act
-        const result = sut('csISO2022JP', utf8('a日'));
+        const result = sut('csISO2022JP', utf8('a日'), buildCharsetEncoder);
 
         // Assert
         expect(result).toEqual(bytesOf(0x61, ...TO_JIS0208, 0x46, 0x7c, ...TO_ASCII));
@@ -136,7 +137,7 @@ describe('reencode', () => {
         const sut = encodeFromUtf8;
 
         // Act
-        const result = sut('ISO-2022-JP', utf8(`a${text}`));
+        const result = sut('ISO-2022-JP', utf8(`a${text}`), buildCharsetEncoder);
 
         // Assert
         expect(result).toBeUndefined();
@@ -150,7 +151,7 @@ describe('reencode', () => {
       const sut = encodeFromUtf8;
 
       // Act
-      const result = sut('Shift_JIS', utf8('😀'));
+      const result = sut('Shift_JIS', utf8('😀'), buildCharsetEncoder);
 
       // Assert
       expect(result).toBeUndefined();
@@ -163,7 +164,7 @@ describe('reencode', () => {
       const sut = encodeFromUtf8;
 
       // Act
-      const result = sut('windows-1251', utf8('é'));
+      const result = sut('windows-1251', utf8('é'), buildCharsetEncoder);
 
       // Assert
       expect(result).toBeUndefined();
@@ -176,7 +177,7 @@ describe('reencode', () => {
       const sut = encodeFromUtf8;
 
       // Act
-      const result = sut('ISO-8859-1', bytesOf(0xe9));
+      const result = sut('ISO-8859-1', bytesOf(0xe9), buildCharsetEncoder);
 
       // Assert
       expect(result).toBeUndefined();
@@ -209,7 +210,7 @@ describe('reencode', () => {
         const sut = encodeFromUtf8;
 
         // Act
-        const result = sut(label, utf8(`${text}a`));
+        const result = sut(label, utf8(`${text}a`), buildCharsetEncoder);
 
         // Assert
         expect(result).toEqual(bytesOf(...expected, 0x61));
@@ -224,7 +225,7 @@ describe('reencode', () => {
       const sut = encodeFromUtf8;
 
       // Act
-      const result = sut('Shift_JIS', utf8('ｱ'));
+      const result = sut('Shift_JIS', utf8('ｱ'), buildCharsetEncoder);
 
       // Assert
       expect(result).toEqual(bytesOf(0xb1));
@@ -237,7 +238,7 @@ describe('reencode', () => {
       const sut = encodeFromUtf8;
 
       // Act
-      const result = sut('UTF-16', utf8('pé😀'));
+      const result = sut('UTF-16', utf8('pé😀'), buildCharsetEncoder);
 
       // Assert
       expect(result).toEqual(bytesOf(0xfe, 0xff, 0, 0x70, 0, 0xe9, 0xd8, 0x3d, 0xde, 0x00));
@@ -274,17 +275,22 @@ describe('reencode', () => {
     });
   });
 
-  describe('Given the memoised encoder, When encoding twice', () => {
-    it('Then both calls agree', () => {
+  describe('Given a caller-owned encoder lookup, When encoding under a padded mixed-case label', () => {
+    it('Then the lookup is asked for the normalised label and its encoder runs', () => {
       // Arrange
+      const asked: string[] = [];
+      const encoders = (label: string) => {
+        asked.push(label);
+        return (text: string) => utf8(`<${text}>`);
+      };
       const sut = encodeFromUtf8;
 
       // Act
-      const first = sut('windows-1252', utf8('é'));
-      const second = sut('windows-1252', utf8('é'));
+      const result = sut(' Windows-1252 ', utf8('é'), encoders);
 
       // Assert
-      expect(second).toEqual(first);
+      expect(asked).toEqual(['windows-1252']);
+      expect(result).toEqual(utf8('<é>'));
     });
   });
 

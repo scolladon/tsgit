@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { encodeIso2022Jp } from '../../../../src/domain/pretty/iso-2022-jp.js';
+import { buildIso2022JpEncoder } from '../../../../src/domain/pretty/iso-2022-jp.js';
 
 const ROUND_TRIP_RUNS = 200;
 const MAX_LENGTH = 32;
@@ -13,6 +13,7 @@ const ASCII_PRINTABLE = { min: 0x20, max: 0x7e };
 const TO_ASCII = [ESC, 0x28, 0x42];
 
 const decoder = new TextDecoder('iso-2022-jp');
+const encodeIso2022Jp = buildIso2022JpEncoder();
 
 /** A JIS X 0208 level-1 kanji, drawn by its two-byte code and read back through WHATWG. */
 const kanji = fc

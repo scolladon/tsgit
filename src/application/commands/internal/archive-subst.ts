@@ -5,6 +5,11 @@ import { type CommitView, parseCommitView } from '../../../domain/pretty/commit-
 import type { Decoration } from '../../../domain/pretty/decorations.js';
 import type { DescribeArgs } from '../../../domain/pretty/describe-placeholder.js';
 import { expandFormatSubst } from '../../../domain/pretty/format-subst.js';
+import {
+  buildCharsetEncoder,
+  type CharsetEncoder,
+  type CharsetEncoders,
+} from '../../../domain/pretty/reencode.js';
 import { signatureHeaderFor, splitSignedCommit } from '../../../domain/pretty/signed-commit.js';
 import {
   type AbbrevKind,
@@ -59,12 +64,23 @@ interface Resolvers {
 const ONE_DESCRIBE_PER_ARCHIVE: FormatBudget = { describe: 1 };
 const SPENT: FormatBudget = { describe: 0 };
 const MILLISECONDS_PER_SECOND = 1000;
+/** The scan only records occurrences; it never parses a header, so nothing is transcoded. */
+const NO_TRANSCODING: CharsetEncoders = () => undefined;
 
 const once = <T>(load: () => Promise<T>): (() => Promise<T>) => {
   let pending: Promise<T> | undefined;
   return () => {
     pending ??= load();
     return pending;
+  };
+};
+
+/** Each charset's encoder built at most once per archive, the first time a commit needs it. */
+const memoisedEncoders = (): CharsetEncoders => {
+  const built = new Map<string, CharsetEncoder | undefined>();
+  return (label) => {
+    if (!built.has(label)) built.set(label, buildCharsetEncoder(label));
+    return built.get(label);
   };
 };
 
@@ -141,13 +157,17 @@ const scanOccurrences = (
 ): { readonly occurrences: ReadonlyArray<Occurrence>; readonly budget: FormatBudget } => {
   const occurrences: Occurrence[] = [];
   let remaining = budget;
-  expandFormatSubst(content, (accumulated, fmt) => {
-    const tokens = scanPlaceholders(fmt, remaining);
-    const requirements = formatRequirements(tokens);
-    occurrences.push({ tokens, budget: remaining, requirements });
-    if (requirements.describe) remaining = SPENT;
-    return { bytes: accumulated, parsedHeader: false, encoding: undefined };
-  });
+  expandFormatSubst(
+    content,
+    (accumulated, fmt) => {
+      const tokens = scanPlaceholders(fmt, remaining);
+      const requirements = formatRequirements(tokens);
+      occurrences.push({ tokens, budget: remaining, requirements });
+      if (requirements.describe) remaining = SPENT;
+      return { bytes: accumulated, parsedHeader: false, encoding: undefined };
+    },
+    NO_TRANSCODING,
+  );
   return { occurrences, budget: remaining };
 };
 
@@ -218,19 +238,25 @@ const resolveEnv = async (
   };
 };
 
+interface OccurrenceExpansion {
+  readonly occurrences: ReadonlyArray<Occurrence>;
+  readonly view: CommitView;
+  readonly env: FormatEnv;
+  readonly encoders: CharsetEncoders;
+}
+
 const expandOccurrences = (
   content: Uint8Array,
-  occurrences: ReadonlyArray<Occurrence>,
-  view: CommitView,
-  env: FormatEnv,
+  { occurrences, view, env, encoders }: OccurrenceExpansion,
 ): Uint8Array => {
   let index = 0;
-  return expandFormatSubst(content, (accumulated) => {
+  const expandOne = (accumulated: Uint8Array) => {
     const { tokens, budget } = occurrences[index++] as Occurrence;
     const result = formatCommit(tokens, view, env, budget, accumulated);
     if ('refused' in result) throw formatPlaceholderUnsupported(result.refused);
     return { bytes: result.bytes, parsedHeader: result.parsedHeader, encoding: view.encoding };
-  });
+  };
+  return expandFormatSubst(content, expandOne, encoders);
 };
 
 /**
@@ -241,6 +267,7 @@ export const createSubstExpander = (ctx: Context, ids: ArchivedIds): SubstExpand
   const commitId = ids.commit;
   const clock = readClock();
   const resolvers = createResolvers(ctx, ids);
+  const encoders = memoisedEncoders();
   let budget = ONE_DESCRIBE_PER_ARCHIVE;
   return {
     expandFile: async (content) => {
@@ -250,7 +277,7 @@ export const createSubstExpander = (ctx: Context, ids: ArchivedIds): SubstExpand
       const { view } = await resolvers.commit();
       const reached = upToRefusal(scanned.occurrences);
       const env = await resolveEnv(ctx, commitId, resolvers, reached, clock);
-      return expandOccurrences(content, scanned.occurrences, view, env);
+      return expandOccurrences(content, { occurrences: scanned.occurrences, view, env, encoders });
     },
   };
 };

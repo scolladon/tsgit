@@ -1,5 +1,5 @@
 import { type CommitView, parseCommitView } from './commit-view.js';
-import { encodeIso2022Jp, isIso2022JpLabel } from './iso-2022-jp.js';
+import { buildIso2022JpEncoder, isIso2022JpLabel } from './iso-2022-jp.js';
 
 /**
  * The commit-encoding round trip behind `export-subst`. git uses `iconv`; the platform offers
@@ -7,7 +7,15 @@ import { encodeIso2022Jp, isIso2022JpLabel } from './iso-2022-jp.js';
  * is reported as `undefined`, which callers treat as git's failed `iconv` (buffer unconverted).
  */
 
-type Encoder = ReadonlyMap<number, Uint8Array>;
+/** One charset's encoder: the text's bytes there, or `undefined` when a character has none. */
+export type CharsetEncoder = (text: string) => Uint8Array | undefined;
+/**
+ * The encoder for a normalised charset label, `undefined` when there is none. Building a
+ * multi-byte one decodes every byte pair, so the caller decides how long encoders are kept.
+ */
+export type CharsetEncoders = (label: string) => CharsetEncoder | undefined;
+
+type CodePointTable = ReadonlyMap<number, Uint8Array>;
 type ByteOrder = 'big-endian' | 'little-endian';
 
 const UTF8_LABELS: ReadonlySet<string> = new Set(['utf-8', 'utf8']);
@@ -86,41 +94,49 @@ const addSingleCodePoint = (
   table.set(codePoint, Uint8Array.from(bytes));
 };
 
-const latin1Encoder = (): Encoder =>
+const latin1Table = (): CodePointTable =>
   new Map(Array.from({ length: BYTE_VALUES }, (_, byte) => [byte, Uint8Array.of(byte)]));
 
-const deriveEncoder = (decoder: TextDecoder, pairs: boolean): Encoder => {
-  const table = new Map<number, Uint8Array>();
+const addSingleBytes = (table: Map<number, Uint8Array>, decoder: TextDecoder): void => {
   for (let byte = 0; byte < BYTE_VALUES; byte++) {
     addSingleCodePoint(table, tryDecode(decoder, Uint8Array.of(byte)), [byte]);
   }
-  for (let seq = 0; pairs && seq < TWO_BYTE_SEQUENCES; seq++) {
+};
+
+const addBytePairs = (table: Map<number, Uint8Array>, decoder: TextDecoder): void => {
+  for (let seq = 0; seq < TWO_BYTE_SEQUENCES; seq++) {
     const bytes = [seq >> 8, seq & BYTE_MASK];
     addSingleCodePoint(table, tryDecode(decoder, Uint8Array.from(bytes)), bytes);
   }
+};
+
+const singleByteTable = (decoder: TextDecoder): CodePointTable => {
+  const table = new Map<number, Uint8Array>();
+  addSingleBytes(table, decoder);
   return table;
 };
 
-const buildEncoder = (label: string): Encoder | undefined => {
-  if (LATIN1_LABELS.has(label)) return latin1Encoder();
+/** Single bytes first, so a character with both forms keeps the one-byte one. */
+const multiByteTable = (decoder: TextDecoder): CodePointTable => {
+  const table = new Map<number, Uint8Array>();
+  addSingleBytes(table, decoder);
+  addBytePairs(table, decoder);
+  return table;
+};
+
+const buildTable = (label: string): CodePointTable | undefined => {
+  if (LATIN1_LABELS.has(label)) return latin1Table();
   const decoder = strictDecoder(label);
   if (decoder === undefined) return undefined;
-  if (SINGLE_BYTE.has(decoder.encoding)) return deriveEncoder(decoder, false);
-  if (MULTI_BYTE.has(decoder.encoding)) return deriveEncoder(decoder, true);
+  if (SINGLE_BYTE.has(decoder.encoding)) return singleByteTable(decoder);
+  if (MULTI_BYTE.has(decoder.encoding)) return multiByteTable(decoder);
   return undefined;
 };
 
-const encoders = new Map<string, Encoder | undefined>();
-
-const encoderFor = (label: string): Encoder | undefined => {
-  if (!encoders.has(label)) encoders.set(label, buildEncoder(label));
-  return encoders.get(label);
-};
-
-const encodeWith = (encoder: Encoder, text: string): Uint8Array | undefined => {
+const encodeWith = (table: CodePointTable, text: string): Uint8Array | undefined => {
   const parts: Uint8Array[] = [];
   for (const char of text) {
-    const bytes = encoder.get(char.codePointAt(0) as number);
+    const bytes = table.get(char.codePointAt(0) as number);
     if (bytes === undefined) return undefined;
     parts.push(bytes);
   }
@@ -177,17 +193,25 @@ export const decodeToUtf8 = (label: string, bytes: Uint8Array): Uint8Array | und
   return text === undefined ? undefined : new TextEncoder().encode(text);
 };
 
+/** The encoder iconv offers for a normalised label, built from scratch on every call. */
+export const buildCharsetEncoder = (label: string): CharsetEncoder | undefined => {
+  if (UTF16_LABELS.has(label)) return utf16WithBom;
+  const order = UTF16_FIXED_ORDER.get(label);
+  if (order !== undefined) return (text) => utf16Units(text, order);
+  if (isIso2022JpLabel(label)) return buildIso2022JpEncoder();
+  const table = buildTable(label);
+  return table === undefined ? undefined : (text) => encodeWith(table, text);
+};
+
 /** The UTF-8 bytes in `label`'s encoding, or `undefined` when git's `iconv` would fail. */
-export const encodeFromUtf8 = (label: string, utf8: Uint8Array): Uint8Array | undefined => {
+export const encodeFromUtf8 = (
+  label: string,
+  utf8: Uint8Array,
+  encoders: CharsetEncoders,
+): Uint8Array | undefined => {
   const text = tryDecode(UTF8_STRICT, utf8);
   if (text === undefined) return undefined;
-  const key = normalise(label);
-  if (UTF16_LABELS.has(key)) return utf16WithBom(text);
-  const order = UTF16_FIXED_ORDER.get(key);
-  if (order !== undefined) return utf16Units(text, order);
-  if (isIso2022JpLabel(key)) return encodeIso2022Jp(text);
-  const encoder = encoderFor(key);
-  return encoder === undefined ? undefined : encodeWith(encoder, text);
+  return encoders(normalise(label))?.(text);
 };
 
 const nonUtf8Label = (view: CommitView): string | undefined => {

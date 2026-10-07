@@ -1,6 +1,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { type Expansion, expandFormatSubst } from '../../../../src/domain/pretty/format-subst.js';
+import { buildCharsetEncoder } from '../../../../src/domain/pretty/reencode.js';
 
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const TOTALITY_RUNS = 200;
@@ -35,7 +36,7 @@ describe('Given arbitrary bytes, When expanding', () => {
         const sut = expandFormatSubst;
 
         // Act
-        const result = sut(blob, echo);
+        const result = sut(blob, echo, buildCharsetEncoder);
 
         // Assert
         expect(result).toBeInstanceOf(Uint8Array);
@@ -55,10 +56,14 @@ describe('Given a blob without $Format:, When expanding', () => {
         let calls = 0;
 
         // Act
-        const result = sut(blob, (accumulated) => {
-          calls += 1;
-          return plain(accumulated);
-        });
+        const result = sut(
+          blob,
+          (accumulated) => {
+            calls += 1;
+            return plain(accumulated);
+          },
+          buildCharsetEncoder,
+        );
 
         // Assert
         expect([...result]).toEqual([...blob]);
@@ -79,10 +84,14 @@ describe('Given k well-formed $Format:%H$ occurrences, When expanding', () => {
         let calls = 0;
 
         // Act
-        sut(blob, (accumulated) => {
-          calls += 1;
-          return plain(accumulated);
-        });
+        sut(
+          blob,
+          (accumulated) => {
+            calls += 1;
+            return plain(accumulated);
+          },
+          buildCharsetEncoder,
+        );
 
         // Assert
         expect(calls).toBe(k);

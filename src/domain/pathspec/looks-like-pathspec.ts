@@ -3,7 +3,7 @@
  * character, or long-form `:(…)` magic, reads as a pathspec even though no
  * file by that name exists.
  */
-const GLOB_SPECIAL = new Set(['*', '?', '[']);
+const GLOB_SPECIAL: ReadonlySet<string> = new Set(['*', '?', '[']);
 const ESCAPE = '\\';
 const LONG_MAGIC = ':(';
 

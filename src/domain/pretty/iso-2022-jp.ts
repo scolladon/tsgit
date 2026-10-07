@@ -72,14 +72,9 @@ interface Tables {
   readonly jis0208: Table;
 }
 
-let memo: Tables | undefined;
-
-const tables = (): Tables => {
-  if (memo === undefined) {
-    const decoder = new TextDecoder('iso-2022-jp', { fatal: true });
-    memo = { roman: buildRoman(decoder), jis0208: buildJis0208(decoder) };
-  }
-  return memo;
+const buildTables = (): Tables => {
+  const decoder = new TextDecoder('iso-2022-jp', { fatal: true });
+  return { roman: buildRoman(decoder), jis0208: buildJis0208(decoder) };
 };
 
 interface Encoded {
@@ -95,12 +90,11 @@ const encodeChar = (codePoint: number, { roman, jis0208 }: Tables): Encoded | un
   return jisBytes === undefined ? undefined : { set: 'jis0208', bytes: jisBytes };
 };
 
-/** The text as `ISO-2022-JP` bytes, or `undefined` when one character has no form there. */
-export const encodeIso2022Jp = (text: string): Uint8Array | undefined => {
+const encodeWith = (tables: Tables, text: string): Uint8Array | undefined => {
   const out: number[] = [];
   let current: CharacterSet = 'ascii';
   for (const char of text) {
-    const encoded = encodeChar(char.codePointAt(0) as number, tables());
+    const encoded = encodeChar(char.codePointAt(0) as number, tables);
     if (encoded === undefined) return undefined;
     if (encoded.set !== current) out.push(...DESIGNATE[encoded.set]);
     out.push(...encoded.bytes);
@@ -108,4 +102,13 @@ export const encodeIso2022Jp = (text: string): Uint8Array | undefined => {
   }
   if (current !== 'ascii') out.push(...DESIGNATE.ascii);
   return Uint8Array.from(out);
+};
+
+/**
+ * An encoder giving the text as `ISO-2022-JP` bytes, or `undefined` when one character has no
+ * form there. Building its tables decodes thousands of sequences, so callers keep the encoder.
+ */
+export const buildIso2022JpEncoder = (): ((text: string) => Uint8Array | undefined) => {
+  const tables = buildTables();
+  return (text) => encodeWith(tables, text);
 };

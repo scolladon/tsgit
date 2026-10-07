@@ -28,7 +28,10 @@ export const DEFAULT_TRAILER_OPTIONS: TrailerOptions = {
 const LINE_FEED = '\n';
 const COMMENT = '#';
 const DEFAULT_SEPARATORS = ':';
-const GENERATED_PREFIXES = ['Signed-off-by: ', '(cherry picked from commit '];
+const GENERATED_PREFIXES: ReadonlyArray<string> = [
+  'Signed-off-by: ',
+  '(cherry picked from commit ',
+];
 const CUT_LINE = '# ------------------------ >8 ------------------------\n';
 const OLD_CONFLICTS = 'Conflicts:\n';
 const TRAILER_RATIO = 3;
