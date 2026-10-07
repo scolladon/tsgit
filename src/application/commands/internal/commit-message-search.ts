@@ -4,7 +4,7 @@ import { errorDataCode } from '../../../domain/error-data-code.js';
 import { type Commit, commitBodyBytes } from '../../../domain/objects/commit.js';
 import { decodePreservingBom } from '../../../domain/objects/encoding.js';
 import type { ObjectId, RefName } from '../../../domain/objects/index.js';
-import { compileExtendedRegex } from '../../../domain/regex/extended-regex.js';
+import { compileExtendedRegex, type ExtendedRegex } from '../../../domain/regex/extended-regex.js';
 import type { Context } from '../../../ports/context.js';
 import { enumerateRefs } from '../../primitives/enumerate-refs.js';
 import { parseCommit } from '../../primitives/internal/lookup-commit-reference.js';
@@ -96,7 +96,7 @@ const refTipCommit = async (
 };
 
 interface MessageTest {
-  readonly pattern: RegExp;
+  readonly pattern: ExtendedRegex;
   readonly negated: boolean;
 }
 

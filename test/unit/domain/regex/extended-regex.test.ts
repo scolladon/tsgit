@@ -1,8 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { compileExtendedRegex } from '../../../../src/domain/regex/extended-regex.js';
 
+const LONG_RUN = 40;
+const STACKED_OPERATORS = 100_000;
+const MAX_GROUP_NESTING = 500;
+const EMPTY_GROUPS = 50_000;
+const STACKED_INTERVALS = 20_000;
+/** Two widest optional runs (two instructions per optional `a`) and four `a`s: 2^17 instructions. */
+const FULL_BUDGET = `${'a{0,32767}'.repeat(2)}aaaa`;
+
 const matches = (pattern: string, subject: string): boolean | undefined =>
   compileExtendedRegex(pattern)?.test(subject);
+
+const nested = (depth: number): string => `${'('.repeat(depth)}a${')'.repeat(depth)}`;
 
 describe('compileExtendedRegex', () => {
   describe('Given a pattern regcomp(REG_EXTENDED) accepts', () => {
@@ -32,6 +42,14 @@ describe('compileExtendedRegex', () => {
         ['^x{,}$', '', true],
         ['x{0}y', 'y', true],
         ['a{1}{2}', 'aa', true],
+        ['^a+{2}$', 'a', false],
+        ['^a+{2}$', 'aa', true],
+        ['^a?{2}$', 'aaa', false],
+        ['^a{2}?$', 'a', false],
+        ['^a*{0}b$', 'b', true],
+        ['^a*{0}b$', 'ab', false],
+        ['^a{0}*b$', 'b', true],
+        ['^a{0}*b$', 'ab', false],
         ['[[:digit:]]', 'v2', true],
         ['[[:digit:]]', 'vv', false],
         ['^[[:alpha:]]+$', 'abc', true],
@@ -61,6 +79,8 @@ describe('compileExtendedRegex', () => {
         ['[x[]', '[', true],
         ['\\<fix', 'prefix fix', true],
         ['\\<fix', 'prefix', false],
+        ['\\<fix', 'fix', true],
+        ['fix\\>', 'fix', true],
         ['fix\\>', 'fixed', false],
         ['fix\\>', 'a fix.', true],
         ['\\bfix\\b', 'a fix', true],
@@ -119,6 +139,7 @@ describe('compileExtendedRegex', () => {
         ['x{a}'],
         ['x{1,a}'],
         ['x{2,1}'],
+        ['x{2,1}*'],
         ['x{32768}'],
         ['x{32768,}'],
         ['x{1,2,3}'],
@@ -149,6 +170,212 @@ describe('compileExtendedRegex', () => {
 
         // Assert
         expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a pattern a backtracking matcher takes exponential time on', () => {
+    describe('When it is matched against a long run it cannot match', () => {
+      it.each([
+        ['(a+)+b', 'a'],
+        ['(a|a)*b', 'a'],
+        ['(a*)*b', 'a'],
+        ['(x+x+)+y', 'x'],
+      ])('Then /%s/ answers false', (pattern, character) => {
+        // Arrange
+        const sut = matches;
+
+        // Act
+        const result = sut(pattern, character.repeat(LONG_RUN));
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+
+    describe('When it is matched against a long run it can match', () => {
+      it('Then it answers true', () => {
+        // Arrange
+        const sut = matches;
+
+        // Act
+        const result = sut('(a+)+b', `${'a'.repeat(LONG_RUN)}b`);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given repetition operators stacked by the thousand', () => {
+    describe('When the pattern is matched', () => {
+      it.each([
+        ['a', '*', `${'a'.repeat(3)}b`],
+        ['a', '+', `${'a'.repeat(3)}b`],
+        ['a', '?', 'ab'],
+        ['a{2}', '{1}', 'aab'],
+      ])('Then %s stacked with %s repeats like once', (atom, operator, subject) => {
+        // Arrange
+        const sut = matches;
+
+        // Act
+        const result = sut(`^${atom}${operator.repeat(STACKED_OPERATORS)}b$`, subject);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given groups nested as deep as accepted', () => {
+    describe('When the pattern is matched', () => {
+      it('Then it matches', () => {
+        // Arrange
+        const sut = matches;
+
+        // Act
+        const result = sut(nested(MAX_GROUP_NESTING), 'a');
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given groups nested one level deeper than accepted', () => {
+    describe('When it is compiled', () => {
+      it('Then it yields no matcher', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+
+        // Act
+        const result = sut(nested(MAX_GROUP_NESTING + 1));
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given repetitions whose expansion exceeds the automaton budget', () => {
+    describe('When it is compiled', () => {
+      it.each([['(a{1000}){1000}'], ['(a{0,600}){0,600}'], ['a{0,32767}'.repeat(3)]])(
+        'Then /%s/ yields no matcher',
+        (pattern) => {
+          // Arrange
+          const sut = compileExtendedRegex;
+
+          // Act
+          const result = sut(pattern);
+
+          // Assert
+          expect(result).toBeUndefined();
+        },
+      );
+    });
+  });
+
+  describe('Given repetitions expanding to exactly the automaton budget', () => {
+    describe('When the pattern is matched', () => {
+      it('Then it matches', () => {
+        // Arrange
+        const sut = matches;
+
+        // Act
+        const result = sut(FULL_BUDGET, 'aaaaaaaa');
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given one repetition expanding to exactly the automaton budget', () => {
+    describe('When the pattern is matched', () => {
+      it('Then it compiles and answers', () => {
+        // Arrange
+        const sut = matches;
+
+        // Act
+        const result = sut('(a{16}){8192}', 'a');
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given the widest interval stacked by the thousand', () => {
+    describe('When it is compiled', () => {
+      it('Then it yields no matcher', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+
+        // Act
+        const result = sut(`a${'{32767}'.repeat(STACKED_INTERVALS)}`);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given repetitions expanding one instruction past the automaton budget', () => {
+    describe('When it is compiled', () => {
+      it('Then it yields no matcher', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+
+        // Act
+        const result = sut(`${FULL_BUDGET}a`);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an empty group repeated past the automaton budget', () => {
+    describe('When the pattern is matched', () => {
+      it('Then the empty repetition costs nothing and it matches', () => {
+        // Arrange
+        const sut = matches;
+
+        // Act
+        const result = sut('^((){0,32767}){0,32767}a$', 'a');
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a repeated group holding thousands of empty groups', () => {
+    describe('When the pattern is matched', () => {
+      it('Then it matches', () => {
+        // Arrange
+        const sut = matches;
+
+        // Act
+        const result = sut(`(${'()'.repeat(EMPTY_GROUPS)}a){0,32767}`, 'a');
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given repetitions whose expansion stays within the automaton budget', () => {
+    describe('When it is matched', () => {
+      it('Then it matches', () => {
+        // Arrange
+        const sut = matches;
+
+        // Act
+        const result = sut('^(a{0,200}){0,200}$', 'aaaa');
+
+        // Assert
+        expect(result).toBe(true);
       });
     });
   });

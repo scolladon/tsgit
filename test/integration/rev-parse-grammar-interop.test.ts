@@ -581,3 +581,55 @@ describe.skipIf(!GIT_AVAILABLE)('integration — a search pattern holding a colo
     });
   });
 });
+
+const LONG_RUN = 60;
+
+/** c1 holding a run of `a`s ← c2 holding a run of `x`s, the messages a backtracking matcher stalls on. */
+const buildLongRunRepository = (repo: string): void => {
+  runGit(['init', '-q', '-b', 'main', repo]);
+  disableAutoMaintenance(repo);
+  const tree = runGit(['-C', repo, 'hash-object', '-t', 'tree', '-w', '--stdin'], {
+    input: EMPTY_TREE_INPUT,
+  }).trim();
+  const commitTree = (message: string, offset: number, parents: ReadonlyArray<string>): string =>
+    runGit(['-C', repo, 'commit-tree', tree, '-m', message, ...parents.flatMap((p) => ['-p', p])], {
+      env: identityAt(offset),
+    }).trim();
+  const c1 = commitTree('a'.repeat(LONG_RUN), 1, []);
+  git(repo, 'update-ref', 'refs/heads/main', commitTree('x'.repeat(LONG_RUN), 2, [c1]));
+};
+
+describe.skipIf(!GIT_AVAILABLE)('integration — a search pattern nesting repetitions', () => {
+  let repo = '';
+
+  beforeAll(async () => {
+    repo = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-nested-repetition-')));
+    buildLongRunRepository(repo);
+  }, SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+
+  describe.each([
+    { argument: ':/(a+)+b', resolves: false },
+    { argument: ':/(a|aa)+c', resolves: false },
+    { argument: 'HEAD^{/(x+x+)+y}', resolves: false },
+    { argument: ':/(a+)+', resolves: true },
+    { argument: 'HEAD^{/(x+x+)+}', resolves: true },
+  ])('Given $argument over long runs of one character', ({ argument, resolves }) => {
+    describe('When git rev-parse and revParse read it', () => {
+      it('Then both resolve the same object', async () => {
+        // Arrange
+        const peer = gitOutcome(repo, argument);
+
+        // Act
+        const result = await tsgitOutcome(repo, argument);
+
+        // Assert
+        expect(result).toEqual(peer);
+        expect(peer.id !== undefined).toBe(resolves);
+      });
+    });
+  });
+});
