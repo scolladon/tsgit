@@ -451,3 +451,79 @@ describe('Given a ref naming an object that fails to read', () => {
     });
   });
 });
+
+const hexBytes = (hex: string): Uint8Array =>
+  Uint8Array.from(hex.match(/../g) ?? [], (pair) => Number.parseInt(pair, 16));
+
+/** c1 `first a}:b match` ← c2 `second x`, both holding the file `y}`. */
+const colonPatternRepo = async (): Promise<SearchRepo> => {
+  const { ctx, errors } = loggingContext();
+  const blob = await writeRawObjectBytes(ctx, 'blob', encoder.encode('y\n'));
+  const entry = encoder.encode('100644 y}\0');
+  const tree = await writeRawObjectBytes(
+    ctx,
+    'tree',
+    new Uint8Array([...entry, ...hexBytes(blob)]),
+  );
+  const c1 = await writeCommit(ctx, tree, [], 1, 'first a}:b match\n');
+  const c2 = await writeCommit(ctx, tree, [c1], 2, 'second x\n');
+  await writeRef(ctx, 'refs/heads/main', c2);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+  return { ctx, errors, ids: { blob, c1, c2 } };
+};
+
+describe('Given a search pattern holding a colon a commit message matches', () => {
+  describe('When the whole name is evaluated', () => {
+    it('Then it names the matched commit before any tree-path split, as git reads it', async () => {
+      // Arrange
+      const { ctx, ids } = await colonPatternRepo();
+      const sut = evaluateRevision;
+
+      // Act
+      const result = await sut(ctx, 'HEAD^{/a}:b}');
+
+      // Assert
+      expect(result).toBe(ids.c1);
+    });
+  });
+});
+
+describe('Given a search pattern holding a colon no commit message matches', () => {
+  describe('When the name is evaluated', () => {
+    it('Then it falls back to the tree-path split at the colon', async () => {
+      // Arrange
+      const { ctx, ids } = await colonPatternRepo();
+      const sut = evaluateRevision;
+
+      // Act
+      const result = await sut(ctx, 'HEAD^{/x}:y}');
+
+      // Assert
+      expect(result).toBe(ids.blob);
+    });
+  });
+});
+
+describe('Given a whole-name search that walks into a corrupt loose object', () => {
+  describe('When the name is evaluated', () => {
+    it('Then the corruption refuses rather than falling back to the split', async () => {
+      // Arrange
+      const { ctx } = loggingContext();
+      const tree = await writeRawObjectBytes(ctx, 'tree', new Uint8Array());
+      await ctx.fs.write(
+        `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(ABSENT_OID)}`,
+        encoder.encode('garbage'),
+      );
+      const tip = await writeCommit(ctx, tree, [ABSENT_OID], 2, 'tip\n');
+      await writeRef(ctx, 'refs/heads/main', tip);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+      const sut = evaluateRevision;
+
+      // Act
+      const code = await failureCode(() => sut(ctx, 'HEAD^{/a}:b}'));
+
+      // Assert
+      expect(code).toBe('DECOMPRESS_FAILED');
+    });
+  });
+});

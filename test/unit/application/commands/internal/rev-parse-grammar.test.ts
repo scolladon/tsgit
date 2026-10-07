@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  mayReadWhole,
   parseExpression,
+  parseWholeName,
   type RevExpression,
 } from '../../../../../src/application/commands/internal/rev-parse-grammar.js';
 import { TsgitError } from '../../../../../src/domain/index.js';
@@ -946,3 +948,53 @@ describe('internal/rev-parse-grammar', () => {
     });
   });
 });
+
+describe('Given a name whose last operation is a message search', () => {
+  describe('When mayReadWhole checks it', () => {
+    it('Then it may read whole', () => {
+      // Arrange
+      const sut = mayReadWhole;
+
+      // Act
+      const result = sut('HEAD^{/a}:b}');
+
+      // Assert
+      expect(result).toBe(true);
+    });
+  });
+
+  describe('When parseWholeName reads it', () => {
+    it('Then the colon stays inside the search pattern', () => {
+      // Arrange
+      const sut = parseWholeName;
+
+      // Act
+      const result = sut('HEAD^{/a}:b}');
+
+      // Assert
+      expect(result).toEqual({
+        kind: 'ref-or-hex',
+        base: 'HEAD',
+        operations: [{ kind: 'search', pattern: 'a}:b', name: 'HEAD^{/a}:b}' }],
+      });
+    });
+  });
+});
+
+describe.each(['HEAD:a', 'HEAD^{tree}:a', 'HEAD^{/a}:b^{tree}'])(
+  'Given %s, whose last operation is no message search',
+  (raw) => {
+    describe('When mayReadWhole checks it', () => {
+      it('Then it only reads as a tree path', () => {
+        // Arrange
+        const sut = mayReadWhole;
+
+        // Act
+        const result = sut(raw);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  },
+);

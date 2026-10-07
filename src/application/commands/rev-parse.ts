@@ -64,8 +64,10 @@ import {
 } from './internal/rev-parse-difference.js';
 import {
   isMessageSearch,
+  mayReadWhole,
   type PeelTarget,
   parseExpression,
+  parseWholeName,
   type ReflogSelector,
   type RevExpression,
   type RevOperation,
@@ -405,7 +407,8 @@ const evaluate = async (
     return resolveIndexStage(ctx, { stage: expr.stage, path: resolveRelativePath(ctx, expr.path) });
   }
   if (expr.kind === 'tree-path') {
-    return resolveTreePath(ctx, table, expr.rev, expr.path);
+    const whole = mayReadWhole(raw) ? await readWholeName(ctx, table, raw, accepts) : undefined;
+    return whole ?? resolveTreePath(ctx, table, expr.rev, expr.path);
   }
   if (expr.kind === 'message-search') return searchFromRefs(ctx, table, expr.pattern, raw);
   // `now` is read once per call so the reflog `@{date}` resolution is
@@ -419,6 +422,26 @@ const evaluate = async (
     id = await applyOperation(ctx, table, id, op);
   }
   return id;
+};
+
+/** A whole-name reading that names nothing: git goes on to split the name at its colon. */
+const WHOLE_NAME_MISSES: ReadonlySet<string | undefined> = new Set([
+  'REVPARSE_UNRESOLVED',
+  'OBJECT_NOT_FOUND',
+]);
+
+const readWholeName = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  raw: string,
+  accepts: CandidateFilter | undefined,
+): Promise<ObjectId | undefined> => {
+  try {
+    return await evaluate(ctx, table, parseWholeName(raw), raw, accepts);
+  } catch (error) {
+    if (!WHOLE_NAME_MISSES.has(errorDataCode(error))) throw error;
+    return undefined;
+  }
 };
 
 const EMPTY_AT = '@';

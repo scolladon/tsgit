@@ -530,3 +530,54 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse :/regex and :path pari
     });
   });
 });
+
+/** c1 `first a}:b match` ← c2 `second x`, both holding the file `y}`. */
+const buildColonPatternRepository = (repo: string): void => {
+  runGit(['init', '-q', '-b', 'main', repo]);
+  disableAutoMaintenance(repo);
+  const blob = runGit(['-C', repo, 'hash-object', '-w', '--stdin'], { input: 'y\n' }).trim();
+  const tree = runGit(['-C', repo, 'mktree'], { input: `100644 blob ${blob}\ty}\n` }).trim();
+  const commitTree = (message: string, offset: number, parents: ReadonlyArray<string>): string =>
+    runGit(['-C', repo, 'commit-tree', tree, '-m', message, ...parents.flatMap((p) => ['-p', p])], {
+      env: identityAt(offset),
+    }).trim();
+  const c1 = commitTree('first a}:b match', 1, []);
+  git(repo, 'update-ref', 'refs/heads/main', commitTree('second x', 2, [c1]));
+};
+
+describe.skipIf(!GIT_AVAILABLE)('integration — a search pattern holding a colon', () => {
+  let repo = '';
+
+  beforeAll(async () => {
+    repo = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-colon-pattern-')));
+    buildColonPatternRepository(repo);
+  }, SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+
+  describe.each([
+    { argument: 'HEAD^{/a}:b}', reading: 'the whole name, the pattern matching', resolves: true },
+    {
+      argument: 'HEAD^{/x}:y}',
+      reading: 'the tree path, the whole pattern matching nothing',
+      resolves: true,
+    },
+    { argument: 'HEAD^{/zz}:y}', reading: 'nothing, neither reading resolving', resolves: false },
+  ])('Given $argument', ({ argument, reading, resolves }) => {
+    describe('When git rev-parse and revParse read it', () => {
+      it(`Then both resolve ${reading}`, async () => {
+        // Arrange
+        const peer = gitOutcome(repo, argument);
+
+        // Act
+        const result = await tsgitOutcome(repo, argument);
+
+        // Assert
+        expect(result).toEqual(peer);
+        expect(peer.id !== undefined).toBe(resolves);
+      });
+    });
+  });
+});

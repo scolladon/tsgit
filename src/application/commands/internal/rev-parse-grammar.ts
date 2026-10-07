@@ -104,6 +104,17 @@ export const parseExpression = (raw: string): RevExpression => {
   return parseRefOrHex(raw);
 };
 
+/**
+ * git's `get_oid_with_context_1` reads a name whole before splitting it at a
+ * colon. Only a trailing `^{/<pattern>}` can hold a colon the depth scan
+ * misplaces — a `}` in the pattern closes the scan's brace early — so only
+ * such a name can read whole.
+ */
+export const mayReadWhole = (raw: string): boolean => trailingPeel(raw)?.op.kind === 'search';
+
+/** The name read whole, ignoring any colon in it — refused as `parseExpression` refuses a base. */
+export const parseWholeName = (raw: string): RevExpression => parseRefOrHex(raw);
+
 /** Index of the first `:` outside any `@{…}`/`^{…}` region, or -1. */
 const findTreePathColon = (raw: string): number => {
   let depth = 0;
