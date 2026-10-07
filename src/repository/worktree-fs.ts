@@ -4,10 +4,12 @@ import type { FileSystem } from '../ports/file-system.js';
 export type WorktreeFs = (worktreePath: string | ReadonlyArray<string>) => FileSystem;
 
 /**
- * Builds the worktree-fs capability (ADR-298): each request reaches exactly the
- * worktree path(s) asked for plus the layout roots, through `confine`, which
- * receives that root set. Memoised by root set — `listWorktrees` asks once per
- * worktree, and a fresh adapter per call for the same worktree is pure waste.
+ * Builds the worktree-fs capability: each request reaches exactly the worktree
+ * path(s) asked for plus the layout roots, through `confine`, which receives
+ * that root set — a linked worktree lives outside `workDir`, so the confined
+ * filesystem must widen to reach it without opening anything beyond it.
+ * Memoised by root set — `listWorktrees` asks once per worktree, and a fresh
+ * adapter per call for the same worktree is pure waste.
  */
 export const createWorktreeFs = (
   layoutRoots: ReadonlyArray<string>,

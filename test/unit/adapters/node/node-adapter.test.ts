@@ -1,7 +1,7 @@
-import { mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import * as nodePath from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   buildLayout,
   createNodeContext,
@@ -21,6 +21,20 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import { TsgitError } from '../../../../src/domain/index.js';
 import { SHA1_CONFIG, SHA256_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
+
+// Every temp directory a test below creates; afterEach removes them all.
+const createdDirs: string[] = [];
+
+const tempBase = async (prefix: string): Promise<string> => {
+  const base = await realpath(await mkdtemp(nodePath.join(tmpdir(), prefix)));
+  createdDirs.push(base);
+  return base;
+};
+
+afterEach(async () => {
+  const dirs = createdDirs.splice(0);
+  await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+});
 
 describe('createNodeContext', () => {
   describe('Given workDir only', () => {
@@ -80,7 +94,7 @@ describe('createNodeContext', () => {
       readonly worktree: string;
       readonly sibling: string;
     }> => {
-      const base = await realpath(await mkdtemp(nodePath.join(tmpdir(), 'tsgit-node-wt-')));
+      const base = await tempBase('tsgit-node-wt-');
       const worktree = nodePath.join(base, 'wt');
       const sibling = nodePath.join(base, 'sibling');
       await mkdir(worktree);
@@ -142,7 +156,7 @@ describe('createNodeContext', () => {
       readonly borrower: string;
       readonly alternateObjects: string;
     }> => {
-      const base = await realpath(await mkdtemp(nodePath.join(tmpdir(), 'tsgit-node-alt-')));
+      const base = await tempBase('tsgit-node-alt-');
       const borrower = nodePath.join(base, 'borrower');
       const alternateObjects = nodePath.join(base, 'source', '.git', 'objects');
       await mkdir(nodePath.join(borrower, '.git', 'objects', 'info'), { recursive: true });

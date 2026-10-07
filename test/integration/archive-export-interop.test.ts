@@ -32,7 +32,7 @@ import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from '
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { type ArchiveEntry, archive } from '../../src/application/commands/archive.js';
 import { __resetConfigCacheForTests } from '../../src/application/primitives/config-read.js';
@@ -851,7 +851,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-subst interop', () => {
     });
   });
 
-  describe('Given a tree id and an annotated tag as the tree-ish (S7)', () => {
+  describe('Given a tree id and an annotated tag as the tree-ish', () => {
     describe('When each is archived', () => {
       it('Then the tree id never expands and the tag peels to its commit', async () => {
         // Arrange
@@ -913,7 +913,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-subst interop', () => {
     });
   });
 
-  describe('Given %(count) or %(total) in an export-subst file (S9)', () => {
+  describe('Given %(count) or %(total) in an export-subst file', () => {
     describe.each([
       ['%(count)', 'count'],
       ['%(total)', 'total'],
@@ -938,7 +938,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-subst interop', () => {
       });
     });
   });
-  describe('Given a committed .mailmap mapping the author (S12)', () => {
+  describe('Given a committed .mailmap mapping the author', () => {
     const MAPPED = '[$Format:%aN|%aE|%aL$]';
     const mailmapRepo = (slug: string): Promise<string> =>
       makeSubstRepo(slug, {
@@ -1073,7 +1073,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-subst interop', () => {
     });
   });
 
-  describe('Given refs of every decoration class on the archived commit (S13)', () => {
+  describe('Given refs of every decoration class on the archived commit', () => {
     const FORMAT = '[$Format:%d|%D|%(decorate:prefix=<,suffix=>,separator=;,tag=T:,pointer=~>)$]';
     const decoratedRepo = async (slug: string): Promise<string> => {
       const dir = await makeSubstRepo(slug, { f: FORMAT });
@@ -1211,7 +1211,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-subst interop', () => {
     });
   });
 
-  describe('Given a commit whose encoding header names a legacy charset (S16)', () => {
+  describe('Given a commit whose encoding header names a legacy charset', () => {
     const encodedRepo = async (
       slug: string,
       encoding: string,
@@ -1267,24 +1267,33 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-subst interop', () => {
     });
   });
 
-  describe('Given author and committer dates relative to the current clock (S17)', () => {
+  describe('Given author and committer dates relative to a pinned clock', () => {
+    // git reads its now from GIT_TEST_DATE_NOW; tsgit reads Date, faked to the same instant.
+    const NOW_SECONDS = 1_700_000_000;
+    const MILLISECONDS_PER_SECOND = 1000;
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
     describe('When now-relative date modes expand', () => {
       it('Then %ar, %ah, %cr and %ch read the same clock as git', async () => {
         // Arrange
         const dir = await makeSubstRepo('relative', {});
-        const now = Math.floor(Date.now() / 1000);
         writeLayout(dir, { r: '[$Format:%ar|%ah|%cr|%ch$]' });
         commitAll(dir, 'relative\n', {
-          GIT_AUTHOR_DATE: `${now - 25 * SECONDS_PER_HOUR} +0000`,
-          GIT_COMMITTER_DATE: `${now - 2 * SECONDS_PER_HOUR} +0000`,
+          GIT_AUTHOR_DATE: `${NOW_SECONDS - 25 * SECONDS_PER_HOUR} +0000`,
+          GIT_COMMITTER_DATE: `${NOW_SECONDS - 2 * SECONDS_PER_HOUR} +0000`,
         });
+        const expanded =
+          gitFiles(dir, 'HEAD', { GIT_TEST_DATE_NOW: String(NOW_SECONDS) }).get('r') ?? '';
+        vi.useFakeTimers({ toFake: ['Date'], now: NOW_SECONDS * MILLISECONDS_PER_SECOND });
 
         // Act
         const result = await tsgitFiles(dir, 'HEAD');
 
         // Assert
-        const expanded = gitFiles(dir, 'HEAD').get('r') ?? '';
-        expect(expanded).toMatch(/^\[25 hours ago\|.+\|2 hours ago\|.+\]$/);
+        expect(expanded).toBe('[25 hours ago|Mon 21:13|2 hours ago|2 hours ago]');
         expect(result.get('r')).toBe(expanded);
       });
     });

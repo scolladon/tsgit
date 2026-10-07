@@ -274,20 +274,6 @@ export const topReflogSubject = (dir: string, ref: string): string =>
   git(dir, 'log', '-g', '--format=%gs', ref).split('\n')[0] ?? '';
 
 /**
- * Run `git`, capturing stdout, stderr AND the numeric exit code (never
- * throws on a normal git refusal) — for co-refusal assertions where the
- * exact exit code matters, not just success/failure. `tryRunGit` above only
- * distinguishes ok/not-ok; this reports the code so a caller can assert
- * git's documented refusal exit (128 for a structural `fatal:`, 1 for
- * `fsck`'s WARN/ERROR bits). Rethrows on EVERY spawn failure (`result.error`
- * — a timeout kill included, but also an unresolvable binary or any other
- * reason the child never ran) and on `status === null` (killed by a signal
- * with no `error` set): `spawnSync`'s own invariant is that `status` is
- * `null` exactly when the process never exited normally, so coercing either
- * case to a fake `1` would misreport a process that never actually ran as a
- * `fsck` WARN/ERROR exit.
- */
-/**
  * A git that refuses before reading its stdin (a fatal in setup, a bad
  * argument) closes the pipe while the parent is still writing a payload
  * larger than the pipe buffer, so `spawnSync` reports `EPIPE` alongside the
@@ -299,6 +285,22 @@ const isStdinClosedByExitedGit = (result: {
 }): boolean =>
   (result.error as NodeJS.ErrnoException | undefined)?.code === 'EPIPE' && result.status !== null;
 
+/**
+ * Run `git`, capturing stdout, stderr AND the numeric exit code (never
+ * throws on a normal git refusal) — for co-refusal assertions where the
+ * exact exit code matters, not just success/failure. `tryRunGit` above only
+ * distinguishes ok/not-ok; this reports the code so a caller can assert
+ * git's documented refusal exit (128 for a structural `fatal:`, 1 for
+ * `fsck`'s WARN/ERROR bits). Rethrows on every spawn failure (`result.error`
+ * — a timeout kill included, but also an unresolvable binary or any other
+ * reason the child never ran) except an `EPIPE` that arrives with an exit
+ * status, which is git refusing before it read its stdin (see
+ * `isStdinClosedByExitedGit`), and on `status === null` (killed by a signal
+ * with no `error` set): `spawnSync`'s own invariant is that `status` is
+ * `null` exactly when the process never exited normally, so coercing either
+ * case to a fake `1` would misreport a process that never actually ran as a
+ * `fsck` WARN/ERROR exit.
+ */
 export const tryRunGitWithExit = (
   args: ReadonlyArray<string>,
   options: { readonly input?: string | Uint8Array; readonly env?: NodeJS.ProcessEnv } = {},

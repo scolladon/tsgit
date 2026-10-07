@@ -532,7 +532,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates interop — the direct node context'
 
 describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is audited', () => {
   describe('Given a clean --shared borrower holding no local object', () => {
-    describe('When fsck runs (F1)', () => {
+    describe('When fsck runs', () => {
       it(
         'Then git and tsgit are silent and exit 0',
         async () => {
@@ -563,7 +563,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
         flags: ['--connectivity-only'],
         opts: { connectivityOnly: true },
       },
-    ])('When the borrower fsck runs ($label) (F2)', ({ flags, opts }) => {
+    ])('When the borrower fsck runs ($label)', ({ flags, opts }) => {
       it(
         'Then both report the donor blob as dangling and exit 0',
         async () => {
@@ -637,7 +637,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
     describe.each([
       { label: 'default', flags: [] as string[], opts: {} },
       { label: 'no-full', flags: ['--no-full'], opts: { full: false } },
-    ])('When the borrower fsck runs ($label) (F3)', ({ label, flags, opts }) => {
+    ])('When the borrower fsck runs ($label)', ({ label, flags, opts }) => {
       it(
         'Then both exit 1 and name the oid and the donor path',
         async () => {
@@ -697,7 +697,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
       );
     });
 
-    describe('When the borrower fsck runs connectivity-only (F3)', () => {
+    describe('When the borrower fsck runs connectivity-only', () => {
       it(
         'Then both exit 0 and report the same dangling objects',
         async () => {
@@ -760,7 +760,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
       writeFileSync(file, bytes);
     };
 
-    describe('When a reachable object body is corrupt (F4)', () => {
+    describe('When a reachable object body is corrupt', () => {
       it(
         'Then git dies with 128 and tsgit refuses naming the same packed object and pack',
         async () => {
@@ -1033,7 +1033,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
   });
 
   describe('Given a donor directory that was removed', () => {
-    describe('When the borrower fsck runs (F5)', () => {
+    describe('When the borrower fsck runs', () => {
       it(
         'Then both fail with the same exit bits',
         async () => {
