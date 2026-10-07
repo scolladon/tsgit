@@ -15,7 +15,8 @@
  * linear in the subject; one with back-references needs backtracking and runs
  * as its ECMAScript translation, exponential at worst — as regexec is there.
  * A subject lacking text every match must contain is refused before the
- * automaton runs, and a pattern that is plain text is a substring search.
+ * automaton runs, and a pattern spelling one of a few plain texts is a
+ * substring search.
  */
 
 /** GNU's `RE_DUP_MAX`: the largest bound an interval accepts. */
@@ -31,6 +32,8 @@ const MAX_GROUP_NESTING = 500;
  * steps per subject character.
  */
 const MAX_PROGRAM_SIZE = 1 << 17;
+/** Most texts a pattern may spell and still run as a substring search. */
+const MAX_EXACT_TEXTS = 16;
 const WORD_CHARACTERS = '\\p{L}\\p{N}_';
 const WORD = `[${WORD_CHARACTERS}]`;
 const WORD_START = `(?<!${WORD})(?=${WORD})`;
@@ -71,12 +74,20 @@ interface Sequence {
 
 type Fragment = Instruction | Sequence;
 
+/** Texts a piece may spell, `undefined` where they are unknown or too many. */
+type Spelt = ReadonlyArray<string> | undefined;
+
+/** Sets of texts, all of one of which lie inside every match. */
+type Alternatives = ReadonlyArray<ReadonlyArray<string>>;
+
 /** The text a piece's matches are known to spell. */
 interface Literals {
-  /** What every match spells, when the piece only ever matches that text. */
-  readonly exact: string | undefined;
+  /** The texts every match is one of, when the piece only ever matches those. */
+  readonly exact: Spelt;
   /** Texts known to lie inside every match, each a run of literal characters. */
   readonly required: ReadonlyArray<string>;
+  /** Alternatives every match chooses among. */
+  readonly anyOf: ReadonlyArray<Alternatives>;
   /** Where a match may start: anywhere, or only where the subject starts. */
   readonly starts: Starts;
 }
@@ -96,7 +107,7 @@ interface Bounds {
 }
 
 /** Nothing known: a piece matching varied text, or a zero-width one a substring search cannot place. */
-const OPAQUE: Literals = { exact: undefined, required: [], starts: 'anywhere' };
+const OPAQUE: Literals = { exact: undefined, required: [], anyOf: [], starts: 'anywhere' };
 
 const maskOf = (holds: Assertion): number => {
   let mask = 0;
@@ -222,8 +233,8 @@ export const compileExtendedRegex = (pattern: string): ExtendedRegex | undefined
 /** A lone surrogate is one character to the automaton but half of one to a substring search. */
 const LONE_SURROGATE = /\p{Cs}/u;
 
-const isPlainText = (exact: string | undefined): exact is string =>
-  exact !== undefined && !LONE_SURROGATE.test(exact);
+const isPlainText = (exact: Spelt): exact is ReadonlyArray<string> =>
+  exact !== undefined && !exact.some((text) => LONE_SURROGATE.test(text));
 
 const backtracking = (pattern: RegExp): ExtendedRegex => ({
   engine: 'backtracking',
@@ -232,14 +243,18 @@ const backtracking = (pattern: RegExp): ExtendedRegex => ({
 
 const linear = (test: ExtendedRegex['test']): ExtendedRegex => ({ engine: 'linear', test });
 
+const holdsAll = (subject: string, texts: ReadonlyArray<string>): boolean =>
+  texts.every((text) => subject.includes(text));
+
 const matcherOf = ({ fragment, literals }: Piece): ExtendedRegex => {
-  const { exact, required, starts } = literals;
-  if (isPlainText(exact)) return linear((subject) => subject.includes(exact));
+  const { exact, required, anyOf, starts } = literals;
+  if (isPlainText(exact)) return linear((subject) => exact.some((text) => subject.includes(text)));
   const matches = automaton(fragment, starts);
-  const texts = required.filter((text) => text !== '');
-  if (texts.length === 0) return linear(matches);
   return linear(
-    (subject, check) => texts.every((text) => subject.includes(text)) && matches(subject, check),
+    (subject, check) =>
+      holdsAll(subject, required) &&
+      anyOf.every((sets) => sets.some((texts) => holdsAll(subject, texts))) &&
+      matches(subject, check),
   );
 };
 
@@ -266,7 +281,7 @@ const literalPiece = (ch: string): Piece => {
   return {
     source,
     fragment: { op: 'char', source, code: ch.codePointAt(0) as number },
-    literals: { exact: ch, required: [ch], starts: 'anywhere' },
+    literals: { ...OPAQUE, exact: [ch], required: [ch] },
   };
 };
 
@@ -281,11 +296,22 @@ const parseAlternation = (c: Cursor, nesting: number): Translation => {
   }
 };
 
-/** Alternatives share no known text, but start at the subject's start when each of them does. */
-const alternativeLiterals = (branches: ReadonlyArray<Piece>): Literals =>
-  branches.every((branch) => branch.literals.starts === 'subject-start')
-    ? { ...OPAQUE, starts: 'subject-start' }
-    : OPAQUE;
+/**
+ * A match spells one of the branches' texts, while they stay few, and all of
+ * one branch's required texts; it starts at the subject's start when each
+ * branch does.
+ */
+const alternativeLiterals = (branches: ReadonlyArray<Piece>): Literals => {
+  const exact = branches.map(({ literals }) => literals.exact);
+  const texts = exact.flatMap((spelt) => spelt ?? []);
+  const starts = branches.every(({ literals }) => literals.starts === 'subject-start');
+  return {
+    exact: exact.includes(undefined) || texts.length > MAX_EXACT_TEXTS ? undefined : texts,
+    required: [],
+    anyOf: [branches.map(({ literals }) => literals.required)],
+    starts: starts ? 'subject-start' : 'anywhere',
+  };
+};
 
 const alternatePieces = (branches: ReadonlyArray<Piece>): Piece => ({
   source: branches.map((branch) => branch.source).join('|'),
@@ -313,22 +339,33 @@ const parseBranch = (c: Cursor, nesting: number): Translation => {
   };
 };
 
-/** Adjacent exact pieces spell one run; every run and every inner requirement is required. */
+/**
+ * Adjacent pieces spelling one text each spell one run; every run and every
+ * inner requirement is required, and every part's alternatives are chosen.
+ */
 const concatenatedLiterals = (parts: ReadonlyArray<Literals>): Literals => {
   const required: string[] = [];
-  let [run, allExact] = ['', true];
+  let run = '';
   for (const { exact, required: inner } of parts) {
-    if (exact !== undefined) {
-      run += exact;
+    if (exact?.length === 1) {
+      run += exact[0];
       continue;
     }
     required.push(run);
     for (const text of inner) required.push(text);
-    [run, allExact] = ['', false];
+    run = '';
   }
   required.push(run);
+  const exact = parts.reduce<Spelt>((texts, part) => spell(texts, part.exact), ['']);
   const starts = parts[0]?.starts ?? 'anywhere';
-  return { exact: allExact ? run : undefined, required, starts };
+  return { exact, required, anyOf: parts.flatMap((part) => part.anyOf), starts };
+};
+
+/** Each prefix followed by each suffix; `undefined` where either is unknown or they spell too many. */
+const spell = (prefixes: Spelt, suffixes: Spelt): Spelt => {
+  if (prefixes === undefined || suffixes === undefined) return undefined;
+  if (prefixes.length * suffixes.length > MAX_EXACT_TEXTS) return undefined;
+  return prefixes.flatMap((prefix) => suffixes.map((suffix) => prefix + suffix));
 };
 
 /** A repetition opening an expression is refused; an anchor takes no repetition. */

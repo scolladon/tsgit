@@ -83,6 +83,9 @@ describe('compileExtendedRegex (performance)', () => {
     ['quick.*zzz', SUBSTRING_BUDGET],
     ['^release zzz', ANCHORED_BUDGET],
     ['[0-9]{4}', AUTOMATON_BUDGET],
+    ['a|b', SUBSTRING_BUDGET],
+    ['feat|fix', SUBSTRING_BUDGET],
+    ['(feat|fix):', SUBSTRING_BUDGET],
   ])('Given /%s/', (pattern, budget) => {
     describe('When it scans commit messages', () => {
       it(`Then it runs within ${budget} times RegExp`, () => {

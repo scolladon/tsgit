@@ -160,6 +160,23 @@ describe('compileExtendedRegex', () => {
         ['x[[:alpha:]]', 'xé', true],
         ['(é|a)b', 'éb', true],
         ['(é|a)b', 'éc', false],
+        ['feat|fix', 'a fix', true],
+        ['feat|fix', 'a fax', false],
+        ['(feat|fix):', 'fix: x', true],
+        ['(feat|fix):', 'fix x: feat', false],
+        ['(1|2)(1|2)(1|2)(1|2)', '0 2112', true],
+        ['(1|2)(1|2)(1|2)(1|2)(1|2)', '0 2112', false],
+        ['(1|2)(1|2)(1|2)(1|2)(1|2)', '12112', true],
+        ['a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q', 'q', true],
+        ['a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q', 'z', false],
+        ['(12|34)+5', '34125', true],
+        ['(12|34)+5', '34 5 12', false],
+        ['x(ab|c*)y', 'xy', true],
+        ['(a(b|c)|d)e', 'de', true],
+        ['(a(b|c)|d)e', 'ace', true],
+        ['(a(b|c)|d)e', 'abx', false],
+        ['(fe|fi)[a-z]:', 'fix:', true],
+        ['(fe|fi)[a-z]:', 'fox:', false],
       ])('Then /%s/ against %j answers %s', (pattern, subject, expected) => {
         // Arrange
         const sut = compileExtendedRegex;
@@ -308,6 +325,22 @@ describe('compileExtendedRegex', () => {
         // Assert
         expect(result).toBe(true);
       });
+    });
+
+    describe('When a long subject spells none of the texts each alternative requires', () => {
+      it.each([['feat|fix'], ['(feat|fix)[0-9]']])(
+        'Then /%s/ refuses it before the automaton steps',
+        (pattern) => {
+          // Arrange
+          const sut = compileExtendedRegex;
+
+          // Act
+          const result = sut(pattern)?.test('f'.repeat(LONG_SUBJECT_LENGTH), stop);
+
+          // Assert
+          expect(result).toBe(false);
+        },
+      );
     });
 
     describe('When no character of a long subject can begin a match', () => {
