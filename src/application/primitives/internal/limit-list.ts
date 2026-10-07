@@ -58,6 +58,12 @@ export interface LimitListOptions {
    * the walk runs to completion.
    */
   readonly takeAtMost?: number;
+  /**
+   * git's `min_age` (`--before`), in seconds: an interesting commit dated
+   * after it is walked through but neither listed nor taken as the date the
+   * excluded side is weighed against. Omitted lists every date.
+   */
+  readonly minAge?: number;
 }
 
 export interface LimitedWalk {
@@ -94,7 +100,7 @@ export interface LimitWalkOptions {
 
 /** The walk's own knobs; `seeds` defaults to git's `<from> ^<until>` command-line order. */
 type LimitSettings = Pick<LimitListOptions, 'until' | 'firstParent' | 'settle'> &
-  Partial<Pick<LimitListOptions, 'seeds' | 'objectTypes' | 'takeAtMost'>>;
+  Partial<Pick<LimitListOptions, 'seeds' | 'objectTypes' | 'takeAtMost' | 'minAge'>>;
 
 /** Complete a walk's options for {@link limitList}, loading `.git/shallow` when none is given. */
 export const resolveLimitOptions = async (
@@ -262,18 +268,29 @@ const drain = async (state: LimitState): Promise<ReadonlyArray<ObjectId>> => {
     if (entry.oid === state.interestingCache) state.interestingCache = undefined;
     await processParents(state, entry.oid);
     if (state.uninteresting.has(entry.oid)) {
-      markParentsUninteresting(state, entry.oid);
-      state.bodies.delete(entry.oid);
-      slop = keepWalking(state, date, slop);
+      slop = settleUninteresting(state, entry.oid, date, slop);
       if (slop === 0) break;
       continue;
     }
-    date = entry.date;
     state.lowestShownGeneration = Math.min(state.lowestShownGeneration, entry.generation);
+    if (entry.date > (state.options.minAge ?? Number.POSITIVE_INFINITY)) continue;
+    date = entry.date;
     taken.push(entry.oid);
     if (taken.length === state.options.takeAtMost) break;
   }
   return taken;
+};
+
+/** git's uninteresting pop: its parents marked, then whether the walk may stop. */
+const settleUninteresting = (
+  state: LimitState,
+  id: ObjectId,
+  date: number,
+  slop: number,
+): number => {
+  markParentsUninteresting(state, id);
+  state.bodies.delete(id);
+  return keepWalking(state, date, slop);
 };
 
 const keepWalking = (state: LimitState, date: number, slop: number): number => {

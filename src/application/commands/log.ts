@@ -88,7 +88,8 @@ const walkFrom = (ctx: Context, startId: ObjectId, opts: LogOptions): AsyncItera
  * git limits a walk with exclusions (`limit_list`), giving up on a skewed
  * excluded line after a few commits — except a topological order over a
  * commit-graph, which explores the excluded side by generation and so
- * excludes exactly.
+ * excludes exactly. `before` is git's `min_age` there: a newer commit is
+ * left out before it can move the date the excluded side is weighed against.
  */
 const walkExcluding = async (
   ctx: Context,
@@ -100,6 +101,7 @@ const walkExcluding = async (
     until,
     firstParent: opts.order === 'first-parent',
     settle: opts.topoOrder === undefined ? 'slop' : await topoOrderSettle(ctx),
+    ...(opts.before === undefined ? {} : { minAge: secondsOf(opts.before) }),
   } as const;
   return walkLimited(ctx, await resolveLimitOptions(ctx, { from: [startId] }, limits));
 };
@@ -114,6 +116,8 @@ const topologically = async (
   return sortInTopologicalOrder(commits, order);
 };
 
+const secondsOf = (date: Date): number => date.getTime() / 1000;
+
 const collectShown = async (
   commits: AsyncIterable<Commit> | Iterable<Commit>,
   opts: LogOptions,
@@ -121,7 +125,7 @@ const collectShown = async (
   const before = opts.before;
   const out: LogEntry[] = [];
   for await (const value of commits) {
-    if (before !== undefined && value.data.committer.timestamp > before.getTime() / 1000) {
+    if (before !== undefined && value.data.committer.timestamp > secondsOf(before)) {
       continue;
     }
     if (!withinParentBand(value.data.parents.length, opts)) {

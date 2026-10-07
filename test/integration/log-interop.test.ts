@@ -215,6 +215,18 @@ const buildTiedSeeds = (commit: CommitFn): { readonly ta: string; readonly tb: s
   return { ta, tb: commit('tb', [tp, commit('ts', [tg], 99)], 100) };
 };
 
+/**
+ * dk ← dy ← da, dy dated before dk; dy ← dw640 … dw700 ← dv ← dx, dv dated
+ * before the dw line — a `--before` that leaves out da and dk must not let
+ * either move the date the dx line is weighed against.
+ */
+const buildDoubleSkew = (commit: CommitFn): { readonly da: string; readonly dx: string } => {
+  const dy = commit('dy', [commit('dk', [], 950)], 500);
+  let line = dy;
+  for (const date of [640, 650, 660, 670, 680, 690, 700]) line = commit(`dw${date}`, [line], date);
+  return { da: commit('da', [dy], 1000), dx: commit('dx', [commit('dv', [line], 100)], 2000) };
+};
+
 const buildExclusionHistory = async (withCommitGraph: boolean): Promise<ExclusionHistory> => {
   const dir = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-log-exclusion-')));
   runGit(['init', '-q', '-b', 'main', dir]);
@@ -245,6 +257,7 @@ const buildExclusionHistory = async (withCommitGraph: boolean): Promise<Exclusio
     b1,
     c1,
     ...buildTiedSeeds(commit),
+    ...buildDoubleSkew(commit),
   };
   for (const [name, id] of Object.entries(ids)) git(dir, 'update-ref', `refs/heads/${name}`, id);
   if (withCommitGraph) git(dir, 'commit-graph', 'write', '--reachable');
@@ -665,6 +678,32 @@ describe.skipIf(!GIT_AVAILABLE)('log interop', () => {
           );
         },
       );
+
+      describe.each([900, 950, 1000])('When log walks da excluding dx before %i', (before) => {
+        it.each(EXCLUSION_MODES)(
+          'Then $flags shows the commits git shows',
+          async ({ flags, opts }) => {
+            // Arrange
+            const epoch = OFFSET_EPOCH + before;
+            const da = history.ids.da as string;
+            const dx = history.ids.dx as string;
+            const peer = oidLines(
+              git(history.dir, 'log', '--format=%H', `--before=${epoch}`, ...flags, da, `^${dx}`),
+            );
+
+            // Act
+            const ours = await logIds(history.dir, {
+              ...opts,
+              rev: da!,
+              excluding: [dx!],
+              before: new Date(epoch * 1000),
+            });
+
+            // Assert
+            expect(ours).toEqual(peer);
+          },
+        );
+      });
     },
   );
 });

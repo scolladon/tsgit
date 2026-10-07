@@ -772,6 +772,38 @@ describe('log', () => {
     });
   });
 
+  describe('Given a double-skewed history whose excluded line reaches the shown line late', () => {
+    /** K ← Y ← A on `main`, Y dated before K; Y ← W640 … W700 ← V ← X on `x`, V dated before the W line. */
+    const seedDoubleSkew = async () => {
+      const ctx = createMemoryContext();
+      const k = await writeCommitAt(ctx, [], 950, 'K');
+      const y = await writeCommitAt(ctx, [k], 500, 'Y');
+      const a = await writeCommitAt(ctx, [y], 1000, 'A');
+      let tip = y;
+      for (const date of [640, 650, 660, 670, 680, 690, 700]) {
+        tip = await writeCommitAt(ctx, [tip], date, `W${date}`);
+      }
+      const v = await writeCommitAt(ctx, [tip], 100, 'V');
+      const x = await writeCommitAt(ctx, [v], 2000, 'X');
+      await seedRepo(ctx, { refs: { 'refs/heads/main': a, 'refs/heads/x': x } });
+      return ctx;
+    };
+
+    describe('When log excludes x and leaves out commits after K', () => {
+      it('Then the left-out K never moves the date the excluded line is weighed against', async () => {
+        // Arrange
+        const ctx = await seedDoubleSkew();
+        const sut = log;
+
+        // Act
+        const result = await sut(ctx, { rev: 'main', excluding: ['x'], before: new Date(900_000) });
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
   describe('Given a parent committed after one of its two children', () => {
     describe.each([
       { label: 'the default order', opts: {}, expected: 'e a f b' },

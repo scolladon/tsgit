@@ -473,6 +473,43 @@ describe('limitList', () => {
       });
     });
   });
+
+  describe('Given a double-skewed history whose excluded line reaches the shown line late', () => {
+    // K ← Y ← A, Y dated before K; Y ← W640 … W700 ← V ← X, V dated before the W line.
+    const DOUBLE_SKEW: Spec = [
+      ['K', 950, []],
+      ['Y', 500, ['K']],
+      ['A', 1000, ['Y']],
+      ['W640', 640, ['Y']],
+      ['W650', 650, ['W640']],
+      ['W660', 660, ['W650']],
+      ['W670', 670, ['W660']],
+      ['W680', 680, ['W670']],
+      ['W690', 690, ['W680']],
+      ['W700', 700, ['W690']],
+      ['V', 100, ['W700']],
+      ['X', 2000, ['V']],
+    ];
+
+    describe.each([
+      { before: 900, expected: [] },
+      { before: 950, expected: ['Y', 'K'] },
+      { before: 1000, expected: ['A', 'Y', 'K'] },
+    ])('When A is limited excluding X, commits after $before left out', ({ before, expected }) => {
+      it('Then a left-out commit never moves the date the excluded line is weighed against', async () => {
+        // Arrange
+        const history = await buildHistory(DOUBLE_SKEW);
+        const options = optionsFor(history, ['A'], ['X'], { minAge: EPOCH + before });
+        const sut = limitList;
+
+        // Act
+        const result = await sut(history.ctx, options);
+
+        // Assert
+        expect(result.shown.map(history.name)).toEqual(expected);
+      });
+    });
+  });
 });
 
 describe('walkLimited', () => {
