@@ -25,19 +25,30 @@ const ident = (timestamp: number): AuthorIdentity => ({
   timezoneOffset: '+0000',
 });
 
+/** One logged line: its level, the constant message, the variable parts in its context. */
+interface LogRecord {
+  readonly level: 'info' | 'error';
+  readonly message: string;
+  readonly context: Readonly<Record<string, unknown>> | undefined;
+}
+
+type LogContext = Readonly<Record<string, unknown>> | undefined;
+
 interface Seeded {
   readonly ctx: Context;
-  readonly logs: string[];
+  readonly logs: LogRecord[];
   readonly head: ObjectId;
 }
 
 const seed = async (): Promise<Seeded> => {
-  const logs: string[] = [];
+  const logs: LogRecord[] = [];
   const ctx = {
     ...createMemoryContext(),
     logger: {
-      info: (message: string) => logs.push(message),
-      error: (message: string) => logs.push(`error: ${message}`),
+      info: (message: string, context?: LogContext) =>
+        logs.push({ level: 'info', message, context }),
+      error: (message: string, context?: LogContext) =>
+        logs.push({ level: 'error', message, context }),
     },
   } as Context;
   await init(ctx);
@@ -83,18 +94,24 @@ const rawTag = (ctx: Context, target: ObjectId, type: string): Promise<ObjectId>
   writeRawObjectBytes(ctx, 'tag', encoder.encode(`object ${target}\ntype ${type}\ntag x\n\nx\n`));
 
 /** Plants an unreadable naming ref; answers the `error:` lines its parse logs. */
-type Planter = (ctx: Context) => Promise<ReadonlyArray<string>>;
+type Planter = (ctx: Context) => Promise<ReadonlyArray<LogRecord>>;
+
+const badObject = (id: ObjectId, code: string, reason: string): LogRecord => ({
+  level: 'error',
+  message: 'bad object',
+  context: { id, code, reason },
+});
 
 const plantMalformedCommitTag: Planter = async (ctx) => {
   const malformed = await writeRawObjectBytes(ctx, 'commit', encoder.encode('not a commit\n'));
   await plantRef(ctx, 'refs/tags/a-malformed', await rawTag(ctx, malformed, 'commit'));
-  return [`error: bad object ${malformed}: INVALID_COMMIT: first line must be tree`];
+  return [badObject(malformed, 'INVALID_COMMIT', 'INVALID_COMMIT: first line must be tree')];
 };
 
 const plantBogusTypeTag: Planter = async (ctx) => {
   const bogus = await rawTag(ctx, MISSING_OID, 'bogus');
   await plantRef(ctx, 'refs/tags/a-bogus', bogus);
-  return [`error: bad object ${bogus}: INVALID_TAG: invalid object type: bogus`];
+  return [badObject(bogus, 'INVALID_TAG', 'INVALID_TAG: invalid object type: bogus')];
 };
 
 const UNREADABLE_TIPS: ReadonlyArray<{ readonly label: string; readonly plant: Planter }> = [
@@ -232,7 +249,9 @@ describe('nameRev tip table', () => {
 
         // Assert
         expect(result).toBeUndefined();
-        expect(logs).toEqual(['Could not get commit for lt. Skipping.']);
+        expect(logs).toEqual([
+          { level: 'info', message: 'Could not get commit for lt. Skipping.', context: undefined },
+        ]);
       });
     });
   });

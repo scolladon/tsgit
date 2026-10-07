@@ -36,16 +36,24 @@ const ORIGIN = [
   '',
 ].join('\n');
 
+/** One logged line: the constant message, the variable parts in its context. */
+interface LogRecord {
+  readonly message: string;
+  readonly context: Readonly<Record<string, unknown>> | undefined;
+}
+
 interface Seeded {
   readonly ctx: Context;
-  readonly warnings: string[];
+  readonly warnings: LogRecord[];
   readonly head: string;
 }
 
 const seed = async (extraConfig = ''): Promise<Seeded> => {
-  const warnings: string[] = [];
+  const warnings: LogRecord[] = [];
   const base = createMemoryContext();
-  const ctx: Context = { ...base, logger: { warn: (message: string) => warnings.push(message) } };
+  const warn = (message: string, context?: Readonly<Record<string, unknown>>) =>
+    warnings.push({ message, context });
+  const ctx: Context = { ...base, logger: { warn } };
   await init(ctx);
   await writeSymbolicRef(ctx, 'HEAD' as RefName, 'refs/heads/main' as RefName);
   await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
@@ -393,13 +401,19 @@ describe('branchCreate — upstream tracking', () => {
         label: 'a remote-tracking ref',
         startPoint: 'origin/main',
         extra: '',
-        warning: "asked to inherit tracking from 'refs/remotes/origin/main', but no remote is set",
+        warning: {
+          message: 'asked to inherit tracking, but no remote is set',
+          context: { branch: 'refs/remotes/origin/main' },
+        },
       },
       {
         label: 'a branch with a remote but no merge',
         startPoint: 'side',
         extra: '[branch "side"]\n\tremote = origin\n',
-        warning: "asked to inherit tracking from 'side', but no merge configuration is set",
+        warning: {
+          message: 'asked to inherit tracking, but no merge configuration is set',
+          context: { branch: 'side' },
+        },
       },
     ])('When branchCreate cuts z from $label', ({ startPoint, extra, warning }) => {
       it('Then it warns and records nothing', async () => {
@@ -432,7 +446,9 @@ describe('branchCreate — upstream tracking', () => {
 
         // Assert
         expect(result.upstream).toBeUndefined();
-        expect(warnings).toEqual(["not setting branch 'side' as its own upstream"]);
+        expect(warnings).toEqual([
+          { message: 'not setting a branch as its own upstream', context: { branch: 'side' } },
+        ]);
         expect(await branchSection(ctx, 'side')).toBeUndefined();
       });
     });

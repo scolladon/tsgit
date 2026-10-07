@@ -19,10 +19,22 @@ import type { Context } from '../../../../../src/ports/context.js';
 const ORIGIN_HEAD = 'refs/remotes/origin/HEAD' as RefName;
 const ZERO = '0'.repeat(40);
 
-const repoWithTracking = async (): Promise<{ ctx: Context; id: ObjectId; warnings: string[] }> => {
-  const warnings: string[] = [];
+/** One logged line: the constant message, the variable parts in its context. */
+interface LogRecord {
+  readonly message: string;
+  readonly context: Readonly<Record<string, unknown>> | undefined;
+}
+
+const repoWithTracking = async (): Promise<{
+  ctx: Context;
+  id: ObjectId;
+  warnings: LogRecord[];
+}> => {
+  const warnings: LogRecord[] = [];
   const base = createMemoryContext();
-  const ctx = { ...base, logger: { warn: (message: string) => warnings.push(message) } };
+  const warn = (message: string, context?: Readonly<Record<string, unknown>>) =>
+    warnings.push({ message, context });
+  const ctx = { ...base, logger: { warn } };
   await init(ctx);
   await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a`, 'a');
   await add(ctx, ['a']);
@@ -140,7 +152,12 @@ describe('followRemoteHead', () => {
           kind: 'symbolic',
           target: 'refs/remotes/origin/main',
         });
-        expect(warnings).toEqual(["'HEAD' at 'origin' is 'side', but we have 'main' locally."]);
+        expect(warnings).toEqual([
+          {
+            message: "'HEAD' at the remote differs from the one we have locally",
+            context: { remote: 'origin', headName: 'side', local: 'main' },
+          },
+        ]);
       });
     });
 
@@ -174,7 +191,12 @@ describe('followRemoteHead', () => {
         });
 
         // Assert
-        expect(warnings).toEqual(["'HEAD' at 'origin' is 'side', but we have 'main' locally."]);
+        expect(warnings).toEqual([
+          {
+            message: "'HEAD' at the remote differs from the one we have locally",
+            context: { remote: 'origin', headName: 'side', local: 'main' },
+          },
+        ]);
       });
     });
   });
@@ -193,7 +215,10 @@ describe('followRemoteHead', () => {
         // Assert
         expect(await originHead(ctx)).toEqual({ kind: 'direct', id });
         expect(warnings).toEqual([
-          `'HEAD' at 'origin' is 'side', but we have a detached HEAD pointing to '${id}' locally.`,
+          {
+            message: "'HEAD' at the remote differs from the detached HEAD we have locally",
+            context: { remote: 'origin', headName: 'side', id },
+          },
         ]);
       });
     });
@@ -312,7 +337,12 @@ describe('readRemoteHeadPolicy', () => {
         await sut(ctx, 'origin');
 
         // Assert
-        expect(warnings).toEqual(["unrecognized followRemoteHEAD value 'bogus' ignored"]);
+        expect(warnings).toEqual([
+          {
+            message: 'unrecognized followRemoteHEAD value ignored',
+            context: { remote: 'origin', value: 'bogus' },
+          },
+        ]);
       });
     });
   });

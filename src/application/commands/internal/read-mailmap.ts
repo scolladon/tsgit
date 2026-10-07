@@ -56,7 +56,7 @@ const readNamedObject = async (
     return await readObject(ctx, id);
   } catch (error) {
     if (errorDataCode(error) !== 'OBJECT_NOT_FOUND') throw error;
-    ctx.logger?.error?.(`unable to read mailmap object at ${expression}`, { expression });
+    ctx.logger?.error?.('unable to read mailmap object', { expression });
     return undefined;
   }
 };
@@ -68,7 +68,7 @@ const readBlobMailmap = async (ctx: Context, expression: string): Promise<string
   const object = await readNamedObject(ctx, id, expression);
   if (object === undefined) return undefined;
   if (object.type === 'blob') return decode(object.content);
-  ctx.logger?.error?.(`mailmap is not a blob: ${expression}`, { expression });
+  ctx.logger?.error?.('mailmap is not a blob', { expression });
   return undefined;
 };
 

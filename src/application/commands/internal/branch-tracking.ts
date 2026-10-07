@@ -183,13 +183,13 @@ const inheritedSource = async (
   const bare = startRef.startsWith(HEADS_PREFIX) ? startRef.slice(HEADS_PREFIX.length) : startRef;
   const tracking = (await readConfig(ctx)).branch?.get(bare);
   if (tracking?.remote === undefined) {
-    ctx.logger?.warn?.(`asked to inherit tracking from '${bare}', but no remote is set`);
+    ctx.logger?.warn?.('asked to inherit tracking, but no remote is set', { branch: bare });
     return undefined;
   }
   if (tracking.merge === undefined || tracking.merge === '') {
-    ctx.logger?.warn?.(
-      `asked to inherit tracking from '${bare}', but no merge configuration is set`,
-    );
+    ctx.logger?.warn?.('asked to inherit tracking, but no merge configuration is set', {
+      branch: bare,
+    });
     return undefined;
   }
   return { remote: tracking.remote, merges: await mergesOf(ctx, bare) };
@@ -222,7 +222,7 @@ const installUpstream = async (
   const rebase = await shouldSetupRebase(ctx, source.remote);
   if (rebase && merges.length > 1) throw trackingInheritRebaseMultiple(merges);
   if (source.remote === undefined && merges.includes(`${HEADS_PREFIX}${branch}` as RefName)) {
-    ctx.logger?.warn?.(`not setting branch '${branch}' as its own upstream`);
+    ctx.logger?.warn?.('not setting a branch as its own upstream', { branch });
     return undefined;
   }
   const remote = source.remote ?? LOCAL_REMOTE;

@@ -66,6 +66,12 @@ const unbornRepository = async (): Promise<Context> => {
   return ctx;
 };
 
+/** One logged line: the constant message, the variable parts in its context. */
+interface LogRecord {
+  readonly message: string;
+  readonly context: Readonly<Record<string, unknown>> | undefined;
+}
+
 describe('readMailmap', () => {
   describe('Given a worktree .mailmap', () => {
     describe('When the mailmap is read', () => {
@@ -207,9 +213,11 @@ describe('readMailmap', () => {
     describe('When the mailmap is read', () => {
       it('Then nothing is mapped and the misfit is reported as git errors it', async () => {
         // Arrange
-        const errors: string[] = [];
+        const errors: LogRecord[] = [];
         const base = createMemoryContext();
-        const ctx = { ...base, logger: { error: (message: string) => errors.push(message) } };
+        const error = (message: string, context?: Readonly<Record<string, unknown>>) =>
+          errors.push({ message, context });
+        const ctx = { ...base, logger: { error } };
         await commitMailmap(ctx, rule('Blob', 'old@example.com'));
         await writeConfig(ctx, '[mailmap]\n\tblob = main\n');
 
@@ -218,7 +226,9 @@ describe('readMailmap', () => {
 
         // Assert
         expect(result).toBe('Old');
-        expect(errors).toEqual(['mailmap is not a blob: main']);
+        expect(errors).toEqual([
+          { message: 'mailmap is not a blob', context: { expression: 'main' } },
+        ]);
       });
     });
   });
@@ -262,9 +272,11 @@ describe('readMailmap', () => {
     describe('When the mailmap is read', () => {
       it('Then the unreadable object is reported as git errors it and the blob is skipped', async () => {
         // Arrange
-        const errors: string[] = [];
+        const errors: LogRecord[] = [];
         const base = createMemoryContext();
-        const ctx = { ...base, logger: { error: (message: string) => errors.push(message) } };
+        const error = (message: string, context?: Readonly<Record<string, unknown>>) =>
+          errors.push({ message, context });
+        const ctx = { ...base, logger: { error } };
         await commitMailmap(ctx, rule('Blob', 'old@example.com'));
         const missing = '0123456789012345678901234567890123456789';
         await writeConfig(ctx, `[mailmap]\n\tblob = ${missing}\n`);
@@ -275,7 +287,9 @@ describe('readMailmap', () => {
 
         // Assert
         expect(result).toBe('Old');
-        expect(errors).toEqual([`unable to read mailmap object at ${missing}`]);
+        expect(errors).toEqual([
+          { message: 'unable to read mailmap object', context: { expression: missing } },
+        ]);
       });
     });
   });

@@ -32,7 +32,7 @@ export const parseObjectGently = async (
     const code = errorDataCode(error);
     if (code === 'OBJECT_NOT_FOUND') return undefined;
     if (!UNPARSED_CODES.has(code)) throw error;
-    ctx.logger?.error?.(`bad object ${id}: ${(error as Error).message}`, { id, code });
+    ctx.logger?.error?.('bad object', { id, code, reason: (error as Error).message });
     return undefined;
   }
 };

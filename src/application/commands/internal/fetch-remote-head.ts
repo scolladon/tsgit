@@ -35,7 +35,7 @@ export const readRemoteHeadPolicy = async (
   for (const { value } of await findSubsectionEntries(ctx, 'remote', remote, 'followRemoteHEAD')) {
     const parsed = parsePolicy(value ?? '');
     if (parsed === undefined) {
-      ctx.logger?.warn?.(`unrecognized followRemoteHEAD value '${value}' ignored`);
+      ctx.logger?.warn?.('unrecognized followRemoteHEAD value ignored', { remote, value });
       continue;
     }
     policy = parsed;
@@ -113,13 +113,17 @@ const reportDifference = (
   if (local.kind === 'symbolic' && local.target.startsWith(prefix)) {
     const previous = local.target.slice(prefix.length);
     if (previous === headName) return;
-    ctx.logger?.warn?.(
-      `'HEAD' at '${remote}' is '${headName}', but we have '${previous}' locally.`,
-    );
+    ctx.logger?.warn?.("'HEAD' at the remote differs from the one we have locally", {
+      remote,
+      headName,
+      local: previous,
+    });
     return;
   }
   if (local.kind !== 'direct') return;
-  ctx.logger?.warn?.(
-    `'HEAD' at '${remote}' is '${headName}', but we have a detached HEAD pointing to '${local.id}' locally.`,
-  );
+  ctx.logger?.warn?.("'HEAD' at the remote differs from the detached HEAD we have locally", {
+    remote,
+    headName,
+    id: local.id,
+  });
 };
