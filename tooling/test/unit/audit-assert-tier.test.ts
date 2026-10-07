@@ -36,7 +36,7 @@ const PRIMITIVES_SOURCE =
 
 /** Builds a real `ts.Program` over in-memory sources, falling back to the
  * real filesystem for everything else (lib.*.d.ts). Mirrors the compiler-API
- * precedent (`tooling/dts-value-exports.ts`), but virtualised for readable,
+ * precedent (`tooling/dts-value-exports.ts`), but virtualized for readable,
  * isolated fixtures. */
 const buildProgram = (
   files: Readonly<Record<string, string>>,
@@ -611,6 +611,31 @@ describe('findUngatedVerbs', () => {
             '};',
             'export const delegating = async (ctx: Context): Promise<void> => {',
             '  await gate(ctx);',
+            '};',
+            '',
+          ].join('\n'),
+        };
+
+        // Act
+        const result = ungated(files);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a barrel-exported verb that gates through the settings-first operational tier', () => {
+    describe('When scanned', () => {
+      it('Then it is not reported — that tier refuses what the operational tier refuses', () => {
+        // Arrange
+        const files = {
+          [BARREL]: "export { settingsFirst } from './settings-first.js';\n",
+          '/virtual/src/application/commands/settings-first.ts': [
+            "import { assertOperationalRepositorySettingsFirst } from '../primitives/internal/repo-state.js';",
+            'type Context = { readonly root?: string };',
+            'export const settingsFirst = async (ctx: Context): Promise<void> => {',
+            '  await assertOperationalRepositorySettingsFirst(ctx);',
             '};',
             '',
           ].join('\n'),

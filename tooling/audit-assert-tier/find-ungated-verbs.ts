@@ -34,6 +34,11 @@ import * as ts from 'typescript';
  * Naming it here rather than exempting the verb in the allowlist is what lets
  * the audit WITNESS that guard: delete the call and this pass fires.
  *
+ * `assertOperationalRepositorySettingsFirst` is the operational tier for the
+ * builtins whose prologue runs `prepare_repo_settings` first: the same
+ * refusals, only the order in which two malformed config keys are named
+ * differs. It lives in another module, so the transitive walk cannot see it.
+ *
  * Deliberately NOT here: `requireWorkTree` reaches no tier at all — it only
  * tests `workTreeConfigBogus` and `workDir`, so listing it would exempt a verb
  * that established nothing. `assertNotBare` is not a symbol in this codebase.
@@ -45,6 +50,7 @@ const GATING_SYMBOLS: ReadonlyArray<string> = [
   'assertRepository',
   'assertAcceptedRepository',
   'assertOperationalRepository',
+  'assertOperationalRepositorySettingsFirst',
   'assertUsableForBundleVerify',
 ];
 
