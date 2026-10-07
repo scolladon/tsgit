@@ -7,7 +7,7 @@ import {
 } from '../../../domain/attributes/index.js';
 import { gitattributesFileTooLarge } from '../../../domain/commands/error.js';
 import { decode } from '../../../domain/objects/encoding.js';
-import { FILE_MODE } from '../../../domain/objects/file-mode.js';
+import { FILE_MODE, isDirectory } from '../../../domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../config-read.js';
@@ -67,16 +67,52 @@ const assertDeclaredSizeWithinCap = async (
   }
 };
 
-const treeDirReader =
-  (tree: ObjectId): DirReader =>
-  async (ctx, dir) => {
-    const path = dir === '' ? GITATTRIBUTES_FILE : `${dir}/${GITATTRIBUTES_FILE}`;
-    const entry = await findTreeEntry(ctx, tree, path);
+const NO_SEPARATOR = -1;
+
+/** The directory holding `path`: `a/b/c` → `a/b`, a top-level name → the root `''`. */
+const parentDir = (path: string): string => {
+  const slash = path.lastIndexOf('/');
+  return slash === NO_SEPARATOR ? '' : path.slice(0, slash);
+};
+
+const gitattributesPathIn = (dir: string): string =>
+  dir === '' ? GITATTRIBUTES_FILE : `${dir}/${GITATTRIBUTES_FILE}`;
+
+/**
+ * Each directory's tree, found by one exact-name lookup in its parent's tree,
+ * so a walk-ordered lookup reads one level per directory instead of
+ * re-descending from the root. Only an exact descent is cached — a directory
+ * reached any other way is left to the root descent, which owns the
+ * prefix-boundary fallback.
+ */
+const createDirTreeIndex = (tree: ObjectId) => {
+  const dirTrees = new Map<string, ObjectId>([['', tree]]);
+  return async (ctx: Context, dir: string): Promise<ObjectId | undefined> => {
+    const cached = dirTrees.get(dir);
+    if (cached !== undefined) return cached;
+    const parent = dirTrees.get(parentDir(dir));
+    if (parent === undefined) return undefined;
+    const entry = await findTreeEntry(ctx, parent, dir.slice(dir.lastIndexOf('/') + 1));
+    if (entry === undefined || !isDirectory(entry.mode)) return undefined;
+    dirTrees.set(dir, entry.id);
+    return entry.id;
+  };
+};
+
+const treeDirReader = (tree: ObjectId): DirReader => {
+  const dirTreeOf = createDirTreeIndex(tree);
+  return async (ctx, dir) => {
+    const path = gitattributesPathIn(dir);
+    const dirTree = await dirTreeOf(ctx, dir);
+    const entry = await (dirTree === undefined
+      ? findTreeEntry(ctx, tree, path)
+      : findTreeEntry(ctx, dirTree, GITATTRIBUTES_FILE));
     if (entry === undefined || !isReadableMode(entry.mode)) return undefined;
     await assertDeclaredSizeWithinCap(ctx, entry.id, path);
     const { content } = await readBlob(ctx, entry.id);
     return parseGitattributes(decode(content));
   };
+};
 
 const readInfo = (ctx: Context): Promise<ParsedAttributes | undefined> =>
   loadAndParse(ctx, `${commonGitDir(ctx)}/info/attributes`);
@@ -87,16 +123,6 @@ const readGlobal = async (ctx: Context): Promise<ParsedAttributes | undefined> =
   const resolved = expandUserPath(ctx, raw);
   if (resolved === undefined) return undefined;
   return loadAndParse(ctx, resolved);
-};
-
-/** Directories whose `.gitattributes` govern `path`, deepest first, root (`''`) last. */
-const dirChain = (path: FilePath): ReadonlyArray<string> => {
-  const parts = path.split('/');
-  parts.pop(); // drop the filename
-  const dirs: string[] = [];
-  for (let i = parts.length; i >= 1; i -= 1) dirs.push(parts.slice(0, i).join('/'));
-  dirs.push('');
-  return dirs;
 };
 
 /**
@@ -118,9 +144,8 @@ const WINDOWS_DRIVE_ABSOLUTE_RE = /^[A-Za-z]:/;
  * Windows drive letter), or a `..` (or Win32-canonicalises-to-`..`) segment.
  * Real git diffs such trees cleanly; this is the boundary that lets tsgit do
  * the same without ever asking the filesystem about a path outside the
- * worktree. Never called with `''` — the root directory key is pre-seeded
- * into `dirCache` before any lookup, so `loadDir` never reaches this guard
- * for it.
+ * worktree. Never called with `''` — the root's stack is pre-seeded before
+ * any lookup, so no load ever reaches this guard for it.
  */
 const dirEscapesWorktree = (dir: string): boolean => {
   const normalized = dir.replace(/\\/g, '/');
@@ -136,6 +161,31 @@ export interface AttributeProvider {
     readonly macros: MacroRegistry;
   }>;
 }
+
+type DirLoader = (dir: string) => Promise<ParsedAttributes | undefined>;
+
+/**
+ * Each directory's sources from its own `.gitattributes` up to the root's,
+ * deepest first, built on its parent's stack so a walk-ordered lookup loads
+ * and copies one level instead of re-deriving the whole chain. A fresh chain
+ * still loads deepest first.
+ */
+const createDirectoryStacks = (
+  loadDir: DirLoader,
+  rootStack: ReadonlyArray<AttributeSource>,
+): ((dir: string) => Promise<ReadonlyArray<AttributeSource>>) => {
+  const stacks = new Map<string, ReadonlyArray<AttributeSource>>([['', rootStack]]);
+  const stackOf = async (dir: string): Promise<ReadonlyArray<AttributeSource>> => {
+    const cached = stacks.get(dir);
+    if (cached !== undefined) return cached;
+    const parsed = await loadDir(dir);
+    const above = await stackOf(parentDir(dir));
+    const stack = parsed === undefined ? above : [{ basedir: dir, rules: parsed.rules }, ...above];
+    stacks.set(dir, stack);
+    return stack;
+  };
+  return stackOf;
+};
 
 /**
  * Build an `AttributeProvider` for a context. `info/attributes`, the global
@@ -157,29 +207,18 @@ const buildAttributeProviderFrom = async (
     ...(root?.macros ?? []),
     ...(global?.macros ?? []),
   ]);
-  const dirCache = new Map<string, ParsedAttributes | undefined>([['', root]]);
-  const loadDir = async (dir: string): Promise<ParsedAttributes | undefined> => {
-    if (dirCache.has(dir)) return dirCache.get(dir);
-    if (dirEscapesWorktree(dir)) {
-      dirCache.set(dir, undefined);
-      return undefined;
-    }
-    const parsed = await readDir(ctx, dir as FilePath);
-    dirCache.set(dir, parsed);
-    return parsed;
-  };
+  const stackOf = createDirectoryStacks(
+    (dir) => (dirEscapesWorktree(dir) ? Promise.resolve(undefined) : readDir(ctx, dir as FilePath)),
+    root === undefined ? [] : [{ basedir: '', rules: root.rules }],
+  );
+  const highest = info === undefined ? [] : [{ basedir: '', rules: info.rules }];
+  const lowest = global === undefined ? [] : [{ basedir: '', rules: global.rules }];
   const sourcesForPath = async (
     path: FilePath,
-  ): Promise<{ sources: ReadonlyArray<AttributeSource>; macros: MacroRegistry }> => {
-    const sources: AttributeSource[] = [];
-    if (info !== undefined) sources.push({ basedir: '', rules: info.rules });
-    for (const dir of dirChain(path)) {
-      const parsed = await loadDir(dir);
-      if (parsed !== undefined) sources.push({ basedir: dir, rules: parsed.rules });
-    }
-    if (global !== undefined) sources.push({ basedir: '', rules: global.rules });
-    return { sources, macros };
-  };
+  ): Promise<{ sources: ReadonlyArray<AttributeSource>; macros: MacroRegistry }> => ({
+    sources: [...highest, ...(await stackOf(parentDir(path))), ...lowest],
+    macros,
+  });
   return { sourcesForPath };
 };
 

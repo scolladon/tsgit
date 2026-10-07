@@ -16,7 +16,13 @@ import type { FilePath, ObjectId } from '../../../../../src/domain/objects/objec
 import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import { asBareContext } from '../../commands/fixtures.js';
-import { writeLooseWithDeclaredSize, writeRawObjectBytes } from '../fixtures.js';
+import {
+  buildTreeChain,
+  deepIndexPath,
+  instrumentedContext,
+  writeLooseWithDeclaredSize,
+  writeRawObjectBytes,
+} from '../fixtures.js';
 
 const seed = async (ctx: Context, path: string, content: string): Promise<void> => {
   await ctx.fs.writeUtf8(path, content);
@@ -328,6 +334,27 @@ describe('buildAttributeProvider', () => {
     });
   });
 
+  describe('Given a root .gitattributes', () => {
+    describe('When resolving a top-level file', () => {
+      it('Then it touches the file system no further than the build did', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seed(base, '/repo/.gitattributes', '* merge=root\n');
+        const { ctx, calls } = instrumentedContext(base);
+        const provider = await buildAttributeProvider(ctx);
+        const sut = provider.sourcesForPath;
+        const built = calls().length;
+
+        // Act
+        const result = await sut('top.txt' as FilePath);
+
+        // Assert
+        expect(result.sources.map(({ basedir }) => basedir)).toEqual(['']);
+        expect(calls().slice(built)).toEqual([]);
+      });
+    });
+  });
+
   describe('Given the root .gitattributes pre-seeded into the directory cache at build time', () => {
     describe('When resolving a root-level path after construction', () => {
       it('Then the lookup touches no `.gitattributes` on disk (fully served from the seeded cache)', async () => {
@@ -579,6 +606,21 @@ const treeResolve = async (
   return resolveAttribute(sources, path, name, macros);
 };
 
+/** `d0/…/d{depth}` with a file at the bottom and a `.gitattributes` in every tenth directory. */
+const putDeepTreeWithAttributes = async (ctx: Context, depth: number): Promise<ObjectId> => {
+  let child = await putBlob(ctx, 'leaf');
+  let childMode: string = FILE_MODE.REGULAR;
+  for (let level = depth; level >= 0; level -= 1) {
+    const entries: Array<readonly [string, string, ObjectId]> = [[childMode, `d${level}`, child]];
+    if (level % 10 === 0) {
+      entries.push([FILE_MODE.REGULAR, '.gitattributes', await putBlob(ctx, `* merge=${level}\n`)]);
+    }
+    child = await putTree(ctx, entries);
+    childMode = FILE_MODE.DIRECTORY;
+  }
+  return child;
+};
+
 describe('buildTreeAttributeProvider', () => {
   describe('Given a tree with a root and a nested .gitattributes', () => {
     describe('When resolving paths', () => {
@@ -594,6 +636,34 @@ describe('buildTreeAttributeProvider', () => {
         const tree = await putTree(ctx, [
           [FILE_MODE.REGULAR, '.gitattributes', rootAttrs],
           [FILE_MODE.DIRECTORY, 'sub', sub],
+        ]);
+
+        // Act
+        const result = await treeResolve(ctx, tree, path);
+
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a .gitattributes two directories down, a file named like a directory and no such directory', () => {
+    describe('When resolving each path before any of its parent directories', () => {
+      it.each([
+        { path: 'top/mid/a.txt', expected: { set: 'mid' } },
+        { path: 'file/a.txt', expected: { set: 'root' } },
+        { path: 'missing/a.txt', expected: { set: 'root' } },
+      ])('Then $path reads the files on its own chain', async ({ path, expected }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const rootAttrs = await putBlob(ctx, '*.txt merge=root\n');
+        const midAttrs = await putBlob(ctx, '*.txt merge=mid\n');
+        const mid = await putTree(ctx, [[FILE_MODE.REGULAR, '.gitattributes', midAttrs]]);
+        const top = await putTree(ctx, [[FILE_MODE.DIRECTORY, 'mid', mid]]);
+        const tree = await putTree(ctx, [
+          [FILE_MODE.REGULAR, '.gitattributes', rootAttrs],
+          [FILE_MODE.REGULAR, 'file', midAttrs],
+          [FILE_MODE.DIRECTORY, 'top', top],
         ]);
 
         // Act
@@ -747,6 +817,60 @@ describe('buildTreeAttributeProvider', () => {
           size: MAX_GITATTRIBUTES_BYTES + 1,
           limit: MAX_GITATTRIBUTES_BYTES,
         });
+      });
+    });
+  });
+
+  describe('Given a tree nested many directories deep, read with every object cache off', () => {
+    describe('When each directory and the leaf are resolved in walk order', () => {
+      it('Then it reads the root once and two trees per directory, never re-descending from the root', async () => {
+        // Arrange
+        const depth = 60;
+        const base = createMemoryContext({ deltaCacheMaxBytes: 0, parsedObjectMemoMaxEntries: 0 });
+        const tree = await buildTreeChain(base, depth);
+        const { ctx, calls } = instrumentedContext(base);
+        const sut = buildTreeAttributeProvider;
+
+        // Act
+        const provider = await sut(ctx, tree);
+        for (let slashes = 0; slashes < depth; slashes += 1) {
+          await provider.sourcesForPath(`${deepIndexPath(slashes)}/` as FilePath);
+        }
+        await provider.sourcesForPath(deepIndexPath(depth) as FilePath);
+
+        // Assert
+        const result = calls().filter(
+          ({ method, path }) => method === 'read' && path.includes('/objects/'),
+        );
+        expect(result).toHaveLength(2 * depth + 1);
+      });
+    });
+  });
+
+  describe('Given a tree a thousand directories deep with a .gitattributes in every tenth one', () => {
+    describe('When each directory and the leaf are resolved in walk order', () => {
+      it('Then every level keeps its own rules and the walk finishes inside a second', async () => {
+        // Arrange
+        const depth = 1000;
+        const ctx = createMemoryContext();
+        const tree = await putDeepTreeWithAttributes(ctx, depth);
+        const provider = await buildTreeAttributeProvider(ctx, tree);
+        const sut = provider.sourcesForPath;
+        const startedAt = Date.now();
+
+        // Act
+        for (let slashes = 0; slashes < depth; slashes += 1) {
+          await sut(`${deepIndexPath(slashes)}/` as FilePath);
+        }
+        const result = await sut(deepIndexPath(depth) as FilePath);
+        const elapsedMs = Date.now() - startedAt;
+
+        // Assert
+        expect(result.sources.map(({ basedir }) => basedir)).toEqual([
+          ...Array.from({ length: 100 }, (_unused, tenth) => deepIndexPath(999 - 10 * tenth)),
+          '',
+        ]);
+        expect(elapsedMs).toBeLessThan(1000);
       });
     });
   });

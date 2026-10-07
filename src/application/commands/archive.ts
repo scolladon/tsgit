@@ -179,6 +179,17 @@ const readEntryContent = async (
 
 const isInside = (path: string, directory: string): boolean => path.startsWith(`${directory}/`);
 
+const isOutside = (path: string, directory: ArchiveEntry | undefined): boolean =>
+  directory !== undefined && !isInside(path, directory.path);
+
+/**
+ * Held-back directories always form one ancestor chain, deepest last, so the
+ * trim stops at the first one still holding `path`.
+ */
+const keepAncestorsOf = (queued: ArchiveEntry[], path: string): void => {
+  while (isOutside(path, queued.at(-1))) queued.pop();
+};
+
 const attributeKey = (path: string, mode: FileMode): string =>
   mode === FILE_MODE.GITLINK ? `${path}/` : path;
 
@@ -200,7 +211,7 @@ const createEntryPlanner = async (
   return async (entry) => {
     const { path, id, mode } = entry;
     if (ignoredDirectory !== undefined && isInside(path, ignoredDirectory)) return [];
-    queued = queued.filter((dir) => isInside(path, dir.path));
+    keepAncestorsOf(queued, path);
     if (mode === FILE_MODE.DIRECTORY) {
       if (await isExportIgnored(`${path}/`)) ignoredDirectory = path;
       else queued.push({ path, mode, oid: id });

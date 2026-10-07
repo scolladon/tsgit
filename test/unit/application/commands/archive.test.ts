@@ -23,7 +23,12 @@ import {
 } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { type Context, createSession } from '../../../../src/ports/context.js';
-import { buildTreeChain, instrumentedContext, seedMaxTreeDepth } from '../primitives/fixtures.js';
+import {
+  buildTreeChain,
+  deepIndexPath,
+  instrumentedContext,
+  seedMaxTreeDepth,
+} from '../primitives/fixtures.js';
 import { writeSyntheticPackIn } from '../primitives/pack-fixture.js';
 import { asBareContext } from './fixtures.js';
 
@@ -753,6 +758,32 @@ describe('Given core.maxTreeDepth configured to a small cap and a tree chain exa
       // Assert — SMALL_CAP directory entries + 1 leaf blob; no throw
       expect(entries).toHaveLength(SMALL_CAP + 1);
       expect(entries[entries.length - 1]?.mode).toBe(FILE_MODE.REGULAR);
+    });
+  });
+});
+
+describe('Given a tree chain a thousand directories deep under the default depth cap', () => {
+  describe('When archive iterates all entries', () => {
+    it('Then every directory is held back until the leaf flushes it, inside a second', async () => {
+      // Arrange
+      const depth = 1000;
+      const ctx = await initUnbornCtx();
+      const treeId = await buildTreeChain(ctx, depth);
+      const startedAt = Date.now();
+
+      // Act
+      const result = await archive(ctx, { treeish: treeId });
+      const entries: ArchiveEntry[] = [];
+      for await (const entry of result.entries) {
+        entries.push(entry);
+      }
+      const elapsedMs = Date.now() - startedAt;
+
+      // Assert
+      expect(entries.map(({ path }) => path)).toEqual(
+        Array.from({ length: depth + 1 }, (_unused, slashes) => deepIndexPath(slashes)),
+      );
+      expect(elapsedMs).toBeLessThan(1000);
     });
   });
 });
