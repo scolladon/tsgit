@@ -813,6 +813,40 @@ describe('commit', () => {
     });
   });
 
+  describe('Given a signed merge of a signed tag from real git', () => {
+    describe('When roundtripping', () => {
+      it('Then the gpgsig stays after the mergetag, byte for byte', () => {
+        // Arrange
+        const raw = [
+          `tree ${'b'.repeat(40)}`,
+          `parent ${'c'.repeat(40)}`,
+          `parent ${'d'.repeat(40)}`,
+          'author Test <test@test.com> 1609459200 +0000',
+          'committer Test <test@test.com> 1609459200 +0000',
+          `mergetag object ${'d'.repeat(40)}`,
+          ' type commit',
+          ' tag t1',
+          ' ',
+          ' t1 body',
+          'gpgsig -----BEGIN PGP SIGNATURE-----',
+          ' ',
+          ' wsBcBAAB',
+          ' -----END PGP SIGNATURE-----',
+          '',
+          'Merge tag t1\n',
+        ].join('\n');
+        const content = encode(raw);
+        const sut = serializeCommitContent;
+
+        // Act
+        const result = sut(parseCommitContent(DUMMY_ID, content));
+
+        // Assert
+        expect(result).toEqual(content);
+      });
+    });
+  });
+
   describe('property-based tests', () => {
     describe('Given the roundtrip property "parseCommitContent(id, serializeCommitContent(commit)) preserves all fields"', () => {
       describe('When sampled', () => {

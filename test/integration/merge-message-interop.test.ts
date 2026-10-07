@@ -289,6 +289,15 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — default message', () => {
 
   describe('Given signed and unsigned annotated tags verified by a stub gpg program', () => {
     const STUB_VERIFIER = '#!/bin/sh\necho "gpg: stub verifier report" >&2\nexit 1\n';
+    /** Verifies nothing, and signs every payload with one fixed armor. */
+    const STUB_SIGNER = [
+      '#!/bin/sh',
+      'for a in "$@"; do [ "$a" = --verify ] && { echo "gpg: stub verifier report" >&2; exit 1; }; done',
+      'cat >/dev/null',
+      'echo "[GNUPG:] SIG_CREATED D 1 8 00 1700000000 STUB" >&2',
+      "printf -- '-----BEGIN PGP SIGNATURE-----\\n\\nAAAA\\n-----END PGP SIGNATURE-----\\n'",
+      '',
+    ].join('\n');
     const TAGGER = 'tagger T <t@x> 1700000000 +0000\n';
 
     const signedTag = (dir: string, name: string, target: string, tagger: string): void => {
@@ -335,6 +344,26 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — default message', () => {
         // Act
         git(pair.peer, 'merge', '-q', '--no-edit', ...revs);
         await sut({ rev: revs, author: IDENTITY, committer: IDENTITY });
+        await repo.dispose();
+
+        // Assert
+        expect(git(pair.ours, 'rev-parse', 'HEAD')).toBe(git(pair.peer, 'rev-parse', 'HEAD'));
+      });
+    });
+
+    describe('When both tools sign the merge of a signed tag', () => {
+      it('Then the signature follows the mergetag and the merge commits are identical', async () => {
+        // Arrange
+        await tagBoth();
+        const signer = path.join(pair.peer, '.git', 'stub-signer');
+        await writeFile(signer, STUB_SIGNER, { mode: 0o755 });
+        for (const dir of [pair.peer, pair.ours]) git(dir, 'config', 'gpg.program', signer);
+        const repo = await openRepository({ cwd: pair.ours });
+        const sut = repo.merge.run;
+
+        // Act
+        git(pair.peer, 'merge', '-q', '-S', '--no-edit', 't1');
+        await sut({ rev: 't1', sign: true, author: IDENTITY, committer: IDENTITY });
         await repo.dispose();
 
         // Assert

@@ -204,12 +204,13 @@ export function serializeCommitContent(commit: Commit): Uint8Array {
   lines.push(`author ${serializeIdentity(data.author)}`);
   lines.push(`committer ${serializeIdentity(data.committer)}`);
 
-  if (data.gpgSignature !== undefined) {
-    lines.push(formatContinuationHeader('gpgsig', data.gpgSignature));
-  }
-
   for (const header of data.extraHeaders) {
     lines.push(formatContinuationHeader(header.key, header.value));
+  }
+
+  // git's `add_header_signature` appends the signature to the end of the header block.
+  if (data.gpgSignature !== undefined) {
+    lines.push(formatContinuationHeader('gpgsig', data.gpgSignature));
   }
 
   const headerText = lines.join('\n');
