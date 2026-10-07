@@ -142,6 +142,17 @@ describe('compileExtendedRegex', () => {
         ['(^a)+b', 'ab', true],
         ['(^a)*b', 'xb', true],
         ['\\<a.c', 'x abc', true],
+        ['\\<a', '\u{1D400}a', false],
+        ['\\<a', '\u{1F600}a', true],
+        ['\\>', '\u{1D400}', true],
+        ['^..$', '\u{1F600}', false],
+        ['^é+$', 'éé', true],
+        ['^a+$', 'aé', false],
+        ['[0-9]{4}', 'v1.2345', true],
+        ['[0-9]{4}', 'v1.234 5', false],
+        ['x[[:alpha:]]', 'xé', true],
+        ['(é|a)b', 'éb', true],
+        ['(é|a)b', 'éc', false],
       ])('Then /%s/ against %j answers %s', (pattern, subject, expected) => {
         // Arrange
         const sut = compileExtendedRegex;
@@ -217,28 +228,45 @@ describe('compileExtendedRegex', () => {
         ['(a|a)*b', 'a'],
         ['(a*)*b', 'a'],
         ['(x+x+)+y', 'x'],
-      ])('Then /%s/ answers false', (pattern, character) => {
+      ])('Then /%s/ answers false without backtracking', (pattern, character) => {
         // Arrange
-        const sut = matches;
+        const sut = compileExtendedRegex;
 
         // Act
-        const result = sut(pattern, character.repeat(LONG_RUN));
+        const result = sut(pattern);
 
         // Assert
-        expect(result).toBe(false);
+        expect(result?.engine).toBe('linear');
+        expect(result?.test(character.repeat(LONG_RUN))).toBe(false);
       });
     });
 
     describe('When it is matched against a long run it can match', () => {
-      it('Then it answers true', () => {
+      it('Then it answers true without backtracking', () => {
         // Arrange
-        const sut = matches;
+        const sut = compileExtendedRegex;
 
         // Act
-        const result = sut('(a+)+b', `${'a'.repeat(LONG_RUN)}b`);
+        const result = sut('(a+)+b');
 
         // Assert
-        expect(result).toBe(true);
+        expect(result?.engine).toBe('linear');
+        expect(result?.test(`${'a'.repeat(LONG_RUN)}b`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a pattern holding a back-reference', () => {
+    describe('When it is compiled', () => {
+      it('Then it runs on the backtracking engine', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+
+        // Act
+        const result = sut('(a)\\1')?.engine;
+
+        // Assert
+        expect(result).toBe('backtracking');
       });
     });
   });

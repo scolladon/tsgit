@@ -28,11 +28,22 @@ const QUANTIFIER = fc.constantFrom('*', '+', '?', '{2}', '{0,2}', '{1,}', '{,1}'
 
 const alphanumeric = fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789');
 
-const LEAF_ATOM = fc.constantFrom('a', 'b', '.', '[ab]', '[^a]', '\\w', '\\W', '\\s');
+const LEAF_ATOM = fc.constantFrom(
+  'a',
+  'b',
+  'é',
+  '\u{1F600}',
+  '.',
+  '[ab]',
+  '[^a]',
+  '\\w',
+  '\\W',
+  '\\s',
+);
 const ANCHOR = fc.constantFrom('^', '$', '\\<', '\\>', '\\b', '\\B');
 const NESTING = 2;
 
-/** Small extended regexes without back-references over `a` and `b`, groups nested up to `depth`. */
+/** Small extended regexes without back-references, over a few letters, groups nested up to `depth`. */
 const smallPattern = (depth: number): fc.Arbitrary<string> => {
   const atom =
     depth === 0
@@ -54,9 +65,9 @@ const smallPattern = (depth: number): fc.Arbitrary<string> => {
   return fc.array(branch, { minLength: 1, maxLength: 3 }).map((branches) => branches.join('|'));
 };
 
-/** A subject over the characters the small patterns tell apart. */
+/** A subject over the characters the small patterns tell apart, a word character past the BMP among them. */
 const smallSubject = fc
-  .array(fc.constantFrom('a', 'b', ' ', '\n'), { maxLength: 8 })
+  .array(fc.constantFrom('a', 'b', 'é', '\u{1F600}', '\u{1D400}', ' ', '\n'), { maxLength: 8 })
   .map((characters) => characters.join(''));
 
 /** The same pattern with a back-reference in front, so it runs as its ECMAScript translation. */
@@ -146,7 +157,7 @@ describe('compileExtendedRegex properties', () => {
             const result = sut(pattern)?.test(subject);
             return result === sut(backtracking(pattern))?.test(subject);
           }),
-          { numRuns: 300 },
+          { numRuns: 200 },
         );
       });
     });

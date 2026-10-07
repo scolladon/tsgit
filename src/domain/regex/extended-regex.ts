@@ -33,20 +33,34 @@ const MAX_GROUP_NESTING = 500;
 const MAX_PROGRAM_SIZE = 1 << 17;
 const WORD_CHARACTERS = '\\p{L}\\p{N}_';
 const WORD = `[${WORD_CHARACTERS}]`;
-const WORD_PATTERN = new RegExp(WORD, 'u');
 const WORD_START = `(?<!${WORD})(?=${WORD})`;
 const WORD_END = `(?<=${WORD})(?!${WORD})`;
 const FLAGS = 'su';
 
-/** Whether a zero-width assertion holds between the characters around a position. */
-type Assertion = (before: string | undefined, after: string | undefined) => boolean;
+/** What a position is known by: bits for the subject's start and end, and a word character either side. */
+type Context = number;
 
-const isWord = (ch: string | undefined): boolean => ch !== undefined && WORD_PATTERN.test(ch);
+const AT_START = 1;
+const AT_END = 2;
+const WORD_BEFORE = 4;
+const WORD_AFTER = 8;
+const CONTEXTS = 16;
 
-/** An automaton step; `fork` targets are relative to the fork, a jump forks twice to one target. */
+/** Whether a zero-width assertion holds in a context. */
+type Assertion = (context: Context) => boolean;
+
+/** The word bits alone: 1 for a word character before only, 2 after only. */
+const wordSides = (context: Context): number => context >> 2;
+
+/**
+ * An automaton step. A `char` reads a code point its source — a one-character
+ * ECMAScript pattern — matches; `code` is set where that is one code point. An
+ * `assert` holds in the contexts its mask has a bit for. `fork` targets are
+ * relative to the fork; a jump forks twice to one target.
+ */
 type Instruction =
-  | { readonly op: 'char'; readonly matches: (character: string) => boolean }
-  | { readonly op: 'assert'; readonly holds: Assertion }
+  | { readonly op: 'char'; readonly source: string; readonly code?: number }
+  | { readonly op: 'assert'; readonly mask: number }
   | { readonly op: 'fork'; readonly to: number; readonly or: number };
 
 /** Instructions laid out in order without copying: repeated parts are shared. */
@@ -84,17 +98,23 @@ interface Bounds {
 /** Nothing known: a piece matching varied text, or a zero-width one a substring search cannot place. */
 const OPAQUE: Literals = { exact: undefined, required: [], starts: 'anywhere' };
 
+const maskOf = (holds: Assertion): number => {
+  let mask = 0;
+  for (let context = 0; context < CONTEXTS; context += 1) mask |= Number(holds(context)) << context;
+  return mask;
+};
+
 const anchor = (source: string, holds: Assertion, literals = OPAQUE): Piece => ({
   source,
-  fragment: { op: 'assert', holds },
+  fragment: { op: 'assert', mask: maskOf(holds) },
   literals,
 });
 
-const SUBJECT_START = anchor('^', (before) => before === undefined, {
+const SUBJECT_START = anchor('^', (context) => (context & AT_START) !== 0, {
   ...OPAQUE,
   starts: 'subject-start',
 });
-const SUBJECT_END = anchor('$', (_before, after) => after === undefined);
+const SUBJECT_END = anchor('$', (context) => (context & AT_END) !== 0);
 
 const PLAIN_ANCHORS: ReadonlyMap<string, Piece> = new Map([
   ['^', SUBJECT_START],
@@ -102,17 +122,14 @@ const PLAIN_ANCHORS: ReadonlyMap<string, Piece> = new Map([
 ]);
 
 const ESCAPED_ANCHORS: ReadonlyMap<string, Piece> = new Map([
-  ['<', anchor(WORD_START, (before, after) => !isWord(before) && isWord(after))],
-  ['>', anchor(WORD_END, (before, after) => isWord(before) && !isWord(after))],
-  [
-    'b',
-    anchor(`(?:${WORD_START}|${WORD_END})`, (before, after) => isWord(before) !== isWord(after)),
-  ],
+  ['<', anchor(WORD_START, (context) => wordSides(context) === 2)],
+  ['>', anchor(WORD_END, (context) => wordSides(context) === 1)],
+  ['b', anchor(`(?:${WORD_START}|${WORD_END})`, (context) => wordSides(context) % 3 !== 0)],
   [
     'B',
     anchor(
       `(?:(?<=${WORD})(?=${WORD})|(?<!${WORD})(?!${WORD}))`,
-      (before, after) => isWord(before) === isWord(after),
+      (context) => wordSides(context) % 3 === 0,
     ),
   ],
   ['`', SUBJECT_START],
@@ -175,7 +192,11 @@ interface BracketMember {
 
 type Translation = Piece | undefined;
 
+/** How a matcher runs: in time linear in the subject, or backtracking — exponential at worst. */
+export type MatcherEngine = 'linear' | 'backtracking';
+
 export interface ExtendedRegex {
+  readonly engine: MatcherEngine;
   /** Whether `subject` holds a match. */
   readonly test: (subject: string) => boolean;
 }
@@ -191,7 +212,7 @@ export const compileExtendedRegex = (pattern: string): ExtendedRegex | undefined
   };
   const piece = parseAlternation(cursor, 0);
   if (piece === undefined) return undefined;
-  if (cursor.backreferences) return new RegExp(piece.source, FLAGS);
+  if (cursor.backreferences) return backtracking(new RegExp(piece.source, FLAGS));
   return sizeOf(piece.fragment) > MAX_PROGRAM_SIZE ? undefined : matcherOf(piece);
 };
 
@@ -201,15 +222,20 @@ const LONE_SURROGATE = /\p{Cs}/u;
 const isPlainText = (exact: string | undefined): exact is string =>
   exact !== undefined && !LONE_SURROGATE.test(exact);
 
+const backtracking = (pattern: RegExp): ExtendedRegex => ({
+  engine: 'backtracking',
+  test: (subject) => pattern.test(subject),
+});
+
+const linear = (test: (subject: string) => boolean): ExtendedRegex => ({ engine: 'linear', test });
+
 const matcherOf = ({ fragment, literals }: Piece): ExtendedRegex => {
   const { exact, required, starts } = literals;
-  if (isPlainText(exact)) return { test: (subject) => subject.includes(exact) };
-  const matcher = automaton(fragment, starts);
+  if (isPlainText(exact)) return linear((subject) => subject.includes(exact));
+  const matches = automaton(fragment, starts);
   const texts = required.filter((text) => text !== '');
-  if (texts.length === 0) return matcher;
-  return {
-    test: (subject) => texts.every((text) => subject.includes(text)) && matcher.test(subject),
-  };
+  if (texts.length === 0) return linear(matches);
+  return linear((subject) => texts.every((text) => subject.includes(text)) && matches(subject));
 };
 
 const peek = (c: Cursor, offset = 0): string | undefined => c.chars[c.pos + offset];
@@ -224,20 +250,20 @@ const literal = (ch: string): string =>
   VERBATIM.test(ch) ? ch : `\\u{${(ch.codePointAt(0) as number).toString(16)}}`;
 
 /** An expression consuming one character `source` matches. */
-const characterPiece = (source: string): Piece => {
-  const pattern = new RegExp(source, FLAGS);
+const characterPiece = (source: string): Piece => ({
+  source,
+  fragment: { op: 'char', source },
+  literals: OPAQUE,
+});
+
+const literalPiece = (ch: string): Piece => {
+  const source = literal(ch);
   return {
     source,
-    fragment: { op: 'char', matches: (character) => pattern.test(character) },
-    literals: OPAQUE,
+    fragment: { op: 'char', source, code: ch.codePointAt(0) as number },
+    literals: { exact: ch, required: [ch], starts: 'anywhere' },
   };
 };
-
-const literalPiece = (ch: string): Piece => ({
-  source: literal(ch),
-  fragment: { op: 'char', matches: (character) => character === ch },
-  literals: { exact: ch, required: [ch], starts: 'anywhere' },
-});
 
 const parseAlternation = (c: Cursor, nesting: number): Translation => {
   const branches: Piece[] = [];
@@ -567,10 +593,86 @@ const repeatFragment = (body: Fragment, { min, max }: Bounds): Fragment => {
   return sequence([...copies, ...rest]);
 };
 
-const automaton = (fragment: Fragment, starts: Starts): ExtendedRegex => {
-  const program: Instruction[] = [];
-  flatten(fragment, program);
-  return { test: (subject) => run(program, subject, starts) };
+const CHAR = 0;
+const ASSERT = 1;
+const FORK = 2;
+const MATCH = 3;
+const ASCII = 128;
+/** The first code point spelt with two code units. */
+const SURROGATE_PAIR = 0x10000;
+const STICKY_FLAGS = `${FLAGS}y`;
+const MATCHED = -1;
+const NOWHERE = -1;
+
+type CharInstruction = Extract<Instruction, { readonly op: 'char' }>;
+
+/** The code points a `char` reads: ASCII ones by table, others by a sticky pattern run on the subject. */
+interface CharClass {
+  readonly source: string;
+  readonly ascii: Uint8Array;
+  /** `undefined` where no code point past ASCII belongs. */
+  readonly beyond: RegExp | undefined;
+}
+
+/** A program laid out flat, ending in MATCH: per instruction its kind and operands. */
+interface Program {
+  readonly ops: Uint8Array;
+  /** A char's class, an assertion's mask, or a fork's first target. */
+  readonly operand: Int32Array;
+  /** A fork's second target. */
+  readonly target: Int32Array;
+  readonly classes: ReadonlyArray<CharClass>;
+}
+
+/** Finds, from its `lastIndex`, the next code point a match can begin with. */
+type Leading = RegExp;
+
+/**
+ * Buffers every run of one automaton reuses — test never re-enters itself.
+ * `joined` holds the step at which each instruction last joined `pending`.
+ */
+interface Threads {
+  readonly pending: Int32Array;
+  readonly ready: Int32Array;
+  readonly joined: Float64Array;
+  step: number;
+}
+
+interface Machine {
+  readonly program: Program;
+  readonly starts: Starts;
+  /** Unset where a match may be empty or begin with any ASCII code point. */
+  readonly leading: Leading | undefined;
+  /** Set where the program asserts on word characters. */
+  readonly word: CharClass | undefined;
+  readonly threads: Threads;
+}
+
+/** Where a run stands: its index, the threads pending there and whether a word character precedes it. */
+interface Scan {
+  at: number;
+  count: number;
+  wordBefore: boolean;
+}
+
+const automaton = (fragment: Fragment, starts: Starts): ((subject: string) => boolean) => {
+  const instructions: Instruction[] = [];
+  flatten(fragment, instructions);
+  const program = layOut(instructions);
+  const size = program.ops.length;
+  const machine: Machine = {
+    program,
+    starts,
+    leading: starts === 'anywhere' ? leadingOf(program) : undefined,
+    word: program.ops.includes(ASSERT) ? classOf({ op: 'char', source: WORD }) : undefined,
+    threads: {
+      pending: new Int32Array(size),
+      ready: new Int32Array(size),
+      joined: new Float64Array(size),
+      step: 0,
+    },
+  };
+  return (subject) => run(machine, subject);
 };
 
 const flatten = (fragment: Fragment, program: Instruction[]): void => {
@@ -581,73 +683,191 @@ const flatten = (fragment: Fragment, program: Instruction[]): void => {
   for (const part of fragment.parts) flatten(part, program);
 };
 
-/** A simulation over a program: the step at which each instruction last joined the threads. */
-interface Simulation {
-  readonly program: ReadonlyArray<Instruction>;
-  readonly joined: Int32Array;
-}
+const layOut = (instructions: ReadonlyArray<Instruction>): Program => {
+  const ops = new Uint8Array(instructions.length + 1).fill(MATCH);
+  const operand = new Int32Array(instructions.length);
+  const target = new Int32Array(instructions.length);
+  const classes: CharClass[] = [];
+  const indexes = new Map<string, number>();
+  for (const [pc, instruction] of instructions.entries()) {
+    if (instruction.op === 'char') {
+      [ops[pc], operand[pc]] = [CHAR, classIndex(instruction, indexes, classes)];
+    } else if (instruction.op === 'assert') {
+      [ops[pc], operand[pc]] = [ASSERT, instruction.mask];
+    } else {
+      [ops[pc], operand[pc], target[pc]] = [FORK, pc + instruction.to, pc + instruction.or];
+    }
+  }
+  return { ops, operand, target, classes };
+};
 
-/** A step of the subject: its index, and the code points either side of it. */
-interface Step {
-  readonly at: number;
-  readonly before: string | undefined;
-  readonly after: string | undefined;
-}
+/** One class per distinct source, however many instructions read it. */
+const classIndex = (
+  instruction: CharInstruction,
+  indexes: Map<string, number>,
+  classes: CharClass[],
+): number => {
+  const known = indexes.get(instruction.source);
+  if (known !== undefined) return known;
+  indexes.set(instruction.source, classes.length);
+  classes.push(classOf(instruction));
+  return classes.length - 1;
+};
+
+const classOf = ({ source, code }: CharInstruction): CharClass => {
+  const pattern = new RegExp(source, STICKY_FLAGS);
+  const ascii = new Uint8Array(ASCII);
+  for (let unit = 0; unit < ASCII; unit += 1) {
+    ascii[unit] = Number(readsAt(pattern, String.fromCharCode(unit), 0));
+  }
+  return { source, ascii, beyond: code !== undefined && code < ASCII ? undefined : pattern };
+};
+
+const readsAt = (pattern: RegExp, subject: string, at: number): boolean => {
+  pattern.lastIndex = at;
+  return pattern.test(subject);
+};
+
+const accepts = (charClass: CharClass, code: number, subject: string, at: number): boolean => {
+  if (code < ASCII) return charClass.ascii[code] === 1;
+  return charClass.beyond !== undefined && readsAt(charClass.beyond, subject, at);
+};
+
+/**
+ * What every thread starting afresh reads first, through every fork and
+ * assertion; `undefined` where one reaches the match without reading or
+ * where one reads any ASCII code point.
+ */
+const leadingOf = (program: Program): Leading | undefined => {
+  const { ops, operand, target, classes } = program;
+  const seen = new Uint8Array(ops.length);
+  const sources = new Set<number>();
+  for (let pending = [START], pc = pending.pop(); pc !== undefined; pc = pending.pop()) {
+    if (seen[pc] === 1) continue;
+    seen[pc] = 1;
+    const op = ops[pc];
+    if (op === MATCH) return undefined;
+    if (op === FORK) pending.push(operand[pc] as number, target[pc] as number);
+    else if (op === ASSERT) pending.push(pc + 1);
+    else sources.add(operand[pc] as number);
+  }
+  const leading = [...sources].map((index) => classes[index] as CharClass);
+  if (leading.some((charClass) => !charClass.ascii.includes(0))) return undefined;
+  return new RegExp(leading.map((charClass) => charClass.source).join('|'), `${FLAGS}g`);
+};
 
 /**
  * Threads start at every position — or only the first, where no later start
- * can match — and step together, one code point at a time.
+ * can match — and step together, one code point at a time. Where no thread
+ * is pending, the run jumps to the next code point a match can begin with.
  */
-const run = (program: ReadonlyArray<Instruction>, subject: string, starts: Starts): boolean => {
-  const codePoints = subject[Symbol.iterator]();
-  const simulation = { program, joined: new Int32Array(program.length).fill(-1) };
-  let step: Step = {
-    at: 0,
-    before: undefined,
-    after: codePoints.next().value as string | undefined,
-  };
-  for (let pending = [START]; pending.length > 0; ) {
-    const ready = follow(simulation, pending, step);
-    if (ready.includes(program.length)) return true;
-    const { at, after } = step;
-    if (after === undefined) return false;
-    pending = advance(program, ready, after, starts);
-    step = { at: at + 1, before: after, after: codePoints.next().value as string | undefined };
+const run = (machine: Machine, subject: string): boolean => {
+  const { program, threads } = machine;
+  const scan: Scan = { at: 0, count: 0, wordBefore: false };
+  threads.step += 1;
+  while (restart(machine, subject, scan)) {
+    const { at } = scan;
+    const code = subject.codePointAt(at);
+    const wordAfter = isWord(machine, subject, at);
+    const ready = follow(program, threads, scan.count, contextOf(scan, code, wordAfter));
+    if (ready === MATCHED) return true;
+    if (code === undefined) return false;
+    threads.step += 1;
+    scan.count = advance(machine, subject, at, ready, code);
+    scan.at = at + (code < SURROGATE_PAIR ? 1 : 2);
+    scan.wordBefore = wordAfter;
   }
   return false;
 };
 
-type CharInstruction = Extract<Instruction, { readonly op: 'char' }>;
-
-/** The ready threads that consume `character`, one step on, and a thread starting afresh where one may. */
-const advance = (
-  program: ReadonlyArray<Instruction>,
-  ready: ReadonlyArray<number>,
-  character: string,
-  starts: Starts,
-): number[] => {
-  const pending = starts === 'anywhere' ? [START] : [];
-  for (const pc of ready) {
-    if ((program[pc] as CharInstruction).matches(character)) pending.push(pc + 1);
+/**
+ * Joins a thread starting afresh where one may, first jumping to where a
+ * match can begin when none is pending; `false` where none can begin.
+ */
+const restart = (machine: Machine, subject: string, scan: Scan): boolean => {
+  const { starts, leading, threads } = machine;
+  if (scan.at > 0 && starts === 'subject-start') return scan.count > 0;
+  if (scan.count === 0 && leading !== undefined) {
+    const at = nextLeading(leading, subject, scan.at);
+    if (at === NOWHERE) return false;
+    if (at !== scan.at) {
+      scan.at = at;
+      scan.wordBefore = isWordBefore(machine, subject, at);
+    }
   }
-  return pending;
+  scan.count = join(threads, scan.count, START);
+  return true;
+};
+
+const nextLeading = (leading: Leading, subject: string, from: number): number => {
+  leading.lastIndex = from;
+  return leading.test(subject) ? previousStart(subject, leading.lastIndex) : NOWHERE;
+};
+
+/** Where the code point ending at `at` starts: a pair's two code units back. */
+const previousStart = (subject: string, at: number): number =>
+  (subject.codePointAt(at - 2) ?? 0) < SURROGATE_PAIR ? at - 1 : at - 2;
+
+const isWord = ({ word }: Machine, subject: string, at: number): boolean => {
+  const code = subject.codePointAt(at);
+  return word !== undefined && code !== undefined && accepts(word, code, subject, at);
+};
+
+/** Whether the code point ending at `at` is a word character. */
+const isWordBefore = (machine: Machine, subject: string, at: number): boolean =>
+  at > 0 && isWord(machine, subject, previousStart(subject, at));
+
+const contextOf = (scan: Scan, code: number | undefined, wordAfter: boolean): Context =>
+  (scan.at === 0 ? AT_START : 0) |
+  (code === undefined ? AT_END : 0) |
+  (scan.wordBefore ? WORD_BEFORE : 0) |
+  (wordAfter ? WORD_AFTER : 0);
+
+/** Adds `pc` to the pending threads unless it joined them this step; the new count. */
+const join = (threads: Threads, count: number, pc: number): number => {
+  if (threads.joined[pc] === threads.step) return count;
+  threads.joined[pc] = threads.step;
+  threads.pending[count] = pc;
+  return count + 1;
 };
 
 /**
- * Drains `pending` through forks and holding assertions, each instruction
- * once per step, into the threads ready at a character or at the match.
+ * Drains the pending threads through forks and holding assertions, each
+ * instruction once per step, into the threads ready at a character; MATCHED
+ * where one reaches the match.
  */
-const follow = (simulation: Simulation, pending: number[], step: Step): number[] => {
-  const { program, joined } = simulation;
-  const { at, before, after } = step;
-  const ready: number[] = [];
-  for (let pc = pending.pop(); pc !== undefined; pc = pending.pop()) {
-    if (joined[pc] === at) continue;
-    joined[pc] = at;
-    const instruction = program[pc];
-    if (instruction === undefined || instruction.op === 'char') ready.push(pc);
-    else if (instruction.op === 'fork') pending.push(pc + instruction.to, pc + instruction.or);
-    else if (instruction.holds(before, after)) pending.push(pc + 1);
+const follow = (program: Program, threads: Threads, pending: number, context: Context): number => {
+  const { ops, operand, target } = program;
+  let count = pending;
+  let ready = 0;
+  while (count > 0) {
+    count -= 1;
+    const pc = threads.pending[count] as number;
+    const op = ops[pc];
+    if (op === MATCH) return MATCHED;
+    if (op === CHAR) {
+      threads.ready[ready] = pc;
+      ready += 1;
+    } else if (op === FORK) {
+      count = join(threads, join(threads, count, operand[pc] as number), target[pc] as number);
+    } else if (((operand[pc] as number) >> context) & 1) count = join(threads, count, pc + 1);
   }
   return ready;
+};
+
+/** The ready threads that read the code point at `at`, pending one step on; their count. */
+const advance = (
+  { program, threads }: Machine,
+  subject: string,
+  at: number,
+  ready: number,
+  code: number,
+): number => {
+  let count = 0;
+  for (let index = 0; index < ready; index += 1) {
+    const pc = threads.ready[index] as number;
+    const charClass = program.classes[program.operand[pc] as number] as CharClass;
+    if (accepts(charClass, code, subject, at)) count = join(threads, count, pc + 1);
+  }
+  return count;
 };
