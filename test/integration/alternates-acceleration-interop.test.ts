@@ -492,4 +492,41 @@ describe.skipIf(!GIT_AVAILABLE)('alternates commit-graph interop', () => {
       );
     });
   });
+
+  describe('Given a borrower multi-pack-index bitmap and a donor multi-pack-index with a smashed signature', () => {
+    describe('When a bitmap-tier closure is computed over HEAD', () => {
+      it(
+        'Then git refuses and tsgit refuses with the signature check, though the borrower bitmap answers alone',
+        async () => {
+          // Arrange
+          const world = buildWorld();
+          runGit(['-C', world.donor.dir, 'repack', '-a', '-d', '-q']);
+          runGit(['-C', world.donor.dir, 'multi-pack-index', 'write']);
+          commitEmpty(world.borrower, 'c5');
+          runGit([
+            '-C',
+            world.borrower.dir,
+            'repack',
+            '-a',
+            '-d',
+            '-q',
+            '--write-midx',
+            '--write-bitmap-index',
+          ]);
+          const midx = path.join(world.donor.objects, 'pack', 'multi-pack-index');
+          writeFileSync(midx, Buffer.concat([SMASHED_HEADER, readFileSync(midx).subarray(4)]));
+
+          // Act
+          const git = gitObjects(world.borrower);
+          const refusal = await bitmapClosureRefusal(world.borrower);
+
+          // Assert
+          expect(git.exitCode).toBe(GIT_REFUSED);
+          expect(git.stderr).toContain(MIDX_SIGNATURE_ERROR);
+          expect(refusal).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX', check: 'signature' });
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
 });

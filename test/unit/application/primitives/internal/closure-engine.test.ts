@@ -2770,6 +2770,27 @@ describe('computeClosure — bitmap search across object sources', () => {
     });
   });
 
+  describe('Given a midx bitmap in the primary and a donor whose midx refuses to load', () => {
+    describe('When a bitmap-tier closure is requested', () => {
+      it('Then the donor refusal surfaces before any midx bitmap is opened', async () => {
+        // Arrange
+        const { ctx, id, donorSource } = await twoSources(MIDX_FLAVOUR, PACK_FLAVOUR);
+        const refusal = new Error('donor midx refused');
+        vi.spyOn(donorSource.registry, 'assertLoadable').mockRejectedValue(refusal);
+        const midxSpy = vi.spyOn(midxBitmapBindingModule, 'loadMidxBitmapArtefact');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, request(id)).catch((error: unknown) => error);
+
+        // Assert
+        expect(result).toBe(refusal);
+        expect(midxSpy).not.toHaveBeenCalled();
+        vi.restoreAllMocks();
+      });
+    });
+  });
+
   describe('Given a corrupt primary pack bitmap and a healthy donor pack bitmap', () => {
     describe('When a bitmap-tier closure is requested', () => {
       it('Then the donor pack bitmap answers', async () => {

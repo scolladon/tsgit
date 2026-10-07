@@ -634,10 +634,11 @@ async function tryBitmapClosure(
   request: ClosureRequest,
 ): Promise<ClosureObject[] | undefined> {
   const { sources } = await getObjectStore(ctx);
-  // Every source's midx is prepared (and may refuse) before any pack bitmap is
-  // opened, and every midx bitmap outranks every pack bitmap — git's order.
+  // Every source's midx is prepared (and may refuse) before any bitmap is
+  // opened, even when the first midx bitmap answers alone, and every midx
+  // bitmap outranks every pack bitmap — git's `open_midx_bitmap` order.
+  for (const { registry } of sources) await registry.assertLoadable();
   for (const { registry } of sources) {
-    await registry.assertLoadable();
     const midxArtefact = await loadMidxBitmapArtefact(ctx, await registry.midxBitmap());
     if (midxArtefact !== undefined) return closureFrom(ctx, midxArtefact, request);
   }
