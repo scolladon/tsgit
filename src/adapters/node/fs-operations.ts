@@ -26,6 +26,7 @@ export type FsOperations = Pick<
   | 'appendFile'
   | 'chmod'
   | 'lstat'
+  | 'lutimes'
   | 'mkdir'
   | 'open'
   | 'readdir'
@@ -37,7 +38,6 @@ export type FsOperations = Pick<
   | 'rmdir'
   | 'stat'
   | 'symlink'
-  | 'utimes'
   | 'writeFile'
 >;
 

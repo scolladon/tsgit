@@ -5989,13 +5989,13 @@ describe('NodeFileSystem — utimeNow (DI)', () => {
   const target = '/root/object';
   const identityRealpath = () => vi.fn().mockImplementation(async (input: string) => input);
 
-  describe('Given an injected fsOps whose utimes rejects with EACCES', () => {
+  describe('Given an injected fsOps whose lutimes rejects with EACCES', () => {
     describe('When utimeNow(file) is called', () => {
       it('Then the rejection carries the runFs-mapped code and data.path', async () => {
         // Arrange
         const fsOps = fakeFsOps({
           realpath: identityRealpath(),
-          utimes: vi.fn().mockRejectedValue(eacces()),
+          lutimes: vi.fn().mockRejectedValue(eacces()),
         });
         const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps });
 
@@ -6015,18 +6015,18 @@ describe('NodeFileSystem — utimeNow (DI)', () => {
 
   describe('Given an injected fsOps', () => {
     describe('When utimeNow(file) is called', () => {
-      it('Then utimes is called once with the resolved real path and two equal Date instances', async () => {
+      it('Then lutimes is called once with the resolved real path and two equal Date instances, so a leaf swapped for a symlink is never followed', async () => {
         // Arrange
-        const utimes = vi.fn().mockResolvedValue(undefined);
-        const fsOps = fakeFsOps({ realpath: identityRealpath(), utimes });
+        const lutimes = vi.fn().mockResolvedValue(undefined);
+        const fsOps = fakeFsOps({ realpath: identityRealpath(), lutimes });
         const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps });
 
         // Act
         await sut.utimeNow?.(target);
 
         // Assert
-        expect(utimes).toHaveBeenCalledTimes(1);
-        const [path, atime, mtime] = utimes.mock.calls[0] as [string, Date, Date];
+        expect(lutimes).toHaveBeenCalledTimes(1);
+        const [path, atime, mtime] = lutimes.mock.calls[0] as [string, Date, Date];
         expect(path).toBe(target);
         expect(atime).toBeInstanceOf(Date);
         expect(atime).toBe(mtime);
@@ -6036,13 +6036,13 @@ describe('NodeFileSystem — utimeNow (DI)', () => {
 
   describe('Given a symlink leaf', () => {
     describe('When utimeNow is called', () => {
-      it('Then PERMISSION_DENIED and utimes is never called', async () => {
+      it('Then PERMISSION_DENIED and lutimes is never called', async () => {
         // Arrange
-        const utimes = vi.fn().mockResolvedValue(undefined);
+        const lutimes = vi.fn().mockResolvedValue(undefined);
         const fsOps = fakeFsOps({
           realpath: identityRealpath(),
           lstat: vi.fn().mockResolvedValue({ isSymbolicLink: () => true }),
-          utimes,
+          lutimes,
         });
         const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps });
 
@@ -6056,7 +6056,7 @@ describe('NodeFileSystem — utimeNow (DI)', () => {
 
         // Assert
         expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
-        expect(utimes).not.toHaveBeenCalled();
+        expect(lutimes).not.toHaveBeenCalled();
       });
     });
   });

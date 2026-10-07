@@ -1551,11 +1551,12 @@ export class NodeFileSystem implements FileSystem {
   };
 
   utimeNow = async (path: string): Promise<void> => {
-    // Same posture as `chmod`: utimes follows its leaf and no portable no-follow variant exists.
+    // `lutimes` closes the race between the leaf check and the touch: a leaf swapped for a
+    // symlink in between is touched itself, never its target.
     const real = await this.resolveWrite(path);
     await this.assertLeafSafeToWrite(real, path);
     const now = new Date();
-    await runFs(() => this.fsOps.utimes(real, now, now), path);
+    await runFs(() => this.fsOps.lutimes(real, now, now), path);
   };
 
   rmRecursive = async (path: string): Promise<void> => {
