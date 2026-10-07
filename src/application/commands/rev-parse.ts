@@ -47,6 +47,7 @@ import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
 import type { CandidateFilter } from '../primitives/resolve-oid-prefix.js';
 import { readRefCandidate } from '../primitives/resolve-ref.js';
 import { reportAmbiguousOid } from './internal/ambiguous-oid-report.js';
+import { branchMarkRef } from './internal/branch-mark.js';
 import { searchCommitMessages, searchRefMessages } from './internal/commit-message-search.js';
 import {
   namesFilename,
@@ -478,9 +479,10 @@ const resolveReflogBase = async (
   return pickByDate(entries, selector.raw, now, raw, ctx.hashConfig);
 };
 
-/** git's `substitute_branch_name` before `dwim_log`: `@` is HEAD, `@{-<n>}` the branch it left. */
+/** git's `substitute_branch_name` before `dwim_log`: `@` is HEAD, `@{-<n>}` the branch it
+ *  left, `<branch>@{upstream}` / `@{push}` the ref the mark names. */
 const substituteBranch = async (ctx: Context, base: string): Promise<string> =>
-  (await nthPriorCheckout(ctx, base)) ?? interpretEmptyAt(base);
+  (await nthPriorCheckout(ctx, base)) ?? (await branchMarkRef(ctx, base)) ?? interpretEmptyAt(base);
 
 /** git's `@{...}`: `dwim_ref("HEAD")`, its ambiguity warned under the empty name git passes. */
 const currentBranchLog = (ctx: Context): Promise<RefName | undefined> =>

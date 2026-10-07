@@ -16,6 +16,7 @@ import { refCandidates } from '../../../domain/refs/index.js';
 import type { Context } from '../../../ports/context.js';
 import { type CandidateFilter, resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
 import { type RefCandidateOutcome, readRefCandidate } from '../../primitives/resolve-ref.js';
+import { branchMarkRef } from './branch-mark.js';
 import { nthPriorCheckout } from './prior-checkout.js';
 import {
   expandRef,
@@ -23,6 +24,8 @@ import {
   resolveSubstitutedRefLadder,
   warnIfRefNamesObjectId,
 } from './refname-ambiguity.js';
+
+const MARK_OPENER = '@{';
 
 /**
  * One candidate as `expand_ref` reads it. Never peels: git's plain `get_oid`
@@ -51,6 +54,10 @@ export const resolveRevisionName = async (
   }
   const prior = await nthPriorCheckout(ctx, name);
   if (prior !== undefined) return resolvePriorCheckout(ctx, name, prior);
+  const marked = name.includes(MARK_OPENER) ? await branchMarkRef(ctx, name) : undefined;
+  if (marked !== undefined) {
+    return resolveSubstitutedRefLadder(ctx, name, marked, resolveCandidate(ctx));
+  }
   const byRef = await resolveRefLadder(ctx, name, resolveCandidate(ctx));
   if (byRef !== undefined) return byRef;
   return resolveOidPrefix(ctx, name, accepts);
@@ -68,6 +75,10 @@ const resolvePriorCheckout = (
   return resolveSubstitutedRefLadder(ctx, name, prior, resolveCandidate(ctx));
 };
 
+/** git's `substitute_branch_name` before `dwim_ref`: a branch mark spelt as the ref it names. */
+const substituteBranchMark = async (ctx: Context, name: string): Promise<string> =>
+  name.includes(MARK_OPENER) ? ((await branchMarkRef(ctx, name)) ?? name) : name;
+
 /**
  * Every object id `name`'s candidate namespaces resolve to, in ladder order —
  * git's `dwim_ref` count. Only `branch`'s start point consults the count, and
@@ -77,7 +88,9 @@ export const resolvingCandidates = async (
   ctx: Context,
   name: string,
 ): Promise<ReadonlyArray<ObjectId>> =>
-  (await expandRef(ctx, name, resolveCandidate(ctx))).map((found) => found.id);
+  (await expandRef(ctx, await substituteBranchMark(ctx, name), resolveCandidate(ctx))).map(
+    (found) => found.id,
+  );
 
 /** Every real ref `name`'s candidate namespaces resolve to, in ladder order — the
  *  `dwim_ref` count whose single answer `set_merge` keeps. */
@@ -85,7 +98,9 @@ export const resolvingCandidateRefs = async (
   ctx: Context,
   name: string,
 ): Promise<ReadonlyArray<RefName>> =>
-  (await expandRef(ctx, name, resolveCandidate(ctx))).map((found) => found.ref);
+  (await expandRef(ctx, await substituteBranchMark(ctx, name), resolveCandidate(ctx))).map(
+    (found) => found.ref,
+  );
 
 /** git's `dwim_ref` as a command's own call reads it: the first namespace's
  *  unpeeled object id and the ref it ends at, warning on each skipped namespace. */
@@ -93,19 +108,20 @@ export const dwimRefWarning = async (
   ctx: Context,
   name: string,
 ): Promise<{ readonly id: ObjectId; readonly ref: RefName } | undefined> =>
-  (await expandRef(ctx, name, resolveCandidate(ctx)))[0];
+  (await expandRef(ctx, await substituteBranchMark(ctx, name), resolveCandidate(ctx)))[0];
 
 /** git's `dwim_ref` real ref as a command's own `dwim_ref` call reads it, warning on each skipped namespace. */
 export const dwimRefNameWarning = async (
   ctx: Context,
   name: string,
-): Promise<RefName | undefined> => (await expandRef(ctx, name, resolveCandidate(ctx)))[0]?.ref;
+): Promise<RefName | undefined> =>
+  (await expandRef(ctx, await substituteBranchMark(ctx, name), resolveCandidate(ctx)))[0]?.ref;
 
 /** git's `dwim_ref` real ref: the first candidate namespace `name` resolves in,
  *  symbolic refs followed to the ref they end at. A dangling or broken
  *  candidate is skipped; this read is quiet, the counting one warns. */
 export const dwimRefName = async (ctx: Context, name: string): Promise<RefName | undefined> => {
-  for (const candidate of refCandidates(name)) {
+  for (const candidate of refCandidates(await substituteBranchMark(ctx, name))) {
     const outcome = await readRefCandidate(ctx, candidate);
     if (outcome.kind === 'found') return outcome.ref;
   }

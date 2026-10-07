@@ -1,10 +1,11 @@
 export type { ConfigKey, ConfigScope, ParsedConfigKey } from './config-key.js';
 export { parseConfigKey } from './config-key.js';
-export type { CommandError, PushUnmatchedRefspec } from './error.js';
+export type { BranchMarkFailure, CommandError, PushUnmatchedRefspec } from './error.js';
 export {
   authorUnconfigured,
   blockedHost,
   branchExists,
+  branchMarkUnresolved,
   branchNotFound,
   branchNotFullyMerged,
   checkoutOverwriteDirty,

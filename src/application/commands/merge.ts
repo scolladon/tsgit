@@ -92,6 +92,7 @@ import { updateRef } from '../primitives/update-ref.js';
 import { writeObject } from '../primitives/write-object.js';
 import { writeTree } from '../primitives/write-tree.js';
 import { configuredAutostash } from './internal/autostash-config.js';
+import { branchMarkRef } from './internal/branch-mark.js';
 import { branchMergeOptions } from './internal/branch-merge-options.js';
 import { removeMergeBranchState } from './internal/branch-state.js';
 import { conflictMergeMsg, conflictsHint } from './internal/cherry-pick-state.js';
@@ -585,9 +586,15 @@ interface MergeRemote extends OctopusRemote {
   readonly spelt: string;
 }
 
+/** git's `strbuf_branchname` over a merge argument: `@{-<n>}` and a branch mark spelt out. */
+const interpretMergeName = async (ctx: Context, name: string): Promise<string> => {
+  const expanded = await expandPriorCheckout(ctx, name);
+  return (await branchMarkRef(ctx, expanded)) ?? expanded;
+};
+
 /** git's `get_merge_parent`: any revision, peeled to the commit it names. */
 const resolveMergeParent = async (ctx: Context, name: string): Promise<MergeRemote> => {
-  const spelt = await expandPriorCheckout(ctx, name);
+  const spelt = await interpretMergeName(ctx, name);
   const object = await resolveRevisionExpression(ctx, spelt);
   if (object === undefined) throw refNotFound(name as RefName);
   const { id, result } = await peelChain(ctx, object, readObject, (peeled) =>

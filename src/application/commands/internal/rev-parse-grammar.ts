@@ -1,4 +1,5 @@
 import { revparseUnresolved } from '../../../domain/commands/error.js';
+import { findBranchMark } from '../../../domain/refs/branch-mark.js';
 
 /**
  * Pure parser for the revision-expression grammar. Turns a raw expression into
@@ -193,7 +194,7 @@ const parseBase = (
 ): { readonly kind: 'ref-or-hex'; readonly base: string; readonly reflog?: ReflogSelector } => {
   const selected = splitReflog(name, raw);
   const base = selected?.base ?? name;
-  if (FOREIGN_BASE_PATTERN.test(base) && !PRIOR_CHECKOUT_PATTERN.test(base)) fail(raw);
+  if (FOREIGN_BASE_PATTERN.test(base) && !spellsBranchName(base)) fail(raw);
   if (selected === undefined) {
     if (base === '') fail(raw);
     return { kind: 'ref-or-hex', base };
@@ -201,8 +202,13 @@ const parseBase = (
   return { kind: 'ref-or-hex', base, reflog: selected.reflog };
 };
 
+/** A base git's `interpret_branch_name` may still spell: `@{-<n>}`, or a branch mark. */
+const spellsBranchName = (base: string): boolean =>
+  PRIOR_CHECKOUT_PATTERN.test(base) || findBranchMark(base) !== undefined;
+
 /** git's `get_oid_basic`: a closing `@{<body>}`, its opener the last one with a
- *  non-empty body; a `@{-<n>}` there is no selector, and only leads the name. */
+ *  non-empty body; a `@{-<n>}` there is no selector, and only leads the name,
+ *  and an `@{upstream}` / `@{push}` mark is none either. */
 const splitReflog = (
   name: string,
   raw: string,
@@ -212,6 +218,7 @@ const splitReflog = (
   if (at === -1) return undefined;
   const body = name.slice(at + REFLOG_OPENER.length, -1);
   if (body.startsWith(PRIOR_CHECKOUT_MARK)) return at === 0 ? undefined : fail(raw);
+  if (findBranchMark(name.slice(at))?.branch === '') return undefined;
   const reflog: ReflogSelector = DIGITS_ONLY_PATTERN.test(body)
     ? { kind: 'index', n: Number(body) }
     : { kind: 'date', raw: body };

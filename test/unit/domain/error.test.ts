@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ambiguousOidPrefix,
   atomicPushUnsupported,
+  branchMarkUnresolved,
   cleanFilterFailed,
   fetchRefspecConflict,
   fetchRejected,
@@ -345,6 +346,18 @@ describe('domain error — AdapterError', () => {
 
           // Assert
           expect(result.message).toContain('no upstream configured for refs/heads/main');
+        });
+      });
+    });
+
+    describe('Given BRANCH_MARK_UNRESOLVED', () => {
+      describe('When reading message', () => {
+        it('Then names the reason the mark names no ref', () => {
+          // Arrange & Act
+          const result = branchMarkUnresolved({ reason: 'detached-head' });
+
+          // Assert
+          expect(result.message).toContain('branch mark unresolved: detached-head');
         });
       });
     });

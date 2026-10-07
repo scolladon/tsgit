@@ -146,6 +146,7 @@ export type CommandError =
   | { readonly code: 'MAX_REFSPECS_EXCEEDED'; readonly count: number; readonly limit: number }
   | { readonly code: 'REMOTE_NOT_CONFIGURED'; readonly remote: string }
   | { readonly code: 'NO_UPSTREAM_CONFIGURED'; readonly branch: RefName }
+  | ({ readonly code: 'BRANCH_MARK_UNRESOLVED' } & BranchMarkFailure)
   | { readonly code: 'REMOTE_EXISTS'; readonly remote: string }
   | { readonly code: 'REMOTE_NAME_INVALID'; readonly name: string; readonly reason: string }
   | { readonly code: 'INVALID_OPTION'; readonly option: string; readonly reason: string }
@@ -758,6 +759,39 @@ export const remoteNotConfigured = (remote: string): TsgitError =>
 
 export const noUpstreamConfigured = (branch: RefName): TsgitError =>
   new TsgitError({ code: 'NO_UPSTREAM_CONFIGURED', branch });
+
+/**
+ * Why git's `branch_get_upstream` / `branch_get_push` named no ref for a
+ * `<branch>@{upstream}` or `<branch>@{push}` — git dies with the matching message.
+ */
+export type BranchMarkFailure =
+  /** `HEAD does not point to a branch` */
+  | { readonly reason: 'detached-head' }
+  /** `no such branch: '<branch>'` */
+  | { readonly reason: 'no-such-branch'; readonly branch: string }
+  /** `no upstream configured for branch '<branch>'` */
+  | { readonly reason: 'no-upstream'; readonly branch: string }
+  /** `upstream branch '<upstream>' not stored as a remote-tracking branch` */
+  | { readonly reason: 'upstream-not-tracked'; readonly upstream: string }
+  /** `push refspecs for '<remote>' do not include '<branch>'` */
+  | {
+      readonly reason: 'push-refspecs-exclude-branch';
+      readonly remote: string;
+      readonly branch: string;
+    }
+  /** `push destination '<destination>' on remote '<remote>' has no local tracking branch` */
+  | {
+      readonly reason: 'push-destination-untracked';
+      readonly destination: string;
+      readonly remote: string;
+    }
+  /** `push has no destination (push.default is 'nothing')` */
+  | { readonly reason: 'push-default-nothing' }
+  /** `cannot resolve 'simple' push to a single destination` */
+  | { readonly reason: 'simple-push-ambiguous' };
+
+export const branchMarkUnresolved = (failure: BranchMarkFailure): TsgitError =>
+  new TsgitError({ code: 'BRANCH_MARK_UNRESOLVED', ...failure });
 
 export const remoteExists = (remote: string): TsgitError =>
   new TsgitError({ code: 'REMOTE_EXISTS', remote });
