@@ -75,7 +75,7 @@ import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { readCommitData, treeOf } from './internal/history-rewrite.js';
 import { clearMergeMsg, readMergeHead, writeOrigHead } from './internal/merge-state.js';
 import { previousCheckoutArg } from './internal/prior-checkout.js';
-import { branchBaseOf, canFastForward } from './internal/rebase-fast-forward.js';
+import { canFastForward } from './internal/rebase-fast-forward.js';
 import {
   deleteRewrittenRefs,
   fastForwardHead,
@@ -86,6 +86,7 @@ import {
 } from './internal/rebase-merges-steps.js';
 import { rebaseMergesTodo } from './internal/rebase-merges-todo.js';
 import { resolveRebaseReplay } from './internal/rebase-replay.js';
+import { resolveRebaseSides } from './internal/rebase-revisions.js';
 import {
   clearRebaseState,
   dropFixupGroup,
@@ -128,9 +129,9 @@ export interface RebaseInternalOptions {
 }
 
 export interface RebaseRunInput {
-  /** The fork-point side — a commit-ish (`git rebase <upstream>`). */
+  /** The fork-point side — any revision that peels to a commit (`git rebase <upstream>`). */
   readonly upstream: string;
-  /** `--onto <newbase>`: replay onto this base instead of `upstream`. */
+  /** `--onto <newbase>`: replay onto this base instead of `upstream`; `A...B` is their sole merge base. */
   readonly onto?: string;
   /** Present → interactive: the post-`$EDITOR` instruction list (`git rebase -i`). */
   readonly interactive?: ReadonlyArray<RebaseInstruction>;
@@ -598,10 +599,9 @@ export const rebaseRun = async (
   const headCommit = head.kind === 'symbolic' ? await resolveHeadCommit(ctx, head.target) : head.id;
   const branch = branchRefFromHead(head);
   const upstreamName = previousCheckoutArg(input.upstream);
-  const upstream = await resolveCommitIsh(ctx, upstreamName);
-  const onto = input.onto !== undefined ? await resolveCommitIsh(ctx, input.onto) : upstream;
   const ontoName = input.onto ?? upstreamName;
-  const branchBase = await branchBaseOf(ctx, onto, headCommit);
+  const sideNames = { upstreamName, ontoName, head: headCommit };
+  const { upstream, onto, branchBase } = await resolveRebaseSides(ctx, sideNames);
   if (input.interactive !== undefined && rebasingMerges(input.rebaseMerges)) {
     throw invalidOption('rebaseMerges', 'interactive instructions cannot carry merges');
   }

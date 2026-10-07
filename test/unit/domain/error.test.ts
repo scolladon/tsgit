@@ -19,6 +19,7 @@ import {
   pushRefspecUnmatched,
   pushRemoteNotUpstream,
   pushUpstreamNameMismatch,
+  rebaseRevisionInvalid,
   remoteRefNotFound,
   signedPushUnsupported,
   signingFailed,
@@ -358,6 +359,18 @@ describe('domain error — AdapterError', () => {
 
           // Assert
           expect(result.message).toContain('branch mark unresolved: detached-head');
+        });
+      });
+    });
+
+    describe('Given REBASE_REVISION_INVALID', () => {
+      describe('When reading message', () => {
+        it('Then names the reason and the revision', () => {
+          // Arrange & Act
+          const result = rebaseRevisionInvalid({ reason: 'invalid-upstream', revision: 'absent' });
+
+          // Assert
+          expect(result.message).toContain('rebase revision invalid: invalid-upstream absent');
         });
       });
     });

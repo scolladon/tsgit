@@ -264,6 +264,78 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interop', () => {
       expect(headParents(pair.peer)).toBe(1);
     });
   });
+
+  describe('Given rebase sides spelt as revisions', () => {
+    const refusalOf = async (run: () => Promise<unknown>): Promise<unknown> => {
+      try {
+        await run();
+        return undefined;
+      } catch (error) {
+        return (error as TsgitError).data;
+      }
+    };
+
+    describe.each([
+      [['HEAD~1'], { upstream: 'HEAD~1' }],
+      [['--onto', 'main~1...main', 'HEAD~1'], { upstream: 'HEAD~1', onto: 'main~1...main' }],
+      [['@{u}'], { upstream: '@{u}' }],
+    ])('When git rebase %j and tsgit rebase it', (args, input) => {
+      it('Then both land on the same base with the same reflog', async () => {
+        // Arrange
+        buildRevisionSides(pair.peer);
+        buildRevisionSides(pair.ours);
+        tryRunGit(['-C', pair.peer, 'rebase', ...args]);
+        const repo = await openRepository({ cwd: pair.ours });
+
+        // Act
+        await repo.rebase.run(input);
+        await repo.dispose();
+
+        // Assert
+        expect(writeTreeOf(pair.ours)).toBe(writeTreeOf(pair.peer));
+        expect(git(pair.ours, 'rev-parse', 'HEAD~1')).toBe(git(pair.peer, 'rev-parse', 'HEAD~1'));
+        expect(topReflogSubject(pair.ours, 'HEAD')).toBe(topReflogSubject(pair.peer, 'HEAD'));
+      });
+    });
+
+    describe.each([
+      [['absent'], { upstream: 'absent' }, "invalid upstream 'absent'", 'invalid-upstream'],
+      [
+        ['HEAD^{tree}'],
+        { upstream: 'HEAD^{tree}' },
+        "invalid upstream 'HEAD^{tree}'",
+        'invalid-upstream',
+      ],
+      [
+        ['--onto', 'absent', 'HEAD~1'],
+        { upstream: 'HEAD~1', onto: 'absent' },
+        "Does not point to a valid commit 'absent'",
+        'invalid-onto',
+      ],
+      [
+        ['--onto', 'absent...main', 'HEAD~1'],
+        { upstream: 'HEAD~1', onto: 'absent...main' },
+        "'absent...main': need exactly one merge base",
+        'onto-merge-base-not-unique',
+      ],
+    ])('When git rebase %j and tsgit rebase it', (args, input, message, reason) => {
+      it('Then both refuse it', async () => {
+        // Arrange
+        buildRevisionSides(pair.peer);
+        buildRevisionSides(pair.ours);
+        const refused = tryRunGitWithExit(['-C', pair.peer, 'rebase', ...args]);
+        const repo = await openRepository({ cwd: pair.ours });
+
+        // Act
+        const result = await refusalOf(() => repo.rebase.run(input));
+        await repo.dispose();
+
+        // Assert
+        expect(refused.stderr).toContain(`fatal: ${message}`);
+        expect(result).toMatchObject({ code: 'REBASE_REVISION_INVALID', reason });
+      });
+    });
+  });
 });
 
 // ── git-CLI scenario builders ───────────────────────────────────────────────
@@ -814,3 +886,21 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
     },
   );
 });
+
+/** main: a-b-c-d; `side` at b; `feat` off `side` adds f and tracks main. HEAD left on feat. */
+function buildRevisionSides(dir: string): void {
+  runGit(['init', '-q', '-b', 'main', dir]);
+  configGit(dir);
+  for (const name of ['a', 'b', 'c', 'd']) commitFileNamed(dir, name);
+  git(dir, 'branch', 'side', 'HEAD~2');
+  git(dir, 'checkout', '-q', '-b', 'feat', 'side');
+  commitFileNamed(dir, 'f');
+  git(dir, 'config', 'branch.feat.remote', '.');
+  git(dir, 'config', 'branch.feat.merge', 'refs/heads/main');
+}
+
+function commitFileNamed(dir: string, name: string): void {
+  writeWork(dir, name, `${name}\n`);
+  git(dir, 'add', name);
+  gitCommit(dir, name);
+}

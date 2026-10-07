@@ -1,6 +1,11 @@
 export type { ConfigKey, ConfigScope, ParsedConfigKey } from './config-key.js';
 export { parseConfigKey } from './config-key.js';
-export type { BranchMarkFailure, CommandError, PushUnmatchedRefspec } from './error.js';
+export type {
+  BranchMarkFailure,
+  CommandError,
+  PushUnmatchedRefspec,
+  RebaseRevisionFailure,
+} from './error.js';
 export {
   authorUnconfigured,
   blockedHost,
@@ -38,6 +43,7 @@ export {
   pathspecNoMatch,
   pathspecOutsideRepo,
   pushRejected,
+  rebaseRevisionInvalid,
   remoteAdvertisesNoRefs,
   remoteExists,
   remoteNameInvalid,

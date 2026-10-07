@@ -144,6 +144,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'REMOTE_NOT_CONFIGURED':
     case 'NO_UPSTREAM_CONFIGURED':
     case 'BRANCH_MARK_UNRESOLVED':
+    case 'REBASE_REVISION_INVALID':
     case 'REMOTE_EXISTS':
     case 'REMOTE_NAME_INVALID':
     case 'NO_PROMISOR_REMOTE':

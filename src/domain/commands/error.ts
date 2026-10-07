@@ -147,6 +147,7 @@ export type CommandError =
   | { readonly code: 'REMOTE_NOT_CONFIGURED'; readonly remote: string }
   | { readonly code: 'NO_UPSTREAM_CONFIGURED'; readonly branch: RefName }
   | ({ readonly code: 'BRANCH_MARK_UNRESOLVED' } & BranchMarkFailure)
+  | ({ readonly code: 'REBASE_REVISION_INVALID' } & RebaseRevisionFailure)
   | { readonly code: 'REMOTE_EXISTS'; readonly remote: string }
   | { readonly code: 'REMOTE_NAME_INVALID'; readonly name: string; readonly reason: string }
   | { readonly code: 'INVALID_OPTION'; readonly option: string; readonly reason: string }
@@ -792,6 +793,22 @@ export type BranchMarkFailure =
 
 export const branchMarkUnresolved = (failure: BranchMarkFailure): TsgitError =>
   new TsgitError({ code: 'BRANCH_MARK_UNRESOLVED', ...failure });
+
+/** Why git rebase found no commit in its `<upstream>` or `--onto <newbase>`; git dies with the matching message. */
+export type RebaseRevisionFailure =
+  /** `invalid upstream '<revision>'` */
+  | { readonly reason: 'invalid-upstream'; readonly revision: string }
+  /** `Does not point to a valid commit '<revision>'` */
+  | { readonly reason: 'invalid-onto'; readonly revision: string }
+  /** `'<revision>': need exactly one merge base` — an `A...B` onto */
+  | { readonly reason: 'onto-merge-base-not-unique'; readonly revision: string };
+
+export const rebaseRevisionInvalid = (failure: RebaseRevisionFailure): TsgitError =>
+  new TsgitError({
+    code: 'REBASE_REVISION_INVALID',
+    reason: failure.reason,
+    revision: sanitizeForDisplay(failure.revision),
+  });
 
 export const remoteExists = (remote: string): TsgitError =>
   new TsgitError({ code: 'REMOTE_EXISTS', remote });
