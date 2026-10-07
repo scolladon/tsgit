@@ -46,6 +46,10 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'integration',
+          // Interop setup hooks spawn real git hundreds of times to build
+          // fixtures; on a loaded machine that outlasts the 10s default, and
+          // a timed-out `beforeAll` fails every row of the suite at once.
+          hookTimeout: 60_000,
           include: ['test/integration/**/*.test.ts', 'tooling/test/integration/**/*.test.ts'],
           exclude: [
             // Folder-segregated platform-specific integration suites run in

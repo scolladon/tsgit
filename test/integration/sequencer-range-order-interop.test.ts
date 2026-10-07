@@ -10,7 +10,7 @@
  *   bucket:         cross-tool-interop
  *   unique:         ranges and plain commits seed one date-ordered limited walk, so skewed exclusions, duplicates and equal-date ties pick git's commits in git's order
  */
-import { cpSync, existsSync, mkdtempSync, realpathSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -94,6 +94,7 @@ const buildHistory = (dir: string): void => {
   runGit(['init', '-q', '-b', 'main', dir]);
   git(dir, 'config', 'user.name', 'Ada');
   git(dir, 'config', 'user.email', 'ada@example.com');
+  const blobs = writeBlobs(dir);
   const files = new Map<string, ReadonlySet<string>>();
   const ids = new Map<string, string>();
   for (const [name, offset, parents] of HISTORY) {
@@ -102,7 +103,7 @@ const buildHistory = (dir: string): void => {
     const tree = runGit(['-C', dir, 'mktree'], {
       input: [...own]
         .sort()
-        .map((file) => `100644 blob ${blobOf(dir, file)}\t${file}\n`)
+        .map((file) => `100644 blob ${blobs.get(file)}\t${file}\n`)
         .join(''),
     }).trim();
     const date = `${EPOCH + offset} +0000`;
@@ -115,8 +116,20 @@ const buildHistory = (dir: string): void => {
   }
 };
 
-const blobOf = (dir: string, file: string): string =>
-  runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: `${file}\n` }).trim();
+/** Every commit's file blob (its name plus a newline), written by one `hash-object` spawn. */
+const writeBlobs = (dir: string): ReadonlyMap<string, string> => {
+  const sources = path.join(root, 'blob-sources');
+  mkdirSync(sources);
+  const names = HISTORY.map(([name]) => name);
+  const paths = names.map((name) => path.join(sources, name));
+  for (const [index, name] of names.entries()) writeFileSync(paths[index] as string, `${name}\n`);
+  const oids = runGit(['-C', dir, 'hash-object', '-w', '--stdin-paths'], {
+    input: `${paths.join('\n')}\n`,
+  })
+    .trim()
+    .split('\n');
+  return new Map(names.map((name, index) => [name, oids[index] as string]));
+};
 
 const copyAt = (base: string): string => {
   count += 1;
