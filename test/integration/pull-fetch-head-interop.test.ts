@@ -70,6 +70,11 @@ beforeAll(() => {
   dated(['-C', work, 'checkout', '-q', '--orphan', 'root']);
   dated(['-C', work, 'commit', '-q', '--allow-empty', '-m', 'root']);
   dated(['-C', work, 'checkout', '-q', 'main']);
+  const signed = `object ${git(work, 'rev-parse', 'side').trim()}\ntype commit\ntag st\ntagger T <t@x> ${EPOCH} +0000\n\nst body\n-----BEGIN PGP SIGNATURE-----\n\nAAAA\n-----END PGP SIGNATURE-----\n`;
+  const tag = runGit(['-C', work, 'hash-object', '-t', 'tag', '-w', '--literally', '--stdin'], {
+    input: signed,
+  });
+  dated(['-C', work, 'update-ref', 'refs/tags/st', tag.trim()]);
   dated(['clone', '-q', '--bare', work, peerPath]);
 });
 
@@ -145,6 +150,15 @@ describe.skipIf(!GIT_AVAILABLE)('pull FETCH_HEAD interop', () => {
         ['branch.main.remote', 'origin'],
         ['branch.main.merge', 'refs/heads/main'],
         ['branch.main.merge', 'refs/heads/side'],
+      ],
+    },
+    {
+      label: 'signed-tag',
+      branch: 'main',
+      config: [
+        ['branch.main.remote', 'origin'],
+        ['branch.main.merge', 'refs/tags/st'],
+        ['gpg.program', 'false'],
       ],
     },
     {

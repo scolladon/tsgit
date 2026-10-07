@@ -23,7 +23,7 @@ import { tagCreate, tagDelete } from '../../../../src/application/commands/tag.j
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
-import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { readObject, readRawObject } from '../../../../src/application/primitives/read-object.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
@@ -4987,6 +4987,137 @@ describe('merge default message', () => {
         // Assert
         expect(result).toBe(`Merge tag 'st'\n\nsigned body\n\n${COMMENTED}# gpg: stub\n`);
         expect(commands.map((command) => command.split(' ')[0])).toEqual(["'stub-gpg'"]);
+      });
+    });
+  });
+
+  describe('Given signed and unsigned annotated tags on diverged commits', () => {
+    const SIGNATURE = '-----BEGIN PGP SIGNATURE-----\n\nAAAA\n-----END PGP SIGNATURE-----\n';
+
+    const annotatedTag = async (
+      ctx: Context,
+      name: string,
+      target: ObjectId,
+      signature?: string,
+    ): Promise<string> => {
+      const tag = await writeObject(ctx, {
+        type: 'tag',
+        id: '' as ObjectId,
+        data: {
+          object: target,
+          objectType: 'commit',
+          tagName: name,
+          message: `${name} body\r\nline\n`,
+          extraHeaders: [],
+          ...(signature === undefined ? {} : { gpgSignature: signature }),
+        },
+      });
+      await seedRef(ctx, `refs/tags/${name}` as RefName, tag, { reflogMessage: 'seed' });
+      return new TextDecoder().decode((await readRawObject(ctx, tag)).content);
+    };
+
+    /** `feature` tagged `st` (signed) and `ut` (unsigned); `other` off main's parent tagged `so` (signed). */
+    const taggedRepo = async () => {
+      const { ctx, feature } = await divergedRepo();
+      await branchCreate(ctx, { name: 'other', startPoint: 'main~1' });
+      await checkout(ctx, { rev: 'other' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/d.txt`, 'd');
+      await add(ctx, ['d.txt']);
+      const other = (await commit(ctx, { message: 'on-other', author })).id;
+      await checkout(ctx, { rev: 'main' });
+      const st = await annotatedTag(ctx, 'st', feature, SIGNATURE);
+      await annotatedTag(ctx, 'ut', feature);
+      const so = await annotatedTag(ctx, 'so', other, SIGNATURE);
+      return { ctx, st, so };
+    };
+
+    const mergeHeaders = async (ctx: Context, rev: string | ReadonlyArray<string>) => {
+      const result = await mergeRun(ctx, { rev, author });
+      if (result.kind !== 'merge') throw new Error(`expected a merge, got ${result.kind}`);
+      const merged = await readObject(ctx, result.id);
+      if (merged.type !== 'commit') throw new Error('not a commit');
+      return merged.data.extraHeaders;
+    };
+
+    describe('When the signed tag is merged', () => {
+      it('Then the merge commit carries the tag object as a mergetag header', async () => {
+        // Arrange
+        const { ctx, st } = await taggedRepo();
+        const sut = mergeHeaders;
+
+        // Act
+        const result = await sut(ctx, 'st');
+
+        // Assert
+        expect(result).toEqual([{ key: 'mergetag', value: st.slice(0, -1) }]);
+      });
+    });
+
+    describe('When the unsigned tag is merged', () => {
+      it('Then the merge commit carries no mergetag header', async () => {
+        // Arrange
+        const { ctx } = await taggedRepo();
+        const sut = mergeHeaders;
+
+        // Act
+        const result = await sut(ctx, 'ut');
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+
+    describe('When both signed tags are merged as an octopus', () => {
+      it('Then one mergetag header follows per tag parent, in parent order', async () => {
+        // Arrange
+        const { ctx, st, so } = await taggedRepo();
+        const sut = mergeHeaders;
+
+        // Act
+        const result = await sut(ctx, ['so', 'st']);
+
+        // Assert
+        expect(result).toEqual([
+          { key: 'mergetag', value: so.slice(0, -1) },
+          { key: 'mergetag', value: st.slice(0, -1) },
+        ]);
+      });
+    });
+
+    describe("When a signed tag naming HEAD's commit is merged alongside a branch", () => {
+      it("Then HEAD's parent carries that tag", async () => {
+        // Arrange
+        const { ctx } = await taggedRepo();
+        const head = await annotatedTag(
+          ctx,
+          'ht',
+          await resolveRef(ctx, 'HEAD' as RefName),
+          SIGNATURE,
+        );
+        const sut = mergeHeaders;
+
+        // Act
+        const result = await sut(ctx, ['ht', 'feature']);
+
+        // Assert
+        expect(result).toEqual([{ key: 'mergetag', value: head.slice(0, -1) }]);
+      });
+    });
+
+    describe.each([
+      [['st', 'feature'], 1],
+      [['feature', 'st'], 0],
+    ])('When %j name the same commit', (rev, count) => {
+      it(`Then the first name decides: ${count} mergetag header`, async () => {
+        // Arrange
+        const { ctx } = await taggedRepo();
+        const sut = mergeHeaders;
+
+        // Act
+        const result = await sut(ctx, rev);
+
+        // Assert
+        expect(result).toHaveLength(count);
       });
     });
   });

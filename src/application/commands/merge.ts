@@ -28,12 +28,13 @@ import {
   mergeTrees,
 } from '../../domain/merge/index.js';
 import type { MergeCommandLine } from '../../domain/merge/merge-command-line.js';
+import { mergeTagHeader } from '../../domain/merge/merge-tag-header.js';
 import {
   type OrtStrategyOptions,
   parseOrtStrategyOptions,
 } from '../../domain/merge/strategy-options.js';
 import { trivialMerge } from '../../domain/merge/trivial-merge.js';
-import type { CommitData } from '../../domain/objects/commit.js';
+import type { CommitData, ExtraHeader } from '../../domain/objects/commit.js';
 import { treeDepthExceeded, unexpectedObjectType } from '../../domain/objects/error.js';
 import {
   type AuthorIdentity,
@@ -54,7 +55,7 @@ import { abbreviateObjectId } from '../primitives/abbreviate-object-id.js';
 import { conflictResultTree } from '../primitives/apply-merge-to-worktree.js';
 import { buildContentMerger } from '../primitives/build-content-merger.js';
 import { readConfig } from '../primitives/config-read.js';
-import { createCommit } from '../primitives/create-commit.js';
+import { createMergeCommit } from '../primitives/create-commit.js';
 import { detectMergeRenames } from '../primitives/detect-merge-renames.js';
 import { changedPaths, findWouldOverwrite } from '../primitives/find-would-overwrite.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
@@ -82,7 +83,7 @@ import { mergeCollidingRenameSources } from '../primitives/merge-colliding-renam
 import { assertEverySourceLoadable } from '../primitives/object-store.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readIndex } from '../primitives/read-index.js';
-import { readObject } from '../primitives/read-object.js';
+import { readObject, readRawObject } from '../primitives/read-object.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { resolveRef, resolveRefForReading } from '../primitives/resolve-ref.js';
 import { runInformationalHook } from '../primitives/run-hook.js';
@@ -614,6 +615,7 @@ const twoHeadMerge = async (
   branch: RefName | undefined,
   ourId: ObjectId,
   remote: MergeRemote,
+  named: ReadonlyArray<MergeRemote> = [remote],
 ): Promise<MergeEnding> => {
   const theirId = remote.id;
   const opts = await settleMerge(ctx, input, internal, { branch, ourId }, [remote]);
@@ -637,7 +639,7 @@ const twoHeadMerge = async (
   if (opts.fastForward === 'only') {
     throw nonFastForward(branch ?? HEAD, ourId, theirId);
   }
-  const commit = { opts, internal, branch, ourId, parents: [ourId, theirId] };
+  const commit = { opts, internal, branch, ourId, parents: [ourId, theirId], named };
   return underAutostash(ctx, opts, () => twoHeadStrategy(ctx, commit, remote, bases));
 };
 
@@ -834,7 +836,9 @@ const manyHeadMerge = async (
     (id) => named.find((remote) => remote.id === id && id !== ourId) ?? [],
   );
   const described = describedSurvivors(internal, named, reduced);
-  if (remotes.length === 1) return twoHeadMerge(ctx, input, described, branch, ourId, remotes[0]!);
+  if (remotes.length === 1) {
+    return twoHeadMerge(ctx, input, described, branch, ourId, remotes[0]!, named);
+  }
   if (remotes.length === 0) {
     await writeOrigHead(ctx, ourId);
     return { kind: 'up-to-date', id: ourId };
@@ -846,7 +850,7 @@ const manyHeadMerge = async (
   if (opts.fastForward === 'only') throw nonFastForward(branch ?? HEAD, ourId, remotes[0]!.id);
   const keepsHead = reduced.includes(ourId) || opts.fastForward === 'never';
   const parents = [...(keepsHead ? [ourId] : []), ...remotes.map((remote) => remote.id)];
-  const commit = { opts, internal, branch, ourId, parents };
+  const commit = { opts, internal, branch, ourId, parents, named };
   return underAutostash(ctx, opts, () => manyHeadStrategy(ctx, commit, remotes));
 };
 
@@ -965,6 +969,8 @@ interface MergeCommitInput {
   readonly branch: RefName | undefined;
   readonly ourId: ObjectId;
   readonly parents: ReadonlyArray<ObjectId>;
+  /** Every head as named, in order: a commit's first name is the one git's `merge_remote_util` keeps. */
+  readonly named: ReadonlyArray<MergeRemote>;
 }
 
 /** git's `--squash` `finish`: stage `tree` and write `SQUASH_MSG`, leaving HEAD where it is. */
@@ -1029,10 +1035,34 @@ const mergeSignature = async (
   return signCommitData(ctx, config, data, opts.signKey);
 };
 
+const TAG_DECODER = new TextDecoder();
+
+/** git's `handle_signed_tag`: a parent first named by a signed tag carries that tag object. */
+const signedTagHeader = async (
+  ctx: Context,
+  remote: MergeRemote | undefined,
+): Promise<ExtraHeader | undefined> => {
+  if (remote === undefined) return undefined;
+  const tag = await readObject(ctx, remote.object);
+  if (tag.type !== 'tag' || tag.data.gpgSignature === undefined) return undefined;
+  return mergeTagHeader(TAG_DECODER.decode((await readRawObject(ctx, tag.id)).content));
+};
+
+/** git's `append_merge_tag_headers`: one `mergetag` header per signed-tag parent, in parent order. */
+const mergeTagHeaders = async (
+  ctx: Context,
+  parents: ReadonlyArray<ObjectId>,
+  named: ReadonlyArray<MergeRemote>,
+): Promise<ReadonlyArray<ExtraHeader>> => {
+  const firstNames = parents.map((parent) => named.find((remote) => remote.id === parent));
+  const headers = await Promise.all(firstNames.map((remote) => signedTagHeader(ctx, remote)));
+  return headers.filter((header) => header !== undefined);
+};
+
 /** git's `finish_automerge`: commit the merged tree and log `note` behind the reflog action. */
 const commitCleanMerge = async (
   ctx: Context,
-  { opts, internal, branch, ourId, parents }: MergeCommitInput,
+  { opts, internal, branch, ourId, parents, named }: MergeCommitInput,
   mergedTree: ObjectId,
   note: string,
 ): Promise<MergeEnding> => {
@@ -1048,7 +1078,7 @@ const commitCleanMerge = async (
     author,
     committer,
     message,
-    extraHeaders: [],
+    extraHeaders: await mergeTagHeaders(ctx, parents, named),
   };
   // git dies on a failed signing with the merge materialised and its state kept, MERGE_MSG
   // as `prepare_to_commit` wrote it: the message without its final newline.
@@ -1057,10 +1087,9 @@ const commitCleanMerge = async (
     throw error;
   });
   return materialiseAndApply(ctx, mergedTree, async () => {
-    const id = await createCommit(ctx, {
-      ...commitData,
-      ...(gpgSignature === undefined ? {} : { gpgSignature }),
-    });
+    const { extraHeaders, ...unsigned } = commitData;
+    const signed = gpgSignature === undefined ? unsigned : { ...unsigned, gpgSignature };
+    const id = await createMergeCommit(ctx, signed, extraHeaders);
     // Written through the literal `HEAD`: the branch it names, or HEAD itself when detached.
     await updateRef(ctx, HEAD, id, {
       expected: ourId,

@@ -298,12 +298,6 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — default message', () => {
       git(dir, 'update-ref', `refs/tags/${name}`, runGit(args, { input: raw }).trim());
     };
 
-    /** The merge commit's message — its headers (git's `mergetag` among them) cut off. */
-    const messageOf = (dir: string): string => {
-      const raw = git(dir, 'cat-file', 'commit', 'HEAD');
-      return raw.slice(raw.indexOf('\n\n') + 2);
-    };
-
     /** s1..s3 off main's parent; t1 signed on s1, t2 plain annotated on s2, t3 signed without a tagger on s3. */
     const tagBoth = async (): Promise<void> => {
       const verifier = path.join(pair.peer, '.git', 'stub-gpg');
@@ -318,28 +312,35 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — default message', () => {
         signedTag(dir, 't1', 's1', TAGGER);
         git(dir, 'tag', '-a', '-m', 'plain annotated', 't2', 's2');
         signedTag(dir, 't3', 's3', '');
+        signedTag(dir, 'th', 'main', TAGGER);
       }
     };
 
-    describe.each([[['t1']], [['t1', 't2']], [['t2', 't1']], [['t3']], [['t1', 't2', 't3']]])(
-      'When both tools merge %j without a message',
-      (revs) => {
-        it('Then the merge messages are identical', async () => {
-          // Arrange
-          await tagBoth();
-          const repo = await openRepository({ cwd: pair.ours });
-          const sut = repo.merge.run;
+    describe.each([
+      [['t1']],
+      [['t1', 't2']],
+      [['t2', 't1']],
+      [['t3']],
+      [['t1', 't2', 't3']],
+      [['t1', 's1']],
+      [['s1', 't1']],
+      [['th', 's1']],
+    ])('When both tools merge %j without a message', (revs) => {
+      it('Then the merge commits, mergetag headers included, are identical', async () => {
+        // Arrange
+        await tagBoth();
+        const repo = await openRepository({ cwd: pair.ours });
+        const sut = repo.merge.run;
 
-          // Act
-          git(pair.peer, 'merge', '-q', '--no-edit', ...revs);
-          await sut({ rev: revs, author: IDENTITY, committer: IDENTITY });
-          await repo.dispose();
+        // Act
+        git(pair.peer, 'merge', '-q', '--no-edit', ...revs);
+        await sut({ rev: revs, author: IDENTITY, committer: IDENTITY });
+        await repo.dispose();
 
-          // Assert
-          expect(messageOf(pair.ours)).toBe(messageOf(pair.peer));
-        });
-      },
-    );
+        // Assert
+        expect(git(pair.ours, 'rev-parse', 'HEAD')).toBe(git(pair.peer, 'rev-parse', 'HEAD'));
+      });
+    });
   });
 
   describe('Given squash with --no-ff', () => {

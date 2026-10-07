@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { createCommit } from '../../../../src/application/primitives/create-commit.js';
+import {
+  createCommit,
+  createMergeCommit,
+} from '../../../../src/application/primitives/create-commit.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
@@ -503,6 +506,53 @@ describe('createCommit', () => {
         // Assert
         if (read.type !== 'commit') expect.unreachable();
         expect('gpgSignature' in read.data).toBe(false);
+      });
+    });
+  });
+});
+
+describe('createMergeCommit', () => {
+  const MERGE_TAG = { key: 'mergetag', value: 'object abc\ntype commit\n\nbody\r\n-----BEGIN' };
+
+  describe('Given a mergetag header holding a blank line and a CR', () => {
+    describe('When the merge commit is written', () => {
+      it('Then the commit carries the header verbatim', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const tree = await emptyTreeId(ctx);
+        const sut = createMergeCommit;
+
+        // Act
+        const id = await sut(
+          ctx,
+          { tree, parents: [], author: AUTHOR, committer: AUTHOR, message: 'm\n' },
+          [MERGE_TAG],
+        );
+
+        // Assert
+        const result = await readObject(ctx, id);
+        expect(result.type === 'commit' && result.data.extraHeaders).toEqual([MERGE_TAG]);
+      });
+    });
+  });
+
+  describe('Given a message holding a NUL', () => {
+    describe('When the merge commit is written', () => {
+      it('Then the input is refused as createCommit refuses it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const tree = await emptyTreeId(ctx);
+        const sut = createMergeCommit;
+
+        // Act
+        const result = await sut(
+          ctx,
+          { tree, parents: [], author: AUTHOR, committer: AUTHOR, message: 'm\0' },
+          [MERGE_TAG],
+        ).catch((error: unknown) => (error as TsgitError).data);
+
+        // Assert
+        expect(result).toEqual({ code: 'INVALID_COMMIT', reason: 'message contains NUL' });
       });
     });
   });
