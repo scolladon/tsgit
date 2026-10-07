@@ -48,6 +48,7 @@ import type {
 } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
+import type { CommandRunner } from '../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../src/ports/context.js';
 import {
   buildSeededContext,
@@ -4903,6 +4904,89 @@ describe('merge default message', () => {
 
         // Assert
         expect(result).toBe("Merge tag 'at'\n\ntag body line\n");
+      });
+    });
+  });
+
+  describe('Given signed annotated tags at the feature tip', () => {
+    const SIGNATURE = '-----BEGIN PGP SIGNATURE-----\n\nAAAA\n-----END PGP SIGNATURE-----\n';
+    const COMMENTED = '# -----BEGIN PGP SIGNATURE-----\n#\n# AAAA\n# -----END PGP SIGNATURE-----\n';
+    const TAGGER: AuthorIdentity = { ...author, name: 'T' };
+
+    const signedTag = async (ctx: Context, feature: ObjectId, tagger?: AuthorIdentity) => {
+      const tag = await writeObject(ctx, {
+        type: 'tag',
+        id: '' as ObjectId,
+        data: {
+          object: feature,
+          objectType: 'commit',
+          tagName: 'st',
+          message: 'signed body\n',
+          gpgSignature: SIGNATURE,
+          extraHeaders: [],
+          ...(tagger === undefined ? {} : { tagger }),
+        },
+      });
+      await seedRef(ctx, 'refs/tags/st' as RefName, tag, { reflogMessage: 'seed' });
+    };
+
+    /** A verifier that reports `report` on the stderr file the command line redirects to. */
+    const reportingRunner = (ctx: Context, report: string, commands: string[]): CommandRunner => ({
+      run: async (request) => {
+        commands.push(request.command);
+        const errPath = /2> '([^']+)'$/.exec(request.command)?.[1] ?? '';
+        await ctx.fs.writeUtf8(errPath, report);
+        return { exitCode: 1, stdout: new Uint8Array(0) };
+      },
+    });
+
+    describe('When one with a tagger is merged and no verifier can run', () => {
+      it('Then the commented signature follows the message', async () => {
+        // Arrange
+        const { ctx, feature } = await divergedRepo();
+        await signedTag(ctx, feature, TAGGER);
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'st');
+
+        // Assert
+        expect(result).toBe(`Merge tag 'st'\n\nsigned body\n\n${COMMENTED}`);
+      });
+    });
+
+    describe('When one without a tagger is merged', () => {
+      it('Then the commented signature notes the failed verification', async () => {
+        // Arrange
+        const { ctx, feature } = await divergedRepo();
+        await signedTag(ctx, feature);
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'st');
+
+        // Assert
+        expect(result).toBe(
+          `Merge tag 'st'\n\nsigned body\n\n${COMMENTED}# gpg verification failed.\n`,
+        );
+      });
+    });
+
+    describe('When one with a tagger is merged under a configured gpg.program', () => {
+      it("Then that verifier's report is commented beneath the signature", async () => {
+        // Arrange
+        const { ctx: base, feature } = await divergedRepo('[gpg]\n  program = stub-gpg\n');
+        const commands: string[] = [];
+        const ctx: Context = { ...base, command: reportingRunner(base, 'gpg: stub\n', commands) };
+        await signedTag(ctx, feature, TAGGER);
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'st');
+
+        // Assert
+        expect(result).toBe(`Merge tag 'st'\n\nsigned body\n\n${COMMENTED}# gpg: stub\n`);
+        expect(commands.map((command) => command.split(' ')[0])).toEqual(["'stub-gpg'"]);
       });
     });
   });

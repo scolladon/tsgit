@@ -5,12 +5,15 @@
  */
 import { configMissingValue } from '../../../domain/commands/error.js';
 import { ancestorSpelling } from '../../../domain/merge/ancestor-spelling.js';
+import { shortlogOrigin } from '../../../domain/merge/merge-shortlog.js';
+import { formatTagMessages, type TagMessage } from '../../../domain/merge/merge-signatures.js';
 import { mergeTitle } from '../../../domain/merge/merge-title.js';
-import type { ObjectId, RefName } from '../../../domain/objects/index.js';
+import type { ObjectId, RefName, Tag } from '../../../domain/objects/index.js';
 import { compileGlob } from '../../../domain/pathspec/compile-glob.js';
 import type { Context } from '../../../ports/context.js';
-import { findEntries, type LocatedConfigEntry } from '../../primitives/config-read.js';
-import { readObject } from '../../primitives/read-object.js';
+import { findEntries, type LocatedConfigEntry, readConfig } from '../../primitives/config-read.js';
+import { verifyCommitSignature } from '../../primitives/internal/verify-commit-signature.js';
+import { readObject, readRawObject } from '../../primitives/read-object.js';
 import { refResolvesForReading } from '../../primitives/resolve-ref.js';
 import { settleMergeLog } from './merge-log.js';
 import { dwimRefWarning } from './revision-name.js';
@@ -60,11 +63,42 @@ const destination = async (ctx: Context, branch: string): Promise<string | undef
   return suppressed ? undefined : branch;
 };
 
-/** git's `fmt_merge_msg_sigs`: each annotated tag merged has its message follow
- *  the title (the commit's cleanup completes and trims it). */
-const tagBlock = async (ctx: Context, head: MergeHead): Promise<string> => {
+/** What `fmt_merge_msg_sigs` notes when `check_signature` gives no report. */
+const VERIFICATION_FAILED = 'gpg verification failed.\n';
+const ENCODER = new TextEncoder();
+
+/**
+ * git's `check_signature` over a signed tag: a tag naming no tagger fails
+ * before any verifier runs; otherwise the verifier's own report.
+ */
+const signatureReport = async (ctx: Context, tag: Tag, signature: string): Promise<string> => {
+  if (tag.data.tagger === undefined) return VERIFICATION_FAILED;
+  const raw = (await readRawObject(ctx, tag.id)).content;
+  const payload = raw.subarray(0, raw.length - ENCODER.encode(signature).length);
+  const { gpg } = await readConfig(ctx);
+  const verdict = await verifyCommitSignature(ctx, {
+    payload,
+    signature,
+    ...(gpg === undefined ? {} : { gpg }),
+  });
+  return verdict.output;
+};
+
+/** An annotated tag merged, its signature and verifier report beneath its message. */
+const tagMessage = async (ctx: Context, head: MergeHead): Promise<TagMessage | undefined> => {
   const object = await readObject(ctx, head.id);
-  return object.type === 'tag' ? `\n${object.data.message}` : '';
+  if (object.type !== 'tag') return undefined;
+  const origin = shortlogOrigin(head.description).name;
+  const { message, gpgSignature } = object.data;
+  if (gpgSignature === undefined) return { origin, body: message };
+  const report = await signatureReport(ctx, object, gpgSignature);
+  return { origin, body: message, signature: `${gpgSignature}${report}` };
+};
+
+/** git's `fmt_merge_msg_sigs` over every head merged. */
+const tagMessages = async (ctx: Context, heads: ReadonlyArray<MergeHead>): Promise<string> => {
+  const tags = await Promise.all(heads.map((head) => tagMessage(ctx, head)));
+  return formatTagMessages(tags.filter((tag): tag is TagMessage => tag !== undefined));
 };
 
 /** git's `fmt_merge_msg_title`: the title over every head merged into `branch`. */
@@ -91,8 +125,7 @@ export const formatMergeMessage = async (
   message?: string,
 ): Promise<string> => {
   const lead = message ?? (await titleLine(ctx, heads, branch));
-  const tags = await Promise.all(heads.map((head) => tagBlock(ctx, head)));
-  return `${lead}${tags.join('')}`;
+  return `${lead}${await tagMessages(ctx, heads)}`;
 };
 
 /** The kind `merge_name` labels a ref with, when it is one it labels. */

@@ -261,6 +261,61 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — default message', () => {
     });
   });
 
+  describe('Given signed and unsigned annotated tags verified by a stub gpg program', () => {
+    const STUB_VERIFIER = '#!/bin/sh\necho "gpg: stub verifier report" >&2\nexit 1\n';
+    const TAGGER = 'tagger T <t@x> 1700000000 +0000\n';
+
+    const signedTag = (dir: string, name: string, target: string, tagger: string): void => {
+      const object = git(dir, 'rev-parse', target);
+      const raw = `object ${object}\ntype commit\ntag ${name}\n${tagger}\n${name} body\n-----BEGIN PGP SIGNATURE-----\n\nAAAA${name}\n-----END PGP SIGNATURE-----\n`;
+      const args = ['-C', dir, 'hash-object', '-t', 'tag', '-w', '--literally', '--stdin'];
+      git(dir, 'update-ref', `refs/tags/${name}`, runGit(args, { input: raw }).trim());
+    };
+
+    /** The merge commit's message — its headers (git's `mergetag` among them) cut off. */
+    const messageOf = (dir: string): string => {
+      const raw = git(dir, 'cat-file', 'commit', 'HEAD');
+      return raw.slice(raw.indexOf('\n\n') + 2);
+    };
+
+    /** s1..s3 off main's parent; t1 signed on s1, t2 plain annotated on s2, t3 signed without a tagger on s3. */
+    const tagBoth = async (): Promise<void> => {
+      const verifier = path.join(pair.peer, '.git', 'stub-gpg');
+      await writeFile(verifier, STUB_VERIFIER, { mode: 0o755 });
+      for (const dir of [pair.peer, pair.ours]) {
+        for (const branch of ['s1', 's2', 's3']) {
+          git(dir, 'checkout', '-q', '-b', branch, 'main~1');
+          git(dir, 'commit', '-q', '--allow-empty', '-m', `on-${branch}`);
+        }
+        git(dir, 'checkout', '-q', 'main');
+        git(dir, 'config', 'gpg.program', verifier);
+        signedTag(dir, 't1', 's1', TAGGER);
+        git(dir, 'tag', '-a', '-m', 'plain annotated', 't2', 's2');
+        signedTag(dir, 't3', 's3', '');
+      }
+    };
+
+    describe.each([[['t1']], [['t1', 't2']], [['t2', 't1']], [['t3']], [['t1', 't2', 't3']]])(
+      'When both tools merge %j without a message',
+      (revs) => {
+        it('Then the merge messages are identical', async () => {
+          // Arrange
+          await tagBoth();
+          const repo = await openRepository({ cwd: pair.ours });
+          const sut = repo.merge.run;
+
+          // Act
+          git(pair.peer, 'merge', '-q', '--no-edit', ...revs);
+          await sut({ rev: revs, author: IDENTITY, committer: IDENTITY });
+          await repo.dispose();
+
+          // Assert
+          expect(messageOf(pair.ours)).toBe(messageOf(pair.peer));
+        });
+      },
+    );
+  });
+
   describe('Given squash with --no-ff', () => {
     describe('When both tools merge', () => {
       it('Then both refuse before writing ORIG_HEAD', async () => {
