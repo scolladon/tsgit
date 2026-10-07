@@ -15,10 +15,14 @@ const SIGNAL_KILLED_EXIT = 128;
 const BROKEN_PIPE = 'EPIPE';
 const POSIX_SHELL: Shell = ['sh', '-c'];
 const WINDOWS_SHELL: Shell = ['cmd', '/c'];
+/** Bytes of a conversed-with child's output buffered for the consumer before its stdout pauses. */
+const OUTPUT_HIGH_WATER_MARK = 1024 * 1024;
 
 /** A readable child stream, as far as `NodeCommandRunner` consumes it. */
 interface ChildOutput {
   on(event: 'data', listener: (chunk: Uint8Array) => void): void;
+  pause(): void;
+  resume(): void;
 }
 
 /** Minimal child-process surface `NodeCommandRunner` consumes. */
@@ -146,11 +150,44 @@ const spawnCommand = (
 interface ChunkQueue {
   readonly push: (chunk: Uint8Array) => void;
   readonly end: () => void;
+  /** Lifts the high-water mark for good, so a closing child can flush and exit. */
+  readonly release: () => void;
   readonly chunks: AsyncIterable<Uint8Array>;
 }
 
-const createChunkQueue = (): ChunkQueue => {
+/**
+ * Pauses `source` while more than {@link OUTPUT_HIGH_WATER_MARK} bytes wait
+ * for the consumer, and resumes it once they drain back under the mark.
+ */
+const createFlowControl = (source: ChildOutput) => {
+  let buffered = 0;
+  let mark = OUTPUT_HIGH_WATER_MARK;
+  let paused = false;
+  const settle = (): void => {
+    if (paused === buffered > mark) return;
+    paused = !paused;
+    if (paused) source.pause();
+    else source.resume();
+  };
+  return {
+    added: (bytes: number): void => {
+      buffered += bytes;
+      settle();
+    },
+    taken: (bytes: number): void => {
+      buffered -= bytes;
+      settle();
+    },
+    release: (): void => {
+      mark = Number.POSITIVE_INFINITY;
+      settle();
+    },
+  };
+};
+
+const createChunkQueue = (source: ChildOutput): ChunkQueue => {
   const pending: Uint8Array[] = [];
+  const flow = createFlowControl(source);
   let ended = false;
   let wake: (() => void) | undefined;
   const notify = (): void => {
@@ -160,8 +197,10 @@ const createChunkQueue = (): ChunkQueue => {
   async function* drain(): AsyncGenerator<Uint8Array> {
     for (;;) {
       const next = pending.shift();
-      if (next !== undefined) yield next;
-      else if (ended) return;
+      if (next !== undefined) {
+        flow.taken(next.length);
+        yield next;
+      } else if (ended) return;
       else
         await new Promise<void>((resolve) => {
           wake = resolve;
@@ -171,12 +210,14 @@ const createChunkQueue = (): ChunkQueue => {
   return {
     push: (chunk) => {
       pending.push(chunk);
+      flow.added(chunk.length);
       notify();
     },
     end: () => {
       ended = true;
       notify();
     },
+    release: flow.release,
     chunks: { [Symbol.asyncIterator]: drain },
   };
 };
@@ -203,7 +244,7 @@ const killOnAbort = (child: CommandChild, exit: Promise<unknown>, signal?: Abort
 
 const converse = (ops: CommandRunnerOps, shell: Shell, request: CommandRequest): CommandProcess => {
   const child = startChild(ops, shell, request);
-  const output = createChunkQueue();
+  const output = createChunkQueue(child.stdout);
   child.stdout.on('data', output.push);
   const exit = exitOf(child);
   void exit.then(output.end);
@@ -215,6 +256,7 @@ const converse = (ops: CommandRunnerOps, shell: Shell, request: CommandRequest):
     write: (bytes) => writeTo(child, bytes),
     output: output.chunks,
     close: () => {
+      output.release();
       child.stdin.end();
       return exit;
     },

@@ -27,11 +27,22 @@ class FakeStdin extends EventEmitter {
 }
 
 /** Build a stream error carrying `code`, mirroring Node's `ErrnoException`. */
+/** The buffered-output bound past which the runner pauses the child's stdout (1 MiB). */
+const OUTPUT_HIGH_WATER_MARK = 1024 * 1024;
+
 const streamError = (code: string): NodeJS.ErrnoException =>
   Object.assign(new Error(`write ${code}`), { code });
 
-/** Readable side of the fake child stdout — an EventEmitter emitting `data` events. */
-class FakeStdout extends EventEmitter {}
+/** Readable side of the fake child stdout — emits `data` events and records flow control. */
+class FakeStdout extends EventEmitter {
+  readonly flow: Array<'pause' | 'resume'> = [];
+  pause(): void {
+    this.flow.push('pause');
+  }
+  resume(): void {
+    this.flow.push('resume');
+  }
+}
 
 /** Controllable fake child — the test drives its `error` / `close` events. */
 class FakeChild extends EventEmitter {
@@ -427,6 +438,81 @@ describe('NodeCommandRunner', () => {
         expect(child.stdin.ended).toBe(true);
         expect(await output).toEqual([1, 2, 3]);
         expect(exit).toEqual({ exitCode: 0 });
+      });
+    });
+
+    describe('When the child outpaces the consumer past the high-water mark', () => {
+      it('Then stdout pauses once, and resumes once the consumer drains below the mark', async () => {
+        // Arrange
+        const { runner, child } = makeHarness();
+        const sut = runner.spawn;
+        const conversation = sut(baseRequest({ command: 'filter' }));
+        const reader = conversation.output[Symbol.asyncIterator]();
+
+        // Act
+        child.stdout.emit('data', new Uint8Array(OUTPUT_HIGH_WATER_MARK));
+        const atMark = [...child.stdout.flow];
+        child.stdout.emit('data', new Uint8Array(1));
+        child.stdout.emit('data', new Uint8Array(1));
+        const pastMark = [...child.stdout.flow];
+        await reader.next();
+        const result = { atMark, pastMark, drained: child.stdout.flow };
+
+        // Assert
+        expect(result).toEqual({ atMark: [], pastMark: ['pause'], drained: ['pause', 'resume'] });
+      });
+    });
+
+    describe('When the consumer drains a chunk while still above the mark', () => {
+      it('Then stdout stays paused', async () => {
+        // Arrange
+        const { runner, child } = makeHarness();
+        const sut = runner.spawn;
+        const conversation = sut(baseRequest({ command: 'filter' }));
+        const reader = conversation.output[Symbol.asyncIterator]();
+
+        // Act
+        child.stdout.emit('data', new Uint8Array(1));
+        child.stdout.emit('data', new Uint8Array(OUTPUT_HIGH_WATER_MARK + 1));
+        await reader.next();
+
+        // Assert
+        expect(child.stdout.flow).toEqual(['pause']);
+      });
+    });
+
+    describe('When closed while stdout is paused', () => {
+      it('Then stdout resumes so the child can finish writing and exit', async () => {
+        // Arrange
+        const { runner, child } = makeHarness();
+        const sut = runner.spawn;
+        const conversation = sut(baseRequest({ command: 'filter' }));
+        child.stdout.emit('data', new Uint8Array(OUTPUT_HIGH_WATER_MARK + 1));
+
+        // Act
+        const closing = conversation.close();
+        child.emit('close', 0);
+        await closing;
+
+        // Assert
+        expect(child.stdout.flow).toEqual(['pause', 'resume']);
+      });
+    });
+
+    describe('When closed without stdout ever pausing', () => {
+      it('Then the flow is left alone', async () => {
+        // Arrange
+        const { runner, child } = makeHarness();
+        const sut = runner.spawn;
+        const conversation = sut(baseRequest({ command: 'filter' }));
+
+        // Act
+        const closing = conversation.close();
+        child.emit('close', 0);
+        await closing;
+
+        // Assert
+        expect(child.stdout.flow).toEqual([]);
       });
     });
 
