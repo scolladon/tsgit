@@ -29,3 +29,19 @@ the transient file; it exists only while verification runs.
 ## Consequences
 
 - Off Node (no `CommandRunner`), `%G*` yields git's cannot-exec outcome.
+
+## Amendment — staging location diverges from git (2026-10-07)
+
+The staged files bear git's names (`.git_vtag_tmpXXXXXX` for verification,
+`.git_signing_buffer_tmpXXXXXX` for SSH signing), but not git's location. git creates both with
+`mks_tempfile_t`, under `$TMPDIR`; tsgit creates them under the git dir.
+
+- **Observable divergence:** with a read-only `.git`, `git verify-commit` (and `%G?` in
+  `git archive`) still verifies, because nothing is written to the repository. tsgit cannot stage
+  the signature, so the verification refuses. SSH signing diverges the same way.
+- **Why:** containment. The `FileSystem` port is rooted at the repository, and tsgit writes
+  nothing outside the repository unless the caller supplies the file system that reaches there.
+  Staging in `$TMPDIR` needs a temp-file capability (option 2) and the caller's sign-off; until
+  then the divergence stands.
+- **Mode:** git creates the file `0600`. The port's exclusive write carries no mode, so tsgit's
+  file takes the file system's default mode.

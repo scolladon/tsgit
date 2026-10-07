@@ -6,7 +6,10 @@ import { getSpawnCwd } from './path-layout.js';
 
 export const DEFAULT_OPENPGP_PROGRAM = 'gpg';
 export const DEFAULT_SSH_PROGRAM = 'ssh-keygen';
-/** git's `mks_tempfile_t(".git_signing_buffer_tmpXXXXXX")` stem. */
+/**
+ * The stem of git's `mks_tempfile_t(".git_signing_buffer_tmpXXXXXX")`, staged
+ * under the git dir rather than `$TMPDIR`.
+ */
 const SSH_SIGNING_BUFFER_STEM = '.git_signing_buffer_tmp';
 
 const EMPTY = new Uint8Array(0);
@@ -53,7 +56,7 @@ export const resolveSigningSelector = (input: ResolveSigningSelectorInput): stri
 
 const isWellFormedArmor = (text: string): boolean => ARMOR_PATTERN.test(text);
 
-/** git's `sign_buffer_gpg` test: a `SIG_CREATED` status line opening the status or following a newline. */
+/** git's `sign_buffer_gpg` test: a `SIG_CREATED` line opening the status or following a newline. */
 const reportsSignatureCreated = (status: string): boolean =>
   status.startsWith(SIG_CREATED) || status.includes(`\n${SIG_CREATED}`);
 
@@ -132,7 +135,8 @@ const signWithSsh = async (
  * Pure(ish) signing primitive delegating to the system signer through
  * `ctx.command`, by argv with no shell between, as git does. `gpg` runs
  * stdin→stdout; `ssh-keygen` reads the payload from an exclusively created
- * temp file and writes the armor beside it, to `<file>.sig`.
+ * temp file and writes the armor beside it, to `<file>.sig`. The temp file
+ * bears git's name but sits in the git dir, where git uses `$TMPDIR`.
  * Requesting `x509` and running with no `ctx.command` both refuse with a
  * typed reason before any spawn or temp-file write. Success requires exit 0,
  * a well-formed armor block on the signer's output and — for gpg — a

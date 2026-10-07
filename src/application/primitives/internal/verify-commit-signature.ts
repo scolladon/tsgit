@@ -2,9 +2,11 @@
  * git's `check_signature`: verify a detached commit signature by running the
  * system verifier (`gpg`, `gpgsm`, `ssh-keygen`) through `ctx.command`, by
  * argv with no shell between, its stderr captured through a pipe. The
- * signature is staged in a transient file — git's `.git_vtag_tmpXXXXXX`,
- * created exclusively — because the verifiers read it by path; the file is
- * removed on every exit.
+ * signature is staged in a transient file, created exclusively, because the
+ * verifiers read it by path; the file is removed on every exit. Its name is
+ * git's `.git_vtag_tmpXXXXXX`, but its place is not: git creates it in
+ * `$TMPDIR`, tsgit in the git dir, the only place its `FileSystem` reaches —
+ * so a read-only git dir refuses verification that git performs.
  *
  * @writes
  *   surface: verifyBuffer
@@ -18,7 +20,10 @@ import { getSpawnCwd } from '../path-layout.js';
 import { DEFAULT_OPENPGP_PROGRAM, DEFAULT_SSH_PROGRAM } from '../sign-payload.js';
 import { removeIgnoringMissing, stageTempFile } from './stage-temp-file.js';
 
-/** git's `mks_tempfile_t(".git_vtag_tmpXXXXXX")` stem. */
+/**
+ * The stem of git's `mks_tempfile_t(".git_vtag_tmpXXXXXX")`, staged under the
+ * git dir rather than `$TMPDIR`.
+ */
 const VERIFY_BUFFER_STEM = '.git_vtag_tmp';
 const DEFAULT_X509_PROGRAM = 'gpgsm';
 const SHELL_NOT_EXECUTABLE = 126;
@@ -299,6 +304,8 @@ const dispatch = (
 /**
  * Without a `CommandRunner` (browser) or a recognisable signature the verdict
  * is git's unsigned/cannot-exec outcome: `N`, empty fields, `undefined` trust.
+ * The signature is staged under the git dir, where git uses `$TMPDIR`: a git
+ * dir that refuses the write refuses verification.
  */
 export const verifyCommitSignature = async (
   ctx: Context,
