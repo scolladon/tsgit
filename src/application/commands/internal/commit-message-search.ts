@@ -26,7 +26,8 @@ import { resolveRefForReading } from '../../primitives/resolve-ref.js';
  * message matches `search`, a POSIX extended regex. `!-` negates it and `!!`
  * spells a leading `!`; any other leading `!`, or a pattern regcomp refuses,
  * matches nothing. Each parent parses against `table`, the invocation's, when
- * there is one.
+ * there is one. An aborted `ctx.signal` stops the walk between commits and
+ * the match within a long message.
  */
 export const searchCommitMessages = async (
   ctx: Context,
@@ -44,6 +45,7 @@ export const searchCommitMessages = async (
   };
   for (const seed of seeds) enqueue(walk, seed.id, await commitMetaOf(ctx, seed));
   for (let top = walk.heap.pop(); top !== undefined; top = walk.heap.pop()) {
+    ctx.signal?.throwIfAborted();
     await enqueueParents(ctx, walk, top.parents);
     if (await messageMatches(ctx, top.id, test)) return top.id;
   }
@@ -179,7 +181,8 @@ const messageMatches = async (ctx: Context, id: ObjectId, test: MessageTest): Pr
   const content = await readCommitContent(ctx, id);
   if (content === undefined) return false;
   const body = commitBodyBytes(content);
-  const matched = body !== undefined && test.pattern.test(asCString(body));
+  const matched =
+    body !== undefined && test.pattern.test(asCString(body), () => ctx.signal?.throwIfAborted());
   return matched !== test.negated;
 };
 

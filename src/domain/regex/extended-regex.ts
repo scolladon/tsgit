@@ -195,10 +195,13 @@ type Translation = Piece | undefined;
 /** How a matcher runs: in time linear in the subject, or backtracking — exponential at worst. */
 export type MatcherEngine = 'linear' | 'backtracking';
 
+/** Consulted every so often while a match runs; a throw stops it. It must not run that matcher. */
+export type MatchCheck = () => void;
+
 export interface ExtendedRegex {
   readonly engine: MatcherEngine;
-  /** Whether `subject` holds a match. */
-  readonly test: (subject: string) => boolean;
+  /** Whether `subject` holds a match; the automaton consults `check` as it steps. */
+  readonly test: (subject: string, check?: MatchCheck) => boolean;
 }
 
 export const compileExtendedRegex = (pattern: string): ExtendedRegex | undefined => {
@@ -227,7 +230,7 @@ const backtracking = (pattern: RegExp): ExtendedRegex => ({
   test: (subject) => pattern.test(subject),
 });
 
-const linear = (test: (subject: string) => boolean): ExtendedRegex => ({ engine: 'linear', test });
+const linear = (test: ExtendedRegex['test']): ExtendedRegex => ({ engine: 'linear', test });
 
 const matcherOf = ({ fragment, literals }: Piece): ExtendedRegex => {
   const { exact, required, starts } = literals;
@@ -235,7 +238,9 @@ const matcherOf = ({ fragment, literals }: Piece): ExtendedRegex => {
   const matches = automaton(fragment, starts);
   const texts = required.filter((text) => text !== '');
   if (texts.length === 0) return linear(matches);
-  return linear((subject) => texts.every((text) => subject.includes(text)) && matches(subject));
+  return linear(
+    (subject, check) => texts.every((text) => subject.includes(text)) && matches(subject, check),
+  );
 };
 
 const peek = (c: Cursor, offset = 0): string | undefined => c.chars[c.pos + offset];
@@ -648,14 +653,21 @@ interface Machine {
   readonly threads: Threads;
 }
 
-/** Where a run stands: its index, the threads pending there and whether a word character precedes it. */
+/**
+ * Where a run stands: its index, the threads pending there, whether a word
+ * character precedes it and the threads stepped since the check last ran.
+ */
 interface Scan {
   at: number;
   count: number;
   wordBefore: boolean;
+  stepped: number;
 }
 
-const automaton = (fragment: Fragment, starts: Starts): ((subject: string) => boolean) => {
+/** Threads stepped between two checks: a few milliseconds of work. */
+const CHECK_INTERVAL = 1 << 16;
+
+const automaton = (fragment: Fragment, starts: Starts): ExtendedRegex['test'] => {
   const instructions: Instruction[] = [];
   flatten(fragment, instructions);
   const program = layOut(instructions);
@@ -672,8 +684,10 @@ const automaton = (fragment: Fragment, starts: Starts): ((subject: string) => bo
       step: 0,
     },
   };
-  return (subject) => run(machine, subject);
+  return (subject, check = IGNORE) => run(machine, subject, check);
 };
+
+const IGNORE: MatchCheck = () => undefined;
 
 const flatten = (fragment: Fragment, program: Instruction[]): void => {
   if (!('parts' in fragment)) {
@@ -761,9 +775,9 @@ const leadingOf = (program: Program): Leading | undefined => {
  * can match — and step together, one code point at a time. Where no thread
  * is pending, the run jumps to the next code point a match can begin with.
  */
-const run = (machine: Machine, subject: string): boolean => {
+const run = (machine: Machine, subject: string, check: MatchCheck): boolean => {
   const { program, threads } = machine;
-  const scan: Scan = { at: 0, count: 0, wordBefore: false };
+  const scan: Scan = { at: 0, count: 0, wordBefore: false, stepped: 0 };
   threads.step += 1;
   while (restart(machine, subject, scan)) {
     const { at } = scan;
@@ -772,12 +786,20 @@ const run = (machine: Machine, subject: string): boolean => {
     const ready = follow(program, threads, scan.count, contextOf(scan, code, wordAfter));
     if (ready === MATCHED) return true;
     if (code === undefined) return false;
+    consult(scan, ready, check);
     threads.step += 1;
     scan.count = advance(machine, subject, at, ready, code);
     scan.at = at + (code < SURROGATE_PAIR ? 1 : 2);
     scan.wordBefore = wordAfter;
   }
   return false;
+};
+
+const consult = (scan: Scan, ready: number, check: MatchCheck): void => {
+  scan.stepped += ready + 1;
+  if (scan.stepped < CHECK_INTERVAL) return;
+  scan.stepped = 0;
+  check();
 };
 
 /**

@@ -9,6 +9,8 @@ import type { Context } from '../../../../src/ports/context.js';
 import { writeCommitGraph, writeRawObjectBytes } from '../primitives/fixtures.js';
 
 const ABSENT_OID = '1'.repeat(40) as ObjectId;
+/** A message the automaton steps through for well over one check interval. */
+const LONG_MESSAGE_LENGTH = 1 << 18;
 const encoder = new TextEncoder();
 
 interface SearchRepo {
@@ -335,6 +337,68 @@ describe('Given a commit naming an absent parent', () => {
       // Assert
       expect(result).toBe(ids.mp);
       expect(errors).toEqual([]);
+    });
+  });
+});
+
+/**
+ * A signal no reader sees aborted whose check throws `reason` from its second
+ * call on — once the walk has popped its first commit.
+ */
+const abortingAfterFirstCheck = (reason: Error): AbortSignal => {
+  let checks = 0;
+  const throwIfAborted = (): void => {
+    checks += 1;
+    if (checks > 1) throw reason;
+  };
+  return { aborted: false, throwIfAborted } as unknown as AbortSignal;
+};
+
+const rejection = async (run: () => Promise<unknown>): Promise<unknown> => {
+  try {
+    await run();
+  } catch (error) {
+    return error;
+  }
+  return undefined;
+};
+
+describe('Given a signal aborted once a message search popped its first commit', () => {
+  describe('When the walk pops the next commit', () => {
+    it('Then the search rejects with the abort reason', async () => {
+      // Arrange
+      const { ctx } = await searchRepo();
+      const reason = new Error('stopped');
+      const aborting = { ...ctx, signal: abortingAfterFirstCheck(reason) };
+      const sut = evaluateRevision;
+
+      // Act
+      const result = await rejection(() => sut(aborting, 'HEAD^{/first}'));
+
+      // Assert
+      expect(result).toBe(reason);
+    });
+  });
+});
+
+describe('Given a signal aborted once a long message is read', () => {
+  describe('When the automaton steps through the message', () => {
+    it('Then the search rejects with the abort reason', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const tree = await writeRawObjectBytes(ctx, 'tree', new Uint8Array());
+      const message = `${'a'.repeat(LONG_MESSAGE_LENGTH)}c\n`;
+      const long = await writeCommit(ctx, tree, [], 1, message);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${long}\n`);
+      const reason = new Error('stopped');
+      const aborting = { ...ctx, signal: abortingAfterFirstCheck(reason) };
+      const sut = evaluateRevision;
+
+      // Act
+      const result = await rejection(() => sut(aborting, `${long}^{/a.*c}`));
+
+      // Assert
+      expect(result).toBe(reason);
     });
   });
 });

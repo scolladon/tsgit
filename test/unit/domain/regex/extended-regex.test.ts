@@ -10,6 +10,13 @@ const STACKED_INTERVALS = 20_000;
 const MAX_PROGRAM_SIZE = 1 << 17;
 /** Widest intervals each within the budget alone, together far past it. */
 const WIDE_INTERVALS = 10;
+/** A subject the automaton steps through for well over a check interval. */
+const LONG_SUBJECT_LENGTH = 1 << 18;
+const STOP = new Error('stop');
+
+const stop = (): never => {
+  throw STOP;
+};
 /** Two widest optional runs (two instructions per optional `a`) and four `a`s: 2^17 instructions. */
 const FULL_BUDGET = `${'a{0,32767}'.repeat(2)}aaaa`;
 
@@ -267,6 +274,52 @@ describe('compileExtendedRegex', () => {
 
         // Assert
         expect(result).toBe('backtracking');
+      });
+    });
+  });
+
+  describe('Given a check that throws', () => {
+    describe('When the automaton steps through a long subject', () => {
+      it('Then the throw stops the match', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+
+        // Act
+        let result: unknown;
+        try {
+          sut('a.*b')?.test(`${'a'.repeat(LONG_SUBJECT_LENGTH)}b`, stop);
+        } catch (error) {
+          result = error;
+        }
+
+        // Assert
+        expect(result).toBe(STOP);
+      });
+    });
+
+    describe('When the automaton steps through a short subject', () => {
+      it('Then the match ends before the check is consulted', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+
+        // Act
+        const result = sut('a.*b')?.test('a b', stop);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When no character of a long subject can begin a match', () => {
+      it('Then the automaton jumps past them without stepping', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+
+        // Act
+        const result = sut('[0-9]{4}')?.test('x'.repeat(LONG_SUBJECT_LENGTH), stop);
+
+        // Assert
+        expect(result).toBe(false);
       });
     });
   });
