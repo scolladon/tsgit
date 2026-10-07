@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
+import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import {
@@ -344,6 +345,46 @@ describe('worktreeAdd', () => {
 
         // Assert
         expect(result.id).toBe('Stryker was here');
+      });
+    });
+  });
+
+  describe('Given a previous checkout of branch side', () => {
+    const leaveSide = async (): Promise<Context> => {
+      const { ctx } = await seedWithCommit();
+      await branchCreate(ctx, { name: 'side' });
+      await checkout(ctx, { rev: 'side' });
+      await checkout(ctx, { rev: '-' });
+      return ctx;
+    };
+
+    describe.each(['-', '@{-1}'])('When worktreeAdd starts at %j', (commitish) => {
+      it('Then the worktree is attached to side', async () => {
+        // Arrange
+        const ctx = await leaveSide();
+
+        // Act
+        const result = await worktreeAdd(ctx, { path: 'wt-prior', commitish });
+
+        // Assert
+        expect(result).toMatchObject({ branch: 'refs/heads/side', detached: false });
+        expect(await ctx.fs.readUtf8(adminFile(ctx, result.id, 'HEAD'))).toBe(
+          'ref: refs/heads/side\n',
+        );
+      });
+    });
+
+    describe('When worktreeAdd creates a new branch from `-`', () => {
+      it('Then the new branch starts at side', async () => {
+        // Arrange
+        const ctx = await leaveSide();
+        const side = await resolveRef(ctx, 'refs/heads/side' as RefName);
+
+        // Act
+        const result = await worktreeAdd(ctx, { path: 'wt-new', commitish: '-', branch: 'fresh' });
+
+        // Assert
+        expect(result).toMatchObject({ branch: 'refs/heads/fresh', head: side });
       });
     });
   });

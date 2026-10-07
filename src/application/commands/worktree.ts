@@ -50,6 +50,7 @@ import { readIndex } from '../primitives/read-index.js';
 import { readTree } from '../primitives/read-tree.js';
 import { getRefStore, type RefUpdate } from '../primitives/ref-store.js';
 import { branchCreate } from './branch.js';
+import { interpretBranchName, previousCheckoutArg } from './internal/prior-checkout.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import { resolveCommit } from './internal/resolve-rev.js';
 import { status } from './status.js';
@@ -133,7 +134,7 @@ const decideMode = async (
   }
   if (opts.detach === true) return { kind: 'detached' };
   if (opts.commitish !== undefined) {
-    const branchRef = `${HEADS_PREFIX}${opts.commitish}` as RefName;
+    const branchRef = `${HEADS_PREFIX}${await interpretBranchName(ctx, opts.commitish)}` as RefName;
     if ((await getRefStore(ctx).resolveDirect(branchRef)).kind === 'direct') {
       return { kind: 'checkout', branchRef };
     }
@@ -142,6 +143,10 @@ const decideMode = async (
   const name = worktreePathBasename(worktreePath);
   return { kind: 'create', branchRef: `${HEADS_PREFIX}${name}` as RefName, name };
 };
+
+/** git's `worktree add <path> -`: a lone `-` start point is `@{-1}`. */
+const spellPriorCheckout = (opts: WorktreeAddOptions): WorktreeAddOptions =>
+  opts.commitish === undefined ? opts : { ...opts, commitish: previousCheckoutArg(opts.commitish) };
 
 /** Refuse checking out a branch already used by another worktree. */
 const assertBranchFree = async (
@@ -242,9 +247,10 @@ const writeHeadReflog = async (child: Context, mode: AddMode, oid: ObjectId): Pr
  */
 export const worktreeAdd = async (
   ctx: Context,
-  opts: WorktreeAddOptions,
+  requested: WorktreeAddOptions,
 ): Promise<WorktreeAddResult> => {
   await gateWorktree(ctx);
+  const opts = spellPriorCheckout(requested);
   if (opts.path === '') throw worktreePathExists('');
   const worktreePath = resolveWorktreePath(ctx.cwd, opts.path) as FilePath;
   // Defence in depth: the admin id is the path basename, joined onto

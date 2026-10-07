@@ -235,6 +235,41 @@ describe.skipIf(!GIT_AVAILABLE)('worktree interop', () => {
     });
   });
 
+  describe('Given a previous checkout of branch side on each tool', () => {
+    /** `side` at HEAD, checked out then left again — `@{-1}` names it. */
+    const leaveSide = (dir: string): void => {
+      const branch = git(dir, 'symbolic-ref', '--short', 'HEAD').trim();
+      runGit(['-C', dir, 'branch', 'side']);
+      runGit(['-C', dir, 'checkout', '-q', 'side']);
+      runGit(['-C', dir, 'checkout', '-q', branch]);
+    };
+
+    describe.each(['-', '@{-1}'])('When worktree.add starts at %j', (commitish) => {
+      it('Then the worktree is attached to side as git attaches it', async () => {
+        // Arrange
+        const peer = await realpath(pair.peer);
+        runGit(['init', '-q', '-b', 'main', peer]);
+        runGit(['-C', peer, 'commit', '-q', '--allow-empty', '-m', 'seed'], { env: COMMIT_ENV });
+        leaveSide(peer);
+        leaveSide(ours);
+        const peerWt = sibling('peer-prior');
+        runGit(['-C', peer, 'worktree', 'add', '-q', peerWt, commitish]);
+        const wt = sibling('prior');
+        const sut = await openRepository({ cwd: ours });
+
+        // Act
+        const result = await sut.worktree.add({ path: wt, commitish });
+        await sut.dispose();
+
+        // Assert
+        expect(git(wt, 'symbolic-ref', 'HEAD').trim()).toBe(
+          git(peerWt, 'symbolic-ref', 'HEAD').trim(),
+        );
+        expect(result).toMatchObject({ branch: 'refs/heads/side', detached: false });
+      });
+    });
+  });
+
   describe('Given a reftable repository on each tool', () => {
     const TABLE_NAME = /0x[0-9a-f]{12}-0x[0-9a-f]{12}-[0-9a-f]{8}\.ref$/;
 
