@@ -41,8 +41,8 @@ const NEGATION = '^';
 const PARENTS_MARK = '^@';
 const EXCLUDE_PARENTS_MARK = '^!';
 const EXCLUDE_PARENT_MARK = '^-';
-/** git's `strtol_i`: an optional sign, then decimal digits to the end. */
-const PARENT_NUMBER = /^[+-]?[0-9]+$/;
+/** git's `strtol_i`: C whitespace `strtol` skips, an optional sign, then decimal digits to the end. */
+const PARENT_NUMBER = /^[ \t\n\v\f\r]*[+-]?[0-9]+$/;
 
 const tip = (id: ObjectId, negated: boolean): RevisionTip => ({ id, negated });
 

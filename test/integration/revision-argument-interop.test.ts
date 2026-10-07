@@ -92,8 +92,10 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revision argument forms against
       'main^-',
       'main^-1',
       'main^-2',
+      'main^- 1',
+      'main^-\t2',
       '^side',
-    ])('When git rev-list and revList read %s', (argument) => {
+    ])('When git rev-list and revList read %j', (argument) => {
       it("Then both list git's commits in git's order", async () => {
         // Arrange
         const peer = git(repo, 'rev-list', argument).trim().split('\n').filter(Boolean);
@@ -117,8 +119,9 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revision argument forms against
       'main^@',
       'main^!',
       'main^-2',
+      'main^- 2',
       '^side',
-    ])('When git pack-objects --revs and packObjects read the line %s', (line) => {
+    ])('When git pack-objects --revs and packObjects read the line %j', (line) => {
       it('Then both pack the same objects', async () => {
         // Arrange
         const out = await mkdtemp(path.join(repo, '.git', 'packs-'));

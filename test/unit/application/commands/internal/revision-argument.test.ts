@@ -59,6 +59,8 @@ describe('expandRevisionArgument', () => {
       { arg: '^main^!', source: 'command-line', tips: ['main', 'side', '^merge'] },
       { arg: 'main^-', source: 'command-line', tips: ['^main', 'merge'] },
       { arg: 'main^-2', source: 'stdin', tips: ['^side', 'merge'] },
+      { arg: 'main^- 1', source: 'command-line', tips: ['^main', 'merge'] },
+      { arg: 'main^-\t2', source: 'stdin', tips: ['^side', 'merge'] },
       { arg: 'base^!', source: 'command-line', tips: ['root'] },
       { arg: '^side', source: 'stdin', tips: ['^side'] },
       { arg: 'side', source: 'command-line', tips: ['side'] },
@@ -86,6 +88,8 @@ describe('expandRevisionArgument', () => {
       { arg: 'base^-', code: 'REVPARSE_UNRESOLVED' },
       { arg: 'main^-0', code: 'REVPARSE_UNRESOLVED' },
       { arg: 'main^-x', code: 'REVPARSE_UNRESOLVED' },
+      { arg: 'main^- 2x', code: 'REVPARSE_UNRESOLVED' },
+      { arg: 'main^--1', code: 'REVPARSE_UNRESOLVED' },
       { arg: '..', code: 'OBJECT_NOT_FOUND' },
     ])('When $arg is expanded from the command line', ({ arg, code }) => {
       it('Then the whole argument is refused as one name', async () => {
