@@ -129,7 +129,14 @@ const walkBundle = async (
   const options = await resolveLimitOptions(
     ctx,
     { from },
-    { seeds, until: new Set(marks.commitTips), firstParent: false, settle: 'slop', objectTypes },
+    {
+      seeds,
+      until: new Set(marks.commitTips),
+      firstParent: false,
+      settle: 'slop',
+      objectTypes,
+      bodyRetention: 'none',
+    },
   );
   const walk = await limitOrFailSetup(ctx, options);
   const boundary = new Set<ObjectId>();

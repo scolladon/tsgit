@@ -28,6 +28,13 @@ const READ_AHEAD = 8;
  */
 export type LimitSettle = 'slop' | 'generation';
 
+/**
+ * Which parsed bodies the walk keeps: the shown commits', for a caller that
+ * reads them next, or none for one that needs only their heads — a typing
+ * walk then holds a body only until its pointers are typed.
+ */
+export type BodyRetention = 'shown' | 'none';
+
 export interface LimitListOptions {
   /**
    * Every named commit, included or excluded, in command-line order: git
@@ -58,6 +65,8 @@ export interface LimitListOptions {
    * the walk runs to completion.
    */
   readonly takeAtMost?: number;
+  /** Omitted keeps the shown commits' bodies. */
+  readonly bodyRetention?: BodyRetention;
   /**
    * git's `min_age` (`--before`), in seconds: an interesting commit dated
    * after it is walked through but neither listed nor taken as the date the
@@ -73,8 +82,11 @@ export interface LimitedWalk {
   readonly uninteresting: ReadonlySet<ObjectId>;
   /** Commits taken into the list while interesting and found uninteresting later. */
   readonly dropped: ReadonlyArray<ObjectId>;
-  /** Bodies of shown commits read while parsing them (those absent from the graph). */
-  readonly bodies: ReadonlyMap<ObjectId, Commit>;
+  /**
+   * Bodies of shown commits read while parsing them (those absent from the
+   * graph), handed over: a consumer may drop each once it has used it.
+   */
+  readonly bodies: Map<ObjectId, Commit>;
   /**
    * Each shown commit as the walk parsed it — from the commit-graph when it
    * holds the commit, as git's `get_commit_tree` reads it, so a commit whose
@@ -100,7 +112,9 @@ export interface LimitWalkOptions {
 
 /** The walk's own knobs; `seeds` defaults to git's `<from> ^<until>` command-line order. */
 type LimitSettings = Pick<LimitListOptions, 'until' | 'firstParent' | 'settle'> &
-  Partial<Pick<LimitListOptions, 'seeds' | 'objectTypes' | 'takeAtMost' | 'minAge'>>;
+  Partial<
+    Pick<LimitListOptions, 'seeds' | 'objectTypes' | 'takeAtMost' | 'minAge' | 'bodyRetention'>
+  >;
 
 /** Complete a walk's options for {@link limitList}, loading `.git/shallow` when none is given. */
 export const resolveLimitOptions = async (
@@ -358,9 +372,19 @@ const typeParsed = async (state: LimitState, id: ObjectId): Promise<boolean> => 
   // git marks a commit parsed only once its parse succeeds: a failed one is
   // parsed, and fails, again at every reach.
   const typed = await typeWalkedCommit(state.ctx, table, body);
-  if (typed) state.typed.add(id);
+  if (typed) settleTyped(state, id);
   return typed;
 };
+
+/** A typed commit is never typed again: a heads-only walk no longer needs its body. */
+const settleTyped = (state: LimitState, id: ObjectId): void => {
+  state.typed.add(id);
+  if (state.options.bodyRetention === 'none') state.bodies.delete(id);
+};
+
+/** A body is kept for the caller's shown commits, or for a typing walk to type its pointers. */
+const keepsBody = ({ options }: LimitState): boolean =>
+  options.bodyRetention !== 'none' || options.objectTypes !== undefined;
 
 /**
  * git's `fill_commit_in_graph`: each parent looked up as a commit, dying —
@@ -454,7 +478,7 @@ const parse = async (
     shallow,
   });
   if (commit === undefined) return notParsed(state, id);
-  state.bodies.set(id, commit);
+  if (keepsBody(state)) state.bodies.set(id, commit);
   const { tree, parents, committer } = commit.data;
   const date = committer.timestamp;
   return remember(state, id, { tree, parents, date, generation: OUTSIDE_GRAPH });

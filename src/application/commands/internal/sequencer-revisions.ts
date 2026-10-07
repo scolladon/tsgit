@@ -126,7 +126,13 @@ const walkSeeds = async (ctx: Context, seeds: Seeds): Promise<ReadonlyArray<Obje
   const options = await resolveLimitOptions(
     ctx,
     { from: seeds.tips },
-    { seeds: seeds.named, until: new Set(seeds.excluded), firstParent: false, settle: 'slop' },
+    {
+      seeds: seeds.named,
+      until: new Set(seeds.excluded),
+      firstParent: false,
+      settle: 'slop',
+      bodyRetention: 'none',
+    },
   );
   return (await limitList(ctx, options)).shown;
 };

@@ -43,6 +43,14 @@ interface WalkState {
 
 type Order = NonNullable<WalkCommitsOptions['order']>;
 type CommitBodies = BoundedReader<Commit | undefined>;
+/** Bodies a limiting pass already read, each handed to the walk once, then dropped. */
+type ParsedBodies = Map<ObjectId, Commit>;
+
+const takeParsed = (parsed: ParsedBodies, id: ObjectId): Commit | undefined => {
+  const commit = parsed.get(id);
+  parsed.delete(id);
+  return commit;
+};
 
 interface WalkSession {
   readonly state: WalkState;
@@ -51,7 +59,11 @@ interface WalkSession {
   readonly ignoreMissing: boolean;
 }
 
-async function createWalkSession(ctx: Context, options: WalkCommitsOptions): Promise<WalkSession> {
+async function createWalkSession(
+  ctx: Context,
+  options: WalkCommitsOptions,
+  parsed: ParsedBodies,
+): Promise<WalkSession> {
   const order = options.order ?? 'breadth-first';
   const ignoreMissing = options.ignoreMissing ?? false;
   const verifyHash = options.verifyHash ?? false;
@@ -66,8 +78,11 @@ async function createWalkSession(ctx: Context, options: WalkCommitsOptions): Pro
     shallow,
   };
   const bound = limitFor(ctx, 'ioBound');
-  const bodies: CommitBodies = createBoundedReader(bound, (id) =>
-    readCommit(ctx, id, { verifyHash, ignoreMissing, missing: state.missing, shallow }),
+  const bodies: CommitBodies = createBoundedReader(
+    bound,
+    async (id) =>
+      takeParsed(parsed, id) ??
+      readCommit(ctx, id, { verifyHash, ignoreMissing, missing: state.missing, shallow }),
   );
   // Prime the initial seeds so their reads overlap instead of starting only
   // as each is individually popped. Must happen AFTER shallow resolves —
@@ -150,20 +165,31 @@ async function* walkExcluding(
 ): AsyncIterable<Commit> {
   validateOptions(options);
   const limits = { until, firstParent: options.order === 'first-parent', settle: 'slop' } as const;
-  const { uninteresting } = await limitList(ctx, await resolveLimitOptions(ctx, options, limits));
-  yield* walkCommitsStoppingAt(ctx, { ...options, until: uninteresting });
+  const { uninteresting, bodies } = await limitList(
+    ctx,
+    await resolveLimitOptions(ctx, options, limits),
+  );
+  yield* walkStoppingAt(ctx, { ...options, until: uninteresting }, bodies);
 }
 
 /**
  * {@link walkCommits} stopping only at the `until` commits themselves — for
  * callers whose `until` already holds every ancestor of what they exclude.
  */
-export async function* walkCommitsStoppingAt(
+export function walkCommitsStoppingAt(
   ctx: Context,
   options: WalkCommitsOptions,
 ): AsyncIterable<Commit> {
+  return walkStoppingAt(ctx, options, new Map());
+}
+
+async function* walkStoppingAt(
+  ctx: Context,
+  options: WalkCommitsOptions,
+  parsed: ParsedBodies,
+): AsyncIterable<Commit> {
   validateOptions(options);
-  const session = await createWalkSession(ctx, options);
+  const session = await createWalkSession(ctx, options, parsed);
   const { state, bodies, order } = session;
 
   while (state.head < state.queue.length) {

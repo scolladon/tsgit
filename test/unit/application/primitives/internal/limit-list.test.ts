@@ -6,6 +6,7 @@ import {
   resolveLimitOptions,
   walkLimited,
 } from '../../../../../src/application/primitives/internal/limit-list.js';
+import { createObjectTypeTable } from '../../../../../src/application/primitives/internal/object-type-table.js';
 import { readCommit } from '../../../../../src/application/primitives/internal/read-commit.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import type { AuthorIdentity, ObjectId, Tree } from '../../../../../src/domain/objects/index.js';
@@ -660,6 +661,72 @@ describe('resolveLimitOptions', () => {
 
         // Assert
         expect(result.seeds.map(history.name)).toEqual(['d', 'h']);
+      });
+    });
+  });
+});
+
+describe('limitList body retention', () => {
+  const CHAIN: Spec = [
+    ['c0', 0, []],
+    ['c1', 10, ['c0']],
+    ['c2', 20, ['c1']],
+  ];
+
+  describe('Given a chain walked for its heads only', () => {
+    describe('When it is limited', () => {
+      it('Then every commit is shown and no body is retained', async () => {
+        // Arrange
+        const history = await buildHistory(CHAIN);
+        const sut = limitList;
+
+        // Act
+        const result = await sut(
+          history.ctx,
+          optionsFor(history, ['c2'], [], { bodyRetention: 'none' }),
+        );
+
+        // Assert
+        expect(result.shown.map(history.name)).toEqual(['c2', 'c1', 'c0']);
+        expect(result.bodies.size).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a chain typed and walked for its heads only', () => {
+    describe('When it is limited', () => {
+      it('Then only the untyped seed keeps its body', async () => {
+        // Arrange
+        const history = await buildHistory(CHAIN);
+        const objectTypes = createObjectTypeTable();
+        const sut = limitList;
+
+        // Act
+        const result = await sut(
+          history.ctx,
+          optionsFor(history, ['c2'], [], { bodyRetention: 'none', objectTypes }),
+        );
+
+        // Assert
+        expect(result.shown.map(history.name)).toEqual(['c2', 'c1', 'c0']);
+        expect([...result.bodies.keys()].map(history.name)).toEqual(['c2']);
+        expect(objectTypes.get(history.id('c0'))).toBe('commit');
+      });
+    });
+  });
+
+  describe('Given a chain walked for its shown bodies', () => {
+    describe('When it is limited', () => {
+      it('Then every shown body is retained', async () => {
+        // Arrange
+        const history = await buildHistory(CHAIN);
+        const sut = limitList;
+
+        // Act
+        const result = await sut(history.ctx, optionsFor(history, ['c2'], []));
+
+        // Assert
+        expect([...result.bodies.keys()].map(history.name).sort()).toEqual(['c0', 'c1', 'c2']);
       });
     });
   });

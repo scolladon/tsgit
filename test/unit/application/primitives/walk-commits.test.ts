@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import {
   commitGraphChainPath,
@@ -1708,6 +1708,27 @@ describe('walkCommits', () => {
           expect(withStaleGraph.map((commit) => commit.id)).toEqual(
             baseline.map((commit) => commit.id),
           );
+        });
+      });
+    });
+
+    describe('Given a chain walked down to an excluded commit, with no commit-graph', () => {
+      describe('When walkCommits lists the included commits', () => {
+        it('Then each commit object is read once', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const ids = await linearChain(ctx, 5);
+          const reads = vi.spyOn(ctx.deltaCache, 'get');
+          const sut = walkCommits;
+
+          // Act
+          const result = await collect(sut(ctx, { from: [ids[4]!], until: [ids[1]!] }));
+
+          // Assert
+          const shown = [ids[4], ids[3], ids[2]];
+          expect(result.map((commit) => commit.id)).toEqual(shown);
+          const shownReads = reads.mock.calls.filter(([id]) => shown.includes(id as ObjectId));
+          expect(shownReads).toHaveLength(shown.length);
         });
       });
     });

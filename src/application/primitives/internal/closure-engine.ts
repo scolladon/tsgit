@@ -431,6 +431,7 @@ async function collectStreamedWalk(
       until: new Set(),
       firstParent: request.firstParent === true,
       settle: 'slop',
+      bodyRetention: 'none',
       ...(objectTypes === undefined ? {} : { objectTypes }),
       ...(maxCount === undefined ? {} : { takeAtMost: maxCount }),
     },
@@ -475,6 +476,7 @@ async function collectLimitedWalk(
       until: new Set(marks.commitTips),
       firstParent: request.firstParent === true,
       settle: 'slop',
+      bodyRetention: 'none',
       ...(request.objectTypes === undefined ? {} : { objectTypes: request.objectTypes }),
     },
   );
