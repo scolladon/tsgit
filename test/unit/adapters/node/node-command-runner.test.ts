@@ -67,8 +67,22 @@ interface SpawnCall {
 
 type SpawnOptions = Omit<SpawnCall, 'command' | 'args'>;
 
+/** The host a Windows runner searches: its environment and the files that exist. */
+interface HostFixture {
+  readonly env: NodeJS.ProcessEnv;
+  readonly files: ReadonlyArray<string>;
+}
+
+const WINDOWS_INTERPRETER = 'C:\\Windows\\system32\\cmd.exe';
+
+const windowsHost = (files: ReadonlyArray<string> = []): HostFixture => ({
+  env: { PATH: 'C:\\gnupg', ComSpec: WINDOWS_INTERPRETER },
+  files,
+});
+
 const makeHarness = (
   platform: NodeJS.Platform = 'linux',
+  host: HostFixture = { env: process.env, files: [] },
 ): { runner: NodeCommandRunner; child: FakeChild; calls: SpawnCall[] } => {
   const child = new FakeChild();
   const calls: SpawnCall[] = [];
@@ -78,6 +92,8 @@ const makeHarness = (
       child.stderr = options.stdio[2] === 'pipe' ? child.pipedStderr : null;
       return child;
     },
+    env: host.env,
+    isFile: (path) => host.files.includes(path),
   };
   return { runner: new NodeCommandRunner(platform, ops), child, calls };
 };
@@ -95,6 +111,8 @@ const throwingRunner = (): NodeCommandRunner =>
     spawn: () => {
       throw Object.assign(new Error('spawn EINVAL'), { code: 'EINVAL' });
     },
+    env: { PATH: 'C:\\tools' },
+    isFile: () => true,
   });
 
 const baseRequest = (over: Partial<CommandRequest> = {}): CommandRequest => ({
@@ -216,9 +234,9 @@ describe('NodeCommandRunner', () => {
 
   describe('Given the win32 platform', () => {
     describe('When run', () => {
-      it('Then spawns via `cmd /c`', async () => {
+      it('Then spawns via the absolute ComSpec interpreter with `/c`', async () => {
         // Arrange
-        const { runner, child, calls } = makeHarness('win32');
+        const { runner, child, calls } = makeHarness('win32', windowsHost());
 
         // Act
         const promise = runner.run(baseRequest());
@@ -226,8 +244,83 @@ describe('NodeCommandRunner', () => {
         await promise;
 
         // Assert
-        expect(calls[0]?.command).toBe('cmd');
+        expect(calls[0]?.command).toBe(WINDOWS_INTERPRETER);
         expect(calls[0]?.args).toEqual(['/c', 'merge a b']);
+      });
+    });
+  });
+
+  describe('Given the win32 platform and a program planted in the working directory', () => {
+    describe('When run naming that program bare', () => {
+      it('Then spawns the absolute PATH program, never the planted one', async () => {
+        // Arrange
+        const host = windowsHost(['C:\\repo\\gpg.exe', 'C:\\gnupg\\gpg.exe']);
+        const { runner, child, calls } = makeHarness('win32', host);
+        const sut = runner.run.bind(runner);
+
+        // Act
+        const promise = sut(baseRequest({ command: 'gpg', args: ['--verify'], cwd: 'C:\\repo' }));
+        child.emit('close', 0);
+        await promise;
+
+        // Assert
+        expect(calls[0]?.command).toBe('C:\\gnupg\\gpg.exe');
+      });
+    });
+  });
+
+  describe('Given the win32 platform and a program on no PATH entry', () => {
+    describe('When run', () => {
+      it('Then resolves with the spawn-error exit code without spawning', async () => {
+        // Arrange
+        const host = windowsHost(['C:\\repo\\gpg.exe']);
+        const { runner, calls } = makeHarness('win32', host);
+        const sut = runner.run.bind(runner);
+
+        // Act
+        const result = await sut(
+          baseRequest({ command: 'gpg', args: [], cwd: 'C:\\repo', stderr: 'capture' }),
+        );
+
+        // Assert
+        expect(result).toEqual({ exitCode: 127, stderr: new Uint8Array() });
+        expect(calls).toEqual([]);
+      });
+    });
+
+    describe('When run leaving stderr inherited', () => {
+      it('Then the spawn-error result carries no stderr', async () => {
+        // Arrange
+        const { runner } = makeHarness('win32', windowsHost());
+        const sut = runner.run.bind(runner);
+
+        // Act
+        const result = await sut(baseRequest({ command: 'gpg', args: [] }));
+
+        // Assert
+        expect(result).toEqual({ exitCode: 127 });
+      });
+    });
+
+    describe('When spawned for a conversation', () => {
+      it('Then the write rejects, the output ends empty and close reports the spawn-error exit', async () => {
+        // Arrange
+        const { runner, calls } = makeHarness('win32', windowsHost());
+        const sut = runner.spawn;
+
+        // Act
+        const conversation = sut(baseRequest({ command: 'filter', args: [] }));
+        const written = await conversation
+          .write(new Uint8Array([1]))
+          .catch((error: unknown) => error);
+        const output = await collect(conversation.output);
+        const exit = await conversation.close();
+
+        // Assert
+        expect((written as Error).message).toBe('cannot run filter: not found on PATH');
+        expect(output).toEqual([]);
+        expect(exit).toEqual({ exitCode: 127 });
+        expect(calls).toEqual([]);
       });
     });
   });
@@ -400,10 +493,17 @@ describe('NodeCommandRunner', () => {
   });
 
   describe('Given a request naming its program and arguments', () => {
-    describe.each(['linux', 'win32'] as const)('When run on %s', (platform) => {
+    describe.each([
+      { platform: 'linux', host: undefined, program: 'gpg' },
+      {
+        platform: 'win32',
+        host: windowsHost(['C:\\gnupg\\gpg.exe']),
+        program: 'C:\\gnupg\\gpg.exe',
+      },
+    ] as const)('When run on $platform', ({ platform, host, program }) => {
       it('Then spawns the program directly with those arguments, no shell', async () => {
         // Arrange
-        const { runner, child, calls } = makeHarness(platform);
+        const { runner, child, calls } = makeHarness(platform, host);
         const sut = runner.run.bind(runner);
 
         // Act
@@ -412,7 +512,7 @@ describe('NodeCommandRunner', () => {
         await promise;
 
         // Assert
-        expect(calls[0]?.command).toBe('gpg');
+        expect(calls[0]?.command).toBe(program);
         expect(calls[0]?.args).toEqual(['--verify', "it's", '-']);
       });
     });
@@ -591,16 +691,16 @@ describe('NodeCommandRunner', () => {
     });
 
     describe('When started on Windows', () => {
-      it('Then the command runs through `cmd /c`', () => {
+      it('Then the command runs through the absolute ComSpec interpreter with `/c`', () => {
         // Arrange
-        const { runner, calls } = makeHarness('win32');
+        const { runner, calls } = makeHarness('win32', windowsHost());
         const sut = runner.spawn;
 
         // Act
         sut(baseRequest({ command: 'filter' }));
 
         // Assert
-        expect(calls[0]?.command).toBe('cmd');
+        expect(calls[0]?.command).toBe(WINDOWS_INTERPRETER);
         expect(calls[0]?.args).toEqual(['/c', 'filter']);
       });
     });
