@@ -644,4 +644,53 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
       });
     });
   });
+
+  describe('Given refs git cannot load beside an annotated tag: a dangling branch, a tag of an unknown type and a tag of a malformed commit', () => {
+    let dir = '';
+    let ctx: Context;
+
+    const hashLiterally = (type: string, body: string): string =>
+      runGit(['-C', dir, 'hash-object', '-t', type, '-w', '--literally', '--stdin'], {
+        input: body,
+      }).trim();
+
+    const tagBody = (target: string, type: string): string =>
+      `object ${target}\ntype ${type}\ntag x\ntagger A <a@x> 1700000000 +0000\n\nx\n`;
+
+    /** Written past `update-ref`, which refuses a target it cannot load. */
+    const plantRef = (name: string, target: string): Promise<void> =>
+      writeFile(path.join(dir, '.git', name), `${target}\n`);
+
+    beforeAll(async () => {
+      dir = await makeRepo('broken-tips');
+      await commitFile(dir, 'c1');
+      annotate(dir, 'v1', clock + 30);
+      const missing = '1234567890123456789012345678901234567890';
+      await plantRef('refs/heads/dangling', missing);
+      await plantRef('refs/tags/a-bogus', hashLiterally('tag', tagBody(missing, 'bogus')));
+      const malformed = hashLiterally('commit', 'not a commit\n');
+      await plantRef('refs/tags/a-malformed', hashLiterally('tag', tagBody(malformed, 'commit')));
+      ctx = createNodeContext({ workDir: dir });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    describe('When nameRevCmd names HEAD', () => {
+      it('Then it skips the refs it cannot load and names HEAD by the tag as git does', async () => {
+        // Arrange
+        const gitRun = tryRunGitWithExit(['-C', dir, 'name-rev', '--name-only', 'HEAD']);
+        const sut = nameRevCmd;
+
+        // Act
+        const result = renderNameRev(await sut(ctx, 'HEAD'));
+
+        // Assert
+        expect(gitRun.exitCode).toBe(0);
+        expect(result).toBe(gitRun.stdout.trim());
+        expect(result).toBe('tags/v1^0');
+      });
+    });
+  });
 });

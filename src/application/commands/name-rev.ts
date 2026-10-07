@@ -27,7 +27,6 @@ import { hasObject } from '../primitives/has-object.js';
 import type { BoundedReader } from '../primitives/internal/bounded-reader.js';
 import { boundedReaderFor } from '../primitives/internal/concurrency.js';
 import { peel } from '../primitives/internal/peel.js';
-import { peelRefToCommit } from '../primitives/internal/peel-ref-to-commit.js';
 import {
   type CommitMeta,
   commitMetaOf,
@@ -36,6 +35,7 @@ import {
 import { getRefStore } from '../primitives/ref-store.js';
 import { reportAmbiguousOid } from './internal/ambiguous-oid-report.js';
 import { type NameRevOptions, parseNameRevOptions } from './internal/name-rev-options.js';
+import { peelNameRevTip } from './internal/name-rev-tip.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import { evaluateRevision } from './rev-parse.js';
 
@@ -153,15 +153,15 @@ const seedRef = async (
 ): Promise<NameRevNode | undefined> => {
   const resolved = await getRefStore(ctx).resolveDirect(ref);
   if (resolved.kind !== 'direct') return undefined;
-  const tip = await peelRefToCommit(ctx, resolved.id);
-  if (tip === undefined) return undefined;
+  const tip = await peelNameRevTip(ctx, resolved.id);
+  if (tip.commit === undefined) return undefined;
   const meta = await commitMetaOf(ctx, tip.commit);
   if (commitIsBeforeCutoff(meta, cutoff)) return undefined;
   const seed: RevName = {
     ref,
-    tagDeref: tip.viaTag,
+    tagDeref: tip.deref,
     fromTag: ref.startsWith(TAGS_PREFIX),
-    taggerDate: tip.viaTag ? tip.taggerDate : tip.commit.data.committer.timestamp,
+    taggerDate: tip.deref ? tip.taggerDate : tip.commit.data.committer.timestamp,
     generation: 0,
     distance: 0,
     steps: [],
