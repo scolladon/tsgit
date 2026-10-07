@@ -19,6 +19,9 @@ const pgpArmor = (body: string): string =>
 const sshArmor = (body: string): string =>
   `-----BEGIN SSH SIGNATURE-----\n${body}\n-----END SSH SIGNATURE-----\n`;
 
+/** gpg's status-fd line announcing a created signature, as `--status-fd=2` writes it. */
+const SIG_CREATED_LINE = '[GNUPG:] SIG_CREATED D 22 10 00 1700000000 FPR\n';
+
 /** The staged payload file a signer was handed — ssh-keygen's last argument. */
 const stagedBuffer = (request: CommandRequest | undefined): string => request?.args?.at(-1) ?? '';
 
@@ -32,7 +35,11 @@ describe('signPayload', () => {
       it('Then result is ok:true and the armor round-trips the stdout text', async () => {
         // Arrange
         const armor = pgpArmor('c2lnbmF0dXJl');
-        const runner = stubCommandRunner({ exitCode: 0, stdout: enc(armor) });
+        const runner = stubCommandRunner({
+          exitCode: 0,
+          stdout: enc(armor),
+          stderr: enc(SIG_CREATED_LINE),
+        });
         const ctx = createMemoryContext({ command: runner });
 
         // Act
@@ -52,7 +59,11 @@ describe('signPayload', () => {
       it('Then the runner command is "<program> --status-fd=2 -bsau <selector>" and stdin equals the payload bytes', async () => {
         // Arrange
         const armor = pgpArmor('YWJj');
-        const runner = stubCommandRunner({ exitCode: 0, stdout: enc(armor) });
+        const runner = stubCommandRunner({
+          exitCode: 0,
+          stdout: enc(armor),
+          stderr: enc(SIG_CREATED_LINE),
+        });
         const ctx = createMemoryContext({ command: runner });
         const payload = enc('tree deadbeef\n');
 
@@ -70,7 +81,11 @@ describe('signPayload', () => {
 
       it('Then the runner request env carries GIT_DIR set to the repo gitDir', async () => {
         // Arrange
-        const runner = stubCommandRunner({ exitCode: 0, stdout: enc(pgpArmor('YWJj')) });
+        const runner = stubCommandRunner({
+          exitCode: 0,
+          stdout: enc(pgpArmor('YWJj')),
+          stderr: enc(SIG_CREATED_LINE),
+        });
         const ctx = createMemoryContext({ command: runner });
 
         // Act
@@ -87,7 +102,11 @@ describe('signPayload', () => {
       it('Then the command uses that program, not "gpg"', async () => {
         // Arrange
         const armor = pgpArmor('YWJj');
-        const runner = stubCommandRunner({ exitCode: 0, stdout: enc(armor) });
+        const runner = stubCommandRunner({
+          exitCode: 0,
+          stdout: enc(armor),
+          stderr: enc(SIG_CREATED_LINE),
+        });
         const ctx = createMemoryContext({ command: runner });
 
         // Act
@@ -111,7 +130,11 @@ describe('signPayload', () => {
       it('Then the command defaults to "gpg"', async () => {
         // Arrange
         const armor = pgpArmor('YWJj');
-        const runner = stubCommandRunner({ exitCode: 0, stdout: enc(armor) });
+        const runner = stubCommandRunner({
+          exitCode: 0,
+          stdout: enc(armor),
+          stderr: enc(SIG_CREATED_LINE),
+        });
         const ctx = createMemoryContext({ command: runner });
 
         // Act
@@ -128,7 +151,11 @@ describe('signPayload', () => {
       it('Then the selector travels as one verbatim argument and signing still succeeds', async () => {
         // Arrange
         const armor = pgpArmor('YWJj');
-        const runner = stubCommandRunner({ exitCode: 0, stdout: enc(armor) });
+        const runner = stubCommandRunner({
+          exitCode: 0,
+          stdout: enc(armor),
+          stderr: enc(SIG_CREATED_LINE),
+        });
         const ctx = createMemoryContext({ command: runner });
         const selector = 'Name <committer@example.com>';
 
@@ -149,7 +176,11 @@ describe('signPayload', () => {
     describe('When signPayload runs', () => {
       it('Then the quote reaches the program verbatim', async () => {
         // Arrange
-        const runner = stubCommandRunner({ exitCode: 0, stdout: enc(pgpArmor('YWJj')) });
+        const runner = stubCommandRunner({
+          exitCode: 0,
+          stdout: enc(pgpArmor('YWJj')),
+          stderr: enc(SIG_CREATED_LINE),
+        });
         const ctx = createMemoryContext({ command: runner });
 
         // Act
@@ -168,7 +199,11 @@ describe('signPayload', () => {
     describe('When signPayload runs', () => {
       it('Then the payload reaches the program as one literal argument, no shell between', async () => {
         // Arrange
-        const runner = stubCommandRunner({ exitCode: 0, stdout: enc(pgpArmor('YWJj')) });
+        const runner = stubCommandRunner({
+          exitCode: 0,
+          stdout: enc(pgpArmor('YWJj')),
+          stderr: enc(SIG_CREATED_LINE),
+        });
         const ctx = createMemoryContext({ command: runner });
 
         // Act
@@ -359,8 +394,9 @@ describe('signPayload', () => {
         'Then $label yields result { ok: false, reason: "signer-failed" }',
         async ({ exitCode, stdout }) => {
           // Arrange
+          const stderr = enc(SIG_CREATED_LINE);
           const runner = stubCommandRunner(
-            stdout === undefined ? { exitCode } : { exitCode, stdout },
+            stdout === undefined ? { exitCode, stderr } : { exitCode, stdout, stderr },
           );
           const ctx = createMemoryContext({ command: runner });
 
@@ -371,9 +407,99 @@ describe('signPayload', () => {
           });
 
           // Assert
-          expect(result).toEqual({ ok: false, reason: 'signer-failed' });
+          expect(result).toEqual({ ok: false, reason: 'signer-failed', output: SIG_CREATED_LINE });
         },
       );
+    });
+  });
+
+  describe('Given an openpgp signer exiting 0 with a well-formed armor', () => {
+    describe.each([
+      { stderr: 'gpg: using key FPR\n', label: 'a status with no SIG_CREATED line' },
+      { stderr: `x${SIG_CREATED_LINE}`, label: 'SIG_CREATED in the middle of a line' },
+      { stderr: '[GNUPG:] SIG_CREATED\n', label: 'SIG_CREATED with no field after it' },
+      { stderr: '', label: 'no status at all' },
+    ])('When the signer reports $label', ({ stderr }) => {
+      it('Then signing fails, carrying the signer diagnostic', async () => {
+        // Arrange
+        const runner = stubCommandRunner({
+          exitCode: 0,
+          stdout: enc(pgpArmor('YWJj')),
+          stderr: enc(stderr),
+        });
+        const ctx = createMemoryContext({ command: runner });
+        const sut = signPayload;
+
+        // Act
+        const result = await sut(ctx, enc('payload'), { format: 'openpgp', selector: 'K' });
+
+        // Assert
+        expect(result).toEqual({ ok: false, reason: 'signer-failed', output: stderr });
+      });
+    });
+
+    describe.each([
+      { stderr: SIG_CREATED_LINE, label: 'SIG_CREATED opening the status' },
+      {
+        stderr: `gpg: using key FPR\n${SIG_CREATED_LINE}`,
+        label: 'SIG_CREATED after a diagnostic line',
+      },
+      { stderr: '[GNUPG:] SIG_CREATED D', label: 'an unterminated SIG_CREATED line' },
+    ])('When the signer reports $label', ({ stderr }) => {
+      it('Then the signature is accepted and the status kept out of the result', async () => {
+        // Arrange
+        const armor = pgpArmor('YWJj');
+        const runner = stubCommandRunner({ exitCode: 0, stdout: enc(armor), stderr: enc(stderr) });
+        const ctx = createMemoryContext({ command: runner });
+        const sut = signPayload;
+
+        // Act
+        const result = await sut(ctx, enc('payload'), { format: 'openpgp', selector: 'K' });
+
+        // Assert
+        expect(result).toEqual({ ok: true, armor });
+      });
+    });
+  });
+
+  describe.each([
+    { format: 'openpgp', label: 'an openpgp signer' },
+    { format: 'ssh', label: 'an ssh signer' },
+  ] as const)('Given $label', ({ format }) => {
+    describe('When signPayload runs', () => {
+      it('Then the signer stderr is captured, not shown', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ exitCode: 1 });
+        const ctx = createMemoryContext({ command: runner });
+        const sut = signPayload;
+
+        // Act
+        await sut(ctx, enc('payload'), { format, selector: '/key' });
+
+        // Assert
+        expect(runner.calls[0]?.stderr).toBe('capture');
+      });
+    });
+  });
+
+  describe('Given an ssh signer failing with a diagnostic', () => {
+    describe('When signPayload runs', () => {
+      it('Then signing fails, carrying the diagnostic', async () => {
+        // Arrange
+        const runner = stubCommandRunner({ exitCode: 255, stderr: enc('Load key: denied\n') });
+        const ctx = createMemoryContext({ command: runner });
+        const sut = signPayload;
+
+        // Act
+        const result = await sut(ctx, enc('payload'), { format: 'ssh', selector: '/key' });
+
+        // Assert
+        expect(result).toEqual({
+          ok: false,
+          reason: 'signer-failed',
+          output: 'Load key: denied\n',
+        });
+      });
     });
   });
 
@@ -397,7 +523,7 @@ describe('signPayload', () => {
 
           // Assert
           const tmpPath = stagedBuffer(runner.calls[0]);
-          expect(result).toEqual({ ok: false, reason: 'signer-failed' });
+          expect(result).toEqual({ ok: false, reason: 'signer-failed', output: '' });
           expect(tmpPath).not.toBe('');
           expect(await ctx.fs.exists(tmpPath)).toBe(false);
           expect(await ctx.fs.exists(`${tmpPath}.sig`)).toBe(false);
@@ -428,7 +554,7 @@ describe('signPayload', () => {
         });
 
         // Assert
-        expect(result).toEqual({ ok: false, reason: 'signer-failed' });
+        expect(result).toEqual({ ok: false, reason: 'signer-failed', output: '' });
       });
     });
   });
@@ -507,7 +633,11 @@ describe('signPayload', () => {
         // Arrange
         const controller = new AbortController();
         const armor = pgpArmor('YWJj');
-        const runner = stubCommandRunner({ exitCode: 0, stdout: enc(armor) });
+        const runner = stubCommandRunner({
+          exitCode: 0,
+          stdout: enc(armor),
+          stderr: enc(SIG_CREATED_LINE),
+        });
         const ctx = createMemoryContext({ command: runner, signal: controller.signal });
 
         // Act
@@ -546,7 +676,11 @@ describe('signPayload', () => {
     describe('When signPayload runs (openpgp format)', () => {
       it('Then the runner request omits the signal key entirely (never a signal: undefined)', async () => {
         // Arrange
-        const runner = stubCommandRunner({ exitCode: 0, stdout: enc(pgpArmor('YWJj')) });
+        const runner = stubCommandRunner({
+          exitCode: 0,
+          stdout: enc(pgpArmor('YWJj')),
+          stderr: enc(SIG_CREATED_LINE),
+        });
         const ctx = createMemoryContext({ command: runner });
 
         // Act

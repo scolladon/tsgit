@@ -15,7 +15,7 @@ import { TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { HookResult, HookRunner } from '../../../../src/ports/hook-runner.js';
-import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
+import { gpgSignerStub, stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
 import { asBareContext } from './fixtures.js';
 
 const author: AuthorIdentity = {
@@ -808,7 +808,7 @@ describe('commit — signing', () => {
     describe('When commit is called', () => {
       it('Then the commit object carries the returned armor as gpgSignature', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = await seedSigning(runner);
 
         // Act
@@ -826,7 +826,7 @@ describe('commit — signing', () => {
     describe('When commit stores the signature', () => {
       it('Then the armor is stored verbatim — the strip only fires on a real trailing newline', async () => {
         // Arrange — signedArmor() already ends at `-----` with no trailing newline.
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(signedArmor()) });
+        const runner = gpgSignerStub(signedArmor());
         const ctx = await seedSigning(runner);
 
         // Act
@@ -845,7 +845,7 @@ describe('commit — signing', () => {
     describe('When commit signs', () => {
       it('Then the signer receives the unsigned payload on stdin with no gpgsig header', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = await seedSigning(runner);
 
         // Act
@@ -864,7 +864,7 @@ describe('commit — signing', () => {
     describe('When commit is called', () => {
       it('Then it signs — the config default applies', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = await seedSigning(runner, '[commit]\n\tgpgSign = true\n');
 
         // Act
@@ -882,7 +882,7 @@ describe('commit — signing', () => {
     describe('When commit is called', () => {
       it('Then it does not sign — the explicit false overrides the config default', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = await seedSigning(runner, '[commit]\n\tgpgSign = true\n');
 
         // Act
@@ -901,7 +901,7 @@ describe('commit — signing', () => {
     describe('When commit signs', () => {
       it('Then the signer invocation uses the override key, not the configured one', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = await seedSigning(runner, '[user]\n\tsigningKey = DEFAULTKEY\n');
 
         // Act
@@ -937,6 +937,7 @@ describe('commit — signing', () => {
           code: 'SIGNING_FAILED',
           reason: 'signer-failed',
           format: 'openpgp',
+          output: '',
         });
         expect(await ctx.fs.exists(branchRefPath(ctx))).toBe(false);
       });
@@ -1069,7 +1070,7 @@ describe('commit — signing', () => {
     describe('When commit is called', () => {
       it('Then it signs — the guard no-ops on an accepted value', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = await seedSigning(runner, '[commit]\n\tgpgSign = yes\n');
 
         // Act

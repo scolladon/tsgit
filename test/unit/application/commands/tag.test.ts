@@ -24,7 +24,7 @@ import type {
 } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
+import { gpgSignerStub, stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -880,7 +880,7 @@ describe('tag — signing', () => {
     describe('When tag create with a message', () => {
       it('Then the tag body ends with the returned armor unmodified — no trailing-newline trim (unlike commits)', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = await seedSigning(runner);
 
         // Act
@@ -898,7 +898,7 @@ describe('tag — signing', () => {
     describe('When tag create', () => {
       it('Then it still creates a signed annotated tag object — sign implies annotate', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = await seedSigning(runner);
 
         // Act
@@ -917,7 +917,7 @@ describe('tag — signing', () => {
     describe('When tag create signs', () => {
       it('Then the signer receives the unsigned tag payload on stdin with no gpgsig header', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = await seedSigning(runner);
 
         // Act
@@ -936,7 +936,7 @@ describe('tag — signing', () => {
     describe('When tag create with a message', () => {
       it('Then it signs — the config default applies', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = await seedSigning(runner, '[tag]\n  gpgSign = true\n');
 
         // Act
@@ -954,7 +954,7 @@ describe('tag — signing', () => {
     describe('When tag create with a message', () => {
       it('Then it does not sign — the explicit false overrides the config default', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = await seedSigning(runner, '[tag]\n  gpgSign = true\n');
 
         // Act
@@ -973,7 +973,7 @@ describe('tag — signing', () => {
     describe('When tag create', () => {
       it('Then the tag stays lightweight and unsigned — tag.gpgSign only signs an already-annotated tag', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = await seedSigning(runner, '[tag]\n  gpgSign = true\n');
 
         // Act
@@ -1063,7 +1063,7 @@ describe('tag — signing', () => {
     describe('When tag create with a message', () => {
       it('Then it signs — the guard no-ops on an accepted value', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = await seedSigning(runner, '[tag]\n  gpgSign = yes\n');
 
         // Act
@@ -1081,7 +1081,7 @@ describe('tag — signing', () => {
     describe('When tag create signs', () => {
       it('Then the signer invocation uses the override key, not the configured one', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = await seedSigning(runner, '[user]\n  signingKey = DEFAULTKEY\n');
 
         // Act
@@ -1117,6 +1117,7 @@ describe('tag — signing', () => {
           code: 'SIGNING_FAILED',
           reason: 'signer-failed',
           format: 'openpgp',
+          output: '',
         });
         expect(await ctx.fs.exists(tagRefPath(ctx, 'v1.0'))).toBe(false);
       });

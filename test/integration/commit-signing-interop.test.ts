@@ -91,6 +91,7 @@ describe.skipIf(!GIT_AVAILABLE || !GPG_AVAILABLE)('commit signing interop', () =
   let sshRecorder = '';
   let sshRecorderLog = '';
   let failSigner = '';
+  let noStatusSigner = '';
   let fakeSshKey = '';
 
   const initPeer = (dir: string): void => {
@@ -158,6 +159,20 @@ describe.skipIf(!GIT_AVAILABLE || !GPG_AVAILABLE)('commit signing interop', () =
     failSigner = path.join(scriptsDir, 'fail-signer.sh');
     await writeFile(failSigner, '#!/bin/sh\nexit 1\n');
     await chmod(failSigner, 0o755);
+
+    // Exits 0 with a well-formed armor but never reports SIG_CREATED.
+    noStatusSigner = path.join(scriptsDir, 'no-status-signer.sh');
+    await writeFile(
+      noStatusSigner,
+      [
+        '#!/bin/sh',
+        'cat >/dev/null',
+        "echo 'gpg: signing diagnostic' >&2",
+        `printf '%s' '${CANNED_ARMOR}'`,
+        '',
+      ].join('\n'),
+    );
+    await chmod(noStatusSigner, 0o755);
 
     fakeSshKey = path.join(scriptsDir, 'id_fake');
     await writeFile(fakeSshKey, 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKE fake@example.com\n');
@@ -337,6 +352,49 @@ describe.skipIf(!GIT_AVAILABLE || !GPG_AVAILABLE)('commit signing interop', () =
           code: 'SIGNING_FAILED',
           reason: 'signer-failed',
           format: 'openpgp',
+          output: '',
+        });
+        expect(git(gitDir, 'rev-parse', 'HEAD').trim()).toBe(gitHeadBefore);
+        expect(git(tsDir, 'rev-parse', 'HEAD').trim()).toBe(tsHeadBefore);
+      });
+    });
+  });
+
+  describe('Given both peers wired to a signer that exits 0 with an armor but no SIG_CREATED status', () => {
+    describe('When git commits with -S and tsgit commits with sign: true', () => {
+      it('Then both refuse with the signer diagnostic and neither writes a new commit', async () => {
+        // Arrange
+        runGit(['-C', gitDir, 'config', 'gpg.program', noStatusSigner]);
+        runGit(['-C', tsDir, 'config', 'gpg.format', 'openpgp']);
+        runGit(['-C', tsDir, 'config', 'gpg.program', noStatusSigner]);
+        const gitHeadBefore = git(gitDir, 'rev-parse', 'HEAD').trim();
+        const tsHeadBefore = git(tsDir, 'rev-parse', 'HEAD').trim();
+        await writeFile(path.join(gitDir, 'no-status.txt'), 'no status\n');
+        await writeFile(path.join(tsDir, 'no-status.txt'), 'no status\n');
+        git(gitDir, 'add', 'no-status.txt');
+        await add(ctx, ['no-status.txt']);
+
+        // Act — real git golden refusal
+        const gitResult = tryRunGit(['-C', gitDir, 'commit', '-q', '-S', '-m', 'no status'], {
+          env: gitDateEnv(),
+        });
+
+        // Act — tsgit refusal
+        const caught = await commit(ctx, { message: 'no status', author, sign: true }).catch(
+          (error: unknown) => error,
+        );
+
+        // Assert
+        expect(gitResult.ok).toBe(false);
+        expect(gitResult.stderr).toContain(
+          ['error: gpg failed to sign the data:', 'gpg: signing diagnostic', ''].join('\n'),
+        );
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'SIGNING_FAILED',
+          reason: 'signer-failed',
+          format: 'openpgp',
+          output: 'gpg: signing diagnostic\n',
         });
         expect(git(gitDir, 'rev-parse', 'HEAD').trim()).toBe(gitHeadBefore);
         expect(git(tsDir, 'rev-parse', 'HEAD').trim()).toBe(tsHeadBefore);

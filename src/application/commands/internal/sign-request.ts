@@ -1,4 +1,5 @@
-import { signingFailed } from '../../../domain/commands/error.js';
+import { signerFailed, signingFailed } from '../../../domain/commands/error.js';
+import type { TsgitError } from '../../../domain/error.js';
 import type { Commit, CommitData } from '../../../domain/objects/commit.js';
 import {
   type AuthorIdentity,
@@ -9,6 +10,7 @@ import type { Context } from '../../../ports/context.js';
 import type { ParsedConfig } from '../../primitives/config-read.js';
 import {
   resolveSigningSelector,
+  type SignPayloadResult,
   type SignRequest,
   signPayload,
 } from '../../primitives/sign-payload.js';
@@ -38,11 +40,24 @@ export const resolveSignRequest = (
   return { format, selector, ...(program !== undefined ? { program } : {}) };
 };
 
+type SignRefusal = Extract<SignPayloadResult, { readonly ok: false }>;
+
 /**
- * Sign `payload` through `signPayload`, mapping any refusal to the faithful
- * `SIGNING_FAILED` error — off-node omits the format (no signer was ever
- * attempted), any other refusal reports the format that was attempted.
- * Callers must not proceed to write an object when this throws.
+ * The faithful `SIGNING_FAILED` error for a refusal — off-node omits the format
+ * (no signer was ever attempted), any other refusal reports the format that was
+ * attempted, and a failed signer adds its stderr.
+ */
+const refusalError = (refusal: SignRefusal, format: SignRequest['format']): TsgitError => {
+  if (refusal.reason === 'signer-failed') return signerFailed(format, refusal.output);
+  return refusal.reason === 'off-node'
+    ? signingFailed(refusal.reason)
+    : signingFailed(refusal.reason, format);
+};
+
+/**
+ * Sign `payload` through `signPayload`, mapping any refusal to its
+ * `SIGNING_FAILED` error. Callers must not proceed to write an object when
+ * this throws.
  */
 export const signOrThrow = async (
   ctx: Context,
@@ -50,11 +65,7 @@ export const signOrThrow = async (
   request: SignRequest,
 ): Promise<string> => {
   const result = await signPayload(ctx, payload, request);
-  if (!result.ok) {
-    throw result.reason === 'off-node'
-      ? signingFailed(result.reason)
-      : signingFailed(result.reason, request.format);
-  }
+  if (!result.ok) throw refusalError(result, request.format);
   return result.armor;
 };
 

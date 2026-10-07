@@ -45,7 +45,7 @@ import type {
   HttpResponse,
   HttpTransport,
 } from '../../../../src/ports/http-transport.js';
-import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
+import { gpgSignerStub, stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
 import { recordingProgress, seedRepo, withProgress } from './fixtures.js';
 
 const ENCODER = new TextEncoder();
@@ -3304,7 +3304,7 @@ describe('push — signed', () => {
     describe('When push runs', () => {
       it('Then it sends a signed certificate and the ref is accepted', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = createMemoryContext({ command: runner });
         const { parent, tip } = await seedSignedPush(ctx);
         const { transport, requestBodies } = fakeServer({
@@ -3393,7 +3393,7 @@ describe('push — signed', () => {
     describe('When push runs', () => {
       it('Then it sends a signed certificate', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = createMemoryContext({ command: runner });
         const { parent } = await seedSignedPush(ctx);
         const { transport, requestBodies } = fakeServer({
@@ -3418,7 +3418,7 @@ describe('push — signed', () => {
     describe('When the server advertises push-cert', () => {
       it('Then it signs — the config default applies', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = createMemoryContext({ command: runner });
         const { parent } = await seedSignedPush(ctx, { otherExtra: '[push]\n  gpgSign = true\n' });
         const { transport, requestBodies } = fakeServer({
@@ -3465,7 +3465,7 @@ describe('push — signed', () => {
       it('Then it signs — the if-asked config default upgrades to signing', async () => {
         // Arrange — with a nonce advertised, the config `if-asked` mode must
         // resolve to a real signature; collapsing it to `no` would push unsigned.
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = createMemoryContext({ command: runner });
         const { parent } = await seedSignedPush(ctx, {
           otherExtra: '[push]\n  gpgSign = if-asked\n',
@@ -3668,7 +3668,7 @@ describe('push — signed', () => {
     describe('When push signs', () => {
       it('Then the cert pusher line uses the signing key, not the identity string', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = createMemoryContext({ command: runner });
         const { parent } = await seedSignedPush(ctx, {
           userExtra: '  signingKey = 5763ECD93FFE5F79\n',
@@ -3696,7 +3696,7 @@ describe('push — signed', () => {
     describe('When push signs', () => {
       it('Then the cert pushee strips the credentials', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = createMemoryContext({ command: runner });
         // secretlint-disable @secretlint/secretlint-rule-basicauth
         const credUrl = 'https://alice:s3cr3t@example.com/r.git';
@@ -3750,6 +3750,7 @@ describe('push — signed', () => {
           code: 'SIGNING_FAILED',
           reason: 'signer-failed',
           format: 'openpgp',
+          output: '',
         });
         expect(requests.map((r) => r.method)).toEqual(['GET']);
       });

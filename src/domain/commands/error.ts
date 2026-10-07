@@ -486,6 +486,8 @@ export type CommandError =
       readonly code: 'SIGNING_FAILED';
       readonly reason: 'off-node' | 'unsupported-format' | 'signer-failed';
       readonly format?: 'openpgp' | 'ssh' | 'x509';
+      /** `signer-failed` only: the signer's captured stderr, which git prints with its refusal. */
+      readonly output?: string;
     }
   | { readonly code: 'SIGNED_PUSH_UNSUPPORTED'; readonly remote: string }
   | { readonly code: 'ATOMIC_PUSH_UNSUPPORTED'; readonly remote: string }
@@ -1546,11 +1548,10 @@ export const notesObjectHasNone = (object: ObjectId): TsgitError =>
 export const notesRefOutside = (ref: string): TsgitError =>
   new TsgitError({ code: 'NOTES_REF_OUTSIDE', ref });
 
-// Signing refusal: the signer produced no usable signature (off-node — no
-// CommandRunner; unsupported-format — x509; signer-failed — non-zero exit or
-// no well-formed armor on stdout). Nothing is written when this is thrown.
+// Signing refusal before any signer ran (off-node — no CommandRunner;
+// unsupported-format — x509). Nothing is written when this is thrown.
 export const signingFailed = (
-  reason: 'off-node' | 'unsupported-format' | 'signer-failed',
+  reason: 'off-node' | 'unsupported-format',
   format?: 'openpgp' | 'ssh' | 'x509',
 ): TsgitError =>
   new TsgitError(
@@ -1558,6 +1559,13 @@ export const signingFailed = (
       ? { code: 'SIGNING_FAILED', reason }
       : { code: 'SIGNING_FAILED', reason, format },
   );
+
+// Signing refusal: the signer ran but produced no usable signature (non-zero
+// exit, no `SIG_CREATED` status from gpg, or no well-formed armor). Carries
+// the signer's stderr, which git prints after `gpg failed to sign the data`.
+// Nothing is written when this is thrown.
+export const signerFailed = (format: 'openpgp' | 'ssh' | 'x509', output: string): TsgitError =>
+  new TsgitError({ code: 'SIGNING_FAILED', reason: 'signer-failed', format, output });
 
 // Refusal: `--signed` (mode 'yes') was requested but the receiving end's
 // capability advertisement carries no `push-cert` token. Thrown before any

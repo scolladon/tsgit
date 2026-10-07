@@ -22,6 +22,7 @@ import {
   rebaseRevisionInvalid,
   remoteRefNotFound,
   signedPushUnsupported,
+  signerFailed,
   signingFailed,
   smudgeFilterFailed,
   textconvFailed,
@@ -1710,7 +1711,7 @@ describe('signingFailed error', () => {
     describe('When reading .message', () => {
       it('Then message contains the reason and the format', () => {
         // Arrange & Act
-        const result = signingFailed('signer-failed', 'openpgp');
+        const result = signerFailed('openpgp', '');
 
         // Assert
         expect(result.message).toContain('signer-failed');

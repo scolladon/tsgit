@@ -12,12 +12,21 @@ const SSH_SIGNING_BUFFER_STEM = '.git_signing_buffer_tmp';
 const EMPTY = new Uint8Array(0);
 const DECODER = new TextDecoder();
 
+/** The status line gpg writes once it has made a signature — git refuses to sign without it. */
+const SIG_CREATED = '[GNUPG:] SIG_CREATED ';
+
 const ARMOR_PATTERN =
   /-----BEGIN (?:PGP|SSH) SIGNATURE-----[\s\S]*-----END (?:PGP|SSH) SIGNATURE-----/;
 
 export type SignPayloadResult =
   | { readonly ok: true; readonly armor: string }
-  | { readonly ok: false; readonly reason: 'off-node' | 'unsupported-format' | 'signer-failed' };
+  | { readonly ok: false; readonly reason: 'off-node' | 'unsupported-format' }
+  | {
+      readonly ok: false;
+      readonly reason: 'signer-failed';
+      /** The signer's captured stderr — what git prints with its refusal. */
+      readonly output: string;
+    };
 
 export interface SignRequest {
   readonly format: 'openpgp' | 'ssh' | 'x509';
@@ -43,6 +52,16 @@ export const resolveSigningSelector = (input: ResolveSigningSelectorInput): stri
   input.keyOverride ?? input.signingKey ?? input.fallbackIdent;
 
 const isWellFormedArmor = (text: string): boolean => ARMOR_PATTERN.test(text);
+
+/** git's `sign_buffer_gpg` test: a `SIG_CREATED` status line opening the status or following a newline. */
+const reportsSignatureCreated = (status: string): boolean =>
+  status.startsWith(SIG_CREATED) || status.includes(`\n${SIG_CREATED}`);
+
+const signerFailed = (stderr: Uint8Array | undefined): SignPayloadResult => ({
+  ok: false,
+  reason: 'signer-failed',
+  output: DECODER.decode(stderr ?? EMPTY),
+});
 
 const isFileNotFound = (error: unknown): boolean =>
   error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND';
@@ -77,12 +96,15 @@ const signWithOpenpgp = async (
     cwd: getSpawnCwd(ctx.layout),
     env: { GIT_DIR: ctx.layout.gitDir },
     stdin: payload,
+    stderr: 'capture',
     ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
   });
   const armor = DECODER.decode(result.stdout ?? EMPTY);
-  return result.exitCode === 0 && isWellFormedArmor(armor)
-    ? { ok: true, armor }
-    : { ok: false, reason: 'signer-failed' };
+  const signed =
+    result.exitCode === 0 &&
+    reportsSignatureCreated(DECODER.decode(result.stderr ?? EMPTY)) &&
+    isWellFormedArmor(armor);
+  return signed ? { ok: true, armor } : signerFailed(result.stderr);
 };
 
 const signWithSsh = async (
@@ -100,15 +122,14 @@ const signWithSsh = async (
       args: ['-Y', 'sign', '-n', 'git', '-f', req.selector, tmp],
       cwd: getSpawnCwd(ctx.layout),
       env: { GIT_DIR: ctx.layout.gitDir },
+      stderr: 'capture',
       ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
     });
-    if (result.exitCode !== 0) {
-      return { ok: false, reason: 'signer-failed' };
-    }
+    if (result.exitCode !== 0) return signerFailed(result.stderr);
     const armor = await readArmorIfPresent(ctx, sigPath);
     return armor !== undefined && isWellFormedArmor(armor)
       ? { ok: true, armor }
-      : { ok: false, reason: 'signer-failed' };
+      : signerFailed(result.stderr);
   } finally {
     await removeIgnoringMissing(ctx, tmp);
     await removeIgnoringMissing(ctx, sigPath);
@@ -121,9 +142,11 @@ const signWithSsh = async (
  * stdin→stdout; `ssh-keygen` reads the payload from an exclusively created
  * temp file and writes the armor beside it, to `<file>.sig`.
  * Requesting `x509` and running with no `ctx.command` both refuse with a
- * typed reason before any spawn or temp-file write. Success requires exit 0
- * AND a well-formed armor block on the signer's output; anything else is a
- * typed `signer-failed` refusal — never a partial or silent result.
+ * typed reason before any spawn or temp-file write. Success requires exit 0,
+ * a well-formed armor block on the signer's output and — for gpg — a
+ * `SIG_CREATED` status line; anything else is a typed `signer-failed` refusal
+ * carrying the signer's stderr — never a partial or silent result. As in git,
+ * the signer's stderr is captured: hidden on success, returned on refusal.
  */
 export const signPayload = async (
   ctx: Context,

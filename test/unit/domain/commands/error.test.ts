@@ -89,6 +89,7 @@ import {
   revparseUnresolved,
   sanitize,
   signedPushUnsupported,
+  signerFailed,
   signingFailed,
   sparsePatternFileTooLarge,
   stashApplyWouldOverwrite,
@@ -2397,16 +2398,17 @@ describe('domain commands error — extractDetail message formatting', () => {
   });
 
   describe('Given the signingFailed error helper', () => {
-    describe('When called with reason "signer-failed" and a format', () => {
-      it('Then data carries code, reason and format; message names both', () => {
+    describe('When signerFailed is called with a format and the signer output', () => {
+      it('Then data carries code, reason, format and output; message names reason and format', () => {
         // Arrange & Act
-        const result = signingFailed('signer-failed', 'openpgp');
+        const result = signerFailed('openpgp', 'gpg: no default secret key\n');
         // Assert
         expect(result).toBeInstanceOf(TsgitError);
         expect(result.data).toEqual({
           code: 'SIGNING_FAILED',
           reason: 'signer-failed',
           format: 'openpgp',
+          output: 'gpg: no default secret key\n',
         });
         expect(result.message).toContain('signer-failed');
         expect(result.message).toContain('openpgp');
