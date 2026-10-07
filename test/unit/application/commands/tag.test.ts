@@ -1088,7 +1088,7 @@ describe('tag — signing', () => {
         await tagCreate(ctx, { name: 'v1.0', message: 'v1', sign: true, signKey: 'OVERRIDEKEY' });
 
         // Assert
-        const invoked = runner.calls[0]?.command ?? '';
+        const invoked = runner.calls[0]?.args ?? [];
         expect(invoked).toContain('OVERRIDEKEY');
         expect(invoked).not.toContain('DEFAULTKEY');
       });

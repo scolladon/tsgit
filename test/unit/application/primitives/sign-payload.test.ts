@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
@@ -6,6 +6,7 @@ import {
   signPayload,
 } from '../../../../src/application/primitives/sign-payload.js';
 import { TsgitError } from '../../../../src/domain/error.js';
+import type { CommandRequest } from '../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { stubCommandRunner } from './helpers/stub-command-runner.js';
 
@@ -18,9 +19,12 @@ const pgpArmor = (body: string): string =>
 const sshArmor = (body: string): string =>
   `-----BEGIN SSH SIGNATURE-----\n${body}\n-----END SSH SIGNATURE-----\n`;
 
-// Deterministic ssh signing temp-file path — never parsed out of the
-// (now shell-quoted) command string.
-const sshTempPath = (ctx: Context): string => `${ctx.layout.gitDir}/GIT_SIGNING_BUFFER`;
+/** The staged payload file a signer was handed — ssh-keygen's last argument. */
+const stagedBuffer = (request: CommandRequest | undefined): string => request?.args?.at(-1) ?? '';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('signPayload', () => {
   describe('Given format openpgp and a runner returning exit 0 with a PGP armor on stdout', () => {
@@ -57,7 +61,10 @@ describe('signPayload', () => {
 
         // Assert
         const call = runner.calls[0];
-        expect(call?.command).toBe("'gpg' --status-fd=2 -bsau 'ABCD1234'");
+        expect([call?.command, call?.args]).toEqual([
+          'gpg',
+          ['--status-fd=2', '-bsau', 'ABCD1234'],
+        ]);
         expect(call?.stdin).toBe(payload);
       });
 
@@ -91,7 +98,10 @@ describe('signPayload', () => {
         });
 
         // Assert
-        expect(runner.calls[0]?.command).toBe("'/usr/bin/gpg2' --status-fd=2 -bsau 'ABCD1234'");
+        expect([runner.calls[0]?.command, runner.calls[0]?.args]).toEqual([
+          '/usr/bin/gpg2',
+          ['--status-fd=2', '-bsau', 'ABCD1234'],
+        ]);
       });
     });
   });
@@ -108,14 +118,14 @@ describe('signPayload', () => {
         await signPayload(ctx, enc('payload'), { format: 'openpgp', selector: 'ABCD1234' });
 
         // Assert
-        expect(runner.calls[0]?.command.startsWith("'gpg' ")).toBe(true);
+        expect(runner.calls[0]?.command).toBe('gpg');
       });
     });
   });
 
   describe('Given an openpgp selector that is the committer-identity fallback ("Name <email>")', () => {
     describe('When signPayload runs', () => {
-      it('Then the command single-quotes the selector so the redirection metacharacters are inert and signing still succeeds', async () => {
+      it('Then the selector travels as one verbatim argument and signing still succeeds', async () => {
         // Arrange
         const armor = pgpArmor('YWJj');
         const runner = stubCommandRunner({ exitCode: 0, stdout: enc(armor) });
@@ -126,9 +136,10 @@ describe('signPayload', () => {
         const result = await signPayload(ctx, enc('payload'), { format: 'openpgp', selector });
 
         // Assert
-        expect(runner.calls[0]?.command).toBe(
-          "'gpg' --status-fd=2 -bsau 'Name <committer@example.com>'",
-        );
+        expect([runner.calls[0]?.command, runner.calls[0]?.args]).toEqual([
+          'gpg',
+          ['--status-fd=2', '-bsau', 'Name <committer@example.com>'],
+        ]);
         expect(result).toEqual({ ok: true, armor });
       });
     });
@@ -136,7 +147,7 @@ describe('signPayload', () => {
 
   describe('Given an openpgp selector containing an embedded single quote', () => {
     describe('When signPayload runs', () => {
-      it('Then the quote is escaped as close-quote, escaped-quote, reopen-quote', async () => {
+      it('Then the quote reaches the program verbatim', async () => {
         // Arrange
         const runner = stubCommandRunner({ exitCode: 0, stdout: enc(pgpArmor('YWJj')) });
         const ctx = createMemoryContext({ command: runner });
@@ -145,14 +156,17 @@ describe('signPayload', () => {
         await signPayload(ctx, enc('payload'), { format: 'openpgp', selector: "O'Brien" });
 
         // Assert
-        expect(runner.calls[0]?.command).toBe("'gpg' --status-fd=2 -bsau 'O'\\''Brien'");
+        expect([runner.calls[0]?.command, runner.calls[0]?.args]).toEqual([
+          'gpg',
+          ['--status-fd=2', '-bsau', "O'Brien"],
+        ]);
       });
     });
   });
 
   describe('Given an openpgp selector containing a shell command-injection payload', () => {
     describe('When signPayload runs', () => {
-      it('Then the payload is wrapped as a single literal argument, not executed by the shell', async () => {
+      it('Then the payload reaches the program as one literal argument, no shell between', async () => {
         // Arrange
         const runner = stubCommandRunner({ exitCode: 0, stdout: enc(pgpArmor('YWJj')) });
         const ctx = createMemoryContext({ command: runner });
@@ -164,7 +178,10 @@ describe('signPayload', () => {
         });
 
         // Assert
-        expect(runner.calls[0]?.command).toBe("'gpg' --status-fd=2 -bsau 'KEYID; touch pwned'");
+        expect([runner.calls[0]?.command, runner.calls[0]?.args]).toEqual([
+          'gpg',
+          ['--status-fd=2', '-bsau', 'KEYID; touch pwned'],
+        ]);
       });
     });
   });
@@ -178,8 +195,8 @@ describe('signPayload', () => {
         let capturedPayload: Uint8Array | undefined;
         const runner = stubCommandRunner({
           exitCode: 0,
-          onRun: async () => {
-            const tmp = sshTempPath(ctx);
+          onRun: async (request) => {
+            const tmp = stagedBuffer(request);
             capturedPayload = await ctx.fs.read(tmp);
             await ctx.fs.write(`${tmp}.sig`, enc(armor));
           },
@@ -195,13 +212,49 @@ describe('signPayload', () => {
 
         // Assert
         expect(result).toEqual({ ok: true, armor });
-        const tmp = sshTempPath(ctx);
-        expect(runner.calls[0]?.command).toBe(
-          `'ssh-keygen' -Y sign -n git -f '/home/user/.ssh/id_ed25519' '${tmp}'`,
+        const tmp = stagedBuffer(runner.calls[0]);
+        expect(runner.calls[0]).toMatchObject({
+          command: 'ssh-keygen',
+          args: ['-Y', 'sign', '-n', 'git', '-f', '/home/user/.ssh/id_ed25519', tmp],
+        });
+        expect(tmp).toMatch(
+          new RegExp(`^${ctx.layout.gitDir}/\\.git_signing_buffer_tmp[A-Za-z0-9]{6}$`),
         );
         expect(capturedPayload !== undefined && dec(capturedPayload)).toBe(dec(payload));
         expect(await ctx.fs.exists(tmp)).toBe(false);
         expect(await ctx.fs.exists(`${tmp}.sig`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given format ssh and a file planted at the first name drawn for the payload', () => {
+    describe('When signPayload runs', () => {
+      it('Then the planted file stays untouched and the signer reads the payload elsewhere', async () => {
+        // Arrange
+        let ctx!: Context;
+        let seen = '';
+        const runner = stubCommandRunner({
+          exitCode: 0,
+          onRun: async (request) => {
+            const tmp = stagedBuffer(request);
+            seen = dec(await ctx.fs.read(tmp));
+            await ctx.fs.write(`${tmp}.sig`, enc(sshArmor('YWJj')));
+          },
+        });
+        ctx = createMemoryContext({ command: runner });
+        const planted = `${ctx.layout.gitDir}/.git_signing_buffer_tmpAAAAAA`;
+        await ctx.fs.write(planted, enc('precious'));
+        const draws = [0, 0, 0, 0, 0, 0];
+        vi.spyOn(Math, 'random').mockImplementation(() => draws.shift() ?? 0.5);
+
+        // Act
+        const result = await signPayload(ctx, enc('payload'), { format: 'ssh', selector: '/key' });
+
+        // Assert
+        expect(result).toEqual({ ok: true, armor: sshArmor('YWJj') });
+        expect(dec(await ctx.fs.read(planted))).toBe('precious');
+        expect(stagedBuffer(runner.calls[0])).toBe(planted.replace('AAAAAA', 'f'.repeat(6)));
+        expect(seen).toBe('payload');
       });
     });
   });
@@ -213,8 +266,8 @@ describe('signPayload', () => {
         let ctx!: Context;
         const runner = stubCommandRunner({
           exitCode: 0,
-          onRun: async () => {
-            const tmp = sshTempPath(ctx);
+          onRun: async (request) => {
+            const tmp = stagedBuffer(request);
             await ctx.fs.write(`${tmp}.sig`, enc(sshArmor('YWJj')));
           },
         });
@@ -236,8 +289,8 @@ describe('signPayload', () => {
         let ctx!: Context;
         const runner = stubCommandRunner({
           exitCode: 0,
-          onRun: async () => {
-            const tmp = sshTempPath(ctx);
+          onRun: async (request) => {
+            const tmp = stagedBuffer(request);
             await ctx.fs.write(`${tmp}.sig`, enc(sshArmor('YWJj')));
           },
         });
@@ -247,7 +300,7 @@ describe('signPayload', () => {
         await signPayload(ctx, enc('payload'), { format: 'ssh', selector: '/key' });
 
         // Assert
-        expect(runner.calls[0]?.command.startsWith("'ssh-keygen' ")).toBe(true);
+        expect(runner.calls[0]?.command).toBe('ssh-keygen');
       });
     });
   });
@@ -335,7 +388,6 @@ describe('signPayload', () => {
           // Arrange
           const runner = stubCommandRunner({ exitCode });
           const ctx = createMemoryContext({ command: runner });
-          const tmpPath = sshTempPath(ctx);
 
           // Act
           const result = await signPayload(ctx, enc('payload'), {
@@ -344,7 +396,9 @@ describe('signPayload', () => {
           });
 
           // Assert
+          const tmpPath = stagedBuffer(runner.calls[0]);
           expect(result).toEqual({ ok: false, reason: 'signer-failed' });
+          expect(tmpPath).not.toBe('');
           expect(await ctx.fs.exists(tmpPath)).toBe(false);
           expect(await ctx.fs.exists(`${tmpPath}.sig`)).toBe(false);
         },
@@ -360,8 +414,8 @@ describe('signPayload', () => {
         let ctx!: Context;
         const runner = stubCommandRunner({
           exitCode: 1,
-          onRun: async () => {
-            const tmp = sshTempPath(ctx);
+          onRun: async (request) => {
+            const tmp = stagedBuffer(request);
             await ctx.fs.write(`${tmp}.sig`, enc(sshArmor('c2ln')));
           },
         });
@@ -389,8 +443,8 @@ describe('signPayload', () => {
         const baseCtx = createMemoryContext({
           command: stubCommandRunner({
             exitCode: 0,
-            onRun: async () => {
-              const tmp = sshTempPath(baseCtx);
+            onRun: async (request) => {
+              const tmp = stagedBuffer(request);
               await baseCtx.fs.write(`${tmp}.sig`, enc(armor));
             },
           }),
@@ -472,8 +526,8 @@ describe('signPayload', () => {
         let ctx!: Context;
         const runner = stubCommandRunner({
           exitCode: 0,
-          onRun: async () => {
-            const tmp = sshTempPath(ctx);
+          onRun: async (request) => {
+            const tmp = stagedBuffer(request);
             await ctx.fs.write(`${tmp}.sig`, enc(armor));
           },
         });
@@ -511,8 +565,8 @@ describe('signPayload', () => {
         let ctx!: Context;
         const runner = stubCommandRunner({
           exitCode: 0,
-          onRun: async () => {
-            const tmp = sshTempPath(ctx);
+          onRun: async (request) => {
+            const tmp = stagedBuffer(request);
             await ctx.fs.write(`${tmp}.sig`, enc(sshArmor('YWJj')));
           },
         });

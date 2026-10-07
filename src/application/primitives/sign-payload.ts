@@ -1,12 +1,13 @@
 import { TsgitError } from '../../domain/error.js';
 import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
-import { sqQuote } from './internal/shell-quote.js';
+import { stageTempFile } from './internal/stage-temp-file.js';
 import { getSpawnCwd } from './path-layout.js';
 
 export const DEFAULT_OPENPGP_PROGRAM = 'gpg';
 export const DEFAULT_SSH_PROGRAM = 'ssh-keygen';
-const SSH_SIGNING_BUFFER_PATH_SUFFIX = 'GIT_SIGNING_BUFFER';
+/** git's `mks_tempfile_t(".git_signing_buffer_tmpXXXXXX")` stem. */
+const SSH_SIGNING_BUFFER_STEM = '.git_signing_buffer_tmp';
 
 const EMPTY = new Uint8Array(0);
 const DECODER = new TextDecoder();
@@ -71,7 +72,8 @@ const signWithOpenpgp = async (
 ): Promise<SignPayloadResult> => {
   const program = req.program ?? DEFAULT_OPENPGP_PROGRAM;
   const result = await runner.run({
-    command: `${sqQuote(program)} --status-fd=2 -bsau ${sqQuote(req.selector)}`,
+    command: program,
+    args: ['--status-fd=2', '-bsau', req.selector],
     cwd: getSpawnCwd(ctx.layout),
     env: { GIT_DIR: ctx.layout.gitDir },
     stdin: payload,
@@ -90,12 +92,12 @@ const signWithSsh = async (
   req: SignRequest,
 ): Promise<SignPayloadResult> => {
   const program = req.program ?? DEFAULT_SSH_PROGRAM;
-  const tmp = `${ctx.layout.gitDir}/${SSH_SIGNING_BUFFER_PATH_SUFFIX}`;
+  const tmp = await stageTempFile(ctx, `${ctx.layout.gitDir}/${SSH_SIGNING_BUFFER_STEM}`, payload);
   const sigPath = `${tmp}.sig`;
-  await ctx.fs.write(tmp, payload);
   try {
     const result = await runner.run({
-      command: `${sqQuote(program)} -Y sign -n git -f ${sqQuote(req.selector)} ${sqQuote(tmp)}`,
+      command: program,
+      args: ['-Y', 'sign', '-n', 'git', '-f', req.selector, tmp],
       cwd: getSpawnCwd(ctx.layout),
       env: { GIT_DIR: ctx.layout.gitDir },
       ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
@@ -115,8 +117,9 @@ const signWithSsh = async (
 
 /**
  * Pure(ish) signing primitive delegating to the system signer through
- * `ctx.command` — no new port. `gpg` runs stdin→stdout; `ssh-keygen` writes
- * the payload to a temp file and reads the armor back from `<file>.sig`.
+ * `ctx.command`, by argv with no shell between, as git does. `gpg` runs
+ * stdin→stdout; `ssh-keygen` reads the payload from an exclusively created
+ * temp file and writes the armor beside it, to `<file>.sig`.
  * Requesting `x509` and running with no `ctx.command` both refuse with a
  * typed reason before any spawn or temp-file write. Success requires exit 0
  * AND a well-formed armor block on the signer's output; anything else is a

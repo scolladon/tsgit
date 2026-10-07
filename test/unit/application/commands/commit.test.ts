@@ -908,7 +908,7 @@ describe('commit — signing', () => {
         await commit(ctx, { message: 'm', author, sign: true, signKey: 'OVERRIDEKEY' });
 
         // Assert
-        const invoked = runner.calls[0]?.command ?? '';
+        const invoked = runner.calls[0]?.args ?? [];
         expect(invoked).toContain('OVERRIDEKEY');
         expect(invoked).not.toContain('DEFAULTKEY');
       });
