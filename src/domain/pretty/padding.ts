@@ -67,11 +67,11 @@ const truncationAt = (fmt: Uint8Array, at: number): Truncation | undefined => {
   return TRUNCATIONS.find(([name]) => rest.startsWith(name))?.[1];
 };
 
-const columnWidth = (width: number, toColumn: boolean): number | undefined => {
-  if (width >= 0) return width;
-  const shifted = toColumn ? width + TERMINAL_COLUMNS : width;
-  return shifted < 0 ? undefined : shifted;
-};
+const cursorWidth = (width: number): number | undefined => (width < 0 ? undefined : width);
+
+/** `|(…)` counts a negative width back from the terminal's right edge. */
+const columnWidth = (width: number): number | undefined =>
+  cursorWidth(width < 0 ? width + TERMINAL_COLUMNS : width);
 
 /** git's `parse_padding_placeholder`, `at` being the `<` or `>`. */
 export const parsePadding = (fmt: Uint8Array, at: number): ParsedPadding | undefined => {
@@ -86,7 +86,7 @@ export const parsePadding = (fmt: Uint8Array, at: number): ParsedPadding | undef
   if (end >= fmt.length || end === start) return undefined;
   const raw = readInt(latin1(fmt.subarray(start, end)));
   if (raw === undefined || raw === 0 || Math.abs(raw) > FORMATTING_LIMIT) return undefined;
-  const width = columnWidth(raw, toColumn);
+  const width = toColumn ? columnWidth(raw) : cursorWidth(raw);
   if (width === undefined) return undefined;
   const request: PadRequest = { width, fromColumn: toColumn && width !== 0, align: aligned.align };
   if (fmt[end] !== COMMA) return { request, truncate: undefined, length: end - at + 1 };

@@ -328,10 +328,10 @@ const negotiateAndApply = async (
   }
 
   const followTags = autoFollowsTags(remote.request);
-  const capabilities = tagFollowingCapabilities(
-    selectFetchCapabilities(advertisement.capabilities, ctx.hashConfig.algorithm),
-    followTags && (discovery.version === 2 || advertisement.capabilities.includes(INCLUDE_TAG)),
-  );
+  const selected = selectFetchCapabilities(advertisement.capabilities, ctx.hashConfig.algorithm);
+  const asksIncludeTag =
+    followTags && (discovery.version === 2 || advertisement.capabilities.includes(INCLUDE_TAG));
+  const capabilities = asksIncludeTag ? withIncludeTag(selected) : withoutIncludeTag(selected);
   const local = await localState(ctx, advertisement.refs);
   const warn = (message: string): void => ctx.logger?.warn?.(message);
   const mapped = getRefMap(remote.request, advertisement.refs, local, warn);
@@ -473,14 +473,14 @@ interface FetchedMap {
 
 const INCLUDE_TAG = 'include-tag';
 
-/** git asks for `include-tag` only when it follows tags. */
-const tagFollowingCapabilities = (
-  capabilities: ReadonlyArray<string>,
-  includeTag: boolean,
-): ReadonlyArray<string> => {
-  const without = capabilities.filter((capability) => capability !== INCLUDE_TAG);
-  return includeTag ? [INCLUDE_TAG, ...without] : without;
-};
+const withoutIncludeTag = (capabilities: ReadonlyArray<string>): ReadonlyArray<string> =>
+  capabilities.filter((capability) => capability !== INCLUDE_TAG);
+
+/** git asks for `include-tag` only when it follows tags, and asks for it first. */
+const withIncludeTag = (capabilities: ReadonlyArray<string>): ReadonlyArray<string> => [
+  INCLUDE_TAG,
+  ...withoutIncludeTag(capabilities),
+];
 
 /** The local refs and symrefs, and which advertised tag objects and peeled commits are present. */
 const localState = async (
@@ -648,7 +648,7 @@ const judgeUpdate = async (
   { source, force }: MappedRef,
   name: RefName,
   oldId: ObjectId,
-  checksAncestry: boolean,
+  forcedUpdates: ForcedUpdateCheck,
 ): Promise<Judgement> => {
   if (name.startsWith(TAGS_PREFIX)) {
     return force ? updating('updating tag') : rejecting('would-clobber-existing-tag');
@@ -656,7 +656,8 @@ const judgeUpdate = async (
   const current = await commitOf(ctx, oldId);
   const updated = await commitOf(ctx, source.id);
   if (current === undefined || updated === undefined) return updating(storingAction(source.name));
-  if (!checksAncestry || (await isAncestor(ctx, current, updated))) return updating('fast-forward');
+  if (!forcedUpdates.enabled || (await isAncestor(ctx, current, updated)))
+    return updating('fast-forward');
   return force ? updating('forced-update') : rejecting('non-fast-forward');
 };
 
@@ -690,7 +691,7 @@ const applyRemoteRef = async (
       storingAction(source),
     );
   }
-  const judgement = await judgeUpdate(ctx, entry, name, oldId, remote.forcedUpdates.enabled);
+  const judgement = await judgeUpdate(ctx, entry, name, oldId, remote.forcedUpdates);
   if (judgement.kind === 'reject') {
     return { name, source, oldId, newId, status: 'rejected', rejection: judgement.rejection };
   }

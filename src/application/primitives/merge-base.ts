@@ -633,17 +633,26 @@ export const mergeBase = async (
 ): Promise<readonly ObjectId[]> => {
   if (commits.length === 0) throw invalidWalkInput('mergeBase requires at least one commit');
   const table = createObjectTypeTable();
-  const looked = await lookUpArguments(ctx, table, commits, options?.octopus === true);
+  const looked = await lookUpArguments(
+    ctx,
+    table,
+    commits,
+    options?.octopus === true ? 'last-first' : 'given',
+  );
   return mergeBasesOf(ctx, looked, options, table);
 };
 
-/** git's argument loop: each looked up in turn — `--octopus` last first. */
+/** The order git's argument loop looks commits up in: `--octopus` goes last first. */
+type LookupOrder = 'given' | 'last-first';
+
+/** git's argument loop: each looked up in turn, in `order`, the result in the given order. */
 const lookUpArguments = async (
   ctx: Context,
   table: ObjectTypeTable,
   ids: readonly ObjectId[],
-  lastFirst: boolean,
+  order: LookupOrder,
 ): Promise<ObjectId[]> => {
+  const lastFirst = order === 'last-first';
   const peeled: ObjectId[] = [];
   for (const id of lastFirst ? [...ids].reverse() : ids) {
     const commit = await lookupTypedCommitReference(ctx, table, id);

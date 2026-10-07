@@ -365,40 +365,45 @@ const boundedRepeat = (low: string, high: string): Bounds | undefined => {
   return max > MAX_REPEAT || min > max ? undefined : { min, max };
 };
 
+/** Where an item sits in a bracket expression: its first, or any later one. */
+type ItemPosition = 'opening' | 'inner';
+/** Where a member sits: an item's start, or the end of a range, where `-` is literal. */
+type MemberPosition = ItemPosition | 'range-end';
+
 const parseBracket = (c: Cursor): string | undefined => {
   const negated = peek(c) === '^';
   if (negated) c.pos += 1;
   const members: string[] = [];
-  for (let first = true; ; first = false) {
+  for (let at: ItemPosition = 'opening'; ; at = 'inner') {
     const ch = peek(c);
     if (ch === undefined) return undefined;
-    if (ch === ']' && !first) {
+    if (ch === ']' && at === 'inner') {
       c.pos += 1;
       return `[${negated ? '^' : ''}${members.join('')}]`;
     }
-    const member = parseBracketItem(c, first);
+    const member = parseBracketItem(c, at);
     if (member === undefined) return undefined;
     members.push(member);
   }
 };
 
-const parseBracketItem = (c: Cursor, first: boolean): string | undefined => {
-  const start = parseBracketMember(c, first);
+const parseBracketItem = (c: Cursor, at: ItemPosition): string | undefined => {
+  const start = parseBracketMember(c, at);
   if (start === undefined) return undefined;
   if (peek(c) !== '-' || peek(c, 1) === ']') return start.source;
   c.pos += 1;
-  const end = parseBracketMember(c, true);
+  const end = parseBracketMember(c, 'range-end');
   return end === undefined ? undefined : rangeSource(start, end);
 };
 
 /** A `-` that neither opens the bracket nor precedes its `]` must bound a range. */
-const parseBracketMember = (c: Cursor, acceptsHyphen: boolean): BracketMember | undefined => {
+const parseBracketMember = (c: Cursor, at: MemberPosition): BracketMember | undefined => {
   const ch = next(c);
   if (ch === undefined) return undefined;
   if (ch === '[' && BRACKET_SYMBOL_DELIMITERS.has(peek(c) as string)) {
     return parseBracketSymbol(c, next(c) as string);
   }
-  if (ch === '-' && !acceptsHyphen && peek(c) !== ']') return undefined;
+  if (ch === '-' && at === 'inner' && peek(c) !== ']') return undefined;
   return characterMember(ch);
 };
 

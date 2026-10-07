@@ -341,7 +341,6 @@ const bothSidesMoves = (
 const movedInput = (
   { ours, theirs, renames }: Pick<DirectoryRenamedInput, 'ours' | 'theirs' | 'renames'>,
   sideMoves: BothSidesMoves,
-  provisionalClean: boolean,
 ): DirectoryRenamedInput => {
   const [ourMoves, theirMoves] = [sideMoves.ours.found, sideMoves.theirs.found];
   const moved = [...ourMoves.values(), ...theirMoves.values()];
@@ -356,7 +355,7 @@ const movedInput = (
     fileLocations: new Set(renames.directoryRenames === 'conflict' ? moved : []),
     vacated: new Set([...ourMoves.keys(), ...theirMoves.keys()]),
     sidePaths: movedSidePaths(ourMoves, theirMoves),
-    clean: provisionalClean && sideMoves.ours.clean && sideMoves.theirs.clean,
+    clean: sideMoves.ours.clean && sideMoves.theirs.clean,
   };
 };
 
@@ -378,6 +377,6 @@ export function applyDirectoryRenames(
   const byOurs = withoutShared(oursRenamed.renames, theirsRenamed.renames);
   const byTheirs = withoutShared(theirsRenamed.renames, oursRenamed.renames);
   const sideMoves = bothSidesMoves(base, { ours, theirs }, byOurs, byTheirs);
-  const provisionalClean = !oursRenamed.split && !theirsRenamed.split;
-  return movedInput({ ours, theirs, renames }, sideMoves, provisionalClean);
+  const moved = movedInput({ ours, theirs, renames }, sideMoves);
+  return oursRenamed.split || theirsRenamed.split ? { ...moved, clean: false } : moved;
 }

@@ -106,11 +106,15 @@ const chainIo = (ctx: Context): AlternateChainIo => ({
   pathSyntax: gitPathSyntaxOf(ctx),
 });
 
+/** The repository's own object directory, or one reached through `info/alternates`. */
+type SourceKind = 'local' | 'alternate';
+
 const buildSource = async (
   ctx: Context,
   objectsDir: string,
-  local: boolean,
+  kind: SourceKind,
 ): Promise<ObjectSource> => {
+  const local = kind === 'local';
   const fs = local ? ctx.fs : accessFor(ctx, objectsDir);
   return { objectsDir, fs, local, registry: await createPackRegistry(ctx, { objectsDir, fs }) };
 };
@@ -120,7 +124,7 @@ const buildAlternates = (
   ctx: Context,
   dirs: ReadonlyArray<string>,
 ): Promise<ReadonlyArray<ObjectSource>> =>
-  Promise.all(dirs.map((dir) => buildSource(ctx, dir, false)));
+  Promise.all(dirs.map((dir) => buildSource(ctx, dir, 'alternate')));
 
 interface Discovery {
   readonly alternates: ReadonlyArray<string>;
@@ -223,7 +227,7 @@ const createHandle = (
 const buildHandle = async (ctx: Context): Promise<StoreHandle> => {
   const objectsDir = `${commonGitDir(ctx)}/objects`;
   const [primary, discovery, bigFileThreshold] = await Promise.all([
-    buildSource(ctx, objectsDir, true),
+    buildSource(ctx, objectsDir, 'local'),
     discover(ctx, objectsDir),
     readBigFileThreshold(ctx),
   ]);

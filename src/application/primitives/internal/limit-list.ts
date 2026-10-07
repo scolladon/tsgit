@@ -248,7 +248,7 @@ const createState = (ctx: Context, options: LimitListOptions): LimitState => ({
 const enqueueSeeds = async (state: LimitState): Promise<void> => {
   const { seeds, until } = state.options;
   for (const seed of new Set(seeds)) {
-    const parsed = await parse(state, seed, false);
+    const parsed = await parse(state, seed, 'strict');
     if (parsed === undefined) continue;
     if (until.has(seed)) {
       state.uninteresting.add(seed);
@@ -385,7 +385,7 @@ const parseInOrder = async (
   state: LimitState,
   parents: ReadonlyArray<ObjectId>,
 ): Promise<ReadonlyArray<Parsed | undefined>> => {
-  const settled = await Promise.allSettled(parents.map((parent) => parse(state, parent, false)));
+  const settled = await Promise.allSettled(parents.map((parent) => parse(state, parent, 'strict')));
   return settled.map((result) => {
     if (result.status === 'rejected') throw result.reason;
     return result.value;
@@ -398,7 +398,7 @@ const processUninterestingParents = async (
   parents: ReadonlyArray<ObjectId>,
 ): Promise<void> => {
   for (const parent of parents) state.uninteresting.add(parent);
-  const parsed = await Promise.all(parents.map((parent) => parse(state, parent, true)));
+  const parsed = await Promise.all(parents.map((parent) => parse(state, parent, 'gentle')));
   for (const [at, parent] of parents.entries()) {
     const entry = parsed[at];
     if (entry === undefined || !(await typeParsed(state, parent))) continue;
@@ -425,15 +425,17 @@ const enqueue = (state: LimitState, oid: ObjectId, parsed: Parsed): void => {
   state.queue.push({ oid, date: parsed.date, arrival, generation: parsed.generation });
 };
 
+/** How a parse treats a missing object: an uninteresting parent's is skipped, not refused. */
+type ParseMode = 'strict' | 'gentle';
+
 /**
  * git's `repo_parse_commit`: the commit-graph entry when there is one, else
- * the object. `gently` (an uninteresting parent) skips a missing object
- * instead of refusing.
+ * the object, read under `mode`.
  */
 const parse = async (
   state: LimitState,
   id: ObjectId,
-  gently: boolean,
+  mode: ParseMode,
 ): Promise<Parsed | undefined> => {
   const known = state.parsed.get(id);
   if (known !== undefined) return known;
@@ -447,7 +449,7 @@ const parse = async (
   const commit = await readCommit(state.ctx, id, {
     verifyHash,
     // A typed walk records a missing parent for its parse loop to refuse.
-    ignoreMissing: gently || ignoreMissing || state.options.objectTypes !== undefined,
+    ignoreMissing: mode === 'gentle' || ignoreMissing || state.options.objectTypes !== undefined,
     missing: state.missing,
     shallow,
   });
