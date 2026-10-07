@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { compileExtendedRegex } from '../../../../src/domain/regex/extended-regex.js';
 
 const LONG_RUN = 40;
@@ -6,6 +6,10 @@ const STACKED_OPERATORS = 100_000;
 const MAX_GROUP_NESTING = 500;
 const EMPTY_GROUPS = 50_000;
 const STACKED_INTERVALS = 20_000;
+/** The automaton's instruction budget. */
+const MAX_PROGRAM_SIZE = 1 << 17;
+/** Widest intervals each within the budget alone, together far past it. */
+const WIDE_INTERVALS = 10;
 /** Two widest optional runs (two instructions per optional `a`) and four `a`s: 2^17 instructions. */
 const FULL_BUDGET = `${'a{0,32767}'.repeat(2)}aaaa`;
 
@@ -15,6 +19,10 @@ const matches = (pattern: string, subject: string): boolean | undefined =>
 const nested = (depth: number): string => `${'('.repeat(depth)}a${')'.repeat(depth)}`;
 
 describe('compileExtendedRegex', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe('Given a pattern regcomp(REG_EXTENDED) accepts', () => {
     describe('When it is matched against a subject', () => {
       it.each([
@@ -344,6 +352,57 @@ describe('compileExtendedRegex', () => {
 
         // Assert
         expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given widest intervals each within the automaton budget but together past it', () => {
+    describe('When it is compiled', () => {
+      it('Then it refuses before laying out copies past the budget', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+        const fill = vi.spyOn(Array.prototype, 'fill');
+
+        // Act
+        const result = sut('a{32767}'.repeat(WIDE_INTERVALS));
+
+        // Assert
+        const laidOut = fill.mock.contexts.reduce<number>(
+          (total, copies) => total + (copies as unknown[]).length,
+          0,
+        );
+        expect(result).toBeUndefined();
+        expect(laidOut).toBeLessThanOrEqual(MAX_PROGRAM_SIZE);
+      });
+    });
+  });
+
+  describe('Given copies past the automaton budget that a later {0} discards', () => {
+    describe('When it is compiled', () => {
+      it('Then the discarded copies still count and it yields no matcher', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+
+        // Act
+        const result = sut('((a{32767}){4}){0}'.repeat(2));
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given empty groups repeated past the automaton budget many times over', () => {
+    describe('When the pattern is matched', () => {
+      it('Then the empty repetitions lay out nothing and it matches', () => {
+        // Arrange
+        const sut = matches;
+
+        // Act
+        const result = sut(`${'(){0,32767}'.repeat(WIDE_INTERVALS)}a`, 'a');
+
+        // Assert
+        expect(result).toBe(true);
       });
     });
   });

@@ -163,6 +163,8 @@ interface Cursor {
   groups: number;
   readonly closedGroups: Set<number>;
   backreferences: boolean;
+  /** Instructions the repetitions laid out so far beyond their bodies — never given back. */
+  laidOut: number;
 }
 
 /** A bracket member; `codePoint` is set only where it may bound a range. */
@@ -185,6 +187,7 @@ export const compileExtendedRegex = (pattern: string): ExtendedRegex | undefined
     groups: 0,
     closedGroups: new Set(),
     backreferences: false,
+    laidOut: 0,
   };
   const piece = parseAlternation(cursor, 0);
   if (piece === undefined) return undefined;
@@ -365,20 +368,21 @@ const parseRepetitions = (c: Cursor, atom: Piece): Translation => {
   let pending: PendingRepetition | undefined = { piece: atom };
   while (pending !== undefined && REPETITION_STARTS.has(peek(c) as string)) {
     const outer = parseRepetition(c);
-    pending = outer === undefined ? undefined : stackRepetition(pending, outer);
+    pending = outer === undefined ? undefined : stackRepetition(c, pending, outer);
   }
   if (pending?.bounds === undefined) return pending?.piece;
-  return repeat(pending.piece, pending.bounds);
+  return repeat(c, pending.piece, pending.bounds);
 };
 
 /** Folds `outer` into the pending repetition where the two make one, so stacks stay shallow. */
 const stackRepetition = (
+  c: Cursor,
   { piece, bounds }: PendingRepetition,
   outer: Bounds,
 ): PendingRepetition | undefined => {
   if (bounds === undefined) return { piece, bounds: outer };
   if (absorbs(bounds)) return { piece, bounds: product(bounds, outer) };
-  const repeated = repeat(piece, bounds);
+  const repeated = repeat(c, piece, bounds);
   return repeated === undefined ? undefined : { piece: repeated, bounds: outer };
 };
 
@@ -391,9 +395,11 @@ const product = (inner: Bounds, outer: Bounds): Bounds => ({
   max: inner.max === 0 || outer.max === 0 ? 0 : inner.max * outer.max,
 });
 
-const repeat = (piece: Piece, bounds: Bounds): Translation => {
+/** Copies that would take the running total past the automaton are refused before they are laid out. */
+const repeat = (c: Cursor, piece: Piece, bounds: Bounds): Translation => {
+  c.laidOut += Math.max(0, expansionOf(sizeOf(piece.fragment), bounds));
+  if (c.laidOut > MAX_PROGRAM_SIZE) return undefined;
   const fragment = repeatFragment(piece.fragment, bounds);
-  if (fragment === undefined) return undefined;
   const { min, max } = bounds;
   return {
     source: `(?:${piece.source}){${min},${max === Number.POSITIVE_INFINITY ? '' : max}}`,
@@ -538,16 +544,21 @@ const alternate = (branches: ReadonlyArray<Fragment>): Fragment => {
   return sequence(parts.reverse());
 };
 
+/** Instructions `repeatFragment` adds to a body of `size`; an empty body adds none. */
+const expansionOf = (size: number, { min, max }: Bounds): number => {
+  if (size === 0) return 0;
+  if (max === Number.POSITIVE_INFINITY) return min * size + 2;
+  return min * size + (max - min) * (size + 1) - size;
+};
+
 /**
  * `min` copies of `body`, then a skippable copy jumping back to its fork or
  * `max - min` skippable copies; every copy is shared. An empty body repeats
- * to itself, at no cost however large the bounds; copies that alone outgrow
- * the automaton are refused before they are laid out.
+ * to itself, at no cost however large the bounds.
  */
-const repeatFragment = (body: Fragment, { min, max }: Bounds): Fragment | undefined => {
+const repeatFragment = (body: Fragment, { min, max }: Bounds): Fragment => {
   const size = sizeOf(body);
   if (size === 0) return body;
-  if (size * (max === Number.POSITIVE_INFINITY ? min : max) > MAX_PROGRAM_SIZE) return undefined;
   const copies = Array<Fragment>(min).fill(body);
   const rest =
     max === Number.POSITIVE_INFINITY
