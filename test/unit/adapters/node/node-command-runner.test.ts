@@ -74,6 +74,9 @@ interface HostFixture {
 }
 
 const WINDOWS_INTERPRETER = 'C:\\Windows\\system32\\cmd.exe';
+const WINDOWS_PROCESS_CWD = 'C:\\work';
+/** The variable that keeps cmd.exe from searching its working directory for a program. */
+const NO_CWD_PROGRAM_SEARCH = 'NoDefaultCurrentDirectoryInExePath';
 
 const windowsHost = (files: ReadonlyArray<string> = []): HostFixture => ({
   env: { PATH: 'C:\\gnupg', ComSpec: WINDOWS_INTERPRETER },
@@ -93,6 +96,7 @@ const makeHarness = (
       return child;
     },
     env: host.env,
+    cwd: () => WINDOWS_PROCESS_CWD,
     isFile: (path) => host.files.includes(path),
   };
   return { runner: new NodeCommandRunner(platform, ops), child, calls };
@@ -112,8 +116,26 @@ const throwingRunner = (): NodeCommandRunner =>
       throw Object.assign(new Error('spawn EINVAL'), { code: 'EINVAL' });
     },
     env: { PATH: 'C:\\tools' },
+    cwd: () => WINDOWS_PROCESS_CWD,
     isFile: () => true,
   });
+
+/** A Windows runner whose file probe throws `failure`, recording any spawn it makes. */
+const probeFailingRunner = (failure: Error): { runner: NodeCommandRunner; spawned: string[] } => {
+  const spawned: string[] = [];
+  const runner = new NodeCommandRunner('win32', {
+    spawn: (command: string) => {
+      spawned.push(command);
+      return new FakeChild();
+    },
+    env: { PATH: 'C:\\tools' },
+    cwd: () => WINDOWS_PROCESS_CWD,
+    isFile: () => {
+      throw failure;
+    },
+  });
+  return { runner, spawned };
+};
 
 const baseRequest = (over: Partial<CommandRequest> = {}): CommandRequest => ({
   command: 'merge a b',
@@ -246,6 +268,114 @@ describe('NodeCommandRunner', () => {
         // Assert
         expect(calls[0]?.command).toBe(WINDOWS_INTERPRETER);
         expect(calls[0]?.args).toEqual(['/c', 'merge a b']);
+      });
+    });
+  });
+
+  describe('Given the win32 platform and a request without arguments', () => {
+    describe('When run', () => {
+      it('Then the shell runs with the working-directory program search disabled, the caller environment kept', async () => {
+        // Arrange
+        const { runner, child, calls } = makeHarness('win32', windowsHost());
+        const sut = runner.run.bind(runner);
+
+        // Act
+        const promise = sut(baseRequest());
+        child.emit('close', 0);
+        await promise;
+
+        // Assert
+        expect(calls[0]?.env[NO_CWD_PROGRAM_SEARCH]).toBe('1');
+        expect(calls[0]?.env.GIT_DIR).toBe('/repo/.git');
+        expect(calls[0]?.env.PATH).toBe('C:\\gnupg');
+      });
+    });
+
+    describe('When spawned for a conversation', () => {
+      it('Then the shell runs with the working-directory program search disabled', () => {
+        // Arrange
+        const { runner, calls } = makeHarness('win32', windowsHost());
+        const sut = runner.spawn;
+
+        // Act
+        sut(baseRequest());
+
+        // Assert
+        expect(calls[0]?.env[NO_CWD_PROGRAM_SEARCH]).toBe('1');
+      });
+    });
+  });
+
+  describe('Given the win32 platform and a request naming its arguments', () => {
+    describe('When run', () => {
+      it('Then the environment is the caller environment alone', async () => {
+        // Arrange
+        const host = windowsHost(['C:\\gnupg\\gpg.exe']);
+        const { runner, child, calls } = makeHarness('win32', host);
+        const sut = runner.run.bind(runner);
+
+        // Act
+        const promise = sut(baseRequest({ command: 'gpg', args: ['--verify'] }));
+        child.emit('close', 0);
+        await promise;
+
+        // Assert
+        expect(calls[0]?.env).toEqual({ ...host.env, GIT_DIR: '/repo/.git' });
+      });
+    });
+  });
+
+  describe('Given a POSIX platform and a request without arguments', () => {
+    describe('When run', () => {
+      it('Then the environment is the caller environment alone', async () => {
+        // Arrange
+        const { runner, child, calls } = makeHarness();
+        const sut = runner.run.bind(runner);
+
+        // Act
+        const promise = sut(baseRequest());
+        child.emit('close', 0);
+        await promise;
+
+        // Assert
+        expect(calls[0]?.env).toEqual({ ...process.env, GIT_DIR: '/repo/.git' });
+      });
+    });
+  });
+
+  describe('Given the win32 platform and a file probe that throws', () => {
+    describe('When run', () => {
+      it('Then resolves with the spawn-error exit code without spawning', async () => {
+        // Arrange
+        const { runner, spawned } = probeFailingRunner(new Error('probe failed'));
+        const sut = runner.run.bind(runner);
+
+        // Act
+        const result = await sut(baseRequest({ command: 'gpg', args: [] }));
+
+        // Assert
+        expect(result).toEqual({ exitCode: 127 });
+        expect(spawned).toEqual([]);
+      });
+    });
+
+    describe('When spawned for a conversation', () => {
+      it('Then the write rejects with the probe failure and close reports the spawn-error exit', async () => {
+        // Arrange
+        const failure = new Error('probe failed');
+        const { runner } = probeFailingRunner(failure);
+        const sut = runner.spawn;
+
+        // Act
+        const conversation = sut(baseRequest({ command: 'filter', args: [] }));
+        const written = await conversation
+          .write(new Uint8Array([1]))
+          .catch((error: unknown) => error);
+        const exit = await conversation.close();
+
+        // Assert
+        expect(written).toBe(failure);
+        expect(exit).toEqual({ exitCode: 127 });
       });
     });
   });

@@ -24,6 +24,13 @@ const SIGNAL_KILLED_EXIT = 128;
 const BROKEN_PIPE = 'EPIPE';
 const POSIX_SHELL: Shell = ['sh', '-c'];
 const WINDOWS_SHELL_FLAG = '/c';
+/**
+ * cmd.exe searches its working directory — the repository — before `PATH` for a
+ * command line's program unless this variable is set, which would run a program
+ * the repository planted there.
+ */
+const WINDOWS_SHELL_ENV: NodeJS.ProcessEnv = { NoDefaultCurrentDirectoryInExePath: '1' };
+const NO_SHELL_ENV: NodeJS.ProcessEnv = {};
 /** Bytes of a conversed-with child's output buffered for the consumer before its stdout pauses. */
 const OUTPUT_HIGH_WATER_MARK = 1024 * 1024;
 
@@ -79,6 +86,8 @@ type Shell = readonly [string, string];
 /** How a platform starts programs: its shell, and where a program name resolves. */
 interface Launcher {
   readonly shell: Shell;
+  /** Variables a shell start sets over the caller's environment. */
+  readonly shellEnv: NodeJS.ProcessEnv;
   readonly resolve: ProgramResolver;
 }
 
@@ -118,20 +127,34 @@ const spawnChild = (
     : ops.spawn(file, args, { cwd: request.cwd, env, stdio: ['pipe', 'pipe', 'inherit'] });
 
 /**
+ * What `request` starts, its program not yet resolved: the program with its own
+ * arguments when it names them, else the launcher's shell running its command line.
+ */
+const invocationOf = (
+  { shell: [shell, flag], shellEnv }: Launcher,
+  baseEnv: NodeJS.ProcessEnv,
+  request: CommandRequest,
+): Invocation => {
+  const env = { ...baseEnv, ...request.env };
+  return request.args === undefined
+    ? { file: shell, args: [flag, request.command], env: { ...env, ...shellEnv } }
+    : { file: request.command, args: request.args, env };
+};
+
+/**
  * Spawns `request` directly when it names its arguments, else through the
  * launcher's shell; a program the launcher cannot find never starts.
  */
 const startChild = (
   ops: CommandRunnerOps,
-  { shell: [shell, flag], resolve }: Launcher,
+  launcher: Launcher,
   request: CommandRequest,
 ): Started => {
-  const program = request.args === undefined ? shell : request.command;
-  const file = resolve(program);
-  if (file === undefined) return { error: programNotFound(program) };
-  const args = request.args ?? [flag, request.command];
+  const invocation = invocationOf(launcher, ops.env, request);
   try {
-    return { child: spawnChild(ops, { file, args, env: { ...ops.env, ...request.env } }, request) };
+    const file = launcher.resolve(invocation.file);
+    if (file === undefined) return { error: programNotFound(invocation.file) };
+    return { child: spawnChild(ops, { ...invocation, file }, request) };
   } catch (error) {
     return { error };
   }
@@ -373,7 +396,10 @@ const conversation = (child: CommandChild, request: ConversationRequest): Comman
  * Node `CommandRunner`: runs a command line through the platform shell
  * (`sh -c` on POSIX; on Windows the absolute `ComSpec` interpreter with `/c`)
  * with `cwd` and an environment that merges `request.env` over `process.env`.
- * On Windows a bare program name resolves against `PATH` alone, never `cwd`.
+ * On Windows a bare program the runner starts itself resolves against `PATH`
+ * alone, never `cwd`; a command line goes to cmd.exe with
+ * `NoDefaultCurrentDirectoryInExePath` set, so cmd.exe searches `PATH` and not
+ * `cwd` for its program; the programs it starts inherit that variable.
  * Stdin is piped from `request.stdin` when present; stdout is captured into
  * `result.stdout`. Never rejects for a non-zero exit.
  */
@@ -401,9 +427,12 @@ export class NodeCommandRunner implements CommandRunner {
 
   /** Read per start: the interpreter follows `ComSpec` as the environment changes. */
   private launcher(): Launcher {
-    const shell: Shell = this.isWindows
-      ? [windowsCommandInterpreter(this.ops.env), WINDOWS_SHELL_FLAG]
-      : POSIX_SHELL;
-    return { shell, resolve: this.resolve };
+    return this.isWindows
+      ? {
+          shell: [windowsCommandInterpreter(this.ops.env), WINDOWS_SHELL_FLAG],
+          shellEnv: WINDOWS_SHELL_ENV,
+          resolve: this.resolve,
+        }
+      : { shell: POSIX_SHELL, shellEnv: NO_SHELL_ENV, resolve: this.resolve };
   }
 }

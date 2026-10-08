@@ -10,10 +10,28 @@ import {
   windowsCommandInterpreter,
 } from '../../../../src/adapters/node/windows-program-lookup.js';
 
+const PROCESS_CWD = 'C:\\work';
+
 const hostWith = (path: string | undefined, files: ReadonlyArray<string>) => ({
   env: path === undefined ? {} : { PATH: path },
+  cwd: (): string => PROCESS_CWD,
   isFile: (candidate: string): boolean => files.includes(candidate),
 });
+
+/** A host over `PATH` that records every candidate it probes, finding none. */
+const recordingHost = (path: string, visited: string[]) => ({
+  env: { PATH: path },
+  cwd: (): string => PROCESS_CWD,
+  isFile: (candidate: string): boolean => {
+    visited.push(candidate);
+    return false;
+  },
+});
+
+/** A stat whose probe fails with `code` (or with no code at all when `undefined`). */
+const failingWith = (code: string | undefined) => (): never => {
+  throw Object.assign(new Error(`stat ${code}`), code === undefined ? {} : { code });
+};
 
 describe('lookupWindowsProgram', () => {
   describe('Given a bare name present in a later PATH entry and in the working directory', () => {
@@ -72,13 +90,7 @@ describe('lookupWindowsProgram', () => {
       it('Then looks for that name alone, adding no second suffix', () => {
         // Arrange
         const visited: string[] = [];
-        const host = {
-          env: { PATH: 'C:\\bin' },
-          isFile: (candidate: string): boolean => {
-            visited.push(candidate);
-            return false;
-          },
-        };
+        const host = recordingHost('C:\\bin', visited);
         const sut = lookupWindowsProgram;
 
         // Act
@@ -96,13 +108,7 @@ describe('lookupWindowsProgram', () => {
       it('Then skips them rather than searching the working directory', () => {
         // Arrange
         const visited: string[] = [];
-        const host = {
-          env: { PATH: ';C:\\bin;' },
-          isFile: (candidate: string): boolean => {
-            visited.push(candidate);
-            return false;
-          },
-        };
+        const host = recordingHost(';C:\\bin;', visited);
         const sut = lookupWindowsProgram;
 
         // Act
@@ -113,6 +119,62 @@ describe('lookupWindowsProgram', () => {
       });
     });
   });
+
+  describe.each([
+    { path: '.;C:\\x', directory: 'C:\\work' },
+    { path: 'bin;C:\\x', directory: 'C:\\work\\bin' },
+  ])('Given the relative PATH entry leading $path', ({ path, directory }) => {
+    describe('When looked up', () => {
+      it('Then probes that entry against the process working directory', () => {
+        // Arrange
+        const visited: string[] = [];
+        const host = recordingHost(path, visited);
+        const sut = lookupWindowsProgram;
+
+        // Act
+        sut('gpg', host);
+
+        // Assert
+        expect(visited.slice(0, 2)).toEqual([`${directory}\\gpg.exe`, `${directory}\\gpg`]);
+      });
+
+      it('Then resolves to the absolute file it probed', () => {
+        // Arrange
+        const host = hostWith(path, [`${directory}\\gpg.exe`, 'C:\\x\\gpg.exe']);
+        const sut = lookupWindowsProgram;
+
+        // Act
+        const result = sut('gpg', host);
+
+        // Assert
+        expect(result).toBe(`${directory}\\gpg.exe`);
+      });
+    });
+  });
+
+  describe.each(['ELOOP', 'EIO'])(
+    'Given an earlier PATH entry whose probe fails with %s',
+    (code) => {
+      describe('When looked up', () => {
+        it('Then the next PATH entry is tried', () => {
+          // Arrange
+          const failing = failingWith(code);
+          const stat = (path: string) =>
+            path.startsWith('C:\\broken\\')
+              ? failing()
+              : { isFile: () => path === 'C:\\bin\\gpg.exe' };
+          const host = { ...hostWith('C:\\broken;C:\\bin', []), isFile: isRegularFileVia(stat) };
+          const sut = lookupWindowsProgram;
+
+          // Act
+          const result = sut('gpg', host);
+
+          // Assert
+          expect(result).toBe('C:\\bin\\gpg.exe');
+        });
+      });
+    },
+  );
 
   describe('Given no PATH at all', () => {
     describe('When looked up', () => {
@@ -218,6 +280,21 @@ describe('realProgramLookupHost', () => {
   });
 
   describe('Given the production host', () => {
+    describe('When its working directory is read', () => {
+      it('Then it is the live process working directory', () => {
+        // Arrange
+        const sut = realProgramLookupHost;
+
+        // Act
+        const result = sut.cwd();
+
+        // Assert
+        expect(result).toBe(process.cwd());
+      });
+    });
+  });
+
+  describe('Given the production host', () => {
     describe('When its environment is read', () => {
       it('Then it is the live process environment', () => {
         // Arrange
@@ -234,12 +311,8 @@ describe('realProgramLookupHost', () => {
 });
 
 describe('isRegularFileVia', () => {
-  const failingWith = (code: string) => (): never => {
-    throw Object.assign(new Error(`stat ${code}`), { code });
-  };
-
-  describe.each(['EACCES', 'EPERM', 'ENAMETOOLONG'])(
-    'Given a candidate whose stat fails with %s',
+  describe.each(['EACCES', 'EPERM', 'ENAMETOOLONG', 'ELOOP', 'EIO', undefined])(
+    'Given a candidate whose stat fails with code %s',
     (code) => {
       describe('When probed', () => {
         it('Then it is no program, so the search moves on', () => {
@@ -256,53 +329,6 @@ describe('isRegularFileVia', () => {
       });
     },
   );
-
-  describe('Given a candidate whose stat fails with an error carrying no code', () => {
-    describe('When probed', () => {
-      it('Then that error propagates', () => {
-        // Arrange
-        const failure = new Error('stat failed');
-        const stat = (): never => {
-          throw failure;
-        };
-        const sut = isRegularFileVia;
-
-        // Act
-        const result = (() => {
-          try {
-            return sut(stat)('C:\\bin\\ssh.exe');
-          } catch (error) {
-            return error;
-          }
-        })();
-
-        // Assert
-        expect(result).toBe(failure);
-      });
-    });
-  });
-
-  describe('Given a candidate whose stat fails with any other error', () => {
-    describe('When probed', () => {
-      it('Then that error propagates', () => {
-        // Arrange
-        const stat = failingWith('EIO');
-        const sut = isRegularFileVia;
-
-        // Act
-        const result = (() => {
-          try {
-            return sut(stat)('C:\\bin\\ssh.exe');
-          } catch (error) {
-            return error;
-          }
-        })();
-
-        // Assert
-        expect((result as NodeJS.ErrnoException).code).toBe('EIO');
-      });
-    });
-  });
 });
 
 describe('programResolverFor', () => {

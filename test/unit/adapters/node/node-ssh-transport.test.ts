@@ -52,6 +52,7 @@ const makeHarness = (
       return child;
     },
     env: host.env,
+    cwd: () => 'C:\\work',
     isFile: (path) => host.files.includes(path),
   };
   return { transport: new NodeSshTransport(platform, ops), child, calls };

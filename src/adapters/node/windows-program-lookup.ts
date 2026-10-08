@@ -4,6 +4,8 @@ import { win32 } from 'node:path';
 /** What a Windows program lookup reads from its host. */
 export interface ProgramLookupHost {
   readonly env: NodeJS.ProcessEnv;
+  /** The process working directory a relative `PATH` entry is searched from. */
+  readonly cwd: () => string;
   readonly isFile: (path: string) => boolean;
 }
 
@@ -17,23 +19,20 @@ type StatProbe = (
 ) => { isFile(): boolean } | undefined;
 
 /**
- * `errno` codes of a candidate the process cannot reach. Git for Windows'
- * existence check fails on them alike, so the search skips such a candidate.
+ * A probe that fails, whatever the reason, finds no program there: Git for
+ * Windows' `lookup_prog` skips every candidate its access check fails on,
+ * so the search moves on to the next one.
  */
-const UNREACHABLE_CODES: ReadonlySet<string> = new Set(['EACCES', 'EPERM', 'ENAMETOOLONG']);
+const FAILED_PROBE_FINDS_NO_PROGRAM = false;
 
-const isUnreachable = (error: unknown): boolean =>
-  UNREACHABLE_CODES.has((error as NodeJS.ErrnoException).code ?? '');
-
-/** Whether `path` names a regular file, a candidate the process cannot reach counting as none. */
+/** Whether `path` names a regular file; see {@link FAILED_PROBE_FINDS_NO_PROGRAM}. */
 export const isRegularFileVia =
   (stat: StatProbe) =>
   (path: string): boolean => {
     try {
       return stat(path, { throwIfNoEntry: false })?.isFile() === true;
-    } catch (error) {
-      if (isUnreachable(error)) return false;
-      throw error;
+    } catch {
+      return FAILED_PROBE_FINDS_NO_PROGRAM;
     }
   };
 
@@ -41,6 +40,7 @@ export const isRegularFileVia =
 export const realProgramLookupHost: ProgramLookupHost = {
   // `process.env` itself, never a copy: on Windows only it reads `Path` as `PATH`.
   env: process.env,
+  cwd: () => process.cwd(),
   isFile: isRegularFileVia(statSync),
 };
 
@@ -63,8 +63,10 @@ const candidateNames = (program: string): ReadonlyArray<string> =>
  * Resolves a bare program name against `PATH` alone, entry by entry, the way
  * Git for Windows' `path_lookup` does — never the working directory, which
  * Windows' own search would try first and a repository can plant a program in.
- * A name carrying a path separator is used as given. `undefined` when no `PATH`
- * entry holds the program.
+ * A relative entry is searched from the process working directory and its
+ * candidate returned absolute, so the file spawned is the file probed. A name
+ * carrying a path separator is used as given. `undefined` when no `PATH` entry
+ * holds the program.
  */
 export const lookupWindowsProgram = (
   program: string,
@@ -74,8 +76,11 @@ export const lookupWindowsProgram = (
   const directories = (host.env.PATH ?? '')
     .split(PATH_LIST_SEPARATOR)
     .filter((directory) => directory.length > 0);
+  const cwd = host.cwd();
   return directories
-    .flatMap((directory) => candidateNames(program).map((name) => win32.join(directory, name)))
+    .flatMap((directory) =>
+      candidateNames(program).map((name) => win32.resolve(cwd, directory, name)),
+    )
     .find(host.isFile);
 };
 
