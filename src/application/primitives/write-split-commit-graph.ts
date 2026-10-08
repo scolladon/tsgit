@@ -17,14 +17,11 @@ import { mergedLayerCount } from '../../domain/commit/commit-graph-split.js';
 import {
   type CommitGraphBase,
   type CommitGraphBaseCommit,
-  type CommitGraphChangedPaths,
   type CommitGraphGeneration,
   type CommitGraphWriterCommit,
   type CorrectedDatePass,
   computeCommitGraphGenerations,
-  serializeCommitGraph,
 } from '../../domain/commit/commit-graph-writer.js';
-import { errorDataCode } from '../../domain/error-data-code.js';
 import { objectNotFound } from '../../domain/objects/error.js';
 import { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
@@ -61,7 +58,11 @@ import {
   commitGraphLocked,
   commitGraphRoots,
   declinesChangedPathsVersion,
+  GRAPH_LAYER_SUFFIX,
+  isAbsent,
   makeReplaceable,
+  removeIfPresent,
+  serializeCommitGraphFile,
 } from './write-commit-graph.js';
 
 export interface WriteSplitCommitGraphResult {
@@ -73,7 +74,6 @@ export interface WriteSplitCommitGraphResult {
 
 const NOTHING_WRITTEN: WriteSplitCommitGraphResult = { written: false, commitCount: 0 };
 
-const GRAPH_LAYER_SUFFIX = '.graph';
 const MS_PER_SECOND = 1000;
 
 interface LayerSlot {
@@ -170,41 +170,6 @@ function graphBase(
   return { layerHashes: base.map(({ hash }) => hash), commitCount, commits: entries };
 }
 
-async function serializeLayer(
-  ctx: Context,
-  commits: readonly CommitGraphWriterCommit[],
-  base: CommitGraphBase,
-  changedPaths: CommitGraphChangedPaths | undefined,
-  generations: ReadonlyMap<ObjectId, CommitGraphGeneration>,
-  pass: CorrectedDatePass,
-): Promise<{ readonly bytes: Uint8Array; readonly hash: ObjectId }> {
-  const bytes = serializeCommitGraph(
-    commits,
-    ctx.hashConfig,
-    base,
-    changedPaths,
-    generations,
-    pass,
-  );
-  const trailerStart = bytes.length - ctx.hashConfig.digestLength;
-  const digest = await ctx.hash.hash(bytes.subarray(0, trailerStart));
-  bytes.set(digest, trailerStart);
-  return { bytes, hash: ObjectId.fromRaw(digest) };
-}
-
-const isAbsent = (error: unknown): boolean => {
-  const code = errorDataCode(error);
-  return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';
-};
-
-async function removeIfPresent(ctx: Context, path: string): Promise<void> {
-  try {
-    await ctx.fs.rm(path);
-  } catch (error) {
-    if (!isAbsent(error)) throw error;
-  }
-}
-
 /** A single-file base moves into the chain under its trailing hash; with no base it is simply dropped. */
 async function settleSingleFile(ctx: Context, base: readonly LocalGraphLayer[]): Promise<void> {
   const gitDir = commonGitDir(ctx);
@@ -240,12 +205,13 @@ async function mtimeSecondsIfPresent(ctx: Context, path: string): Promise<number
 async function writeChainLayer(
   ctx: Context,
   plan: SplitPlan,
-  layer: { readonly bytes: Uint8Array; readonly hash: ObjectId },
+  layer: { readonly bytes: Uint8Array; readonly digest: Uint8Array },
 ): Promise<void> {
   const gitDir = commonGitDir(ctx);
-  const hashes = [...plan.base.map(({ hash }) => hash), layer.hash];
+  const layerHash = ObjectId.fromRaw(layer.digest);
+  const hashes = [...plan.base.map(({ hash }) => hash), layerHash];
   await ctx.fs.mkdir(commitGraphLayersDir(gitDir));
-  const layerPath = commitGraphLayerPath(gitDir, layer.hash);
+  const layerPath = commitGraphLayerPath(gitDir, layerHash);
   const chainPath = commitGraphChainPath(gitDir);
   await withLockFile(ctx, chainPath, commitGraphLocked, async (commit) => {
     await makeReplaceable(ctx, layerPath);
@@ -309,7 +275,7 @@ export async function writeSplitCommitGraph(ctx: Context): Promise<WriteSplitCom
   const commits = parsedForWrite(parser, order, refusalFor(settings));
   const budget = filterBudget(maxNewFilters, new Set(fresh), generations, pass);
   const changedPaths = await changedPathsFor(ctx, commits, layers, settings, budget);
-  const layer = await serializeLayer(ctx, commits, base, changedPaths, generations, pass);
+  const layer = await serializeCommitGraphFile(ctx, commits, base, changedPaths, generations, pass);
   await writeChainLayer(ctx, plan, layer);
   return { written: true, commitCount: base.commitCount + commits.length };
 }

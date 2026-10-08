@@ -14,6 +14,7 @@
  */
 import type { BloomFilterSettings } from '../../domain/commit/bloom-filter.js';
 import {
+  type CommitGraphBase,
   type CommitGraphChangedPaths,
   type CommitGraphGeneration,
   type CommitGraphWriterCommit,
@@ -179,14 +180,41 @@ export async function changedPathsFor(
   return { settings, filters: await changedPathFilters(ctx, commits, settings, stored, budget) };
 }
 
-const GRAPH_LAYER_SUFFIX = '.graph';
+/**
+ * git's `write_commit_graph_file`: the serialized graph, closed by the checksum
+ * of every byte before it — the digest that also names a chain layer.
+ */
+export async function serializeCommitGraphFile(
+  ctx: Context,
+  commits: readonly CommitGraphWriterCommit[],
+  base: CommitGraphBase,
+  changedPaths: CommitGraphChangedPaths | undefined,
+  generations: ReadonlyMap<ObjectId, CommitGraphGeneration>,
+  pass: CorrectedDatePass,
+): Promise<{ readonly bytes: Uint8Array; readonly digest: Uint8Array }> {
+  const bytes = serializeCommitGraph(
+    commits,
+    ctx.hashConfig,
+    base,
+    changedPaths,
+    generations,
+    pass,
+  );
+  const trailerStart = bytes.length - ctx.hashConfig.digestLength;
+  const digest = await ctx.hash.hash(bytes.subarray(0, trailerStart));
+  bytes.set(digest, trailerStart);
+  return { bytes, digest };
+}
 
-const isAbsent = (error: unknown): boolean => {
+export const GRAPH_LAYER_SUFFIX = '.graph';
+
+/** A missing file, or a missing directory on its path: nothing there to remove, list or stat. */
+export const isAbsent = (error: unknown): boolean => {
   const code = errorDataCode(error);
   return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';
 };
 
-async function removeIfPresent(ctx: Context, path: string): Promise<void> {
+export async function removeIfPresent(ctx: Context, path: string): Promise<void> {
   try {
     await ctx.fs.rm(path);
   } catch (error) {
@@ -242,17 +270,14 @@ export async function writeCommitGraph(ctx: Context): Promise<WriteCommitGraphRe
   if (commits.length === 0) return { commitCount: 0 };
 
   const changedPaths = await changedPathsFor(ctx, commits, layers, settings);
-  const bytes = serializeCommitGraph(
+  const { bytes } = await serializeCommitGraphFile(
+    ctx,
     commits,
-    ctx.hashConfig,
     EMPTY_COMMIT_GRAPH_BASE,
     changedPaths,
     generations,
     pass,
   );
-  const trailerStart = bytes.length - ctx.hashConfig.digestLength;
-  const digest = await ctx.hash.hash(bytes.subarray(0, trailerStart));
-  bytes.set(digest, trailerStart);
 
   const path = commitGraphPath(commonGitDir(ctx));
   await makeReplaceable(ctx, path);
