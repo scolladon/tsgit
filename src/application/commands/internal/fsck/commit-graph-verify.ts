@@ -262,7 +262,9 @@ function compareParents(
   id: ObjectId,
   odbParents: ReadonlyArray<ObjectId>,
 ): number {
-  const graphParents = graphParentPositions(walk.layer, position, walk.graph.corrected);
+  const graphParents = graphParentPositions(walk.layer, position, {
+    correctedCommitDates: walk.graph.corrected,
+  });
   let maxGeneration = 0;
   for (const [index, parentPosition] of graphParents.entries()) {
     const actual = odbParents[index];

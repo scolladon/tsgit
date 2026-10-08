@@ -91,7 +91,11 @@ export const rm = async (
         removedEntries.push(entry);
       }
     }
-    enforceLiteralMatches(literalSpellings, removed, opts.recursive === true);
+    enforceLiteralMatches(
+      literalSpellings,
+      removed,
+      opts.recursive === true ? 'recursive' : 'paths-only',
+    );
     if (opts.force !== true) {
       await enforceSafetyValve(ctx, removedEntries, opts.cached === true);
     }
@@ -112,20 +116,23 @@ export const rm = async (
   }
 };
 
+/** Whether a pathspec may remove the paths beneath a directory (`-r`) or only paths it names. */
+type RemovalReach = 'recursive' | 'paths-only';
+
 /**
  * git rm's per-pathspec check, in pathspec order: a literal must match, and
- * unless `recursive`, it must name a tracked path itself — one that only reached
+ * under `paths-only`, it must name a tracked path itself — one that only reached
  * paths beneath it is a directory removal git refuses without `-r`.
  */
 const enforceLiteralMatches = (
   spellings: ReadonlyMap<FilePath, string>,
   removed: ReadonlyArray<FilePath>,
-  recursive: boolean,
+  reach: RemovalReach,
 ): void => {
   const exact = new Set<string>(removed);
   for (const [literal, spelled] of spellings) {
     enforceLiteralMustMatch([literal], removed, spellings);
-    if (!recursive && !exact.has(literal)) throw rmRecursiveWithoutR(spelled);
+    if (reach === 'paths-only' && !exact.has(literal)) throw rmRecursiveWithoutR(spelled);
   }
 };
 

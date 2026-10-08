@@ -70,7 +70,9 @@ export const branchMerged = async (
   }
   const merged = await isAncestor(ctx, tipCommit, upstream.commit, table);
   const mergedToHead = head !== undefined && (await isAncestor(ctx, tipCommit, head, table));
-  if (merged !== mergedToHead) warnUpstreamDisagrees(ctx, name, upstream.name, merged);
+  if (merged !== mergedToHead) {
+    warnUpstreamDisagrees(ctx, name, upstream.name, merged ? 'upstream-only' : 'head-only');
+  }
   return merged;
 };
 
@@ -80,20 +82,32 @@ interface UpstreamReference {
   readonly commit: ObjectId;
 }
 
+/** Which side the branch is merged to when upstream and HEAD disagree. */
+type MergedOnlyTo = 'upstream-only' | 'head-only';
+
+const DISAGREEMENT_WARNINGS: Readonly<
+  Record<MergedOnlyTo, (branch: string, upstream: RefName) => string>
+> = {
+  'upstream-only': (branch, upstream) =>
+    `deleting branch '${branch}' that has been merged to\n         '${upstream}', but not yet merged to HEAD`,
+  'head-only': (branch, upstream) =>
+    `not deleting branch '${branch}' that is not yet merged to\n         '${upstream}', even though it is merged to HEAD`,
+};
+
 /** git's transition-period reminder: upstream and HEAD disagree on whether the branch is merged. */
 const warnUpstreamDisagrees = (
   ctx: Context,
   name: RefName,
   upstream: RefName,
-  merged: boolean,
+  mergedOnlyTo: MergedOnlyTo,
 ): void => {
   const branch = shortBranchName(name);
-  ctx.logger?.warn?.(
-    merged
-      ? `deleting branch '${branch}' that has been merged to\n         '${upstream}', but not yet merged to HEAD`
-      : `not deleting branch '${branch}' that is not yet merged to\n         '${upstream}', even though it is merged to HEAD`,
-    { branch, upstream, merged },
-  );
+  const merged = mergedOnlyTo === 'upstream-only';
+  ctx.logger?.warn?.(DISAGREEMENT_WARNINGS[mergedOnlyTo](branch, upstream), {
+    branch,
+    upstream,
+    merged,
+  });
 };
 
 const upstreamReference = async (

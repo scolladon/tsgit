@@ -44,7 +44,12 @@ const EXCLUDE_PARENT_MARK = '^-';
 /** git's `strtol_i`: C whitespace `strtol` skips, an optional sign, then decimal digits to the end. */
 const PARENT_NUMBER = /^[ \t\n\v\f\r]*[+-]?[0-9]+$/;
 
-const tip = (id: ObjectId, negated: boolean): RevisionTip => ({ id, negated });
+/** git's `UNINTERESTING` mark, or its absence, on the tips an argument names. */
+type TipPolarity = 'interesting' | 'uninteresting';
+
+const isUninteresting = (polarity: TipPolarity): boolean => polarity === 'uninteresting';
+const interestingTip = (id: ObjectId): RevisionTip => ({ id, negated: false });
+const uninterestingTip = (id: ObjectId): RevisionTip => ({ id, negated: true });
 
 const SIDES_BY_SOURCE: Readonly<
   Record<RevisionSource, (arg: string) => DifferenceSides | undefined>
@@ -78,10 +83,10 @@ const expandRange = async (
   const end = await readCommittish(ctx, table, sides.end);
   if (end === undefined) return undefined;
   await requireRangeEnds(ctx, table, arg, sides, [start, end]);
-  if (!sides.symmetric) return [tip(start, true), tip(end, false)];
+  if (!sides.symmetric) return [uninterestingTip(start), interestingTip(end)];
   const bases = await symmetricBases(ctx, arg, [start, end]);
   if (bases === undefined) return undefined;
-  return [...bases.map((id) => tip(id, true)), tip(start, false), tip(end, false)];
+  return [...bases.map(uninterestingTip), interestingTip(start), interestingTip(end)];
 };
 
 /**
@@ -110,7 +115,7 @@ const parentsOf = async (
   ctx: Context,
   table: ObjectTypeTable,
   spelt: string,
-  negated: boolean,
+  polarity: TipPolarity,
   exclude?: number,
 ): Promise<ReadonlyArray<RevisionTip> | undefined> => {
   const flipped = spelt.startsWith(NEGATION);
@@ -122,7 +127,8 @@ const parentsOf = async (
   const { parents } = applyGraft(commit, await loadShallowSet(ctx)).data;
   const chosen = exclude === undefined ? parents : parents.slice(exclude - 1, exclude);
   if (chosen.length === 0 && exclude !== undefined) return undefined;
-  return chosen.map((parent) => tip(parent, negated !== flipped));
+  const negated = isUninteresting(polarity) !== flipped;
+  return chosen.map((parent) => ({ id: parent, negated }));
 };
 
 /** The base before `mark` when its first occurrence ends `arg`, as git's search for it requires. */
@@ -144,7 +150,7 @@ const shrinkExcludeParents = async (
 ): Promise<Shrunk> => {
   const base = endingWith(arg, EXCLUDE_PARENTS_MARK);
   if (base === undefined) return { excluded: [], rest: arg };
-  const excluded = await parentsOf(ctx, table, base, true);
+  const excluded = await parentsOf(ctx, table, base, 'uninteresting');
   return excluded === undefined ? { excluded: [], rest: arg } : { excluded, rest: base };
 };
 
@@ -160,7 +166,7 @@ const shrinkExcludeParent = async (
   const n = spelt === '' ? 1 : Number.parseInt(spelt, 10);
   if (spelt !== '' && (!PARENT_NUMBER.test(spelt) || n < 1)) throw revparseUnresolved(arg);
   const base = arg.slice(0, at);
-  const excluded = await parentsOf(ctx, table, base, true, n);
+  const excluded = await parentsOf(ctx, table, base, 'uninteresting', n);
   return excluded === undefined ? { excluded: [], rest: arg } : { excluded, rest: base };
 };
 
@@ -177,7 +183,7 @@ const readTip = async (
       ? await readReporting(ctx, table, name)
       : await readNamedObject(ctx, table, name, arg);
   await requireReference(ctx, table, name, id);
-  return tip(id, negated);
+  return { id, negated };
 };
 
 /** The tips `arg` expands to, in the order git adds them to the walk. */
@@ -191,7 +197,7 @@ export const expandRevisionArgument = async (
   if (range !== undefined) return range;
   const parentsBase = endingWith(arg, PARENTS_MARK);
   const parents =
-    parentsBase === undefined ? undefined : await parentsOf(ctx, table, parentsBase, false);
+    parentsBase === undefined ? undefined : await parentsOf(ctx, table, parentsBase, 'interesting');
   if (parents !== undefined) return parents;
   const withoutParents = await shrinkExcludeParents(ctx, table, arg);
   const withoutParent = await shrinkExcludeParent(ctx, table, withoutParents.rest);
@@ -225,14 +231,15 @@ export const expandRevisionArguments = async (
   const wants: ObjectId[] = [];
   const not: ObjectId[] = [];
   const tips: PendingTip[] = [];
-  const place = (expanded: RevisionTip, flip: boolean): void => {
-    const excluded = expanded.negated !== flip;
+  const place = (expanded: RevisionTip, polarity: TipPolarity): void => {
+    const excluded = expanded.negated !== isUninteresting(polarity);
     (excluded ? not : wants).push(expanded.id);
     tips.push({ id: expanded.id, excluded });
   };
   for (const arg of args.wants)
-    for (const t of await expandRevisionArgument(ctx, table, arg, source)) place(t, false);
+    for (const t of await expandRevisionArgument(ctx, table, arg, source)) place(t, 'interesting');
   for (const arg of args.not)
-    for (const t of await expandRevisionArgument(ctx, table, arg, source)) place(t, true);
+    for (const t of await expandRevisionArgument(ctx, table, arg, source))
+      place(t, 'uninteresting');
   return { wants, not, tips };
 };

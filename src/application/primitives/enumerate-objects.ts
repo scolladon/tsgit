@@ -33,27 +33,31 @@ export async function enumerateObjects(
   opts?: EnumerateObjectsOptions,
 ): Promise<ReadonlyArray<ObjectId>> {
   const includePacks = opts?.includePacks !== false;
-  const accessiblePacksOnly = opts?.accessiblePacksOnly === true;
+  const packs: PackSelection = opts?.accessiblePacksOnly === true ? 'accessible' : 'all';
   const store = await getObjectStore(ctx);
   const sources = opts?.scope === 'local' ? [store.primary] : store.sources;
   const ids = new Set<ObjectId>();
 
   for (const source of sources) {
     await collectLooseObjectIds(ctx, source, ids);
-    if (includePacks) await collectSourcePackIds(source, accessiblePacksOnly, ids);
+    if (includePacks) await collectSourcePackIds(source, packs, ids);
   }
 
   return [...ids].sort();
 }
 
+/** Which of a source's packs contribute ids: every registered one, or only those the registry can open. */
+type PackSelection = 'all' | 'accessible';
+
 async function collectSourcePackIds(
   source: ObjectSource,
-  accessiblePacksOnly: boolean,
+  selection: PackSelection,
   ids: Set<ObjectId>,
 ): Promise<void> {
-  const packs = accessiblePacksOnly
-    ? (await source.registry.health()).accessible
-    : await source.registry.all();
+  const packs =
+    selection === 'accessible'
+      ? (await source.registry.health()).accessible
+      : await source.registry.all();
   await collectPackedObjectIds(packs, ids);
 }
 

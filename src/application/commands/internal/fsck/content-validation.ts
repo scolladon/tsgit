@@ -420,7 +420,7 @@ function claimSpecialNames(
 function catalogueFindings(
   ctx: Context,
   body: Pick<ReadableObject, 'kind' | 'rawBody'>,
-  strict: boolean,
+  { strict }: Pick<CatalogueOptions, 'strict'>,
   fileNames: ReadonlyArray<SpecialBlobName>,
 ): ReadonlyArray<ObjectFinding> {
   const checked = fileNames.length === 0 ? [undefined] : fileNames;
@@ -449,7 +449,7 @@ function catalogueResult(
   if (raw.kind === 'tree') options.specialBlobs.noteTree(raw.rawBody);
   if (options.skipped.has(id)) return EMPTY_RESULT;
   const fileNames = raw.kind === 'blob' ? claimSpecialNames(options.specialBlobs, id) : [];
-  const catalogued = catalogueFindings(ctx, raw, options.strict, fileNames);
+  const catalogued = catalogueFindings(ctx, raw, options, fileNames);
   return retypedFindings(id, raw.kind, catalogued, options.severities);
 }
 
@@ -695,7 +695,7 @@ async function deferredCheck(
   }
   const fileNames = claimSpecialNames(options.specialBlobs, id);
   const body = { kind: 'blob', rawBody: object.content } as const;
-  const catalogued = catalogueFindings(ctx, body, options.strict, fileNames);
+  const catalogued = catalogueFindings(ctx, body, options, fileNames);
   return retypedFindings(id, 'blob', catalogued, options.severities);
 }
 
