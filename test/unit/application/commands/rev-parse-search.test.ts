@@ -1,9 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { evaluateRevision, revParse } from '../../../../src/application/commands/rev-parse.js';
+import * as objectResolverModule from '../../../../src/application/primitives/object-resolver.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import { parseCommitContent } from '../../../../src/domain/objects/commit.js';
 import type { Commit, ObjectId } from '../../../../src/domain/objects/index.js';
+import * as extendedRegexModule from '../../../../src/domain/regex/extended-regex.js';
 import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { writeCommitGraph, writeRawObjectBytes } from '../primitives/fixtures.js';
@@ -341,64 +343,92 @@ describe('Given a commit naming an absent parent', () => {
   });
 });
 
+type Matching = (subject: string, matches: () => boolean, abort: () => void) => boolean;
+
 /**
- * A signal no reader sees aborted whose check throws `reason` from its second
- * call on — once the walk has popped its first commit.
+ * A message search over a signal `around` can abort as the search's own regex
+ * runs, recording each object read entered once the signal has aborted.
  */
-const abortingAfterFirstCheck = (reason: Error): AbortSignal => {
-  let checks = 0;
-  const throwIfAborted = (): void => {
-    checks += 1;
-    if (checks > 1) throw reason;
-  };
-  return { aborted: false, throwIfAborted } as unknown as AbortSignal;
+const abortableSearch = (ctx: Context, around: Matching) => {
+  const controller = new AbortController();
+  const readsAfterAbort: ObjectId[] = [];
+  const compile = extendedRegexModule.compileExtendedRegex;
+  vi.spyOn(extendedRegexModule, 'compileExtendedRegex').mockImplementation((pattern) => {
+    const regex = compile(pattern);
+    if (regex === undefined) return undefined;
+    const test: typeof regex.test = (subject, check) =>
+      around(
+        subject,
+        () => regex.test(subject, check),
+        () => controller.abort(),
+      );
+    return { ...regex, test };
+  });
+  const resolve = objectResolverModule.resolveObject;
+  vi.spyOn(objectResolverModule, 'resolveObject').mockImplementation((context, ...rest) => {
+    if (controller.signal.aborted) readsAfterAbort.push(rest[1]);
+    return resolve(context, ...rest);
+  });
+  const resolveContent = objectResolverModule.resolveObjectContentWithDepth;
+  vi.spyOn(objectResolverModule, 'resolveObjectContentWithDepth').mockImplementation(
+    (context, ...rest) => {
+      if (controller.signal.aborted) readsAfterAbort.push(rest[1]);
+      return resolveContent(context, ...rest);
+    },
+  );
+  return { ctx: { ...ctx, signal: controller.signal }, readsAfterAbort };
 };
 
-const rejection = async (run: () => Promise<unknown>): Promise<unknown> => {
-  try {
-    await run();
-  } catch (error) {
-    return error;
-  }
-  return undefined;
-};
+describe('Given a message search whose signal aborts once its first commit is examined', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
-describe('Given a signal aborted once a message search popped its first commit', () => {
   describe('When the walk pops the next commit', () => {
-    it('Then the search rejects with the abort reason', async () => {
+    it('Then the search rejects as an aborted operation before reading another object', async () => {
       // Arrange
       const { ctx } = await searchRepo();
-      const reason = new Error('stopped');
-      const aborting = { ...ctx, signal: abortingAfterFirstCheck(reason) };
+      const search = abortableSearch(ctx, (_subject, matches, abort) => {
+        const matched = matches();
+        abort();
+        return matched;
+      });
       const sut = evaluateRevision;
 
       // Act
-      const result = await rejection(() => sut(aborting, 'HEAD^{/first}'));
+      const result = await failureCode(() => sut(search.ctx, 'HEAD^{/first}'));
 
       // Assert
-      expect(result).toBe(reason);
+      expect(result).toBe('OPERATION_ABORTED');
+      expect(search.readsAfterAbort).toEqual([]);
     });
   });
 });
 
-describe('Given a signal aborted once a long message is read', () => {
+describe('Given a message search whose signal aborts as a long message is matched', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe('When the automaton steps through the message', () => {
-    it('Then the search rejects with the abort reason', async () => {
+    it('Then the search rejects as an aborted operation instead of finishing the match', async () => {
       // Arrange
-      const ctx = createMemoryContext();
-      const tree = await writeRawObjectBytes(ctx, 'tree', new Uint8Array());
+      const base = createMemoryContext();
+      const tree = await writeRawObjectBytes(base, 'tree', new Uint8Array());
       const message = `${'a'.repeat(LONG_MESSAGE_LENGTH)}c\n`;
-      const long = await writeCommit(ctx, tree, [], 1, message);
-      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${long}\n`);
-      const reason = new Error('stopped');
-      const aborting = { ...ctx, signal: abortingAfterFirstCheck(reason) };
+      const long = await writeCommit(base, tree, [], 1, message);
+      await base.fs.writeUtf8(`${base.layout.gitDir}/HEAD`, `${long}\n`);
+      const search = abortableSearch(base, (_subject, matches, abort) => {
+        abort();
+        return matches();
+      });
       const sut = evaluateRevision;
 
       // Act
-      const result = await rejection(() => sut(aborting, `${long}^{/a.*c}`));
+      const result = await failureCode(() => sut(search.ctx, `${long}^{/a.*c}`));
 
       // Assert
-      expect(result).toBe(reason);
+      expect(result).toBe('OPERATION_ABORTED');
     });
   });
 });

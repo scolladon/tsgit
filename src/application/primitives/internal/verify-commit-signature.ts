@@ -18,6 +18,7 @@ import type { Context } from '../../../ports/context.js';
 import type { ParsedConfig } from '../config-read.js';
 import { getSpawnCwd } from '../path-layout.js';
 import { DEFAULT_OPENPGP_PROGRAM, DEFAULT_SSH_PROGRAM } from '../sign-payload.js';
+import { checkAborted } from './retry-after-rescan.js';
 import { removeIgnoringMissing, stageTempFile } from './stage-temp-file.js';
 
 /**
@@ -119,8 +120,8 @@ const spawnOrNothing = async (
       ...(stdin !== undefined ? { stdin } : {}),
       ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
     });
-  } catch (error) {
-    if (ctx.signal?.aborted === true) throw error;
+  } catch {
+    checkAborted(ctx);
     return undefined;
   }
 };
@@ -138,9 +139,9 @@ const EMPTY = new Uint8Array(0);
 const makeRunTool =
   (ctx: Context, runner: CommandRunner): RunTool =>
   async (program, args, stdin) => {
-    ctx.signal?.throwIfAborted();
+    checkAborted(ctx);
     const result = await spawnOrNothing(ctx, runner, [program, args], stdin);
-    ctx.signal?.throwIfAborted();
+    checkAborted(ctx);
     if (result === undefined || isCannotExec(result.exitCode)) return CANNOT_EXEC;
     return {
       exitCode: result.exitCode,

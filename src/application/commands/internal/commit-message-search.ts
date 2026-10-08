@@ -17,6 +17,7 @@ import {
   commitMetaOf,
   readCommitMeta,
 } from '../../primitives/internal/read-commit-meta.js';
+import { checkAborted } from '../../primitives/internal/retry-after-rescan.js';
 import { readRawObject } from '../../primitives/read-object.js';
 import { resolveRefForReading } from '../../primitives/resolve-ref.js';
 
@@ -45,7 +46,7 @@ export const searchCommitMessages = async (
   };
   for (const seed of seeds) enqueue(walk, seed.id, await commitMetaOf(ctx, seed));
   for (let top = walk.heap.pop(); top !== undefined; top = walk.heap.pop()) {
-    ctx.signal?.throwIfAborted();
+    checkAborted(ctx);
     await enqueueParents(ctx, walk, top.parents);
     if (await messageMatches(ctx, top.id, test)) return top.id;
   }
@@ -181,8 +182,7 @@ const messageMatches = async (ctx: Context, id: ObjectId, test: MessageTest): Pr
   const content = await readCommitContent(ctx, id);
   if (content === undefined) return false;
   const body = commitBodyBytes(content);
-  const matched =
-    body !== undefined && test.pattern.test(asCString(body), () => ctx.signal?.throwIfAborted());
+  const matched = body !== undefined && test.pattern.test(asCString(body), () => checkAborted(ctx));
   return matched !== test.negated;
 };
 

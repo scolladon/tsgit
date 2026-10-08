@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { verifyCommitSignature } from '../../../../../src/application/primitives/internal/verify-commit-signature.js';
+import { TsgitError } from '../../../../../src/domain/error.js';
 import type {
   CommandRequest,
   CommandResult,
@@ -75,6 +76,9 @@ const gpgContext = (stdout: string, stderr = ''): Context =>
   harness(() => ({ stdout, stderr })).ctx;
 
 const GPG_INPUT = { payload: PAYLOAD, signature: PGP_SIG };
+
+const abortCode = (error: unknown): string | undefined =>
+  error instanceof TsgitError ? error.data.code : undefined;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -637,20 +641,23 @@ describe('verifyCommitSignature', () => {
 
   describe('Given a runner aborted through the context signal', () => {
     describe('When the signature is verified', () => {
-      it('Then the abort is rethrown and the buffer is removed', async () => {
+      it('Then it rejects as an aborted operation and the buffer is removed', async () => {
         // Arrange
         const controller = new AbortController();
         const rig = harness(() => {
           controller.abort();
           return 'throw';
         });
-        const aborted = { ...rig.ctx, signal: controller.signal };
+        const sut = verifyCommitSignature;
 
         // Act
-        const act = verifyCommitSignature(aborted, { payload: PAYLOAD, signature: PGP_SIG });
+        const result = await sut(
+          { ...rig.ctx, signal: controller.signal },
+          { payload: PAYLOAD, signature: PGP_SIG },
+        ).catch((error: unknown) => error);
 
         // Assert
-        await expect(act).rejects.toThrow('spawn failed');
+        expect(abortCode(result)).toBe('OPERATION_ABORTED');
         expect(await rig.ctx.fs.exists(rig.bufferPath)).toBe(false);
       });
     });
@@ -658,12 +665,11 @@ describe('verifyCommitSignature', () => {
 
   describe('Given an ssh verification whose signal aborts while the first verifier runs', () => {
     describe('When the signature is verified', () => {
-      it('Then it rejects with the abort reason, spawns nothing further and removes the buffer', async () => {
+      it('Then it rejects as an aborted operation, spawns nothing further and removes the buffer', async () => {
         // Arrange
         const controller = new AbortController();
-        const reason = new Error('stop');
         const rig = harness(() => {
-          controller.abort(reason);
+          controller.abort();
           return { exitCode: 128 };
         });
         const sut = verifyCommitSignature;
@@ -679,7 +685,7 @@ describe('verifyCommitSignature', () => {
         ).catch((error: unknown) => error);
 
         // Assert
-        expect(result).toBe(reason);
+        expect(abortCode(result)).toBe('OPERATION_ABORTED');
         expect(rig.requests).toHaveLength(1);
         expect(await rig.ctx.fs.exists(rig.bufferPath)).toBe(false);
       });
@@ -688,11 +694,10 @@ describe('verifyCommitSignature', () => {
 
   describe('Given a signal that aborted before verification', () => {
     describe('When the signature is verified', () => {
-      it('Then it rejects with the abort reason without spawning a verifier', async () => {
+      it('Then it rejects as an aborted operation without spawning a verifier', async () => {
         // Arrange
         const controller = new AbortController();
-        const reason = new Error('stop');
-        controller.abort(reason);
+        controller.abort();
         const rig = harness(() => ({}));
         const sut = verifyCommitSignature;
 
@@ -703,7 +708,7 @@ describe('verifyCommitSignature', () => {
         ).catch((error: unknown) => error);
 
         // Assert
-        expect(result).toBe(reason);
+        expect(abortCode(result)).toBe('OPERATION_ABORTED');
         expect(rig.requests).toEqual([]);
       });
     });
