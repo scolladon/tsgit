@@ -36,7 +36,7 @@ import type { Context } from '../../../ports/context.js';
 import { getObjectStore } from '../object-store.js';
 import { readObject } from '../read-object.js';
 import { readTree } from '../read-tree.js';
-import { MAX_PUSH_OBJECTS } from '../types.js';
+import { MAX_PUSH_OBJECTS, type WalkTreeOptions } from '../types.js';
 import { isGitlink } from '../validators.js';
 import { walkCommitsStoppingAt } from '../walk-commits.js';
 import { walkTree } from '../walk-tree.js';
@@ -241,19 +241,21 @@ const asBadTree = (ctx: Context, scope: TreeEmitScope, error: unknown): unknown 
   return badTreeObject(id);
 };
 
+/** The listing prunes subtrees already marked uninteresting or emitted. */
+const treeContentsWalk = (scope: TreeEmitScope): WalkTreeOptions => ({
+  pathHasher: PACK_NAME_HASH_V1,
+  maxDepth: scope.maxDepth,
+  skipTree: (id: ObjectId): boolean => scope.marked.has(id) || scope.emitted.has(id),
+  strictSubtrees: scope.objectTypes !== undefined,
+});
+
 async function emitTreeContents(
   ctx: Context,
   treeId: ObjectId,
   scope: TreeEmitScope,
   emit: Emit,
 ): Promise<void> {
-  const skipTree = (id: ObjectId): boolean => scope.marked.has(id) || scope.emitted.has(id);
-  for await (const entry of walkTree(ctx, treeId, {
-    pathHasher: PACK_NAME_HASH_V1,
-    maxDepth: scope.maxDepth,
-    skipTree,
-    strictSubtrees: scope.objectTypes !== undefined,
-  })) {
+  for await (const entry of walkTree(ctx, treeId, treeContentsWalk(scope))) {
     if (isGitlink(entry.mode)) continue;
     const type = isDirectory(entry.mode) ? 'tree' : 'blob';
     if (!assignObjectType(ctx, scope.objectTypes, entry.id, type)) {
@@ -591,6 +593,23 @@ async function emitListed(
   for (const commit of listed.walked) await emitTree(ctx, commit.tree, scope, emit);
 }
 
+const closureMarks = (ctx: Context, request: ClosureRequest): Promise<NotMarksAccumulator> =>
+  createNotMarks(ctx, {
+    objects: request.objects,
+    ...(request.objectTypes === undefined ? {} : { objectTypes: request.objectTypes }),
+  });
+
+const treeEmitScope = (
+  marks: NotMarks,
+  state: EmitState,
+  request: ClosureRequest,
+): TreeEmitScope => ({
+  marked: marks.objects,
+  emitted: state.emitted,
+  maxDepth: marks.maxDepth,
+  objectTypes: request.objectTypes,
+});
+
 async function walkClosure(ctx: Context, request: ClosureRequest): Promise<ClosureObject[]> {
   const state: EmitState = { emitted: new Set<ObjectId>(), cap: MAX_PUSH_OBJECTS };
   const results: ClosureObject[] = [];
@@ -599,16 +618,8 @@ async function walkClosure(ctx: Context, request: ClosureRequest): Promise<Closu
     results.push(entry);
   };
 
-  const marks = await createNotMarks(ctx, {
-    objects: request.objects,
-    ...(request.objectTypes === undefined ? {} : { objectTypes: request.objectTypes }),
-  });
-  const scope: TreeEmitScope = {
-    marked: marks.objects,
-    emitted: state.emitted,
-    maxDepth: marks.maxDepth,
-    objectTypes: request.objectTypes,
-  };
+  const marks = await closureMarks(ctx, request);
+  const scope = treeEmitScope(marks, state, request);
   const resolved = await resolveTips(ctx, request, marks);
   const walked = await listCommitSeeds(ctx, resolved, marks, request);
   await emitListed(ctx, { walked, pending: resolved.pending }, scope, request, emit);

@@ -234,6 +234,27 @@ const normalise = async (
 const unresolvableAt = (path: string, listedIn: string) =>
   ({ reason: 'unresolvable', path, listedIn }) as const;
 
+const notADirectoryAt = (path: string, listedIn: string) =>
+  ({ reason: 'not-a-directory', path, listedIn }) as const;
+
+const unreachableAt = (
+  path: string,
+  listedIn: string,
+  code: string | undefined,
+): AlternateDiagnostic => ({
+  reason: 'unreachable',
+  path,
+  listedIn,
+  ...(code === undefined ? {} : { code }),
+});
+
+/** A missing path, or one crossing a non-directory, is not a directory; any other failure is unreachable. */
+const statFailureAt = (path: string, listedIn: string, error: unknown): AlternateDiagnostic => {
+  const code = errorDataCode(error);
+  if (code === FILE_NOT_FOUND || code === NOT_A_DIRECTORY) return notADirectoryAt(path, listedIn);
+  return unreachableAt(path, listedIn, code);
+};
+
 /** The entry's real path, trailing slashes dropped; reported and `undefined` when it has none. */
 const realEntryPath = async (
   resolution: Resolution,
@@ -251,14 +272,7 @@ const realEntryPath = async (
     if (real === undefined) return void report(resolution, unresolvableAt(joined, holder));
     return real.replace(TRAILING_SLASHES, '');
   } catch (error) {
-    const code = errorDataCode(error);
-    report(resolution, {
-      reason: 'unreachable',
-      path: joined,
-      listedIn: holder,
-      ...(code === undefined ? {} : { code }),
-    });
-    return undefined;
+    return void report(resolution, unreachableAt(joined, holder, errorDataCode(error)));
   }
 };
 
@@ -268,23 +282,15 @@ const isDirectory = async (
   holder: string,
 ): Promise<boolean> => {
   if (path === TRIMMED_ROOT) {
-    report(resolution, { reason: 'not-a-directory', path, listedIn: holder });
+    report(resolution, notADirectoryAt(path, holder));
     return false;
   }
   try {
     const stat = await resolution.io.probe(path).stat(path);
-    if (!stat.isDirectory)
-      report(resolution, { reason: 'not-a-directory', path, listedIn: holder });
+    if (!stat.isDirectory) report(resolution, notADirectoryAt(path, holder));
     return stat.isDirectory;
   } catch (error) {
-    const code = errorDataCode(error);
-    const absent = code === FILE_NOT_FOUND || code === NOT_A_DIRECTORY;
-    report(resolution, {
-      reason: absent ? 'not-a-directory' : 'unreachable',
-      path,
-      listedIn: holder,
-      ...(code === undefined || absent ? {} : { code }),
-    });
+    report(resolution, statFailureAt(path, holder, error));
     return false;
   }
 };

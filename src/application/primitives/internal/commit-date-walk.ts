@@ -211,14 +211,17 @@ const enqueueCommit = async (ctx: Context, walk: DateWalk, id: ObjectId): Promis
   }
 };
 
+/**
+ * The arrival is ticketed before any await: callers resolve candidates in
+ * git's push order (seeds as given, parents in parent order), so the ticket is
+ * that order whatever the reads' completion timing. A dropped candidate's gap
+ * is inert.
+ */
 const resolveHeapEntry = async (
   ctx: Context,
   walk: DateWalk,
   id: ObjectId,
 ): Promise<HeapEntry | undefined> => {
-  // Ticketed before any await: callers resolve candidates in git's push order
-  // (seeds as given, parents in parent order), so the ticket is that order
-  // whatever the reads' completion timing. A dropped candidate's gap is inert.
   const arrival = walk.arrivals;
   walk.arrivals += 1;
   const header = await commitHeader(ctx, id);

@@ -1624,6 +1624,15 @@ const applyCoreEntry = (
   if (lowered === 'hookspath') return { ...core, hooksPath: value };
   if (lowered === 'notesref') return { ...core, notesRef: value };
   if (lowered === 'sshcommand') return { ...core, sshCommand: value };
+  return applyCoreParsedEntry(core, lowered, value);
+};
+
+/** Handles the `[core]` keys whose value goes through a dedicated numeric grammar. */
+const applyCoreParsedEntry = (
+  core: MutableCore,
+  lowered: string,
+  value: string,
+): MutableCore | undefined => {
   if (lowered === 'loosecompression' || lowered === 'compression') {
     return applyLooseCompressionEntry(core, lowered, value);
   }
@@ -1759,35 +1768,35 @@ const mergeRemoteTopLevel = (acc: { remotePushDefault?: string }, sec: IniSectio
   }
 };
 
+type MutableBranch = {
+  remote?: string;
+  merge?: string;
+  merges?: ReadonlyArray<string>;
+  pushRemote?: string;
+};
+
+const applyBranchEntry = (next: MutableBranch, key: string, value: string): void => {
+  if (key === 'remote') next.remote = value;
+  else if (key === 'merge') {
+    // git's upstream is `merge[0]`: the first value read.
+    next.merge ??= value;
+    next.merges = [...(next.merges ?? []), value];
+  }
+  // Git config keys are case-insensitive; compare pushRemote on the lower-cased key.
+  else if (key.toLowerCase() === 'pushremote') next.pushRemote = value;
+};
+
 const mergeBranch = (
-  acc: {
-    branch?: Map<
-      string,
-      { remote?: string; merge?: string; merges?: ReadonlyArray<string>; pushRemote?: string }
-    >;
-  },
+  acc: { branch?: Map<string, MutableBranch> },
   name: string,
   sec: IniSection,
 ): void => {
   acc.branch ??= new Map();
   const current = acc.branch.get(name) ?? {};
-  const next: {
-    remote?: string;
-    merge?: string;
-    merges?: ReadonlyArray<string>;
-    pushRemote?: string;
-  } = { ...current };
+  const next: MutableBranch = { ...current };
   for (const { key, value } of sec.entries) {
     // String-typed fields skip null (valueless key treated as absent).
-    if (value === null) continue;
-    if (key === 'remote') next.remote = value;
-    else if (key === 'merge') {
-      // git's upstream is `merge[0]`: the first value read.
-      next.merge ??= value;
-      next.merges = [...(next.merges ?? []), value];
-    }
-    // Git config keys are case-insensitive; compare pushRemote on the lower-cased key.
-    else if (key.toLowerCase() === 'pushremote') next.pushRemote = value;
+    if (value !== null) applyBranchEntry(next, key, value);
   }
   acc.branch.set(name, next);
 };

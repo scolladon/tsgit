@@ -391,17 +391,21 @@ async function probeStoredType(ctx: Context, id: ObjectId): Promise<ObjectType |
   return retryOnceAfterRescan(ctx, store, id, probe);
 }
 
+/**
+ * Same order as resolveObjectContentWithDepth: the store-setup gate runs
+ * before the virtual tree short-circuit.
+ */
+async function verifiedEmptyTree(registry: PackRegistry): Promise<VerifiedObject> {
+  await registry.assertLoadable();
+  return VIRTUAL_EMPTY_TREE;
+}
+
 async function hashStoredObject(
   ctx: Context,
   registry: PackRegistry,
   id: ObjectId,
 ): Promise<VerifiedObject> {
-  if (id === emptyTreeOid(ctx.hashConfig)) {
-    // Same order as resolveObjectContentWithDepth: the store-setup gate runs
-    // before the virtual tree short-circuit.
-    await registry.assertLoadable();
-    return VIRTUAL_EMPTY_TREE;
-  }
+  if (id === emptyTreeOid(ctx.hashConfig)) return verifiedEmptyTree(registry);
   const source = await openBlobSource(ctx, id, MAX_BUFFERED_BLOB_BYTES, {
     verifyHash: true,
     ...(await readOrderFor(ctx, id)),
