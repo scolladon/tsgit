@@ -401,4 +401,76 @@ describe.skipIf(!GIT_AVAILABLE || !GPG_AVAILABLE)('commit signing interop', () =
       });
     });
   });
+
+  /** A shell-escaped carriage return: `printf` turns it into the byte. */
+  const SHELL_CR = '\\r';
+  const CRLF_ARMOR_LINES = {
+    openpgp: [
+      '-----BEGIN PGP SIGNATURE-----',
+      '',
+      `ab${SHELL_CR}cd`,
+      '-----END PGP SIGNATURE-----',
+    ],
+    ssh: ['-----BEGIN SSH SIGNATURE-----', `ab${SHELL_CR}cd`, '-----END SSH SIGNATURE-----'],
+  } as const;
+
+  /** A canned signer ending every armor line with CRLF and hiding one lone CR mid-line. */
+  const writeCrlfSigner = async (format: 'openpgp' | 'ssh'): Promise<string> => {
+    const signer = path.join(scriptsDir, `crlf-${format}-signer.sh`);
+    const armor = CRLF_ARMOR_LINES[format].map((line) => `${line}${SHELL_CR}\\n`).join('');
+    const emit =
+      format === 'openpgp'
+        ? [
+            'cat >/dev/null',
+            "echo '[GNUPG:] SIG_CREATED D 22 10 00 1700000000 CANNEDFPR0123456789' >&2",
+            `printf -- '${armor}'`,
+          ]
+        : ['for last in "$@"; do :; done', `printf -- '${armor}' > "$last.sig"`];
+    await writeFile(signer, ['#!/bin/sh', ...emit, ''].join('\n'));
+    await chmod(signer, 0o755);
+    return signer;
+  };
+
+  const initSigningPeer = async (format: 'openpgp' | 'ssh', signer: string): Promise<string> => {
+    const peer = await mkdtemp(path.join(scriptsDir, `crlf-${format}-peer-`));
+    initPeer(peer);
+    runGit(['-C', peer, 'config', 'gpg.format', format]);
+    runGit(['-C', peer, 'config', `gpg.${format === 'ssh' ? 'ssh.' : ''}program`, signer]);
+    runGit(['-C', peer, 'config', 'user.signingKey', fakeSshKey]);
+    return peer;
+  };
+
+  describe('Given both tools wired to a signer that writes its armor with carriage returns', () => {
+    describe('When each commits the same tree with signing on', () => {
+      it.each(['openpgp', 'ssh'] as const)(
+        'Then the %s signature is stored without them and both commits share one OID',
+        async (format) => {
+          // Arrange
+          const signer = await writeCrlfSigner(format);
+          const gitPeer = await initSigningPeer(format, signer);
+          const tsCtx = createNodeContext({ workDir: await initSigningPeer(format, signer) });
+          runGit(['-C', gitPeer, 'commit', '-q', '-S', '--allow-empty', '-m', 'crlf signer'], {
+            env: gitDateEnv(),
+          });
+          const gitOid = git(gitPeer, 'rev-parse', 'HEAD').trim();
+
+          // Act
+          const result = await commit(tsCtx, {
+            message: 'crlf signer',
+            author,
+            sign: true,
+            allowEmpty: true,
+          });
+
+          // Assert
+          const stored = await readObject(tsCtx, result.id);
+          if (stored.type !== 'commit') throw new Error('expected a commit object');
+          expect(stored.data.gpgSignature).toBe(
+            CRLF_ARMOR_LINES[format].join('\n').replace(SHELL_CR, ''),
+          );
+          expect(result.id).toBe(gitOid);
+        },
+      );
+    });
+  });
 });

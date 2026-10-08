@@ -716,6 +716,55 @@ describe('signPayload', () => {
       });
     });
   });
+
+  describe('Given an openpgp signer writing its armor with carriage returns', () => {
+    describe('When signPayload runs', () => {
+      it('Then every carriage return is dropped from the armor', async () => {
+        // Arrange
+        const runner = stubCommandRunner({
+          exitCode: 0,
+          stdout: enc(
+            '-----BEGIN PGP SIGNATURE-----\r\n\r\nab\rcd\r\n-----END PGP SIGNATURE-----\r\n',
+          ),
+          stderr: enc(SIG_CREATED_LINE),
+        });
+        const ctx = createMemoryContext({ command: runner });
+        const sut = signPayload;
+
+        // Act
+        const result = await sut(ctx, enc('payload'), { format: 'openpgp', selector: 'K' });
+
+        // Assert
+        expect(result).toEqual({ ok: true, armor: pgpArmor('abcd') });
+      });
+    });
+  });
+
+  describe('Given an ssh signer writing its armor with carriage returns', () => {
+    describe('When signPayload runs', () => {
+      it('Then every carriage return is dropped from the armor', async () => {
+        // Arrange
+        let ctx!: Context;
+        const runner = stubCommandRunner({
+          exitCode: 0,
+          onRun: async (request) => {
+            await ctx.fs.write(
+              `${stagedBuffer(request)}.sig`,
+              enc('-----BEGIN SSH SIGNATURE-----\r\nab\rcd\r\n-----END SSH SIGNATURE-----\r\n'),
+            );
+          },
+        });
+        ctx = createMemoryContext({ command: runner });
+        const sut = signPayload;
+
+        // Act
+        const result = await sut(ctx, enc('payload'), { format: 'ssh', selector: '/k' });
+
+        // Assert
+        expect(result).toEqual({ ok: true, armor: sshArmor('abcd') });
+      });
+    });
+  });
 });
 
 describe('resolveSigningSelector', () => {

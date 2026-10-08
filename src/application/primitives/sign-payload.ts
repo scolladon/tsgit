@@ -54,7 +54,13 @@ export interface ResolveSigningSelectorInput {
 export const resolveSigningSelector = (input: ResolveSigningSelectorInput): string =>
   input.keyOverride ?? input.signingKey ?? input.fallbackIdent;
 
+const CARRIAGE_RETURNS = /\r/g;
+
 const isWellFormedArmor = (text: string): boolean => ARMOR_PATTERN.test(text);
+
+/** git's `remove_cr_after`: every CR the signer wrote is dropped, not only those ending a line. */
+const signatureText = (bytes: Uint8Array): string =>
+  DECODER.decode(bytes).replace(CARRIAGE_RETURNS, '');
 
 /** git's `sign_buffer_gpg` test: a `SIG_CREATED` line opening the status or following a newline. */
 const reportsSignatureCreated = (status: string): boolean =>
@@ -71,7 +77,7 @@ const isFileNotFound = (error: unknown): boolean =>
 
 const readArmorIfPresent = async (ctx: Context, path: string): Promise<string | undefined> => {
   try {
-    return DECODER.decode(await ctx.fs.read(path));
+    return signatureText(await ctx.fs.read(path));
   } catch (error) {
     if (isFileNotFound(error)) return undefined;
     throw error;
@@ -94,7 +100,7 @@ const signWithOpenpgp = async (
     stderr: 'capture',
     ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
   });
-  const armor = DECODER.decode(result.stdout ?? EMPTY);
+  const armor = signatureText(result.stdout ?? EMPTY);
   const signed =
     result.exitCode === 0 &&
     reportsSignatureCreated(DECODER.decode(result.stderr ?? EMPTY)) &&
@@ -142,7 +148,8 @@ const signWithSsh = async (
  * a well-formed armor block on the signer's output and — for gpg — a
  * `SIG_CREATED` status line; anything else is a typed `signer-failed` refusal
  * carrying the signer's stderr — never a partial or silent result. As in git,
- * the signer's stderr is captured: hidden on success, returned on refusal.
+ * the signer's stderr is captured: hidden on success, returned on refusal,
+ * and every carriage return in the armor is dropped.
  */
 export const signPayload = async (
   ctx: Context,
