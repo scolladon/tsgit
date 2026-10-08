@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
+  resolveSignRequest,
   signOrThrow,
-  resolveSignRequest as sut,
 } from '../../../../../src/application/commands/internal/sign-request.js';
 import type { ParsedConfig } from '../../../../../src/application/primitives/config-read.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
@@ -25,6 +25,8 @@ describe('resolveSignRequest', () => {
         // Arrange
         const config: ParsedConfig = {};
 
+        const sut = resolveSignRequest;
+
         // Act
         const result = sut(config, identity, undefined);
 
@@ -39,6 +41,8 @@ describe('resolveSignRequest', () => {
       it('Then the format is ssh and the selector is the empty string', () => {
         // Arrange
         const config: ParsedConfig = { gpg: { format: 'ssh' } };
+
+        const sut = resolveSignRequest;
 
         // Act
         const result = sut(config, identity, undefined);
@@ -97,7 +101,10 @@ describe('resolveSignRequest', () => {
             'format openpgp with both an override signKey and user.signingKey has the override win over both',
         },
       ])('Then $label', ({ config, override, expectedSelector }) => {
-        // Arrange + Act
+        // Arrange
+        const sut = resolveSignRequest;
+
+        // Act
         const result = sut(config, identity, override);
 
         // Assert
@@ -111,6 +118,8 @@ describe('resolveSignRequest', () => {
       it('Then the request carries gpg.program', () => {
         // Arrange
         const config: ParsedConfig = { gpg: { format: 'openpgp', program: '/usr/bin/gpg2' } };
+
+        const sut = resolveSignRequest;
 
         // Act
         const result = sut(config, identity, undefined);
@@ -129,6 +138,8 @@ describe('resolveSignRequest', () => {
           gpg: { format: 'ssh', program: '/usr/bin/gpg2', ssh: { program: '/usr/bin/ssh-keygen' } },
         };
 
+        const sut = resolveSignRequest;
+
         // Act
         const result = sut(config, identity, undefined);
 
@@ -143,6 +154,8 @@ describe('resolveSignRequest', () => {
       it('Then program is omitted from the request entirely', () => {
         // Arrange
         const config: ParsedConfig = { gpg: { format: 'openpgp' } };
+
+        const sut = resolveSignRequest;
 
         // Act
         const result = sut(config, identity, undefined);

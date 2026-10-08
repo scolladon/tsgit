@@ -66,7 +66,7 @@ const signatureText = (bytes: Uint8Array): string =>
 const reportsSignatureCreated = (status: string): boolean =>
   status.startsWith(SIG_CREATED) || status.includes(`\n${SIG_CREATED}`);
 
-const signerFailed = (stderr: Uint8Array | undefined): SignPayloadResult => ({
+const signerRefusal = (stderr: Uint8Array | undefined): SignPayloadResult => ({
   ok: false,
   reason: 'signer-failed',
   output: DECODER.decode(stderr ?? EMPTY),
@@ -105,7 +105,7 @@ const signWithOpenpgp = async (
     result.exitCode === 0 &&
     reportsSignatureCreated(DECODER.decode(result.stderr ?? EMPTY)) &&
     isWellFormedArmor(armor);
-  return signed ? { ok: true, armor } : signerFailed(result.stderr);
+  return signed ? { ok: true, armor } : signerRefusal(result.stderr);
 };
 
 const signWithSsh = async (
@@ -126,11 +126,11 @@ const signWithSsh = async (
       stderr: 'capture',
       ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
     });
-    if (result.exitCode !== 0) return signerFailed(result.stderr);
+    if (result.exitCode !== 0) return signerRefusal(result.stderr);
     const armor = await readArmorIfPresent(ctx, sigPath);
     return armor !== undefined && isWellFormedArmor(armor)
       ? { ok: true, armor }
-      : signerFailed(result.stderr);
+      : signerRefusal(result.stderr);
   } finally {
     await removeIgnoringMissing(ctx, tmp);
     await removeIgnoringMissing(ctx, sigPath);
