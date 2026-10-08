@@ -270,20 +270,17 @@ export async function writeCommitGraph(ctx: Context): Promise<WriteCommitGraphRe
   if (commits.length === 0) return { commitCount: 0 };
 
   const changedPaths = await changedPathsFor(ctx, commits, layers, settings);
-  const { bytes } = await serializeCommitGraphFile(
-    ctx,
-    commits,
-    EMPTY_COMMIT_GRAPH_BASE,
-    changedPaths,
-    generations,
-    pass,
-  );
+  const base = EMPTY_COMMIT_GRAPH_BASE;
+  const graph = await serializeCommitGraphFile(ctx, commits, base, changedPaths, generations, pass);
+  await replaceCommitGraphFile(ctx, graph.bytes);
+  return { commitCount: commits.length };
+}
 
+/** Replace `objects/info/commit-graph` with `bytes`, then expire any split chain it supersedes. */
+async function replaceCommitGraphFile(ctx: Context, bytes: Uint8Array): Promise<void> {
   const path = commitGraphPath(commonGitDir(ctx));
   await makeReplaceable(ctx, path);
   await atomicWriteFile(ctx, path, bytes, commitGraphLocked);
   await ctx.fs.chmod(path, COMMIT_GRAPH_FILE_MODE);
   await expireCommitGraphChain(ctx);
-
-  return { commitCount: commits.length };
 }

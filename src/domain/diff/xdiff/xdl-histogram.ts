@@ -150,8 +150,7 @@ function splitRegion(
   region: LineRegion,
   sink: RegionSink,
 ): ReadonlyArray<LineRegion> {
-  const { line1, count1, line2, count2 } = region;
-  if (count1 === 0 || count2 === 0) {
+  if (region.count1 === 0 || region.count2 === 0) {
     markRegion(sink, region);
     return [];
   }
@@ -164,6 +163,12 @@ function splitRegion(
     markRegion(sink, region);
     return [];
   }
+  return regionsAround(region, lcs);
+}
+
+/** The sub-regions before and after the common sequence `lcs` found in `region`. */
+function regionsAround(region: LineRegion, lcs: LcsSearch): ReadonlyArray<LineRegion> {
+  const { line1, count1, line2, count2 } = region;
   return [
     { line1, count1: lcs.begin1 - line1, line2, count2: lcs.begin2 - line2 },
     {

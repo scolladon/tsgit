@@ -220,15 +220,27 @@ const normalise = async (
   holder: string,
 ): Promise<string | undefined> => {
   const text = decodeEntry(entry);
-  const { probe, pathSyntax } = resolution.io;
+  const { pathSyntax } = resolution.io;
   const joined =
     text === undefined
       ? lossyUtf8.decode(entry)
       : pathSyntax.isAbsolute(text)
         ? text
         : `${holder}/${text}`;
-  const unresolvable = { reason: 'unresolvable', path: joined, listedIn: holder } as const;
-  if (text === undefined) return void report(resolution, unresolvable);
+  if (text === undefined) return void report(resolution, unresolvableAt(joined, holder));
+  return realEntryPath(resolution, joined, holder);
+};
+
+const unresolvableAt = (path: string, listedIn: string) =>
+  ({ reason: 'unresolvable', path, listedIn }) as const;
+
+/** The entry's real path, trailing slashes dropped; reported and `undefined` when it has none. */
+const realEntryPath = async (
+  resolution: Resolution,
+  joined: string,
+  holder: string,
+): Promise<string | undefined> => {
+  const { probe, pathSyntax } = resolution.io;
   try {
     const real = await realpathAllowingMissingLeaf(
       pathSyntax,
@@ -236,7 +248,7 @@ const normalise = async (
       joined,
       resolution.cwd,
     );
-    if (real === undefined) return void report(resolution, unresolvable);
+    if (real === undefined) return void report(resolution, unresolvableAt(joined, holder));
     return real.replace(TRAILING_SLASHES, '');
   } catch (error) {
     const code = errorDataCode(error);

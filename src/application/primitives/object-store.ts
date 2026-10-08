@@ -218,17 +218,24 @@ const storeOver = (state: StoreState, bigFileThreshold: number): ObjectStore => 
       return state.diagnostics;
     },
     bigFileThreshold,
-    refresh: () => {
-      primary.registry.refresh();
-      state.stale = true;
-    },
-    reprepare: async () => {
-      await Promise.all(state.sources.map((s) => s.registry.reprepare()));
-    },
-    dispose: async () => {
-      await Promise.all(state.sources.map((s) => s.registry.dispose()));
-    },
+    refresh: () => refreshStore(state, primary),
+    reprepare: () => reprepareSources(state),
+    dispose: () => disposeSources(state),
   };
+};
+
+/** Re-scan the primary's packs now; re-read the alternates on the next resolve. */
+const refreshStore = (state: StoreState, primary: ObjectSource): void => {
+  primary.registry.refresh();
+  state.stale = true;
+};
+
+const reprepareSources = async (state: StoreState): Promise<void> => {
+  await Promise.all(state.sources.map((s) => s.registry.reprepare()));
+};
+
+const disposeSources = async (state: StoreState): Promise<void> => {
+  await Promise.all(state.sources.map((s) => s.registry.dispose()));
 };
 
 const resolveAgain = (ctx: Context, state: StoreState): Promise<void> => {

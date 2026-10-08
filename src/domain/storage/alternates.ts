@@ -6,6 +6,8 @@ const BACKSLASH = 0x5c;
 const DIGIT_ZERO = 0x30;
 const OCTAL_RADIX = 8;
 const OCTAL_ESCAPE_LENGTH = 3;
+/** A single-character escape such as `\n`: one byte after the backslash. */
+const SIMPLE_ESCAPE_LENGTH = 1;
 const MAX_FIRST_OCTAL_DIGIT = 3;
 const MAX_OCTAL_DIGIT = 7;
 
@@ -53,19 +55,24 @@ export const unquoteCStyle = (bytes: Uint8Array, start: number): Unquoted | unde
       at++;
       continue;
     }
-    const escaped = bytes[at + 1];
-    const simple = escaped === undefined ? undefined : SIMPLE_ESCAPES.get(escaped);
-    if (simple !== undefined) {
-      out.push(simple);
-      at += 2;
-      continue;
-    }
-    const octal = readOctal(bytes, at + 1);
-    if (octal === undefined) return undefined;
-    out.push(octal);
-    at += 1 + OCTAL_ESCAPE_LENGTH;
+    const unescaped = readEscape(bytes, at + 1);
+    if (unescaped === undefined) return undefined;
+    out.push(unescaped.byte);
+    at += 1 + unescaped.length;
   }
   return undefined;
+};
+
+/** The byte the escape at `at`, just past a backslash, stands for, and how many bytes spell it. */
+const readEscape = (
+  bytes: Uint8Array,
+  at: number,
+): { readonly byte: number; readonly length: number } | undefined => {
+  const escaped = bytes[at];
+  const simple = escaped === undefined ? undefined : SIMPLE_ESCAPES.get(escaped);
+  if (simple !== undefined) return { byte: simple, length: SIMPLE_ESCAPE_LENGTH };
+  const octal = readOctal(bytes, at);
+  return octal === undefined ? undefined : { byte: octal, length: OCTAL_ESCAPE_LENGTH };
 };
 
 const lineEnd = (bytes: Uint8Array, from: number): number => {

@@ -55,29 +55,51 @@ async function outcomeOf(ctx: Context, id: ObjectId): Promise<CommitGraphWriterC
 
 /** One write's parser: successes kept, failures kept only as the line each later parse logs again. */
 export function createCommitGraphParser(ctx: Context): CommitGraphParser {
-  const parsed = new Map<ObjectId, CommitGraphWriterCommit>();
-  const failures = new Map<ObjectId, string>();
-  const parse = (id: ObjectId): void => {
-    const line = failures.get(id);
-    if (line !== undefined) ctx.logger?.error?.(line, { id });
+  const state: ParserState = { ctx, parsed: new Map(), failures: new Map() };
+  return {
+    parse: (id) => logFailure(state, id),
+    parsed: (id) => state.parsed.get(id),
+    probe: (id) => probeCommit(state, id),
+    read: (id) => readCommit(state, id),
   };
-  const settle = async (id: ObjectId): Promise<CommitGraphWriterCommit | string> => {
-    const outcome = parsed.get(id) ?? failures.get(id) ?? (await outcomeOf(ctx, id));
-    if (typeof outcome !== 'string') parsed.set(id, outcome);
-    return outcome;
-  };
-  const probe = async (id: ObjectId): Promise<CommitGraphWriterCommit | undefined> => {
-    const outcome = await settle(id);
-    return typeof outcome === 'string' ? undefined : outcome;
-  };
-  const read = async (id: ObjectId): Promise<CommitGraphWriterCommit | undefined> => {
-    const outcome = await settle(id);
-    if (typeof outcome !== 'string') return outcome;
-    failures.set(id, outcome);
-    parse(id);
-    return undefined;
-  };
-  return { parse, parsed: (id) => parsed.get(id), probe, read };
+}
+
+/** One parser's settled commits, and the line each failed parse logs. */
+interface ParserState {
+  readonly ctx: Context;
+  readonly parsed: Map<ObjectId, CommitGraphWriterCommit>;
+  readonly failures: Map<ObjectId, string>;
+}
+
+function logFailure(state: ParserState, id: ObjectId): void {
+  const line = state.failures.get(id);
+  if (line !== undefined) state.ctx.logger?.error?.(line, { id });
+}
+
+async function settle(state: ParserState, id: ObjectId): Promise<CommitGraphWriterCommit | string> {
+  const outcome =
+    state.parsed.get(id) ?? state.failures.get(id) ?? (await outcomeOf(state.ctx, id));
+  if (typeof outcome !== 'string') state.parsed.set(id, outcome);
+  return outcome;
+}
+
+async function probeCommit(
+  state: ParserState,
+  id: ObjectId,
+): Promise<CommitGraphWriterCommit | undefined> {
+  const outcome = await settle(state, id);
+  return typeof outcome === 'string' ? undefined : outcome;
+}
+
+async function readCommit(
+  state: ParserState,
+  id: ObjectId,
+): Promise<CommitGraphWriterCommit | undefined> {
+  const outcome = await settle(state, id);
+  if (typeof outcome !== 'string') return outcome;
+  state.failures.set(id, outcome);
+  logFailure(state, id);
+  return undefined;
 }
 
 /** The roots that name commits, in ref order — git's `--reachable` set. */

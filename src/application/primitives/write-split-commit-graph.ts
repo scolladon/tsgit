@@ -264,7 +264,23 @@ export async function writeSplitCommitGraph(ctx: Context): Promise<WriteSplitCom
   const fresh = await commitsOutsideGraph(ctx, parser, layers);
   const chainCount = layers.reduce((sum, { layer }) => sum + layer.commitCount, 0);
   if (fresh.length === 0) return { written: false, commitCount: chainCount };
+  return writeFreshLayer(ctx, { layers, parser, fresh, request, maxNewFilters });
+}
 
+/** Everything the new layer is planned from. */
+interface FreshLayerInput {
+  readonly layers: Awaited<ReturnType<typeof loadCommitGraphBaseLayers>>;
+  readonly parser: CommitGraphParser;
+  readonly fresh: ReadonlyArray<ObjectId>;
+  readonly request: Awaited<ReturnType<typeof changedPathsRequest>>;
+  readonly maxNewFilters: Awaited<ReturnType<typeof configuredMaxNewFilters>>;
+}
+
+/** Plan the split, fold the merged layers into the new one, and write it to the chain. */
+async function writeFreshLayer(
+  ctx: Context,
+  { layers, parser, fresh, request, maxNewFilters }: FreshLayerInput,
+): Promise<WriteSplitCommitGraphResult> {
   const plan = planSplit(layers, fresh.length);
   const order = mergedOrder([...fresh, ...(await foldedCommits(parser, plan.folded))]);
   const parsed = order.flatMap((id) => parser.parsed(id) ?? []);

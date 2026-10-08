@@ -437,6 +437,14 @@ const evalSpec = (spec: Spec, view: CommitView, env: FormatEnv): Uint8Array | un
       return NO_BYTES;
     case 'padding':
       return spec.literal ? undefined : NO_BYTES;
+    default:
+      return evalCommitSpec(spec, view, env);
+  }
+};
+
+/** A placeholder that reads the commit, or the environment it is shown in. */
+const evalCommitSpec = (spec: Spec, view: CommitView, env: FormatEnv): Uint8Array | undefined => {
+  switch (spec.kind) {
     case 'id':
       return encodeAscii(fullId(spec.of, view, env));
     case 'abbrev':
@@ -446,11 +454,7 @@ const evalSpec = (spec: Spec, view: CommitView, env: FormatEnv): Uint8Array | un
     case 'message':
       return evalMessage(spec.part, view);
     case 'trailers':
-      return formatTrailers(
-        view.message.subarray(skipBlankLines(view.message, 0)),
-        spec.options,
-        env.trailer,
-      );
+      return evalTrailers(spec.options, view, env);
     case 'decorations':
       return formatDecorations(env.decorations ?? [], spec.options);
     case 'describe':
@@ -461,6 +465,13 @@ const evalSpec = (spec: Spec, view: CommitView, env: FormatEnv): Uint8Array | un
       return undefined;
   }
 };
+
+const evalTrailers = (
+  options: Extract<Spec, { readonly kind: 'trailers' }>['options'],
+  view: CommitView,
+  env: FormatEnv,
+): Uint8Array =>
+  formatTrailers(view.message.subarray(skipBlankLines(view.message, 0)), options, env.trailer);
 
 const declinedSource = (spec: Spec): Uint8Array =>
   spec.kind === 'ident' ? encodeAscii(`${spec.letter}${spec.part}`) : NO_BYTES;

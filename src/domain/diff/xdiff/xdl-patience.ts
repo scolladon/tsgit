@@ -131,6 +131,12 @@ function gapEnd(
   return { line1, line2 };
 }
 
+/** A line on each side, 1-based. */
+interface LinePair {
+  readonly line1: number;
+  readonly line2: number;
+}
+
 /** xpatience.c's `walk_common_sequence`: queues every gap between the anchors. */
 function walkCommonSequence(
   classes: LineClasses,
@@ -138,27 +144,32 @@ function walkCommonSequence(
   region: LineRegion,
   pending: LineRegion[],
 ): void {
-  let line1 = region.line1;
-  let line2 = region.line2;
+  let from: LinePair = { line1: region.line1, line2: region.line2 };
   for (let entry: PatienceEntry | undefined = first; ; ) {
-    const next = gapEnd(classes, entry, { line1, line2 }, region);
-    while (
-      line1 < next.line1 &&
-      line2 < next.line2 &&
-      classes.ours[line1 - 1] === classes.theirs[line2 - 1]
-    ) {
-      line1++;
-      line2++;
-    }
+    const next = gapEnd(classes, entry, from, region);
+    const { line1, line2 } = skipEqualLines(classes, from, next);
     if (next.line1 > line1 || next.line2 > line2) {
       pending.push({ line1, count1: next.line1 - line1, line2, count2: next.line2 - line2 });
     }
     if (entry === undefined) return;
     const runEnd = endOfAnchorRun(entry);
-    line1 = runEnd.line1 + 1;
-    line2 = runEnd.line2 + 1;
+    from = { line1: runEnd.line1 + 1, line2: runEnd.line2 + 1 };
     entry = runEnd.next;
   }
+}
+
+/** Advance both sides past the lines they share before the gap ends at `next`. */
+function skipEqualLines(classes: LineClasses, from: LinePair, next: LinePair): LinePair {
+  let { line1, line2 } = from;
+  while (
+    line1 < next.line1 &&
+    line2 < next.line2 &&
+    classes.ours[line1 - 1] === classes.theirs[line2 - 1]
+  ) {
+    line1++;
+    line2++;
+  }
+  return { line1, line2 };
 }
 
 /** One `patience_diff` call: marks what it settles, queues the gaps left to diff. */
