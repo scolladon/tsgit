@@ -126,13 +126,15 @@ const backreferencing = (groups: number): fc.Arbitrary<Spelling> => {
 };
 
 /**
- * `(P)Q(R)S`: Q may read group 1 again, S groups 1 and 2 — both closed by
- * then, whichever of P and R holds the second. Groups nest one level inside
- * P and R and repetitions do not stack, so RegExp settles each small subject
- * in few steps.
+ * `(P)Q(R)S`: Q may read group 1 again, S groups 1 and 2. P holds no group,
+ * so both named groups stand outside every repetition and alternative: every
+ * path through them sets them, once — where RegExp, which reads an unset
+ * group as empty and forgets a group each repetition copy, answers as glibc
+ * does. Groups nest one level inside R and repetitions do not stack, so
+ * RegExp settles each small subject in few steps.
  */
 const backreferencePattern: fc.Arbitrary<Spelling> = fc
-  .tuple(smallPattern(1), backreferencing(1), smallPattern(1), backreferencing(2))
+  .tuple(smallPattern(0), backreferencing(1), smallPattern(1), backreferencing(2))
   .map(([first, between, second, after]) =>
     spelt(
       `(${first.ere})${between.ere}(${second.ere})${after.ere}`,

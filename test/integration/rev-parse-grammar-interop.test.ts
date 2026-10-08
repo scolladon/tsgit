@@ -39,9 +39,6 @@ const ABSENT_OID = '1'.repeat(40);
  * a back-reference, as tsgit does.
  */
 const GNU_REGEX = process.platform !== 'darwin';
-/** Rows whose answer hinges on reading `\1` as a back-reference. */
-const backreferenceRows = <Row>(rows: ReadonlyArray<Row>): ReadonlyArray<Row> =>
-  GNU_REGEX ? rows : [];
 
 const identityAt = (offset: number): NodeJS.ProcessEnv => ({
   ...runGitEnv(),
@@ -422,7 +419,6 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse ^{/regex} search parit
       'z^{/head}',
       'z^{/tail}',
       'tt^{/x}',
-      ...backreferenceRows(['HEAD^{/(s)ide \\1ame}']),
     ])('When git rev-parse and revParse read %s', (argument) => {
       it('Then both resolve the same object and print the same errors', async () => {
         // Arrange
@@ -434,6 +430,24 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse ^{/regex} search parit
         // Assert
         expect(result).toEqual(peer);
       });
+    });
+
+    describe.skipIf(!GNU_REGEX)('where the C library reads \\1 as a back-reference', () => {
+      describe.each(['HEAD^{/(s)ide \\1ame}'])(
+        'When git rev-parse and revParse read %s',
+        (argument) => {
+          it('Then both resolve the same object and print the same errors', async () => {
+            // Arrange
+            const peer = gitOutcome(repo, argument);
+
+            // Act
+            const result = await tsgitOutcome(repo, argument);
+
+            // Assert
+            expect(result).toEqual(peer);
+          });
+        },
+      );
     });
   });
 });
@@ -632,10 +646,6 @@ describe.skipIf(!GIT_AVAILABLE)('integration — a search pattern nesting repeti
     { argument: ':/^(a{7})\\1+$', resolves: false },
     { argument: ':/(ab)\\1', resolves: false },
     { argument: 'HEAD^{/(x)y\\1}', resolves: false },
-    ...backreferenceRows([
-      { argument: ':/^(a+)\\1$', resolves: true },
-      { argument: 'HEAD^{/^(xx)\\1+$}', resolves: true },
-    ]),
   ])('Given $argument over long runs of one character', ({ argument, resolves }) => {
     describe('When git rev-parse and revParse read it', () => {
       it('Then both resolve the same object', async () => {
@@ -651,4 +661,91 @@ describe.skipIf(!GIT_AVAILABLE)('integration — a search pattern nesting repeti
       });
     });
   });
+
+  describe.skipIf(!GNU_REGEX)('where the C library reads \\1 as a back-reference', () => {
+    describe.each([
+      { argument: ':/^(a+)\\1$', resolves: true },
+      { argument: 'HEAD^{/^(xx)\\1+$}', resolves: true },
+    ])('Given $argument over long runs of one character', ({ argument, resolves }) => {
+      describe('When git rev-parse and revParse read it', () => {
+        it('Then both resolve the same object', async () => {
+          // Arrange
+          const peer = gitOutcome(repo, argument);
+
+          // Act
+          const result = await tsgitOutcome(repo, argument);
+
+          // Assert
+          expect(result).toEqual(peer);
+          expect(peer.id !== undefined).toBe(resolves);
+        });
+      });
+    });
+  });
 });
+
+/**
+ * Subjects, oldest first, a back-reference to a group a repetition skipped or
+ * left unset tells apart. The rows spell `?` and `*` as intervals: either
+ * makes rev-parse read the argument as a pathspec.
+ */
+const UNSET_GROUP_SUBJECTS = ['y', 'b', 'abx', 'ab'];
+
+/** A chain of commits, oldest first, each message one subject without a trailing newline. */
+const buildSubjectsRepository = (repo: string): void => {
+  runGit(['init', '-q', '-b', 'main', repo]);
+  disableAutoMaintenance(repo);
+  const tree = runGit(['-C', repo, 'hash-object', '-t', 'tree', '-w', '--stdin'], {
+    input: EMPTY_TREE_INPUT,
+  }).trim();
+  const tip = UNSET_GROUP_SUBJECTS.reduce<ReadonlyArray<string>>((parents, subject, offset) => {
+    const stamp = `A <a@x> ${EPOCH + offset} +0000`;
+    const parentLines = parents.map((parent) => `parent ${parent}\n`).join('');
+    const content = `tree ${tree}\n${parentLines}author ${stamp}\ncommitter ${stamp}\n\n${subject}`;
+    return [
+      runGit(['-C', repo, 'hash-object', '-t', 'commit', '-w', '--stdin'], {
+        input: content,
+      }).trim(),
+    ];
+  }, []);
+  git(repo, 'update-ref', 'refs/heads/main', ...tip);
+};
+
+describe.skipIf(!GIT_AVAILABLE || !GNU_REGEX)(
+  'integration — a back-reference to a group a repetition skipped or left unset',
+  () => {
+    let repo = '';
+
+    beforeAll(async () => {
+      repo = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-unset-group-')));
+      buildSubjectsRepository(repo);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(repo, { recursive: true, force: true });
+    });
+
+    describe.each([
+      { argument: 'HEAD^{/(x){0,1}y\\1}', resolves: false },
+      { argument: 'HEAD^{/^(a){0}\\1b}', resolves: false },
+      { argument: 'HEAD^{/((a)|b)+x\\2}', resolves: false },
+      { argument: 'HEAD^{/^((a)|b){2}\\2}', resolves: false },
+      { argument: 'HEAD^{/^(a|())+\\2b$}', resolves: true },
+      { argument: 'HEAD^{/^(a|()){0,}\\2b$}', resolves: true },
+    ])('Given $argument over the subjects y, b, abx and ab', ({ argument, resolves }) => {
+      describe('When git rev-parse and revParse read it', () => {
+        it('Then both resolve the same object', async () => {
+          // Arrange
+          const peer = gitOutcome(repo, argument);
+
+          // Act
+          const result = await tsgitOutcome(repo, argument);
+
+          // Assert
+          expect(result).toEqual(peer);
+          expect(peer.id !== undefined).toBe(resolves);
+        });
+      });
+    });
+  },
+);

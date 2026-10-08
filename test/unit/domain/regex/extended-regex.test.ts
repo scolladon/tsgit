@@ -152,9 +152,20 @@ describe('compileExtendedRegex', () => {
         ['(ab)\\1', 'xabab', true],
         ['(ab)\\1', 'abba', false],
         ['^((a)|b?){1,2}c\\2', 'ac', false],
-        ['^((a)|b){2}\\2', 'ab', true],
-        ['^(a){0}\\1b', 'b', true],
+        ['^((a)|b){2}\\2', 'ab', false],
+        ['^((a)|b){2}\\2', 'aba', true],
+        ['^(a){0}\\1b', 'b', false],
+        ['(x)?y\\1', 'y', false],
+        ['(x)?y\\1', 'xyx', true],
+        ['(a)*x\\1', 'x', false],
+        ['((a)|b)+x\\2', 'abx', false],
+        ['((a)|b)+-\\2', 'ab-a', true],
         ['^(a|())+\\2b$', 'ab', true],
+        ['^(a|())*\\2b$', 'b', true],
+        ['^(b?)*\\1c$', 'bc', true],
+        ['^(a?)*x\\1$', 'x', true],
+        ['^(b|()){0,3}\\2c$', 'bbc', true],
+        ['^(a?)+\\1b$', 'aab', true],
         ['(a+)+b\\1c', 'aabac', true],
         ['\\<(\\w)\\1', 'a bb', true],
         ['^(a*)\\1$', 'aaaa', true],
@@ -644,21 +655,36 @@ describe('compileExtendedRegex', () => {
 
   describe('Given widest intervals each within the automaton budget but together past it', () => {
     describe('When it is compiled', () => {
-      it('Then it refuses before laying out copies past the budget', () => {
+      it('Then it refuses once the copies laid out pass the budget, not after laying out all', () => {
         // Arrange
         const sut = compileExtendedRegex;
-        const fill = vi.spyOn(Array.prototype, 'fill');
+        const from = vi.spyOn(Array, 'from');
 
         // Act
         const result = sut('a{32767}'.repeat(WIDE_INTERVALS));
 
         // Assert
-        const laidOut = fill.mock.contexts.reduce<number>(
-          (total, copies) => total + (copies as unknown[]).length,
-          0,
-        );
+        const laidOut = from.mock.calls
+          .map(([copies]) => copies)
+          .filter((copies) => typeof copies !== 'string')
+          .reduce<number>((total, copies) => total + (copies as ArrayLike<unknown>).length, 0);
         expect(result).toBeUndefined();
-        expect(laidOut).toBeLessThanOrEqual(MAX_PROGRAM_SIZE);
+        expect(laidOut).toBeLessThanOrEqual(MAX_PROGRAM_SIZE + MAX_REPEAT);
+      });
+    });
+  });
+
+  describe('Given a back-reference after an empty group repeated past the backtracking budget', () => {
+    describe('When it is compiled', () => {
+      it('Then it yields no matcher', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+
+        // Act
+        const result = sut('((){0,32767}){0,32767}\\2');
+
+        // Assert
+        expect(result).toBeUndefined();
       });
     });
   });

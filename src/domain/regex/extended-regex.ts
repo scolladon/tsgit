@@ -13,8 +13,11 @@
  *
  * A pattern without back-references runs as a Thompson automaton, in time
  * linear in the subject. One with back-references needs backtracking, which
- * follows ECMAScript's rules and spends at most a fixed number of steps on a
- * subject; one it cannot settle within them answers no match. The automaton
+ * spends at most a fixed number of steps on a subject; one it cannot settle
+ * within them answers no match. A back-reference reads the text its group
+ * last captured on the path, which a later repetition copy that skips the
+ * group leaves in place; one to a group no copy has captured matches nothing,
+ * as glibc's `regexec` has it. The automaton
  * first refuses, in linear time, a subject such a pattern cannot match even
  * with each back-reference read as any text.
  * A subject lacking text every match must contain is refused before the
@@ -36,6 +39,12 @@ const MAX_GROUP_NESTING = 500;
  */
 const MAX_PROGRAM_SIZE = 1 << 17;
 /**
+ * Most instructions the backtracking program may take — room for every
+ * nameable group nested inside the widest interval. glibc spends over a
+ * minute compiling an empty group repeated past it.
+ */
+const MAX_BACKTRACKING_PROGRAM_SIZE = 1 << 20;
+/**
  * Steps the backtracking matcher takes on one subject before answering no
  * match — about 50 ms of work, where glibc settles typical exponential
  * patterns in a few. A step runs one instruction or compares one character.
@@ -54,15 +63,13 @@ const FLAGS = 'su';
 const CHAR = 0;
 const ASSERT = 1;
 const FORK = 2;
-/** Records the position in a memory slot. */
+/** Records the position in a memory slot: a group's bounds, or where a repetition copy starts. */
 const SAVE = 3;
 /** Reads again the text a group captured. */
 const BACKREF = 4;
-/** Starts a repetition copy: records the position in a register and forgets the copy's captures. */
-const ITERATE = 5;
-/** Ends an optional repetition copy, failing where it read nothing. */
-const PROGRESS = 6;
-const MATCH = 7;
+/** Ends a copy of an unbounded repetition, leaving the repetition where the copy read nothing. */
+const PROGRESS = 5;
+const MATCH = 6;
 
 /** What a position is known by: bits for the subject's start and end, and a word character either side. */
 type Context = number;
@@ -76,8 +83,10 @@ const CONTEXTS = 16;
 /** Whether a zero-width assertion holds in a context. */
 type Assertion = (context: Context) => boolean;
 
-/** The word bits alone: 1 for a word character before only, 2 after only. */
-const wordSides = (context: Context): number => context >> 2;
+const wordBefore = (context: Context): boolean => (context & WORD_BEFORE) !== 0;
+const wordAfter = (context: Context): boolean => (context & WORD_AFTER) !== 0;
+/** A word character on one side only. */
+const atWordBoundary = (context: Context): boolean => wordBefore(context) !== wordAfter(context);
 
 /**
  * An automaton step. A `char` reads a code point its source — a one-character
@@ -124,11 +133,10 @@ interface Literals {
 
 type Starts = 'anywhere' | 'subject-start';
 
-/** A parsed expression: its program, its literal text and the groups it captures, a bit each. */
+/** A parsed expression: its program and its literal text. */
 interface Piece {
   readonly fragment: Fragment;
   readonly literals: Literals;
-  readonly captures: number;
 }
 
 interface Bounds {
@@ -145,8 +153,6 @@ const maskOf = (holds: Assertion): number => {
   return mask;
 };
 
-const NO_CAPTURES = 0;
-
 const plain = (code: number, operand: number, target = 0): Instruction => ({
   op: 'plain',
   code,
@@ -157,7 +163,6 @@ const plain = (code: number, operand: number, target = 0): Instruction => ({
 const anchor = (holds: Assertion, literals = OPAQUE): Piece => ({
   fragment: plain(ASSERT, maskOf(holds)),
   literals,
-  captures: NO_CAPTURES,
 });
 
 const SUBJECT_START = anchor((context) => (context & AT_START) !== 0, {
@@ -172,10 +177,10 @@ const PLAIN_ANCHORS: ReadonlyMap<string, Piece> = new Map([
 ]);
 
 const ESCAPED_ANCHORS: ReadonlyMap<string, Piece> = new Map([
-  ['<', anchor((context) => wordSides(context) === 2)],
-  ['>', anchor((context) => wordSides(context) === 1)],
-  ['b', anchor((context) => wordSides(context) % 3 !== 0)],
-  ['B', anchor((context) => wordSides(context) % 3 === 0)],
+  ['<', anchor((context) => wordAfter(context) && !wordBefore(context))],
+  ['>', anchor((context) => wordBefore(context) && !wordAfter(context))],
+  ['b', anchor(atWordBoundary)],
+  ['B', anchor((context) => !atWordBoundary(context))],
   ['`', SUBJECT_START],
   ["'", SUBJECT_END],
 ]);
@@ -258,8 +263,8 @@ export const compileExtendedRegex = (pattern: string): ExtendedRegex | undefined
   const automaton = parse(pattern, 'linear');
   if (automaton === undefined) return undefined;
   if (!automaton.backreferences) return matcherOf(automaton.piece);
-  // Only the automaton's limit refuses what the parser accepts.
-  return backtracking(automaton.piece, parse(pattern, 'backtracking') as Parsed);
+  const captured = parse(pattern, 'backtracking');
+  return captured === undefined ? undefined : backtracking(automaton.piece, captured);
 };
 
 /** A pattern parsed for one engine. */
@@ -270,14 +275,13 @@ interface Parsed {
 }
 
 /**
- * The backtracking program needs no limit of its own: per automaton
- * instruction it adds at most a start and an end for each of the nine
- * nameable groups around it, a mark for each of the at most seventeen nested
- * repetitions copying it, and two per optional copy's fork.
+ * The backtracking program also records where groups start and end, empty
+ * ones included, which the automaton leaves out: a repetition of an empty
+ * group costs it nothing but lays out the backtracking program's records.
  */
 const PROGRAM_LIMITS: Readonly<Record<MatcherEngine, number>> = {
   linear: MAX_PROGRAM_SIZE,
-  backtracking: Number.POSITIVE_INFINITY,
+  backtracking: MAX_BACKTRACKING_PROGRAM_SIZE,
 };
 
 const parse = (pattern: string, engine: MatcherEngine): Parsed | undefined => {
@@ -347,17 +351,12 @@ const literal = (ch: string): string =>
 const characterPiece = (source: string): Piece => ({
   fragment: { op: 'char', source },
   literals: OPAQUE,
-  captures: NO_CAPTURES,
 });
 
 const literalPiece = (ch: string): Piece => ({
   fragment: { op: 'char', source: literal(ch), code: ch.codePointAt(0) as number },
   literals: { ...OPAQUE, exact: [ch], required: [ch] },
-  captures: NO_CAPTURES,
 });
-
-const capturesOf = (pieces: ReadonlyArray<Piece>): number =>
-  pieces.reduce((captures, piece) => captures | piece.captures, NO_CAPTURES);
 
 const parseAlternation = (c: Cursor, nesting: number): Translation => {
   const branches: Piece[] = [];
@@ -390,7 +389,6 @@ const alternativeLiterals = (branches: ReadonlyArray<Piece>): Literals => {
 const alternatePieces = (branches: ReadonlyArray<Piece>): Piece => ({
   fragment: alternate(branches.map((branch) => branch.fragment)),
   literals: branches.length === 1 ? (branches[0] as Piece).literals : alternativeLiterals(branches),
-  captures: capturesOf(branches),
 });
 
 /** A `)` closes a branch only inside a group; at the top it is an ordinary character. */
@@ -409,7 +407,6 @@ const parseBranch = (c: Cursor, nesting: number): Translation => {
   return {
     fragment: sequence(pieces.map((piece) => piece.fragment)),
     literals: concatenatedLiterals(pieces.map((piece) => piece.literals)),
-    captures: capturesOf(pieces),
   };
 };
 
@@ -483,19 +480,13 @@ const parseGroup = (c: Cursor, nesting: number): Translation => {
   return captured(c, index, inner);
 };
 
-/**
- * The backtracking program records where a group a back-reference can name
- * starts and ends. One holding no instruction is left out: it captures empty
- * text, which a back-reference to an unset group reads too.
- */
+/** The backtracking program records where a group a back-reference can name starts and ends. */
 const captured = (c: Cursor, index: number, inner: Piece): Piece => {
-  const ignored = c.engine === 'linear' || index > MAX_BACKREFERENCE;
-  if (ignored || sizeOf(inner.fragment) === 0) return inner;
+  if (c.engine === 'linear' || index > MAX_BACKREFERENCE) return inner;
   const start = index * 2;
   return {
     fragment: sequence([plain(SAVE, start), inner.fragment, plain(SAVE, start + 1)]),
     literals: inner.literals,
-    captures: inner.captures | (1 << index),
   };
 };
 
@@ -520,7 +511,7 @@ const parseBackreference = (c: Cursor, digit: string): Translation => {
     c.engine === 'linear'
       ? repeatFragment(sameCopies(characterPiece('.').fragment), ANY_RUN)
       : plain(BACKREF, group);
-  return { fragment, literals: OPAQUE, captures: NO_CAPTURES };
+  return { fragment, literals: OPAQUE };
 };
 
 const ANY_RUN: Bounds = { min: 0, max: Number.POSITIVE_INFINITY };
@@ -572,7 +563,6 @@ const repeat = (c: Cursor, piece: Piece, bounds: Bounds): Translation => {
     fragment,
     // Whatever one copy requires, a repetition holding a copy requires too.
     literals: bounds.min === 0 ? OPAQUE : { ...piece.literals, exact: undefined },
-    captures: piece.captures,
   };
 };
 
@@ -710,33 +700,26 @@ const alternate = (branches: ReadonlyArray<Fragment>): Fragment => {
   return sequence(parts.reverse());
 };
 
-/**
- * A repeated body as each copy lays it out: the first, every later one `min`
- * requires, and every optional one.
- */
+/** A repeated body as a bounded copy lays it out, and as an unbounded repetition's copy does. */
 interface Copies {
-  readonly first: Fragment;
-  readonly again: Fragment;
-  readonly optional: Fragment;
+  readonly body: Fragment;
+  readonly loop: Fragment;
 }
 
-const sameCopies = (body: Fragment): Copies => ({ first: body, again: body, optional: body });
+const sameCopies = (body: Fragment): Copies => ({ body, loop: body });
 
 /**
- * The automaton repeats the body as it is. The backtracking program follows
- * ECMAScript: each copy but the first forgets the captures its body holds,
- * and an optional copy must read something — the copy records where it
- * starts in a register of its own.
+ * The automaton repeats the body as it is. In the backtracking program a
+ * copy of an unbounded repetition records where it starts in a register of
+ * its own, so a copy reading nothing ends the repetition instead of looping.
  */
-const copiesOf = (c: Cursor, { fragment, captures }: Piece): Copies => {
+const copiesOf = (c: Cursor, { fragment }: Piece): Copies => {
   if (c.engine === 'linear') return sameCopies(fragment);
   const register = c.slots;
   c.slots += 1;
-  const iterate = plain(ITERATE, register, captures);
   return {
-    first: fragment,
-    again: captures === NO_CAPTURES ? fragment : sequence([iterate, fragment]),
-    optional: sequence([iterate, fragment, plain(PROGRESS, register)]),
+    body: fragment,
+    loop: sequence([plain(SAVE, register), fragment, plain(PROGRESS, register)]),
   };
 };
 
@@ -745,18 +728,17 @@ const copiesOf = (c: Cursor, { fragment, captures }: Piece): Copies => {
  * `max - min` copies, each skipping past the rest; copies share the body. An
  * empty body repeats to itself, at no cost however large the bounds.
  */
-const repeatFragment = (copies: Copies, { min, max }: Bounds): Fragment => {
-  if (sizeOf(copies.first) === 0) return copies.first;
-  const required = Array.from({ length: min }, (_, index) =>
-    index === 0 ? copies.first : copies.again,
+const repeatFragment = ({ body, loop }: Copies, { min, max }: Bounds): Fragment => {
+  if (sizeOf(body) === 0) return body;
+  const required = Array.from({ length: min }, () => body);
+  if (max === Number.POSITIVE_INFINITY) {
+    const size = sizeOf(loop);
+    return sequence([...required, fork(1, size + 2), loop, fork(-size - 1, -size - 1)]);
+  }
+  const size = sizeOf(body);
+  const optional = Array.from({ length: max - min }, (_, index) =>
+    sequence([fork(1, (max - min - index) * (size + 1)), body]),
   );
-  const size = sizeOf(copies.optional);
-  const optional =
-    max === Number.POSITIVE_INFINITY
-      ? [fork(1, size + 2), copies.optional, fork(-size - 1, -size - 1)]
-      : Array.from({ length: max - min }, (_, index) =>
-          sequence([fork(1, (max - min - index) * (size + 1)), copies.optional]),
-        );
   return sequence([...required, ...optional]);
 };
 
@@ -1068,6 +1050,8 @@ const advance = (
 
 /** No position recorded: an unset capture or register. */
 const UNSET = -1;
+/** From the end of an unbounded repetition's copy to the instruction after the repetition. */
+const PAST_JUMP_BACK = 2;
 
 /**
  * One backtracking path and the ways back from it, reused by every run.
@@ -1210,12 +1194,13 @@ const save: Executor = ({ path, program }) => {
   return true;
 };
 
-/** An unset group reads as empty text, as in ECMAScript; each character compared is a step. */
+/** A group no copy has captured reads nothing; each character compared is a step. */
 const reread: Executor = ({ path, program }, subject, budget) => {
   const slot = (program.operand[path.pc] as number) * 2;
   const begin = path.memory[slot] as number;
   const end = path.memory[slot + 1] as number;
-  const length = end === UNSET ? 0 : end - begin;
+  if (end === UNSET) return false;
+  const length = end - begin;
   const agreeing = repeated(subject, begin, begin + length, path.at);
   budget.steps += agreeing;
   if (agreeing !== length) return false;
@@ -1236,24 +1221,10 @@ const repeated = (subject: string, begin: number, end: number, at: number): numb
   return count;
 };
 
-const iterate: Executor = ({ path, program }) => {
-  const captures = program.target[path.pc] as number;
-  write(path, program.operand[path.pc] as number, path.at);
-  for (let group = 1; group <= MAX_BACKREFERENCE; group += 1) {
-    if ((captures >> group) & 1) forget(path, group);
-  }
-  path.pc += 1;
-  return true;
-};
-
-const forget = (path: Path, group: number): void => {
-  write(path, group * 2, UNSET);
-  write(path, group * 2 + 1, UNSET);
-};
-
+/** The jump back to the repetition's fork follows the copy; a copy that read nothing steps past it. */
 const progress: Executor = ({ path, program }) => {
-  if (path.memory[program.operand[path.pc] as number] === path.at) return false;
-  path.pc += 1;
+  const empty = path.memory[program.operand[path.pc] as number] === path.at;
+  path.pc += empty ? PAST_JUMP_BACK : 1;
   return true;
 };
 
@@ -1270,8 +1241,6 @@ const execute = (machine: Backtracker, subject: string, budget: Budget): boolean
       return save(machine, subject, budget);
     case BACKREF:
       return reread(machine, subject, budget);
-    case ITERATE:
-      return iterate(machine, subject, budget);
     default:
       return progress(machine, subject, budget);
   }
