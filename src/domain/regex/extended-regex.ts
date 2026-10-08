@@ -940,22 +940,26 @@ const layOut = (instructions: ReadonlyArray<Instruction>): Program => {
   const classes: CharClass[] = [];
   const indexes = new Map<string, number>();
   for (const [pc, instruction] of instructions.entries()) {
-    if ('source' in instruction) {
-      [ops[pc], operand[pc]] = [
-        READ_CODES[instruction.op],
-        classIndex(instruction, indexes, classes),
-      ];
-    } else if (instruction.op === 'fork') {
-      [ops[pc], operand[pc], target[pc]] = [FORK, pc + instruction.to, pc + instruction.or];
-    } else {
-      [ops[pc], operand[pc], target[pc]] = [
-        instruction.code,
-        instruction.operand,
-        instruction.target,
-      ];
-    }
+    [ops[pc], operand[pc], target[pc]] = encode(instruction, pc, indexes, classes);
   }
   return { ops, operand, target, classes };
+};
+
+/** A read jumps nowhere: its target slot keeps the zero a fresh program holds. */
+const UNUSED_TARGET = 0;
+
+/** One instruction's opcode, operand and target at `pc`, fork targets made absolute. */
+const encode = (
+  instruction: Instruction,
+  pc: number,
+  indexes: Map<string, number>,
+  classes: CharClass[],
+): readonly [number, number, number] => {
+  if ('source' in instruction) {
+    return [READ_CODES[instruction.op], classIndex(instruction, indexes, classes), UNUSED_TARGET];
+  }
+  if (instruction.op === 'fork') return [FORK, pc + instruction.to, pc + instruction.or];
+  return [instruction.code, instruction.operand, instruction.target];
 };
 
 /** One class per distinct source, however many instructions read it. */
