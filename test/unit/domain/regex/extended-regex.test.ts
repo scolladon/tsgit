@@ -19,11 +19,8 @@ const MAX_BACKTRACK_STEPS = 1 << 22;
 const STEPS_PER_CODE_UNIT = 1 << 6;
 /** Choices and undo records it holds before it answers no match. */
 const MAX_PATH_ENTRIES = 1 << 22;
-/**
- * Copies of `((a)|b)` reading `a` whose records reach that bound: each leaves
- * sixteen, in eleven steps — some 2.9 million steps, inside the budget.
- */
-const COPIES_AT_BOUND = MAX_PATH_ENTRIES / 16;
+/** Copies of `(a|b)` reading `a` whose records reach that bound: each leaves eight, in seven steps. */
+const COPIES_AT_BOUND = MAX_PATH_ENTRIES / 8;
 /** Steps between two checks. */
 const CHECK_INTERVAL = 1 << 16;
 /** Words of a message a back-reference pattern splits every way. */
@@ -85,6 +82,33 @@ const budgetChecks = (subject: string): number =>
   Math.ceil((MAX_BACKTRACK_STEPS + STEPS_PER_CODE_UNIT * subject.length) / CHECK_INTERVAL);
 
 const nested = (depth: number): string => `${'('.repeat(depth)}a${')'.repeat(depth)}`;
+
+/** Most texts the subject is searched for before the automaton runs. */
+const MAX_PREFILTER_TEXTS = 32;
+/** Most classes a match may begin with for the automaton to jump to where one begins. */
+const MAX_LEADING_CLASSES = 8;
+
+/** `t0.t1.…`: a pattern requiring `count` texts, and a text holding them all yet no match. */
+const requiringTexts = (count: number): { readonly pattern: string; readonly text: string } => {
+  const texts = Array.from({ length: count }, (_, index) => `t${index}`);
+  return { pattern: texts.join('.'), text: texts.join('__') };
+};
+
+/** `(c1|c2|…)[0-9]` over `count` letters: a match begins with any of `count` classes. */
+const leadingLetters = (count: number): string =>
+  `(${Array.from('abcdefghijklmnop'.slice(0, count)).join('|')})[0-9]`;
+
+/** The texts a run searches the subject for. */
+const searchedTexts = (): (() => ReadonlyArray<string>) => {
+  const includes = vi.spyOn(String.prototype, 'includes');
+  return () => includes.mock.calls.map(([text]) => text);
+};
+
+/** How often a run jumps ahead with a pattern searching for where a match begins. */
+const leadingSearches = (): (() => number) => {
+  const test = vi.spyOn(RegExp.prototype, 'test');
+  return () => test.mock.contexts.filter((pattern) => (pattern as RegExp).global).length;
+};
 
 describe('compileExtendedRegex', () => {
   afterEach(() => {
@@ -459,6 +483,23 @@ describe('compileExtendedRegex', () => {
     });
   });
 
+  describe('Given a back-reference after nested repetitions of bodies that may read nothing', () => {
+    describe('When the copies reading nothing record no group the back-reference reads', () => {
+      it('Then they are pruned, and the match settles before the check is consulted', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+        const { check, calls } = countingCheck(0);
+
+        // Act
+        const result = sut('(((.{0,2}|b?)*)*)\\1')?.test('aa\né\n  é', check);
+
+        // Assert
+        expect(result).toBe(true);
+        expect(calls()).toBe(0);
+      });
+    });
+  });
+
   describe('Given a back-reference pattern splitting every word of a long message', () => {
     describe('When the match lies at the message end', () => {
       it('Then the steps the message length allows find it', () => {
@@ -476,7 +517,7 @@ describe('compileExtendedRegex', () => {
     });
   });
 
-  describe('Given a back-reference after a repeated group over a long run', () => {
+  describe('Given a back-reference after a repeated alternation over a long run', () => {
     describe.each([
       { run: COPIES_AT_BOUND / 4, expected: true },
       { run: COPIES_AT_BOUND * 1.25, expected: false },
@@ -488,7 +529,7 @@ describe('compileExtendedRegex', () => {
         const { check } = countingCheck(budgetChecks(text) + 1);
 
         // Act
-        const result = sut('(x)((a)|b)*\\1')?.test(text, check);
+        const result = sut('(x)(a|b)*\\1')?.test(text, check);
 
         // Assert
         expect(result).toBe(expected);
@@ -630,6 +671,85 @@ describe('compileExtendedRegex', () => {
 
         // Assert
         expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a pattern requiring texts every match holds', () => {
+    describe.each([
+      { count: MAX_PREFILTER_TEXTS, searched: MAX_PREFILTER_TEXTS },
+      { count: MAX_PREFILTER_TEXTS + 1, searched: 0 },
+    ])('When it requires $count texts and the message holds them all', ({ count, searched }) => {
+      it(`Then the message is searched for ${searched} of them before the automaton runs`, () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+        const { pattern, text } = requiringTexts(count);
+        const matcher = sut(pattern);
+        const texts = searchedTexts();
+
+        // Act
+        const result = matcher?.test(text);
+
+        // Assert
+        expect(result).toBe(false);
+        expect(texts()).toHaveLength(searched);
+      });
+    });
+  });
+
+  describe('Given a pattern spelling a few texts around a shared one', () => {
+    describe('When the message lacks the shared text', () => {
+      it('Then it is refused without searching for the spelt texts', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+        const matcher = sut('a(b|c)zzz');
+        const texts = searchedTexts();
+
+        // Act
+        const result = matcher?.test('abc ac zz');
+
+        // Assert
+        expect(result).toBe(false);
+        expect(texts()).toEqual(['a', 'zzz']);
+      });
+    });
+  });
+
+  describe('Given a pattern whose required runs are empty', () => {
+    describe('When it is matched', () => {
+      it('Then the message is never searched for empty text', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+        const matcher = sut('(feat|fix)[0-9]');
+        const texts = searchedTexts();
+
+        // Act
+        const result = matcher?.test('a fix2');
+
+        // Assert
+        expect(result).toBe(true);
+        expect(texts()).not.toContain('');
+      });
+    });
+  });
+
+  describe('Given a pattern a match may begin with any of several classes', () => {
+    describe.each([
+      { count: MAX_LEADING_CLASSES, jumps: true },
+      { count: MAX_LEADING_CLASSES + 1, jumps: false },
+    ])('When $count classes may begin it', ({ count, jumps }) => {
+      it(`Then the automaton ${jumps ? 'jumps' : 'steps'} to where one begins`, () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+        const matcher = sut(leadingLetters(count));
+        const searches = leadingSearches();
+
+        // Act
+        const result = matcher?.test(`a${'x'.repeat(LONG_RUN)}a1`);
+
+        // Assert
+        expect(result).toBe(true);
+        expect(searches() > 0).toBe(jumps);
       });
     });
   });

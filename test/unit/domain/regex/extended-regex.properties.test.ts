@@ -144,6 +144,23 @@ const backreferencePattern: fc.Arbitrary<Spelling> = fc
 
 const answers = (ecma: string, subject: string): boolean => new RegExp(ecma, 'su').test(subject);
 
+/**
+ * Checks a backtracking run on a small subject consults once its steps are
+ * spent: past them it answers no match by design, where RegExp runs on.
+ */
+const SPENT_BUDGET_CHECKS = (1 << 22) / (1 << 16);
+
+/** A check, and whether the run consulting it spent its step budget. */
+const budgetWatch = (): { readonly check: () => void; readonly spent: () => boolean } => {
+  let checks = 0;
+  return {
+    check: () => {
+      checks += 1;
+    },
+    spent: () => checks >= SPENT_BUDGET_CHECKS,
+  };
+};
+
 /** A subject over the characters the small patterns tell apart, a word character past the BMP among them. */
 const smallSubject = fc
   .array(fc.constantFrom('a', 'b', 'é', '\u{1F600}', '\u{1D400}', ' ', '\n'), { maxLength: 8 })
@@ -241,14 +258,16 @@ describe('compileExtendedRegex properties', () => {
 
   describe('Given a small pattern followed by a back-reference to it and a small subject', () => {
     describe('When the compiled matcher and RegExp match it', () => {
-      it('Then both answer alike', () => {
+      it('Then both answer alike, unless the matcher spent its step budget', () => {
         // Arrange
         const sut = compileExtendedRegex;
 
         // Act / Assert
         fc.assert(
           fc.property(smallPattern(NESTING), smallSubject, ({ ere, ecma }, subject) => {
-            const result = sut(`(${ere})\\1`)?.test(subject);
+            const { check, spent } = budgetWatch();
+            const result = sut(`(${ere})\\1`)?.test(subject, check);
+            fc.pre(!spent());
             return result === answers(`(${ecma})\\1`, subject);
           }),
           { numRuns: 100 },
@@ -259,14 +278,16 @@ describe('compileExtendedRegex properties', () => {
 
   describe('Given small patterns reading groups again, repeated or not, and a small subject', () => {
     describe('When the compiled matcher and RegExp match it', () => {
-      it('Then both answer alike', () => {
+      it('Then both answer alike, unless the matcher spent its step budget', () => {
         // Arrange
         const sut = compileExtendedRegex;
 
         // Act / Assert
         fc.assert(
           fc.property(backreferencePattern, smallSubject, ({ ere, ecma }, subject) => {
-            const result = sut(ere)?.test(subject);
+            const { check, spent } = budgetWatch();
+            const result = sut(ere)?.test(subject, check);
+            fc.pre(!spent());
             return result === answers(ecma, subject);
           }),
           { numRuns: 100 },
