@@ -6024,7 +6024,7 @@ describe('maintenance', () => {
         expect(result.cruftObjectsExpired).toBe(0);
       });
 
-      it('Then an expired copy is pruned', async () => {
+      it('Then an expired copy is pruned as a loose file, not counted as data destroyed', async () => {
         // Arrange
         const ctx = await borrower();
         await looseInDonor(ctx, 'donor-garbage');
@@ -6039,7 +6039,9 @@ describe('maintenance', () => {
         // Assert
         expect(await isLoose(ctx, looseCopy)).toBe(false);
         expect(result.cruftPackId).toBeUndefined();
-        expect(result.cruftObjectsExpired).toBe(1);
+        expect(result.cruftObjectsExpired).toBe(0);
+        expect(result.prunedLooseObjects).toBe(result.looseObjectsBefore);
+        expect(result.looseObjectsPacked).toBe(result.looseObjectsBefore - 1);
       });
     });
   });

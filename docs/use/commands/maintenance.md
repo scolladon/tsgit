@@ -197,7 +197,7 @@ interface MaintenanceResult {
 |---|---|
 | `looseObjectsBefore` | loose objects present when `gc` started |
 | `looseObjectsPacked` | loose objects that ended up in a pack (normal or cruft) |
-| `prunedLooseObjects` | every loose file unlinked — packed ones and destroyed ones alike, so it may exceed `looseObjectsPacked` |
+| `prunedLooseObjects` | every loose file unlinked — packed ones, destroyed ones, and expired copies of objects an alternate still holds alike, so it may exceed `looseObjectsPacked` |
 | `packsBefore` / `packsAfter` | pack count before and after the call |
 | `packId` | the normal pack's sha, or `undefined` |
 | `cruftObjectsAdded` | newly-unreachable objects that entered the cruft pack this run |

@@ -1147,7 +1147,8 @@ export async function runGcTask(
       packId: normalPack.packId,
       cruftObjectsAdded,
       cruftObjectsRetained,
-      cruftObjectsExpired: doomed.length,
+      // An alternate still holds every `expired` copy, so only `cruftDoomed` leaves the repository.
+      cruftObjectsExpired: cruftDoomed.length,
       cruftPackId: cruftOutcome.cruftPackId,
       promisorPackId,
       packsRetired:
