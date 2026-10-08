@@ -12,10 +12,11 @@
  * apply. Character classes follow a UTF-8 locale.
  *
  * A pattern without back-references runs as a Thompson automaton, in time
- * linear in the subject; one with back-references needs backtracking and runs
- * as its ECMAScript translation, exponential at worst where glibc's regexec
- * is not. The automaton first refuses, in linear time, a subject such a
- * pattern cannot match even with each back-reference read as any text.
+ * linear in the subject. One with back-references needs backtracking, which
+ * follows ECMAScript's rules and spends at most a fixed number of steps on a
+ * subject; one it cannot settle within them answers no match. The automaton
+ * first refuses, in linear time, a subject such a pattern cannot match even
+ * with each back-reference read as any text.
  * A subject lacking text every match must contain is refused before the
  * automaton runs, and a pattern spelling one of a few plain texts is a
  * substring search.
@@ -34,13 +35,34 @@ const MAX_GROUP_NESTING = 500;
  * steps per subject character.
  */
 const MAX_PROGRAM_SIZE = 1 << 17;
+/**
+ * Steps the backtracking matcher takes on one subject before answering no
+ * match — about 50 ms of work, where glibc settles typical exponential
+ * patterns in a few. A step runs one instruction or compares one character.
+ */
+const MAX_BACKTRACK_STEPS = 1 << 22;
+/** The groups a back-reference can name: `\1` to `\9`. */
+const MAX_BACKREFERENCE = 9;
+/** Memory slots before the repetition registers: a start and an end per nameable group. */
+const CAPTURE_SLOTS = (MAX_BACKREFERENCE + 1) * 2;
 /** Most texts a pattern may spell and still run as a substring search. */
 const MAX_EXACT_TEXTS = 16;
 const WORD_CHARACTERS = '\\p{L}\\p{N}_';
 const WORD = `[${WORD_CHARACTERS}]`;
-const WORD_START = `(?<!${WORD})(?=${WORD})`;
-const WORD_END = `(?<=${WORD})(?!${WORD})`;
 const FLAGS = 'su';
+
+const CHAR = 0;
+const ASSERT = 1;
+const FORK = 2;
+/** Records the position in a memory slot. */
+const SAVE = 3;
+/** Reads again the text a group captured. */
+const BACKREF = 4;
+/** Starts a repetition copy: records the position in a register and forgets the copy's captures. */
+const ITERATE = 5;
+/** Ends an optional repetition copy, failing where it read nothing. */
+const PROGRESS = 6;
+const MATCH = 7;
 
 /** What a position is known by: bits for the subject's start and end, and a word character either side. */
 type Context = number;
@@ -59,14 +81,20 @@ const wordSides = (context: Context): number => context >> 2;
 
 /**
  * An automaton step. A `char` reads a code point its source — a one-character
- * ECMAScript pattern — matches; `code` is set where that is one code point. An
- * `assert` holds in the contexts its mask has a bit for. `fork` targets are
- * relative to the fork; a jump forks twice to one target.
+ * ECMAScript pattern — matches; `code` is set where that is one code point.
+ * `fork` targets are relative to the fork; a jump forks twice to one target.
+ * Any other instruction is laid out as written: an ASSERT holds in the
+ * contexts its operand has a bit for.
  */
 type Instruction =
   | { readonly op: 'char'; readonly source: string; readonly code?: number }
-  | { readonly op: 'assert'; readonly mask: number }
-  | { readonly op: 'fork'; readonly to: number; readonly or: number };
+  | { readonly op: 'fork'; readonly to: number; readonly or: number }
+  | {
+      readonly op: 'plain';
+      readonly code: number;
+      readonly operand: number;
+      readonly target: number;
+    };
 
 /** Instructions laid out in order without copying: repeated parts are shared. */
 interface Sequence {
@@ -96,11 +124,11 @@ interface Literals {
 
 type Starts = 'anywhere' | 'subject-start';
 
-/** A parsed expression: its ECMAScript source, its automaton and its literal text. */
+/** A parsed expression: its program, its literal text and the groups it captures, a bit each. */
 interface Piece {
-  readonly source: string;
   readonly fragment: Fragment;
   readonly literals: Literals;
+  readonly captures: number;
 }
 
 interface Bounds {
@@ -117,17 +145,26 @@ const maskOf = (holds: Assertion): number => {
   return mask;
 };
 
-const anchor = (source: string, holds: Assertion, literals = OPAQUE): Piece => ({
-  source,
-  fragment: { op: 'assert', mask: maskOf(holds) },
-  literals,
+const NO_CAPTURES = 0;
+
+const plain = (code: number, operand: number, target = 0): Instruction => ({
+  op: 'plain',
+  code,
+  operand,
+  target,
 });
 
-const SUBJECT_START = anchor('^', (context) => (context & AT_START) !== 0, {
+const anchor = (holds: Assertion, literals = OPAQUE): Piece => ({
+  fragment: plain(ASSERT, maskOf(holds)),
+  literals,
+  captures: NO_CAPTURES,
+});
+
+const SUBJECT_START = anchor((context) => (context & AT_START) !== 0, {
   ...OPAQUE,
   starts: 'subject-start',
 });
-const SUBJECT_END = anchor('$', (context) => (context & AT_END) !== 0);
+const SUBJECT_END = anchor((context) => (context & AT_END) !== 0);
 
 const PLAIN_ANCHORS: ReadonlyMap<string, Piece> = new Map([
   ['^', SUBJECT_START],
@@ -135,16 +172,10 @@ const PLAIN_ANCHORS: ReadonlyMap<string, Piece> = new Map([
 ]);
 
 const ESCAPED_ANCHORS: ReadonlyMap<string, Piece> = new Map([
-  ['<', anchor(WORD_START, (context) => wordSides(context) === 2)],
-  ['>', anchor(WORD_END, (context) => wordSides(context) === 1)],
-  ['b', anchor(`(?:${WORD_START}|${WORD_END})`, (context) => wordSides(context) % 3 !== 0)],
-  [
-    'B',
-    anchor(
-      `(?:(?<=${WORD})(?=${WORD})|(?<!${WORD})(?!${WORD}))`,
-      (context) => wordSides(context) % 3 === 0,
-    ),
-  ],
+  ['<', anchor((context) => wordSides(context) === 2)],
+  ['>', anchor((context) => wordSides(context) === 1)],
+  ['b', anchor((context) => wordSides(context) % 3 !== 0)],
+  ['B', anchor((context) => wordSides(context) % 3 === 0)],
   ['`', SUBJECT_START],
   ["'", SUBJECT_END],
 ]);
@@ -186,8 +217,12 @@ const BACKREFERENCE = /^[1-9]$/;
 const BOUND = /^\d*$/;
 const VERBATIM = /^[A-Za-z0-9]$/;
 
-/** Parse position over the pattern's code points, with the groups already closed. */
+/**
+ * Parse position over the pattern's code points, with the groups already
+ * closed, for the engine the program is laid out for.
+ */
 interface Cursor {
+  readonly engine: MatcherEngine;
   readonly chars: ReadonlyArray<string>;
   pos: number;
   groups: number;
@@ -195,6 +230,8 @@ interface Cursor {
   backreferences: boolean;
   /** Instructions the repetitions laid out so far beyond their bodies — never given back. */
   laidOut: number;
+  /** Memory slots the backtracking program uses: the captures', then a register per repetition. */
+  slots: number;
 }
 
 /** A bracket member; `codePoint` is set only where it may bound a range. */
@@ -218,18 +255,45 @@ export interface ExtendedRegex {
 }
 
 export const compileExtendedRegex = (pattern: string): ExtendedRegex | undefined => {
+  const automaton = parse(pattern, 'linear');
+  if (automaton === undefined) return undefined;
+  if (!automaton.backreferences) return matcherOf(automaton.piece);
+  // Only the automaton's limit refuses what the parser accepts.
+  return backtracking(automaton.piece, parse(pattern, 'backtracking') as Parsed);
+};
+
+/** A pattern parsed for one engine. */
+interface Parsed {
+  readonly piece: Piece;
+  readonly backreferences: boolean;
+  readonly slots: number;
+}
+
+/**
+ * The backtracking program needs no limit of its own: per automaton
+ * instruction it adds at most a start and an end for each of the nine
+ * nameable groups around it, a mark for each of the at most seventeen nested
+ * repetitions copying it, and two per optional copy's fork.
+ */
+const PROGRAM_LIMITS: Readonly<Record<MatcherEngine, number>> = {
+  linear: MAX_PROGRAM_SIZE,
+  backtracking: Number.POSITIVE_INFINITY,
+};
+
+const parse = (pattern: string, engine: MatcherEngine): Parsed | undefined => {
   const cursor: Cursor = {
+    engine,
     chars: Array.from(pattern),
     pos: 0,
     groups: 0,
     closedGroups: new Set(),
     backreferences: false,
     laidOut: 0,
+    slots: CAPTURE_SLOTS,
   };
   const piece = parseAlternation(cursor, 0);
-  if (piece === undefined) return undefined;
-  if (sizeOf(piece.fragment) > MAX_PROGRAM_SIZE) return undefined;
-  return cursor.backreferences ? backtracking(piece) : matcherOf(piece);
+  if (piece === undefined || sizeOf(piece.fragment) > PROGRAM_LIMITS[engine]) return undefined;
+  return { piece, backreferences: cursor.backreferences, slots: cursor.slots };
 };
 
 /** A lone surrogate is one character to the automaton but half of one to a substring search. */
@@ -242,12 +306,12 @@ const isPlainText = (exact: Spelt): exact is ReadonlyArray<string> =>
  * The automaton reads each back-reference as any text: a subject it refuses
  * cannot match, and is refused in linear time before the backtracking.
  */
-const backtracking = (piece: Piece): ExtendedRegex => {
-  const pattern = new RegExp(piece.source, FLAGS);
+const backtracking = (piece: Piece, { piece: captured, slots }: Parsed): ExtendedRegex => {
   const { test } = matcherOf(piece);
+  const matches = backtracker(captured.fragment, captured.literals.starts, slots);
   return {
     engine: 'backtracking',
-    test: (subject, check) => test(subject, check) && pattern.test(subject),
+    test: (subject, check = IGNORE) => test(subject, check) && matches(subject, check),
   };
 };
 
@@ -281,19 +345,19 @@ const literal = (ch: string): string =>
 
 /** An expression consuming one character `source` matches. */
 const characterPiece = (source: string): Piece => ({
-  source,
   fragment: { op: 'char', source },
   literals: OPAQUE,
+  captures: NO_CAPTURES,
 });
 
-const literalPiece = (ch: string): Piece => {
-  const source = literal(ch);
-  return {
-    source,
-    fragment: { op: 'char', source, code: ch.codePointAt(0) as number },
-    literals: { ...OPAQUE, exact: [ch], required: [ch] },
-  };
-};
+const literalPiece = (ch: string): Piece => ({
+  fragment: { op: 'char', source: literal(ch), code: ch.codePointAt(0) as number },
+  literals: { ...OPAQUE, exact: [ch], required: [ch] },
+  captures: NO_CAPTURES,
+});
+
+const capturesOf = (pieces: ReadonlyArray<Piece>): number =>
+  pieces.reduce((captures, piece) => captures | piece.captures, NO_CAPTURES);
 
 const parseAlternation = (c: Cursor, nesting: number): Translation => {
   const branches: Piece[] = [];
@@ -324,9 +388,9 @@ const alternativeLiterals = (branches: ReadonlyArray<Piece>): Literals => {
 };
 
 const alternatePieces = (branches: ReadonlyArray<Piece>): Piece => ({
-  source: branches.map((branch) => branch.source).join('|'),
   fragment: alternate(branches.map((branch) => branch.fragment)),
   literals: branches.length === 1 ? (branches[0] as Piece).literals : alternativeLiterals(branches),
+  captures: capturesOf(branches),
 });
 
 /** A `)` closes a branch only inside a group; at the top it is an ordinary character. */
@@ -343,9 +407,9 @@ const parseBranch = (c: Cursor, nesting: number): Translation => {
     pieces.push(expression);
   }
   return {
-    source: pieces.map((piece) => piece.source).join(''),
     fragment: sequence(pieces.map((piece) => piece.fragment)),
     literals: concatenatedLiterals(pieces.map((piece) => piece.literals)),
+    captures: capturesOf(pieces),
   };
 };
 
@@ -416,7 +480,23 @@ const parseGroup = (c: Cursor, nesting: number): Translation => {
   const inner = parseAlternation(c, nesting + 1);
   if (inner === undefined || next(c) !== ')') return undefined;
   c.closedGroups.add(index);
-  return { source: `(${inner.source})`, fragment: inner.fragment, literals: inner.literals };
+  return captured(c, index, inner);
+};
+
+/**
+ * The backtracking program records where a group a back-reference can name
+ * starts and ends. One holding no instruction is left out: it captures empty
+ * text, which a back-reference to an unset group reads too.
+ */
+const captured = (c: Cursor, index: number, inner: Piece): Piece => {
+  const ignored = c.engine === 'linear' || index > MAX_BACKREFERENCE;
+  if (ignored || sizeOf(inner.fragment) === 0) return inner;
+  const start = index * 2;
+  return {
+    fragment: sequence([plain(SAVE, start), inner.fragment, plain(SAVE, start + 1)]),
+    literals: inner.literals,
+    captures: inner.captures | (1 << index),
+  };
 };
 
 /** A trailing `\` is refused. */
@@ -433,10 +513,14 @@ const parseEscape = (c: Cursor): Translation => {
  * backtracking, and the automaton reads the reference as any text.
  */
 const parseBackreference = (c: Cursor, digit: string): Translation => {
-  if (!c.closedGroups.has(Number(digit))) return undefined;
+  const group = Number(digit);
+  if (!c.closedGroups.has(group)) return undefined;
   c.backreferences = true;
-  const fragment = repeatFragment(characterPiece('.').fragment, ANY_RUN);
-  return { source: `(?:\\${digit})`, fragment, literals: OPAQUE };
+  const fragment =
+    c.engine === 'linear'
+      ? repeatFragment(sameCopies(characterPiece('.').fragment), ANY_RUN)
+      : plain(BACKREF, group);
+  return { fragment, literals: OPAQUE, captures: NO_CAPTURES };
 };
 
 const ANY_RUN: Bounds = { min: 0, max: Number.POSITIVE_INFINITY };
@@ -479,17 +563,16 @@ const product = (inner: Bounds, outer: Bounds): Bounds => ({
   max: inner.max === 0 || outer.max === 0 ? 0 : inner.max * outer.max,
 });
 
-/** Copies that would take the running total past the automaton are refused before they are laid out. */
+/** Copies that take the running total past the program's limit are refused. */
 const repeat = (c: Cursor, piece: Piece, bounds: Bounds): Translation => {
-  c.laidOut += Math.max(0, expansionOf(sizeOf(piece.fragment), bounds));
-  if (c.laidOut > MAX_PROGRAM_SIZE) return undefined;
-  const fragment = repeatFragment(piece.fragment, bounds);
-  const { min, max } = bounds;
+  const fragment = repeatFragment(copiesOf(c, piece), bounds);
+  c.laidOut += Math.max(0, sizeOf(fragment) - sizeOf(piece.fragment));
+  if (c.laidOut > PROGRAM_LIMITS[c.engine]) return undefined;
   return {
-    source: `(?:${piece.source}){${min},${max === Number.POSITIVE_INFINITY ? '' : max}}`,
     fragment,
     // Whatever one copy requires, a repetition holding a copy requires too.
-    literals: min === 0 ? OPAQUE : { ...piece.literals, exact: undefined },
+    literals: bounds.min === 0 ? OPAQUE : { ...piece.literals, exact: undefined },
+    captures: piece.captures,
   };
 };
 
@@ -627,33 +710,56 @@ const alternate = (branches: ReadonlyArray<Fragment>): Fragment => {
   return sequence(parts.reverse());
 };
 
-/** Instructions `repeatFragment` adds to a body of `size`; an empty body adds none. */
-const expansionOf = (size: number, { min, max }: Bounds): number => {
-  if (size === 0) return 0;
-  if (max === Number.POSITIVE_INFINITY) return min * size + 2;
-  return min * size + (max - min) * (size + 1) - size;
+/**
+ * A repeated body as each copy lays it out: the first, every later one `min`
+ * requires, and every optional one.
+ */
+interface Copies {
+  readonly first: Fragment;
+  readonly again: Fragment;
+  readonly optional: Fragment;
+}
+
+const sameCopies = (body: Fragment): Copies => ({ first: body, again: body, optional: body });
+
+/**
+ * The automaton repeats the body as it is. The backtracking program follows
+ * ECMAScript: each copy but the first forgets the captures its body holds,
+ * and an optional copy must read something — the copy records where it
+ * starts in a register of its own.
+ */
+const copiesOf = (c: Cursor, { fragment, captures }: Piece): Copies => {
+  if (c.engine === 'linear') return sameCopies(fragment);
+  const register = c.slots;
+  c.slots += 1;
+  const iterate = plain(ITERATE, register, captures);
+  return {
+    first: fragment,
+    again: captures === NO_CAPTURES ? fragment : sequence([iterate, fragment]),
+    optional: sequence([iterate, fragment, plain(PROGRESS, register)]),
+  };
 };
 
 /**
- * `min` copies of `body`, then a skippable copy jumping back to its fork or
- * `max - min` skippable copies; every copy is shared. An empty body repeats
- * to itself, at no cost however large the bounds.
+ * `min` copies of the body, then a skippable copy jumping back to its fork or
+ * `max - min` copies, each skipping past the rest; copies share the body. An
+ * empty body repeats to itself, at no cost however large the bounds.
  */
-const repeatFragment = (body: Fragment, { min, max }: Bounds): Fragment => {
-  const size = sizeOf(body);
-  if (size === 0) return body;
-  const copies = Array<Fragment>(min).fill(body);
-  const rest =
+const repeatFragment = (copies: Copies, { min, max }: Bounds): Fragment => {
+  if (sizeOf(copies.first) === 0) return copies.first;
+  const required = Array.from({ length: min }, (_, index) =>
+    index === 0 ? copies.first : copies.again,
+  );
+  const size = sizeOf(copies.optional);
+  const optional =
     max === Number.POSITIVE_INFINITY
-      ? [fork(1, size + 2), body, fork(-size - 1, -size - 1)]
-      : Array<Fragment>(max - min).fill(sequence([fork(1, size + 1), body]));
-  return sequence([...copies, ...rest]);
+      ? [fork(1, size + 2), copies.optional, fork(-size - 1, -size - 1)]
+      : Array.from({ length: max - min }, (_, index) =>
+          sequence([fork(1, (max - min - index) * (size + 1)), copies.optional]),
+        );
+  return sequence([...required, ...optional]);
 };
 
-const CHAR = 0;
-const ASSERT = 1;
-const FORK = 2;
-const MATCH = 3;
 const ASCII = 128;
 /** The first code point spelt with two code units. */
 const SURROGATE_PAIR = 0x10000;
@@ -719,16 +825,26 @@ interface Scan {
 /** Threads stepped between two checks: a few milliseconds of work. */
 const CHECK_INTERVAL = 1 << 16;
 
-const automaton = (fragment: Fragment, starts: Starts): ExtendedRegex['test'] => {
+/** What both engines know of a laid-out program before they run it. */
+type Layout = Omit<Machine, 'threads'>;
+
+const layOutMachine = (fragment: Fragment, starts: Starts): Layout => {
   const instructions: Instruction[] = [];
   flatten(fragment, instructions);
   const program = layOut(instructions);
-  const size = program.ops.length;
-  const machine: Machine = {
+  return {
     program,
     starts,
     leading: starts === 'anywhere' ? leadingOf(program) : undefined,
     word: program.ops.includes(ASSERT) ? classOf({ op: 'char', source: WORD }) : undefined,
+  };
+};
+
+const automaton = (fragment: Fragment, starts: Starts): ExtendedRegex['test'] => {
+  const layout = layOutMachine(fragment, starts);
+  const size = layout.program.ops.length;
+  const machine: Machine = {
+    ...layout,
     threads: {
       pending: new Int32Array(size),
       ready: new Int32Array(size),
@@ -758,10 +874,14 @@ const layOut = (instructions: ReadonlyArray<Instruction>): Program => {
   for (const [pc, instruction] of instructions.entries()) {
     if (instruction.op === 'char') {
       [ops[pc], operand[pc]] = [CHAR, classIndex(instruction, indexes, classes)];
-    } else if (instruction.op === 'assert') {
-      [ops[pc], operand[pc]] = [ASSERT, instruction.mask];
-    } else {
+    } else if (instruction.op === 'fork') {
       [ops[pc], operand[pc], target[pc]] = [FORK, pc + instruction.to, pc + instruction.or];
+    } else {
+      [ops[pc], operand[pc], target[pc]] = [
+        instruction.code,
+        instruction.operand,
+        instruction.target,
+      ];
     }
   }
   return { ops, operand, target, classes };
@@ -801,8 +921,8 @@ const accepts = (charClass: CharClass, code: number, subject: string, at: number
 
 /**
  * What every thread starting afresh reads first, through every fork and
- * assertion; `undefined` where one reaches the match without reading or
- * where one reads any ASCII code point.
+ * instruction reading nothing; `undefined` where one reaches the match or a
+ * back-reference without reading, or where one reads any ASCII code point.
  */
 const leadingOf = (program: Program): Leading | undefined => {
   const { ops, operand, target, classes } = program;
@@ -812,10 +932,10 @@ const leadingOf = (program: Program): Leading | undefined => {
     if (seen[pc] === 1) continue;
     seen[pc] = 1;
     const op = ops[pc];
-    if (op === MATCH) return undefined;
+    if (op === MATCH || op === BACKREF) return undefined;
     if (op === FORK) pending.push(operand[pc] as number, target[pc] as number);
-    else if (op === ASSERT) pending.push(pc + 1);
-    else sources.add(operand[pc] as number);
+    else if (op === CHAR) sources.add(operand[pc] as number);
+    else pending.push(pc + 1);
   }
   const leading = [...sources].map((index) => classes[index] as CharClass);
   if (leading.some((charClass) => !charClass.ascii.includes(0))) return undefined;
@@ -882,14 +1002,14 @@ const nextLeading = (leading: Leading, subject: string, from: number): number =>
 const previousStart = (subject: string, at: number): number =>
   (subject.codePointAt(at - 2) ?? 0) < SURROGATE_PAIR ? at - 1 : at - 2;
 
-const isWord = ({ word }: Machine, subject: string, at: number): boolean => {
+const isWord = ({ word }: Layout, subject: string, at: number): boolean => {
   const code = subject.codePointAt(at);
   return word !== undefined && code !== undefined && accepts(word, code, subject, at);
 };
 
 /** Whether the code point ending at `at` is a word character. */
-const isWordBefore = (machine: Machine, subject: string, at: number): boolean =>
-  at > 0 && isWord(machine, subject, previousStart(subject, at));
+const isWordBefore = (layout: Layout, subject: string, at: number): boolean =>
+  at > 0 && isWord(layout, subject, previousStart(subject, at));
 
 const contextOf = (scan: Scan, code: number | undefined, wordAfter: boolean): Context =>
   (scan.at === 0 ? AT_START : 0) |
@@ -945,3 +1065,220 @@ const advance = (
   }
   return count;
 };
+
+/** No position recorded: an unset capture or register. */
+const UNSET = -1;
+
+/**
+ * One backtracking path and the ways back from it, reused by every run.
+ * `memory` holds each capture's start and end, then each repetition's
+ * register; `trail` its earlier values, a slot and a value per write, and
+ * `choices` the forks' other targets, each with its position and the trail's
+ * length there.
+ */
+interface Path {
+  pc: number;
+  at: number;
+  readonly memory: Int32Array;
+  readonly trail: number[];
+  readonly choices: number[];
+}
+
+/** The work one subject has taken, and when the check next runs. */
+interface Budget {
+  steps: number;
+  nextCheck: number;
+  readonly check: MatchCheck;
+}
+
+interface Backtracker extends Layout {
+  readonly path: Path;
+}
+
+/** How a run from one position ends. */
+type Outcome = 'matched' | 'failed' | 'exhausted';
+
+const backtracker = (
+  fragment: Fragment,
+  starts: Starts,
+  slots: number,
+): ((subject: string, check: MatchCheck) => boolean) => {
+  const machine: Backtracker = {
+    ...layOutMachine(fragment, starts),
+    path: { pc: START, at: 0, memory: new Int32Array(slots), trail: [], choices: [] },
+  };
+  return (subject, check) => backtrack(machine, subject, check);
+};
+
+/**
+ * Runs from each position a match may start at, leftmost first, until one
+ * matches or the subject's steps are spent.
+ */
+const backtrack = (machine: Backtracker, subject: string, check: MatchCheck): boolean => {
+  const budget: Budget = { steps: 0, nextCheck: CHECK_INTERVAL, check };
+  for (let from = firstStart(machine, subject); from !== NOWHERE; ) {
+    const outcome = attempt(machine, subject, from, budget);
+    if (outcome !== 'failed') return outcome === 'matched';
+    from = nextStart(machine, subject, from);
+  }
+  return false;
+};
+
+const firstStart = ({ leading }: Backtracker, subject: string): number =>
+  leading === undefined ? 0 : nextLeading(leading, subject, 0);
+
+const nextStart = (machine: Backtracker, subject: string, from: number): number => {
+  const code = subject.codePointAt(from);
+  if (machine.starts === 'subject-start' || code === undefined) return NOWHERE;
+  const after = from + (code < SURROGATE_PAIR ? 1 : 2);
+  return machine.leading === undefined ? after : nextLeading(machine.leading, subject, after);
+};
+
+/** Follows one path from `from`, backing up to the last fork whenever it fails. */
+const attempt = (machine: Backtracker, subject: string, from: number, budget: Budget): Outcome => {
+  const { path, program } = machine;
+  Object.assign(path, { pc: START, at: from });
+  path.memory.fill(UNSET);
+  path.trail.length = 0;
+  path.choices.length = 0;
+  for (;;) {
+    if (program.ops[path.pc] === MATCH) return 'matched';
+    if (!spend(budget)) return 'exhausted';
+    if (!execute(machine, subject, budget) && !backUp(path)) return 'failed';
+  }
+};
+
+/** Takes a step, consulting the check every interval; `false` once the budget is spent. */
+const spend = (budget: Budget): boolean => {
+  budget.steps += 1;
+  if (budget.steps < budget.nextCheck) return true;
+  budget.nextCheck += CHECK_INTERVAL;
+  budget.check();
+  return budget.steps < MAX_BACKTRACK_STEPS;
+};
+
+/** Returns to the last fork's other target, undoing the writes since; `false` where none is left. */
+const backUp = (path: Path): boolean => {
+  const { choices, trail, memory } = path;
+  const length = choices.pop();
+  if (length === undefined) return false;
+  path.at = choices.pop() as number;
+  path.pc = choices.pop() as number;
+  while (trail.length > length) {
+    const value = trail.pop() as number;
+    memory[trail.pop() as number] = value;
+  }
+  return true;
+};
+
+const write = (path: Path, slot: number, value: number): void => {
+  path.trail.push(slot, path.memory[slot] as number);
+  path.memory[slot] = value;
+};
+
+/** Runs the instruction at the path's `pc`; `false` where the path fails there. */
+type Executor = (machine: Backtracker, subject: string, budget: Budget) => boolean;
+
+const readCharacter: Executor = ({ path, program }, subject) => {
+  const code = subject.codePointAt(path.at);
+  const charClass = program.classes[program.operand[path.pc] as number] as CharClass;
+  if (code === undefined || !accepts(charClass, code, subject, path.at)) return false;
+  path.at += code < SURROGATE_PAIR ? 1 : 2;
+  path.pc += 1;
+  return true;
+};
+
+const assertContext: Executor = (machine, subject) => {
+  const { path, program } = machine;
+  const context = contextAt(machine, subject, path.at);
+  path.pc += 1;
+  return (((program.operand[path.pc - 1] as number) >> context) & 1) === 1;
+};
+
+/** A fork to one target is a jump; any other leaves its second target to back up to. */
+const branch: Executor = ({ path, program }) => {
+  const to = program.operand[path.pc] as number;
+  const or = program.target[path.pc] as number;
+  if (to !== or) path.choices.push(or, path.at, path.trail.length);
+  path.pc = to;
+  return true;
+};
+
+const save: Executor = ({ path, program }) => {
+  write(path, program.operand[path.pc] as number, path.at);
+  path.pc += 1;
+  return true;
+};
+
+/** An unset group reads as empty text, as in ECMAScript; each character compared is a step. */
+const reread: Executor = ({ path, program }, subject, budget) => {
+  const slot = (program.operand[path.pc] as number) * 2;
+  const begin = path.memory[slot] as number;
+  const end = path.memory[slot + 1] as number;
+  const length = end === UNSET ? 0 : end - begin;
+  const agreeing = repeated(subject, begin, begin + length, path.at);
+  budget.steps += agreeing;
+  if (agreeing !== length) return false;
+  path.at += length;
+  path.pc += 1;
+  return true;
+};
+
+/** How many code units from `at` repeat those from `begin` up to `end`. */
+const repeated = (subject: string, begin: number, end: number, at: number): number => {
+  let count = 0;
+  while (
+    begin + count < end &&
+    subject.charCodeAt(begin + count) === subject.charCodeAt(at + count)
+  ) {
+    count += 1;
+  }
+  return count;
+};
+
+const iterate: Executor = ({ path, program }) => {
+  const captures = program.target[path.pc] as number;
+  write(path, program.operand[path.pc] as number, path.at);
+  for (let group = 1; group <= MAX_BACKREFERENCE; group += 1) {
+    if ((captures >> group) & 1) forget(path, group);
+  }
+  path.pc += 1;
+  return true;
+};
+
+const forget = (path: Path, group: number): void => {
+  write(path, group * 2, UNSET);
+  write(path, group * 2 + 1, UNSET);
+};
+
+const progress: Executor = ({ path, program }) => {
+  if (path.memory[program.operand[path.pc] as number] === path.at) return false;
+  path.pc += 1;
+  return true;
+};
+
+/** MATCH ends the run before an instruction is executed. */
+const execute = (machine: Backtracker, subject: string, budget: Budget): boolean => {
+  switch (machine.program.ops[machine.path.pc]) {
+    case CHAR:
+      return readCharacter(machine, subject, budget);
+    case FORK:
+      return branch(machine, subject, budget);
+    case ASSERT:
+      return assertContext(machine, subject, budget);
+    case SAVE:
+      return save(machine, subject, budget);
+    case BACKREF:
+      return reread(machine, subject, budget);
+    case ITERATE:
+      return iterate(machine, subject, budget);
+    default:
+      return progress(machine, subject, budget);
+  }
+};
+
+const contextAt = (layout: Layout, subject: string, at: number): Context =>
+  (at === 0 ? AT_START : 0) |
+  (at === subject.length ? AT_END : 0) |
+  (isWordBefore(layout, subject, at) ? WORD_BEFORE : 0) |
+  (isWord(layout, subject, at) ? WORD_AFTER : 0);

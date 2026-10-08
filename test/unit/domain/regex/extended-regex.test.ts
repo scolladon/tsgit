@@ -13,6 +13,19 @@ const WIDE_INTERVALS = 10;
 /** A subject the automaton steps through for well over a check interval. */
 const LONG_SUBJECT_LENGTH = 1 << 18;
 const STOP = new Error('stop');
+/** Steps the backtracking matcher takes on one subject before it answers no match. */
+const MAX_BACKTRACK_STEPS = 1 << 22;
+/** Steps between two checks. */
+const CHECK_INTERVAL = 1 << 16;
+/** A run the back-reference pattern below splits every way before refusing it. */
+const EXPONENTIAL_SUBJECT = `${'a'.repeat(LONG_RUN)}bc`;
+/** Text repeated by a back-reference, and how many times. */
+const REPEATED_TEXT_LENGTH = 1 << 7;
+const REPETITIONS = 1 << 6;
+/** The groups a back-reference can name. */
+const NAMEABLE_GROUPS = 9;
+/** GNU's `RE_DUP_MAX`. */
+const MAX_REPEAT = 0x7fff;
 
 const stop = (): never => {
   throw STOP;
@@ -35,6 +48,17 @@ const refuseBacktracking = (): ReadonlyArray<string> => {
     return false;
   });
   return backtracked;
+};
+
+/** A check that counts how often it is consulted. */
+const countingCheck = (): { readonly check: () => void; readonly calls: () => number } => {
+  let calls = 0;
+  return {
+    check: () => {
+      calls += 1;
+    },
+    calls: () => calls,
+  };
 };
 
 const nested = (depth: number): string => `${'('.repeat(depth)}a${')'.repeat(depth)}`;
@@ -125,6 +149,20 @@ describe('compileExtendedRegex', () => {
         ['(a)\\1', 'aa', true],
         ['(a)\\1', 'ab', false],
         ['(a)\\10', 'aa0', true],
+        ['(ab)\\1', 'xabab', true],
+        ['(ab)\\1', 'abba', false],
+        ['^((a)|b?){1,2}c\\2', 'ac', false],
+        ['^((a)|b){2}\\2', 'ab', true],
+        ['^(a){0}\\1b', 'b', true],
+        ['^(a|())+\\2b$', 'ab', true],
+        ['(a+)+b\\1c', 'aabac', true],
+        ['\\<(\\w)\\1', 'a bb', true],
+        ['^(a*)\\1$', 'aaaa', true],
+        ['^(a*)\\1$', 'aaa', false],
+        ['(.)\\1', 'xyy', true],
+        ['(.)\\1', 'xyx', false],
+        ['(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)\\9', 'abcdefghiji', true],
+        ['(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)\\9', 'abcdefghijx', false],
         ['\\.', 'a', false],
         ['\\{', '{', true],
         ['\\n', 'n', true],
@@ -325,6 +363,106 @@ describe('compileExtendedRegex', () => {
 
         // Assert
         expect(result).toBe('backtracking');
+      });
+    });
+  });
+
+  describe('Given a back-reference pattern backtracking splits a long run every way on', () => {
+    describe('When the run passes the linear check but cannot match', () => {
+      it('Then it answers false once the step budget is spent', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+        const { check, calls } = countingCheck();
+
+        // Act
+        const result = sut('(a+)+b\\1c')?.test(EXPONENTIAL_SUBJECT, check);
+
+        // Assert
+        expect(result).toBe(false);
+        expect(calls()).toBe(MAX_BACKTRACK_STEPS / CHECK_INTERVAL);
+      });
+    });
+
+    describe('When a match lies past the step budget', () => {
+      it('Then it answers false', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+
+        // Act
+        const result = sut('(a+)+b\\1c')?.test(`${EXPONENTIAL_SUBJECT} abac`);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+
+    describe('When the check throws', () => {
+      it('Then the throw stops the match', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+
+        // Act
+        let result: unknown;
+        try {
+          sut('(a+)+b\\1c')?.test(EXPONENTIAL_SUBJECT, stop);
+        } catch (error) {
+          result = error;
+        }
+
+        // Assert
+        expect(result).toBe(STOP);
+      });
+    });
+  });
+
+  describe('Given a back-reference pattern and a subject holding its match', () => {
+    describe('When it is matched', () => {
+      it('Then it answers true without RegExp backtracking', () => {
+        // Arrange
+        const sut = matches;
+        const backtracked = refuseBacktracking();
+
+        // Act
+        const result = sut('(ab)\\1', 'xabab');
+
+        // Assert
+        expect(result).toBe(true);
+        expect(backtracked).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a back-reference repeating a long text many times over', () => {
+    describe('When the repetitions are compared in few steps', () => {
+      it('Then the compared characters count toward the check', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+        const text = 'a'.repeat(REPEATED_TEXT_LENGTH);
+        const message = `${text}x${text.repeat(REPETITIONS)}zy`;
+
+        // Act
+        let result: unknown;
+        try {
+          sut('^([^x]*)x\\1*\\1*y')?.test(message, stop);
+        } catch (error) {
+          result = error;
+        }
+
+        // Assert
+        expect(result).toBe(STOP);
+      });
+    });
+
+    describe('When a short subject is matched', () => {
+      it('Then the match ends before the check is consulted', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+
+        // Act
+        const result = sut('(a)\\1')?.test('aa', stop);
+
+        // Assert
+        expect(result).toBe(true);
       });
     });
   });
@@ -611,6 +749,21 @@ describe('compileExtendedRegex', () => {
 
         // Assert
         expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given every group a back-reference can name, nested, repeated by the widest interval', () => {
+    describe('When the pattern is compiled', () => {
+      it('Then it yields a backtracking matcher', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+
+        // Act
+        const result = sut(`${nested(NAMEABLE_GROUPS)}{${MAX_REPEAT}}\\1`)?.engine;
+
+        // Assert
+        expect(result).toBe('backtracking');
       });
     });
   });

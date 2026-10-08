@@ -48,6 +48,11 @@ const joined =
 const WORD = '[\\p{L}\\p{N}_]';
 const WORD_START = `(?<!${WORD})(?=${WORD})`;
 const WORD_END = `(?<=${WORD})(?!${WORD})`;
+/**
+ * RegExp also tries the position inside a surrogate pair, where no lookaround
+ * reads a character; git only stands between characters.
+ */
+const BETWEEN_CHARACTERS = '(?:^|(?<=[^]))';
 
 const SPELT_QUANTIFIER = fc.constantFrom(
   ...QUANTIFIERS.map((quantifier) => spelt(quantifier, quantifier.replace('{,', '{0,'))),
@@ -70,7 +75,7 @@ const ANCHOR = fc.constantFrom(
   spelt('\\<', WORD_START),
   spelt('\\>', WORD_END),
   spelt('\\b', `(?:${WORD_START}|${WORD_END})`),
-  spelt('\\B', `(?:(?<=${WORD})(?=${WORD})|(?<!${WORD})(?!${WORD}))`),
+  spelt('\\B', `(?:(?<=${WORD})(?=${WORD})|${BETWEEN_CHARACTERS}(?<!${WORD})(?!${WORD}))`),
 );
 const NESTING = 2;
 /**
@@ -109,6 +114,31 @@ const smallPattern = (depth: number): fc.Arbitrary<Spelling> => {
   const branch = fc.array(expression, { maxLength: 4 }).map(joined(''));
   return fc.array(branch, { minLength: 1, maxLength: 3 }).map(joined('|'));
 };
+
+/** Expressions over the leaf atoms and back-references to the first `groups` groups, each maybe repeated. */
+const backreferencing = (groups: number): fc.Arbitrary<Spelling> => {
+  const references = Array.from({ length: groups }, (_, index) => spelt(`\\${index + 1}`));
+  const atom = fc.oneof(LEAF_ATOM, fc.constantFrom(...references));
+  const expression = fc
+    .tuple(atom, fc.array(SPELT_QUANTIFIER, { maxLength: MAX_STACKED }))
+    .map(repeated);
+  return fc.array(expression, { maxLength: 3 }).map(joined(''));
+};
+
+/**
+ * `(P)Q(R)S`: Q may read group 1 again, S groups 1 and 2 — both closed by
+ * then, whichever of P and R holds the second. Groups nest one level inside
+ * P and R and repetitions do not stack, so RegExp settles each small subject
+ * in few steps.
+ */
+const backreferencePattern: fc.Arbitrary<Spelling> = fc
+  .tuple(smallPattern(1), backreferencing(1), smallPattern(1), backreferencing(2))
+  .map(([first, between, second, after]) =>
+    spelt(
+      `(${first.ere})${between.ere}(${second.ere})${after.ere}`,
+      `(${first.ecma})${between.ecma}(${second.ecma})${after.ecma}`,
+    ),
+  );
 
 const answers = (ecma: string, subject: string): boolean => new RegExp(ecma, 'su').test(subject);
 
@@ -218,6 +248,24 @@ describe('compileExtendedRegex properties', () => {
           fc.property(smallPattern(NESTING), smallSubject, ({ ere, ecma }, subject) => {
             const result = sut(`(${ere})\\1`)?.test(subject);
             return result === answers(`(${ecma})\\1`, subject);
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given small patterns reading groups again, repeated or not, and a small subject', () => {
+    describe('When the compiled matcher and RegExp match it', () => {
+      it('Then both answer alike', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+
+        // Act / Assert
+        fc.assert(
+          fc.property(backreferencePattern, smallSubject, ({ ere, ecma }, subject) => {
+            const result = sut(ere)?.test(subject);
+            return result === answers(ecma, subject);
           }),
           { numRuns: 100 },
         );

@@ -33,6 +33,15 @@ const SETUP_TIMEOUT = 60_000;
 const EPOCH = 1_700_000_000;
 const TAG_CHAIN_LENGTH = 6;
 const ABSENT_OID = '1'.repeat(40);
+/**
+ * git on macOS hands extended patterns to the C library's regex, which reads
+ * `\1` as a plain `1`; elsewhere glibc or git's bundled GNU regex reads it as
+ * a back-reference, as tsgit does.
+ */
+const GNU_REGEX = process.platform !== 'darwin';
+/** Rows whose answer hinges on reading `\1` as a back-reference. */
+const backreferenceRows = <Row>(rows: ReadonlyArray<Row>): ReadonlyArray<Row> =>
+  GNU_REGEX ? rows : [];
 
 const identityAt = (offset: number): NodeJS.ProcessEnv => ({
   ...runGitEnv(),
@@ -388,6 +397,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse ^{/regex} search parit
       'HEAD^{/side}',
       'HEAD^{/^(main|side) same}',
       'HEAD^{/s(ec|id)}',
+      'HEAD^{/(e)\\1}',
       'HEAD^{/[[:alpha:]]+ fix}',
       'HEAD^{/date$}',
       'HEAD^{/^merge it$}',
@@ -412,6 +422,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse ^{/regex} search parit
       'z^{/head}',
       'z^{/tail}',
       'tt^{/x}',
+      ...backreferenceRows(['HEAD^{/(s)ide \\1ame}']),
     ])('When git rev-parse and revParse read %s', (argument) => {
       it('Then both resolve the same object and print the same errors', async () => {
         // Arrange
@@ -617,6 +628,14 @@ describe.skipIf(!GIT_AVAILABLE)('integration — a search pattern nesting repeti
     { argument: 'HEAD^{/(x+x+)+y}', resolves: false },
     { argument: ':/(a+)+', resolves: true },
     { argument: 'HEAD^{/(x+x+)+}', resolves: true },
+    { argument: ':/(a+)+b\\1c', resolves: false },
+    { argument: ':/^(a{7})\\1+$', resolves: false },
+    { argument: ':/(ab)\\1', resolves: false },
+    { argument: 'HEAD^{/(x)y\\1}', resolves: false },
+    ...backreferenceRows([
+      { argument: ':/^(a+)\\1$', resolves: true },
+      { argument: 'HEAD^{/^(xx)\\1+$}', resolves: true },
+    ]),
   ])('Given $argument over long runs of one character', ({ argument, resolves }) => {
     describe('When git rev-parse and revParse read it', () => {
       it('Then both resolve the same object', async () => {
