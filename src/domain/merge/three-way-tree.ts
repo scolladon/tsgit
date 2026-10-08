@@ -11,6 +11,7 @@ import {
   applyMergeRenames,
   type MergeRenames,
   NO_MERGE_RENAMES,
+  type RenamedMergeInput,
   type SidePaths,
   type SplitRename,
 } from './merge-renames.js';
@@ -480,6 +481,16 @@ async function resolveAddAdd(
   if (!ourRegular || !theirRegular) {
     return addAddConflict(path, our, their);
   }
+  return mergeAddAddContent(path, our, their, contentMerger);
+}
+
+/** Two regular files added at one path: merge their content without a base. */
+async function mergeAddAddContent(
+  path: FilePath,
+  our: FlatTreeEntry,
+  their: FlatTreeEntry,
+  contentMerger: ContentMerger,
+): Promise<MergeOutcome> {
   const contentResult = await mergeBaseless(path, our, their, contentMerger);
   if (contentResult.tag === 'resolved') return contentResult.outcome;
   return conflictOutcome({
@@ -653,7 +664,31 @@ export async function mergeTrees(
   enforcePerInputCap(base, 'base');
   enforcePerInputCap(ours, 'ours');
   enforcePerInputCap(theirs, 'theirs');
+  const plan = planTreeMerge(base, ours, theirs, renames);
+  const scope: PathScope = { labels, reserved: new Set<FilePath>(plan.paths), variant };
+  const merger = withSidePaths(contentMerger, plan.sidePaths);
+  const { forced, splitRenames } = plan.renamed;
+  const forcedConflicts = await settleSplitRenames(forced, splitRenames, contentMerger);
+  const outcomes = await resolvePaths(plan, forcedConflicts, merger, scope);
+  const conflicts = extractConflicts(outcomes);
+  return { outcomes, conflicts, cleanMerge: conflicts.length === 0 && plan.located.clean };
+}
 
+/** Every path the merge visits, in git's order, once directory and file renames moved them. */
+interface TreeMergePlan {
+  readonly located: ReturnType<typeof withDirectoryRenames>;
+  readonly renamed: RenamedMergeInput;
+  readonly paths: ReadonlySet<FilePath>;
+  readonly sortedPaths: ReadonlyArray<FilePath>;
+  readonly sidePaths: RenamedMergeInput['sidePaths'];
+}
+
+function planTreeMerge(
+  base: FlatTree | undefined,
+  ours: FlatTree | undefined,
+  theirs: FlatTree | undefined,
+  renames: MergeRenames,
+): TreeMergePlan {
   const located = withDirectoryRenames(base, ours, theirs, renames);
   const renamed = applyMergeRenames(base, located.ours, located.theirs, located.renames);
   const vacated =
@@ -661,21 +696,23 @@ export async function mergeTrees(
       ? renamed.vacated
       : new Set([...renamed.vacated, ...located.vacated]);
   const paths = buildUnionPaths(renamed.base, renamed.ours, renamed.theirs, vacated);
-  const sortedPaths = sortByPath([...paths], (p) => p);
-  const scope: PathScope = { labels, reserved: new Set<FilePath>(paths), variant };
   const sidePaths =
     located.sidePaths.size === 0
       ? renamed.sidePaths
       : new Map([...located.sidePaths, ...renamed.sidePaths]);
-  const merger = withSidePaths(contentMerger, sidePaths);
-  const forcedConflicts = await settleSplitRenames(
-    renamed.forced,
-    renamed.splitRenames,
-    contentMerger,
-  );
+  return { located, renamed, paths, sortedPaths: sortByPath([...paths], (p) => p), sidePaths };
+}
 
+/** Resolve every path in order; a forced conflict stands in for its path's own resolution. */
+async function resolvePaths(
+  plan: TreeMergePlan,
+  forcedConflicts: ReadonlyMap<FilePath, MergeConflict>,
+  merger: ContentMerger,
+  scope: PathScope,
+): Promise<MergeOutcome[]> {
+  const { renamed, located } = plan;
   const outcomes: MergeOutcome[] = [];
-  for (const path of sortedPaths) {
+  for (const path of plan.sortedPaths) {
     const forced = forcedConflicts.get(path);
     if (forced !== undefined) {
       outcomes.push(conflictOutcome(forced));
@@ -692,7 +729,5 @@ export async function mergeTrees(
       located.fileLocations.has(path) ? asFileLocation(outcome, path, entries) : outcome,
     );
   }
-
-  const conflicts = extractConflicts(outcomes);
-  return { outcomes, conflicts, cleanMerge: conflicts.length === 0 && located.clean };
+  return outcomes;
 }

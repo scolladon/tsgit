@@ -286,26 +286,36 @@ function toSegments(
   base?: ReadonlyArray<Uint8Array>,
 ): MergeSegment[] {
   const ours = sides.ours.lines;
-  const theirs = sides.theirs.lines;
   const segments: MergeSegment[] = [];
-  const pushClean = (lines: ReadonlyArray<Uint8Array>): void => {
-    if (lines.length > 0) segments.push({ kind: 'clean', lines });
-  };
   let cursor = 0;
   for (const record of records) {
     if (record.mode === IDENTICAL) continue;
-    pushClean(ours.slice(cursor, record.i1));
-    const oursLines = ours.slice(record.i1, record.i1 + record.chg1);
-    const theirsLines = theirs.slice(record.i2, record.i2 + record.chg2);
-    if (record.mode === CONFLICT) {
-      segments.push(conflictSegment(record, oursLines, theirsLines, base));
-    } else {
-      pushClean(record.mode === TAKE_OURS ? oursLines : theirsLines);
-    }
+    pushClean(segments, ours.slice(cursor, record.i1));
+    pushRecord(segments, record, sides, base);
     cursor = record.i1 + record.chg1;
   }
-  pushClean(ours.slice(cursor));
+  pushClean(segments, ours.slice(cursor));
   return segments;
+}
+
+function pushClean(segments: MergeSegment[], lines: ReadonlyArray<Uint8Array>): void {
+  if (lines.length > 0) segments.push({ kind: 'clean', lines });
+}
+
+/** One differing record: a conflict, or the side it takes as clean lines. */
+function pushRecord(
+  segments: MergeSegment[],
+  record: MergeRecord,
+  sides: SidePair,
+  base: ReadonlyArray<Uint8Array> | undefined,
+): void {
+  const oursLines = sides.ours.lines.slice(record.i1, record.i1 + record.chg1);
+  const theirsLines = sides.theirs.lines.slice(record.i2, record.i2 + record.chg2);
+  if (record.mode === CONFLICT) {
+    segments.push(conflictSegment(record, oursLines, theirsLines, base));
+    return;
+  }
+  pushClean(segments, record.mode === TAKE_OURS ? oursLines : theirsLines);
 }
 
 /**

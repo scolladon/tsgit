@@ -6,7 +6,7 @@ import {
   unrelatedHistories,
   workingTreeDirty,
 } from '../../domain/commands/error.js';
-import type { FlatTreeEntry } from '../../domain/diff/flat-tree.js';
+import type { FlatTree, FlatTreeEntry } from '../../domain/diff/flat-tree.js';
 import { conflictsToIndexEntries, sortedRecordedPaths } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
@@ -26,6 +26,7 @@ import {
   type MergeOutcome,
   mergeLabels,
   mergeTrees,
+  type TreeMergeResult,
 } from '../../domain/merge/index.js';
 import type { MergeCommandLine } from '../../domain/merge/merge-command-line.js';
 import { mergeTagHeader } from '../../domain/merge/merge-tag-header.js';
@@ -635,18 +636,24 @@ const twoHeadMerge = async (
   const [base] = bases;
   if (base === theirId) return { kind: 'up-to-date', id: ourId };
   if (base === ourId && opts.fastForward !== 'never') {
-    return underAutostash(ctx, opts, async () =>
-      opts.squash === true
-        ? squashInto(ctx, await getTree(ctx, theirId), ourId, [theirId])
-        : fastForward(ctx, opts, internal, branch, { ourId, theirId }),
-    );
+    return fastForwardOrSquash(ctx, { opts, internal, branch }, { ourId, theirId });
   }
-  if (opts.fastForward === 'only') {
-    throw nonFastForward(branch ?? HEAD, ourId, theirId);
-  }
+  if (opts.fastForward === 'only') throw nonFastForward(branch ?? HEAD, ourId, theirId);
   const commit = { opts, internal, branch, ourId, parents: [ourId, theirId], named };
   return underAutostash(ctx, opts, () => twoHeadStrategy(ctx, commit, remote, bases));
 };
+
+/** HEAD is an ancestor of the one remote head: fast-forward to it, or squash it in. */
+const fastForwardOrSquash = (
+  ctx: Context,
+  { opts, internal, branch }: Pick<MergeCommitInput, 'opts' | 'internal' | 'branch'>,
+  heads: { readonly ourId: ObjectId; readonly theirId: ObjectId },
+): Promise<MergeEnding> =>
+  underAutostash(ctx, opts, async () =>
+    opts.squash === true
+      ? squashInto(ctx, await getTree(ctx, heads.theirId), heads.ourId, [heads.theirId])
+      : fastForward(ctx, opts, internal, branch, heads),
+  );
 
 /** git's trivial in-index merge where every strategy allows it, then its strategy loop for one head. */
 const twoHeadStrategy = async (
@@ -836,10 +843,7 @@ const manyHeadMerge = async (
   ourId: ObjectId,
   named: ReadonlyArray<MergeRemote>,
 ): Promise<MergeEnding> => {
-  const reduced = (await tryReduceHeads(ctx, [ourId, ...named.map((remote) => remote.id)])) ?? [];
-  const remotes = reduced.flatMap(
-    (id) => named.find((remote) => remote.id === id && id !== ourId) ?? [],
-  );
+  const { reduced, remotes } = await survivingRemotes(ctx, ourId, named);
   const described = describedSurvivors(internal, named, reduced);
   if (remotes.length === 1) {
     return twoHeadMerge(ctx, input, described, branch, ourId, remotes[0]!, named);
@@ -857,6 +861,22 @@ const manyHeadMerge = async (
   const parents = [...(keepsHead ? [ourId] : []), ...remotes.map((remote) => remote.id)];
   const commit = { opts, internal, branch, ourId, parents, named };
   return underAutostash(ctx, opts, () => manyHeadStrategy(ctx, commit, remotes));
+};
+
+/** git's `reduce_heads` over HEAD and every named head, and the remotes that survive it. */
+const survivingRemotes = async (
+  ctx: Context,
+  ourId: ObjectId,
+  named: ReadonlyArray<MergeRemote>,
+): Promise<{
+  readonly reduced: ReadonlyArray<ObjectId>;
+  readonly remotes: ReadonlyArray<MergeRemote>;
+}> => {
+  const reduced = (await tryReduceHeads(ctx, [ourId, ...named.map((remote) => remote.id)])) ?? [];
+  const remotes = reduced.flatMap(
+    (id) => named.find((remote) => remote.id === id && id !== ourId) ?? [],
+  );
+  return { reduced, remotes };
 };
 
 /** git's `try_merge_strategy` for several heads: only `octopus` and `ours` handle them. */
@@ -1067,17 +1087,36 @@ const mergeTagHeaders = async (
 /** git's `finish_automerge`: commit the merged tree and log `note` behind the reflog action. */
 const commitCleanMerge = async (
   ctx: Context,
-  { opts, internal, branch, ourId, parents, named }: MergeCommitInput,
+  input: MergeCommitInput,
   mergedTree: ObjectId,
   note: string,
 ): Promise<MergeEnding> => {
+  const { opts, ourId, parents } = input;
   const heads = parents.filter((id) => id !== ourId);
   if (opts.squash === true) return headless(squashInto(ctx, mergedTree, ourId, heads));
   if (opts.commit === false) return stopBeforeCommit(ctx, opts, mergedTree, ourId, heads);
+  const commitData = await mergeCommitData(ctx, input, mergedTree);
+  // git dies on a failed signing with the merge materialised and its state kept, MERGE_MSG
+  // as `prepare_to_commit` wrote it: the message without its final newline.
+  const gpgSignature = await mergeSignature(ctx, opts, commitData).catch(async (error: unknown) => {
+    await stopBeforeCommit(ctx, opts, mergedTree, ourId, heads, commitData.message.slice(0, -1));
+    throw error;
+  });
+  return materialiseAndApply(ctx, mergedTree, () =>
+    writeMergeCommit(ctx, input, { commitData, gpgSignature }, note),
+  );
+};
+
+/** The merge commit's data: its author, committer, cleaned message and mergetag headers. */
+const mergeCommitData = async (
+  ctx: Context,
+  { opts, parents, named }: MergeCommitInput,
+  mergedTree: ObjectId,
+): Promise<CommitData> => {
   const author = await resolveMergeAuthor(ctx, opts);
   const committer = resolveMergeCommitter(opts, author);
   const message = sanitizeMessage(opts.message, { allowEmpty: false });
-  const commitData: CommitData = {
+  return {
     tree: mergedTree,
     parents,
     author,
@@ -1085,23 +1124,27 @@ const commitCleanMerge = async (
     message,
     extraHeaders: await mergeTagHeaders(ctx, parents, named),
   };
-  // git dies on a failed signing with the merge materialised and its state kept, MERGE_MSG
-  // as `prepare_to_commit` wrote it: the message without its final newline.
-  const gpgSignature = await mergeSignature(ctx, opts, commitData).catch(async (error: unknown) => {
-    await stopBeforeCommit(ctx, opts, mergedTree, ourId, heads, message.slice(0, -1));
-    throw error;
+};
+
+/** Store the (signed) merge commit and advance HEAD behind the reflog action. */
+const writeMergeCommit = async (
+  ctx: Context,
+  { opts, internal, branch, ourId, parents }: MergeCommitInput,
+  {
+    commitData,
+    gpgSignature,
+  }: { readonly commitData: CommitData; readonly gpgSignature: string | undefined },
+  note: string,
+): Promise<MergeResult> => {
+  const { extraHeaders, ...unsigned } = commitData;
+  const signed = gpgSignature === undefined ? unsigned : { ...unsigned, gpgSignature };
+  const id = await createCommitWithStoredHeaders(ctx, signed, extraHeaders);
+  // Written through the literal `HEAD`: the branch it names, or HEAD itself when detached.
+  await updateRef(ctx, HEAD, id, {
+    expected: ourId,
+    reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: ${note}`,
   });
-  return materialiseAndApply(ctx, mergedTree, async () => {
-    const { extraHeaders, ...unsigned } = commitData;
-    const signed = gpgSignature === undefined ? unsigned : { ...unsigned, gpgSignature };
-    const id = await createCommitWithStoredHeaders(ctx, signed, extraHeaders);
-    // Written through the literal `HEAD`: the branch it names, or HEAD itself when detached.
-    await updateRef(ctx, HEAD, id, {
-      expected: ourId,
-      reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: ${note}`,
-    });
-    return { kind: 'merge', id, branch, parents };
-  });
+  return { kind: 'merge', id, branch, parents };
 };
 
 /**
@@ -1199,43 +1242,63 @@ interface MergeTreeInput {
 
 const computeMergeTreeResult = async (
   ctx: Context,
-  { ourId, theirId, baseId, strategy }: MergeTreeInput,
+  input: MergeTreeInput,
   revName: string,
 ): Promise<MergeTreeResult> => {
-  const ourTreeId = await getTree(ctx, ourId);
-  const theirTreeId = await getTree(ctx, theirId);
-  const baseTreeId = baseId !== undefined ? await getTree(ctx, baseId) : undefined;
-
-  const [ourFlat, theirSide, baseSide] = await Promise.all([
-    flattenTree(ctx, ourTreeId),
-    flattenTree(ctx, theirTreeId),
-    baseTreeId !== undefined ? flattenTree(ctx, baseTreeId) : Promise.resolve(undefined),
-  ]);
-
-  const ours = { tree: ourTreeId, flat: ourFlat };
-  const shift = strategy.subtreeShift;
-  const [theirFlat, baseFlat] =
-    shift === undefined
-      ? [theirSide, baseSide]
-      : await Promise.all([
-          shiftMergeSide(ctx, ours, { tree: theirTreeId, flat: theirSide }, shift),
-          shiftMergeSide(ctx, ours, { tree: baseTreeId, flat: baseSide }, shift),
-        ]);
-  const labels: MergeLabels = mergeLabels(revName, baseId);
+  const { strategy } = input;
+  const trees = await readMergeSides(ctx, input);
+  const labels: MergeLabels = mergeLabels(revName, input.baseId);
   const contentMerger = buildContentMerger(ctx, labels, strategy);
-  const detected = await detectMergeRenames(ctx, baseFlat, ourFlat, theirFlat, strategy.renames);
-  const trees = { base: baseFlat, ours: ourFlat, theirs: theirFlat };
+  const { base, ours, theirs } = trees;
+  const detected = await detectMergeRenames(ctx, base, ours, theirs, strategy.renames);
   const renames = await mergeCollidingRenameSources(ctx, trees, detected, contentMerger);
-  const result = await mergeTrees(
-    baseFlat,
-    ourFlat,
-    theirFlat,
+  const merged = await mergeTrees(
+    base,
+    ours,
+    theirs,
     contentMerger,
     labels,
     renames,
     strategy.variant,
   );
+  return settleMergeTree(ctx, merged, ours);
+};
 
+/** The three sides a merge reads, flattened — and subtree-shifted onto ours when asked. */
+interface FlatMergeSides {
+  readonly base: FlatTree | undefined;
+  readonly ours: FlatTree;
+  readonly theirs: FlatTree;
+}
+
+const readMergeSides = async (
+  ctx: Context,
+  { ourId, theirId, baseId, strategy }: MergeTreeInput,
+): Promise<FlatMergeSides> => {
+  const ourTreeId = await getTree(ctx, ourId);
+  const theirTreeId = await getTree(ctx, theirId);
+  const baseTreeId = baseId !== undefined ? await getTree(ctx, baseId) : undefined;
+  const [ourFlat, theirSide, baseSide] = await Promise.all([
+    flattenTree(ctx, ourTreeId),
+    flattenTree(ctx, theirTreeId),
+    baseTreeId !== undefined ? flattenTree(ctx, baseTreeId) : Promise.resolve(undefined),
+  ]);
+  const shift = strategy.subtreeShift;
+  if (shift === undefined) return { base: baseSide, ours: ourFlat, theirs: theirSide };
+  const ours = { tree: ourTreeId, flat: ourFlat };
+  const [theirs, base] = await Promise.all([
+    shiftMergeSide(ctx, ours, { tree: theirTreeId, flat: theirSide }, shift),
+    shiftMergeSide(ctx, ours, { tree: baseTreeId, flat: baseSide }, shift),
+  ]);
+  return { base, ours: ourFlat, theirs };
+};
+
+/** A clean merge's synthesised tree, or its conflicts with every split rename's blob staged. */
+const settleMergeTree = async (
+  ctx: Context,
+  result: TreeMergeResult,
+  ourFlat: FlatTree,
+): Promise<MergeTreeResult> => {
   if (result.cleanMerge) {
     const tree = await synthesiseMergedTree(ctx, result.outcomes);
     return { kind: 'clean', tree };
@@ -1481,22 +1544,55 @@ const persistConflictState = async (
   ourId: ObjectId,
   theirId: ObjectId,
 ): Promise<MergeEnding> => {
-  rejectUnsupportedConflicts(result.conflicts);
+  const changed = await refuseUnwritableConflicts(ctx, result);
+  await writeConflictState(ctx, { opts, result, ourId, theirId }, changed);
+  return conflictOutcome(opts, result.conflicts, theirId, ourId);
+};
 
+type ConflictedTree = Extract<MergeTreeResult, { readonly kind: 'conflict' }>;
+
+/**
+ * Every refusal, before the first write; returns the paths the merge changes.
+ * The whole-set path gate is hoisted above the write wave and above
+ * `acquireIndexLock`: every outcome/conflict path this call is about to write
+ * is validated in one upfront pass, so a hostile name anywhere in the batch
+ * refuses before the FIRST byte is written, not partway through the
+ * concurrent write wave — mirrors `validateChangesetPaths`
+ * (apply-changeset.ts) and `restoreUntracked`'s pre-pass (stash.ts).
+ */
+const refuseUnwritableConflicts = async (
+  ctx: Context,
+  result: ConflictedTree,
+): Promise<ReturnType<typeof changedPaths>> => {
+  rejectUnsupportedConflicts(result.conflicts);
   const changed = changedPaths(result.outcomes, result.conflicts, result.ours);
   await assertNothingOverwritten(ctx, changed);
-
-  // Whole-set path gate, hoisted above the write wave and above
-  // `acquireIndexLock`: every outcome/conflict path this call is about to
-  // write is validated in one upfront pass, so a hostile name anywhere in
-  // the batch refuses before the FIRST byte is written, not partway through
-  // the concurrent write wave — mirrors `validateChangesetPaths`
-  // (apply-changeset.ts) and `restoreUntracked`'s pre-pass (stash.ts).
   validateMergeWritePaths(result.outcomes, result.conflicts, changed);
+  return changed;
+};
 
-  // loadSparseMatcher is a pure config/pattern-file read — no lock needed. A
-  // defined matcher keeps excluded blob-backed paths out of the working tree
-  // and marks their stage-0 conflict-state entries skip-worktree.
+/**
+ * AUTO_MERGE, then — under the index lock — the working tree, the stop state
+ * and the conflicted index. loadSparseMatcher is a pure config/pattern-file
+ * read — no lock needed. A defined matcher keeps excluded blob-backed paths
+ * out of the working tree and marks their stage-0 conflict-state entries
+ * skip-worktree.
+ */
+const writeConflictState = async (
+  ctx: Context,
+  {
+    opts,
+    result,
+    ourId,
+    theirId,
+  }: {
+    readonly opts: SettledMerge;
+    readonly result: ConflictedTree;
+    readonly ourId: ObjectId;
+    readonly theirId: ObjectId;
+  },
+  changed: ReturnType<typeof changedPaths>,
+): Promise<void> => {
   const matcher = await loadSparseMatcher(ctx);
   const merged = await mergedBlobEntries(ctx, result.outcomes);
   // Recorded before the first write: a broken AUTO_MERGE fails the merge as git's does.
@@ -1509,7 +1605,6 @@ const persistConflictState = async (
     await writeStopState(ctx, opts, ourId, [theirId], sortedRecordedPaths(result.conflicts));
     return buildConflictIndexEntries(result.outcomes, result.conflicts, matcher, merged);
   });
-  return conflictOutcome(opts, result.conflicts, theirId, ourId);
 };
 
 /**

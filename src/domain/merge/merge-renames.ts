@@ -250,13 +250,7 @@ export function applyMergeRenames(
   }
   const ourEntries: Entries = new Map(ours?.entries);
   const theirEntries: Entries = new Map(theirs?.entries);
-  const shared: Shared = {
-    base: new Map(base.entries),
-    vacated: new Set(),
-    sidePaths: new Map(),
-    forced: new Map(),
-    splitRenames: [],
-  };
+  const shared = sharedMoving(base);
   const intoOurs = { renamingSide: ourEntries, other: theirEntries };
   const intoTheirs = { renamingSide: theirEntries, other: ourEntries };
   const oursMoving = movingFor(shared, 'ours', intoOurs, renames.theirs);
@@ -267,6 +261,15 @@ export function applyMergeRenames(
   const moved = { ours: asTree(ourEntries, ours), theirs: asTree(theirEntries, theirs) };
   return { base: { entries: shared.base }, ...moved, vacated, sidePaths, forced, splitRenames };
 }
+
+/** What both sides' renames move into: the merge base, and every finding they share. */
+const sharedMoving = (base: FlatTree): Shared => ({
+  base: new Map(base.entries),
+  vacated: new Set(),
+  sidePaths: new Map(),
+  forced: new Map(),
+  splitRenames: [],
+});
 
 /** A rename/add whose source both sides changed: ort content-merges that source first. */
 export interface CollidingSourceMerge {
@@ -342,27 +345,10 @@ export function collidingSourceMerges(
   renames: MergeRenames,
 ): ReadonlyArray<CollidingSourceMerge> {
   if (base === undefined) return [];
-  const shared = { base };
+  const ourSide = { base, side: 'ours', renaming: ours, other: theirs } as const;
+  const theirSide = { base, side: 'theirs', renaming: theirs, other: ours } as const;
   return [
-    ...sideCollisions(
-      {
-        ...shared,
-        side: 'ours',
-        renaming: ours,
-        other: theirs,
-        otherRenames: byOldPath(renames.theirs),
-      },
-      renames.ours,
-    ),
-    ...sideCollisions(
-      {
-        ...shared,
-        side: 'theirs',
-        renaming: theirs,
-        other: ours,
-        otherRenames: byOldPath(renames.ours),
-      },
-      renames.theirs,
-    ),
+    ...sideCollisions({ ...ourSide, otherRenames: byOldPath(renames.theirs) }, renames.ours),
+    ...sideCollisions({ ...theirSide, otherRenames: byOldPath(renames.ours) }, renames.theirs),
   ];
 }
