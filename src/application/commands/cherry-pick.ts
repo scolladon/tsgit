@@ -6,21 +6,13 @@
  * `applyMergeToWorktree` primitive. Conflicts and empty picks stop with a
  * dedicated `CHERRY_PICK_HEAD` state (distinct from the merge machine).
  */
-import {
-  cherryPickMergeNoMainline,
-  noInitialCommit,
-  noOperationInProgress,
-  workingTreeDirty,
-} from '../../domain/commands/error.js';
+import { cherryPickMergeNoMainline } from '../../domain/commands/error.js';
 import { sortedRecordedPaths } from '../../domain/diff/index.js';
-import { TsgitError } from '../../domain/error.js';
-import { unsupportedOperation } from '../../domain/index.js';
 import { type ConflictType, type MergeConflict, replayLabels } from '../../domain/merge/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
 import { cherryPickReflog, commitCherryPickReflog } from '../../domain/reflog/reflog-messages.js';
-import type { TodoEntry } from '../../domain/sequencer/index.js';
 import {
   CHERRY_PICK,
   CHERRY_PICK_ABORT,
@@ -28,53 +20,45 @@ import {
   CHERRY_PICK_SKIP,
 } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
-import { applyMergeToWorktree } from '../primitives/apply-merge-to-worktree.js';
 import { createCommit } from '../primitives/create-commit.js';
-import { removeAutoMerge } from '../primitives/internal/auto-merge-ref.js';
-import {
-  assertNoPendingOperation,
-  assertOperationalRepository,
-  readHeadRaw,
-  requireWorkTree,
-} from '../primitives/internal/repo-state.js';
-import { assertEverySourceLoadable } from '../primitives/object-store.js';
-import { readIndex } from '../primitives/read-index.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
-import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { updateRef } from '../primitives/update-ref.js';
-import { abortSequencerReset, skipSequencerReset } from './internal/abort-sequencer-reset.js';
+import { skipSequencerReset } from './internal/abort-sequencer-reset.js';
 import {
   clearCherryPickHead,
   conflictMergeMsg,
   readCherryPickHead,
   writeCherryPickHead,
 } from './internal/cherry-pick-state.js';
-import { assertCleanWorkTree } from './internal/clean-work-tree.js';
-import { sanitizeMessage, stripComments } from './internal/commit-message.js';
+import { sanitizeMessage } from './internal/commit-message.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { readCommitData, requireSymbolicHead, treeOf } from './internal/history-rewrite.js';
-import { acquireIndexLock } from './internal/index-update.js';
-import { clearMergeMsg, readMergeMsg, writeMergeMsg } from './internal/merge-state.js';
+import { writeMergeMsg } from './internal/merge-state.js';
 import {
-  isSequence,
-  resolveSequencerRevisions,
-  type SequencerRevisions,
-} from './internal/sequencer-revisions.js';
+  abortReplay,
+  commitResolvedReplay,
+  type Finalised,
+  finaliseResolvedReplay,
+  finaliseStoppedReplay,
+  HEAD,
+  openReplayResume,
+  openReplayRun,
+  type ReplayCommand,
+  readReplayCommit,
+  replayOntoHead,
+  requireContinuableHead,
+  runNoCommitReplay,
+  toConflictList,
+  writeSequencerStop,
+} from './internal/replay-sequence.js';
+import { isSequence, type SequencerRevisions } from './internal/sequencer-revisions.js';
 import {
   clearSequencer,
   readSequencerHead,
   readSequencerOpts,
-  readSequencerTodo,
-  writeAbortSafety,
-  writeSequencerHead,
-  writeSequencerOpts,
-  writeSequencerTodo,
 } from './internal/sequencer-state.js';
-import { rejectUnmergedIndex } from './internal/unmerged-index.js';
 
 export type { ConflictType } from '../../domain/merge/index.js';
-
-const HEAD: RefName = 'HEAD' as RefName;
 
 export interface CherryPickRunInput {
   /** Revisions to pick, in argument order — a commit-ish or an `A..B` range each. */
@@ -120,12 +104,21 @@ type PickOutcome =
   | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
   | { readonly kind: 'empty' };
 
-/** A merge commit (≥2 parents) cannot be picked without a chosen mainline (`-m`). */
-const isMergeCommit = (cData: CommitData): boolean => cData.parents.length >= 2;
-
-const toConflictList = (
-  conflicts: ReadonlyArray<MergeConflict>,
-): ReadonlyArray<CherryPickConflict> => conflicts.map((c) => ({ path: c.path, type: c.type }));
+/** A pick replays `C` as the 3-way merge `base = parent(C)`, `theirs = C`. */
+const CHERRY_PICK_COMMAND: ReplayCommand = {
+  operation: CHERRY_PICK,
+  todoCommand: 'pick',
+  detachedRefusal: 'cannot cherry-pick with detached HEAD',
+  readStopHead: readCherryPickHead,
+  clearStopHead: clearCherryPickHead,
+  refuseMerge: cherryPickMergeNoMainline,
+  mergeSides: async (ctx, cData) => {
+    const parentId = cData.parents[0];
+    const baseTree = parentId !== undefined ? await treeOf(ctx, parentId) : undefined;
+    return { baseTree, theirsTree: cData.tree };
+  },
+  labels: replayLabels,
+};
 
 /**
  * git's `prepare_revs` for a pick: a walked range is replayed oldest first,
@@ -134,39 +127,25 @@ const toConflictList = (
 const pickOrder = (revisions: SequencerRevisions): ReadonlyArray<ObjectId> =>
   revisions.kind === 'walked' ? [...revisions.commits].reverse() : revisions.commits;
 
-/** Read each commit's subject to build `pick <oid> <subject>` todo entries. */
-const buildTodoEntries = async (
-  ctx: Context,
-  oids: ReadonlyArray<ObjectId>,
-): Promise<ReadonlyArray<TodoEntry>> => {
-  const entries: TodoEntry[] = [];
-  for (const oid of oids) {
-    const cData = await readCommitData(ctx, oid);
-    entries.push({ command: 'pick', oid, subject: subjectLine(cData.message) });
-  }
-  return entries;
-};
-
 interface SequenceState {
   readonly multiPick: boolean;
   readonly sequenceHead: ObjectId;
 }
 
-/** Persist the git-faithful sequencer dir on a multi-pick stop. */
-const writeSequencerStop = async (
+/** Persist the git-faithful sequencer dir when a multi-pick sequence stops. */
+const stopSequence = async (
   ctx: Context,
   seq: SequenceState,
   remaining: ReadonlyArray<ObjectId>,
   currentHead: ObjectId,
   opts: PickOptions,
 ): Promise<void> => {
-  await writeSequencerHead(ctx, seq.sequenceHead);
-  await writeSequencerTodo(ctx, await buildTodoEntries(ctx, remaining));
-  await writeAbortSafety(ctx, currentHead);
-  await writeSequencerOpts(ctx, {
-    recordOrigin: opts.recordOrigin,
-    allowEmpty: opts.allowEmpty,
-    noCommit: false,
+  if (!seq.multiPick) return;
+  await writeSequencerStop(ctx, CHERRY_PICK_COMMAND, {
+    sequenceHead: seq.sequenceHead,
+    remaining,
+    currentHead,
+    opts: { recordOrigin: opts.recordOrigin, allowEmpty: opts.allowEmpty, noCommit: false },
   });
 };
 
@@ -187,14 +166,13 @@ const runSequence = async (
   const applied: CherryPickedCommit[] = [];
   for (let i = 0; i < todo.length; i += 1) {
     const source = todo[i] as ObjectId;
-    const cData = await readCommitData(ctx, source);
-    if (isMergeCommit(cData)) {
-      // Partial-apply: earlier picks are already committed. Stop AT the merge —
-      // the sequencer keeps it as todo[0] (no CHERRY_PICK_HEAD, since it never
-      // started). The user resolves with `skip` or `abort`.
-      if (seq.multiPick) await writeSequencerStop(ctx, seq, todo.slice(i), ourId, opts);
-      throw cherryPickMergeNoMainline(source);
-    }
+    const headBefore = ourId;
+    // Partial-apply: earlier picks are already committed. A merge stops AT it —
+    // the sequencer keeps it as todo[0] (no CHERRY_PICK_HEAD, since it never
+    // started). The user resolves with `skip` or `abort`.
+    const cData = await readReplayCommit(ctx, CHERRY_PICK_COMMAND, source, () =>
+      stopSequence(ctx, seq, todo.slice(i), headBefore, opts),
+    );
     const outcome = await applyOnePick(ctx, source, cData, ourId, opts);
     if (outcome.kind === 'committed') {
       applied.push({ source, created: outcome.id });
@@ -208,7 +186,7 @@ const runSequence = async (
       outcome.kind === 'conflict' ? outcome.conflicts : undefined,
       opts,
     );
-    if (seq.multiPick) await writeSequencerStop(ctx, seq, todo.slice(i), ourId, opts);
+    await stopSequence(ctx, seq, todo.slice(i), ourId, opts);
     const remaining = todo.length - (i + 1);
     return outcome.kind === 'conflict'
       ? {
@@ -235,17 +213,6 @@ const appendCherryPickOrigin = (message: string, source: ObjectId): string =>
 /** The message a pick will commit: the source message, optionally `-x`-stamped. */
 const messageDraft = (message: string, source: ObjectId, recordOrigin: boolean): string =>
   recordOrigin ? appendCherryPickOrigin(message, source) : message;
-
-/** Resolve the (always symbolic — detached is refused upstream) HEAD branch to
- *  its commit oid, or refuse on an unborn branch. */
-const resolveHeadCommit = async (ctx: Context, branch: RefName): Promise<ObjectId> => {
-  try {
-    return await resolveRef(ctx, branch);
-  } catch (err) {
-    if (err instanceof TsgitError && err.data.code === 'REF_NOT_FOUND') throw noInitialCommit();
-    throw err;
-  }
-};
 
 /** Build the new commit: preserved author + message, current committer, single parent. */
 const createPickCommit = async (
@@ -276,40 +243,25 @@ const applyOnePick = async (
   cData: CommitData,
   ourId: ObjectId,
   opts: PickOptions,
-): Promise<PickOutcome> => {
-  const parentId = cData.parents[0];
-  const baseTree = parentId !== undefined ? await treeOf(ctx, parentId) : undefined;
-  const oursTree = await treeOf(ctx, ourId);
-  const lock = await acquireIndexLock(ctx);
-  try {
-    const currentIndex = await readIndex(ctx);
-    const res = await applyMergeToWorktree(ctx, {
-      baseTree,
-      oursTree,
-      theirsTree: cData.tree,
-      currentIndex,
-      labels: replayLabels(source, subjectLine(cData.message)),
-    });
-    if (res.kind === 'would-overwrite')
-      throw workingTreeDirty({ localChanges: res.localChanges, untracked: res.untracked });
-    if (res.kind === 'conflict') {
-      await lock.commit(res.indexEntries);
-      return { kind: 'conflict', conflicts: res.conflicts };
-    }
-    if (res.mergedTree === oursTree && !opts.allowEmpty) return { kind: 'empty' };
-    await lock.commit(res.result.newIndexEntries);
-    const id = await createPickCommit(ctx, source, cData, ourId, res.mergedTree, opts);
-    // Written through the literal `HEAD` — cherry-pick refuses on a
-    // detached HEAD, so `HEAD` always names the branch being advanced here.
-    await updateRef(ctx, HEAD, id, {
-      expected: ourId,
-      reflogMessage: cherryPickReflog(subjectLine(cData.message)),
-    });
-    return { kind: 'committed', id };
-  } finally {
-    await lock.release();
-  }
-};
+): Promise<PickOutcome> =>
+  replayOntoHead(
+    ctx,
+    CHERRY_PICK_COMMAND,
+    { source, cData },
+    ourId,
+    async (res, oursTree, lock) => {
+      if (res.mergedTree === oursTree && !opts.allowEmpty) return { kind: 'empty' };
+      await lock.commit(res.result.newIndexEntries);
+      const id = await createPickCommit(ctx, source, cData, ourId, res.mergedTree, opts);
+      // Written through the literal `HEAD` — cherry-pick refuses on a
+      // detached HEAD, so `HEAD` always names the branch being advanced here.
+      await updateRef(ctx, HEAD, id, {
+        expected: ourId,
+        reflogMessage: cherryPickReflog(subjectLine(cData.message)),
+      });
+      return { kind: 'committed', id };
+    },
+  );
 
 /** Persist single-pick stop state (`CHERRY_PICK_HEAD` + `MERGE_MSG`). */
 const persistStop = async (
@@ -327,72 +279,13 @@ const persistStop = async (
   await writeMergeMsg(ctx, message);
 };
 
-/**
- * `-n` / `--no-commit`: apply each pick to the index + working tree, accumulating
- * across the list, without creating any commit or persisting resume state — even
- * on conflict (verified against git). There is nothing to `continue`.
- */
-const runNoCommit = async (
-  ctx: Context,
-  todo: ReadonlyArray<ObjectId>,
-): Promise<CherryPickResult> => {
-  const lock = await acquireIndexLock(ctx);
-  try {
-    // The index lock commits once, so accumulate in memory across picks (the
-    // working tree is written per pick by `applyMergeToWorktree`) and commit the
-    // final accumulated index at the end.
-    let currentIndex = await readIndex(ctx);
-    for (let i = 0; i < todo.length; i += 1) {
-      const source = todo[i] as ObjectId;
-      const cData = await readCommitData(ctx, source);
-      if (isMergeCommit(cData)) throw cherryPickMergeNoMainline(source);
-      const parentId = cData.parents[0];
-      const baseTree = parentId !== undefined ? await treeOf(ctx, parentId) : undefined;
-      const oursTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
-      const res = await applyMergeToWorktree(ctx, {
-        baseTree,
-        oursTree,
-        theirsTree: cData.tree,
-        currentIndex,
-        labels: replayLabels(source, subjectLine(cData.message)),
-      });
-      if (res.kind === 'would-overwrite')
-        throw workingTreeDirty({ localChanges: res.localChanges, untracked: res.untracked });
-      if (res.kind === 'conflict') {
-        await lock.commit(res.indexEntries);
-        return {
-          kind: 'conflict',
-          commit: source,
-          conflicts: toConflictList(res.conflicts),
-          remaining: todo.length - (i + 1),
-        };
-      }
-      currentIndex = { ...currentIndex, entries: res.result.newIndexEntries };
-    }
-    await lock.commit(currentIndex.entries);
-    return { kind: 'no-commit', sources: todo };
-  } finally {
-    await lock.release();
-  }
-};
-
 export const cherryPickRun = async (
   ctx: Context,
   input: CherryPickRunInput,
 ): Promise<CherryPickResult> => {
-  await assertOperationalRepository(ctx);
-  requireWorkTree(ctx, CHERRY_PICK);
-  await assertNoPendingOperation(ctx);
-  await assertEverySourceLoadable(ctx);
-  const head = await readHeadRaw(ctx);
-  if (head.kind !== 'symbolic') {
-    throw unsupportedOperation(CHERRY_PICK, 'cannot cherry-pick with detached HEAD');
-  }
-  const ourId = await resolveHeadCommit(ctx, head.target);
-  const revisions = await resolveSequencerRevisions(ctx, input.commits);
+  const { ourId, revisions } = await openReplayRun(ctx, CHERRY_PICK_COMMAND, input.commits);
   const todo = pickOrder(revisions);
-  await assertCleanWorkTree(ctx, await treeOf(ctx, ourId));
-  if (input.noCommit === true) return runNoCommit(ctx, todo);
+  if (input.noCommit === true) return runNoCommitReplay(ctx, CHERRY_PICK_COMMAND, todo);
   const opts: PickOptions = {
     recordOrigin: input.recordOrigin ?? false,
     allowEmpty: input.allowEmpty ?? false,
@@ -417,25 +310,11 @@ const commitResolvedPick = async (
   tree: ObjectId,
 ): Promise<ObjectId> => {
   const cData = await readCommitData(ctx, source);
-  const committer = await resolveCurrentIdentity(ctx);
-  const message = sanitizeMessage(stripComments((await readMergeMsg(ctx)) ?? ''), {
-    allowEmpty: false,
-  });
-  const id = await createCommit(ctx, {
-    tree,
-    parents: [ourId],
-    author: cData.author,
-    committer,
-    message,
-    extraHeaders: [],
-  });
-  // Written through the literal `HEAD` — cherry-pick continue refuses on a
-  // detached HEAD, so `HEAD` always names the branch being advanced here.
-  await updateRef(ctx, HEAD, id, {
-    expected: ourId,
-    reflogMessage: commitCherryPickReflog(subjectLine(message)),
-  });
-  return id;
+  return commitResolvedReplay(
+    ctx,
+    { ourId, tree },
+    { authorFor: () => cData.author, reflogMessage: commitCherryPickReflog },
+  );
 };
 
 /** Resume options: a multi-pick sequence's persisted opts win; else the input. */
@@ -455,24 +334,16 @@ const resolveResumeOpts = async (
 };
 
 /** Finalise the in-progress conflicted pick (if any) and resume the sequencer todo. */
-const finaliseInProgressPick = async (
+const finaliseInProgressPick = (
   ctx: Context,
   source: ObjectId,
   ourId: ObjectId,
   opts: PickOptions,
-): Promise<{ readonly created: ObjectId } | { readonly empty: true }> => {
-  const index = await readIndex(ctx);
-  rejectUnmergedIndex(index.entries);
-  const indexTree = await synthesizeTreeFromIndex(ctx, index.entries);
-  if (indexTree === (await treeOf(ctx, ourId)) && !opts.allowEmpty) {
-    return { empty: true };
-  }
-  const created = await commitResolvedPick(ctx, source, ourId, indexTree);
-  await clearCherryPickHead(ctx);
-  await clearMergeMsg(ctx);
-  await removeAutoMerge(ctx);
-  return { created };
-};
+): Promise<Finalised> =>
+  finaliseResolvedReplay(ctx, CHERRY_PICK_COMMAND, ourId, {
+    allowEmpty: opts.allowEmpty,
+    commit: (tree) => commitResolvedPick(ctx, source, ourId, tree),
+  });
 
 /**
  * Finalise the in-progress conflicted pick as a single-parent commit from the
@@ -483,30 +354,16 @@ export const cherryPickContinue = async (
   ctx: Context,
   input: CherryPickContinueInput = {},
 ): Promise<CherryPickResult> => {
-  await assertOperationalRepository(ctx);
-  requireWorkTree(ctx, CHERRY_PICK_CONTINUE);
-  const source = await readCherryPickHead(ctx);
-  const todoOnDisk = await readSequencerTodo(ctx);
-  if (source === undefined && (todoOnDisk === undefined || todoOnDisk.length === 0)) {
-    throw noOperationInProgress(CHERRY_PICK);
-  }
-  await assertEverySourceLoadable(ctx);
-  const head = await readHeadRaw(ctx);
-  if (head.kind !== 'symbolic') {
-    throw unsupportedOperation(CHERRY_PICK_CONTINUE, 'cannot continue with detached HEAD');
-  }
+  const resume = await openReplayResume(ctx, CHERRY_PICK_COMMAND, CHERRY_PICK_CONTINUE);
+  const branch = await requireContinuableHead(ctx, CHERRY_PICK_CONTINUE);
   const opts = await resolveResumeOpts(ctx, input);
-  let ourId = await resolveRef(ctx, head.target);
-  const applied: CherryPickedCommit[] = [];
-  if (source !== undefined) {
-    const remainingAfter = todoOnDisk !== undefined ? todoOnDisk.length - 1 : 0;
-    const done = await finaliseInProgressPick(ctx, source, ourId, opts);
-    if ('empty' in done) return { kind: 'empty', commit: source, remaining: remainingAfter };
-    applied.push({ source, created: done.created });
-    ourId = done.created;
-  }
-  // A finalised current pick is `todo[0]` — drop it; a merge-stop leaves it.
-  const rest = (todoOnDisk ?? []).slice(source !== undefined ? 1 : 0).map((e) => e.oid);
+  const start = await finaliseStoppedReplay(
+    resume,
+    await resolveRef(ctx, branch),
+    (source, ourId) => finaliseInProgressPick(ctx, source, ourId, opts),
+  );
+  if (start.kind === 'empty') return start;
+  const { applied, ourId, rest } = start;
   // Stryker disable next-line BlockStatement: equivalent — this early return only
   // short-circuits the empty-rest case that runSequence([]) already handles identically
   // (clearSequencer then return picked), so emptying the block changes no observable state.
@@ -537,14 +394,7 @@ export const cherryPickSkip = async (
   ctx: Context,
   input: CherryPickContinueInput = {},
 ): Promise<CherryPickResult> => {
-  await assertOperationalRepository(ctx);
-  requireWorkTree(ctx, CHERRY_PICK_SKIP);
-  const source = await readCherryPickHead(ctx);
-  const todoOnDisk = await readSequencerTodo(ctx);
-  if (source === undefined && (todoOnDisk === undefined || todoOnDisk.length === 0)) {
-    throw noOperationInProgress(CHERRY_PICK);
-  }
-  await assertEverySourceLoadable(ctx);
+  const { todoOnDisk } = await openReplayResume(ctx, CHERRY_PICK_COMMAND, CHERRY_PICK_SKIP);
   const branch = await requireSymbolicHead(ctx, CHERRY_PICK_SKIP);
   const ourId = await resolveRef(ctx, branch);
   const opts = await resolveResumeOpts(ctx, input);
@@ -569,16 +419,5 @@ export const cherryPickSkip = async (
  * clear all state. The branch update records git's faithful
  * `reset: moving to <oid>` reflog. Refuses when nothing is in progress.
  */
-export const cherryPickAbort = async (ctx: Context): Promise<CherryPickAbortResult> => {
-  await assertOperationalRepository(ctx);
-  requireWorkTree(ctx, CHERRY_PICK_ABORT);
-  const source = await readCherryPickHead(ctx);
-  const seqHead = await readSequencerHead(ctx);
-  if (source === undefined && seqHead === undefined) {
-    throw noOperationInProgress(CHERRY_PICK);
-  }
-  const branch = await requireSymbolicHead(ctx, CHERRY_PICK_ABORT);
-  const target = seqHead ?? (await resolveRef(ctx, branch));
-  await abortSequencerReset(ctx, { target });
-  return { head: target, branch };
-};
+export const cherryPickAbort = (ctx: Context): Promise<CherryPickAbortResult> =>
+  abortReplay(ctx, CHERRY_PICK_COMMAND, CHERRY_PICK_ABORT);

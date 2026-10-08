@@ -8,12 +8,11 @@
  */
 import {
   invalidOption,
-  noInitialCommit,
   noOperationInProgress,
   workingTreeDirty,
 } from '../../domain/commands/error.js';
 import { renderPatch, sortedRecordedPaths } from '../../domain/diff/index.js';
-import { TsgitError } from '../../domain/error.js';
+import type { TsgitError } from '../../domain/error.js';
 import { type ConflictType, type MergeConflict, replayLabels } from '../../domain/merge/index.js';
 import { amendedExtraHeaders } from '../../domain/objects/amend-headers.js';
 import type { CommitData, ExtraHeader } from '../../domain/objects/commit.js';
@@ -73,7 +72,7 @@ import {
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import { sanitizeMessage, stripComments } from './internal/commit-message.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
-import { readCommitData, treeOf } from './internal/history-rewrite.js';
+import { readCommitData, resolveHeadCommit, treeOf } from './internal/history-rewrite.js';
 import { clearMergeMsg, readMergeHead, writeOrigHead } from './internal/merge-state.js';
 import { previousCheckoutArg } from './internal/prior-checkout.js';
 import { canFastForward } from './internal/rebase-fast-forward.js';
@@ -204,16 +203,6 @@ interface PlannedMerge {
 type PlannedLine = PlannedPick | PlannedMerge | RebaseLabelLine | RebaseResetLine;
 
 const shortOid = (oid: ObjectId): string => oid.slice(0, 7);
-
-/** Resolve the (symbolic) HEAD branch to its commit, or refuse on an unborn branch. */
-const resolveHeadCommit = async (ctx: Context, branch: RefName): Promise<ObjectId> => {
-  try {
-    return await resolveRef(ctx, branch);
-  } catch (err) {
-    if (err instanceof TsgitError && err.data.code === 'REF_NOT_FOUND') throw noInitialCommit();
-    throw err;
-  }
-};
 
 /** Commits in `base..head`, oldest-first (the rebase work-list). `base`'s whole
  *  ancestor set is excluded so a shared root reached down a divergent branch

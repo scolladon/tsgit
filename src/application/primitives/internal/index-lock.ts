@@ -9,7 +9,7 @@ interface AcquireOptions {
   readonly now?: () => number;
 }
 
-interface IndexLock {
+export interface IndexLock {
   /** Drop the lock without modifying the index on disk. Idempotent. */
   readonly release: () => Promise<void>;
   /**

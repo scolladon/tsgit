@@ -4,11 +4,14 @@
  * Each replay command consumes the same building blocks, so they live here
  * rather than being copied per command.
  */
+import { noInitialCommit } from '../../../domain/commands/error.js';
+import { TsgitError } from '../../../domain/error.js';
 import { unsupportedOperation } from '../../../domain/index.js';
 import type { ObjectId, RefName } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readCommitData } from '../../primitives/internal/read-commit-data.js';
 import { readHeadRaw } from '../../primitives/internal/repo-state.js';
+import { resolveRef } from '../../primitives/resolve-ref.js';
 
 export { readCommitData };
 
@@ -22,4 +25,14 @@ export const requireSymbolicHead = async (ctx: Context, verb: string): Promise<R
     throw unsupportedOperation(verb, 'cannot run with detached HEAD');
   }
   return head.target;
+};
+
+/** Resolve the (symbolic) HEAD branch to its commit, or refuse on an unborn branch. */
+export const resolveHeadCommit = async (ctx: Context, branch: RefName): Promise<ObjectId> => {
+  try {
+    return await resolveRef(ctx, branch);
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === 'REF_NOT_FOUND') throw noInitialCommit();
+    throw err;
+  }
 };
