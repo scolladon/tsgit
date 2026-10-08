@@ -206,38 +206,60 @@ export const maintenance = async (
   // `--task=commit-graph --task=gc` runs commit-graph first;
   // `--task=gc --task=commit-graph` runs gc first. Mirrored here rather
   // than hard-coding either task first.
-  let commitGraphOutcome = NO_COMMIT_GRAPH;
-  // Stryker disable next-line BooleanLiteral: equivalent — `gcOutcome.ran` is read only inside the loop below, immediately after `gcOutcome` is reassigned in that same iteration's `gc` branch; the final return spreads only `.result`, never `.ran`. This initial value is therefore never observed, whichever task list is requested.
-  let gcOutcome: { readonly ran: boolean; readonly result: GcResult } = {
-    ran: false,
-    result: GC_NOT_RUN,
+  let progress: MaintenanceProgress = {
+    commitGraph: NO_COMMIT_GRAPH,
+    gc: GC_NOT_RUN,
+    tasksRun: [],
+    tasksFailed: [],
   };
-  const tasksRun: MaintenanceTask[] = [];
-  const tasksFailed: MaintenanceTaskFailure[] = [];
-
   for (const task of orderedUniqueTasks(opts.tasks)) {
-    if (task === 'commit-graph') {
-      const outcome = await runCommitGraphTask(ctx);
-      if ('code' in outcome) {
-        tasksFailed.push(outcome);
-        continue;
-      }
-      commitGraphOutcome = laterOutcome(commitGraphOutcome, outcome);
-      tasksRun.push('commit-graph');
-      continue;
-    }
-    const gcRun = await runGcStep(ctx, opts, gcSettings);
-    if ('code' in gcRun) {
-      tasksFailed.push(gcRun);
-      continue;
-    }
-    gcOutcome = gcRun;
-    if (!gcOutcome.ran) continue;
-    tasksRun.push('gc');
-    commitGraphOutcome = (await writeGcCommitGraph(ctx)) ?? commitGraphOutcome;
+    progress =
+      task === 'commit-graph'
+        ? await commitGraphStep(ctx, progress)
+        : await gcStep(ctx, { opts, settings: gcSettings }, progress);
   }
+  const { tasksRun, tasksFailed } = progress;
+  return { tasksRun, tasksFailed, ...progress.commitGraph, ...progress.gc };
+};
 
-  return { tasksRun, tasksFailed, ...commitGraphOutcome, ...gcOutcome.result };
+/** What the tasks run so far have produced. */
+interface MaintenanceProgress {
+  readonly commitGraph: CommitGraphOutcome;
+  readonly gc: GcResult;
+  readonly tasksRun: ReadonlyArray<MaintenanceTask>;
+  readonly tasksFailed: ReadonlyArray<MaintenanceTaskFailure>;
+}
+
+const failedStep = (
+  progress: MaintenanceProgress,
+  failure: MaintenanceTaskFailure,
+): MaintenanceProgress => ({ ...progress, tasksFailed: [...progress.tasksFailed, failure] });
+
+const commitGraphStep = async (
+  ctx: Context,
+  progress: MaintenanceProgress,
+): Promise<MaintenanceProgress> => {
+  const outcome = await runCommitGraphTask(ctx);
+  if ('code' in outcome) return failedStep(progress, outcome);
+  return {
+    ...progress,
+    commitGraph: laterOutcome(progress.commitGraph, outcome),
+    tasksRun: [...progress.tasksRun, 'commit-graph'],
+  };
+};
+
+/** A gc that ran is followed by the commit-graph write git's `cmd_gc` tail performs. */
+const gcStep = async (
+  ctx: Context,
+  config: { readonly opts: MaintenanceOptions; readonly settings: GcSettings },
+  progress: MaintenanceProgress,
+): Promise<MaintenanceProgress> => {
+  const gcRun = await runGcStep(ctx, config.opts, config.settings);
+  if ('code' in gcRun) return failedStep(progress, gcRun);
+  if (!gcRun.ran) return { ...progress, gc: gcRun.result };
+  const tasksRun = [...progress.tasksRun, 'gc' as const];
+  const commitGraph = (await writeGcCommitGraph(ctx)) ?? progress.commitGraph;
+  return { ...progress, gc: gcRun.result, tasksRun, commitGraph };
 };
 
 /** The write git runs as a child: its coded refusal fails the task; anything else is a bug and propagates. */
