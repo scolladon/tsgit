@@ -19,6 +19,8 @@ const MAX_BACKTRACK_STEPS = 1 << 22;
 const CHECK_INTERVAL = 1 << 16;
 /** A run the back-reference pattern below splits every way before refusing it. */
 const EXPONENTIAL_SUBJECT = `${'a'.repeat(LONG_RUN)}bc`;
+/** A run several check intervals long. */
+const LONG_RUN_LENGTH = CHECK_INTERVAL * 8;
 /** Text repeated by a back-reference, and how many times. */
 const REPEATED_TEXT_LENGTH = 1 << 7;
 const REPETITIONS = 1 << 6;
@@ -166,6 +168,11 @@ describe('compileExtendedRegex', () => {
         ['^(a?)*x\\1$', 'x', true],
         ['^(b|()){0,3}\\2c$', 'bbc', true],
         ['^(a?)+\\1b$', 'aab', true],
+        ['^.*(.)\\1$', 'x\u{1F600}\u{1F600}', true],
+        ['^.*(.)\\1$', '\u{1F600}\uDE00', false],
+        ['^(.)é*\\1$', '-éé-', true],
+        ['^(1)[12]*2\\1', '12221', true],
+        ['^(1)[12]*2\\1', '1111', false],
         ['(a+)+b\\1c', 'aabac', true],
         ['\\<(\\w)\\1', 'a bb', true],
         ['^(a*)\\1$', 'aaaa', true],
@@ -440,6 +447,29 @@ describe('compileExtendedRegex', () => {
         expect(result).toBe(true);
         expect(backtracked).toEqual([]);
       });
+    });
+  });
+
+  describe('Given a back-reference after a long repeated run', () => {
+    describe('When it is matched', () => {
+      it.each([
+        { pattern: '(x)a*\\1', subject: `x${'a'.repeat(LONG_RUN_LENGTH)}x`, steps: 1 },
+        { pattern: '(x)(ab)*\\1', subject: `x${'ab'.repeat(LONG_RUN_LENGTH / 2)}x`, steps: 3 },
+      ])(
+        'Then /$pattern/ takes at most $steps steps per code point',
+        ({ pattern, subject, steps }) => {
+          // Arrange
+          const sut = compileExtendedRegex;
+          const { check, calls } = countingCheck();
+
+          // Act
+          const result = sut(pattern)?.test(subject, check);
+
+          // Assert
+          expect(result).toBe(true);
+          expect(calls()).toBeLessThanOrEqual((steps * LONG_RUN_LENGTH) / CHECK_INTERVAL + 1);
+        },
+      );
     });
   });
 

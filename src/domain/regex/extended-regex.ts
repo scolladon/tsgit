@@ -69,7 +69,9 @@ const SAVE = 3;
 const BACKREF = 4;
 /** Ends a copy of an unbounded repetition, leaving the repetition where the copy read nothing. */
 const PROGRESS = 5;
-const MATCH = 6;
+/** Reads every code point of a run a class matches, then gives them back one at a time. */
+const SPAN = 6;
+const MATCH = 7;
 
 /** What a position is known by: bits for the subject's start and end, and a word character either side. */
 type Context = number;
@@ -91,12 +93,12 @@ const atWordBoundary = (context: Context): boolean => wordBefore(context) !== wo
 /**
  * An automaton step. A `char` reads a code point its source — a one-character
  * ECMAScript pattern — matches; `code` is set where that is one code point.
- * `fork` targets are relative to the fork; a jump forks twice to one target.
- * Any other instruction is laid out as written: an ASSERT holds in the
- * contexts its operand has a bit for.
+ * A `span` reads any number of them. `fork` targets are relative to the fork;
+ * a jump forks twice to one target. Any other instruction is laid out as
+ * written: an ASSERT holds in the contexts its operand has a bit for.
  */
 type Instruction =
-  | { readonly op: 'char'; readonly source: string; readonly code?: number }
+  | { readonly op: 'char' | 'span'; readonly source: string; readonly code?: number }
   | { readonly op: 'fork'; readonly to: number; readonly or: number }
   | {
       readonly op: 'plain';
@@ -700,41 +702,59 @@ const alternate = (branches: ReadonlyArray<Fragment>): Fragment => {
   return sequence(parts.reverse());
 };
 
-/** A repeated body as a bounded copy lays it out, and as an unbounded repetition's copy does. */
+/** A repeated body as a bounded copy lays it out, and any number of copies of it. */
 interface Copies {
   readonly body: Fragment;
-  readonly loop: Fragment;
+  readonly unbounded: Fragment;
 }
 
-const sameCopies = (body: Fragment): Copies => ({ body, loop: body });
+/** A skippable copy jumping back to its fork. */
+const star = (copy: Fragment): Fragment => {
+  const size = sizeOf(copy);
+  return sequence([fork(1, size + 2), copy, fork(-size - 1, -size - 1)]);
+};
+
+const sameCopies = (body: Fragment): Copies => ({ body, unbounded: star(body) });
 
 /**
- * The automaton repeats the body as it is. In the backtracking program a
- * copy of an unbounded repetition records where it starts in a register of
- * its own, so a copy reading nothing ends the repetition instead of looping.
+ * Whether every path through a fragment reads a character. A sequence
+ * without a fork of its own runs each part in order: the forks inside a part
+ * land within it or at its end, but for a bounded repetition's copies, which
+ * read nothing alone.
  */
-const copiesOf = (c: Cursor, { fragment }: Piece): Copies => {
-  if (c.engine === 'linear') return sameCopies(fragment);
-  const register = c.slots;
-  c.slots += 1;
-  return {
-    body: fragment,
-    loop: sequence([plain(SAVE, register), fragment, plain(PROGRESS, register)]),
-  };
+const reads = (fragment: Fragment): boolean => {
+  if (!('parts' in fragment)) return fragment.op === 'char';
+  const forks = fragment.parts.some((part) => !('parts' in part) && part.op === 'fork');
+  return !forks && fragment.parts.some(reads);
 };
 
 /**
- * `min` copies of the body, then a skippable copy jumping back to its fork or
- * `max - min` copies, each skipping past the rest; copies share the body. An
- * empty body repeats to itself, at no cost however large the bounds.
+ * The automaton repeats the body as it is. In the backtracking program a run
+ * of one class is a span; a copy of any other body that may read nothing
+ * records where it starts in a register of its own, so a copy reading
+ * nothing ends the repetition instead of looping.
  */
-const repeatFragment = ({ body, loop }: Copies, { min, max }: Bounds): Fragment => {
+const copiesOf = (c: Cursor, { fragment }: Piece): Copies => {
+  if (c.engine === 'linear') return sameCopies(fragment);
+  if (!('parts' in fragment) && fragment.op === 'char') {
+    return { body: fragment, unbounded: { ...fragment, op: 'span' } };
+  }
+  if (reads(fragment)) return sameCopies(fragment);
+  const register = c.slots;
+  c.slots += 1;
+  const copy = sequence([plain(SAVE, register), fragment, plain(PROGRESS, register)]);
+  return { body: fragment, unbounded: star(copy) };
+};
+
+/**
+ * `min` copies of the body, then any number of copies or `max - min` copies,
+ * each skipping past the rest; copies share the body. An empty body repeats
+ * to itself, at no cost however large the bounds.
+ */
+const repeatFragment = ({ body, unbounded }: Copies, { min, max }: Bounds): Fragment => {
   if (sizeOf(body) === 0) return body;
   const required = Array.from({ length: min }, () => body);
-  if (max === Number.POSITIVE_INFINITY) {
-    const size = sizeOf(loop);
-    return sequence([...required, fork(1, size + 2), loop, fork(-size - 1, -size - 1)]);
-  }
+  if (max === Number.POSITIVE_INFINITY) return sequence([...required, unbounded]);
   const size = sizeOf(body);
   const optional = Array.from({ length: max - min }, (_, index) =>
     sequence([fork(1, (max - min - index) * (size + 1)), body]),
@@ -749,7 +769,9 @@ const STICKY_FLAGS = `${FLAGS}y`;
 const MATCHED = -1;
 const NOWHERE = -1;
 
-type CharInstruction = Extract<Instruction, { readonly op: 'char' }>;
+type CharInstruction = Extract<Instruction, { readonly source: string }>;
+
+const READ_CODES: Readonly<Record<CharInstruction['op'], number>> = { char: CHAR, span: SPAN };
 
 /** The code points a `char` reads: ASCII ones by table, others by a sticky pattern run on the subject. */
 interface CharClass {
@@ -854,8 +876,11 @@ const layOut = (instructions: ReadonlyArray<Instruction>): Program => {
   const classes: CharClass[] = [];
   const indexes = new Map<string, number>();
   for (const [pc, instruction] of instructions.entries()) {
-    if (instruction.op === 'char') {
-      [ops[pc], operand[pc]] = [CHAR, classIndex(instruction, indexes, classes)];
+    if ('source' in instruction) {
+      [ops[pc], operand[pc]] = [
+        READ_CODES[instruction.op],
+        classIndex(instruction, indexes, classes),
+      ];
     } else if (instruction.op === 'fork') {
       [ops[pc], operand[pc], target[pc]] = [FORK, pc + instruction.to, pc + instruction.or];
     } else {
@@ -917,7 +942,10 @@ const leadingOf = (program: Program): Leading | undefined => {
     if (op === MATCH || op === BACKREF) return undefined;
     if (op === FORK) pending.push(operand[pc] as number, target[pc] as number);
     else if (op === CHAR) sources.add(operand[pc] as number);
-    else pending.push(pc + 1);
+    else {
+      if (op === SPAN) sources.add(operand[pc] as number);
+      pending.push(pc + 1);
+    }
   }
   const leading = [...sources].map((index) => classes[index] as CharClass);
   if (leading.some((charClass) => !charClass.ascii.includes(0))) return undefined;
@@ -1058,7 +1086,8 @@ const PAST_JUMP_BACK = 2;
  * `memory` holds each capture's start and end, then each repetition's
  * register; `trail` its earlier values, a slot and a value per write, and
  * `choices` the forks' other targets, each with its position and the trail's
- * length there.
+ * length there. A span's way back is held as the complement of the target
+ * after it, beneath which lies where the span started.
  */
 interface Path {
   pc: number;
@@ -1100,6 +1129,10 @@ const backtracker = (
  */
 const backtrack = (machine: Backtracker, subject: string, check: MatchCheck): boolean => {
   const budget: Budget = { steps: 0, nextCheck: CHECK_INTERVAL, check };
+  const { path } = machine;
+  path.memory.fill(UNSET);
+  path.trail.length = 0;
+  path.choices.length = 0;
   for (let from = firstStart(machine, subject); from !== NOWHERE; ) {
     const outcome = attempt(machine, subject, from, budget);
     if (outcome !== 'failed') return outcome === 'matched';
@@ -1121,14 +1154,12 @@ const nextStart = (machine: Backtracker, subject: string, from: number): number 
 /** Follows one path from `from`, backing up to the last fork whenever it fails. */
 const attempt = (machine: Backtracker, subject: string, from: number, budget: Budget): Outcome => {
   const { path, program } = machine;
-  Object.assign(path, { pc: START, at: from });
-  path.memory.fill(UNSET);
-  path.trail.length = 0;
-  path.choices.length = 0;
+  path.pc = START;
+  path.at = from;
   for (;;) {
     if (program.ops[path.pc] === MATCH) return 'matched';
     if (!spend(budget)) return 'exhausted';
-    if (!execute(machine, subject, budget) && !backUp(path)) return 'failed';
+    if (!execute(machine, subject, budget) && !backUp(path, subject)) return 'failed';
   }
 };
 
@@ -1141,17 +1172,31 @@ const spend = (budget: Budget): boolean => {
   return budget.steps < MAX_BACKTRACK_STEPS;
 };
 
-/** Returns to the last fork's other target, undoing the writes since; `false` where none is left. */
-const backUp = (path: Path): boolean => {
+/**
+ * Returns to the last way back, undoing the writes since; `false` where none
+ * is left, every write undone for the next start. A span gives back its last
+ * code point, and keeps its way back while it holds more than it started with.
+ */
+const backUp = (path: Path, subject: string): boolean => {
   const { choices, trail, memory } = path;
   const length = choices.pop();
-  if (length === undefined) return false;
-  path.at = choices.pop() as number;
-  path.pc = choices.pop() as number;
-  while (trail.length > length) {
+  while (trail.length > (length ?? 0)) {
     const value = trail.pop() as number;
     memory[trail.pop() as number] = value;
   }
+  if (length === undefined) return false;
+  const at = choices.pop() as number;
+  const pc = choices.pop() as number;
+  if (pc >= 0) return resume(path, pc, at);
+  const back = previousStart(subject, at);
+  if (back > (choices.at(-1) as number)) choices.push(pc, back, length);
+  else choices.pop();
+  return resume(path, ~pc, back);
+};
+
+const resume = (path: Path, pc: number, at: number): boolean => {
+  path.pc = pc;
+  path.at = at;
   return true;
 };
 
@@ -1185,6 +1230,22 @@ const branch: Executor = ({ path, program }) => {
   const or = program.target[path.pc] as number;
   if (to !== or) path.choices.push(or, path.at, path.trail.length);
   path.pc = to;
+  return true;
+};
+
+/** Each code point read is a step. */
+const span: Executor = ({ path, program }, subject, budget) => {
+  const charClass = program.classes[program.operand[path.pc] as number] as CharClass;
+  const start = path.at;
+  let at = start;
+  for (let code = subject.codePointAt(at); code !== undefined; code = subject.codePointAt(at)) {
+    if (!accepts(charClass, code, subject, at)) break;
+    at += code < SURROGATE_PAIR ? 1 : 2;
+  }
+  budget.steps += at - start;
+  path.pc += 1;
+  if (at > start) path.choices.push(start, ~path.pc, at, path.trail.length);
+  path.at = at;
   return true;
 };
 
@@ -1241,6 +1302,8 @@ const execute = (machine: Backtracker, subject: string, budget: Budget): boolean
       return save(machine, subject, budget);
     case BACKREF:
       return reread(machine, subject, budget);
+    case SPAN:
+      return span(machine, subject, budget);
     default:
       return progress(machine, subject, budget);
   }
