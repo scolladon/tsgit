@@ -374,47 +374,53 @@ export function buildReachableSet(
     brokenEdges: [],
     unreadableEdges: [],
     typeFindings: [],
-    typing:
-      typing === undefined
-        ? undefined
-        : {
-            typed: new Map(typing.typedBeforeWalk),
-            unparseable: typing.unparseable,
-            graphCommits: typing.graphCommits,
-          },
+    typing: walkTypingState(typing),
     unresolvedEntries,
     worklist: [...seeds],
     pushed: new Set(seeds),
   };
+  while (state.worklist.length > 0) walkNext(state);
+  return walkResultOf(state);
+}
 
-  while (state.worklist.length > 0) {
-    const id = state.worklist.pop();
-    if (id === undefined || state.reached.has(id)) continue;
-    if (promised.has(id)) {
-      // git's `mark_object`: a promisor object is reached, its links never followed.
-      state.reached.add(id);
-      continue;
-    }
-    if (!universe.has(id)) {
-      state.missingIds.add(id);
-      continue;
-    }
-    const graphCommit = graphParsedCommit(state, id);
-    const obj = graphCommit ?? objectCache.get(id);
-    if (obj == null) {
-      // Corrupt/unreadable, no further edges — either a ROOT (no referring
-      // edge routed it here), or a REFERENCED id whose pack copy
-      // `routeEdgeTarget` trusted (`isContentUnreadable`'s pack-membership
-      // exclusion) and so enqueued here instead of diverting to
-      // `missingIds`.
-      state.reached.add(id);
-    } else if (walksAsTyped(state, id, obj)) {
-      visitObject(state, id, obj);
-    } else {
-      state.reached.add(id);
-    }
+/** The walk's own typing state, seeded with what git typed before the walk. */
+function walkTypingState(typing: WalkTypingInput | undefined): WalkState['typing'] {
+  if (typing === undefined) return undefined;
+  return {
+    typed: new Map(typing.typedBeforeWalk),
+    unparseable: typing.unparseable,
+    graphCommits: typing.graphCommits,
+  };
+}
+
+/**
+ * Pop the next id and walk it. An id the walk cannot read is reached with no
+ * further edges — either a ROOT (no referring edge routed it here), or a
+ * REFERENCED id whose pack copy `routeEdgeTarget` trusted
+ * (`isContentUnreadable`'s pack-membership exclusion) and so enqueued here
+ * instead of diverting to `missingIds`.
+ */
+function walkNext(state: WalkState): void {
+  const id = state.worklist.pop();
+  if (id === undefined || state.reached.has(id)) return;
+  if (state.promised.has(id)) {
+    // git's `mark_object`: a promisor object is reached, its links never followed.
+    state.reached.add(id);
+    return;
   }
+  if (!state.universe.has(id)) {
+    state.missingIds.add(id);
+    return;
+  }
+  const obj = graphParsedCommit(state, id) ?? state.objectCache.get(id);
+  if (obj != null && walksAsTyped(state, id, obj)) {
+    visitObject(state, id, obj);
+    return;
+  }
+  state.reached.add(id);
+}
 
+function walkResultOf(state: WalkState): WalkResult {
   return {
     reached: state.reached,
     missingIds: state.missingIds,

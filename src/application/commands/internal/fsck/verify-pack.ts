@@ -8,6 +8,7 @@ import {
   recordedEntryCrc,
 } from '../../../../domain/storage/index.js';
 import type { Context } from '../../../../ports/context.js';
+import type { Hasher } from '../../../../ports/hash-service.js';
 import { resolvePackChain } from '../../../primitives/object-resolver.js';
 import {
   getObjectStore,
@@ -98,33 +99,59 @@ async function scanEntries(
   index: PackIndex,
 ): Promise<EntryScan> {
   const { pack } = target;
+  const layout = await entryLayoutOf(pack, index);
+  const hasher = ctx.hash.createHasher();
+  hasher.update(await pack.readSlice(0, layout.starts[0] ?? layout.trailerStart));
+  const entries = await verifyEntriesInOrder(ctx, target, index, layout, hasher);
+  const trailer = await pack.readSlice(layout.trailerStart, index.digestLength);
+  return {
+    checksumHolds: bytesEqual(await hasher.digest(), trailer),
+    entries,
+    ids: layout.order.map((position) => objectIdAt(index, position)),
+  };
+}
+
+/** Where a pack's entries sit: index positions in offset order, their start
+ *  offsets in that order, and where the trailer begins. */
+interface EntryLayout {
+  readonly order: ReadonlyArray<number>;
+  readonly starts: ReadonlyArray<number>;
+  readonly trailerStart: number;
+}
+
+async function entryLayoutOf(pack: RegisteredPack, index: PackIndex): Promise<EntryLayout> {
   const { trailerStart } = await pack.offsetTable();
   const offsets = entryOffsetsF64(index);
   const order = positionsByOffset(offsets);
-  const starts = order.map((position) => offsets[position]!);
-  const hasher = ctx.hash.createHasher();
-  hasher.update(await pack.readSlice(0, starts[0] ?? trailerStart));
+  return { order, starts: order.map((position) => offsets[position]!), trailerStart };
+}
+
+/** Every entry in offset order — hashed for the trailer check, CRC'd against
+ *  the `.idx` and unpacked on the way. */
+async function verifyEntriesInOrder(
+  ctx: Context,
+  target: PackUnderVerification,
+  index: PackIndex,
+  layout: EntryLayout,
+  hasher: Hasher,
+): Promise<ContentValidationResult> {
+  const { order, starts, trailerStart } = layout;
   const findings: FsckFinding[] = [];
   let exitBit = 0;
   for (const [rank, position] of order.entries()) {
     const offset = starts[rank]!;
-    const bytes = await pack.readSlice(offset, (starts[rank + 1] ?? trailerStart) - offset);
+    const bytes = await target.pack.readSlice(offset, (starts[rank + 1] ?? trailerStart) - offset);
     hasher.update(bytes);
-    const id = objectIdAt(index, position);
+    const crc = recordedEntryCrc(index, position);
     const own = await verifyEntry(ctx, target, bytes, {
-      id,
+      id: objectIdAt(index, position),
       offset,
-      crc: recordedEntryCrc(index, position),
+      crc,
     });
     findings.push(...own.findings);
     exitBit |= own.exitBit;
   }
-  const trailer = await pack.readSlice(trailerStart, index.digestLength);
-  return {
-    checksumHolds: bytesEqual(await hasher.digest(), trailer),
-    entries: { findings, exitBit },
-    ids: order.map((position) => objectIdAt(index, position)),
-  };
+  return { findings, exitBit };
 }
 
 const crcMismatch = (pack: string, id: ObjectId, offset: number): PackFinding => ({

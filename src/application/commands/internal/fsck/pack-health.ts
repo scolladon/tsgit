@@ -1,6 +1,6 @@
 import type { Context } from '../../../../ports/context.js';
 import { getObjectStore, type ObjectSource } from '../../../primitives/object-store.js';
-import { faultReason } from '../../../primitives/pack-registry.js';
+import { faultReason, type UnusablePack } from '../../../primitives/pack-registry.js';
 import { EXIT_PACK, EXIT_PACK_REV_INDEX } from './exit-codes.js';
 import { attributeTo } from './source-attribution.js';
 import type { FsckFinding, FsckOptions } from './types.js';
@@ -52,26 +52,34 @@ async function reportSourcePacks(
   const unusable = gated
     ? (await source.registry.health()).unusable
     : await source.registry.indexFaults();
+  const report = { gated, attribution, findings };
+  return unusable.reduce((exitBit, entry) => exitBit | reportUnusablePack(entry, report), 0);
+}
+
+/** Where one source's unusable packs are reported, and whether accessibility is. */
+interface UnusablePackReport {
+  readonly gated: boolean;
+  readonly attribution: { readonly objectsDir?: string };
+  readonly findings: FsckFinding[];
+}
+
+/** Report one unusable pack: its accessibility when gated, its `.rev` when its index failed. */
+function reportUnusablePack(entry: UnusablePack, report: UnusablePackReport): number {
+  const { attribution, findings } = report;
+  const reason = faultReason(entry.data);
   let exitBit = 0;
-
-  for (const entry of unusable) {
-    const reason = faultReason(entry.data);
-
-    if (gated) {
-      findings.push({
-        type: entry.layer === 'index' ? 'pack-index-unusable' : 'pack-inaccessible',
-        pack: entry.name,
-        reason,
-        ...attribution,
-      });
-      exitBit |= EXIT_PACK;
-    }
-
-    if (entry.layer === 'index') {
-      findings.push({ type: 'pack-rev-index-unusable', pack: entry.name, reason, ...attribution });
-      exitBit |= EXIT_PACK_REV_INDEX;
-    }
+  if (report.gated) {
+    findings.push({
+      type: entry.layer === 'index' ? 'pack-index-unusable' : 'pack-inaccessible',
+      pack: entry.name,
+      reason,
+      ...attribution,
+    });
+    exitBit |= EXIT_PACK;
   }
-
+  if (entry.layer === 'index') {
+    findings.push({ type: 'pack-rev-index-unusable', pack: entry.name, reason, ...attribution });
+    exitBit |= EXIT_PACK_REV_INDEX;
+  }
   return exitBit;
 }

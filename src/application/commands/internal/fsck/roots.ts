@@ -275,33 +275,51 @@ async function walkCacheTree(
   universe?: ReadonlySet<ObjectId>,
 ): Promise<CacheTreeWalk> {
   const stack: CacheTreeEntry[] = [root];
-  const parsed: ObjectId[] = [];
-  const unresolved: ObjectId[] = [];
+  const walk: CacheTreeVisit = { roots, probe, universe, parsed: [], unresolved: [] };
   while (stack.length > 0) {
     const entry = stack.pop() as CacheTreeEntry;
-    if (entry.id !== undefined) {
-      const present = await probe(ctx, entry.id);
-      if (present === false) {
-        unresolved.push(entry.id);
-        continue;
-      }
-      // `universe` membership, not the probe, is what licenses the seed —
-      // the same guard `addRefRoots` applies. An oid the run's own mode kept
-      // out of `universe` cannot be followed by the reachability walk and
-      // would surface a spurious 'missing' finding; an oid inside it was
-      // already found by this run's own scan, which is proof enough to root
-      // it whatever the probe could or could not say about its route.
-      // Rooting an oid the probe refused invents nothing: `buildReachableSet`
-      // records no out-edge for an object whose cache entry is null, so no
-      // broken edge and no missing id can follow from it. `universe`
-      // omitted (gc's unbounded callers) roots every resolvable entry.
-      if (universe === undefined || universe.has(entry.id)) roots.add(entry.id);
-      parsed.push(entry.id);
-    }
+    if (!(await resolvesCacheTreeEntry(ctx, entry, walk))) continue;
     // Reversed so the first child pops first: git's recursive pre-order.
     stack.push(...[...entry.children].reverse());
   }
-  return { unresolved, parsed };
+  return { unresolved: walk.unresolved, parsed: walk.parsed };
+}
+
+/** Where `walkCacheTree` records what it meets. */
+interface CacheTreeVisit {
+  readonly roots: Set<ObjectId>;
+  readonly probe: Probe;
+  readonly universe: ReadonlySet<ObjectId> | undefined;
+  readonly parsed: ObjectId[];
+  readonly unresolved: ObjectId[];
+}
+
+/**
+ * Probe one cache-tree entry; `false` when it names an absent object, whose
+ * children the walk then skips. `universe` membership, not the probe, is what
+ * licenses the seed — the same guard `addRefRoots` applies. An oid the run's
+ * own mode kept out of `universe` cannot be followed by the reachability walk
+ * and would surface a spurious 'missing' finding; an oid inside it was already
+ * found by this run's own scan, which is proof enough to root it whatever the
+ * probe could or could not say about its route. Rooting an oid the probe
+ * refused invents nothing: `buildReachableSet` records no out-edge for an
+ * object whose cache entry is null, so no broken edge and no missing id can
+ * follow from it. `universe` omitted (gc's unbounded callers) roots every
+ * resolvable entry.
+ */
+async function resolvesCacheTreeEntry(
+  ctx: Context,
+  entry: CacheTreeEntry,
+  walk: CacheTreeVisit,
+): Promise<boolean> {
+  if (entry.id === undefined) return true;
+  if ((await walk.probe(ctx, entry.id)) === false) {
+    walk.unresolved.push(entry.id);
+    return false;
+  }
+  if (walk.universe === undefined || walk.universe.has(entry.id)) walk.roots.add(entry.id);
+  walk.parsed.push(entry.id);
+  return true;
 }
 
 /** The index, or `undefined` when it is absent or its bytes do not form one. */
@@ -468,20 +486,8 @@ async function addRecordedReflogRoots(
 ): Promise<ReadonlyArray<InvalidReflogEntry>> {
   const zero = zeroOid(ctx.hashConfig);
   const invalid: InvalidReflogEntry[] = [];
-  for (const { ref: head, worktreeCtx } of await worktreeContexts(ctx)) {
-    const prefix = head.slice(0, -HEAD_REF.length);
-    const perReflog = await boundedMapFor(
-      ctx,
-      'ioBound',
-      await listReflogs(worktreeCtx),
-      async (ref) =>
-        splitReflogEntries(
-          worktreeRefName(prefix, ref),
-          await readReflogIfOpenable(worktreeCtx, ref),
-          isRecorded,
-          zero,
-        ),
-    );
+  for (const worktree of await worktreeContexts(ctx)) {
+    const perReflog = await splitWorktreeReflogs(ctx, worktree, isRecorded, zero);
     // Rooted once every read is back, in reflog order: the walk pops in push order.
     for (const split of perReflog) {
       for (const id of split.recorded) roots.add(id);
@@ -489,6 +495,26 @@ async function addRecordedReflogRoots(
     }
   }
   return invalid;
+}
+
+/** Every reflog of one worktree, read in bounded parallel and split by
+ *  whether the run recorded each oid. */
+async function splitWorktreeReflogs(
+  ctx: Context,
+  worktree: { readonly ref: RefName; readonly worktreeCtx: Context },
+  isRecorded: (id: ObjectId) => boolean,
+  zero: ObjectId,
+): Promise<ReadonlyArray<ReflogSplit>> {
+  const { worktreeCtx } = worktree;
+  const prefix = worktree.ref.slice(0, -HEAD_REF.length);
+  return boundedMapFor(ctx, 'ioBound', await listReflogs(worktreeCtx), async (ref) =>
+    splitReflogEntries(
+      worktreeRefName(prefix, ref),
+      await readReflogIfOpenable(worktreeCtx, ref),
+      isRecorded,
+      zero,
+    ),
+  );
 }
 
 /** `ref` as the current worktree names it: another worktree's own refs carry its prefix. */
@@ -595,28 +621,36 @@ export async function collectRoots(
   parses: ParseCheck,
 ): Promise<RootsCollection> {
   const roots = new Set<ObjectId>();
-  const gate: TipGate = async (id) => universe.has(id) && (await parses(id));
-  const sawAbsentRef = await addRefRoots(ctx, roots, gate);
-  const sawAbsentHead = await addWorktreeHeadRoots(ctx, roots, gate);
-  const refRooted = new Set(roots);
+  const tips = await addTipRoots(ctx, roots, async (id) => universe.has(id) && (await parses(id)));
   const invalidReflogEntries =
     opts.reflogRoots !== false ? await addRecordedReflogRoots(ctx, roots, isRecorded) : [];
   const unparseableReflogRoots =
     opts.connectivityOnly === true
-      ? await unparseableSince(roots, refRooted, parses)
+      ? await unparseableSince(roots, tips.refTips, parses)
       : new Set<ObjectId>();
   const index =
     opts.indexRoot !== false ? await fsckEveryIndex(ctx, roots, universe) : NO_INDEX_FSCK;
   return {
     roots,
+    ...tips,
     invalidIndexPointers: index.invalid,
-    sawAbsentRefTarget: sawAbsentRef || sawAbsentHead,
     parsedIndexIds: index.parsed,
     indexBlobIds: new Set(index.blobs),
     invalidReflogEntries,
     unparseableReflogRoots,
-    refTips: refRooted,
   };
+}
+
+/** Root every ref tip and worktree HEAD `gate` admits: the tips git's
+ *  `snapshot_refs` parsed, and whether one named an absent object. */
+async function addTipRoots(
+  ctx: Context,
+  roots: Set<ObjectId>,
+  gate: TipGate,
+): Promise<Pick<RootsCollection, 'sawAbsentRefTarget' | 'refTips'>> {
+  const sawAbsentRef = await addRefRoots(ctx, roots, gate);
+  const sawAbsentHead = await addWorktreeHeadRoots(ctx, roots, gate);
+  return { sawAbsentRefTarget: sawAbsentRef || sawAbsentHead, refTips: new Set(roots) };
 }
 
 /** Root every other worktree's HEAD git's fsck snapshots; returns whether

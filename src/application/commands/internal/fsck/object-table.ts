@@ -187,16 +187,39 @@ export function buildObjectTable(
     unparsed: new Set(),
     unresolvedEntries: new Map(),
   };
+  parseTips(state, tips, objectCache);
+  readFirstCopies(state, copies, objectCache, refused);
+  return tableOf(state);
+}
+
+/** `snapshot_refs`: every ref tip the cache holds, parsed first. */
+function parseTips(
+  state: TableState,
+  tips: Iterable<ObjectId>,
+  objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
+): void {
   for (const id of tips) {
     const obj = objectCache.get(id);
     if (obj != null) parseTip(state, id, obj);
   }
+}
+
+/** Every copy in read order, each object read at its first copy only. */
+function readFirstCopies(
+  state: TableState,
+  copies: ReadonlyArray<ReadCopy>,
+  objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
+  refused: ReadonlySet<ObjectId>,
+): void {
   for (const copy of copies) {
     const obj = refused.has(copy.id) ? undefined : objectCache.get(copy.id);
     if (obj == null || state.read.has(copy.id)) continue;
     state.read.add(copy.id);
     readCopy(state, copy, obj);
   }
+}
+
+function tableOf(state: TableState): ObjectTable {
   return {
     findings: state.findings,
     exitBit: state.findings.reduce((bit, finding) => bit | findingExitBit(finding), 0),
