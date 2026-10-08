@@ -129,13 +129,12 @@ describe('stageTempFile', () => {
 
   describe('Given a failed write whose cleanup also fails for a reason other than a missing file', () => {
     describe('When bytes are staged', () => {
-      it('Then the cleanup failure propagates', async () => {
+      it('Then the write failure propagates, carrying the cleanup failure as its cause', async () => {
         // Arrange
         const ctx = createMemoryContext();
+        const writeFailure = new TsgitError({ code: 'PERMISSION_DENIED', path: '/x' });
         const cleanupFailure = new TsgitError({ code: 'PERMISSION_DENIED', path: '/y' });
-        vi.spyOn(ctx.fs, 'writeExclusive').mockRejectedValue(
-          new TsgitError({ code: 'PERMISSION_DENIED', path: '/x' }),
-        );
+        vi.spyOn(ctx.fs, 'writeExclusive').mockRejectedValue(writeFailure);
         vi.spyOn(ctx.fs, 'rm').mockRejectedValue(cleanupFailure);
         const sut = stageTempFile;
 
@@ -145,7 +144,30 @@ describe('stageTempFile', () => {
         );
 
         // Assert
-        expect(result).toBe(cleanupFailure);
+        expect(result).toBe(writeFailure);
+        expect((result as Error).cause).toBe(cleanupFailure);
+      });
+    });
+  });
+
+  describe('Given a write failing with a non-Error value whose cleanup also fails', () => {
+    describe('When bytes are staged', () => {
+      it('Then an Error naming the value propagates, carrying the cleanup failure as its cause', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const cleanupFailure = new TsgitError({ code: 'PERMISSION_DENIED', path: '/y' });
+        vi.spyOn(ctx.fs, 'writeExclusive').mockRejectedValue('disk gone');
+        vi.spyOn(ctx.fs, 'rm').mockRejectedValue(cleanupFailure);
+        const sut = stageTempFile;
+
+        // Act
+        const result = await sut(ctx, `${ctx.layout.gitDir}/.tmp`, enc('sig')).catch(
+          (error: unknown) => error,
+        );
+
+        // Assert
+        expect((result as Error).message).toBe('disk gone');
+        expect((result as Error).cause).toBe(cleanupFailure);
       });
     });
   });
