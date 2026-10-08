@@ -288,21 +288,7 @@ const negotiateAndSend = async (
   session: GitServiceSession,
 ): Promise<PushResult> => {
   const adv = await discoverReceivePackRefs(session);
-  const localHeads =
-    // Stryker disable next-line ConditionalExpression: equivalent — forcing the guard true also computes localHeads for non-matching plans, but finalizePushRefspecs ignores localHeads unless the plan is 'matching', so the extra value is discarded and the result is unchanged.
-    plan.kind === 'matching'
-      ? // Stryker disable next-line MethodExpression: equivalent — finalizePushRefspecs intersects localHeads with the head-only advertised set, so dropping this refs/heads/ pre-filter cannot change the resolved refspecs.
-        (await enumerateRefs(ctx)).filter((ref) => ref.startsWith(HEADS_PREFIX))
-      : [];
-  const refspecs = await matchExplicitTargets(
-    ctx,
-    {
-      refspecs: finalizePushRefspecs(plan, adv, localHeads),
-      written: plan.kind === 'explicit' ? plan.written : [],
-    },
-    adv,
-    url,
-  );
+  const refspecs = await targetRefspecs(ctx, plan, adv, url);
   const resolved = await resolveAllRefspecs(ctx, refspecs, adv, remote, opts);
   const movers = resolved.filter((r) => !isUpToDate(r));
   const refresh = (): Promise<void> => updateUpToDateTracking(ctx, resolved, remote);
@@ -316,6 +302,30 @@ const negotiateAndSend = async (
   await refresh();
   return { remote: remote.name, url, pushedRefs };
 };
+
+/** The refspecs a push sends, finalised against what the remote advertised. */
+const targetRefspecs = async (
+  ctx: Context,
+  plan: PushRefspecPlan,
+  adv: Advertisement,
+  url: string,
+): Promise<ReadonlyArray<ParsedRefspec>> => {
+  const localHeads = await matchingLocalHeads(ctx, plan);
+  const written = plan.kind === 'explicit' ? plan.written : [];
+  const refspecs = finalizePushRefspecs(plan, adv, localHeads);
+  return matchExplicitTargets(ctx, { refspecs, written }, adv, url);
+};
+
+/** Every local branch a `:` (matching) push considers; none for any other plan. */
+const matchingLocalHeads = async (
+  ctx: Context,
+  plan: PushRefspecPlan,
+): Promise<ReadonlyArray<RefName>> =>
+  // Stryker disable next-line ConditionalExpression: equivalent — forcing the guard true also computes localHeads for non-matching plans, but finalizePushRefspecs ignores localHeads unless the plan is 'matching', so the extra value is discarded and the result is unchanged.
+  plan.kind === 'matching'
+    ? // Stryker disable next-line MethodExpression: equivalent — finalizePushRefspecs intersects localHeads with the head-only advertised set, so dropping this refs/heads/ pre-filter cannot change the resolved refspecs.
+      (await enumerateRefs(ctx)).filter((ref) => ref.startsWith(HEADS_PREFIX))
+    : [];
 
 /** git refreshes every up-to-date ref's tracking ref even when the remote failed to unpack. */
 const refreshingOnUnpackFailure = async (

@@ -54,7 +54,12 @@ import {
   readHeadRaw,
   requireWorkTree,
 } from './internal/repo-state.js';
-import { type MergeInternalOptions, type MergeResult, mergeRun } from './merge.js';
+import {
+  type MergeInternalOptions,
+  type MergeResult,
+  type MergeRunInput,
+  mergeRun,
+} from './merge.js';
 import { type RebaseResult, rebaseRun } from './rebase.js';
 
 export interface PullOptions {
@@ -337,23 +342,14 @@ const canFastForward = async (
 export const pull = async (ctx: Context, given: PullOptions = {}): Promise<PullResult> => {
   await assertOperationalRepository(ctx);
   requireWorkTree(ctx, 'pull');
-  const settled = await settleFastForward(ctx, given);
-  await assertNoPendingOperation(ctx);
-
-  const branchRef = branchRefFromHead(await readHeadRaw(ctx));
-  const currentBranch = branchRef !== undefined ? shortBranchName(branchRef) : undefined;
-  const upstream = await readUpstream(ctx, currentBranch, settled);
-  const reconciled = await settleRebase(ctx, settled, currentBranch);
-  const opts = await settleAutostash(ctx, reconciled.opts);
-  const origHead = await resolveRefOrMissing(ctx, 'HEAD');
-  if (origHead === undefined && rebasing(opts)) await assertIndexUnborn(ctx);
-  const rebase = await planRebase(ctx, opts, upstream, branchRef);
+  const plan = await planPull(ctx, given);
+  const { opts, upstream, branchRef, origHead } = plan;
   const fetchResult = await fetchUpstream(ctx, opts, upstream);
   assertNothingRejected(fetchResult);
   await followUpdatedHead(ctx, origHead);
   const fetched = await mergeHeads(ctx, opts, upstream, branchRef);
   if (origHead === undefined) return pullIntoEmptyHead(ctx, fetchResult, fetched, branchRef);
-  const { unreconciled } = reconciled;
+  const { rebase, unreconciled } = plan;
   const { reflogAction } = upstream;
   return integrate(ctx, {
     opts,
@@ -364,6 +360,27 @@ export const pull = async (ctx: Context, given: PullOptions = {}): Promise<PullR
     rebase,
     unreconciled,
   });
+};
+
+/** Everything a pull settles before it fetches. */
+interface PullPlan extends Pick<Integration, 'opts' | 'branchRef' | 'rebase' | 'unreconciled'> {
+  readonly upstream: Upstream;
+  readonly origHead: ObjectId | undefined;
+}
+
+/** Settle the pull's options against the configuration, its upstream and its rebase. */
+const planPull = async (ctx: Context, given: PullOptions): Promise<PullPlan> => {
+  const settled = await settleFastForward(ctx, given);
+  await assertNoPendingOperation(ctx);
+  const branchRef = branchRefFromHead(await readHeadRaw(ctx));
+  const currentBranch = branchRef !== undefined ? shortBranchName(branchRef) : undefined;
+  const upstream = await readUpstream(ctx, currentBranch, settled);
+  const reconciled = await settleRebase(ctx, settled, currentBranch);
+  const opts = await settleAutostash(ctx, reconciled.opts);
+  const origHead = await resolveRefOrMissing(ctx, 'HEAD');
+  if (origHead === undefined && rebasing(opts)) await assertIndexUnborn(ctx);
+  const rebase = await planRebase(ctx, opts, upstream, branchRef);
+  return { opts, upstream, branchRef, origHead, rebase, unreconciled: reconciled.unreconciled };
 };
 
 /**
@@ -503,28 +520,26 @@ const integrateByMerge = async (
   opts: PullOptions,
 ): Promise<PullResult> => {
   const mergeInternal: MergeInternalOptions = { reflogAction, heads: fetched };
-  const mergeResult = await mergeRun(
-    ctx,
-    {
-      rev: fetched.map((line) => line.id),
-      // git passes `--allow-unrelated-histories` only when asked, leaving `branch.<b>.mergeoptions` its say.
-      ...(opts.allowUnrelatedHistories === true ? { allowUnrelatedHistories: true } : {}),
-      // git passes `--autostash` / `--no-autostash` only when pull settled one.
-      ...(opts.autostash !== undefined ? { autostash: opts.autostash } : {}),
-      ...(opts.message !== undefined ? { message: opts.message } : {}),
-      ...(opts.log !== undefined ? { log: opts.log } : {}),
-      ...(opts.squash !== undefined ? { squash: opts.squash } : {}),
-      ...(opts.commit !== undefined ? { commit: opts.commit } : {}),
-      ...(opts.strategy !== undefined ? { strategy: opts.strategy } : {}),
-      // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ fastForward: undefined }`, which `merge` reads as `!== 'never'` (so a fast-forward proceeds) and `=== 'only'` (false) — identical to omitting it. The drop direction + the `!==` flip are killed by the fastForward-forwarding tests.
-      ...(opts.fastForward !== undefined ? { fastForward: opts.fastForward } : {}),
-      // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ author: undefined }`, which `merge` resolves as `opts.author ?? config` — identical to omitting it. The drop direction + the `!==` flip are killed by the author-bearing merge tests.
-      ...(opts.author !== undefined ? { author: opts.author } : {}),
-      // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ committer: undefined }`, which `merge` resolves as `opts.committer ?? author` — identical to omitting it. The drop direction + the `!==` flip are killed by the committer-forwarding test.
-      ...(opts.committer !== undefined ? { committer: opts.committer } : {}),
-    },
-    mergeInternal,
-  );
-
+  const mergeResult = await mergeRun(ctx, mergeInputOf(fetched, opts), mergeInternal);
   return { fetch: fetchResult, integration: 'merge', merge: mergeResult };
 };
+
+/** The `merge` git's pull runs: every fetched head, and only the options pull settled. */
+const mergeInputOf = (fetched: ReadonlyArray<FetchHeadLine>, opts: PullOptions): MergeRunInput => ({
+  rev: fetched.map((line) => line.id),
+  // git passes `--allow-unrelated-histories` only when asked, leaving `branch.<b>.mergeoptions` its say.
+  ...(opts.allowUnrelatedHistories === true ? { allowUnrelatedHistories: true } : {}),
+  // git passes `--autostash` / `--no-autostash` only when pull settled one.
+  ...(opts.autostash !== undefined ? { autostash: opts.autostash } : {}),
+  ...(opts.message !== undefined ? { message: opts.message } : {}),
+  ...(opts.log !== undefined ? { log: opts.log } : {}),
+  ...(opts.squash !== undefined ? { squash: opts.squash } : {}),
+  ...(opts.commit !== undefined ? { commit: opts.commit } : {}),
+  ...(opts.strategy !== undefined ? { strategy: opts.strategy } : {}),
+  // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ fastForward: undefined }`, which `merge` reads as `!== 'never'` (so a fast-forward proceeds) and `=== 'only'` (false) — identical to omitting it. The drop direction + the `!==` flip are killed by the fastForward-forwarding tests.
+  ...(opts.fastForward !== undefined ? { fastForward: opts.fastForward } : {}),
+  // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ author: undefined }`, which `merge` resolves as `opts.author ?? config` — identical to omitting it. The drop direction + the `!==` flip are killed by the author-bearing merge tests.
+  ...(opts.author !== undefined ? { author: opts.author } : {}),
+  // Stryker disable next-line ConditionalExpression: equivalent — the always-true mutant forwards `{ committer: undefined }`, which `merge` resolves as `opts.committer ?? author` — identical to omitting it. The drop direction + the `!==` flip are killed by the committer-forwarding test.
+  ...(opts.committer !== undefined ? { committer: opts.committer } : {}),
+});

@@ -47,7 +47,7 @@ import {
   readConfig,
   warnSlashLeadingPromisorRemotes,
 } from '../primitives/config-read.js';
-import { fetchPack } from '../primitives/fetch-pack.js';
+import { type FetchPackResult, fetchPack } from '../primitives/fetch-pack.js';
 import { hasObject } from '../primitives/has-object.js';
 import { assertValidBooleanConfig } from '../primitives/internal/boolean-config-guard.js';
 import { peelRefToCommit } from '../primitives/internal/peel-ref-to-commit.js';
@@ -66,7 +66,11 @@ import {
   formatFetchHead,
   writeFetchHead,
 } from './internal/fetch-head.js';
-import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
+import {
+  type DiscoveryResult,
+  negotiateDiscovery,
+  negotiatePackBytes,
+} from './internal/fetch-negotiation.js';
 import {
   autoFollowsTags,
   findNonLocalTags,
@@ -174,9 +178,27 @@ export const fetchWith = async (
   internal: FetchInternalOptions,
 ): Promise<FetchResult> => {
   await assertOperationalRepository(ctx);
+  const { remote, url, filter } = await resolveFetchTarget(ctx, opts, internal);
+  ctx.progress.start(FETCH_NEGOTIATE_OP);
+  try {
+    return await fetchViaSession(ctx, opts, remote, url, filter);
+  } finally {
+    ctx.progress.end(FETCH_NEGOTIATE_OP);
+  }
+};
+
+/** The remote a fetch reaches, its refspec request and where it lives. */
+const resolveFetchTarget = async (
+  ctx: Context,
+  opts: FetchOptions,
+  internal: FetchInternalOptions,
+): Promise<{
+  readonly remote: FetchRemote;
+  readonly url: string;
+  readonly filter: string | undefined;
+}> => {
   const forcedUpdates = await readForcedUpdateCheck(ctx);
-  const head = await readHeadRaw(ctx);
-  const branchRef = branchRefFromHead(head);
+  const branchRef = branchRefFromHead(await readHeadRaw(ctx));
   const currentBranch = branchRef !== undefined ? shortBranchName(branchRef) : undefined;
   const config = await readRemoteConfig(ctx);
   const remoteName = defaultRemoteName(config, opts.remote, currentBranch);
@@ -184,25 +206,14 @@ export const fetchWith = async (
   // git's single-remote fetch asks `repo_has_promisor_remote` before it fetches.
   await warnSlashLeadingPromisorRemotes(ctx);
   const { url, filter } = await resolveRemoteUrl(ctx, remoteName);
-
-  ctx.progress.start(FETCH_NEGOTIATE_OP);
-  try {
-    return await fetchViaSession(
-      ctx,
-      opts,
-      {
-        name: remoteName,
-        request,
-        forcedUpdates,
-        updateHeadOk: internal.updateHeadOk === true,
-        reflogAction: internal.reflogAction ?? fetchArgvAction(opts, remoteName),
-      },
-      url,
-      filter,
-    );
-  } finally {
-    ctx.progress.end(FETCH_NEGOTIATE_OP);
-  }
+  const remote: FetchRemote = {
+    name: remoteName,
+    request,
+    forcedUpdates,
+    updateHeadOk: internal.updateHeadOk === true,
+    reflogAction: internal.reflogAction ?? fetchArgvAction(opts, remoteName),
+  };
+  return { remote, url, filter };
 };
 
 const fetchArgvAction = (opts: FetchOptions, remoteName: string): string =>
@@ -320,13 +331,37 @@ const negotiateAndApply = async (
 ): Promise<FetchResult> => {
   const discovery = await negotiateDiscovery(ctx, session);
   assertPeerAlgorithm(ctx.hashConfig.algorithm, discovery.objectFormat, 'fetch');
-  const advertisement = discovery.advertisement;
   // A partial repo's fetch must re-apply its filter; the server must still
   // advertise the `filter` capability.
-  if (filter !== undefined && !advertisesFilter(advertisement.capabilities)) {
+  if (filter !== undefined && !advertisesFilter(discovery.advertisement.capabilities)) {
     throw remoteFilterUnsupported();
   }
+  const plan = await planFetch(ctx, remote, discovery);
+  const { refMap, followTags } = plan;
+  const fetched: FetchedMap = { refMap, advertisement: discovery.advertisement, followTags };
+  if (await skipsUploadPack(ctx, opts, filter, plan.wants)) {
+    return applyRefsAndBuildResult(ctx, opts, remote, url, fetched, [], []);
+  }
+  const packResult = await fetchWantedPack(ctx, session, discovery, { opts, filter, plan });
+  await applyShallowUpdate(ctx, packResult);
+  const { shallow, unshallow } = packResult;
+  return applyRefsAndBuildResult(ctx, opts, remote, url, fetched, shallow, unshallow);
+};
 
+/** What a fetch asks for: the capabilities, the mapped refs and the oids they want. */
+interface FetchPlan {
+  readonly followTags: boolean;
+  readonly capabilities: ReadonlyArray<string>;
+  readonly refMap: ReadonlyArray<MappedRef>;
+  readonly wants: ReadonlyArray<ObjectId>;
+}
+
+const planFetch = async (
+  ctx: Context,
+  remote: FetchRemote,
+  discovery: DiscoveryResult,
+): Promise<FetchPlan> => {
+  const { advertisement } = discovery;
   const followTags = autoFollowsTags(remote.request);
   const selected = selectFetchCapabilities(advertisement.capabilities, ctx.hashConfig.algorithm);
   const asksIncludeTag =
@@ -338,60 +373,56 @@ const negotiateAndApply = async (
   const refMap = storableRefMap(ctx, mapped);
   if (!remote.updateHeadOk) await assertNoCheckedOutTarget(ctx, refMap);
   const wants = uniqueRefOids(refMap.map((entry) => entry.source));
+  return { followTags, capabilities, refMap, wants };
+};
 
-  // A partial repo's wanted objects may be legitimately promised-absent (the
-  // filter deliberately omits them), and a `depth` request needs to reach the
-  // server regardless of local presence — deepening extends history the
-  // server holds, it doesn't just fetch an already-known tip. The
-  // local-presence short-circuit only applies to full, unfiltered,
-  // non-deepening fetches: when everything is already on disk, the
-  // upload-pack exchange has nothing to contribute — skip it and go straight
-  // to updating refs. Checked before deriving haves: the have-walk is wasted
-  // work when this short-circuit is about to discard it anyway.
-  if (filter === undefined && opts.depth === undefined && (await isEverythingLocal(ctx, wants))) {
-    return applyRefsAndBuildResult(
-      ctx,
-      opts,
-      remote,
-      url,
-      { refMap, advertisement, followTags },
-      [],
-      [],
-    );
-  }
+/**
+ * A partial repo's wanted objects may be legitimately promised-absent (the
+ * filter deliberately omits them), and a `depth` request needs to reach the
+ * server regardless of local presence — deepening extends history the server
+ * holds, it doesn't just fetch an already-known tip. The local-presence
+ * short-circuit only applies to full, unfiltered, non-deepening fetches: when
+ * everything is already on disk, the upload-pack exchange has nothing to
+ * contribute — skip it and go straight to updating refs. Checked before
+ * deriving haves: the have-walk is wasted work when this short-circuit is
+ * about to discard it anyway.
+ */
+const skipsUploadPack = async (
+  ctx: Context,
+  opts: FetchOptions,
+  filter: string | undefined,
+  wants: ReadonlyArray<ObjectId>,
+): Promise<boolean> =>
+  filter === undefined && opts.depth === undefined && (await isEverythingLocal(ctx, wants));
 
+/** The upload-pack exchange: derive haves, then fetch the wanted pack. */
+const fetchWantedPack = async (
+  ctx: Context,
+  session: GitServiceSession,
+  discovery: DiscoveryResult,
+  request: {
+    readonly opts: FetchOptions;
+    readonly filter: string | undefined;
+    readonly plan: FetchPlan;
+  },
+): Promise<FetchPackResult> => {
+  const { opts, filter, plan } = request;
   const haves = await deriveHaves(ctx);
-  const packResult = await fetchPack(
-    ctx,
-    (c, req) => negotiatePackBytes(c, session, discovery.version, req),
-    {
-      wants,
-      haves,
-      capabilities,
-      progressOp: FETCH_WRITE_OBJECTS_OP,
-      // Stryker disable next-line ConditionalExpression: equivalent — fetchPack gates on input.depth !== undefined, so depth:undefined behaves identically to a missing key.
-      ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
-      // A partial repo re-applies its stored filter and re-marks the pack promisor.
-      ...(filter !== undefined ? { filter, promisor: true } : {}),
-    },
-  );
+  return fetchPack(ctx, (c, req) => negotiatePackBytes(c, session, discovery.version, req), {
+    wants: plan.wants,
+    haves,
+    capabilities: plan.capabilities,
+    progressOp: FETCH_WRITE_OBJECTS_OP,
+    // Stryker disable next-line ConditionalExpression: equivalent — fetchPack gates on input.depth !== undefined, so depth:undefined behaves identically to a missing key.
+    ...(opts.depth !== undefined ? { depth: opts.depth } : {}),
+    // A partial repo re-applies its stored filter and re-marks the pack promisor.
+    ...(filter !== undefined ? { filter, promisor: true } : {}),
+  });
+};
 
-  if (packResult.shallow.length > 0 || packResult.unshallow.length > 0) {
-    await updateShallow(ctx, {
-      shallow: packResult.shallow,
-      unshallow: packResult.unshallow,
-    });
-  }
-
-  return applyRefsAndBuildResult(
-    ctx,
-    opts,
-    remote,
-    url,
-    { refMap, advertisement, followTags },
-    packResult.shallow,
-    packResult.unshallow,
-  );
+const applyShallowUpdate = async (ctx: Context, packResult: FetchPackResult): Promise<void> => {
+  if (packResult.shallow.length === 0 && packResult.unshallow.length === 0) return;
+  await updateShallow(ctx, { shallow: packResult.shallow, unshallow: packResult.unshallow });
 };
 
 /** git's `check_not_current_branch`: no refspec may write a branch a worktree holds. */
@@ -432,8 +463,7 @@ const applyRefsAndBuildResult = async (
 ): Promise<FetchResult> => {
   const { request } = remote;
   const { refMap } = fetched;
-  const pruneSpecs = request.cliSpecs.length > 0 ? request.cliSpecs : request.configSpecs;
-  const prunedRefs = opts.prune === true ? await prune(ctx, pruneSpecs, refMap) : [];
+  const prunedRefs = opts.prune === true ? await pruneByRequest(ctx, request, refMap) : [];
   const updated = await applyRemoteRefs(ctx, remote, refMap);
   const backfill = fetched.followTags ? await backfillTags(ctx, fetched.advertisement) : [];
   // git's backfill is a second `store_updated_refs` round, made only when a tag needs it.
@@ -442,16 +472,16 @@ const applyRefsAndBuildResult = async (
   await writeFetchHead(ctx, fetchHeadText);
   if (followsRemoteHead(request)) await setRemoteHead(ctx, remote.name, fetched.advertisement);
   const updatedRefs = [...updated, ...backfilled];
-
-  return {
-    remote: remote.name,
-    url,
-    updatedRefs,
-    prunedRefs,
-    shallow,
-    unshallow,
-  };
+  return { remote: remote.name, url, updatedRefs, prunedRefs, shallow, unshallow };
 };
+
+/** `--prune` by the command line's refspecs, else by the configured ones. */
+const pruneByRequest = (
+  ctx: Context,
+  request: RefMapRequest,
+  refMap: ReadonlyArray<MappedRef>,
+): ReturnType<typeof prune> =>
+  prune(ctx, request.cliSpecs.length > 0 ? request.cliSpecs : request.configSpecs, refMap);
 
 /** git sets the remote HEAD only on a fetch by the remote's own configured refspecs. */
 const followsRemoteHead = ({ cliSpecs, configSpecs }: RefMapRequest): boolean =>
