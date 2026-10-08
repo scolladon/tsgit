@@ -880,6 +880,22 @@ const CHECK_INTERVAL = 1 << 16;
 /** What both engines know of a laid-out program before they run it. */
 type Layout = Omit<Machine, 'threads'>;
 
+const WORD_CONTEXT = WORD_BEFORE | WORD_AFTER;
+
+const holdsIn = (mask: number, context: Context): boolean => ((mask >> context) & 1) === 1;
+
+/** Whether an assertion's verdict changes with the word characters around the position. */
+const dependsOnWords = (mask: number): boolean => {
+  for (let context = 0; context < CONTEXTS; context += 1) {
+    if (holdsIn(mask, context) !== holdsIn(mask, context & ~WORD_CONTEXT)) return true;
+  }
+  return false;
+};
+
+/** Whether some assertion reads word context — `^` and `$` read only the subject's bounds. */
+const readsWordContext = ({ ops, operand }: Program): boolean =>
+  ops.some((op, pc) => op === ASSERT && dependsOnWords(operand[pc] as number));
+
 const layOutMachine = (fragment: Fragment, starts: Starts): Layout => {
   const instructions: Instruction[] = [];
   flatten(fragment, instructions);
@@ -888,7 +904,7 @@ const layOutMachine = (fragment: Fragment, starts: Starts): Layout => {
     program,
     starts,
     leading: starts === 'anywhere' ? leadingOf(program) : undefined,
-    word: program.ops.includes(ASSERT) ? classOf({ op: 'char', source: WORD }) : undefined,
+    word: readsWordContext(program) ? classOf({ op: 'char', source: WORD }) : undefined,
   };
 };
 

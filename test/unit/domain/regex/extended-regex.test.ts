@@ -110,9 +110,55 @@ const leadingSearches = (): (() => number) => {
   return () => test.mock.contexts.filter((pattern) => (pattern as RegExp).global).length;
 };
 
+/** The class a run reads to tell whether a code point is a word character. */
+const WORD_CLASS_SOURCE = '[\\p{L}\\p{N}_]';
+
+/** How often a matcher, from its compilation on, asks whether a code point is a word character. */
+const wordReads = (): (() => number) => {
+  const test = vi.spyOn(RegExp.prototype, 'test');
+  return () =>
+    test.mock.contexts.filter((pattern) => (pattern as RegExp).source === WORD_CLASS_SOURCE).length;
+};
+
 describe('compileExtendedRegex', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  describe('Given a pattern whose only assertions read the subject bounds', () => {
+    describe('When it is compiled and matched against a subject of word characters', () => {
+      it.each([['^(.).*\\1$'], ['^feat'], ['^Merge'], ['fix$']])(
+        'Then %s never reads whether a code point is a word character',
+        (pattern) => {
+          // Arrange
+          const reads = wordReads();
+          const sut = compileExtendedRegex;
+
+          // Act
+          sut(pattern)?.test('é Merge feat fix é');
+
+          // Assert
+          expect(reads()).toBe(0);
+        },
+      );
+    });
+  });
+
+  describe('Given a pattern asserting a word boundary', () => {
+    describe('When it is compiled and matched against a subject of word characters', () => {
+      it('Then it reads whether code points are word characters', () => {
+        // Arrange
+        const reads = wordReads();
+        const sut = compileExtendedRegex;
+
+        // Act
+        const result = sut('\\bfix\\b')?.test('é prefix fix é');
+
+        // Assert
+        expect(result).toBe(true);
+        expect(reads()).toBeGreaterThan(0);
+      });
+    });
   });
 
   describe('Given a pattern regcomp(REG_EXTENDED) accepts', () => {
