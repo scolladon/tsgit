@@ -263,14 +263,11 @@ const createFlowControl = (source: ChildOutput): FlowControl => {
     buffered += delta;
     settle();
   };
-  return {
-    added: adjust,
-    taken: (bytes) => adjust(-bytes),
-    release: () => {
-      mark = Number.POSITIVE_INFINITY;
-      settle();
-    },
+  const release = (): void => {
+    mark = Number.POSITIVE_INFINITY;
+    settle();
   };
+  return { added: adjust, taken: (bytes) => adjust(-bytes), release };
 };
 
 /** A wake-up the consumer awaits while the queue is empty. */
