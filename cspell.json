@@ -1424,7 +1424,8 @@
     "CHANGELOG.md",
     "package-lock.json",
     "*.tsbuildinfo",
-    "test/fixtures/clone-source/source.git/**"
+    "test/fixtures/clone-source/source.git/**",
+    "src/domain/pretty/utf8-width-tables.ts"
   ],
   "ignoreRegExpList": ["[a-f0-9]{40}"]
 }
