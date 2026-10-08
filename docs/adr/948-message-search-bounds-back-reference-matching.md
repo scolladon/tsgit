@@ -43,6 +43,6 @@ the budget answers "no match" — git's own silent outcome for a pattern its `re
 
 **Amendment (2026-10-08) — platform split in git itself.** git hands extended patterns to the C
 library's regex: glibc (Linux) and the bundled GNU regex (Windows) read `\1`–`\9` as back-references,
-while macOS libc reads them as a literal digit (`:/(a)\1` matches `za1` there). tsgit follows the GNU
+while the macOS C library reads them as a literal digit (`:/(a)\1` matches `za1` there). tsgit follows the GNU
 reading on every platform, as it did before this decision; interop rows whose answer depends on the
 reading run on non-darwin platforms only.
