@@ -4,6 +4,7 @@ import type { Context } from '../../ports/context.js';
 import { boundedMapFor } from './internal/concurrency.js';
 import { getObjectStore, type ObjectSource } from './object-store.js';
 import type { RegisteredPack } from './pack-registry.js';
+import { fanoutDirIn } from './path-layout.js';
 
 export interface EnumerateObjectsOptions {
   /** Include objects from pack files (default: true). */
@@ -78,7 +79,7 @@ async function collectPrefixObjectIds(
   source: ObjectSource,
   prefix: string,
 ): Promise<ReadonlyArray<ObjectId>> {
-  const dir = `${source.objectsDir}/${prefix}`;
+  const dir = fanoutDirIn(source.objectsDir, prefix);
   if (!(await source.fs.exists(dir))) return [];
   const entries = await source.fs.readdir(dir);
   const suffixLength = ctx.hashConfig.hexLength - prefix.length;

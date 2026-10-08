@@ -23,6 +23,7 @@ import {
 import { configuredHint } from './internal/disambiguation-hints.js';
 import { isMissingFanoutDir } from './internal/loose-oid-cache.js';
 import { getObjectStore, type ObjectSource } from './object-store.js';
+import { fanoutDirIn } from './path-layout.js';
 
 /** Lower bound of an abbreviated-oid prefix — independent of the repository's
  *  hash width (measured against real git: a 4-char prefix resolves under
@@ -75,7 +76,7 @@ export const scanLooseIn = async (
   source: ObjectSource,
   prefix: string,
 ): Promise<ReadonlyArray<ObjectId>> => {
-  const dir = `${source.objectsDir}/${prefix.slice(0, 2)}`;
+  const dir = fanoutDirIn(source.objectsDir, prefix.slice(0, 2));
   const rest = prefix.slice(2);
   const looseName = patternFor(LOOSE_NAME_PATTERNS, ctx.hashConfig.algorithm);
   let entries: Awaited<ReturnType<Context['fs']['readdir']>>;

@@ -12,10 +12,9 @@ import {
   readDeltaTargetSize,
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
-import type { ObjectSourceReader } from '../../ports/object-source-access.js';
 import type { PromisorRemote } from '../../ports/promisor.js';
 import { forgetLooseOidPrefix, probeLooseOid } from './internal/loose-oid-cache.js';
-import type { SourceLocation } from './internal/source-location.js';
+import { looseLocationOf, type SourceLocation } from './internal/source-location.js';
 import {
   assertChainDepthWithinCap,
   isBase,
@@ -38,7 +37,7 @@ import {
   refreshObjectStore,
 } from './object-store.js';
 import { nextOffsetForEntry, type PackLookupHit, type PackRegistry } from './pack-registry.js';
-import { commonGitDir, looseObjectPath, looseObjectPathIn } from './path-layout.js';
+import { looseObjectPathIn } from './path-layout.js';
 import type { RawObject, ReadObjectOptions } from './types.js';
 
 /**
@@ -343,14 +342,6 @@ async function resolveDeclaredHeader(
   throw objectNotFound(id);
 }
 
-const loosePathFor = (ctx: Context, id: ObjectId, location?: SourceLocation): string =>
-  location === undefined
-    ? looseObjectPath(commonGitDir(ctx), id)
-    : looseObjectPathIn(location.objectsDir, id);
-
-const looseFsFor = (ctx: Context, location?: SourceLocation): ObjectSourceReader =>
-  location === undefined ? ctx.fs : location.fs;
-
 /**
  * Reads only the first `LOOSE_HEADER_PROBE_BYTES` compressed bytes off disk
  * — never the whole file — mirroring `readLooseCompressed`'s membership-
@@ -366,8 +357,9 @@ async function readLooseDeclaredHeader(
   if (!(await probeLooseOid(ctx, id, location))) return undefined;
   let prefix: Uint8Array;
   try {
-    prefix = await looseFsFor(ctx, location).readSlice(
-      loosePathFor(ctx, id, location),
+    const loose = looseLocationOf(ctx, location);
+    prefix = await loose.fs.readSlice(
+      looseObjectPathIn(loose.objectsDir, id),
       0,
       LOOSE_HEADER_PROBE_BYTES,
     );
@@ -462,7 +454,8 @@ async function readDeclaredHeaderFromWholeFile(
   id: ObjectId,
   location?: SourceLocation,
 ): Promise<DeclaredObjectHeader> {
-  const compressed = await looseFsFor(ctx, location).read(loosePathFor(ctx, id, location));
+  const loose = looseLocationOf(ctx, location);
+  const compressed = await loose.fs.read(looseObjectPathIn(loose.objectsDir, id));
   const outcome = await probeDeclaredSize(ctx, compressed);
   if (outcome.status === 'found') return outcome.header;
   throw looseHeaderTooLong(id);

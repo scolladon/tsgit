@@ -18,7 +18,7 @@ import {
 } from './internal/repo-settings-gate.js';
 import type { SourceLocation } from './internal/source-location.js';
 import { createPackRegistry, type PackRegistry } from './pack-registry.js';
-import { commonGitDir } from './path-layout.js';
+import { commonGitDir, objectsDirOf } from './path-layout.js';
 
 export interface ObjectSource extends SourceLocation {
   readonly local: boolean;
@@ -262,7 +262,7 @@ const createHandle = (
 };
 
 const buildHandle = async (ctx: Context): Promise<StoreHandle> => {
-  const objectsDir = `${commonGitDir(ctx)}/objects`;
+  const objectsDir = objectsDirOf(commonGitDir(ctx));
   const [primary, discovery, bigFileThreshold] = await Promise.all([
     buildSource(ctx, objectsDir, 'local'),
     discover(ctx, objectsDir),

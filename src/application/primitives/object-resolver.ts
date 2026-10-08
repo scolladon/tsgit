@@ -58,10 +58,10 @@ import {
 } from './internal/object-caches.js';
 import { isInflateCapExceeded } from './internal/pack-byte-source.js';
 import { checkAborted, retryOnceAfterRescan } from './internal/retry-after-rescan.js';
-import type { SourceLocation } from './internal/source-location.js';
+import { looseLocationOf, type SourceLocation } from './internal/source-location.js';
 import { looseCacheLocation, type ObjectSource, type ObjectStore } from './object-store.js';
 import { deltaBaseCacheKey, nextOffsetForEntry, type PackLookupHit } from './pack-registry.js';
-import { commonGitDir, looseObjectPath, looseObjectPathIn } from './path-layout.js';
+import { looseObjectPathIn } from './path-layout.js';
 
 /**
  * Git treats the empty tree as a virtual, always-present object — resolvable
@@ -662,10 +662,9 @@ async function readLooseCompressed(
   location?: SourceLocation,
 ): Promise<Uint8Array | undefined> {
   if (!(await probeLooseOid(ctx, id, location))) return undefined;
+  const loose = looseLocationOf(ctx, location);
   try {
-    return location === undefined
-      ? await ctx.fs.read(looseObjectPath(commonGitDir(ctx), id))
-      : await location.fs.read(looseObjectPathIn(location.objectsDir, id));
+    return await loose.fs.read(looseObjectPathIn(loose.objectsDir, id));
   } catch (error) {
     if (error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND') {
       forgetLooseOidPrefix(ctx, id, location);

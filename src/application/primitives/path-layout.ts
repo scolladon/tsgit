@@ -48,12 +48,19 @@ export const commonGitDir = (ctx: Context): string => commonDirOf(ctx.layout);
 export const perWorktreeRefDir = (ctx: Context, name: RefName): string =>
   isPerWorktreeRef(name) ? ctx.layout.gitDir : commonGitDir(ctx);
 
-export const looseObjectPath = (gitDir: string, id: ObjectId): string =>
-  `${gitDir}/objects/${computeLooseObjectPath(id)}`;
+/** A repository's own `objects` directory — the primary object store. */
+export const objectsDirOf = (gitDir: string): string => `${gitDir}/objects`;
 
 /** Loose-object path under an arbitrary `objects` directory (primary or alternate). */
 export const looseObjectPathIn = (objectsDirectory: string, id: ObjectId): string =>
   `${objectsDirectory}/${computeLooseObjectPath(id)}`;
+
+export const looseObjectPath = (gitDir: string, id: ObjectId): string =>
+  looseObjectPathIn(objectsDirOf(gitDir), id);
+
+/** A loose fanout directory (`<objects>/xx`) under an arbitrary `objects` directory. */
+export const fanoutDirIn = (objectsDirectory: string, prefix: string): string =>
+  `${objectsDirectory}/${prefix}`;
 
 export const looseRefPath = (gitDir: string, name: RefName): string => `${gitDir}/${name}`;
 
@@ -76,7 +83,8 @@ export const reftableTableLockPath = (gitDir: string, tableName: string): string
 
 export const indexPath = (gitDir: string): string => `${gitDir}/index`;
 
-export const objectsDir = (gitDir: string, prefix: string): string => `${gitDir}/objects/${prefix}`;
+export const objectsDir = (gitDir: string, prefix: string): string =>
+  fanoutDirIn(objectsDirOf(gitDir), prefix);
 
 export const packsDir = (gitDir: string): string => `${gitDir}/objects/pack`;
 

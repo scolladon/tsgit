@@ -32,8 +32,8 @@ import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import type { ObjectSourceReader } from '../../../ports/object-source-access.js';
-import { commonGitDir, objectsDir } from '../path-layout.js';
-import type { SourceLocation } from './source-location.js';
+import { fanoutDirIn } from '../path-layout.js';
+import { looseLocationOf, type SourceLocation } from './source-location.js';
 
 const fanoutCache = new WeakMap<Context['session'], Map<string, Set<string>>>();
 
@@ -69,12 +69,9 @@ const locationPrefixMap = (location: SourceLocation): Map<string, Set<string>> =
   return byPrefix;
 };
 
-async function listSuffixes(
-  readdir: ObjectSourceReader['readdir'],
-  dir: string,
-): Promise<Set<string>> {
+async function listSuffixes(fs: ObjectSourceReader, dir: string): Promise<Set<string>> {
   try {
-    const entries = await readdir(dir);
+    const entries = await fs.readdir(dir);
     return new Set(entries.map((entry) => entry.name));
   } catch (error) {
     if (!isMissingFanoutDir(error)) throw error;
@@ -91,10 +88,8 @@ async function loadFanoutSet(
   const cached = byPrefix.get(prefix);
   if (cached !== undefined) return cached;
 
-  const suffixes =
-    location === undefined
-      ? await listSuffixes((dir) => ctx.fs.readdir(dir), objectsDir(commonGitDir(ctx), prefix))
-      : await listSuffixes((dir) => location.fs.readdir(dir), `${location.objectsDir}/${prefix}`);
+  const loose = looseLocationOf(ctx, location);
+  const suffixes = await listSuffixes(loose.fs, fanoutDirIn(loose.objectsDir, prefix));
   byPrefix.set(prefix, suffixes);
   return suffixes;
 }
