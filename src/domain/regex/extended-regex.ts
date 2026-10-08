@@ -13,8 +13,9 @@
  *
  * A pattern without back-references runs as a Thompson automaton, in time
  * linear in the subject. One with back-references needs backtracking, which
- * spends at most a fixed number of steps on a subject; one it cannot settle
- * within them answers no match. A back-reference reads the text its group
+ * spends at most a number of steps growing with the subject's length, and
+ * holds at most a fixed number of ways back; one it cannot settle within
+ * them answers no match. A back-reference reads the text its group
  * last captured on the path, which a later repetition copy that skips the
  * group leaves in place; one to a group no copy has captured matches nothing,
  * as glibc's `regexec` has it. The automaton
@@ -45,11 +46,21 @@ const MAX_PROGRAM_SIZE = 1 << 17;
  */
 const MAX_BACKTRACKING_PROGRAM_SIZE = 1 << 20;
 /**
- * Steps the backtracking matcher takes on one subject before answering no
+ * Steps the backtracking matcher takes on any subject before answering no
  * match — about 50 ms of work, where glibc settles typical exponential
- * patterns in a few. A step runs one instruction or compares one character.
+ * patterns in a few. A step runs one instruction or reads one character.
  */
 const MAX_BACKTRACK_STEPS = 1 << 22;
+/**
+ * Further steps it may take per code unit of the subject: patterns splitting
+ * each word of a long message every way, as `(\w+) (\w+) \2 \1`, take under 30.
+ */
+const STEPS_PER_CODE_UNIT = 1 << 6;
+/**
+ * Most choices and undo records the backtracking matcher holds before
+ * answering no match: some 32 MB.
+ */
+const MAX_PATH_ENTRIES = 1 << 22;
 /** The groups a back-reference can name: `\1` to `\9`. */
 const MAX_BACKREFERENCE = 9;
 /** Memory slots before the repetition registers: a start and an end per nameable group. */
@@ -1097,9 +1108,10 @@ interface Path {
   readonly choices: number[];
 }
 
-/** The work one subject has taken, and when the check next runs. */
+/** The work one subject has taken, the most it may take, and when the check next runs. */
 interface Budget {
   steps: number;
+  readonly limit: number;
   nextCheck: number;
   readonly check: MatchCheck;
 }
@@ -1128,7 +1140,8 @@ const backtracker = (
  * matches or the subject's steps are spent.
  */
 const backtrack = (machine: Backtracker, subject: string, check: MatchCheck): boolean => {
-  const budget: Budget = { steps: 0, nextCheck: CHECK_INTERVAL, check };
+  const limit = MAX_BACKTRACK_STEPS + STEPS_PER_CODE_UNIT * subject.length;
+  const budget: Budget = { steps: 0, limit, nextCheck: CHECK_INTERVAL, check };
   const { path } = machine;
   path.memory.fill(UNSET);
   path.trail.length = 0;
@@ -1158,18 +1171,21 @@ const attempt = (machine: Backtracker, subject: string, from: number, budget: Bu
   path.at = from;
   for (;;) {
     if (program.ops[path.pc] === MATCH) return 'matched';
-    if (!spend(budget)) return 'exhausted';
+    if (!spend(budget, path)) return 'exhausted';
     if (!execute(machine, subject, budget) && !backUp(path, subject)) return 'failed';
   }
 };
 
-/** Takes a step, consulting the check every interval; `false` once the budget is spent. */
-const spend = (budget: Budget): boolean => {
+/**
+ * Takes a step, consulting the check every interval; `false` once the steps
+ * or the path's records are past their bounds.
+ */
+const spend = (budget: Budget, path: Path): boolean => {
   budget.steps += 1;
   if (budget.steps < budget.nextCheck) return true;
   budget.nextCheck += CHECK_INTERVAL;
   budget.check();
-  return budget.steps < MAX_BACKTRACK_STEPS;
+  return budget.steps < budget.limit && path.trail.length + path.choices.length < MAX_PATH_ENTRIES;
 };
 
 /**

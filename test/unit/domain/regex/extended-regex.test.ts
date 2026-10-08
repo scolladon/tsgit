@@ -13,10 +13,22 @@ const WIDE_INTERVALS = 10;
 /** A subject the automaton steps through for well over a check interval. */
 const LONG_SUBJECT_LENGTH = 1 << 18;
 const STOP = new Error('stop');
-/** Steps the backtracking matcher takes on one subject before it answers no match. */
+/** Steps the backtracking matcher takes on any subject before it answers no match. */
 const MAX_BACKTRACK_STEPS = 1 << 22;
+/** Further steps it may take per code unit of the subject. */
+const STEPS_PER_CODE_UNIT = 1 << 6;
+/** Choices and undo records it holds before it answers no match. */
+const MAX_PATH_ENTRIES = 1 << 22;
+/**
+ * Copies of `((a)|b)` reading `a` whose records reach that bound: each leaves
+ * sixteen, in eleven steps — some 2.9 million steps, inside the budget.
+ */
+const COPIES_AT_BOUND = MAX_PATH_ENTRIES / 16;
 /** Steps between two checks. */
 const CHECK_INTERVAL = 1 << 16;
+/** Words of a message a back-reference pattern splits every way. */
+const PROSE = 'every brown fox jumps over a lazy dog and runs into the deep forest ';
+const LONG_MESSAGE_LENGTH = 1 << 19;
 /** A run the back-reference pattern below splits every way before refusing it. */
 const EXPONENTIAL_SUBJECT = `${'a'.repeat(LONG_RUN)}bc`;
 /** A run several check intervals long. */
@@ -52,16 +64,25 @@ const refuseBacktracking = (): ReadonlyArray<string> => {
   return backtracked;
 };
 
-/** A check that counts how often it is consulted. */
-const countingCheck = (): { readonly check: () => void; readonly calls: () => number } => {
+const PAST_CEILING = new Error('consulted past the ceiling');
+
+/** A check that counts how often it is consulted, and throws once consulted more than `ceiling` times. */
+const countingCheck = (
+  ceiling: number,
+): { readonly check: () => void; readonly calls: () => number } => {
   let calls = 0;
   return {
     check: () => {
       calls += 1;
+      if (calls > ceiling) throw PAST_CEILING;
     },
     calls: () => calls,
   };
 };
+
+/** How often the backtracking matcher consults the check on `subject` before its steps are spent. */
+const budgetChecks = (subject: string): number =>
+  Math.ceil((MAX_BACKTRACK_STEPS + STEPS_PER_CODE_UNIT * subject.length) / CHECK_INTERVAL);
 
 const nested = (depth: number): string => `${'('.repeat(depth)}a${')'.repeat(depth)}`;
 
@@ -390,14 +411,16 @@ describe('compileExtendedRegex', () => {
       it('Then it answers false once the step budget is spent', () => {
         // Arrange
         const sut = compileExtendedRegex;
-        const { check, calls } = countingCheck();
+        const backtracked = refuseBacktracking();
+        const { check, calls } = countingCheck(budgetChecks(EXPONENTIAL_SUBJECT) + 1);
 
         // Act
         const result = sut('(a+)+b\\1c')?.test(EXPONENTIAL_SUBJECT, check);
 
         // Assert
         expect(result).toBe(false);
-        expect(calls()).toBe(MAX_BACKTRACK_STEPS / CHECK_INTERVAL);
+        expect(calls()).toBe(budgetChecks(EXPONENTIAL_SUBJECT));
+        expect(backtracked).toEqual([]);
       });
     });
 
@@ -405,12 +428,14 @@ describe('compileExtendedRegex', () => {
       it('Then it answers false', () => {
         // Arrange
         const sut = compileExtendedRegex;
+        const backtracked = refuseBacktracking();
 
         // Act
         const result = sut('(a+)+b\\1c')?.test(`${EXPONENTIAL_SUBJECT} abac`);
 
         // Assert
         expect(result).toBe(false);
+        expect(backtracked).toEqual([]);
       });
     });
 
@@ -418,6 +443,7 @@ describe('compileExtendedRegex', () => {
       it('Then the throw stops the match', () => {
         // Arrange
         const sut = compileExtendedRegex;
+        refuseBacktracking();
 
         // Act
         let result: unknown;
@@ -429,6 +455,43 @@ describe('compileExtendedRegex', () => {
 
         // Assert
         expect(result).toBe(STOP);
+      });
+    });
+  });
+
+  describe('Given a back-reference pattern splitting every word of a long message', () => {
+    describe('When the match lies at the message end', () => {
+      it('Then the steps the message length allows find it', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+        const body = PROSE.repeat(Math.ceil(LONG_MESSAGE_LENGTH / PROSE.length));
+        const { check } = countingCheck(budgetChecks(body) + 1);
+
+        // Act
+        const result = sut('([a-z]+) \\1 q')?.test(`${body}abc abc q`, check);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a back-reference after a repeated group over a long run', () => {
+    describe.each([
+      { run: COPIES_AT_BOUND / 4, expected: true },
+      { run: COPIES_AT_BOUND * 1.25, expected: false },
+    ])('When the run is $run characters long', ({ run, expected }) => {
+      it(`Then it answers ${expected}: past its bound, the path's records end the match`, () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+        const text = `x${'a'.repeat(run)}x`;
+        const { check } = countingCheck(budgetChecks(text) + 1);
+
+        // Act
+        const result = sut('(x)((a)|b)*\\1')?.test(text, check);
+
+        // Assert
+        expect(result).toBe(expected);
       });
     });
   });
@@ -460,14 +523,15 @@ describe('compileExtendedRegex', () => {
         ({ pattern, subject, steps }) => {
           // Arrange
           const sut = compileExtendedRegex;
-          const { check, calls } = countingCheck();
+          const ceiling = (steps * LONG_RUN_LENGTH) / CHECK_INTERVAL + 1;
+          const { check, calls } = countingCheck(ceiling);
 
           // Act
           const result = sut(pattern)?.test(subject, check);
 
           // Assert
           expect(result).toBe(true);
-          expect(calls()).toBeLessThanOrEqual((steps * LONG_RUN_LENGTH) / CHECK_INTERVAL + 1);
+          expect(calls()).toBeLessThanOrEqual(ceiling);
         },
       );
     });
