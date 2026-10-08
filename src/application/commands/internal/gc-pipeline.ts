@@ -1008,7 +1008,12 @@ export async function runGcTask(
   // git's repack loads the promisor remotes before pack-objects reads `[pack]`.
   await assertValidPromisorRemoteConfig(ctx);
   await assertValidPackIntConfig(ctx);
-  const run: GcRun = { ctx, packDir, settings, census };
+  return { ran: true, result: await repack(ctx, { ctx, packDir, settings, census }) };
+}
+
+/** Steps 1b to 11: classify, plan, write, retire, prune, tidy, then measure what is left. */
+async function repack(ctx: Context, run: GcRun): Promise<GcResult> {
+  const { census } = run;
   const existing = await readExistingPacks(run);
   const plan = await planRepack(run, existing);
   const outputs = await writeRepack(run, plan, existing);
@@ -1016,10 +1021,7 @@ export async function runGcTask(
   const pruned = await pruneLooseAfterRepack(ctx, census.looseSet, plan.doomed);
   await tidyAfterRepack(run);
   const after = await measurePacksAfter(ctx);
-  return {
-    ran: true,
-    result: ranResult({ census, existing, plan, outputs, packsRetired, pruned, after }),
-  };
+  return ranResult({ census, existing, plan, outputs, packsRetired, pruned, after });
 }
 
 /** Step 1: the loose count the auto gate reads, and every pack registered. */

@@ -192,6 +192,15 @@ function orderedUniqueTasks(tasks: ReadonlyArray<MaintenanceTask>): ReadonlyArra
   return ordered;
 }
 
+/**
+ * Run each requested maintenance task once, in the order first requested.
+ * Pinned against git 2.55.0 (`GIT_TRACE=1 git maintenance run --task=…
+ * --task=…`, both orderings): `git maintenance run` executes requested tasks
+ * in the order they were REQUESTED, not a fixed internal priority —
+ * `--task=commit-graph --task=gc` runs commit-graph first;
+ * `--task=gc --task=commit-graph` runs gc first. Mirrored here rather than
+ * hard-coding either task first.
+ */
 export const maintenance = async (
   ctx: Context,
   opts: MaintenanceOptions,
@@ -199,19 +208,7 @@ export const maintenance = async (
   await assertOperationalRepository(ctx);
   validateTasks(opts.tasks);
   const gcSettings = await readGcSettings(ctx);
-
-  // Pinned against git 2.55.0 (`GIT_TRACE=1 git maintenance run --task=…
-  // --task=…`, both orderings): `git maintenance run` executes requested
-  // tasks in the order they were REQUESTED, not a fixed internal priority —
-  // `--task=commit-graph --task=gc` runs commit-graph first;
-  // `--task=gc --task=commit-graph` runs gc first. Mirrored here rather
-  // than hard-coding either task first.
-  let progress: MaintenanceProgress = {
-    commitGraph: NO_COMMIT_GRAPH,
-    gc: GC_NOT_RUN,
-    tasksRun: [],
-    tasksFailed: [],
-  };
+  let progress = NOTHING_RUN;
   for (const task of orderedUniqueTasks(opts.tasks)) {
     progress =
       task === 'commit-graph'
@@ -229,6 +226,13 @@ interface MaintenanceProgress {
   readonly tasksRun: ReadonlyArray<MaintenanceTask>;
   readonly tasksFailed: ReadonlyArray<MaintenanceTaskFailure>;
 }
+
+const NOTHING_RUN: MaintenanceProgress = {
+  commitGraph: NO_COMMIT_GRAPH,
+  gc: GC_NOT_RUN,
+  tasksRun: [],
+  tasksFailed: [],
+};
 
 const failedStep = (
   progress: MaintenanceProgress,
