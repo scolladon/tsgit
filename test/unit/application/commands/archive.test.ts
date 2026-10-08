@@ -1464,6 +1464,66 @@ describe('archive export-subst routing', () => {
     });
   });
 
+  describe('Given commits whose encoding headers name one charset by different aliases', () => {
+    describe('When each is archived in one session', () => {
+      it('Then one encoder is built for the charset', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const tree = await writeSpecTree(ctx, [
+          ['.gitattributes', SUBST_ALL],
+          ['a', '$Format:%s$'],
+        ]);
+        const commit = makeCommit(tree);
+        const encodedAs = (value: string) =>
+          writeObject(ctx, {
+            ...commit,
+            data: { ...commit.data, extraHeaders: [{ key: 'encoding', value }] },
+          });
+        const commitIds = [await encodedAs('sjis'), await encodedAs('Shift_JIS')];
+        vi.mocked(buildCharsetEncoder).mockClear();
+        const sut = archive;
+
+        // Act
+        for (const commitId of commitIds) {
+          const { entries } = await sut(ctx, { treeish: commitId });
+          for await (const _ of entries);
+        }
+
+        // Assert
+        expect(vi.mocked(buildCharsetEncoder).mock.calls).toEqual([['shift_jis']]);
+      });
+    });
+  });
+
+  describe('Given a commit whose encoding header names no charset the platform knows', () => {
+    describe('When it is archived', () => {
+      it('Then no encoder is built or kept for the label', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const tree = await writeSpecTree(ctx, [
+          ['.gitattributes', SUBST_ALL],
+          ['a', '$Format:%s$'],
+        ]);
+        const commit = makeCommit(tree);
+        const commitId = await writeObject(ctx, {
+          ...commit,
+          data: { ...commit.data, extraHeaders: [{ key: 'encoding', value: 'x-no-such-charset' }] },
+        });
+        vi.mocked(buildCharsetEncoder).mockClear();
+        const sut = archive;
+
+        // Act
+        const { entries } = await sut(ctx, { treeish: commitId });
+        for await (const _ of entries);
+
+        // Assert
+        expect(vi.mocked(buildCharsetEncoder).mock.calls).toEqual([]);
+      });
+    });
+  });
+
   describe('Given two export-subst files of a commit encoded in ISO-8859-1', () => {
     describe('When the entries are iterated', () => {
       it('Then both are transcoded with one encoder built for the archive', async () => {

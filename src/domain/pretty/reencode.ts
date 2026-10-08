@@ -194,6 +194,25 @@ export const decodeToUtf8 = (label: string, bytes: Uint8Array): Uint8Array | und
 };
 
 /** The encoder iconv offers for a normalised label, built from scratch on every call. */
+const TABLE_ENCODINGS: ReadonlySet<string> = new Set([...SINGLE_BYTE, ...MULTI_BYTE]);
+
+/** Labels whose encoder follows the label itself, not the charset a WHATWG decoder maps it to. */
+const isSelfNamedLabel = (label: string): boolean =>
+  LATIN1_LABELS.has(label) ||
+  UTF16_LABELS.has(label) ||
+  UTF16_FIXED_ORDER.has(label) ||
+  isIso2022JpLabel(label);
+
+/**
+ * The one name every alias of a normalised label's charset shares, which `buildCharsetEncoder`
+ * builds the same encoder for; `undefined` where it builds none.
+ */
+export const charsetIdentity = (label: string): string | undefined => {
+  if (isSelfNamedLabel(label)) return label;
+  const encoding = strictDecoder(label)?.encoding;
+  return encoding !== undefined && TABLE_ENCODINGS.has(encoding) ? encoding : undefined;
+};
+
 export const buildCharsetEncoder = (label: string): CharsetEncoder | undefined => {
   if (UTF16_LABELS.has(label)) return utf16WithBom;
   const order = UTF16_FIXED_ORDER.get(label);

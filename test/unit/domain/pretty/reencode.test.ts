@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildCharsetEncoder,
+  charsetIdentity,
   decodeToUtf8,
   encodeFromUtf8,
   isUtf8Label,
@@ -305,6 +306,31 @@ describe('reencode', () => {
       it(`Then the answer is ${expected}`, () => {
         // Arrange
         const sut = isUtf8Label;
+
+        // Act
+        const result = sut(label);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe.each([
+    ['sjis', 'shift_jis'],
+    ['shift_jis', 'shift_jis'],
+    ['l1', 'windows-1252'],
+    ['latin1', 'latin1'],
+    ['utf-16', 'utf-16'],
+    ['utf-16le', 'utf-16le'],
+    ['csiso2022jp', 'csiso2022jp'],
+    ['gb18030', undefined],
+    ['x-no-such-charset', undefined],
+  ])('Given the normalised label %j', (label, expected) => {
+    describe('When asking which charset it builds an encoder for', () => {
+      it(`Then the answer is ${String(expected)}`, () => {
+        // Arrange
+        const sut = charsetIdentity;
 
         // Act
         const result = sut(label);

@@ -9,6 +9,7 @@ import {
   buildCharsetEncoder,
   type CharsetEncoder,
   type CharsetEncoders,
+  charsetIdentity,
 } from '../../../domain/pretty/reencode.js';
 import { signatureHeaderFor, splitSignedCommit } from '../../../domain/pretty/signed-commit.js';
 import {
@@ -78,14 +79,18 @@ const once = <T>(load: () => Promise<T>): (() => Promise<T>) => {
 /**
  * A multi-byte table costs tens of milliseconds to build, so a session builds each
  * charset's encoder once, the first time a commit needs it, for every archive it makes.
+ * A commit's encoding header is free text, so the memo is keyed by charset, not by label:
+ * aliases share one encoder and a label naming none leaves nothing behind.
  */
 const sessionEncoders = new WeakMap<Context['session'], CharsetEncoders>();
 
 const memoisedEncoders = (): CharsetEncoders => {
   const built = new Map<string, CharsetEncoder | undefined>();
   return (label) => {
-    if (!built.has(label)) built.set(label, buildCharsetEncoder(label));
-    return built.get(label);
+    const charset = charsetIdentity(label);
+    if (charset === undefined) return undefined;
+    if (!built.has(charset)) built.set(charset, buildCharsetEncoder(charset));
+    return built.get(charset);
   };
 };
 
