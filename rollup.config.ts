@@ -97,6 +97,18 @@ const treeshakeOptions = {
   propertyReadSideEffects: false,
 };
 
+// Commit formatting (`pretty/`) and message search (`regex/`) serve only the
+// commands that render or grep commits, so they ship apart from the core
+// domain every command loads. `ascii` and `date` stay in `domain`: core modules
+// (index resolve-undo, mailmap, squash messages) import them, and leaving them
+// here would make `domain` import the whole text chunk.
+const DOMAIN_TEXT_DIRS = ['/src/domain/pretty/', '/src/domain/regex/'];
+const DOMAIN_CORE_TEXT_MODULES = ['/src/domain/pretty/ascii.ts', '/src/domain/pretty/date.ts'];
+
+const isDomainTextModule = (/** @type {string} */ moduleId) =>
+  DOMAIN_TEXT_DIRS.some((dir) => moduleId.includes(dir)) &&
+  !DOMAIN_CORE_TEXT_MODULES.some((module) => moduleId.endsWith(module));
+
 // Coarse, layer-aligned chunking for the runtime outputs. Left to its own
 // devices with 60 entries, rollup emits ~143 micro-chunks and a plain
 // `import '@scolladon/tsgit'` resolves/parses/links ~190 files — measured at
@@ -118,6 +130,7 @@ const manualChunks = (/** @type {string} */ id) => {
   if (moduleId.includes('/src/adapters/browser/')) return 'adapter-browser';
   if (moduleId.includes('/src/adapters/memory/')) return 'adapter-memory';
   if (moduleId.includes('/src/adapters/')) return 'adapters-shared';
+  if (isDomainTextModule(moduleId)) return 'domain-text';
   if (moduleId.includes('/src/domain/')) return 'domain';
   if (moduleId.includes('/src/application/commands/internal/')) return 'commands-internal';
   if (moduleId.includes('/src/application/primitives/')) return 'primitives';
