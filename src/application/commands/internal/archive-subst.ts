@@ -75,13 +75,26 @@ const once = <T>(load: () => Promise<T>): (() => Promise<T>) => {
   };
 };
 
-/** Each charset's encoder built at most once per archive, the first time a commit needs it. */
+/**
+ * A multi-byte table costs tens of milliseconds to build, so a session builds each
+ * charset's encoder once, the first time a commit needs it, for every archive it makes.
+ */
+const sessionEncoders = new WeakMap<Context['session'], CharsetEncoders>();
+
 const memoisedEncoders = (): CharsetEncoders => {
   const built = new Map<string, CharsetEncoder | undefined>();
   return (label) => {
     if (!built.has(label)) built.set(label, buildCharsetEncoder(label));
     return built.get(label);
   };
+};
+
+const encodersOf = (ctx: Context): CharsetEncoders => {
+  const existing = sessionEncoders.get(ctx.session);
+  if (existing !== undefined) return existing;
+  const created = memoisedEncoders();
+  sessionEncoders.set(ctx.session, created);
+  return created;
 };
 
 /** git reads the clock once per archive; the local offset is the one in force at that instant. */
@@ -267,7 +280,7 @@ export const createSubstExpander = (ctx: Context, ids: ArchivedIds): SubstExpand
   const commitId = ids.commit;
   const clock = readClock();
   const resolvers = createResolvers(ctx, ids);
-  const encoders = memoisedEncoders();
+  const encoders = encodersOf(ctx);
   let budget = ONE_DESCRIBE_PER_ARCHIVE;
   return {
     expandFile: async (content) => {

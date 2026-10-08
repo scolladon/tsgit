@@ -1499,6 +1499,43 @@ describe('archive export-subst routing', () => {
         expect(vi.mocked(buildCharsetEncoder).mock.calls).toEqual([['iso-8859-1']]);
       });
     });
+
+    describe('When it is archived twice in one session', () => {
+      it('Then both archives transcode with the one encoder the session built', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const tree = await writeSpecTree(ctx, [
+          ['.gitattributes', SUBST_ALL],
+          ['a', 'é $Format:%s$'],
+        ]);
+        const commit = makeCommit(tree);
+        const encoded = {
+          ...commit,
+          data: { ...commit.data, extraHeaders: [{ key: 'encoding', value: 'ISO-8859-1' }] },
+        };
+        const commitId = await writeObject(ctx, encoded);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+        vi.mocked(buildCharsetEncoder).mockClear();
+        const sut = archive;
+        const contentOfA = async (): Promise<ReadonlyArray<number> | undefined> => {
+          const { entries } = await sut(ctx, { treeish: 'HEAD' });
+          let content: ReadonlyArray<number> | undefined;
+          for await (const entry of entries) {
+            if (entry.path === 'a' && entry.content) content = [...entry.content];
+          }
+          return content;
+        };
+
+        // Act
+        const result = [await contentOfA(), await contentOfA()];
+
+        // Assert
+        const latin1 = [0xe9, ...new TextEncoder().encode(' commit')];
+        expect(result).toEqual([latin1, latin1]);
+        expect(vi.mocked(buildCharsetEncoder).mock.calls).toEqual([['iso-8859-1']]);
+      });
+    });
   });
 
   describe('Given an export-subst file above core.bigFileThreshold', () => {
