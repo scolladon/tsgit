@@ -715,6 +715,44 @@ const matchesSection = (
 ): boolean =>
   tokenSection.toLowerCase() === section.toLowerCase() && tokenSubsection === subsection;
 
+type ConfigEntryToken = Extract<ConfigToken, { kind: 'entry' }>;
+type ConfigHeaderToken = Extract<ConfigToken, { kind: 'header' }>;
+
+/** One entry token with the subsection of the header it sits under. */
+interface SectionEntry {
+  readonly token: ConfigEntryToken;
+  readonly subsection: string | undefined;
+}
+
+/** Enters exactly `[<section> "<subsection>"]` (`undefined` ⇒ no subsection). */
+const exactSection =
+  (section: string, subsection?: string) =>
+  (header: ConfigHeaderToken): boolean =>
+    matchesSection(header.section, header.subsection, section, subsection);
+
+/** Enters `[<section>]` and every `[<section> "<any>"]` (case-insensitive section). */
+const anySubsectionOf = (section: string) => {
+  const loweredSection = section.toLowerCase();
+  return (header: ConfigHeaderToken): boolean => header.section.toLowerCase() === loweredSection;
+};
+
+/** Every entry token, in file order, under a header `enters` accepts. */
+function* sectionEntries(
+  tokens: ReadonlyArray<ConfigToken>,
+  enters: (header: ConfigHeaderToken) => boolean,
+): Generator<SectionEntry> {
+  let inSection = false;
+  let subsection: string | undefined;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = enters(token);
+      subsection = token.subsection;
+      continue;
+    }
+    if (inSection && token.kind === 'entry') yield { token, subsection };
+  }
+}
+
 /**
  * Valueless-entry detection: scan the repo-local config and return the FIRST
  * valueless (`value === null`) entry, by config-file line, whose key
@@ -732,13 +770,8 @@ export const findFirstValuelessEntry = async (
 ): Promise<ValuelessEntry | undefined> => {
   const { tokens, source: path } = await readConfigEntry(ctx);
   const keySet = new Set(keys.map((k) => k.toLowerCase()));
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, section, subsection);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry' || token.value !== null) continue;
+  for (const { token } of sectionEntries(tokens, exactSection(section, subsection))) {
+    if (token.value !== null) continue;
     const loweredKey = token.key.toLowerCase();
     if (!keySet.has(loweredKey)) continue;
     const loweredSection = section.toLowerCase();
@@ -775,15 +808,8 @@ export const findFirstValuelessInSection = async (
   const { tokens, source: path } = await readConfigEntry(ctx);
   const keySet = new Set(keys.map((k) => k.toLowerCase()));
   const loweredSection = section.toLowerCase();
-  let subsection: string | undefined;
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = token.section.toLowerCase() === loweredSection;
-      subsection = token.subsection;
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry' || token.value !== null) continue;
+  for (const { token, subsection } of sectionEntries(tokens, anySubsectionOf(section))) {
+    if (token.value !== null) continue;
     if (requireSubsection && subsection === undefined) continue;
     const loweredKey = token.key.toLowerCase();
     if (!keySet.has(loweredKey)) continue;
@@ -875,13 +901,8 @@ function* entriesIn(
   const qualifiedSection =
     subsection === undefined ? section.toLowerCase() : `${section.toLowerCase()}.${subsection}`;
   const qualifiedKey = `${qualifiedSection}.${loweredKey}`;
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, section, subsection);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry' || token.key.toLowerCase() !== loweredKey) continue;
+  for (const { token } of sectionEntries(tokens, exactSection(section, subsection))) {
+    if (token.key.toLowerCase() !== loweredKey) continue;
     yield { key: qualifiedKey, source, line: token.startLine + 1, value: token.value };
   }
 }
@@ -917,15 +938,7 @@ export const readReflogExpiryConfig = async (
 ): Promise<ReadonlyArray<ReflogExpiryConfigEntry>> => {
   const { tokens, source } = await readConfigEntry(ctx);
   const entries: ReflogExpiryConfigEntry[] = [];
-  let inSection = false;
-  let subsection: string | undefined;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = token.section.toLowerCase() === 'gc';
-      subsection = token.subsection;
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry') continue;
+  for (const { token, subsection } of sectionEntries(tokens, anySubsectionOf('gc'))) {
     const entry = reflogExpiryEntry(token, subsection, source);
     if (entry !== undefined) entries.push(entry);
   }
@@ -983,13 +996,7 @@ export const findFirstInvalidCompression = async (
   ctx: Context,
 ): Promise<InvalidCompressionEntry | undefined> => {
   const { tokens, source: path } = await readConfigEntry(ctx);
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, 'core', undefined);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry') continue;
+  for (const { token } of sectionEntries(tokens, exactSection('core'))) {
     const loweredKey = token.key.toLowerCase();
     if (!COMPRESSION_KEYS.has(loweredKey)) continue;
     const qualifiedKey = `core.${loweredKey}`;
@@ -1071,15 +1078,7 @@ function* walkFsckEntries(
   tokens: ReadonlyArray<ConfigToken>,
   source: string,
 ): Generator<FsckConfigItem> {
-  let inSection = false;
-  let subsection: string | undefined;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = token.section.toLowerCase() === FSCK_SECTION;
-      subsection = token.subsection;
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry') continue;
+  for (const { token, subsection } of sectionEntries(tokens, anySubsectionOf(FSCK_SECTION))) {
     yield gradeFsckEntry(composeFsckMsgId(subsection, token.key), token, source);
   }
 }
@@ -1156,13 +1155,7 @@ export const findFirstInvalidPackInt = async (
   ctx: Context,
 ): Promise<InvalidPackIntEntry | undefined> => {
   const { tokens, source: path } = await readConfigEntry(ctx);
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, 'pack', undefined);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry') continue;
+  for (const { token } of sectionEntries(tokens, exactSection('pack'))) {
     const lowered = token.key.toLowerCase();
     const check = packIntChecker(lowered);
     if (check === undefined) continue;
@@ -1217,26 +1210,10 @@ export interface InvalidNumericEntry {
  * line regardless of what follows it. Returns `undefined` when the key is
  * absent or its last entry is valid. Runs ONLY on a command's refusal path.
  */
-export const findLastInvalidMaxTreeDepth = async (
+export const findLastInvalidMaxTreeDepth = (
   ctx: Context,
-): Promise<InvalidNumericEntry | undefined> => {
-  const { tokens, source: path } = await readConfigEntry(ctx);
-  let inSection = false;
-  let last: { readonly value: string | null } | undefined;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, 'core', undefined);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry') continue;
-    if (token.key.toLowerCase() !== MAX_TREE_DEPTH_KEY) continue;
-    last = { value: token.value };
-  }
-  if (last === undefined) return undefined;
-  const reason = cIntRefusal(last.value);
-  if (reason === undefined) return undefined;
-  return { key: `core.${MAX_TREE_DEPTH_KEY}`, source: path, value: last.value ?? '', reason };
-};
+): Promise<InvalidNumericEntry | undefined> =>
+  findLastInvalidRepoInt(ctx, 'core', MAX_TREE_DEPTH_KEY);
 
 /** git's `git_config_int` grammar: why it dies on `value`, or `undefined` when it parses. */
 const cIntRefusal = (value: string | null): InvalidNumericEntry['reason'] | undefined => {
@@ -1277,26 +1254,24 @@ export const findLastInvalidRepoInt = async (
  * `GIT_UINT64_MAX` is `'out of range'`. Runs ONLY on a command's refusal
  * path — this is the eager twin of the lenient `applyDeltaBaseCacheLimitEntry`.
  */
-export const findLastInvalidDeltaBaseCacheLimit = async (
+export const findLastInvalidDeltaBaseCacheLimit = (
   ctx: Context,
+): Promise<InvalidNumericEntry | undefined> =>
+  findLastInvalidCoreUnsignedLong(ctx, DELTA_BASE_CACHE_LIMIT_KEY);
+
+/**
+ * git's config-set read of `core.<key>` under the unsigned-long grammar: the
+ * LAST entry, returned when git would die on it, else `undefined`.
+ */
+const findLastInvalidCoreUnsignedLong = async (
+  ctx: Context,
+  key: string,
 ): Promise<InvalidNumericEntry | undefined> => {
-  const { tokens, source: path } = await readConfigEntry(ctx);
-  let inSection = false;
-  let last: { readonly value: string | null } | undefined;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, 'core', undefined);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry') continue;
-    if (token.key.toLowerCase() !== DELTA_BASE_CACHE_LIMIT_KEY) continue;
-    last = { value: token.value };
-  }
+  const last = await findLastEntry(ctx, 'core', key);
   if (last === undefined) return undefined;
-  const key = `core.${DELTA_BASE_CACHE_LIMIT_KEY}`;
   const checked = checkGitUnsignedLong(last.value);
   if (checked.ok) return undefined;
-  return { key, source: path, value: last.value ?? '', reason: checked.reason };
+  return { key: last.key, source: last.source, value: last.value ?? '', reason: checked.reason };
 };
 
 /**
@@ -1333,15 +1308,10 @@ export const findLastInvalidPackedGitBound = async (
  * fails, else `undefined`. Runs ONLY on a command's refusal path —
  * `readConfig` stays lenient.
  */
-export const findLastInvalidBigFileThreshold = async (
+export const findLastInvalidBigFileThreshold = (
   ctx: Context,
-): Promise<InvalidNumericEntry | undefined> => {
-  const last = await findLastEntry(ctx, 'core', BIG_FILE_THRESHOLD_KEY);
-  if (last === undefined) return undefined;
-  const checked = checkGitUnsignedLong(last.value);
-  if (checked.ok) return undefined;
-  return { key: last.key, source: last.source, value: last.value ?? '', reason: checked.reason };
-};
+): Promise<InvalidNumericEntry | undefined> =>
+  findLastInvalidCoreUnsignedLong(ctx, BIG_FILE_THRESHOLD_KEY);
 
 type MutableGpgSsh = { program?: string; allowedSignersFile?: string; revocationFile?: string };
 
@@ -1597,19 +1567,10 @@ const applyAbbrevEntry = (core: MutableCore, value: string): MutableCore | undef
  */
 export const assertValidAbbrevConfig = async (ctx: Context): Promise<void> => {
   const { tokens, source } = await readConfigEntry(ctx);
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, 'core', undefined);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry' || token.key.toLowerCase() !== ABBREV_KEY) continue;
-    if (token.value === null) {
-      throw configMissingValue('core.abbrev', source, token.startLine + 1);
-    }
-    const verdict = classifyAbbrev(token.value);
-    if (!verdict.ok)
-      throw configBadNumericValue('core.abbrev', source, token.value, verdict.reason);
+  for (const { line, value } of entriesIn(tokens, source, 'core', ABBREV_KEY)) {
+    if (value === null) throw configMissingValue('core.abbrev', source, line);
+    const verdict = classifyAbbrev(value);
+    if (!verdict.ok) throw configBadNumericValue('core.abbrev', source, value, verdict.reason);
   }
 };
 
@@ -2225,15 +2186,9 @@ export const findInvalidPushDefault = async (
   ctx: Context,
 ): Promise<InvalidPushDefaultEntry | undefined> => {
   const { tokens, source: path } = await readConfigEntry(ctx);
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, 'push', undefined);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry' || token.key.toLowerCase() !== 'default') continue;
-    if (token.value === null || parsePushDefault(token.value) !== undefined) continue;
-    return { key: 'push.default', source: path, line: token.startLine + 1, value: token.value };
+  for (const { line, value } of entriesIn(tokens, path, 'push', 'default')) {
+    if (value === null || parsePushDefault(value) !== undefined) continue;
+    return { key: 'push.default', source: path, line, value };
   }
   return undefined;
 };
@@ -2354,18 +2309,8 @@ const finalizeCore = (core: MutableCore | undefined): ParsedConfig['core'] => {
   return { ...finalizeCoreIdentityFields(core), ...finalizeCoreSizeFields(core) };
 };
 
-type FinalizeOut = {
-  diff?: ReadonlyMap<string, { textconv?: string; cachetextconv?: boolean; binary?: boolean }>;
-  filter?: ReadonlyMap<string, FilterEntry>;
-  commit?: { gpgSign?: boolean };
-  tag?: { gpgSign?: boolean };
-  pack?: MutablePack;
-  gc?: MutableGc;
-  push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
-  gpg?: MutableGpg;
-  mailmap?: { file?: string; blob?: string };
-  trailer?: MutableTrailer;
-};
+/** {@link ParsedConfig} with its top-level fields assignable, for `finalize` to fill in. */
+type FinalizeOut = { -readonly [Field in keyof ParsedConfig]: ParsedConfig[Field] };
 
 // Extracted to keep `finalize` under the cognitive-complexity ceiling.
 const finalizeDriverMaps = (acc: MutableParsedConfig, out: FinalizeOut): void => {
@@ -2409,50 +2354,7 @@ const finalizeScalarBuckets = (acc: MutableParsedConfig, out: FinalizeOut): void
 };
 
 const finalize = (acc: MutableParsedConfig): ParsedConfig => {
-  const out: {
-    core?: {
-      bare?: boolean;
-      excludesFile?: string;
-      attributesFile?: string;
-      logAllRefUpdates?: boolean | 'always';
-      hooksPath?: string;
-      sparseCheckout?: boolean;
-      sparseCheckoutCone?: boolean;
-      looseCompression?: number;
-      maxTreeDepth?: number;
-      deltaBaseCacheLimit?: number;
-    };
-    user?: { name?: string; email?: string; signingKey?: string };
-    remote?: ReadonlyMap<
-      string,
-      {
-        url?: string;
-        pushUrl?: string;
-        fetch?: ReadonlyArray<string>;
-        promisor?: boolean;
-        partialCloneFilter?: string;
-      }
-    >;
-    remotePushDefault?: string;
-    branch?: ReadonlyMap<
-      string,
-      { remote?: string; merge?: string; merges?: ReadonlyArray<string>; pushRemote?: string }
-    >;
-    submodule?: ReadonlyMap<string, { url?: string; active?: boolean; update?: string }>;
-    merge?: ReadonlyMap<string, { name?: string; driver?: string; recursive?: string }>;
-    diff?: ReadonlyMap<string, { textconv?: string; cachetextconv?: boolean; binary?: boolean }>;
-    filter?: ReadonlyMap<
-      string,
-      { clean?: string; smudge?: string; process?: string; required?: boolean }
-    >;
-    extensions?: { partialClone?: string };
-    commit?: { gpgSign?: boolean };
-    tag?: { gpgSign?: boolean };
-    pack?: MutablePack;
-    gc?: MutableGc;
-    push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
-    gpg?: MutableGpg;
-  } = {};
+  const out: FinalizeOut = {};
   const core = finalizeCore(acc.core);
   if (core !== undefined) out.core = core;
   const user = finalizeUser(acc.user);
@@ -2544,15 +2446,9 @@ const findFirstRejectedBoolean = async (
 ): Promise<InvalidBooleanEntry | undefined> => {
   const { tokens, source: path } = await readConfigEntry(ctx);
   const keySet = new Set(target.keys.map((k) => k.toLowerCase()));
-  let subsection: string | undefined;
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      subsection = token.subsection;
-      inSection = headerEntersTarget(token.section, token.subsection, target);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry') continue;
+  const enters = (header: ConfigHeaderToken): boolean =>
+    headerEntersTarget(header.section, header.subsection, target);
+  for (const { token, subsection } of sectionEntries(tokens, enters)) {
     const value = token.value;
     if (!entryValueRejected(value, token.key, subsection, target, keySet)) continue;
     return {
@@ -2617,14 +2513,8 @@ const isRegistrablePromisorName = (name: string): boolean => !name.startsWith('/
 /** The remote name of every entry registering a promisor, in config order, repeats kept. */
 const registeringRemoteNames = (tokens: ReadonlyArray<ConfigToken>): ReadonlyArray<string> => {
   const names: string[] = [];
-  let remoteName: string | undefined;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      remoteName = token.section.toLowerCase() === 'remote' ? (token.subsection ?? '') : undefined;
-      continue;
-    }
-    if (token.kind !== 'entry' || remoteName === undefined) continue;
-    if (registersPromisor(token.key, token.value)) names.push(remoteName);
+  for (const { token, subsection } of sectionEntries(tokens, anySubsectionOf('remote'))) {
+    if (registersPromisor(token.key, token.value)) names.push(subsection ?? '');
   }
   return names;
 };
@@ -2664,13 +2554,9 @@ const remoteTableEntries = (
   tokens: ReadonlyArray<ConfigToken>,
 ): ReadonlyArray<RemoteTableEntry> => {
   const entries: RemoteTableEntry[] = [];
-  let remote: string | undefined;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      remote = token.section.toLowerCase() === 'remote' ? token.subsection : undefined;
-    } else if (token.kind === 'entry' && remote !== undefined) {
-      entries.push({ remote, key: token.key.toLowerCase(), value: token.value });
-    }
+  for (const { token, subsection: remote } of sectionEntries(tokens, anySubsectionOf('remote'))) {
+    if (remote === undefined) continue;
+    entries.push({ remote, key: token.key.toLowerCase(), value: token.value });
   }
   return entries;
 };
@@ -2736,8 +2622,6 @@ export type PromisorConfigRefusal =
   | { readonly kind: 'bad-boolean'; readonly entry: InvalidBooleanEntry }
   | { readonly kind: 'missing-value'; readonly entry: ValuelessEntry };
 
-type ConfigEntryToken = Extract<ConfigToken, { kind: 'entry' }>;
-
 /** git reads `promisor` as a boolean, and a registrable remote's filter as a string. */
 const promisorEntryRefusal = (
   token: ConfigEntryToken,
@@ -2768,14 +2652,8 @@ export const findFirstPromisorConfigRefusal = async (
   ctx: Context,
 ): Promise<PromisorConfigRefusal | undefined> => {
   const { tokens, source } = await readConfigEntry(ctx);
-  let remoteName: string | undefined;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      remoteName = token.section.toLowerCase() === 'remote' ? (token.subsection ?? '') : undefined;
-      continue;
-    }
-    if (token.kind !== 'entry' || remoteName === undefined) continue;
-    const refusal = promisorEntryRefusal(token, remoteName, source);
+  for (const { token, subsection } of sectionEntries(tokens, anySubsectionOf('remote'))) {
+    const refusal = promisorEntryRefusal(token, subsection ?? '', source);
     if (refusal !== undefined) return refusal;
   }
   return undefined;
