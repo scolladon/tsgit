@@ -343,20 +343,18 @@ export const pull = async (ctx: Context, given: PullOptions = {}): Promise<PullR
   await assertOperationalRepository(ctx);
   requireWorkTree(ctx, 'pull');
   const plan = await planPull(ctx, given);
-  const { opts, upstream, branchRef, origHead } = plan;
+  const { opts, upstream, branchRef, origHead, rebase, unreconciled } = plan;
   const fetchResult = await fetchUpstream(ctx, opts, upstream);
   assertNothingRejected(fetchResult);
   await followUpdatedHead(ctx, origHead);
   const fetched = await mergeHeads(ctx, opts, upstream, branchRef);
   if (origHead === undefined) return pullIntoEmptyHead(ctx, fetchResult, fetched, branchRef);
-  const { rebase, unreconciled } = plan;
-  const { reflogAction } = upstream;
   return integrate(ctx, {
     opts,
     branchRef,
     fetchResult,
     fetched,
-    reflogAction,
+    reflogAction: upstream.reflogAction,
     rebase,
     unreconciled,
   });

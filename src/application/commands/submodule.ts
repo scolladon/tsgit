@@ -259,6 +259,31 @@ const initEntry = async (
   ...(update !== undefined ? { update } : {}),
 });
 
+/** Each url-bearing selected row's init outcome, resolved one row at a time in order. */
+const initSelectedEntries = async (
+  selected: ReadonlyArray<PathedRow>,
+  config: ParsedConfig,
+  updateModes: ReadonlyMap<string, SubmoduleUpdateMode>,
+  resolveUrl: SubmoduleUrlResolver,
+): Promise<ReadonlyArray<SubmoduleInitEntry>> => {
+  const entries: SubmoduleInitEntry[] = [];
+  for (const row of selected) {
+    if (row.url === undefined) continue;
+    const existing = config.submodule?.get(row.name)?.url;
+    const update = updateModes.get(row.name);
+    entries.push(await initEntry({ ...row, url: row.url }, existing, update, resolveUrl));
+  }
+  return entries;
+};
+
+/** The config writes registering every entry this init freshly registered. */
+const registrationOps = (
+  entries: ReadonlyArray<SubmoduleInitEntry>,
+): ReadonlyArray<ConfigOperation> =>
+  entries
+    .filter((entry) => entry.registered)
+    .flatMap((entry) => registerOps(entry.name, entry.url, entry.update));
+
 /** {@link submoduleInit}, resolving relative urls through `shared` when a caller
  *  inits row by row within one command. */
 const initSubmodules = async (
@@ -274,20 +299,8 @@ const initSubmodules = async (
   const selected = selectRows(rows, opts.paths);
   const config = await readConfig(ctx);
   const resolveUrl = shared ?? createSubmoduleUrlResolver(ctx, workDir);
-  const entries: SubmoduleInitEntry[] = [];
-  const ops: ConfigOperation[] = [];
-  for (const row of selected) {
-    if (row.url === undefined) continue;
-    const existing = config.submodule?.get(row.name)?.url;
-    const entry = await initEntry(
-      { ...row, url: row.url },
-      existing,
-      updateModes.get(row.name),
-      resolveUrl,
-    );
-    if (entry.registered) ops.push(...registerOps(entry.name, entry.url, entry.update));
-    entries.push(entry);
-  }
+  const entries = await initSelectedEntries(selected, config, updateModes, resolveUrl);
+  const ops = registrationOps(entries);
   if (ops.length > 0) await updateConfigOperations(ctx, ops);
   return { entries };
 };

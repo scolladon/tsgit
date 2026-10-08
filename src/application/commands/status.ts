@@ -262,15 +262,20 @@ const scanWorkingTree = async (
     });
   // A clean driver hears the paths in index order, however the reads race;
   // without attributes no driver applies, and the scan needs no order.
-  const results =
-    provider === undefined
-      ? await scan()
-      : await withCleanOrder(ctx, (order) => {
-          for (const entry of stage0) order.enlist(entry.path);
-          return scan(order);
-        });
+  const results = provider === undefined ? await scan() : await inIndexOrder(ctx, stage0, scan);
   return deltaMapOf(results);
 };
+
+/** Runs `scan` with every stage-0 path enlisted, so a clean driver hears them in index order. */
+const inIndexOrder = <T>(
+  ctx: Context,
+  stage0: ReadonlyArray<IndexEntry>,
+  scan: (order: CleanOrder) => Promise<T>,
+): Promise<T> =>
+  withCleanOrder(ctx, (order) => {
+    for (const entry of stage0) order.enlist(entry.path);
+    return scan(order);
+  });
 
 const deltaMapOf = (
   results: ReadonlyArray<readonly [FilePath, WorkingTreeDelta] | undefined>,
