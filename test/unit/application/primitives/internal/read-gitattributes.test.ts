@@ -336,7 +336,7 @@ describe('buildAttributeProvider', () => {
 
   describe('Given concurrent lookups under one uncached directory', () => {
     describe('When sourcesForPath runs for two of its files at once', () => {
-      it('Then that directory `.gitattributes` is read once', async () => {
+      it('Then that directory `.gitattributes` is read once and serves both', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '/repo/a/.gitattributes', '* merge=a\n');
@@ -345,11 +345,15 @@ describe('buildAttributeProvider', () => {
         const sut = provider.sourcesForPath;
 
         // Act
-        await Promise.all([sut('a/x.txt' as FilePath), sut('a/y.txt' as FilePath)]);
+        const result = await Promise.all([sut('a/x.txt' as FilePath), sut('a/y.txt' as FilePath)]);
 
         // Assert
         const reads = spy.mock.calls.filter(([path]) => path === '/repo/a/.gitattributes');
         expect(reads).toHaveLength(1);
+        expect(result.map(({ sources }) => sources.map(({ basedir }) => basedir))).toEqual([
+          ['a'],
+          ['a'],
+        ]);
       });
     });
   });

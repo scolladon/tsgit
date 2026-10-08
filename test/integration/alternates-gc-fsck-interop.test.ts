@@ -175,7 +175,7 @@ const donorPackedBlob = (donor: string): { readonly oid: string; readonly conten
 
 describe.skipIf(!GIT_AVAILABLE)('alternates gc interop — local-only packing', () => {
   describe('Given a borrower with local commits atop a packed donor history', () => {
-    describe('When gc runs on twin copies (G1)', () => {
+    describe('When gc runs on twin copies', () => {
       it(
         'Then both local object sets are equal and exclude every donor object',
         async () => {
@@ -198,7 +198,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates gc interop — local-only packing', 
       );
     });
 
-    describe('When git repack -a -d -l runs against tsgit gc (G2)', () => {
+    describe('When git repack -a -d -l runs against tsgit gc', () => {
       it(
         'Then tsgit gc yields the same local objects as the local-only repack',
         async () => {
@@ -219,7 +219,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates gc interop — local-only packing', 
   });
 
   describe('Given a donor holding an unreachable loose object', () => {
-    describe('When the borrower prunes everything (G3)', () => {
+    describe('When the borrower prunes everything', () => {
       it(
         'Then the donor file set is untouched by both git and tsgit',
         async () => {
@@ -253,7 +253,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates gc interop — local-only packing', 
       writeLooseCopy(objectsOf(borrower), oid, content);
     };
 
-    describe('When git prune-packed runs against tsgit gc (G4)', () => {
+    describe('When git prune-packed runs against tsgit gc', () => {
       it(
         'Then both remove the borrower loose copy',
         async () => {
@@ -274,7 +274,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates gc interop — local-only packing', 
       );
     });
 
-    describe('When gc runs on twin copies (G5)', () => {
+    describe('When gc runs on twin copies', () => {
       it(
         'Then the loose copy is removed and the local object sets are equal',
         async () => {
@@ -308,7 +308,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates gc interop — local-only packing', 
       runGit(['-C', borrower, 'hash-object', '-w', '--stdin'], { input: LOCAL_GARBAGE });
     };
 
-    describe('When gc runs on twin copies (G6)', () => {
+    describe('When gc runs on twin copies', () => {
       it(
         'Then the donor-packed copy is dropped and only the local garbage reaches the cruft pack',
         async () => {
@@ -347,7 +347,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates gc interop — local-only packing', 
       commitFile(borrower, 'loose.txt', DONOR_LOOSE);
     };
 
-    describe('When git repack -a -d -l runs against tsgit gc (G7)', () => {
+    describe('When git repack -a -d -l runs against tsgit gc', () => {
       it(
         'Then neither packs the copy and both keep it loose',
         async () => {
@@ -386,7 +386,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates gc interop — local-only packing', 
     const garbageOid = (pair: Pair, content: string): string =>
       runGit(['-C', pair.donor, 'hash-object', '--stdin'], { input: content }).trim();
 
-    describe('When gc runs on twin copies (G8)', () => {
+    describe('When gc runs on twin copies', () => {
       it(
         'Then neither crufts them, the recent copy stays loose and the expired one is pruned',
         async () => {
@@ -434,14 +434,14 @@ describe.skipIf(!GIT_AVAILABLE)('alternates gc interop — local-only packing', 
     };
 
     describe.each([
-      ['true', 'G9'],
-      ['false', 'G10'],
-    ])('When gc runs on twin copies with gc.cruftPacks=%s (%s)', (cruftPacks, slug) => {
+      ['true', 'cruft-packs'],
+      ['false', 'no-cruft-packs'],
+    ])('When gc runs on twin copies with gc.cruftPacks=%s', (cruftPacks, slug) => {
       it(
         'Then both drop the donor-held object and keep only the local garbage',
         async () => {
           // Arrange
-          const pair = pairOf(slug.toLowerCase(), withLocallyPackedGarbage);
+          const pair = pairOf(slug, withLocallyPackedGarbage);
           const hashOf = (content: string): string =>
             runGit(['-C', pair.donor, 'hash-object', '--stdin'], { input: content }).trim();
           for (const side of [pair.gitSide, pair.tsgitSide]) {
@@ -590,7 +590,7 @@ const commitGraphFiles = (
 
 describe.skipIf(!GIT_AVAILABLE)('alternates interop — the direct node context', () => {
   describe('Given a clone --shared borrower whose history lives in the donor', () => {
-    describe('When createNodeContext reads a donor-only blob (N1)', () => {
+    describe('When createNodeContext reads a donor-only blob', () => {
       it(
         'Then it returns the bytes git cat-file returns',
         async () => {
@@ -613,7 +613,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates interop — the direct node context'
       );
     });
 
-    describe('When createNodeContext logs HEAD across the donor history (N2)', () => {
+    describe('When createNodeContext logs HEAD across the donor history', () => {
       it(
         'Then it lists the commits git log lists, in the same order',
         async () => {
@@ -635,7 +635,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates interop — the direct node context'
       );
     });
 
-    describe('When createNodeContext runs the commit-graph task on a twin copy (N3)', () => {
+    describe('When createNodeContext runs the commit-graph task on a twin copy', () => {
       it(
         'Then it writes the alternate-aware chain git writes, byte for byte',
         async () => {
@@ -716,7 +716,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
   });
 
   describe('Given a donor commit on a branch the borrower lacks', () => {
-    describe('When the borrower fsck runs (F2b)', () => {
+    describe('When the borrower fsck runs', () => {
       it(
         'Then both report the commit as dangling and the unreachable set matches --unreachable',
         async () => {
@@ -849,7 +849,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
   });
 
   describe('Given a donor loose file with a broken zlib stream', () => {
-    describe('When the borrower fsck runs (F3b)', () => {
+    describe('When the borrower fsck runs', () => {
       it(
         'Then both exit 1 and name the donor path',
         async () => {
@@ -912,7 +912,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
       );
     });
 
-    describe('When the pack trailer is corrupt (F4b)', () => {
+    describe('When the pack trailer is corrupt', () => {
       it(
         'Then both exit 14 on the donor and the borrower with the missing blobs and invalid pointers git names',
         async () => {
@@ -961,7 +961,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
 
     const DAMAGE_PAST_ENTRY_START = 4;
 
-    describe('When a second donor pack holds a damaged duplicate of a reachable blob (V4-dup)', () => {
+    describe('When a second donor pack holds a damaged duplicate of a reachable blob', () => {
       it(
         'Then both exit 4 on the donor and the borrower and report the damaged copy git reports',
         async () => {
@@ -997,7 +997,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
       );
     });
 
-    describe('When a loose copy shadows a damaged pack copy of a reachable blob (V4-loose)', () => {
+    describe('When a loose copy shadows a damaged pack copy of a reachable blob', () => {
       it(
         'Then both exit 4 on the donor and the borrower and report the hidden pack copy',
         async () => {
@@ -1044,14 +1044,14 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
 
     describe.each([
       {
-        label: 'the tip tree the cache-tree names (V6)',
+        label: 'the tip tree the cache-tree names',
         slug: 'v6',
         rev: 'HEAD^{tree}',
         modes: ['', '--no-full', '--connectivity-only'],
       },
-      { label: 'a non-tip commit (V7)', slug: 'v7', rev: 'HEAD~1', modes: ['--connectivity-only'] },
+      { label: 'a non-tip commit', slug: 'v7', rev: 'HEAD~1', modes: ['--connectivity-only'] },
       {
-        label: 'a tree no ref or cache-tree names (V8)',
+        label: 'a tree no ref or cache-tree names',
         slug: 'v8',
         rev: 'HEAD~1^{tree}',
         modes: ['--connectivity-only'],
@@ -1094,7 +1094,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
       );
     });
 
-    describe('When a separate pack holds only an unreachable object and is corrupt (F4c)', () => {
+    describe('When a separate pack holds only an unreachable object and is corrupt', () => {
       it(
         'Then both exit 4 and every verify_pack line git prints is rebuilt from tsgit findings',
         async () => {
@@ -1202,7 +1202,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates gc/fsck interop — loose-only enume
     { run: 'fsck' as const, gitArgs: ['fsck', '--no-full'] },
     { run: 'gc' as const, gitArgs: ['gc', '-q'] },
   ])('Given a borrower whose core.deltaBaseCacheLimit is malformed', ({ run, gitArgs }) => {
-    describe(`When git ${gitArgs.join(' ')} and tsgit ${run} run (L1)`, () => {
+    describe(`When git ${gitArgs.join(' ')} and tsgit ${run} run`, () => {
       it(
         'Then both refuse with the bad-numeric fatal',
         async () => {

@@ -201,7 +201,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-ignore interop', () => {
 
   describe('Given file-level export-ignore rules', () => {
     describe('When the repository is archived', () => {
-      it('Then a set attribute omits the file (E1)', async () => {
+      it('Then a set attribute omits the file', async () => {
         // Arrange
         const dir = await makeRepo('e1', {
           '.gitattributes': 't1 export-ignore\n',
@@ -213,7 +213,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-ignore interop', () => {
         await expectParity(dir, 'HEAD', ['.gitattributes', 'k']);
       });
 
-      it('Then unset, string-valued and unspecified attributes keep the file (E2)', async () => {
+      it('Then unset, string-valued and unspecified attributes keep the file', async () => {
         // Arrange
         const dir = await makeRepo('e2', {
           '.gitattributes':
@@ -227,7 +227,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-ignore interop', () => {
         await expectParity(dir, 'HEAD', ['.gitattributes', 't2', 't3', 't4']);
       });
 
-      it('Then a macro expanding to export-ignore omits the file (E3)', async () => {
+      it('Then a macro expanding to export-ignore omits the file', async () => {
         // Arrange
         const dir = await makeRepo('e3', {
           '.gitattributes': '[attr]hidden export-ignore\nt5 hidden\n',
@@ -239,7 +239,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-ignore interop', () => {
         await expectParity(dir, 'HEAD', ['.gitattributes', 'k']);
       });
 
-      it('Then a symlink matching the rule is omitted (E8)', async () => {
+      it('Then a symlink matching the rule is omitted', async () => {
         // Arrange
         const dir = await makeRepo('e8', {
           '.gitattributes': 'lnk export-ignore\n',
@@ -267,7 +267,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-ignore interop', () => {
 
   describe('Given directory-level export-ignore rules', () => {
     describe('When the repository is archived', () => {
-      it('Then a directory ignored by name drops with every descendant (E4)', async () => {
+      it('Then a directory ignored by name drops with every descendant', async () => {
         // Arrange
         const dir = await makeRepo('e4', {
           '.gitattributes': 'a export-ignore\n',
@@ -280,7 +280,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-ignore interop', () => {
         await expectParity(dir, 'HEAD', ['.gitattributes', 'k']);
       });
 
-      it('Then a directory ignored with a trailing slash drops with every descendant (E5)', async () => {
+      it('Then a directory ignored with a trailing slash drops with every descendant', async () => {
         // Arrange
         const dir = await makeRepo('e5', {
           '.gitattributes': 'b/ export-ignore\n',
@@ -292,7 +292,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-ignore interop', () => {
         await expectParity(dir, 'HEAD', ['.gitattributes', 'k']);
       });
 
-      it('Then dir/** keeps the directory and drops its children (E6)', async () => {
+      it('Then dir/** keeps the directory and drops its children', async () => {
         // Arrange
         const dir = await makeRepo('e6', {
           '.gitattributes': 'c/** export-ignore\n',
@@ -303,7 +303,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-ignore interop', () => {
         await expectParity(dir, 'HEAD', ['.gitattributes', 'c/']);
       });
 
-      it('Then a directory whose only content is ignored is never emitted (E7)', async () => {
+      it('Then a directory whose only content is ignored is never emitted', async () => {
         // Arrange
         const dir = await makeRepo('e7', {
           '.gitattributes': 'd/e export-ignore\n',
@@ -343,7 +343,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-ignore interop', () => {
         },
       );
 
-      it('Then a directory-only rule spares a same-named file and drops the directory (E9)', async () => {
+      it('Then a directory-only rule spares a same-named file and drops the directory', async () => {
         // Arrange
         const dir = await makeRepo('e9', {
           '.gitattributes': 'foo/ export-ignore\n',
@@ -379,7 +379,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-ignore interop', () => {
 
   describe('Given a tree holding an empty subtree', () => {
     describe('When the tree is archived', () => {
-      it('Then the empty subtree is not emitted (E10)', async () => {
+      it('Then the empty subtree is not emitted', async () => {
         // Arrange
         const dir = await makeRepo('e10', { k: '1' });
         const blob = git(dir, 'rev-parse', 'HEAD:k').trim();
@@ -396,7 +396,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-ignore interop', () => {
 
   describe('Given attributes living in the archived tree', () => {
     describe('When a subdirectory is archived', () => {
-      it("Then that directory's .gitattributes is the root file and the repository root is invisible (E11)", async () => {
+      it("Then that directory's .gitattributes is the root file and the repository root is invisible", async () => {
         // Arrange
         const dir = await makeRepo('e11', {
           '.gitattributes': 'x export-ignore\n',
@@ -411,7 +411,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-ignore interop', () => {
     });
 
     describe('When the work tree .gitattributes is edited but uncommitted', () => {
-      it('Then the committed rules still decide (E13)', async () => {
+      it('Then the committed rules still decide', async () => {
         // Arrange
         const dir = await makeRepo('e13', {
           '.gitattributes': 't1 export-ignore\n',
@@ -426,7 +426,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-ignore interop', () => {
     });
 
     describe('When .git/info/attributes names a file', () => {
-      it('Then the file is omitted and its directory is emitted (E14)', async () => {
+      it('Then the file is omitted and its directory is emitted', async () => {
         // Arrange
         const dir = await makeRepo('e14', { 'g/x': '1', k: '2' });
         writeFileSync(path.join(dir, '.git', 'info', 'attributes'), 'g/x export-ignore\n');
@@ -437,7 +437,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-ignore interop', () => {
     });
 
     describe('When the repository is a bare clone', () => {
-      it('Then the committed .gitattributes applies (E15)', async () => {
+      it('Then the committed .gitattributes applies', async () => {
         // Arrange
         const dir = await makeRepo('e15', {
           '.gitattributes': 't1 export-ignore\n',
@@ -459,7 +459,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-ignore interop', () => {
     });
 
     describe('When the treeish is a tree id', () => {
-      it('Then the tree attributes apply (E16)', async () => {
+      it('Then the tree attributes apply', async () => {
         // Arrange
         const dir = await makeRepo('e16', {
           '.gitattributes': 't1 export-ignore\n',
@@ -474,7 +474,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-ignore interop', () => {
     });
 
     describe('When a nested .gitattributes is committed as a symlink', () => {
-      it('Then its rules are not read (E17)', async () => {
+      it('Then its rules are not read', async () => {
         // Arrange
         const dir = await makeRepo('e17', {
           'rules.txt': 'q export-ignore\n',
@@ -490,7 +490,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-ignore interop', () => {
 
   describe('Given a path argument naming an ignored file', () => {
     describe('When git archives it', () => {
-      it('Then git emits an empty archive, which tsgit has no pathspec to reproduce (E12)', async () => {
+      it('Then git emits an empty archive, which tsgit has no pathspec to reproduce', async () => {
         // Arrange
         const dir = await makeRepo('e12', { '.gitattributes': 't1 export-ignore\n', t1: '1' });
 
@@ -812,7 +812,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-subst interop', () => {
     });
   });
 
-  describe('Given $Format: occurrences with unusual terminators (S1–S3)', () => {
+  describe('Given $Format: occurrences with unusual terminators', () => {
     describe('When the commit is archived', () => {
       it('Then the first later $ terminates, a missing one keeps the tail, a NUL ends the format', async () => {
         // Arrange
@@ -833,7 +833,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-subst interop', () => {
     });
   });
 
-  describe('Given export-subst on a binary blob, a symlink and a big file (S4–S6)', () => {
+  describe('Given export-subst on a binary blob, a symlink and a big file', () => {
     describe('When the commit is archived', () => {
       it('Then the binary and the big file expand and the symlink target stays verbatim', async () => {
         // Arrange
@@ -878,7 +878,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-subst interop', () => {
     });
   });
 
-  describe('Given %(describe) in two files (S8, S11)', () => {
+  describe('Given %(describe) in two files', () => {
     describe('When the repository has no tag', () => {
       it('Then the first file spends the budget on an empty describe and the second stays literal', async () => {
         // Arrange
@@ -1141,7 +1141,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-subst interop', () => {
       });
     });
   });
-  describe('Given a commit signed with a canned OpenPGP signature (S14, S15)', () => {
+  describe('Given a commit signed with a canned OpenPGP signature', () => {
     const FORMAT = '[$Format:%G?|%GG|%GS|%GK|%GF|%GP|%GT$]';
     const signedRepo = async (slug: string): Promise<string> => {
       const dir = await makeSubstRepo(slug, { f: FORMAT });

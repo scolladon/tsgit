@@ -1280,13 +1280,13 @@ describe('Given the index git wrote for a three-blob pack', () => {
   describe("When the rebuilt index is compared with git's file", () => {
     it("Then it carries git's own .idx checksum", () => {
       // Arrange
-      const sut = gitIndexBytes;
+      const rebuilt = gitIndexBytes();
 
       // Act
-      const result = sut();
+      const result = bytesToHex(rebuilt.subarray(rebuilt.length - DIGEST_LENGTH));
 
       // Assert
-      expect(bytesToHex(result.subarray(result.length - DIGEST_LENGTH))).toBe(GIT_IDX_CHECKSUM);
+      expect(result).toBe(GIT_IDX_CHECKSUM);
     });
   });
 

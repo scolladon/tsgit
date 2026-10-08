@@ -2786,7 +2786,6 @@ describe('computeClosure — bitmap search across object sources', () => {
         // Assert
         expect(result).toBe(refusal);
         expect(midxSpy).not.toHaveBeenCalled();
-        vi.restoreAllMocks();
       });
     });
   });

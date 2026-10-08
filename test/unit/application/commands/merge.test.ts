@@ -4930,7 +4930,7 @@ describe('merge default message', () => {
       await seedRef(ctx, 'refs/tags/st' as RefName, tag, { reflogMessage: 'seed' });
     };
 
-    /** A verifier that reports `report` on the stderr file the command line redirects to. */
+    /** A verifier that fails, reporting `report` on the stderr the runner captures. */
     const reportingRunner = (report: string, commands: string[]): CommandRunner => ({
       run: async (request) => {
         commands.push(request.command);

@@ -553,8 +553,16 @@ describe('applyDirectoryRenames cleanliness', () => {
 });
 
 describe('applyDirectoryRenames scanning', () => {
+  const ITERATIONS = ['keys', 'values', 'entries', 'forEach', Symbol.iterator] as const;
+
+  /** Per tree, a count of every way its entries can be iterated, read once the act is done. */
   const scanCounters = (...trees: ReadonlyArray<FlatTree>) =>
-    trees.map((flat) => vi.spyOn(flat.entries as Map<FilePath, unknown>, 'keys'));
+    trees.map((flat) => {
+      const spies = ITERATIONS.map((method) =>
+        vi.spyOn(flat.entries as Map<FilePath, unknown>, method),
+      );
+      return { scans: () => spies.reduce((total, spy) => total + spy.mock.calls.length, 0) };
+    });
 
   describe('Given neither side renamed a file', () => {
     describe('When the directory renames are applied', () => {
@@ -569,7 +577,7 @@ describe('applyDirectoryRenames scanning', () => {
         const result = sut(base, ours, theirs, renames);
 
         // Assert
-        expect(counters.map((counter) => counter.mock.calls.length)).toEqual([0, 0, 0]);
+        expect(counters.map((counter) => counter.scans())).toEqual([0, 0, 0]);
         expect(result).toEqual({
           ours,
           theirs,
@@ -585,7 +593,7 @@ describe('applyDirectoryRenames scanning', () => {
 
   describe('Given theirs renamed a directory ours added a file into', () => {
     describe('When the directory renames are applied', () => {
-      it('Then each tree is scanned for its directories and additions once', () => {
+      it('Then each tree is scanned for its directories and additions once, and ours once more to move its file', () => {
         // Arrange
         const [base, ours, theirs] = [tree('dir/a', 'dir/b', 'x'), ADDED_IN_DIR, MOVED];
         const counters = scanCounters(base, ours, theirs);
@@ -596,7 +604,7 @@ describe('applyDirectoryRenames scanning', () => {
         const result = sut(base, ours, theirs, renames);
 
         // Assert
-        expect(counters.map((counter) => counter.mock.calls.length)).toEqual([1, 2, 2]);
+        expect(counters.map((counter) => counter.scans())).toEqual([1, 3, 2]);
         expect(paths(result.ours)).toEqual(['dir/a', 'dir/b', 'newdir/c', 'x']);
       });
     });

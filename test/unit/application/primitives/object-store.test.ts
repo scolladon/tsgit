@@ -22,6 +22,8 @@ import type { AlternatePathProbe } from '../../../../src/ports/object-source-acc
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const PRIMARY = '/repo/.git/objects';
 const LIST = `${PRIMARY}/info/alternates`;
+/** Generous: the overlap is decided by the first registry's release, not by this clock. */
+const OVERLAP_WAIT_MS = 5_000;
 
 const contextWithAlternates = (text?: string): Context =>
   createMemoryContext({ files: text === undefined ? {} : { [LIST]: encode(text) } });
@@ -118,7 +120,9 @@ describe('getObjectStore', () => {
         // Act
         const pending = sut(ctx);
         const overlapped = await vi
-          .waitFor(() => expect(built).toContain('/repo/b/objects'), { timeout: 200 })
+          .waitFor(() => expect(built).toContain('/repo/b/objects'), {
+            timeout: OVERLAP_WAIT_MS,
+          })
           .then(() => true)
           .catch(() => false);
         release();
