@@ -4,7 +4,8 @@
 // - `*` matches any run except `/` — i.e. one path segment.
 // - `**` matches any run including `/` — any number of segments. When
 //  followed by `/`, the `/` is absorbed so `**/` spans zero or more whole
-//  `<segment>/` runs.
+//  `<segment>/` runs. Under `pathname` (gitignore, gitattributes, sparse) a
+//  star run does so only as a whole path component; elsewhere it is a `*`.
 // - `?` matches exactly one non-`/` character.
 //
 // A pattern compiles to a LINEAR, non-backtracking matcher: it is tokenised
@@ -27,6 +28,13 @@ export interface CompileGlobOptions {
    * `compilePathspec` for literal-as-directory semantics.
    */
   readonly withDirSuffix?: boolean;
+  /**
+   * git's WM_PATHNAME matching, used by gitignore, gitattributes and sparse
+   * rules: a run of stars spans `/` only as a whole path component — preceded
+   * by the pattern start or `/` and followed by the end or `/`. Any other run
+   * (`a**b`, `d/**b`) is a single `*`.
+   */
+  readonly pathname?: boolean;
 }
 
 /** A compiled glob — `test` reports whether a path matches the pattern. */
@@ -50,29 +58,55 @@ interface ScannedToken {
 // `(^|.*/)` — the unanchored prefix — is exactly `(.*/)?`, i.e. one `star-slash`.
 const PREFIX_TOKEN: GlobToken = { kind: 'star-slash' };
 
+const STAR = '*';
+const SEPARATOR = '/';
+const STAR_TOKEN: GlobToken = { kind: 'star' };
+
 const scanStar = (pattern: string, i: number): ScannedToken => {
-  if (pattern[i + 1] !== '*') {
-    return { token: { kind: 'star' }, next: i + 1 };
+  if (pattern[i + 1] !== STAR) {
+    return { token: STAR_TOKEN, next: i + 1 };
   }
   const after = i + 2;
-  if (pattern[after] === '/') {
+  if (pattern[after] === SEPARATOR) {
     return { token: { kind: 'star-slash' }, next: after + 1 };
   }
   return { token: { kind: 'star-star' }, next: after };
 };
 
-const scanToken = (pattern: string, i: number): ScannedToken => {
+const endOfStarRun = (pattern: string, start: number): number => {
+  let end = start;
+  while (pattern[end] === STAR) end += 1;
+  return end;
+};
+
+const isWholeComponent = (pattern: string, start: number, end: number): boolean =>
+  (start === 0 || pattern[start - 1] === SEPARATOR) &&
+  (end === pattern.length || pattern[end] === SEPARATOR);
+
+// git's wildmatch under WM_PATHNAME: the whole star run is one token, and only
+// a run of two or more forming a whole path component may cross a `/`.
+const scanPathnameStar = (pattern: string, i: number): ScannedToken => {
+  const end = endOfStarRun(pattern, i);
+  const spansDirectories = end - i > 1 && isWholeComponent(pattern, i, end);
+  if (!spansDirectories) return { token: STAR_TOKEN, next: end };
+  if (pattern[end] === SEPARATOR) return { token: { kind: 'star-slash' }, next: end + 1 };
+  return { token: { kind: 'star-star' }, next: end };
+};
+
+const scanToken = (pattern: string, i: number, options: CompileGlobOptions): ScannedToken => {
   const ch = pattern[i] as string;
-  if (ch === '*') return scanStar(pattern, i);
+  if (ch === STAR) {
+    return options.pathname === true ? scanPathnameStar(pattern, i) : scanStar(pattern, i);
+  }
   if (ch === '?') return { token: { kind: 'single' }, next: i + 1 };
   return { token: { kind: 'literal', char: ch }, next: i + 1 };
 };
 
-const tokenize = (pattern: string): GlobToken[] => {
+const tokenize = (pattern: string, options: CompileGlobOptions): GlobToken[] => {
   const tokens: GlobToken[] = [];
   let i = 0;
   while (i < pattern.length) {
-    const scanned = scanToken(pattern, i);
+    const scanned = scanToken(pattern, i, options);
     tokens.push(scanned.token);
     i = scanned.next;
   }
@@ -186,7 +220,7 @@ const matchTokens = (
 };
 
 export const compileGlob = (pattern: string, options: CompileGlobOptions): GlobMatcher => {
-  const tokens = tokenize(pattern);
+  const tokens = tokenize(pattern, options);
   return { test: (path: string): boolean => matchTokens(tokens, options, path) };
 };
 
