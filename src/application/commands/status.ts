@@ -6,6 +6,7 @@ import {
   type DiffChange,
   diffIndexAgainstTree,
   type FlatTree,
+  type GroupedIndex,
   groupUnmergedEntries,
   type UnmergedEntryGroup,
 } from '../../domain/diff/index.js';
@@ -132,49 +133,89 @@ const statusInScope = async (ctx: Context): Promise<StatusResult> => {
   // Promisor-remote guard (see assertValidPromisorRemoteConfig) — loaded up front.
   await assertValidPromisorRemoteConfig(ctx);
   const head = await readHeadRaw(ctx);
-  const branch = branchRefFromHead(head);
-  const detached = head.kind === 'direct';
   // `readIndex` returns an empty index when the file is absent (fresh/unborn
   // repo); a thrown error means a corrupt index, which we let propagate rather
   // than fabricate an empty one — fabricating it would report every HEAD path as
   // a spurious staged deletion (git errors on a corrupt index too).
   const index = await readIndex(ctx);
-  // Partition the index into the stage-0 (tracked) entries and the unmerged
-  // (stage 1/2/3) groups. A conflicted path has no stage-0 entry, so it is
-  // reported only under the unmerged column.
+  const tracked = trackedEntriesOf(index);
+  ctx.progress.start(STATUS_SCAN_OP);
+  try {
+    const scanned = await scanStatusTree(ctx, index, tracked);
+    const report = await reportStatus(ctx, { index, tracked, scanned, workDir });
+    return { branch: branchRefFromHead(head), detached: head.kind === 'direct', ...report };
+  } finally {
+    ctx.progress.end(STATUS_SCAN_OP);
+  }
+};
+
+/** The index's tracked entries: stage 0 by path, the unmerged groups, and every tracked path. */
+interface TrackedEntries {
+  readonly grouped: GroupedIndex;
+  readonly stage0Map: ReadonlyMap<FilePath, IndexEntry>;
+  readonly trackedPaths: ReadonlySet<FilePath>;
+}
+
+/** Partition the index into the stage-0 (tracked) entries and the unmerged
+ *  (stage 1/2/3) groups. A conflicted path has no stage-0 entry, so it is
+ *  reported only under the unmerged column. */
+const trackedEntriesOf = (index: GitIndex): TrackedEntries => {
   const grouped = groupUnmergedEntries(index);
   const stage0Map = new Map<FilePath, IndexEntry>(
     grouped.staged.map((entry) => [entry.path, entry]),
   );
   const trackedPaths = new Set<FilePath>(grouped.unmerged.keys());
   for (const path of stage0Map.keys()) trackedPaths.add(path);
-  ctx.progress.start(STATUS_SCAN_OP);
-  try {
-    const tracker = createGranularityTracker(ctx.progress, STATUS_SCAN_OP, STATUS_SCAN_GRANULARITY);
-    // Build the attribute provider once per status invocation when a command
-    // runner is wired. When absent, the provider is undefined and every
-    // compareWorkingTreeDelta call takes the raw-bytes path.
-    const provider = await maybeBuildAttributeProvider(ctx);
-    const workingMap = await scanWorkingTree(
-      ctx,
-      grouped.staged,
-      tracker,
-      provider,
-      index.indexMtime,
-    );
-    const untracked = await scanUntracked(ctx, trackedPaths);
-    // git's status names HEAD through `get_oid`, warning on an ambiguous HEAD
-    // and refusing a malformed core.warnAmbiguousRefs once HEAD resolves.
-    await resolveRevisionName(ctx, HEAD_NAME);
-    const headTree = await readHeadTree(ctx);
-    const stagedKindMap = collectStagedKinds(index, headTree, grouped.unmerged);
-    const changes = buildChanges(stagedKindMap, workingMap, headTree, stage0Map);
-    const unmerged = await buildUnmergedEntries(ctx, grouped.unmerged, workDir);
-    const clean = changes.length === 0 && untracked.length === 0 && unmerged.length === 0;
-    return { branch, detached, changes, untracked, unmerged, clean };
-  } finally {
-    ctx.progress.end(STATUS_SCAN_OP);
-  }
+  return { grouped, stage0Map, trackedPaths };
+};
+
+/** What the working tree holds: every tracked file's delta, and the untracked paths. */
+interface ScannedTree {
+  readonly workingMap: Map<FilePath, WorkingTreeDelta>;
+  readonly untracked: ReadonlyArray<FilePath>;
+}
+
+/** Build the attribute provider once per status invocation when a command
+ *  runner is wired. When absent, the provider is undefined and every
+ *  compareWorkingTreeDelta call takes the raw-bytes path. */
+const scanStatusTree = async (
+  ctx: Context,
+  index: GitIndex,
+  tracked: TrackedEntries,
+): Promise<ScannedTree> => {
+  const tracker = createGranularityTracker(ctx.progress, STATUS_SCAN_OP, STATUS_SCAN_GRANULARITY);
+  const provider = await maybeBuildAttributeProvider(ctx);
+  const { staged } = tracked.grouped;
+  const workingMap = await scanWorkingTree(ctx, staged, tracker, provider, index.indexMtime);
+  const untracked = await scanUntracked(ctx, tracked.trackedPaths);
+  return { workingMap, untracked };
+};
+
+/** git's status names HEAD through `get_oid`, warning on an ambiguous HEAD and
+ *  refusing a malformed core.warnAmbiguousRefs once HEAD resolves. */
+const reportStatus = async (
+  ctx: Context,
+  {
+    index,
+    tracked,
+    scanned,
+    workDir,
+  }: {
+    readonly index: GitIndex;
+    readonly tracked: TrackedEntries;
+    readonly scanned: ScannedTree;
+    readonly workDir: string;
+  },
+): Promise<Omit<StatusResult, 'branch' | 'detached'>> => {
+  await resolveRevisionName(ctx, HEAD_NAME);
+  const headTree = await readHeadTree(ctx);
+  const { unmerged: groups } = tracked.grouped;
+  const stagedKindMap = collectStagedKinds(index, headTree, groups);
+  const changes = buildChanges(stagedKindMap, scanned.workingMap, headTree, tracked.stage0Map);
+  const unmerged = await buildUnmergedEntries(ctx, groups, workDir);
+  const { untracked } = scanned;
+  const clean = changes.length === 0 && untracked.length === 0 && unmerged.length === 0;
+  return { changes, untracked, unmerged, clean };
 };
 
 /**
@@ -228,6 +269,12 @@ const scanWorkingTree = async (
           for (const entry of stage0) order.enlist(entry.path);
           return scan(order);
         });
+  return deltaMapOf(results);
+};
+
+const deltaMapOf = (
+  results: ReadonlyArray<readonly [FilePath, WorkingTreeDelta] | undefined>,
+): Map<FilePath, WorkingTreeDelta> => {
   const map = new Map<FilePath, WorkingTreeDelta>();
   for (const result of results) {
     if (result !== undefined) map.set(...result);
