@@ -274,6 +274,30 @@ describe('getObjectStore', () => {
     });
   });
 
+  describe("Given unusable entries in the primary's list and in a held alternate's list", () => {
+    describe('When refresh then getObjectStore', () => {
+      it("Then the held alternate's diagnostics survive, ahead of the primary's reported once", async () => {
+        // Arrange
+        const ctx = contextWithAlternates('/repo/a/objects\n/repo/gone/objects\n');
+        await ctx.fs.mkdir('/repo/a/objects');
+        await ctx.fs.writeUtf8('/repo/a/objects/info/alternates', '/repo/missing/objects\n');
+        const sut = getObjectStore;
+        const store = await sut(ctx);
+        const unusable = (diagnostics: typeof store.diagnostics) =>
+          diagnostics.map(({ path, listedIn }) => ({ path, listedIn }));
+        const nested = { path: '/repo/missing/objects', listedIn: '/repo/a/objects' };
+        const direct = { path: '/repo/gone/objects', listedIn: PRIMARY };
+
+        // Act
+        store.refresh();
+        const result = await sut(ctx);
+
+        // Assert
+        expect(unusable(result.diagnostics)).toEqual([nested, direct]);
+      });
+    });
+  });
+
   describe('Given core.ignoreCase and a held alternate re-listed in another case', () => {
     const caseFolding = (fs: FileSystem): AlternatePathProbe => ({
       lstat: (path) => fs.lstat(path.toLowerCase()),

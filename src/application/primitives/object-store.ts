@@ -161,14 +161,26 @@ interface StoreState {
   inflight: Promise<void> | undefined;
 }
 
+/**
+ * A held alternate's list is never read again, so what it reported stays true; the
+ * primary's list is re-read and reports afresh.
+ */
+const heldAlternateDiagnostics = (state: StoreState): ReadonlyArray<AlternateDiagnostic> => {
+  const heldAlternates = new Set(
+    state.sources.filter((source) => !source.local).map((source) => source.objectsDir),
+  );
+  return state.diagnostics.filter(({ listedIn }) => heldAlternates.has(listedIn));
+};
+
 /** Add-only: a source already held keeps its registry even when the list no longer names it. */
 const appendDiscovered = async (ctx: Context, state: StoreState): Promise<void> => {
   const [primary] = state.sources as readonly [ObjectSource, ...ObjectSource[]];
   const held = state.sources.map((source) => source.objectsDir);
   const found = await discover(ctx, primary.objectsDir, held);
   const added = await buildAlternates(ctx, found.alternates);
+  const kept = heldAlternateDiagnostics(state);
   state.sources = [...state.sources, ...added];
-  state.diagnostics = found.diagnostics;
+  state.diagnostics = [...kept, ...found.diagnostics];
 };
 
 const storeOver = (state: StoreState, bigFileThreshold: number): ObjectStore => {
