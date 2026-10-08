@@ -113,69 +113,85 @@ const withoutCapability = (filter: RunningFilter, capability: string): RunningFi
   capabilities: new Set([...filter.capabilities].filter((name) => name !== capability)),
 });
 
+/** The pool's running filters — git keys `subprocess_map` by the driver's command — and its turn queue. */
+interface PoolState {
+  readonly running: Map<string, RunningFilter>;
+  queue: Promise<unknown>;
+}
+
+/** One path's conversion request. */
+interface ConvertRequest {
+  readonly ctx: Context;
+  readonly runner: CommandRunner;
+  readonly command: string;
+  readonly conversation: FilterConversation;
+}
+
 const createFilterProcessPool = (): FilterProcessPool => {
-  // git keys `subprocess_map` by the driver's command.
-  const running = new Map<string, RunningFilter>();
-  let queue: Promise<unknown> = Promise.resolve();
-
-  const runningFilter = async (
-    ctx: Context,
-    runner: CommandRunner,
-    command: string,
-    handshake: FilterHandshake,
-  ): Promise<Started> => {
-    const open = running.get(command);
-    if (open !== undefined) return { filter: open };
-    const started = await startFilter(ctx, runner, command, handshake);
-    if ('filter' in started) running.set(command, started.filter);
-    return started;
+  const state: PoolState = { running: new Map(), queue: Promise.resolve() };
+  return {
+    convert: (ctx, runner, command, conversation) =>
+      convertInTurn(state, { ctx, runner, command, conversation }),
+    close: () => closePool(state),
   };
+};
 
-  const settle = async (
-    key: string,
-    filter: RunningFilter,
-    conversation: FilterConversation,
-  ): Promise<FilterProcessOutcome> => {
-    // A rejected write or an undecodable frame is the protocol breaking —
-    // git's `handle_filter_error` stops the process, as `broken` does here.
-    const exchanged = await conversation.exchange(filter).catch(() => BROKEN);
-    if (exchanged.kind === 'converted') return { ok: true, bytes: exchanged.bytes };
-    if (exchanged.kind === 'error') return FAILED;
-    if (exchanged.kind === 'abort') {
-      running.set(key, withoutCapability(filter, conversation.capability));
-      return FAILED;
-    }
-    running.delete(key);
-    return stoppedOutcome(filter.child);
-  };
+const runningFilter = async (
+  state: PoolState,
+  { ctx, runner, command, conversation }: ConvertRequest,
+): Promise<Started> => {
+  const open = state.running.get(command);
+  if (open !== undefined) return { filter: open };
+  const started = await startFilter(ctx, runner, command, conversation.handshake);
+  if ('filter' in started) state.running.set(command, started.filter);
+  return started;
+};
 
-  const convertNow = async (
-    ctx: Context,
-    runner: CommandRunner,
-    command: string,
-    conversation: FilterConversation,
-  ): Promise<FilterProcessOutcome> => {
-    const started = await runningFilter(ctx, runner, command, conversation.handshake);
-    if ('failure' in started) return started.failure;
-    if (!started.filter.capabilities.has(conversation.capability)) return FAILED;
-    return settle(command, started.filter, conversation);
-  };
+const settle = async (
+  state: PoolState,
+  key: string,
+  filter: RunningFilter,
+  conversation: FilterConversation,
+): Promise<FilterProcessOutcome> => {
+  // A rejected write or an undecodable frame is the protocol breaking —
+  // git's `handle_filter_error` stops the process, as `broken` does here.
+  const exchanged = await conversation.exchange(filter).catch(() => BROKEN);
+  if (exchanged.kind === 'converted') return { ok: true, bytes: exchanged.bytes };
+  if (exchanged.kind === 'error') return FAILED;
+  if (exchanged.kind === 'abort') {
+    state.running.set(key, withoutCapability(filter, conversation.capability));
+    return FAILED;
+  }
+  state.running.delete(key);
+  return stoppedOutcome(filter.child);
+};
 
-  // git converts one path at a time; a process speaks to one request at a time.
-  const convert: FilterProcessPool['convert'] = (ctx, runner, command, conversation) => {
-    const turn = queue.then(() => convertNow(ctx, runner, command, conversation));
-    queue = turn.catch(() => undefined);
-    return turn;
-  };
+const convertNow = async (
+  state: PoolState,
+  request: ConvertRequest,
+): Promise<FilterProcessOutcome> => {
+  const { conversation } = request;
+  const started = await runningFilter(state, request);
+  if ('failure' in started) return started.failure;
+  if (!started.filter.capabilities.has(conversation.capability)) return FAILED;
+  return settle(state, request.command, started.filter, conversation);
+};
 
-  const close = async (): Promise<void> => {
-    await queue;
-    const filters = [...running.values()];
-    running.clear();
-    await Promise.all(filters.map((filter) => filter.child.close()));
-  };
+/** git converts one path at a time; a process speaks to one request at a time. */
+const convertInTurn = (
+  state: PoolState,
+  request: ConvertRequest,
+): Promise<FilterProcessOutcome> => {
+  const turn = state.queue.then(() => convertNow(state, request));
+  state.queue = turn.catch(() => undefined);
+  return turn;
+};
 
-  return { convert, close };
+const closePool = async (state: PoolState): Promise<void> => {
+  await state.queue;
+  const filters = [...state.running.values()];
+  state.running.clear();
+  await Promise.all(filters.map((filter) => filter.child.close()));
 };
 
 /** A pool and how many scopes on its Context still use it. */

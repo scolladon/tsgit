@@ -29,8 +29,9 @@ import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
 import { applyCleanFilter } from '../primitives/internal/apply-clean-filter.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
-import { withCleanOrder } from '../primitives/internal/clean-order.js';
+import { type CleanOrder, withCleanOrder } from '../primitives/internal/clean-order.js';
 import { limiterFor } from '../primitives/internal/concurrency.js';
+import type { ConcurrencyLimiter } from '../primitives/internal/concurrency-limiter.js';
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import { type IndexMtime, isEntryStatClean } from '../primitives/internal/is-entry-stat-clean.js';
@@ -165,31 +166,48 @@ const addLiteralOnly = async (
   const lock = await acquireIndexLock(ctx);
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
-    const { entries: existing, indexMtime } = await readExistingEntries(ctx);
-    const newEntries = new Map<FilePath, IndexEntry>(existing);
-    const added: FilePath[] = [];
-    const modified: FilePath[] = [];
-    // git stages — and cleans — in index order, whatever order the paths came in.
-    for (const path of [...validated].sort(comparePaths)) {
-      const result = await stageOne(
-        ctx,
-        path,
-        provider,
-        existing.get(path),
-        indexMtime,
-        ensurePromisorConfigValid,
-      );
-      if (result === 'missing') throw pathspecNoMatch(path);
-      const previous = existing.get(path);
-      newEntries.set(path, result);
-      if (previous === undefined) added.push(path);
-      else if (previous.id !== result.id || previous.mode !== result.mode) modified.push(path);
-    }
+    const state = await readExistingEntries(ctx);
+    const staging = { ctx, provider, ...state, ensurePromisorConfigValid };
+    const { newEntries, added, modified } = await stageLiterals(staging, validated);
     await lock.commit(Array.from(newEntries.values()));
     return { added, modified, removed: [] };
   } finally {
     await lock.release();
   }
+};
+
+/** What every path is staged against: the index as read, and the add's attributes and guard. */
+interface Staging {
+  readonly ctx: Context;
+  readonly provider: AttributeProvider | undefined;
+  readonly entries: ReadonlyMap<FilePath, IndexEntry>;
+  readonly indexMtime: IndexMtime | undefined;
+  readonly ensurePromisorConfigValid: PromisorGuard;
+}
+
+/** git stages — and cleans — in index order, whatever order the paths came in. */
+const stageLiterals = async (
+  staging: Staging,
+  validated: ReadonlyArray<FilePath>,
+): Promise<{
+  readonly newEntries: ReadonlyMap<FilePath, IndexEntry>;
+  readonly added: ReadonlyArray<FilePath>;
+  readonly modified: ReadonlyArray<FilePath>;
+}> => {
+  const { ctx, provider, entries: existing, indexMtime } = staging;
+  const newEntries = new Map<FilePath, IndexEntry>(existing);
+  const added: FilePath[] = [];
+  const modified: FilePath[] = [];
+  for (const path of [...validated].sort(comparePaths)) {
+    const previous = existing.get(path);
+    const guard = staging.ensurePromisorConfigValid;
+    const result = await stageOne(ctx, path, provider, previous, indexMtime, guard);
+    if (result === 'missing') throw pathspecNoMatch(path);
+    newEntries.set(path, result);
+    if (previous === undefined) added.push(path);
+    else if (previous.id !== result.id || previous.mode !== result.mode) modified.push(path);
+  }
+  return { newEntries, added, modified };
 };
 
 const allLiteralsAreFiles = async (
@@ -251,50 +269,81 @@ const stageWalkedEntries = async (
   indexMtime: IndexMtime | undefined,
   ensurePromisorConfigValid: PromisorGuard,
 ): Promise<WalkOutcome[]> => {
-  const limiter = limiterFor(ctx, 'ioBound');
-  const outcomes: WalkOutcome[] = [];
-  const pending: Promise<void>[] = [];
-  let firstError: { readonly error: unknown; readonly ordinal: number } | undefined;
-  // A clean driver hears the paths in walk order, however the reads race.
-  await withCleanOrder(ctx, async (order) => {
-    const dispatch = (walkEntry: WalkWorkingTreeEntry, ordinal: number): void => {
-      order.enlist(walkEntry.path);
-      pending.push(
-        limiter
-          .run(() =>
-            processWalkEntry(
-              ctx,
-              walkEntry,
-              existing,
-              seen,
-              provider,
-              indexMtime,
-              ensurePromisorConfigValid,
-            ),
-          )
-          .then(
-            (outcome) => {
-              if (outcome !== undefined) outcomes.push(outcome);
-            },
-            (error: unknown) => {
-              // Stryker disable next-line EqualityOperator: equivalent — `ordinal` is a distinct integer per dispatch() call (assigned via a single monotonically-incrementing `ordinal++` in the walk loop), so `ordinal === firstError.ordinal` can only be true when this IS the entry that already set firstError — impossible, since a settled promise's rejection handler runs at most once; `<=` and `<` are therefore indistinguishable at every reachable call (full add.test.ts suite, incl. the earliest-walked-path race tests, passes unmutated).
-              if (firstError === undefined || ordinal < firstError.ordinal) {
-                firstError = { error, ordinal };
-              }
-            },
-          )
-          .finally(() => order.release(walkEntry.path)),
-      );
-    };
+  const stage = (walkEntry: WalkWorkingTreeEntry): Promise<WalkOutcome | undefined> =>
+    processWalkEntry(
+      ctx,
+      walkEntry,
+      existing,
+      seen,
+      provider,
+      indexMtime,
+      ensurePromisorConfigValid,
+    );
+  const walked: WalkStaging = { outcomes: [], pending: [], firstError: undefined };
+  await dispatchInCleanOrder(ctx, walk, stage, walked);
+  if (walked.firstError !== undefined) throw walked.firstError.error;
+  return walked.outcomes;
+};
+
+/** A clean driver hears the paths in walk order, however the reads race. */
+const dispatchInCleanOrder = (
+  ctx: Context,
+  walk: AsyncIterable<WalkWorkingTreeEntry>,
+  stage: (walkEntry: WalkWorkingTreeEntry) => Promise<WalkOutcome | undefined>,
+  walked: WalkStaging,
+): Promise<void> =>
+  withCleanOrder(ctx, async (order) => {
+    const dispatcher = { limiter: limiterFor(ctx, 'ioBound'), order, stage, walked };
     try {
       let ordinal = 0;
-      for await (const walkEntry of walk) dispatch(walkEntry, ordinal++);
+      for await (const walkEntry of walk) dispatchWalkEntry(dispatcher, walkEntry, ordinal++);
     } finally {
-      await Promise.all(pending);
+      await Promise.all(walked.pending);
     }
   });
-  if (firstError !== undefined) throw firstError.error;
-  return outcomes;
+
+/** What the walk staged so far, and the earliest-walked entry's failure. */
+interface WalkStaging {
+  readonly outcomes: WalkOutcome[];
+  readonly pending: Promise<void>[];
+  firstError: { readonly error: unknown; readonly ordinal: number } | undefined;
+}
+
+/** Stage one walked entry under the limiter, releasing its clean turn whatever the outcome. */
+const dispatchWalkEntry = (
+  {
+    limiter,
+    order,
+    stage,
+    walked,
+  }: {
+    readonly limiter: ConcurrencyLimiter;
+    readonly order: CleanOrder;
+    readonly stage: (walkEntry: WalkWorkingTreeEntry) => Promise<WalkOutcome | undefined>;
+    readonly walked: WalkStaging;
+  },
+  walkEntry: WalkWorkingTreeEntry,
+  ordinal: number,
+): void => {
+  order.enlist(walkEntry.path);
+  walked.pending.push(
+    limiter
+      .run(() => stage(walkEntry))
+      .then(
+        (outcome) => {
+          if (outcome !== undefined) walked.outcomes.push(outcome);
+        },
+        (error: unknown) => keepEarliestError(walked, error, ordinal),
+      )
+      .finally(() => order.release(walkEntry.path)),
+  );
+};
+
+const keepEarliestError = (walked: WalkStaging, error: unknown, ordinal: number): void => {
+  // Stryker disable next-line EqualityOperator: equivalent — `ordinal` is a distinct integer per dispatch() call (assigned via a single monotonically-incrementing `ordinal++` in the walk loop), so `ordinal === firstError.ordinal` can only be true when this IS the entry that already set firstError — impossible, since a settled promise's rejection handler runs at most once; `<=` and `<` are therefore indistinguishable at every reachable call (full add.test.ts suite, incl. the earliest-walked-path race tests, passes unmutated).
+  if (walked.firstError === undefined || ordinal < walked.firstError.ordinal) {
+    walked.firstError = { error, ordinal };
+  }
 };
 
 // Walk-and-filter add: applies `.gitignore` (so build artefacts stay
@@ -307,49 +356,78 @@ const addByPathspec = async (
   { matcher, literalMustMatch, literalSpellings }: ResolvedPathspec,
   provider: AttributeProvider | undefined,
 ): Promise<AddResult> => {
-  const ignore = await buildRepoIgnorePredicate(ctx);
-  const combinedIgnore: IgnorePredicate = async (path, isDirectory) => {
+  const combinedIgnore = withPathspec(await buildRepoIgnorePredicate(ctx), matcher);
+  const lock = await acquireIndexLock(ctx);
+  const ensurePromisorConfigValid = createPromisorGuard(ctx);
+  try {
+    const staged = await stageIgnoredWalk(ctx, combinedIgnore, provider, ensurePromisorConfigValid);
+    const { newEntries, matched, added, modified } = tallyWalkOutcomes(
+      staged.existing,
+      staged.outcomes,
+    );
+    // git add never refuses the whole tree, even when it holds nothing to add.
+    const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
+    enforceLiteralMustMatch(mustMatch, matched, literalSpellings);
+    await lock.commit(Array.from(newEntries.values()));
+    return { added: [...added].sort(), modified: [...modified].sort(), removed: [] };
+  } finally {
+    await lock.release();
+  }
+};
+
+/** Read the index, then stage every walked entry `ignore` keeps. */
+const stageIgnoredWalk = async (
+  ctx: Context,
+  ignore: IgnorePredicate,
+  provider: AttributeProvider | undefined,
+  ensurePromisorConfigValid: PromisorGuard,
+): Promise<{
+  readonly existing: ReadonlyMap<FilePath, IndexEntry>;
+  readonly outcomes: ReadonlyArray<WalkOutcome>;
+}> => {
+  const { entries: existing, indexMtime } = await readExistingEntries(ctx);
+  const outcomes = await stageWalkedEntries(
+    ctx,
+    walkWorkingTree(ctx, { ignore }),
+    existing,
+    new Set<FilePath>(),
+    provider,
+    indexMtime,
+    ensurePromisorConfigValid,
+  );
+  return { existing, outcomes };
+};
+
+/** `.gitignore` prunes directories and leaves; the pathspec filters leaves only. */
+const withPathspec =
+  (ignore: IgnorePredicate, matcher: ResolvedPathspec['matcher']): IgnorePredicate =>
+  async (path, isDirectory) => {
     if (await ignore(path, isDirectory)) return true;
     if (isDirectory) return false;
     return !matchesPathspec(matcher, path);
   };
-  const lock = await acquireIndexLock(ctx);
-  const ensurePromisorConfigValid = createPromisorGuard(ctx);
-  try {
-    const { entries: existing, indexMtime } = await readExistingEntries(ctx);
-    const newEntries = new Map<FilePath, IndexEntry>(existing);
-    const seen = new Set<FilePath>();
-    const outcomes = await stageWalkedEntries(
-      ctx,
-      walkWorkingTree(ctx, { ignore: combinedIgnore }),
-      existing,
-      seen,
-      provider,
-      indexMtime,
-      ensurePromisorConfigValid,
-    );
-    const matched: FilePath[] = [];
-    const added: FilePath[] = [];
-    const modified: FilePath[] = [];
-    for (const outcome of outcomes) {
-      matched.push(outcome.path);
-      newEntries.set(outcome.path, outcome.entry);
-      if (outcome.kind === 'added') added.push(outcome.path);
-      else if (outcome.kind === 'modified') modified.push(outcome.path);
-    }
-    // git add never refuses the whole tree, even when it holds nothing to add.
-    enforceLiteralMustMatch(
-      literalMustMatch.filter((literal) => !namesWholeTree(literal)),
-      matched,
-      literalSpellings,
-    );
-    added.sort();
-    modified.sort();
-    await lock.commit(Array.from(newEntries.values()));
-    return { added, modified, removed: [] };
-  } finally {
-    await lock.release();
+
+/** The index once every walked outcome is staged, and which paths were matched, added, modified. */
+const tallyWalkOutcomes = (
+  existing: ReadonlyMap<FilePath, IndexEntry>,
+  outcomes: ReadonlyArray<WalkOutcome>,
+): {
+  readonly newEntries: ReadonlyMap<FilePath, IndexEntry>;
+  readonly matched: ReadonlyArray<FilePath>;
+  readonly added: ReadonlyArray<FilePath>;
+  readonly modified: ReadonlyArray<FilePath>;
+} => {
+  const newEntries = new Map<FilePath, IndexEntry>(existing);
+  const matched: FilePath[] = [];
+  const added: FilePath[] = [];
+  const modified: FilePath[] = [];
+  for (const outcome of outcomes) {
+    matched.push(outcome.path);
+    newEntries.set(outcome.path, outcome.entry);
+    if (outcome.kind === 'added') added.push(outcome.path);
+    else if (outcome.kind === 'modified') modified.push(outcome.path);
   }
+  return { newEntries, matched, added, modified };
 };
 
 /**
@@ -538,19 +616,39 @@ const stageFromStat = async (
   indexMtime: IndexMtime | undefined,
   ensurePromisorConfigValid: PromisorGuard,
 ): Promise<IndexEntry> => {
-  // Re-lstat under the index lock to close the TOCTOU window: an attacker
-  // swapping the inode (regular ↔ symlink, file ↔ directory) between `kind`
-  // being observed and our read would otherwise re-route the read through
-  // `ctx.fs.read` (which follows symlinks), break the mode classification, or
-  // trip an opaque adapter error. Abort the whole add on any type flip.
-  // `kind` comes either from a real lstat (`stageOne`) or from the walker's
-  // readdir dirent bits (`processWalkEntry`, spending no lstat to get here) —
-  // for the walked case the reference point is readdir instead of a walk-time
-  // lstat, a marginally wider window of the SAME TOCTOU class; this fresh
-  // lstat remains the sole authority either way.
   // Promisor-remote guard (see createPromisorGuard) — lazy-once per add()
   // invocation, first paid when the write path actually engages.
   await ensurePromisorConfigValid();
+  const fresh = await freshStatOfSameKind(ctx, path, kind);
+  if (previous !== undefined && restagesAsIs(previous, fresh, indexMtime)) return previous;
+  // Authoritative size cap — uses the fresh stat so a grow-between-walk-and-
+  // stage race cannot smuggle an oversize blob past the pre-filter.
+  if (fresh.size > MAX_WORKING_TREE_BLOB_BYTES) {
+    throw workingTreeFileTooLarge(path, fresh.size, MAX_WORKING_TREE_BLOB_BYTES);
+  }
+  const mode: FileMode = deriveWorkingMode(fresh);
+  validateIndexPath(path, NO_PARSER_OFFSET, mode);
+  const id = await writeCleanedBlob(ctx, path, fresh, provider);
+  return indexEntryFromStat(fresh, mode, id, path);
+};
+
+/**
+ * Re-lstat under the index lock to close the TOCTOU window: an attacker
+ * swapping the inode (regular ↔ symlink, file ↔ directory) between `kind`
+ * being observed and our read would otherwise re-route the read through
+ * `ctx.fs.read` (which follows symlinks), break the mode classification, or
+ * trip an opaque adapter error. Abort the whole add on any type flip. `kind`
+ * comes either from a real lstat (`stageOne`) or from the walker's readdir
+ * dirent bits (`processWalkEntry`, spending no lstat to get here) — for the
+ * walked case the reference point is readdir instead of a walk-time lstat, a
+ * marginally wider window of the SAME TOCTOU class; this fresh lstat remains
+ * the sole authority either way.
+ */
+const freshStatOfSameKind = async (
+  ctx: Context,
+  path: FilePath,
+  kind: EntryKind,
+): Promise<FileStat> => {
   const fresh = await ctx.fs.lstat(joinPath(requireWorkTree(ctx, 'add'), path));
   if (
     fresh.isSymbolicLink !== kind.isSymbolicLink ||
@@ -559,50 +657,55 @@ const stageFromStat = async (
   ) {
     throw operationAborted();
   }
-  // `ie_match_stat` short-circuit, as git's add takes it: a stat-clean path
-  // (against the racy-guarded index mtime) whose mode is unchanged is
-  // re-staged as-is — no read, no clean filter, no hash. This is also what
-  // keeps the filter-section validation surface faithful: git only validates
-  // `[filter *].required` when it actually converts, which a stat-clean path
-  // never does.
-  if (
-    previous !== undefined &&
-    indexMtime !== undefined &&
-    // Stryker disable next-line ConditionalExpression: equivalent — deriveWorkingMode never returns FILE_MODE.GITLINK, so the next conjunct (mode match) is unconditionally false whenever previous.mode is GITLINK; forcing this operand's real-false case to `true` can never flip the chain's overall value.
-    previous.mode !== FILE_MODE.GITLINK &&
-    deriveWorkingMode(fresh) === previous.mode &&
-    isEntryStatClean(previous, fresh, indexMtime)
-  ) {
-    return previous;
-  }
-  // Authoritative size cap — uses the fresh stat so a grow-between-walk-and-
-  // stage race cannot smuggle an oversize blob past the pre-filter.
-  if (fresh.size > MAX_WORKING_TREE_BLOB_BYTES) {
-    throw workingTreeFileTooLarge(path, fresh.size, MAX_WORKING_TREE_BLOB_BYTES);
-  }
-  const mode: FileMode = deriveWorkingMode(fresh);
-  // Staging boundary: `.git`-alias (and NTFS/HFS-obscured variants) and a
-  // symlinked `.gitmodules` component must be refused HERE, before either
-  // read arm runs below — the walker (`validateWalkedEntryPath`) deliberately
-  // lets these through so `status` can still list them, exactly as git's own
-  // directory walk does. `validateIndexPath` mirrors git's `verify_path`, so
-  // both the regular-file and symlink arms of `readContent` refuse
-  // identically; the throw here aborts the whole add before any entry is
-  // added to `newEntries`, so the index commit never runs (git's add -A is
-  // all-or-nothing: one hostile path aborts the entire batch).
-  validateIndexPath(path, NO_PARSER_OFFSET, mode);
+  return fresh;
+};
+
+/**
+ * `ie_match_stat` short-circuit, as git's add takes it: a stat-clean path
+ * (against the racy-guarded index mtime) whose mode is unchanged is re-staged
+ * as-is — no read, no clean filter, no hash. This is also what keeps the
+ * filter-section validation surface faithful: git only validates
+ * `[filter *].required` when it actually converts, which a stat-clean path
+ * never does.
+ */
+const restagesAsIs = (
+  previous: IndexEntry,
+  fresh: FileStat,
+  indexMtime: IndexMtime | undefined,
+): boolean =>
+  indexMtime !== undefined &&
+  // Stryker disable next-line ConditionalExpression: equivalent — deriveWorkingMode never returns FILE_MODE.GITLINK, so the next conjunct (mode match) is unconditionally false whenever previous.mode is GITLINK; forcing this operand's real-false case to `true` can never flip the chain's overall value.
+  previous.mode !== FILE_MODE.GITLINK &&
+  deriveWorkingMode(fresh) === previous.mode &&
+  isEntryStatClean(previous, fresh, indexMtime);
+
+/**
+ * The cleaned blob's id, written to the store. Reached only once the staging
+ * boundary passed: `.git`-alias (and NTFS/HFS-obscured variants) and a
+ * symlinked `.gitmodules` component are refused before either read arm runs —
+ * the walker (`validateWalkedEntryPath`) deliberately lets these through so
+ * `status` can still list them, exactly as git's own directory walk does.
+ * `validateIndexPath` mirrors git's `verify_path`, so both the regular-file and
+ * symlink arms of `readContent` refuse identically, and the whole add aborts
+ * before the index commit (git's add -A is all-or-nothing). git's `index_fd`
+ * reads the threshold before hashing a regular file it does not stream
+ * through a required filter.
+ */
+const writeCleanedBlob = async (
+  ctx: Context,
+  path: FilePath,
+  fresh: FileStat,
+  provider: AttributeProvider | undefined,
+): Promise<ObjectId> => {
   const conversion = await cleanConversion(ctx, path, fresh.isSymbolicLink, provider);
-  // git's `index_fd` reads the threshold before hashing a regular file it
-  // does not stream through a required filter.
   if (!fresh.isSymbolicLink && !conversion.streams) await assertBigFileThresholdValid(ctx);
   const raw = await readContent(ctx, path, fresh);
   const bytes = await conversion.apply(raw);
-  const id = (await writeObject(ctx, {
+  return (await writeObject(ctx, {
     type: 'blob',
     id: '' as ObjectId,
     content: bytes,
   })) as ObjectId;
-  return indexEntryFromStat(fresh, mode, id, path);
 };
 
 /** How a path's bytes are cleaned before hashing, and whether git streams them. */

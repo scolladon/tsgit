@@ -25,34 +25,46 @@ const UNORDERED: CleanOrder = { enlist: () => undefined, release: () => undefine
 /** Keyed on the Context object itself, as the filter-process pool is. */
 const sequences = new WeakMap<Context, Sequence>();
 
+/** Every enlisted path's ordinal, which have been released, and who waits on which. */
+interface SequenceState {
+  readonly ordinals: Map<FilePath, number>;
+  readonly released: boolean[];
+  readonly waiters: Map<number, () => void>;
+  /** The lowest ordinal not yet released: the one path free to clean. */
+  next: number;
+}
+
 const createSequence = (): Sequence => {
-  const ordinals = new Map<FilePath, number>();
-  const released: boolean[] = [];
-  const waiters = new Map<number, () => void>();
-  // The lowest ordinal not yet released: the one path free to clean.
-  let next = 0;
-  const advance = (): void => {
-    while (released[next] === true) next += 1;
-    waiters.get(next)?.();
-  };
+  const state: SequenceState = { ordinals: new Map(), released: [], waiters: new Map(), next: 0 };
   return {
-    enlist: (path) => {
-      if (ordinals.has(path)) return;
-      ordinals.set(path, released.length);
-      released.push(false);
-    },
-    release: (path) => {
-      const ordinal = ordinals.get(path);
-      if (ordinal === undefined) return;
-      released[ordinal] = true;
-      advance();
-    },
-    admit: (path) => {
-      const ordinal = ordinals.get(path);
-      if (ordinal === undefined || ordinal <= next) return ADMITTED;
-      return new Promise((resolve) => waiters.set(ordinal, resolve));
-    },
+    enlist: (path) => enlistIn(state, path),
+    release: (path) => releaseIn(state, path),
+    admit: (path) => admitIn(state, path),
   };
+};
+
+const enlistIn = (state: SequenceState, path: FilePath): void => {
+  if (state.ordinals.has(path)) return;
+  state.ordinals.set(path, state.released.length);
+  state.released.push(false);
+};
+
+const releaseIn = (state: SequenceState, path: FilePath): void => {
+  const ordinal = state.ordinals.get(path);
+  if (ordinal === undefined) return;
+  state.released[ordinal] = true;
+  advance(state);
+};
+
+const advance = (state: SequenceState): void => {
+  while (state.released[state.next] === true) state.next += 1;
+  state.waiters.get(state.next)?.();
+};
+
+const admitIn = (state: SequenceState, path: FilePath): Promise<void> => {
+  const ordinal = state.ordinals.get(path);
+  if (ordinal === undefined || ordinal <= state.next) return ADMITTED;
+  return new Promise((resolve) => state.waiters.set(ordinal, resolve));
 };
 
 /**

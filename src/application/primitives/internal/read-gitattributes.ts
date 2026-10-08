@@ -218,17 +218,13 @@ const buildAttributeProviderFrom = async (
   const info = await readInfo(ctx);
   const global = await readGlobal(ctx);
   const root = await readDir(ctx, '');
-  const macros = buildMacroRegistry([
-    ...(info?.macros ?? []),
-    ...(root?.macros ?? []),
-    ...(global?.macros ?? []),
-  ]);
+  const macros = buildMacroRegistry([info, root, global].flatMap((file) => file?.macros ?? []));
   const stackOf = createDirectoryStacks(
     (dir) => (dirEscapesWorktree(dir) ? Promise.resolve(undefined) : readDir(ctx, dir as FilePath)),
-    root === undefined ? [] : [{ basedir: '', rules: root.rules }],
+    rootSourceOf(root),
   );
-  const highest = info === undefined ? [] : [{ basedir: '', rules: info.rules }];
-  const lowest = global === undefined ? [] : [{ basedir: '', rules: global.rules }];
+  const highest = rootSourceOf(info);
+  const lowest = rootSourceOf(global);
   const sourcesForPath = async (
     path: FilePath,
   ): Promise<{ sources: ReadonlyArray<AttributeSource>; macros: MacroRegistry }> => ({
@@ -237,6 +233,10 @@ const buildAttributeProviderFrom = async (
   });
   return { sourcesForPath };
 };
+
+/** A file read at the top of the work tree, as the one source it contributes. */
+const rootSourceOf = (file: ParsedAttributes | undefined): ReadonlyArray<AttributeSource> =>
+  file === undefined ? [] : [{ basedir: '', rules: file.rules }];
 
 export const buildAttributeProvider = (ctx: Context): Promise<AttributeProvider> =>
   buildAttributeProviderFrom(ctx, workTreeDirReader);
