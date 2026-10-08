@@ -250,6 +250,18 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-ignore interop', () => {
         // Act / Assert
         await expectParity(dir, 'HEAD', ['.gitattributes', 'k']);
       });
+
+      it('Then a rule without a slash matches its ** against a basename alone, never across a directory', async () => {
+        // Arrange
+        const dir = await makeRepo('basename', {
+          '.gitattributes': 'a**b export-ignore\n',
+          'x/ab': '1',
+          'q/a/xb': '2',
+        });
+
+        // Act / Assert
+        await expectParity(dir, 'HEAD', ['.gitattributes', 'q/', 'q/a/', 'q/a/xb', 'x/']);
+      });
     });
   });
 

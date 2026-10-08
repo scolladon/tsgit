@@ -867,6 +867,57 @@ describe('buildTreeAttributeProvider', () => {
     });
   });
 
+  describe('Given a directory carrying its own .gitattributes', () => {
+    describe("When the directory's own key is looked up", () => {
+      it('Then its sources stop at its parent, as the directory is a path in that parent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const subAttrs = await putBlob(ctx, 'sub merge=own\n');
+        const sub = await putTree(ctx, [[FILE_MODE.REGULAR, '.gitattributes', subAttrs]]);
+        const rootAttrs = await putBlob(ctx, 'sub merge=parent\n');
+        const tree = await putTree(ctx, [
+          [FILE_MODE.REGULAR, '.gitattributes', rootAttrs],
+          [FILE_MODE.DIRECTORY, 'sub', sub],
+        ]);
+        const provider = await buildTreeAttributeProvider(ctx, tree);
+        const sut = provider.sourcesForPath;
+
+        // Act
+        const result = await sut('sub/' as FilePath);
+
+        // Assert
+        expect(result.sources.map(({ basedir }) => basedir)).toEqual(['']);
+      });
+    });
+  });
+
+  describe('Given a tree nested many directories deep with a .gitattributes in every tenth one, read with every object cache off', () => {
+    describe('When each directory and the leaf are resolved in walk order', () => {
+      it('Then each .gitattributes blob is read once beside the two tree reads per directory', async () => {
+        // Arrange
+        const depth = 60;
+        const attributeFiles = depth / 10 + 1;
+        const base = createMemoryContext({ deltaCacheMaxBytes: 0, parsedObjectMemoMaxEntries: 0 });
+        const tree = await putDeepTreeWithAttributes(base, depth);
+        const { ctx, calls } = instrumentedContext(base);
+        const sut = buildTreeAttributeProvider;
+
+        // Act
+        const provider = await sut(ctx, tree);
+        for (let slashes = 0; slashes < depth; slashes += 1) {
+          await provider.sourcesForPath(`${deepIndexPath(slashes)}/` as FilePath);
+        }
+        await provider.sourcesForPath(deepIndexPath(depth) as FilePath);
+
+        // Assert
+        const result = calls().filter(
+          ({ method, path }) => method === 'read' && path.includes('/objects/'),
+        );
+        expect(result).toHaveLength(2 * depth + 1 + attributeFiles);
+      });
+    });
+  });
+
   describe('Given a worktree nested many directories deep with a .gitattributes in every directory', () => {
     describe('When each directory and the leaf are resolved in walk order', () => {
       it("Then it reads each directory's .gitattributes exactly once", async () => {

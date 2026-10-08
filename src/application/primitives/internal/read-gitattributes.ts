@@ -75,6 +75,12 @@ const parentDir = (path: string): string => {
   return slash === NO_SEPARATOR ? '' : path.slice(0, slash);
 };
 
+const DIRECTORY_MARKER = '/';
+
+/** The directory a queried path sits in — a `dir/` key names `dir` inside its parent. */
+const containingDir = (path: string): string =>
+  parentDir(path.endsWith(DIRECTORY_MARKER) ? path.slice(0, -DIRECTORY_MARKER.length) : path);
+
 const gitattributesPathIn = (dir: string): string =>
   dir === '' ? GITATTRIBUTES_FILE : `${dir}/${GITATTRIBUTES_FILE}`;
 
@@ -226,7 +232,7 @@ const buildAttributeProviderFrom = async (
   const sourcesForPath = async (
     path: FilePath,
   ): Promise<{ sources: ReadonlyArray<AttributeSource>; macros: MacroRegistry }> => ({
-    sources: [...highest, ...(await stackOf(parentDir(path))), ...lowest],
+    sources: [...highest, ...(await stackOf(containingDir(path))), ...lowest],
     macros,
   });
   return { sourcesForPath };
