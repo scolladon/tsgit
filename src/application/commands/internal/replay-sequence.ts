@@ -242,29 +242,39 @@ export const runNoCommitReplay = async (
 ): Promise<NoCommitResult> => {
   const lock = await acquireIndexLock(ctx);
   try {
-    // The index lock commits once, so accumulate in memory across replays (the
-    // working tree is written per replay by `applyMergeToWorktree`) and commit
-    // the final accumulated index at the end.
-    let currentIndex = await readIndex(ctx);
-    for (let i = 0; i < todo.length; i += 1) {
-      const source = todo[i] as ObjectId;
-      const res = await replayOntoIndex(ctx, lock, command, source, currentIndex);
-      if (res.kind === 'conflict') {
-        const remaining = todo.length - (i + 1);
-        return {
-          kind: 'conflict',
-          commit: source,
-          conflicts: toConflictList(res.conflicts),
-          remaining,
-        };
-      }
-      currentIndex = { ...currentIndex, entries: res.result.newIndexEntries };
-    }
-    await lock.commit(currentIndex.entries);
+    const replayed = await accumulateReplays(ctx, lock, command, todo);
+    if (replayed.kind === 'conflict') return replayed;
+    await lock.commit(replayed.index.entries);
     return { kind: 'no-commit', sources: todo };
   } finally {
     await lock.release();
   }
+};
+
+/**
+ * The index lock commits once, so accumulate in memory across replays (the
+ * working tree is written per replay by `applyMergeToWorktree`); the caller
+ * commits the final accumulated index. Stops at the first conflict.
+ */
+const accumulateReplays = async (
+  ctx: Context,
+  lock: IndexLock,
+  command: ReplayCommand,
+  todo: ReadonlyArray<ObjectId>,
+): Promise<
+  Extract<NoCommitResult, { readonly kind: 'conflict' }> | { kind: 'accumulated'; index: GitIndex }
+> => {
+  let currentIndex = await readIndex(ctx);
+  for (let i = 0; i < todo.length; i += 1) {
+    const source = todo[i] as ObjectId;
+    const res = await replayOntoIndex(ctx, lock, command, source, currentIndex);
+    if (res.kind === 'conflict') {
+      const conflicts = toConflictList(res.conflicts);
+      return { kind: 'conflict', commit: source, conflicts, remaining: todo.length - (i + 1) };
+    }
+    currentIndex = { ...currentIndex, entries: res.result.newIndexEntries };
+  }
+  return { kind: 'accumulated', index: currentIndex };
 };
 
 /** Read each commit's subject to build `<verb> <oid> <subject>` todo entries. */

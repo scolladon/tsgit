@@ -305,9 +305,23 @@ const replayOne = async (
   const outcome = await mergeUnderLock(ctx, source, cData, ourId);
   if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
   if (outcome.mergedTree === outcome.oursTree) return { kind: 'empty' };
+  return {
+    kind: 'committed',
+    id: await commitPick(ctx, outcome.mergedTree, cData, ourId, reflogAction),
+  };
+};
+
+/** Commit a clean pick's tree onto `ourId` and advance HEAD with `rebase (pick)`. */
+const commitPick = async (
+  ctx: Context,
+  tree: ObjectId,
+  cData: CommitData,
+  ourId: ObjectId,
+  reflogAction: string,
+): Promise<ObjectId> => {
   const committer = await resolveCurrentIdentity(ctx);
   const id = await createCommit(ctx, {
-    tree: outcome.mergedTree,
+    tree,
     parents: [ourId],
     author: cData.author,
     committer,
@@ -318,7 +332,7 @@ const replayOne = async (
     expected: ourId,
     reflogMessage: rebasePickReflog(subjectLine(cData.message), reflogAction),
   });
-  return { kind: 'committed', id };
+  return id;
 };
 
 /** Render the failed pick's `parent..commit` diff for `.git/rebase-merge/patch`. */
@@ -585,6 +599,49 @@ export const rebaseRun = async (
   await assertOperationalRepositorySettingsFirst(ctx);
   requireWorkTree(ctx, 'rebase');
   await assertNoPendingOperation(ctx);
+  const sides = await resolveRunSides(ctx, input);
+  if (input.interactive !== undefined && rebasingMerges(input.rebaseMerges)) {
+    throw invalidOption('rebaseMerges', 'interactive instructions cannot carry merges');
+  }
+  const stash = await autostashIfWanted(ctx, input.autostash);
+  await assertCleanWorkTree(ctx, await treeOf(ctx, sides.headCommit));
+  if (input.interactive !== undefined) {
+    if (stash !== undefined) await writeAutostash(ctx, stash);
+    const { branch, headCommit, upstream, onto, ontoName } = sides;
+    const interactiveSides = { branch, headCommit, upstream, onto, ontoName };
+    return startInteractive(ctx, sides.upstreamName, input.interactive, interactiveSides);
+  }
+  return replayUnlessUpToDate(ctx, input.rebaseMerges, sides, { stash, reflogAction });
+};
+
+/** git fires pre-rebase only when the rebase will do work; an up-to-date rebase
+ *  (nothing to replay or fast-forward) returns before the hook, matching git. */
+const replayUnlessUpToDate = async (
+  ctx: Context,
+  mode: RebaseRunInput['rebaseMerges'],
+  sides: RunSides,
+  run: { readonly stash: ObjectId | undefined; readonly reflogAction: string },
+): Promise<RebaseResult> => {
+  const { onto, upstream, branchBase } = sides;
+  if (await canFastForward(ctx, { onto, upstream, head: sides.headCommit, branchBase })) {
+    return finishUpToDate(ctx, run.stash);
+  }
+  if (run.stash !== undefined) await writeAutostash(ctx, run.stash);
+  return startReplay(ctx, mode, sides, run.reflogAction);
+};
+
+/** Both sides of a non-interactive run, named and resolved. */
+interface RunSides {
+  readonly branch: RefName | undefined;
+  readonly headCommit: ObjectId;
+  readonly upstreamName: string;
+  readonly ontoName: string;
+  readonly upstream: ObjectId;
+  readonly onto: ObjectId;
+  readonly branchBase: ObjectId | undefined;
+}
+
+const resolveRunSides = async (ctx: Context, input: RebaseRunInput): Promise<RunSides> => {
   const head = await readHeadRaw(ctx);
   const headCommit = head.kind === 'symbolic' ? await resolveHeadCommit(ctx, head.target) : head.id;
   const branch = branchRefFromHead(head);
@@ -592,45 +649,46 @@ export const rebaseRun = async (
   const ontoName = input.onto ?? upstreamName;
   const sideNames = { upstreamName, ontoName, head: headCommit };
   const { upstream, onto, branchBase } = await resolveRebaseSides(ctx, sideNames);
-  if (input.interactive !== undefined && rebasingMerges(input.rebaseMerges)) {
-    throw invalidOption('rebaseMerges', 'interactive instructions cannot carry merges');
-  }
-  const stash = await autostashIfWanted(ctx, input.autostash);
-  await assertCleanWorkTree(ctx, await treeOf(ctx, headCommit));
-  if (input.interactive !== undefined) {
-    if (stash !== undefined) await writeAutostash(ctx, stash);
-    const sides = { branch, headCommit, upstream, onto, ontoName };
-    return startInteractive(ctx, upstreamName, input.interactive, sides);
-  }
-  // git fires pre-rebase only when the rebase will do work; an up-to-date rebase
-  // (nothing to replay or fast-forward) returns before the hook, matching git.
-  if (await canFastForward(ctx, { onto, upstream, head: headCommit, branchBase })) {
-    // git's `finish_rebase`, which the merge backend's own pick loop never reaches.
-    await removeAutoMerge(ctx);
-    if (stash !== undefined) await applyAutostash(ctx, stash);
-    return { kind: 'up-to-date' };
-  }
-  if (stash !== undefined) await writeAutostash(ctx, stash);
+  return { branch, headCommit, upstreamName, ontoName, upstream, onto, branchBase };
+};
+
+/** git's `finish_rebase`, which the merge backend's own pick loop never reaches. */
+const finishUpToDate = async (ctx: Context, stash: ObjectId | undefined): Promise<RebaseResult> => {
+  await removeAutoMerge(ctx);
+  if (stash !== undefined) await applyAutostash(ctx, stash);
+  return { kind: 'up-to-date' };
+};
+
+/** Fire pre-rebase, plan the todo, detach onto `onto` and replay it. */
+const startReplay = async (
+  ctx: Context,
+  mode: RebaseRunInput['rebaseMerges'],
+  sides: RunSides,
+  reflogAction: string,
+): Promise<RebaseResult> => {
+  const { headCommit, upstream, onto } = sides;
   await assertEverySourceLoadable(ctx);
-  await firePreRebase(ctx, upstreamName);
-  const todo = await planTodo(ctx, input.rebaseMerges, { upstream, head: headCommit });
+  await firePreRebase(ctx, sides.upstreamName);
+  const todo = await planTodo(ctx, mode, { upstream, head: headCommit });
   await writeOrigHead(ctx, headCommit);
-  await detachHead(ctx, headCommit, onto, ontoName, reflogAction);
+  await detachHead(ctx, headCommit, onto, sides.ontoName, reflogAction);
   const rc: ReplayContext = {
-    branch,
+    branch: sides.branch,
     onto,
     reflogAction,
     origHead: headCommit,
     doneBefore: [],
     todo,
-    backupHeader: {
-      shortUpstream: shortOid(upstream),
-      shortOrigHead: shortOid(headCommit),
-      shortOnto: shortOid(onto),
-    },
+    backupHeader: backupHeaderOf(upstream, headCommit, onto),
   };
   return replayFrom(ctx, rc, onto, { applied: [], rewritten: [] });
 };
+
+const backupHeaderOf = (upstream: ObjectId, origHead: ObjectId, onto: ObjectId) => ({
+  shortUpstream: shortOid(upstream),
+  shortOrigHead: shortOid(origHead),
+  shortOnto: shortOid(onto),
+});
 
 export interface RebaseAbortResult {
   readonly head: ObjectId;
@@ -656,6 +714,11 @@ export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
   await assertNothingUnstaged(ctx);
   await assertEverySourceLoadable(ctx);
   if (isInteractiveState(state)) return rebaseContinueInteractive(ctx, state);
+  return continueStop(ctx, state);
+};
+
+/** Commit the resolved stop (unless it matches HEAD) and replay the rest of the todo. */
+const continueStop = async (ctx: Context, state: RebaseState): Promise<RebaseResult> => {
   const index = await readIndex(ctx);
   rejectUnmergedIndex(index.entries);
   const stopped = stoppedCommit(state);
@@ -664,21 +727,28 @@ export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
   const rc = replayContextOf(state);
   const rewrittenBefore = await readRewrittenList(ctx);
   const mergeHead = await readMergeHead(ctx);
-  if (mergeHead === undefined && (await treeMatchesCommit(ctx, tree, currentHead))) {
-    return replayFrom(ctx, rc, currentHead, {
-      applied: [],
-      rewritten: [...rewrittenBefore, [stopped, currentHead] as const],
-    });
+  const created = await commitResolution(ctx, state, tree, { head: currentHead, mergeHead });
+  const resumeAt = created ?? currentHead;
+  return replayFrom(ctx, rc, resumeAt, {
+    applied: created === undefined ? [] : [{ source: stopped, created }],
+    rewritten: [...rewrittenBefore, [stopped, resumeAt] as const],
+  });
+};
+
+/** The resolution commit, or `undefined` when the index matches HEAD and no
+ *  merge is pending — HEAD then stands in for the stopped commit. */
+const commitResolution = async (
+  ctx: Context,
+  state: RebaseState,
+  tree: ObjectId,
+  parents: { readonly head: ObjectId; readonly mergeHead: ObjectId | undefined },
+): Promise<ObjectId | undefined> => {
+  if (parents.mergeHead === undefined && (await treeMatchesCommit(ctx, tree, parents.head))) {
+    return undefined;
   }
-  const resolutionId = await commitStoppedResolution(ctx, state, tree, {
-    head: currentHead,
-    mergeHead,
-  });
+  const resolutionId = await commitStoppedResolution(ctx, state, tree, parents);
   await concludeStopCommit(ctx);
-  return replayFrom(ctx, rc, resolutionId, {
-    applied: [{ source: stopped, created: resolutionId }],
-    rewritten: [...rewrittenBefore, [stopped, resolutionId] as const],
-  });
+  return resolutionId;
 };
 
 /** git's `has_unstaged_changes` gate: a tracked file changed but not staged stops `--continue`. */
@@ -760,25 +830,35 @@ export const rebaseAbort = async (ctx: Context): Promise<RebaseAbortResult> => {
   const branch = branchOf(state.headName);
   const currentHead = await resolveRef(ctx, HEAD);
   await hardResetWorktreeToCommit(ctx, state.origHead);
-  // A branch rebase reattaches HEAD to the ref (`returning to <branch>`); a
-  // detached rebase moves HEAD back to the original oid (`returning to <oid>`).
-  const reflog = {
-    oldId: currentHead,
-    newId: state.origHead,
-    message:
-      branch !== undefined
-        ? rebaseAbortReturningTo(branch)
-        : rebaseAbortReturningTo(state.origHead),
-  };
-  await getRefStore(ctx).applyRefUpdates([
-    branch !== undefined
-      ? { kind: 'setSymbolic', name: HEAD, target: branch, reflog }
-      : { kind: 'set', name: HEAD, id: state.origHead, reflog },
-  ]);
+  await returnHeadFromRebase(ctx, { branch, origHead: state.origHead, currentHead });
   await removeBranchState(ctx, 'silent');
   await deleteRewrittenRefs(ctx, state.done);
   await endRebaseState(ctx);
   return { head: state.origHead, headName: state.headName };
+};
+
+/** A branch rebase reattaches HEAD to the ref (`returning to <branch>`); a
+ *  detached rebase moves HEAD back to the original oid (`returning to <oid>`). */
+const returnHeadFromRebase = async (
+  ctx: Context,
+  heads: {
+    readonly branch: RefName | undefined;
+    readonly origHead: ObjectId;
+    readonly currentHead: ObjectId;
+  },
+): Promise<void> => {
+  const { branch, origHead } = heads;
+  const reflog = {
+    oldId: heads.currentHead,
+    newId: origHead,
+    message:
+      branch !== undefined ? rebaseAbortReturningTo(branch) : rebaseAbortReturningTo(origHead),
+  };
+  await getRefStore(ctx).applyRefUpdates([
+    branch !== undefined
+      ? { kind: 'setSymbolic', name: HEAD, target: branch, reflog }
+      : { kind: 'set', name: HEAD, id: origHead, reflog },
+  ]);
 };
 
 // ── interactive (`rebase -i`) ───────────────────────────────────────────────
@@ -1034,17 +1114,25 @@ const stepReword = async (
     rebaseRewordReflog(subjectLine(cData.message)),
   );
   if (produced.kind === 'conflict') return { kind: 'conflict', conflicts: produced.conflicts };
-  const producedData = await readCommitData(ctx, produced.created);
-  const created = await commitAndAdvance(ctx, {
+  return { kind: 'advanced', created: await amendMessage(ctx, produced.created, message) };
+};
+
+/** git's second reword step: amend `produced` to carry `message` (`rebase (reword): <new>`). */
+const amendMessage = async (
+  ctx: Context,
+  produced: ObjectId,
+  message: string,
+): Promise<ObjectId> => {
+  const producedData = await readCommitData(ctx, produced);
+  return commitAndAdvance(ctx, {
     tree: producedData.tree,
     parent: producedData.parents[0],
-    expected: produced.created,
+    expected: produced,
     author: producedData.author,
     message,
     reflog: rebaseRewordReflog(subjectLine(message)),
     carried: amendedExtraHeaders(producedData.extraHeaders),
   });
-  return { kind: 'advanced', created };
 };
 
 const stepInstruction = (
@@ -1108,18 +1196,23 @@ const persistInteractiveStop = async (
     patch: fields.patch,
     // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ backupHeader: undefined }`, which `writeRebaseStop`'s `if (field !== undefined)` skips exactly like the `{}` branch (byte-identical on-disk state).
     ...(ic.backupHeader !== undefined ? { backupHeader: ic.backupHeader } : {}),
-    // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ amend: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
-    ...(fields.amend !== undefined ? { amend: fields.amend } : {}),
-    // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ currentFixups: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
-    ...(fields.currentFixups !== undefined ? { currentFixups: fields.currentFixups } : {}),
-    // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ rewrittenPending: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
-    ...(fields.rewrittenPending !== undefined ? { rewrittenPending: fields.rewrittenPending } : {}),
-    // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ messageSquash: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
-    ...(fields.messageSquash !== undefined ? { messageSquash: fields.messageSquash } : {}),
-    ...(fields.messageFixup !== undefined ? { messageFixup: fields.messageFixup } : {}),
-    ...(fields.mergeMsg !== undefined ? { mergeMsg: fields.mergeMsg } : {}),
+    ...optionalStopFields(fields),
   });
 };
+
+/** The stop fields only some stops carry, each present only when set. */
+const optionalStopFields = (fields: StopFields) => ({
+  // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ amend: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
+  ...(fields.amend !== undefined ? { amend: fields.amend } : {}),
+  // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ currentFixups: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
+  ...(fields.currentFixups !== undefined ? { currentFixups: fields.currentFixups } : {}),
+  // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ rewrittenPending: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
+  ...(fields.rewrittenPending !== undefined ? { rewrittenPending: fields.rewrittenPending } : {}),
+  // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ messageSquash: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
+  ...(fields.messageSquash !== undefined ? { messageSquash: fields.messageSquash } : {}),
+  ...(fields.messageFixup !== undefined ? { messageFixup: fields.messageFixup } : {}),
+  ...(fields.mergeMsg !== undefined ? { mergeMsg: fields.mergeMsg } : {}),
+});
 
 /** git keeps the group base's message in `message-fixup` until a squash joins the group. */
 const fixupOnlyMessage = (
@@ -1185,16 +1278,7 @@ const meldGroupMember = async (
   const headData = await readCommitData(ctx, head);
   const outcome = await mergeUnderLock(ctx, inst.oid, cData, head);
   if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
-  group.members.push({ message: cData.message, skip: inst.action === 'fixup' });
-  group.fixups.push({ action: inst.action as 'squash' | 'fixup', oid: inst.oid });
-  group.pending.push(inst.oid);
-  // Stryker disable next-line ConditionalExpression: equivalent — forcing the `inst.message !== undefined` guard true makes a squash with no message assign `group.inline = undefined`, leaving the already-`undefined` field unchanged. (The whole-condition `→ true` and `&&` → `||` mutants are killed by the fixup-carrying-an-inline-message test.)
-  if (inst.action === 'squash' && inst.message !== undefined) group.inline = inst.message;
-  const template = buildCombinedMessage([{ message: group.baseMessage }, ...group.members]);
-  const message = isLast
-    ? // Stryker disable next-line BooleanLiteral: equivalent — an empty squash inline message is rejected upfront by `planInteractive`; otherwise the template fallback retains the base commit's non-empty message, so it is never empty here.
-      sanitizeMessage(group.inline ?? stripComments(template), { allowEmpty: false })
-    : template;
+  const message = joinMeldGroup(group, inst, cData, isLast);
   const created = await commitAndAdvance(ctx, {
     tree: outcome.mergedTree,
     parent: headData.parents[0],
@@ -1207,6 +1291,26 @@ const meldGroupMember = async (
   return { kind: 'committed', created, message };
 };
 
+/** Add `inst` to the group and return the melded message: the template, or
+ *  — on the group's last member — the cleaned final message. */
+const joinMeldGroup = (
+  group: MeldGroup,
+  inst: PlannedInstruction,
+  cData: CommitData,
+  isLast: boolean,
+): string => {
+  group.members.push({ message: cData.message, skip: inst.action === 'fixup' });
+  group.fixups.push({ action: inst.action as 'squash' | 'fixup', oid: inst.oid });
+  group.pending.push(inst.oid);
+  // Stryker disable next-line ConditionalExpression: equivalent — forcing the `inst.message !== undefined` guard true makes a squash with no message assign `group.inline = undefined`, leaving the already-`undefined` field unchanged. (The whole-condition `→ true` and `&&` → `||` mutants are killed by the fixup-carrying-an-inline-message test.)
+  if (inst.action === 'squash' && inst.message !== undefined) group.inline = inst.message;
+  const template = buildCombinedMessage([{ message: group.baseMessage }, ...group.members]);
+  return isLast
+    ? // Stryker disable next-line BooleanLiteral: equivalent — an empty squash inline message is rejected upfront by `planInteractive`; otherwise the template fallback retains the base commit's non-empty message, so it is never empty here.
+      sanitizeMessage(group.inline ?? stripComments(template), { allowEmpty: false })
+    : template;
+};
+
 /** Replay `ic.todo` from `startHead`. Stops on the first conflict or `edit`;
  *  otherwise finishes (updates the branch + reattaches HEAD). A run of
  *  squash/fixup melds into the preceding commit, threading `group`. */
@@ -1216,88 +1320,165 @@ const replayInteractive = async (
   startHead: ObjectId,
   seed: ReplaySeed,
 ): Promise<RebaseResult> => {
-  let head = startHead;
-  const applied: RebasedCommit[] = [...seed.applied];
-  const rewritten: Array<readonly [ObjectId, ObjectId]> = [...seed.rewritten];
-  const group: MeldGroup = {
-    baseMessage: (await readCommitData(ctx, startHead)).message,
-    members: [],
-    fixups: [],
-    pending: [startHead],
-    inline: undefined,
+  const replay: InteractiveReplay = {
+    head: startHead,
+    applied: [...seed.applied],
+    rewritten: [...seed.rewritten],
+    group: await meldGroupFrom(ctx, startHead),
   };
   for (let i = 0; i < ic.todo.length; i += 1) {
-    const inst = ic.todo[i]!;
-    await removeAutoMerge(ctx);
-    if (inst.action === 'drop') continue;
-    const cData = await readCommitData(ctx, inst.oid);
-    const patch = await renderCommitPatch(ctx, cData);
-    if (inst.action === 'squash' || inst.action === 'fixup') {
-      const meld = await meldGroupMember(ctx, inst, cData, head, group, !meldContinues(ic.todo, i));
-      if (meld.kind === 'conflict') {
-        const template = buildCombinedMessage([
-          { message: group.baseMessage },
-          ...group.members,
-          { message: cData.message, skip: inst.action === 'fixup' },
-        ]);
-        const currentFixups = [...group.fixups, { action: inst.action, oid: inst.oid }];
-        await persistInteractiveStop(ctx, ic, i, {
-          stoppedSha: inst.oid,
-          author: cData.author,
-          message: template,
-          patch,
-          rewritten,
-          amend: head,
-          currentFixups,
-          rewrittenPending: [...group.pending],
-          messageSquash: template,
-          ...fixupOnlyMessage(currentFixups, group.baseMessage),
-          mergeMsg: template,
-        });
-        return conflictResult(inst.oid, meld.conflicts, ic.todo.length - (i + 1));
-      }
-      applied.push({ source: inst.oid, created: meld.created });
-      rewritten.push([inst.oid, meld.created]);
-      head = meld.created;
-      continue;
-    }
-    const step = await stepInstruction(ctx, inst, cData, head);
-    if (step.kind === 'conflict') {
-      const message = conflictMergeMsg(cData.message, sortedRecordedPaths(step.conflicts));
-      await persistInteractiveStop(ctx, ic, i, {
-        stoppedSha: inst.oid,
-        author: cData.author,
-        message,
-        patch,
-        rewritten,
-        mergeMsg: message,
-      });
-      return conflictResult(inst.oid, step.conflicts, ic.todo.length - (i + 1));
-    }
-    if (step.kind === 'edit-stop') {
-      await persistInteractiveStop(ctx, ic, i, {
-        stoppedSha: inst.oid,
-        author: cData.author,
-        message: cData.message,
-        patch,
-        rewritten,
-        amend: step.created,
-      });
-      return { kind: 'stopped', commit: inst.oid, remaining: ic.todo.length - (i + 1) };
-    }
-    applied.push({ source: inst.oid, created: step.created });
-    rewritten.push([inst.oid, step.created]);
-    head = step.created;
-    group.baseMessage = (await readCommitData(ctx, step.created)).message;
-    group.members = [];
-    group.fixups = [];
-    group.pending = [step.created];
-    group.inline = undefined;
+    const stop = await replayInstruction(ctx, ic, i, replay);
+    if (stop !== undefined) return stop;
   }
-  await finishRebase(ctx, { ...ic, reflogAction: REBASE_REFLOG_ACTION }, head);
-  await firePostRewrite(ctx, rewritten);
+  await finishRebase(ctx, { ...ic, reflogAction: REBASE_REFLOG_ACTION }, replay.head);
+  await firePostRewrite(ctx, replay.rewritten);
   await endRebaseState(ctx);
-  return { kind: 'rebased', commits: applied };
+  return { kind: 'rebased', commits: replay.applied };
+};
+
+/** Where an interactive replay stands: HEAD, what it applied and rewrote, the open meld group. */
+interface InteractiveReplay {
+  head: ObjectId;
+  readonly applied: RebasedCommit[];
+  readonly rewritten: Array<readonly [ObjectId, ObjectId]>;
+  readonly group: MeldGroup;
+}
+
+/** One todo line under replay, with the commit it names and its rendered patch. */
+interface ReplayedLine {
+  readonly ic: InteractiveContext;
+  readonly index: number;
+  readonly inst: PlannedInstruction;
+  readonly cData: CommitData;
+  readonly patch: string;
+}
+
+/** A meld group opened on `base`, its message the group's `# 1st commit message`. */
+const meldGroupFrom = async (ctx: Context, base: ObjectId): Promise<MeldGroup> => ({
+  baseMessage: (await readCommitData(ctx, base)).message,
+  members: [],
+  fixups: [],
+  pending: [base],
+  inline: undefined,
+});
+
+/** Replay todo line `index`; the stop's result when it stops, else `undefined`. */
+const replayInstruction = async (
+  ctx: Context,
+  ic: InteractiveContext,
+  index: number,
+  replay: InteractiveReplay,
+): Promise<RebaseResult | undefined> => {
+  const inst = ic.todo[index]!;
+  await removeAutoMerge(ctx);
+  if (inst.action === 'drop') return undefined;
+  const cData = await readCommitData(ctx, inst.oid);
+  const line: ReplayedLine = { ic, index, inst, cData, patch: await renderCommitPatch(ctx, cData) };
+  if (inst.action === 'squash' || inst.action === 'fixup') return replayMeld(ctx, line, replay);
+  return replayStep(ctx, line, replay);
+};
+
+const remainingAfter = (line: ReplayedLine): number => line.ic.todo.length - (line.index + 1);
+
+/** Record `created` as the rewrite of `source` and advance HEAD to it. */
+const recordCreated = (replay: InteractiveReplay, source: ObjectId, created: ObjectId): void => {
+  replay.applied.push({ source, created });
+  replay.rewritten.push([source, created]);
+  replay.head = created;
+};
+
+/** A squash/fixup line: meld it into the open group, or stop on its conflict. */
+const replayMeld = async (
+  ctx: Context,
+  line: ReplayedLine,
+  replay: InteractiveReplay,
+): Promise<RebaseResult | undefined> => {
+  const { ic, index, inst, cData } = line;
+  const isLast = !meldContinues(ic.todo, index);
+  const meld = await meldGroupMember(ctx, inst, cData, replay.head, replay.group, isLast);
+  if (meld.kind === 'conflict') {
+    await persistInteractiveStop(ctx, ic, index, meldStopFields(line, replay));
+    return conflictResult(inst.oid, meld.conflicts, remainingAfter(line));
+  }
+  recordCreated(replay, inst.oid, meld.created);
+  return undefined;
+};
+
+/** The stop a conflicted meld persists: the group's template so far, with the member. */
+const meldStopFields = (line: ReplayedLine, replay: InteractiveReplay): StopFields => {
+  const { inst, cData } = line;
+  const { group } = replay;
+  const template = buildCombinedMessage([
+    { message: group.baseMessage },
+    ...group.members,
+    { message: cData.message, skip: inst.action === 'fixup' },
+  ]);
+  const currentFixups = [
+    ...group.fixups,
+    { action: inst.action as 'squash' | 'fixup', oid: inst.oid },
+  ];
+  return {
+    ...{ stoppedSha: inst.oid, author: cData.author, message: template, patch: line.patch },
+    ...{ rewritten: replay.rewritten, amend: replay.head, currentFixups },
+    rewrittenPending: [...group.pending],
+    messageSquash: template,
+    ...fixupOnlyMessage(currentFixups, group.baseMessage),
+    mergeMsg: template,
+  };
+};
+
+/** Any other line: step it, stopping on a conflict or an `edit`; a commit it
+ *  produces opens a new meld group. */
+const replayStep = async (
+  ctx: Context,
+  line: ReplayedLine,
+  replay: InteractiveReplay,
+): Promise<RebaseResult | undefined> => {
+  const { inst, cData } = line;
+  const step = await stepInstruction(ctx, inst, cData, replay.head);
+  if (step.kind === 'conflict') return stopOnStepConflict(ctx, line, replay, step.conflicts);
+  if (step.kind === 'edit-stop') return stopForEdit(ctx, line, replay, step.created);
+  recordCreated(replay, inst.oid, step.created);
+  await reopenMeldGroup(ctx, replay.group, step.created);
+  return undefined;
+};
+
+const stopOnStepConflict = async (
+  ctx: Context,
+  line: ReplayedLine,
+  replay: InteractiveReplay,
+  conflicts: ReadonlyArray<MergeConflict>,
+): Promise<RebaseResult> => {
+  const { inst, cData, patch } = line;
+  const message = conflictMergeMsg(cData.message, sortedRecordedPaths(conflicts));
+  await persistInteractiveStop(ctx, line.ic, line.index, {
+    ...{ stoppedSha: inst.oid, author: cData.author, message, patch },
+    ...{ rewritten: replay.rewritten, mergeMsg: message },
+  });
+  return conflictResult(inst.oid, conflicts, remainingAfter(line));
+};
+
+const stopForEdit = async (
+  ctx: Context,
+  line: ReplayedLine,
+  replay: InteractiveReplay,
+  created: ObjectId,
+): Promise<RebaseResult> => {
+  const { inst, cData, patch } = line;
+  await persistInteractiveStop(ctx, line.ic, line.index, {
+    ...{ stoppedSha: inst.oid, author: cData.author, message: cData.message, patch },
+    ...{ rewritten: replay.rewritten, amend: created },
+  });
+  return { kind: 'stopped', commit: inst.oid, remaining: remainingAfter(line) };
+};
+
+/** Reset `group` in place onto `base`: the next squash/fixup melds into it. */
+const reopenMeldGroup = async (ctx: Context, group: MeldGroup, base: ObjectId): Promise<void> => {
+  group.baseMessage = (await readCommitData(ctx, base)).message;
+  group.members = [];
+  group.fixups = [];
+  group.pending = [base];
+  group.inline = undefined;
 };
 
 const rebaseRunInteractive = async (ctx: Context, plan: InteractivePlan): Promise<RebaseResult> => {

@@ -21,6 +21,7 @@ import {
 import type { Context } from '../../../ports/context.js';
 import { applyMergeToWorktree } from '../../primitives/apply-merge-to-worktree.js';
 import { createCommit } from '../../primitives/create-commit.js';
+import type { IndexLock } from '../../primitives/internal/index-lock.js';
 import { mergeBasesOf } from '../../primitives/merge-base.js';
 import { readIndex } from '../../primitives/read-index.js';
 import { getRefStore } from '../../primitives/ref-store.js';
@@ -124,24 +125,34 @@ export const mergeTreesUnderLock = async (
   const oursTree = await treeOf(ctx, input.ours);
   const lock = await acquireIndexLock(ctx);
   try {
-    const res = await applyMergeToWorktree(ctx, {
-      baseTree: input.baseTree,
-      oursTree,
-      theirsTree: input.theirsTree,
-      currentIndex: await readIndex(ctx),
-      labels: input.labels,
-    });
-    if (res.kind === 'would-overwrite')
-      throw workingTreeDirty({ localChanges: res.localChanges, untracked: res.untracked });
-    if (res.kind === 'conflict') {
-      await lock.commit(res.indexEntries);
-      return { kind: 'conflict', conflicts: res.conflicts };
-    }
-    await lock.commit(res.result.newIndexEntries);
-    return { kind: 'clean', mergedTree: res.mergedTree, oursTree };
+    return await mergeIntoLockedIndex(ctx, lock, input, oursTree);
   } finally {
     await lock.release();
   }
+};
+
+/** Merge into the work tree and commit the result to the locked index. */
+const mergeIntoLockedIndex = async (
+  ctx: Context,
+  lock: IndexLock,
+  input: MergeTreesInput,
+  oursTree: ObjectId,
+): Promise<MergeTreesOutcome> => {
+  const res = await applyMergeToWorktree(ctx, {
+    baseTree: input.baseTree,
+    oursTree,
+    theirsTree: input.theirsTree,
+    currentIndex: await readIndex(ctx),
+    labels: input.labels,
+  });
+  if (res.kind === 'would-overwrite')
+    throw workingTreeDirty({ localChanges: res.localChanges, untracked: res.untracked });
+  if (res.kind === 'conflict') {
+    await lock.commit(res.indexEntries);
+    return { kind: 'conflict', conflicts: res.conflicts };
+  }
+  await lock.commit(res.result.newIndexEntries);
+  return { kind: 'clean', mergedTree: res.mergedTree, oursTree };
 };
 
 export interface MergeStep {
@@ -177,20 +188,33 @@ export const recreateMerge = async (ctx: Context, step: MergeStep): Promise<Merg
   }
   const [base] = await mergeBasesOf(ctx, [step.head, theirs.id]);
   if (base === theirs.id) return { kind: 'kept' };
-  const merged = await mergeTreesUnderLock(ctx, {
-    baseTree: base !== undefined ? await treeOf(ctx, base) : undefined,
-    ours: step.head,
-    theirsTree: await treeOf(ctx, theirs.id),
-    labels: mergeLabels(theirs.name, base),
-  });
+  const merged = await mergeLabelInto(ctx, step.head, theirs, base);
   if (merged.kind === 'conflict') {
-    // git's `do_merge` writes MERGE_HEAD without a line feed, and MERGE_MSG verbatim.
-    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, theirs.id);
-    await writeMergeMode(ctx, 'never');
-    await writeMergeMsg(ctx, step.original.message);
+    await persistMergeStop(ctx, theirs.id, step.original.message);
     return merged;
   }
   return { kind: 'committed', id: await commitMerge(ctx, step, merged.mergedTree, theirs.id) };
+};
+
+/** Merge the labelled commit `theirs` into `head` over their merge base. */
+const mergeLabelInto = async (
+  ctx: Context,
+  head: ObjectId,
+  theirs: { readonly id: ObjectId; readonly name: string },
+  base: ObjectId | undefined,
+): Promise<MergeTreesOutcome> =>
+  mergeTreesUnderLock(ctx, {
+    baseTree: base !== undefined ? await treeOf(ctx, base) : undefined,
+    ours: head,
+    theirsTree: await treeOf(ctx, theirs.id),
+    labels: mergeLabels(theirs.name, base),
+  });
+
+/** git's `do_merge` writes MERGE_HEAD without a line feed, and MERGE_MSG verbatim. */
+const persistMergeStop = async (ctx: Context, theirs: ObjectId, message: string): Promise<void> => {
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, theirs);
+  await writeMergeMode(ctx, 'never');
+  await writeMergeMsg(ctx, message);
 };
 
 const commitMerge = async (
@@ -207,18 +231,20 @@ const commitMerge = async (
     message: step.original.message,
     extraHeaders: [],
   });
+  await advanceHeadToMerge(ctx, step, id);
+  return id;
+};
+
+/** Move HEAD from the step's head to the recreated merge, `rebase (merge)`. */
+const advanceHeadToMerge = async (ctx: Context, step: MergeStep, id: ObjectId): Promise<void> => {
+  const message = rebaseMergeReflog(subjectLine(step.original.message), step.reflogAction);
   await getRefStore(ctx).applyRefUpdates([
     {
       kind: 'set',
       name: HEAD,
       id,
       expected: step.head,
-      reflog: {
-        oldId: step.head,
-        newId: id,
-        message: rebaseMergeReflog(subjectLine(step.original.message), step.reflogAction),
-      },
+      reflog: { oldId: step.head, newId: id, message },
     },
   ]);
-  return id;
 };
