@@ -349,9 +349,9 @@ const matcherOf = ({ fragment, literals }: Piece): ExtendedRegex => {
   const { exact, starts } = literals;
   const { required, anyOf } = prefilterOf(literals);
   if (isPlainText(exact)) {
-    return linear(
-      (subject) => holdsAll(subject, required) && exact.some((text) => subject.includes(text)),
-    );
+    const spells = (subject: string): boolean => exact.some((text) => subject.includes(text));
+    if (required.length === 0) return linear(spells);
+    return linear((subject) => holdsAll(subject, required) && spells(subject));
   }
   const matches = automaton(fragment, starts);
   return linear(

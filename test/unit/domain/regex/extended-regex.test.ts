@@ -715,6 +715,24 @@ describe('compileExtendedRegex', () => {
     });
   });
 
+  describe('Given a pattern spelling texts that share none', () => {
+    describe('When it is matched', () => {
+      it('Then the message is searched for the texts alone', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+        const matcher = sut('foo|bar');
+        const every = vi.spyOn(Array.prototype, 'every');
+
+        // Act
+        const result = matcher?.test('a bar');
+
+        // Assert
+        expect(result).toBe(true);
+        expect(every).not.toHaveBeenCalled();
+      });
+    });
+  });
+
   describe('Given a pattern whose required runs are empty', () => {
     describe('When it is matched', () => {
       it('Then the message is never searched for empty text', () => {
