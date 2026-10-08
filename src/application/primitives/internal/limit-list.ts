@@ -463,13 +463,22 @@ const parse = async (
 ): Promise<Parsed | undefined> => {
   const known = state.parsed.get(id);
   if (known !== undefined) return known;
-  const { shallow, verifyHash, ignoreMissing } = state.options;
-  const header = shallow.has(id) ? undefined : await commitHeader(state.ctx, id);
+  const header = state.options.shallow.has(id) ? undefined : await commitHeader(state.ctx, id);
   if (header !== undefined) {
     const { rootTree: tree, parents, committerDate: date, generation } = header;
     if (state.options.objectTypes !== undefined) state.fromGraph.add(id);
     return remember(state, id, { tree, parents, date, generation });
   }
+  return parseObject(state, id, mode);
+};
+
+/** {@link parse}'s fallback for a commit the graph does not hold: the object itself. */
+const parseObject = async (
+  state: LimitState,
+  id: ObjectId,
+  mode: ParseMode,
+): Promise<Parsed | undefined> => {
+  const { shallow, verifyHash, ignoreMissing } = state.options;
   const commit = await readCommit(state.ctx, id, {
     verifyHash,
     // A typed walk records a missing parent for its parse loop to refuse.

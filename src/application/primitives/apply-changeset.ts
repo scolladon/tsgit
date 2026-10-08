@@ -512,6 +512,38 @@ export const applyChangeset = (
 ): Promise<ApplyChangesetResult> =>
   withFilterProcessPool(ctx, () => applyChangesetInScope(ctx, opts));
 
+/** Refuses a changeset that would overwrite local changes or untracked files. */
+const assertNoDirtyOverwrite = async (
+  ctx: Context,
+  workdir: string,
+  entries: ReadonlyArray<ChangesetEntry>,
+): Promise<void> => {
+  const dirty = await checkDirty(ctx, workdir, entries);
+  if (dirty.localChanges.length > 0 || dirty.untracked.length > 0) {
+    throw checkoutOverwriteDirty(dirty);
+  }
+};
+
+/**
+ * Builds the attribute provider lazily, once per invocation. A runner-less
+ * context skips it unless a driver is required: only a required driver
+ * changes what a context that cannot run filters writes.
+ */
+const createLazyProvider = (ctx: Context): (() => Promise<AttributeProvider | undefined>) => {
+  let providerPromise: Promise<AttributeProvider | undefined> | undefined;
+  return () => (providerPromise ??= maybeBuildAttributeProvider(ctx));
+};
+
+/**
+ * Sized off cpuBound, not ioBound: a smudge subprocess spawn is
+ * process/CPU-bound, not blocking-fd-bound, so it must not inherit the
+ * write wave's wider ioBound budget — see `writeBlobToWorkingTree`.
+ */
+const createSmudging = (ctx: Context, opts: ApplyChangesetOpts): Smudging => ({
+  limiter: limiterFor(ctx, 'cpuBound'),
+  ...(opts.checkoutMetadata && { metadata: opts.checkoutMetadata }),
+});
+
 const applyChangesetInScope = async (
   ctx: Context,
   opts: ApplyChangesetOpts,
@@ -524,31 +556,14 @@ const applyChangesetInScope = async (
   // pays a dirty probe — or a pool slot — for entries that carry no I/O.
   const { deletes, writes } = splitWaves(changeset.entries);
 
-  if (!force) {
-    const dirty = await checkDirty(ctx, workdir, [...deletes, ...writes]);
-    if (dirty.localChanges.length > 0 || dirty.untracked.length > 0) {
-      throw checkoutOverwriteDirty(dirty);
-    }
-  }
+  if (!force) await assertNoDirtyOverwrite(ctx, workdir, [...deletes, ...writes]);
 
-  // Build the attribute provider lazily, once per invocation. A runner-less
-  // context skips it unless a driver is required: only a required driver
-  // changes what a context that cannot run filters writes.
-  let providerPromise: Promise<AttributeProvider | undefined> | undefined;
-  const lazyProvider = (): Promise<AttributeProvider | undefined> =>
-    (providerPromise ??= maybeBuildAttributeProvider(ctx));
-
+  const lazyProvider = createLazyProvider(ctx);
   // One scanner per changeset application, shared by BOTH the delete-skip
   // check and the write-side unlink: its per-directory memo means a deep
   // tree with many entries under the same symlinked directory costs one
   // `lstat` per distinct directory, not one per entry.
   const scanner = createLeadingPathScanner(ctx);
-  // Sized off cpuBound, not ioBound: a smudge subprocess spawn is
-  // process/CPU-bound, not blocking-fd-bound, so it must not inherit the
-  // write wave's wider ioBound budget — see `writeBlobToWorkingTree`.
-  const smudging: Smudging = {
-    limiter: limiterFor(ctx, 'cpuBound'),
-    ...(opts.checkoutMetadata && { metadata: opts.checkoutMetadata }),
-  };
+  const smudging = createSmudging(ctx, opts);
   return applyAllEntries(ctx, deletes, writes, workdir, lazyProvider, scanner, smudging);
 };

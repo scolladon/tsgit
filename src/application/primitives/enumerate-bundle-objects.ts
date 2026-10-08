@@ -21,7 +21,7 @@ import {
   markNotTip,
   type NotMarksAccumulator,
 } from './internal/closure-not-marks.js';
-import { limitOrFailSetup, resolveLimitOptions } from './internal/limit-list.js';
+import { type LimitedWalk, limitOrFailSetup, resolveLimitOptions } from './internal/limit-list.js';
 import { resolveTagChain } from './internal/object-emit.js';
 import { createObjectTypeTable, type ObjectTypeTable } from './internal/object-type-table.js';
 import { MAX_PUSH_OBJECTS } from './types.js';
@@ -112,6 +112,37 @@ const seedInOrder = async (
   return seeded;
 };
 
+/** git's limited walk from the seeded tips down to the excluded ones' marks. */
+const limitBundleRevisions = async (
+  ctx: Context,
+  { from, seeds }: BundleSeeds,
+  marks: NotMarksAccumulator,
+  objectTypes: ObjectTypeTable,
+): Promise<LimitedWalk> => {
+  const options = await resolveLimitOptions(
+    ctx,
+    { from },
+    {
+      seeds,
+      until: new Set(marks.commitTips),
+      firstParent: false,
+      settle: 'slop',
+      objectTypes,
+      bodyRetention: 'none',
+    },
+  );
+  return limitOrFailSetup(ctx, options);
+};
+
+/** The uninteresting parents of every listed commit, in walk order. */
+const boundaryOf = (walk: LimitedWalk): ReadonlyArray<ObjectId> => [
+  ...new Set(
+    walk.shownHeads.flatMap((commit) =>
+      commit.parents.filter((parent) => walk.uninteresting.has(parent)),
+    ),
+  ),
+];
+
 /**
  * git's `--boundary` walk of the bundle's revisions, typed into the bundle
  * process's own table: the uninteresting parents of every commit the limited
@@ -125,28 +156,10 @@ const walkBundle = async (
 ): Promise<BundleWalk> => {
   if (tips.every((tip) => !tip.excluded)) return NOTHING_EXCLUDED;
   const marks = await createNotMarks(ctx, { objects: true, objectTypes });
-  const { from, seeds } = await seedInOrder(ctx, tips, marks, objectTypes);
-  const options = await resolveLimitOptions(
-    ctx,
-    { from },
-    {
-      seeds,
-      until: new Set(marks.commitTips),
-      firstParent: false,
-      settle: 'slop',
-      objectTypes,
-      bodyRetention: 'none',
-    },
-  );
-  const walk = await limitOrFailSetup(ctx, options);
-  const boundary = new Set<ObjectId>();
-  for (const commit of walk.shownHeads) {
-    for (const parent of commit.parents) {
-      if (walk.uninteresting.has(parent)) boundary.add(parent);
-    }
-  }
+  const seeded = await seedInOrder(ctx, tips, marks, objectTypes);
+  const walk = await limitBundleRevisions(ctx, seeded, marks, objectTypes);
   return {
-    boundary: [...boundary],
+    boundary: boundaryOf(walk),
     uninteresting: new Set([...marks.objects, ...walk.uninteresting]),
   };
 };

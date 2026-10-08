@@ -194,9 +194,7 @@ async function* walkStoppingAt(
 
   while (state.head < state.queue.length) {
     if (ctx.signal?.aborted) throw operationAborted();
-    const id = state.queue[state.head]!;
-    state.head += 1;
-    state.queued.delete(id);
+    const id = takeNext(state);
     if (state.visited.has(id) || state.missing.has(id) || state.until.has(id)) continue;
 
     const { commit, enqueuedFromHeader } = await resolveFrontierEntry(ctx, session, id);
@@ -204,12 +202,18 @@ async function* walkStoppingAt(
     state.visited.add(id);
     // Graph-absent commit: parents were not yet known, so enqueue them from
     // the just-read body.
-    if (!enqueuedFromHeader) {
-      enqueueParents(state, commit, order, bodies);
-    }
+    if (!enqueuedFromHeader) enqueueParents(state, commit, order, bodies);
     await parseFollowedParents(ctx, session, commit);
     yield commit;
   }
+}
+
+/** Pops the frontier's next commit; the caller guards that one is queued. */
+function takeNext(state: WalkState): ObjectId {
+  const id = state.queue[state.head]!;
+  state.head += 1;
+  state.queued.delete(id);
+  return id;
 }
 
 /**

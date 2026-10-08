@@ -426,6 +426,13 @@ async function tryResolveViaSource(
   );
   checkAborted(ctx);
   await verifyObjectContent(ctx, id, resolved.type, resolved.content, verifyHash);
+  return sizedByContent(resolved);
+}
+
+/** A pack-resolved object, its declared size being its resolved bytes' length. */
+function sizedByContent(
+  resolved: ObjectContent & { chainDepth: number },
+): ObjectContent & { chainDepth: number; declaredSize: number } {
   return {
     type: resolved.type,
     content: resolved.content,
