@@ -1016,6 +1016,12 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-subst interop', () => {
       return shared as string;
     };
 
+    /** Rebuilds the `error:` line git prints from the logger's constant message and its context. */
+    const gitErrorLine = (message: string, context?: Readonly<Record<string, unknown>>): string =>
+      message === 'unable to read mailmap object'
+        ? `error: ${message} at ${String(context?.expression)}`
+        : `error: ${message}`;
+
     describe.each([
       ['an abbreviated id two objects share', 'ambiguous'],
       ['a full object id naming no object', 'missing'],
@@ -1032,7 +1038,10 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-subst interop', () => {
         __resetConfigCacheForTests();
         const ctx = {
           ...createNodeContext({ workDir: dir }),
-          logger: { error: (message: string) => errors.push(message) },
+          logger: {
+            error: (message: string, context?: Readonly<Record<string, unknown>>) =>
+              errors.push(gitErrorLine(message, context)),
+          },
         };
         const sut = archive;
 
@@ -1043,7 +1052,7 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-subst interop', () => {
         // Assert
         const expected = stderr.split('\n').filter((line) => line.startsWith('error: '));
         expect(expected).not.toEqual([]);
-        expect(errors.map((message) => `error: ${message}`)).toEqual(expected);
+        expect(errors).toEqual(expected);
         expect(await tsgitFiles(dir, 'HEAD')).toEqual(gitFiles(dir, 'HEAD'));
       });
     });
