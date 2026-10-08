@@ -449,6 +449,19 @@ const parseBranch = (c: Cursor, nesting: number): Translation => {
  * inner requirement is required, and every part's alternatives are chosen.
  */
 const concatenatedLiterals = (parts: ReadonlyArray<Literals>): Literals => {
+  const required = requiredRuns(parts);
+  const exact = parts.reduce<Spelt>((texts, part) => spell(texts, part.exact), ['']);
+  const starts = parts[0]?.starts ?? 'anywhere';
+  return {
+    exact,
+    required,
+    anyOf: parts.flatMap((part) => part.anyOf),
+    starts,
+  };
+};
+
+/** Each run of single-text parts, then any other part's own requirements, empty texts dropped. */
+const requiredRuns = (parts: ReadonlyArray<Literals>): ReadonlyArray<string> => {
   const required: string[] = [];
   let run = '';
   for (const { exact, required: inner } of parts) {
@@ -461,14 +474,7 @@ const concatenatedLiterals = (parts: ReadonlyArray<Literals>): Literals => {
     run = '';
   }
   required.push(run);
-  const exact = parts.reduce<Spelt>((texts, part) => spell(texts, part.exact), ['']);
-  const starts = parts[0]?.starts ?? 'anywhere';
-  return {
-    exact,
-    required: required.filter((text) => text !== ''),
-    anyOf: parts.flatMap((part) => part.anyOf),
-    starts,
-  };
+  return required.filter((text) => text !== '');
 };
 
 /** Each prefix followed by each suffix; `undefined` where either is unknown or they spell too many. */

@@ -342,27 +342,26 @@ const bothSidesMoves = (
   byOurs: DirectoryRenames,
   byTheirs: DirectoryRenames,
 ): BothSidesMoves => {
-  const ourCollisions = collisionsOf(scans.addedPaths(sides.ours), byTheirs);
-  const theirCollisions = collisionsOf(scans.addedPaths(sides.theirs), byOurs);
-  return {
-    ours: moves({
-      scans,
-      side: sides.ours,
-      directoryRenames: byTheirs,
-      exclusions: byOurs,
-      collisions: ourCollisions,
-      otherCollisions: theirCollisions,
-    }),
-    theirs: moves({
-      scans,
-      side: sides.theirs,
-      directoryRenames: byOurs,
-      exclusions: byTheirs,
-      collisions: theirCollisions,
-      otherCollisions: ourCollisions,
-    }),
+  const ourMove: SideMove = {
+    scans,
+    side: sides.ours,
+    directoryRenames: byTheirs,
+    exclusions: byOurs,
+    collisions: collisionsOf(scans.addedPaths(sides.ours), byTheirs),
+    otherCollisions: collisionsOf(scans.addedPaths(sides.theirs), byOurs),
   };
+  return { ours: moves(ourMove), theirs: moves(mirroredMove(ourMove, sides.theirs)) };
 };
+
+/** The other side's move: every renames and collisions pair swaps its roles. */
+const mirroredMove = (move: SideMove, side: FlatTree): SideMove => ({
+  scans: move.scans,
+  side,
+  directoryRenames: move.exclusions,
+  exclusions: move.directoryRenames,
+  collisions: move.otherCollisions,
+  otherCollisions: move.collisions,
+});
 
 const movedInput = (
   { ours, theirs, renames }: Pick<DirectoryRenamedInput, 'ours' | 'theirs' | 'renames'>,

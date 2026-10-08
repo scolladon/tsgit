@@ -455,6 +455,14 @@ const evalCommitSpec = (spec: Spec, view: CommitView, env: FormatEnv): Uint8Arra
       return evalMessage(spec.part, view);
     case 'trailers':
       return evalTrailers(spec.options, view, env);
+    default:
+      return evalEnvironmentSpec(spec, env);
+  }
+};
+
+/** A placeholder that reads only the environment the commit is shown in. */
+const evalEnvironmentSpec = (spec: Spec, env: FormatEnv): Uint8Array | undefined => {
+  switch (spec.kind) {
     case 'decorations':
       return formatDecorations(env.decorations ?? [], spec.options);
     case 'describe':

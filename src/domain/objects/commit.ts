@@ -110,12 +110,18 @@ function withoutFinalNewline(content: Uint8Array): Uint8Array {
   return content[content.length - 1] === NEWLINE ? content.subarray(0, -1) : content;
 }
 
+function headerBlock(content: Uint8Array, blankLineStart: number): Uint8Array {
+  return blankLineStart === -1 ? withoutFinalNewline(content) : content.subarray(0, blankLineStart);
+}
+
+function messageAfter(content: Uint8Array, blankLineStart: number): string {
+  return blankLineStart === -1 ? '' : decodePreservingBom(content.subarray(blankLineStart + 2));
+}
+
 export function parseCommitContent(id: ObjectId, content: Uint8Array): Commit {
   const blankLineStart = findBlankLine(content);
-  const headerBytes =
-    blankLineStart === -1 ? withoutFinalNewline(content) : content.subarray(0, blankLineStart);
-  const message =
-    blankLineStart === -1 ? '' : decodePreservingBom(content.subarray(blankLineStart + 2));
+  const headerBytes = headerBlock(content, blankLineStart);
+  const message = messageAfter(content, blankLineStart);
   const lines = splitByteLines(headerBytes);
   const { tree, parents, author, committer, nextIndex } = parseRequiredFields(headerBytes, lines);
   const { gpgSignature, extraHeaders } = parseOptionalHeaders(headerBytes, lines, nextIndex);
@@ -194,8 +200,13 @@ function parseOptionalHeaders(
 }
 
 export function serializeCommitContent(commit: Commit): Uint8Array {
-  const lines: string[] = [];
   const { data } = commit;
+  const headerText = commitHeaderLines(data).join('\n');
+  return encode(`${headerText}\n\n${data.message}`);
+}
+
+function commitHeaderLines(data: CommitData): string[] {
+  const lines: string[] = [];
 
   lines.push(`tree ${data.tree}`);
   for (const parent of data.parents) {
@@ -213,6 +224,5 @@ export function serializeCommitContent(commit: Commit): Uint8Array {
     lines.push(formatContinuationHeader('gpgsig', data.gpgSignature));
   }
 
-  const headerText = lines.join('\n');
-  return encode(`${headerText}\n\n${data.message}`);
+  return lines;
 }

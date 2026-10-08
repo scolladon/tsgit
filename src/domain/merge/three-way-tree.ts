@@ -703,6 +703,21 @@ function planTreeMerge(
   return { located, renamed, paths, sortedPaths: sortByPath([...paths], (p) => p), sidePaths };
 }
 
+type PathEntries = readonly [
+  FlatTreeEntry | undefined,
+  FlatTreeEntry | undefined,
+  FlatTreeEntry | undefined,
+];
+
+/** The path's base, ours and theirs entries, in that order. */
+function entriesAt(renamed: RenamedMergeInput, path: FilePath): PathEntries {
+  return [
+    renamed.base?.entries.get(path),
+    renamed.ours?.entries.get(path),
+    renamed.theirs?.entries.get(path),
+  ];
+}
+
 /** Resolve every path in order; a forced conflict stands in for its path's own resolution. */
 async function resolvePaths(
   plan: TreeMergePlan,
@@ -718,11 +733,7 @@ async function resolvePaths(
       outcomes.push(conflictOutcome(forced));
       continue;
     }
-    const entries = [
-      renamed.base?.entries.get(path),
-      renamed.ours?.entries.get(path),
-      renamed.theirs?.entries.get(path),
-    ] as const;
+    const entries = entriesAt(renamed, path);
     const result = resolvePath(path, ...entries, merger, scope);
     const outcome = result instanceof Promise ? await result : result;
     outcomes.push(
