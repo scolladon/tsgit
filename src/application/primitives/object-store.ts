@@ -7,6 +7,7 @@ import {
   type AlternateChainIo,
   type AlternateDiagnostic,
   resolveObjectSources,
+  type SourceReports,
 } from './internal/alternate-chain.js';
 import { readBigFileThreshold } from './internal/big-file-threshold.js';
 import { gitPathSyntaxOf } from './internal/git-path-syntax.js';
@@ -129,22 +130,31 @@ const buildAlternates = (
 interface Discovery {
   readonly alternates: ReadonlyArray<string>;
   readonly diagnostics: ReadonlyArray<AlternateDiagnostic>;
+  readonly reports: SourceReports;
 }
+
+/** The sources an earlier read linked and what each of them reported then. */
+interface Held {
+  readonly held: ReadonlyArray<string>;
+  readonly heldReports: SourceReports;
+}
+
+const NOTHING_HELD: Held = { held: [], heldReports: new Map() };
 
 const discover = async (
   ctx: Context,
   objectsDir: string,
-  held: ReadonlyArray<string> = [],
+  prior: Held = NOTHING_HELD,
 ): Promise<Discovery> => {
   const list = await readPrimaryList(ctx, objectsDir);
-  if (list === 'absent') return { alternates: [], diagnostics: [] };
+  if (list === 'absent') return { alternates: [], diagnostics: [], reports: new Map() };
   const primaryList = list === 'unreadable' ? {} : { primaryList: list };
-  const { sources, diagnostics } = await resolveObjectSources(ctx, chainIo(ctx), {
-    held,
+  const { sources, diagnostics, reports } = await resolveObjectSources(ctx, chainIo(ctx), {
+    ...prior,
     ...primaryList,
   });
   const alternates = sources.filter((s) => !s.local).map((s) => s.objectsDir);
-  return { alternates, diagnostics };
+  return { alternates, diagnostics, reports };
 };
 
 /** The store plus the one internal hook the session memo needs: bringing a stale list up to date. */
@@ -157,6 +167,7 @@ interface StoreHandle {
 interface StoreState {
   sources: ReadonlyArray<ObjectSource>;
   diagnostics: ReadonlyArray<AlternateDiagnostic>;
+  reports: SourceReports;
   stale: boolean;
   inflight: Promise<void> | undefined;
 }
@@ -172,15 +183,28 @@ const heldAlternateDiagnostics = (state: StoreState): ReadonlyArray<AlternateDia
   return state.diagnostics.filter(({ listedIn }) => heldAlternates.has(listedIn));
 };
 
+/**
+ * The re-read replays what a held alternate reported where it meets it again; one the list
+ * no longer reaches keeps its diagnostics after the re-read's.
+ */
+const withKeptNotReplayed = (
+  found: ReadonlyArray<AlternateDiagnostic>,
+  kept: ReadonlyArray<AlternateDiagnostic>,
+): ReadonlyArray<AlternateDiagnostic> => [
+  ...found,
+  ...kept.filter((diagnostic) => !found.includes(diagnostic)),
+];
+
 /** Add-only: a source already held keeps its registry even when the list no longer names it. */
 const appendDiscovered = async (ctx: Context, state: StoreState): Promise<void> => {
   const [primary] = state.sources as readonly [ObjectSource, ...ObjectSource[]];
   const held = state.sources.map((source) => source.objectsDir);
-  const found = await discover(ctx, primary.objectsDir, held);
+  const found = await discover(ctx, primary.objectsDir, { held, heldReports: state.reports });
   const added = await buildAlternates(ctx, found.alternates);
   const kept = heldAlternateDiagnostics(state);
   state.sources = [...state.sources, ...added];
-  state.diagnostics = [...kept, ...found.diagnostics];
+  state.diagnostics = withKeptNotReplayed(found.diagnostics, kept);
+  state.reports = new Map([...state.reports, ...found.reports]);
 };
 
 const storeOver = (state: StoreState, bigFileThreshold: number): ObjectStore => {
@@ -226,6 +250,7 @@ const createHandle = (
   const state: StoreState = {
     sources: [primary, ...alternates],
     diagnostics: discovery.diagnostics,
+    reports: discovery.reports,
     stale: false,
     inflight: undefined,
   };

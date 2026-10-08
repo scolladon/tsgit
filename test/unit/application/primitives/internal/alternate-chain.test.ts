@@ -305,6 +305,7 @@ describe('resolveObjectSources', () => {
         expect(result).toEqual({
           sources: [{ objectsDir: PRIMARY, local: true, depth: -1 }],
           diagnostics: [],
+          reports: new Map(),
         });
       });
     });

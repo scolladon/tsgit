@@ -6,6 +6,7 @@ import {
   everySourceLoadable,
   getObjectStore,
   narrowObjectSourceAccess,
+  type ObjectStore,
   objectSources,
   peekObjectStore,
 } from '../../../../src/application/primitives/object-store.js';
@@ -27,6 +28,10 @@ const OVERLAP_WAIT_MS = 5_000;
 
 const contextWithAlternates = (text?: string): Context =>
   createMemoryContext({ files: text === undefined ? {} : { [LIST]: encode(text) } });
+
+/** Which entry was unusable and whose list named it, without the reason's detail. */
+const unusable = (diagnostics: ObjectStore['diagnostics']) =>
+  diagnostics.map(({ path, listedIn }) => ({ path, listedIn }));
 
 describe('getObjectStore', () => {
   afterEach(() => {
@@ -280,24 +285,76 @@ describe('getObjectStore', () => {
 
   describe("Given unusable entries in the primary's list and in a held alternate's list", () => {
     describe('When refresh then getObjectStore', () => {
-      it("Then the held alternate's diagnostics survive, ahead of the primary's reported once", async () => {
+      it("Then the diagnostics come back in the first read's depth-first order", async () => {
         // Arrange
-        const ctx = contextWithAlternates('/repo/a/objects\n/repo/gone/objects\n');
+        const ctx = contextWithAlternates('/repo/gone/objects\n/repo/a/objects\n');
         await ctx.fs.mkdir('/repo/a/objects');
         await ctx.fs.writeUtf8('/repo/a/objects/info/alternates', '/repo/missing/objects\n');
         const sut = getObjectStore;
         const store = await sut(ctx);
-        const unusable = (diagnostics: typeof store.diagnostics) =>
-          diagnostics.map(({ path, listedIn }) => ({ path, listedIn }));
-        const nested = { path: '/repo/missing/objects', listedIn: '/repo/a/objects' };
-        const direct = { path: '/repo/gone/objects', listedIn: PRIMARY };
+        const firstRead = unusable(store.diagnostics);
 
         // Act
         store.refresh();
         const result = await sut(ctx);
 
         // Assert
-        expect(unusable(result.diagnostics)).toEqual([nested, direct]);
+        expect(firstRead).toEqual([
+          { path: '/repo/gone/objects', listedIn: PRIMARY },
+          { path: '/repo/missing/objects', listedIn: '/repo/a/objects' },
+        ]);
+        expect(unusable(result.diagnostics)).toEqual(firstRead);
+      });
+    });
+  });
+
+  describe('Given a held alternate also reached through another held alternate', () => {
+    describe('When refresh then getObjectStore', () => {
+      it('Then what it reported comes back once, where the first read put it', async () => {
+        // Arrange
+        const ctx = contextWithAlternates('/repo/a/objects\n/repo/b/objects\n/repo/gone/objects\n');
+        await ctx.fs.mkdir('/repo/a/objects');
+        await ctx.fs.mkdir('/repo/b/objects');
+        await ctx.fs.writeUtf8('/repo/a/objects/info/alternates', '/repo/b/objects\n');
+        await ctx.fs.writeUtf8('/repo/b/objects/info/alternates', '/repo/missing/objects\n');
+        const sut = getObjectStore;
+        const store = await sut(ctx);
+        const firstRead = unusable(store.diagnostics);
+
+        // Act
+        store.refresh();
+        const result = await sut(ctx);
+
+        // Assert
+        expect(firstRead).toEqual([
+          { path: '/repo/gone/objects', listedIn: PRIMARY },
+          { path: '/repo/missing/objects', listedIn: '/repo/b/objects' },
+        ]);
+        expect(unusable(result.diagnostics)).toEqual(firstRead);
+      });
+    });
+  });
+
+  describe('Given a held alternate the rewritten primary list no longer names', () => {
+    describe('When refresh then getObjectStore', () => {
+      it('Then what it reported stays, after what the new list reports', async () => {
+        // Arrange
+        const ctx = contextWithAlternates('/repo/a/objects\n');
+        await ctx.fs.mkdir('/repo/a/objects');
+        await ctx.fs.writeUtf8('/repo/a/objects/info/alternates', '/repo/missing/objects\n');
+        const sut = getObjectStore;
+        const store = await sut(ctx);
+        await ctx.fs.writeUtf8(LIST, '/repo/gone/objects\n');
+
+        // Act
+        store.refresh();
+        const result = await sut(ctx);
+
+        // Assert
+        expect(unusable(result.diagnostics)).toEqual([
+          { path: '/repo/gone/objects', listedIn: PRIMARY },
+          { path: '/repo/missing/objects', listedIn: '/repo/a/objects' },
+        ]);
       });
     });
   });

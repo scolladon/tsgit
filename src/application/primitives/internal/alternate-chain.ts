@@ -160,7 +160,14 @@ interface Resolution {
   readonly seen: Set<string>;
   readonly sources: ObjectSourceSpec[];
   readonly diagnostics: AlternateDiagnostic[];
+  readonly reports: Map<string, ReadonlyArray<AlternateDiagnostic>>;
+  /** What each held source reported when it was linked, by `key`. */
+  readonly heldReports: ReadonlyMap<string, ReadonlyArray<AlternateDiagnostic>>;
+  readonly replayed: Set<AlternateDiagnostic>;
 }
+
+/** Per linked source, what its visit reported: its own list's entries and every source below. */
+export type SourceReports = ReadonlyMap<string, ReadonlyArray<AlternateDiagnostic>>;
 
 /** git trims an entry's trailing slashes, so the POSIX root becomes the empty path `stat` rejects. */
 const TRAILING_SLASHES = /\/+$/;
@@ -296,10 +303,32 @@ const visit = async (
   }
   for (const path of paths) {
     if (!(await isDirectory(resolution, path, holder))) continue;
-    if (resolution.seen.has(resolution.key(path))) continue;
+    if (resolution.seen.has(resolution.key(path))) {
+      replayHeld(resolution, path);
+      continue;
+    }
     resolution.seen.add(resolution.key(path));
     resolution.sources.push({ objectsDir: path, local: false, depth: holderDepth + 1 });
-    await visit(resolution, path, holderDepth + 1, await readList(resolution, path));
+    await visitLinked(resolution, path, holderDepth + 1);
+  }
+};
+
+/** Visits a newly linked source, keeping what it reported for a later re-read to replay. */
+const visitLinked = async (resolution: Resolution, path: string, depth: number): Promise<void> => {
+  const start = resolution.diagnostics.length;
+  await visit(resolution, path, depth, await readList(resolution, path));
+  resolution.reports.set(path, resolution.diagnostics.slice(start));
+};
+
+/**
+ * A held source is not visited again: what it reported when linked is replayed, once, where the
+ * walk meets it, so a re-read keeps the first read's depth-first order.
+ */
+const replayHeld = (resolution: Resolution, path: string): void => {
+  for (const diagnostic of resolution.heldReports.get(resolution.key(path)) ?? []) {
+    if (resolution.replayed.has(diagnostic)) continue;
+    resolution.replayed.add(diagnostic);
+    resolution.diagnostics.push(diagnostic);
   }
 };
 
@@ -327,6 +356,8 @@ export interface ResolveOptions {
    * holds, so neither it nor the list it holds is visited again — only new sources are.
    */
   readonly held?: ReadonlyArray<string>;
+  /** What the held sources reported when they were linked: replayed where the walk meets them. */
+  readonly heldReports?: SourceReports;
   /** The primary's alternates file, when the caller already read it; read through `io` otherwise. */
   readonly primaryList?: Uint8Array;
 }
@@ -339,24 +370,34 @@ export const resolveObjectSources = async (
 ): Promise<{
   readonly sources: ReadonlyArray<ObjectSourceSpec>;
   readonly diagnostics: ReadonlyArray<AlternateDiagnostic>;
+  readonly reports: SourceReports;
 }> => {
   const raw = `${commonGitDir(ctx)}/objects`;
   const cwd = ctx.layout.workDir ?? ctx.cwd;
   const primary = (await primaryRealpath(io, raw, cwd)) ?? raw;
   const key = (await readIgnoreCase(ctx)) ? asciiLower : (path: string) => path;
-  const resolution: Resolution = {
-    ctx,
-    io,
-    key,
-    cwd,
-    seen: new Set([primary, ...(options.held ?? [])].map(key)),
-    sources: [{ objectsDir: primary, local: true, depth: PRIMARY_DEPTH }],
-    diagnostics: [],
-  };
+  const resolution = startResolution({ ctx, io, key, cwd }, primary, options);
   const entries =
     options.primaryList === undefined
       ? await readList(resolution, primary)
       : parseAlternatesFile(options.primaryList);
   await visit(resolution, primary, PRIMARY_DEPTH, entries);
-  return { sources: resolution.sources, diagnostics: resolution.diagnostics };
+  const { sources, diagnostics, reports } = resolution;
+  return { sources, diagnostics, reports };
+};
+
+type Walker = Pick<Resolution, 'ctx' | 'io' | 'key' | 'cwd'>;
+
+const startResolution = (walker: Walker, primary: string, options: ResolveOptions): Resolution => {
+  const { key } = walker;
+  const held = [...(options.heldReports ?? [])];
+  return {
+    ...walker,
+    seen: new Set([primary, ...(options.held ?? [])].map(key)),
+    sources: [{ objectsDir: primary, local: true, depth: PRIMARY_DEPTH }],
+    diagnostics: [],
+    reports: new Map(),
+    heldReports: new Map(held.map(([path, reported]) => [key(path), reported])),
+    replayed: new Set(),
+  };
 };
