@@ -5,9 +5,10 @@
  * Returns `undefined` when the chain loops (a store whose objects do not hash
  * to their names) or terminates at a non-commit.
  */
-import type { Commit, ObjectId } from '../../../domain/objects/index.js';
+import type { Commit, GitObject, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readObject } from '../read-object.js';
+import { peelTagChain } from './peel-chain.js';
 
 export interface PeeledRef {
   readonly commit: Commit;
@@ -21,18 +22,9 @@ export const peelRefToCommit = async (
   ctx: Context,
   oid: ObjectId,
 ): Promise<PeeledRef | undefined> => {
-  let current = await readObject(ctx, oid);
-  let viaTag = false;
-  let taggerDate = 0;
-  const seen = new Set<ObjectId>([oid]);
-  while (current.type === 'tag') {
-    const next = current.data.object;
-    if (seen.has(next)) return undefined;
-    seen.add(next);
-    if (!viaTag) taggerDate = current.data.tagger?.timestamp ?? 0;
-    viaTag = true;
-    current = await readObject(ctx, next);
-  }
-  if (current.type !== 'commit') return undefined;
-  return { commit: current, viaTag, taggerDate };
+  const read = (id: ObjectId): Promise<GitObject> => readObject(ctx, id);
+  const start = { id: oid, result: await read(oid) };
+  const { object, deref, taggerDate } = await peelTagChain(start, read, 'outermost');
+  if (object.type !== 'commit') return undefined;
+  return { commit: object, viaTag: deref, taggerDate };
 };

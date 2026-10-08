@@ -24,7 +24,7 @@ import { branchCheckedOut } from '../../domain/worktree/error.js';
 import type { Context } from '../../ports/context.js';
 import { lookupTypedCommitReference } from '../primitives/internal/lookup-commit-reference.js';
 import { createObjectTypeTable } from '../primitives/internal/object-type-table.js';
-import { peelChain } from '../primitives/internal/peel-chain.js';
+import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
 import { transactionLogging } from '../primitives/internal/ref-transaction-logging.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { readObject } from '../primitives/read-object.js';
@@ -617,9 +617,7 @@ const resolveBranchTarget = async (ctx: Context, startPoint: string): Promise<Ob
  * `actual` reflects the fully peeled type.
  */
 const requireCommit = async (ctx: Context, id: ObjectId): Promise<ObjectId> => {
-  const { id: peeledId, result } = await peelChain(ctx, id, readObject, (object) =>
-    object.type === 'tag' ? object.data.object : undefined,
-  );
+  const { id: peeledId, result } = await peelChain(ctx, id, readObject, tagHop);
   if (result.type !== 'commit') throw unexpectedObjectType('commit', result.type, id);
   return peeledId;
 };

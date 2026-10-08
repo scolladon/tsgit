@@ -7,6 +7,7 @@
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { Commit, GitObject, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
+import { peelTagChain } from '../../primitives/internal/peel-chain.js';
 import { readObject } from '../../primitives/read-object.js';
 
 export interface NameRevTip {
@@ -47,16 +48,8 @@ export const peelLoadedTip = async (
   oid: ObjectId,
   object: GitObject | undefined,
 ): Promise<NameRevTip> => {
-  let current = object;
-  let deref = false;
-  let taggerDate = 0;
-  const seen = new Set<ObjectId>([oid]);
-  while (current?.type === 'tag' && !seen.has(current.data.object)) {
-    seen.add(current.data.object);
-    taggerDate = current.data.tagger?.timestamp ?? 0;
-    deref = true;
-    current = await parseObjectGently(ctx, current.data.object);
-  }
-  const commit = current?.type === 'commit' ? current : undefined;
-  return { commit, deref, taggerDate };
+  const read = (id: ObjectId) => parseObjectGently(ctx, id);
+  const peeled = await peelTagChain({ id: oid, result: object }, read, 'innermost');
+  const commit = peeled.object?.type === 'commit' ? peeled.object : undefined;
+  return { commit, deref: peeled.deref, taggerDate: peeled.taggerDate };
 };

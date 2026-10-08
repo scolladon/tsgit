@@ -20,7 +20,7 @@ import { MERGE_HEAD } from '../../domain/refs/state-files.js';
 import { MERGE } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import { buildIndexFromTree } from '../primitives/build-index-from-tree.js';
-import { peelChain } from '../primitives/internal/peel-chain.js';
+import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
@@ -216,9 +216,7 @@ const resolveTarget = async (ctx: Context, target: string): Promise<ObjectId> =>
   await resolveRevisionExpression(ctx, target);
   const id = await resolveRevisionExpression(ctx, target);
   if (id === undefined) throw revparseUnresolved(target);
-  const { id: commit, result } = await peelChain(ctx, id, readObject, (object) =>
-    object.type === 'tag' ? object.data.object : undefined,
-  );
+  const { id: commit, result } = await peelChain(ctx, id, readObject, tagHop);
   if (result.type !== 'commit') throw unexpectedObjectType('commit', result.type, id);
   return commit;
 };

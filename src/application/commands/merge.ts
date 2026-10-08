@@ -63,7 +63,7 @@ import { writeAutoMerge } from '../primitives/internal/auto-merge-ref.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { readUiDiffAlgorithm } from '../primitives/internal/merge-rename-config.js';
 import { mergedBlobEntries } from '../primitives/internal/merged-blob-entries.js';
-import { peelChain } from '../primitives/internal/peel-chain.js';
+import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
 import { resolveMaxTreeDepth } from '../primitives/internal/resolve-max-tree-depth.js';
 import {
   createLeadingPathScanner,
@@ -597,9 +597,7 @@ const resolveMergeParent = async (ctx: Context, name: string): Promise<MergeRemo
   const spelt = await interpretMergeName(ctx, name);
   const object = await resolveRevisionExpression(ctx, spelt);
   if (object === undefined) throw refNotFound(name as RefName);
-  const { id, result } = await peelChain(ctx, object, readObject, (peeled) =>
-    peeled.type === 'tag' ? peeled.data.object : undefined,
-  );
+  const { id, result } = await peelChain(ctx, object, readObject, tagHop);
   if (result.type !== 'commit') throw refNotFound(name as RefName);
   return { id, name, object, spelt };
 };

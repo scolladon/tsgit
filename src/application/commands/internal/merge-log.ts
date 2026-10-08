@@ -24,7 +24,7 @@ import {
   type LocatedConfigEntry,
 } from '../../primitives/config-read.js';
 import { assertValidBooleanConfig } from '../../primitives/internal/boolean-config-guard.js';
-import { peelChain } from '../../primitives/internal/peel-chain.js';
+import { peelChain, tagHop } from '../../primitives/internal/peel-chain.js';
 import { readObject } from '../../primitives/read-object.js';
 import { walkCommitsByDate } from '../../primitives/walk-commits-by-date.js';
 
@@ -122,9 +122,7 @@ const branchDescription = async (ctx: Context, name: string): Promise<string | u
 
 /** The commit a head names once its tags are peeled — merge only takes heads naming commits. */
 const peeledCommit = async (ctx: Context, id: ObjectId): Promise<ObjectId> => {
-  const peeled = await peelChain(ctx, id, readObject, (object) =>
-    object.type === 'tag' ? object.data.object : undefined,
-  );
+  const peeled = await peelChain(ctx, id, readObject, tagHop);
   return peeled.id;
 };
 

@@ -1,7 +1,8 @@
 import { objectNotFound } from '../../../domain/objects/error.js';
-import type { ObjectId } from '../../../domain/objects/index.js';
+import type { GitObject, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { type ObjectTypeTable, parseTypedObject } from './object-type-table.js';
+import { walkPeelChain } from './peel-chain.js';
 
 type PeelTarget = 'commit' | 'tree' | 'blob' | 'tag';
 
@@ -22,24 +23,23 @@ export const peel = async (
   target: PeelTarget,
   name?: string,
 ): Promise<ObjectId> => {
-  const seen = new Set<ObjectId>();
-  for (let current = id; !seen.has(current); ) {
-    seen.add(current);
-    const obj = await parseTypedObject(ctx, table, current);
-    if (obj === undefined) throw objectNotFound(current);
-    if (obj.type === target) return current;
-    if (obj.type === 'tag') {
-      current = obj.data.object;
-      continue;
-    }
-    if (obj.type === 'commit') {
-      current = obj.data.tree;
-      continue;
-    }
-    if (name !== undefined) reportPeelMismatch(ctx, name, target, obj.type);
-    throw objectNotFound(current);
-  }
-  throw objectNotFound(id);
+  const read = (oid: ObjectId) => parseTypedObject(ctx, table, oid);
+  const nextHop = (obj: GitObject | undefined) => hopToward(obj, target);
+  const walk = await walkPeelChain({ id, result: await read(id) }, read, nextHop);
+  if (walk.end !== 'reached') throw objectNotFound(id);
+  const reached = walk.result;
+  if (reached === undefined) throw objectNotFound(walk.id);
+  if (reached.type === target) return walk.id;
+  if (name !== undefined) reportPeelMismatch(ctx, name, target, reached.type);
+  throw objectNotFound(walk.id);
+};
+
+/** A tag hops to its target and a commit to its root tree, until `target` is reached. */
+const hopToward = (obj: GitObject | undefined, target: PeelTarget): ObjectId | undefined => {
+  if (obj === undefined || obj.type === target) return undefined;
+  if (obj.type === 'tag') return obj.data.object;
+  if (obj.type === 'commit') return obj.data.tree;
+  return undefined;
 };
 
 const reportPeelMismatch = (

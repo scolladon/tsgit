@@ -1,12 +1,13 @@
 import { errorDataCode } from '../../domain/error-data-code.js';
-import type { GitObject, ObjectId, RefName } from '../../domain/objects/index.js';
+import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { refChainTooDeep, refCycleDetected, refNotFound } from '../../domain/refs/error.js';
 import { validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
+import { peelChain, tagHop } from './internal/peel-chain.js';
 import { readObject } from './read-object.js';
 import { getRefStore, type RefStore } from './ref-store.js';
 import { MAX_SYMBOLIC_REF_DEPTH, type ResolveRefOptions } from './types.js';
-import { exceedsMaxPeelDepth, exceedsMaxSymbolicDepth } from './validators.js';
+import { exceedsMaxSymbolicDepth } from './validators.js';
 
 /** {@link resolveDirectChain}'s result: the resolved id, or the ref name the
  *  chain ended on when no candidate exists — never a thrown `REF_NOT_FOUND`,
@@ -195,7 +196,7 @@ const finalizeOutcome = (
 ): Promise<ObjectId> => {
   if (options?.peel !== true) return Promise.resolve(outcome.id);
   // Stryker disable next-line OptionalChaining: equivalent — the guard above returns unless `options?.peel === true`, which no undefined `options` can satisfy, so `options` is always defined here.
-  return peelChain(ctx, outcome.id, options?.maxPeelDepth ?? Number.POSITIVE_INFINITY);
+  return peelTags(ctx, outcome.id, options?.maxPeelDepth ?? Number.POSITIVE_INFINITY);
 };
 
 /**
@@ -250,16 +251,5 @@ export async function resolveDirectChain(
 }
 
 /** Peel tags to any depth, as git does, unless the caller caps it; a chain revisiting an object refuses. */
-async function peelChain(ctx: Context, startId: ObjectId, maxDepth: number): Promise<ObjectId> {
-  let current: ObjectId = startId;
-  const seen = new Set<ObjectId>([startId]);
-  for (;;) {
-    const object: GitObject = await readObject(ctx, current);
-    if (object.type !== 'tag') return current;
-    current = object.data.object;
-    if (seen.has(current) || exceedsMaxPeelDepth(seen.size, maxDepth)) {
-      throw refChainTooDeep(seen.size, []);
-    }
-    seen.add(current);
-  }
-}
+const peelTags = async (ctx: Context, startId: ObjectId, maxDepth: number): Promise<ObjectId> =>
+  (await peelChain(ctx, startId, readObject, tagHop, maxDepth)).id;

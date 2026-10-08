@@ -8,9 +8,9 @@ import {
   invalidSymmetricRange,
   type SymmetricRangeNonCommit,
 } from '../../../domain/commands/error.js';
-import type { GitObject, ObjectId } from '../../../domain/objects/index.js';
+import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import { peelChain } from '../../primitives/internal/peel-chain.js';
+import { peelChain, tagHop } from '../../primitives/internal/peel-chain.js';
 import { tryMergeBasesOf } from '../../primitives/merge-base.js';
 import { readObject } from '../../primitives/read-object.js';
 
@@ -18,12 +18,9 @@ type SymmetricSide =
   | { readonly kind: 'commit'; readonly commit: ObjectId }
   | { readonly kind: 'non-commit'; readonly side: SymmetricRangeNonCommit };
 
-const tagTarget = (object: GitObject): ObjectId | undefined =>
-  object.type === 'tag' ? object.data.object : undefined;
-
 /** git's `lookup_commit_reference` on one side of `A...B`: the side as named, peeled through its tags. */
 const peelSymmetricSide = async (ctx: Context, id: ObjectId): Promise<SymmetricSide> => {
-  const { id: peeled, result } = await peelChain(ctx, id, readObject, tagTarget);
+  const { id: peeled, result } = await peelChain(ctx, id, readObject, tagHop);
   if (result.type === 'commit') return { kind: 'commit', commit: peeled };
   return { kind: 'non-commit', side: { id, type: result.type } };
 };

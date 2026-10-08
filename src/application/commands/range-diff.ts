@@ -16,7 +16,7 @@ import {
 } from '../../domain/commands/error.js';
 import { foldSubject } from '../../domain/objects/commit-message.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
-import type { Commit, GitObject, ObjectId } from '../../domain/objects/index.js';
+import type { Commit, ObjectId } from '../../domain/objects/index.js';
 import {
   type RangeDiffEntry,
   type RenderedPatch,
@@ -31,7 +31,7 @@ import {
   type ObjectTypeTable,
   parseTypedObjectOrAbsent,
 } from '../primitives/internal/object-type-table.js';
-import { peelChain } from '../primitives/internal/peel-chain.js';
+import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
 import { materialisePatchFiles } from '../primitives/materialise-patch-files.js';
 import { readObject } from '../primitives/read-object.js';
 import { walkCommitsByDate } from '../primitives/walk-commits-by-date.js';
@@ -148,12 +148,9 @@ const setUpRange = async (
   return ends;
 };
 
-const tagTarget = (object: GitObject): ObjectId | undefined =>
-  object.type === 'tag' ? object.data.object : undefined;
-
 /** The commit `id` reaches through its tags, or `undefined` for a tree or blob, which git log walks nothing from. */
 const commitBehind = async (ctx: Context, id: ObjectId): Promise<ObjectId | undefined> => {
-  const { id: peeled, result } = await peelChain(ctx, id, readObject, tagTarget);
+  const { id: peeled, result } = await peelChain(ctx, id, readObject, tagHop);
   return result.type === 'commit' ? peeled : undefined;
 };
 

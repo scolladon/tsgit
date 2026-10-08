@@ -10,7 +10,6 @@ import { errorDataCode } from '../../domain/error-data-code.js';
 import {
   FILE_MODE,
   type FilePath,
-  type GitObject,
   type ObjectId,
   type RefName,
 } from '../../domain/objects/index.js';
@@ -20,7 +19,7 @@ import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
 import type { CheckoutMetadata } from '../primitives/internal/apply-smudge-filter.js';
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
-import { peelChain } from '../primitives/internal/peel-chain.js';
+import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
 import type { HeadState } from '../primitives/internal/repo-state.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { assertEverySourceLoadable } from '../primitives/object-store.js';
@@ -160,7 +159,7 @@ const resolveSwitch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise
  * `unable to read tree` does before any branch is validated.
  */
 const switchCommit = async (ctx: Context, object: ObjectId): Promise<ObjectId | undefined> => {
-  const { id, result } = await peelChain(ctx, object, readObject, peelTag);
+  const { id, result } = await peelChain(ctx, object, readObject, tagHop);
   if (result.type === 'commit') return id;
   await readTree(ctx, object);
   return undefined;
@@ -287,9 +286,6 @@ interface PathSource {
   readonly metadata: CheckoutMetadata;
 }
 
-const peelTag = (object: GitObject): ObjectId | undefined =>
-  object.type === 'tag' ? object.data.object : undefined;
-
 /** git dies `invalid reference` naming the revision as given, whatever step of it failed. */
 const resolveSourceRevision = async (ctx: Context, rev: string): Promise<ObjectId> => {
   const id = await resolveRevisionExpression(ctx, rev);
@@ -304,7 +300,7 @@ const resolveSourceRevision = async (ctx: Context, rev: string): Promise<ObjectI
  */
 const resolvePathSource = async (ctx: Context, rev: string): Promise<PathSource> => {
   const named = await resolveSourceRevision(ctx, rev);
-  const { id, result } = await peelChain(ctx, named, readObject, peelTag);
+  const { id, result } = await peelChain(ctx, named, readObject, tagHop);
   const tree = await readTree(ctx, id);
   const treeish = result.type === 'commit' ? id : named;
   return { tree: tree.id, metadata: await checkoutMetadataFor(ctx, rev, treeish) };
