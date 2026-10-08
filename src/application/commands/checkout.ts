@@ -450,15 +450,7 @@ export const checkout = (ctx: Context, opts: CheckoutOptions): Promise<CheckoutR
 const checkoutInScope = async (ctx: Context, opts: CheckoutOptions): Promise<CheckoutResult> => {
   await assertOperationalRepository(ctx);
   requireWorkTree(ctx, 'checkout');
-
-  const switchMode = isSwitch(opts);
-  const pathsMode = isPaths(opts);
-  if (switchMode && pathsMode) {
-    throw invalidOption('paths', 'cannot be combined with rev');
-  }
-  if (!switchMode && !pathsMode) {
-    throw invalidOption('rev', 'either rev or paths must be provided');
-  }
+  const pathsMode = isPathRestore(opts);
 
   ctx.progress.start(CHECKOUT_MATERIALIZE_OP);
   try {
@@ -468,4 +460,17 @@ const checkoutInScope = async (ctx: Context, opts: CheckoutOptions): Promise<Che
   } finally {
     ctx.progress.end(CHECKOUT_MATERIALIZE_OP);
   }
+};
+
+/** Refuses `rev` with `paths`, or neither, then tells whether `paths` was the one given. */
+const isPathRestore = (opts: CheckoutOptions): opts is CheckoutPathsOptions => {
+  const switchMode = isSwitch(opts);
+  const pathsMode = isPaths(opts);
+  if (switchMode && pathsMode) {
+    throw invalidOption('paths', 'cannot be combined with rev');
+  }
+  if (!switchMode && !pathsMode) {
+    throw invalidOption('rev', 'either rev or paths must be provided');
+  }
+  return pathsMode;
 };

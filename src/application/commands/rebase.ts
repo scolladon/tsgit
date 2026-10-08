@@ -1589,11 +1589,21 @@ const resumeInteractiveStop = async (
     return commitStoppedResolution(ctx, state, tree, { head: currentHead, mergeHead: undefined });
   }
   if (state.amend !== currentHead) throw await uncommittedOnTopOfEdit(ctx, currentHead);
-  const amendCommit = await readCommitData(ctx, state.amend);
+  return amendEditStop(ctx, state, tree, currentHead);
+};
+
+/** An edit stop still at the edit'd commit: the staged changes amend it in place. */
+const amendEditStop = async (
+  ctx: Context,
+  state: RebaseState,
+  tree: ObjectId,
+  editedHead: ObjectId,
+): Promise<ObjectId> => {
+  const amendCommit = await readCommitData(ctx, editedHead);
   return commitAndAdvance(ctx, {
     tree,
     parent: amendCommit.parents[0],
-    expected: currentHead,
+    expected: editedHead,
     author: state.author,
     message: amendCommit.message,
     reflog: rebaseContinueReflog(subjectLine(amendCommit.message)),

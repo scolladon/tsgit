@@ -211,27 +211,50 @@ const remoteTableRead = async (
   return 'after-write';
 };
 
+interface BranchClaim {
+  readonly branchName: string;
+  readonly name: RefName;
+  readonly force: boolean;
+  /** git's `ref_exists`, answered once and kept: it both refuses an unforced
+   *  clobber and types the reflog message. */
+  readonly held: boolean;
+}
+
+/** The new branch's ref, refused when it exists unforced or a worktree holds it. */
+const claimBranch = async (ctx: Context, input: BranchCreateInput): Promise<BranchClaim> => {
+  const branchName = await interpretBranchName(ctx, input.name);
+  const name = validateRefName(`${HEADS_PREFIX}${branchName}`);
+  const force = input.force === true;
+  const held = await refResolvesForReading(ctx, name);
+  if (!force && held) throw branchExists(name);
+  if (force && held) await assertNoWorktreeHolds(ctx, name);
+  return { branchName, name, force, held };
+};
+
+/**
+ * An omitted start point is the label git substitutes for it — the current
+ * branch's short name, or `HEAD` when detached — run through the same ladder.
+ */
+const resolveStartCommit = async (
+  ctx: Context,
+  input: BranchCreateInput,
+  mode: TrackMode,
+): Promise<{ readonly startPoint: string; readonly target: ObjectId }> => {
+  const startPoint = input.startPoint ?? (await omittedStartPointLabel(ctx));
+  const start = await resolveBranchTarget(ctx, startPoint).catch((err: unknown) => {
+    throw asUpstreamMissing(err, startPoint, mode);
+  });
+  return { startPoint, target: await requireCommit(ctx, start) };
+};
+
 export const branchCreate = async (
   ctx: Context,
   input: BranchCreateInput,
 ): Promise<BranchCreateResult> => {
   await assertOperationalRepository(ctx);
-  const branchName = await interpretBranchName(ctx, input.name);
-  const name = validateRefName(`${HEADS_PREFIX}${branchName}`);
-  const force = input.force === true;
-  // git's `ref_exists` answers this once and the answer is kept: it both
-  // refuses an unforced clobber and types the reflog message below.
-  const held = await refResolvesForReading(ctx, name);
-  if (!force && held) throw branchExists(name);
-  if (force && held) await assertNoWorktreeHolds(ctx, name);
+  const { branchName, name, force, held } = await claimBranch(ctx, input);
   const mode = await resolveTrackMode(ctx, input);
-  // An omitted start point is the label git substitutes for it — the current
-  // branch's short name, or `HEAD` when detached — run through the same ladder.
-  const startPoint = input.startPoint ?? (await omittedStartPointLabel(ctx));
-  const start = await resolveBranchTarget(ctx, startPoint).catch((err: unknown) => {
-    throw asUpstreamMissing(err, startPoint, mode);
-  });
-  const target = await requireCommit(ctx, start);
+  const { startPoint, target } = await resolveStartCommit(ctx, input, mode);
   const tableRead = await remoteTableRead(ctx, input, mode);
   if (tableRead === 'before-write') await buildRemoteTable(ctx);
   const startRef =

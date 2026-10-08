@@ -1153,6 +1153,21 @@ function promisorPackInput(
   return { id, nameHash: PACK_NAME_HASH_PATHLESS, recency: reachable.size + index };
 }
 
+/** A cruft candidate's mtime: its existing cruft pack's record, else its packs' or loose file's. */
+function cruftCandidateMtimes(
+  run: GcRun,
+  existing: ExistingPacks,
+  cruftCandidates: ReadonlyArray<ObjectId>,
+): Promise<ReadonlyMap<ObjectId, number>> {
+  return computeCruftMtimes(
+    run.ctx,
+    cruftCandidates,
+    run.census.looseSet,
+    existing.existingCruft.mtimes,
+    existing.normal.mtimeOf,
+  );
+}
+
 /** Step 5: the expiry cutoff, over the cruft candidates and the loose-only expiries. */
 async function ageCruftCandidates(
   run: GcRun,
@@ -1163,14 +1178,7 @@ async function ageCruftCandidates(
   const { looseSet } = run.census;
   const { cruftCandidates, expiryOnly } = partition;
   const { pruneCutoff } = run.settings;
-  const cruftMtimes = existing.existingCruft.mtimes;
-  const mtimes = await computeCruftMtimes(
-    ctx,
-    cruftCandidates,
-    looseSet,
-    cruftMtimes,
-    existing.normal.mtimeOf,
-  );
+  const mtimes = await cruftCandidateMtimes(run, existing, cruftCandidates);
   const looseMtimes = await computeCruftMtimes(ctx, expiryOnly, looseSet, NO_MTIMES, NO_MTIMES);
   const { survivors, doomed: cruftDoomed } = partitionByCutoff(
     cruftCandidates,

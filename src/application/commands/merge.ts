@@ -778,20 +778,21 @@ const ortAttempt = async (
     { ourId, theirId, baseId, strategy: settings },
     opts.rev,
   );
-  if (result.kind === 'clean') {
-    return {
-      kind: 'clean',
-      tree: result.tree,
-      note: mergeMadeBy(strategy),
-      autoMerge: result.tree,
-    };
-  }
+  if (result.kind === 'clean') return cleanOrtAttempt(result.tree, strategy);
   return {
     kind: 'conflict',
     weight: conflictWeight(result.conflicts),
     persist: () => persistConflictState(ctx, opts, result, ourId, theirId),
   };
 };
+
+/** A clean ort merge records its tree as the `AUTO_MERGE` too. */
+const cleanOrtAttempt = (tree: ObjectId, strategy: string): StrategyAttempt => ({
+  kind: 'clean',
+  tree,
+  note: mergeMadeBy(strategy),
+  autoMerge: tree,
+});
 
 /**
  * git's `read_tree_trivial` for a merge about to commit over one base: the
