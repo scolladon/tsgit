@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { lstatIfPresent } from '../../../../src/application/primitives/internal/fs-probes.js';
 import { validateHead } from '../../../../src/application/primitives/internal/head-file.js';
 import { assertRepository } from '../../../../src/application/primitives/internal/repo-state.js';
 import {
@@ -2961,18 +2962,17 @@ describe('ref-store', () => {
         const looseHeadsDir = `${ctx.layout.gitDir}/refs/heads/`;
         let inFlight = 0;
         let maxInFlight = 0;
-        const originalLstat = ctx.fs.lstat.bind(ctx.fs);
         const instrumented: Context = {
           ...ctx,
           fs: {
             ...ctx.fs,
-            lstat: async (path: string) => {
-              if (!path.startsWith(looseHeadsDir)) return originalLstat(path);
+            tryLstat: async (path: string) => {
+              if (!path.startsWith(looseHeadsDir)) return lstatIfPresent(base.fs, path);
               inFlight += 1;
               if (inFlight > maxInFlight) maxInFlight = inFlight;
               await Promise.resolve();
               inFlight -= 1;
-              return originalLstat(path);
+              return lstatIfPresent(base.fs, path);
             },
           },
         };
@@ -3706,14 +3706,17 @@ describe('ref-store', () => {
         const base = await buildSeededContext({
           refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
         });
+        // The listing's read of the ref is answered; every later probe of it
+        // — the duplicate check packRefs makes before pruning — refuses.
         const loosePath = `${base.layout.gitDir}/refs/heads/main`;
+        let probes = 0;
         const ctx: Context = {
           ...base,
           fs: {
             ...base.fs,
-            lstat: async (path) => {
-              if (path === loosePath) throw permissionDenied(path);
-              return base.fs.lstat(path);
+            tryLstat: async (path) => {
+              if (path === loosePath && probes++ > 0) throw permissionDenied(path);
+              return lstatIfPresent(base.fs, path);
             },
           },
         };

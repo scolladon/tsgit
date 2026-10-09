@@ -389,6 +389,13 @@ type LooseLeaf =
   | { readonly kind: 'none' }
   | { readonly kind: 'blocked' };
 
+/** What an `lstat` found at a loose path — `absent` when it found nothing. */
+const leafKindOf = (stat: FileStat | undefined): LooseLeafKind => {
+  if (stat === undefined) return 'absent';
+  if (stat.isDirectory) return 'directory';
+  return stat.isSymbolicLink ? 'link' : 'file';
+};
+
 const NO_LEAF: LooseLeaf = { kind: 'none' };
 const BLOCKED_LEAF: LooseLeaf = { kind: 'blocked' };
 const SYMLINK_LEAF: LooseLeaf = { kind: 'symlink' };
@@ -1186,9 +1193,7 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  regular file. One `lstat`, the same call {@link leafKind} makes. */
   async function looseLeafKind(path: string): Promise<LooseLeafKind> {
     try {
-      const stat = await ctx.fs.lstat(path);
-      if (stat.isDirectory) return 'directory';
-      return stat.isSymbolicLink ? 'link' : 'file';
+      return leafKindOf(await lstatIfPresent(ctx.fs, path));
     } catch (err) {
       if (NOT_A_DIRECTORY_PATH_CODES.has(errorCodeOf(err))) return 'absent';
       throw err;

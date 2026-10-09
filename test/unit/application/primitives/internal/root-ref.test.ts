@@ -9,6 +9,7 @@ import {
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import type { ObjectId, RefName } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
+import { rejectionRecordingContext } from '../../../../fixtures/rejection-recording-context.js';
 import { withReftableStorage } from '../reftable-fixtures.js';
 
 type Logged = readonly [level: string, message: string];
@@ -153,6 +154,26 @@ describe('root-ref', () => {
             "cannot lock ref 'CHERRY_PICK_HEAD': unable to resolve reference 'CHERRY_PICK_HEAD': reference broken",
           ],
         ]);
+      });
+    });
+  });
+
+  describe('Given a configured repository holding no AUTO_MERGE and no log of it', () => {
+    describe('When deleteRootRef removes it', () => {
+      it('Then no probe of the ref, its log or packed-refs is answered by a refusal', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await base.fs.writeUtf8(`${base.layout.gitDir}/config`, '[core]\n');
+        await base.fs.writeUtf8(`${base.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const { ctx, rejections } = rejectionRecordingContext(base);
+        const sut = deleteRootRef;
+
+        // Act
+        await sut(ctx, 'AUTO_MERGE' as RefName);
+
+        // Assert
+        const result = rejections();
+        expect(result).toEqual([]);
       });
     });
   });
