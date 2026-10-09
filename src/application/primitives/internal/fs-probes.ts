@@ -46,3 +46,18 @@ export const readUtf8IfPresent = async (
   if (fs.tryReadUtf8 === undefined) return readUtf8Fallback(fs, path);
   return fs.tryReadUtf8(path);
 };
+
+/** A missing file, or a missing directory on its path: nothing there to remove, list or stat. */
+export const isAbsent = (error: unknown): boolean => {
+  const code = errorDataCode(error);
+  return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';
+};
+
+/** `rm`, answered without a refusal where the path is {@link isAbsent absent}. */
+export async function removeIfPresent(fs: FileSystem, path: string): Promise<void> {
+  try {
+    await fs.rm(path);
+  } catch (error) {
+    if (!isAbsent(error)) throw error;
+  }
+}

@@ -1008,12 +1008,12 @@ export async function runGcTask(
   // git's repack loads the promisor remotes before pack-objects reads `[pack]`.
   await assertValidPromisorRemoteConfig(ctx);
   await assertValidPackIntConfig(ctx);
-  return { ran: true, result: await repack(ctx, { ctx, packDir, settings, census }) };
+  return { ran: true, result: await repack({ ctx, packDir, settings, census }) };
 }
 
 /** Steps 1b to 11: classify, plan, write, retire, prune, tidy, then measure what is left. */
-async function repack(ctx: Context, run: GcRun): Promise<GcResult> {
-  const { census } = run;
+async function repack(run: GcRun): Promise<GcResult> {
+  const { ctx, census } = run;
   const existing = await readExistingPacks(run);
   const plan = await planRepack(run, existing);
   const outputs = await writeRepack(run, plan, existing);

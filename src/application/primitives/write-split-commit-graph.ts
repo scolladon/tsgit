@@ -39,6 +39,7 @@ import {
   rootCommits,
 } from './internal/commit-graph-passes.js';
 import { correctedDatePass } from './internal/corrected-date-pass.js';
+import { isAbsent, removeIfPresent } from './internal/fs-probes.js';
 import {
   type LocalGraphLayer,
   loadCommitGraphBaseLayers,
@@ -59,9 +60,7 @@ import {
   commitGraphRoots,
   declinesChangedPathsVersion,
   GRAPH_LAYER_SUFFIX,
-  isAbsent,
   makeReplaceable,
-  removeIfPresent,
   serializeCommitGraphFile,
 } from './write-commit-graph.js';
 
@@ -175,7 +174,7 @@ async function settleSingleFile(ctx: Context, base: readonly LocalGraphLayer[]):
   const gitDir = commonGitDir(ctx);
   const single = commitGraphPath(gitDir);
   const top = base[base.length - 1];
-  if (top === undefined) return removeIfPresent(ctx, single);
+  if (top === undefined) return removeIfPresent(ctx.fs, single);
   if (top.path === single) await ctx.fs.rename(single, commitGraphLayerPath(gitDir, top.hash));
 }
 

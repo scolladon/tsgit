@@ -7,7 +7,6 @@
  * a chain cannot name it where it sits, so the write stands alone over it.
  */
 import type { CommitGraphLayer } from '../../../domain/commit/commit-graph.js';
-import { errorDataCode } from '../../../domain/error-data-code.js';
 import { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { getObjectStore, type ObjectSource } from '../object-store.js';
@@ -16,7 +15,7 @@ import {
   commitGraphLayerPathIn,
   commitGraphPathIn,
 } from '../path-layout.js';
-import { readUtf8IfPresent } from './fs-probes.js';
+import { isAbsent, readUtf8IfPresent } from './fs-probes.js';
 import { parseLayerOrUndefined } from './read-commit-graph.js';
 
 export interface LocalGraphLayer {
@@ -27,11 +26,6 @@ export interface LocalGraphLayer {
   /** Found in the repository's own object directory — only such a layer may be merged or moved. */
   readonly local: boolean;
 }
-
-const isAbsent = (error: unknown): boolean => {
-  const code = errorDataCode(error);
-  return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';
-};
 
 /** A source as the writer reads it: its own directory through `ctx.fs`, an alternate through the store's view. */
 interface ReadableSource {

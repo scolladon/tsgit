@@ -53,6 +53,7 @@ import {
   type UnparsedRefusal,
 } from './internal/commit-graph-passes.js';
 import { correctedDatePass } from './internal/corrected-date-pass.js';
+import { isAbsent, removeIfPresent } from './internal/fs-probes.js';
 import {
   type LocalGraphLayer,
   loadCommitGraphBaseLayers,
@@ -208,20 +209,6 @@ export async function serializeCommitGraphFile(
 
 export const GRAPH_LAYER_SUFFIX = '.graph';
 
-/** A missing file, or a missing directory on its path: nothing there to remove, list or stat. */
-export const isAbsent = (error: unknown): boolean => {
-  const code = errorDataCode(error);
-  return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';
-};
-
-export async function removeIfPresent(ctx: Context, path: string): Promise<void> {
-  try {
-    await ctx.fs.rm(path);
-  } catch (error) {
-    if (!isAbsent(error)) throw error;
-  }
-}
-
 async function chainLayerNames(ctx: Context, layersDir: string): Promise<readonly string[]> {
   try {
     const entries = await ctx.fs.readdir(layersDir);
@@ -238,10 +225,10 @@ async function chainLayerNames(ctx: Context, layersDir: string): Promise<readonl
  */
 async function expireCommitGraphChain(ctx: Context): Promise<void> {
   const gitDir = commonGitDir(ctx);
-  await removeIfPresent(ctx, commitGraphChainPath(gitDir));
+  await removeIfPresent(ctx.fs, commitGraphChainPath(gitDir));
   const layersDir = commitGraphLayersDir(gitDir);
   for (const name of await chainLayerNames(ctx, layersDir)) {
-    await removeIfPresent(ctx, `${layersDir}/${name}`);
+    await removeIfPresent(ctx.fs, `${layersDir}/${name}`);
   }
 }
 

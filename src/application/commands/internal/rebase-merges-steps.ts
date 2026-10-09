@@ -21,7 +21,7 @@ import {
 import type { Context } from '../../../ports/context.js';
 import { applyMergeToWorktree } from '../../primitives/apply-merge-to-worktree.js';
 import { createCommit } from '../../primitives/create-commit.js';
-import type { IndexLock } from '../../primitives/internal/index-lock.js';
+import { acquireIndexLock, type IndexLock } from '../../primitives/internal/index-lock.js';
 import { mergeBasesOf } from '../../primitives/merge-base.js';
 import { readIndex } from '../../primitives/read-index.js';
 import { getRefStore } from '../../primitives/ref-store.js';
@@ -29,7 +29,6 @@ import { resolveRef } from '../../primitives/resolve-ref.js';
 import { resolveCommitIsh } from './commit-ish.js';
 import { resolveCurrentIdentity } from './current-identity.js';
 import { treeOf } from './history-rewrite.js';
-import { acquireIndexLock } from './index-update.js';
 import { writeMergeMode, writeMergeMsg } from './merge-state.js';
 import { hardResetWorktreeToCommit } from './reset-worktree.js';
 

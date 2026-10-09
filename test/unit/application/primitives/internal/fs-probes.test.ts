@@ -1,10 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
+  isAbsent,
   lstatIfPresent,
   readUtf8IfPresent,
+  removeIfPresent,
 } from '../../../../../src/application/primitives/internal/fs-probes.js';
-import { notADirectory, type TsgitError } from '../../../../../src/domain/error.js';
+import {
+  fileNotFound,
+  notADirectory,
+  permissionDenied,
+  type TsgitError,
+} from '../../../../../src/domain/error.js';
 import type { FileSystem } from '../../../../../src/ports/file-system.js';
 
 const withFsOverride = (fs: FileSystem, overrides: Partial<FileSystem>): FileSystem => ({
@@ -178,6 +185,81 @@ describe('readUtf8IfPresent', () => {
 
         // Assert
         expect(result).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('isAbsent', () => {
+  describe.each([
+    { refusal: 'FILE_NOT_FOUND', error: fileNotFound('/repo/x'), expected: true },
+    { refusal: 'NOT_A_DIRECTORY', error: notADirectory('/repo/x'), expected: true },
+    { refusal: 'PERMISSION_DENIED', error: permissionDenied('/repo/x'), expected: false },
+    { refusal: 'no code', error: new Error('boom'), expected: false },
+  ])('Given a refusal carrying $refusal', ({ error, expected }) => {
+    describe('When classified', () => {
+      it(`Then it is ${expected ? 'absent' : 'not absent'}`, () => {
+        // Arrange
+        const sut = isAbsent;
+
+        // Act
+        const result = sut(error);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('removeIfPresent', () => {
+  describe('Given a present file', () => {
+    describe('When removed', () => {
+      it('Then the file is gone', async () => {
+        // Arrange
+        const { fs } = createMemoryContext();
+        await fs.writeUtf8('/repo/present.txt', 'hi');
+        const sut = removeIfPresent;
+
+        // Act
+        await sut(fs, '/repo/present.txt');
+
+        // Assert
+        expect(await fs.exists('/repo/present.txt')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an absent file', () => {
+    describe('When removed', () => {
+      it('Then it resolves without a refusal', async () => {
+        // Arrange
+        const { fs } = createMemoryContext();
+        const sut = removeIfPresent;
+
+        // Act
+        const result = sut(fs, '/repo/absent.txt');
+
+        // Assert
+        await expect(result).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an rm refused for another reason', () => {
+    describe('When removed', () => {
+      it('Then the refusal propagates', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const denied = permissionDenied('/repo/locked.txt');
+        const fs = withFsOverride(base.fs, { rm: () => Promise.reject(denied) });
+        const sut = removeIfPresent;
+
+        // Act
+        const result = sut(fs, '/repo/locked.txt');
+
+        // Assert
+        await expect(result).rejects.toBe(denied);
       });
     });
   });

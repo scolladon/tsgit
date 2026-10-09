@@ -219,20 +219,19 @@ const createEntryPlanner = async (
     }
     const flushed = queued;
     queued = [];
-    const leaf = await archiveLeaf(ctx, entry, isSet, subst);
-    return leaf === undefined ? flushed : [...flushed, leaf];
+    if (await isExportIgnored(attributeKey(path, mode))) return flushed;
+    return [...flushed, await archiveLeaf(ctx, entry, isSet, subst)];
   };
 };
 
-/** A non-directory entry as archived, `undefined` when export-ignored. */
+/** A non-directory entry, not export-ignored, as archived. */
 const archiveLeaf = async (
   ctx: Context,
   entry: WalkTreeEntry,
   isSet: AttributeCheck,
   subst: SubstExpander | undefined,
-): Promise<ArchiveEntry | undefined> => {
+): Promise<ArchiveEntry> => {
   const { path, id, mode } = entry;
-  if (await isSet(attributeKey(path, mode), EXPORT_IGNORE)) return undefined;
   if (mode === FILE_MODE.GITLINK) return { path, mode, oid: id };
   const content = await readEntryContent(ctx, entry, isSet, subst);
   return { path, mode, oid: id, content };

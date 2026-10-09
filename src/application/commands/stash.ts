@@ -25,6 +25,7 @@ import { compareWorkingTreeEntry } from '../primitives/compare-working-tree-entr
 import { createCommit } from '../primitives/create-commit.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { hashBlob } from '../primitives/hash-blob.js';
+import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import { pathIsOccupied } from '../primitives/internal/path-occupied.js';
 import { maybeBuildAttributeProvider } from '../primitives/internal/read-gitattributes.js';
@@ -359,7 +360,7 @@ interface ResetInputs {
 /** Reset the working tree + index to HEAD (or the index tree under `--keep-index`). */
 const resetAfterPush = async (
   ctx: Context,
-  lock: Awaited<ReturnType<typeof acquireIndexLock>>,
+  lock: IndexLock,
   inputs: ResetInputs,
 ): Promise<void> => {
   const { base, iTree, untracked, opts } = inputs;
@@ -448,7 +449,7 @@ const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> =>
 /** Reinstate the staged state (`--index`) when the index-side 3-way merge is clean. */
 const reinstateIndex = async (
   ctx: Context,
-  lock: Awaited<ReturnType<typeof acquireIndexLock>>,
+  lock: IndexLock,
   args: {
     readonly bTree: ObjectId;
     readonly cTree: ObjectId;
@@ -542,7 +543,7 @@ interface StashApplication {
 /** Merge the stash into the index and work tree, then restore its index and untracked files. */
 const applyUnderLock = async (
   ctx: Context,
-  lock: Awaited<ReturnType<typeof acquireIndexLock>>,
+  lock: IndexLock,
   { workDir, w, input, parsed, bTree, uTree }: StashApplication,
 ): Promise<StashApplyResult> => {
   const currentIndex = await readIndex(ctx);
