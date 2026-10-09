@@ -295,7 +295,7 @@ done
 # shipped in every distribution form, none removable without giving back
 # git's own builtin_diffstat parity (numstat/stat count the RAW blob, never
 # the textconv OUTPUT the patch hunk renders).
-# Raised 1014 -> 1365 KiB by the alternates object lookup and the git-faithfulness
+# Raised 1014 -> 1366 KiB by the alternates object lookup and the git-faithfulness
 # work that shipped with it: the measured tarball lands at 1 397 649 B, 359 313 B
 # over the old cap (main packs 1 038 052 B on the same toolchain, so the branch
 # adds 359 597 B, +34.6%), measured on a clean build after a dedicated trim pass.
@@ -312,8 +312,11 @@ done
 # same code (692 668 -> 997 046 B raw). This is the largest single raise in the
 # list because it folds a whole release's worth of git surface into one change
 # set; none is removable without dropping the parity each piece exists to add.
+# The per-call-overhead perf fixes that followed (ref-miss and root-ref probes,
+# peeled-tree type read, unordered status scan, fsck offset sort) add 652 B more
+# (1 398 301 B, past 1365 KiB), hence 1366.
 # Per-row size-limit attribution: docs/design/bundle-size-optimization.md.
-SIZE_CAP=$((1365 * 1024))
+SIZE_CAP=$((1366 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

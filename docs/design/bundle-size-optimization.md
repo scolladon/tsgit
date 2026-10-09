@@ -480,13 +480,17 @@ previous raises left); passing rows are unchanged.
 
 | Row | main | measured | Δ | old limit | new limit | Attributable to |
 |---|--:|--:|--:|--:|--:|---|
-| Browser bundle (no-build) | 217 676 | 320 859 | +103 183 | 217.82 kB | 320.9 kB | every layer below — the bundle inlines all of them |
-| Full library | 270 101 | 376 580 | +106 479 | 335 kB | 376.6 kB | every layer below |
+| Browser bundle (no-build) | 217 676 | 321 035 | +103 359 | 217.82 kB | 321.1 kB | every layer below — the bundle inlines all of them |
+| Full library | 270 101 | 376 932 | +106 831 | 335 kB | 377 kB | every layer below |
 | Chunks: domain | 80 279 | 119 137 | +38 858 | 80.41 kB | 119.2 kB | export-subst pretty expander (`domain/pretty`), merge renames / directory renames / merge command line (`domain/merge`), ERE automaton and bounded back-reference matcher (`domain/regex`), commit-graph split and Bloom (`domain/commit`), histogram / patience (`domain/diff`), new error members |
-| Chunks: primitives | 74 500 | 98 645 | +24 145 | 74.54 kB | 98.7 kB | alternates chain and object store, limit-list and closure walks, signature verification, ambiguous-name candidates, split commit-graph writer, merge-base, config reads |
-| Chunks: commands-internal | 44 995 | 79 128 | +34 133 | 46 kB | 79.2 kB | fetch ref map and branch tracking, octopus merge, rebase-merges steps, archive export-subst, fsck alternates roots and commit-graph verification |
+| Chunks: primitives | 74 500 | 98 775 | +24 275 | 74.54 kB | 98.8 kB | alternates chain and object store, limit-list and closure walks, signature verification, ambiguous-name candidates, split commit-graph writer, merge-base, config reads |
+| Chunks: commands-internal | 44 995 | 79 241 | +34 246 | 46 kB | 79.3 kB | fetch ref map and branch tracking, octopus merge, rebase-merges steps, archive export-subst, fsck alternates roots and commit-graph verification |
 | Chunks: repository | 7 857 | 9 091 | +1 234 | 7.9 kB | 9.1 kB | facade wiring for the new command options |
 | Command (fetch) | 1 496 | 3 169 | +1 673 | 3 kB | 3.2 kB | fetch's refspec / ref-map rework |
 
-The npm tarball cap moved 1014 → 1365 KiB (1 038 052 → 1 397 649 B); its attribution
+The per-call-overhead perf fixes that followed (ref-miss and root-ref probes, peeled-tree
+type read, unordered status scan, fsck offset sort) account for +176 B browser, +352 B full
+library, +130 B primitives and +113 B commands-internal of the measured column.
+
+The npm tarball cap moved 1014 → 1366 KiB (1 038 052 → 1 398 301 B); its attribution
 lives in `tooling/verify-tarball.sh`'s cap block.
