@@ -373,7 +373,10 @@ export function commitDataAt(
 }
 
 /** Reads the parent positions for a layer-local position, following EDGE for an octopus. */
-function commitParentPositionsAt(layer: CommitGraphLayer, localPos: number): CommitParentPositions {
+export function commitParentPositionsAt(
+  layer: CommitGraphLayer,
+  localPos: number,
+): CommitParentPositions {
   const parentsOffset =
     layer._commitDataOffset + localPos * layer._commitDataEntrySize + layer._hashLength;
   const parent1Raw = layer._view.getUint32(parentsOffset);

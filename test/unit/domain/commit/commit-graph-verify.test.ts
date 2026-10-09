@@ -66,7 +66,7 @@ describe('commit-graph verify structure', () => {
         const sut = graphParentPositions;
 
         // Act
-        const result = sut(layer, 2, { correctedCommitDates: true });
+        const result = sut(layer, 2);
 
         // Assert
         expect(result).toEqual([0, 1]);

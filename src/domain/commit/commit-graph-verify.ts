@@ -5,12 +5,7 @@
  */
 import { bytesToHex, compareBytes } from '../objects/encoding.js';
 import type { ObjectId } from '../objects/index.js';
-import {
-  type CommitDataOptions,
-  type CommitGraphLayer,
-  commitDataAt,
-  graphParentsAt,
-} from './commit-graph.js';
+import { type CommitGraphLayer, commitParentPositionsAt, graphParentsAt } from './commit-graph.js';
 import type { CommitGraphLoadFailure } from './commit-graph-load.js';
 
 /** One disagreement `git commit-graph verify` reports, keyed by the check that failed. */
@@ -109,9 +104,8 @@ export function findGraphPosition(layer: CommitGraphLayer, oid: Uint8Array): num
 export function graphParentPositions(
   layer: CommitGraphLayer,
   position: number,
-  options: CommitDataOptions,
 ): ReadonlyArray<number> {
-  const data = commitDataAt(layer, position, options);
+  const data = commitParentPositionsAt(layer, position);
   const second = data.parent2Pos === undefined ? [] : [data.parent2Pos];
   const first = data.parent1Pos === undefined ? [] : [data.parent1Pos];
   return [...first, ...second, ...data.additionalParentPositions];

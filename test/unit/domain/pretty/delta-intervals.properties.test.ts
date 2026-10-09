@@ -8,11 +8,8 @@
  */
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import {
-  DELTA_RADIX,
-  DELTA_SEPARATOR,
-  decodeDeltaIntervals,
-} from '../../../../src/domain/pretty/delta-intervals.js';
+import { decodeDeltaIntervals } from '../../../../src/domain/pretty/delta-intervals.js';
+import { encodeDeltas } from '../../../../tooling/utf8-width-encoding.ts';
 
 const NUM_RUNS = 100;
 const MAX_CODE_POINT = 0x10ffff;
@@ -20,12 +17,6 @@ const MAX_CODE_POINT = 0x10ffff;
 const arbAscendingCodePoints = fc
   .array(fc.integer({ min: 0, max: MAX_CODE_POINT }), { minLength: 1, maxLength: 40 })
   .map((codePoints) => [...codePoints].sort((left, right) => left - right));
-
-const encode = (codePoints: readonly number[]): string =>
-  codePoints
-    .map((codePoint, index) => codePoint - (codePoints[index - 1] ?? 0))
-    .map((delta) => delta.toString(DELTA_RADIX))
-    .join(DELTA_SEPARATOR);
 
 describe('decodeDeltaIntervals properties', () => {
   describe('Given any ascending code point list', () => {
@@ -37,7 +28,7 @@ describe('decodeDeltaIntervals properties', () => {
             const sut = decodeDeltaIntervals;
 
             // Act
-            const result = sut(encode(codePoints));
+            const result = sut(encodeDeltas(codePoints));
 
             // Assert
             expect(result).toEqual(codePoints);

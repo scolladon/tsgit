@@ -30,7 +30,7 @@ describe('commit-graph verify structure properties', () => {
             expect(result).toEqual({ verdicts: [], fatal: false });
             for (let position = 0; position < layer.commitCount; position += 1) {
               expect(findGraphPosition(layer, graphOidBytesAt(layer, position))).toBe(position);
-              const parents = graphParentPositions(layer, position, { correctedCommitDates: true });
+              const parents = graphParentPositions(layer, position);
               expect(parents.every((parent) => parent < layer.commitCount)).toBe(true);
             }
           }),

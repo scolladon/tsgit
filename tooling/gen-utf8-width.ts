@@ -17,7 +17,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DELTA_RADIX, DELTA_SEPARATOR } from '../src/domain/pretty/delta-intervals.ts';
+import { encodeDeltas } from './utf8-width-encoding.ts';
 
 const OUTPUT_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -47,12 +47,6 @@ const requireTable = (tables: ReadonlyMap<string, readonly number[]>, name: stri
   }
   return table;
 };
-
-const encodeDeltas = (table: readonly number[]): string =>
-  table
-    .map((codePoint, index) => codePoint - (index === 0 ? 0 : (table[index - 1] as number)))
-    .map((delta) => delta.toString(DELTA_RADIX))
-    .join(DELTA_SEPARATOR);
 
 const renderTable = (exportName: string, table: readonly number[]): string =>
   `export const ${exportName}: readonly number[] = decodeDeltaIntervals('${encodeDeltas(table)}');\n`;

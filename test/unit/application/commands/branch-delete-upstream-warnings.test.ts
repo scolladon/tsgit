@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, type Mock, vi } from 'vitest';
 
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { branchDelete } from '../../../../src/application/commands/branch.js';
@@ -27,6 +27,8 @@ const MERGED_TO_UPSTREAM =
 interface Seeded {
   readonly ctx: Context;
   readonly logs: string[];
+  /** The logger's `warn`, spied on for the metadata each warning carries. */
+  readonly warn: Mock<(message: string, data?: unknown) => void>;
   readonly tree: ObjectId;
   readonly root: ObjectId;
   /** The commit HEAD stands on. */
@@ -49,11 +51,14 @@ const writeCommitOn = (
 
 const seed = async (): Promise<Seeded> => {
   const logs: string[] = [];
+  const warn = vi.fn((message: string, _data?: unknown) => {
+    logs.push(`warning: ${message}`);
+  });
   const base = createMemoryContext();
   const ctx = {
     ...base,
     logger: {
-      warn: (message: string) => logs.push(`warning: ${message}`),
+      warn,
       error: (message: string) => logs.push(`error: ${message}`),
     },
   } as Context;
@@ -66,7 +71,7 @@ const seed = async (): Promise<Seeded> => {
     { kind: 'setSymbolic', name: 'HEAD' as RefName, target: MAIN },
     { kind: 'set', name: MAIN, id: head },
   ]);
-  return { ctx, logs, tree, root, head, side };
+  return { ctx, logs, warn, tree, root, head, side };
 };
 
 const plantRef = (ctx: Context, name: RefName, id: ObjectId): Promise<unknown> =>
@@ -92,7 +97,7 @@ describe('Given a branch its upstream contains but HEAD does not', () => {
   describe('When branch delete runs unforced', () => {
     it('Then it warns that HEAD has not merged it and removes the ref', async () => {
       // Arrange
-      const { ctx, logs, side } = await seed();
+      const { ctx, logs, warn, side } = await seed();
       await plantRef(ctx, TOPIC, side);
       await plantRef(ctx, UPSTREAM, side);
       await configureUpstream(ctx, UPSTREAM);
@@ -104,6 +109,11 @@ describe('Given a branch its upstream contains but HEAD does not', () => {
       // Assert
       expect(result).toEqual({ name: TOPIC });
       expect(logs).toEqual([`warning: ${MERGED_TO_UPSTREAM}`]);
+      expect(warn).toHaveBeenCalledWith(MERGED_TO_UPSTREAM, {
+        branch: 'topic',
+        upstream: UPSTREAM,
+        merged: true,
+      });
     });
   });
 });
@@ -112,7 +122,7 @@ describe('Given a branch HEAD contains but its upstream does not', () => {
   describe('When branch delete runs unforced', () => {
     it('Then it warns that HEAD alone has merged it and refuses', async () => {
       // Arrange
-      const { ctx, logs, head, side } = await seed();
+      const { ctx, logs, warn, head, side } = await seed();
       await plantRef(ctx, TOPIC, head);
       await plantRef(ctx, UPSTREAM, side);
       await configureUpstream(ctx, UPSTREAM);
@@ -126,6 +136,11 @@ describe('Given a branch HEAD contains but its upstream does not', () => {
       expect(logs).toEqual([
         "warning: not deleting branch 'topic' that is not yet merged to\n         'refs/heads/up', even though it is merged to HEAD",
       ]);
+      expect(warn).toHaveBeenCalledWith(expect.any(String), {
+        branch: 'topic',
+        upstream: UPSTREAM,
+        merged: false,
+      });
     });
   });
 });

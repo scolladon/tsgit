@@ -35,30 +35,32 @@ describe('decodeDeltaIntervals', () => {
       expect(result).toEqual([0x300, 0x36f, 0x36f, 0x392]);
     });
   });
+});
 
-  describe('Given the generated zero-width table, When decoded at module evaluation', () => {
+describe('utf8-width-tables', () => {
+  describe('Given the generated zero-width table, When the module is loaded', () => {
     it("Then it holds git's zero-width intervals", () => {
       // Arrange
-      const sut = ZERO_WIDTH_INTERVALS;
+      const expected = GIT_ZERO_WIDTH_INTERVALS;
 
       // Act
-      const result = [...sut];
+      const result = [...ZERO_WIDTH_INTERVALS];
 
       // Assert
-      expect(result).toEqual(GIT_ZERO_WIDTH_INTERVALS);
+      expect(result).toEqual(expected);
     });
   });
 
-  describe('Given the generated double-width table, When decoded at module evaluation', () => {
+  describe('Given the generated double-width table, When the module is loaded', () => {
     it("Then it holds git's double-width intervals", () => {
       // Arrange
-      const sut = DOUBLE_WIDTH_INTERVALS;
+      const expected = GIT_DOUBLE_WIDTH_INTERVALS;
 
       // Act
-      const result = [...sut];
+      const result = [...DOUBLE_WIDTH_INTERVALS];
 
       // Assert
-      expect(result).toEqual(GIT_DOUBLE_WIDTH_INTERVALS);
+      expect(result).toEqual(expected);
     });
   });
 });
