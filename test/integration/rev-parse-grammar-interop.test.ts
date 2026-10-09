@@ -106,6 +106,14 @@ const buildRepository = (repo: string): void => {
     input: mistyped,
   }).trim();
   git(repo, 'update-ref', '--no-deref', 'refs/tags/mt', mistypedTag);
+  const unparseableTree = runGit(
+    ['-C', repo, 'hash-object', '-t', 'tree', '-w', '--stdin', '--literally'],
+    { input: 'not a tree' },
+  ).trim();
+  const overUnparseableTree = runGit(['-C', repo, 'commit-tree', unparseableTree, '-m', 'ut'], {
+    env: identityAt(200),
+  }).trim();
+  git(repo, 'update-ref', 'refs/tags/ut', overUnparseableTree);
 };
 
 describe.skipIf(!GIT_AVAILABLE)('integration — evaluateRevision typing parity with git', () => {
@@ -164,7 +172,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse suffix grammar parity 
     await rm(repo, { recursive: true, force: true });
   });
 
-  describe('Given commits, a six-deep tag chain and a tag naming an absent object', () => {
+  describe('Given commits, a six-deep tag chain, a tag naming an absent object and a commit over an unparseable tree', () => {
     describe.each([
       'HEAD~',
       'HEAD~~',
@@ -186,6 +194,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse suffix grammar parity 
       'mt^{tree}',
       'mt^{blob}',
       'mt^{object}',
+      'ut^{tree}',
     ])('When git rev-parse and revParse read %s', (argument) => {
       it('Then both resolve the same object and print the same errors', async () => {
         // Arrange

@@ -1,7 +1,11 @@
 import { objectNotFound } from '../../../domain/objects/error.js';
-import type { GitObject, ObjectId } from '../../../domain/objects/index.js';
+import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import { type ObjectTypeTable, parseTypedObject } from './object-type-table.js';
+import {
+  type ObjectTypeTable,
+  type PeelHopObject,
+  parseTypedPeelHop,
+} from './object-type-table.js';
 import { walkPeelChain } from './peel-chain.js';
 
 type PeelTarget = 'commit' | 'tree' | 'blob' | 'tag';
@@ -23,8 +27,8 @@ export const peel = async (
   target: PeelTarget,
   name?: string,
 ): Promise<ObjectId> => {
-  const read = (oid: ObjectId) => parseTypedObject(ctx, table, oid);
-  const nextHop = (obj: GitObject | undefined) => hopToward(obj, target);
+  const read = (oid: ObjectId) => parseTypedPeelHop(ctx, table, oid);
+  const nextHop = (obj: PeelHopObject | undefined) => hopToward(obj, target);
   const walk = await walkPeelChain({ id, result: await read(id) }, read, nextHop);
   if (walk.end !== 'reached') throw objectNotFound(id);
   const reached = walk.result;
@@ -35,7 +39,7 @@ export const peel = async (
 };
 
 /** A tag hops to its target and a commit to its root tree, until `target` is reached. */
-const hopToward = (obj: GitObject | undefined, target: PeelTarget): ObjectId | undefined => {
+const hopToward = (obj: PeelHopObject | undefined, target: PeelTarget): ObjectId | undefined => {
   if (obj === undefined || obj.type === target) return undefined;
   if (obj.type === 'tag') return obj.data.object;
   if (obj.type === 'commit') return obj.data.tree;

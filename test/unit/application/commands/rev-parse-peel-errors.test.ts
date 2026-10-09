@@ -12,7 +12,7 @@ import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { CommitData, ObjectId } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { writeForgedTagLoop } from '../primitives/fixtures.js';
+import { writeForgedTagLoop, writeRawObjectBytes } from '../primitives/fixtures.js';
 
 const AUTHOR = {
   name: 'Test',
@@ -473,6 +473,24 @@ describe('Given a commit naming a tree the store lacks', () => {
 
       // Assert
       expect(result).toBe('OBJECT_NOT_FOUND');
+    });
+  });
+});
+
+describe('Given a commit whose tree object does not parse as a tree', () => {
+  describe('When resolveRevision peels it with ^{tree}', () => {
+    it("Then the tree's id answers unparsed, as git's peel leaves its entries to the walk", async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await init(ctx);
+      const tree = await writeRawObjectBytes(ctx, 'tree', new TextEncoder().encode('not a tree'));
+      const commit = await writeCommit(ctx, tree, []);
+
+      // Act
+      const result = await resolveRevision(ctx, `${commit}^{tree}`);
+
+      // Assert
+      expect(result).toBe(tree);
     });
   });
 });

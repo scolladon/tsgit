@@ -521,8 +521,8 @@ export async function resolveLooseArm(
 }
 
 /** Memoised parse for a resolved object's type+content — synchronous, so
- *  neither caller below pays an extra microtask hop for it. */
-function parseMemoised(
+ *  no caller pays an extra microtask hop for it. */
+export function parseResolvedObject(
   ctx: Context,
   id: ObjectId,
   type: ObjectType,
@@ -555,7 +555,7 @@ export async function resolveObject(
     0,
     mode,
   );
-  return parseMemoised(ctx, id, type, content);
+  return parseResolvedObject(ctx, id, type, content);
 }
 
 /** Like `resolveObject`, but also surfaces the resolved content's declared
@@ -578,7 +578,7 @@ export async function resolveObjectWithSize(
     0,
     mode,
   );
-  return { object: parseMemoised(ctx, id, type, content), size: declaredSize };
+  return { object: parseResolvedObject(ctx, id, type, content), size: declaredSize };
 }
 
 /**

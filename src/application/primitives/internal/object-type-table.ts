@@ -18,7 +18,9 @@ import type {
   Tag,
 } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import { readObject } from '../read-object.js';
+import { parseResolvedObject } from '../object-resolver.js';
+import { readObject, readRawObject } from '../read-object.js';
+import type { RawObject } from '../types.js';
 import { loadShallowSet } from './shallow-set.js';
 
 export type ObjectTypeTable = Map<ObjectId, ObjectType>;
@@ -115,12 +117,16 @@ export const typeGraphParents = (
   }
 };
 
+/** What a peel reads of an object it steps over: a commit or tag parsed for its next hop, a
+ *  tree or blob only typed — git's `parse_tree_buffer` keeps a tree's entries unparsed. */
+export type PeelHopObject = GitObject | { readonly type: 'tree' | 'blob' };
+
 /** The pointers git's parse of `object` types: a tag's target, a commit's tree and parents. */
 const assignPointers = async (
   ctx: Context,
   table: ObjectTypeTable | undefined,
   id: ObjectId,
-  object: GitObject,
+  object: PeelHopObject,
 ): Promise<boolean> => {
   if (object.type === 'tag') return assignTagPointer(ctx, table, id, object);
   if (object.type === 'commit' && table !== undefined) {
@@ -141,6 +147,24 @@ export const parseTypedObject = async (
   id: ObjectId,
 ): Promise<GitObject | undefined> => {
   const object = await readObject(ctx, id);
+  if (!assignObjectType(ctx, table, id, object.type)) return undefined;
+  return (await assignPointers(ctx, table, id, object)) ? object : undefined;
+};
+
+const peelHopOf = (ctx: Context, id: ObjectId, { type, content }: RawObject): PeelHopObject =>
+  type === 'tree' || type === 'blob' ? { type } : parseResolvedObject(ctx, id, type, content);
+
+/**
+ * {@link parseTypedObject} as a peel needs it: typed and pointer-typed the same, but a tree or
+ * blob is read without being parsed, as git's `parse_object` leaves a tree's entries to the walk
+ * that reads them.
+ */
+export const parseTypedPeelHop = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  id: ObjectId,
+): Promise<PeelHopObject | undefined> => {
+  const object = peelHopOf(ctx, id, await readRawObject(ctx, id));
   if (!assignObjectType(ctx, table, id, object.type)) return undefined;
   return (await assignPointers(ctx, table, id, object)) ? object : undefined;
 };
