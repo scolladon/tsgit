@@ -509,35 +509,48 @@ if LC_ALL=C grep -aqE '(import|from|require)[^"'\'']*["'\'']node:' "$BUNDLE"; th
   exit 1
 fi
 
-# The default entry (package.json "." default condition + ./auto/memory) is the
-# runtime-agnostic one: a node: specifier there hard-fails any runtime without
-# node builtins (plain browsers, workerd without nodejs_compat). Check the
-# entry file AND every chunk in its static import graph.
+# The default entry (package.json "." default condition + ./auto/memory) and
+# the browser entry are the runtime-agnostic ones: a node: specifier there
+# hard-fails any runtime without node builtins (plain browsers, workerd without
+# nodejs_compat). Check each entry file AND every chunk in its import graph,
+# and refuse the node adapter itself — a shared chunk that imports it drags
+# every node: external along, so naming the chunk pins the cause, not just the
+# symptom.
 DEFAULT_ENTRY_DIR=$(mktemp -d -t tsgit-default-entry.XXXXXX)
 tar -xzf "$TARBALL" -C "$DEFAULT_ENTRY_DIR" 'package/dist/esm'
 if ! DEFAULT_ENTRY_DIR="$DEFAULT_ENTRY_DIR" node --input-type=module -e '
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-const seen = new Set();
-const queue = [resolve(process.env.DEFAULT_ENTRY_DIR, "package/dist/esm/index.default.js")];
+import { dirname, relative, resolve } from "node:path";
+const esmRoot = resolve(process.env.DEFAULT_ENTRY_DIR, "package/dist/esm");
+const neutralEntries = ["index.default.js", "index.browser.js"];
+const nodeAdapterPathRe = /(?:^|\/)(?:chunks\/adapter-node-[^/]*|adapters\/node\/[^/]*)\.js$/;
 const specifierRe = /(?:import|from)\s*["'"'"']([^"'"'"']+)["'"'"']|import\s*\(\s*["'"'"']([^"'"'"']+)["'"'"']\s*\)/g;
-while (queue.length > 0) {
-  const file = queue.pop();
-  if (seen.has(file)) continue;
-  seen.add(file);
-  const source = readFileSync(file, "utf8");
-  for (const match of source.matchAll(specifierRe)) {
-    const spec = match[1] ?? match[2];
-    if (spec === undefined) continue;
-    if (spec.startsWith("node:")) {
-      console.error(`node: specifier "${spec}" reachable from index.default.js via ${file}`);
-      process.exit(1);
+const violationsFrom = (entry) => {
+  const violations = [];
+  const seen = new Set();
+  const queue = [resolve(esmRoot, entry)];
+  while (queue.length > 0) {
+    const file = queue.pop();
+    if (seen.has(file)) continue;
+    seen.add(file);
+    const fromFile = relative(esmRoot, file);
+    if (nodeAdapterPathRe.test(fromFile)) violations.push(`${entry} reaches the node adapter ${fromFile}`);
+    for (const match of readFileSync(file, "utf8").matchAll(specifierRe)) {
+      const spec = match[1] ?? match[2];
+      if (spec === undefined) continue;
+      if (spec.startsWith("node:")) violations.push(`${entry} reaches "${spec}" via ${fromFile}`);
+      if (spec.startsWith(".")) queue.push(resolve(dirname(file), spec));
     }
-    if (spec.startsWith(".")) queue.push(resolve(dirname(file), spec));
   }
+  return violations;
+};
+const violations = neutralEntries.flatMap(violationsFrom);
+if (violations.length > 0) {
+  console.error(violations.join("\n"));
+  process.exit(1);
 }
 ' ; then
-  echo "FAIL: the default (runtime-agnostic) entry reaches a node: specifier" >&2
+  echo "FAIL: a runtime-agnostic entry (index.default.js / index.browser.js) reaches the node adapter or a node: specifier" >&2
   exit 1
 fi
 

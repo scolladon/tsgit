@@ -97,18 +97,6 @@ const treeshakeOptions = {
   propertyReadSideEffects: false,
 };
 
-// Commit formatting (`pretty/`) and message search (`regex/`) serve only the
-// commands that render or grep commits, so they ship apart from the core
-// domain every command loads. `ascii` and `date` stay in `domain`: core modules
-// (index resolve-undo, mailmap, squash messages) import them, and leaving them
-// here would make `domain` import the whole text chunk.
-const DOMAIN_TEXT_DIRS = ['/src/domain/pretty/', '/src/domain/regex/'];
-const DOMAIN_CORE_TEXT_MODULES = ['/src/domain/pretty/ascii.ts', '/src/domain/pretty/date.ts'];
-
-const isDomainTextModule = (/** @type {string} */ moduleId) =>
-  DOMAIN_TEXT_DIRS.some((dir) => moduleId.includes(dir)) &&
-  !DOMAIN_CORE_TEXT_MODULES.some((module) => moduleId.endsWith(module));
-
 // Coarse, layer-aligned chunking for the runtime outputs. Left to its own
 // devices with 60 entries, rollup emits ~143 micro-chunks and a plain
 // `import '@scolladon/tsgit'` resolves/parses/links ~190 files — measured at
@@ -120,7 +108,10 @@ const isDomainTextModule = (/** @type {string} */ moduleId) =>
 // chunk boundaries, is what keeps a single command's shipped bytes small.
 // Platform adapters are NEVER merged with each other or with neutral code:
 // a node adapter module inside a shared chunk would drag `node:` externals
-// into browser consumers' module graphs.
+// into browser consumers' module graphs. The facade helpers under
+// `src/repository/` need an explicit home for the same reason: left
+// unassigned, rollup folds the ones the node adapter imports into
+// `adapter-node`, and every neutral entry then imports that chunk.
 const manualChunks = (/** @type {string} */ id) => {
   // Rollup ids carry backslash separators on Windows; normalise so every
   // branch below matches — a silent fall-through would revert the build to
@@ -130,13 +121,13 @@ const manualChunks = (/** @type {string} */ id) => {
   if (moduleId.includes('/src/adapters/browser/')) return 'adapter-browser';
   if (moduleId.includes('/src/adapters/memory/')) return 'adapter-memory';
   if (moduleId.includes('/src/adapters/')) return 'adapters-shared';
-  if (isDomainTextModule(moduleId)) return 'domain-text';
   if (moduleId.includes('/src/domain/')) return 'domain';
   if (moduleId.includes('/src/application/commands/internal/')) return 'commands-internal';
   if (moduleId.includes('/src/application/primitives/')) return 'primitives';
   if (moduleId.includes('/src/operators/')) return 'operators';
   if (moduleId.includes('/src/transport/')) return 'transport';
   if (moduleId.includes('/src/ports/')) return 'ports';
+  if (moduleId.includes('/src/repository/')) return 'repository';
   return undefined;
 };
 
