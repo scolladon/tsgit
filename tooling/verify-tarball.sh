@@ -295,7 +295,25 @@ done
 # shipped in every distribution form, none removable without giving back
 # git's own builtin_diffstat parity (numstat/stat count the RAW blob, never
 # the textconv OUTPUT the patch hunk renders).
-SIZE_CAP=$((1014 * 1024))
+# Raised 1014 -> 1365 KiB by the alternates object lookup and the git-faithfulness
+# work that shipped with it: the measured tarball lands at 1 397 649 B, 359 313 B
+# over the old cap (main packs 1 038 052 B on the same toolchain, so the branch
+# adds 359 597 B, +34.6%), measured on a clean build after a dedicated trim pass.
+# Attribution, by layer, all runtime code every distribution form ships plus the
+# matching `.d.ts`/`.d.cts` surface: the alternates chain in the object store and
+# fsck/gc's alternates handling; git's merge rename and directory-rename
+# detection and the merge command line; histogram, patience and match-trees
+# diff; ERE message search on a linear automaton with a bounded back-reference
+# matcher; the export-subst pretty expander (user format, trailers, dates,
+# re-encoding, wrapping, width tables); the rev-parse grammar and
+# ambiguous-name candidates; the push/fetch/pull rework with its ref map and
+# branch tracking; rebase-merges, octopus and autostash; and commit-graph split
+# chains, Bloom filters and their verification. The browser bundle carries the
+# same code (692 668 -> 997 046 B raw). This is the largest single raise in the
+# list because it folds a whole release's worth of git surface into one change
+# set; none is removable without dropping the parity each piece exists to add.
+# Per-row size-limit attribution: docs/design/bundle-size-optimization.md.
+SIZE_CAP=$((1365 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
