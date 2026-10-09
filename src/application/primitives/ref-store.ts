@@ -52,6 +52,7 @@ import type { DirEntry, FileStat } from '../../ports/file-system.js';
 import { atomicWriteFile, atomicWriteRef, withLockFile } from './atomic-write.js';
 import { boundedMapFor } from './internal/concurrency.js';
 import { removeEmptyDirectory, removeEmptyDirectoryTree } from './internal/empty-directories.js';
+import { lstatIfPresent } from './internal/fs-probes.js';
 import { invalidateHeadSlot, readHeadFile } from './internal/head-file.js';
 import {
   isCheckedWhenAbsent,
@@ -708,15 +709,24 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   const refDir = (name: RefName): string => perWorktreeRefDir(ctx, name);
 
-  async function loadPackedRefs(): Promise<LoadedPackedRefs> {
-    const path = packedRefsPath(commonGitDir(ctx));
-    let stat: FileStat;
+  /** `packed-refs`' followed `stat`, `undefined` when absent. The no-follow probe
+   *  answers a regular file — and an absence — itself, with no refusal; only a
+   *  symbolic link pays the following `stat`. */
+  async function statPackedRefs(path: string): Promise<FileStat | undefined> {
+    const leaf = await lstatIfPresent(ctx.fs, path);
+    if (leaf === undefined || !leaf.isSymbolicLink) return leaf;
     try {
-      stat = await ctx.fs.stat(path);
+      return await ctx.fs.stat(path);
     } catch (err) {
-      if (isFileNotFound(err)) return EMPTY_PACKED_REFS;
+      if (isFileNotFound(err)) return undefined;
       throw err;
     }
+  }
+
+  async function loadPackedRefs(): Promise<LoadedPackedRefs> {
+    const path = packedRefsPath(commonGitDir(ctx));
+    const stat = await statPackedRefs(path);
+    if (stat === undefined) return EMPTY_PACKED_REFS;
     const key = packedCacheKey(stat);
     if (packedCache !== undefined && packedCache.mtimeKey === key) {
       return packedCache.loaded;
@@ -820,10 +830,27 @@ function createFilesRefStore(ctx: Context): RefStore {
    * open, a regular file in the path — the plain reader, which decides those.
    */
   async function readLooseLeaf(name: RefName, path: string): Promise<LooseLeaf> {
+    if (await isPlainlyAbsent(path)) return NO_LEAF;
     try {
       return await readRegularLeaf(path);
     } catch (err) {
       return leafAfterRefusedOpen(name, path, err);
+    }
+  }
+
+  /**
+   * Whether nothing stands at `path` — answered by the adapter's refusal-free
+   * `tryLstat`, so a missing ref, the common dwim miss, never builds an error.
+   * A regular file in the path is left to the open, which decides it; an
+   * adapter without the probe always answers `false`.
+   */
+  async function isPlainlyAbsent(path: string): Promise<boolean> {
+    if (ctx.fs.tryLstat === undefined) return false;
+    try {
+      return (await ctx.fs.tryLstat(path)) === undefined;
+    } catch (err) {
+      if (errorCodeOf(err) === 'NOT_A_DIRECTORY') return false;
+      throw err;
     }
   }
 

@@ -14,6 +14,7 @@ import {
   __resetConfigCacheForTests,
   invalidateConfigCache,
 } from '../../../../src/application/primitives/config-read.js';
+import { lstatIfPresent } from '../../../../src/application/primitives/internal/fs-probes.js';
 import { looseObjectPath, objectsDir } from '../../../../src/application/primitives/path-layout.js';
 import { getRefStore, refExists } from '../../../../src/application/primitives/ref-store.js';
 import {
@@ -1831,12 +1832,12 @@ describe('branch', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            openWithNoFollow: async (path, mode) => {
-              if (path !== racedPath) return ctx.fs.openWithNoFollow(path, mode);
+            tryLstat: async (path) => {
+              if (path !== racedPath) return lstatIfPresent(ctx.fs, path);
               reads += 1;
-              if (reads === 1) throw fileNotFound(path);
+              if (reads === 1) return undefined;
               await ctx.fs.writeUtf8(racedPath, `${commitId}\n`);
-              return ctx.fs.openWithNoFollow(path, mode);
+              return ctx.fs.lstat(path);
             },
           },
         };

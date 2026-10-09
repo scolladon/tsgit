@@ -41,6 +41,9 @@ function buildSingleRefTable(refName: string, id: Uint8Array): Uint8Array {
   return buildReftable({ ...headerSpec, blocks: [block] });
 }
 
+/** Every port method that answers a path's metadata without reading its bytes. */
+const METADATA_PROBES: ReadonlySet<string> = new Set(['stat', 'lstat']);
+
 /** Every port method a loose ref's content can be read through. */
 const LOOSE_READS: ReadonlySet<string> = new Set(['readUtf8', 'openWithNoFollow']);
 
@@ -611,7 +614,7 @@ describe('ref-store', () => {
         // Assert
         const reads = calls()
           .slice(before)
-          .filter((c) => c.path === '/repo/.git/packed-refs' && c.method !== 'stat');
+          .filter((c) => c.path === '/repo/.git/packed-refs' && !METADATA_PROBES.has(c.method));
         expect(reads).toEqual([]);
         expect(await sut.resolveDirect('refs/heads/lo' as RefName)).toEqual({ kind: 'missing' });
       });
@@ -637,7 +640,7 @@ describe('ref-store', () => {
         // Assert
         const reads = calls()
           .slice(before)
-          .filter((c) => c.path === '/repo/.git/packed-refs' && c.method !== 'stat');
+          .filter((c) => c.path === '/repo/.git/packed-refs' && !METADATA_PROBES.has(c.method));
         expect(reads).toEqual([]);
         expect(result).toEqual({ kind: 'direct', id: 'b'.repeat(40) });
         expect(await sut.resolveDirect('refs/tags/old' as RefName)).toEqual({ kind: 'missing' });
@@ -1644,10 +1647,10 @@ describe('ref-store', () => {
 
   describe('Given packed-refs is absent', () => {
     describe('When resolveDirect falls through to loadPackedRefs', () => {
-      it('Then it issues one stat and no exists probe on the packed-refs path', async () => {
+      it('Then it issues one no-follow probe and no exists probe on the packed-refs path', async () => {
         // Arrange
-        // Kills a mutant that reintroduces the old `exists`-then-`stat` pair:
-        // the packed-refs path must see exactly one `stat` call and zero
+        // Kills a mutant that reintroduces an `exists`-then-`stat` pair: the
+        // packed-refs path must see exactly one `lstat` call and zero
         // `exists` calls.
         const base = await buildSeededContext();
         const { ctx, calls } = instrumentedContext(base);
@@ -1659,8 +1662,87 @@ describe('ref-store', () => {
 
         // Assert
         expect(calls().filter((c) => c.path === packedPath)).toEqual([
-          { method: 'stat', path: packedPath },
+          { method: 'lstat', path: packedPath },
         ]);
+      });
+    });
+  });
+
+  describe('Given packed-refs is a symbolic link to a packed-refs file', () => {
+    describe('When resolveDirect falls through to loadPackedRefs', () => {
+      it('Then the followed file answers the name', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const target = `${ctx.layout.gitDir}/elsewhere-packed`;
+        await ctx.fs.writeUtf8(target, `${'b'.repeat(40)} refs/tags/p\n`);
+        await ctx.fs.symlink(target, `${ctx.layout.gitDir}/packed-refs`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('refs/tags/p' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id: 'b'.repeat(40) });
+      });
+    });
+  });
+
+  describe('Given packed-refs is a dangling symbolic link', () => {
+    describe('When resolveDirect falls through to loadPackedRefs', () => {
+      it('Then the name is missing, as with no packed-refs at all', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.symlink(`${ctx.layout.gitDir}/nowhere`, `${ctx.layout.gitDir}/packed-refs`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('refs/tags/p' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'missing' });
+      });
+    });
+  });
+
+  describe('Given a symbolic link at packed-refs whose followed stat faults', () => {
+    describe('When resolveDirect falls through to loadPackedRefs', () => {
+      it('Then the fault propagates instead of reading as absent packed-refs', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const packedPath = `${ctx.layout.gitDir}/packed-refs`;
+        await ctx.fs.symlink(`${ctx.layout.gitDir}/elsewhere`, packedPath);
+        const fault = permissionDenied(packedPath);
+        vi.spyOn(ctx.fs, 'stat').mockRejectedValue(fault);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('refs/tags/p' as RefName).catch((e: unknown) => e);
+
+        // Assert
+        expect(result).toBe(fault);
+      });
+    });
+  });
+
+  describe('Given the no-follow probe of a loose ref path faults', () => {
+    describe('When resolveDirect reads the name', () => {
+      it('Then the fault propagates and the leaf is never opened', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const loosePath = `${ctx.layout.gitDir}/refs/heads/main`;
+        const fault = permissionDenied(loosePath);
+        vi.spyOn(ctx.fs, 'tryLstat').mockRejectedValue(fault);
+        const open = vi.spyOn(ctx.fs, 'openWithNoFollow');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut
+          .resolveDirect('refs/heads/main' as RefName)
+          .catch((e: unknown) => e);
+
+        // Assert
+        expect(result).toBe(fault);
+        expect(open).not.toHaveBeenCalled();
       });
     });
   });

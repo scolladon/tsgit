@@ -162,7 +162,9 @@ describe('root-ref', () => {
       it('Then the failure propagates', async () => {
         // Arrange
         const failure = new Error('disk failure');
-        const ctx = failingReads(createMemoryContext(), failure);
+        const planted = createMemoryContext();
+        await plant(planted, `${OID}\n`);
+        const ctx = failingReads(planted, failure);
         const sut = deleteRootRef;
 
         // Act
