@@ -23,10 +23,18 @@ export interface PeelOutcome<T> {
 /** Why the walk stopped: a terminal link, a revisited link, or the caller's hop cap. */
 export type PeelEnd = 'reached' | 'revisited' | 'too-deep';
 
+/** The links whose hop was taken, by count and ends — `id`/`result` is never among them. */
+export interface CrossedLinks<T> {
+  readonly count: number;
+  /** The outermost link crossed; `undefined` when none was. */
+  readonly first: T | undefined;
+  /** The innermost link crossed; `undefined` when none was. */
+  readonly last: T | undefined;
+}
+
 export interface PeelWalk<T> extends PeelOutcome<T> {
   readonly end: PeelEnd;
-  /** The links whose hop was taken, outermost first — `id`/`result` is never among them. */
-  readonly crossed: readonly T[];
+  readonly crossed: CrossedLinks<T>;
 }
 
 export type PeelRead<T> = (id: ObjectId) => Promise<T>;
@@ -46,6 +54,15 @@ export interface TagChainPeel<T> {
 
 const UNCAPPED = Number.POSITIVE_INFINITY;
 
+const NOTHING_CROSSED: CrossedLinks<never> = { count: 0, first: undefined, last: undefined };
+
+/** `crossed` once `link`'s hop is taken: only the ends are kept, never the chain itself. */
+const crossing = <T>(crossed: CrossedLinks<T>, link: T): CrossedLinks<T> => ({
+  count: crossed.count + 1,
+  first: crossed.count === 0 ? link : crossed.first,
+  last: link,
+});
+
 export async function walkPeelChain<T>(
   start: PeelOutcome<T>,
   read: PeelRead<T>,
@@ -53,7 +70,7 @@ export async function walkPeelChain<T>(
   maxHops: number = UNCAPPED,
 ): Promise<PeelWalk<T>> {
   const seen = new Set<ObjectId>([start.id]);
-  const crossed: T[] = [];
+  let crossed: CrossedLinks<T> = NOTHING_CROSSED;
   let { id, result } = start;
   for (;;) {
     const next = nextHop(result, id);
@@ -61,7 +78,7 @@ export async function walkPeelChain<T>(
     if (seen.has(next)) return { end: 'revisited', id, result, crossed };
     if (exceedsMaxPeelDepth(seen.size, maxHops)) return { end: 'too-deep', id, result, crossed };
     seen.add(next);
-    crossed.push(result);
+    crossed = crossing(crossed, result);
     id = next;
     result = await read(id);
   }
@@ -78,7 +95,7 @@ export async function peelChain<T>(
   const readLink: PeelRead<T> = (id) => read(ctx, id);
   const start = { id: startId, result: await readLink(startId) };
   const walk = await walkPeelChain(start, readLink, nextHop, maxHops);
-  if (walk.end !== 'reached') throw refChainTooDeep(walk.crossed.length + 1, []);
+  if (walk.end !== 'reached') throw refChainTooDeep(walk.crossed.count + 1, []);
   return { id: walk.id, result: walk.result };
 }
 
@@ -93,8 +110,8 @@ export async function peelTagChain<T extends GitObject | undefined>(
   pick: TaggerDatePick,
 ): Promise<TagChainPeel<T>> {
   const walk = await walkPeelChain(start, read, tagHop);
-  const tag = pick === 'outermost' ? walk.crossed[0] : walk.crossed.at(-1);
-  const deref = walk.crossed.length > 0;
+  const tag = pick === 'outermost' ? walk.crossed.first : walk.crossed.last;
+  const deref = walk.crossed.count > 0;
   return { object: walk.result, deref, taggerDate: taggerDateOf(tag) };
 }
 
