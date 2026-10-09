@@ -9,7 +9,7 @@ import {
   posixGitPathSyntax,
   windowsGitPathSyntax,
 } from '../../../../../src/application/primitives/internal/git-path-syntax.js';
-import { fileNotFound, permissionDenied } from '../../../../../src/domain/error.js';
+import { fileNotFound, notADirectory, permissionDenied } from '../../../../../src/domain/error.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import type { FileStat } from '../../../../../src/ports/file-system.js';
 import type { AlternatePathProbe } from '../../../../../src/ports/object-source-access.js';
@@ -750,6 +750,49 @@ describe('resolveObjectSources', () => {
           },
         ]);
         expect(warn).toHaveBeenCalledOnce();
+      });
+    });
+  });
+
+  describe.each([
+    {
+      refusal: 'a permission refusal',
+      fault: permissionDenied('/repo/store/a'),
+      expected: {
+        reason: 'unreachable',
+        path: '/repo/store/a',
+        listedIn: PRIMARY,
+        code: 'PERMISSION_DENIED',
+      },
+    },
+    {
+      refusal: 'a non-directory on its path',
+      fault: notADirectory('/repo/store/a'),
+      expected: { reason: 'not-a-directory', path: '/repo/store/a', listedIn: PRIMARY },
+    },
+    {
+      refusal: 'a codeless error',
+      fault: new Error('stat failed'),
+      expected: { reason: 'unreachable', path: '/repo/store/a', listedIn: PRIMARY },
+    },
+  ])('Given an entry whose directory check is refused with $refusal', ({ fault, expected }) => {
+    describe('When the chain is resolved', () => {
+      it('Then the entry is dropped with that diagnostic', async () => {
+        // Arrange
+        const ctx = contextWith({ [PRIMARY]: '/repo/store/a\n' });
+        await ctx.fs.mkdir('/repo/store/a');
+        const refusingStat: AlternatePathProbe = {
+          stat: (path) => (path === '/repo/store/a' ? Promise.reject(fault) : ctx.fs.stat(path)),
+          lstat: ctx.fs.lstat.bind(ctx.fs),
+          readlink: ctx.fs.readlink.bind(ctx.fs),
+        };
+
+        // Act
+        const result = await resolveObjectSources(ctx, { ...ioOf(ctx), probe: () => refusingStat });
+
+        // Assert
+        expect(result.sources.map((source) => source.objectsDir)).toEqual([PRIMARY]);
+        expect(result.diagnostics).toStrictEqual([expected]);
       });
     });
   });
