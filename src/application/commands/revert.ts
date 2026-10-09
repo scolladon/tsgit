@@ -22,6 +22,7 @@ import {
 } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import { createCommit } from '../primitives/create-commit.js';
+import { assertOperationalRepository } from '../primitives/internal/repo-state.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeTree } from '../primitives/write-tree.js';
@@ -270,6 +271,7 @@ const runSequence = async (
 };
 
 export const revertRun = async (ctx: Context, input: RevertRunInput): Promise<RevertResult> => {
+  await assertOperationalRepository(ctx);
   const { ourId, revisions } = await openReplayRun(ctx, REVERT_COMMAND, input.commits);
   const todo = revisions.commits;
   if (input.noCommit === true) return runNoCommitReplay(ctx, REVERT_COMMAND, todo);
@@ -306,6 +308,7 @@ const finaliseInProgressRevert = (ctx: Context, ourId: ObjectId): Promise<Finali
  * or the index is unmerged; a resolution that yields no change re-stops empty.
  */
 export const revertContinue = async (ctx: Context): Promise<RevertResult> => {
+  await assertOperationalRepository(ctx);
   const resume = await openReplayResume(ctx, REVERT_COMMAND, REVERT_CONTINUE);
   const branch = await requireContinuableHead(ctx, REVERT_CONTINUE);
   const start = await finaliseStoppedReplay(resume, await resolveRef(ctx, branch), (_, ourId) =>
@@ -337,6 +340,7 @@ export interface RevertAbortResult {
  * state), then resume the remaining sequencer reverts (if any).
  */
 export const revertSkip = async (ctx: Context): Promise<RevertResult> => {
+  await assertOperationalRepository(ctx);
   const { todoOnDisk } = await openReplayResume(ctx, REVERT_COMMAND, REVERT_SKIP);
   const branch = await requireSymbolicHead(ctx, REVERT_SKIP);
   const ourId = await resolveRef(ctx, branch);
@@ -354,5 +358,7 @@ export const revertSkip = async (ctx: Context): Promise<RevertResult> => {
  * and clear all state. The branch update records git's faithful
  * `reset: moving to <oid>` reflog. Refuses when nothing is in progress.
  */
-export const revertAbort = (ctx: Context): Promise<RevertAbortResult> =>
-  abortReplay(ctx, REVERT_COMMAND, REVERT_ABORT);
+export const revertAbort = async (ctx: Context): Promise<RevertAbortResult> => {
+  await assertOperationalRepository(ctx);
+  return abortReplay(ctx, REVERT_COMMAND, REVERT_ABORT);
+};

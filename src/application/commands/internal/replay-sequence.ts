@@ -26,7 +26,6 @@ import { removeAutoMerge } from '../../primitives/internal/auto-merge-ref.js';
 import { acquireIndexLock, type IndexLock } from '../../primitives/internal/index-lock.js';
 import {
   assertNoPendingOperation,
-  assertOperationalRepository,
   readHeadRaw,
   requireWorkTree,
 } from '../../primitives/internal/repo-state.js';
@@ -116,8 +115,8 @@ export const toConflictList = (
 ): ReadonlyArray<ReplayConflict> => conflicts.map((c) => ({ path: c.path, type: c.type }));
 
 /**
- * A fresh run's pre-flight: an operational repository with a work tree, no
- * pending operation, every source loadable, an attached HEAD on a born branch
+ * A fresh run's pre-flight (after the caller's operational-tier check): a work
+ * tree, no pending operation, every source loadable, an attached HEAD on a born branch
  * and a clean work tree. Returns HEAD's commit and the resolved revisions.
  */
 export const openReplayRun = async (
@@ -125,7 +124,6 @@ export const openReplayRun = async (
   command: ReplayCommand,
   commits: ReadonlyArray<string>,
 ): Promise<{ readonly ourId: ObjectId; readonly revisions: SequencerRevisions }> => {
-  await assertOperationalRepository(ctx);
   requireWorkTree(ctx, command.operation);
   await assertNoPendingOperation(ctx);
   await assertEverySourceLoadable(ctx);
@@ -319,15 +317,14 @@ export interface ResumeState {
 }
 
 /**
- * A resume's pre-flight: an operational repository with a work tree, a stopped
- * replay or a non-empty todo to resume, and every source loadable.
+ * A resume's pre-flight (after the caller's operational-tier check): a work
+ * tree, a stopped replay or a non-empty todo to resume, and every source loadable.
  */
 export const openReplayResume = async (
   ctx: Context,
   command: ReplayCommand,
   label: string,
 ): Promise<ResumeState> => {
-  await assertOperationalRepository(ctx);
   requireWorkTree(ctx, label);
   const source = await command.readStopHead(ctx);
   const todoOnDisk = await readSequencerTodo(ctx);
@@ -453,7 +450,6 @@ export const abortReplay = async (
   command: ReplayCommand,
   label: string,
 ): Promise<ReplayAbortResult> => {
-  await assertOperationalRepository(ctx);
   requireWorkTree(ctx, label);
   const source = await command.readStopHead(ctx);
   const seqHead = await readSequencerHead(ctx);

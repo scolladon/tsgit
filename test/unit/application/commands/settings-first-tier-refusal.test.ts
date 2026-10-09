@@ -5,6 +5,12 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { mergeAbort } from '../../../../src/application/commands/abort-merge.js';
+import {
+  cherryPickAbort,
+  cherryPickContinue,
+  cherryPickRun,
+  cherryPickSkip,
+} from '../../../../src/application/commands/cherry-pick.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { mergeContinue } from '../../../../src/application/commands/continue-merge.js';
 import { diff } from '../../../../src/application/commands/diff.js';
@@ -16,6 +22,12 @@ import {
   rebaseRun,
   rebaseSkip,
 } from '../../../../src/application/commands/rebase.js';
+import {
+  revertAbort,
+  revertContinue,
+  revertRun,
+  revertSkip,
+} from '../../../../src/application/commands/revert.js';
 import { status } from '../../../../src/application/commands/status.js';
 import type { Context } from '../../../../src/ports/context.js';
 
@@ -53,6 +65,14 @@ describe('Given a repository whose format version git refuses', () => {
     { verb: 'rebase --continue', run: (ctx: Context) => rebaseContinue(ctx) },
     { verb: 'rebase --skip', run: (ctx: Context) => rebaseSkip(ctx) },
     { verb: 'rebase --abort', run: (ctx: Context) => rebaseAbort(ctx) },
+    { verb: 'cherry-pick', run: (ctx: Context) => cherryPickRun(ctx, { commits: ['HEAD'] }) },
+    { verb: 'cherry-pick --continue', run: (ctx: Context) => cherryPickContinue(ctx) },
+    { verb: 'cherry-pick --skip', run: (ctx: Context) => cherryPickSkip(ctx) },
+    { verb: 'cherry-pick --abort', run: (ctx: Context) => cherryPickAbort(ctx) },
+    { verb: 'revert', run: (ctx: Context) => revertRun(ctx, { commits: ['HEAD'] }) },
+    { verb: 'revert --continue', run: (ctx: Context) => revertContinue(ctx) },
+    { verb: 'revert --skip', run: (ctx: Context) => revertSkip(ctx) },
+    { verb: 'revert --abort', run: (ctx: Context) => revertAbort(ctx) },
     { verb: 'pack-objects', run: (ctx: Context) => packObjects(ctx, { wants: ['HEAD'] }) },
   ])('When $verb runs', ({ run }) => {
     it('Then it refuses the repository format version, as git does', async () => {

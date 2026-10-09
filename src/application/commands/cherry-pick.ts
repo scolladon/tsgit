@@ -21,6 +21,7 @@ import {
 } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import { createCommit } from '../primitives/create-commit.js';
+import { assertOperationalRepository } from '../primitives/internal/repo-state.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { skipSequencerReset } from './internal/abort-sequencer-reset.js';
@@ -285,6 +286,7 @@ export const cherryPickRun = async (
   ctx: Context,
   input: CherryPickRunInput,
 ): Promise<CherryPickResult> => {
+  await assertOperationalRepository(ctx);
   const { ourId, revisions } = await openReplayRun(ctx, CHERRY_PICK_COMMAND, input.commits);
   const todo = pickOrder(revisions);
   if (input.noCommit === true) return runNoCommitReplay(ctx, CHERRY_PICK_COMMAND, todo);
@@ -356,6 +358,7 @@ export const cherryPickContinue = async (
   ctx: Context,
   input: CherryPickContinueInput = {},
 ): Promise<CherryPickResult> => {
+  await assertOperationalRepository(ctx);
   const resume = await openReplayResume(ctx, CHERRY_PICK_COMMAND, CHERRY_PICK_CONTINUE);
   const branch = await requireContinuableHead(ctx, CHERRY_PICK_CONTINUE);
   const opts = await resolveResumeOpts(ctx, input);
@@ -396,6 +399,7 @@ export const cherryPickSkip = async (
   ctx: Context,
   input: CherryPickContinueInput = {},
 ): Promise<CherryPickResult> => {
+  await assertOperationalRepository(ctx);
   const { todoOnDisk } = await openReplayResume(ctx, CHERRY_PICK_COMMAND, CHERRY_PICK_SKIP);
   const branch = await requireSymbolicHead(ctx, CHERRY_PICK_SKIP);
   const ourId = await resolveRef(ctx, branch);
@@ -421,5 +425,7 @@ export const cherryPickSkip = async (
  * clear all state. The branch update records git's faithful
  * `reset: moving to <oid>` reflog. Refuses when nothing is in progress.
  */
-export const cherryPickAbort = (ctx: Context): Promise<CherryPickAbortResult> =>
-  abortReplay(ctx, CHERRY_PICK_COMMAND, CHERRY_PICK_ABORT);
+export const cherryPickAbort = async (ctx: Context): Promise<CherryPickAbortResult> => {
+  await assertOperationalRepository(ctx);
+  return abortReplay(ctx, CHERRY_PICK_COMMAND, CHERRY_PICK_ABORT);
+};
