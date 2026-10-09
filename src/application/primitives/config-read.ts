@@ -736,11 +736,16 @@ const anySubsectionOf = (section: string) => {
   return (header: ConfigHeaderToken): boolean => header.section.toLowerCase() === loweredSection;
 };
 
-/** Every entry token, in file order, under a header `enters` accepts. */
-function* sectionEntries(
+/**
+ * Every entry token, in file order, under a header `enters` accepts. A plain
+ * loop collecting into an array: a generator's per-token resume cost shows on
+ * every config scan of a large config.
+ */
+function sectionEntries(
   tokens: ReadonlyArray<ConfigToken>,
   enters: (header: ConfigHeaderToken) => boolean,
-): Generator<SectionEntry> {
+): ReadonlyArray<SectionEntry> {
+  const entries: SectionEntry[] = [];
   let inSection = false;
   let subsection: string | undefined;
   for (const token of tokens) {
@@ -749,8 +754,9 @@ function* sectionEntries(
       subsection = token.subsection;
       continue;
     }
-    if (inSection && token.kind === 'entry') yield { token, subsection };
+    if (inSection && token.kind === 'entry') entries.push({ token, subsection });
   }
+  return entries;
 }
 
 /**
