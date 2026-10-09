@@ -984,6 +984,41 @@ describe('fetch', () => {
       });
     });
 
+    describe('Given prune=true, a command-line refspec and stale refs in both namespaces', () => {
+      describe('When fetch', () => {
+        it('Then only the stale ref under the command-line destination is pruned', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {
+            refs: {
+              'refs/remotes/origin/feature-x': FAKE_OID('b'),
+              'refs/other/gone': FAKE_OID('c'),
+            },
+          });
+          await writeOriginConfig(ctx);
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'prune by cli\n');
+          const { transport } = fakeRemote({
+            url: 'https://example.com/r.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            packBytes,
+          });
+
+          // Act
+          const result = await fetch(
+            { ...ctx, transport },
+            { prune: true, refspecs: ['refs/heads/*:refs/other/*'] },
+          );
+
+          // Assert
+          expect(result.prunedRefs).toEqual(['refs/other/gone']);
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/other/gone`)).toBe(false);
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/feature-x`)).toBe(
+            true,
+          );
+        });
+      });
+    });
+
     describe('Given prune=false', () => {
       describe('When fetch', () => {
         it('Then stale remote-tracking refs are preserved', async () => {

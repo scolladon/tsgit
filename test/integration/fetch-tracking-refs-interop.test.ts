@@ -34,18 +34,21 @@ afterAll(() => {
   if (root !== undefined) rmSync(root, { recursive: true, force: true });
 });
 
-/** A peer with main, b2, b3 and a tag, and one empty repository per tool fetching from it. */
-const setUp = (): { readonly ours: string; readonly theirs: string; readonly peerRoot: string } => {
-  const peerRoot = path.join(root, 'peer');
-  const work = path.join(root, 'work');
+/** A peer with main, b2, b3 and a tag, and one empty repository per tool fetching from it, under `scope`. */
+const setUp = (
+  scope: string,
+): { readonly ours: string; readonly theirs: string; readonly peerRoot: string } => {
+  const base = path.join(root, scope);
+  const peerRoot = path.join(base, 'peer');
+  const work = path.join(base, 'work');
   runGit(['init', '-q', '-b', 'main', work]);
   runGit(['-C', work, 'commit', '-q', '--allow-empty', '-m', 'a']);
   for (const branch of ['b2', 'b3']) runGit(['-C', work, 'branch', branch]);
   runGit(['-C', work, 'tag', 'v1']);
   runGit(['clone', '-q', '--bare', work, path.join(peerRoot, 'peer.git')]);
   const tip = git(work, 'rev-parse', 'HEAD').trim();
-  const ours = path.join(root, 'ours');
-  const theirs = path.join(root, 'theirs');
+  const ours = path.join(base, 'ours');
+  const theirs = path.join(base, 'theirs');
   for (const [dir, url] of [
     [ours, PEER_URL],
     [theirs, path.join(peerRoot, 'peer.git')],
@@ -88,7 +91,7 @@ describe.skipIf(!GIT_AVAILABLE)('fetch tracking refs interop', () => {
     describe('When both tools fetch with prune', () => {
       it('Then the refs written and pruned agree', async () => {
         // Arrange
-        const { ours, theirs, peerRoot } = setUp();
+        const { ours, theirs, peerRoot } = setUp('configured');
         const ctx = {
           ...createNodeContext({ workDir: ours }),
           transport: backendTransport(peerRoot),
@@ -102,6 +105,30 @@ describe.skipIf(!GIT_AVAILABLE)('fetch tracking refs interop', () => {
         // Assert
         expect(allRefs(ours)).toBe(allRefs(theirs));
         expect(allRefs(ours)).toContain('refs/remotes/x/b2');
+      });
+    });
+  });
+
+  describe('Given stale refs under both the configured and a command-line destination', () => {
+    describe('When both tools fetch with prune and that command-line refspec', () => {
+      it('Then only the command-line destination is pruned, as git does', async () => {
+        // Arrange
+        const { ours, theirs, peerRoot } = setUp('command-line');
+        const ctx = {
+          ...createNodeContext({ workDir: ours }),
+          transport: backendTransport(peerRoot),
+        };
+        const refspec = '+refs/heads/*:refs/remotes/other/*';
+        const sut = fetch;
+
+        // Act
+        await sut(ctx, { remote: 'origin', prune: true, refspecs: [refspec] });
+        git(theirs, 'fetch', '-q', '--prune', 'origin', refspec);
+
+        // Assert
+        expect(allRefs(ours)).toBe(allRefs(theirs));
+        expect(allRefs(ours)).toContain('refs/remotes/x/b-gone');
+        expect(allRefs(ours)).not.toContain('refs/remotes/other/zz');
       });
     });
   });
