@@ -1320,15 +1320,16 @@ const replayInteractive = async (
   startHead: ObjectId,
   seed: ReplaySeed,
 ): Promise<RebaseResult> => {
-  const replay: InteractiveReplay = {
+  let replay: InteractiveReplay = {
     head: startHead,
     applied: [...seed.applied],
     rewritten: [...seed.rewritten],
     group: await meldGroupFrom(ctx, startHead),
   };
   for (let i = 0; i < ic.todo.length; i += 1) {
-    const stop = await replayInstruction(ctx, ic, i, replay);
-    if (stop !== undefined) return stop;
+    const outcome = await replayInstruction(ctx, ic, i, replay);
+    if ('stop' in outcome) return outcome.stop;
+    replay = outcome.next;
   }
   await finishRebase(ctx, { ...ic, reflogAction: REBASE_REFLOG_ACTION }, replay.head);
   await firePostRewrite(ctx, replay.rewritten);
@@ -1338,11 +1339,16 @@ const replayInteractive = async (
 
 /** Where an interactive replay stands: HEAD, what it applied and rewrote, the open meld group. */
 interface InteractiveReplay {
-  head: ObjectId;
-  readonly applied: RebasedCommit[];
-  readonly rewritten: Array<readonly [ObjectId, ObjectId]>;
+  readonly head: ObjectId;
+  readonly applied: ReadonlyArray<RebasedCommit>;
+  readonly rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>;
   readonly group: MeldGroup;
 }
+
+/** A replayed todo line either stops the rebase or hands on where the replay stands next. */
+type InteractiveLineOutcome =
+  | { readonly stop: RebaseResult }
+  | { readonly next: InteractiveReplay };
 
 /** One todo line under replay, with the commit it names and its rendered patch. */
 interface ReplayedLine {
@@ -1362,16 +1368,16 @@ const meldGroupFrom = async (ctx: Context, base: ObjectId): Promise<MeldGroup> =
   inline: undefined,
 });
 
-/** Replay todo line `index`; the stop's result when it stops, else `undefined`. */
+/** Replay todo line `index`: the stop's result when it stops, else the replay's next state. */
 const replayInstruction = async (
   ctx: Context,
   ic: InteractiveContext,
   index: number,
   replay: InteractiveReplay,
-): Promise<RebaseResult | undefined> => {
+): Promise<InteractiveLineOutcome> => {
   const inst = ic.todo[index]!;
   await removeAutoMerge(ctx);
-  if (inst.action === 'drop') return undefined;
+  if (inst.action === 'drop') return { next: replay };
   const cData = await readCommitData(ctx, inst.oid);
   const line: ReplayedLine = { ic, index, inst, cData, patch: await renderCommitPatch(ctx, cData) };
   if (inst.action === 'squash' || inst.action === 'fixup') return replayMeld(ctx, line, replay);
@@ -1380,29 +1386,41 @@ const replayInstruction = async (
 
 const remainingAfter = (line: ReplayedLine): number => line.ic.todo.length - (line.index + 1);
 
-/** Record `created` as the rewrite of `source` and advance HEAD to it. */
-const recordCreated = (replay: InteractiveReplay, source: ObjectId, created: ObjectId): void => {
-  replay.applied.push({ source, created });
-  replay.rewritten.push([source, created]);
-  replay.head = created;
-};
+/** The replay once `created` is recorded as the rewrite of `source`, HEAD advanced to it. */
+const recordCreated = (
+  replay: InteractiveReplay,
+  source: ObjectId,
+  created: ObjectId,
+): InteractiveReplay => ({
+  ...replay,
+  head: created,
+  applied: [...replay.applied, { source, created }],
+  rewritten: [...replay.rewritten, [source, created]],
+});
 
 /** A squash/fixup line: meld it into the open group, or stop on its conflict. */
 const replayMeld = async (
   ctx: Context,
   line: ReplayedLine,
   replay: InteractiveReplay,
-): Promise<RebaseResult | undefined> => {
+): Promise<InteractiveLineOutcome> => {
   const { ic, index, inst, cData } = line;
   const isLast = !meldContinues(ic.todo, index);
   const meld = await meldGroupMember(ctx, inst, cData, replay.head, replay.group, isLast);
   if (meld.kind === 'conflict') {
     await persistInteractiveStop(ctx, ic, index, meldStopFields(line, replay));
-    return conflictResult(inst.oid, meld.conflicts, remainingAfter(line));
+    return { stop: conflictResult(inst.oid, meld.conflicts, remainingAfter(line)) };
   }
-  recordCreated(replay, inst.oid, meld.created);
-  return undefined;
+  return { next: recordCreated(replay, inst.oid, meld.created) };
 };
+
+/** The fields every interactive stop records: the stopped commit, its author, a message, the patch. */
+const stoppedLineFields = (line: ReplayedLine, message: string) => ({
+  stoppedSha: line.inst.oid,
+  author: line.cData.author,
+  message,
+  patch: line.patch,
+});
 
 /** The stop a conflicted meld persists: the group's template so far, with the member. */
 const meldStopFields = (line: ReplayedLine, replay: InteractiveReplay): StopFields => {
@@ -1418,8 +1436,10 @@ const meldStopFields = (line: ReplayedLine, replay: InteractiveReplay): StopFiel
     { action: inst.action as 'squash' | 'fixup', oid: inst.oid },
   ];
   return {
-    ...{ stoppedSha: inst.oid, author: cData.author, message: template, patch: line.patch },
-    ...{ rewritten: replay.rewritten, amend: replay.head, currentFixups },
+    ...stoppedLineFields(line, template),
+    rewritten: replay.rewritten,
+    amend: replay.head,
+    currentFixups,
     rewrittenPending: [...group.pending],
     messageSquash: template,
     ...fixupOnlyMessage(currentFixups, group.baseMessage),
@@ -1433,14 +1453,17 @@ const replayStep = async (
   ctx: Context,
   line: ReplayedLine,
   replay: InteractiveReplay,
-): Promise<RebaseResult | undefined> => {
+): Promise<InteractiveLineOutcome> => {
   const { inst, cData } = line;
   const step = await stepInstruction(ctx, inst, cData, replay.head);
-  if (step.kind === 'conflict') return stopOnStepConflict(ctx, line, replay, step.conflicts);
-  if (step.kind === 'edit-stop') return stopForEdit(ctx, line, replay, step.created);
-  recordCreated(replay, inst.oid, step.created);
-  await reopenMeldGroup(ctx, replay.group, step.created);
-  return undefined;
+  if (step.kind === 'conflict') {
+    return { stop: await stopOnStepConflict(ctx, line, replay, step.conflicts) };
+  }
+  if (step.kind === 'edit-stop')
+    return { stop: await stopForEdit(ctx, line, replay, step.created) };
+  const next = recordCreated(replay, inst.oid, step.created);
+  await reopenMeldGroup(ctx, next.group, step.created);
+  return { next };
 };
 
 const stopOnStepConflict = async (
@@ -1449,13 +1472,13 @@ const stopOnStepConflict = async (
   replay: InteractiveReplay,
   conflicts: ReadonlyArray<MergeConflict>,
 ): Promise<RebaseResult> => {
-  const { inst, cData, patch } = line;
-  const message = conflictMergeMsg(cData.message, sortedRecordedPaths(conflicts));
+  const message = conflictMergeMsg(line.cData.message, sortedRecordedPaths(conflicts));
   await persistInteractiveStop(ctx, line.ic, line.index, {
-    ...{ stoppedSha: inst.oid, author: cData.author, message, patch },
-    ...{ rewritten: replay.rewritten, mergeMsg: message },
+    ...stoppedLineFields(line, message),
+    rewritten: replay.rewritten,
+    mergeMsg: message,
   });
-  return conflictResult(inst.oid, conflicts, remainingAfter(line));
+  return conflictResult(line.inst.oid, conflicts, remainingAfter(line));
 };
 
 const stopForEdit = async (
@@ -1464,12 +1487,12 @@ const stopForEdit = async (
   replay: InteractiveReplay,
   created: ObjectId,
 ): Promise<RebaseResult> => {
-  const { inst, cData, patch } = line;
   await persistInteractiveStop(ctx, line.ic, line.index, {
-    ...{ stoppedSha: inst.oid, author: cData.author, message: cData.message, patch },
-    ...{ rewritten: replay.rewritten, amend: created },
+    ...stoppedLineFields(line, line.cData.message),
+    rewritten: replay.rewritten,
+    amend: created,
   });
-  return { kind: 'stopped', commit: inst.oid, remaining: remainingAfter(line) };
+  return { kind: 'stopped', commit: line.inst.oid, remaining: remainingAfter(line) };
 };
 
 /** Reset `group` in place onto `base`: the next squash/fixup melds into it. */

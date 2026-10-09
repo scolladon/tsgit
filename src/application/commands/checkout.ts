@@ -450,20 +450,18 @@ export const checkout = (ctx: Context, opts: CheckoutOptions): Promise<CheckoutR
 const checkoutInScope = async (ctx: Context, opts: CheckoutOptions): Promise<CheckoutResult> => {
   await assertOperationalRepository(ctx);
   requireWorkTree(ctx, 'checkout');
-  const pathsMode = isPathRestore(opts);
+  assertSingleCheckoutMode(opts);
 
   ctx.progress.start(CHECKOUT_MATERIALIZE_OP);
   try {
-    return pathsMode
-      ? await pathRestore(ctx, opts)
-      : await switchBranch(ctx, opts as CheckoutSwitchOptions);
+    return isPaths(opts) ? await pathRestore(ctx, opts) : await switchBranch(ctx, opts);
   } finally {
     ctx.progress.end(CHECKOUT_MATERIALIZE_OP);
   }
 };
 
-/** Refuses `rev` with `paths`, or neither, then tells whether `paths` was the one given. */
-const isPathRestore = (opts: CheckoutOptions): opts is CheckoutPathsOptions => {
+/** Refuses `rev` with `paths`, or neither. */
+const assertSingleCheckoutMode = (opts: CheckoutOptions): void => {
   const switchMode = isSwitch(opts);
   const pathsMode = isPaths(opts);
   if (switchMode && pathsMode) {
@@ -472,5 +470,4 @@ const isPathRestore = (opts: CheckoutOptions): opts is CheckoutPathsOptions => {
   if (!switchMode && !pathsMode) {
     throw invalidOption('rev', 'either rev or paths must be provided');
   }
-  return pathsMode;
 };

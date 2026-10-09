@@ -240,12 +240,14 @@ const runSequence = async (
   const applied: RevertedCommit[] = [];
   for (let i = 0; i < todo.length; i += 1) {
     const source = todo[i] as ObjectId;
-    const headBefore = ourId;
-    // Partial-apply: earlier reverts are committed. A merge stops AT it, keeping
-    // it as todo[0] (no REVERT_HEAD — it never started).
-    const cData = await readReplayCommit(ctx, REVERT_COMMAND, source, () =>
-      stopSequence(ctx, seq, todo.slice(i), headBefore),
-    );
+    const read = await readReplayCommit(ctx, source);
+    if (read.kind === 'merge') {
+      // Partial-apply: earlier reverts are committed. A merge stops AT it, keeping
+      // it as todo[0] (no REVERT_HEAD — it never started).
+      await stopSequence(ctx, seq, todo.slice(i), ourId);
+      throw REVERT_COMMAND.refuseMerge(source);
+    }
+    const { cData } = read;
     const outcome = await applyOneRevert(ctx, source, cData, ourId);
     if (outcome.kind === 'committed') {
       applied.push({ source, created: outcome.id });

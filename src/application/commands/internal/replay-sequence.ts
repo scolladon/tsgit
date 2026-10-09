@@ -138,17 +138,17 @@ export const openReplayRun = async (
   return { ourId, revisions };
 };
 
-/** The commit to replay; a merge commit runs `stopAtMerge` and refuses. */
-export const readReplayCommit = async (
-  ctx: Context,
-  command: ReplayCommand,
-  source: ObjectId,
-  stopAtMerge: () => Promise<void>,
-): Promise<CommitData> => {
+/** The commit to replay, or a merge commit, which a replay refuses. */
+type ReplayCommit =
+  | { readonly kind: 'merge' }
+  | { readonly kind: 'replay'; readonly cData: CommitData };
+
+const MERGE_COMMIT: ReplayCommit = { kind: 'merge' };
+
+/** The commit to replay; a merge commit is reported, for the caller to stop at and refuse. */
+export const readReplayCommit = async (ctx: Context, source: ObjectId): Promise<ReplayCommit> => {
   const cData = await readCommitData(ctx, source);
-  if (!isMergeCommit(cData)) return cData;
-  await stopAtMerge();
-  throw command.refuseMerge(source);
+  return isMergeCommit(cData) ? MERGE_COMMIT : { kind: 'replay', cData };
 };
 
 /** The commit a replay merge applies. */
@@ -214,8 +214,6 @@ export const replayOntoHead = async <Outcome>(
   }
 };
 
-const noStop = (): Promise<void> => Promise.resolve();
-
 /** Replay `source` onto the accumulated index, its own HEAD being that index's tree. */
 const replayOntoIndex = async (
   ctx: Context,
@@ -224,7 +222,9 @@ const replayOntoIndex = async (
   source: ObjectId,
   currentIndex: GitIndex,
 ): Promise<ReplayMerge> => {
-  const cData = await readReplayCommit(ctx, command, source, noStop);
+  const read = await readReplayCommit(ctx, source);
+  if (read.kind === 'merge') throw command.refuseMerge(source);
+  const { cData } = read;
   const sides = await command.mergeSides(ctx, cData);
   const oursTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
   return replayMerge(ctx, lock, command, { source, cData }, { ...sides, oursTree, currentIndex });

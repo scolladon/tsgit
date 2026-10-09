@@ -166,13 +166,15 @@ const runSequence = async (
   const applied: CherryPickedCommit[] = [];
   for (let i = 0; i < todo.length; i += 1) {
     const source = todo[i] as ObjectId;
-    const headBefore = ourId;
-    // Partial-apply: earlier picks are already committed. A merge stops AT it —
-    // the sequencer keeps it as todo[0] (no CHERRY_PICK_HEAD, since it never
-    // started). The user resolves with `skip` or `abort`.
-    const cData = await readReplayCommit(ctx, CHERRY_PICK_COMMAND, source, () =>
-      stopSequence(ctx, seq, todo.slice(i), headBefore, opts),
-    );
+    const read = await readReplayCommit(ctx, source);
+    if (read.kind === 'merge') {
+      // Partial-apply: earlier picks are already committed. A merge stops AT it —
+      // the sequencer keeps it as todo[0] (no CHERRY_PICK_HEAD, since it never
+      // started). The user resolves with `skip` or `abort`.
+      await stopSequence(ctx, seq, todo.slice(i), ourId, opts);
+      throw CHERRY_PICK_COMMAND.refuseMerge(source);
+    }
+    const { cData } = read;
     const outcome = await applyOnePick(ctx, source, cData, ourId, opts);
     if (outcome.kind === 'committed') {
       applied.push({ source, created: outcome.id });

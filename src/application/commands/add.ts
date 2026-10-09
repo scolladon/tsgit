@@ -251,14 +251,14 @@ const lstatOrMissing = async (
  * `added`/`modified` afterwards, so completion order carries no meaning.
  *
  * A rejection (a hostile-path abort, or the walk itself throwing) is
- * recorded rather than propagated immediately: every already-dispatched
+ * settled rather than propagated immediately: every already-dispatched
  * task is drained (awaited to settlement, never left dangling) before the
- * recorded error surfaces, so the index is never committed while a pooled
- * write may still be in flight. The recorded error is the LOWEST-ordinal
- * (earliest walk-order) rejection, not whichever settles first under the
- * pool's own scheduling — a later-walked entry with a faster failure must
- * not shadow an earlier one's, or the refusal payload becomes a function of
- * pool timing instead of the deterministic walk order.
+ * error surfaces, so the index is never committed while a pooled write may
+ * still be in flight. The surfaced error is the earliest-walked entry's
+ * rejection, not whichever settles first under the pool's own scheduling —
+ * a later-walked entry with a faster failure must not shadow an earlier
+ * one's, or the refusal payload becomes a function of pool timing instead
+ * of the deterministic walk order.
  */
 const stageWalkedEntries = async (
   ctx: Context,
@@ -279,35 +279,44 @@ const stageWalkedEntries = async (
       indexMtime,
       ensurePromisorConfigValid,
     );
-  const walked: WalkStaging = { outcomes: [], pending: [], firstError: undefined };
-  await dispatchInCleanOrder(ctx, walk, stage, walked);
-  if (walked.firstError !== undefined) throw walked.firstError.error;
-  return walked.outcomes;
+  return stagedOutcomes(await dispatchInCleanOrder(ctx, walk, stage));
 };
 
-/** A clean driver hears the paths in walk order, however the reads race. */
+/** One walked entry once staged: its outcome, or the failure staging it met. */
+type StagedEntry =
+  | { readonly kind: 'staged'; readonly outcome: WalkOutcome | undefined }
+  | { readonly kind: 'failed'; readonly error: unknown };
+
+/** The staged outcomes, in walk order; the earliest-walked entry's failure refuses instead. */
+const stagedOutcomes = (staged: ReadonlyArray<StagedEntry>): WalkOutcome[] => {
+  const outcomes: WalkOutcome[] = [];
+  for (const entry of staged) {
+    if (entry.kind === 'failed') throw entry.error;
+    if (entry.outcome !== undefined) outcomes.push(entry.outcome);
+  }
+  return outcomes;
+};
+
+/**
+ * A clean driver hears the paths in walk order, however the reads race. Every
+ * entry is settled, in walk order, before the walk's own failure surfaces.
+ */
 const dispatchInCleanOrder = (
   ctx: Context,
   walk: AsyncIterable<WalkWorkingTreeEntry>,
   stage: (walkEntry: WalkWorkingTreeEntry) => Promise<WalkOutcome | undefined>,
-  walked: WalkStaging,
-): Promise<void> =>
+): Promise<ReadonlyArray<StagedEntry>> =>
   withCleanOrder(ctx, async (order) => {
-    const dispatcher = { limiter: limiterFor(ctx, 'ioBound'), order, stage, walked };
+    const dispatcher = { limiter: limiterFor(ctx, 'ioBound'), order, stage };
+    const pending: Promise<StagedEntry>[] = [];
     try {
-      let ordinal = 0;
-      for await (const walkEntry of walk) dispatchWalkEntry(dispatcher, walkEntry, ordinal++);
-    } finally {
-      await Promise.all(walked.pending);
+      for await (const walkEntry of walk) pending.push(dispatchWalkEntry(dispatcher, walkEntry));
+    } catch (error) {
+      await Promise.all(pending);
+      throw error;
     }
+    return Promise.all(pending);
   });
-
-/** What the walk staged so far, and the earliest-walked entry's failure. */
-interface WalkStaging {
-  readonly outcomes: WalkOutcome[];
-  readonly pending: Promise<void>[];
-  firstError: { readonly error: unknown; readonly ordinal: number } | undefined;
-}
 
 /** Stage one walked entry under the limiter, releasing its clean turn whatever the outcome. */
 const dispatchWalkEntry = (
@@ -315,35 +324,21 @@ const dispatchWalkEntry = (
     limiter,
     order,
     stage,
-    walked,
   }: {
     readonly limiter: ConcurrencyLimiter;
     readonly order: CleanOrder;
     readonly stage: (walkEntry: WalkWorkingTreeEntry) => Promise<WalkOutcome | undefined>;
-    readonly walked: WalkStaging;
   },
   walkEntry: WalkWorkingTreeEntry,
-  ordinal: number,
-): void => {
+): Promise<StagedEntry> => {
   order.enlist(walkEntry.path);
-  walked.pending.push(
-    limiter
-      .run(() => stage(walkEntry))
-      .then(
-        (outcome) => {
-          if (outcome !== undefined) walked.outcomes.push(outcome);
-        },
-        (error: unknown) => keepEarliestError(walked, error, ordinal),
-      )
-      .finally(() => order.release(walkEntry.path)),
-  );
-};
-
-const keepEarliestError = (walked: WalkStaging, error: unknown, ordinal: number): void => {
-  // Stryker disable next-line EqualityOperator: equivalent — `ordinal` is a distinct integer per dispatch() call (assigned via a single monotonically-incrementing `ordinal++` in the walk loop), so `ordinal === firstError.ordinal` can only be true when this IS the entry that already set firstError — impossible, since a settled promise's rejection handler runs at most once; `<=` and `<` are therefore indistinguishable at every reachable call (full add.test.ts suite, incl. the earliest-walked-path race tests, passes unmutated).
-  if (walked.firstError === undefined || ordinal < walked.firstError.ordinal) {
-    walked.firstError = { error, ordinal };
-  }
+  return limiter
+    .run(() => stage(walkEntry))
+    .then(
+      (outcome): StagedEntry => ({ kind: 'staged', outcome }),
+      (error: unknown): StagedEntry => ({ kind: 'failed', error }),
+    )
+    .finally(() => order.release(walkEntry.path));
 };
 
 // Walk-and-filter add: applies `.gitignore` (so build artefacts stay
