@@ -49,7 +49,7 @@ function scanA(index: HistogramIndex, line1: number, count1: number): void {
     const cls = a[ptr - 1]!;
     if (recordGeneration[cls] === generation) {
       nextPtr[ptr - 1] = recordPtr[cls]!;
-      recordCount[cls]!++;
+      recordCount[cls] = recordCount[cls]! + 1;
     } else {
       recordGeneration[cls] = generation;
       recordCount[cls] = 1;
