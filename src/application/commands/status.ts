@@ -19,6 +19,7 @@ import {
   type WorkingTreeComparison,
   type WorkingTreeDelta,
 } from '../primitives/compare-working-tree-entry.js';
+import { readConfig } from '../primitives/config-read.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
 import { type CleanOrder, withCleanOrder } from '../primitives/internal/clean-order.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
@@ -261,10 +262,17 @@ const scanWorkingTree = async (
       }
     });
   // A clean driver hears the paths in index order, however the reads race;
-  // without attributes no driver applies, and the scan needs no order.
-  const results = provider === undefined ? await scan() : await inIndexOrder(ctx, stage0, scan);
+  // without attributes, or with no driver configured, no clean runs or
+  // refuses, and the scan needs no order.
+  const ordered = provider !== undefined && (await configuresFilterDriver(ctx));
+  const results = ordered ? await inIndexOrder(ctx, stage0, scan) : await scan();
   return deltaMapOf(results);
 };
+
+/** Whether any `[filter "<driver>"]` section is configured: without one, a filter attribute
+ *  resolves to no driver, so no clean runs and none refuses. */
+const configuresFilterDriver = async (ctx: Context): Promise<boolean> =>
+  ((await readConfig(ctx)).filter?.size ?? 0) > 0;
 
 /** Runs `scan` with every stage-0 path enlisted, so a clean driver hears them in index order. */
 const inIndexOrder = <T>(
