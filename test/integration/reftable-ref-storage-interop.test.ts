@@ -372,8 +372,12 @@ const corruptMagic: Damager = (repoDir) => {
 };
 
 /**
- * Truncated to 50 bytes — below v1's own 24-byte header plus 68-byte
- * footer (92 bytes). The design doc's own recipe truncates to 400 bytes,
+ * Truncated into [68, 92) — below v1's own 24-byte header plus 68-byte
+ * footer (92 bytes), so tsgit refuses with `truncated`, yet not below the
+ * footer alone: under 68 bytes git computes `size - 68` unsigned and reads
+ * its "footer" from before the start of its own mmap, so its outcome
+ * depends on memory layout (an intermittent SIGBUS on macOS) rather than
+ * being a stable behaviour to pin. The design doc's own recipe truncates to 400 bytes,
  * but re-measured against THIS fixture's actual table (494 bytes: five
  * refs plus one annotated tag), 400 bytes lands ABOVE that 92-byte floor —
  * `parseReftable` reads a header fine and then reads a "footer" from
@@ -383,10 +387,12 @@ const corruptMagic: Damager = (repoDir) => {
  * to cover; git's own for-each-ref/fsck behaviour is identical at either
  * length (re-measured both ways).
  */
+const TRUNCATED_TABLE_BYTES = 80;
+
 const truncateTableBelowItsOwnHeaderAndFooter: Damager = (repoDir) => {
   const tablePath = soleTablePath(repoDir);
   const bytes = readFileSync(tablePath);
-  writeFileSync(tablePath, bytes.subarray(0, 50));
+  writeFileSync(tablePath, bytes.subarray(0, TRUNCATED_TABLE_BYTES));
 };
 
 const corruptFooterCrc: Damager = (repoDir) => {
