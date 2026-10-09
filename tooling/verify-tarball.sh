@@ -324,11 +324,6 @@ INVENTORY=$(mktemp -t tsgit-tarball-inventory.XXXXXX)
 BUNDLE=$(mktemp -t tsgit-browser-bundle.XXXXXX)
 SIZE=$(wc -c < "$TARBALL" | tr -d ' ')
 
-if (( SIZE > SIZE_CAP )); then
-  echo "FAIL: tarball $(basename "$TARBALL") is ${SIZE} bytes (cap ${SIZE_CAP})" >&2
-  exit 1
-fi
-
 # Subpath resolution guard (ADR-644). `attw --pack` enumerates `exports`
 # keys literally and prints "(wildcard)" for a pattern without resolving
 # anything behind it — that is precisely how a `./commands/*` wildcard whose
@@ -549,6 +544,7 @@ if (violations.length > 0) {
   console.error(violations.join("\n"));
   process.exit(1);
 }
+console.log(`${neutralEntries.join(" and ")} reach no node: specifier and no node adapter.`);
 ' ; then
   echo "FAIL: a runtime-agnostic entry (index.default.js / index.browser.js) reaches the node adapter or a node: specifier" >&2
   exit 1
@@ -590,6 +586,14 @@ if (( QUICK == 0 )); then
     echo "FAIL: arethetypeswrong reported issues" >&2
     exit 1
   }
+fi
+
+# Size cap last: every structural check above (subpath resolution, the
+# neutral-entry node:/adapter-node walk, bundle shape, types) reports first, so
+# an over-cap tarball can never hide a leak behind its size failure.
+if (( SIZE > SIZE_CAP )); then
+  echo "FAIL: tarball $(basename "$TARBALL") is ${SIZE} bytes (cap ${SIZE_CAP})" >&2
+  exit 1
 fi
 
 echo "OK: tarball $(basename "$TARBALL") verified at ${SIZE} bytes."
