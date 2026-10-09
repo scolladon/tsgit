@@ -1,9 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../../src/adapters/memory/memory-adapter.js';
 import type { CatalogueOptions } from '../../../../../../src/application/commands/internal/fsck/content-validation.js';
 import { createSpecialBlobLedger } from '../../../../../../src/application/commands/internal/fsck/special-blobs.js';
 import type { FsckOptions } from '../../../../../../src/application/commands/internal/fsck/types.js';
-import { runVerifyPackPass } from '../../../../../../src/application/commands/internal/fsck/verify-pack.js';
+import {
+  positionsByOffset,
+  runVerifyPackPass,
+} from '../../../../../../src/application/commands/internal/fsck/verify-pack.js';
 import { DEFAULT_BIG_FILE_THRESHOLD_BYTES } from '../../../../../../src/application/primitives/internal/big-file-threshold.js';
 import { SHA1_CONFIG } from '../../../../../../src/domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../../../src/domain/objects/index.js';
@@ -325,6 +328,77 @@ describe('Given a tree with duplicate entries stored in two intact packs', () =>
         result.findings.filter((f) => f.type === 'bad-object' && f.msgId === 'duplicateEntries'),
       ).toEqual([duplicate, duplicate]);
       expect(result.exitBit).toBe(4);
+    });
+  });
+});
+
+describe('positionsByOffset', () => {
+  describe('Given offsets whose keys fit a double exactly', () => {
+    describe('When ordered by offset', () => {
+      it('Then each position comes back in the order its offset sits in the pack', () => {
+        // Arrange
+        const offsets = Float64Array.of(300, 12, 4_000_000_000, 150);
+        const sut = positionsByOffset;
+
+        // Act
+        const result = sut(offsets, 4_000_000_001);
+
+        // Assert
+        expect(result).toEqual([1, 3, 0, 2]);
+      });
+    });
+  });
+
+  describe('Given offsets well inside the exact range of a double', () => {
+    describe('When ordered by offset', () => {
+      it('Then no per-pair comparator sort runs', () => {
+        // Arrange
+        const offsets = Float64Array.of(300, 12, 150);
+        const comparatorSort = vi.spyOn(Array.prototype, 'sort');
+        const sut = positionsByOffset;
+
+        // Act
+        sut(offsets, 301);
+
+        // Assert
+        const result = comparatorSort.mock.calls.length;
+        expect(result).toBe(0);
+      });
+    });
+  });
+
+  describe('Given offsets whose keys would exceed the exact range of a double', () => {
+    describe('When ordered by offset', () => {
+      it('Then the comparator sort still orders every position by its offset', () => {
+        // Arrange
+        const large = 2 ** 51;
+        const offsets = Float64Array.of(large + 3, large + 1, 12, large + 2);
+        const sut = positionsByOffset;
+
+        // Act
+        const result = sut(offsets, large + 4);
+
+        // Assert
+        expect(result).toEqual([2, 1, 3, 0]);
+      });
+    });
+  });
+
+  describe('Given a bound whose keys land exactly on the largest exact double', () => {
+    describe('When ordered by offset', () => {
+      it('Then the key sort still answers exactly', () => {
+        // Arrange
+        const count = 2;
+        const bound = Math.floor(Number.MAX_SAFE_INTEGER / count);
+        const offsets = Float64Array.of(bound - 1, bound - 2);
+        const sut = positionsByOffset;
+
+        // Act
+        const result = sut(offsets, bound);
+
+        // Assert
+        expect(result).toEqual([1, 0]);
+      });
     });
   });
 });

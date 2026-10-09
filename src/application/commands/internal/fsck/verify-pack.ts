@@ -33,9 +33,20 @@ type PackFinding = Extract<
   { type: 'pack-index-checksum-mismatch' | 'pack-checksum-mismatch' | 'pack-crc-mismatch' }
 >;
 
-/** Index positions ordered by the pack offset each entry starts at. */
-export function positionsByOffset(offsets: Float64Array): ReadonlyArray<number> {
-  return Array.from(offsets.keys()).sort((left, right) => offsets[left]! - offsets[right]!);
+/**
+ * Index positions ordered by the pack offset each entry starts at, every offset below `bound`.
+ * Offsets are unique, so `offset * count + position` orders exactly as the offsets do and
+ * carries its position back out: one native numeric sort, no comparator call per pair. A key
+ * past the largest integer a double holds exactly would round, so a pack that large takes the
+ * comparator sort instead.
+ */
+export function positionsByOffset(offsets: Float64Array, bound: number): ReadonlyArray<number> {
+  const count = offsets.length;
+  if (bound * count > Number.MAX_SAFE_INTEGER) {
+    return Array.from(offsets.keys()).sort((left, right) => offsets[left]! - offsets[right]!);
+  }
+  const keys = offsets.map((offset, position) => offset * count + position).sort();
+  return Array.from(keys, (key) => key % count);
 }
 
 async function indexChecksumHolds(ctx: Context, index: PackIndex): Promise<boolean> {
@@ -122,7 +133,7 @@ interface EntryLayout {
 async function entryLayoutOf(pack: RegisteredPack, index: PackIndex): Promise<EntryLayout> {
   const { trailerStart } = await pack.offsetTable();
   const offsets = entryOffsetsF64(index);
-  const order = positionsByOffset(offsets);
+  const order = positionsByOffset(offsets, trailerStart);
   return { order, starts: order.map((position) => offsets[position]!), trailerStart };
 }
 
