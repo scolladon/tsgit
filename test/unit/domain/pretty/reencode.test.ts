@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildCharsetEncoder,
   charsetIdentity,
@@ -273,6 +273,76 @@ describe('reencode', () => {
       // Assert
       expect(result).toEqual(utf8('p'));
       expect(lone).toBeUndefined();
+    });
+  });
+
+  describe('Given a BOM-less UTF-16 text whose second byte is the little-endian BOM byte, When decoding', () => {
+    it('Then it is still read as big-endian, as iconv does', () => {
+      // Arrange
+      const sut = decodeToUtf8;
+
+      // Act
+      const result = sut('UTF-16', bytesOf(0, 0xfe));
+
+      // Assert
+      expect(result).toEqual(utf8('þ'));
+    });
+  });
+
+  describe('Given a little-endian BOM before a lone surrogate, When decoding', () => {
+    it('Then the text is unconverted', () => {
+      // Arrange
+      const sut = decodeToUtf8;
+
+      // Act
+      const result = sut('UTF-16', bytesOf(0xff, 0xfe, 0x3d, 0xd8));
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe('Given a Shift_JIS character two byte pairs decode to, When encoding', () => {
+    it('Then the first pair is used, as iconv does', () => {
+      // Arrange
+      const sut = encodeFromUtf8;
+
+      // Act
+      const result = sut('Shift_JIS', utf8('∪'), buildCharsetEncoder);
+
+      // Assert
+      expect(result).toEqual(bytesOf(0x81, 0xbe));
+    });
+  });
+
+  describe('Given a Big5 decoder that reads one byte pair as two code points, as WHATWG specifies', () => {
+    const RealTextDecoder = globalThis.TextDecoder;
+    const COMBINING_PAIR = [0x88, 0x62];
+    const SINGLE_CHARACTER_PAIR = [0x88, 0x66];
+    const isPair = (input: Uint8Array, pair: ReadonlyArray<number>): boolean =>
+      input.length === pair.length && pair.every((byte, at) => input[at] === byte);
+    class WhatwgBig5Decoder extends RealTextDecoder {
+      override decode(input?: AllowSharedBufferSource, options?: TextDecodeOptions): string {
+        const bytes = input as Uint8Array;
+        if (isPair(bytes, COMBINING_PAIR)) return '\u00ca\u0304';
+        if (isPair(bytes, SINGLE_CHARACTER_PAIR)) return '\u00ca';
+        return super.decode(input, options);
+      }
+    }
+    afterEach(() => vi.unstubAllGlobals());
+
+    describe('When encoding the first of those code points alone', () => {
+      it('Then the pair decoding to exactly that character is used', () => {
+        // Arrange
+        vi.stubGlobal('TextDecoder', WhatwgBig5Decoder);
+        const sut = buildCharsetEncoder;
+
+        // Act
+        const result = sut('big5')?.('\u00ca');
+
+        // Assert
+        expect(result).toEqual(bytesOf(...SINGLE_CHARACTER_PAIR));
+      });
     });
   });
 
