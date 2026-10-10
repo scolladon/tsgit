@@ -642,4 +642,72 @@ describe('collidingSourceMerges', () => {
       });
     });
   });
+
+  describe('Given a rename whose source the other side only made executable, onto its own addition', () => {
+    describe('When the renames are applied', () => {
+      it('Then the mode change counts as a change and the merged source meets the addition', () => {
+        // Arrange
+        const base = tree([[OLD, ID_BASE]]);
+        const ours: FlatTree = {
+          entries: new Map([
+            [NEW, entry(ID_ADDED)],
+            [OLD, { id: ID_BASE, mode: FILE_MODE.EXECUTABLE }],
+          ]),
+        };
+        const theirs = tree([[NEW, ID_OTHER]]);
+        const renames: MergeRenames = {
+          ours: [],
+          theirs: [{ oldPath: OLD, newPath: NEW, mergedSource: entry(ID_MERGED) }],
+        };
+        const sut = applyMergeRenames;
+
+        // Act
+        const result = sut(base, ours, theirs, renames);
+
+        // Assert
+        expect(listed(result.theirs)).toEqual([[NEW, entry(ID_MERGED)]]);
+      });
+    });
+  });
+
+  describe('Given two sources both sides rename apart, theirs listing them in the other order', () => {
+    describe('When the renames are applied', () => {
+      it("Then the splits are recorded in ours' order", () => {
+        // Arrange
+        const base = tree([
+          ['a', ID_BASE],
+          ['b', ID_EDIT],
+        ]);
+        const ours = tree([
+          ['a1', ID_BASE],
+          ['b1', ID_EDIT],
+        ]);
+        const theirs = tree([
+          ['a2', ID_BASE],
+          ['b2', ID_EDIT],
+        ]);
+        const path = (name: string) => name as FilePath;
+        const renames: MergeRenames = {
+          ours: [
+            { oldPath: path('a'), newPath: path('a1') },
+            { oldPath: path('b'), newPath: path('b1') },
+          ],
+          theirs: [
+            { oldPath: path('b'), newPath: path('b2') },
+            { oldPath: path('a'), newPath: path('a2') },
+          ],
+        };
+        const sut = applyMergeRenames;
+
+        // Act
+        const result = sut(base, ours, theirs, renames);
+
+        // Assert
+        expect(result.splitRenames.map((split) => split.paths)).toEqual([
+          { base: 'a', ours: 'a1', theirs: 'a2' },
+          { base: 'b', ours: 'b1', theirs: 'b2' },
+        ]);
+      });
+    });
+  });
 });
