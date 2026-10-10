@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  escapeLengthAt,
   NO_WRAPPING,
   parseWrapLayout,
   rewrapTail,
@@ -96,6 +97,9 @@ describe('wrapText', () => {
       ['a\n-b c\n d', 5, 'a\n-b c\nd'],
       ['ab\n', 5, 'ab\n'],
       ['\n', 5, '\n'],
+      ['x\nab', 20, 'x ab'],
+      ['x\nzy', 20, 'x zy'],
+      ['x\n_y', 20, 'x\n_y'],
     ])('Then %j at width %i becomes %j', (text, width, expected) => {
       // Arrange
       const sut = wrapText;
@@ -207,6 +211,19 @@ describe('wrapText', () => {
     });
   });
 
+  describe('Given an empty text, When wrapping with an indent', () => {
+    it('Then nothing is written, not even the indent', () => {
+      // Arrange
+      const sut = wrapText;
+
+      // Act
+      const result = sut(encode(''), 2, 2, 10);
+
+      // Assert
+      expect(decode(result)).toBe('');
+    });
+  });
+
   describe('Given a NUL byte, When wrapping', () => {
     it('Then the text ends there', () => {
       // Arrange
@@ -228,6 +245,37 @@ describe('wrapText', () => {
 
       // Assert
       expect(decode(result)).toBe(' ab');
+    });
+  });
+});
+
+describe('escapeLengthAt', () => {
+  describe.each([
+    ['a bracket not preceded by ESC', 'x[1m'],
+    ['an ESC not followed by a bracket', '\x1bxm'],
+  ])('Given %s, When measuring', (_label, text) => {
+    it('Then no escape starts there', () => {
+      // Arrange
+      const sut = escapeLengthAt;
+
+      // Act
+      const result = sut(encode(text), 0);
+
+      // Assert
+      expect(result).toBe(0);
+    });
+  });
+
+  describe('Given parameters separated by semicolons, When measuring', () => {
+    it('Then the whole sequence through its final m counts', () => {
+      // Arrange
+      const sut = escapeLengthAt;
+
+      // Act
+      const result = sut(encode('\x1b[1;31mab'), 0);
+
+      // Assert
+      expect(result).toBe(7);
     });
   });
 });
@@ -277,6 +325,8 @@ describe('parseWrapLayout', () => {
       'w(5,0,0',
       'w(5,x)',
       'w(5,0,0,1)',
+      'w(5,0,0,)',
+      'w5)',
       'w(5x)',
       'w(16385)',
       'w(1,16385)',
@@ -331,6 +381,23 @@ describe('rewrapTail', () => {
       // Assert
       expect(decode(Uint8Array.from(pieces.flatMap((piece) => [...piece])))).toBe('xx ab\n cd');
       expect(result).toEqual({ layout: layout(0, 0, 0), start: 9 });
+    });
+
+    it.each([
+      ['indent1', layout(4, 2, 1)],
+      ['indent2', layout(4, 1, 2)],
+    ])('Then a layout differing only by %s still wraps the tail', (_field, next) => {
+      // Arrange
+      const sut = rewrapTail;
+      const pieces = [encode('ab cd')];
+      const current = { layout: layout(4, 1, 1), start: 0 };
+
+      // Act
+      const result = sut(pieces, current, next);
+
+      // Assert
+      expect(pieces.map(decode)).toEqual([' ab\n cd']);
+      expect(result).toEqual({ layout: next, start: 7 });
     });
 
     it('Then a tail already consumed is left alone', () => {
