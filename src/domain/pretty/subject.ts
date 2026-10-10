@@ -15,6 +15,7 @@ const LOWER_Z = 0x7a;
 
 const trimTrailingSpace = (line: Uint8Array): Uint8Array => {
   let end = line.length;
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — at end 0 line[-1] is undefined and isAsciiSpace(undefined) is false, so the loop stops at 0 either way
   while (end > 0 && isAsciiSpace(line[end - 1] as number)) end--;
   return line.subarray(0, end);
 };
@@ -52,7 +53,9 @@ const isTrimmedTail = (byte: number): boolean => byte === DOT || byte === DASH;
 
 const sanitize = (subject: Uint8Array): number[] => {
   const out: number[] = [];
+  // Stryker disable next-line BooleanLiteral: equivalent — a separator before the first title byte is dropped by the out.length guard, so the initial value is unobservable
   let pendingSeparator = false;
+  // Stryker disable next-line EqualityOperator: equivalent — subject[length] is undefined, which is not a title char, so the extra pass only sets a separator that is never emitted
   for (let index = 0; index < subject.length; index++) {
     const byte = subject[index] as number;
     if (!isTitleChar(byte)) {
@@ -70,6 +73,7 @@ const sanitize = (subject: Uint8Array): number[] => {
 /** git's `format_sanitized_subject` (`%f`) over the joined subject. */
 export const formatSanitizedSubject = (raw: Uint8Array): Uint8Array => {
   const out = sanitize(formatSubject(raw));
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — on an empty out, out[-1] is undefined and isTrimmedTail(undefined) is false, so the loop stops either way
   while (out.length > 0 && isTrimmedTail(out[out.length - 1] as number)) out.pop();
   return Uint8Array.from(out);
 };

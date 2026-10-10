@@ -40,6 +40,9 @@ describe('formatSanitizedSubject', () => {
     ['underscores and digits', 'v_1.2', 'v_1.2'],
     ['non-ASCII bytes', 'café x', 'caf-x'],
     ['only specials', ' !! ', ''],
+    ['digits and lowercase at their range bounds', 'a0b 9z', 'a0b-9z'],
+    ['uppercase at its range bounds', 'A-Z', 'A-Z'],
+    ['a dot after a special run', 'a .', 'a'],
   ])('Given %s, When formatting', (_title, raw, expected) => {
     it(`Then it yields "${expected}"`, () => {
       // Arrange
