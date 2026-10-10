@@ -215,9 +215,155 @@ describe('directoryRenamesOf', () => {
       });
     });
   });
+
+  describe('Given a removed subdirectory under a relevant directory, renamed with it', () => {
+    describe('When the directory renames are computed', () => {
+      it('Then its renames also vote for the relevant directory above it', () => {
+        // Arrange
+        const base = tree('A/B/f1', 'A/B/f2');
+        const side = tree('C/B/f1', 'C/B/f2');
+        const other = tree('A/B/f1', 'A/B/f2', 'A/x');
+        const renames = [rename('A/B/f1', 'C/B/f1'), rename('A/B/f2', 'C/B/f2')];
+        const sut = directoryRenamesOf;
+
+        // Act
+        const result = sut(base, side, other, renames);
+
+        // Assert
+        expect(new Map(result)).toEqual(
+          new Map([
+            ['A/B', 'C/B'],
+            ['A', 'C'],
+          ]),
+        );
+      });
+    });
+  });
+
+  describe('Given a removed subdirectory voting through another one to a relevant directory', () => {
+    describe('When the directory renames are computed', () => {
+      it('Then the subdirectory in between gets no vote of its own', () => {
+        // Arrange
+        const base = tree('A/g', 'A/B/C/f');
+        const side = tree('X/g', 'X/Q/C/f');
+        const other = tree('A/g', 'A/B/C/f', 'A/z', 'A/B/D/new');
+        const renames = [rename('A/g', 'X/g'), rename('A/B/C/f', 'X/Q/C/f')];
+        const sut = directoryRenamesOf;
+
+        // Act
+        const result = sut(base, side, other, renames);
+
+        // Assert
+        expect(new Map(result)).toEqual(
+          new Map([
+            ['A/B/C', 'X/Q/C'],
+            ['A', 'X'],
+          ]),
+        );
+      });
+    });
+  });
+
+  describe('Given a removed nested directory with no relevant directory above it', () => {
+    describe('When the directory renames are computed', () => {
+      it('Then it is not renamed', () => {
+        // Arrange
+        const base = tree('p/q/a', 'p/q/b', 'p/z');
+        const side = tree('r/q/a', 'r/q/b', 'p/z');
+        const other = tree('p/q/a', 'p/q/b', 'p/z', 'p/q/sub/new');
+        const renames = [rename('p/q/a', 'r/q/a'), rename('p/q/b', 'r/q/b')];
+        const sut = directoryRenamesOf;
+
+        // Act
+        const result = sut(base, side, other, renames);
+
+        // Assert
+        expect([...result]).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a file renamed out of a directory the side kept', () => {
+    describe('When the directory renames are computed', () => {
+      it('Then the kept directory is not renamed', () => {
+        // Arrange
+        const base = tree('a/f', 'a/g');
+        const side = tree('a/g', 'b/f');
+        const other = tree('a/f', 'a/g', 'a/new');
+        const sut = directoryRenamesOf;
+
+        // Act
+        const result = sut(base, side, other, [rename('a/f', 'b/f')]);
+
+        // Assert
+        expect([...result]).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('scanMergeTrees', () => {
+  describe('Given a tree holding a top-level file and a nested one', () => {
+    describe("When the tree's directories are scanned", () => {
+      it("Then only the nested file's directories are listed, never the top level", () => {
+        // Arrange
+        const sut = scanMergeTrees;
+
+        // Act
+        const result = sut(BASE).directoriesOf(tree('ab', 'd/e/f'));
+
+        // Assert
+        expect([...result].sort()).toEqual(['d', 'd/e']);
+      });
+    });
+  });
 });
 
 describe('applyDirectoryRenames', () => {
+  describe('Given theirs renamed a directory ours added into, directly and in a new subdirectory', () => {
+    describe('When the directory renames are applied', () => {
+      it('Then both additions move under the renamed directory', () => {
+        // Arrange
+        const ours = tree('dir/a', 'dir/b', 'dir/c', 'dir/sub/c2', 'x');
+        const sut = applyDirectoryRenames;
+
+        // Act
+        const result = sut(BASE, ours, MOVED, {
+          ours: [],
+          theirs: DIR_MOVE,
+          directoryRenames: 'apply',
+        });
+
+        // Assert
+        expect(paths(result.ours)).toEqual(['dir/a', 'dir/b', 'newdir/c', 'newdir/sub/c2', 'x']);
+      });
+    });
+  });
+
+  describe('Given our addition sits where our directory rename sends a path of theirs', () => {
+    describe('When the directory renames are applied', () => {
+      it('Then our addition stays put though theirs renamed its directory', () => {
+        // Arrange
+        const base = tree('A/a1', 'A/a2', 'B/b1', 'B/b2');
+        const ours = tree('B/a1', 'B/a2', 'B/b1', 'B/b2', 'B/n');
+        const theirs = tree('A/a1', 'A/a2', 'C/b1', 'C/b2', 'A/n');
+        const renames = {
+          ours: [rename('A/a1', 'B/a1'), rename('A/a2', 'B/a2')],
+          theirs: [rename('B/b1', 'C/b1'), rename('B/b2', 'C/b2')],
+          directoryRenames: 'apply',
+        } as const;
+        const sut = applyDirectoryRenames;
+
+        // Act
+        const result = sut(base, ours, theirs, renames);
+
+        // Assert
+        expect(paths(result.ours)).toEqual(['B/b1', 'B/b2', 'B/n', 'C/a1', 'C/a2']);
+        expect(result.theirs).toBe(theirs);
+      });
+    });
+  });
+
   describe('Given theirs renamed a directory ours added a file into', () => {
     describe('When the directory renames are applied', () => {
       it('Then our addition moves into the renamed directory, marked as a file location', () => {
@@ -292,6 +438,7 @@ describe('applyDirectoryRenames', () => {
       { ours: [], theirs: DIR_MOVE, directoryRenames: 'none' } as const,
     ],
     ['no side renamed a file', { ours: [], theirs: [] }],
+    ['the directory-rename mode is unset', { ours: [], theirs: DIR_MOVE }],
   ])('Given %s', (_label, renames) => {
     describe('When the directory renames are applied', () => {
       it('Then nothing moves', () => {

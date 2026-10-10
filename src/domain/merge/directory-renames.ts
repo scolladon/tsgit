@@ -22,6 +22,7 @@ const TOP_LEVEL = '';
 
 const parentOf = (path: string): string => {
   const slash = path.lastIndexOf('/');
+  // Stryker disable next-line EqualityOperator: equivalent — at slash 0, path.slice(0, 0) is already TOP_LEVEL
   return slash < 0 ? TOP_LEVEL : path.slice(0, slash);
 };
 
@@ -101,6 +102,7 @@ const removedDirectories = (
   const sideDirectories = scans.directoriesOf(side);
   const removed = new Map<string, Relevance>();
   for (const directory of scans.directoriesOf(scans.base)) {
+    // Stryker disable next-line ConditionalExpression: equivalent — a kept directory has no removed, so no relevant, ancestor: it would rank 'none', whose votes are never kept
     if (sideDirectories.has(directory)) continue;
     if (relevant.has(directory)) removed.set(directory, 'self');
     else removed.set(directory, hasAncestorIn(directory, relevant) ? 'ancestor' : 'none');
@@ -130,6 +132,7 @@ const countRename = (
     if (!first && baseNameOf(oldPart) !== baseNameOf(newPart)) return;
     if (relevance === 'self' || first) increment(counts, oldDirectory, newDirectory);
     first = false;
+    // Stryker disable next-line ConditionalExpression,LogicalOperator: equivalent — the next step returns anyway: a 'none' directory's removed parent is 'none', and an empty new part never matches the old basename
     if (relevance === 'none' || newDirectory === TOP_LEVEL) return;
     [oldPart, newPart] = [oldDirectory, newDirectory];
   }
@@ -137,9 +140,11 @@ const countRename = (
 
 /** `get_provisional_directory_renames`: the destination holding a strict majority of the votes. */
 const majority = (targets: ReadonlyMap<string, number>): string | undefined => {
+  // Stryker disable next-line BooleanLiteral: equivalent — every count is at least 1, so the first target always takes the count > max branch, which resets tied
   let [best, max, tied] = [undefined as string | undefined, 0, false];
   for (const [target, count] of targets) {
     if (count === max) tied = true;
+    // Stryker disable next-line EqualityOperator: equivalent — an equal count took the branch above, so count > max and count >= max agree here
     else if (count > max) [best, max, tied] = [target, count, false];
   }
   return tied ? undefined : best;
@@ -314,6 +319,7 @@ const movedRenames = (
 
 /** `handle_directory_level_conflicts`: a directory both sides renamed is renamed by neither. */
 const withoutShared = (mine: DirectoryRenames, theirs: DirectoryRenames): DirectoryRenames =>
+  // Stryker disable next-line MethodExpression: equivalent — a directory both sides renamed is removed on both, so no added path lies under it and no rename lands in it
   new Map([...mine].filter(([source]) => !theirs.has(source)));
 
 const unchanged = (
