@@ -233,6 +233,19 @@ describe('reencode', () => {
     });
   });
 
+  describe('Given the euro sign, which the GBK decoder reads from both 0x80 and A2 E3, When encoding as GBK', () => {
+    it('Then the two-byte form iconv produces is used', () => {
+      // Arrange
+      const sut = encodeFromUtf8;
+
+      // Act
+      const result = sut('GBK', utf8('€'), buildCharsetEncoder);
+
+      // Assert
+      expect(result).toEqual(bytesOf(0xa2, 0xe3));
+    });
+  });
+
   describe('Given the UTF-16 label, When encoding', () => {
     it('Then the output is a big-endian BOM followed by the code units', () => {
       // Arrange

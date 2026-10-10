@@ -1290,6 +1290,20 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-subst interop', () => {
       });
     });
 
+    describe('When the encoding is GBK and the subject holds the euro sign', () => {
+      it('Then the euro sign round-trips to its two-byte form, not the single byte 0x80', async () => {
+        // Arrange
+        const dir = await encodedRepo(
+          'enc-gbk-euro',
+          'GBK',
+          Buffer.from('euro \xa2\xe3\n', 'latin1'),
+        );
+
+        // Act / Assert
+        await expectSameExpansion(dir, 'HEAD', { subject: '[GBK|euro \xa2\xe3]' });
+      });
+    });
+
     const utf16 = (text: string, order: 'utf16le' | 'ucs2be'): string =>
       order === 'utf16le'
         ? Buffer.from(text, 'utf16le').toString('latin1')

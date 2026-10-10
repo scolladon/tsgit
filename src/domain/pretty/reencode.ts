@@ -116,11 +116,14 @@ const singleByteTable = (decoder: TextDecoder): CodePointTable => {
   return table;
 };
 
-/** Single bytes first, so a character with both forms keeps the one-byte one. */
+/**
+ * Byte pairs first, so a character with both forms keeps the two-byte one as iconv does: GBK's
+ * euro sign decodes from 0x80 and from A2 E3, and iconv encodes it as A2 E3.
+ */
 const multiByteTable = (decoder: TextDecoder): CodePointTable => {
   const table = new Map<number, Uint8Array>();
-  addSingleBytes(table, decoder);
   addBytePairs(table, decoder);
+  addSingleBytes(table, decoder);
   return table;
 };
 
