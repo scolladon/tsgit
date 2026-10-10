@@ -423,6 +423,11 @@ describe('compilePathnameGlob', () => {
     ['*/c', 'x/c', true],
     ['*/c', 'x/y/c', false],
     ['ma[', 'ma[', false],
+    ['**a', 'x/a', false],
+    ['**x/c', 'a/x/c', false],
+    ['**\\a', 'x/a', false],
+    ['a/*', 'a/b/c', false],
+    ['*a', 'b', false],
   ] as const)('Given the pattern %j and the text %j', (pattern, text, expected) => {
     describe('When matched under WM_PATHNAME', () => {
       it(`Then it reports ${expected}`, () => {

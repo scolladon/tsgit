@@ -292,6 +292,7 @@ const stepStar = (text: Uint8Array, next: Uint8Array): Uint8Array => {
 const stepSegment = (text: Uint8Array, next: Uint8Array): Uint8Array => {
   const cur = new Uint8Array(text.length + 1);
   cur[text.length] = next[text.length] === 1 ? 1 : 0;
+  // Stryker disable next-line ArithmeticOperator: equivalent — `cur` holds `text.length + 1` slots, so the extra turn writes past the end (a silent no-op on a typed array); the turn at `text.length` then reads `undefined` past both arrays and recomputes the value the line above already stored.
   for (let j = text.length - 1; j >= 0; j--) {
     cur[j] = next[j] === 1 || (text[j] !== SLASH && cur[j + 1] === 1) ? 1 : 0;
   }
