@@ -53,7 +53,7 @@ const parseLine = (rawLine: string): MailmapRule | undefined => {
   const line = nul < 0 ? rawLine : rawLine.slice(0, nul);
   const first = parseLeadingNameAndEmail(line);
   if (first === undefined) return undefined;
-  const second = first.rest === '' ? undefined : parseNameAndEmail(first.rest);
+  const second = parseNameAndEmail(first.rest);
   if (second === undefined) return { newName: first.name, oldEmail: first.email };
   return {
     newName: first.name,
