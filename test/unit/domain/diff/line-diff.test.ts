@@ -5,6 +5,7 @@ import {
   BINARY_DETECTION_BYTES,
   diffLines,
   diffPresplitLines,
+  diffPresplitLinesForMode,
   isBinary,
   MAX_LINE_BYTES,
   splitLines,
@@ -943,4 +944,32 @@ describe('line-diff — classifying very long lines under an active lineKey', ()
       });
     });
   });
+
+  describe.each(['myers', 'patience'] as const)(
+    'Given two long unrelated digit files diffed with %s',
+    (algorithm) => {
+      describe('When the line counts are summed', () => {
+        it("Then they are git's numstat: no slid group is re-diffed outside histogram", () => {
+          // Arrange
+          let seed = 12345;
+          const next = (bound: number): number => {
+            seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+            return seed % bound;
+          };
+          const side = () => Array.from({ length: 1500 + next(1500) }, () => enc(`${next(6)}\n`));
+          const ours = side();
+          const theirs = side();
+          const sut = diffPresplitLinesForMode;
+
+          // Act
+          const result = sut(ours, theirs, algorithm).hunks.filter((h) => h.kind !== 'common');
+
+          // Assert
+          const removed = result.reduce((n, h) => n + h.oursEnd - h.oursStart, 0);
+          const added = result.reduce((n, h) => n + h.theirsEnd - h.theirsStart, 0);
+          expect([removed, added]).toEqual([388, 1374]);
+        });
+      });
+    },
+  );
 });
