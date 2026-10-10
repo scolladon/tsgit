@@ -45,6 +45,22 @@ describe('parseGitignore', () => {
     });
   });
 
+  describe('Given "Documentation/**.html" (a star run that is not a whole component)', () => {
+    describe('When parsed', () => {
+      it('Then the run stops at a slash like a single star, as git check-ignore does', () => {
+        // Arrange
+        const input = 'Documentation/**.html';
+
+        // Act
+        const result = parseGitignore(input);
+
+        // Assert
+        expect(result[0]?.compiled.test('Documentation/git.html')).toBe(true);
+        expect(result[0]?.compiled.test('Documentation/ppc/ppc.html')).toBe(false);
+      });
+    });
+  });
+
   describe('Given "*.log"', () => {
     describe('When parsed', () => {
       it('Then yields one rule that matches "foo.log"', () => {
