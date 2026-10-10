@@ -95,6 +95,7 @@ const parseLine = (line: string): RebaseTodoLine => {
   const reset = RESET_LINE.exec(line);
   if (reset !== null) {
     const subject = reset[2];
+    // Stryker disable next-line ConditionalExpression: equivalent — a reset's subject is read only through `!== undefined`, so `{ subject: undefined }` reads as no subject
     return { action: 'reset', label: reset[1]!, ...(subject !== undefined ? { subject } : {}) };
   }
   const merge = MERGE_LINE.exec(line);

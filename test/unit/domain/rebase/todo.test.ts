@@ -6,6 +6,7 @@ import {
   type RebaseTodoLine,
   serializeRebaseTodo,
 } from '../../../../src/domain/rebase/index.js';
+import { serializeRebaseScript } from '../../../../src/domain/rebase/todo.js';
 
 const pick = (oid: string, subject: string): RebaseTodoEntry => ({ action: 'pick', oid, subject });
 
@@ -151,6 +152,19 @@ describe('rebase todo grammar', () => {
       it('Then each block opens on a blank line before its reset, as git writes it', () => {
         // Arrange
         const sut = serializeRebaseTodo;
+
+        // Act
+        const result = sut(lines);
+
+        // Assert
+        expect(result).toBe(text);
+      });
+    });
+
+    describe('When serialized as the generated script', () => {
+      it('Then a reset naming no branch carries no branch header', () => {
+        // Arrange
+        const sut = serializeRebaseScript;
 
         // Act
         const result = sut(lines);
