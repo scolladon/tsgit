@@ -118,7 +118,7 @@ const consumeSeparator = (run: Run, text: Uint8Array, separator: number): boolea
     run.lastSpace++;
     const next = byteAt(text, run.lastSpace);
     if (next === LINE_FEED) run.chunks.push(LINE_FEED_BYTES);
-    if (next === LINE_FEED || !isAsciiAlphanumeric(next)) return true;
+    if (!isAsciiAlphanumeric(next)) return true;
     run.chunks.push(SPACE_BYTES);
   }
   run.column++;
@@ -187,13 +187,10 @@ export const rewrapTail = (pieces: Uint8Array[], current: Wrapping, next: WrapLa
   if (sameLayout(current.layout, next)) return current;
   const emitted = concatBytes(pieces);
   const { width, indent1, indent2 } = current.layout;
-  const wrapped =
-    current.start < emitted.length
-      ? concatBytes([
-          emitted.subarray(0, current.start),
-          wrapText(emitted.subarray(current.start), indent1, indent2, width),
-        ])
-      : emitted;
+  const wrapped = concatBytes([
+    emitted.subarray(0, current.start),
+    wrapText(emitted.subarray(current.start), indent1, indent2, width),
+  ]);
   pieces.splice(0, pieces.length, wrapped);
   return { layout: next, start: wrapped.length };
 };
@@ -215,19 +212,15 @@ const readUnsigned = (text: string, from: number): Reading => {
 };
 
 const readLayout = (args: string): WrapLayout | undefined => {
-  if (args === '') return NO_WRAPPING.layout;
-  const values: number[] = [];
-  let next = 0;
-  for (let slot = 0; slot < LAYOUT_SLOTS; slot++) {
-    const reading = readUnsigned(args, next);
+  let reading = readUnsigned(args, 0);
+  const values = [reading.value];
+  while (values.length < LAYOUT_SLOTS && args.charCodeAt(reading.next) === COMMA) {
+    reading = readUnsigned(args, reading.next + 1);
     values.push(reading.value);
-    next = reading.next;
-    if (slot === LAYOUT_SLOTS - 1 || args.charCodeAt(next) !== COMMA) break;
-    next++;
   }
   const [width = 0, indent1 = 0, indent2 = 0] = values;
   const withinLimit = values.every((value) => value <= FORMATTING_LIMIT);
-  return next === args.length && withinLimit ? { width, indent1, indent2 } : undefined;
+  return reading.next === args.length && withinLimit ? { width, indent1, indent2 } : undefined;
 };
 
 export interface ParsedWrap {
