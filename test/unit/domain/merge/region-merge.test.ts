@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { diffLines } from '../../../../src/domain/diff/line-diff.js';
+import { diffLines, diffPresplitLinesForMode } from '../../../../src/domain/diff/line-diff.js';
+import { type LineKey, linesEqualUnder } from '../../../../src/domain/diff/whitespace.js';
 import {
+  buildBaseShowingSegments,
   buildMergeSegments,
   changesFromHunks,
   type LineChange,
+  type LineModel,
   type MergeSegment,
   type SideEdit,
 } from '../../../../src/domain/merge/region-merge.js';
@@ -15,6 +18,7 @@ const lines = (...values: ReadonlyArray<string>): Uint8Array[] => values.map(enc
 const text = (arr: ReadonlyArray<Uint8Array>): string => arr.map((l) => decoder.decode(l)).join('');
 
 interface MergeArgs {
+  readonly base: ReadonlyArray<Uint8Array>;
   readonly baseLength: number;
   readonly ours: SideEdit;
   readonly theirs: SideEdit;
@@ -26,6 +30,7 @@ function argsFor(base: string, ours: string, theirs: string): MergeArgs {
   const oursDiff = diffLines(baseBytes, enc(ours));
   const theirsDiff = diffLines(baseBytes, enc(theirs));
   return {
+    base: oursDiff.oursLines,
     baseLength: oursDiff.oursLines.length,
     ours: { lines: oursDiff.theirsLines, changes: changesFromHunks(oursDiff.hunks) },
     theirs: { lines: theirsDiff.theirsLines, changes: changesFromHunks(theirsDiff.hunks) },
@@ -45,7 +50,8 @@ function render(segments: ReadonlyArray<MergeSegment>): string {
   for (const s of segments) {
     const last = parts[parts.length - 1];
     if (s.kind === 'conflict') {
-      parts.push(`CONFLICT[ours=${text(s.ours)}|theirs=${text(s.theirs)}]`);
+      const base = s.base === undefined ? '' : `|base=${text(s.base)}`;
+      parts.push(`CONFLICT[ours=${text(s.ours)}${base}|theirs=${text(s.theirs)}]`);
     } else if (last?.startsWith('CLEAN[')) {
       parts[parts.length - 1] = `${last.slice(0, -1)}${text(s.lines)}]`;
     } else {
@@ -54,6 +60,15 @@ function render(segments: ReadonlyArray<MergeSegment>): string {
   }
   return parts.join('');
 }
+
+const IGNORE_ALL_SPACE: LineKey = { mode: 'all', ignoreCrAtEol: false };
+
+// Lines compare and diff with every space ignored, as `-X ignore-all-space` merges them.
+const SPACE_BLIND: LineModel = {
+  linesEqual: (a, b) => linesEqualUnder(a, b, IGNORE_ALL_SPACE),
+  diffSides: (ours, theirs) =>
+    diffPresplitLinesForMode(ours, theirs, 'myers', { lineKey: IGNORE_ALL_SPACE }).hunks,
+};
 
 describe('region-merge', () => {
   describe('buildMergeSegments', () => {
@@ -443,6 +458,228 @@ describe('region-merge', () => {
 
           // Assert
           expect(render(result)).toBe('CLEAN[a\n]CONFLICT[ours=X\nd\ne\n|theirs=b\nY\n]CLEAN[f\n]');
+        });
+      });
+    });
+
+    describe.each([
+      {
+        given: 'ours rewrites both lines and theirs deletes the second',
+        base: 'c\nb\n',
+        ours: 'b\ne\n',
+        theirs: 'c\n',
+        expected: 'CONFLICT[ours=b\ne\n|theirs=c\n]',
+      },
+      {
+        given: 'ours appends a line after the one theirs deletes',
+        base: 'a\nc\n',
+        ours: 'a\nc\nc\n',
+        theirs: 'a\n',
+        expected: 'CLEAN[a\n]CONFLICT[ours=c\nc\n|theirs=]',
+      },
+    ])('Given $given', ({ base, ours, theirs, expected }) => {
+      describe('When buildMergeSegments runs', () => {
+        it('Then it conflicts as git merge-file does', () => {
+          // Arrange
+          const sut = buildMergeSegments;
+          const args = argsFor(base, ours, theirs);
+
+          // Act
+          const result = sut(args.baseLength, args.ours, args.theirs);
+
+          // Assert
+          expect(render(result)).toBe(expected);
+        });
+      });
+    });
+
+    describe('Given a region both sides rebuild identically from differently shaped changes', () => {
+      describe('When buildMergeSegments runs between two conflicts three lines apart', () => {
+        it('Then the region still keeps the two conflicts apart', () => {
+          // Arrange — ours deletes b3; theirs rewrites b2,b3 into b2: the sides agree on [2,4).
+          const ours: SideEdit = {
+            lines: lines('O0\n', 'k1\n', 'b2\n', 'k4\n', 'O5\n'),
+            changes: [change(0, 1, 0, 1), change(3, 1, 3, 0), change(5, 1, 4, 1)],
+          };
+          const theirs: SideEdit = {
+            lines: lines('T0\n', 'k1\n', 'b2\n', 'k4\n', 'T5\n'),
+            changes: [change(0, 1, 0, 1), change(2, 2, 2, 1), change(5, 1, 4, 1)],
+          };
+          const sut = buildMergeSegments;
+
+          // Act
+          const result = sut(6, ours, theirs);
+
+          // Assert
+          expect(render(result)).toBe(
+            'CONFLICT[ours=O0\n|theirs=T0\n]CLEAN[k1\nb2\nk4\n]CONFLICT[ours=O5\n|theirs=T5\n]',
+          );
+        });
+      });
+    });
+
+    describe('Given a region both sides rebuild equal only under the line model', () => {
+      describe('When buildMergeSegments runs', () => {
+        it("Then the region keeps ours' bytes", () => {
+          // Arrange — ours deletes b2; theirs rewrites b1,b2 into a spaced b1.
+          const ours: SideEdit = {
+            lines: lines('k0\n', 'b1\n', 'k3\n'),
+            changes: [change(2, 1, 2, 0)],
+          };
+          const theirs: SideEdit = {
+            lines: lines('k0\n', 'b1 \n', 'k3\n'),
+            changes: [change(1, 2, 1, 1)],
+          };
+
+          const sut = buildMergeSegments;
+
+          // Act
+          const result = sut(4, ours, theirs, SPACE_BLIND);
+
+          // Assert
+          expect(render(result)).toBe('CLEAN[k0\nb1\nk3\n]');
+        });
+      });
+    });
+
+    describe('Given ours changed only whitespace the line model ignores', () => {
+      describe('When buildMergeSegments runs', () => {
+        it("Then the merge is theirs verbatim, as git's whitespace-blind merge is", () => {
+          // Arrange
+          const ours: SideEdit = { lines: lines('a \n', 'b\n'), changes: [] };
+          const theirs: SideEdit = { lines: lines('a\n', 'B\n'), changes: [change(1, 1, 1, 1)] };
+
+          const sut = buildMergeSegments;
+
+          // Act
+          const result = sut(2, ours, theirs, SPACE_BLIND);
+
+          // Assert
+          expect(render(result)).toBe('CLEAN[a\nB\n]');
+        });
+      });
+    });
+  });
+
+  describe('buildBaseShowingSegments', () => {
+    describe.each([
+      {
+        given: 'ours deletes the line theirs prefixes',
+        style: 'diff3' as const,
+        base: 'b\n',
+        ours: '',
+        theirs: 'c\nb\n',
+        expected: 'CONFLICT[ours=|base=b\n|theirs=c\nb\n]',
+      },
+      {
+        given: 'ours deletes a line theirs inserts before, after a shared line',
+        style: 'diff3' as const,
+        base: 'c\nc\nb\n',
+        ours: 'c\nb\n',
+        theirs: 'c\ne\nc\nb\n',
+        expected: 'CLEAN[c\n]CONFLICT[ours=|base=c\n|theirs=e\nc\n]CLEAN[b\n]',
+      },
+      {
+        given: 'ours deletes the line before an insertion of theirs',
+        style: 'diff3' as const,
+        base: 'e\ne\ne\n',
+        ours: 'e\ne\n',
+        theirs: 'e\ne\ne\nd\n',
+        expected: 'CLEAN[e\ne\n]CONFLICT[ours=|base=e\n|theirs=e\nd\n]',
+      },
+      {
+        given: 'ours rewrites both lines and theirs deletes the second',
+        style: 'zdiff3' as const,
+        base: 'c\nb\n',
+        ours: 'b\ne\n',
+        theirs: 'c\n',
+        expected: 'CONFLICT[ours=b\ne\n|base=c\nb\n|theirs=c\n]',
+      },
+      {
+        given: 'both sides append the same line and theirs also prefixes one',
+        style: 'zdiff3' as const,
+        base: 'c\n',
+        ours: 'c\nb\n',
+        theirs: 'e\nc\nb\n',
+        expected: 'CLEAN[e\nc\nb\n]',
+      },
+      {
+        given: 'ours deletes the line theirs replaces',
+        style: 'zdiff3' as const,
+        base: 'c\n',
+        ours: '',
+        theirs: 'd\n',
+        expected: 'CONFLICT[ours=|base=c\n|theirs=d\n]',
+      },
+      {
+        given: 'theirs deletes the line ours replaces',
+        style: 'zdiff3' as const,
+        base: 'c\n',
+        ours: 'a\n',
+        theirs: '',
+        expected: 'CONFLICT[ours=a\n|base=c\n|theirs=]',
+      },
+    ])('Given $given', ({ style, base, ours, theirs, expected }) => {
+      describe(`When buildBaseShowingSegments runs in ${style} style`, () => {
+        it('Then it conflicts as git merge-file does', () => {
+          // Arrange
+          const sut = buildBaseShowingSegments;
+          const args = argsFor(base, ours, theirs);
+
+          // Act
+          const result = sut(args.base, args.ours, args.theirs, { style });
+
+          // Assert
+          expect(render(result)).toBe(expected);
+        });
+      });
+    });
+
+    describe('Given theirs changed a line only in whitespace the line model ignores', () => {
+      describe('When buildBaseShowingSegments runs in zdiff3 style', () => {
+        it("Then theirs' one-sided change keeps its own bytes", () => {
+          // Arrange
+          const ours: SideEdit = {
+            lines: lines('k0\n', 'b1\n', 'k2\n', 'O3\n'),
+            changes: [change(3, 1, 3, 1)],
+          };
+          const theirs: SideEdit = {
+            lines: lines('k0\n', 'b1 \n', 'k2\n', 'b3\n'),
+            changes: [change(1, 1, 1, 1)],
+          };
+          const base = lines('k0\n', 'b1\n', 'k2\n', 'b3\n');
+
+          const sut = buildBaseShowingSegments;
+
+          // Act
+          const result = sut(base, ours, theirs, {
+            style: 'zdiff3',
+            model: SPACE_BLIND,
+          });
+
+          // Assert
+          expect(render(result)).toBe('CLEAN[k0\nb1 \nk2\nO3\n]');
+        });
+      });
+    });
+
+    describe('Given ours changed only whitespace the line model ignores', () => {
+      describe('When buildBaseShowingSegments runs', () => {
+        it("Then the merge is theirs verbatim, as git's whitespace-blind merge is", () => {
+          // Arrange
+          const ours: SideEdit = { lines: lines('a \n', 'b\n'), changes: [] };
+          const theirs: SideEdit = { lines: lines('a\n', 'B\n'), changes: [change(1, 1, 1, 1)] };
+
+          const sut = buildBaseShowingSegments;
+
+          // Act
+          const result = sut(lines('a\n', 'b\n'), ours, theirs, {
+            style: 'diff3',
+            model: SPACE_BLIND,
+          });
+
+          // Assert
+          expect(render(result)).toBe('CLEAN[a\nB\n]');
         });
       });
     });
