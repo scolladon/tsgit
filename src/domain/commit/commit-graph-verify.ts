@@ -94,7 +94,6 @@ export function findGraphPosition(layer: CommitGraphLayer, oid: Uint8Array): num
     const mid = low + Math.floor((high - low) / 2);
     const cmp = compareBytes(graphOidBytesAt(layer, mid), oid);
     if (cmp === 0) return mid;
-    // Stryker disable next-line EqualityOperator: equivalent — a zero cmp returned on the line above, so cmp > 0 and cmp >= 0 agree here
     if (cmp > 0) high = mid;
     else low = mid + 1;
   }

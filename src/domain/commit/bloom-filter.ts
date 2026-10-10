@@ -62,7 +62,6 @@ function blockAt(data: Uint8Array, at: number, read: ByteReader): number {
 
 function tailOf(data: Uint8Array, from: number, read: ByteReader): number {
   let k = 0;
-  // Stryker disable next-line ArithmeticOperator: equivalent — a start past the end reads `undefined`, which shifts to 0 and leaves `k` unchanged; and `from` is a multiple of 4, so `(i + from) * 8` and `(i - from) * 8` differ by a multiple of 32, which a 32-bit shift count discards.
   for (let i = data.length - 1; i >= from; i -= 1) k ^= read(data[i]!) << ((i - from) * 8);
   return k;
 }
@@ -84,7 +83,6 @@ export function murmur3Seeded(seed: number, data: Uint8Array, version: BloomHash
     hash ^= scramble(blockAt(data, at, read));
     hash = (Math.imul(rotateLeft(hash, R2), M) + N) | 0;
   }
-  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — with no tail byte `tailOf` is 0, `scramble(0)` is 0, and `hash ^= 0` changes nothing.
   if (tailStart < data.length) hash ^= scramble(tailOf(data, tailStart, read));
   return finalMix(hash ^ data.length);
 }

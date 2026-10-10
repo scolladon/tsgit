@@ -589,7 +589,6 @@ function withSidePaths(
   contentMerger: ContentMerger,
   sidePaths: ReadonlyMap<FilePath, SidePaths>,
 ): ContentMerger {
-  // Stryker disable next-line ConditionalExpression: equivalent — an empty map finds no path, so the wrapper hands every context through unchanged
   if (sidePaths.size === 0) return contentMerger;
   return (ctx, base, ours, theirs) => {
     const paths = sidePaths.get(ctx.path);
@@ -638,7 +637,6 @@ async function settleSplitRenames(
   splits: ReadonlyArray<SplitRename>,
   contentMerger: ContentMerger,
 ): Promise<ReadonlyMap<FilePath, MergeConflict>> {
-  // Stryker disable next-line ConditionalExpression: equivalent — with no split the loop never runs and the copy holds forced's entries unchanged
   if (splits.length === 0) return forced;
   const settled = new Map(forced);
   for (const split of splits) {

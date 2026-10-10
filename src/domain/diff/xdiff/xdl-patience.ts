@@ -59,7 +59,6 @@ function binarySearch(sequence: ReadonlyArray<PatienceEntry>, line2: number): nu
   let right = sequence.length;
   while (left + 1 < right) {
     const middle = left + Math.floor((right - left) / 2);
-    // Stryker disable next-line EqualityOperator: equivalent — unique entries carry distinct line2 values (a theirs line has one class), so the search never meets a tie
     if (sequence[middle]!.line2 > line2) right = middle;
     else left = middle;
   }
@@ -91,7 +90,6 @@ function findLongestCommonSequence(
     const longest = sequence.length;
     const last = sequence[longest - 1];
     const i =
-      // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — the pile tops ascend strictly in line2 and never tie, so binarySearch also returns longest - 1 for an entry above the last top or an empty sequence
       last === undefined || entry.line2 > last.line2
         ? longest - 1
         : binarySearch(sequence, entry.line2);
@@ -152,7 +150,6 @@ function walkCommonSequence(
   for (let entry: PatienceEntry | undefined = first; ; ) {
     const next = gapEnd(classes, entry, from, region);
     const { line1, line2 } = skipEqualLines(classes, from, next);
-    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — the extra regions these push are empty on both sides, which patienceStep marks nothing for
     if (next.line1 > line1 || next.line2 > line2) {
       pending.push({ line1, count1: next.line1 - line1, line2, count2: next.line2 - line2 });
     }
@@ -184,13 +181,13 @@ function patienceStep(
   sink: RegionSink,
   pending: LineRegion[],
 ): void {
-  // Stryker disable next-line ConditionalExpression,LogicalOperator,BlockStatement: equivalent — a region empty on one side has no match, so the no-match branch below marks it identically
+  // Stryker disable next-line LogicalOperator,BlockStatement: equivalent — a region empty on one side has no match, so the no-match branch below marks it identically
   if (region.count1 === 0 || region.count2 === 0) {
     markRegion(sink, region);
     return;
   }
   const { entries, hasMatches } = fillHashmap(classes, region);
-  // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — with no match no line is unique, so the region falls back to the classic diff, which marks every line of a region sharing none changed, as markRegion does
+  // Stryker disable next-line BlockStatement: equivalent — with no match no line is unique, so the region falls back to the classic diff, which marks every line of a region sharing none changed, as markRegion does
   if (!hasMatches) {
     markRegion(sink, region);
     return;

@@ -275,7 +275,6 @@ const settleAbbreviation = (arg: string, { abbrev, ambiguous }: Abbreviations): 
 const parseShorts = (argv: ReadonlyArray<string>, start: MergeCommandLine, at: number): Parsed => {
   const arg = argv[at]!;
   let line = start;
-  // Stryker disable next-line EqualityOperator: equivalent — at index === arg.length the lookup finds `--stat`, the first short-less option, whose set is a no-op
   for (let index = 1; index < arg.length; index++) {
     const spelt = `-${arg[index]!}`;
     const option = OPTIONS.find((candidate) => candidate.short === arg[index]);

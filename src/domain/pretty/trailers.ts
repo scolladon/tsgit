@@ -40,7 +40,6 @@ const LATIN1_CHUNK = 8_192;
 /** `TextDecoder('latin1')` is windows-1252 in the Encoding Standard; this maps each byte to one code unit. */
 const toByteString = (bytes: Uint8Array): string => {
   let text = '';
-  // Stryker disable next-line EqualityOperator: equivalent — at === bytes.length appends String.fromCharCode() of an empty subarray, i.e. ''
   for (let at = 0; at < bytes.length; at += LATIN1_CHUNK) {
     text += String.fromCharCode(...bytes.subarray(at, at + LATIN1_CHUNK));
   }
@@ -351,7 +350,6 @@ const closeOption = (source: string, end: number, value: string | undefined): Ma
 
 const valueEnd = (source: string, from: number): number => {
   const found = source.slice(from).search(OPTION_BREAK);
-  // Stryker disable next-line ConditionalExpression: equivalent — `from - 1` is the '=' sign, where no option name matches either, so the list is rejected the same way
   return found === -1 ? source.length : from + found;
 };
 

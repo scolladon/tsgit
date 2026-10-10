@@ -604,7 +604,7 @@ const absorbs = (inner: Bounds): boolean =>
 
 const product = (inner: Bounds, outer: Bounds): Bounds => ({
   min: inner.min * outer.min,
-  // Stryker disable next-line ConditionalExpression,LogicalOperator: equivalent — 0 × ∞ is NaN, and a NaN bound lays out no copy, as a 0 bound does
+  // Stryker disable next-line LogicalOperator: equivalent — 0 × ∞ is NaN, and a NaN bound lays out no copy, as a 0 bound does
   max: inner.max === 0 || outer.max === 0 ? 0 : inner.max * outer.max,
 });
 
@@ -901,7 +901,6 @@ const holdsIn = (mask: number, context: Context): boolean => ((mask >> context) 
 
 /** Whether an assertion's verdict changes with the word characters around the position. */
 const dependsOnWords = (mask: number): boolean => {
-  // Stryker disable next-line EqualityOperator: equivalent — context 16 reads bit 16 of a 16-bit mask on both sides: 0 and 0
   for (let context = 0; context < CONTEXTS; context += 1) {
     if (holdsIn(mask, context) !== holdsIn(mask, context & ~WORD_CONTEXT)) return true;
   }
@@ -994,7 +993,6 @@ const classIndex = (
 const classOf = ({ source, code }: CharInstruction): CharClass => {
   const pattern = new RegExp(source, STICKY_FLAGS);
   const ascii = new Uint8Array(ASCII);
-  // Stryker disable next-line EqualityOperator: equivalent — a write past the typed array’s end is dropped
   for (let unit = 0; unit < ASCII; unit += 1) {
     ascii[unit] = Number(readsAt(pattern, String.fromCharCode(unit), 0));
   }
@@ -1088,7 +1086,6 @@ const restart = (machine: Machine, subject: string, scan: Scan): boolean => {
   if (scan.at > 0 && starts === 'subject-start') return scan.count > 0;
   if (scan.count === 0 && leading !== undefined) {
     const at = nextLeading(leading, subject, scan.at);
-    // Stryker disable next-line ConditionalExpression: equivalent — with a leading set no thread matches before reading, and position -1 holds no code point, so the run answers false there too
     if (at === NOWHERE) return false;
     if (at !== scan.at) {
       scan.at = at;
@@ -1140,7 +1137,6 @@ const follow = (program: Program, threads: Threads, pending: number, context: Co
   const { ops, operand, target } = program;
   let count = pending;
   let ready = 0;
-  // Stryker disable next-line EqualityOperator: equivalent — one more pass reads pending[-1], undefined, which names no instruction and joins nothing
   while (count > 0) {
     count -= 1;
     const pc = threads.pending[count] as number;
@@ -1291,7 +1287,6 @@ const backUp = (path: Path, subject: string): boolean => {
   if (length === undefined) return false;
   const at = choices.pop() as number;
   const pc = choices.pop() as number;
-  // Stryker disable next-line EqualityOperator: equivalent — a fork records its other target only when it differs from the first, and every such target lies past the fork, so a recorded target is never 0
   if (pc >= 0) return resume(path, pc, at);
   const back = previousStart(subject, at);
   if (back > (choices.at(-1) as number)) choices.push(pc, back, length);

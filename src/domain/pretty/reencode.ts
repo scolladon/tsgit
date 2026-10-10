@@ -88,7 +88,6 @@ const addSingleCodePoint = (
   text: string | undefined,
   bytes: number[],
 ): void => {
-  // Stryker disable next-line ConditionalExpression: equivalent — no single-byte or multi-byte WHATWG decoder turns a non-empty input into '' (each complete sequence yields a code point), so text is never empty here
   if (text === undefined || text.length === 0) return;
   const codePoint = text.codePointAt(0) as number;
   if (String.fromCodePoint(codePoint) !== text || table.has(codePoint)) return;
@@ -99,14 +98,12 @@ const latin1Table = (): CodePointTable =>
   new Map(Array.from({ length: BYTE_VALUES }, (_, byte) => [byte, Uint8Array.of(byte)]));
 
 const addSingleBytes = (table: Map<number, Uint8Array>, decoder: TextDecoder): void => {
-  // Stryker disable next-line EqualityOperator: equivalent — Uint8Array.of(256) wraps to byte 0, whose U+0000 is already in the table
   for (let byte = 0; byte < BYTE_VALUES; byte++) {
     addSingleCodePoint(table, tryDecode(decoder, Uint8Array.of(byte)), [byte]);
   }
 };
 
 const addBytePairs = (table: Map<number, Uint8Array>, decoder: TextDecoder): void => {
-  // Stryker disable next-line EqualityOperator: equivalent — sequence 0x10000 wraps to the pair 00 00, which decodes to two characters and is skipped
   for (let seq = 0; seq < TWO_BYTE_SEQUENCES; seq++) {
     const bytes = [seq >> 8, seq & BYTE_MASK];
     addSingleCodePoint(table, tryDecode(decoder, Uint8Array.from(bytes)), bytes);
@@ -159,7 +156,6 @@ const joinParts = (parts: ReadonlyArray<Uint8Array>): Uint8Array => {
 const utf16Units = (text: string, order: ByteOrder): Uint8Array => {
   const out = new Uint8Array(text.length * 2);
   const [high, low] = order === 'big-endian' ? [0, 1] : [1, 0];
-  // Stryker disable next-line EqualityOperator: equivalent — the extra step writes past the end of the typed array, which is a silent no-op
   for (let i = 0; i < text.length; i++) {
     const unit = text.charCodeAt(i);
     out[i * 2 + high] = unit >> 8;
@@ -238,7 +234,6 @@ export const encodeFromUtf8 = (
 };
 
 const nonUtf8Label = (view: CommitView): string | undefined => {
-  // Stryker disable next-line ConditionalExpression: equivalent — without the guard an absent encoding reads as the label '', which no decoder knows, so the view is returned as is
   if (view.encoding === undefined) return undefined;
   const label = new TextDecoder('latin1').decode(view.encoding);
   return isUtf8Label(label) ? undefined : label;

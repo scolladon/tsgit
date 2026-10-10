@@ -141,7 +141,6 @@ const parseOption = (source: string, at: number): ParsedOption | undefined => {
 
 const valueEnd = (source: string, from: number): number => {
   const stop = source.slice(from).search(/[,)]/);
-  // Stryker disable next-line ConditionalExpression: equivalent — from - 1 lands on '=' and source.length on nothing, both refused as non-terminators by parseOption
   return stop === -1 ? source.length : from + stop;
 };
 
