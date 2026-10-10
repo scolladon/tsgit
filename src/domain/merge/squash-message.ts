@@ -32,6 +32,7 @@ export interface SquashedCommit {
 const indentedBody = (message: string): string => {
   const lines = message.split('\n').map((line) => line.replace(TRAILING_SPACE, ''));
   const first = lines.findIndex((line) => line !== '');
+  // Stryker disable next-line ConditionalExpression: equivalent — an all-blank body would render one bare indent, which the entry's closing right-trim removes
   if (first === -1) return '';
   return lines
     .slice(first)

@@ -172,4 +172,21 @@ describe('squashMessage', () => {
       });
     });
   });
+
+  describe('Given a message whose single leading line is blank', () => {
+    describe('When rendered', () => {
+      it('Then the body starts at the line after it', () => {
+        // Arrange
+        const sut = squashMessage;
+
+        // Act
+        const result = sut([{ id: ONE, mergeParents: [], author, message: '\nsubject\n' }]);
+
+        // Assert
+        expect(result).toBe(
+          `Squashed commit of the following:\n\ncommit ${ONE}\nAuthor: a <a@x>\nDate:   Tue Nov 14 23:43:20 2023 +0130\n\n    subject\n`,
+        );
+      });
+    });
+  });
 });
