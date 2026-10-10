@@ -98,8 +98,19 @@ describe('Given an empty extension', () => {
 describe.each([
   { label: 'a path with no NUL', data: text('f') },
   { label: 'a path that ends the data', data: text('f\0') },
-  { label: 'an empty mode', data: text('f\0\u0000100644\u0000100644\0') },
-  { label: 'a non-octal mode', data: text('f\u0000100648\u0000100644\u0000100644\0') },
+  {
+    label: 'an empty mode',
+    data: concat(text('f\0\u0000100644\u0000100644\0'), hexToBytes(OURS), hexToBytes(THEIRS)),
+  },
+  {
+    label: 'a non-octal mode',
+    data: concat(
+      text('f\u0000100648\u0000100644\u0000100644\0'),
+      hexToBytes(BASE),
+      hexToBytes(OURS),
+      hexToBytes(THEIRS),
+    ),
+  },
   { label: 'a mode with no NUL', data: text('f\u0000100644') },
   { label: 'a last mode that ends the data', data: text('f\u0000000\u0000000\u0000000\0') },
   {
@@ -147,6 +158,8 @@ describe('Given mode fields git reads through strtoul', () => {
     { field: '-100644', mode: 2 ** 32 - 0o100644 },
     { field: '-0', mode: 0 },
     { field: '7'.repeat(23), mode: 2 ** 32 - 1 },
+    { field: `2${'0'.repeat(21)}`, mode: 2 ** 32 - 1 },
+    { field: `-1${'7'.repeat(21)}`, mode: 1 },
   ])('When the stage-1 mode is "$field"', ({ field, mode }) => {
     it('Then it decodes to the unsigned int git stores', () => {
       // Arrange
@@ -167,7 +180,10 @@ describe('Given mode fields git reads through strtoul', () => {
   describe.each([' ', '+', '-', ' +', '+-1', '1 '])('When the stage-1 mode is "%s"', (field) => {
     it('Then the extension is refused as git refuses it', () => {
       // Arrange
-      const data = record('f', [field, '0', '0'], []);
+      const data = concat(
+        record('f', [field, '0', '0'], []),
+        record('g', ['100644', '0', '0'], [BASE]),
+      );
 
       // Act
       const result = sut(data, DIGEST);

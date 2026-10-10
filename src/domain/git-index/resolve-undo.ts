@@ -45,6 +45,7 @@ function field(cursor: Cursor): Uint8Array | undefined {
 /** Past `strtoul`'s optional leading whitespace and sign: where digits start, and whether negated. */
 function signedStart(bytes: Uint8Array): { readonly start: number; readonly negative: boolean } {
   let start = 0;
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — bytes[length] is undefined and isAsciiSpace(undefined) is false, so the scan stops at length either way
   while (start < bytes.length && isAsciiSpace(bytes[start] as number)) start += 1;
   const sign = bytes[start];
   if (sign !== PLUS && sign !== MINUS) return { start, negative: false };
@@ -111,6 +112,7 @@ function readStages(
 
 function readRecord(cursor: Cursor, digestLength: number): ResolveUndoRecord | undefined {
   const path = field(cursor);
+  // Stryker disable next-line ConditionalExpression: equivalent — a refused field leaves the cursor unmoved, so readModes re-reads the same field and refuses too
   if (path === undefined) return undefined;
   const modes = readModes(cursor);
   if (modes === undefined) return undefined;
