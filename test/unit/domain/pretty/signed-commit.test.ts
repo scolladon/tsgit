@@ -74,6 +74,21 @@ describe('splitSignedCommit', () => {
       });
     });
   });
+  describe('Given a commit whose first line starts with a space', () => {
+    describe('When splitting it', () => {
+      it('Then that line stays in the payload, no signature being open yet', () => {
+        // Arrange
+        const sut = splitSignedCommit;
+
+        // Act
+        const result = sut(encode(' lead\ngpgsig mine\n\nmsg\n'), 'gpgsig');
+
+        // Assert
+        expect(result && decode(result.payload)).toBe(' lead\n\nmsg\n');
+        expect(result && decode(result.signature)).toBe('mine\n');
+      });
+    });
+  });
 });
 
 describe('Given each repository hash', () => {
