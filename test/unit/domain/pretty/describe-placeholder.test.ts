@@ -70,6 +70,7 @@ describe('parseDescribePlaceholder', () => {
         '(describe:match=)',
         '(describe:exclude)',
         '(describe:tagsZ)',
+        `(describe:tags${'abbrev'}=5)`,
         '(describe:tags',
         '(describe:match=v*',
         '(describe',
