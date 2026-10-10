@@ -125,6 +125,17 @@ describe('parseColorSpec', () => {
       // Assert
       expect(result).toBeUndefined();
     });
+
+    it.each(['x123', '1234', 'xff8000'])('Then %s without the leading # is rejected', (spec) => {
+      // Arrange
+      const sut = parseColorSpec;
+
+      // Act
+      const result = sut(spec);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
   });
 
   describe('Given a foreground and a background, When parsing', () => {
