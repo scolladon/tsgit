@@ -12,17 +12,14 @@ export interface IdentParts {
   readonly tz?: Uint8Array;
 }
 
-const skipSpaces = (line: Uint8Array, from: number): number => {
-  let cursor = from;
-  while (cursor < line.length && isAsciiSpace(line[cursor] as number)) cursor++;
-  return cursor;
-};
-
 const skipWhile = (line: Uint8Array, from: number, accept: (byte: number) => boolean): number => {
   let cursor = from;
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — past the end `line[cursor]` is `undefined`, which neither `isAsciiSpace` nor `isAsciiDigit` accepts (every comparison with it is false), so the walk stops at `line.length` either way.
   while (cursor < line.length && accept(line[cursor] as number)) cursor++;
   return cursor;
 };
+
+const skipSpaces = (line: Uint8Array, from: number): number => skipWhile(line, from, isAsciiSpace);
 
 const nameEndBefore = (line: Uint8Array, mailBegin: number): number => {
   for (let cursor = mailBegin - 2; cursor >= 0; cursor--) {
