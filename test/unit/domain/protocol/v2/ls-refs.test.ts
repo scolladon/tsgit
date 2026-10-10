@@ -350,6 +350,25 @@ describe('parseLsRefsResponse', () => {
           { name: 'refs/heads/main', id: OID1 },
         ]);
         expect(result.head).toBeUndefined();
+        expect(result.capabilities).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a symref-target HEAD followed by a second HEAD line without attributes', () => {
+    describe('When parsed', () => {
+      it('Then the head symref is the first HEAD line one', async () => {
+        // Arrange
+        const stream = responseBody([
+          `${OID2} HEAD symref-target:refs/heads/main\n`,
+          `${OID1} HEAD\n`,
+        ]);
+
+        // Act
+        const result = await parseLsRefsResponse(stream);
+
+        // Assert
+        expect(result.capabilities).toEqual(['symref=HEAD:refs/heads/main']);
       });
     });
   });
