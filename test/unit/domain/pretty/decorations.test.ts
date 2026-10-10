@@ -1,4 +1,3 @@
-// cspell:ignore prefixsuffix
 import { describe, expect, it } from 'vitest';
 import {
   type Decoration,
