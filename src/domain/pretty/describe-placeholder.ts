@@ -41,6 +41,7 @@ const matchArg = (text: string, at: number, name: string): ArgMatch | undefined 
   let value: string | undefined;
   if (text[cursor] === ASSIGN) {
     const rest = text.slice(cursor + 1).search(/[,)]/);
+    // Stryker disable next-line ConditionalExpression: equivalent — with no `,` or `)` left the cursor stops on `=` instead of the end, and neither is a separator nor a close, so the match fails either way
     const end = rest === -1 ? text.length : cursor + 1 + rest;
     value = text.slice(cursor + 1, end);
     cursor = end;
@@ -54,9 +55,9 @@ const parseMaybeBool = (value: string): boolean | undefined => {
   const word = value.toLowerCase();
   if (TRUE_WORDS.includes(word)) return true;
   if (FALSE_WORDS.includes(word)) return false;
-  const integer = GIT_INTEGER.exec(value);
-  if (!integer) return undefined;
-  return NON_ZERO_DIGIT.test(integer.slice(1).join(''));
+  if (!GIT_INTEGER.test(value)) return undefined;
+  // Outside its digits an integer holds only blanks, a sign, `0x` and a `kmg` unit, none a non-zero digit.
+  return NON_ZERO_DIGIT.test(value);
 };
 
 const stepTags = (text: string, at: number, args: DescribeArgs): Step => {
