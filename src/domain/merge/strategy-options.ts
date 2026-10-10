@@ -41,6 +41,7 @@ const WHITESPACE_OPTIONS: ReadonlyMap<string, WhitespaceMode> = new Map([
 const IGNORE_CR_AT_EOL = 'ignore-cr-at-eol';
 
 const strongerMode = (a: WhitespaceMode, b: WhitespaceMode): WhitespaceMode =>
+  // Stryker disable next-line EqualityOperator: equivalent — on a tie a and b are the same mode
   WHITESPACE_STRENGTH.indexOf(a) >= WHITESPACE_STRENGTH.indexOf(b) ? a : b;
 
 const withWhitespace = (key: LineKey, option: string): LineKey | undefined => {

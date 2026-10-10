@@ -50,23 +50,27 @@ describe('parseOrtStrategyOptions', () => {
     });
   });
 
-  describe.each(['bogus', '', 'find-renames=abc', 'find-renames=5x', 'diff-algorithm=bogus'])(
-    'Given the option %j',
-    (option) => {
-      describe('When parsed', () => {
-        it('Then it refuses as an unknown strategy option', () => {
-          // Arrange
-          const options = ['find-renames', option];
+  describe.each([
+    'bogus',
+    '',
+    'find-renames=abc',
+    'find-renames=5x',
+    'diff-algorithm=bogus',
+    'diff-algorithm:myers',
+  ])('Given the option %j', (option) => {
+    describe('When parsed', () => {
+      it('Then it refuses as an unknown strategy option', () => {
+        // Arrange
+        const options = ['find-renames', option];
 
-          // Act
-          const result = failureOf(options);
+        // Act
+        const result = failureOf(options);
 
-          // Assert
-          expect(result).toEqual({ code: 'UNKNOWN_STRATEGY_OPTION', option });
-        });
+        // Assert
+        expect(result).toEqual({ code: 'UNKNOWN_STRATEGY_OPTION', option });
       });
-    },
-  );
+    });
+  });
 
   describe.each([
     ['ours', ['ours'], 'ours'],
