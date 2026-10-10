@@ -23,6 +23,42 @@ describe('mergeTitle', () => {
     });
   });
 
+  describe('Given two local heads of a kind', () => {
+    describe.each([
+      [
+        ["remote-tracking branch 'o/a' of .", "remote-tracking branch 'o/b' of ."],
+        "Merge remote-tracking branches 'o/a' and 'o/b'",
+      ],
+      [["'x' of .", "'y' of ."], "Merge commits 'x' and 'y'"],
+    ])('When titled from %j', (descriptions, expected) => {
+      it('Then the plural kind joins them as git does', () => {
+        // Arrange
+        const sut = mergeTitle;
+
+        // Act
+        const result = sut(descriptions, undefined);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a head whose description opens with the source separator', () => {
+    describe('When titled', () => {
+      it('Then it is an unnamed commit of that source', () => {
+        // Arrange
+        const sut = mergeTitle;
+
+        // Act
+        const result = sut([' of ../peer'], undefined);
+
+        // Assert
+        expect(result).toBe('Merge commit  of ../peer');
+      });
+    });
+  });
+
   describe('Given a destination that is not suppressed', () => {
     describe('When titled', () => {
       it('Then it names the branch merged into', () => {
