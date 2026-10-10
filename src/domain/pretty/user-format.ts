@@ -258,6 +258,7 @@ const classifyParen = (fmt: Uint8Array, at: number, budget: FormatBudget): Class
   const trailers = parseTrailersPlaceholder(fmt, at);
   if (trailers)
     return { spec: { kind: 'trailers', options: trailers.options }, length: trailers.length };
+  // Stryker disable next-line MethodExpression: equivalent — the list holds one prefix, so some and every agree on it
   return UNPARSED_PAREN_PREFIXES.some((prefix) => startsWithAt(fmt, at, prefix))
     ? DECLINED_UNPARSED
     : DECLINED_PARSING;
@@ -274,6 +275,7 @@ const classify = (fmt: Uint8Array, at: number, budget: FormatBudget): Classified
   if (letter === 'a' || letter === 'c') return classifyIdent(letter, fmt, at);
   if (letter === 'g') return classifyReflog(fmt, at);
   if (letter === 'G') return classifySignature(fmt, at);
+  // Stryker disable next-line ConditionalExpression: equivalent — every prefix classifyParen accepts opens with '(', so any other letter falls through to its DECLINED_PARSING
   return letter === '(' ? classifyParen(fmt, at, budget) : DECLINED_PARSING;
 };
 
@@ -324,6 +326,7 @@ const trimTrailingLineFeeds = (pieces: Uint8Array[]): void => {
   while (pieces.length > 0) {
     const last = pieces[pieces.length - 1] as Uint8Array;
     let end = last.length;
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — at end 0, last[-1] is undefined, never a line feed, so the scan stops at 0 either way
     while (end > 0 && last[end - 1] === LINE_FEED) end--;
     if (end > 0) {
       pieces[pieces.length - 1] = last.subarray(0, end);

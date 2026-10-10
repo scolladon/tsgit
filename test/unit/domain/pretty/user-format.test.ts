@@ -108,6 +108,8 @@ describe('formatCommit magic', () => {
     ['a declined placeholder under %- trims line feeds', 'x\n%-N', 'xN'],
     ['a declined placeholder under % keeps the rest', 'a% N', 'aN'],
     ['a declined placeholder without magic', '%N', '%N'],
+    ['a declined placeholder without magic keeps line feeds', 'x\n%Zz', 'x\n%Zz'],
+    ['no magic keeps line feeds before an empty value', 'x\n%gd', 'x\n'],
     ['a wrap placeholder under %+', '%+w(5)', '%+w(5)'],
     ['a wrap placeholder under %-', '%-w(5)', '%-w(5)'],
     ['a wrap placeholder under a space', '% w(5)', '% w(5)'],
@@ -302,6 +304,7 @@ describe('formatCommit idents', () => {
       ['%at', ''],
       ['%ad', ''],
       ['%as', '%as'],
+      ['%<(10)%C(always,red)%as|', '\x1b[31m          as|'],
     ])('Then %s yields %s', (format, expected) => {
       // Arrange
       const sut = expand;
@@ -841,6 +844,7 @@ describe('Given header-parsing and header-free placeholders, When expanding', ()
     ['%xZZ', true],
     ['%aX', true],
     ['%(unknown)', true],
+    ['%(decorate:bogus)', false],
     ['%', true],
     ['%h%e', true],
     ['%e%h', true],
@@ -1029,6 +1033,23 @@ describe('Given ref decorations in the environment', () => {
 
       // Assert
       expect(result).toMatchObject({ parsedHeader: false });
+    });
+  });
+});
+
+describe('scanPlaceholders', () => {
+  describe('Given a format ending in a placeholder', () => {
+    describe('When scanning', () => {
+      it('Then no empty text token trails the placeholder', () => {
+        // Arrange
+        const sut = scanPlaceholders;
+
+        // Act
+        const result = sut(encode('a%h'));
+
+        // Assert
+        expect(result.map((token) => token.kind)).toEqual(['text', 'item']);
+      });
     });
   });
 });
