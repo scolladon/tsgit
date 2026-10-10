@@ -23,6 +23,18 @@ const MAX_PATH_ENTRIES = 1 << 22;
 const COPIES_AT_BOUND = MAX_PATH_ENTRIES / 8;
 /** Steps between two checks. */
 const CHECK_INTERVAL = 1 << 16;
+/** Steps those copies take to leave that many records: eight in seven steps each. */
+const STEPS_TO_PATH_BOUND = (MAX_PATH_ENTRIES / 8) * 7;
+/** A subject length whose step limit is a whole number of check intervals. */
+const INTERVAL_ALIGNED_LENGTH = CHECK_INTERVAL / STEPS_PER_CODE_UNIT;
+/** Steps `(x)a*\\1` takes, beside the run its span reads, up to the back-reference: two saves, `x`, the span and the reference. */
+const SPAN_PATTERN_STEPS = 5;
+/** Threads a position of `^a*$` steps: its one ready thread and itself. */
+const STEPPED_PER_POSITION = 2;
+/** Most texts a pattern may spell and still run as a substring search. */
+const MAX_EXACT_TEXTS = 16;
+/** Two widest intervals that `{0}` discards lay out 2 × 65533 instructions; a run of seven lays out six more. */
+const BUDGET_RUN = 7;
 /** Words of a message a back-reference pattern splits every way. */
 const PROSE = 'every brown fox jumps over a lazy dog and runs into the deep forest ';
 const LONG_MESSAGE_LENGTH = 1 << 19;
@@ -93,6 +105,10 @@ const requiringTexts = (count: number): { readonly pattern: string; readonly tex
   const texts = Array.from({ length: count }, (_, index) => `t${index}`);
   return { pattern: texts.join('.'), text: texts.join('__') };
 };
+
+/** `a|b|…` over `count` letters: a pattern spelling `count` texts. */
+const letterBranches = (count: number): string =>
+  Array.from('abcdefghijklmnopq'.slice(0, count)).join('|');
 
 /** `(c1|c2|…)[0-9]` over `count` letters: a match begins with any of `count` classes. */
 const leadingLetters = (count: number): string =>
@@ -338,6 +354,23 @@ describe('compileExtendedRegex', () => {
         ['(a(b|c)|d)e', 'abx', false],
         ['(fe|fi)[a-z]:', 'fix:', true],
         ['(fe|fi)[a-z]:', 'fox:', false],
+        ['\uD800|b', '\u{10000}', false],
+        ['a)', 'a', false],
+        ['^a{2,}?$', 'a', false],
+        ['^a{1,2}b$', 'ab', true],
+        ['x{32767,}', 'x', false],
+        ['[a.]', '.', true],
+        ['[a-a]', 'a', true],
+        ['^\u0080$', '\u0080', true],
+        ['^.$', '\u{10000}', true],
+        ['^(.)\\1$', '\u{10000}\u{10000}', true],
+        ['(.)\\1', '\u{1F600}\uDE00', false],
+        ['(.)\\1', '\u{10000}\uDC00', false],
+        ['^(\uDC00)x\u{10000}*\\1$', '\uDC00x\u{10000}', false],
+        ['^(a)b*\\1b$', 'ab', false],
+        ['^(b)a*\\1$', 'ba-b', false],
+        ['^(()b?)*\\2c$', 'c', true],
+        ['^(()b?){2}*\\2c$', 'c', true],
       ])('Then /%s/ against %j answers %s', (pattern, subject, expected) => {
         // Arrange
         const sut = compileExtendedRegex;
@@ -393,6 +426,8 @@ describe('compileExtendedRegex', () => {
         ['[[=a=]-z]'],
         ['\\1'],
         ['(a\\1)'],
+        ['[[.a.b.]]'],
+        ['[[.xy].]]'],
       ])('Then /%s/ yields no matcher', (pattern) => {
         // Arrange
         const sut = compileExtendedRegex;
@@ -494,6 +529,22 @@ describe('compileExtendedRegex', () => {
       });
     });
 
+    describe('When the subject allows a whole number of check intervals', () => {
+      it('Then it answers false at the consult its steps reach the limit on', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+        const text = `${'a'.repeat(INTERVAL_ALIGNED_LENGTH - 2)}bc`;
+        const { check, calls } = countingCheck(budgetChecks(text) + 1);
+
+        // Act
+        const result = sut('(a+)+b\\1c')?.test(text, check);
+
+        // Assert
+        expect(result).toBe(false);
+        expect(calls()).toBe(budgetChecks(text));
+      });
+    });
+
     describe('When a match lies past the step budget', () => {
       it('Then it answers false', () => {
         // Arrange
@@ -583,6 +634,24 @@ describe('compileExtendedRegex', () => {
     });
   });
 
+  describe('Given a back-reference after a repeated alternation, past a group whose records align its bound with a consult', () => {
+    describe('When the run is long enough to reach that bound', () => {
+      it('Then it answers false at the consult the records reach the bound on', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+        const text = `yx${'a'.repeat(COPIES_AT_BOUND * 1.25)}xy`;
+        const { check, calls } = countingCheck(budgetChecks(text) + 1);
+
+        // Act
+        const result = sut('(y)(x)(a|b)*\\2\\1')?.test(text, check);
+
+        // Assert
+        expect(result).toBe(false);
+        expect(calls()).toBe(STEPS_TO_PATH_BOUND / CHECK_INTERVAL);
+      });
+    });
+  });
+
   describe('Given a back-reference pattern and a subject holding its match', () => {
     describe('When it is matched', () => {
       it('Then it answers true without RegExp backtracking', () => {
@@ -605,6 +674,7 @@ describe('compileExtendedRegex', () => {
       it.each([
         { pattern: '(x)a*\\1', subject: `x${'a'.repeat(LONG_RUN_LENGTH)}x`, steps: 1 },
         { pattern: '(x)(ab)*\\1', subject: `x${'ab'.repeat(LONG_RUN_LENGTH / 2)}x`, steps: 3 },
+        { pattern: '(x)(a)*\\2\\1', subject: `x${'a'.repeat(LONG_RUN_LENGTH)}x`, steps: 5 },
       ])(
         'Then /$pattern/ takes at most $steps steps per code point',
         ({ pattern, subject, steps }) => {
@@ -719,6 +789,38 @@ describe('compileExtendedRegex', () => {
         expect(result).toBe(false);
       });
     });
+
+    describe('When a match begins past a long run no character of which can begin one', () => {
+      it('Then the automaton jumps to the match without stepping', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+
+        // Act
+        const result = sut('[0-9]{4}')?.test(`${'x'.repeat(LONG_SUBJECT_LENGTH)}1234`, stop);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe.each([
+      { pattern: '^b', start: 'a' },
+      { pattern: '^(b)\\1', start: 'b' },
+    ])(
+      'When /$pattern/, anchored at the subject start, fails there before a long subject',
+      ({ pattern, start }) => {
+        it('Then the match ends before the check is consulted', () => {
+          // Arrange
+          const sut = compileExtendedRegex;
+
+          // Act
+          const result = sut(pattern)?.test(`${start}${'x'.repeat(LONG_SUBJECT_LENGTH)}b`, stop);
+
+          // Assert
+          expect(result).toBe(false);
+        });
+      },
+    );
   });
 
   describe('Given a pattern requiring texts every match holds', () => {
@@ -1083,6 +1185,199 @@ describe('compileExtendedRegex', () => {
 
         // Assert
         expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a check that counts its consultations', () => {
+    describe('When the automaton steps one ready thread per position through a long subject', () => {
+      it('Then it is consulted once per interval of stepped threads', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+        const expected = (STEPPED_PER_POSITION * LONG_SUBJECT_LENGTH) / CHECK_INTERVAL;
+        const { check, calls } = countingCheck(expected);
+
+        // Act
+        const result = sut('^a*$')?.test('a'.repeat(LONG_SUBJECT_LENGTH), check);
+
+        // Assert
+        expect(result).toBe(true);
+        expect(calls()).toBe(expected);
+      });
+    });
+
+    describe.each([
+      { run: CHECK_INTERVAL - SPAN_PATTERN_STEPS, checks: 1 },
+      { run: CHECK_INTERVAL - SPAN_PATTERN_STEPS - 1, checks: 0 },
+    ])('When a span reads a run of $run before a back-reference', ({ run, checks }) => {
+      it(`Then the run counts toward the check, consulted ${checks} times`, () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+        const { check, calls } = countingCheck(checks);
+
+        // Act
+        const result = sut('(x)a*\\1')?.test(`x${'a'.repeat(run)}x`, check);
+
+        // Assert
+        expect(result).toBe(true);
+        expect(calls()).toBe(checks);
+      });
+    });
+  });
+
+  describe('Given a pattern requiring a text and choosing among alternatives', () => {
+    describe('When only the texts together number past those searched for', () => {
+      it('Then the message is searched for none of them', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+        const matcher = sut(`t0${'.(a|b)'.repeat(MAX_PREFILTER_TEXTS / 2)}`);
+        const texts = searchedTexts();
+
+        // Act
+        const result = matcher?.test('t0');
+
+        // Assert
+        expect(result).toBe(false);
+        expect(texts()).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a repeated literal', () => {
+    describe('When it is matched', () => {
+      it('Then the message is searched for the literal before the automaton runs', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+        const matcher = sut('a+');
+        const texts = searchedTexts();
+
+        // Act
+        const result = matcher?.test('xyz');
+
+        // Assert
+        expect(result).toBe(false);
+        expect(texts()).toEqual(['a']);
+      });
+    });
+  });
+
+  describe('Given a pattern spelling a few texts', () => {
+    describe.each([
+      { pattern: letterBranches(MAX_EXACT_TEXTS), automaton: false },
+      { pattern: letterBranches(MAX_EXACT_TEXTS + 1), automaton: true },
+      { pattern: '(1|2)'.repeat(4), automaton: false },
+      { pattern: '(1|2)'.repeat(5), automaton: true },
+    ])('When /$pattern/ is matched', ({ pattern, automaton }) => {
+      it(`Then it ${automaton ? 'runs the automaton' : 'searches for the texts alone'}`, () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+        const matcher = sut(pattern);
+        const every = vi.spyOn(Array.prototype, 'every');
+
+        // Act
+        const result = matcher?.test('z');
+
+        // Assert
+        expect(result).toBe(false);
+        expect(every.mock.calls.length > 0).toBe(automaton);
+      });
+    });
+  });
+
+  describe('Given a pattern no search can place a match of', () => {
+    describe.each([['^ab'], ['^a|^b'], ['.[0-9]'], ['(a|.)[0-9]'], ['(a?)\\1x']])(
+      'When /%s/ is matched',
+      (pattern) => {
+        it('Then the automaton never jumps to where a match begins', () => {
+          // Arrange
+          const sut = compileExtendedRegex;
+          const matcher = sut(pattern);
+          const searches = leadingSearches();
+
+          // Act
+          matcher?.test('zz ab zx1 bx');
+
+          // Assert
+          expect(searches()).toBe(0);
+        });
+      },
+    );
+  });
+
+  describe('Given a pattern a match begins with one class spelt more times than the classes jumped to', () => {
+    describe('When it is matched', () => {
+      it('Then the automaton jumps to where the class begins', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+        const matcher = sut(
+          `(${Array.from({ length: MAX_LEADING_CLASSES + 1 }, () => 'a').join('|')})[0-9]`,
+        );
+        const searches = leadingSearches();
+
+        // Act
+        const result = matcher?.test(`a${'x'.repeat(LONG_RUN)}a1`);
+
+        // Assert
+        expect(result).toBe(true);
+        expect(searches()).toBeGreaterThan(0);
+      });
+    });
+  });
+
+  describe('Given a pattern reading an ASCII character', () => {
+    describe('When a thread reads it where a non-ASCII code point stands', () => {
+      it('Then no pattern runs to tell them apart', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+        const matcher = sut('a.*b');
+        const test = vi.spyOn(RegExp.prototype, 'test');
+
+        // Act
+        const result = matcher?.test('aéb');
+
+        // Assert
+        expect(result).toBe(true);
+        expect(
+          test.mock.contexts.filter(
+            (pattern) => (pattern as RegExp).sticky && (pattern as RegExp).source === 'a',
+          ),
+        ).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a pattern asserting a word boundary where a match may begin', () => {
+    describe('When a run steps onto such a place past a non-ASCII word character', () => {
+      it('Then it reads the word class of that character once', () => {
+        // Arrange
+        const sut = compileExtendedRegex;
+        const matcher = sut('\\bfix');
+        const reads = wordReads();
+
+        // Act
+        const result = matcher?.test('f٣fix');
+
+        // Assert
+        expect(result).toBe(false);
+        expect(reads()).toBe(1);
+      });
+    });
+  });
+
+  describe('Given widest intervals {0} discards and a run, laid out to the automaton budget', () => {
+    describe.each([
+      { run: BUDGET_RUN, expected: true },
+      { run: BUDGET_RUN + 1, expected: undefined },
+    ])('When the run is $run long', ({ run, expected }) => {
+      it(`Then it answers ${expected}`, () => {
+        // Arrange
+        const sut = matches;
+
+        // Act
+        const result = sut(`${'a{0,32767}{0}'.repeat(2)}a{${run}}`, 'a'.repeat(run));
+
+        // Assert
+        expect(result).toBe(expected);
       });
     });
   });
