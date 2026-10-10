@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { squashMessage } from '../../../../src/domain/merge/squash-message.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 
-const author = { name: 'a', email: 'a@x', timestamp: 1_700_000_000, timezoneOffset: '+0000' };
+const author = new TextEncoder().encode('a <a@x> 1700000000 +0000');
 const message = fc.string({ unit: fc.constantFrom('a', ' ', '\t', '\n', '\r'), maxLength: 40 });
 const commit = fc.record({
   id: fc.stringMatching(/^[0-9a-f]{40}$/).map((id) => id as ObjectId),

@@ -261,6 +261,44 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — default message', () => {
     });
   });
 
+  describe('Given a branch whose author lines carry no digit-led date or a second angle pair', () => {
+    describe('When both tools squash-merge it', () => {
+      it('Then SQUASH_MSG is identical', async () => {
+        // Arrange
+        const authors = [
+          'A <a@b> -5 +0000',
+          'A <a@b> -5 +0100',
+          'A <a@b> +5 +0100',
+          'A <a@b> 0x10 +0100',
+          'A <a@b> 1e3 +0100',
+          'A <b> <c@d> 7 +0200',
+        ];
+        for (const dir of [pair.peer, pair.ours]) {
+          const tree = git(dir, 'rev-parse', 'main^{tree}');
+          const tip = authors.reduce(
+            (parent, author, index) =>
+              runGit(['-C', dir, 'hash-object', '-t', 'commit', '-w', '--literally', '--stdin'], {
+                input: `tree ${tree}\nparent ${parent}\nauthor ${author}\ncommitter c <c@x> 1700000000 +0000\n\nodd ${index}\n`,
+              }).trim(),
+            git(dir, 'rev-parse', 'main'),
+          );
+          git(dir, 'update-ref', 'refs/heads/odd', tip);
+        }
+        tryRunGit(['-C', pair.peer, 'merge', '-q', '--squash', 'odd'], { env: COMMIT_ENV });
+        const repo = await openRepository({ cwd: pair.ours });
+        const sut = repo.merge.run;
+
+        // Act
+        await sut({ rev: 'odd', squash: true, author: IDENTITY, committer: IDENTITY });
+        await repo.dispose();
+        const result = await readFile(path.join(pair.ours, '.git', 'SQUASH_MSG'), 'utf8');
+
+        // Assert
+        expect(result).toBe(await readFile(path.join(pair.peer, '.git', 'SQUASH_MSG'), 'utf8'));
+      });
+    });
+  });
+
   describe.each([
     ['feat**', 'feat/x'],
     ['feat*', 'feat/x'],

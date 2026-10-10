@@ -1,13 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { squashMessage } from '../../../../src/domain/merge/squash-message.js';
-import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
+import type { ObjectId } from '../../../../src/domain/objects/index.js';
 
-const author: AuthorIdentity = {
-  name: 'a',
-  email: 'a@x',
-  timestamp: 1_700_000_000,
-  timezoneOffset: '+0130',
-};
+const ident = (line: string): Uint8Array => new TextEncoder().encode(line);
+const author = ident('a <a@x> 1700000000 +0130');
 const ONE = '8f2f9f786f12a60642c4595a9d0dd4269d014377' as ObjectId;
 const TWO = 'dfd974a2faa12ad9d530c1f3041a4b69e82f56c1' as ObjectId;
 
@@ -100,6 +96,79 @@ describe('squashMessage', () => {
 
         // Assert
         expect(result).toBe('Squashed commit of the following:\n');
+      });
+    });
+  });
+
+  describe('Given author lines whose date does not start with a digit', () => {
+    describe('When rendered', () => {
+      it('Then each date falls back to the epoch in UTC, its zone dropped', () => {
+        // Arrange
+        const sut = squashMessage;
+
+        // Act
+        const result = sut(
+          ['-5', '+5', '0x10', '1e3'].map((date) => ({
+            id: ONE,
+            mergeParents: [],
+            author: ident(`A <a@b> ${date} +0100`),
+            message: 'm\n',
+          })),
+        );
+
+        // Assert
+        const epoch = `\ncommit ${ONE}\nAuthor: A <a@b>\nDate:   Thu Jan 1 00:00:00 1970 +0000\n\n    m\n`;
+        expect(result).toBe(`Squashed commit of the following:\n${epoch.repeat(4)}`);
+      });
+    });
+  });
+
+  describe('Given an author line with a second angle-bracket pair', () => {
+    describe('When rendered', () => {
+      it('Then the name and mail end at the first pair and the date follows the last', () => {
+        // Arrange
+        const sut = squashMessage;
+
+        // Act
+        const result = sut([
+          { id: ONE, mergeParents: [], author: ident('A <b> <c@d> 7 +0200'), message: 'm\n' },
+        ]);
+
+        // Assert
+        expect(result).toBe(
+          `Squashed commit of the following:\n\ncommit ${ONE}\nAuthor: A <b>\nDate:   Thu Jan 1 02:00:07 1970 +0200\n\n    m\n`,
+        );
+      });
+    });
+  });
+
+  describe.each([
+    ['an author line without angle brackets', ident('plain name 5 +0000')],
+    ['no author line', undefined],
+  ])('Given %s', (_label, missing) => {
+    describe('When rendered with a body', () => {
+      it('Then no author or date line is written before the body', () => {
+        // Arrange
+        const sut = squashMessage;
+
+        // Act
+        const result = sut([{ id: ONE, mergeParents: [], author: missing, message: 'body\n' }]);
+
+        // Assert
+        expect(result).toBe(`Squashed commit of the following:\n\ncommit ${ONE}\n\n    body\n`);
+      });
+    });
+
+    describe('When rendered with an empty message', () => {
+      it('Then the commit line closes its entry', () => {
+        // Arrange
+        const sut = squashMessage;
+
+        // Act
+        const result = sut([{ id: ONE, mergeParents: [], author: missing, message: '' }]);
+
+        // Assert
+        expect(result).toBe(`Squashed commit of the following:\n\ncommit ${ONE}\n`);
       });
     });
   });
