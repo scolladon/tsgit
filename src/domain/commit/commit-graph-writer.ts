@@ -270,9 +270,9 @@ type DeriveGeneration = (date: number, maxParentGeneration: number) => number;
 const deriveLevel: DeriveGeneration = (_, maxParent) =>
   Math.min(maxParent, MAX_TOPOLOGICAL_LEVEL - 1) + 1;
 
-/** Version 2: the commit's own date when it is past every parent's, else one past the highest — a dateless commit counts as none. */
+/** Version 2: the commit's own date when it is past every parent's, else one past the highest — a dateless commit's 0 never is, as the highest is at least 0. */
 const deriveCorrectedDate: DeriveGeneration = (date, maxParent) =>
-  date > 0 && date > maxParent ? date : maxParent + 1;
+  date > maxParent ? date : maxParent + 1;
 
 /**
  * git's two generation passes over the commits being written, in `order`:
