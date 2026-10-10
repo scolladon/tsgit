@@ -28,7 +28,6 @@ const RIGHT_PAREN = 0x29;
 const SPACE = 0x20;
 const LINE_FEED = 0x0a;
 const ESCAPE = 0x1b;
-const LOWER_M = 0x6d;
 const MAX_ESCAPE_REACH = 10;
 const ELLIPSIS = new TextEncoder().encode('..');
 const TERMINAL_COLUMNS = 80;
@@ -83,7 +82,7 @@ export const parsePadding = (fmt: Uint8Array, at: number): ParsedPadding | undef
   const start = open + 1;
   let end = start;
   while (end < fmt.length && fmt[end] !== COMMA && fmt[end] !== RIGHT_PAREN) end++;
-  if (end >= fmt.length || end === start) return undefined;
+  if (end >= fmt.length) return undefined;
   const raw = readInt(latin1(fmt.subarray(start, end)));
   if (raw === undefined || raw === 0 || Math.abs(raw) > FORMATTING_LIMIT) return undefined;
   const width = toColumn ? columnWidth(raw) : cursorWidth(raw);
@@ -165,8 +164,10 @@ interface Stolen {
 
 const trailingEscapeStart = (head: Uint8Array, last: number): number | undefined => {
   let start = last - 1;
-  while (start > 0 && last - start < MAX_ESCAPE_REACH && head[start] !== ESCAPE) start--;
-  const complete = head[start] === ESCAPE && last + 1 - start === escapeLengthAt(head, start);
+  // Past the head's start the bytes read undefined, so the reach alone ends the scan.
+  while (last - start < MAX_ESCAPE_REACH && head[start] !== ESCAPE) start--;
+  // Only an escape at `start` ending in the `m` at `last` spans this exactly.
+  const complete = last + 1 - start === escapeLengthAt(head, start);
   return complete ? start : undefined;
 };
 
@@ -181,7 +182,7 @@ const steal = (head: Uint8Array, value: Uint8Array, len: number, padding: number
       room++;
       continue;
     }
-    const start = head[last] === LOWER_M ? trailingEscapeStart(head, last) : undefined;
+    const start = trailingEscapeStart(head, last);
     if (start === undefined) break;
     moved = concatBytes([head.subarray(start, last + 1), moved]);
     last = start - 1;
