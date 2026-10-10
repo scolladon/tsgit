@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { utf8Width } from '../../../../src/domain/pretty/utf8-width.js';
+import { glyphAt, utf8Width } from '../../../../src/domain/pretty/utf8-width.js';
 
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const widthOfCodePoint = (codePoint: number): number =>
@@ -95,6 +95,7 @@ describe('utf8Width', () => {
       ['last of the last wide interval', 0x3fffd, 2],
       ['just after the last wide interval', 0x3fffe, 1],
       ['between the last two wide intervals', 0x2fffe, 1],
+      ['the first printable Latin-1 character', 0xa0, 1],
     ])('Then %s measures correctly', (_name, codePoint, expected) => {
       // Arrange
       const sut = widthOfCodePoint;
@@ -121,6 +122,8 @@ describe('utf8Width', () => {
       ['a five-byte lead', [0xf8, 0x88, 0x80, 0x80, 0x80]],
       ['a bad third byte', [0xe6, 0x97, 0x41]],
       ['a bad fourth byte', [0xf0, 0x9f, 0x98, 0x41]],
+      ['a four-byte lead past U+10FFFF', [0xf5, 0x80, 0x80, 0x80]],
+      ['four continuation bytes', [0x80, 0x80, 0x80, 0x80]],
     ])('Then %s counts one column per byte', (_name, bytes) => {
       // Arrange
       const sut = utf8Width;
@@ -130,6 +133,25 @@ describe('utf8Width', () => {
 
       // Assert
       expect(result).toBe(bytes.length + 3);
+    });
+  });
+
+  describe('Given valid three-byte characters beside the rejected ranges, When measured', () => {
+    it.each([
+      ['an E0 lead past the overlong range', [0xe0, 0xa4, 0x85], 1],
+      ['an ED lead below the surrogates', [0xed, 0x95, 0x9c], 2],
+      ['a BF BF tail under a lead other than EF', [0xe3, 0xbf, 0xbf], 2],
+      ['a BE tail under EF without a BF second byte', [0xef, 0xbc, 0xbe], 2],
+      ['an EF BF lead short of U+FFFE', [0xef, 0xbf, 0xbd], 1],
+    ])('Then %s is decoded and measured', (_name, bytes, expected) => {
+      // Arrange
+      const sut = utf8Width;
+
+      // Act
+      const result = sut(new Uint8Array(bytes));
+
+      // Assert
+      expect(result).toBe(expected);
     });
   });
 
@@ -143,6 +165,21 @@ describe('utf8Width', () => {
 
       // Assert
       expect(result).toBe(1);
+    });
+  });
+});
+
+describe('glyphAt', () => {
+  describe('Given a NUL byte, When read', () => {
+    it('Then it is one byte wide and takes no column', () => {
+      // Arrange
+      const sut = glyphAt;
+
+      // Act
+      const result = sut(new Uint8Array([0x00]), 0);
+
+      // Assert
+      expect(result).toEqual({ columns: 0, length: 1 });
     });
   });
 });
