@@ -302,4 +302,21 @@ describe('parseCommitView', () => {
       });
     });
   });
+
+  describe('Given a header whose lines after the tree are all parents', () => {
+    describe('When parsing it', () => {
+      it('Then every parent line is listed', () => {
+        // Arrange
+        const sut = parseCommitView;
+
+        // Act
+        const result = sut(
+          commit([`tree ${TREE}`, `parent ${PARENT_A}`, `parent ${PARENT_B}`], 'm'),
+        );
+
+        // Assert
+        expect(result.parents).toEqual([PARENT_A, PARENT_B]);
+      });
+    });
+  });
 });

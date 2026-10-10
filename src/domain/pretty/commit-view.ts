@@ -62,6 +62,7 @@ interface HeaderBlock {
 /** Lines up to the first empty one, which `parse_commit_header` stops at. */
 const headerBlock = (buf: Uint8Array): HeaderBlock => {
   const lines: Line[] = [];
+  // Stryker disable next-line EqualityOperator: equivalent — at start === length the extra pass returns messageStart length + 1, and every view cut from past the end is as empty as one cut at length
   for (let start = 0; start < buf.length; ) {
     const end = lineEnd(buf, start);
     if (end === start) return { lines, messageStart: start + 1 };
@@ -104,6 +105,7 @@ const isBlankLine = (buf: Uint8Array, start: number, end: number): boolean =>
 /** git's `skip_blank_lines`: whole whitespace-only lines. */
 export const skipBlankLines = (buf: Uint8Array, from: number): number => {
   let start = from;
+  // Stryker disable next-line EqualityOperator: equivalent — at start === length the empty line is blank, so the extra pass steps past the end and the loop still returns length
   while (start < buf.length) {
     const end = lineEnd(buf, start);
     if (!isBlankLine(buf, start, end)) return start;
@@ -121,6 +123,7 @@ interface SubjectBounds {
 const subjectBounds = (buf: Uint8Array, from: number): SubjectBounds => {
   let end = from;
   let start = from;
+  // Stryker disable next-line EqualityOperator: equivalent — at start === length the empty line is blank and returns next = min(length + 1, length) = length, as the loop exit does
   while (start < buf.length) {
     const lineStop = lineEnd(buf, start);
     const next = Math.min(lineStop + 1, buf.length);
