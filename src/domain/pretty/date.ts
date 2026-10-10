@@ -138,8 +138,7 @@ const zoneStrict = (zone: number): string => {
   return `${signOf(zone)}${pad2(Math.trunc(magnitude / HOURS_MINUTES_DIVISOR))}:${pad2(magnitude % HOURS_MINUTES_DIVISOR)}`;
 };
 
-const dayOf = (civil: Civil): string =>
-  `${String(civil.year).padStart(4, '0')}-${pad2(civil.month + 1)}-${pad2(civil.day)}`;
+const dayOf = (civil: Civil): string => `${civil.year}-${pad2(civil.month + 1)}-${pad2(civil.day)}`;
 
 const clockOf = (civil: Civil): string =>
   `${pad2(civil.hour)}:${pad2(civil.minute)}:${pad2(civil.second)}`;
