@@ -43,14 +43,11 @@ interface Matches {
   readonly remote: boolean;
 }
 
-/** `threeway_merge`'s `head_match` / `remote_match`, only weighed when the sides differ. */
-const matchesOf = (bases: readonly Entry[], head: Entry, remote: Entry): Matches => {
-  if (same(remote, head)) return { head: false, remote: false };
-  return {
-    head: bases.some((base) => same(base, head)),
-    remote: bases.some((base) => same(base, remote)),
-  };
-};
+/** `threeway_merge`'s `head_match` / `remote_match`: whether some base equals that side. */
+const matchesOf = (bases: readonly Entry[], head: Entry, remote: Entry): Matches => ({
+  head: bases.some((base) => same(base, head)),
+  remote: bases.some((base) => same(base, remote)),
+});
 
 /** `threeway_merge` under `--aggressive`; `undefined` when it leaves the path unmerged. */
 const trivialMerge = (
@@ -85,6 +82,7 @@ export const resolveOctopusEntry = (
   const trivial = trivialMerge(head, remote, matches);
   if (trivial !== undefined) return trivial;
   // `threeway_merge` keeps the first present base at stage 1 unless both sides matched one.
+  // Stryker disable next-line LogicalOperator: equivalent — past trivialMerge the two matches agree: a lone head match takes remote or drops, a lone remote match takes head or drops
   const base = matches.head && matches.remote ? undefined : bases.find((b) => b !== undefined);
   return oneFileMerge(base, head, remote);
 };
