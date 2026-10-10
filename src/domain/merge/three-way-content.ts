@@ -113,6 +113,7 @@ function renderWithMarkers(
 }
 
 const activeKey = (key: LineKey | undefined): LineKey | undefined =>
+  // Stryker disable next-line ConditionalExpression: equivalent — an inactive key normalises every line to its own bytes (no CR rule, mode none, no terminator strip), so keyed hashing and equality match the key-less path
   key !== undefined && lineKeyIsActive(key) ? key : undefined;
 
 function lineModel(
