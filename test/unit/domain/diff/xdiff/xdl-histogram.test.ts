@@ -134,4 +134,65 @@ describe('the histogram line diff', () => {
       });
     });
   });
+
+  const lineRange = (first: number, last: number): ReadonlyArray<number> =>
+    Array.from({ length: last - first + 1 }, (_, offset) => first + offset);
+
+  describe.each([
+    {
+      context: 'a match that already spans the next lines of theirs',
+      ours: 'b a b a a c c c a c'.split(' '),
+      theirs: 'c a b a b'.split(' '),
+      deleted: lineRange(4, 10),
+      inserted: [1, 2],
+    },
+    {
+      context: 'a match whose forward extension crosses a rarer line',
+      ours: 'a c a c a c b c a'.split(' '),
+      theirs: 'c b a b a c a'.split(' '),
+      deleted: lineRange(1, 5),
+      inserted: [3, 4, 5],
+    },
+    {
+      context: 'a repeated line whose next occurrence lies inside the match it anchored',
+      ours: 'e e e c a e e c e'.split(' '),
+      theirs: 'e e c'.split(' '),
+      deleted: [3, 4, 5, 6, 7, 9],
+      inserted: [],
+    },
+    {
+      context: 'a match whose backward extension crosses a more repeated line',
+      ours: 'c c c c c c b b'.split(' '),
+      theirs: 'b a c c b'.split(' '),
+      deleted: [1, 2, 3, 4, 8],
+      inserted: [1, 2],
+    },
+    {
+      context: 'a match whose backward extension crosses a rarer line',
+      ours: 'd b c a d a a d c a e c e c a c b d'.split(' '),
+      theirs: 'c d c a d b d'.split(' '),
+      deleted: [1, 2, 4, 5, 6, 7, ...lineRange(11, 16)],
+      inserted: [5],
+    },
+    {
+      context: 'a region whose rarest common line occurs exactly 64 times',
+      ours: [...repeat('a', 64), ...repeat('b', 66)],
+      theirs: 'b b a'.split(' '),
+      deleted: lineRange(2, 130),
+      inserted: [1, 2],
+    },
+  ])('Given $context', ({ ours, theirs, deleted, inserted }) => {
+    describe('When diffing with the histogram algorithm', () => {
+      it('Then it changes the lines git diff --histogram changes', () => {
+        // Arrange
+        const sut = diffPresplitLinesForMode;
+
+        // Act
+        const result = sut(linesOf(ours), linesOf(theirs), 'histogram');
+
+        // Assert
+        expect(changedLines(result.hunks)).toEqual({ deleted, inserted });
+      });
+    });
+  });
 });

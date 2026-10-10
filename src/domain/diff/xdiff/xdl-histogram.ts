@@ -129,6 +129,7 @@ function tryLcs(
 }
 
 function findLcs(index: HistogramIndex, region: LineRegion): LcsSearch {
+  // Stryker disable next-line UpdateOperator: equivalent — any never-repeated nonzero stamp works; recordGeneration starts at 0 and -1, -2, … are as fresh as 1, 2, …
   index.generation++;
   scanA(index, region.line1, region.count1);
   const search: LcsSearch = {
@@ -137,6 +138,7 @@ function findLcs(index: HistogramIndex, region: LineRegion): LcsSearch {
     begin2: 0,
     end2: 0,
     cnt: MAX_CHAIN_LENGTH + 1,
+    // Stryker disable next-line BooleanLiteral: equivalent — with no common line cnt stays above the cap, so the classic fallback runs and, sharing no line, marks the whole region as markRegion does
     hasCommon: false,
   };
   const end2 = region.line2 + region.count2 - 1;
@@ -150,6 +152,7 @@ function splitRegion(
   region: LineRegion,
   sink: RegionSink,
 ): ReadonlyArray<LineRegion> {
+  // Stryker disable next-line LogicalOperator,BlockStatement: equivalent — an empty side shares no line, so findLcs finds no match and the same markRegion follows
   if (region.count1 === 0 || region.count2 === 0) {
     markRegion(sink, region);
     return [];
