@@ -204,6 +204,7 @@ describe('Given degenerate messages, When formatting', () => {
     ['an empty message', ''],
     ['a single character', 'x'],
     ['a cut line only', '# ------------------------ >8 ------------------------\nFixes: 1\n'],
+    ['a lone line feed', '\n'],
   ])('Then %s has no trailer block', (_label, message) => {
     // Arrange
     const text = message;
@@ -232,6 +233,73 @@ describe('Given degenerate messages, When formatting', () => {
 
     // Act
     const result = block(message);
+
+    // Assert
+    expect(result).toBe('');
+  });
+});
+
+const CUT_LINE = '# ------------------------ >8 ------------------------\n';
+
+describe('Given a message shaped around the block boundaries, When formatting', () => {
+  it.each([
+    ['a message opening with a blank line keeps its block', '\nFixes: 1\n', 'Fixes: 1\n'],
+    ['a whitespace-only line separates paragraphs', 'subject\n\nbody\n \nFixes: 1\n', 'Fixes: 1\n'],
+    [
+      'whitespace after the last line feed is a skipped blank line',
+      'subject\n\nSigned-off-by: A\n\n  ',
+      'Signed-off-by: A\n\n  ',
+    ],
+    ['a tab before the separator still makes a trailer', 'subject\n\nFoo\t: bar\n', 'Foo\t: bar\n'],
+    ['a token broken by a space is not a trailer', 'subject\n\nFoo bar: x\n', ''],
+    ['a leading cut line hides everything', `${CUT_LINE}subject\n\nFixes: 1\n`, ''],
+    [
+      'a cut line hides the plain lines below it',
+      `subject\n\nFixes: 1\n${CUT_LINE}plain\n`,
+      'Fixes: 1\n',
+    ],
+    [
+      'a tab-indented last paragraph outside a Conflicts list stays in the message',
+      'subject\n\nFixes: 1\n\n\tindented\n',
+      '',
+    ],
+    [
+      'a tab-indented paragraph before any Conflicts list stays in the message',
+      '\nFixes: 1\n\n\tx\n',
+      '',
+    ],
+    [
+      'a plain line ends a Conflicts list and stays in the message',
+      'subject\n\nFixes: 1\n\nConflicts:\n\ta\nplain\n',
+      '',
+    ],
+    [
+      'indented lines at the top of the paragraph count against the trailer ratio',
+      'subject\n\n a\n b\n c\n d\nSigned-off-by: A\n',
+      '',
+    ],
+    [
+      'indented lines under a comment count against the trailer ratio',
+      'subject\n\nSigned-off-by: A\n# c\n a\n b\n c\n d\n',
+      '',
+    ],
+  ])('Then %s', (_label, message, expected) => {
+    // Arrange
+    const text = message;
+
+    // Act
+    const result = block(text);
+
+    // Assert
+    expect(result).toBe(expected);
+  });
+
+  it('Then a configured key the paragraph never names does not recognise it', () => {
+    // Arrange
+    const config = { keys: new Map([['ack', 'Acked-by']]) };
+
+    // Act
+    const result = block('subject\n\nFixes: 1\nplain\n', config);
 
     // Assert
     expect(result).toBe('');
@@ -488,6 +556,87 @@ describe('formatTrailers options', () => {
       expect(result).toBe('Fixes: 1\n');
     });
   });
+
+  describe('Given unfold, When formatting lines the block holds', () => {
+    it.each([
+      [
+        'an indented line holding a separator after a plain line stays plain',
+        'subject\n\nSigned-off-by: A\nplain\n :x\n',
+        'Signed-off-by: A\nplain\n :x\n',
+      ],
+      [
+        'an indented first line stays plain',
+        'subject\n\n x\nSigned-off-by: A\n',
+        ' x\nSigned-off-by: A\n',
+      ],
+      [
+        'a comment line is dropped without swallowing the indented line below it',
+        'subject\n\nSigned-off-by: A\n# c\n x\n',
+        'Signed-off-by: A\n x\n',
+      ],
+      ['a one-character token takes its continuation', 'subject\n\nA: x\n cont\n', 'A: x cont\n'],
+      ['a token without letters or digits is kept', 'subject\n\n-: x\n', '-: x\n'],
+    ])('Then %s', (_label, message, expected) => {
+      // Arrange
+      const options = { unfold: true };
+
+      // Act
+      const result = render(options, {}, message);
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe('Given configured keys, When unfolding a trailer', () => {
+    it.each([
+      [
+        'a token without letters or digits takes the first configured key',
+        'ab',
+        'Ab',
+        '-: x\n',
+        'Ab: x\n',
+      ],
+      ['an unrelated token is kept', 'ack', 'Acked-by', 'Fixes: 1\n', 'Fixes: 1\n'],
+      [
+        'a token prefixing the configured name takes its key',
+        'fixes',
+        'Fixes',
+        'Fix: x\n',
+        'Fixes: x\n',
+      ],
+      ['a trailing dash is ignored when matching', 'fix', 'Fixes', 'Fix-: x\n', 'Fixes: x\n'],
+      [
+        'a token matching only the key takes the key as configured',
+        'ack',
+        'Acked-by',
+        'acked-by: x\n',
+        'Acked-by: x\n',
+      ],
+    ])('Then %s', (_label, name, key, trailer, expected) => {
+      // Arrange
+      const config = { keys: new Map([[name, key]]) };
+
+      // Act
+      const result = render({ unfold: true }, config, `subject\n\n${trailer}`);
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe('Given a key filter without only, When formatting', () => {
+    it('Then the other trailers are dropped', () => {
+      // Arrange
+      const options = { keys: ['Fixes'] };
+
+      // Act
+      const result = render(options, {}, 'subject\n\nFixes: 1\nOther: 2\n');
+
+      // Assert
+      expect(result).toBe('Fixes: 1\n');
+    });
+  });
 });
 
 const parse = (placeholder: string, at = 0) => {
@@ -580,6 +729,17 @@ describe('parseTrailersPlaceholder', () => {
 
       // Assert
       expect(result?.options).toEqual(DEFAULT_TRAILER_OPTIONS);
+    });
+
+    it('Then a false value overrides an earlier bare name', () => {
+      // Arrange
+      const placeholder = '(trailers:only,only=no)';
+
+      // Act
+      const result = parse(placeholder);
+
+      // Assert
+      expect(result).toEqual({ options: DEFAULT_TRAILER_OPTIONS, length: 23 });
     });
 
     it('Then an unparsable value is skipped, leaving the next option to read from there', () => {
