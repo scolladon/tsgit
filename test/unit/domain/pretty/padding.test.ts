@@ -43,6 +43,8 @@ describe('parsePadding', () => {
       '<(16385)',
       '<(-16385)',
       'x',
+      'x(8)',
+      '<x8)',
       '<(-99999999999999999999)',
     ])('Then %s is not a placeholder at all', (source) => {
       // Arrange
@@ -368,6 +370,42 @@ describe('padValue', () => {
 
       // Assert
       expect(result).toBe('ab \x1b[31m' + 'abcd');
+    });
+
+    it.each([
+      ['x  \x1b[31m\x1b[1m', 2, 'none', 'x\x1b[31m\x1b[1m' + 'abcd'],
+      ['x  \x1b[31mxm', 2, 'none', 'x  \x1b[31mxm' + 'abcd'],
+      ['x  rm', 2, 'right', 'x  rm..'],
+      ['x  \x1b[31m', 6, 'none', 'x  \x1b[31m  abcd'],
+      [' \x1b[31m', 2, 'none', ' \x1b[31m' + 'abcd'],
+      ['x  \x1b[1;4;5;31m', 2, 'none', 'x\x1b[1;4;5;31m' + 'abcd'],
+      ['x  \x1b[1;4;31;44m', 2, 'none', 'x  \x1b[1;4;31;44m' + 'abcd'],
+    ] as const)(
+      'Then %j at %i truncated %s renders %j as git does',
+      (head, width, how, expected) => {
+        // Arrange
+        const sut = padded;
+
+        // Act
+        const result = sut(head, 'abcd', request(width, 'text-right-stealing'), how);
+
+        // Assert
+        expect(result).toBe(expected);
+      },
+    );
+
+    it('Then a value exactly as wide as the width leaves the head whole', () => {
+      // Arrange
+      const sut = padValue;
+
+      // Act
+      const result = sut(encode('a  '), encode('abcd'), request(4, 'text-right-stealing'), 'none');
+
+      // Assert
+      expect({ head: decode(result.head), body: decode(result.body) }).toEqual({
+        head: 'a  ',
+        body: 'abcd',
+      });
     });
   });
 });
