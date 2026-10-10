@@ -15,6 +15,7 @@ describe('ancestorSpelling', () => {
     ['side^0', undefined],
     ['side~x', undefined],
     ['side~2^0', undefined],
+    ['123', undefined],
   ])('Given the revision %s, When it is read as an ancestor spelling', (name, expected) => {
     it('Then it reads the branch git merge_name names', () => {
       // Arrange
