@@ -95,6 +95,7 @@ export async function shiftTree(
 ): Promise<TreeShift> {
   const initial = await scoreTrees(list, one, two);
   const add: BestMatch = { score: initial, path: '' };
+  // Stryker disable next-line StringLiteral: equivalent — del.path is read only once del.score beats add.score >= initial, and matchTrees overwrites the path whenever it raises the score
   const del: BestMatch = { score: initial, path: '' };
   await matchTrees(list, one, two, { best: add, base: '', limit: DEFAULT_DEPTH_LIMIT });
   await matchTrees(list, two, one, { best: del, base: '', limit: DEFAULT_DEPTH_LIMIT });

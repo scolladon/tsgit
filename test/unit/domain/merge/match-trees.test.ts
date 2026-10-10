@@ -136,6 +136,34 @@ describe('match-trees', () => {
       { kind: 'remove', prefix: 'lib' },
     ],
     ['both have it and neither shift helps', 'host', 'host', 'lib', { kind: 'none' }],
+    [
+      'only the first tree has the prefix, though adding scores worse',
+      'host',
+      'topOnly',
+      'lib',
+      { kind: 'add', prefix: 'lib' },
+    ],
+    [
+      'both have it and both shifts tie the initial score',
+      'tieOne',
+      'tieTwo',
+      'p',
+      { kind: 'none' },
+    ],
+    [
+      'both have it and the shifts tie above the initial score',
+      'tieOne',
+      'tieTwo',
+      'q',
+      { kind: 'add', prefix: 'q' },
+    ],
+    [
+      'both have it and removing beats only the initial score',
+      'tieOne',
+      'tieTwo',
+      'r',
+      { kind: 'add', prefix: 'r' },
+    ],
   ] as const)('Given %s', (_label, one, two, prefix, expected) => {
     describe('When shiftTreeBy shifts by it', () => {
       it('Then it shifts the way git does', async () => {
@@ -145,6 +173,15 @@ describe('match-trees', () => {
           ...HOST,
           nested: [dir('lib', 'inner'), dir('sub', 'project')],
           inner: [file('q', 'bq')],
+          topOnly: [file('top', 'bt')],
+          tieOne: [file('f', 'b1'), dir('p', 'p1'), dir('q', 'q1'), dir('r', 'r1')],
+          tieTwo: [file('f', 'b2'), dir('p', 'p2'), dir('q', 'q2'), dir('r', 'r2')],
+          p1: [file('f', 'b3'), dir('p', 'x1'), dir('q', 'x1'), dir('r', 'x1')],
+          p2: [file('f', 'b4'), dir('p', 'x2'), dir('q', 'x2'), dir('r', 'x2')],
+          q1: [file('f', 'b2'), dir('p', 'x1'), dir('q', 'x1'), dir('r', 'x1')],
+          q2: [file('f', 'b1'), dir('p', 'x2'), dir('q', 'x2'), dir('r', 'x2')],
+          r1: [file('f', 'b2'), dir('p', 'p2'), dir('q', 'x1'), dir('r', 'x1')],
+          r2: [file('f', 'b1'), dir('p', 'x2'), dir('q', 'x2'), dir('r', 'x2')],
         });
 
         // Act
