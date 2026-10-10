@@ -37,6 +37,7 @@ describe('parseMergeCommandLine', () => {
     ['--log', ['--log'], { log: true }],
     ['--log=5', ['--log=5'], { log: 5 }],
     ['--log=1k', ['--log=1k'], { log: 1024 }],
+    ['--log at the bottom of a C int', ['--log=-2147483648'], { log: -2147483648 }],
     ['--no-log', ['--no-log'], { log: false }],
     ['-s with a separate value', ['-s', 'resolve'], { strategy: ['resolve'] }],
     [
@@ -107,6 +108,7 @@ describe('parseMergeCommandLine', () => {
     ['-S', ['-S'], { sign: true }],
     ['-S with a key', ['-SKEY'], { sign: true, signKey: 'KEY' }],
     ['--gpg-sign with a key, then without', ['--gpg-sign=KEY', '--gpg-sign'], { sign: true }],
+    ['--gpg-sign with an empty key, after a key', ['-SKEY', '--gpg-sign='], { sign: true }],
     ['--no-gpg-sign', ['-SKEY', '--no-gpg-sign'], { sign: false }],
   ] as const)('Given %s', (_, argv, expected) => {
     describe('When parsed', () => {
@@ -127,6 +129,11 @@ describe('parseMergeCommandLine', () => {
     ['an unknown long option', ['--bogus'], { code: 'UNKNOWN_OPTION', option: '--bogus' }],
     ['an unknown switch', ['-x'], { code: 'UNKNOWN_OPTION', option: '-x' }],
     ['an unknown switch after a known one', ['-qx'], { code: 'UNKNOWN_OPTION', option: '-x' }],
+    [
+      'a doubled negation of an option not itself named no-',
+      ['--no-no-squash'],
+      { code: 'UNKNOWN_OPTION', option: '--no-no-squash' },
+    ],
     [
       'a negation git does not take',
       ['--no-ff-only'],
@@ -151,6 +158,11 @@ describe('parseMergeCommandLine', () => {
       'a negation given a value',
       ['--no-squash=1'],
       { code: 'INVALID_OPTION', option: '--no-squash', reason: 'takes no value' },
+    ],
+    [
+      'a doubled negation given a value',
+      ['--no-no-verify=x'],
+      { code: 'INVALID_OPTION', option: '--no-no-verify', reason: 'takes no value' },
     ],
     [
       'a log count that is not an integer',
@@ -212,6 +224,11 @@ describe('parseMergeCommandLine', () => {
         option: '--strat=ours',
         candidates: ['--strategy', '--strategy-option'],
       },
+    ],
+    [
+      'an empty name with a value, which every option starts',
+      ['--=foo'],
+      { code: 'AMBIGUOUS_OPTION', option: '--=foo', candidates: ['--signoff', '--no-no-verify'] },
     ],
     [
       'a prefix of no- itself',
