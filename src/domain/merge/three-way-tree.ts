@@ -693,15 +693,9 @@ function planTreeMerge(
 ): TreeMergePlan {
   const located = withDirectoryRenames(base, ours, theirs, renames);
   const renamed = applyMergeRenames(base, located.ours, located.theirs, located.renames);
-  const vacated =
-    located.vacated.size === 0
-      ? renamed.vacated
-      : new Set([...renamed.vacated, ...located.vacated]);
+  const vacated = new Set([...renamed.vacated, ...located.vacated]);
   const paths = buildUnionPaths(renamed.base, renamed.ours, renamed.theirs, vacated);
-  const sidePaths =
-    located.sidePaths.size === 0
-      ? renamed.sidePaths
-      : new Map([...located.sidePaths, ...renamed.sidePaths]);
+  const sidePaths = new Map([...located.sidePaths, ...renamed.sidePaths]);
   return { located, renamed, paths, sortedPaths: sortByPath([...paths], (p) => p), sidePaths };
 }
 
