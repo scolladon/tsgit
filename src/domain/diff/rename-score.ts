@@ -28,6 +28,7 @@ const accumulate = (text: string): Accumulated => {
   let scale = 1;
   let dot = false;
   let at = 0;
+  // Stryker disable next-line EqualityOperator: equivalent — the extra turn reads `text[text.length]`, `undefined`, which is neither `.` nor a digit, so it breaks with `at` still at `text.length`.
   for (; at < text.length; at++) {
     const ch = text[at];
     if (!dot && ch === '.') {
@@ -49,6 +50,7 @@ export const parseRenameScore = (text: string): ParsedRenameScore => {
   const { num, scale: digitScale, dot, end } = accumulate(text);
   const percent = text[end] === '%';
   const scale = percent ? (dot ? digitScale * PERCENT : PERCENT) : digitScale;
+  // Stryker disable next-line EqualityOperator: equivalent — at `num === scale` (scale is never 0) the division branch computes floor(MAX_SCORE * scale / scale), exactly MAX_SCORE.
   const score = num >= scale ? MAX_SCORE : Math.floor((MAX_SCORE * num) / scale);
   return { score, rest: text.slice(percent ? end + 1 : end) };
 };

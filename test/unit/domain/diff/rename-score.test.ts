@@ -18,6 +18,7 @@ describe('parseRenameScore', () => {
     ['50%x', 30000, 'x'],
     ['1.2.3', 60000, '.3'],
     ['1234567', 7407, ''],
+    ['000019', 0, ''],
   ])('Given %j', (text, score, rest) => {
     describe('When parsed', () => {
       it(`Then the score is ${score} and ${JSON.stringify(rest)} is left`, () => {
