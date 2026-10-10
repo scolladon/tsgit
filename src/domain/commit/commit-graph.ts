@@ -260,7 +260,8 @@ export function storedBloomFilter(
   const start =
     localPos === 0 ? 0 : layer._view.getUint32(index.start + (localPos - 1) * BIDX_ENTRY_SIZE);
   const dataSize = data.end - data.start - BDAT_HEADER_SIZE;
-  if (end > dataSize || start > dataSize || end < start) return undefined;
+  // A start past the data has its end past it too, or below it.
+  if (end > dataSize || end < start) return undefined;
   const filters = data.start + BDAT_HEADER_SIZE;
   return layer._bytes.subarray(filters + start, filters + end);
 }
