@@ -74,6 +74,9 @@ const MAX_LEADING_CLASSES = 8;
 const WORD_CHARACTERS = '\\p{L}\\p{N}_';
 const WORD = `[${WORD_CHARACTERS}]`;
 const FLAGS = 'su';
+/** The source reading any one code point, a newline included under the `s` flag. */
+// Stryker disable next-line StringLiteral: equivalent — an empty sticky pattern matches at every position, as `.` under the s and u flags reads every code point
+const ANY_CHARACTER = '.';
 
 const CHAR = 0;
 const ASSERT = 1;
@@ -408,6 +411,7 @@ const parseAlternation = (c: Cursor, nesting: number): Translation => {
  */
 const alternativeLiterals = (branches: ReadonlyArray<Piece>): Literals => {
   const exact = branches.map(({ literals }) => literals.exact);
+  // Stryker disable next-line ArrayDeclaration: equivalent — the fallback stands for an unknown branch, which makes exact undefined before texts is read
   const texts = exact.flatMap((spelt) => spelt ?? []);
   const starts = branches.every(({ literals }) => literals.starts === 'subject-start');
   return {
@@ -500,14 +504,14 @@ const readAnchor = (c: Cursor): Piece | undefined => {
     return plain;
   }
   if (peek(c) !== '\\') return undefined;
-  const escaped = ESCAPED_ANCHORS.get(peek(c, 1) ?? '');
+  const escaped = ESCAPED_ANCHORS.get(peek(c, 1) as string);
   if (escaped !== undefined) c.pos += 2;
   return escaped;
 };
 
 const parseAtom = (c: Cursor, nesting: number): Translation => {
   const ch = next(c) as string;
-  if (ch === '.') return characterPiece('.');
+  if (ch === '.') return characterPiece(ANY_CHARACTER);
   if (ch === '(') return parseGroup(c, nesting);
   if (ch === '\\') return parseEscape(c);
   if (ch !== '[') return literalPiece(ch);
@@ -558,7 +562,7 @@ const parseBackreference = (c: Cursor, digit: string): Translation => {
   c.referenced |= 1 << group;
   const fragment =
     c.engine === 'linear'
-      ? repeatFragment(sameCopies(characterPiece('.').fragment), ANY_RUN)
+      ? repeatFragment(sameCopies(characterPiece(ANY_CHARACTER).fragment), ANY_RUN)
       : plain(BACKREF, group);
   return { fragment, literals: OPAQUE };
 };
@@ -600,6 +604,7 @@ const absorbs = (inner: Bounds): boolean =>
 
 const product = (inner: Bounds, outer: Bounds): Bounds => ({
   min: inner.min * outer.min,
+  // Stryker disable next-line ConditionalExpression,LogicalOperator: equivalent — 0 × ∞ is NaN, and a NaN bound lays out no copy, as a 0 bound does
   max: inner.max === 0 || outer.max === 0 ? 0 : inner.max * outer.max,
 });
 
@@ -631,12 +636,15 @@ const parseInterval = (c: Cursor): Bounds | undefined => {
   return high === '' ? openRepeat(low) : boundedRepeat(low, high);
 };
 
-/** The digits up to the next `,` or `}`; `undefined` when anything else intervenes. */
+/**
+ * The digits up to the next `,` or `}`; `undefined` when anything else
+ * intervenes. At the pattern's end, the caller's next read refuses the interval.
+ */
 const readBound = (c: Cursor): string | undefined => {
   const start = c.pos;
   while (peek(c) !== undefined && peek(c) !== ',' && peek(c) !== '}') c.pos += 1;
   const digits = c.chars.slice(start, c.pos).join('');
-  return peek(c) !== undefined && BOUND.test(digits) ? digits : undefined;
+  return BOUND.test(digits) ? digits : undefined;
 };
 
 const openRepeat = (low: string): Bounds | undefined => {
@@ -661,7 +669,6 @@ const parseBracket = (c: Cursor): string | undefined => {
   const members: string[] = [];
   for (let at: ItemPosition = 'opening'; ; at = 'inner') {
     const ch = peek(c);
-    if (ch === undefined) return undefined;
     if (ch === ']' && at === 'inner') {
       c.pos += 1;
       return `[${negated ? '^' : ''}${members.join('')}]`;
@@ -700,7 +707,6 @@ const characterMember = (ch: string): BracketMember => ({
 /** `[:class:]`, `[.c.]` (a collating symbol, may bound a range) or `[=c=]`. */
 const parseBracketSymbol = (c: Cursor, delimiter: string): BracketMember | undefined => {
   const name = readBracketSymbol(c, delimiter);
-  if (name === undefined) return undefined;
   if (delimiter === ':') {
     const body = CHARACTER_CLASSES.get(name.join(''));
     return body === undefined ? undefined : { source: body };
@@ -710,11 +716,13 @@ const parseBracketSymbol = (c: Cursor, delimiter: string): BracketMember | undef
   return delimiter === '.' ? characterMember(only) : { source: literal(only) };
 };
 
-/** The symbol's characters up to `<delimiter>]`, consumed; `undefined` when unterminated. */
-const readBracketSymbol = (c: Cursor, delimiter: string): ReadonlyArray<string> | undefined => {
+/**
+ * The symbol's characters up to `<delimiter>]`, consumed. An unterminated one
+ * takes the rest of the pattern, leaving its bracket unterminated and refused.
+ */
+const readBracketSymbol = (c: Cursor, delimiter: string): ReadonlyArray<string> => {
   const start = c.pos;
   while (peek(c) !== undefined && !(peek(c) === delimiter && peek(c, 1) === ']')) c.pos += 1;
-  if (peek(c) === undefined) return undefined;
   const name = c.chars.slice(start, c.pos);
   c.pos += 2;
   return name;
@@ -888,10 +896,12 @@ type Layout = Omit<Machine, 'threads'>;
 
 const WORD_CONTEXT = WORD_BEFORE | WORD_AFTER;
 
+// Stryker disable next-line EqualityOperator: equivalent — holdsIn only feeds dependsOnWords, which compares two of its answers; negating both leaves the comparison unchanged
 const holdsIn = (mask: number, context: Context): boolean => ((mask >> context) & 1) === 1;
 
 /** Whether an assertion's verdict changes with the word characters around the position. */
 const dependsOnWords = (mask: number): boolean => {
+  // Stryker disable next-line EqualityOperator: equivalent — context 16 reads bit 16 of a 16-bit mask on both sides: 0 and 0
   for (let context = 0; context < CONTEXTS; context += 1) {
     if (holdsIn(mask, context) !== holdsIn(mask, context & ~WORD_CONTEXT)) return true;
   }
@@ -984,6 +994,7 @@ const classIndex = (
 const classOf = ({ source, code }: CharInstruction): CharClass => {
   const pattern = new RegExp(source, STICKY_FLAGS);
   const ascii = new Uint8Array(ASCII);
+  // Stryker disable next-line EqualityOperator: equivalent — a write past the typed array’s end is dropped
   for (let unit = 0; unit < ASCII; unit += 1) {
     ascii[unit] = Number(readsAt(pattern, String.fromCharCode(unit), 0));
   }
@@ -1077,6 +1088,7 @@ const restart = (machine: Machine, subject: string, scan: Scan): boolean => {
   if (scan.at > 0 && starts === 'subject-start') return scan.count > 0;
   if (scan.count === 0 && leading !== undefined) {
     const at = nextLeading(leading, subject, scan.at);
+    // Stryker disable next-line ConditionalExpression: equivalent — with a leading set no thread matches before reading, and position -1 holds no code point, so the run answers false there too
     if (at === NOWHERE) return false;
     if (at !== scan.at) {
       scan.at = at;
@@ -1103,7 +1115,7 @@ const isWord = ({ word }: Layout, subject: string, at: number): boolean => {
 
 /** Whether the code point ending at `at` is a word character. */
 const isWordBefore = (layout: Layout, subject: string, at: number): boolean =>
-  at > 0 && isWord(layout, subject, previousStart(subject, at));
+  isWord(layout, subject, previousStart(subject, at));
 
 const contextOf = (scan: Scan, code: number | undefined, wordAfter: boolean): Context =>
   (scan.at === 0 ? AT_START : 0) |
@@ -1128,6 +1140,7 @@ const follow = (program: Program, threads: Threads, pending: number, context: Co
   const { ops, operand, target } = program;
   let count = pending;
   let ready = 0;
+  // Stryker disable next-line EqualityOperator: equivalent — one more pass reads pending[-1], undefined, which names no instruction and joins nothing
   while (count > 0) {
     count -= 1;
     const pc = threads.pending[count] as number;
@@ -1278,6 +1291,7 @@ const backUp = (path: Path, subject: string): boolean => {
   if (length === undefined) return false;
   const at = choices.pop() as number;
   const pc = choices.pop() as number;
+  // Stryker disable next-line EqualityOperator: equivalent — a fork records its other target only when it differs from the first, and every such target lies past the fork, so a recorded target is never 0
   if (pc >= 0) return resume(path, pc, at);
   const back = previousStart(subject, at);
   if (back > (choices.at(-1) as number)) choices.push(pc, back, length);
