@@ -9,12 +9,14 @@ const MIN_SIZE = 8 + 4 * 12 + 1024 + HASH_LENGTH;
 const HEADER_SIZE = 8;
 const ROW_SIZE = 12;
 
-const graph = (): Uint8Array =>
+const graph = (ids: ReadonlyArray<string> = ['a'.repeat(40), 'c'.repeat(40)]): Uint8Array =>
   serializeCommitGraph(
-    [
-      { id: 'a'.repeat(40) as ObjectId, rootTree: 'b'.repeat(40) as ObjectId, parents: [] },
-      { id: 'c'.repeat(40) as ObjectId, rootTree: 'b'.repeat(40) as ObjectId, parents: [] },
-    ].map((commit) => ({ ...commit, committerDate: 1 })),
+    ids.map((id) => ({
+      id: id as ObjectId,
+      rootTree: 'b'.repeat(40) as ObjectId,
+      parents: [],
+      committerDate: 1,
+    })),
     SHA1_CONFIG,
   );
 
@@ -155,6 +157,64 @@ describe('commitGraphLoadFailure', () => {
 
       // Assert
       expect(result).toEqual({ kind: 'early-terminator' });
+    });
+  });
+
+  describe('Given a file one byte short of the chunks it declares, When classified', () => {
+    it('Then the declared count is named', () => {
+      // Arrange
+      const bytes = new Uint8Array(MIN_SIZE + ROW_SIZE - 1);
+      bytes.set([0x43, 0x47, 0x50, 0x48, 1, 1, 4]);
+      const sut = commitGraphLoadFailure;
+
+      // Act
+      const result = sut(bytes, HASH_LENGTH);
+
+      // Assert
+      expect(result).toEqual({ kind: 'too-small-for-chunks', chunkCount: 4 });
+    });
+  });
+
+  describe('Given a chunk offset with its high word set, When classified', () => {
+    it('Then the 64-bit offset lands past the file', () => {
+      // Arrange
+      const bytes = graph();
+      const start = offsetAt(bytes, 0);
+      const end = offsetAt(bytes, 1);
+      view(bytes).setUint32(HEADER_SIZE + ROW_SIZE + 4, 1);
+      const sut = commitGraphLoadFailure;
+
+      // Act
+      const result = sut(bytes, HASH_LENGTH);
+
+      // Assert
+      expect(result).toEqual({ kind: 'improper-offsets', offset: start, next: 0x100000000 + end });
+    });
+  });
+
+  describe('Given a graph of no commits, whose lookup and data chunks are empty, When classified', () => {
+    it('Then it loads', () => {
+      // Arrange
+      const sut = commitGraphLoadFailure;
+
+      // Act
+      const result = sut(graph([]), HASH_LENGTH);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe('Given a graph whose first oid opens with zero bytes, When classified', () => {
+    it('Then the fanout check stops at its own last entry and the graph loads', () => {
+      // Arrange
+      const sut = commitGraphLoadFailure;
+
+      // Act
+      const result = sut(graph(['0'.repeat(40), 'c'.repeat(40)]), HASH_LENGTH);
+
+      // Assert
+      expect(result).toBeUndefined();
     });
   });
 
