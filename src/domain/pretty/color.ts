@@ -102,12 +102,17 @@ interface Parsed {
   readonly background?: Color;
 }
 
+/** The first colour is the foreground, the second the background; git rejects a third. */
+const assignColor = (parsed: Parsed, color: Color): Parsed | undefined => {
+  if (!parsed.foreground) return { ...parsed, foreground: color };
+  if (!parsed.background) return { ...parsed, background: color };
+  return undefined;
+};
+
 const parseWord = (parsed: Parsed, word: string): Parsed | undefined => {
   if (word === 'reset') return { ...parsed, reset: true };
   const color = parseColor(word);
-  if (color && !parsed.foreground) return { ...parsed, foreground: color };
-  if (color && !parsed.background) return { ...parsed, background: color };
-  if (color) return undefined;
+  if (color) return assignColor(parsed, color);
   const attribute = parseAttribute(word);
   if (attribute === undefined) return undefined;
   return { ...parsed, attributes: new Set([...parsed.attributes, attribute]) };
