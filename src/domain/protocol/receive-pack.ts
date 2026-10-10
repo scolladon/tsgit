@@ -183,7 +183,9 @@ const parseOptionId = (value: string | undefined, hexLength: number): ObjectId |
 const withOption = (report: RefStatusReport, line: string, hexLength: number): RefStatusReport => {
   const body = line.slice(OPTION_PREFIX.length);
   const space = body.indexOf(' ');
+  // Stryker disable next-line EqualityOperator: equivalent — a leading space makes the key '' or ' …', and neither names an option
   const key = space < 0 ? body : body.slice(0, space);
+  // Stryker disable next-line EqualityOperator: equivalent — a leading space leaves a key that names no option, so the value is never read
   const value = space < 0 ? undefined : body.slice(space + 1);
   if (key === 'refname') return value === undefined ? report : { ...report, refName: value };
   if (key === 'forced-update') return { ...report, forcedUpdate: true };
