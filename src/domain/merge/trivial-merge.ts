@@ -15,8 +15,7 @@ const same = (a: Entry, b: Entry): boolean =>
 
 /** One path's trivial outcome: the entry kept, or `undefined` when it needs a file-level merge. */
 const resolvePath = (base: Entry, head: Entry, remote: Entry): Entry => {
-  if (remote !== undefined && same(base, head) && !same(base, remote)) return remote;
-  if (head === undefined) return undefined;
+  if (same(base, head) && !same(base, remote)) return remote;
   if (same(head, remote)) return head;
   return same(base, remote) && !same(base, head) ? head : undefined;
 };
@@ -25,6 +24,7 @@ const resolvePath = (base: Entry, head: Entry, remote: Entry): Entry => {
 const clashes = (paths: ReadonlyArray<FilePath>): boolean => {
   const directories = new Set<string>();
   for (const path of paths) {
+    // Stryker disable next-line StringLiteral: equivalent — searching '' first records '' as a directory, which no non-empty tree path equals, and the next search from 1 finds the same slashes
     for (let at = path.indexOf('/'); at !== -1; at = path.indexOf('/', at + 1)) {
       directories.add(path.slice(0, at));
     }
