@@ -60,6 +60,6 @@ const append = (cursor: Cursor, c: string, at: number): Cursor => ({
 
 const pastSpaces = (line: string, at: number): number => {
   let next = at + 1;
-  while (next < line.length && GIT_SPACE.has(line[next]!)) next++;
+  while (GIT_SPACE.has(line.charAt(next))) next++;
   return next;
 };
