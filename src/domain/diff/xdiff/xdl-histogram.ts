@@ -162,7 +162,7 @@ function splitRegion(
     sink.fallback(region);
     return [];
   }
-  if (lcs.begin1 === 0 && lcs.begin2 === 0) {
+  if (lcs.begin1 === 0) {
     markRegion(sink, region);
     return [];
   }
