@@ -22,6 +22,21 @@ describe('parseAlternatesFile', () => {
     });
   });
 
+  describe('Given a quoted entry whose escape is followed by bytes below the octal digits', () => {
+    describe('When parsing', () => {
+      it('Then the broken quoting leaves the line verbatim', () => {
+        // Arrange
+        const sut = parseAlternatesFile;
+
+        // Act
+        const result = sut(bytes('"\\///"\n'));
+
+        // Assert
+        expect(texts(result)).toEqual(['"\\///"']);
+      });
+    });
+  });
+
   describe('Given an empty file', () => {
     describe('When parsing', () => {
       it('Then there are no entries', () => {

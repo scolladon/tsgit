@@ -47,6 +47,7 @@ const readOctal = (bytes: Uint8Array, at: number): number | undefined => {
 export const unquoteCStyle = (bytes: Uint8Array, start: number): Unquoted | undefined => {
   const out: number[] = [];
   let at = start + 1;
+  // Stryker disable next-line EqualityOperator: equivalent — at length the undefined byte is neither quote nor backslash, so the extra pass leaves the loop unterminated and returns undefined
   while (at < bytes.length) {
     const byte = bytes[at] as number;
     if (byte === QUOTE) return { value: new Uint8Array(out), end: at + 1 };
@@ -86,6 +87,7 @@ export const parseAlternatesFile = (input: Uint8Array): ReadonlyArray<Uint8Array
   const bytes = firstNul === -1 ? input : input.subarray(0, firstNul);
   const entries: Uint8Array[] = [];
   let at = 0;
+  // Stryker disable next-line EqualityOperator: equivalent — at length the extra pass cuts an empty entry, which is never kept
   while (at < bytes.length) {
     if (bytes[at] === COMMENT) {
       at = lineEnd(bytes, at) + 1;
