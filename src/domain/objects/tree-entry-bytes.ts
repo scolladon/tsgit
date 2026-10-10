@@ -161,6 +161,7 @@ function foldsToNtfsFallbackShortName(
   if (end < shortEnd) return false;
   const head = buf.subarray(start, start + NTFS_SHORT_NAME_PREFIX_LENGTH + 1);
   const tilde = head.indexOf(ASCII_TILDE);
+  // Stryker disable next-line ConditionalExpression: equivalent — with no tilde the prefix check would cover the first five prefix letters, and the digit check then reads that leading letter and fails
   if (tilde < 0) return false;
   if (
     !matchesAsciiCaseInsensitive(buf, start, NTFS_FALLBACK_SHORT_NAME_PREFIX[alias].slice(0, tilde))

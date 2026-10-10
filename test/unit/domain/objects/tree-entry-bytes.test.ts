@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { encode } from '../../../../src/domain/objects/encoding.js';
 import {
+  backslashSegmentStarts,
   entryNameKey,
   hasNonOctalByte,
   matchesDotgitAlias,
@@ -560,6 +561,40 @@ describe('Given a name that is an NTFS short-name alias inside a wider buffer', 
 
       // Assert
       expect(result).toBe(false);
+    });
+  });
+});
+
+describe('Given a range too short for the dot form, embedded in a buffer that completes it', () => {
+  describe('When only the range is matched against "git"', () => {
+    it('Then bytes past the range never complete the dot form', () => {
+      // Arrange
+      const sut = matchesNtfsDotgitAlias;
+      const buffer = encode('xxx.git');
+
+      // Act
+      const result = sut(buffer, 3, 5, 'git');
+
+      // Assert
+      expect(result).toBe(false);
+    });
+  });
+});
+
+describe('backslashSegmentStarts', () => {
+  describe('Given a range holding one backslash, with another just past its end', () => {
+    describe('When the segment starts are listed', () => {
+      it('Then only the byte after the inner backslash starts a segment', () => {
+        // Arrange
+        const sut = backslashSegmentStarts;
+        const buffer = encode('a\\b\\');
+
+        // Act
+        const result = sut(buffer, 0, 3);
+
+        // Assert
+        expect(result).toEqual([2]);
+      });
     });
   });
 });
