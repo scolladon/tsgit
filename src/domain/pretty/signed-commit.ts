@@ -29,10 +29,7 @@ const fromByteString = (text: string): Uint8Array =>
 
 const signatureLine = (state: SplitState, line: string, header: string): string | undefined => {
   if (state.inSignature && line.startsWith(CONTINUATION)) return line.slice(1);
-  if (line.startsWith(`${header} `)) {
-    state.otherSignature = false;
-    return line.slice(header.length + 1);
-  }
+  if (line.startsWith(`${header} `)) return line.slice(header.length + 1);
   if (line.startsWith(ANY_SIGNATURE_HEADER)) state.otherSignature = true;
   else if (!line.startsWith(CONTINUATION)) state.otherSignature = false;
   return undefined;
