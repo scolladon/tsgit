@@ -685,6 +685,26 @@ describe('computeCommitGraphGenerations', () => {
     });
   });
 
+  describe('Given a chain whose child sorts first', () => {
+    describe('When the generations are computed', () => {
+      it('Then a commit already settled under its child is parsed in its turn and not walked again', () => {
+        // Arrange
+        const root = commit('c', []);
+        const middle = commit('b', [root.id]);
+        const tip = commit('a', [middle.id]);
+        const { parses, view } = recordingView([root, middle, tip]);
+        const walk = [tip.id, middle.id, root.id, root.id, middle.id, middle.id, root.id];
+        const sut = computeCommitGraphGenerations;
+
+        // Act
+        sut([tip.id, middle.id, root.id], NO_BASE_LAYERS, view);
+
+        // Assert
+        expect(parses).toEqual([...walk, ...walk]);
+      });
+    });
+  });
+
   describe('Given a root and its child both dated zero', () => {
     describe('When the generations are computed', () => {
       it('Then each corrected date counts up from one, as a dateless commit does in git', () => {
