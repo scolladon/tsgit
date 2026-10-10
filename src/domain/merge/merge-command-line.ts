@@ -158,15 +158,24 @@ export const parseMergeCommandLine = (argv: ReadonlyArray<string>): MergeCommand
 
 const parseArgument = (argv: ReadonlyArray<string>, { line, next }: Parsed): Parsed => {
   const arg = argv[next]!;
-  if (!arg.startsWith('-') || arg === '-') return { line, next: next + 1 };
+  if (!arg.startsWith('-')) return { line, next: next + 1 };
   return arg.startsWith('--') ? parseLong(argv, line, next) : parseShorts(argv, line, next);
 };
 
-const parseLong = (argv: ReadonlyArray<string>, line: MergeCommandLine, at: number): Parsed => {
-  const body = argv[at]!.slice(2);
+interface LongArgument {
+  readonly name: string;
+  readonly attached?: string;
+}
+
+/** `--<name>=<value>` attaches what follows its first `=`; `--<name>` attaches nothing. */
+const splitAttached = (body: string): LongArgument => {
   const equals = body.indexOf('=');
-  const name = equals < 0 ? body : body.slice(0, equals);
-  const attached = equals < 0 ? undefined : body.slice(equals + 1);
+  if (equals < 0) return { name: body };
+  return { name: body.slice(0, equals), attached: body.slice(equals + 1) };
+};
+
+const parseLong = (argv: ReadonlyArray<string>, line: MergeCommandLine, at: number): Parsed => {
+  const { name, attached } = splitAttached(argv[at]!.slice(2));
   const { option, negated } = findLong(argv[at]!, name);
   const spelt = `--${negated ? NEGATION : ''}${option.long!}`;
   if (negated || option.value === 'none') {
@@ -266,6 +275,7 @@ const settleAbbreviation = (arg: string, { abbrev, ambiguous }: Abbreviations): 
 const parseShorts = (argv: ReadonlyArray<string>, start: MergeCommandLine, at: number): Parsed => {
   const arg = argv[at]!;
   let line = start;
+  // Stryker disable next-line EqualityOperator: equivalent — at index === arg.length the lookup finds `--stat`, the first short-less option, whose set is a no-op
   for (let index = 1; index < arg.length; index++) {
     const spelt = `-${arg[index]!}`;
     const option = OPTIONS.find((candidate) => candidate.short === arg[index]);
@@ -276,7 +286,7 @@ const parseShorts = (argv: ReadonlyArray<string>, start: MergeCommandLine, at: n
     }
     const rest = arg.slice(index + 1);
     if (rest !== '' || option.value === 'optional') {
-      return { line: option.set(line, rest === '' ? undefined : rest, spelt), next: at + 1 };
+      return { line: option.set(line, rest, spelt), next: at + 1 };
     }
     return takeNextValue(argv, line, at, option, spelt);
   }
