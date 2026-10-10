@@ -2074,6 +2074,38 @@ describe('mergeTrees — directory renames', () => {
     });
   });
 
+  describe('Given theirs renamed a directory ours added into, applied outright, When mergeTrees is called', () => {
+    it('Then the vacated source path resolves as deleted', async () => {
+      // Arrange
+      const renames = { ours: [], theirs: DIR_MOVE, directoryRenames: 'apply' } as const;
+      const sut = mergeTrees;
+
+      // Act
+      const result = await sut(base, ours, theirs, noopMerger, DEFAULT_MERGE_LABELS, renames);
+
+      // Assert
+      expect(result.outcomes).toContainEqual({ status: 'resolved-deleted', path: 'dir/c' });
+    });
+  });
+
+  describe('Given the moved addition meets one the other side made there, When its content merges', () => {
+    it('Then each side is labelled with the path it held', async () => {
+      // Arrange
+      const renames = { ours: [], theirs: DIR_MOVE, directoryRenames: 'conflict' } as const;
+      const added = tree([...theirs.entries, ['newdir/c', entry(ID_D)]]);
+      const merger = spyMerger({ status: 'clean', bytes: new Uint8Array(0) });
+      const sut = mergeTrees;
+
+      // Act
+      await sut(base, ours, added, merger.fn, DEFAULT_MERGE_LABELS, renames);
+
+      // Assert
+      expect(merger.ctxs.map((ctx) => ctx.sidePaths)).toEqual([
+        { base: 'newdir/c', ours: 'dir/c', theirs: 'newdir/c' },
+      ]);
+    });
+  });
+
   describe('Given the moved addition meets one the other side made there, in conflict mode', () => {
     describe('When mergeTrees is called', () => {
       it('Then the add/add conflict stands', async () => {
