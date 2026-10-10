@@ -45,12 +45,11 @@ const addFirst = (
   if (codePoint !== undefined && !table.has(codePoint)) table.set(codePoint, bytes);
 };
 
-/** Roman entries that differ from ASCII — the only ones iconv reaches, ASCII being tried first. */
+/** Roman entries; iconv reaches only those that differ from ASCII, ASCII being tried first. */
 const buildRoman = (decoder: TextDecoder): Table => {
   const table = new Map<number, ReadonlyArray<number>>();
   for (const byte of graphicBytes(FIRST_GRAPHIC, LAST_GRAPHIC)) {
-    const codePoint = decodeOne(decoder, [...DESIGNATE.roman, byte]);
-    if (codePoint !== byte) addFirst(table, codePoint, [byte]);
+    addFirst(table, decodeOne(decoder, [...DESIGNATE.roman, byte]), [byte]);
   }
   return table;
 };
