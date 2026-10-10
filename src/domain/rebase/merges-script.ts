@@ -70,6 +70,7 @@ const abbreviationOf = (input: MergesScriptInput, oid: ObjectId): string =>
 /** A commit outside the range's abbreviation, lengthened until no label clashes. */
 const uniqueAbbreviation = (state: LabelState, abbrev: string, oid: ObjectId): string => {
   if (!state.labels.has(abbrev)) return abbrev;
+  // Stryker disable next-line EqualityOperator: equivalent — the extra turn at `length === oid.length` tries `oid` itself, and returning it there or falling through to `return oid` yields the same label.
   for (let length = abbrev.length + 1; length < oid.length; length += 1) {
     if (!state.labels.has(oid.slice(0, length))) return oid.slice(0, length);
   }

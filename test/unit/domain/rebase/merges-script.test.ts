@@ -177,6 +177,9 @@ describe('makeScriptWithMerges', () => {
         { subject: 'f'.repeat(40), expected: `${'f'.repeat(40)}-2` },
         { subject: 'x'.repeat(300), expected: 'x'.repeat(233) },
         { subject: `${'x'.repeat(232)}€`, expected: 'x'.repeat(232) },
+        { subject: 'a  b', expected: 'a-b' },
+        { subject: 'a '.repeat(200), expected: `${'a-'.repeat(116)}a` },
+        { subject: 'é'.repeat(117), expected: 'é'.repeat(117) },
       ])('Then "$subject" sanitizes to "$expected"', ({ subject, expected }) => {
         // Arrange
         const tip = '1'.repeat(40);
@@ -289,6 +292,48 @@ describe('makeScriptWithMerges', () => {
 
         // Assert
         expect(result[4]).toEqual({ action: 'reset', label: 'base', subject: '' });
+      });
+    });
+
+    describe('When an abbreviation-less cousin forks from a long oid', () => {
+      it('Then the first seven characters label it', () => {
+        // Arrange
+        const sut = makeScriptWithMerges;
+        const commits = [
+          commit('c1', ['outside-fork']),
+          commit('s1', ['m1']),
+          commit('M', ['c1', 's1'], "Merge branch 'side' into topic"),
+        ];
+
+        // Act
+        const result = sut(input({ commits, ontoBase: id('m1') }));
+
+        // Assert
+        expect(result[4]).toEqual({ action: 'reset', label: 'outside', subject: '' });
+      });
+    });
+
+    describe('When two blocks fork from the same commit outside the range', () => {
+      it('Then both reset to its abbreviation, never to a branch point', () => {
+        // Arrange
+        const sut = makeScriptWithMerges;
+        const commits = [
+          commit('c1', ['base']),
+          commit('s1', ['m1']),
+          commit('t1', ['base']),
+          commit('M', ['c1', 's1'], "Merge branch 'side' into topic"),
+          commit('N', ['M', 't1'], "Merge branch 'other' into topic"),
+        ];
+
+        // Act
+        const result = sut(input({ commits, ontoBase: id('m1') }));
+
+        // Assert
+        expect(result.filter((line) => line.action === 'reset')).toEqual([
+          { action: 'reset', label: 'onto', branch: 'side' },
+          { action: 'reset', label: 'base', subject: '', branch: 'other' },
+          { action: 'reset', label: 'base', subject: '' },
+        ]);
       });
     });
 
