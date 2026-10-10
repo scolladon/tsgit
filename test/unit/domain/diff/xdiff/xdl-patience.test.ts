@@ -153,4 +153,106 @@ describe('the patience line diff', () => {
       });
     });
   });
+
+  describe('Given unique lines whose longest common run spans two anchors', () => {
+    describe('When diffing with the patience algorithm', () => {
+      it('Then it anchors on the whole run git diff --patience keeps', () => {
+        // Arrange
+        const sut = diffPresplitLinesForMode;
+        const ours = linesOf(['e', 'c', 'd', 'a']);
+        const theirs = linesOf(['c', 'e', 'd', 'c']);
+
+        // Act
+        const result = sut(ours, theirs, 'patience');
+
+        // Assert
+        expect(changedLines(result.hunks)).toEqual({ deleted: [2, 4], inserted: [1, 4] });
+      });
+    });
+  });
+
+  describe('Given lines that match right before an anchor', () => {
+    describe('When diffing with the patience algorithm', () => {
+      it('Then they stay common as git diff --patience keeps them', () => {
+        // Arrange
+        const sut = diffPresplitLinesForMode;
+        const ours = linesOf(['e', 'c', 'c', 'e', 'e', 'a', 'b']);
+        const theirs = linesOf(['c', 'e', 'a']);
+
+        // Act
+        const result = sut(ours, theirs, 'patience');
+
+        // Assert
+        expect(changedLines(result.hunks)).toEqual({ deleted: [1, 3, 4, 7], inserted: [] });
+      });
+    });
+  });
+
+  describe('Given a gap whose ours side is followed by a line held once in the theirs gap', () => {
+    describe('When diffing with the patience algorithm', () => {
+      it('Then the gap is diffed over its own lines only', () => {
+        // Arrange
+        const sut = diffPresplitLinesForMode;
+        const ours = linesOf(['e', 'c', 'd']);
+        const theirs = linesOf(['a', 'c', 'a', 'a', 'c', 'd']);
+
+        // Act
+        const result = sut(ours, theirs, 'patience');
+
+        // Assert
+        expect(changedLines(result.hunks)).toEqual({ deleted: [1], inserted: [1, 2, 3, 4] });
+      });
+    });
+  });
+
+  describe('Given a gap whose theirs side is followed by a line held once in the ours gap', () => {
+    describe('When diffing with the patience algorithm', () => {
+      it('Then the gap is diffed over its own lines only', () => {
+        // Arrange
+        const sut = diffPresplitLinesForMode;
+        const ours = linesOf(['c', 'c', 'e']);
+        const theirs = linesOf(['a', 'a', 'c', 'e']);
+
+        // Act
+        const result = sut(ours, theirs, 'patience');
+
+        // Assert
+        expect(changedLines(result.hunks)).toEqual({ deleted: [1], inserted: [1, 2] });
+      });
+    });
+  });
+
+  describe('Given ours lines before an anchor that match back into the previous anchor run', () => {
+    describe('When diffing with the patience algorithm', () => {
+      it('Then the pull-back stops where the gap starts', () => {
+        // Arrange
+        const sut = diffPresplitLinesForMode;
+        const ours = linesOf(['a', 'e', 'c', 'a']);
+        const theirs = linesOf(['e', 'c', 'c', 'a']);
+
+        // Act
+        const result = sut(ours, theirs, 'patience');
+
+        // Assert
+        expect(changedLines(result.hunks)).toEqual({ deleted: [1], inserted: [3] });
+      });
+    });
+  });
+
+  describe('Given theirs lines before an anchor that match back into the previous anchor run', () => {
+    describe('When diffing with the patience algorithm', () => {
+      it('Then the pull-back stops where the gap starts', () => {
+        // Arrange
+        const sut = diffPresplitLinesForMode;
+        const ours = linesOf(['c', 'a', 'a', 'b']);
+        const theirs = linesOf(['a', 'b', 'b', 'a', 'c', 'a', 'b', 'a']);
+
+        // Act
+        const result = sut(ours, theirs, 'patience');
+
+        // Assert
+        expect(changedLines(result.hunks)).toEqual({ deleted: [3], inserted: [1, 2, 3, 4, 8] });
+      });
+    });
+  });
 });
