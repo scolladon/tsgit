@@ -196,6 +196,21 @@ describe('changedPathFilter', () => {
     });
   });
 
+  describe('Given a changed path with a leading slash', () => {
+    describe('When the filter is built', () => {
+      it('Then only the path is keyed, never the empty directory before its slash', () => {
+        // Arrange
+        const sut = changedPathFilter;
+
+        // Act
+        const result = sut([bytes('/a')], DEFAULT_BLOOM_FILTER_SETTINGS);
+
+        // Assert
+        expect(result).toHaveLength(2);
+      });
+    });
+  });
+
   describe('Given more distinct paths than the maximum', () => {
     describe('When the filter is built', () => {
       it("Then it is git's single 0xFF too-large marker", () => {
