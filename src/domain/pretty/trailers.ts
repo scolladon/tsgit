@@ -40,6 +40,7 @@ const LATIN1_CHUNK = 8_192;
 /** `TextDecoder('latin1')` is windows-1252 in the Encoding Standard; this maps each byte to one code unit. */
 const toByteString = (bytes: Uint8Array): string => {
   let text = '';
+  // Stryker disable next-line EqualityOperator: equivalent — at === bytes.length appends String.fromCharCode() of an empty subarray, i.e. ''
   for (let at = 0; at < bytes.length; at += LATIN1_CHUNK) {
     text += String.fromCharCode(...bytes.subarray(at, at + LATIN1_CHUNK));
   }
@@ -49,6 +50,7 @@ const toByteString = (bytes: Uint8Array): string => {
 const fromByteString = (text: string): Uint8Array =>
   Uint8Array.from(text, (char) => char.charCodeAt(0));
 
+/** False past either end of `text` (`charCodeAt` is NaN there), which bounds every whitespace walk. */
 const isSpaceAt = (text: string, at: number): boolean => isAsciiSpace(text.charCodeAt(at));
 
 const nextLine = (text: string, from: number): number => {
@@ -66,7 +68,7 @@ const lastLine = (text: string, length: number): number => {
 
 const isBlankLine = (text: string, at: number): boolean => {
   let cursor = at;
-  while (cursor < text.length && text[cursor] !== LINE_FEED && isSpaceAt(text, cursor)) cursor++;
+  while (text[cursor] !== LINE_FEED && isSpaceAt(text, cursor)) cursor++;
   return cursor === text.length || text[cursor] === LINE_FEED;
 };
 
@@ -80,7 +82,7 @@ const isTokenChar = (char: string): boolean => char === '-' || isAlphanumeric(ch
 const findSeparator = (line: string, separators: string): number => {
   let whitespaceFound = false;
   for (let at = 0; at < line.length; at++) {
-    const char = line[at] as string;
+    const char = line.charAt(at);
     if (separators.includes(char)) return at;
     if (!whitespaceFound && isTokenChar(char)) continue;
     if (at > 0 && (char === ' ' || char === '\t')) {
@@ -117,17 +119,8 @@ const endOfLogMessage = (text: string): number => {
   return commentStart ? commentStart : cutoff;
 };
 
-const titleEnd = (text: string): number => {
-  let at = 0;
-  while (at < text.length && (isCommentLine(text, at) || !isBlankLine(text, at))) {
-    at = nextLine(text, at);
-  }
-  return at;
-};
-
-/** `strncasecmp(token, name, length) == 0`. */
+/** `strncasecmp(token, name, length) == 0`; a name shorter than `length` slices short and never matches. */
 const sameStart = (token: string, name: string, length: number): boolean =>
-  name.length >= length &&
   token.slice(0, length).toLowerCase() === name.slice(0, length).toLowerCase();
 
 const namesConfiguredToken = (line: string, length: number, keys: ReadonlyMap<string, string>) =>
@@ -171,14 +164,15 @@ const countLine = (tally: Tally, line: string, grammar: Grammar): Tally => {
 const closesBlock = (tally: Tally): boolean => {
   const plain = tally.plain + tally.continuations;
   if (tally.recognized && tally.trailers * TRAILER_RATIO >= plain) return true;
-  return tally.trailers > 0 && plain === 0;
+  // git also asks for a trailer line, but a counted paragraph with no plain line always holds one.
+  return plain === 0;
 };
 
 /** `find_trailer_block_start`: offset of the first trailer line, or `length` when there is none. */
 const trailerBlockStart = (text: string, grammar: Grammar): number => {
-  const floor = titleEnd(text);
+  // git stops at the end of the title; the title holds no blank line, so scanning it can only fall through to `text.length`.
   let tally = START_TALLY;
-  for (let line = lastLine(text, text.length); line >= floor; line = lastLine(text, line)) {
+  for (let line = lastLine(text, text.length); line >= 0; line = lastLine(text, line)) {
     if (isCommentLine(text, line)) {
       tally = { ...tally, plain: tally.plain + tally.continuations, continuations: 0 };
     } else if (!isBlankLine(text, line)) {
@@ -225,8 +219,8 @@ const blockEntries = (block: string, separators: string): string[] => {
 const trim = (text: string): string => {
   let start = 0;
   let end = text.length;
-  while (start < end && isSpaceAt(text, start)) start++;
-  while (end > start && isSpaceAt(text, end - 1)) end--;
+  while (isSpaceAt(text, start)) start++;
+  while (isSpaceAt(text, end - 1)) end--;
   return text.slice(start, end);
 };
 
@@ -349,13 +343,15 @@ interface Matched {
   readonly end: number;
 }
 
-const closeOption = (source: string, end: number, value: string | undefined) => {
-  if (source[end] === ',') return { value, end: end + 1 };
-  return source[end] === CLOSE ? { value, end } : undefined;
-};
+/** An unterminated value ends at `source.length`, where no option name matches, so the list is still rejected. */
+const closeOption = (source: string, end: number, value: string | undefined): Matched => ({
+  value,
+  end: source[end] === ',' ? end + 1 : end,
+});
 
 const valueEnd = (source: string, from: number): number => {
   const found = source.slice(from).search(OPTION_BREAK);
+  // Stryker disable next-line ConditionalExpression: equivalent — `from - 1` is the '=' sign, where no option name matches either, so the list is rejected the same way
   return found === -1 ? source.length : from + found;
 };
 
@@ -364,10 +360,11 @@ const matchOption = (source: string, at: number, name: string): Matched | undefi
   if (!source.startsWith(name, at)) return undefined;
   const afterName = at + name.length;
   if (source[afterName] !== '=') {
-    return OPTION_BREAK.test(source[afterName] ?? '')
+    return OPTION_BREAK.test(source.charAt(afterName))
       ? closeOption(source, afterName, undefined)
       : undefined;
   }
+  // Stryker disable next-line ArithmeticOperator: equivalent — searching from the name's last character adds it and '=', neither of which is ',' or ')'
   const end = valueEnd(source, afterName + 1);
   return closeOption(source, end, source.slice(afterName + 1, end));
 };
