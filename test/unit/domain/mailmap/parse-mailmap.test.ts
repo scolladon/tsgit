@@ -79,6 +79,8 @@ describe('parseMailmap', () => {
       ['unterminated email', 'Name <unterminated'],
       ['empty first email', 'Name <> <old@e>'],
       ['closing bracket first', 'Name > <a@b'],
+      ['closing bracket without an opening one', 'Name>'],
+      ['a NUL as the first byte', '\0<z@x>'],
     ])('Then %s is skipped', (_title, line) => {
       // Arrange
       const sut = parseMailmap;
@@ -88,6 +90,19 @@ describe('parseMailmap', () => {
 
       // Assert
       expect(result).toEqual([{ newName: 'Ok', oldEmail: 'a@b' }]);
+    });
+  });
+
+  describe('Given a closing bracket inside the name, When parsing', () => {
+    it('Then the email is the bracket pair after the opening one', () => {
+      // Arrange
+      const sut = parseMailmap;
+
+      // Act
+      const result = sut('New><old@x>');
+
+      // Assert
+      expect(result).toEqual([{ newName: 'New>', oldEmail: 'old@x' }]);
     });
   });
 
