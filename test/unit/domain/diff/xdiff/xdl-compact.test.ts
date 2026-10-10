@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { compactChanges } from '../../../../../src/domain/diff/xdiff/xdl-compact.js';
+import {
+  compactChanges,
+  type GroupSpan,
+} from '../../../../../src/domain/diff/xdiff/xdl-compact.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 const lines = (s: string): ReadonlyArray<Uint8Array> => s.split('\n').map((l) => enc(`${l}\n`));
@@ -658,6 +661,94 @@ describe('compactChanges', () => {
         // Assert
         expect(Array.from(theirsChanged)).toEqual([0, 1, 0, 0, 0, 0, 1, 0]);
         expect(Array.from(oursChanged)).toEqual([0, 0, 0, 0, 0, 1, 0, 0]);
+      });
+    });
+  });
+
+  // xdiffi.c re-diffs a group only when it moved and the other file's group is non-empty.
+  describe('Given a group fallback', () => {
+    const compactWithFallback = (
+      ours: ReadonlyArray<string>,
+      oursChanged: ReadonlyArray<number>,
+      theirs: ReadonlyArray<string>,
+      theirsChanged: ReadonlyArray<number>,
+    ): ReadonlyArray<readonly [GroupSpan, GroupSpan]> => {
+      const sut = compactChanges;
+      const alphabet = [...new Set([...ours, ...theirs])];
+      const calls: Array<readonly [GroupSpan, GroupSpan]> = [];
+      sut(
+        new Uint8Array(oursChanged),
+        new Uint8Array(theirsChanged),
+        new Int32Array(ours.map((line) => alphabet.indexOf(line))),
+        ours.map((line) => enc(`${line}\n`)),
+        (group, otherGroup) => calls.push([{ ...group }, { ...otherGroup }]),
+      );
+      return calls;
+    };
+
+    describe('When a group cannot slide (a X b / a Y b)', () => {
+      it('Then it is not re-diffed', () => {
+        // Arrange
+        const ours = ['a', 'X', 'b'];
+        const theirs = ['a', 'Y', 'b'];
+
+        // Act
+        const result = compactWithFallback(ours, [0, 1, 0], theirs, [0, 1, 0]);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+
+    describe('When a group slides down but the other file has no group beside it (a a / a)', () => {
+      it('Then it is not re-diffed, as git skips the trivial case', () => {
+        // Arrange
+        const ours = ['a', 'a'];
+        const theirs = ['a'];
+
+        // Act
+        const result = compactWithFallback(ours, [1, 0], theirs, [0]);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+
+    describe('When a group grows downward by a merge and keeps its start', () => {
+      it('Then it is re-diffed against the other group', () => {
+        // Arrange
+        const ours = ['a', 'a', 'a'];
+        const theirs = ['b', 'a'];
+
+        // Act
+        const result = compactWithFallback(ours, [1, 0, 1], theirs, [1, 0]);
+
+        // Assert
+        expect(result).toEqual([
+          [
+            { start: 0, end: 2 },
+            { start: 0, end: 1 },
+          ],
+        ]);
+      });
+    });
+
+    describe('When a group slides up and keeps its end', () => {
+      it('Then it is re-diffed against the other group', () => {
+        // Arrange
+        const ours = ['a', 'a', 'a', 'a', 'b', 'a'];
+        const theirs = ['b', 'b', 'a', 'a', 'b'];
+
+        // Act
+        const result = compactWithFallback(ours, [0, 1, 0, 1, 0, 1], theirs, [1, 1, 0, 0, 0]);
+
+        // Assert
+        expect(result).toEqual([
+          [
+            { start: 0, end: 2 },
+            { start: 0, end: 2 },
+          ],
+        ]);
       });
     });
   });
