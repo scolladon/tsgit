@@ -4450,3 +4450,24 @@ describe('Given a regular entry whose backslash segment reads as .gitmodules', (
     });
   });
 });
+
+describe('Given a symlink entry whose backslash segment is no dotgit alias', () => {
+  describe('When validateObject runs', () => {
+    it('Then the tree carries no finding, as git fsck reports none', () => {
+      // Arrange
+      const rawBytes = buildTree(buildTreeEntry('120000', 'a\\b', BLOB_SHA));
+      const sut = validateObject;
+
+      // Act
+      const result = sut({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toEqual([]);
+    });
+  });
+});
