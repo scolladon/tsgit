@@ -21,7 +21,9 @@ const concat = (head: Uint8Array, tail: Uint8Array): Uint8Array => {
 };
 
 const indexOfMarker = (blob: Uint8Array, from: number): number => {
+  // Stryker disable next-line ArithmeticOperator: equivalent — positions past length - marker read undefined bytes, which match no marker byte
   const last = blob.length - MARKER.length;
+  // Stryker disable next-line EqualityOperator: equivalent — a marker ending the blob has no `$` after it, so finding it or not both keep the tail verbatim
   for (let i = from; i <= last; i++) {
     if (MARKER.every((byte, offset) => blob[i + offset] === byte)) return i;
   }
@@ -42,6 +44,7 @@ const settle = (
 ): Uint8Array => {
   if (!parsedHeader || encoding === undefined) return bytes;
   const label = latin1(encoding);
+  // Stryker disable next-line ConditionalExpression: equivalent — buildCharsetEncoder has no encoder for a UTF-8 label, so encodeFromUtf8 yields undefined and `?? bytes` returns the same buffer
   if (isUtf8Label(label)) return bytes;
   return encodeFromUtf8(label, bytes, encoders) ?? bytes;
 };
