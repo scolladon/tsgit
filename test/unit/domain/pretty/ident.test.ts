@@ -107,6 +107,21 @@ describe('splitIdentLine', () => {
     });
   });
 
+  describe('Given a timezone with no date before it', () => {
+    describe('When splitting it', () => {
+      it('Then name and mail are returned and date and tz are not', () => {
+        // Arrange
+        const line = 'N <m> +0100';
+
+        // Act
+        const result = split(line);
+
+        // Assert
+        expect(result).toEqual({ name: 'N', mail: 'm', date: undefined, tz: undefined });
+      });
+    });
+  });
+
   describe('Given a sign without digits in the timezone', () => {
     describe('When splitting it', () => {
       it('Then date and tz are not returned', () => {
