@@ -243,7 +243,6 @@ const classifyDescribe = (fmt: Uint8Array, at: number, budget: FormatBudget): Cl
 };
 
 const startsWithAt = (fmt: Uint8Array, at: number, prefix: string): boolean =>
-  prefix.length <= fmt.length - at &&
   [...prefix].every((letter, offset) => fmt[at + offset] === letter.charCodeAt(0));
 
 const classifyParen = (fmt: Uint8Array, at: number, budget: FormatBudget): Classified => {
