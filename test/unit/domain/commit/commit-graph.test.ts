@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_BLOOM_FILTER_SETTINGS } from '../../../../src/domain/commit/bloom-filter.js';
 import {
   commitDataAt,
+  graphParentsAt,
   parseCommitGraphLayer,
   positionOf,
   storedBloomFilter,
@@ -328,6 +329,27 @@ describe('commit-graph', () => {
           expect(result.parent1Pos).toBe(0);
           expect(result.parent2Pos).toBe(1);
           expect(result.additionalParentPositions).toEqual([2]);
+        });
+      });
+    });
+
+    describe('Given a second octopus merge whose EDGE list starts after the first one', () => {
+      describe('When reading its graph parents', () => {
+        it('Then its own extra parents come back, not the first octopus ones', () => {
+          // Arrange
+          const sut = graphParentsAt;
+          const layer = parseCommitGraphLayer(
+            buildCommitGraphBytes({
+              ...octopusModel(),
+              commits: [...octopusModel().commits, commit('d4', [0, 2, 3])],
+            }),
+          );
+
+          // Act
+          const result = sut(layer, 4);
+
+          // Assert
+          expect(result).toEqual({ positions: [0, 2, 3], edgesOutOfBounds: false });
         });
       });
     });
@@ -784,6 +806,25 @@ describe('parseCommitGraphLayer, changed-path settings', () => {
         // Arrange
         const sut = parseCommitGraphLayer;
         const bytes = serializeCommitGraph(commits, SHA1_CONFIG, undefined, changedPaths);
+
+        // Act
+        const result = sut(bytes);
+
+        // Assert
+        expect(result.bloomSettings).toEqual({ hashVersion: 2, numHashes: 6, bitsPerEntry: 10 });
+      });
+    });
+  });
+
+  describe('Given a layer whose BDAT holds its header and no filter bytes', () => {
+    describe('When parsed', () => {
+      it("Then its BDAT header's settings are still read back", () => {
+        // Arrange
+        const sut = parseCommitGraphLayer;
+        const bytes = serializeCommitGraph(commits, SHA1_CONFIG, undefined, {
+          ...changedPaths,
+          filters: new Map(),
+        });
 
         // Act
         const result = sut(bytes);
