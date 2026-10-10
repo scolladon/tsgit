@@ -92,15 +92,20 @@ interface SidePair {
   readonly theirs: SideEdit;
 }
 
-/** xdiff's `xdl_append_merge`: a record touching the last one in either side's lines joins it. */
+/**
+ * xdiff's `xdl_append_merge`: a record touching the last one joins it. Records
+ * stand on a common base, so they touch in ours' lines exactly when they touch in
+ * theirs'; and only a conflict is ever touched, a one-sided record lying a base
+ * line clear of every later change.
+ */
 function appendRecord(records: MergeRecord[], next: MergeRecord): void {
   const last = records[records.length - 1];
-  if (last === undefined || (next.i1 > last.i1 + last.chg1 && next.i2 > last.i2 + last.chg2)) {
+  if (last === undefined || next.i1 > last.i1 + last.chg1) {
     records.push(next);
     return;
   }
   records[records.length - 1] = {
-    mode: next.mode === last.mode ? last.mode : CONFLICT,
+    mode: CONFLICT,
     i0: last.i0,
     chg0: next.i0 + next.chg0 - last.i0,
     i1: last.i1,
@@ -135,26 +140,28 @@ function theirsRecord(change: LineChange, oursOffset: number): MergeRecord {
   };
 }
 
-/** The conflict two overlapping changes form, widened to the union of their base spans. */
+/**
+ * The conflict two overlapping changes form, from where the earlier one starts to
+ * each side's own change end: the change ending later stays in the walk, and the
+ * record it yields next joins this one up to that end.
+ */
 function conflictRecord(ours: LineChange, theirs: LineChange): MergeRecord {
   const off = ours.i1 - theirs.i1;
-  const ffo = off + ours.chg1 - theirs.chg1;
-  const i0 = off > 0 ? ours.i1 - off : ours.i1;
-  const chg0 = ours.i1 + ours.chg1 - i0;
-  const i1 = off > 0 ? ours.i2 - off : ours.i2;
-  const i2 = off > 0 ? theirs.i2 : theirs.i2 + off;
-  const chg1 = ours.i2 + ours.chg2 - i1;
-  const chg2 = theirs.i2 + theirs.chg2 - i2;
+  const i0 = Math.min(ours.i1, theirs.i1);
+  const i1 = ours.i2 - Math.max(off, 0);
+  const i2 = theirs.i2 + Math.min(off, 0);
   return {
     mode: CONFLICT,
     i0,
-    chg0: ffo < 0 ? chg0 - ffo : chg0,
+    chg0: endOf(ours) - i0,
     i1,
-    chg1: ffo < 0 ? chg1 - ffo : chg1,
+    chg1: ours.i2 + ours.chg2 - i1,
     i2,
-    chg2: ffo < 0 ? chg2 : chg2 + ffo,
+    chg2: theirs.i2 + theirs.chg2 - i2,
   };
 }
+
+const endOf = (change: LineChange): number => change.i1 + change.chg1;
 
 function isTwin(ours: LineChange, theirs: LineChange, sides: SidePair, model: LineModel): boolean {
   if (ours.i1 !== theirs.i1 || ours.chg1 !== theirs.chg1 || ours.chg2 !== theirs.chg2) return false;
@@ -165,8 +172,6 @@ function isTwin(ours: LineChange, theirs: LineChange, sides: SidePair, model: Li
   }
   return true;
 }
-
-const endOf = (change: LineChange): number => change.i1 + change.chg1;
 
 interface Advance {
   readonly ours: boolean;
@@ -225,7 +230,7 @@ function buildRecords(baseLength: number, sides: SidePair, model: LineModel): Me
  * differing runs conflicted; sides found identical resolve to ours.
  */
 function refineConflict(record: MergeRecord, sides: SidePair, model: LineModel): MergeRecord[] {
-  if (record.mode !== CONFLICT || record.chg1 === 0 || record.chg2 === 0) return [record];
+  if (record.mode !== CONFLICT) return [record];
   const hunks = model.diffSides(
     sides.ours.lines.slice(record.i1, record.i1 + record.chg1),
     sides.theirs.lines.slice(record.i2, record.i2 + record.chg2),
@@ -331,7 +336,6 @@ export function buildMergeSegments(
   model: LineModel = BYTE_EXACT,
 ): MergeSegment[] {
   if (ours.changes.length === 0) return [{ kind: 'clean', lines: theirs.lines }];
-  if (theirs.changes.length === 0) return [{ kind: 'clean', lines: ours.lines }];
   const sides = { ours, theirs };
   const refined = buildRecords(baseLength, sides, model).flatMap((record) =>
     refineConflict(record, sides, model),
@@ -374,7 +378,6 @@ export function buildBaseShowingSegments(
   options: { readonly style: BaseShowingStyle; readonly model?: LineModel },
 ): MergeSegment[] {
   if (ours.changes.length === 0) return [{ kind: 'clean', lines: theirs.lines }];
-  if (theirs.changes.length === 0) return [{ kind: 'clean', lines: ours.lines }];
   const model = options.model ?? BYTE_EXACT;
   const sides = { ours, theirs };
   const records = buildRecords(base.length, sides, model);
