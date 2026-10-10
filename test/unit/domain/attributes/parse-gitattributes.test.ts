@@ -259,6 +259,23 @@ describe('parseGitattributes', () => {
     });
   });
 
+  describe('Given an anchored pattern whose star run is not a whole path component', () => {
+    describe('When parsed', () => {
+      it('Then the star run matches within one segment only, as git check-attr does', () => {
+        // Arrange
+        const sut = parseGitattributes;
+        const input = '/a**b text';
+
+        // Act
+        const result = sut(input);
+
+        // Assert
+        expect(result.rules[0]!.compiled.test('axb')).toBe(true);
+        expect(result.rules[0]!.compiled.test('a/x/b')).toBe(false);
+      });
+    });
+  });
+
   describe('Given a directory-only pattern (trailing slash)', () => {
     describe('When parsed', () => {
       it('Then directoryOnly is true', () => {
