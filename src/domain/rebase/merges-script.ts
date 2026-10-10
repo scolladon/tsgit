@@ -76,9 +76,9 @@ const uniqueAbbreviation = (state: LabelState, abbrev: string, oid: ObjectId): s
   return oid;
 };
 
-/** A label must not read as a full oid, nor as the `#` that opens a oneline. */
+/** A label must not read as a full oid. git also refuses `#`, which a sanitized label never is. */
 const clashes = (state: LabelState, label: string, oid: ObjectId): boolean =>
-  (label.length === oid.length && HEX.test(label)) || label === '#' || state.labels.has(label);
+  (label.length === oid.length && HEX.test(label)) || state.labels.has(label);
 
 const uniqueLabel = (state: LabelState, label: string, oid: ObjectId): string => {
   if (!clashes(state, label, oid)) return label;
