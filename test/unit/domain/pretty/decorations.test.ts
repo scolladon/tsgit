@@ -1,3 +1,4 @@
+// cspell:ignore prefixsuffix
 import { describe, expect, it } from 'vitest';
 import {
   type Decoration,
@@ -248,6 +249,7 @@ describe('parseDecoratePlaceholder', () => {
         '(decorate:prefix=x',
         '(decorate:bogus)',
         '(decorate:prefixed=x)',
+        '(decorate:prefixsuffix=x)',
         '(decorate:prefix=x,bogus)',
         '(decorated)',
         '(describe)',

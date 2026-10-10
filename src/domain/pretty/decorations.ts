@@ -132,6 +132,7 @@ const parseOption = (source: string, at: number): ParsedOption | undefined => {
   if (!name) return undefined;
   const valueAt = at + name.length;
   const hasValue = source[valueAt] === '=';
+  // Stryker disable next-line ArithmeticOperator: equivalent — valueAt - 1 and valueAt hold the name's last letter and '=', neither a terminator, so the search lands on the same , or )
   const end = hasValue ? valueEnd(source, valueAt + 1) : valueAt;
   if (source[end] !== ',' && source[end] !== ')') return undefined;
   const raw = hasValue ? source.slice(valueAt + 1, end) : '';
@@ -140,6 +141,7 @@ const parseOption = (source: string, at: number): ParsedOption | undefined => {
 
 const valueEnd = (source: string, from: number): number => {
   const stop = source.slice(from).search(/[,)]/);
+  // Stryker disable next-line ConditionalExpression: equivalent — from - 1 lands on '=' and source.length on nothing, both refused as non-terminators by parseOption
   return stop === -1 ? source.length : from + stop;
 };
 
