@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { SHA1_CONFIG, SHA256_CONFIG } from '../../../../src/domain/objects/hash-config.js';
-import { isOid, oidPattern } from '../../../../src/domain/objects/oid-pattern.js';
+import { isOid, leadingOid, oidPattern } from '../../../../src/domain/objects/oid-pattern.js';
 
 const HEX_39 = 'a'.repeat(39);
 const HEX_40 = 'a'.repeat(40);
@@ -205,6 +205,54 @@ describe('oidPattern', () => {
         // Assert
         expect(result.test(HEX_64)).toBe(true);
         expect(result.test(HEX_40)).toBe(false);
+      });
+    });
+  });
+});
+
+describe('leadingOid', () => {
+  describe.each([
+    { label: 'exactly the width', value: HEX_40, expected: HEX_40 },
+    { label: 'upper-case hex', value: UPPER_40, expected: HEX_40 },
+    { label: 'mixed-case hex', value: `${'aB'.repeat(20)}`, expected: 'ab'.repeat(20) },
+    { label: 'trailing non-hex characters', value: `${HEX_40}zz`, expected: HEX_40 },
+    { label: 'trailing hex characters', value: `${HEX_40}00`, expected: HEX_40 },
+    { label: 'one character short', value: HEX_39, expected: undefined },
+    { label: 'a non-hex first character', value: `g${HEX_39}`, expected: undefined },
+    { label: 'a non-hex last character of the width', value: `${HEX_39}g`, expected: undefined },
+    { label: 'the empty string', value: EMPTY, expected: undefined },
+  ])('Given SHA1_CONFIG and $label', ({ value, expected }) => {
+    describe('When the leading oid is read', () => {
+      it('Then it is the lower-cased first 40 characters, or undefined', () => {
+        // Arrange
+        const sut = leadingOid;
+
+        // Act
+        const result = sut(value, SHA1_CONFIG);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'exactly the width', value: HEX_64, expected: HEX_64 },
+    { label: 'upper-case hex', value: 'A'.repeat(64), expected: HEX_64 },
+    { label: 'trailing characters', value: `${HEX_64}zz`, expected: HEX_64 },
+    { label: 'the SHA-1 width only', value: HEX_40, expected: undefined },
+    { label: 'one character short', value: HEX_63, expected: undefined },
+  ])('Given SHA256_CONFIG and $label', ({ value, expected }) => {
+    describe('When the leading oid is read', () => {
+      it('Then it is the lower-cased first 64 characters, or undefined', () => {
+        // Arrange
+        const sut = leadingOid;
+
+        // Act
+        const result = sut(value, SHA256_CONFIG);
+
+        // Assert
+        expect(result).toBe(expected);
       });
     });
   });
