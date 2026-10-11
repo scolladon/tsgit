@@ -369,3 +369,26 @@ describe('Given a packed blob whose hash cannot be computed', () => {
     });
   });
 });
+
+describe('Given a packed entry whose unpack fails for a reason no object error names', () => {
+  describe('When validatePackedEntry validates that entry', () => {
+    it('Then the fault propagates instead of reporting the entry unpackable', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const [blobId] = await writeSyntheticPack(ctx, 'p-fault', [
+        { kind: 'base', type: 'blob', content: ENCODER.encode('unreadable') },
+      ]);
+      const fault = new Error('disk fault');
+      const entry = {
+        ...(await packedEntryOf(ctx, blobId as ObjectId)),
+        unpack: () => Promise.reject(fault),
+      };
+
+      // Act
+      const result = sut(ctx, entry, CATALOGUE);
+
+      // Assert
+      await expect(result).rejects.toBe(fault);
+    });
+  });
+});

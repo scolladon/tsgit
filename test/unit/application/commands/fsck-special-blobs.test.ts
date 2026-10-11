@@ -380,3 +380,117 @@ describe('Given an absent blob one tree names .gitmodules and another .gitattrib
     });
   });
 });
+
+const EMPTY_TREE_HEADER = enc.encode('tree 0\0');
+
+describe('Given a pack holding a tree naming a tree object under .gitattributes, then that tree', () => {
+  describe('When fsck runs', () => {
+    it('Then the tree met in place stays queued and reports gitattributesBlob at the end', async () => {
+      // Arrange
+      const ctx = await initCtx();
+      const emptyTreeId = (await ctx.hash.hashHex(EMPTY_TREE_HEADER)) as ObjectId;
+      await writeSyntheticPack(ctx, 'tree-after', [
+        namingTreeSpec(ctx, '.gitattributes', emptyTreeId),
+        { kind: 'base', type: 'tree', content: new Uint8Array() },
+      ]);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings).toContainEqual({
+        type: 'bad-object',
+        id: emptyTreeId,
+        objectType: 'tree',
+        msgId: 'gitattributesBlob',
+        severity: 'error',
+      });
+    });
+  });
+});
+
+describe('Given a blob whose bytes read like a tree naming .gitmodules', () => {
+  describe('When fsck runs', () => {
+    it('Then nothing is queued, as only a checked tree queues special blobs', async () => {
+      // Arrange
+      const ctx = await initCtx();
+      const absentId = await blobIdOf(ctx, EVIL_GITMODULES);
+      const treeLikeBytes = serializeTreeContent(
+        {
+          type: 'tree',
+          id: '' as ObjectId,
+          entries: [treeEntry(FILE_MODE.REGULAR, '.gitmodules', absentId)],
+        },
+        ctx.hashConfig,
+      );
+      await writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: treeLikeBytes });
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings.filter((finding) => finding.type === 'bad-object')).toEqual([]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given a queued .gitmodules blob no store holds and fsck.gitmodulesMissing=warn', () => {
+  describe('When fsck runs', () => {
+    it('Then the finding is a warning and sets no exit bit', async () => {
+      // Arrange
+      const ctx = await initCtx();
+      const blobId = await blobIdOf(ctx, EVIL_GITMODULES);
+      await writeObject(ctx, {
+        type: 'tree',
+        id: '' as ObjectId,
+        entries: [treeEntry(FILE_MODE.REGULAR, '.gitmodules', blobId)],
+      });
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[fsck]\n\tgitmodulesMissing = warn\n');
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings).toContainEqual({
+        type: 'bad-object',
+        id: blobId,
+        objectType: 'blob',
+        msgId: 'gitmodulesMissing',
+        severity: 'warning',
+      });
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given a queued .gitmodules blob whose pack cannot be read for a reason no object error names', () => {
+  describe('When fsck runs with --no-full', () => {
+    it('Then the fault propagates instead of reporting the blob missing', async () => {
+      // Arrange
+      const ctx = await initCtx();
+      const blobId = await blobIdOf(ctx, EVIL_GITMODULES);
+      await writeSyntheticPack(ctx, 'blob-only', [blobSpec]);
+      await writeObject(ctx, {
+        type: 'tree',
+        id: '' as ObjectId,
+        entries: [treeEntry(FILE_MODE.REGULAR, '.gitmodules', blobId)],
+      });
+      const fault = new Error('disk fault');
+      const open = ctx.fs.openWithNoFollow;
+      vi.spyOn(ctx.fs, 'openWithNoFollow').mockImplementation((path, mode) =>
+        path.endsWith('.pack') ? Promise.reject(fault) : open(path, mode),
+      );
+      const sut = fsck;
+
+      // Act
+      const result = sut(ctx, { full: false });
+
+      // Assert
+      await expect(result).rejects.toBe(fault);
+    });
+  });
+});
