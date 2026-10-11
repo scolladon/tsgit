@@ -11,6 +11,7 @@ import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { pull } from '../../../../src/application/commands/pull.js';
 import { rm } from '../../../../src/application/commands/rm.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
+import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
@@ -20,6 +21,7 @@ import { updateRef } from '../../../../src/application/primitives/update-ref.js'
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
+import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type {
@@ -228,6 +230,49 @@ describe('pull', () => {
           untracked: [],
         });
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('mine');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/fresh`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given HEAD names an unborn branch with a staged file the fetched head also holds', () => {
+    describe('When pull refuses it', () => {
+      it('Then the index lock is released', async () => {
+        // Arrange
+        const { ctx, main } = await unbornWithUpstream();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'mine');
+        await add(ctx, ['a.txt']);
+
+        // Act
+        await pullError(() => unbornPull(ctx, main));
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given HEAD names an unborn branch with a staged file of the fetched content but another mode', () => {
+    describe('When pull', () => {
+      it('Then it refuses with WORKING_TREE_DIRTY naming the file', async () => {
+        // Arrange
+        const { ctx, main } = await unbornWithUpstream();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        const lock = await acquireIndexLock(ctx);
+        await lock.commit(
+          (await readIndex(ctx)).entries.map((entry) => ({ ...entry, mode: FILE_MODE.EXECUTABLE })),
+        );
+
+        // Act
+        const result = await pullError(() => unbornPull(ctx, main));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['a.txt'],
+          untracked: [],
+        });
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/fresh`)).toBe(false);
       });
     });
