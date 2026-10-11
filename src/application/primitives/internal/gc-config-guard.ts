@@ -29,6 +29,7 @@ export const readGcExpiryCutoff = async (
 const assertValidGcBooleanConfig = async (ctx: Context, key: string): Promise<void> => {
   const entry = await findLastEntry(ctx, GC_SECTION, key);
   if (entry === undefined || parseGitBoolean(entry.value).ok) return;
+  // Stryker disable next-line StringLiteral: equivalent — parseGitBoolean(null) is ok, so a null value never reaches the throw and the fallback is never read
   throw configBadBooleanValue(entry.key, entry.source, entry.value ?? '');
 };
 

@@ -73,6 +73,7 @@ const HINT_FILTERS: Readonly<
  */
 export const configuredHint = async (ctx: Context): Promise<CandidateFilter | undefined> => {
   const entry = await findLastEntry(ctx, 'core', 'disambiguate');
+  // Stryker disable next-line StringLiteral: equivalent — '' parses to no hint and 'none' maps to no filter, so both give undefined
   const hint = parseDisambiguationHint(entry?.value ?? 'none');
   return hint === undefined ? undefined : HINT_FILTERS[hint]?.(ctx);
 };
