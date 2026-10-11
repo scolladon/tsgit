@@ -532,6 +532,7 @@ const presentTagObjects = async (
 ): Promise<ReadonlySet<ObjectId>> => {
   const objects = new Set<ObjectId>();
   for (const ref of refs) {
+    // Stryker disable next-line LogicalOperator: equivalent — `objects` is only queried for the ids of tags the repository lacks, and this loop adds each of those itself when present, so also visiting a held tag or a non-tag ref adds ids that are never read.
     if (!ref.name.startsWith(TAGS_PREFIX) || names.has(ref.name)) continue;
     for (const id of [ref.id, ref.peeled]) {
       if (id !== undefined && (await hasObject(ctx, id))) objects.add(id);
