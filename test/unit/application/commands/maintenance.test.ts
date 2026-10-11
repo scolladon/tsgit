@@ -417,6 +417,24 @@ describe('maintenance', () => {
     });
   });
 
+  describe('Given an explicit core.commitGraph = true', () => {
+    describe('When maintenance runs the commit-graph task', () => {
+      it('Then the graph is written, as only a false value disables it', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '[core]\n\tcommitGraph = true\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['commit-graph'] });
+
+        // Assert
+        expect(result.commitGraphWritten).toBe(true);
+        expect(result.commitsInGraph).toBe(1);
+      });
+    });
+  });
+
   describe('Given a malformed core.commitGraph', () => {
     describe('When maintenance runs the commit-graph task', () => {
       it('Then it refuses on the value, as prepare_repo_settings dies', async () => {
