@@ -994,6 +994,62 @@ describe('write-working-tree-file', () => {
       });
     });
 
+    describe('Given a packed delta blob', () => {
+      describe('When the blob is written', () => {
+        it('Then the file holds the reconstructed content', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const [, id] = await writeSyntheticPack(ctx, 'delta', [
+            { kind: 'base', type: 'blob', content: encode('the delta base') },
+            { kind: 'ofs-delta', baseIndex: 0, targetContent: encode('the delta target') },
+          ]);
+          const fullPath = `${ctx.layout.workDir}/d.txt`;
+          const sut = writeStreamedBlob;
+
+          // Act
+          await sut(ctx, fullPath, id as ObjectId, FILE_MODE.REGULAR);
+
+          // Assert
+          expect(await ctx.fs.readUtf8(fullPath)).toBe('the delta target');
+        });
+      });
+    });
+
+    describe('Given a packed delta blob that reconstructs to nothing', () => {
+      describe('When the blob is written', () => {
+        it('Then the file is empty and no empty chunk is handed to the file system', async () => {
+          // Arrange
+          const seeded = await buildSeededContext();
+          const [, id] = await writeSyntheticPack(seeded, 'empty', [
+            { kind: 'base', type: 'blob', content: encode('the delta base') },
+            { kind: 'ofs-delta', baseIndex: 0, targetContent: new Uint8Array(0) },
+          ]);
+          const chunks: Uint8Array[] = [];
+          const ctx: Context = {
+            ...seeded,
+            fs: {
+              ...seeded.fs,
+              writeStream: async (path, source) => {
+                const collected: Uint8Array[] = [];
+                for await (const chunk of source) collected.push(chunk);
+                chunks.push(...collected);
+                await seeded.fs.write(path, new Uint8Array(0));
+              },
+            },
+          };
+          const fullPath = `${ctx.layout.workDir}/e.txt`;
+          const sut = writeStreamedBlob;
+
+          // Act
+          await sut(ctx, fullPath, id as ObjectId, FILE_MODE.REGULAR);
+
+          // Assert
+          expect(chunks).toEqual([]);
+          expect((await ctx.fs.read(fullPath)).byteLength).toBe(0);
+        });
+      });
+    });
+
     describe('Given a small loose blob and an executable mode', () => {
       describe('When the blob is written', () => {
         it('Then the bytes land with 0o755', async () => {
