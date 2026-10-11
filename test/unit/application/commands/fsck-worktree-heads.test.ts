@@ -15,6 +15,7 @@ import type { Context } from '../../../../src/ports/context.js';
 
 const ABSENT = '1111111111111111111111111111111111111111' as ObjectId;
 const EXIT_MISSING = 2;
+const EXIT_REFS_CONTENT = 8;
 const AUTHOR = {
   name: 'Ada',
   email: 'ada@example.com',
@@ -213,6 +214,80 @@ describe('Given a linked worktree whose gitdir file is empty', () => {
 
       // Assert
       expect(pointerFindings(result.findings)).toEqual([]);
+    });
+  });
+});
+
+describe('Given a linked worktree whose gitdir file holds only a newline', () => {
+  describe('When fsck runs', () => {
+    it('Then the worktree is still listed, as git skips only an empty file', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/gitdir`, '\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/HEAD`, `${ABSENT}\n`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(pointerFindings(result.findings)).toEqual([pointer('worktrees/wt1/HEAD')]);
+      expect(result.exitCode).toBe(EXIT_MISSING);
+    });
+  });
+});
+
+const failHeadRead = (ctx: Context, fault: Error): void => {
+  const headPath = `${ctx.layout.gitDir}/worktrees/wt1/HEAD`;
+  const readUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+  vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+    if (path === headPath) throw fault;
+    return readUtf8(path);
+  });
+};
+
+describe('Given a linked worktree whose HEAD file cannot be read for permission', () => {
+  describe('When fsck runs', () => {
+    it('Then it reports the unreadable file with bit 8 and carries on', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      const headPath = `${ctx.layout.gitDir}/worktrees/wt1/HEAD`;
+      failHeadRead(ctx, permissionDenied(headPath));
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings.filter((finding) => finding.type === 'bad-ref')).toEqual([
+        {
+          type: 'bad-ref',
+          ref: 'worktrees/wt1/HEAD',
+          msgId: 'cannotReadRef',
+          severity: 'error',
+          path: headPath,
+          reason: 'PERMISSION_DENIED',
+        },
+      ]);
+      expect(result.exitCode).toBe(EXIT_REFS_CONTENT);
+    });
+  });
+});
+
+describe('Given a linked worktree whose HEAD read fails with an unclassified fault', () => {
+  describe('When fsck runs', () => {
+    it('Then the fault propagates', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      const fault = new Error('EIO: i/o error');
+      failHeadRead(ctx, fault);
+      const sut = fsck;
+
+      // Act
+      const result = sut(ctx);
+
+      // Assert
+      await expect(result).rejects.toBe(fault);
     });
   });
 });

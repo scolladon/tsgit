@@ -9,7 +9,7 @@ import { getRefStore } from '../../../primitives/ref-store.js';
 import { resolveRef } from '../../../primitives/resolve-ref.js';
 import { EXIT_MISSING, EXIT_REFS_CONTENT } from './exit-codes.js';
 import { objectIsPresent } from './object-presence.js';
-import { isTolerableRefFault, worktreeHeads } from './roots.js';
+import { isTolerableRefFault, snapshotWorktreeHeads, type UnreadableHead } from './roots.js';
 import type { FsckFinding } from './types.js';
 import type { ParseCheck } from './verified-copies.js';
 
@@ -150,19 +150,33 @@ async function targetOf(ctx: Context, entry: RefEntries[number]): Promise<Object
   }
 }
 
+/** What git's ref snapshot met: the targets it keeps, and the HEAD files it could not read. */
+interface RefSnapshot {
+  readonly targets: ReadonlyArray<{ readonly ref: RefName; readonly id: ObjectId }>;
+  readonly unreadable: ReadonlyArray<UnreadableHead>;
+}
+
 /** git's snapshot order: every ref by name, then every worktree's HEAD. */
-async function snapshotTargets(
-  ctx: Context,
-  entries: RefEntries,
-): Promise<ReadonlyArray<{ readonly ref: RefName; readonly id: ObjectId }>> {
+async function snapshotTargets(ctx: Context, entries: RefEntries): Promise<RefSnapshot> {
   const refs: { readonly ref: RefName; readonly id: ObjectId }[] = [];
   for (const entry of entries) {
     if (entry.name === HEAD) continue;
     const id = await targetOf(ctx, entry);
     if (id !== undefined) refs.push({ ref: entry.name, id });
   }
-  return [...refs, ...(await worktreeHeads(ctx))];
+  const { heads, unreadable } = await snapshotWorktreeHeads(ctx);
+  return { targets: [...refs, ...heads], unreadable };
 }
+
+/** git's `cannot read ref file` error: the file is skipped and the run exits with bit 8. */
+const unreadableHeadFinding = ({ ref, path }: UnreadableHead): BadRefFinding => ({
+  type: 'bad-ref',
+  ref,
+  msgId: 'cannotReadRef',
+  severity: 'error',
+  path,
+  reason: 'PERMISSION_DENIED',
+});
 
 /** Every ref — symbolic ones through their chain, every worktree's HEAD
  *  included — naming an object the universe does not hold and no promisor
@@ -176,15 +190,17 @@ async function collectAbsentTargets(
   promised: ReadonlySet<ObjectId>,
   parses: ParseCheck,
 ): Promise<PassResult> {
-  const targets = await snapshotTargets(ctx, entries);
+  const { targets, unreadable } = await snapshotTargets(ctx, entries);
+  const unreadableFindings = unreadable.map(unreadableHeadFinding);
   const findings: RefFinding[] = [];
   for (const { ref, id } of targets) {
     if (promised.has(id) || (await isKnownOid(ctx, universe, id, check, parses))) continue;
     findings.push({ type: 'bad-ref', ref, msgId: 'badRefOid', severity: 'error', target: id });
   }
-  const exitBit = findings.length > 0 ? EXIT_MISSING : 0;
-  if (findings.length === targets.length) findings.push(NO_DEFAULT_REFERENCES);
-  return { findings, exitBit };
+  const exitBit =
+    (findings.length > 0 ? EXIT_MISSING : 0) | (unreadable.length > 0 ? EXIT_REFS_CONTENT : 0);
+  const noDefault = findings.length === targets.length ? [NO_DEFAULT_REFERENCES] : [];
+  return { findings: [...unreadableFindings, ...findings, ...noDefault], exitBit };
 }
 
 /**

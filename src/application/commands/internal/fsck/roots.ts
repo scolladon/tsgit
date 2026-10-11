@@ -819,14 +819,30 @@ export interface WorktreeHead {
   readonly id: ObjectId;
 }
 
-/** The object `worktreeCtx`'s HEAD names, or `undefined` when it names none. */
-async function headOf(worktreeCtx: Context): Promise<ObjectId | undefined> {
+/** A HEAD file git could not read: its `cannot read ref file '<path>'` error. */
+export interface UnreadableHead {
+  readonly ref: RefName;
+  readonly path: string;
+}
+
+type HeadRead =
+  | { readonly kind: 'named'; readonly id: ObjectId }
+  | { readonly kind: 'none' }
+  | { readonly kind: 'unreadable'; readonly path: string };
+
+const NO_HEAD: HeadRead = { kind: 'none' };
+
+/** What `worktreeCtx`'s HEAD yields: the object it names, nothing, or a refusal to be read. */
+async function headOf(worktreeCtx: Context): Promise<HeadRead> {
   try {
     // Stryker disable next-line ObjectLiteral: equivalent — peel defaults to false in resolveRef; {} and { peel: false } produce identical behavior.
-    return await resolveRef(worktreeCtx, HEAD_REF, { peel: false });
+    return { kind: 'named', id: await resolveRef(worktreeCtx, HEAD_REF, { peel: false }) };
   } catch (err) {
+    if (err instanceof TsgitError && err.data.code === 'PERMISSION_DENIED') {
+      return { kind: 'unreadable', path: err.data.path };
+    }
     if (!isTolerableRefFault(err)) throw err;
-    return undefined;
+    return NO_HEAD;
   }
 }
 
@@ -838,15 +854,18 @@ async function linkedWorktreeContext(
   adminDir: string,
 ): Promise<Context | undefined> {
   if (adminDir === ctx.layout.gitDir) return ctx;
-  let pointer: string;
+  let raw: string;
   try {
-    pointer = (await ctx.fs.readUtf8(`${adminDir}/gitdir`)).trim();
+    raw = await ctx.fs.readUtf8(`${adminDir}/gitdir`);
   } catch (err) {
     if (isUnopenableFile(err)) return undefined;
     throw err;
   }
-  if (pointer === '') return undefined;
-  return deriveWorktreeContext(ctx, id, stripGitSuffix(resolveWorktreePath(adminDir, pointer)));
+  // git skips only a zero-byte file; one holding just whitespace still lists the worktree.
+  if (raw === '') return undefined;
+  // Stryker disable next-line MethodExpression: equivalent — the trimmed pointer only sets the derived Context's workDir and fs confinement, while every reader of linkedWorktreeContext touches only commonDir-rooted admin files.
+  const pointer = resolveWorktreePath(adminDir, raw.trim());
+  return deriveWorktreeContext(ctx, id, stripGitSuffix(pointer));
 }
 
 /** git's `get_worktrees` order: the main worktree, then each admin entry as listed. */
@@ -868,17 +887,30 @@ export async function worktreeContexts(
 const refFor = (ctx: Context, worktreeCtx: Context, foreign: string): RefName =>
   (worktreeCtx === ctx ? HEAD_REF : foreign) as RefName;
 
+/** Every worktree's HEAD, split into the ones that name an object and the ones git could not read. */
+export interface WorktreeHeadSnapshot {
+  readonly heads: ReadonlyArray<WorktreeHead>;
+  readonly unreadable: ReadonlyArray<UnreadableHead>;
+}
+
 /**
  * Every worktree's HEAD that names an object — git's `snapshot_refs` worktree
  * loop: the current one as `HEAD`, the others under their per-worktree
  * prefix. A HEAD naming nothing (unborn, unresolvable) is skipped as git's
- * `refs_resolve_ref_unsafe` returning NULL is.
+ * `refs_resolve_ref_unsafe` returning NULL is; one whose file is refused to
+ * be read is skipped too, and listed apart because git reports it.
  */
-export async function worktreeHeads(ctx: Context): Promise<ReadonlyArray<WorktreeHead>> {
+export async function snapshotWorktreeHeads(ctx: Context): Promise<WorktreeHeadSnapshot> {
   const heads: WorktreeHead[] = [];
+  const unreadable: UnreadableHead[] = [];
   for (const { ref, worktreeCtx } of await worktreeContexts(ctx)) {
-    const id = await headOf(worktreeCtx);
-    if (id !== undefined) heads.push({ ref, id });
+    const read = await headOf(worktreeCtx);
+    if (read.kind === 'named') heads.push({ ref, id: read.id });
+    if (read.kind === 'unreadable') unreadable.push({ ref, path: read.path });
   }
-  return heads;
+  return { heads, unreadable };
+}
+
+export async function worktreeHeads(ctx: Context): Promise<ReadonlyArray<WorktreeHead>> {
+  return (await snapshotWorktreeHeads(ctx)).heads;
 }

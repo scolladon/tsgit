@@ -52,6 +52,10 @@ export type FsckFinding =
       readonly msgId: string;
       readonly severity: FsckSeverity;
       readonly target?: ObjectId;
+      /** The file git's `cannot read ref file` names, when the ref could not be read. */
+      readonly path?: string;
+      /** Why that file could not be read. */
+      readonly reason?: 'PERMISSION_DENIED';
     }
   | {
       /** A reflog side naming an object the run never recorded — git's
