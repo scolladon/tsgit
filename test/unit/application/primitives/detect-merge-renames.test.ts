@@ -456,4 +456,132 @@ describe('detectMergeRenames', () => {
       });
     });
   });
+
+  describe('Given theirs moved two sibling-named directories and ours added into only one', () => {
+    describe('When renames are detected', () => {
+      it('Then only the files of the directory ours added into are paired for their location', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const inDir = await blob(ctx, LINES);
+        const inSibling = await blob(ctx, OTHER_LINES);
+        const added = await blob(ctx, 'added\n');
+        const base = flat([
+          ['dir/a', inDir],
+          ['directory/b', inSibling],
+        ]);
+        const ours = flat([
+          ['dir/a', inDir],
+          ['dir/c', added],
+          ['directory/b', inSibling],
+        ]);
+        const theirs = flat([
+          ['newdir/a', inDir],
+          ['moved-directory/b', inSibling],
+        ]);
+        const sut = detectMergeRenames;
+
+        // Act
+        const result = await sut(ctx, base, ours, theirs);
+
+        // Assert
+        expect(result.theirs).toEqual([{ oldPath: 'dir/a', newPath: 'newdir/a' }]);
+      });
+    });
+  });
+
+  describe('Given theirs keeps a path ours changed and adds a copy of it', () => {
+    describe('When renames are detected', () => {
+      it('Then no rename is paired, as git detects no copies', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const original = await blob(ctx, LINES);
+        const edited = await blob(ctx, EDITED);
+        const sut = detectMergeRenames;
+
+        // Act
+        const result = await sut(
+          ctx,
+          flat([['u', original]]),
+          flat([['u', edited]]),
+          flat([
+            ['u', original],
+            ['v', original],
+          ]),
+        );
+
+        // Assert
+        expect(result).toMatchObject({ ours: [], theirs: [] });
+      });
+    });
+  });
+
+  describe('Given the other side changed only the mode of a path this side renamed', () => {
+    describe('When renames are detected', () => {
+      it('Then the source is relevant and the rename is paired', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const content = await blob(ctx, LINES);
+        const base = flat([['f', content]]);
+        const ours: FlatTree = {
+          entries: new Map([['f' as FilePath, { id: content, mode: FILE_MODE.EXECUTABLE }]]),
+        };
+        const theirs = flat([['g', content]]);
+        const sut = detectMergeRenames;
+
+        // Act
+        const result = await sut(ctx, base, ours, theirs);
+
+        // Assert
+        expect(result.theirs).toEqual([{ oldPath: 'f', newPath: 'g' }]);
+      });
+    });
+  });
+
+  describe('Given a rename limit of 1 and an empty file deleted beside an inexact rename', () => {
+    describe('When renames are detected', () => {
+      it('Then the empty deletion does not count against the limit', async () => {
+        // Arrange
+        const ctx = await withConfig(createMemoryContext(), '[merge]\n\trenameLimit = 1\n');
+        const { base, ours, theirs } = await renameVsModify(ctx, `0\n${LINES}`);
+        const empty = await blob(ctx, '');
+        const filled = await blob(ctx, 'x\n');
+        const withEmpty = (tree: FlatTree, id: ObjectId) =>
+          flat([...[...tree.entries].map(([p, e]) => [p, e.id] as const), ['e', id]]);
+        const sut = detectMergeRenames;
+
+        // Act
+        const result = await sut(ctx, withEmpty(base, empty), withEmpty(ours, filled), theirs);
+
+        // Assert
+        expect(result.theirs).toEqual(BIG_TO_BIG2);
+      });
+    });
+  });
+
+  describe('Given a rename limit of 1 and one inexact rename beside a second addition', () => {
+    describe('When renames are detected', () => {
+      it('Then the warning asks for the larger of the sources and destinations', async () => {
+        // Arrange
+        const warnings: string[] = [];
+        const base = await withConfig(createMemoryContext(), '[merge]\n\trenameLimit = 1\n');
+        const ctx: Context = { ...base, logger: { warn: (line) => warnings.push(line) } };
+        const { base: baseTree, ours, theirs } = await renameVsModify(ctx, `0\n${LINES}`);
+        const extra = await blob(ctx, 'unrelated\n');
+        const withExtra = flat([
+          ...[...theirs.entries].map(([p, e]) => [p, e.id] as const),
+          ['extra', extra],
+        ]);
+        const sut = detectMergeRenames;
+
+        // Act
+        await sut(ctx, baseTree, ours, withExtra);
+
+        // Assert
+        expect(warnings).toEqual([
+          'exhaustive rename detection was skipped due to too many files.',
+          'you may want to set your merge.renamelimit variable to at least 2 and retry the command.',
+        ]);
+      });
+    });
+  });
 });
