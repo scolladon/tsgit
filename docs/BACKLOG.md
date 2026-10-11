@@ -18,6 +18,20 @@ Details live in git history, ADRs (`docs/adr/`), and design docs (`docs/design/`
 | **v4.0** — transport + signing + perf | 25–26 | complete |
 | **v5.0** — test base rework + pack storage + repository trust | 27–29 | in progress — 27, 28 and 29.1–29.4 complete; **29.5** (compat-format spike) remains |
 
+## Next up (decided 2026-10-01)
+
+1. ~~#302 alternates~~ (this PR)
+2. #309 `emptyTreeOid` / `EMPTY_TREE_OID` runtime export from the node entry — small direct PR
+3. Release 5.0.0 — merge release-please PR #299
+4. 31.4 run 1 — (a)+(b)+(c)+(d-i)
+5. 31.10 / 31.11
+6. #311 + 31.8 paired (follow git 2.56; pin CI git in the same PR)
+7. 31.5 → 31.6 (investigate #310 first)
+
+Fillers: 31.7, #306, #307, #308.
+
+Ranked by user impact (reported failure > consumer API bug > release > faithfulness > performance).
+
 Latest published release: `@scolladon/tsgit@3.4.0`.
 
 Wave 0 of every major (test base, then docs, then features) is non-negotiable. Performance pass closes each major.
@@ -594,6 +608,28 @@ Surfaced by the 2026-09-10 deep performance review (`.claude/perf-review-2026-09
   - a loose size claim at or above the 2 GiB inflate ceiling is refused, and that case has not been probed against git. _(surfaced by the diff-core parity hardening review; ADR-907 amendment.)_
 
 Order: numeric, 31.1 → 31.6, one craft session each, strictly sequential (no parallel worktrees: 31.2 and 31.3 both touch the adapter and ref/config seams, 31.4 and 31.5 both touch `compare-working-tree-entry` and `writeObject`). 31.2 then 31.3 compound: fewer calls, then cheaper calls. 31.4b lands the stat-cache arming that 31.5's `findWouldOverwrite` pooling relies on; 31.1's `computeClosure` for `push` is what lets 31.6 delete `enumeratePushObjects`.
+
+## Phase 32 — Faithfulness and subsystem gaps found alongside the alternates run (v5)
+
+Surfaced while landing alternates (#302) and the 2026-10-06 triage of tsgit against git 2.55 (about 100 items probed in merge/rebase/checkout, fetch/push/remote, object names, graph/storage; Tiers 1–2 shipped with #302). Every entry below was reproduced against real git 2.55; items marked **verify on main** may overlap a fix that landed in the same PR and must be re-pinned before work starts.
+
+- [ ] **32.1** Triage Tier 3 — refusal mismatches (git refuses or accepts, tsgit does the opposite): merge refuses on `REVERT_HEAD`/`REBASE_HEAD` (A2) · `checkout -- <unmerged>` silent (A6) · octopus D/F conflict raw error + litter (A13) · tracking from `@{-1}` (A20) · checkout of an unborn non-`heads` HEAD (A21) · `--detach <path>` message (A22) · `checkout <remote-branch>` DWIM (A23) · fetch `force`/`showForcedUpdates` options (B5, **verify on main**) · two srcs one dst refused client-side (B13) · mirror refspec + negative → `branch -d` deletes an unmerged branch (B17) · leading `-x` (C6) · tag-of-tree cherry-pick type (C22) · diff-driver config read eagerly: add/reset/checkout refuse, status misses `diff.renames` (D16) · `a/../b` pathspecs (D15) · linked-worktree garbage HEAD in fsck/gc (D9) · grep tree-ish typing and blob targets (D10) · valueless `branch.x.merge` (D19, **verify on main**) · `walkTree` non-strict subtree skip (D22) · `writeExclusive` with a file parent: silent success on Node (D5).
+- [ ] **32.2** Triage Tier 4 — message only: octopus info lines (A14) · blame warns once (A26) · `src refspec X does not match any` (B11) · `:path` diagnostics (C3) · stdin ambiguity warning (C9, **verify on main**) · `Promise.all` warnings past the first bad arg (C10) · ambiguity line before invalid type (C19, **verify on main**) · GDA2 misfit at parse (D3, **verify on main**) · `mark_tagged` logs (D7) · Bloom chunk warnings on read (D12) · midx error shape (D6).
+- [ ] **32.3** Triage Tier 5 — edge (corrupt or forged objects, rare config): stale `SQUASH_MSG` on continue (A3) · rebase `--quit` (A4) · `info/grafts` in rebase linearity (A10) · blame with a missing parent via graph (A25, **verify on main**) · backfill second fetch (B3) · forged unsafe tag name (B9) · v2 option without `ok` (B15) · push/bundle sparse (B20) · forged tag type (C11) · `type bogus` tag (C17) · unparsable header in ambiguity (C18) · malformed commit behind a tag (C20) · malformed commit collision (C21) · huge `^-N` (C-S1) · malformed `core.bigFileThreshold` in archive (C-S2, **verify on main**) · `log ^<blob>` (C-S3) · session graph cache, acceleration only (D1) · ragged OIDL/CDAT (D4) · git `BUG` abort, needs an ADR rather than a copy (D13).
+- [ ] **32.4** `info/grafts` and `refs/replace/*` honoured by history commands — history walks do not apply them (ADR-542 deferred both); the commit-graph writer only refuses to write a graph while they apply, and decorations name replace refs. A subsystem: read grafts and replace refs in the object/commit-read seam, with its own design and ADR.
+- [ ] **32.5** Thin-pack fetch — the fetch request negotiates no `thin-pack` (the v1 capability subset omits it), so a fetch downloads full objects where git sends deltas against objects the client already has. The index-pack walk already completes thin packs from a base resolver (used by `bundle verify`); the work is requesting `thin-pack` and wiring that resolver into the fetch receive path. Kept out of the alternates PR by decision.
+- [ ] **32.6** EOL conversion subsystem — `core.autocrlf`, `core.eol`, `core.safecrlf`, the `text`/`eol` attributes (`text=auto`), `ident` and renormalization (`-X renormalize`, `add --renormalize`) are not implemented; merge refuses `-X renormalize` for that reason. High priority: conversion changes blob bytes, hence object ids, on add and checkout. Own design, ADRs and interop matrix against git 2.55.
+- [ ] **32.7** Global and system config reading — the typed `core.*`/feature-key reads (`readConfig`) are repository-local only (ADR-637 records the divergence; `repo.config` itself spans all scopes, ADR-182); git also layers system and global files under every read, which triaged gaps depend on (e.g. a globally set `fetch.showForcedUpdates` is not seen). Reading outside the repository crosses the containment boundary (ADR-625): own feature with design, ADR and security review before any code.
+- [ ] **32.8** `stash apply --index` patch semantics — git runs `diff-tree <stash^2> <stash> | apply --cached`-style patch application for the index part and refuses where the patch does not apply; tsgit tree-merges. Pinned against git 2.55: tsgit accepts and merges a stash git refuses to apply with `--index`. Align on the patch semantics (and `stash pop --index`).
+- [ ] **32.9** Merge options with no machinery behind them — git accepts, tsgit refuses: `-e`/`--edit`, `--cleanup`, `--signoff`, `-F`/`--file`, `--into-name`, `--no-overwrite-ignore`, `--rerere-autoupdate`, `--verify-signatures`, `--abort`/`--quit`/`--continue` inside `branch.<b>.mergeoptions`, `-h`. Also pinned: `merge` never runs the `pre-merge-commit` and `commit-msg` hooks (wrong-result). Each option needs its backing capability first (editor session, rerere, signature verification on merge).
+- [ ] **32.10** Interactive rebase todo commits outside the rebased range are refused — git replays them; tsgit refuses (pinned refusal mismatch).
+- [ ] **32.11** Pathspec glob dialect — `add`/`rm`/`checkout`/`grep` use gitignore-style anchoring and slash-bounded `*`/`?`, no `[..]`, refuse magic pathspecs, and an unmatched glob is neither refused nor atomic; git's default pathspec glob lets `*` cross `/`. Result: commands touch wrong files or silently do nothing (data-integrity). `describe --match`/`--exclude` and `name-rev --refs` share the dialect and subpath divergence. Pinned against git 2.55 and tsgit. Plan: dialect fix (~15 lines + ADR amending 037/040), unmatched-glob refusal (~40), `describe` (~3), `name-rev` (~12), magic pathspecs and `:(exclude)` (~150, breaking, ADR superseding 038). **verify on main**: a `**` fix (whole path component only) landed in the same PR.
+- [ ] **32.12** `rev-list --objects -n 0` boundary objects — git 2.55 `rev-list --objects -n 0 W T ^N` prints nothing; tsgit lists `T` and its blob, because the closure engine's `listCommitSeeds` returns early on `maxCount === 0` before marking boundary trees. Pre-existing; wrong-result on an edge input.
+- [ ] **32.13** Commit-graph chain with a blank line mid-file — git 2.55 warns `invalid commit-graph chain: line '' not a hash`, errors `one or more commit-graph chain files could not be loaded` and ignores the chain; tsgit (`parseChainLayerHashes`) skips the blank line and loads every layer silently. A trailing newline is accepted by both. Pre-existing.
+- [ ] **32.14** Reftable footer magic is never checked — `readFooter` accepts a footer whose magic git rejects, so a corrupt table is read where git refuses it. Pre-existing; pin by planting a footer with a bad magic and comparing `git for-each-ref` with `refList`.
+- [ ] **32.15** `:/<regex>` message search without a literal prefilter — measured 6–25 µs per message against 0.1–3 µs for a native RegExp (`quick.*dog` 27–36× slower, `fix.{0,1000}bug` 2.2 s on the measured corpus) when a literal is present. A lazy DFA with a literal prefilter (~1–1.5 kB gz) closes it. **verify on main**: a linear-time automaton for back-reference-free patterns landed in the same PR; re-measure first.
+
+---
 
 ---
 
