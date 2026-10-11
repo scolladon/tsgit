@@ -68,6 +68,12 @@ describe('branchMarkRef', () => {
       '[remote "origin"]\n  push = refs/heads/main:refs/heads/other\n',
       'origin/other',
     ],
+    [
+      'nou@{push}',
+      '[push]\n  default = matching\n[branch "nou"]\n  remote = origin\n  merge = refs/heads/other\n',
+      'origin/nou',
+    ],
+    ['@{-1}@{u}', '', undefined],
     ['main', '', undefined],
     ['main@{1}', '', undefined],
     ['@{u}x', '', undefined],
