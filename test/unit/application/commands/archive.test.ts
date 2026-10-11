@@ -1426,6 +1426,35 @@ describe('archive export-subst routing', () => {
     });
   });
 
+  describe('Given a merge commit and a parents placeholder', () => {
+    describe('When the entries are iterated', () => {
+      it('Then the parents are abbreviated and joined by a space', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const tree = await writeSpecTree(ctx, [
+          ['.gitattributes', SUBST_ALL],
+          ['f', '[$Format:%p$]'],
+        ]);
+        const first = await writeObject(ctx, makeCommit(tree));
+        const base = makeCommit(tree);
+        const second = await writeObject(ctx, {
+          ...base,
+          data: { ...base.data, message: 'second' },
+        });
+        const commitId = await writeObject(ctx, makeCommit(tree, [first, second]));
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result.f).toBe(`[${first.slice(0, 7)} ${second.slice(0, 7)}]`);
+      });
+    });
+  });
+
   describe('Given an executable export-subst file', () => {
     describe('When the entries are iterated', () => {
       it('Then the placeholder expands', async () => {
@@ -1727,6 +1756,26 @@ describe('archive export-subst describe budget', () => {
     });
   });
 
+  describe('Given a file without describe before a file asking for a description', () => {
+    describe('When the entries are iterated', () => {
+      it('Then the later file is still described', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedTaggedHistory([
+          ['a.txt', 'N=$Format:%H$'],
+          ['z.txt', 'Z=$Format:%(describe)$'],
+        ]);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result['a.txt']).toBe(`N=${commitId}`);
+        expect(result['z.txt']).toBe(`Z=v1-1-g${commitId.slice(0, 7)}`);
+      });
+    });
+  });
+
   describe.each([
     ['abbrev=0', (_id: string) => 'v1'],
     ['abbrev=5', (id: string) => `v1-1-g${id.slice(0, 5)}`],
@@ -1865,6 +1914,42 @@ describe('archive export-subst resolved data', () => {
     });
   });
 
+  describe('Given an abbreviation placeholder before a refusing occurrence', () => {
+    describe('When the entries are iterated', () => {
+      it('Then the earlier occurrence is still abbreviated before the refusal', async () => {
+        // Arrange
+        const { ctx } = await seedSubstCommit([
+          ['.gitattributes', SUBST_ALL],
+          ['f', '$Format:%h$ $Format:%(count)$'],
+        ]);
+        const sut = iterateUntilFailure;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.failure).toMatchObject({ placeholder: '%(count)' });
+        expect(abbreviateObjectId).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given decorations asked by a later occurrence only', () => {
+    describe('When the entries are iterated', () => {
+      it('Then they are resolved for that occurrence', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedTaggedHistory([['f', '$Format:%H$|$Format:%D$']]);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result.f).toBe(`${commitId}|HEAD -> main, tag: lw`);
+      });
+    });
+  });
+
   describe('Given a worktree .mailmap and an ident placeholder read through the mailmap', () => {
     describe('When the entries are iterated', () => {
       it('Then the ident is mapped through the worktree mailmap', async () => {
@@ -1955,6 +2040,42 @@ describe('archive export-subst resolved data', () => {
           payload,
           signature: `${SIGNATURE}\n`,
         });
+      });
+    });
+  });
+
+  describe('Given a signed commit the verifier finds good', () => {
+    describe('When the entries are iterated', () => {
+      it('Then the signature placeholders read the verdict', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const tree = await writeSpecTree(ctx, [
+          ['.gitattributes', SUBST_ALL],
+          ['f', '$Format:%G?|%GS|%GT$'],
+        ]);
+        const unsigned = makeCommit(tree);
+        const commitId = await writeObject(ctx, {
+          ...unsigned,
+          data: { ...unsigned.data, gpgSignature: SIGNATURE },
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+        vi.mocked(verifyCommitSignature).mockResolvedValueOnce({
+          result: 'G',
+          trust: 'ultimate',
+          signer: 'Ada',
+          key: 'K1',
+          fingerprint: 'F1',
+          primaryKeyFingerprint: 'P1',
+          output: '',
+        });
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result.f).toBe('G|Ada|ultimate');
       });
     });
   });
@@ -2065,6 +2186,35 @@ describe('archive export-subst resolved data', () => {
 
         // Assert
         expect(result.f).toBe('2 hours ago');
+      });
+    });
+  });
+
+  describe('Given a human date placeholder and a local zone ahead of UTC', () => {
+    describe('When the entries are iterated an hour after the commit', () => {
+      const previousZone = process.env.TZ;
+
+      afterEach(() => {
+        if (previousZone === undefined) delete process.env.TZ;
+        else process.env.TZ = previousZone;
+      });
+
+      it('Then the local day decides, so the commit zone is shown', async () => {
+        // Arrange
+        process.env.TZ = 'EET-2';
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime((COMMITTER_TIMESTAMP + 3600) * 1000);
+        const { ctx } = await seedSubstCommit([
+          ['.gitattributes', SUBST_ALL],
+          ['f', '$Format:%ch$'],
+        ]);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result.f).toBe('Tue 22:13 +0000');
       });
     });
   });
