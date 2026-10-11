@@ -1045,9 +1045,39 @@ describe('buildPack', () => {
         ]);
         const streamSpy = vi.spyOn(blobSourceModule, 'readBlobContentInStreamOrder');
         const sut = buildPack;
+        // The pack landed after the write, so the session that wrote has not scanned it.
+        const reopened = { ...ctx, session: createSession() };
 
         // Act
-        await sut(ctx, { objects: [{ id }] });
+        await sut(reopened, { objects: [{ id }] });
+
+        // Assert
+        expect(streamSpy).not.toHaveBeenCalled();
+        vi.restoreAllMocks();
+      });
+    });
+  });
+
+  describe('Given a non-blob above bigFileThreshold packed non-delta', () => {
+    describe('When buildPack runs without delta', () => {
+      it('Then the content is read the ordinary way', async () => {
+        // Arrange
+        const content = pseudoRandomBytes(313, BIG_FILE_THRESHOLD + 1);
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          `[core]\n\tbigFileThreshold = ${BIG_FILE_THRESHOLD}\n`,
+        );
+        __resetConfigCacheForTests();
+        const [id] = await writeSyntheticPackIn(ctx, `${ctx.layout.gitDir}/objects`, 'p', [
+          { kind: 'base', type: 'commit', content },
+        ]);
+        const streamSpy = vi.spyOn(blobSourceModule, 'readBlobContentInStreamOrder');
+        const sut = buildPack;
+        const reopened = { ...ctx, session: createSession() };
+
+        // Act
+        await sut(reopened, { objects: [{ id: id as ObjectId }] });
 
         // Assert
         expect(streamSpy).not.toHaveBeenCalled();
