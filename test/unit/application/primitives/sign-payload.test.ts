@@ -413,6 +413,27 @@ describe('signPayload', () => {
     });
   });
 
+  describe('Given an openpgp signer exiting non-zero after emitting a well-formed armor and its SIG_CREATED status', () => {
+    describe('When signPayload runs (openpgp format)', () => {
+      it('Then signing fails, carrying the signer diagnostic', async () => {
+        // Arrange
+        const runner = stubCommandRunner({
+          exitCode: 1,
+          stdout: enc(pgpArmor('YWJj')),
+          stderr: enc(SIG_CREATED_LINE),
+        });
+        const ctx = createMemoryContext({ command: runner });
+        const sut = signPayload;
+
+        // Act
+        const result = await sut(ctx, enc('payload'), { format: 'openpgp', selector: 'K' });
+
+        // Assert
+        expect(result).toEqual({ ok: false, reason: 'signer-failed', output: SIG_CREATED_LINE });
+      });
+    });
+  });
+
   describe('Given an openpgp signer exiting 0 with a well-formed armor', () => {
     describe.each([
       { stderr: 'gpg: using key FPR\n', label: 'a status with no SIG_CREATED line' },
