@@ -17,7 +17,7 @@ import {
 } from '../../../../../src/application/primitives/object-store.js';
 import { getPackRegistry } from '../../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
-import { TsgitError } from '../../../../../src/domain/error.js';
+import { permissionDenied, TsgitError } from '../../../../../src/domain/error.js';
 import { serializeObject } from '../../../../../src/domain/objects/git-object.js';
 import type { Blob, Commit, ObjectId, Tag } from '../../../../../src/domain/objects/index.js';
 import { EMPTY_TREE_OID, serializeHeader } from '../../../../../src/domain/objects/index.js';
@@ -1597,6 +1597,26 @@ describe('verifyStoredObject', () => {
     });
   });
 
+  describe('Given a loose blob whose first read fails with a coded fault other than not-found', () => {
+    describe('When verifyStoredObject is called', () => {
+      it('Then the fault propagates instead of reading as an absent object', async () => {
+        // Arrange
+        const blob: Blob = { type: 'blob', content: ENC.encode('hello'), id: '' as ObjectId };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(ctx, blob);
+        const path = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+        vi.spyOn(ctx.fs, 'readSlice').mockRejectedValueOnce(permissionDenied(path));
+        const sut = verifyStoredObject;
+
+        // Act
+        const result = await rejectionData(sut(ctx, id));
+
+        // Assert
+        expect(result).toEqual({ code: 'PERMISSION_DENIED', path });
+      });
+    });
+  });
+
   describe('Given a streamed loose commit above the buffered gate', () => {
     describe('When verifyStoredObject is called', () => {
       it('Then its acceptance scan accepts the commit', async () => {
@@ -2541,6 +2561,31 @@ describe('stream order core.bigFileThreshold read', () => {
 
         // Assert
         expect(result).toEqual(content);
+      });
+    });
+  });
+});
+
+describe('openBlobSource in in-core order through a corrupt alternate', () => {
+  describe('Given a blob loose in an alternate whose multi-pack-index is corrupt', () => {
+    describe('When openBlobSource', () => {
+      it('Then the alternate refuses the corrupt index before its loose copy is read', async () => {
+        // Arrange
+        const ctx = await contextWithCorruptAlternate();
+        const content = ENC.encode('loose in the corrupt alternate');
+        const bytes = new Uint8Array([...serializeHeader('blob', content.length), ...content]);
+        const id = (await ctx.hash.hashHex(bytes)) as ObjectId;
+        await ctx.fs.write(
+          `${ALT_OBJECTS}/${computeLooseObjectPath(id)}`,
+          await ctx.compressor.deflate(bytes),
+        );
+        const sut = openBlobSource;
+
+        // Act
+        const result = await rejectionData(sut(ctx, id, 0, inCoreOrder));
+
+        // Assert
+        expect(result).toMatchObject(ALT_REACHED);
       });
     });
   });
