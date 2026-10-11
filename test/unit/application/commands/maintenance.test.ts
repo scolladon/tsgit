@@ -6044,5 +6044,31 @@ describe('maintenance', () => {
         expect(result.looseObjectsPacked).toBe(result.looseObjectsBefore - 1);
       });
     });
+
+    describe('When gc and the borrower packs an unreachable object a donor holds loose', () => {
+      it('Then the pack copy is crufted and nothing is destroyed', async () => {
+        // Arrange
+        const ctx = await borrower();
+        const donorGarbage = await looseInDonor(ctx, 'donor-garbage');
+        const [packedCopy] = await writeSyntheticPack(ctx, 'garbage', [
+          { kind: 'base', type: 'blob', content: enc.encode('donor-garbage') },
+        ]);
+        await commitTreeOf(ctx, await writeObject(ctx, makeBlob('other')));
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        const local = await enumerateObjectsMod.enumerateObjects(ctx, { scope: 'local' });
+        expect(local).not.toContain(packedCopy);
+        expect(local).toHaveLength(3);
+        expect(result.cruftPackId).toBeUndefined();
+        expect(result.packsRetired).toBe(1);
+        expect(
+          await ctx.fs.exists(`${DONOR_OBJECTS}/${computeLooseObjectPath(donorGarbage)}`),
+        ).toBe(true);
+      });
+    });
   });
 });

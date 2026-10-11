@@ -29,6 +29,18 @@ const seedWithWorktree = async (): Promise<Context> => {
 
 const adminOf = (ctx: Context): string => `${commonGitDir(ctx)}/worktrees/wt`;
 
+const CASE_TWIN_ADMIN = 'wt2';
+
+/** A second live worktree whose path is the first one's with its case changed. */
+const addCaseTwinWorktree = async (ctx: Context): Promise<string> => {
+  const admin = `${commonGitDir(ctx)}/worktrees/${CASE_TWIN_ADMIN}`;
+  const twin = `${ctx.layout.workDir}/WT`;
+  await ctx.fs.writeUtf8(`${twin}/.git`, `gitdir: ${admin}\n`);
+  await ctx.fs.writeUtf8(`${admin}/gitdir`, `${twin}/.git\n`);
+  await ctx.fs.writeUtf8(`${admin}/index`, 'index');
+  return admin;
+};
+
 describe('maintenance gc worktree prune', () => {
   describe('Given a linked worktree whose admin gitdir file is empty', () => {
     describe('When the gc task runs', () => {
@@ -129,6 +141,58 @@ describe('maintenance gc worktree prune', () => {
 
         // Assert
         expect(await ctx.fs.exists(adminOf(ctx))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given two live linked worktrees whose paths differ only by case', () => {
+    describe('When core.ignoreCase is set and the gc task runs', () => {
+      it('Then the later admin dir is pruned as a duplicate', async () => {
+        // Arrange
+        const ctx = await seedWithWorktree();
+        const twinAdmin = await addCaseTwinWorktree(ctx);
+        await ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  ignoreCase = true\n');
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await ctx.fs.exists(adminOf(ctx))).toBe(true);
+        expect(await ctx.fs.exists(twinAdmin)).toBe(false);
+      });
+    });
+
+    describe('When core.ignoreCase is explicitly off and the gc task runs', () => {
+      it('Then both admin dirs are kept', async () => {
+        // Arrange
+        const ctx = await seedWithWorktree();
+        const twinAdmin = await addCaseTwinWorktree(ctx);
+        await ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, '[core]\n  ignoreCase = false\n');
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await ctx.fs.exists(adminOf(ctx))).toBe(true);
+        expect(await ctx.fs.exists(twinAdmin)).toBe(true);
+      });
+    });
+
+    describe('When core.ignoreCase is unset and the gc task runs', () => {
+      it('Then both admin dirs are kept', async () => {
+        // Arrange
+        const ctx = await seedWithWorktree();
+        const twinAdmin = await addCaseTwinWorktree(ctx);
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await ctx.fs.exists(adminOf(ctx))).toBe(true);
+        expect(await ctx.fs.exists(twinAdmin)).toBe(true);
       });
     });
   });

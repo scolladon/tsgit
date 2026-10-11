@@ -6,10 +6,13 @@
  */
 import { describe, expect, it } from 'vitest';
 import { fsck } from '../../../../src/application/commands/fsck.js';
+import { looseObjectPath } from '../../../../src/application/primitives/path-layout.js';
+import { refreshPackRegistry } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
+import { writeSyntheticPack } from '../primitives/pack-fixture.js';
 import {
   aboutId,
   blobOf,
@@ -221,6 +224,47 @@ describe('fsck connectivity-only unreachable referents', () => {
             { type: 'dangling', id: outer, objectType: 'tree' },
           ].sort((left, right) => left.id.localeCompare(right.id)),
         );
+      });
+    });
+  });
+
+  describe('Given a packed dangling commit whose tree is a blob read before it', () => {
+    describe('When a connectivity-only fsck runs', () => {
+      it('Then the commit is a bad tree pointer and both dangle', async () => {
+        // Arrange
+        const ctx = await repoWithMain();
+        const blob = await writeObject(ctx, blobOf('leaf\n'));
+        const loose = await writeObject(
+          ctx,
+          await searchFor(
+            (n) => commitOf(blob, [], `m${n}`),
+            (id) => readBefore(blob, id),
+          ),
+        );
+        const looseFile = looseObjectPath(ctx.layout.gitDir, loose);
+        const raw = await ctx.compressor.inflate(await ctx.fs.read(looseFile));
+        const content = raw.slice(raw.indexOf(0) + 1);
+        const [commit] = await writeSyntheticPack(ctx, 'dangling', [
+          { kind: 'base', type: 'commit', content },
+        ]);
+        await ctx.fs.rm(looseFile);
+        refreshPackRegistry(ctx);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx, CONNECTIVITY_ONLY);
+
+        // Assert
+        expect(findingsOfType(result.findings, 'type-conflict')).toEqual([
+          { type: 'type-conflict', id: blob, objectType: 'blob', expectedType: 'tree' },
+        ]);
+        expect(findingsOfType(result.findings, 'bad-pointer')).toEqual([
+          { type: 'bad-pointer', id: commit, link: 'tree', target: blob },
+        ]);
+        expect(findingsOfType(result.findings, 'dangling')).toEqual([
+          { type: 'dangling', id: blob, objectType: 'blob' },
+          { type: 'dangling', id: commit, objectType: 'commit' },
+        ]);
       });
     });
   });

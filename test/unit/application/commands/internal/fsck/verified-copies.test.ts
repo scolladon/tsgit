@@ -85,6 +85,25 @@ describe('Given an id served from a mis-hashed pack entry', () => {
     });
   });
 
+  describe('When one id has a verified loose copy and another has none', () => {
+    it('Then only the id with no verified copy is unverified', () => {
+      // Arrange
+      const verifiedId = 'a'.repeat(40) as ObjectId;
+      const unverifiedId = 'b'.repeat(40) as ObjectId;
+      const verified = new Map([
+        [verifiedId, project({ type: 'blob', id: verifiedId, content: new Uint8Array() })],
+        [unverifiedId, null],
+      ]);
+      const sut = unverifiedIds;
+
+      // Act
+      const result = sut(verified);
+
+      // Assert
+      expect(result).toEqual(new Set([unverifiedId]));
+    });
+  });
+
   describe.each([
     { label: 'does not inflate', bytes: async () => enc.encode('garbage') },
     {
