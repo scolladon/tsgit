@@ -82,12 +82,6 @@ const NOTHING_EXCLUDED: BundleWalk = { boundary: [], uninteresting: new Set() };
 
 type BundleWalk = Pick<BundleObjectClosure, 'boundary' | 'uninteresting'>;
 
-/** The commits the bundle walk starts from, in pending order, and those it seeds. */
-interface BundleSeeds {
-  readonly from: ObjectId[];
-  readonly seeds: ObjectId[];
-}
-
 /**
  * git's `prepare_revision_walk` over the bundle's pending tips: an excluded
  * one marked, a wanted one peeled, each commit seeded in that order.
@@ -97,31 +91,30 @@ const seedInOrder = async (
   tips: ReadonlyArray<ClosureTip>,
   marks: NotMarksAccumulator,
   objectTypes: ObjectTypeTable,
-): Promise<BundleSeeds> => {
-  const seeded: BundleSeeds = { from: [], seeds: [] };
+): Promise<ReadonlyArray<ObjectId>> => {
+  const seeds: ObjectId[] = [];
   for (const tip of tips) {
     if (tip.excluded) {
       const commit = await markNotTip(ctx, tip.id, marks);
-      if (commit !== undefined) seeded.seeds.push(commit);
+      if (commit !== undefined) seeds.push(commit);
       continue;
     }
-    const peeled = await resolveTagChain(ctx, objectTypes, tip.id, IGNORE_TAG);
-    seeded.from.push(peeled);
-    seeded.seeds.push(peeled);
+    seeds.push(await resolveTagChain(ctx, objectTypes, tip.id, IGNORE_TAG));
   }
-  return seeded;
+  return seeds;
 };
 
 /** git's limited walk from the seeded tips down to the excluded ones' marks. */
 const limitBundleRevisions = async (
   ctx: Context,
-  { from, seeds }: BundleSeeds,
+  seeds: ReadonlyArray<ObjectId>,
   marks: NotMarksAccumulator,
   objectTypes: ObjectTypeTable,
 ): Promise<LimitedWalk> => {
+  // `seeds` carry the whole command-line order, so `from` adds nothing to them.
   const options = await resolveLimitOptions(
     ctx,
-    { from },
+    { from: [] },
     {
       seeds,
       until: new Set(marks.commitTips),
