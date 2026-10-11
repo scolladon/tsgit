@@ -138,6 +138,73 @@ describe('firstParentChangedPaths', () => {
     });
   });
 
+  describe('Given a changed subtree that also holds an untouched file', () => {
+    describe('When diffed', () => {
+      it('Then only the edited file of the subtree is reported', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const [x, y] = [await blob(ctx, 'x'), await blob(ctx, 'y')];
+        const before = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'f', x),
+          treeEntry(FILE_MODE.REGULAR, 'g', x),
+        ]);
+        const after = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'f', y),
+          treeEntry(FILE_MODE.REGULAR, 'g', x),
+        ]);
+        const parent = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'e', before)]);
+        const child = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'e', after)]);
+        const sut = firstParentChangedPaths;
+
+        // Act
+        const result = await sut(ctx, child, parent, NO_LIMIT);
+
+        // Assert
+        expect(text(result)).toEqual(['e/f']);
+      });
+    });
+  });
+
+  describe('Given a file added before an untouched one', () => {
+    describe('When diffed', () => {
+      it('Then only the added file is reported', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const x = await blob(ctx, 'x');
+        const parent = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'b', x)]);
+        const child = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'a', x),
+          treeEntry(FILE_MODE.REGULAR, 'b', x),
+        ]);
+        const sut = firstParentChangedPaths;
+
+        // Act
+        const result = await sut(ctx, child, parent, NO_LIMIT);
+
+        // Assert
+        expect(text(result)).toEqual(['a']);
+      });
+    });
+  });
+
+  describe('Given a changed top-level file', () => {
+    describe('When diffed against no parent', () => {
+      it('Then its path is a copy that does not retain the tree bytes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const x = await blob(ctx, 'x');
+        const root = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'a', x)]);
+        const sut = firstParentChangedPaths;
+
+        // Act
+        const [path] = await sut(ctx, root, undefined, NO_LIMIT);
+
+        // Assert
+        expect(path?.buffer.byteLength).toBe(path?.length);
+      });
+    });
+  });
+
   describe('Given a raw high-bit entry name', () => {
     describe('When diffed against no parent', () => {
       it('Then the path keeps its bytes undecoded', async () => {
@@ -279,6 +346,26 @@ describe('storedFilterLookup', () => {
 
         // Assert
         expect(result && [...result]).toEqual(expected);
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'hash version', other: { ...V2, hashVersion: 1 as const } },
+    { label: 'bits per entry', other: { ...V2, bitsPerEntry: V2.bitsPerEntry + 1 } },
+  ])('Given a base layer differing only in $label under a top layer', ({ other }) => {
+    describe('When the mismatched base layer commit is looked up', () => {
+      it('Then its filter is not reused', () => {
+        // Arrange
+        const base = layerWith(idOf('a'), Uint8Array.of(0x01), other);
+        const top = layerWith(idOf('b'), Uint8Array.of(0x02), V2);
+        const sut = storedFilterLookup;
+
+        // Act
+        const result = sut([base, top], V2)(idOf('a'));
+
+        // Assert
+        expect(result).toBeUndefined();
       });
     });
   });
