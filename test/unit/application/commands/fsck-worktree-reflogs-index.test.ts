@@ -301,6 +301,38 @@ describe('Given an index recording resolve-undo stages', () => {
     });
   });
 
+  describe('When a cache-tree extension precedes the resolve-undo extension', () => {
+    it('Then the resolve-undo pointer is still reported', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      const merged = await writeBlob(ctx, 'merged');
+      const tree = await writeObject(ctx, { type: 'tree', id: '' as ObjectId, entries: [] });
+      await writeIndexAt(
+        ctx,
+        ctx.layout.gitDir,
+        [indexEntry(merged, 'f')],
+        [
+          cacheTreeNaming(tree),
+          resolveUndo([
+            ['100644', ABSENT],
+            ['0', undefined],
+            ['0', undefined],
+          ]),
+        ],
+      );
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(pointerFindings(result.findings)).toEqual([
+        { type: 'invalid-resolve-undo-pointer', id: ABSENT, index: `${ctx.layout.gitDir}/index` },
+      ]);
+      expect(result.exitCode).toBe(EXIT_REFS_CONTENT);
+    });
+  });
+
   describe('When a regular stage names a blob only a pack holds and fsck skips packs', () => {
     it('Then nothing is reported, as git still parses the packed blob', async () => {
       // Arrange

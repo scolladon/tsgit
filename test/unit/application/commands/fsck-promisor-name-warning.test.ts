@@ -78,6 +78,43 @@ describe('Given a /-leading promisor remote and a ref naming an object no store 
   });
 });
 
+describe('Given a /-leading promisor remote, an unborn HEAD and a branch naming an object no store holds', () => {
+  describe('When fsck runs', () => {
+    it('Then it warns once — the branch alone sends git to its promisor remotes', async () => {
+      // Arrange
+      const { ctx, warnings } = await unbornWithSlashPromisor();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/other`, `${'1'.repeat(40)}\n`);
+      const sut = fsck;
+
+      // Act
+      await sut(ctx);
+
+      // Assert
+      expect(warnings.filter((line) => PROMISOR_WARNING.test(line))).toHaveLength(1);
+    });
+  });
+});
+
+describe('Given a /-leading promisor remote, an unborn HEAD and a linked worktree HEAD naming an object no store holds', () => {
+  describe('When fsck runs', () => {
+    it('Then it warns once — that HEAD alone sends git to its promisor remotes', async () => {
+      // Arrange
+      const { ctx, warnings } = await unbornWithSlashPromisor();
+      const adminDir = `${ctx.layout.gitDir}/worktrees/wt`;
+      await ctx.fs.writeUtf8(`${adminDir}/HEAD`, `${'1'.repeat(40)}\n`);
+      await ctx.fs.writeUtf8(`${adminDir}/gitdir`, '/work/wt/.git\n');
+      await ctx.fs.writeUtf8(`${adminDir}/commondir`, '../..\n');
+      const sut = fsck;
+
+      // Act
+      await sut(ctx);
+
+      // Assert
+      expect(warnings.filter((line) => PROMISOR_WARNING.test(line))).toHaveLength(1);
+    });
+  });
+});
+
 const MISSING = '1'.repeat(40);
 const reflogNamingMissing = `${'0'.repeat(40)} ${MISSING} A <a@b> 1700000000 +0000\tx\n`;
 

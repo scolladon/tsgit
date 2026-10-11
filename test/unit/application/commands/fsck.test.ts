@@ -3550,6 +3550,7 @@ async function writeIndexWithEntry(
   entryId: ObjectId,
   path: string,
   cacheTreeId: ObjectId | undefined,
+  extraExtensions: ReadonlyArray<{ readonly signature: string; readonly data: Uint8Array }> = [],
 ): Promise<void> {
   const index = {
     version: 2 as const,
@@ -3570,7 +3571,10 @@ async function writeIndexWithEntry(
         path: path as FilePath,
       },
     ],
-    extensions: cacheTreeId === undefined ? [] : [buildCacheTreeExtension(cacheTreeId)],
+    extensions: [
+      ...(cacheTreeId === undefined ? [] : [buildCacheTreeExtension(cacheTreeId)]),
+      ...extraExtensions,
+    ],
     trailerSha: new Uint8Array(0),
   };
   const indexBytes = await serializeIndexFixtureAsync(index, ctx);
@@ -4100,6 +4104,35 @@ describe('Given a cache-tree naming only an oid a multi-pack-index routes past i
       const findings = result.findings.filter((f) => f.type === 'midx-unusable');
       expect(findings).toHaveLength(1);
       expect((findings[0] as { reason: string }).reason).toContain('pack index');
+      expect(result.exitCode).toBe(32);
+    });
+  });
+});
+
+describe('Given a resolve-undo stage naming only an oid a multi-pack-index routes past its own PNAM', () => {
+  describe('When fsck runs', () => {
+    it('Then no missing is claimed for the stage and the midx pass reports the route it cannot decode', async () => {
+      // Arrange — the oid lives nowhere but the midx OIDL, so the parse probe
+      // can say nothing and the stage must not be rooted.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('refused-route resolve-undo'));
+      const refusedRouteId = midxOid('cc2');
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({ entries: [{ id: refusedRouteId, packIndex: 0, offset: 0 }] }),
+      );
+      const stage = [...enc.encode('a.txt\x00100644\x000\x000\x00'), ...hexToBytes(refusedRouteId)];
+      await writeIndexWithEntry(ctx, blobId, 'a.txt', undefined, [
+        { signature: 'REUC', data: Uint8Array.from(stage) },
+      ]);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(reopen(ctx));
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'missing')).toEqual([]);
+      expect(result.findings.filter((f) => f.type === 'midx-unusable')).toHaveLength(1);
       expect(result.exitCode).toBe(32);
     });
   });
