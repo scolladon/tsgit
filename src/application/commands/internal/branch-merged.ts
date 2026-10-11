@@ -65,6 +65,7 @@ export const branchMerged = async (
   { table, head }: MergeValve,
 ): Promise<boolean> => {
   const upstream = await upstreamReference(ctx, table, name);
+  // Stryker disable next-line ConditionalExpression: equivalent — when the upstream commit is HEAD, `merged` and `mergedToHead` are the same walk, so falling through returns the same value and never warns
   if (upstream === undefined || upstream.commit === head) {
     return head !== undefined && (await isAncestor(ctx, tipCommit, head, table));
   }
