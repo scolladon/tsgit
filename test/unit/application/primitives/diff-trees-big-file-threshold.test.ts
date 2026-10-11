@@ -112,6 +112,75 @@ describe('Given a malformed core.bigFileThreshold and an added gitlink', () => {
   });
 });
 
+describe('Given a malformed core.bigFileThreshold and a gitlink on one side only of a path', () => {
+  const OTHER_COMMIT = '2'.repeat(40) as ObjectId;
+  const treesOf = async (
+    ctx: Context,
+    from: readonly [FileMode, ObjectId],
+    to: readonly [FileMode, ObjectId],
+  ) =>
+    [
+      await writeTree(ctx, [treeEntry(from[0], 'sub', from[1])]),
+      await writeTree(ctx, [treeEntry(to[0], 'sub', to[1])]),
+    ] as const;
+
+  describe('When diffing with stat a gitlink that is deleted', () => {
+    it('Then it diffs without reading the threshold', async () => {
+      // Arrange
+      const ctx = await malformedRepo();
+      const [from, to] = [
+        await writeTree(ctx, [treeEntry(GITLINK, 'sub', SUBMODULE_COMMIT)]),
+        await writeTree(ctx, []),
+      ];
+      const sut = diffTrees;
+
+      // Act
+      const result = await sut(ctx, from, to, { withStat: true });
+
+      // Assert
+      expect(result.changes).toHaveLength(1);
+    });
+  });
+
+  describe('When diffing with stat a gitlink that moves to another commit', () => {
+    it('Then it diffs without reading the threshold', async () => {
+      // Arrange
+      const ctx = await malformedRepo();
+      const [from, to] = await treesOf(ctx, [GITLINK, SUBMODULE_COMMIT], [GITLINK, OTHER_COMMIT]);
+      const sut = diffTrees;
+
+      // Act
+      const result = await sut(ctx, from, to, { withStat: true });
+
+      // Assert
+      expect(result.changes).toHaveLength(1);
+    });
+  });
+
+  describe.each([
+    { name: 'a blob that becomes a gitlink', direction: 'blob-to-gitlink' },
+    { name: 'a gitlink that becomes a blob', direction: 'gitlink-to-blob' },
+  ])('When diffing with stat $name', ({ direction }) => {
+    it('Then it refuses with the key, as the blob side is weighed', async () => {
+      // Arrange
+      const ctx = await malformedRepo();
+      const blobEntry = [REGULAR, await blob(ctx, 'a\n')] as const;
+      const gitlinkEntry = [GITLINK, SUBMODULE_COMMIT] as const;
+      const [from, to] =
+        direction === 'blob-to-gitlink'
+          ? await treesOf(ctx, blobEntry, gitlinkEntry)
+          : await treesOf(ctx, gitlinkEntry, blobEntry);
+      const sut = diffTrees;
+
+      // Act
+      const result = await refusalOf(sut(ctx, from, to, { withStat: true }));
+
+      // Assert
+      expect(result).toMatchObject(REFUSAL);
+    });
+  });
+});
+
 describe('Given a malformed core.bigFileThreshold and a blob its attributes call binary', () => {
   describe('When diffing with stat', () => {
     it('Then it diffs without reading the threshold', async () => {
