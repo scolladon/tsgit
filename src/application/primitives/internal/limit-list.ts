@@ -219,6 +219,7 @@ async function* readShown(
     if (ctx.signal?.aborted) throw operationAborted();
     for (const ahead of walk.shown.slice(index, index + READ_AHEAD)) reader.start(ahead);
     const commit = await reader.start(id);
+    // Stryker disable next-line CallExpression: equivalent — forget only releases a consumed read's memo; each id is started once, so the yielded commits are unchanged
     reader.forget(id);
     if (commit !== undefined) yield commit;
   }
@@ -279,6 +280,7 @@ const drain = async (state: LimitState): Promise<ReadonlyArray<ObjectId>> => {
   let date = Number.POSITIVE_INFINITY;
   for (let entry = state.queue.pop(); entry !== undefined; entry = state.queue.pop()) {
     if (state.ctx.signal?.aborted) throw operationAborted();
+    // Stryker disable next-line EqualityOperator: equivalent — a cache kept for the popped interesting commit is cleared by the next pop before any read, and only an uninteresting pop reads it
     if (entry.oid === state.interestingCache) state.interestingCache = undefined;
     await processParents(state, entry.oid);
     if (state.uninteresting.has(entry.oid)) {
@@ -302,7 +304,6 @@ const settleUninteresting = (
   date: number,
   slop: number,
 ): number => {
-  markParentsUninteresting(state, id);
   state.bodies.delete(id);
   return keepWalking(state, date, slop);
 };
@@ -378,6 +379,7 @@ const typeParsed = async (state: LimitState, id: ObjectId): Promise<boolean> => 
 
 /** A typed commit is never typed again: a heads-only walk no longer needs its body. */
 const settleTyped = (state: LimitState, id: ObjectId): void => {
+  // Stryker disable next-line CallExpression: equivalent — typing a commit again assigns the same types and answers true, so the memo only skips work
   state.typed.add(id);
   if (state.options.bodyRetention === 'none') state.bodies.delete(id);
 };
@@ -391,6 +393,7 @@ const keepsBody = ({ options }: LimitState): boolean =>
  * gentle parse or not — on one an earlier lookup typed otherwise.
  */
 const typeGraphParents = (state: LimitState, table: ObjectTypeTable, id: ObjectId): void => {
+  // Stryker disable next-line CallExpression: equivalent — typing the parents again assigns the same commit type and answers true, so the memo only skips work
   state.typed.add(id);
   for (const parent of (state.parsed.get(id) as Parsed).parents) {
     if (!assignObjectType(state.ctx, table, parent, 'commit')) throw commitLookupFailed(parent);
