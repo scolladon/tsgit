@@ -14,6 +14,7 @@ import {
   findFirstInvalidLogAllRefUpdates,
   findFirstInvalidPackInt,
   findFirstInvalidPushGpgSign,
+  findFirstPromisorConfigRefusal,
   findFirstValuelessEntry,
   findFirstValuelessInSection,
   findInvalidGcNumber,
@@ -7009,6 +7010,17 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       },
       { given: 'an unrelated remote key', config: '[remote "a"]\n\turl = x\n', expected: [] },
       {
+        given: 'an unrelated remote key holding a true boolean',
+        config: '[remote "a"]\n\turl = true\n',
+        expected: [],
+      },
+      {
+        given: 'extensions.partialClone naming the first of two promisor remotes',
+        config:
+          '[remote "a"]\n\tpromisor = true\n[remote "b"]\n\tpromisor = true\n[extensions]\n\tpartialClone = a\n',
+        expected: ['b', 'a'],
+      },
+      {
         given: 'a /-leading remote name',
         config: '[remote "/abs"]\n\tpromisor = true\n[remote "ok"]\n\tpromisor = true\n',
         expected: ['ok'],
@@ -9743,6 +9755,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     ['40', 40],
     ['64', 64],
     ['1k', 1024],
+    ['2147483647', 2147483647],
   ] as const)('Given core.abbrev = %j', (raw, expected) => {
     describe('When readConfig', () => {
       it(`Then abbrev is ${JSON.stringify(expected)}`, async () => {
@@ -9779,6 +9792,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     ['3', 'out of range'],
     ['0', 'out of range'],
     ['-1', 'out of range'],
+    ['2147483648', 'out of range'],
     ['true', 'invalid unit'],
     ['abc', 'invalid unit'],
   ] as const)('Given core.abbrev = %s', (raw, reason) => {
@@ -9915,6 +9929,71 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
         // Assert
         expect(result.trailer).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an unrelated section with a subsection holding a key entry', () => {
+    describe('When readConfig', () => {
+      it('Then trailer stays absent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[other "Fix"]\n\tkey = Fixes-Bug\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.trailer).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an unrelated subsectionless section holding a separators entry', () => {
+    describe('When readConfig', () => {
+      it('Then trailer stays absent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[other]\n\tseparators = :=\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.trailer).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [gpg "ssh"] section with a valueless program', () => {
+    describe('When readConfig', () => {
+      it('Then gpg stays absent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gpg "ssh"]\n\tprogram\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gpg).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a remote with a valueless key other than partialclonefilter', () => {
+    describe('When findFirstPromisorConfigRefusal', () => {
+      it('Then it finds no refusal', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[remote "a"]\n\turl\n');
+        const sut = findFirstPromisorConfigRefusal;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
       });
     });
   });

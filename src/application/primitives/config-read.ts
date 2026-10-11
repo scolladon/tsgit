@@ -1223,7 +1223,6 @@ export const findLastInvalidMaxTreeDepth = (
 
 /** git's `git_config_int` grammar: why it dies on `value`, or `undefined` when it parses. */
 const cIntRefusal = (value: string | null): InvalidNumericEntry['reason'] | undefined => {
-  if (value === null) return 'invalid unit';
   const parsed = parseGitInt(value);
   if (!parsed.ok) return parsed.reason;
   // The C-`int` narrowing sits here, on top of `parseGitInt`: `parseGitInt`'s own
