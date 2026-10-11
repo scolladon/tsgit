@@ -6,6 +6,7 @@ import { describe as describeCommand } from '../../../../src/application/command
 import { init } from '../../../../src/application/commands/init.js';
 import { nameRev } from '../../../../src/application/commands/name-rev.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import type { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
@@ -103,6 +104,31 @@ describe('Given an abbreviated object id two objects share', () => {
         'hint: The candidates are:',
         `Could not get sha1 for ${shared}. Skipping.`,
       ]);
+    });
+  });
+});
+
+describe('Given a reflog position beyond the reflog', () => {
+  describe('When nameRev reads it', () => {
+    it('Then it refuses with the reflog range, as git dies rather than skipping', async () => {
+      // Arrange
+      const { ctx, logs } = await seed();
+      const sut = nameRev;
+
+      // Act
+      const outcome = await sut(ctx, 'HEAD@{99}').then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+      // Assert
+      expect((outcome as TsgitError).data).toEqual({
+        code: 'REFLOG_ENTRY_OUT_OF_RANGE',
+        ref: 'HEAD',
+        requested: 99,
+        available: 1,
+      });
+      expect(logs).toEqual([]);
     });
   });
 });
