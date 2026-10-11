@@ -39,7 +39,6 @@ export interface ObjectTable {
 
 interface TableState {
   readonly types: Map<ObjectId, FsckObjectType>;
-  readonly parsed: Set<ObjectId>;
   readonly read: Set<ObjectId>;
   readonly findings: TableFinding[];
   readonly unparsed: Set<ObjectId>;
@@ -110,10 +109,10 @@ export function failedLink(
   return undefined;
 }
 
-/** `snapshot_refs` parses a ref tip before any copy is read. */
+/** `snapshot_refs` parses a ref tip before any copy is read: parsing types its links. */
 function parseTip(state: TableState, id: ObjectId, obj: ProjectedGitObject): void {
   if (lookup(state.types, id, obj.type) !== undefined) return;
-  if (failedLink(state.types, id, obj) === undefined) state.parsed.add(id);
+  failedLink(state.types, id, obj);
 }
 
 /** The type git's tree walk looks an entry up as. */
@@ -139,23 +138,11 @@ function refuseParse(state: TableState, copy: ReadCopy, causes: ReadonlyArray<Ta
   state.unparsed.add(copy.id);
 }
 
-/** A parsed object is never parsed again: its links stay looked up. */
-function parseOnce(
-  state: TableState,
-  id: ObjectId,
-  obj: ProjectedGitObject,
-): ReadonlyArray<TableFinding> | undefined {
-  if (state.parsed.has(id)) return undefined;
-  const failed = failedLink(state.types, id, obj);
-  if (failed === undefined) state.parsed.add(id);
-  return failed;
-}
-
 /** `parse_object_buffer` on one copy, then `fsck_obj` when it parsed. */
 function readCopy(state: TableState, copy: ReadCopy, obj: ProjectedGitObject): void {
   const { id } = copy;
   const own = lookup(state.types, id, obj.type);
-  const failed = own === undefined ? parseOnce(state, id, obj) : [own];
+  const failed = own === undefined ? failedLink(state.types, id, obj) : [own];
   if (failed === undefined) checkTreeEntries(state, id, obj);
   else refuseParse(state, copy, failed);
 }
@@ -181,7 +168,6 @@ export function buildObjectTable(
 ): ObjectTable {
   const state: TableState = {
     types: new Map(),
-    parsed: new Set(),
     read: new Set(),
     findings: [],
     unparsed: new Set(),

@@ -14,6 +14,7 @@ import { isStoredCorruption } from './stored-corruption.js';
 
 async function tipOf(ctx: Context, ref: RefName): Promise<ObjectId | undefined> {
   try {
+    // Stryker disable next-line ObjectLiteral: equivalent — peel defaults to false in resolveRef; {} and { peel: false } produce identical behavior.
     return await resolveRef(ctx, ref, { peel: false });
   } catch (err) {
     if (!isTolerableRefFault(err)) throw err;

@@ -130,7 +130,7 @@ type RefEntries = Awaited<ReturnType<RefStore['listRefs']>>;
 /** The chain failures git's `refs_resolve_ref_unsafe` returns NULL on for a
  *  symbolic ref: its end names no ref, it loops, or it outruns the depth git
  *  follows. Each is a broken ref git snapshots with the zero oid. */
-const BROKEN_SYMREF_CODES: ReadonlySet<string> = new Set([
+const BROKEN_SYMREF_CODES: ReadonlySet<string | undefined> = new Set([
   'REF_NOT_FOUND',
   'REF_CYCLE_DETECTED',
   'REF_CHAIN_TOO_DEEP',
@@ -142,9 +142,10 @@ const BROKEN_SYMREF_CODES: ReadonlySet<string> = new Set([
 async function targetOf(ctx: Context, entry: RefEntries[number]): Promise<ObjectId | undefined> {
   if (entry.value.kind === 'direct') return entry.value.id;
   try {
+    // Stryker disable next-line ObjectLiteral: equivalent — peel defaults to false in resolveRef; {} and { peel: false } produce identical behavior.
     return await resolveRef(ctx, entry.name, { peel: false });
   } catch (err) {
-    if (BROKEN_SYMREF_CODES.has(errorDataCode(err) ?? '')) return zeroOid(ctx.hashConfig);
+    if (BROKEN_SYMREF_CODES.has(errorDataCode(err))) return zeroOid(ctx.hashConfig);
     if (!isTolerableRefFault(err)) throw err;
     return undefined;
   }
