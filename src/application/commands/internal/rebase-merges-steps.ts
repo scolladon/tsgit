@@ -10,7 +10,7 @@ import { unsupportedOperation } from '../../../domain/error.js';
 import { type MergeConflict, type MergeLabels, mergeLabels } from '../../../domain/merge/index.js';
 import type { CommitData } from '../../../domain/objects/commit.js';
 import { subjectLine } from '../../../domain/objects/commit-message.js';
-import { type ObjectId, RefName } from '../../../domain/objects/index.js';
+import { type ObjectId, RefName, zeroOid } from '../../../domain/objects/index.js';
 import type { RebaseTodoLine } from '../../../domain/rebase/index.js';
 import {
   REBASE_REFLOG_ACTION,
@@ -51,12 +51,16 @@ const lookupLabel = async (
 /** git's `do_label`. */
 export const labelHead = async (ctx: Context, label: string): Promise<void> => {
   const head = await resolveRef(ctx, HEAD);
-  await getRefStore(ctx).applyRefUpdates([
+  const name = rewrittenRef(label);
+  const refs = getRefStore(ctx);
+  const previous = await refs.resolveDirect(name);
+  const oldId = previous.kind === 'direct' ? previous.id : zeroOid(ctx.hashConfig);
+  await refs.applyRefUpdates([
     {
       kind: 'set',
-      name: rewrittenRef(label),
+      name,
       id: head,
-      reflog: { oldId: head, newId: head, message: `rebase (label) '${label}'` },
+      reflog: { oldId, newId: head, message: `rebase (label) '${label}'` },
     },
   ]);
 };

@@ -13,7 +13,12 @@ import { mergeRun } from '../../../../../src/application/commands/merge.js';
 import { readObject } from '../../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../../src/application/primitives/resolve-ref.js';
-import type { CommitData, ObjectId, RefName } from '../../../../../src/domain/objects/index.js';
+import {
+  type CommitData,
+  type ObjectId,
+  type RefName,
+  zeroOid,
+} from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
 const AUTHOR = { name: 'Feat', email: 'feat@y', timestamp: 100, timezoneOffset: '+0000' };
@@ -45,20 +50,25 @@ const tip = (ctx: Context, name: string): Promise<ObjectId> =>
   resolveRef(ctx, `refs/heads/${name}` as RefName);
 
 describe('labelHead', () => {
-  describe('Given every ref update is logged and a commit at HEAD', () => {
-    describe('When HEAD is labelled', () => {
-      it('Then the label ref records the rebase (label) reflog message', async () => {
+  describe('Given every ref update is logged and a label created then re-pointed', () => {
+    describe('When HEAD is labelled twice', () => {
+      it('Then the reflog opens from the zero oid and the re-point starts from the previous value', async () => {
         // Arrange
         const ctx = await newRepo('[core]\n\tlogAllRefUpdates = always\n');
-        await commitFile(ctx, 'base');
+        const first = await commitFile(ctx, 'base');
         const sut = labelHead;
+        await sut(ctx, 'foo');
+        const second = await commitFile(ctx, 'next');
 
         // Act
         await sut(ctx, 'foo');
 
         // Assert
         const entries = await readReflog(ctx, 'refs/rewritten/foo' as RefName);
-        expect(entries.map((entry) => entry.message)).toEqual(["rebase (label) 'foo'"]);
+        expect(entries.map(({ oldId, newId, message }) => ({ oldId, newId, message }))).toEqual([
+          { oldId: zeroOid(ctx.hashConfig), newId: first, message: "rebase (label) 'foo'" },
+          { oldId: first, newId: second, message: "rebase (label) 'foo'" },
+        ]);
       });
     });
   });
