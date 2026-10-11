@@ -2336,3 +2336,79 @@ describe('applyChangeset', () => {
     });
   });
 });
+
+describe('applyChangeset write order under a long-running filter', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const writeOrderUnder = async (config: string, spawns: boolean): Promise<string[]> => {
+    const base = createMemoryContext({ files: { '/repo/.git/config': enc(config) } });
+    const ctx = spawns
+      ? { ...base, command: scriptedCommandRunner(new Uint8Array(0)).runner }
+      : base;
+    const ids = [await writeBlob(ctx, enc('zz')), await writeBlob(ctx, enc('mm'))];
+    const order: string[] = [];
+    const realWrite = ctx.fs.writeStream.bind(ctx.fs);
+    vi.spyOn(ctx.fs, 'writeStream').mockImplementation(async (path, chunks) => {
+      order.push(path);
+      await realWrite(path, chunks);
+    });
+    const changeset = makeChangeset([
+      makeAdd('z', ids[0] as ObjectId),
+      makeAdd('m', ids[1] as ObjectId),
+    ]);
+    const sut = applyChangeset;
+    await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+    return order;
+  };
+
+  const SERIAL = [`${WORKDIR}/m`, `${WORKDIR}/z`];
+  const CONCURRENT = [`${WORKDIR}/z`, `${WORKDIR}/m`];
+
+  describe.each([
+    {
+      name: 'one driver with a process on a runner that can spawn',
+      config: '[filter "a"]\n\tprocess = proc\n',
+      spawns: true,
+      expected: SERIAL,
+    },
+    {
+      name: 'a driver without a process beside one with a process',
+      config: '[filter "a"]\n\tclean = cat\n[filter "b"]\n\tprocess = proc\n',
+      spawns: true,
+      expected: SERIAL,
+    },
+    {
+      name: 'a driver with a process on a runner that cannot spawn',
+      config: '[filter "a"]\n\tprocess = proc\n',
+      spawns: false,
+      expected: CONCURRENT,
+    },
+    {
+      name: 'only a driver without a process',
+      config: '[filter "a"]\n\tclean = cat\n',
+      spawns: true,
+      expected: CONCURRENT,
+    },
+    {
+      name: 'only a driver whose process is empty',
+      config: '[filter "a"]\n\tprocess =\n',
+      spawns: true,
+      expected: CONCURRENT,
+    },
+  ])('Given $name', ({ config, spawns, expected }) => {
+    describe('When applyChangeset writes entries given out of path order', () => {
+      it('Then the writes are ordered as git checks the entries out', async () => {
+        // Arrange
+        const sut = writeOrderUnder;
+
+        // Act
+        const result = await sut(config, spawns);
+
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
+  });
+});
