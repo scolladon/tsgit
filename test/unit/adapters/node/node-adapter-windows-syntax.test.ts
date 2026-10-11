@@ -39,5 +39,21 @@ describe('createNodeContext', () => {
         expect(result).toBe(first);
       });
     });
+
+    describe('When alternate paths on two drives are probed', () => {
+      it('Then each drive gets its own root probe', () => {
+        // Arrange
+        const ctx = createNodeContext({ workDir: '/tmp/tsgit-ctx-test' });
+        const sut = ctx.alternatePathProbe;
+
+        // Act
+        const first = sut?.('C:\\x\\objects');
+        const result = sut?.('D:\\x\\objects');
+
+        // Assert
+        expect(result).toBeDefined();
+        expect(result).not.toBe(first);
+      });
+    });
   });
 });

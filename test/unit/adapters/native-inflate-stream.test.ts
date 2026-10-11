@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MemoryCompressor } from '../../../src/adapters/memory/memory-compressor.js';
 import { createNativeInflateStream } from '../../../src/adapters/native-inflate-stream.js';
 import type { TsgitError } from '../../../src/domain/error.js';
@@ -79,6 +79,28 @@ describe('createNativeInflateStream', () => {
 
         // Assert
         await expect(result).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a consumer that stops reading early with a reason', () => {
+    describe('When the reader is cancelled', () => {
+      it('Then the source feeding the stream is cancelled with that reason', async () => {
+        // Arrange
+        const sut = createNativeInflateStream;
+        const cancelled: unknown[] = [];
+        const source = new ReadableStream<Uint8Array>({
+          cancel: (reason) => {
+            cancelled.push(reason);
+          },
+        });
+        const reader = source.pipeThrough(sut()).getReader();
+
+        // Act
+        await reader.cancel('done');
+
+        // Assert
+        await vi.waitFor(() => expect(cancelled).toEqual(['done']));
       });
     });
   });

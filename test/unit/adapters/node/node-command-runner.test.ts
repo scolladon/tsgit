@@ -745,6 +745,27 @@ describe('NodeCommandRunner', () => {
       });
     });
 
+    describe('When the consumer is waiting on an empty queue and the child then answers', () => {
+      it('Then the waiting read receives the chunk before the child exits', async () => {
+        // Arrange
+        const { runner, child } = makeHarness();
+        const sut = runner.spawn;
+        const conversation = sut(baseRequest({ command: 'filter' }));
+        const reader = conversation.output[Symbol.asyncIterator]();
+        const waiting = reader.next();
+
+        // Act
+        child.stdout.emit('data', new Uint8Array([9]));
+        const result = await Promise.race([
+          waiting,
+          new Promise<'stalled'>((resolve) => setTimeout(() => resolve('stalled'), 50)),
+        ]);
+
+        // Assert
+        expect(result).toEqual({ done: false, value: new Uint8Array([9]) });
+      });
+    });
+
     describe('When the child outpaces the consumer past the high-water mark', () => {
       it('Then stdout pauses once, and resumes once the consumer drains below the mark', async () => {
         // Arrange

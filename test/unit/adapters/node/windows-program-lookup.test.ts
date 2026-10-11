@@ -192,6 +192,31 @@ describe('lookupWindowsProgram', () => {
     });
   });
 
+  describe('Given no PATH at all and a host that finds every candidate', () => {
+    describe('When looked up', () => {
+      it('Then probes no candidate and finds nothing', () => {
+        // Arrange
+        const visited: string[] = [];
+        const host = {
+          env: {},
+          cwd: (): string => PROCESS_CWD,
+          isFile: (candidate: string): boolean => {
+            visited.push(candidate);
+            return true;
+          },
+        };
+        const sut = lookupWindowsProgram;
+
+        // Act
+        const result = sut('gpg', host);
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect(visited).toEqual([]);
+      });
+    });
+  });
+
   describe.each(['C:\\tools\\gpg.exe', 'tools/gpg'])(
     'Given the name %s carrying a path separator',
     (program) => {
