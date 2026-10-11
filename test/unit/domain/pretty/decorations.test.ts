@@ -84,6 +84,22 @@ describe('formatDecorations', () => {
     });
   });
 
+  describe('Given a decoration that is not a branch but shares the name HEAD points at', () => {
+    describe('When rendering with the defaults', () => {
+      it('Then it is not folded into HEAD', () => {
+        // Arrange
+        const sut = formatDecorations;
+        const lookalike: Decoration = { kind: 'tag', name: 'refs/heads/main' };
+
+        // Act
+        const result = sut([attachedHead, lookalike], {});
+
+        // Assert
+        expect(decode(result)).toBe(' (HEAD, tag: main)');
+      });
+    });
+  });
+
   describe('Given custom options', () => {
     describe('When prefix and suffix are empty', () => {
       it('Then only the names and separators remain', () => {
