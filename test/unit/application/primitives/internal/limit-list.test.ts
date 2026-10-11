@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createCommit } from '../../../../../src/application/primitives/create-commit.js';
 import {
   type LimitListOptions,
@@ -12,6 +12,7 @@ import { writeObject } from '../../../../../src/application/primitives/write-obj
 import type { AuthorIdentity, ObjectId, Tree } from '../../../../../src/domain/objects/index.js';
 import { computeLooseObjectPath } from '../../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../../src/ports/context.js';
+import type { Logger } from '../../../../../src/ports/logger.js';
 import { buildSeededContext, writeCommitGraph } from '../fixtures.js';
 
 const EPOCH = 1_700_000_000;
@@ -727,6 +728,526 @@ describe('limitList body retention', () => {
 
         // Assert
         expect([...result.bodies.keys()].map(history.name).sort()).toEqual(['c0', 'c1', 'c2']);
+      });
+    });
+  });
+});
+
+describe('limitList seeding', () => {
+  describe('Given an included commit whose parent is excluded and older than it', () => {
+    describe('When the walk is limited', () => {
+      it('Then the shared parent is never taken into the list', async () => {
+        // Arrange
+        const history = await buildHistory([
+          ['p', 500, []],
+          ['t', 1000, ['p']],
+          ['e', 400, ['p']],
+        ]);
+        const sut = limitList;
+
+        // Act
+        const result = await sut(history.ctx, optionsFor(history, ['t'], ['e']));
+
+        // Assert
+        expect(result.shown.map(history.name)).toEqual(['t']);
+        expect(result.dropped).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given two named commits where the second is the first one’s parent', () => {
+    describe('When the walk is limited', () => {
+      it('Then the parent is listed once', async () => {
+        // Arrange
+        const history = await buildHistory([
+          ['p', 500, []],
+          ['t', 1000, ['p']],
+        ]);
+        const sut = limitList;
+
+        // Act
+        const result = await sut(history.ctx, optionsFor(history, ['t', 'p'], []));
+
+        // Assert
+        expect(result.shown.map(history.name)).toEqual(['t', 'p']);
+      });
+    });
+  });
+
+  describe('Given an excluded commit parsed from its object', () => {
+    describe('When the walk is limited', () => {
+      it('Then its body is not handed over', async () => {
+        // Arrange
+        const history = await buildHistory([
+          ['t', 300, []],
+          ['e', 200, []],
+        ]);
+        const sut = limitList;
+
+        // Act
+        const result = await sut(history.ctx, optionsFor(history, ['t'], ['e']));
+
+        // Assert
+        expect([...result.bodies.keys()].map(history.name)).toEqual(['t']);
+      });
+    });
+  });
+});
+
+describe('limitList cached interest', () => {
+  describe('Given an interesting commit queued behind a long excluded line', () => {
+    describe('When the excluded line outlasts the slop before reaching it', () => {
+      it('Then the queued interesting commit keeps the walk going and is shown', async () => {
+        // Arrange
+        const line: Spec = [
+          ['f8', 820, []],
+          ['f7', 830, ['f8']],
+          ['f6', 840, ['f7']],
+          ['f5', 850, ['f6']],
+          ['f4', 860, ['f5']],
+          ['f3', 870, ['f4']],
+          ['f2', 880, ['f3']],
+          ['f1', 890, ['f2']],
+        ];
+        const history = await buildHistory([
+          ['x', 500, []],
+          ['i', 1000, ['x']],
+          ...line,
+          ['e', 900, ['f1']],
+        ]);
+
+        // Act
+        const result = await shownNames(history, optionsFor(history, ['i'], ['e']));
+
+        // Assert
+        expect(result).toEqual(['i', 'x']);
+      });
+    });
+  });
+});
+
+describe('limitList settling by generation', () => {
+  describe('Given an included commit built on the tip of a long excluded line', () => {
+    describe('When the walk settles by generation', () => {
+      it('Then it stops once the queued excluded commits are older than the shown one', async () => {
+        // Arrange
+        const chain: Spec = [
+          ['r0', 100, []],
+          ['r1', 110, ['r0']],
+          ['r2', 120, ['r1']],
+          ['r3', 130, ['r2']],
+          ['r4', 140, ['r3']],
+          ['r5', 150, ['r4']],
+        ];
+        const history = await buildHistory([...chain, ['i', 1000, ['r5']]]);
+        await graphOver(history, ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'i']);
+        const options = optionsFor(history, ['i'], ['r5'], { settle: 'generation' });
+        const sut = limitList;
+
+        // Act
+        const result = await sut(history.ctx, options);
+
+        // Assert
+        expect([...result.uninteresting].map(history.name).sort()).toEqual(['r3', 'r4', 'r5']);
+      });
+    });
+  });
+
+  describe('Given queued excluded commits of which only some are older than the shown one', () => {
+    describe('When the walk settles by generation', () => {
+      it('Then it keeps walking until every queued one is older', async () => {
+        // Arrange
+        const history = await buildHistory([
+          ['z', 100, []],
+          ['s', 1030, ['z']],
+          ['q', 1040, ['s']],
+          ['p', 1050, ['q']],
+          ['x0', 800, []],
+          ['c', 900, ['p']],
+          ['i', 1000, []],
+        ]);
+        await graphOver(history, ['z', 's', 'q', 'p', 'x0', 'c', 'i']);
+        const options = optionsFor(history, ['i'], ['c', 'x0'], { settle: 'generation' });
+        const sut = limitList;
+
+        // Act
+        const result = await sut(history.ctx, options);
+
+        // Assert
+        expect([...result.uninteresting].map(history.name).sort()).toEqual([
+          'c',
+          'p',
+          'q',
+          's',
+          'x0',
+          'z',
+        ]);
+      });
+    });
+  });
+});
+
+describe('limitList typed bodies', () => {
+  const CHAIN: Spec = [
+    ['c0', 0, []],
+    ['c1', 10, ['c0']],
+    ['c2', 20, ['c1']],
+  ];
+
+  describe('Given a typed chain walked for its shown bodies', () => {
+    describe('When it is limited', () => {
+      it('Then every shown body is retained after its pointers are typed', async () => {
+        // Arrange
+        const history = await buildHistory(CHAIN);
+        const objectTypes = createObjectTypeTable();
+        const sut = limitList;
+
+        // Act
+        const result = await sut(history.ctx, optionsFor(history, ['c2'], [], { objectTypes }));
+
+        // Assert
+        expect([...result.bodies.keys()].map(history.name).sort()).toEqual(['c0', 'c1', 'c2']);
+      });
+    });
+  });
+});
+
+describe('resolveLimitOptions defaults', () => {
+  describe('Given a walk that sets neither ignoreMissing nor verifyHash', () => {
+    describe('When the options are resolved', () => {
+      it('Then both default to off', async () => {
+        // Arrange
+        const history = await buildHistory(TIED_SEEDS);
+        const sut = resolveLimitOptions;
+
+        // Act
+        const result = await sut(
+          history.ctx,
+          { from: [history.id('c')], shallow: new Set() },
+          { until: new Set(), firstParent: false, settle: 'slop' },
+        );
+
+        // Assert
+        expect(result.ignoreMissing).toBe(false);
+        expect(result.verifyHash).toBe(false);
+      });
+    });
+  });
+});
+
+describe('limitList parent diagnostics', () => {
+  const loggedHistory = async (): Promise<{
+    readonly history: History;
+    readonly error: ReturnType<typeof vi.fn>;
+    readonly ctx: Context;
+  }> => {
+    const history = await buildHistory([['t', 300, []]]);
+    const error = vi.fn();
+    const logger: Logger = { error };
+    return { history, error, ctx: { ...history.ctx, logger } };
+  };
+
+  describe('Given a typed walk over a commit whose parent object is missing', () => {
+    describe('When the walk refuses', () => {
+      it('Then it logs the unreadable parent with its id', async () => {
+        // Arrange
+        const history = await buildHistory([
+          ['gone', 100, []],
+          ['t', 300, ['gone']],
+        ]);
+        await dropObject(history, 'gone');
+        const error = vi.fn();
+        const ctx = { ...history.ctx, logger: { error } as Logger };
+        const objectTypes = createObjectTypeTable();
+        const sut = limitList;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, optionsFor(history, ['t'], [], { objectTypes }));
+        } catch (thrown) {
+          caught = thrown;
+        }
+
+        // Assert
+        expect(caught).toMatchObject({
+          data: { code: 'REVISION_WALK_FAILED', commit: history.id('t') },
+        });
+        expect(error).toHaveBeenCalledWith(`Could not read ${history.id('gone')}`, {
+          id: history.id('gone'),
+        });
+      });
+    });
+  });
+
+  describe('Given a typed walk over a commit whose parent is not a commit', () => {
+    describe('When the walk refuses', () => {
+      it('Then it logs the object that is not a commit with its id', async () => {
+        // Arrange
+        const { history, error, ctx } = await loggedHistory();
+        const blob = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([1]),
+          id: '' as ObjectId,
+        });
+        const tree = await writeObject(ctx, { type: 'tree', entries: [], id: '' as ObjectId });
+        const tip = await createCommit(ctx, {
+          tree,
+          parents: [blob],
+          author: AUTHOR,
+          committer: AUTHOR,
+          message: 'tip',
+        });
+        const objectTypes = createObjectTypeTable();
+        const sut = limitList;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { ...optionsFor(history, [], []), seeds: [tip], objectTypes });
+        } catch (thrown) {
+          caught = thrown;
+        }
+
+        // Assert
+        expect(caught).toMatchObject({ data: { code: 'REVISION_WALK_FAILED', commit: tip } });
+        expect(error).toHaveBeenCalledWith(`Object ${blob} not a commit`, { id: blob });
+      });
+    });
+  });
+
+  describe('Given an untyped walk over a commit whose parent is not a commit', () => {
+    describe('When the walk is limited', () => {
+      it('Then the parent is skipped without a diagnostic', async () => {
+        // Arrange
+        const { history, error, ctx } = await loggedHistory();
+        const blob = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([1]),
+          id: '' as ObjectId,
+        });
+        const tree = await writeObject(ctx, { type: 'tree', entries: [], id: '' as ObjectId });
+        const tip = await createCommit(ctx, {
+          tree,
+          parents: [blob],
+          author: AUTHOR,
+          committer: AUTHOR,
+          message: 'tip',
+        });
+        const sut = limitList;
+
+        // Act
+        const result = await sut(ctx, { ...optionsFor(history, [], []), seeds: [tip] });
+
+        // Assert
+        expect(result.shown).toEqual([tip]);
+        expect(error).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
+/** `ctx` whose object reads are counted per id — every read consults the delta cache once. */
+const countingReads = (ctx: Context): { ctx: Context; reads: Map<ObjectId, number> } => {
+  const reads = new Map<ObjectId, number>();
+  const deltaCache = new Proxy(ctx.deltaCache, {
+    get: (target, key, receiver) => {
+      const value = Reflect.get(target, key, receiver);
+      if (key !== 'get' || typeof value !== 'function') return value;
+      return (id: ObjectId, ...rest: unknown[]) => {
+        reads.set(id, (reads.get(id) ?? 0) + 1);
+        return value.call(target, id, ...rest);
+      };
+    },
+  });
+  return { ctx: { ...ctx, deltaCache }, reads };
+};
+
+const linear = (length: number): Spec =>
+  Array.from({ length }, (_, at) => [`k${at}`, 100 + at, at === 0 ? [] : [`k${at - 1}`]] as const);
+
+describe('walkLimited reads', () => {
+  describe('Given more shown commits in the commit-graph than the read-ahead window', () => {
+    describe('When the first body is taken', () => {
+      it('Then exactly the window of bodies is read ahead', async () => {
+        // Arrange
+        const spec = linear(12);
+        const history = await buildHistory(spec);
+        await graphOver(
+          history,
+          spec.map(([name]) => name),
+        );
+        const counted = countingReads(history.ctx);
+        const sut = walkLimited;
+        const walk = sut(counted.ctx, optionsFor(history, ['k11'], []));
+
+        // Act
+        await walk.next();
+        await new Promise((resolve) => setTimeout(resolve, 30));
+
+        // Assert
+        const readNames = [...counted.reads.keys()].map(history.name).sort();
+        expect(readNames).toEqual(['k10', 'k11', 'k4', 'k5', 'k6', 'k7', 'k8', 'k9']);
+      });
+    });
+  });
+
+  describe('Given a diamond history outside the commit-graph', () => {
+    describe('When it is walked to the end', () => {
+      it('Then every commit object is read once', async () => {
+        // Arrange
+        const history = await buildHistory([
+          ['r', 100, []],
+          ['a', 200, ['r']],
+          ['b', 210, ['r']],
+          ['t', 300, ['a', 'b']],
+        ]);
+        const counted = countingReads(history.ctx);
+        const sut = walkLimited;
+
+        // Act
+        const shown: string[] = [];
+        for await (const commit of sut(counted.ctx, optionsFor(history, ['t'], []))) {
+          shown.push(commit.data.message);
+        }
+
+        // Assert
+        expect(shown).toEqual(['t', 'b', 'a', 'r']);
+        expect(
+          Object.fromEntries([...counted.reads].map(([id, n]) => [history.name(id), n])),
+        ).toEqual({
+          r: 1,
+          a: 1,
+          b: 1,
+          t: 1,
+        });
+      });
+    });
+  });
+});
+
+describe('limitList excluded diamonds', () => {
+  describe('Given an excluded merge whose two parents share a parent', () => {
+    describe('When the excluded line outlasts the slop', () => {
+      it('Then the shared parent is walked once', async () => {
+        // Arrange
+        const history = await buildHistory([
+          ['d5', 630, []],
+          ['d4', 640, ['d5']],
+          ['d3', 650, ['d4']],
+          ['d2', 660, ['d3']],
+          ['d1', 670, ['d2']],
+          ['c', 680, ['d1']],
+          ['b', 690, ['c']],
+          ['a', 700, ['c']],
+          ['v', 900, ['a', 'b']],
+          ['i', 1000, []],
+        ]);
+        const sut = limitList;
+
+        // Act
+        const result = await sut(history.ctx, optionsFor(history, ['i'], ['v']));
+
+        // Assert
+        expect([...result.uninteresting].map(history.name).sort()).toEqual([
+          'a',
+          'b',
+          'c',
+          'd1',
+          'd2',
+          'd3',
+          'v',
+        ]);
+      });
+    });
+  });
+});
+
+describe('limitList stale interest', () => {
+  describe('Given the only queued interesting commit is taken right after it was cached', () => {
+    describe('When the excluded line then outlasts the slop', () => {
+      it('Then the walk gives up and leaves the deep excluded commits unmarked', async () => {
+        // Arrange
+        const history = await buildHistory([
+          ['u10', 620, []],
+          ['u9', 630, ['u10']],
+          ['u8', 640, ['u9']],
+          ['u7', 650, ['u8']],
+          ['u6', 660, ['u7']],
+          ['u5', 670, ['u6']],
+          ['u4', 680, ['u5']],
+          ['u3', 690, ['u4']],
+          ['u2', 700, ['u3']],
+          ['u1', 900, ['u2']],
+          ['x', 800, []],
+          ['i', 1000, []],
+        ]);
+        const options = optionsFor(history, ['i', 'x'], ['u1']);
+        const sut = limitList;
+
+        // Act
+        const result = await sut(history.ctx, options);
+
+        // Assert
+        expect([...result.uninteresting].map(history.name).sort()).toEqual([
+          'u1',
+          'u2',
+          'u3',
+          'u4',
+          'u5',
+          'u6',
+          'u7',
+          'u8',
+        ]);
+      });
+    });
+  });
+});
+
+describe('limitList typed excluded seeds', () => {
+  describe('Given an excluded seed popped before the included commit built on it', () => {
+    describe('When a typed walk reaches the seed through that commit', () => {
+      it('Then the seed is not typed again from the commit-graph', async () => {
+        // Arrange
+        const history = await buildHistory([
+          ['r', 100, []],
+          ['e', 900, ['r']],
+          ['t', 500, ['e']],
+        ]);
+        const objectTypes = createObjectTypeTable();
+        objectTypes.set(history.id('r'), 'blob');
+        const sut = limitList;
+
+        // Act
+        const result = await sut(history.ctx, optionsFor(history, ['t'], ['e'], { objectTypes }));
+
+        // Assert
+        expect(result.shown.map(history.name)).toEqual(['t']);
+      });
+    });
+  });
+});
+
+describe('limitList excluded parents reached late', () => {
+  describe('Given an excluded commit that an included commit reaches before the line marking it', () => {
+    describe('When its parent is dated before the line marking it', () => {
+      it('Then the parent is already excluded when it is queued, so it is never taken', async () => {
+        // Arrange
+        const history = await buildHistory([
+          ['c', 750, []],
+          ['b', 800, ['c']],
+          ['a', 700, ['b']],
+          ['e', 900, ['a']],
+          ['t', 880, ['b']],
+        ]);
+        const sut = limitList;
+
+        // Act
+        const result = await sut(history.ctx, optionsFor(history, ['t'], ['e']));
+
+        // Assert
+        expect(result.shown.map(history.name)).toEqual(['t']);
+        expect(result.dropped).toEqual([]);
       });
     });
   });
