@@ -488,3 +488,30 @@ describe('Given a context carrying a promisor remote and an absent .gitmodules b
     });
   });
 });
+
+describe.each([
+  { mode: 'with --full', options: {} },
+  { mode: 'without --full', options: { full: false } },
+])(
+  'Given a ref naming a promisor-pack object whose bytes hash to another id',
+  ({ mode, options }) => {
+    describe(`When fsck runs ${mode}`, () => {
+      it('Then the ref is not an invalid pointer, as the promisor pack holds the object', async () => {
+        // Arrange
+        const ctx = await initCtx();
+        const misnamed = `${'0'.repeat(39)}1` as ObjectId;
+        await writePromisorPack(ctx, [
+          { kind: 'base', type: 'blob', content: enc.encode('x'), idOverride: misnamed },
+        ]);
+        await writeRef(ctx, 'gone', misnamed);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx, options);
+
+        // Assert
+        expect(badRefTargets(result.findings)).toEqual([]);
+      });
+    });
+  },
+);

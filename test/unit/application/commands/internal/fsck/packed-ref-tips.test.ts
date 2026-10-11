@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../../src/adapters/memory/memory-adapter.js';
+import type { CachedGitObject } from '../../../../../../src/application/commands/internal/fsck/object-cache.js';
 import { assertRefTipsReadable } from '../../../../../../src/application/commands/internal/fsck/packed-ref-tips.js';
 import { looseObjectPath } from '../../../../../../src/application/primitives/path-layout.js';
 import { readObject } from '../../../../../../src/application/primitives/read-object.js';
@@ -238,6 +239,42 @@ describe('Given a ref tip no store holds whose read fails to inflate', () => {
 
       // Assert
       await expect(result).resolves.toBeUndefined();
+    });
+  });
+});
+
+describe('Given a ref tip the audit cache already decoded', () => {
+  describe('When ref tips are checked', () => {
+    it('Then the tip is not read again', async () => {
+      // Arrange
+      const { ctx, id } = await looseTip();
+      const cache = new Map<ObjectId, CachedGitObject>([[id, { type: 'blob' }]]);
+      const reads = vi.mocked(readObject);
+      reads.mockClear();
+
+      // Act
+      await sut(ctx, cache);
+
+      // Assert
+      expect(reads).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('Given a ref tip the audit cache holds as unreadable', () => {
+  describe('When ref tips are checked', () => {
+    it('Then the tip is read to find whether a store holds it', async () => {
+      // Arrange
+      const { ctx, id } = await looseTip();
+      const cache = new Map<ObjectId, CachedGitObject>([[id, null]]);
+      const reads = vi.mocked(readObject);
+      reads.mockClear();
+
+      // Act
+      await sut(ctx, cache);
+
+      // Assert
+      expect(reads).toHaveBeenCalledWith(ctx, id);
     });
   });
 });
