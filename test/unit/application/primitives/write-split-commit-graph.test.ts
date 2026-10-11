@@ -14,6 +14,7 @@ import { writeCommitGraph } from '../../../../src/application/primitives/write-c
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeSplitCommitGraph } from '../../../../src/application/primitives/write-split-commit-graph.js';
 import {
+  commitDataAt,
   parseCommitGraphLayer,
   positionOf,
   storedBloomFilter,
@@ -168,6 +169,69 @@ describe('writeSplitCommitGraph', () => {
         expect(layer.commitCount).toBe(3);
         expect(positionOf(layer, next)).toBeDefined();
         expect(await ctx.fs.exists(commitGraphLayerPath(gitDir, oldHash!))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a split layer holding the lower-ordered root and a new higher-ordered root of the same date', () => {
+    describe('When the split write folds them with a budget of one filter', () => {
+      it('Then the lower-ordered root gets the filter — pinned against git 2.55.0', async () => {
+        // Arrange — `commitGraph.changedPaths=true`, `commitGraph.maxNewFilters=1`,
+        // `git commit-graph write --reachable --split` over the two roots gives the
+        // lower object id the filter and the higher a zero-length one.
+        const ctx = await buildSeededContext();
+        const [low, high] = [await commitOn(ctx, [], 'a'), await commitOn(ctx, [], 'b')].sort() as [
+          ObjectId,
+          ObjectId,
+        ];
+        await pointRef(ctx, 'refs/heads/main', low);
+        await writeSplitCommitGraph(ctx);
+        await ctx.fs.appendUtf8(
+          `${commonGitDir(ctx)}/config`,
+          '[commitGraph]\n\tchangedPaths\n\tmaxNewFilters = 1\n',
+        );
+        await pointRef(ctx, 'refs/heads/next', high);
+        const sut = writeSplitCommitGraph;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const hashes = await chainHashes(ctx);
+        const layer = await readLayer(ctx, hashes[0]!);
+        const lengths = [low, high].map(
+          (id) => storedBloomFilter(layer, positionOf(layer, id)!)?.length,
+        );
+        expect(hashes).toHaveLength(1);
+        expect(lengths).toEqual([1, 0]);
+      });
+    });
+  });
+
+  describe('Given a single-file base of three linear commits and a child of its tip', () => {
+    describe('When the split write adds the child as a layer', () => {
+      it('Then the child carries the base tip level plus one and its corrected date past the base tip', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await linearHistory(ctx, 3);
+        await pointRef(ctx, 'refs/heads/main', ids[2]!);
+        await writeCommitGraph(ctx);
+        const next = await commitOn(ctx, [ids[2]!], 'next');
+        await pointRef(ctx, 'refs/heads/next', next);
+        const sut = writeSplitCommitGraph;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const [, tipHash] = await chainHashes(ctx);
+        const tip = await readLayer(ctx, tipHash!);
+        const at = positionOf(tip, next)!;
+        const level = commitDataAt(tip, at, { correctedCommitDates: false }).generation;
+        const corrected = commitDataAt(tip, at, { correctedCommitDates: true }).generation;
+        // git 2.55.0 (`commit-graph write --reachable`, then `--split=no-merge` over a new commit)
+        // writes the same level and corrected date for the child.
+        expect({ level, corrected }).toEqual({ level: 4, corrected: AUTHOR.timestamp + 3 });
       });
     });
   });
