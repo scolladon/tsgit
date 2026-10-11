@@ -25,6 +25,7 @@ describe('matchExplicitPush', () => {
     { raw: 'lt:newname', expected: { src: 'refs/tags/lt', dst: 'refs/tags/newname' } },
     { raw: 'lt', expected: { src: 'refs/tags/lt', dst: 'refs/tags/lt' } },
     { raw: 'main:fresh', expected: { src: 'refs/heads/main', dst: 'refs/heads/fresh' } },
+    { raw: 'main:foo/bar', expected: { src: 'refs/heads/main', dst: 'refs/heads/foo/bar' } },
     { raw: 'main:refs/custom/x', expected: { src: 'refs/heads/main', dst: 'refs/custom/x' } },
     { raw: 'HEAD:fresh', expected: { src: 'HEAD', dst: 'refs/heads/fresh' } },
     { raw: 'HEAD', expected: { src: 'HEAD', dst: 'refs/heads/main' } },
