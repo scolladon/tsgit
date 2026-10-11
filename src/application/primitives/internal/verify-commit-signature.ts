@@ -121,7 +121,7 @@ const spawnOrNothing = async (
       ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
     });
   } catch {
-    checkAborted(ctx);
+    // An abort that made the spawn throw is raised by the caller's post-spawn `checkAborted`.
     return undefined;
   }
 };
