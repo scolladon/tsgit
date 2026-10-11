@@ -190,7 +190,6 @@ const convertInTurn = (
 const closePool = async (state: PoolState): Promise<void> => {
   await state.queue;
   const filters = [...state.running.values()];
-  state.running.clear();
   await Promise.all(filters.map((filter) => filter.child.close()));
 };
 
