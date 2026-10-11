@@ -167,7 +167,7 @@ describe('verifyCommitSignature', () => {
     describe('When the signature is verified', () => {
       it('Then the primary key fingerprint is empty', async () => {
         // Arrange
-        const ctx = gpgContext(status('VALIDSIG FFFF'));
+        const ctx = gpgContext(status('VALIDSIG FFFF d 1 0 4 0 1 10 01'));
 
         // Act
         const result = await verifyCommitSignature(ctx, GPG_INPUT);
@@ -178,19 +178,17 @@ describe('verifyCommitSignature', () => {
     });
   });
 
-  describe('Given a BADSIG after a GOODSIG and a line without the gnupg prefix', () => {
+  describe('Given a GOODSIG followed by a BADSIG-looking line without the gnupg prefix', () => {
     describe('When the signature is verified', () => {
-      it('Then the later status wins and the unprefixed line is ignored', async () => {
+      it('Then the unprefixed line is ignored', async () => {
         // Arrange
-        const ctx = gpgContext(
-          `${status('GOODSIG K One')}GOODSIG K Ignored\n${status('BADSIG K Two', 'NEWSIG')}`,
-        );
+        const ctx = gpgContext(`${status('GOODSIG K One')}BADSIG K Ignored\n`);
 
         // Act
         const result = await verifyCommitSignature(ctx, GPG_INPUT);
 
         // Assert
-        expect(result).toMatchObject({ result: 'B', signer: 'Two' });
+        expect(result).toMatchObject({ result: 'G', key: 'K', signer: 'One' });
       });
     });
   });
@@ -1003,6 +1001,293 @@ describe('verifyCommitSignature', () => {
         // Assert
         expect(rig.requests).toHaveLength(2);
         expect(result).toMatchObject({ result: 'B', trust: 'never' });
+      });
+    });
+  });
+
+  const EMPTY_VERDICT = {
+    result: 'N',
+    key: '',
+    signer: '',
+    fingerprint: '',
+    primaryKeyFingerprint: '',
+    trust: 'undefined',
+  } as const;
+
+  describe.each([
+    { keyword: 'GOODSIG' },
+    { keyword: 'BADSIG' },
+    { keyword: 'ERRSIG' },
+    { keyword: 'EXPSIG' },
+    { keyword: 'EXPKEYSIG' },
+    { keyword: 'REVKEYSIG' },
+  ])('Given a $keyword status line with nothing after the keyword', ({ keyword }) => {
+    describe('When the signature is verified', () => {
+      it('Then it names no signature, as git matches the keyword with its trailing space', async () => {
+        // Arrange
+        const ctx = gpgContext(`[GNUPG:] ${keyword}\n`);
+        const sut = verifyCommitSignature;
+
+        // Act
+        const result = await sut(ctx, GPG_INPUT);
+
+        // Assert
+        expect(result).toMatchObject(EMPTY_VERDICT);
+      });
+    });
+  });
+
+  describe.each([
+    {
+      label: 'a key and no signer',
+      stdout: '[GNUPG:] GOODSIG K\n',
+      expected: { result: 'G', key: 'K\n', signer: '' },
+    },
+    {
+      label: 'a key whose line break runs into the next status line',
+      stdout: '[GNUPG:] GOODSIG K\n[GNUPG:] TRUST_FULLY 0 pgp\n',
+      expected: {
+        result: 'G',
+        key: 'K\n[GNUPG:]',
+        signer: 'TRUST_FULLY 0 pgp',
+        trust: 'undefined',
+      },
+    },
+    {
+      label: 'a key whose line break runs into a plain line',
+      stdout: '[GNUPG:] GOODSIG K\nfoo bar\n',
+      expected: { result: 'G', key: 'K\nfoo', signer: 'bar' },
+    },
+    {
+      label: 'an empty signer, which swallows the next line',
+      stdout: '[GNUPG:] GOODSIG K\n[GNUPG:] \n[GNUPG:] REVKEYSIG K J\n',
+      expected: { result: 'G', key: 'K\n[GNUPG:]', signer: '' },
+    },
+    {
+      label: 'an ERRSIG key running into a trust line that is still read',
+      stdout: '[GNUPG:] ERRSIG K\n[GNUPG:] TRUST_FULLY 0 pgp\n',
+      expected: { result: 'E', key: 'K\n[GNUPG:]', signer: '', trust: 'fully' },
+    },
+  ])('Given a status stream with $label', ({ stdout, expected }) => {
+    describe('When the signature is verified', () => {
+      it('Then the fields are read as git reads them', async () => {
+        // Arrange
+        const ctx = gpgContext(stdout);
+        const sut = verifyCommitSignature;
+
+        // Act
+        const result = await sut(ctx, GPG_INPUT);
+
+        // Assert
+        expect(result).toMatchObject(expected);
+      });
+    });
+  });
+
+  describe.each([
+    {
+      label: 'a GOODSIG then a BADSIG',
+      stdout: status('GOODSIG K1 J1', 'BADSIG K2 J2'),
+      trust: 'undefined',
+    },
+    {
+      label: 'a BADSIG then a GOODSIG',
+      stdout: status('BADSIG K1 J1', 'GOODSIG K2 J2'),
+      trust: 'undefined',
+    },
+    {
+      label: 'a trust level git does not know',
+      stdout: status('GOODSIG K J', 'TRUST_BOGUS 0'),
+      trust: 'undefined',
+    },
+    {
+      label: 'a trust level followed by a tab',
+      stdout: '[GNUPG:] GOODSIG K J\n[GNUPG:] TRUST_FULLY\t0\n',
+      trust: 'undefined',
+    },
+    {
+      label: 'a known trust level then one glued to a digit',
+      stdout: status('GOODSIG K J', 'TRUST_FULLY 0', 'TRUST_FULLY0'),
+      trust: 'fully',
+    },
+  ])('Given a status stream with $label', ({ stdout, trust }) => {
+    describe('When the signature is verified', () => {
+      it('Then the verdict is an error with no field but the trust read so far', async () => {
+        // Arrange
+        const ctx = gpgContext(stdout);
+        const sut = verifyCommitSignature;
+
+        // Act
+        const result = await sut(ctx, GPG_INPUT);
+
+        // Assert
+        expect(result).toMatchObject({ ...EMPTY_VERDICT, result: 'E', trust });
+      });
+    });
+  });
+
+  describe.each([
+    {
+      label: 'a fingerprint with no further field',
+      line: 'VALIDSIG FFFF',
+      expected: { fingerprint: 'FFFF\n', primaryKeyFingerprint: '' },
+    },
+    {
+      label: 'a primary key followed by more words',
+      line: 'VALIDSIG FFFF d 1 0 4 0 1 10 01 PPPP extra',
+      expected: { fingerprint: 'FFFF', primaryKeyFingerprint: 'PPPP extra' },
+    },
+    {
+      label: 'an empty fingerprint',
+      line: 'VALIDSIG  d 1 0 4 0 1 10 01 PPPP',
+      expected: { fingerprint: '', primaryKeyFingerprint: 'PPPP' },
+    },
+  ])('Given a VALIDSIG line with $label', ({ line, expected }) => {
+    describe('When the signature is verified', () => {
+      it('Then the fingerprints are read as git reads them', async () => {
+        // Arrange
+        const ctx = gpgContext(status('GOODSIG K J', line));
+        const sut = verifyCommitSignature;
+
+        // Act
+        const result = await sut(ctx, GPG_INPUT);
+
+        // Assert
+        expect(result).toMatchObject(expected);
+      });
+    });
+  });
+
+  const sshVerdict = (
+    stdout: string,
+    options: { readonly exit?: number; readonly stderr?: string; readonly find?: 'alice' | 'none' },
+  ) => {
+    const rig = harness((request) => {
+      if (commandLine(request).includes('find-principals')) {
+        return options.find === 'none'
+          ? { exitCode: 1, stderr: 'no matching principal\n' }
+          : { stdout: 'alice\n' };
+      }
+      return { exitCode: options.exit ?? 0, stdout, stderr: options.stderr ?? '' };
+    });
+    return verifyCommitSignature(rig.ctx, {
+      payload: PAYLOAD,
+      signature: SSH_SIG,
+      gpg: { ssh: { allowedSignersFile: '/allowed' } },
+    });
+  };
+
+  describe.each([
+    {
+      label: 'no key',
+      stdout: 'Good "git" signature for alice with ED25519\n',
+      expected: { result: 'B', signer: 'alice', trust: 'fully', key: '', fingerprint: '' },
+    },
+    {
+      label: 'an empty key',
+      stdout: 'Good "git" signature for alice with ED25519 key \n',
+      expected: { result: 'B', signer: 'alice', trust: 'fully', key: '' },
+    },
+    {
+      label: 'no algorithm separator',
+      stdout: 'Good "git" signature for alice\n',
+      expected: { result: 'B', signer: '', trust: 'never', key: '' },
+    },
+    {
+      label: 'a principal containing the separator',
+      stdout: 'Good "git" signature for a with b with ED25519 key SHA256:abc\n',
+      expected: { result: 'G', signer: 'a with b', key: 'SHA256:abc', fingerprint: 'SHA256:abc' },
+    },
+    {
+      label: 'a fingerprint repeating the key marker',
+      stdout: 'Good "git" signature for alice with ED25519 key SHA256:abc key x\n',
+      expected: { result: 'G', signer: 'alice', key: 'SHA256:abc key x' },
+    },
+    {
+      label: 'a key marker inside a word',
+      stdout: 'Good "git" signature for alice with monkey SHA256:x\n',
+      expected: { result: 'G', signer: 'alice', key: 'SHA256:x' },
+    },
+    {
+      label: 'a separator after the key',
+      stdout:
+        'Good "git" signature for alice with ED25519 key SHA256:q with X key SHA256:abc with z\n',
+      expected: {
+        result: 'B',
+        signer: 'alice with ED25519 key SHA256:q with X key SHA256:abc',
+        key: '',
+      },
+    },
+    {
+      label: 'trailing blanks',
+      stdout: 'Good "git" signature for alice with ED25519 key SHA256:abc \t\r\n',
+      expected: { result: 'G', signer: 'alice', key: 'SHA256:abc' },
+    },
+    {
+      label: 'a trailing separator',
+      stdout: 'Good "git" signature for alice with ED25519 key SHA256:q with \n',
+      expected: { result: 'G', signer: 'alice', key: 'SHA256:q with' },
+    },
+  ])('Given ssh-keygen printing a principal line with $label', ({ stdout, expected }) => {
+    describe('When the signature is verified', () => {
+      it('Then the verdict is the one git reaches', async () => {
+        // Arrange
+        const sut = sshVerdict;
+
+        // Act
+        const result = await sut(stdout, {});
+
+        // Assert
+        expect(result).toMatchObject(expected);
+      });
+    });
+  });
+
+  describe.each([
+    {
+      label: 'a good line without a key',
+      stdout: 'Good "git" signature with ED25519\n',
+      expected: { result: 'B', trust: 'undefined', key: '' },
+    },
+    {
+      label: 'a refusal that exits cleanly',
+      stdout: 'Could not verify signature\n',
+      expected: { result: 'B', trust: 'never', key: '' },
+    },
+    {
+      label: 'a good line cut short by a trailing separator',
+      stdout: 'Good "git" signature with \n',
+      expected: { result: 'B', trust: 'never', key: '' },
+    },
+  ])('Given a key matching no principal and ssh-keygen printing $label', ({ stdout, expected }) => {
+    describe('When the signature is verified', () => {
+      it('Then the verdict is the one git reaches', async () => {
+        // Arrange
+        const sut = sshVerdict;
+
+        // Act
+        const result = await sut(stdout, { find: 'none' });
+
+        // Assert
+        expect(result).toMatchObject(expected);
+      });
+    });
+  });
+
+  describe('Given ssh-keygen printing a key line without a line break and a warning on stderr', () => {
+    describe('When the signature is verified', () => {
+      it('Then the warning is not part of the fingerprint', async () => {
+        // Arrange
+        const sut = sshVerdict;
+
+        // Act
+        const result = await sut('Good "git" signature with ED25519 key SHA256:abc', {
+          find: 'none',
+          stderr: 'warn\n',
+        });
+
+        // Assert
+        expect(result).toMatchObject({ result: 'G', key: 'SHA256:abc', fingerprint: 'SHA256:abc' });
       });
     });
   });

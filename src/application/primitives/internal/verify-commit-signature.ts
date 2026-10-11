@@ -71,24 +71,26 @@ const NOT_VERIFIED: SignatureVerdict = {
   output: '',
 };
 
-const STATUS_RESULTS: Readonly<Record<string, SignatureResult>> = {
-  GOODSIG: 'G',
-  BADSIG: 'B',
-  ERRSIG: 'E',
-  EXPSIG: 'X',
-  EXPKEYSIG: 'Y',
-  REVKEYSIG: 'R',
-};
+/** The rows of git's status table that name a signature: the check string (with its trailing space), the result, and whether a signer follows the key. */
+const SIGNATURE_STATUSES: ReadonlyArray<readonly [string, SignatureResult, boolean]> = [
+  ['GOODSIG ', 'G', true],
+  ['BADSIG ', 'B', true],
+  ['ERRSIG ', 'E', false],
+  ['EXPSIG ', 'X', true],
+  ['EXPKEYSIG ', 'Y', true],
+  ['REVKEYSIG ', 'R', true],
+];
 
-const STATUS_TRUSTS: Readonly<Record<string, SignatureTrust>> = {
-  TRUST_UNDEFINED: 'undefined',
-  TRUST_NEVER: 'never',
-  TRUST_MARGINAL: 'marginal',
-  TRUST_FULLY: 'fully',
-  TRUST_ULTIMATE: 'ultimate',
-};
+const VALIDSIG_STATUS = 'VALIDSIG ';
+const TRUST_STATUS = 'TRUST_';
 
-const KEY_ONLY_STATUSES: ReadonlySet<string> = new Set(['ERRSIG']);
+const TRUST_LEVELS: ReadonlyMap<string, SignatureTrust> = new Map([
+  ['UNDEFINED', 'undefined'],
+  ['NEVER', 'never'],
+  ['MARGINAL', 'marginal'],
+  ['FULLY', 'fully'],
+  ['ULTIMATE', 'ultimate'],
+]);
 
 interface ToolRun {
   readonly exitCode: number;
@@ -150,33 +152,103 @@ const makeRunTool =
     };
   };
 
-const splitFirst = (text: string, separator: string): readonly [string, string] => {
-  const at = text.indexOf(separator);
-  return at < 0 ? [text, ''] : [text.slice(0, at), text.slice(at + separator.length)];
+const indexOrEnd = (text: string, char: string, from: number): number => {
+  const at = text.indexOf(char, from);
+  return at < 0 ? text.length : at;
 };
 
-const applyStatusLine = (verdict: SignatureVerdict, line: string): SignatureVerdict => {
-  if (!line.startsWith(GNUPG_PREFIX)) return verdict;
-  const [keyword, rest] = splitFirst(line.slice(GNUPG_PREFIX.length), ' ');
-  const result = STATUS_RESULTS[keyword];
-  if (result !== undefined) {
-    const [key, signer] = splitFirst(rest, ' ');
-    return { ...verdict, result, key, signer: KEY_ONLY_STATUSES.has(keyword) ? '' : signer };
-  }
-  const trust = STATUS_TRUSTS[keyword];
-  if (trust !== undefined) return { ...verdict, trust };
-  if (keyword !== 'VALIDSIG') return verdict;
-  const fields = rest.split(' ');
-  return {
-    ...verdict,
-    fingerprint: splitFirst(rest, ' ')[0],
-    primaryKeyFingerprint: fields[VALIDSIG_PRIMARY_FIELD] ?? '',
+/** A cursor into the status text, with what was read so far. */
+interface StatusScan {
+  readonly verdict: SignatureVerdict;
+  readonly signed: boolean;
+  readonly at: number;
+}
+
+/** git resumes one character past the start of the signer it read, so an empty signer swallows the next line. */
+const readSigner = (text: string, keyEnd: number, resume: number): readonly [string, number] => {
+  if (text[keyEnd] !== ' ') return ['', resume];
+  return [
+    text.slice(keyEnd + 1, indexOrEnd(text, '\n', keyEnd + 1)),
+    indexOrEnd(text, '\n', keyEnd + 2),
+  ];
+};
+
+/** git's key read: up to the next space, newlines included. */
+const signatureStep = (
+  scan: StatusScan,
+  text: string,
+  from: number,
+  [, result, withSigner]: (typeof SIGNATURE_STATUSES)[number],
+): StatusScan | undefined => {
+  if (scan.signed) return undefined;
+  const keyEnd = indexOrEnd(text, ' ', from);
+  const [signer, at] = withSigner ? readSigner(text, keyEnd, scan.at) : ['', scan.at];
+  const verdict = { ...scan.verdict, result, key: text.slice(from, keyEnd), signer };
+  return { verdict, signed: true, at };
+};
+
+/** The fingerprint runs to the next space, newlines included; the primary key is whatever follows the ninth space of the line that follows. */
+const validSigStep = (scan: StatusScan, text: string, from: number): StatusScan => {
+  const fingerprintEnd = indexOrEnd(text, ' ', from);
+  const line = text.slice(fingerprintEnd, indexOrEnd(text, '\n', fingerprintEnd));
+  const verdict = {
+    ...scan.verdict,
+    fingerprint: text.slice(from, fingerprintEnd),
+    primaryKeyFingerprint: line.split(' ').slice(VALIDSIG_PRIMARY_FIELD).join(' '),
   };
+  return { ...scan, verdict };
 };
 
-/** git's `parse_gpg_output`: later status lines override earlier ones. */
-const parseGpgStatus = (status: string, output: string): SignatureVerdict =>
-  status.split('\n').reduce(applyStatusLine, { ...NOT_VERIFIED, output });
+const trustStep = (scan: StatusScan, text: string, from: number): StatusScan | undefined => {
+  const end = Math.min(indexOrEnd(text, ' ', from), indexOrEnd(text, '\n', from));
+  const trust = TRUST_LEVELS.get(text.slice(from, end));
+  return trust === undefined ? undefined : { ...scan, verdict: { ...scan.verdict, trust } };
+};
+
+/** One status line at `start`; `undefined` is git's `goto error`. The scan resumes at the next newline unless a signer was read. */
+const statusStep = (scan: StatusScan, text: string, start: number): StatusScan | undefined => {
+  if (!text.startsWith(GNUPG_PREFIX, start)) {
+    return { ...scan, at: indexOrEnd(text, '\n', start + 1) };
+  }
+  const from = start + GNUPG_PREFIX.length;
+  const lineEnd = { ...scan, at: indexOrEnd(text, '\n', from + 1) };
+  const signature = SIGNATURE_STATUSES.find(([check]) => text.startsWith(check, from));
+  if (signature !== undefined) {
+    return signatureStep(lineEnd, text, from + signature[0].length, signature);
+  }
+  if (text.startsWith(VALIDSIG_STATUS, from)) {
+    return validSigStep(lineEnd, text, from + VALIDSIG_STATUS.length);
+  }
+  if (text.startsWith(TRUST_STATUS, from)) {
+    return trustStep(lineEnd, text, from + TRUST_STATUS.length);
+  }
+  return lineEnd;
+};
+
+/** git's `error:` label: a refused status leaves an `E` with nothing but the trust read so far. */
+const refused = (verdict: SignatureVerdict): SignatureVerdict => ({
+  ...verdict,
+  result: 'E',
+  key: '',
+  signer: '',
+  fingerprint: '',
+  primaryKeyFingerprint: '',
+});
+
+/** git's `parse_gpg_output`: one signature status at most; a malformed or repeated one refuses the lot. */
+const parseGpgStatus = (status: string, output: string): SignatureVerdict => {
+  let scan: StatusScan = { verdict: { ...NOT_VERIFIED, output }, signed: false, at: 0 };
+  while (scan.at < status.length) {
+    if (status[scan.at] === '\n') {
+      scan = { ...scan, at: scan.at + 1 };
+      continue;
+    }
+    const next = statusStep(scan, status, scan.at);
+    if (next === undefined) return refused(scan.verdict);
+    scan = next;
+  }
+  return scan.verdict;
+};
 
 const verifyWithGpgFamily = async (
   run: RunTool,
@@ -193,20 +265,32 @@ const verifyWithGpgFamily = async (
 };
 
 const BAD_SSH: SignatureVerdict = { ...NOT_VERIFIED, result: 'B', trust: 'never' };
+const SSH_PRINCIPAL_END = ' with ';
+const SSH_KEY_MARKER = 'key ';
+
+/** git's own `isspace` leaves out the vertical tab and the form feed. */
+const TRAILING_SPACE = /[ \t\r]+$/;
+
+const firstLine = (text: string): string =>
+  text.slice(0, indexOrEnd(text, '\n', 0)).replace(TRAILING_SPACE, '');
 
 /** git's `parse_ssh_output`: "Good "git" signature [for <principal>] with <algo> key <fingerprint>". */
-const parseSshOutput = (output: string): SignatureVerdict => {
-  const [line] = splitFirst(output, '\n');
+const parseSshOutput = (tool: ToolRun): SignatureVerdict => {
+  const output = tool.stdout + tool.stderr;
+  const line = firstLine(tool.stdout);
   const withPrincipal = line.startsWith(SSH_GOOD_FOR);
   if (!withPrincipal && !line.startsWith(SSH_GOOD_WITH)) return { ...BAD_SSH, output };
   const body = line.slice((withPrincipal ? SSH_GOOD_FOR : SSH_GOOD_WITH).length);
-  const [signer, keyPart] = withPrincipal ? splitFirst(body, ' with ') : ['', body];
-  const [, fingerprint] = splitFirst(keyPart, ' key ');
+  const principalEnd = body.lastIndexOf(SSH_PRINCIPAL_END);
+  if (withPrincipal && principalEnd < 0) return { ...BAD_SSH, output };
+  const algorithm = withPrincipal ? body.slice(principalEnd + SSH_PRINCIPAL_END.length) : body;
+  const keyAt = algorithm.indexOf(SSH_KEY_MARKER);
+  const fingerprint = keyAt < 0 ? '' : algorithm.slice(keyAt + SSH_KEY_MARKER.length);
   return {
     ...NOT_VERIFIED,
-    result: 'G',
+    result: fingerprint === '' ? 'B' : 'G',
     trust: withPrincipal ? 'fully' : 'undefined',
-    signer,
+    signer: withPrincipal ? body.slice(0, principalEnd) : '',
     key: fingerprint,
     fingerprint,
     output,
@@ -246,11 +330,9 @@ const verifyWithoutPrincipal = async (
   principalsStderr: string,
 ): Promise<SignatureVerdict> => {
   const tool = await run(program, ['-Y', 'check-novalidate', '-n', 'git', '-s', sigPath], payload);
-  if (tool.exitCode !== 0) return parseSshOutput(tool.stdout + tool.stderr);
-  const verdict = parseSshOutput(
-    tool.stdout + principalsStderr + NO_PRINCIPAL_NOTICE + tool.stderr,
-  );
-  return { ...verdict, signer: '', trust: 'undefined' };
+  const verdict = parseSshOutput(tool);
+  if (tool.exitCode !== 0) return verdict;
+  return { ...verdict, output: tool.stdout + principalsStderr + NO_PRINCIPAL_NOTICE + tool.stderr };
 };
 
 const verifyWithSsh = async (
@@ -275,7 +357,7 @@ const verifyWithSsh = async (
     (principal) => sshVerifyArgs(sigPath, allowed, principal, gpg?.revocationFile),
     payload,
   );
-  return parseSshOutput(verified.stdout + verified.stderr);
+  return parseSshOutput(verified);
 };
 
 type SignatureFormat = 'openpgp' | 'x509' | 'ssh';
