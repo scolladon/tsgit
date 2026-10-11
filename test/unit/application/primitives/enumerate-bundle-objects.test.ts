@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import {
   type BundleObjectClosure,
   enumerateBundleObjects,
 } from '../../../../src/application/primitives/enumerate-bundle-objects.js';
+import * as closureEngineModule from '../../../../src/application/primitives/internal/closure-engine.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -130,6 +131,59 @@ describe('enumerateBundleObjects', () => {
         expect(result.objects).toEqual([]);
         expect(result.boundary).toEqual([]);
         expect(result.uninteresting).toEqual(new Set());
+      });
+    });
+  });
+
+  describe('Given an empty wants list and a have', () => {
+    describe('When enumerateBundleObjects is called', () => {
+      it('Then nothing is walked, so nothing is flagged uninteresting', async () => {
+        // Arrange
+        const { ctx, commit1 } = await buildLinearFixture();
+        const sut = enumerateBundleObjects;
+
+        // Act
+        const result = await sut(ctx, { wants: [], haves: [commit1] });
+
+        // Assert
+        expect(result).toEqual({ objects: [], boundary: [], uninteresting: new Set() });
+      });
+    });
+  });
+
+  describe('Given a closure of exactly maxObjects objects', () => {
+    describe('When enumerateBundleObjects is called', () => {
+      it('Then it returns them all without refusing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobA = await makeBlob(ctx, 'A');
+        const tree1 = await makeTree(ctx, [treeEntry(BLOB_MODE, 'f.txt', blobA)]);
+        const commit1 = await makeCommit(ctx, tree1, [], 'c', 1);
+        const sut = enumerateBundleObjects;
+
+        // Act
+        const result = await sut(ctx, { wants: [commit1], haves: [], maxObjects: 3 });
+
+        // Assert
+        expect(sorted(idsOf(result.objects))).toEqual(sorted([commit1, tree1, blobA]));
+      });
+    });
+  });
+
+  describe('Given a have whose child is wanted', () => {
+    describe('When enumerateBundleObjects is called', () => {
+      it('Then the closure excludes the haves and the boundary', async () => {
+        // Arrange
+        const { ctx, commit1, commit3 } = await buildLinearFixture();
+        const closureSpy = vi.spyOn(closureEngineModule, 'computeClosure');
+        const sut = enumerateBundleObjects;
+
+        // Act
+        await sut(ctx, { wants: [commit3], haves: [commit1] });
+
+        // Assert
+        expect(closureSpy.mock.calls[0]?.[1].not).toEqual([commit1, commit1]);
+        vi.restoreAllMocks();
       });
     });
   });
