@@ -74,6 +74,7 @@ import { sanitizeMessage, stripComments } from './internal/commit-message.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { readCommitData, resolveHeadCommit, treeOf } from './internal/history-rewrite.js';
 import { clearMergeMsg, readMergeHead, writeOrigHead } from './internal/merge-state.js';
+import { isOriginallyEmpty } from './internal/original-empty.js';
 import { previousCheckoutArg } from './internal/prior-checkout.js';
 import { canFastForward } from './internal/rebase-fast-forward.js';
 import {
@@ -304,7 +305,10 @@ const replayOne = async (
   }
   const outcome = await mergeUnderLock(ctx, source, cData, ourId);
   if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
-  if (outcome.mergedTree === outcome.oursTree) return { kind: 'empty' };
+  // git keeps a commit that started empty and drops only one the replay made empty.
+  if (outcome.mergedTree === outcome.oursTree && !(await isOriginallyEmpty(ctx, cData))) {
+    return { kind: 'empty' };
+  }
   return {
     kind: 'committed',
     id: await commitPick(ctx, outcome.mergedTree, cData, ourId, reflogAction),

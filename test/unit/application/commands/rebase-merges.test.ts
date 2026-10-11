@@ -174,6 +174,38 @@ describe('rebaseRun with rebaseMerges', () => {
     });
   });
 
+  describe('Given a topic commit that starts empty, When rebased with rebaseMerges', () => {
+    it('Then the replay keeps it as an empty commit over the rebased parent', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await ctx.fs.appendUtf8(
+        `${ctx.layout.gitDir}/config`,
+        '\n[user]\n\tname = Ada\n\temail = a@x\n',
+      );
+      await commitFile(ctx, 'base');
+      await branchCreate(ctx, { name: 'topic' });
+      await checkout(ctx, { rev: 'topic' });
+      await commitFile(ctx, 't1');
+      await commit(ctx, { message: 'empty', author: AUTHOR, allowEmpty: true });
+      await checkout(ctx, { rev: 'main' });
+      await commitFile(ctx, 'u1');
+      await checkout(ctx, { rev: 'topic' });
+      const sut = rebaseRun;
+
+      // Act
+      const result = await sut(ctx, { upstream: 'main', rebaseMerges: true });
+
+      // Assert
+      expect(result.kind).toBe('rebased');
+      const kept = await readCommit(ctx, await resolveRef(ctx, 'refs/heads/topic' as RefName));
+      const parent = await readCommit(ctx, kept.parents[0]!);
+      expect(kept.message).toBe('empty\n');
+      expect(kept.tree).toBe(parent.tree);
+      expect(parent.message).toBe('t1\n');
+    });
+  });
+
   describe('Given the recreated merge conflicts', () => {
     describe('When rebased with rebaseMerges', () => {
       it('Then it stops on the merge with git-shaped state', async () => {

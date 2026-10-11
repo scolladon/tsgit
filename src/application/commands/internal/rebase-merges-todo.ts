@@ -4,12 +4,7 @@
  * the pure {@link makeScriptWithMerges} labels with.
  */
 import { subjectLine } from '../../../domain/objects/commit-message.js';
-import {
-  type Commit,
-  emptyTreeOid,
-  type ObjectId,
-  RefName,
-} from '../../../domain/objects/index.js';
+import { type ObjectId, RefName } from '../../../domain/objects/index.js';
 import {
   makeScriptWithMerges,
   type RebaseTodoLine,
@@ -18,7 +13,7 @@ import {
 import type { Context } from '../../../ports/context.js';
 import { abbreviateObjectId } from '../../primitives/abbreviate-object-id.js';
 import { getRefStore } from '../../primitives/ref-store.js';
-import { readCommitData, treeOf } from './history-rewrite.js';
+import { readCommitData } from './history-rewrite.js';
 import { walkRebaseRange } from './rebase-replay.js';
 
 const HEADS_PREFIX = 'refs/heads/';
@@ -28,14 +23,6 @@ export interface RebaseMergesTodoInput {
   readonly head: ObjectId;
   readonly rebaseCousins: boolean;
 }
-
-/** git's `is_original_commit_empty`: the tree equals the first parent's (or the empty tree). */
-const isOriginallyEmpty = async (ctx: Context, commit: Commit): Promise<boolean> => {
-  const parent = commit.data.parents[0];
-  const parentTree =
-    parent !== undefined ? await treeOf(ctx, parent) : emptyTreeOid(ctx.hashConfig);
-  return commit.data.tree === parentTree;
-};
 
 /** `refs/heads/` decorations by commit; the last name in ref order wins, as git's list does. */
 const branchNamesOf = async (ctx: Context): Promise<ReadonlyMap<ObjectId, string>> => {
@@ -72,7 +59,7 @@ export const rebaseMergesTodo = async (
   const range = await walkRebaseRange(ctx, input);
   const commits: ScriptCommit[] = [];
   for (const commit of range.headSide) {
-    const skipped = (await range.isUpstream(commit)) || (await isOriginallyEmpty(ctx, commit));
+    const skipped = await range.isUpstream(commit);
     const subject = subjectLine(commit.data.message);
     commits.push({ id: commit.id, parents: commit.data.parents, subject, skipped });
   }

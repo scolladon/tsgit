@@ -151,4 +151,32 @@ describe('rebaseMergesTodo', () => {
       });
     });
   });
+
+  describe('Given a topic commit that starts empty', () => {
+    describe('When the todo is generated', () => {
+      it('Then the empty commit is picked, as git keeps it by default', async () => {
+        // Arrange
+        const ctx = await newRepo();
+        await commitFile(ctx, 'base');
+        await branchCreate(ctx, { name: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
+        const t1 = await commitFile(ctx, 't1');
+        const empty = (await commit(ctx, { message: 'empty', author: AUTHOR, allowEmpty: true }))
+          .id;
+        await checkout(ctx, { rev: 'main' });
+        await commitFile(ctx, 'u1');
+        await checkout(ctx, { rev: 'topic' });
+        const sut = todoOf;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.filter((line) => line.action === 'pick')).toEqual([
+          { action: 'pick', oid: t1, subject: 't1' },
+          { action: 'pick', oid: empty, subject: 'empty' },
+        ]);
+      });
+    });
+  });
 });

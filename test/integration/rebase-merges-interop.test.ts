@@ -135,6 +135,18 @@ const cousin: Shape = (dir) => {
   dated(dir, 'checkout', '-q', 'topic');
 };
 
+/** topic: t1, a commit that starts empty, t3; main advances with u1. */
+const withEmptyCommit: Shape = (dir) => {
+  commitFile(dir, 'base');
+  dated(dir, 'checkout', '-q', '-b', 'topic');
+  commitFile(dir, 't1');
+  dated(dir, 'commit', '-q', '--allow-empty', '-m', 'empty');
+  commitFile(dir, 't3');
+  dated(dir, 'checkout', '-q', 'main');
+  commitFile(dir, 'u1');
+  dated(dir, 'checkout', '-q', 'topic');
+};
+
 const setUp = (label: string, shape: Shape) => {
   const dirs = {
     ours: path.join(root, `${label}-ours`),
@@ -245,6 +257,22 @@ describe.skipIf(!GIT_AVAILABLE)('rebase --rebase-merges interop', () => {
 
         // Act
         await sut(dirs, args, { upstream: 'main', rebaseMerges });
+
+        // Assert
+        expect(state(dirs.ours)).toEqual(state(dirs.theirs));
+      });
+    });
+  });
+
+  describe('Given a topic commit that starts empty', () => {
+    describe('When both tools rebase it with merges', () => {
+      it('Then both keep it as an empty commit', async () => {
+        // Arrange
+        const dirs = setUp('empty', withEmptyCommit);
+        const sut = rebaseBoth;
+
+        // Act
+        await sut(dirs, ['-r'], { upstream: 'main', rebaseMerges: true });
 
         // Assert
         expect(state(dirs.ours)).toEqual(state(dirs.theirs));
