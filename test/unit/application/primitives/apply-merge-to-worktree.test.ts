@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   applyMergeToWorktree,
+  conflictResultTree,
   writeMarkedConflict,
 } from '../../../../src/application/primitives/apply-merge-to-worktree.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
@@ -1726,6 +1727,190 @@ describe('applyMergeToWorktree — a clean side the alternate refuses to serve',
         expect((failure as TsgitError).data).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX' });
         expect((await ctx.fs.read(`${ctx.layout.workDir}/b`)).length).toBe(0);
         expect(chmod).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
+describe('conflictResultTree', () => {
+  const treeOf = (ctx: Context, entries: ReadonlyArray<[FileMode, string, ObjectId]>) =>
+    treeWith(
+      ctx,
+      entries.map(([mode, path, id]) => treeEntry(mode, path as FilePath, id)),
+    );
+
+  const resultOf = (ctx: Context, conflict: MergeConflict) =>
+    conflictResultTree(ctx, [], [conflict], []);
+
+  describe('Given a conflict whose path survives on one side', () => {
+    describe('When only their side holds a blob', () => {
+      it('Then the path holds their blob', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const theirs = await writeBlob(ctx, 'theirs\n');
+        const conflict: MergeConflict = {
+          type: 'modify-delete',
+          path: 'f' as FilePath,
+          theirId: theirs,
+          theirMode: FILE_MODE.REGULAR,
+          ourMode: FILE_MODE.REGULAR,
+        };
+        const sut = resultOf;
+
+        // Act
+        const result = await sut(ctx, conflict);
+
+        // Assert
+        expect(result).toBe(await treeOf(ctx, [[FILE_MODE.REGULAR, 'f', theirs]]));
+      });
+    });
+
+    describe('When both sides hold a blob', () => {
+      it('Then the path holds our blob', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ours = await writeBlob(ctx, 'ours\n');
+        const theirs = await writeBlob(ctx, 'theirs\n');
+        const conflict: MergeConflict = {
+          type: 'modify-delete',
+          path: 'f' as FilePath,
+          ourId: ours,
+          theirId: theirs,
+          ourMode: FILE_MODE.REGULAR,
+          theirMode: FILE_MODE.REGULAR,
+        };
+        const sut = resultOf;
+
+        // Act
+        const result = await sut(ctx, conflict);
+
+        // Assert
+        expect(result).toBe(await treeOf(ctx, [[FILE_MODE.REGULAR, 'f', ours]]));
+      });
+    });
+  });
+
+  describe('Given a conflict of a type whose path no side survives', () => {
+    describe('When only their side holds a blob', () => {
+      it('Then the path is left out of the tree', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const theirs = await writeBlob(ctx, 'theirs\n');
+        const conflict: MergeConflict = {
+          type: 'content',
+          path: 'f' as FilePath,
+          theirId: theirs,
+          theirMode: FILE_MODE.REGULAR,
+          ourMode: FILE_MODE.REGULAR,
+        };
+        const sut = resultOf;
+
+        // Act
+        const result = await sut(ctx, conflict);
+
+        // Assert
+        expect(result).toBe(await treeOf(ctx, []));
+      });
+    });
+  });
+
+  describe('Given a distinct-types conflict recording a path per side', () => {
+    describe('When the result tree is built', () => {
+      it('Then each side holds its blob at its own path', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ours = await writeBlob(ctx, 'ours\n');
+        const theirs = await writeBlob(ctx, 'theirs\n');
+        const conflict: MergeConflict = {
+          type: 'distinct-types',
+          path: 'f' as FilePath,
+          ourPath: 'f' as FilePath,
+          ourId: ours,
+          ourMode: FILE_MODE.REGULAR,
+          theirPath: 'f~side' as FilePath,
+          theirId: theirs,
+          theirMode: FILE_MODE.EXECUTABLE,
+        };
+        const sut = resultOf;
+
+        // Act
+        const result = await sut(ctx, conflict);
+
+        // Assert
+        expect(result).toBe(
+          await treeOf(ctx, [
+            [FILE_MODE.REGULAR, 'f', ours],
+            [FILE_MODE.EXECUTABLE, 'f~side', theirs],
+          ]),
+        );
+      });
+    });
+
+    describe('When only our side is recorded', () => {
+      it('Then only our blob is in the tree', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ours = await writeBlob(ctx, 'ours\n');
+        const conflict: MergeConflict = {
+          type: 'distinct-types',
+          path: 'f' as FilePath,
+          ourPath: 'f' as FilePath,
+          ourId: ours,
+          ourMode: FILE_MODE.REGULAR,
+        };
+        const sut = resultOf;
+
+        // Act
+        const result = await sut(ctx, conflict);
+
+        // Assert
+        expect(result).toBe(await treeOf(ctx, [[FILE_MODE.REGULAR, 'f', ours]]));
+      });
+    });
+
+    describe('When only their side is recorded', () => {
+      it('Then only their blob is in the tree', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const theirs = await writeBlob(ctx, 'theirs\n');
+        const conflict: MergeConflict = {
+          type: 'distinct-types',
+          path: 'f' as FilePath,
+          theirPath: 'f~side' as FilePath,
+          theirId: theirs,
+          theirMode: FILE_MODE.REGULAR,
+        };
+        const sut = resultOf;
+
+        // Act
+        const result = await sut(ctx, conflict);
+
+        // Assert
+        expect(result).toBe(await treeOf(ctx, [[FILE_MODE.REGULAR, 'f~side', theirs]]));
+      });
+    });
+  });
+
+  describe('Given a content conflict whose sides differ in mode', () => {
+    describe('When no merged mode is recorded', () => {
+      it('Then the path takes our mode', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ours = await writeBlob(ctx, 'ours\n');
+        const conflict: MergeConflict = {
+          type: 'content',
+          path: 'f' as FilePath,
+          ourId: ours,
+          ourMode: FILE_MODE.REGULAR,
+          theirMode: FILE_MODE.EXECUTABLE,
+        };
+        const sut = resultOf;
+
+        // Act
+        const result = await sut(ctx, conflict);
+
+        // Assert
+        expect(result).toBe(await treeOf(ctx, [[FILE_MODE.REGULAR, 'f', ours]]));
       });
     });
   });
