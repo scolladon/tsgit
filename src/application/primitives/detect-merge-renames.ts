@@ -103,6 +103,7 @@ const RENAME_LIMIT_WARNING = 'exhaustive rename detection was skipped due to too
 
 /** git's `too_many_rename_candidates` over the sources and destinations the exact pass left. */
 const neededLimit = (left: ReadonlyArray<DiffChange>, limit: number): number => {
+  // Stryker disable next-line EqualityOperator: equivalent — `!==` swaps sources and destinations (left holds only adds and deletes), and both their product and their max are symmetric.
   const sources = left.filter((change) => change.type === 'delete').length;
   const destinations = left.length - sources;
   return sources * destinations > limit * limit ? Math.max(sources, destinations) : 0;
