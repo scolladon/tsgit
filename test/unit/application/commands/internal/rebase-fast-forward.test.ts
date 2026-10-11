@@ -30,22 +30,24 @@ interface History {
   readonly line: ObjectId;
   readonly side: ObjectId;
   readonly merge: ObjectId;
+  readonly onMerge: ObjectId;
   readonly crossA: ObjectId;
   readonly crossB: ObjectId;
   readonly broken: ObjectId;
 }
 
-/** root ← line; root ← side; merge of line and side; crossA, crossB criss-cross line and side; broken names a missing parent. */
+/** root ← line; root ← side; merge of line and side, with onMerge on top of it; crossA, crossB criss-cross line and side; broken names a missing parent. */
 const history = async (): Promise<History> => {
   const ctx = createMemoryContext();
   const root = await commitOn(ctx, 'root', []);
   const line = await commitOn(ctx, 'line', [root]);
   const side = await commitOn(ctx, 'side', [root]);
   const merge = await commitOn(ctx, 'merge', [line, side]);
+  const onMerge = await commitOn(ctx, 'onMerge', [merge]);
   const crossA = await commitOn(ctx, 'crossA', [line, side]);
   const crossB = await commitOn(ctx, 'crossB', [side, line]);
   const broken = await commitOn(ctx, 'broken', [MISSING]);
-  return { ctx, root, line, side, merge, crossA, crossB, broken };
+  return { ctx, root, line, side, merge, onMerge, crossA, crossB, broken };
 };
 
 const refusalOf = (run: () => Promise<unknown>): Promise<unknown> =>
@@ -161,6 +163,12 @@ describe('isLinearHistory', () => {
     { label: 'reaching from through single parents', from: 'root', to: 'line', linear: true },
     { label: 'reaching the root before from', from: 'side', to: 'line', linear: true },
     { label: 'crossing a merge', from: 'root', to: 'merge', linear: false },
+    {
+      label: 'stopping at from before a merge below it',
+      from: 'merge',
+      to: 'onMerge',
+      linear: true,
+    },
   ] as const)('Given a first-parent chain $label', ({ from, to, linear }) => {
     describe('When its linearity is checked', () => {
       it("Then it answers as git's is_linear_history does", async () => {

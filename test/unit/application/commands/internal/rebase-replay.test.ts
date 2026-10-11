@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { resolveRebaseReplay } from '../../../../../src/application/commands/internal/rebase-replay.js';
+import {
+  resolveRebaseReplay,
+  walkRebaseRange,
+} from '../../../../../src/application/commands/internal/rebase-replay.js';
 import { createCommit } from '../../../../../src/application/primitives/create-commit.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
@@ -151,6 +154,33 @@ describe('resolveRebaseReplay', () => {
 
         // Assert
         expect(history.names(result)).toEqual(replayed);
+      });
+    });
+  });
+});
+
+describe('walkRebaseRange', () => {
+  describe('Given upstream and head that criss-cross over two merge bases', () => {
+    describe('When the range is walked', () => {
+      it('Then every merge base is a bottom of the walk', async () => {
+        // Arrange
+        const history = await buildHistory([
+          ['root', 100, []],
+          ['a1', 200, ['root']],
+          ['b1', 300, ['root']],
+          ['up', 400, ['a1', 'b1']],
+          ['head', 500, ['b1', 'a1']],
+        ]);
+        const sut = walkRebaseRange;
+
+        // Act
+        const result = await sut(history.ctx, {
+          upstream: history.id('up'),
+          head: history.id('head'),
+        });
+
+        // Assert
+        expect([...history.names(result.bases)].sort()).toEqual(['a1', 'b1']);
       });
     });
   });

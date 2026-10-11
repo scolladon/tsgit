@@ -136,6 +136,17 @@ describe('rebase-state', () => {
         expect(await read(ctx, 'rewritten-list')).toBe(`${T1} ${NEW1}\n`);
       });
 
+      it('Then no refs-to-delete file is written when no label was executed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRebaseStop(ctx, STOP);
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/refs-to-delete`)).toBe(false);
+      });
+
       it('Then the empty marker files are written', async () => {
         // Arrange
         const ctx = createMemoryContext();
