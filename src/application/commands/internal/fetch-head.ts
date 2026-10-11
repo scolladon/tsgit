@@ -44,7 +44,7 @@ const fetchHeadPath = (ctx: Context): string => `${ctx.layout.gitDir}/${FETCH_HE
 export const fetchHeadUrl = (url: string): string => {
   const anonymized = anonymizeRemoteUrl(url);
   let end = anonymized.length;
-  while (end > 0 && anonymized[end - 1] === '/') end -= 1;
+  while (anonymized[end - 1] === '/') end -= 1;
   const trimmed = anonymized.slice(0, end);
   const keepsSuffix = end - 1 <= GIT_SUFFIX_MIN_LAST_INDEX || !trimmed.endsWith(GIT_SUFFIX);
   return keepsSuffix ? trimmed : trimmed.slice(0, -GIT_SUFFIX.length);
@@ -98,7 +98,7 @@ export const writeFetchHead = async (ctx: Context, content: string): Promise<voi
 };
 
 const parseLine = (text: string): FetchHeadLine => {
-  const [id = '', marker, ...description] = text.split(TAB);
+  const [id, marker, ...description] = text.split(TAB) as [string, ...string[]];
   return {
     id: ObjectIdFactory.from(id),
     forMerge: marker !== NOT_FOR_MERGE,
