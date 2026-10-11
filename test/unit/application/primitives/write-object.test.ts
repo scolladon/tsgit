@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { freshenObject } from '../../../../src/application/primitives/internal/freshen-object.js';
+import { probeLooseOid } from '../../../../src/application/primitives/internal/loose-oid-cache.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import {
   writeLooseObject,
   writeObject,
 } from '../../../../src/application/primitives/write-object.js';
-import { TsgitError } from '../../../../src/domain/error.js';
+import { fileExists, TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
 import { buildSeededContext, seedMaxTreeDepth } from './fixtures.js';
 import { writeSyntheticPack } from './pack-fixture.js';
@@ -487,6 +488,34 @@ describe('writeObject', () => {
         expect(
           await ctx.fs.exists(`${ctx.layout.gitDir}/objects/${id.slice(0, 2)}/${id.slice(2)}`),
         ).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a racing writer that created the loose file after the freshen probe', () => {
+    describe('When writeObject finds the file already there', () => {
+      it('Then the loose-object cache lists the object', async () => {
+        // Arrange
+        const blob: Blob = { type: 'blob', content: new Uint8Array([42]), id: '' as ObjectId };
+        const id = await writeObject(await buildSeededContext(), blob);
+        const base = await buildSeededContext();
+        await probeLooseOid(base, `${id.slice(0, 2)}${'0'.repeat(38)}` as ObjectId);
+        const ctx = {
+          ...base,
+          fs: {
+            ...base.fs,
+            writeExclusive: async (target: string, data: Uint8Array) => {
+              await base.fs.write(target, data);
+              throw fileExists(target);
+            },
+          },
+        };
+        const sut = writeObject;
+        // Act
+        await sut(ctx, blob);
+
+        // Assert
+        expect(await probeLooseOid(ctx, id)).toBe(true);
       });
     });
   });
