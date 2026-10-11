@@ -14,6 +14,7 @@ import {
   resolveObjectWithSize,
   SINGLE_PASS_INFLATE_CAP,
 } from '../../../../src/application/primitives/object-resolver.js';
+import { getObjectStore } from '../../../../src/application/primitives/object-store.js';
 import {
   createPackRegistry,
   deltaBaseCacheKey,
@@ -5262,6 +5263,42 @@ describe('object-resolver', () => {
           );
           expect(looseReadCalls).toEqual([]);
         });
+      });
+    });
+  });
+});
+
+describe('resolveObject through a primary and an alternate', () => {
+  describe('Given a primary loose copy pruned out-of-band while the alternate holds the object', () => {
+    describe('When the object is resolved again after the primary was found empty', () => {
+      it('Then the primary file is not read a second time', async () => {
+        // Arrange
+        const primaryObjects = '/repo/.git/objects';
+        const altObjects = '/repo/alt/objects';
+        const ctx = createMemoryContext({
+          files: { [`${primaryObjects}/info/alternates`]: ENC.encode(`${altObjects}\n`) },
+        });
+        await ctx.fs.mkdir(altObjects);
+        const bytes = new Uint8Array([...serializeHeader('blob', 4), ...ENC.encode('data')]);
+        const id = (await ctx.hash.hashHex(bytes)) as ObjectId;
+        const compressed = await ctx.compressor.deflate(bytes);
+        const primaryPath = `${primaryObjects}/${computeLooseObjectPath(id)}`;
+        await ctx.fs.write(primaryPath, compressed);
+        await ctx.fs.write(`${altObjects}/${computeLooseObjectPath(id)}`, compressed);
+        const store = await getObjectStore(ctx);
+        await resolveObject(ctx, store, id, true);
+        await ctx.fs.rm(primaryPath);
+        ctx.deltaCache.delete(id);
+        await resolveObject(ctx, store, id, true);
+        ctx.deltaCache.delete(id);
+        const read = vi.spyOn(ctx.fs, 'read');
+
+        // Act
+        const sut = resolveObject;
+        await sut(ctx, store, id, true);
+
+        // Assert
+        expect(read.mock.calls.map(([path]) => path)).not.toContain(primaryPath);
       });
     });
   });

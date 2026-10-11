@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import * as configReadMod from '../../../../src/application/primitives/config-read.js';
+import * as repoSettingsGateMod from '../../../../src/application/primitives/internal/repo-settings-gate.js';
 import {
   assertEverySourceLoadable,
   everySourceLoadable,
@@ -161,6 +162,24 @@ describe('getObjectStore', () => {
     });
   });
 
+  describe('Given a session whose repo-settings verdict is already settled', () => {
+    describe('When getObjectStore is called again', () => {
+      it('Then the verdict is not asked for again', async () => {
+        // Arrange
+        const ctx = contextWithAlternates();
+        await getObjectStore(ctx);
+        const assertValid = vi.spyOn(repoSettingsGateMod, 'assertRepoSettingsValid');
+
+        // Act
+        const sut = getObjectStore;
+        await sut(ctx);
+
+        // Assert
+        expect(assertValid).not.toHaveBeenCalled();
+      });
+    });
+  });
+
   describe('Given a store not yet resolved', () => {
     describe('When peekObjectStore', () => {
       it('Then undefined before resolution and the instance after', async () => {
@@ -279,6 +298,65 @@ describe('getObjectStore', () => {
 
         // Assert
         expect(result.sources.map((s) => s.objectsDir)).toEqual([PRIMARY, '/repo/a/objects']);
+      });
+    });
+  });
+
+  describe('Given a primary list rewritten after each of two re-resolutions', () => {
+    describe('When refresh then getObjectStore, twice', () => {
+      it('Then each rewrite is picked up', async () => {
+        // Arrange
+        const ctx = contextWithAlternates('/repo/a/objects\n');
+        await ctx.fs.mkdir('/repo/a/objects');
+        await ctx.fs.mkdir('/repo/b/objects');
+        await ctx.fs.mkdir('/repo/c/objects');
+        const sut = getObjectStore;
+        const store = await sut(ctx);
+        await ctx.fs.writeUtf8(LIST, '/repo/a/objects\n/repo/b/objects\n');
+        store.refresh();
+        await sut(ctx);
+        await ctx.fs.writeUtf8(LIST, '/repo/a/objects\n/repo/b/objects\n/repo/c/objects\n');
+
+        // Act
+        store.refresh();
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.sources.map((s) => s.objectsDir)).toEqual([
+          PRIMARY,
+          '/repo/a/objects',
+          '/repo/b/objects',
+          '/repo/c/objects',
+        ]);
+      });
+    });
+  });
+
+  describe('Given two held alternates each reporting an unusable entry and a list reordered twice', () => {
+    describe('When refresh then getObjectStore after each reorder', () => {
+      it("Then the diagnostics follow the current list's order, not the previous read's", async () => {
+        // Arrange
+        const ctx = contextWithAlternates('/repo/a/objects\n/repo/b/objects\n');
+        await ctx.fs.mkdir('/repo/a/objects');
+        await ctx.fs.mkdir('/repo/b/objects');
+        await ctx.fs.writeUtf8('/repo/a/objects/info/alternates', '/repo/missing-a/objects\n');
+        await ctx.fs.writeUtf8('/repo/b/objects/info/alternates', '/repo/missing-b/objects\n');
+        const sut = getObjectStore;
+        const store = await sut(ctx);
+        await ctx.fs.writeUtf8(LIST, '/repo/b/objects\n/repo/a/objects\n');
+        store.refresh();
+        await sut(ctx);
+        await ctx.fs.writeUtf8(LIST, '/repo/a/objects\n/repo/b/objects\n');
+
+        // Act
+        store.refresh();
+        const result = await sut(ctx);
+
+        // Assert
+        expect(unusable(result.diagnostics)).toEqual([
+          { path: '/repo/missing-a/objects', listedIn: '/repo/a/objects' },
+          { path: '/repo/missing-b/objects', listedIn: '/repo/b/objects' },
+        ]);
       });
     });
   });
