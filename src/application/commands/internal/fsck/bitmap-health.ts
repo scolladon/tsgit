@@ -58,7 +58,6 @@ async function packBitmapFindings(
 ): Promise<ReadonlyArray<FsckFinding>> {
   const findings: FsckFinding[] = [];
   for (const pack of await source.registry.all()) {
-    if (!pack.hasBitmap) continue;
     const load = await pack.bitmapBytes();
     findings.push(...(await checkBitmapLoad(ctx, attribution, `${pack.name}.bitmap`, load)));
   }
