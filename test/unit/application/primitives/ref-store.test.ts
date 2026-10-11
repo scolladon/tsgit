@@ -26,7 +26,7 @@ import {
   buildReftable,
   buildReftableHeader,
 } from '../../../fixtures/refs/reftable-writers.js';
-import { buildSeededContext, instrumentedContext } from './fixtures.js';
+import { buildSeededContext, instrumentedContext, writeForgedTag } from './fixtures.js';
 import { commonReftableDir, withReftableStorage, writeReftableFiles } from './reftable-fixtures.js';
 
 /** A single-record ref-block table naming `refName -> id`. */
@@ -3876,6 +3876,43 @@ describe('ref-store', () => {
 
         // Assert
         expect(result).toEqual({ kind: 'direct', id: 'bb'.repeat(20) });
+      });
+    });
+  });
+
+  describe.each([
+    {
+      shape: 'a two-tag cycle through the ref target',
+      links: [
+        { from: 'a1', to: 'b2' },
+        { from: 'b2', to: 'a1' },
+      ],
+      depth: 2,
+    },
+    {
+      shape: 'a tail leading into a two-tag cycle',
+      links: [
+        { from: 'a1', to: 'b2' },
+        { from: 'b2', to: 'c3' },
+        { from: 'c3', to: 'b2' },
+      ],
+      depth: 3,
+    },
+  ])('Given a forged tag chain forming $shape', ({ links, depth }) => {
+    describe('When packRefs peels the tag ref', () => {
+      it('Then it refuses with REF_CHAIN_TOO_DEEP counting every tag it visited', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idOf = (stem: string): ObjectId => stem.repeat(20) as ObjectId;
+        for (const { from, to } of links) await writeForgedTag(ctx, idOf(from), idOf(to));
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/forged`, `${idOf('a1')}\n`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const refusal = await sut.packRefs().catch((error: TsgitError) => error.data);
+
+        // Assert
+        expect(refusal).toEqual({ code: 'REF_CHAIN_TOO_DEEP', depth, chain: [] });
       });
     });
   });

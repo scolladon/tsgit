@@ -320,19 +320,30 @@ export async function writeRawObjectBytes(
 const FORGED_TAG_ID = 'a1'.repeat(20) as ObjectId;
 
 /**
- * Plant a loose tag naming itself under an id its bytes do not hash to — a
- * loop only a store read without hash verification can hold.
+ * Plant a loose tag naming `target` under `id`, an id its bytes do not hash
+ * to — links a chain only a store read without hash verification can follow.
  */
-export async function writeForgedTagLoop(ctx: Context): Promise<ObjectId> {
+export async function writeForgedTag(
+  ctx: Context,
+  id: ObjectId,
+  target: ObjectId,
+): Promise<ObjectId> {
   const content = new TextEncoder().encode(
-    `object ${FORGED_TAG_ID}\ntype tag\ntag loop\ntagger A <a@a> 0 +0000\n\nloop\n`,
+    `object ${target}\ntype tag\ntag loop\ntagger A <a@a> 0 +0000\n\nloop\n`,
   );
   const header = serializeHeader('tag', content.length);
   const bytes = new Uint8Array([...header, ...content]);
-  const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(FORGED_TAG_ID)}`;
+  const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
   await ctx.fs.write(loosePath, await ctx.compressor.deflate(bytes));
-  return FORGED_TAG_ID;
+  return id;
 }
+
+/**
+ * Plant a loose tag naming itself under an id its bytes do not hash to — a
+ * loop only a store read without hash verification can hold.
+ */
+export const writeForgedTagLoop = (ctx: Context): Promise<ObjectId> =>
+  writeForgedTag(ctx, FORGED_TAG_ID, FORGED_TAG_ID);
 
 /**
  * Overwrite an already-hashed loose object's on-disk file with a header
