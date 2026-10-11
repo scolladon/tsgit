@@ -4445,6 +4445,105 @@ describe('Given a reflog entry naming an unreadable (empty-file) loose object', 
   });
 });
 
+describe('Given a packed object whose loose copy hashes to another id', () => {
+  const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904' as ObjectId;
+  const IDENT = 'a <a@a> 1700000000 +0000';
+  const plantMisHashedLooseCopy = async (ctx: Context, id: ObjectId, other: ObjectId) => {
+    const otherPath = looseObjectPath(ctx.layout.gitDir, other);
+    const bytes = await ctx.fs.read(otherPath);
+    await ctx.fs.rm(otherPath);
+    await ctx.fs.write(looseObjectPath(ctx.layout.gitDir, id), bytes);
+  };
+
+  describe('When it is a root commit', () => {
+    it('Then the pack copy is still reported as a root beside the hash-mismatch', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const ids = await writeSyntheticPack(ctx, 'p', [
+        { kind: 'base', type: 'tree', content: new Uint8Array(0) },
+        {
+          kind: 'base',
+          type: 'commit',
+          content: enc.encode(`tree ${EMPTY_TREE}\nauthor ${IDENT}\ncommitter ${IDENT}\n\nc\n`),
+        },
+      ]);
+      const packed = ids[1] as ObjectId;
+      const other = await writeObject(ctx, makeCommit(EMPTY_TREE, [], 'd'));
+      await plantMisHashedLooseCopy(ctx, packed, other);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings).toContainEqual({ type: 'hash-mismatch', id: packed, actual: other });
+      expect(result.findings).toContainEqual({ type: 'root', id: packed });
+    });
+  });
+
+  describe('When no pack holds it', () => {
+    it('Then no root is reported for the mis-hashed loose copy', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const looseOnly = await writeObject(ctx, makeCommit(EMPTY_TREE, [], 'c'));
+      const other = await writeObject(ctx, makeCommit(EMPTY_TREE, [], 'd'));
+      await plantMisHashedLooseCopy(ctx, looseOnly, other);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings).toContainEqual({
+        type: 'hash-mismatch',
+        id: looseOnly,
+        actual: other,
+      });
+      expect(result.findings.filter((f) => f.type === 'root')).toEqual([]);
+    });
+  });
+
+  describe('When it is an annotated tag', () => {
+    it('Then the pack copy is still reported as tagged beside the hash-mismatch', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const ids = await writeSyntheticPack(ctx, 'p', [
+        { kind: 'base', type: 'tree', content: new Uint8Array(0) },
+        {
+          kind: 'base',
+          type: 'commit',
+          content: enc.encode(`tree ${EMPTY_TREE}\nauthor ${IDENT}\ncommitter ${IDENT}\n\nc\n`),
+        },
+      ]);
+      const commit = ids[1] as ObjectId;
+      const tagBody = enc.encode(`object ${commit}\ntype commit\ntag v1\ntagger ${IDENT}\n\nmsg\n`);
+      const packedTag = (
+        await writeSyntheticPack(ctx, 'q', [{ kind: 'base', type: 'tag', content: tagBody }])
+      )[0] as ObjectId;
+      const other = await writeObject(ctx, makeTag(commit, 'commit', 'v2'));
+      await plantMisHashedLooseCopy(ctx, packedTag, other);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings).toContainEqual({
+        type: 'hash-mismatch',
+        id: packedTag,
+        actual: other,
+      });
+      expect(result.findings).toContainEqual({
+        type: 'tagged',
+        id: commit,
+        objectType: 'commit',
+        tagName: 'v1',
+        tag: packedTag,
+      });
+    });
+  });
+});
+
 describe('Given a loose object whose content hash does not match its path (hash-path mismatch), connectivityOnly: true', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
     it("Then emits a dangling finding with the real decoded type, not 'unknown'", async () => {

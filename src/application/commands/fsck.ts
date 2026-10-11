@@ -143,14 +143,15 @@ function misHashedLooseIds(findings: ReadonlyArray<FsckFinding>): ReadonlyArray<
 }
 
 /** Every id whose own content check raised an error — `fsck_obj` prints
- *  nothing more for it. A hash mismatch never reaches the check at all, nor
- *  does an object whose parse failed (`unparsed`). */
+ *  nothing more for it, nor for an object whose parse failed (`unparsed`). A
+ *  loose copy hashing to another id is not here: a pack copy of the id is still
+ *  checked, and the cache override already marks it unreadable when no pack backs it. */
 function contentRefusedIds(
   findings: ReadonlyArray<FsckFinding>,
   unparsed: ReadonlySet<ObjectId>,
 ): ReadonlySet<ObjectId> {
   const refused = findings.flatMap((f) =>
-    (f.type === 'bad-object' && f.severity === 'error') || f.type === 'hash-mismatch' ? [f.id] : [],
+    f.type === 'bad-object' && f.severity === 'error' ? [f.id] : [],
   );
   return new Set([...refused, ...unparsed]);
 }
