@@ -78,6 +78,26 @@ describe('removeBranchState', () => {
     });
   });
 
+  describe('Given a stopped revert and a sequencer without a todo', () => {
+    describe('When the branch state is removed', () => {
+      it('Then the sequencer stays and the marker goes', async () => {
+        // Arrange
+        const { ctx } = loggingContext();
+        await plant(ctx, 'REVERT_HEAD');
+        await plant(ctx, 'sequencer/head');
+        const sut = removeBranchState;
+
+        // Act
+        await sut(ctx, 'silent');
+
+        // Assert
+        const sequencerHead = await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer/head`);
+        const marker = await ctx.fs.exists(`${ctx.layout.gitDir}/REVERT_HEAD`);
+        expect([sequencerHead, marker]).toEqual([true, false]);
+      });
+    });
+  });
+
   describe('Given a stopped pick whose todo holds one unterminated line', () => {
     describe('When the branch state is removed', () => {
       it('Then the finished sequencer goes too', async () => {
