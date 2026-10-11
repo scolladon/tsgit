@@ -142,6 +142,24 @@ describe('loadRefDecorations', () => {
     });
   });
 
+  describe('Given a replace ref naming an object the repository does not hold', () => {
+    describe('When the decorations are loaded', () => {
+      it('Then no replaced decoration is made up for the absent object', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const replacement = await putCommit(ctx, 'replacement');
+        await writeRef(ctx, `refs/replace/${'0'.repeat(39)}1`, replacement);
+        const sut = loadRefDecorations;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.size).toBe(0);
+      });
+    });
+  });
+
   describe('Given a shallow boundary', () => {
     describe('When the decorations are loaded', () => {
       it('Then the boundary commit is grafted, ahead of its refs', async () => {
