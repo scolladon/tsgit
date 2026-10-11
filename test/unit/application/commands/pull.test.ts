@@ -10,6 +10,7 @@ import { init } from '../../../../src/application/commands/init.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { pull } from '../../../../src/application/commands/pull.js';
 import { rm } from '../../../../src/application/commands/rm.js';
+import { sparseCheckoutSet } from '../../../../src/application/commands/sparse-checkout.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
@@ -715,6 +716,99 @@ describe('pull', () => {
         // Assert
         expect(warnings.filter((w) => w.startsWith('fetch updated'))).toEqual([]);
         expect(await resolveRef(ctx, 'refs/heads/fresh' as RefName)).toBe(b);
+      });
+    });
+  });
+
+  describe('Given a refspec leaving the checked-out branch where it was', () => {
+    describe('When pull', () => {
+      it('Then no head-update warning is given', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'a', 'A');
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        const b = await commitFile(ctx, 'b.txt', 'b', 'B');
+        await checkout(ctx, { rev: 'main' });
+        await seedConfig(ctx, { url: REMOTE_URL });
+        const { transport } = buildPullRemote(
+          [{ name: 'refs/heads/main', id: b }],
+          await emptyPack(ctx),
+        );
+        const warnings: string[] = [];
+        const logger = { warn: (message: string) => warnings.push(message) };
+        const sut = pull;
+
+        // Act
+        await sut({ ...withTransport(ctx, transport), logger }, { remote: 'origin', ref: 'main' });
+
+        // Assert
+        expect(warnings).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a sparse checkout excluding the file the moved branch adds', () => {
+    describe('When pull moves the checked-out branch under the working tree', () => {
+      it('Then the file stays out of the working tree, as git honours the sparse patterns', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'a', 'A');
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        const b = await commitFile(ctx, 'b.txt', 'b', 'B');
+        await checkout(ctx, { rev: 'main' });
+        await sparseCheckoutSet(ctx, { patterns: ['/a.txt'], cone: false });
+        await seedConfig(ctx, { url: REMOTE_URL });
+        const { transport } = buildPullRemote(
+          [{ name: 'refs/heads/main', id: b }],
+          await emptyPack(ctx),
+        );
+        const sut = pull;
+
+        // Act
+        await sut(withTransport(ctx, transport), { remote: 'origin', ref: 'main:main' });
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/b.txt`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an untracked file the moved branch would overwrite', () => {
+    describe('When pull moves the checked-out branch under the working tree', () => {
+      it('Then it refuses with the dirty paths and releases the index lock, as git cannot fast-forward the tree', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'a', 'A');
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        const b = await commitFile(ctx, 'b.txt', 'b', 'B');
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'local');
+        await seedConfig(ctx, { url: REMOTE_URL });
+        const { transport } = buildPullRemote(
+          [{ name: 'refs/heads/main', id: b }],
+          await emptyPack(ctx),
+        );
+        const sut = pull;
+
+        // Act
+        const data = await pullError(() =>
+          sut(withTransport(ctx, transport), { remote: 'origin', ref: 'main:main' }),
+        );
+
+        // Assert
+        expect(data).toEqual({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: [],
+          untracked: ['b.txt'],
+        });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/b.txt`)).toBe('local');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
       });
     });
   });
@@ -1785,6 +1879,37 @@ describe('pull', () => {
       });
     });
 
+    describe('Given a first fetched head descending from HEAD beside a diverged one and nothing chosen', () => {
+      describe('When pull', () => {
+        it('Then it refuses the divergence, as git fast-forwards only a single head', async () => {
+          // Arrange
+          const { ctx, b } = await divergedRepo();
+          await branchCreate(ctx, { name: 'ahead' });
+          await checkout(ctx, { rev: 'ahead' });
+          const ahead = await commitFile(ctx, 'd.txt', 'd', 'D');
+          await checkout(ctx, { rev: 'main' });
+          await updateConfigEntries(ctx, remoteEntries(ORIGIN_FETCH));
+          const { transport } = buildPullRemote(
+            [
+              { name: 'refs/heads/side-a', id: ahead },
+              { name: 'refs/heads/side-b', id: b },
+            ],
+            await emptyPack(ctx),
+          );
+          const sut = refusal;
+
+          // Act
+          const result = await sut(withTransport(ctx, transport), {
+            ref: 'refs/heads/side-*:refs/remotes/s/*',
+            author,
+          });
+
+          // Assert
+          expect(result).toEqual({ code: 'PULL_DIVERGENT_BRANCHES' });
+        });
+      });
+    });
+
     describe('Given an explicit ref fetching two refs at one tip for merging', () => {
       describe('When pull', () => {
         it('Then the repeated tip is merged once, the message naming both refs as git does', async () => {
@@ -1922,11 +2047,46 @@ describe('pull', () => {
       });
     });
 
+    describe('Given a detached HEAD pulling an explicit remote with no refspec', () => {
+      describe('When pull', () => {
+        it('Then it refuses with NO_UPSTREAM_CONFIGURED naming HEAD, as git is not on a branch', async () => {
+          // Arrange
+          const { ctx, b } = await divergedRepo();
+          const head = await resolveRef(ctx, 'refs/heads/main' as RefName);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${head}\n`);
+          await updateConfigEntries(ctx, remoteEntries(ORIGIN_FETCH));
+          const { transport } = buildPullRemote(
+            [{ name: 'refs/heads/side', id: b }],
+            await emptyPack(ctx),
+          );
+          const sut = refusal;
+
+          // Act
+          const result = await sut(withTransport(ctx, transport), { remote: 'origin' });
+
+          // Assert
+          expect(result).toEqual({ code: 'NO_UPSTREAM_CONFIGURED', branch: 'HEAD' });
+        });
+      });
+    });
+
     describe.each([
       {
         label: 'an upstream naming a ref the remote does not have',
         config: upstream('main', 'origin', 'refs/heads/nope'),
         opts: {},
+        expected: {
+          code: 'PULL_NO_MERGE_CANDIDATES',
+          reason: 'merge-ref-not-fetched',
+          remote: 'origin',
+          ref: 'refs/heads/nope',
+        },
+      },
+      {
+        label:
+          'an upstream naming a ref the remote does not have, pulled from its own remote by name',
+        config: upstream('main', 'origin', 'refs/heads/nope'),
+        opts: { remote: 'origin' },
         expected: {
           code: 'PULL_NO_MERGE_CANDIDATES',
           reason: 'merge-ref-not-fetched',
@@ -2288,6 +2448,83 @@ describe('pull rebasing onto the fetched head', () => {
     });
   });
 
+  describe('Given a local merge diverged from the fetched head, When pull with rebase true', () => {
+    it('Then the merge is flattened into linear commits on the fetched head', async () => {
+      // Arrange
+      const { ctx } = await divergedPull();
+      await branchCreate(ctx, { name: 'side' });
+      await checkout(ctx, { rev: 'side' });
+      await commitFile(ctx, 's.txt', 's\n', 'S');
+      await checkout(ctx, { rev: 'main' });
+      await commitFile(ctx, 'y.txt', 'y\n', 'Y');
+      await mergeRun(ctx, { rev: 'side', fastForward: 'never' });
+      const sut = pull;
+
+      // Act
+      await sut(ctx, { rebase: true });
+
+      // Assert
+      const tip = await readObject(ctx, await resolveRef(ctx, 'refs/heads/main' as RefName));
+      expect(tip.type === 'commit' && tip.data.parents).toHaveLength(1);
+      expect((await reflogMessages(ctx, 'HEAD')).slice(-3, -1).sort()).toEqual([
+        'pull (pick): S',
+        'pull (pick): Y',
+      ]);
+    });
+  });
+
+  describe('Given a fast-forwardable head and merge.ff=false, When pull with rebase true', () => {
+    it('Then it still fast-forwards, as git pins the merge it runs to fast-forward only', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await commitFile(ctx, 'a.txt', 'a', 'A');
+      await branchCreate(ctx, { name: 'feature' });
+      await checkout(ctx, { rev: 'feature' });
+      const b = await commitFile(ctx, 'b.txt', 'b', 'B');
+      await checkout(ctx, { rev: 'main' });
+      await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
+      await ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, '[merge]\n\tff = false\n');
+      const { transport } = buildPullRemote(
+        [{ name: 'refs/heads/main', id: b }],
+        await emptyPack(ctx),
+      );
+      const sut = pull;
+
+      // Act
+      const result = await sut(withTransport(ctx, transport), { rebase: true });
+
+      // Assert
+      expect(result.integration === 'merge' && result.merge.kind).toBe('fast-forward');
+      expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(b);
+    });
+  });
+
+  describe('Given HEAD already containing the fetched head, When pull with rebase true and fast-forward only', () => {
+    it('Then the merge reports up-to-date and no rebase runs', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await init(ctx);
+      const a = await commitFile(ctx, 'a.txt', 'a', 'A');
+      await commitFile(ctx, 'b.txt', 'b', 'B');
+      await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
+      const { transport } = buildPullRemote(
+        [{ name: 'refs/heads/main', id: a }],
+        await emptyPack(ctx),
+      );
+      const sut = pull;
+
+      // Act
+      const result = await sut(withTransport(ctx, transport), {
+        rebase: true,
+        fastForward: 'only',
+      });
+
+      // Assert
+      expect(result.integration === 'merge' && result.merge.kind).toBe('up-to-date');
+    });
+  });
+
   describe('Given a fast-forwardable head, When pull with rebase true', () => {
     it('Then it fast-forwards through the merge, as git does without invoking rebase', async () => {
       // Arrange
@@ -2564,6 +2801,58 @@ describe('pull rebasing, edge states', () => {
 
       // Assert
       expect(await parentsOfTip(ctx)).toEqual([b]);
+    });
+  });
+
+  describe('Given the fork point already the merge base with commits both sides hold, When pull with rebase true', () => {
+    it('Then the commit the fetched head already holds is not replayed over its later edit', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, USER);
+      const a = await commitFile(ctx, 'a.txt', 'a\n', 'A');
+      await commitFile(ctx, 'm.txt', 'm', 'M');
+      await branchCreate(ctx, { name: 'feature' });
+      await checkout(ctx, { rev: 'feature' });
+      const b = await commitFile(ctx, 'm.txt', 'rewritten', 'B');
+      await checkout(ctx, { rev: 'main' });
+      await commitFile(ctx, 'c.txt', 'c', 'X');
+      await seedConfig(ctx, { url: REMOTE_URL, upstream: true });
+      const remote = buildPullRemote([{ name: 'refs/heads/main', id: b }], await emptyPack(ctx));
+      await updateRef(ctx, 'refs/remotes/origin/main' as RefName, a, { reflogMessage: 'fetch' });
+      const sut = pull;
+
+      // Act
+      await sut(withTransport(ctx, remote.transport), { rebase: true });
+
+      // Assert
+      expect((await reflogMessages(ctx, 'HEAD')).slice(-3)).toEqual([
+        `pull (start): checkout ${b}`,
+        'pull (pick): X',
+        'pull (finish): returning to refs/heads/main',
+      ]);
+    });
+  });
+
+  describe('Given an upstream rewritten since a detached HEAD forked from it, When pull with rebase true and an explicit ref', () => {
+    it('Then every commit HEAD holds beyond the fetched head is replayed, as a detached HEAD has no fork point', async () => {
+      // Arrange
+      const { ctx, b, x } = await divergedPull();
+      await updateRef(ctx, 'refs/remotes/origin/main' as RefName, x, {
+        reflogMessage: 'fetch: fast-forward',
+      });
+      const y = await commitFile(ctx, 'd.txt', 'd', 'Y');
+      await checkout(ctx, { rev: y, detach: true });
+      const sut = pull;
+
+      // Act
+      await sut(ctx, { rebase: true, ref: 'refs/heads/main' });
+
+      // Assert
+      const tip = await readObject(ctx, await resolveRef(ctx, 'HEAD' as RefName));
+      const replayedX = await readObject(ctx, (tip.type === 'commit' ? tip.data.parents : [])[0]!);
+      expect(replayedX.type === 'commit' && replayedX.data.message).toBe('X\n');
+      expect(replayedX.type === 'commit' && replayedX.data.parents).toEqual([b]);
     });
   });
 
