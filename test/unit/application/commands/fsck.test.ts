@@ -4420,6 +4420,31 @@ describe('Given a reachable tree entry pointing at an unreadable (empty-file) bl
   });
 });
 
+describe('Given a reflog entry naming an unreadable (empty-file) loose object', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then the entry is not invalid, as git records every enumerated object, and the exit code is 0', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const damagedId = 'd7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7' as ObjectId;
+      await writeEmptyLooseObject(ctx, damagedId);
+      await writeObject(ctx, makeBlob('kept'));
+      await ctx.fs.mkdir(`${ctx.layout.gitDir}/logs/refs/heads`);
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/logs/refs/heads/main`,
+        `${'0'.repeat(40)} ${damagedId} Ada <ada@example.com> 1700000000 +0000\tbranch: Created\n`,
+      );
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx, { connectivityOnly: true });
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'invalid-reflog-entry')).toEqual([]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
 describe('Given a loose object whose content hash does not match its path (hash-path mismatch), connectivityOnly: true', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
     it("Then emits a dangling finding with the real decoded type, not 'unknown'", async () => {
