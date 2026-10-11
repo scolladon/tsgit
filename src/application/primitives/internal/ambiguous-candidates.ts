@@ -122,7 +122,7 @@ const comparedInGitOrder =
   (reads: CandidateReadFault[]) =>
   (a: ProbedCandidate, b: ProbedCandidate): number => {
     for (const side of [a, b]) if (side.fault !== undefined) reads.push(side.fault);
-    if (a.type === b.type) return a.id < b.id ? -1 : 1;
+    // The input is id-sorted, so on equal ranks the left operand holds the smaller id.
     return rankOf(a) > rankOf(b) ? 1 : -1;
   };
 

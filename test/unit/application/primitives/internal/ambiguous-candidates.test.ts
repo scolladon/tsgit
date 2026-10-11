@@ -128,4 +128,52 @@ describe('describeCandidates', () => {
       });
     });
   });
+
+  describe('Given an id naming no object', () => {
+    describe('When it is described', () => {
+      it('Then it is listed as a bad object without any read fault', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const absent = 'ab'.repeat(20) as ObjectId;
+        const sut = describeCandidates;
+
+        // Act
+        const result = await sut(ctx, [absent]);
+
+        // Assert
+        expect(result.candidates).toEqual([{ id: absent, type: 'bad-object' }]);
+        expect(result.readFaults).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given three unreadable loose objects passed in descending id order', () => {
+    describe('When they are described', () => {
+      it('Then the type reads replay in the merge-sort order of the id-sorted set', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const [a, b, c] = ['a', 'b', 'c'].map((digit) => digit.repeat(40) as ObjectId) as [
+          ObjectId,
+          ObjectId,
+          ObjectId,
+        ];
+        for (const id of [a, b, c]) {
+          const path = `${ctx.layout.gitDir}/objects/${id.slice(0, 2)}/${id.slice(2)}`;
+          await ctx.fs.write(path, new Uint8Array([1]));
+        }
+        const fault = (id: ObjectId): unknown => ({
+          id,
+          reason: 'unexpected end of deflate stream',
+        });
+        const sut = describeCandidates;
+
+        // Act
+        const result = await sut(ctx, [c, b, a]);
+
+        // Assert
+        expect(result.candidates.map(({ id }) => id)).toEqual([a, b, c]);
+        expect(result.readFaults).toEqual([b, c, a, b, a, b, c].map(fault));
+      });
+    });
+  });
 });
