@@ -155,6 +155,33 @@ describe('walkCommits', () => {
   });
 
   describe('Given empty from and a commit to exclude', () => {
+    describe('When walkCommits walks in topo-order', () => {
+      it('Then throws INVALID_WALK_INPUT with the empty-from reason', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const [rootId] = await linearChain(ctx, 1);
+        const sut = walkCommits;
+
+        // Act
+        let caught: unknown;
+        try {
+          for await (const _ of sut(ctx, { from: [], until: [rootId!], order: 'topo-order' })) {
+            void _;
+          }
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_WALK_INPUT',
+          reason: 'empty from',
+        });
+      });
+    });
+  });
+
+  describe('Given empty from and a commit to exclude', () => {
     describe('When walkCommits is called', () => {
       it('Then throws INVALID_WALK_INPUT before limiting', async () => {
         // Arrange
@@ -524,6 +551,8 @@ describe('walkCommits', () => {
         const { computeLooseObjectPath } = await import(
           '../../../../src/domain/storage/loose-path.js'
         );
+        // `asCommits` read the parent through the delta cache; drop it so the removal is a real miss.
+        ctx.deltaCache.delete(parent);
         await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(parent)}`);
         const sut = walkCommits;
 
@@ -534,6 +563,30 @@ describe('walkCommits', () => {
 
         // Assert
         expect(result.value?.id).toBe(child);
+      });
+    });
+  });
+
+  describe('Given a seed whose parent is another seed already yielded', () => {
+    describe('When the parent object is removed after it was yielded', () => {
+      it('Then the child still yields, the parent not being read a second time', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const [parent, child] = (await linearChain(ctx, 2)) as [ObjectId, ObjectId];
+        const { computeLooseObjectPath } = await import(
+          '../../../../src/domain/storage/loose-path.js'
+        );
+        const iterator = walkCommits(ctx, { from: [parent, child] })[Symbol.asyncIterator]();
+        const first = await iterator.next();
+        ctx.deltaCache.delete(parent);
+        await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(parent)}`);
+
+        // Act
+        const second = await iterator.next();
+
+        // Assert
+        expect(first.value?.id).toBe(parent);
+        expect(second.value?.id).toBe(child);
       });
     });
   });
