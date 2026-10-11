@@ -201,6 +201,23 @@ describe('followRemoteHead', () => {
     });
   });
 
+  describe('Given a local remote HEAD naming main and a remote HEAD naming main', () => {
+    describe('When the policy is warn', () => {
+      it('Then nothing is reported', async () => {
+        // Arrange
+        const { ctx, id, warnings } = await repoWithTracking();
+        await writeSymbolicRef(ctx, ORIGIN_HEAD, 'refs/remotes/origin/main' as RefName);
+        const sut = followRemoteHead;
+
+        // Act
+        await sut(ctx, 'origin', advertising(id, 'refs/heads/main'), { mode: 'warn' });
+
+        // Assert
+        expect(warnings).toEqual([]);
+      });
+    });
+  });
+
   describe('Given a detached local remote HEAD', () => {
     describe('When the policy is warn', () => {
       it('Then the detached HEAD is kept and reported', async () => {
@@ -233,6 +250,32 @@ describe('followRemoteHead', () => {
 
         // Act
         await sut(ctx, 'origin', advertising(id, undefined, ['side']), { mode: 'create' });
+
+        // Assert
+        expect(await originHead(ctx)).toEqual({
+          kind: 'symbolic',
+          target: 'refs/remotes/origin/side',
+        });
+      });
+    });
+
+    describe('When one remote branch carries its oid and another carries a different one', () => {
+      it('Then only the branch at its oid is taken as the remote HEAD', async () => {
+        // Arrange
+        const { ctx, id } = await repoWithTracking();
+        const elsewhere = 'b'.repeat(40) as ObjectId;
+        const advertisement = {
+          capabilities: [],
+          refs: [
+            { name: 'HEAD', id },
+            { name: 'refs/heads/main', id: elsewhere },
+            { name: 'refs/heads/side', id },
+          ],
+        } as Advertisement;
+        const sut = followRemoteHead;
+
+        // Act
+        await sut(ctx, 'origin', advertisement, { mode: 'create' });
 
         // Assert
         expect(await originHead(ctx)).toEqual({

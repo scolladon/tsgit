@@ -245,6 +245,12 @@ describe('getRefMap', () => {
       refs: advertised('refs/heads/main', 'refs/heads/secret'),
       expected: [['refs/heads/main', 'refs/remotes/o/main', 'merge']],
     },
+    {
+      label: 'a command-line negative refspec naming no advertised ref',
+      request: fromCli(['refs/heads/main:refs/remotes/o/main', '^refs/heads/absent'], ['']),
+      refs: advertised('refs/heads/main'),
+      expected: [['refs/heads/main', 'refs/remotes/o/main', 'merge']],
+    },
   ])('Given $label', ({ request, refs, expected }) => {
     describe('When the ref map is built', () => {
       it('Then each entry carries its local ref and FETCH_HEAD status', () => {
