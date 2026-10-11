@@ -49,6 +49,7 @@ const upstreamRef = async (ctx: Context, config: ParsedConfig, branch: string): 
 
 /** git's `tracking_for_push_dest`: where the remote's fetch refspecs store `destination`. */
 const trackingForPushDest = (config: ParsedConfig, remote: string, destination: string): string => {
+  // Stryker disable next-line ArrayDeclaration: equivalent — a refspec naming no destination maps nothing, so the stand-in finds no tracking ref exactly as `[]` does
   const tracked = findTrackingRef(config.remote?.get(remote)?.fetch ?? [], destination);
   if (tracked === undefined) {
     throw branchMarkUnresolved({ reason: 'push-destination-untracked', destination, remote });
@@ -110,6 +111,7 @@ const markedRef = async (ctx: Context, mark: BranchMark): Promise<string> => {
  * `undefined` when `name` carries no mark.
  */
 export const branchMarkRef = async (ctx: Context, name: string): Promise<string | undefined> => {
+  // Stryker disable next-line ConditionalExpression: equivalent — a name without `@{` has no prior checkout to expand and no mark to find, so skipping this guard still returns undefined
   if (!name.includes(MARK_OPENER)) return undefined;
   const expanded = await expandPriorCheckout(ctx, name);
   if (expanded.startsWith(UNEXPANDED_PRIOR_CHECKOUT)) return undefined;
