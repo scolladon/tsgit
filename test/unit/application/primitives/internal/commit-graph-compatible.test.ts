@@ -70,6 +70,30 @@ describe('hasReplaceRefs', () => {
       expected: false,
     },
     { label: 'a branch alone', ref: `refs/heads/${OID}`, config: '', expected: false },
+    {
+      label: 'a replace ref with trailing non-hex characters',
+      ref: `refs/replace/${OID}zz`,
+      config: '',
+      expected: true,
+    },
+    {
+      label: 'a replace ref with trailing hex characters',
+      ref: `refs/replace/${OID}00`,
+      config: '',
+      expected: true,
+    },
+    {
+      label: 'a replace ref named in upper case',
+      ref: `refs/replace/${OID.toUpperCase()}`,
+      config: '',
+      expected: true,
+    },
+    {
+      label: 'a replace ref one character short',
+      ref: `refs/replace/${OID.slice(1)}`,
+      config: '',
+      expected: false,
+    },
   ])('Given $label', ({ ref, config, expected }) => {
     describe('When checked', () => {
       it(`Then it answers ${expected}`, async () => {

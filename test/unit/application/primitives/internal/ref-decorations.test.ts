@@ -142,6 +142,41 @@ describe('loadRefDecorations', () => {
     });
   });
 
+  describe.each([
+    { label: 'trailing non-hex characters', nameOf: (id: string) => `${id}zz`, replaced: true },
+    { label: 'trailing hex characters', nameOf: (id: string) => `${id}00`, replaced: true },
+    { label: 'upper-case hex', nameOf: (id: string) => id.toUpperCase(), replaced: true },
+    {
+      label: 'a name one character short',
+      nameOf: (id: string) => id.slice(0, -1),
+      replaced: false,
+    },
+    {
+      label: 'a non-hex character inside the width',
+      nameOf: (id: string) => `g${id.slice(1)}`,
+      replaced: false,
+    },
+  ])('Given a replace ref whose name carries $label', ({ nameOf, replaced }) => {
+    describe('When the decorations are loaded', () => {
+      it('Then the object is decorated as replaced exactly when git parses the name', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const original = await putCommit(ctx, 'original');
+        const replacement = await putCommit(ctx, 'replacement');
+        await writeRef(ctx, `refs/replace/${nameOf(original)}`, replacement);
+        const sut = loadRefDecorations;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.get(original)).toEqual(
+          replaced ? [{ kind: 'replaced', name: 'replaced' }] : undefined,
+        );
+      });
+    });
+  });
+
   describe('Given a replace ref naming an object the repository does not hold', () => {
     describe('When the decorations are loaded', () => {
       it('Then no replaced decoration is made up for the absent object', async () => {

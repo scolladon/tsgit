@@ -1,4 +1,4 @@
-import type { ObjectId, RefName } from '../../../domain/objects/index.js';
+import { leadingOid, type ObjectId, type RefName } from '../../../domain/objects/index.js';
 import type { Decoration, DecorationKind } from '../../../domain/pretty/decorations.js';
 import type { Context } from '../../../ports/context.js';
 import { enumerateRefs } from '../enumerate-refs.js';
@@ -50,10 +50,10 @@ const addWithPeeledTargets = async (
 };
 
 const addReplaced = async (ctx: Context, collected: Collected, name: string): Promise<void> => {
-  const original = name.slice(REPLACE_PREFIX.length);
-  if (original.length !== ctx.hashConfig.hexLength || !/^[0-9a-f]+$/.test(original)) return;
-  if (!(await hasObject(ctx, original as ObjectId))) return;
-  add(collected, original as ObjectId, { kind: 'replaced', name: 'replaced' });
+  const original = leadingOid(name.slice(REPLACE_PREFIX.length), ctx.hashConfig);
+  if (original === undefined) return;
+  if (!(await hasObject(ctx, original))) return;
+  add(collected, original, { kind: 'replaced', name: 'replaced' });
 };
 
 const addRef = async (ctx: Context, collected: Collected, name: RefName): Promise<void> => {

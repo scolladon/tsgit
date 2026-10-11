@@ -7,7 +7,7 @@
  * such as `gc`'s consults them.
  */
 import { parseGitBoolean, parseGitInt } from '../../../domain/config/config-ini.js';
-import { isOid } from '../../../domain/objects/index.js';
+import { leadingOid } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { findLastEntry } from '../config-read.js';
 import { enumerateRefs } from '../enumerate-refs.js';
@@ -37,7 +37,8 @@ export const hasReplaceRefs = async (ctx: Context): Promise<boolean> => {
   const refs = await enumerateRefs(ctx);
   return refs.some(
     (ref) =>
-      ref.startsWith(REPLACE_PREFIX) && isOid(ref.slice(REPLACE_PREFIX.length), ctx.hashConfig),
+      ref.startsWith(REPLACE_PREFIX) &&
+      leadingOid(ref.slice(REPLACE_PREFIX.length), ctx.hashConfig) !== undefined,
   );
 };
 
