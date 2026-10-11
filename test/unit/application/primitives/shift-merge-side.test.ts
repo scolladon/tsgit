@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { flattenTree } from '../../../../src/application/primitives/flatten-tree.js';
+import * as readTreeModule from '../../../../src/application/primitives/read-tree.js';
 import { shiftMergeSide } from '../../../../src/application/primitives/shift-merge-side.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import {
@@ -114,6 +115,28 @@ describe('shiftMergeSide', () => {
 
         // Assert
         expect(pathsOf(result)).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a host and a side whose trees are scored more than once', () => {
+    describe('When a guessed shift lists them', () => {
+      it('Then each tree object is read once', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { host, side } = await fixture(ctx);
+        const hostFlat = await flattenTree(ctx, host);
+        const sideFlat = await flattenTree(ctx, side);
+        const readTree = vi.spyOn(readTreeModule, 'readTree');
+        const sut = shiftMergeSide;
+
+        // Act
+        await sut(ctx, { tree: host, flat: hostFlat }, { tree: side, flat: sideFlat }, '');
+
+        // Assert
+        const readIds = readTree.mock.calls.map(([, id]) => id);
+        expect(readIds.length).toBeGreaterThan(0);
+        expect(readIds).toEqual([...new Set(readIds)]);
       });
     });
   });
