@@ -3,6 +3,7 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import { init } from '../../../../../src/application/commands/init.js';
 import {
   readMergeHead,
+  readMergeHeads,
   readMergeMsg,
   readOrigHead,
   readsNoFastForward,
@@ -268,6 +269,26 @@ describe('merge-state', () => {
           const data = (caught as { data?: { code?: string; value?: string } })?.data;
           expect(data?.code).toBe('INVALID_OBJECT_ID');
           expect(data?.value).toBe('not-a-hex-oid');
+        });
+      });
+    });
+  });
+
+  describe('readMergeHeads', () => {
+    describe('Given a whitespace-only MERGE_HEAD', () => {
+      describe('When readMergeHeads is called', () => {
+        it('Then no head list is returned rather than an empty one', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await init(ctx);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, '   \n\n');
+          const sut = readMergeHeads;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
         });
       });
     });
