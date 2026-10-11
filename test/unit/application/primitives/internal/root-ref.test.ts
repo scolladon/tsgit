@@ -60,6 +60,45 @@ describe('root-ref', () => {
     });
   });
 
+  describe('Given a root ref that is a symbolic ref to a branch', () => {
+    describe('When writeRootRef records an object', () => {
+      it('Then the root ref itself is overwritten and the branch is left alone', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const id = await blob(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${OID}\n`);
+        await plant(ctx, 'ref: refs/heads/main\n');
+        const sut = writeRootRef;
+
+        // Act
+        await sut(ctx, NAME, id);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(looseFile(ctx))).toBe(`${id}\n`);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`)).toBe(`${OID}\n`);
+      });
+    });
+  });
+
+  describe('Given a root ref that already has a reflog', () => {
+    describe('When writeRootRef records an object', () => {
+      it('Then the reflog entry carries no message, as git writes none', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const id = await blob(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/${NAME}`, '');
+        const sut = writeRootRef;
+
+        // Act
+        await sut(ctx, NAME, id);
+
+        // Assert
+        const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/${NAME}`);
+        expect(result).toMatch(new RegExp(`^${'0'.repeat(40)} ${id} [^\\t]+ \\d+ [+-]\\d{4}\\n$`));
+      });
+    });
+  });
+
   describe('Given a reftable repository', () => {
     describe('When writeRootRef records an object', () => {
       it('Then the stack resolves it and no loose file exists', async () => {
@@ -154,6 +193,25 @@ describe('root-ref', () => {
             "cannot lock ref 'CHERRY_PICK_HEAD': unable to resolve reference 'CHERRY_PICK_HEAD': reference broken",
           ],
         ]);
+      });
+    });
+  });
+
+  describe('Given a root ref that is a symbolic ref to a branch', () => {
+    describe('When deleteRootRef removes it', () => {
+      it('Then the root ref is deleted and the branch survives', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${OID}\n`);
+        await plant(ctx, 'ref: refs/heads/main\n');
+        const sut = deleteRootRef;
+
+        // Act
+        await sut(ctx, NAME);
+
+        // Assert
+        expect(await ctx.fs.exists(looseFile(ctx))).toBe(false);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`)).toBe(`${OID}\n`);
       });
     });
   });
