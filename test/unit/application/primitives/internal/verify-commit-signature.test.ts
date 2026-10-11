@@ -813,4 +813,197 @@ describe('verifyCommitSignature', () => {
       });
     });
   });
+
+  describe('Given a context without a signal', () => {
+    describe('When the signature is verified', () => {
+      it('Then the spawn request names no signal', async () => {
+        // Arrange
+        const rig = harness(() => ({}));
+        const sut = verifyCommitSignature;
+
+        // Act
+        await sut(rig.ctx, { payload: PAYLOAD, signature: PGP_SIG });
+
+        // Assert
+        expect(Object.keys(rig.requests[0] ?? {})).not.toContain('signal');
+      });
+    });
+  });
+
+  describe('Given a signal that aborts while the only verifier runs', () => {
+    describe('When the signature is verified', () => {
+      it('Then it rejects as an aborted operation instead of reporting the verdict', async () => {
+        // Arrange
+        const controller = new AbortController();
+        const rig = harness(() => {
+          controller.abort();
+          return { stdout: status('GOODSIG K Jane') };
+        });
+        const sut = verifyCommitSignature;
+
+        // Act
+        const result = await sut(
+          { ...rig.ctx, signal: controller.signal },
+          { payload: PAYLOAD, signature: PGP_SIG },
+        ).catch((error: unknown) => error);
+
+        // Assert
+        expect(abortCode(result)).toBe('OPERATION_ABORTED');
+      });
+    });
+  });
+
+  describe('Given a GOODSIG status line with an empty key field', () => {
+    describe('When the signature is verified', () => {
+      it('Then the key is empty and the signer follows the second separator', async () => {
+        // Arrange
+        const ctx = gpgContext(status('GOODSIG  Jane Doe'));
+        const sut = verifyCommitSignature;
+
+        // Act
+        const result = await sut(ctx, GPG_INPUT);
+
+        // Assert
+        expect(result).toMatchObject({ result: 'G', key: '', signer: 'Jane Doe' });
+      });
+    });
+  });
+
+  describe('Given a status line whose prefix differs from the gnupg one', () => {
+    describe('When the signature is verified', () => {
+      it('Then the line is ignored', async () => {
+        // Arrange
+        const ctx = gpgContext('[GNUPG;] GOODSIG K Jane\n');
+        const sut = verifyCommitSignature;
+
+        // Act
+        const result = await sut(ctx, GPG_INPUT);
+
+        // Assert
+        expect(result).toMatchObject({ result: 'N', key: '', signer: '' });
+      });
+    });
+  });
+
+  describe('Given an unknown status keyword after a VALIDSIG line', () => {
+    describe('When the signature is verified', () => {
+      it('Then the fingerprints of the VALIDSIG line are kept', async () => {
+        // Arrange
+        const ctx = gpgContext(
+          status('GOODSIG K Jane', 'VALIDSIG FFFF d 1 0 4 0 1 10 01 PPPP', 'KEY_CONSIDERED ZZZZ 0'),
+        );
+        const sut = verifyCommitSignature;
+
+        // Act
+        const result = await sut(ctx, GPG_INPUT);
+
+        // Assert
+        expect(result).toMatchObject({ fingerprint: 'FFFF', primaryKeyFingerprint: 'PPPP' });
+      });
+    });
+  });
+
+  describe('Given an ssh principal whose verification prints a key without a principal', () => {
+    describe('When the signature is verified', () => {
+      it('Then the key is reported with no signer and the undefined trust', async () => {
+        // Arrange
+        const rig = harness((request) =>
+          commandLine(request).includes('find-principals')
+            ? { stdout: 'alice\n' }
+            : { stdout: `Good "git" signature with ED25519 key ${FPR}\n` },
+        );
+        const sut = verifyCommitSignature;
+
+        // Act
+        const result = await sut(rig.ctx, {
+          payload: PAYLOAD,
+          signature: SSH_SIG,
+          gpg: { ssh: { allowedSignersFile: '/allowed' } },
+        });
+
+        // Assert
+        expect(result).toMatchObject({ result: 'G', trust: 'undefined', signer: '', key: FPR });
+      });
+    });
+  });
+
+  describe('Given an ssh signature with two principals of which the first prints no good signature', () => {
+    describe('When the signature is verified', () => {
+      it('Then the second principal is still tried and reported', async () => {
+        // Arrange
+        const rig = harness((request) => {
+          if (commandLine(request).includes('find-principals')) return { stdout: 'alice\nbob\n' };
+          return commandLine(request).includes('-I bob')
+            ? { stdout: `Good "git" signature for bob with ED25519 key ${FPR}\n` }
+            : { stdout: 'weird output\n' };
+        });
+        const sut = verifyCommitSignature;
+
+        // Act
+        const result = await sut(rig.ctx, {
+          payload: PAYLOAD,
+          signature: SSH_SIG,
+          gpg: { ssh: { allowedSignersFile: '/allowed' } },
+        });
+
+        // Assert
+        expect(rig.requests).toHaveLength(3);
+        expect(result).toMatchObject({ result: 'G', signer: 'bob' });
+      });
+    });
+  });
+
+  describe('Given ssh-keygen finding principals with a failure that is no usage error', () => {
+    describe('When the signature is verified', () => {
+      it('Then its stdout is not trusted and the key is checked without a principal', async () => {
+        // Arrange
+        const rig = harness((request) => {
+          if (commandLine(request).includes('find-principals')) {
+            return { exitCode: 1, stdout: 'alice\n', stderr: 'no matching principal\n' };
+          }
+          return { stdout: `Good "git" signature with ED25519 key ${FPR}\n` };
+        });
+        const sut = verifyCommitSignature;
+
+        // Act
+        const result = await sut(rig.ctx, {
+          payload: PAYLOAD,
+          signature: SSH_SIG,
+          gpg: { ssh: { allowedSignersFile: '/allowed' } },
+        });
+
+        // Assert
+        expect(rig.requests.map((request) => request.args?.[1])).toEqual([
+          'find-principals',
+          'check-novalidate',
+        ]);
+        expect(result).toMatchObject({ result: 'G', trust: 'undefined', signer: '' });
+      });
+    });
+  });
+
+  describe('Given ssh-keygen listing one principal followed by a newline whose verification fails', () => {
+    describe('When the signature is verified', () => {
+      it('Then no empty principal is tried and the signature is bad', async () => {
+        // Arrange
+        const rig = harness((request) =>
+          commandLine(request).includes('find-principals')
+            ? { stdout: 'alice\n' }
+            : { exitCode: 255, stdout: 'Could not verify signature.\n' },
+        );
+        const sut = verifyCommitSignature;
+
+        // Act
+        const result = await sut(rig.ctx, {
+          payload: PAYLOAD,
+          signature: SSH_SIG,
+          gpg: { ssh: { allowedSignersFile: '/allowed' } },
+        });
+
+        // Assert
+        expect(rig.requests).toHaveLength(2);
+        expect(result).toMatchObject({ result: 'B', trust: 'never' });
+      });
+    });
+  });
 });
