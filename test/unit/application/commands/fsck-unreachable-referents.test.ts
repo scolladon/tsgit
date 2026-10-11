@@ -268,4 +268,47 @@ describe('fsck connectivity-only unreachable referents', () => {
       });
     });
   });
+
+  describe('Given a dangling commit whose tree is a blob read before it, stored loose and packed', () => {
+    describe('When a connectivity-only fsck runs', () => {
+      it('Then each copy is walked, so the conflict and the bad pointer are reported once per copy', async () => {
+        // Arrange
+        const ctx = await repoWithMain();
+        const blob = await writeObject(ctx, blobOf('leaf\n'));
+        const commit = await writeObject(
+          ctx,
+          await searchFor(
+            (n) => commitOf(blob, [], `m${n}`),
+            (id) => readBefore(blob, id),
+          ),
+        );
+        const raw = await ctx.compressor.inflate(
+          await ctx.fs.read(looseObjectPath(ctx.layout.gitDir, commit)),
+        );
+        const content = raw.slice(raw.indexOf(0) + 1);
+        await writeSyntheticPack(ctx, 'twin', [{ kind: 'base', type: 'commit', content }]);
+        refreshPackRegistry(ctx);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx, CONNECTIVITY_ONLY);
+
+        // Assert
+        const conflict = {
+          type: 'type-conflict',
+          id: blob,
+          objectType: 'blob',
+          expectedType: 'tree',
+        };
+        const pointer = { type: 'bad-pointer', id: commit, link: 'tree', target: blob };
+        expect(findingsOfType(result.findings, 'type-conflict')).toEqual([conflict, conflict]);
+        expect(findingsOfType(result.findings, 'bad-pointer')).toEqual([pointer, pointer]);
+        expect(findingsOfType(result.findings, 'dangling')).toEqual([
+          { type: 'dangling', id: blob, objectType: 'blob' },
+          { type: 'dangling', id: commit, objectType: 'commit' },
+        ]);
+        expect(result.exitCode).toBe(0);
+      });
+    });
+  });
 });

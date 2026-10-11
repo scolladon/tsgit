@@ -86,11 +86,9 @@ export function markUnreachableReferents(
   objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
 ): ReferentMarks {
   const state: MarkState = { types: new Map(typed), used: new Set(), findings: [] };
-  const walked = new Set<ObjectId>();
   for (const id of order) {
     const obj = objectCache.get(id);
-    if (obj == null || reached.has(id) || walked.has(id)) continue;
-    walked.add(id);
+    if (obj == null || reached.has(id)) continue;
     markReferents(state, id, obj);
   }
   return { used: state.used, findings: state.findings };
