@@ -109,8 +109,8 @@ describe('Given a fresh repo, When committing a file, Then HEAD points at the co
     });
 
     // Assert
-    const head = await sut.revParse('HEAD');
-    expect(head).toBe(result.id);
+    const [head] = await sut.revParse('HEAD');
+    expect(head).toEqual({ kind: 'object', id: result.id, negated: false });
 
     await sut.dispose();
   });

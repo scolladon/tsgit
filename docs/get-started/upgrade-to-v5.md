@@ -1,8 +1,8 @@
 # Upgrade to v5
 
-v5 is a faithfulness release. Every change below moves a surface that used to answer its own way onto the answer the `git` binary gives — object reads that git streams, ref updates that git verifies and dereferences, reflog expiry that reads git's own configuration keys and clocks, and a memory adapter that resolves symlinks and refuses the way the Node one does. Nothing here was added for its own sake: each item is a place tsgit and git disagreed, and git won.
+v5 is a faithfulness release. Every change below moves a surface that used to answer its own way onto the answer the `git` binary gives — object reads that git streams, ref updates that git verifies and dereferences, reflog expiry that reads git's own configuration keys and clocks, push, fetch, merge, pull and rebase that report and refuse the way git does, alternate object stores that are read, and a memory adapter that resolves symlinks and refuses the way the Node one does. Nothing here was added for its own sake: each item is a place tsgit and git disagreed, and git won.
 
-There are no renamed exports and no removed commands. The breaking part is behaviour — calls that used to throw may now succeed, calls that used to succeed may now refuse, and a few return values changed shape at the margins. Read the sections that cover the surfaces you use; if you only read and write objects, the first section is enough.
+There are no renamed exports and no removed commands. The breaking part is behaviour — calls that used to throw may now succeed, calls that used to succeed may now refuse, and some return values changed shape (`revParse`, `pull`, `MergeResult`, `FetchUpdate`, `remote.show`). Read the sections that cover the surfaces you use; if you only read and write objects, the first section is enough.
 
 ## Object reads
 
@@ -111,6 +111,156 @@ This is the largest group. `updateRef` was a thin compare-and-swap over one ref 
 
 If you rename remotes programmatically, point `<remote>/HEAD` inside its own remote first, and re-read the config after a refused rename rather than assuming it rolled back.
 
+## Revision parsing
+
+**`revParse` returns git's ordered revision list instead of one id** (ADR-940). A plain name answers one entry; ranges and parent shorthands answer several, in the order `git rev-parse` prints them, with excluded revisions flagged rather than prefixed. An argument that is not a revision but names an existing path comes back as a `path` entry.
+
+```ts
+// before
+const head: ObjectId = await repo.revParse('HEAD');
+// after
+const [head] = await repo.revParse('HEAD');          // { kind: 'object', id, negated: false }
+await repo.revParse('main..topic');                   // topic, then main with negated: true
+await repo.revParse('topic^@');                       // topic's parents
+```
+
+Internal callers that need one object are unaffected. If you want one id, take the first entry and check `kind === 'object'`; a range expression there is no longer a refusal. A refusal raised after git has already printed lines (`A...B` with a non-commit side) carries those entries in its error data.
+
+**`@{upstream}`, `@{u}` and `@{push}` resolve everywhere a revision does.** They were not supported before. Unresolvable marks refuse `BRANCH_MARK_UNRESOLVED`, with git's reason. Reflog selectors go through git's `dwim_log`, and `HEAD` is named through `get_oid`.
+
+**An ambiguous abbreviated id lists every candidate** (ADR-941). `AMBIGUOUS_OID_PREFIX` used to carry at most 16. `candidates` now holds all of them in git's order (tags, commits, trees, blobs), each described as git's hint describes it: a commit or tag with `date` and `subject`, a tree or blob by type, and `bad-object` / `bad-tag` for unreadable ones. A repository crafted to collide on a short prefix can now make that error as large as git's stderr would be.
+
+```ts
+// before: error.data.candidates.length <= 16, entries { id, type }
+// after:  every candidate; commits and tags also carry { date, subject }
+```
+
+**Revision-taking commands type objects the way git's lookups do.** `mergeBase` looks each argument up as a commit (annotated tags peel) and refuses the first that names none with `INVALID_COMMIT_NAME`; a parent that fails to parse refuses `COMMIT_PARSE_FAILED`, as git's walk dies on it. `revList`, `rangeDiff` and `bundle.create` parse both range ends into one object table and refuse a bad end with `INVALID_REVISION_RANGE` or `INVALID_SYMMETRIC_RANGE`; `rangeDiff` also refuses a range whose two ends are one object with `NEED_TWO_COMMIT_RANGES`. A tree entry stored as another type refuses `TREE_ENTRY_TYPE_MISMATCH` or `BAD_TREE_OBJECT` in `revList --objects`. git's `error:` lines go to `ctx.logger.error`. Catch these codes where you caught `OBJECT_NOT_FOUND` or `REVPARSE_UNRESOLVED` for these inputs.
+
+**Tag chains peel to any depth.** The depth cap is gone; only a chain that revisits an object refuses `REF_CHAIN_TOO_DEEP`.
+
+**`walkCommits` gains `order: 'topo-order'`**, git's `--topo-order`: every commit is read before the first is yielded, and a commit comes after all its children. `'breadth-first'` names the former queue order and `'topo'` stays as its alias.
+
+## Push
+
+**A rejected ref no longer throws; `push` reports it per ref** (ADR-942). The call carries on with the other refs, as git does, and resolves with every ref's outcome. `NON_FAST_FORWARD` is no longer thrown by `push` (it remains `merge`/`pull`'s code for `fastForward: 'only'`).
+
+```ts
+// before
+try { await repo.push({ refspecs: ['main'] }); }
+catch (e) { if (e.data.code === 'NON_FAST_FORWARD') handle(e.data.name); }
+// after
+const { pushedRefs } = await repo.push({ refspecs: ['main'] });
+for (const ref of pushedRefs) {
+  if (ref.status === 'rejected') handle(ref.name, ref.rejection, ref.reason);
+}
+```
+
+`rejection` is one of `'non-fast-forward'`, `'needs-force'`, `'fetch-first'`, `'already-exists'`, `'stale-info'` (a `forceWithLease` expectation that no longer holds), `'remote-ref-updated'` (`forceIfIncludes`), `'remote-ref-not-deletable'`, `'atomic-push-failed'`, or `'remote'` (the server's `ng`, text in `reason`). A stale lease is a rejection too, not a `PUSH_REJECTED` throw.
+
+**`atomic` is opt-in.** Push used to request the server's `atomic` capability whenever it was advertised. It now does so only for `push({ atomic: true })`, as `git push --atomic` does, and throws `ATOMIC_PUSH_UNSUPPORTED` when the server does not advertise it. Refs held back by another ref's rejection report `'atomic-push-failed'`.
+
+**Leases follow git's compare-and-swap.** An `'auto'` lease on a tag or an untracked ref expects the remote ref absent and reports `'stale-info'`, instead of refusing `lease-on-non-branch`; a delete is checked against the lease too.
+
+**`report-status-v2` is spoken when advertised.** A ref a `proc-receive` hook rewrote is reported under its rewritten name and ids, with `forcedUpdate` set when the hook says so. Remote-tracking refs follow the rewritten reports.
+
+**More git behaviour on the same call.** `PushOptions.forceIfIncludes` and `push.useForceIfIncludes` are honoured under an automatic lease. A full delete the server did not advertise is sent, and a short delete destination is matched against remote refs (`PUSH_REFSPEC_UNMATCHED` when it matches none or several). A branch with several `branch.<b>.merge` values refuses `PUSH_MULTIPLE_UPSTREAMS` when push needs its upstream. Only the capabilities git's `send-pack` requests are requested.
+
+## Fetch
+
+**`FetchUpdate` is a union with a status and a source** (ADR-944). Every update carries `source` (the remote ref) and `status`; a rejected one keeps its old id.
+
+```ts
+// before: { name, oldId, newId }
+// after
+type FetchUpdate =
+  | { name; source; oldId: ObjectId | undefined; newId; status: 'ok' }
+  | { name; source; oldId: ObjectId; newId; status: 'rejected'; rejection: 'non-fast-forward' | 'would-clobber-existing-tag' };
+```
+
+A ref mapped without `+` is no longer moved when the fetched commit does not descend from it, and an existing tag is never moved without `+`. Both used to be overwritten silently. `fetch` resolves, performing every other update; `pull` refuses `FETCH_REJECTED` before merging.
+
+**`refspecs` are git's command-line refspecs.** They replace `remote.<name>.fetch` (the default is now that config, not a fixed branches refspec), short sources are matched like `find_ref_by_name_abbrev`, and every ref they name is listed for merging in `FETCH_HEAD`. `refmap` (git's `--refmap`) maps them onto tracking refs; without `refspecs` it refuses `INVALID_OPTION`. `FETCH_HEAD` is now written as git writes it, and tags follow the fetched history.
+
+**New refusals.** A refspec writing a branch some worktree holds refuses `FETCH_INTO_CHECKED_OUT_BRANCH`. Two remote refs mapped onto one local ref refuse `FETCH_REFSPEC_CONFLICT`. A configured or exact source the remote does not advertise refuses `REMOTE_REF_NOT_FOUND`. Fetching from an empty remote succeeds with an empty `FETCH_HEAD`. Reflog messages carry git's argv-derived action (`fetch origin main:other: storing head`), and `refs/remotes/<remote>/HEAD` follows `remote.<remote>.followRemoteHEAD`.
+
+## Merge and pull
+
+**`pull` returns a discriminated result.** `PullResult` is `{ fetch, integration: 'merge', merge } | { fetch, integration: 'rebase', rebase }`; branch on `integration` instead of reading `result.merge` unconditionally.
+
+**A divergent pull refuses unless told how to reconcile** (ADR-946). With neither `rebase` nor `pull.rebase`/`pull.ff` choosing, and the fetched head diverged from `HEAD`, `pull` refuses `PULL_DIVERGENT_BRANCHES` after the fetch. Pass `rebase: false` to keep merging.
+
+```ts
+await repo.pull({ rebase: false });      // the old implicit merge
+await repo.pull({ rebase: true });       // or 'merges'
+```
+
+`pull` merges what the fetch marked for merging in `FETCH_HEAD`, not `branch.<b>.merge` read directly; `ref` is now a command-line refspec (`git pull <remote> <ref>`). When nothing is marked it refuses with `PULL_NO_MERGE_CANDIDATES` or `NO_UPSTREAM_CONFIGURED`. A pull into an unborn branch works, and a pull whose fetch moves the checked-out branch fast-forwards the work tree.
+
+**`merge` gains git's options** (ADR-945), also accepted by `pull`: `squash`, `commit: false`, `strategy` (one name or a list tried in turn), `strategyOptions`, `log`, and `autostash`, with `merge.log`, `merge.autostash`, `pull.twohead`, `pull.octopus` and `branch.<b>.mergeoptions` honoured. Unknown names refuse `UNKNOWN_MERGE_STRATEGY`, `UNKNOWN_STRATEGY_OPTION`, `UNKNOWN_OPTION` or `AMBIGUOUS_OPTION`; a squash combined with `fastForward: 'never'` refuses `INCOMPATIBLE_OPTIONS`.
+
+**`MergeResult` has two more variants.** A merge that ends without a commit no longer reports as a merge.
+
+```ts
+// squash:   { kind: 'squashed', origHead, conflicts? }   // SQUASH_MSG written, HEAD unmoved
+// commit:false: { kind: 'stopped', mergeHead, origHead } // MERGE_HEAD + MERGE_MSG kept
+```
+
+An exhaustive `switch (result.kind)` over `MergeResult` needs both arms. Merging several heads is supported (git's `reduce_heads`, octopus strategy), unrelated histories refuse `UNRELATED_HISTORIES` unless `allowUnrelatedHistories`, and a merge into a detached `HEAD` stays detached.
+
+**The merge core detects renames like `ort`** (ADR-947). A file renamed on one side and edited on the other merges into its new path, directory renames apply per `merge.directoryRenames`, and rename/delete, rename/rename and rename/add stop as conflicts. Content merges diff with histogram by default (`diff.algorithm` overrides it), conflict markers refine as git's do, and `merge.conflictStyle` `diff3`/`zdiff3` is honoured. Merges that used to conflict or clobber may now merge cleanly, and the reverse; merge commit ids can differ from earlier tsgit output. A merge that git refuses in the directory-rename split case no longer commits.
+
+**Merge commits match git byte for byte.** The default message follows `fmt_merge_msg`, a signed-tag merge carries git's `mergetag` header and comment block, and the reflog reads `Merge made by the 'ort' strategy.` instead of `'tsgit'`. Merge commits can be signed through `sign`/`signKey` or `commit.gpgSign`. A conflicted merge, cherry-pick, rebase, revert or stash no longer drops cleanly line-merged paths from the index.
+
+**Local changes can be stashed around the operation**, as `--autostash` does, by `merge`, `pull` and `rebase` through `MERGE_AUTOSTASH` / `rebase-merge/autostash`, with git's `Created autostash` / `Applied autostash` messages.
+
+## Rebase
+
+**`upstream` and `onto` accept any revision that peels to a commit**, and `onto` accepts `A...B`. Before, only a ref or object id resolved (`rebase HEAD~3` threw `REF_NOT_FOUND`). A bad revision refuses `REBASE_REVISION_INVALID`.
+
+```ts
+// before: await repo.rebase({ upstream: 'abc123…' });
+await repo.rebase({ upstream: 'HEAD~3' });
+```
+
+**`rebaseMerges` and `autostash` are new options**, and the replay walks git's right-only, merge-free, graph-ordered range. A stop leaves git's marker files (`MERGE_MSG`, `message-fixup`, `amend`, `current-fixups`), and an `edit` stop followed by `skip` keeps the edited commit. `pull --rebase` rebases from git's fork point.
+
+## Other commands
+
+**`rm` refuses a directory without `recursive`.** A literal pathspec that reaches only paths under a directory refuses `RM_RECURSIVE_WITHOUT_R`; pass `recursive: true`.
+
+**`checkout` refuses unresolvable and non-commit switch targets** (`CHECKOUT_NON_COMMIT`, `CHECKOUT_START_POINT_NOT_COMMIT`) and peels tags.
+
+**`name-rev` names a tag, tree or blob only by a ref pointing straight at it,** and returns `undefined` for an argument git cannot read instead of throwing. `nameRev` skips a dangling ref rather than refusing every input.
+
+**`remote.show` reports every merge value.** `trackedBy[].merge` is `ReadonlyArray<string>` (was `string | undefined`), and a branch with no merge value is omitted.
+
+**`branch.create` records tracking** (`track`, `noTrack`, `upstream` in the result), and `branch.delete`/`push` reachability checks refuse `COMMIT_PARSE_FAILED` as the merge-base walk does.
+
+**`maintenance` reports a failed task instead of throwing.** `tasksFailed` lists each `{ task, code, data }` and the remaining tasks still run. A commit-graph write over an unparseable commit refuses `TREE_UNREADABLE`.
+
+**`bundle.create` bundles what git's limited walk picks**, prerequisites included; `BUNDLE_EMPTY` is `reason: 'no-refs'` only, and an empty selection writes an empty pack.
+
+## Alternate object stores
+
+**Alternates are read.** `objects/info/alternates` is honoured for every object read (loose, packed, multi-pack-index, bitmaps and the commit-graph chain), in git's search order, up to git's nesting depth. Before, an alternate's objects were not found.
+
+```ts
+const { sources, unusable } = await repo.primitives.objectSources();
+```
+
+An alternate that cannot be used is skipped and listed in `unusable` (`unresolvable`, `not-a-directory`, `unreadable-list`, `nesting-too-deep`, `unreachable`), and warned through `ctx.logger`; a read never fails because of it (ADR-914, ADR-916). `fsck` audits every source; `gc` packs the repository's own objects only (git's `repack -l`), `prune` removes only the repository's own loose objects, and a loose copy of an object an alternate already packs is removed; a write that finds the object in any source freshens that copy instead of writing (ADR-922). `GIT_ALTERNATE_OBJECT_DIRECTORIES` is not read (ADR-923). `repo.primitives.abbreviateObjectId` is new and extends an abbreviation past collisions in every source.
+
+**Direct adapter users get alternates too.** `createNodeContext` now reads alternates through the same access `openRepository` uses; containment is unchanged. A caller-supplied `opts.fs` bounds every read, alternates included: it must itself reach an out-of-root alternate, which is otherwise skipped as `unreachable` (ADR-915).
+
+## Command runner and filters
+
+**`CommandRunner` gains `args`, `stderr` and an optional `spawn`** (ADR-938). A request with `args` runs the program directly with no shell; `stderr: 'capture'` returns the child's stderr on `result.stderr`; `spawn` starts a long-running child for `filter.<driver>.process`. A custom `CommandRunner` that lacks `spawn` makes a required process driver refuse, as git refuses a driver it cannot start. Signing and verification now run their programs by argv.
+
+**A required `clean`/`smudge` driver that smudges nothing refuses** `SMUDGE_FILTER_FAILED` (`exitCode` is now optional). `checkout` smudges through `filter.<driver>.process`.
+
+**On Windows, spawned programs resolve through `PATH` only,** never the working tree, and command lines run under `cmd.exe` with `NoDefaultCurrentDirectoryInExePath` set, which the programs they start inherit. A relative `PATH` entry resolves to an absolute one.
+
 ## Caches and memory
 
 **The cache family's documented ceiling is about 158 MiB, not 136 MiB.** The parsed-object memo's byte valve is now charged at measured cost rather than an estimate (about 37.7 MiB at SHA-1), and at SHA-256 the flat-tree and memo valves are sized so each still admits its full reference workload. No API changed and no default you set moves — only the number you should budget for.
@@ -122,4 +272,9 @@ If you rename remotes programmatically, point `<remote>/HEAD` inside its own rem
 | Look up an error code's payload | [Errors](../use/errors.md) |
 | See the full `updateRef` surface | [`updateRef`](../use/primitives/update-ref.md) |
 | See reflog expiry's options and refusals | [`reflog`](../use/commands/reflog.md) |
+| See `revParse`'s ordered entries | [`revParse`](../use/commands/rev-parse.md) |
+| See push's per-ref rejections | [`push`](../use/commands/push.md) |
+| See fetch's per-ref status | [`fetch`](../use/commands/fetch.md) |
+| See merge and pull options | [`merge`](../use/commands/merge.md), [`pull`](../use/commands/pull.md) |
+| List the object stores a session reads | [`objectSources`](../use/primitives/object-sources.md) |
 | Come from `isomorphic-git` instead | [Migration guide](migrate-from-isomorphic-git.md) |
