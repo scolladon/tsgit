@@ -16,7 +16,7 @@ import { readBlob } from '../read-blob.js';
 import { readDeclaredObjectHeader } from '../read-object.js';
 import { MAX_GITATTRIBUTES_BYTES } from '../types.js';
 import { joinPath } from './join-working-tree-path.js';
-import { expandUserPath, loadCappedUtf8, sanitizedErrorPath } from './read-capped-file.js';
+import { expandUserPath, loadCappedUtf8 } from './read-capped-file.js';
 import { findTreeEntry } from './resolve-tree-path.js';
 
 /** Load + parse one attributes file; `undefined` when absent, symlink, or a directory. */
@@ -52,15 +52,11 @@ const isReadableMode = (mode: string): boolean =>
   mode === FILE_MODE.REGULAR || mode === FILE_MODE.EXECUTABLE;
 
 /** Refuses on the header's claim so a hostile tree never allocates an oversize blob. */
-const assertDeclaredSizeWithinCap = async (
-  ctx: Context,
-  id: ObjectId,
-  path: string,
-): Promise<void> => {
+const assertDeclaredSizeWithinCap = async (ctx: Context, id: ObjectId): Promise<void> => {
   const { declaredSize } = await readDeclaredObjectHeader(ctx, id);
   if (declaredSize > MAX_GITATTRIBUTES_BYTES) {
     throw gitattributesFileTooLarge(
-      sanitizedErrorPath(path),
+      GITATTRIBUTES_FILE as FilePath,
       declaredSize,
       MAX_GITATTRIBUTES_BYTES,
     );
@@ -80,9 +76,6 @@ const DIRECTORY_MARKER = '/';
 /** The directory a queried path sits in — a `dir/` key names `dir` inside its parent. */
 const containingDir = (path: string): string =>
   parentDir(path.endsWith(DIRECTORY_MARKER) ? path.slice(0, -DIRECTORY_MARKER.length) : path);
-
-const gitattributesPathIn = (dir: string): string =>
-  dir === '' ? GITATTRIBUTES_FILE : `${dir}/${GITATTRIBUTES_FILE}`;
 
 /**
  * Each directory's tree, found by one exact-name lookup in its parent's tree,
@@ -112,13 +105,12 @@ const createDirTreeIndex = (tree: ObjectId) => {
 const treeDirReader = (tree: ObjectId): DirReader => {
   const dirTreeOf = createDirTreeIndex(tree);
   return async (ctx, dir) => {
-    const path = gitattributesPathIn(dir);
     const dirTree = await dirTreeOf(ctx, dir);
     const entry = await (dirTree === undefined
-      ? findTreeEntry(ctx, tree, path)
+      ? findTreeEntry(ctx, tree, `${dir}/${GITATTRIBUTES_FILE}`)
       : findTreeEntry(ctx, dirTree, GITATTRIBUTES_FILE));
     if (entry === undefined || !isReadableMode(entry.mode)) return undefined;
-    await assertDeclaredSizeWithinCap(ctx, entry.id, path);
+    await assertDeclaredSizeWithinCap(ctx, entry.id);
     const { content } = await readBlob(ctx, entry.id);
     return parseGitattributes(decode(content));
   };

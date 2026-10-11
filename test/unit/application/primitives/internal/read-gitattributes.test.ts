@@ -845,6 +845,24 @@ describe('buildTreeAttributeProvider', () => {
     });
   });
 
+  describe('Given a tree .gitattributes exactly at the size cap', () => {
+    describe('When resolving a path', () => {
+      it('Then the file is read, not refused', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const attrs = await putBlob(ctx, '#'.repeat(MAX_GITATTRIBUTES_BYTES));
+        const tree = await putTree(ctx, [[FILE_MODE.REGULAR, '.gitattributes', attrs]]);
+        const sut = treeResolve;
+
+        // Act
+        const result = await sut(ctx, tree, 'a.txt');
+
+        // Assert
+        expect(result).toBe('unspecified');
+      });
+    });
+  });
+
   describe('Given a tree nested many directories deep, read with every object cache off', () => {
     describe('When each directory and the leaf are resolved in walk order', () => {
       it('Then it reads the root once and two trees per directory, never re-descending from the root', async () => {
