@@ -48,6 +48,7 @@ type ParsedBodies = Map<ObjectId, Commit>;
 
 const takeParsed = (parsed: ParsedBodies, id: ObjectId): Commit | undefined => {
   const commit = parsed.get(id);
+  // Stryker disable next-line CallExpression: equivalent — each id is taken once per walk (visited/missing/until skip every re-start), so a retained entry is never read again and only memory differs
   parsed.delete(id);
   return commit;
 };
@@ -228,7 +229,6 @@ async function parseFollowedParents(
   commit: Commit,
 ): Promise<void> {
   const { state, bodies, order } = session;
-  if (state.shallow.has(commit.id)) return;
   for (const parent of selectParentIds(commit.data.parents, order)) {
     if (state.visited.has(parent) || state.missing.has(parent) || state.until.has(parent)) continue;
     const header = state.shallow.has(parent) ? undefined : await commitHeader(ctx, parent);
