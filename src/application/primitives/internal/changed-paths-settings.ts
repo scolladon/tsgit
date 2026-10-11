@@ -54,7 +54,6 @@ export async function changedPathsRequest(ctx: Context): Promise<ChangedPathsReq
   await assertValidBooleanConfig(ctx, 'commitGraph', undefined, ['changedPaths']);
   const entry = await findLastEntry(ctx, 'commitGraph', 'changedPaths');
   if (entry === undefined) return 'preserve';
-  if (entry.value === null) return 'enable';
   const parsed = parseGitBoolean(entry.value);
   return parsed.ok && parsed.value ? 'enable' : 'preserve';
 }
