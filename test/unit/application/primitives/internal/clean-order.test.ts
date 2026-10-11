@@ -136,6 +136,29 @@ describe('withCleanOrder', () => {
       });
     });
 
+    describe('When a nested scope closes', () => {
+      it('Then the outer order still holds a later path back', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const admitted: FilePath[] = [];
+        const sut = withCleanOrder;
+
+        // Act
+        await sut(ctx, async (outer) => {
+          for (const path of [A, B]) outer.enlist(path);
+          await sut(ctx, async () => undefined);
+          const blocked = track(ctx, B, admitted);
+          await drain();
+          expect(admitted).toEqual([]);
+          outer.release(A);
+          await blocked;
+        });
+
+        // Assert
+        expect(admitted).toEqual([B]);
+      });
+    });
+
     describe('When the scope closes', () => {
       it('Then later admissions on the context are no longer ordered', async () => {
         // Arrange
