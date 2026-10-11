@@ -264,6 +264,7 @@ const pushViaSession = async (ctx: Context, opts: PushOptions): Promise<PushResu
   const remoteName = resolvePushRemote(config, opts.remote, currentBranch);
   const url = await resolveRemoteUrl(ctx, remoteName);
   const plan = await planPushRefspecs(config, opts, head);
+  // Stryker disable next-line ArrayDeclaration: equivalent — the lone mutant makes the fallback a one-element spec without a colon, which `findTrackingRef` maps to nothing (`splitSides` leaves `dst` undefined, so `mapSource` returns undefined), exactly as the empty fallback does.
   const remote = { name: remoteName, trackingSpecs: config.remote?.get(remoteName)?.fetch ?? [] };
   const session = openGitSession(ctx, url, 'git-receive-pack');
   try {
