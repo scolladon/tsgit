@@ -5,8 +5,10 @@ import { checkout } from '../../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../../src/application/commands/commit.js';
 import { init } from '../../../../../src/application/commands/init.js';
 import { forkPoint } from '../../../../../src/application/commands/internal/fork-point.js';
+import { readObject } from '../../../../../src/application/primitives/read-object.js';
 import { appendReflog } from '../../../../../src/application/primitives/reflog-store.js';
 import { updateRef } from '../../../../../src/application/primitives/update-ref.js';
+import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
@@ -117,6 +119,53 @@ describe('forkPoint', () => {
 
       // Act
       const result = await forkPoint(ctx, TRACKING, c);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe('Given a reflog naming an object that is no commit, When the fork point is sought', () => {
+    it('Then that value is skipped', async () => {
+      // Arrange
+      const { ctx, b, c } = await history();
+      await updateRef(ctx, TRACKING, b, { reflogMessage: 'fetch' });
+      const blob = await writeObject(ctx, {
+        type: 'blob',
+        id: '' as ObjectId,
+        content: new TextEncoder().encode('hi'),
+      });
+      await appendReflog(ctx, TRACKING, {
+        oldId: b,
+        newId: blob,
+        identity: author,
+        message: 'x',
+      });
+
+      // Act
+      const result = await forkPoint(ctx, TRACKING, c);
+
+      // Assert
+      expect(result).toBe(b);
+    });
+  });
+
+  describe('Given two reflog values that are both merge bases of the commit, When the fork point is sought', () => {
+    it('Then there is none, a fork point being the one and only merge base', async () => {
+      // Arrange
+      const { ctx, b, d } = await history();
+      await updateRef(ctx, TRACKING, b, { reflogMessage: 'fetch' });
+      await updateRef(ctx, TRACKING, d, { reflogMessage: 'fetch: forced-update' });
+      const parent = await readObject(ctx, b);
+      if (parent.type !== 'commit') throw new Error('expected a commit');
+      const merge = await writeObject(ctx, {
+        type: 'commit',
+        id: '' as ObjectId,
+        data: { ...parent.data, parents: [d, b] },
+      });
+
+      // Act
+      const result = await forkPoint(ctx, TRACKING, merge);
 
       // Assert
       expect(result).toBeUndefined();
