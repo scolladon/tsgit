@@ -121,6 +121,7 @@ const peeledCommit = async (ctx: Context, id: ObjectId): Promise<ObjectId | unde
   try {
     return await peel(ctx, undefined, id, 'commit');
   } catch (error) {
+    // Stryker disable next-line StringLiteral: equivalent — the fallback only stands for an absent code and no member of NO_COMMIT_CODES is the empty string or any other literal
     if (NO_COMMIT_CODES.has(errorDataCode(error) ?? '')) return undefined;
     throw error;
   }
