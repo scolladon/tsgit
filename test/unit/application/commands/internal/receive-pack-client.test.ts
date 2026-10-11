@@ -71,7 +71,7 @@ describe('selectPushCapabilities', () => {
         const sut = selectPushCapabilities;
 
         // Act
-        const result = sut(['report-status'], 'sha1');
+        const result = sut(['report-status'], 'sha1', []);
 
         // Assert
         expect(result).toEqual(['report-status']);
@@ -118,7 +118,7 @@ describe('selectPushCapabilities', () => {
         'Then %s IS in the result',
         (cap) => {
           // Arrange & Act
-          const result = selectPushCapabilities([cap], 'sha1');
+          const result = selectPushCapabilities([cap], 'sha1', []);
 
           // Assert
           expect(result).toEqual([cap]);
@@ -133,7 +133,7 @@ describe('selectPushCapabilities', () => {
         'Then %s is NOT in the result',
         (cap) => {
           // Arrange & Act
-          const result = selectPushCapabilities([cap], 'sha1');
+          const result = selectPushCapabilities([cap], 'sha1', []);
 
           // Assert
           expect(result).toEqual([]);
@@ -146,7 +146,7 @@ describe('selectPushCapabilities', () => {
     describe('When selectPushCapabilities runs', () => {
       it('Then the result has exactly one agent= entry (the client one)', () => {
         // Arrange & Act — the server's own agent is never echoed back.
-        const result = selectPushCapabilities(['agent=git/2.x', 'report-status'], 'sha1');
+        const result = selectPushCapabilities(['agent=git/2.x', 'report-status'], 'sha1', []);
 
         // Assert
         const agentEntries = result.filter((c) => c.startsWith('agent='));
@@ -160,7 +160,7 @@ describe('selectPushCapabilities', () => {
     describe('When selectPushCapabilities runs', () => {
       it('Then atomic is NOT in the result', () => {
         // Arrange & Act
-        const result = selectPushCapabilities(['report-status', 'atomic'], 'sha1');
+        const result = selectPushCapabilities(['report-status', 'atomic'], 'sha1', []);
 
         // Assert
         expect(result).not.toContain('atomic');
@@ -197,7 +197,7 @@ describe('selectPushCapabilities', () => {
     describe('When selectPushCapabilities runs', () => {
       it('Then no push-cert token is in the result', () => {
         // Arrange & Act — kills the "always want push-cert" mutant.
-        const result = selectPushCapabilities(['report-status', 'push-cert=abc123'], 'sha1');
+        const result = selectPushCapabilities(['report-status', 'push-cert=abc123'], 'sha1', []);
 
         // Assert
         expect(result.some((c) => c === 'push-cert' || c.startsWith('push-cert='))).toBe(false);
@@ -224,7 +224,7 @@ describe('selectPushCapabilities', () => {
         // git gates its own token on `server_supports_hash()`. Sending one
         // regardless would put an unsolicited capability on every legacy
         // SHA-1 push.
-        const result = selectPushCapabilities(['report-status'], 'sha1');
+        const result = selectPushCapabilities(['report-status'], 'sha1', []);
 
         // Assert
         expect(result.some((capability) => capability.startsWith('object-format='))).toBe(false);
@@ -237,7 +237,7 @@ describe('selectPushCapabilities', () => {
       it('Then the result carries object-format=sha1 when the peer advertised the capability', () => {
         // Arrange & Act — the peer must advertise `object-format` for git to
         // send one; the value sent is OURS, never the peer's echoed back.
-        const result = selectPushCapabilities(['report-status', 'object-format=sha1'], 'sha1');
+        const result = selectPushCapabilities(['report-status', 'object-format=sha1'], 'sha1', []);
 
         // Assert
         expect(result).toContain('object-format=sha1');
@@ -249,7 +249,11 @@ describe('selectPushCapabilities', () => {
     describe('When selectPushCapabilities runs', () => {
       it('Then the result carries object-format=sha256, our own, regardless of the server advert', () => {
         // Arrange & Act
-        const result = selectPushCapabilities(['report-status', 'object-format=sha1'], 'sha256');
+        const result = selectPushCapabilities(
+          ['report-status', 'object-format=sha1'],
+          'sha256',
+          [],
+        );
 
         // Assert
         expect(result).toContain('object-format=sha256');

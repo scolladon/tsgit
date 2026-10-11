@@ -35,7 +35,7 @@ const advertises = (advertised: ReadonlyArray<string>, name: string): boolean =>
 export const selectPushCapabilities = (
   advertised: ReadonlyArray<string>,
   objectFormat: 'sha1' | 'sha256',
-  optIns: ReadonlyArray<string> = [],
+  optIns: ReadonlyArray<string>,
 ): ReadonlyArray<string> => {
   const offered = (name: string): boolean => advertises(advertised, name);
   // git asks for the v2 report whenever the server offers it.
