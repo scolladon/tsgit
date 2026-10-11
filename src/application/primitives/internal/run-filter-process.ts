@@ -157,6 +157,7 @@ const exchange =
     await child.write(encodeRequest(request));
     const statusSection = await sections.next();
     if (statusSection === undefined) return BROKEN;
+    // Stryker disable next-line StringLiteral: equivalent — the seed only matters when no `status=` line exists, and every seed but 'success' (the empty one included) falls through `failureOf` to the same 'broken'
     const status = statusOf(statusSection, '');
     return status === SUCCESS ? readContent(sections) : failureOf(status);
   };
