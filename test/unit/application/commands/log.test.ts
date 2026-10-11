@@ -822,4 +822,24 @@ describe('log', () => {
       });
     });
   });
+
+  describe('Given nothing excluded and a history whose oldest commit is missing', () => {
+    describe('When log is limited to the newest commit', () => {
+      it('Then the walk stops before reading the missing parent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const missing = 'f'.repeat(40) as ObjectId;
+        const middle = await writeCommitAt(ctx, [missing], 2000, 'middle');
+        const newest = await writeCommitAt(ctx, [middle], 3000, 'newest');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': newest } });
+        const sut = log;
+
+        // Act
+        const result = await sut(ctx, { limit: 1 });
+
+        // Assert
+        expect(result.map((entry) => entry.message)).toEqual(['newest']);
+      });
+    });
+  });
 });
