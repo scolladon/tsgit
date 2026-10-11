@@ -48,9 +48,11 @@ interface Seeded {
   readonly head: string;
 }
 
+const HOME = '/repo/home';
+
 const seed = async (extraConfig = ''): Promise<Seeded> => {
   const warnings: LogRecord[] = [];
-  const base = createMemoryContext();
+  const base = createMemoryContext({ home: HOME });
   const warn = (message: string, context?: Readonly<Record<string, unknown>>) =>
     warnings.push({ message, context });
   const ctx: Context = { ...base, logger: { warn } };
@@ -423,6 +425,50 @@ describe('branchCreate — upstream tracking', () => {
 
         // Assert
         expect(result).toMatchObject({ code: 'CONFIG_MISSING_VALUE', key: 'branch.main.merge' });
+        expect(await branchSection(ctx, 'z')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given --track=inherit from a start whose merge is set to the empty string', () => {
+    describe('When branchCreate cuts z', () => {
+      it('Then it inherits the empty merge as git does', async () => {
+        // Arrange
+        const { ctx, warnings } = await seed('[branch "side"]\n\tremote = origin\n\tmerge =\n');
+        await branchCreate(ctx, { name: 'side', noTrack: true });
+        const sut = branchCreate;
+
+        // Act
+        const result = await sut(ctx, { name: 'z', startPoint: 'side', track: 'inherit' });
+
+        // Assert
+        expect(result.upstream).toEqual({ remote: 'origin', merges: [''], rebase: false });
+        expect(await branchSection(ctx, 'z')).toBe('[branch "z"]\n\tremote = origin\n\tmerge = \n');
+        expect(warnings).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given --track=inherit from a start holding a valueless merge in the global config', () => {
+    describe('When branchCreate cuts z', () => {
+      it('Then it refuses naming the global file and line, as git does', async () => {
+        // Arrange
+        const { ctx } = await seed();
+        await ctx.fs.writeUtf8(`${HOME}/.gitconfig`, '[branch "main"]\n\tmerge\n');
+        const sut = branchCreate;
+
+        // Act
+        const result = await refusalOf(() =>
+          sut(ctx, { name: 'z', startPoint: 'main', track: 'inherit' }),
+        );
+
+        // Assert
+        expect(result).toEqual({
+          code: 'CONFIG_MISSING_VALUE',
+          key: 'branch.main.merge',
+          source: `${HOME}/.gitconfig`,
+          line: 2,
+        });
         expect(await branchSection(ctx, 'z')).toBeUndefined();
       });
     });

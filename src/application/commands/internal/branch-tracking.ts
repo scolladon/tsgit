@@ -1,5 +1,4 @@
 import {
-  configMissingValue,
   trackingAmbiguous,
   trackingInheritRebaseMultiple,
   upstreamMissing,
@@ -10,12 +9,9 @@ import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { RefName } from '../../../domain/objects/index.js';
 import { HEADS_PREFIX } from '../../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../../ports/context.js';
-import {
-  findFirstValuelessEntry,
-  findLastEntry,
-  readConfig,
-} from '../../primitives/config-read.js';
-import { getAllConfigValues } from '../../primitives/config-scoped-read.js';
+import { findLastEntry, readConfig } from '../../primitives/config-read.js';
+import { getAllConfigValues, resolveConfigScopePath } from '../../primitives/config-scoped-read.js';
+import { assertNoValuelessConfigAt } from '../../primitives/internal/valueless-config-guard.js';
 import { updateConfigOperations } from '../../primitives/update-config.js';
 import { mapsNamedSource } from './branch-merged.js';
 import { isExcludedByNegativeRefspec } from './negative-refspec.js';
@@ -187,7 +183,7 @@ const inheritedSource = async (
     ctx.logger?.warn?.('asked to inherit tracking, but no remote is set', { branch: bare });
     return undefined;
   }
-  if (tracking.merge === undefined || tracking.merge === '') {
+  if (tracking.merge === undefined) {
     ctx.logger?.warn?.('asked to inherit tracking, but no merge configuration is set', {
       branch: bare,
     });
@@ -201,12 +197,13 @@ const inheritedSource = async (
  * whose read dies on a valueless entry.
  */
 const mergesOf = async (ctx: Context, bare: string): Promise<ReadonlyArray<RefName>> => {
-  const valueless = await findFirstValuelessEntry(ctx, 'branch', bare, ['merge']);
-  if (valueless !== undefined) {
-    throw configMissingValue(valueless.key, valueless.source, valueless.line);
-  }
   const { values } = await getAllConfigValues({ ctx, key: `branch.${bare}.merge` });
-  return values.map(({ value }) => value).filter((value): value is RefName => value !== null);
+  const valueless = values.find(({ value }) => value === null);
+  if (valueless !== undefined) {
+    const path = await resolveConfigScopePath(ctx, valueless.scope);
+    await assertNoValuelessConfigAt(ctx, path, 'branch', bare, ['merge']);
+  }
+  return values.map(({ value }) => value as RefName);
 };
 
 /**

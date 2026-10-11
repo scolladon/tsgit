@@ -774,7 +774,32 @@ export const findFirstValuelessEntry = async (
   subsection: string | undefined,
   keys: ReadonlyArray<string>,
 ): Promise<ValuelessEntry | undefined> => {
-  const { tokens, source: path } = await readConfigEntry(ctx);
+  const { tokens, source } = await readConfigEntry(ctx);
+  return firstValuelessInTokens(tokens, source, section, subsection, keys);
+};
+
+/**
+ * `findFirstValuelessEntry` over an arbitrary config file — a non-local scope
+ * the cached local read does not cover. The caller names a file it already read.
+ */
+export const findFirstValuelessEntryAt = async (
+  ctx: Context,
+  path: string,
+  section: string,
+  subsection: string | undefined,
+  keys: ReadonlyArray<string>,
+): Promise<ValuelessEntry | undefined> => {
+  const raw = await ctx.fs.readUtf8(path);
+  return firstValuelessInTokens(tokenizeConfig(raw, path), path, section, subsection, keys);
+};
+
+const firstValuelessInTokens = (
+  tokens: ReadonlyArray<ConfigToken>,
+  path: string,
+  section: string,
+  subsection: string | undefined,
+  keys: ReadonlyArray<string>,
+): ValuelessEntry | undefined => {
   const keySet = new Set(keys.map((k) => k.toLowerCase()));
   for (const { token } of sectionEntries(tokens, exactSection(section, subsection))) {
     if (token.value !== null) continue;
