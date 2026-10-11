@@ -4,9 +4,11 @@ import { readMailmap } from '../../../../../src/application/commands/internal/re
 import { invalidateConfigCache } from '../../../../../src/application/primitives/config-read.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
+import type { TsgitError } from '../../../../../src/domain/error.js';
 import { mapUser } from '../../../../../src/domain/mailmap/index.js';
 import type { ObjectId } from '../../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../../src/domain/objects/tree.js';
+import { computeLooseObjectPath } from '../../../../../src/domain/storage/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import { asBareContext } from '../fixtures.js';
 
@@ -294,6 +296,28 @@ describe('readMailmap', () => {
     });
   });
 
+  describe('Given mailmap.blob a full object id whose loose object is corrupt', () => {
+    describe('When the mailmap is read', () => {
+      it('Then the read failure propagates, as git dies on a corrupt object', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { blob } = await commitMailmap(ctx, rule('Blob', 'old@example.com'));
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(blob)}`,
+          'garbage',
+        );
+        await writeConfig(ctx, `[mailmap]\n\tblob = ${blob}\n`);
+        const sut = readMailmap;
+
+        // Act
+        const result = await sut(ctx).catch((err: TsgitError) => err.data.code);
+
+        // Assert
+        expect(result).toBe('DECOMPRESS_FAILED');
+      });
+    });
+  });
+
   describe('Given a bare repository with a committed .mailmap and no mailmap.blob', () => {
     describe('When the mailmap is read', () => {
       it('Then HEAD:.mailmap applies', async () => {
@@ -411,6 +435,25 @@ describe('readMailmap', () => {
 
         // Act
         const result = await mapped(ctx, 'old@example.com');
+
+        // Assert
+        expect(result).toBe('File');
+      });
+    });
+  });
+
+  describe('Given a mailmap.file relative path', () => {
+    describe('When the mailmap is read', () => {
+      it('Then it is read from the work directory, as git reads it from the top level', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const ctx = { ...base, layout: { ...base.layout, workDir: '/repo/sub' } };
+        await ctx.fs.writeUtf8('/repo/sub/rel/mailmap', rule('File', 'old@example.com'));
+        await writeConfig(ctx, '[mailmap]\n\tfile = rel/mailmap\n');
+        const sut = mapped;
+
+        // Act
+        const result = await sut(ctx, 'old@example.com');
 
         // Assert
         expect(result).toBe('File');
