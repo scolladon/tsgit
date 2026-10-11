@@ -151,6 +151,59 @@ describe('merge squash', () => {
     });
   });
 
+  describe('Given the branch carries a merge commit', () => {
+    const at = (timestamp: number): AuthorIdentity => ({ ...author, timestamp });
+
+    const withInnerMerge = async (): Promise<{
+      readonly ctx: Context;
+      readonly inner: ObjectId;
+      readonly side: ObjectId;
+      readonly two: ObjectId;
+    }> => {
+      const ctx = createMemoryContext();
+      await init(ctx);
+      const write = async (file: string, message: string, timestamp: number): Promise<ObjectId> => {
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${file}`, file);
+        await add(ctx, [file]);
+        return (await commit(ctx, { message, author: at(timestamp) })).id;
+      };
+      await write('a.txt', 'base', 1_700_000_000);
+      await branchCreate(ctx, { name: 'feature' });
+      await checkout(ctx, { rev: 'feature' });
+      await branchCreate(ctx, { name: 'side' });
+      const two = await write('two.txt', 'two', 1_700_000_100);
+      await checkout(ctx, { rev: 'side' });
+      const side = await write('side.txt', 'side', 1_700_000_200);
+      await checkout(ctx, { rev: 'feature' });
+      await mergeRun(ctx, {
+        rev: 'side',
+        fastForward: 'never',
+        message: 'inner merge',
+        author: at(1_700_000_300),
+      });
+      const inner = await resolveRef(ctx, HEAD);
+      await checkout(ctx, { rev: 'main' });
+      await write('c.txt', 'on-main', 1_700_000_050);
+      return { ctx, inner, side, two };
+    };
+
+    describe('When merged with squash', () => {
+      it("Then SQUASH_MSG prints the merge's abbreviated parents as git does", async () => {
+        // Arrange
+        const { ctx, inner, side, two } = await withInnerMerge();
+        const sut = mergeRun;
+
+        // Act
+        await sut(ctx, { rev: 'feature', squash: true, author });
+
+        // Assert
+        const parents = `${two.slice(0, 7)} ${side.slice(0, 7)}`;
+        const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/SQUASH_MSG`);
+        expect(result).toContain(`\ncommit ${inner}\nMerge: ${parents}\nAuthor: a <a@x>\n`);
+      });
+    });
+  });
+
   describe('Given a squash whose merge conflicts', () => {
     const conflicting = async (): Promise<Repo & { readonly theirs: ObjectId }> => {
       const built = await repo();
