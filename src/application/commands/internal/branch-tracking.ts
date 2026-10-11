@@ -116,6 +116,7 @@ interface RemoteSource {
 const remoteSources = async (ctx: Context, ref: RefName): Promise<ReadonlyArray<RemoteSource>> => {
   const sources: RemoteSource[] = [];
   for (const [remote, entry] of (await readConfig(ctx)).remote ?? []) {
+    // Stryker disable next-line ArrayDeclaration: equivalent — the fallback stands in for a remote with no fetch refspec, and any element put in its place holds no colon, so mapsNamedSource passes it over and firstSource still ends in `undefined`.
     const merge = firstSource(entry.fetch ?? [], ref);
     if (merge !== undefined) sources.push({ remote, merge });
   }
