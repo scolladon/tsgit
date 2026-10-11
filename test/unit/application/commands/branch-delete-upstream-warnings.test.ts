@@ -167,6 +167,47 @@ describe('Given an upstream named through a symbolic ref', () => {
   });
 });
 
+describe('Given a branch both HEAD and a different upstream contain', () => {
+  describe('When branch delete runs unforced', () => {
+    it('Then it removes the ref without a warning', async () => {
+      // Arrange
+      const { ctx, logs, root, side } = await seed();
+      await plantRef(ctx, TOPIC, root);
+      await plantRef(ctx, UPSTREAM, side);
+      await configureUpstream(ctx, UPSTREAM);
+      const sut = branchDelete;
+
+      // Act
+      await sut(ctx, { name: 'topic' });
+
+      // Assert
+      expect(await refExists(ctx, TOPIC)).toBe(false);
+      expect(logs).toEqual([]);
+    });
+  });
+});
+
+describe('Given a branch neither HEAD nor a different upstream contains', () => {
+  describe('When branch delete runs unforced', () => {
+    it('Then it refuses without a warning', async () => {
+      // Arrange
+      const { ctx, logs, tree, root, side } = await seed();
+      const lone = await writeCommitOn(ctx, tree, [root], 'lone');
+      await plantRef(ctx, TOPIC, lone);
+      await plantRef(ctx, UPSTREAM, side);
+      await configureUpstream(ctx, UPSTREAM);
+      const sut = branchDelete;
+
+      // Act
+      const result = await refusalCode(() => sut(ctx, { name: 'topic' }));
+
+      // Assert
+      expect(result).toBe('BRANCH_NOT_FULLY_MERGED');
+      expect(logs).toEqual([]);
+    });
+  });
+});
+
 describe('Given an upstream standing on the commit HEAD stands on', () => {
   describe('When branch delete runs unforced', () => {
     it('Then it removes the ref without a warning', async () => {
