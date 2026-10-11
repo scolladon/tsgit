@@ -129,6 +129,99 @@ describe('octopusMerge', () => {
     });
   });
 
+  describe('Given the head added an empty file the last head added with content', () => {
+    describe('When merged', () => {
+      it('Then the path conflicts although the empty side merges cleanly, as git-merge-one-file does', async () => {
+        // Arrange
+        const { ctx, head, remotes } = await setup({ x: [''] }, { x: ['theirs\n'] });
+        const sut = octopusMerge;
+
+        // Act
+        const result = await sut(ctx, head, remotes);
+
+        // Assert
+        const conflict = result.kind === 'conflict' ? result.conflicts[0] : undefined;
+        expect(conflict?.type).toBe('add-add');
+        expect(new TextDecoder().decode(conflict?.conflictContent)).toBe('theirs\n');
+      });
+    });
+  });
+
+  describe('Given conflicts on a path the base held and on a path both heads added', () => {
+    describe('When merged', () => {
+      it('Then the conflicts come in path order', async () => {
+        // Arrange
+        const { ctx, head, remotes } = await setup(
+          { z: ['ours-z\n'], a: ['ours-a\n'] },
+          { z: ['theirs-z\n'], a: ['theirs-a\n'] },
+          { z: ['1\n'] },
+        );
+        const sut = octopusMerge;
+
+        // Act
+        const result = await sut(ctx, head, remotes);
+
+        // Assert
+        const paths = result.kind === 'conflict' ? result.conflicts.map((c) => c.path) : [];
+        expect(paths).toEqual(['a', 'z']);
+      });
+    });
+  });
+
+  describe('Given a last head built on the head after another head was merged', () => {
+    describe('When merged', () => {
+      it('Then it is merged in rather than fast-forwarded to, keeping the earlier head', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const root = await commitOf(ctx, { a: ['a\n'] }, []);
+        const head = await commitOf(ctx, { a: ['a\n'], h: ['h\n'] }, [root]);
+        const first = await commitOf(ctx, { a: ['a\n'], r1f: ['r1\n'] }, [root]);
+        const last = await commitOf(ctx, { a: ['a\n'], h: ['h\n'], r2f: ['r2\n'] }, [head]);
+        const sut = octopusMerge;
+
+        // Act
+        const result = await sut(ctx, head, [
+          { id: first, name: 'r1' },
+          { id: last, name: 'r2' },
+        ]);
+
+        // Assert
+        const tree = result.kind === 'clean' ? result.tree : undefined;
+        const paths = tree === undefined ? [] : [...(await flattenTree(ctx, tree)).entries.keys()];
+        expect(paths).toEqual(['a', 'h', 'r1f', 'r2f']);
+      });
+    });
+  });
+
+  describe('Given a last head whose history crosses the running result with two merge bases', () => {
+    describe('When merged', () => {
+      it('Then both bases take part, leaving the path they disagree on conflicted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const root = await commitOf(ctx, { f: ['0\n'] }, []);
+        const left = await commitOf(ctx, { f: ['1\n'] }, [root]);
+        const right = await commitOf(ctx, { f: ['2\n'] }, [root]);
+        const head = await commitOf(ctx, { f: ['1\n'] }, [left, right]);
+        const crossed = await commitOf(ctx, { f: ['2\n'] }, [right, left]);
+        const first = await commitOf(ctx, { f: ['0\n'], z: ['z\n'] }, [root]);
+        const sut = octopusMerge;
+
+        // Act
+        const result = await sut(ctx, head, [
+          { id: first, name: 'r1' },
+          { id: crossed, name: 'crossed' },
+        ]);
+
+        // Assert
+        const conflict = result.kind === 'conflict' ? result.conflicts[0] : undefined;
+        expect(conflict).toMatchObject({ type: 'add-add', path: 'f' });
+        expect(conflict?.baseId).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a head id naming a blob', () => {
     describe('When merged', () => {
       it('Then it refuses the non-commit', async () => {

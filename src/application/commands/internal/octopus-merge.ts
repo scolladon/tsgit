@@ -201,7 +201,7 @@ const advance = async (
   const common = await mergeBasesOf(ctx, [remote.id, ...running.commits], { all: true });
   if (common.length === 0) return undefined;
   const remoteEntries = await flatOfCommit(ctx, remote.id);
-  if (running.step === undefined && common.length === 1 && common[0] === running.commits[0]) {
+  if (running.step === undefined && common[0] === running.commits[0]) {
     ctx.logger?.info?.(`Fast-forwarding to: ${remote.name}`);
     return { commits: [remote.id], entries: remoteEntries };
   }
