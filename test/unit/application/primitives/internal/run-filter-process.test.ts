@@ -7,7 +7,12 @@ import {
 } from '../../../../../src/application/primitives/internal/run-filter-process.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/object-id.js';
-import { encodePktStream, FLUSH_PKT } from '../../../../../src/domain/protocol/pkt-line.js';
+import {
+  encodePktLine,
+  encodePktStream,
+  FLUSH_PKT,
+  MAX_PKT_LINE_PAYLOAD,
+} from '../../../../../src/domain/protocol/pkt-line.js';
 import type { CommandProcess, CommandRunner } from '../../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import { scriptedCommandRunner } from '../../../../fixtures/scripted-command-runner.js';
@@ -575,6 +580,119 @@ describe('runFilterProcess', () => {
 
         // Assert
         expect(result.map(bytesOf)).toEqual(['A\n']);
+      });
+    });
+  });
+
+  describe.each([
+    {
+      label: 'a client greeting instead of the server one',
+      greeting: ['git-filter-client\n', 'version=2\n'],
+    },
+    { label: 'a greeting without a version line', greeting: ['git-filter-server\n'] },
+    { label: 'neither the server welcome nor a version', greeting: ['bogus\n'] },
+    { label: 'a version git does not speak', greeting: ['git-filter-server\n', 'version=3\n'] },
+    { label: 'a version that is no integer', greeting: ['git-filter-server\n', 'version=2.0\n'] },
+    { label: 'a version key in another case', greeting: ['git-filter-server\n', 'Version=2\n'] },
+    {
+      label: 'a second version line',
+      greeting: ['git-filter-server\n', 'version=2\n', 'version=3\n'],
+    },
+  ])('Given a process greeting with $label', ({ greeting }) => {
+    describe('When a path is cleaned', () => {
+      it('Then the handshake fails, the path is not converted and the process is stopped', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const scripted = scriptedCommandRunner(
+          concat(stream(...greeting), stream('capability=clean\n'), success('A\n')),
+        );
+        const sut = convertAll;
+
+        // Act
+        const result = await sut(ctx, scripted.runner, [clean('a')]);
+
+        // Assert
+        expect(result).toEqual([{ ok: false, exitCode: undefined }]);
+        expect(scripted.closed()).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a process that ends before greeting', () => {
+    describe('When a path is cleaned', () => {
+      it('Then the handshake fails, no capability is sent and the process is stopped', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const scripted = scriptedCommandRunner(new Uint8Array(0));
+        const sut = convertAll;
+
+        // Act
+        const result = await sut(ctx, scripted.runner, [clean('a')]);
+
+        // Assert
+        expect(result).toEqual([{ ok: false, exitCode: undefined }]);
+        expect(scripted.requests[0]?.stdin).toEqual(stream('git-filter-client\n', 'version=2\n'));
+        expect(scripted.closed()).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a status section carrying a key that is no status', () => {
+    describe('When two paths are cleaned', () => {
+      it('Then the other key is ignored and the same process converts the second path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const scripted = scriptedCommandRunner(
+          concat(HANDSHAKE, stream('status=error\n', 'other=1\n'), success('B\n')),
+        );
+        const sut = convertAll;
+
+        // Act
+        const result = await sut(ctx, scripted.runner, [clean('a'), clean('b')]);
+
+        // Assert
+        expect(result.map(bytesOf)).toEqual([{ ok: false, exitCode: undefined }, 'B\n']);
+        expect(scripted.requests).toHaveLength(1);
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'an empty file', size: 0, ranges: [] as [number, number][] },
+    {
+      label: 'a file of exactly one frame payload',
+      size: MAX_PKT_LINE_PAYLOAD,
+      ranges: [[0, MAX_PKT_LINE_PAYLOAD]] as [number, number][],
+    },
+    {
+      label: 'a file one byte over a frame payload',
+      size: MAX_PKT_LINE_PAYLOAD + 1,
+      ranges: [
+        [0, MAX_PKT_LINE_PAYLOAD],
+        [MAX_PKT_LINE_PAYLOAD, MAX_PKT_LINE_PAYLOAD + 1],
+      ] as [number, number][],
+    },
+  ])('Given $label', ({ size, ranges }) => {
+    describe('When it is cleaned', () => {
+      it('Then it is sent in as many frames as its bytes need and no empty one', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const content = new Uint8Array(size).fill(0x78);
+        const scripted = scriptedCommandRunner(concat(HANDSHAKE, success('A\n')));
+        const sut = runFilterProcess;
+
+        // Act
+        await sut(ctx, scripted.runner, 'proc', { ...clean('a'), bytes: content });
+
+        // Assert
+        const expected = concat(
+          stream('git-filter-client\n', 'version=2\n'),
+          stream('capability=clean\n', 'capability=smudge\n', 'capability=delay\n'),
+          stream('command=clean\n', 'pathname=a\n'),
+          ...ranges.map(([from, to]) => encodePktLine(content.subarray(from, to))),
+          FLUSH_PKT,
+        );
+        expect(scripted.requests[0]?.stdin).toEqual(expected);
       });
     });
   });
