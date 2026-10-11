@@ -19,6 +19,7 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 
 import { computeClosure } from '../../../../../src/application/primitives/internal/closure-engine.js';
 import * as midxBitmapBindingModule from '../../../../../src/application/primitives/internal/midx-bitmap-binding.js';
+import { createObjectTypeTable } from '../../../../../src/application/primitives/internal/object-type-table.js';
 import * as packBitmapBindingModule from '../../../../../src/application/primitives/internal/pack-bitmap-binding.js';
 import * as readCommitMetaModule from '../../../../../src/application/primitives/internal/read-commit-meta.js';
 import * as resolveMaxTreeDepthModule from '../../../../../src/application/primitives/internal/resolve-max-tree-depth.js';
@@ -2949,6 +2950,246 @@ describe('computeClosure — an excluded tree entry stored as a blob, with no ty
         // Assert
         expect({ ids: result.objects.map(({ id }) => id), logged }).toEqual({
           ids: [included, empty],
+          logged: [],
+        });
+      });
+    });
+  });
+});
+
+describe('computeClosure — the commit walk the request selects', () => {
+  /** A merge of an older first parent and a newer second parent, with an unrelated commit to exclude. */
+  const buildDatedMerge = async () => {
+    const ctx = await buildSeededContext();
+    const tree = await writeTree(ctx, []);
+    const older = await writeDatedCommit(ctx, tree, [], 100);
+    const newer = await writeDatedCommit(ctx, tree, [], 900);
+    const merge = await writeDatedCommit(ctx, tree, [older, newer], 1000);
+    const unrelated = await writeDatedCommit(ctx, tree, [], 50);
+    return { ctx, older, newer, merge, unrelated };
+  };
+
+  /** A commit whose only parent the repository lacks. */
+  const buildGraftedTip = async () => {
+    const ctx = await buildSeededContext();
+    const tree = await writeTree(ctx, []);
+    const absentParent = 'b'.repeat(40) as ObjectId;
+    const tip = await writeDatedCommit(ctx, tree, [absentParent], 1000);
+    const unrelated = await writeDatedCommit(ctx, tree, [], 50);
+    return { ctx, tip, unrelated };
+  };
+
+  describe('Given a merge and nothing excluded', () => {
+    describe('When computeClosure walks it with firstParent: true', () => {
+      it('Then only the first-parent line is listed', async () => {
+        // Arrange
+        const { ctx, older, merge } = await buildDatedMerge();
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [merge],
+          not: [],
+          objects: false,
+          firstParent: true,
+        });
+
+        // Assert
+        expect(result.objects.map((object) => object.id)).toEqual([merge, older]);
+      });
+    });
+
+    describe('When computeClosure walks it with firstParent omitted', () => {
+      it('Then every parent is listed, in parent order', async () => {
+        // Arrange
+        const { ctx, older, newer, merge } = await buildDatedMerge();
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, { tier: 'walk', wants: [merge], not: [], objects: false });
+
+        // Assert
+        expect(result.objects.map((object) => object.id)).toEqual([merge, older, newer]);
+      });
+    });
+
+    describe('When computeClosure walks it with maxCount: 2', () => {
+      it('Then it lists the merge and its newer parent, in commit-date order', async () => {
+        // Arrange
+        const { ctx, newer, merge } = await buildDatedMerge();
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [merge],
+          not: [],
+          objects: false,
+          maxCount: 2,
+        });
+
+        // Assert
+        expect(result.objects.map((object) => object.id)).toEqual([merge, newer]);
+      });
+    });
+  });
+
+  describe('Given a commit whose parent the repository lacks and nothing excluded', () => {
+    describe('When computeClosure walks it with maxCount: 5', () => {
+      it('Then the walk stops at the missing edge instead of refusing', async () => {
+        // Arrange
+        const { ctx, tip } = await buildGraftedTip();
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [tip],
+          not: [],
+          objects: false,
+          maxCount: 5,
+        });
+
+        // Assert
+        expect(result.objects.map((object) => object.id)).toEqual([tip]);
+      });
+    });
+  });
+
+  describe('Given a merge and an unrelated commit excluded', () => {
+    describe('When computeClosure walks it with firstParent: true', () => {
+      it('Then only the first-parent line is listed', async () => {
+        // Arrange
+        const { ctx, older, merge, unrelated } = await buildDatedMerge();
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [merge],
+          not: [unrelated],
+          objects: false,
+          firstParent: true,
+        });
+
+        // Assert
+        expect(result.objects.map((object) => object.id)).toEqual([merge, older]);
+      });
+    });
+  });
+
+  describe('Given a commit whose parent the repository lacks and an unrelated commit excluded', () => {
+    describe('When computeClosure walks it', () => {
+      it('Then the walk stops at the missing edge instead of refusing', async () => {
+        // Arrange
+        const { ctx, tip, unrelated } = await buildGraftedTip();
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [tip],
+          not: [unrelated],
+          objects: false,
+        });
+
+        // Assert
+        expect(result.objects.map((object) => object.id)).toEqual([tip]);
+      });
+    });
+  });
+});
+
+describe('computeClosure — what a typing request logs', () => {
+  const recordingContext = async () => {
+    const base = await buildSeededContext();
+    const logged: Array<{ message: string; context: unknown }> = [];
+    const ctx: Context = {
+      ...base,
+      logger: { error: (message, context) => logged.push({ message, context }) },
+    };
+    return { ctx, logged };
+  };
+
+  describe('Given a wanted commit whose tree is a blob', () => {
+    describe('When computeClosure lists its objects under typing', () => {
+      it('Then the blob is logged, with its id, as not a tree and the walk dies on a bad tree', async () => {
+        // Arrange
+        const { ctx, logged } = await recordingContext();
+        const blob = await writeBlob(ctx, 'not a tree');
+        const named = await writeCommit(ctx, blob, [], 'names a blob');
+        const sut = computeClosure;
+
+        // Act
+        const caught = await sut(ctx, {
+          tier: 'walk',
+          wants: [named],
+          not: [],
+          objects: true,
+          objectTypes: createObjectTypeTable(),
+        }).catch((error: unknown) => error);
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'BAD_TREE_OBJECT', id: blob },
+          logged: [{ message: `Object ${blob} not a tree`, context: { id: blob } }],
+        });
+      });
+    });
+  });
+
+  describe('Given an excluded commit whose tree is a blob', () => {
+    describe('When computeClosure marks the excluded side under typing', () => {
+      it('Then the blob is logged, with its id, as not a tree and the included side is listed', async () => {
+        // Arrange
+        const { ctx, logged } = await recordingContext();
+        const blob = await writeBlob(ctx, 'not a tree');
+        const excluded = await writeCommit(ctx, blob, [], 'excluded');
+        const empty = await writeTree(ctx, []);
+        const included = await writeCommit(ctx, empty, [excluded], 'included');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [included],
+          not: [excluded],
+          objects: true,
+          objectTypes: createObjectTypeTable(),
+        });
+
+        // Assert
+        expect({ ids: result.objects.map(({ id }) => id), logged }).toEqual({
+          ids: [included, empty],
+          logged: [{ message: `Object ${blob} not a tree`, context: { id: blob } }],
+        });
+      });
+    });
+  });
+
+  describe('Given an excluded tip that is a blob', () => {
+    describe('When computeClosure marks the excluded side under typing', () => {
+      it('Then nothing is logged, as a blob tip is marked outright and never parsed as a tree', async () => {
+        // Arrange
+        const { ctx, logged } = await recordingContext();
+        const blob = await writeBlob(ctx, 'excluded');
+        const tree = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', blob)]);
+        const wanted = await writeCommit(ctx, tree, [], 'wanted');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [wanted],
+          not: [blob],
+          objects: true,
+          objectTypes: createObjectTypeTable(),
+        });
+
+        // Assert
+        expect({ ids: result.objects.map(({ id }) => id), logged }).toEqual({
+          ids: [wanted, tree],
           logged: [],
         });
       });
