@@ -207,6 +207,27 @@ describe('abbreviateObjectId', () => {
     });
   });
 
+  describe('Given core.abbrev = no, the full hash length', () => {
+    describe('When abbreviating', () => {
+      it('Then it returns the whole id without scanning any pack', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await writeConfig(ctx, '[core]\n\tabbrev = no\n');
+        const { primary } = await getObjectStore(ctx);
+        const registryRead = vi.spyOn(primary.registry, 'all');
+        const id = oidOf('abcdef0', '1');
+        const sut = abbreviateObjectId;
+
+        // Act
+        const result = await sut(ctx, id);
+
+        // Assert
+        expect(result).toBe(id);
+        expect(registryRead).not.toHaveBeenCalled();
+      });
+    });
+  });
+
   describe('Given a core.abbrev key with no value', () => {
     describe('When abbreviating', () => {
       it('Then it refuses with CONFIG_MISSING_VALUE', async () => {
