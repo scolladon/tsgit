@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
-import { evaluateRevision, revParse } from '../../../../src/application/commands/rev-parse.js';
+import {
+  evaluateRevision,
+  readNamedObject,
+  revParse,
+} from '../../../../src/application/commands/rev-parse.js';
 import * as objectResolverModule from '../../../../src/application/primitives/object-resolver.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import { parseCommitContent } from '../../../../src/domain/objects/commit.js';
@@ -18,16 +22,29 @@ const encoder = new TextEncoder();
 interface SearchRepo {
   readonly ctx: Context;
   readonly errors: string[];
+  readonly entries: LoggedError[];
   readonly ids: Readonly<Record<string, ObjectId>>;
 }
 
-const loggingContext = (): { readonly ctx: Context; readonly errors: string[] } => {
+type LoggedError = readonly [message: string, data: unknown];
+
+const loggingContext = (): {
+  readonly ctx: Context;
+  readonly errors: string[];
+  readonly entries: LoggedError[];
+} => {
   const errors: string[] = [];
+  const entries: LoggedError[] = [];
   const ctx = {
     ...createMemoryContext(),
-    logger: { error: (message: string) => errors.push(message) },
+    logger: {
+      error: (message: string, data?: unknown) => {
+        errors.push(message);
+        entries.push([message, data]);
+      },
+    },
   } as Context;
-  return { ctx, errors };
+  return { ctx, errors, entries };
 };
 
 /** A commit's raw bytes; `message` undefined writes no blank line at all. */
@@ -78,7 +95,7 @@ const writeRef = (ctx: Context, name: string, id: ObjectId): Promise<void> =>
  * message holding a NUL, `t` an annotated tag of m and `tt` one of the tree.
  */
 const searchRepo = async (): Promise<SearchRepo> => {
-  const { ctx, errors } = loggingContext();
+  const { ctx, errors, entries } = loggingContext();
   const tree = await writeRawObjectBytes(ctx, 'tree', new Uint8Array());
   const blob = await writeRawObjectBytes(ctx, 'blob', encoder.encode('b\n'));
   const c1 = await writeCommit(ctx, tree, [], 1, 'first fix\n');
@@ -105,7 +122,7 @@ const searchRepo = async (): Promise<SearchRepo> => {
   await writeRef(ctx, 'refs/tags/t', t);
   await writeRef(ctx, 'refs/tags/tt', tt);
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
-  return { ctx, errors, ids: { blob, c1, c2, a, s1, s2, m, nobody, mp, bp, z } };
+  return { ctx, errors, entries, ids: { blob, c1, c2, a, s1, s2, m, nobody, mp, bp, z } };
 };
 
 const failureCode = async (run: () => Promise<unknown>): Promise<string | undefined> => {
@@ -440,7 +457,7 @@ describe('Given a message search whose signal aborts as a long message is matche
  * at an absent ref.
  */
 const allRefsRepo = async (): Promise<SearchRepo> => {
-  const { ctx, errors } = loggingContext();
+  const { ctx, errors, entries } = loggingContext();
   const tree = await writeRawObjectBytes(ctx, 'tree', new Uint8Array());
   const c1 = await writeCommit(ctx, tree, [], 1, 'first fix\n');
   const c2 = await writeCommit(ctx, tree, [c1], 2, 'second\n');
@@ -467,7 +484,7 @@ const allRefsRepo = async (): Promise<SearchRepo> => {
   await writeRef(ctx, 'refs/tags/bad', await tag(ABSENT_OID, 'commit', 'bad'));
   await writeRef(ctx, 'refs/tags/tt', await tag(tree, 'tree', 'tt'));
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
-  return { ctx, errors, ids: { c1, c2, ...tips } };
+  return { ctx, errors, entries, ids: { c1, c2, ...tips } };
 };
 
 const BAD_TAG_ERROR = "missing object referenced by 'refs/tags/bad'";
@@ -551,7 +568,7 @@ const hexBytes = (hex: string): Uint8Array =>
 
 /** c1 `first a}:b match` ← c2 `second x`, both holding the file `y}`. */
 const colonPatternRepo = async (): Promise<SearchRepo> => {
-  const { ctx, errors } = loggingContext();
+  const { ctx, errors, entries } = loggingContext();
   const blob = await writeRawObjectBytes(ctx, 'blob', encoder.encode('y\n'));
   const entry = encoder.encode('100644 y}\0');
   const tree = await writeRawObjectBytes(
@@ -563,7 +580,7 @@ const colonPatternRepo = async (): Promise<SearchRepo> => {
   const c2 = await writeCommit(ctx, tree, [c1], 2, 'second x\n');
   await writeRef(ctx, 'refs/heads/main', c2);
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
-  return { ctx, errors, ids: { blob, c1, c2 } };
+  return { ctx, errors, entries, ids: { blob, c1, c2 } };
 };
 
 describe('Given a search pattern holding a colon a commit message matches', () => {
@@ -618,6 +635,76 @@ describe('Given a whole-name search that walks into a corrupt loose object', () 
 
       // Assert
       expect(code).toBe('DECOMPRESS_FAILED');
+    });
+  });
+});
+
+describe('Given a ref naming a tag of an absent object', () => {
+  describe('When a message search starts from every ref', () => {
+    it('Then the report names the ref', async () => {
+      // Arrange
+      const { ctx, entries } = await allRefsRepo();
+      const sut = evaluateRevision;
+
+      // Act
+      await sut(ctx, ':/tip');
+
+      // Assert
+      expect(entries).toContainEqual([BAD_TAG_ERROR, { name: 'refs/tags/bad' }]);
+    });
+  });
+});
+
+describe('Given a search read without an invocation object table', () => {
+  describe('When the search walks past a parent that is no commit', () => {
+    it('Then the parent is reported by id and the walk goes on', async () => {
+      // Arrange
+      const { ctx, entries, ids } = await searchRepo();
+      const sut = readNamedObject;
+
+      // Act
+      const result = await sut(ctx, undefined, `${ids.bp}^{/first}`, `${ids.bp}^{/first}`);
+
+      // Assert
+      expect(result).toBe(ids.c1);
+      expect(entries).toEqual([[`Object ${ids.blob} not a commit`, { id: ids.blob }]]);
+    });
+  });
+
+  describe('When the search walks past a parent whose object is absent', () => {
+    it('Then the parent is reported by id and the walk goes on', async () => {
+      // Arrange
+      const { ctx, entries, ids } = await searchRepo();
+      const sut = readNamedObject;
+
+      // Act
+      const result = await sut(ctx, undefined, `${ids.mp}^{/second}`, `${ids.mp}^{/second}`);
+
+      // Assert
+      expect(result).toBe(ids.c2);
+      expect(entries).toEqual([[`Could not read ${ABSENT_OID}`, { id: ABSENT_OID }]]);
+    });
+  });
+
+  describe('When the search walks to a parent that fails to read', () => {
+    it('Then the read failure propagates', async () => {
+      // Arrange
+      const { ctx } = loggingContext();
+      const tree = await writeRawObjectBytes(ctx, 'tree', new Uint8Array());
+      const corrupt = '2'.repeat(40) as ObjectId;
+      await ctx.fs.write(
+        `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(corrupt)}`,
+        GARBAGE,
+      );
+      const tip = await writeCommit(ctx, tree, [corrupt], 3, 'tip\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+      const sut = readNamedObject;
+
+      // Act
+      const result = await failureCode(() => sut(ctx, undefined, `${tip}^{/zzz}`, `${tip}^{/zzz}`));
+
+      // Assert
+      expect(result).toBe('DECOMPRESS_FAILED');
     });
   });
 });
