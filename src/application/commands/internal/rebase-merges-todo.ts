@@ -49,7 +49,9 @@ const branchNamesOf = async (ctx: Context): Promise<ReadonlyMap<ObjectId, string
 /** Parents outside the range, and merged tips a label may fall back to abbreviating. */
 const labelFallbacks = (commits: ReadonlyArray<ScriptCommit>): ReadonlyArray<ObjectId> => {
   const inRange = new Set(commits.map((c) => c.id));
+  // Stryker disable next-line MethodExpression: equivalent — an in-range first parent is never abbreviated (labelOid abbreviates only out-of-range parents and merged tips), so the extra entries are never read.
   const outside = commits.flatMap((c) => c.parents).filter((p) => !inRange.has(p));
+  // Stryker disable next-line MethodExpression: equivalent — an in-range first parent is never abbreviated (labelOid abbreviates only out-of-range parents and merged tips), so the extra entries are never read.
   return [...new Set([...outside, ...commits.flatMap((c) => c.parents.slice(1))])];
 };
 

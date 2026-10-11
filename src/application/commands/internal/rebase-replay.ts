@@ -80,6 +80,7 @@ const reachableWithin = (walked: ReadonlyArray<Commit>, tip: ObjectId): Readonly
   for (let id = pending.pop(); id !== undefined; id = pending.pop()) {
     if (reached.has(id)) continue;
     reached.add(id);
+    // Stryker disable next-line MethodExpression: equivalent — a parent outside the walk has no entry in byId, so it adds to reached an id no walked commit can match and expands to nothing.
     pending.push(...(byId.get(id)?.data.parents.filter((parent) => byId.has(parent)) ?? []));
   }
   return reached;
