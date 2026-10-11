@@ -17,7 +17,6 @@ export const configuredAutostash = async (
   await assertValidBooleanConfig(ctx, section, undefined, [AUTOSTASH_KEY]);
   const entry = await findLastEntry(ctx, section, AUTOSTASH_KEY);
   if (entry === undefined) return undefined;
-  if (entry.value === null) return true;
   const parsed = parseGitBoolean(entry.value);
   return parsed.ok && parsed.value;
 };
