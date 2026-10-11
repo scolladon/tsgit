@@ -62,15 +62,15 @@ const advance = async (ctx: Context, tree: ObjectId, commits: ObjectId[]): Promi
 const chainLines = async (ctx: Context): Promise<string[]> =>
   (await ctx.fs.readUtf8(commitGraphChainPath(commonGitDir(ctx)))).split('\n').filter(Boolean);
 
-/** Three commits in a base layer, a fourth in a tip layer above it. */
-const twoLayerChain = async (): Promise<Chain> => {
+/** `baseCommits` in a base layer, `tipCommits` more in a tip layer above it (split writes fold a tip that is not small enough). */
+const twoLayerChain = async (tipCommits = 1, baseCommits = 3): Promise<Chain> => {
   const ctx = createMemoryContext();
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
   const tree = await writeObject(ctx, { type: 'tree', id: '' as ObjectId, entries: [] });
   const commits: ObjectId[] = [];
-  for (let n = 0; n < 3; n += 1) await advance(ctx, tree, commits);
+  for (let n = 0; n < baseCommits; n += 1) await advance(ctx, tree, commits);
   await writeSplitCommitGraph(ctx);
-  await advance(ctx, tree, commits);
+  for (let n = 0; n < tipCommits; n += 1) await advance(ctx, tree, commits);
   await writeSplitCommitGraph(ctx);
   const [base, tip] = (await chainLines(ctx)) as [string, string];
   return { ctx, tree, commits, base, tip };
@@ -93,6 +93,71 @@ const swapRootTreeIn = async (
   if (restamp)
     bytes.set(await ctx.hash.hash(bytes.subarray(0, bytes.length - 20)), bytes.length - 20);
   await ctx.fs.write(layerPath(ctx, hash), bytes);
+};
+
+const HASH_BYTES = 20;
+const CHUNK_TABLE_ENTRY = 12;
+const PARENT_ONE_AT = HASH_BYTES;
+const GENERATION_AT = HASH_BYTES + 8;
+const BEYOND_THE_CHAIN = 99;
+const GENERATION_BELOW_ITS_PARENT = 1;
+const GENERATION_WORD_SHIFT = 2;
+
+const chunkStart = (bytes: Uint8Array, id: string): number => {
+  const view = new DataView(bytes.buffer, bytes.byteOffset);
+  const table = 8 + CHUNK_TABLE_ENTRY * (bytes[6] as number);
+  for (let at = 8; at < table; at += CHUNK_TABLE_ENTRY) {
+    if (new TextDecoder().decode(bytes.subarray(at, at + 4)) === id) {
+      return Number(view.getBigUint64(at + 4));
+    }
+  }
+  throw new Error(`no ${id} chunk`);
+};
+
+const restamp = async (ctx: Context, bytes: Uint8Array): Promise<void> => {
+  bytes.set(
+    await ctx.hash.hash(bytes.subarray(0, bytes.length - HASH_BYTES)),
+    bytes.length - HASH_BYTES,
+  );
+};
+
+const readLayer = async (ctx: Context, hash: string): Promise<Uint8Array> =>
+  new Uint8Array(await ctx.fs.read(layerPath(ctx, hash)));
+
+/** Points the first parent of the tip's first commit past the chain's end, restamping the trailer. */
+const sendTipParentBeyondTheChain = async (ctx: Context, tip: string): Promise<void> => {
+  const bytes = await readLayer(ctx, tip);
+  const view = new DataView(bytes.buffer, bytes.byteOffset);
+  view.setUint32(chunkStart(bytes, 'CDAT') + PARENT_ONE_AT, BEYOND_THE_CHAIN);
+  await restamp(ctx, bytes);
+  await ctx.fs.write(layerPath(ctx, tip), bytes);
+};
+
+/**
+ * Leaves the base without generation data and the tip's one commit with a
+ * topological level below its parent's, the chain otherwise consistent:
+ * the base is renamed after its new trailer and the tip's base chunk follows.
+ */
+const mixGenerationData = async (ctx: Context, base: string, tip: string): Promise<void> => {
+  const baseBytes = await readLayer(ctx, base);
+  const at = new TextDecoder()
+    .decode(baseBytes.subarray(0, 8 + CHUNK_TABLE_ENTRY * (baseBytes[6] as number)))
+    .indexOf('GDA2');
+  baseBytes.set(new TextEncoder().encode('XXXX'), at);
+  await restamp(ctx, baseBytes);
+  const trailer = baseBytes.subarray(baseBytes.length - HASH_BYTES);
+  const renamed = Array.from(trailer, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  await ctx.fs.write(layerPath(ctx, renamed), baseBytes);
+  const tipBytes = await readLayer(ctx, tip);
+  tipBytes.set(trailer, chunkStart(tipBytes, 'BASE'));
+  const generationAt = chunkStart(tipBytes, 'CDAT') + GENERATION_AT;
+  new DataView(tipBytes.buffer, tipBytes.byteOffset).setUint32(
+    generationAt,
+    GENERATION_BELOW_ITS_PARENT << GENERATION_WORD_SHIFT,
+  );
+  await restamp(ctx, tipBytes);
+  await ctx.fs.write(layerPath(ctx, tip), tipBytes);
+  await ctx.fs.writeUtf8(commitGraphChainPath(commonGitDir(ctx)), `${renamed}\n${tip}\n`);
 };
 
 /** The object database stops answering for `id`, as a pruned loose object would. */
@@ -512,6 +577,84 @@ describe('fsck commit-graph chain verify', () => {
 
         // Assert
         expect(caught).toBe(fault);
+      });
+    });
+  });
+
+  describe('Given a tip of three commits, each naming the one before as its parent', () => {
+    describe('When fsck runs', () => {
+      it('Then the parent is found in the tip layer and no commit-graph finding is reported', async () => {
+        // Arrange
+        const { ctx, base, tip } = await twoLayerChain(3, 7);
+        expect(await chainLines(ctx)).toEqual([base, tip]);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a tip whose first commit names a parent past the end of the chain and a base with a bad checksum', () => {
+    describe('When fsck runs', () => {
+      it('Then verification dies on the tip and the base is never reached', async () => {
+        // Arrange
+        const { ctx, tip, base, commits } = await twoLayerChain();
+        await sendTipParentBeyondTheChain(ctx, tip);
+        await swapRootTreeIn(ctx, base, commits[0] as ObjectId, false);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([
+          { check: 'invalid-parent-position', position: BEYOND_THE_CHAIN },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a base without generation data under a tip whose commit sits below its parent', () => {
+    describe('When fsck runs', () => {
+      it('Then the chain reads topological levels and the tip commit is reported', async () => {
+        // Arrange
+        const { ctx, commits, base, tip } = await twoLayerChain();
+        await mixGenerationData(ctx, base, tip);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([
+          {
+            check: 'generation',
+            id: commits[3],
+            generation: GENERATION_BELOW_ITS_PARENT,
+            minimum: 4,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a chain file one byte short of a hash line', () => {
+    describe('When fsck runs', () => {
+      it('Then the chain is too small to open', async () => {
+        // Arrange
+        const { ctx } = await twoLayerChain();
+        await ctx.fs.writeUtf8(commitGraphChainPath(commonGitDir(ctx)), `${'a'.repeat(38)}\n`);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([{ check: 'chain-too-small' }]);
       });
     });
   });
