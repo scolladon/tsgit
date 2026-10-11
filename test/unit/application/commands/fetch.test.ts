@@ -2917,6 +2917,69 @@ describe('fetch — tracking refs mapped through the fetch refspecs', () => {
       });
     });
   });
+
+  describe('Given two refspecs mapping different remote namespaces onto one tracking ref', () => {
+    describe('When fetch prunes and only one of the sources is advertised', () => {
+      it('Then the tracking ref is kept, as one of its sources was fetched', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { refs: { 'refs/remotes/origin/x': FAKE_OID('a') } });
+        await writeConfig(ctx, [
+          '+refs/heads/*:refs/remotes/origin/*',
+          '+refs/other/*:refs/remotes/origin/*',
+        ]);
+        const { transport, blobId } = await advertising(ctx, ['refs/heads/x']);
+
+        // Act
+        const result = await fetch({ ...ctx, transport }, { prune: true });
+
+        // Assert
+        expect(result.prunedRefs).toEqual([]);
+        expect((await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/x`)).trim()).toBe(
+          blobId,
+        );
+      });
+    });
+  });
+
+  describe.each([
+    {
+      label: 'no command-line refspec and configured refspecs',
+      fetchLines: ['+refs/heads/*:refs/remotes/origin/*'],
+      options: {},
+      target: 'refs/remotes/origin/main',
+    },
+    {
+      label: 'a command-line refspec beside configured refspecs',
+      fetchLines: ['+refs/heads/*:refs/remotes/origin/*'],
+      options: { refspecs: ['main'] },
+      target: undefined,
+    },
+    {
+      label: 'no command-line refspec and no configured refspec',
+      fetchLines: [],
+      options: {},
+      target: undefined,
+    },
+  ])('Given the remote HEAD names a fetched branch, $label', ({ fetchLines, options, target }) => {
+    describe('When fetch runs', () => {
+      it(`Then refs/remotes/origin/HEAD ${target === undefined ? 'is not created' : 'is created'}`, async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { refs: { 'refs/remotes/origin/main': FAKE_OID('a') } });
+        await writeConfig(ctx, fetchLines);
+        const { transport } = await advertising(ctx, ['HEAD', 'refs/heads/main']);
+        const sut = fetch;
+
+        // Act
+        await sut({ ...ctx, transport }, options);
+
+        // Assert
+        const head = await getRefStore(ctx).resolveDirect('refs/remotes/origin/HEAD' as RefName);
+        expect(head.kind === 'symbolic' ? head.target : undefined).toBe(target);
+      });
+    });
+  });
 });
 
 describe('fetch — FETCH_HEAD and command-line refspecs', () => {
@@ -3248,6 +3311,30 @@ describe('fetch — FETCH_HEAD and command-line refspecs', () => {
       });
     });
   });
+
+  describe('Given a branch tracking the fetched remote without a merge setting', () => {
+    describe('When fetch runs by two exact configured refspecs', () => {
+      it('Then FETCH_HEAD lists the first refspec for merging and the second not', async () => {
+        // Arrange
+        const { ctx, tip } = await arrange(
+          '  fetch = +refs/heads/main:refs/remotes/origin/main\n' +
+            '  fetch = +refs/heads/b2:refs/remotes/origin/b2\n' +
+            '[branch "main"]\n  remote = origin\n',
+          ['refs/heads/main', 'refs/heads/b2'],
+        );
+        const sut = fetch;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await fetchHead(ctx)).toBe(
+          `${tip}\t\tbranch 'main' of https://example.com/r\n` +
+            `${tip}\tnot-for-merge\tbranch 'b2' of https://example.com/r\n`,
+        );
+      });
+    });
+  });
 });
 
 describe('fetch — wants, include-tag and tag backfill', () => {
@@ -3418,6 +3505,31 @@ describe('fetch — wants, include-tag and tag backfill', () => {
         expect(warnings).toEqual([
           'refs/remotes/origin/b usually tracks refs/heads/b, not refs/heads/a',
         ]);
+      });
+    });
+  });
+
+  describe('Given a v1 server not offering include-tag and refspecs storing into refs', () => {
+    describe('When fetch negotiates', () => {
+      it('Then include-tag is not requested', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await configure(ctx, '+refs/heads/*:refs/remotes/origin/*');
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'tip\n');
+        const { transport, requests } = fakeRemote({
+          url: URL,
+          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          advertisedCaps: ['side-band-64k', 'ofs-delta'],
+          packBytes,
+        });
+        const sut = fetch;
+
+        // Act
+        await sut({ ...ctx, transport });
+
+        // Assert
+        expect(postBody(requests)).toContain(`want ${blobId}`);
+        expect(postBody(requests)).not.toContain('include-tag');
       });
     });
   });
