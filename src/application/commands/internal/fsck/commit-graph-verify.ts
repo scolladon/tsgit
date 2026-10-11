@@ -141,6 +141,7 @@ const report = (run: VerifyRun, verdict: CommitGraphVerdict): void => {
 
 /** git's `verify_commit_graph`: tip to base, a die ending the whole verify. */
 async function verifyChain(ctx: Context, layers: ReadonlyArray<ChainLayer>): Promise<VerifyRun> {
+  // Stryker disable next-line BooleanLiteral: equivalent — layers is non-empty, so verifyLayer assigns run.died before any read of it
   const run: VerifyRun = { verdicts: [], state: 'clean', died: false };
   const graph: ChainGraph = {
     layers,

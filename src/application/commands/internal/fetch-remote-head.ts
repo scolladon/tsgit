@@ -33,6 +33,7 @@ export const readRemoteHeadPolicy = async (
 ): Promise<RemoteHeadPolicy> => {
   let policy = DEFAULT_POLICY;
   for (const { value } of await findSubsectionEntries(ctx, 'remote', remote, 'followRemoteHEAD')) {
+    // Stryker disable next-line StringLiteral: equivalent — '' and any other non-mode, non-prefixed string both parse to undefined
     const parsed = parsePolicy(value ?? '');
     if (parsed === undefined) {
       ctx.logger?.warn?.('unrecognized followRemoteHEAD value ignored', { remote, value });
