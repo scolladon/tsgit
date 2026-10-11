@@ -227,6 +227,26 @@ describe('realpathAllowingMissingLeaf', () => {
     });
   });
 
+  describe.each([
+    { label: 'a bare drive', path: 'C:', expected: 'C:' },
+    { label: 'a drive-relative name', path: 'C:name', expected: 'C:/name' },
+    { label: 'a bare UNC share', path: '//server/share', expected: '//server/share' },
+  ])('Given $label on a Windows filesystem', ({ path, expected }) => {
+    describe('When realpathAllowingMissingLeaf', () => {
+      it('Then the root is kept and joined to the name by exactly one slash', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = realpathAllowingMissingLeaf;
+
+        // Act
+        const result = await sut(windowsGitPathSyntax, ctx.fs, path, '/repo');
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
   describe('Given a rootless path', () => {
     describe('When realpathAllowingMissingLeaf from a rooted cwd', () => {
       it('Then it resolves under the cwd', async () => {
@@ -750,6 +770,53 @@ describe('resolveObjectSources', () => {
           },
         ]);
         expect(warn).toHaveBeenCalledOnce();
+      });
+    });
+  });
+
+  describe('Given an alternates list whose path runs through a non-directory', () => {
+    describe('When the chain is resolved', () => {
+      it('Then the list reads as absent, without a diagnostic', async () => {
+        // Arrange
+        const base = contextWith({});
+        const blocked = notADirectory(listFile(PRIMARY));
+        const reader = { ...base.fs, read: async () => Promise.reject(blocked) };
+
+        // Act
+        const result = await resolveObjectSources(base, {
+          probe: () => base.fs,
+          reader: () => reader,
+          pathSyntax: posixGitPathSyntax,
+        });
+
+        // Assert
+        expect(result.sources.map((source) => source.objectsDir)).toEqual([PRIMARY]);
+        expect(result.diagnostics).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a held source listed twice, with a report from when it was linked', () => {
+    describe('When the chain is resolved again with that report', () => {
+      it('Then the report is replayed once and the held source is not linked again', async () => {
+        // Arrange
+        const held = '/repo/store/a';
+        const ctx = contextWith({ [PRIMARY]: `${held}\n${held}\n` });
+        await ctx.fs.mkdir(held);
+        const reported = {
+          reason: 'unreadable-list',
+          path: listFile(held),
+          listedIn: held,
+          code: 'PERMISSION_DENIED',
+        } as const;
+        const heldReports = new Map([[held, [reported]]]);
+
+        // Act
+        const result = await resolveObjectSources(ctx, ioOf(ctx), { held: [held], heldReports });
+
+        // Assert
+        expect(result.sources.map((source) => source.objectsDir)).toEqual([PRIMARY]);
+        expect(result.diagnostics).toEqual([reported]);
       });
     });
   });

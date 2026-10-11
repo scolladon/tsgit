@@ -111,6 +111,7 @@ export const realpathAllowingMissingLeaf = async (
   path: string,
   cwd: string,
 ): Promise<string | undefined> => {
+  // Stryker disable next-line StringLiteral: equivalent — startAt sets root through restartAt before any read, else returns undefined
   const walk: Walk = { syntax, root: '', names: [], pending: [], hops: 0 };
   if (!startAt(walk, path, cwd)) return undefined;
   while (walk.pending.length > 0) {
