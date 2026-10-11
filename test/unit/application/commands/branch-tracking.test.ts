@@ -16,7 +16,7 @@ import { init } from '../../../../src/application/commands/init.js';
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
-import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
+import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 const AUTHOR: AuthorIdentity = {
@@ -94,6 +94,11 @@ const SECOND_MAIN_MERGE = '[branch "main"]\n\tmerge = refs/heads/z\n';
 const MAIN_EXCLUDED = '[remote "origin"]\n\tfetch = ^refs/heads/main\n';
 const ORIGIN_SECTION = '[branch "z"]\n\tremote = origin\n\tmerge = refs/heads/main\n';
 const LOCAL_SECTION = '[branch "z"]\n\tremote = .\n\tmerge = refs/heads/main\n';
+
+const OTHER_REMOTE_HEAD = '[remote "o2"]\n\turl = /up\n';
+const OTHER_REMOTE_WILDCARD = '\tfetch = +refs/heads/*:refs/remotes/other/*\n';
+const O2_X = { remote: 'o2', merges: ['refs/heads/x'], rebase: false };
+const O2_SECTION = '[branch "z"]\n\tremote = o2\n\tmerge = refs/heads/x\n';
 
 interface TrackingRow {
   readonly label: string;
@@ -271,6 +276,34 @@ const ROWS: ReadonlyArray<TrackingRow> = [
     input: { startPoint: 'origin/z', track: 'direct' },
     upstream: { remote: 'origin', merges: ['refs/heads/z'], rebase: false },
     section: '[branch "z"]\n\tremote = origin\n\tmerge = refs/heads/z\n',
+  },
+  {
+    label: 'a remote start under autoSetupMerge=true',
+    config: '[branch]\n\tautoSetupMerge = true\n',
+    input: { startPoint: 'origin/main' },
+    upstream: ORIGIN_MAIN,
+    section: ORIGIN_SECTION,
+  },
+  {
+    label: 'a local start with --track under autoSetupRebase=remote',
+    config: '[branch]\n\tautoSetupRebase = remote\n',
+    input: { startPoint: 'main', track: 'direct' },
+    upstream: LOCAL_MAIN,
+    section: LOCAL_SECTION,
+  },
+  {
+    label: 'a remote whose first fetch refspec maps another ref',
+    config: `${OTHER_REMOTE_HEAD}\tfetch = +refs/heads/q:refs/remotes/o2x/q\n${OTHER_REMOTE_WILDCARD}`,
+    input: { startPoint: 'other/x' },
+    upstream: O2_X,
+    section: O2_SECTION,
+  },
+  {
+    label: 'a remote whose first fetch refspec has no destination',
+    config: `${OTHER_REMOTE_HEAD}\tfetch = refs/heads/q\n${OTHER_REMOTE_WILDCARD}`,
+    input: { startPoint: 'other/x' },
+    upstream: O2_X,
+    section: O2_SECTION,
   },
 ];
 
@@ -450,6 +483,49 @@ describe('branchCreate — upstream tracking', () => {
           { message: 'not setting a branch as its own upstream', context: { branch: 'side' } },
         ]);
         expect(await branchSection(ctx, 'side')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given --track from a name both a branch and a tag carry', () => {
+    describe('When branchCreate cuts z', () => {
+      it('Then it refuses as ambiguous rather than as a missing upstream', async () => {
+        // Arrange
+        const { ctx, head } = await seed();
+        await branchCreate(ctx, { name: 'amb' });
+        await updateRef(ctx, 'refs/tags/amb' as RefName, head as ObjectId, {
+          reflogMessage: 'plant',
+        });
+        const sut = branchCreate;
+
+        // Act
+        const result = await refusalOf(() =>
+          sut(ctx, { name: 'z', startPoint: 'amb', track: 'direct' }),
+        );
+
+        // Assert
+        expect(result).toEqual({
+          code: 'REVPARSE_AMBIGUOUS',
+          expression: 'amb',
+          candidates: [head, head],
+        });
+      });
+    });
+  });
+
+  describe('Given a branch already tracking another upstream', () => {
+    describe('When branchCreate resets it onto a remote start', () => {
+      it('Then the new upstream replaces the old merge entries', async () => {
+        // Arrange
+        const { ctx } = await seed('[branch "z"]\n\tremote = old\n\tmerge = refs/heads/old\n');
+        await branchCreate(ctx, { name: 'z', noTrack: true });
+        const sut = branchCreate;
+
+        // Act
+        await sut(ctx, { name: 'z', startPoint: 'origin/main', force: true });
+
+        // Assert
+        expect(await branchSection(ctx, 'z')).toBe(ORIGIN_SECTION);
       });
     });
   });
