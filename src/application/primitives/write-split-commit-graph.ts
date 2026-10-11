@@ -129,7 +129,7 @@ interface SplitPlan {
 /** Where the run of local layers ending at the tip begins. */
 function localTipStart(layers: readonly LocalGraphLayer[]): number {
   let start = layers.length;
-  while (start > 0 && layers[start - 1]?.local === true) start -= 1;
+  while (layers[start - 1]?.local === true) start -= 1;
   return start;
 }
 
