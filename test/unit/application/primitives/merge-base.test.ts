@@ -7,6 +7,7 @@ import {
   inMergeBases,
   mergeBase,
   reduceHeads,
+  tryMergeBasesOf,
 } from '../../../../src/application/primitives/merge-base.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -21,6 +22,7 @@ import type {
   Tree,
 } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
+import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext, instrumentedContext, writeCommitGraph } from './fixtures.js';
 
@@ -1332,6 +1334,265 @@ describe('reduceHeads', () => {
 
         // Assert
         expect(result).toEqual([d]);
+      });
+    });
+  });
+});
+
+/** Drops `id`'s loose object so a walk reaching it reads an absent commit. */
+const removeLooseObject = (ctx: Context, id: ObjectId): Promise<void> =>
+  ctx.fs.rmRecursive(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`);
+
+const consultedList = (
+  spy: MockInstance<typeof readCommitMetaModule.readCommitMeta>,
+): ReadonlyArray<ObjectId> => spy.mock.calls.map(([, id]) => id);
+
+describe('mergeBase read memoisation', () => {
+  describe('Given a criss-cross whose bases are read again by the date sort and the reduction', () => {
+    describe('When mergeBase asks for every base', () => {
+      it('Then every commit it consults is read exactly once', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { d, e } = await buildCrissCross(ctx);
+        const consult = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
+        const sut = mergeBase;
+
+        // Act
+        await sut(ctx, [d, e], { all: true });
+
+        // Assert
+        const consulted = consultedList(consult);
+        expect(consulted.length).toBeGreaterThan(0);
+        expect(consulted).toHaveLength(new Set(consulted).size);
+      });
+    });
+  });
+});
+
+describe('merge-base log context', () => {
+  const gapHistory = async (base: Context) => {
+    const error = vi.fn();
+    const ctx = { ...base, logger: { error } };
+    const treeId = await emptyTree(ctx);
+    const ids: ObjectId[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      const parents = i === 0 ? [] : [ids[i - 1] as ObjectId];
+      ids.push(await commitWith(ctx, treeId, 1700000000 + i, parents));
+    }
+    const gap = ids[2] as ObjectId;
+    await removeLooseObject(ctx, gap);
+    return { ctx, error, ids, gap };
+  };
+
+  describe('Given a history missing a commit part-way down', () => {
+    describe('When mergeBase walks through the gap', () => {
+      it('Then the line it logs carries the id of the commit it could not read', async () => {
+        // Arrange
+        const { ctx, error, ids, gap } = await gapHistory(await buildSeededContext());
+        const sut = mergeBase;
+
+        // Act
+        await sut(ctx, [ids[0] as ObjectId, ids[4] as ObjectId]).catch(() => undefined);
+
+        // Assert
+        expect(error.mock.calls).toEqual([[`Could not read ${gap}`, { id: gap }]]);
+      });
+    });
+
+    describe('When tryMergeBasesOf walks through the gap', () => {
+      it('Then it logs the unreadable commit and then the parse failure, each with the commit id', async () => {
+        // Arrange
+        const { ctx, error, ids, gap } = await gapHistory(await buildSeededContext());
+        const sut = tryMergeBasesOf;
+
+        // Act
+        const result = await sut(ctx, [ids[0] as ObjectId, ids[4] as ObjectId]);
+
+        // Assert
+        expect({ result, logged: error.mock.calls }).toEqual({
+          result: undefined,
+          logged: [
+            [`Could not read ${gap}`, { id: gap }],
+            [`could not parse commit ${gap}`, { id: gap }],
+          ],
+        });
+      });
+    });
+  });
+
+  describe('Given a reference naming the commit end as its tree', () => {
+    describe('When inMergeBases types the ends', () => {
+      it('Then the typing conflict it logs carries the id of the commit it was found in', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const error = vi.fn();
+        const ctx = { ...base, logger: { error } };
+        const commit = await writeRawCommit(ctx, await emptyTree(ctx), [], 'commit');
+        const reference = await writeRawCommit(ctx, commit, [commit], 'reference');
+        const sut = inMergeBases;
+
+        // Act
+        await sut(ctx, commit, reference);
+
+        // Assert
+        expect(error.mock.calls).toEqual([
+          [`object ${commit} is a commit, not a tree`, expect.anything()],
+          [`bad tree pointer ${commit} in commit ${reference}`, { id: reference }],
+        ]);
+      });
+    });
+  });
+});
+
+describe('inMergeBases depth-first reach over a commit-graph', () => {
+  /** root <- target, root <- sibling (same generation as target) and tip <- sibling; all covered. */
+  const siblingAtTargetGeneration = async () => {
+    const ctx = await buildSeededContext();
+    const treeId = await emptyTree(ctx);
+    const root = await commitWith(ctx, treeId, 1, []);
+    const target = await commitWith(ctx, treeId, 2, [root]);
+    const sibling = await commitWith(ctx, treeId, 3, [root]);
+    const tip = await commitWith(ctx, treeId, 4, [sibling]);
+    await writeCommitGraph(ctx, [await asCommits(ctx, [root, target, sibling, tip])]);
+    return { ctx, root, target, sibling, tip };
+  };
+
+  describe('Given a parent whose generation equals the target generation without being the target', () => {
+    describe('When inMergeBases measures the target against the tip', () => {
+      it('Then the walk descends into that parent, which is only floored strictly below the target', async () => {
+        // Arrange
+        const { ctx, root, target, sibling, tip } = await siblingAtTargetGeneration();
+        const consult = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
+        const sut = inMergeBases;
+
+        // Act
+        const result = await sut(ctx, target, tip);
+
+        // Assert
+        expect({ result, consulted: consultedIds(consult) }).toEqual({
+          result: false,
+          consulted: new Set([target, tip, sibling, root]),
+        });
+      });
+    });
+  });
+
+  /** target <- reaching <- tip, and tip's second parent `rival` hangs off a separate root. */
+  const reachingParentBeforeRival = async () => {
+    const ctx = await buildSeededContext();
+    const treeId = await emptyTree(ctx);
+    const target = await commitWith(ctx, treeId, 1, []);
+    const reaching = await commitWith(ctx, treeId, 2, [target]);
+    const otherRoot = await commitWith(ctx, treeId, 3, []);
+    const rival = await commitWith(ctx, treeId, 4, [otherRoot]);
+    const tip = await commitWith(ctx, treeId, 5, [reaching, rival]);
+    await writeCommitGraph(ctx, [await asCommits(ctx, [target, reaching, otherRoot, rival, tip])]);
+    return { ctx, target, reaching, rival, tip };
+  };
+
+  describe('Given a tip whose first parent reaches the target and whose second parent is unrelated', () => {
+    describe('When inMergeBases measures the target against the tip', () => {
+      it('Then it answers true without consulting the second parent', async () => {
+        // Arrange
+        const { ctx, target, reaching, rival, tip } = await reachingParentBeforeRival();
+        const consult = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
+        const sut = inMergeBases;
+
+        // Act
+        const result = await sut(ctx, target, tip);
+
+        // Assert
+        expect({ result, consulted: consultedIds(consult) }).toEqual({
+          result: true,
+          consulted: new Set([target, tip, reaching]),
+        });
+        expect(consultedIds(consult).has(rival)).toBe(false);
+      });
+
+      it('Then every commit it consults is read exactly once', async () => {
+        // Arrange
+        const { ctx, target, tip } = await reachingParentBeforeRival();
+        const consult = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
+        const sut = inMergeBases;
+
+        // Act
+        await sut(ctx, target, tip);
+
+        // Assert
+        const consulted = consultedList(consult);
+        expect(consulted).toHaveLength(new Set(consulted).size);
+      });
+    });
+  });
+});
+
+describe('inMergeBases depth-first reach over a parent whose pointers conflict', () => {
+  describe('Given a commit-graph covering only the target and a reference whose parent lists a tree as its parent', () => {
+    describe('When inMergeBases measures the target against the reference', () => {
+      it("Then it logs git's typing lines for that parent and skips it", async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const logged: string[] = [];
+        const ctx = { ...base, logger: { error: (line: string) => logged.push(line) } };
+        const tree = await emptyTree(ctx);
+        const blob = await writeObject(ctx, {
+          type: 'blob',
+          content: new TextEncoder().encode('b'),
+          id: '' as ObjectId,
+        });
+        const otherTree = await writeTree(ctx, [treeEntry('100644' as FileMode, 'b', blob)]);
+        const parent = await writeRawCommit(ctx, otherTree, [tree], 'parent');
+        const reference = await writeRawCommit(ctx, tree, [parent], 'reference');
+        const target = await writeRawCommit(ctx, otherTree, [], 'target');
+        await writeCommitGraph(ctx, [await asCommits(ctx, [target])]);
+        const sut = inMergeBases;
+
+        // Act
+        const result = await sut(ctx, target, reference);
+
+        // Assert
+        expect({ result, logged }).toEqual({
+          result: false,
+          logged: [
+            `object ${tree} is a tree, not a commit`,
+            `bad parent ${tree} in commit ${parent}`,
+          ],
+        });
+      });
+    });
+  });
+});
+
+describe('mergeBase octopus argument order', () => {
+  /** `git merge-base --octopus --all d e` prints c, b and `e d` prints b, c on this very history. */
+  const tiedCrissCross = async () => {
+    const ctx = await buildSeededContext();
+    const treeId = await emptyTree(ctx);
+    const a = await commitNamed(ctx, treeId, 1000000000, [], 'a');
+    const b = await commitNamed(ctx, treeId, 1000000100, [a], 'b');
+    const c = await commitNamed(ctx, treeId, 1000000100, [a], 'c');
+    const d = await commitNamed(ctx, treeId, 1000000200, [b, c], 'd');
+    const e = await commitNamed(ctx, treeId, 1000000200, [c, b], 'e');
+    return { ctx, b, c, d, e };
+  };
+
+  describe('Given a criss-cross whose two bases share a committer date', () => {
+    describe.each([
+      ['d then e', 'de', 'cb'],
+      ['e then d', 'ed', 'bc'],
+    ] as const)('When mergeBase folds %s with octopus', (_label, order, expected) => {
+      it('Then it reports the bases in the order the fold of the given commits finds them', async () => {
+        // Arrange
+        const { ctx, ...named } = await tiedCrissCross();
+        const pick = (letters: string) =>
+          [...letters].map((l) => named[l as 'b' | 'c' | 'd' | 'e']);
+        const sut = mergeBase;
+
+        // Act
+        const result = await sut(ctx, pick(order), { octopus: true, all: true });
+
+        // Assert
+        expect(result).toEqual(pick(expected));
       });
     });
   });
