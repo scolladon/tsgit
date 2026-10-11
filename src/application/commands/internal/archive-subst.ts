@@ -182,6 +182,7 @@ const scanOccurrences = (
       const requirements = formatRequirements(tokens);
       occurrences.push({ tokens, budget: remaining, requirements });
       if (requirements.describe) remaining = SPENT;
+      // Stryker disable next-line BooleanLiteral: equivalent — `encoding: undefined` makes the transcoding rule keep the bytes whatever `parsedHeader` says
       return { bytes: accumulated, parsedHeader: false, encoding: undefined };
     },
     NO_TRANSCODING,
@@ -209,6 +210,7 @@ const resolveAbbreviations = async (
   occurrences: ReadonlyArray<Occurrence>,
 ): Promise<Readonly<Record<AbbrevKind, string>>> => {
   const kinds = new Set(occurrences.flatMap(({ requirements }) => [...requirements.abbrev]));
+  // Stryker disable next-line StringLiteral: equivalent — a kind is read only when a reached token names it, and every such kind is overwritten below
   const resolved = { commit: '', tree: '', parents: '' };
   for (const kind of ABBREV_KINDS.filter((candidate) => kinds.has(candidate))) {
     resolved[kind] = await resolvers.abbreviation(kind);
