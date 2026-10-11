@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
+import { invalidateConfigCache } from '../../../../../src/application/primitives/config-read.js';
 import { createCommit } from '../../../../../src/application/primitives/create-commit.js';
 import {
   commitHeader,
@@ -8,6 +9,7 @@ import {
   graphCommitIds,
   insertBounded,
   isGraphKnownAbsent,
+  parseLayerOrUndefined,
 } from '../../../../../src/application/primitives/internal/read-commit-graph.js';
 import { assertOperationalRepository } from '../../../../../src/application/primitives/internal/repo-state.js';
 import {
@@ -699,6 +701,30 @@ describe('read-commit-graph', () => {
       });
     });
 
+    describe('Given no commit-graph file and no chain file', () => {
+      describe('When commitHeader probes for a graph', () => {
+        it('Then no commit-graph path is ever read (the presence check answers first)', async () => {
+          // Arrange — a fresh session so the probe goes through the overridden fs
+          const base = await buildSeededContext();
+          const tree = await emptyTree(base);
+          const commit = await makeCommit(base, tree, [], 1, 'solo');
+          const readPaths: string[] = [];
+          const ctx = withFsOverride(base, {
+            read: async (path) => {
+              readPaths.push(path);
+              return base.fs.read(path);
+            },
+          });
+
+          // Act
+          await commitHeader(ctx, commit.id);
+
+          // Assert
+          expect(readPaths.filter((path) => path.includes('commit-graph'))).toEqual([]);
+        });
+      });
+    });
+
     describe('Given a commit-graph consulted across two separate commitHeader calls', () => {
       describe('When both calls target the same Context', () => {
         it('Then the graph file is read only once (parsed once, then cached)', async () => {
@@ -1363,6 +1389,49 @@ describe('read-commit-graph', () => {
   });
 });
 
+describe('parseLayerOrUndefined', () => {
+  describe('Given bytes too short to be a commit-graph', () => {
+    describe('When parsed', () => {
+      it('Then the layer is not loadable', () => {
+        // Arrange
+        const sut = parseLayerOrUndefined;
+
+        // Act
+        const result = sut(new Uint8Array(3));
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a failure that is not a graph decode failure', () => {
+    describe('When parsed', () => {
+      it('Then it propagates unchanged instead of reading as an absent graph', () => {
+        // Arrange
+        const sut = parseLayerOrUndefined;
+        const hostile = {
+          get length(): number {
+            throw new Error('not a decode failure');
+          },
+        } as unknown as Uint8Array;
+
+        // Act
+        let caught: unknown;
+        try {
+          sut(hostile);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as Error).message).toBe('not a decode failure');
+      });
+    });
+  });
+});
+
 describe('insertBounded', () => {
   describe('Given a map below its cap', () => {
     describe('When a new key is inserted', () => {
@@ -1592,6 +1661,40 @@ describe('commitHeader / correctedCommitDatesEnabled — repo-settings class bou
           (c) => c.method === 'stat' && c.path === `${ctx.layout.gitDir}/config`,
         );
         expect(configStats).toHaveLength(0);
+      });
+    });
+  });
+
+  describe.each([
+    { name: 'graphCommitIds', sut: graphCommitIds },
+    { name: 'generationNumbersEnabled', sut: generationNumbersEnabled },
+  ])('$name', ({ sut }) => {
+    describe('Given core.commitGraph = false and core.maxTreeDepth = 2.5', () => {
+      describe('When it is called', () => {
+        it('Then it throws CONFIG_BAD_NUMERIC_VALUE — the graph being disabled does not skip the repo-settings class', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[core]\n\tcommitGraph = false\n\tmaxTreeDepth = 2.5\n',
+          );
+          invalidateConfigCache(ctx);
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(ctx);
+            expect.unreachable();
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toMatchObject({
+            code: 'CONFIG_BAD_NUMERIC_VALUE',
+            value: '2.5',
+          });
+        });
       });
     });
   });
