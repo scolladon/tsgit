@@ -374,10 +374,7 @@ async function emitPending(
 const seedsWithoutWalking = (
   commitSeeds: ReadonlyArray<Commit>,
   request: ClosureRequest,
-): ReadonlyArray<WalkedCommit> =>
-  (request.maxCount === undefined ? commitSeeds : commitSeeds.slice(0, request.maxCount)).map(
-    walkedFrom,
-  );
+): ReadonlyArray<WalkedCommit> => commitSeeds.slice(0, request.maxCount).map(walkedFrom);
 
 /** The slice of a walked commit the emit pass needs. */
 interface WalkedCommit {
@@ -539,7 +536,7 @@ async function walkCommitSeeds(
       : await collectLimitedWalk(ctx, resolved, marks, request);
   if (request.objects) await markExcludedTrees(ctx, commitWalk, marks, request);
   const { walked } = commitWalk;
-  return request.maxCount !== undefined ? walked.slice(0, request.maxCount) : walked;
+  return walked.slice(0, request.maxCount);
 }
 
 async function markExcludedTrees(
