@@ -6,10 +6,14 @@ import {
   resolveRevisionName,
   resolvingCandidates,
 } from '../../../../../src/application/commands/internal/revision-name.js';
+import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { permissionDenied, type TsgitError } from '../../../../../src/domain/error.js';
+import type { ObjectId } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import { seedRepo } from '../fixtures.js';
 
+/** Two blob contents whose ids share the abbreviation `abcd`. */
+const SHARING_ABCD = ['x20507\n', 'x115828\n'];
 const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 
 /** A repository whose `refs/heads/main` holds one commit, plus the given symbolic refs. */
@@ -72,6 +76,8 @@ describe('Given a name dwim_ref resolves', () => {
   });
 });
 
+type WarnSink = (message: string, context?: Readonly<Record<string, unknown>>) => void;
+
 const OBJECT_NAME_ADVICE = [
   'Git normally never creates a ref that ends with 40 hex characters',
   'because it will be ignored when you just specify 40-hex. These refs',
@@ -88,7 +94,7 @@ const OBJECT_NAME_ADVICE = [
 const repoWithNamedRef = async (
   refName: (commit: string) => string,
   config: string,
-  warn: (message: string) => void,
+  warn: WarnSink,
 ): Promise<{ readonly ctx: Context; readonly commit: string }> => {
   const ctx = createMemoryContext();
   const { commitIds } = await seedRepo(ctx, { commits: [{ tree: EMPTY_TREE }] });
@@ -152,6 +158,14 @@ describe.each([
       config: CORE,
       advice: true,
       warns: true,
+    },
+    {
+      when: 'a full object id and a ref, core.warnAmbiguousRefs off',
+      ref: full,
+      asked: full,
+      config: `${CORE}\twarnAmbiguousRefs = false\n`,
+      advice: false,
+      warns: false,
     },
     {
       when: 'a full object id and a ref, advice off',
@@ -245,7 +259,7 @@ describe.each([
 const repoWithRawRefs = async (
   branches: ReadonlyArray<string>,
   files: Readonly<Record<string, string>>,
-  warn: (message: string) => void,
+  warn: WarnSink,
 ): Promise<{ readonly ctx: Context; readonly commit: string }> => {
   const ctx = createMemoryContext();
   const { commitIds } = await seedRepo(ctx, { commits: [{ tree: EMPTY_TREE }] });
@@ -438,6 +452,85 @@ describe('Given resolvingCandidates and a name a tag and a branch both carry', (
 
       // Assert
       expect(result).toHaveLength(expected);
+    });
+  });
+});
+
+type WarnRecord = readonly [string, Readonly<Record<string, unknown>> | undefined];
+
+describe.each([
+  { label: 'resolveRevisionName', sut: resolveRevisionName },
+  { label: 'resolveCommitIsh', sut: resolveCommitIsh },
+])('Given $label', ({ sut }) => {
+  describe.each([
+    {
+      when: 'a name a branch and a tag both hold',
+      branches: ['dg'],
+      files: { 'refs/tags/dg': null },
+      expected: [["refname 'dg' is ambiguous.", { refname: 'dg' }]],
+    },
+    {
+      when: 'a dangling symref ahead of a branch',
+      branches: ['dg'],
+      files: { 'refs/tags/dg': 'ref: refs/tags/nope\n' },
+      expected: [['ignoring dangling symref refs/tags/dg', { refname: 'refs/tags/dg' }]],
+    },
+    {
+      when: 'a broken ref ahead of a branch',
+      branches: ['dg'],
+      files: { 'refs/tags/dg': 'garbage\n' },
+      expected: [['ignoring broken ref refs/tags/dg', { refname: 'refs/tags/dg' }]],
+    },
+  ] as ReadonlyArray<{
+    readonly when: string;
+    readonly branches: ReadonlyArray<string>;
+    readonly files: Readonly<Record<string, string | null>>;
+    readonly expected: ReadonlyArray<WarnRecord>;
+  }>)('When it resolves $when', ({ branches, files, expected }) => {
+    it('Then the warning carries the ref it names as structured context', async () => {
+      // Arrange
+      const records: WarnRecord[] = [];
+      const { ctx, commit } = await repoWithRawRefs(branches, {}, (message, context) =>
+        records.push([message, context]),
+      );
+      for (const [name, content] of Object.entries(files)) {
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${name}`, content ?? `${commit}\n`);
+      }
+
+      // Act
+      await sut(ctx, 'dg');
+
+      // Assert
+      expect(records).toEqual(expected);
+    });
+  });
+});
+
+describe.each([
+  { label: 'resolveRevisionName', sut: resolveRevisionName },
+  { label: 'resolveCommitIsh', sut: resolveCommitIsh },
+])('Given $label and a branch named like an abbreviation two objects share', ({ sut }) => {
+  describe('When it resolves that name', () => {
+    it('Then it warns nothing, as the ambiguous abbreviation names none of them', async () => {
+      // Arrange
+      const messages: string[] = [];
+      const { ctx, commit } = await repoWithNamedRef(named('abcd'), CORE, (message) =>
+        messages.push(message),
+      );
+      for (const text of SHARING_ABCD) {
+        await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: new TextEncoder().encode(text),
+        });
+      }
+
+      // Act
+      const result = await sut(ctx, 'abcd');
+
+      // Assert
+      expect(result).toBe(commit);
+      expect(messages).toEqual([]);
     });
   });
 });
