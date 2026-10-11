@@ -1,7 +1,7 @@
 import { errorDataCode } from '../../domain/error-data-code.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { refChainTooDeep, refCycleDetected, refNotFound } from '../../domain/refs/error.js';
-import { validateRefName } from '../../domain/refs/ref-validation.js';
+import { isSafeRefName, validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { peelChain, tagHop } from './internal/peel-chain.js';
 import { readObject } from './read-object.js';
@@ -125,31 +125,20 @@ const MISSING_CANDIDATE: RefCandidateOutcome = { kind: 'missing' };
 const DANGLING_CANDIDATE: RefCandidateOutcome = { kind: 'dangling-symref' };
 const BROKEN_CANDIDATE: RefCandidateOutcome = { kind: 'broken' };
 
+// Stryker disable next-line StringLiteral: equivalent — the `??` fallback is reached only when `errorDataCode` yields undefined, and no literal put there is a member of UNREADABLE_REF_CODES, so the probe answers false whatever the literal is.
 const isUnreadable = (err: unknown): boolean => UNREADABLE_REF_CODES.has(errorDataCode(err) ?? '');
 
-/** Whether git's `check_refname_format` accepts `name`; a name it refuses
- *  is never read, so it is absent rather than broken. */
-const isWellFormed = (name: RefName | 'HEAD'): boolean => {
-  if (name === 'HEAD') return true;
-  try {
-    validateRefName(name);
-    return true;
-  } catch (err) {
-    if (errorDataCode(err) === 'INVALID_REF') return false;
-    throw err;
-  }
-};
-
-/** Why a candidate whose chain failed to read failed: its own first hop
- *  symbolic, or its own content unreadable. */
+/** Why a candidate whose chain failed to read failed: its own content
+ *  unreadable, else a fault past its first hop — which is therefore symbolic.
+ *  A name git's `check_refname_format` refuses is never read, so it is absent. */
 const unreadableCandidate = async (
   ctx: Context,
   name: RefName | 'HEAD',
 ): Promise<RefCandidateOutcome> => {
-  if (!isWellFormed(name)) return MISSING_CANDIDATE;
+  if (!isSafeRefName(name)) return MISSING_CANDIDATE;
   try {
-    const own = await getRefStore(ctx).resolveDirect(name as RefName);
-    return own.kind === 'symbolic' ? DANGLING_CANDIDATE : BROKEN_CANDIDATE;
+    await getRefStore(ctx).resolveDirect(name as RefName);
+    return DANGLING_CANDIDATE;
   } catch (err) {
     if (isUnreadable(err)) return BROKEN_CANDIDATE;
     throw err;

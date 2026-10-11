@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import {
   readRefCandidate,
   refResolvesForReading,
@@ -11,6 +12,7 @@ import type { ResolveRefOptions } from '../../../../src/application/primitives/t
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { permissionDenied, type TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId, RefName, Tag, Tree } from '../../../../src/domain/objects/index.js';
+import { invalidRef } from '../../../../src/domain/refs/error.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext, writeForgedTagLoop } from './fixtures.js';
 
@@ -858,6 +860,71 @@ describe('readRefCandidate', () => {
 
         // Assert
         expect(refusal).toEqual({ code: 'PERMISSION_DENIED', path: target });
+      });
+    });
+  });
+
+  describe('Given HEAD whose own content is garbage', () => {
+    describe('When readRefCandidate reads HEAD', () => {
+      it('Then HEAD is classified broken, not absent', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/HEAD', 'not-a-valid-ref-content\n');
+        const sut = readRefCandidate;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result).toEqual({ kind: 'broken' });
+      });
+    });
+  });
+
+  describe('Given a chain read that fails as unreadable and a classifying re-read that fails otherwise', () => {
+    describe('When readRefCandidate classifies the candidate', () => {
+      it('Then the re-read refusal propagates instead of reading as broken', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
+        });
+        const denied = permissionDenied('/repo/.git/refs/heads/main');
+        vi.spyOn(getRefStore(ctx), 'resolveDirect')
+          .mockRejectedValueOnce(invalidRef('unreadable'))
+          .mockRejectedValueOnce(denied);
+        const sut = readRefCandidate;
+
+        // Act
+        const refusal = await sut(ctx, 'refs/heads/main' as RefName).catch(
+          (err: TsgitError) => err.data,
+        );
+
+        // Assert
+        expect(refusal).toEqual(denied.data);
+      });
+    });
+  });
+
+  describe('Given a chain read that fails otherwise and a classifying re-read that would fail as unreadable', () => {
+    describe('When readRefCandidate reads the candidate', () => {
+      it('Then the chain refusal propagates without being classified', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
+        });
+        const denied = permissionDenied('/repo/.git/refs/heads/main');
+        vi.spyOn(getRefStore(ctx), 'resolveDirect')
+          .mockRejectedValueOnce(denied)
+          .mockRejectedValueOnce(invalidRef('unreadable'));
+        const sut = readRefCandidate;
+
+        // Act
+        const refusal = await sut(ctx, 'refs/heads/main' as RefName).catch(
+          (err: TsgitError) => err.data,
+        );
+
+        // Assert
+        expect(refusal).toEqual(denied.data);
       });
     });
   });
