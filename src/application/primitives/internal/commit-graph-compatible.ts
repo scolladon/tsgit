@@ -15,12 +15,10 @@ import { commonGitDir } from '../path-layout.js';
 import { readUtf8IfPresent } from './fs-probes.js';
 
 const REPLACE_PREFIX = 'refs/replace/';
-const COMMENT = '#';
 
 /** git's `read_graft_line`: `<commit>[ <parent>]*`, anything else being bad data or a comment. */
 const isGraftLine = (line: string, hexLength: number): boolean => {
   const trimmed = line.trimEnd();
-  if (trimmed === '' || trimmed.startsWith(COMMENT)) return false;
   return new RegExp(`^[0-9a-fA-F]{${hexLength}}( [0-9a-fA-F]{${hexLength}})*$`).test(trimmed);
 };
 
