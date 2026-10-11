@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { init } from '../../../../../src/application/commands/init.js';
-import { lookupTypedCommitReferenceQuietly } from '../../../../../src/application/primitives/internal/lookup-commit-reference.js';
+import {
+  lookupCommitReference,
+  lookupTypedCommitReference,
+  lookupTypedCommitReferenceQuietly,
+  parseCommit,
+} from '../../../../../src/application/primitives/internal/lookup-commit-reference.js';
 import { createObjectTypeTable } from '../../../../../src/application/primitives/internal/object-type-table.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import type { AuthorIdentity, ObjectId } from '../../../../../src/domain/objects/index.js';
@@ -16,14 +21,26 @@ const author: AuthorIdentity = {
 
 const ABSENT = 'b'.repeat(40) as ObjectId;
 
-const logging = async (): Promise<{ readonly ctx: Context; readonly logged: string[] }> => {
+interface Logging {
+  readonly ctx: Context;
+  readonly logged: string[];
+  readonly contexts: unknown[];
+}
+
+const logging = async (): Promise<Logging> => {
   const logged: string[] = [];
+  const contexts: unknown[] = [];
   const ctx: Context = {
     ...createMemoryContext(),
-    logger: { error: (message: string) => logged.push(message) },
+    logger: {
+      error: (message: string, context?: Readonly<Record<string, unknown>>) => {
+        logged.push(message);
+        contexts.push(context);
+      },
+    },
   };
   await init(ctx);
-  return { ctx, logged };
+  return { ctx, logged, contexts };
 };
 
 const writeEmptyTree = (ctx: Context): Promise<ObjectId> =>
@@ -106,6 +123,74 @@ describe('lookupTypedCommitReferenceQuietly', () => {
             `object ${tree} is a commit, not a tree`,
             `bad tree pointer ${tree} in commit ${commit}`,
           ],
+        });
+      });
+    });
+  });
+});
+
+describe('lookupCommitReference', () => {
+  describe('Given an id naming a tree', () => {
+    describe('When it is looked up', () => {
+      it('Then it names no commit and logs the id and the kind reached', async () => {
+        // Arrange
+        const { ctx, logged, contexts } = await logging();
+        const tree = await writeEmptyTree(ctx);
+        const sut = lookupCommitReference;
+
+        // Act
+        const result = await sut(ctx, tree);
+
+        // Assert
+        expect({ result, logged, contexts }).toEqual({
+          result: undefined,
+          logged: [`object ${tree} is a tree, not a commit`],
+          contexts: [{ id: tree, type: 'tree' }],
+        });
+      });
+    });
+  });
+});
+
+describe('lookupTypedCommitReference', () => {
+  describe('Given an id naming a tree', () => {
+    describe('When it is looked up', () => {
+      it('Then it names no commit and logs the id and the kind reached', async () => {
+        // Arrange
+        const { ctx, logged, contexts } = await logging();
+        const tree = await writeEmptyTree(ctx);
+        const sut = lookupTypedCommitReference;
+
+        // Act
+        const result = await sut(ctx, createObjectTypeTable(), tree);
+
+        // Assert
+        expect({ result, logged, contexts }).toEqual({
+          result: undefined,
+          logged: [`object ${tree} is a tree, not a commit`],
+          contexts: [{ id: tree, type: 'tree' }],
+        });
+      });
+    });
+  });
+});
+
+describe('parseCommit', () => {
+  describe('Given an id naming no stored object', () => {
+    describe('When it is parsed', () => {
+      it('Then it fails and logs the unreadable id', async () => {
+        // Arrange
+        const { ctx, logged, contexts } = await logging();
+        const sut = parseCommit;
+
+        // Act
+        const result = await sut(ctx, createObjectTypeTable(), ABSENT);
+
+        // Assert
+        expect({ result, logged, contexts }).toEqual({
+          result: false,
+          logged: [`Could not read ${ABSENT}`],
+          contexts: [{ id: ABSENT }],
         });
       });
     });
