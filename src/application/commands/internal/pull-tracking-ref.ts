@@ -12,6 +12,7 @@ const LOCAL_REMOTE = '.';
 export const upstreamTrackingRef = (
   remote: string,
   merge: string,
+  // Stryker disable next-line ArrayDeclaration: equivalent — a lone positive spec without a destination maps nothing and no negative spec exists to exclude, so findTrackingRef answers undefined as for [].
   fetchSpecs: ReadonlyArray<string> = [],
 ): RefName | undefined =>
   remote === LOCAL_REMOTE ? (merge as RefName) : findTrackingRef(fetchSpecs, merge);
