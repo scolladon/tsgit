@@ -330,7 +330,6 @@ async function resolveDeclaredHeader(
   id: ObjectId,
 ): Promise<DeclaredObjectHeader> {
   for (const source of store.sources) {
-    if (source !== store.primary) await source.registry.assertLoadable();
     const hit = await source.registry.lookup(id);
     if (hit !== undefined) {
       const { type, uncompressedSize } = await readPackedMetadata(ctx, source.registry, hit, id);
@@ -467,7 +466,6 @@ async function resolveObjectMetadataWithContent(
   id: ObjectId,
 ): Promise<ObjectMetadataWithContent> {
   for (const source of store.sources) {
-    if (source !== store.primary) await source.registry.assertLoadable();
     const hit = await source.registry.lookup(id);
     if (hit !== undefined) return readPackedMetadata(ctx, source.registry, hit, id);
     const loose = await metadataFromLoose(ctx, store, source, id);

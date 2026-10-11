@@ -410,6 +410,28 @@ describe('readObjectMetadata', () => {
       });
     });
   });
+
+  describe('Given a loose object that appears after its id missed and whose bytes do not hash to its id', () => {
+    describe('When readObjectMetadata reads it', () => {
+      it('Then its type and size are served without verifying the hash', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const planted = 'a'.repeat(40) as ObjectId;
+        await readObjectMetadata(ctx, planted).catch(() => undefined);
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(planted)}`,
+          await ctx.compressor.deflate(ENC.encode('blob 3\0xyz')),
+        );
+        const sut = readObjectMetadata;
+
+        // Act
+        const result = await sut(ctx, planted);
+
+        // Assert
+        expect(result).toEqual({ type: 'blob', uncompressedSize: 3 });
+      });
+    });
+  });
 });
 
 describe('readDeclaredObjectSize', () => {

@@ -1700,6 +1700,42 @@ describe('reading through alternates', () => {
     });
   });
 
+  describe.each([
+    {
+      reader: 'readObjectMetadata',
+      read: (ctx: Context, id: ObjectId): Promise<unknown> => readObjectMetadata(ctx, id),
+    },
+    {
+      reader: 'readDeclaredObjectSize',
+      read: (ctx: Context, id: ObjectId): Promise<unknown> => readDeclaredObjectSize(ctx, id),
+    },
+  ])(
+    'Given an alternate with a flipped-signature midx and an object only in a later alternate',
+    ({ reader, read }) => {
+      describe(`When ${reader} reads the object`, () => {
+        it('Then the read rejects with the midx error data', async () => {
+          // Arrange
+          const ctx = await contextWithAlternates(ALT_OBJECTS, OTHER_ALT_OBJECTS);
+          await ctx.fs.write(`${ALT_OBJECTS}/pack/multi-pack-index`, FLIPPED_SIGNATURE_MIDX);
+          const id = await writeLooseIn(ctx, OTHER_ALT_OBJECTS, ENC.encode('beyond the bad midx'));
+
+          // Act
+          let caught: unknown;
+          try {
+            await read(ctx, id);
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_MULTI_PACK_INDEX');
+          if (data.code === 'INVALID_MULTI_PACK_INDEX') expect(data.check).toBe('signature');
+        });
+      });
+    },
+  );
+
   describe('Given a pack added to an alternate after the first scan', () => {
     describe('When readObject misses then retries', () => {
       it('Then the object is found', async () => {
