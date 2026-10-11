@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   conflictWeight,
+  explicitStrategies,
   preferConflict,
 } from '../../../../../src/application/commands/internal/merge-strategies.js';
+import type { TsgitError } from '../../../../../src/domain/error.js';
 import type { MergeConflict } from '../../../../../src/domain/merge/index.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/index.js';
 
@@ -53,6 +55,47 @@ describe('preferConflict', () => {
 
         // Assert
         expect(result.name).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('explicitStrategies', () => {
+  describe('Given a single known strategy name', () => {
+    describe('When listed', () => {
+      it('Then it is the one-element list', () => {
+        // Arrange
+        const sut = explicitStrategies;
+
+        // Act
+        const result = sut('ours');
+
+        // Assert
+        expect(result).toEqual(['ours']);
+      });
+    });
+  });
+
+  describe('Given a single unknown strategy name', () => {
+    describe('When listed', () => {
+      it("Then it refuses with git's available strategies", () => {
+        // Arrange
+        const sut = explicitStrategies;
+
+        // Act
+        const attempt = (): unknown => sut('bogus');
+
+        // Assert
+        try {
+          attempt();
+          expect.unreachable();
+        } catch (error) {
+          expect((error as TsgitError).data).toEqual({
+            code: 'UNKNOWN_MERGE_STRATEGY',
+            strategy: 'bogus',
+            available: ['octopus', 'ours', 'recursive', 'resolve', 'subtree'],
+          });
+        }
       });
     });
   });

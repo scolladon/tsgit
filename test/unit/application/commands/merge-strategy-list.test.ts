@@ -246,6 +246,25 @@ describe('merge strategy list', () => {
     });
   });
 
+  describe('Given a valueless pull.octopus', () => {
+    describe('When one head is merged', () => {
+      it('Then it refuses the missing value before merging', async () => {
+        // Arrange
+        const { ctx } = await repo('clean', '[pull]\n\toctopus\n');
+        const sut = mergeRun;
+
+        // Act
+        const result = await errorData(sut(ctx, { rev: 'feature', strategy: 'ort', author }));
+
+        // Assert
+        expect(result).toEqual(
+          expect.objectContaining({ code: 'CONFIG_MISSING_VALUE', key: 'pull.octopus' }),
+        );
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(false);
+      });
+    });
+  });
+
   describe('Given pull.octopus ours and pull.twohead bogus', () => {
     describe('When two heads are merged', () => {
       it('Then pull.octopus picks the strategy and pull.twohead is not consulted', async () => {
