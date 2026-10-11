@@ -1,4 +1,5 @@
 import {
+  configMissingValue,
   trackingAmbiguous,
   trackingInheritRebaseMultiple,
   upstreamMissing,
@@ -9,9 +10,12 @@ import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { RefName } from '../../../domain/objects/index.js';
 import { HEADS_PREFIX } from '../../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../../ports/context.js';
-import { findLastEntry, readConfig } from '../../primitives/config-read.js';
+import {
+  findFirstValuelessEntryAt,
+  findLastEntry,
+  readConfig,
+} from '../../primitives/config-read.js';
 import { getAllConfigValues, resolveConfigScopePath } from '../../primitives/config-scoped-read.js';
-import { assertNoValuelessConfigAt } from '../../primitives/internal/valueless-config-guard.js';
 import { updateConfigOperations } from '../../primitives/update-config.js';
 import { mapsNamedSource } from './branch-merged.js';
 import { isExcludedByNegativeRefspec } from './negative-refspec.js';
@@ -41,6 +45,9 @@ export interface TrackingRequest {
   readonly noTrack?: boolean;
   readonly track?: BranchTrack;
 }
+
+/** Where a valueless entry is reported when the file changed since it was seen. */
+const FIRST_LINE = 1;
 
 /** `branch.<n>.remote`'s pseudo-remote for "this repository". */
 const LOCAL_REMOTE = '.';
@@ -201,7 +208,8 @@ const mergesOf = async (ctx: Context, bare: string): Promise<ReadonlyArray<RefNa
   const valueless = values.find(({ value }) => value === null);
   if (valueless !== undefined) {
     const path = await resolveConfigScopePath(ctx, valueless.scope);
-    await assertNoValuelessConfigAt(ctx, path, 'branch', bare, ['merge']);
+    const found = await findFirstValuelessEntryAt(ctx, path, 'branch', bare, ['merge']);
+    throw configMissingValue(`branch.${bare}.merge`, path, found?.line ?? FIRST_LINE);
   }
   return values.map(({ value }) => value as RefName);
 };

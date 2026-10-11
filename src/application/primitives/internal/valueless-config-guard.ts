@@ -1,6 +1,6 @@
 import { configMissingValue } from '../../../domain/commands/error.js';
 import type { Context } from '../../../ports/context.js';
-import { findFirstValuelessEntry, findFirstValuelessEntryAt } from '../config-read.js';
+import { findFirstValuelessEntry } from '../config-read.js';
 
 /**
  * Refuse with `CONFIG_MISSING_VALUE` when any of `keys` (case-insensitive) under
@@ -23,17 +23,5 @@ export const assertNoValuelessConfig = async (
   keys: ReadonlyArray<string>,
 ): Promise<void> => {
   const found = await findFirstValuelessEntry(ctx, section, subsection, keys);
-  if (found !== undefined) throw configMissingValue(found.key, found.source, found.line);
-};
-
-/** `assertNoValuelessConfig` over the config file at `path`, for a scope other than the local one. */
-export const assertNoValuelessConfigAt = async (
-  ctx: Context,
-  path: string,
-  section: string,
-  subsection: string | undefined,
-  keys: ReadonlyArray<string>,
-): Promise<void> => {
-  const found = await findFirstValuelessEntryAt(ctx, path, section, subsection, keys);
   if (found !== undefined) throw configMissingValue(found.key, found.source, found.line);
 };

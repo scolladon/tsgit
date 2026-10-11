@@ -474,6 +474,34 @@ describe('branchCreate — upstream tracking', () => {
     });
   });
 
+  describe('Given a global valueless merge that vanishes before the refusal reads the file again', () => {
+    describe('When branchCreate cuts z with --track=inherit', () => {
+      it('Then it still refuses, naming the first line of the file', async () => {
+        // Arrange
+        const { ctx } = await seed();
+        const global = `${HOME}/.gitconfig`;
+        await ctx.fs.writeUtf8(global, '[branch "main"]\n\tmerge\n');
+        const changedOnReread = async (path: string) =>
+          path === global ? '[branch "main"]\n\tmerge = x\n' : ctx.fs.readUtf8(path);
+        const fs = Object.create(ctx.fs, { readUtf8: { value: changedOnReread } }) as Context['fs'];
+        const sut = branchCreate;
+
+        // Act
+        const result = await refusalOf(() =>
+          sut({ ...ctx, fs }, { name: 'z', startPoint: 'main', track: 'inherit' }),
+        );
+
+        // Assert
+        expect(result).toEqual({
+          code: 'CONFIG_MISSING_VALUE',
+          key: 'branch.main.merge',
+          source: global,
+          line: 1,
+        });
+      });
+    });
+  });
+
   describe('Given --track=inherit from a start with no upstream', () => {
     describe.each([
       {
