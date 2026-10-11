@@ -50,6 +50,7 @@ const LEADING_SPACE = /^[ \t\n\r]+/;
 /** One `merge.log` / `merge.summary` entry under `git_config_bool_or_int`; a negative length dies. */
 const entryLength = (entry: LocatedConfigEntry): number => {
   const parsed = parseGitBoolOrInt(entry.value);
+  // Stryker disable next-line StringLiteral: equivalent — a valueless entry (null) parses as a boolean, so `raw` is only read on a non-null value
   const raw = entry.value ?? '';
   if (!parsed.ok) throw configBadNumericValue(entry.key, entry.source, raw, parsed.reason);
   if (parsed.isBool) return parsed.value === NO_LOG ? NO_LOG : DEFAULT_MERGE_LOG_LENGTH;

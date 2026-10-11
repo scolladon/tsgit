@@ -339,6 +339,60 @@ describe('merge log', () => {
     });
   });
 
+  describe('Given a described merged branch and merge.branchdesc left unset', () => {
+    describe('When merged with log: true', () => {
+      it('Then the shortlog lists the subjects without the description', async () => {
+        // Arrange
+        const ctx = await divergedRepo('[branch "feature"]\n  description = notes\n');
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, { rev: 'feature', log: true });
+
+        // Assert
+        expect(result).toBe(SHORTLOG);
+      });
+    });
+  });
+
+  describe('Given merge.branchdesc and a description keyed by the name of a merged tag', () => {
+    describe('When the tag is merged with log: true', () => {
+      it('Then the shortlog carries no description, as only a local branch has one', async () => {
+        // Arrange
+        const ctx = await divergedRepo(
+          '[merge]\n  branchdesc = true\n[branch "v1"]\n  description = tag-notes\n',
+        );
+        await tagCreate(ctx, { name: 'v1', target: 'feature', message: 'tag msg' });
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, { rev: 'v1', log: true });
+
+        // Assert
+        expect(result).toBe("Merge tag 'v1'\n\ntag msg\n\n* tag 'v1':\n  two\n  one\n");
+      });
+    });
+  });
+
+  describe('Given a merged commit whose subject starts with spaces', () => {
+    describe('When merged with log: true', () => {
+      it('Then the listed subject is left-trimmed', async () => {
+        // Arrange
+        const ctx = await divergedRepo();
+        await checkout(ctx, { rev: 'feature' });
+        await commitFile(ctx, 'lead.txt', '  lead');
+        await checkout(ctx, { rev: 'main' });
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, { rev: 'feature', log: true });
+
+        // Assert
+        expect(result).toBe("Merge branch 'feature'\n\n* feature:\n  lead\n  two\n  one\n");
+      });
+    });
+  });
+
   describe('Given merge.branchdesc and a valueless description of the merged branch', () => {
     describe('When merged with log: true', () => {
       it('Then it refuses with the missing value, as git does', async () => {
