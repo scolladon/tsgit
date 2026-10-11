@@ -194,6 +194,7 @@ const UNOPENABLE_FILE_CODES: ReadonlySet<string> = new Set([
 ]);
 
 export const isUnopenableFile = (err: unknown): boolean =>
+  // Stryker disable next-line StringLiteral: equivalent — the fallback only types the lookup; no UNOPENABLE_FILE_CODES member is '' or any other literal, so every fallback misses alike.
   UNOPENABLE_FILE_CODES.has(errorDataCode(err) ?? '');
 
 /**
