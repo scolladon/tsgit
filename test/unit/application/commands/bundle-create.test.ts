@@ -1664,3 +1664,41 @@ describe('bundleCreate: object types assigned while enumerating', () => {
     });
   });
 });
+
+describe('Given a wanted branch, a second wanted branch and an excluded commit', () => {
+  describe('When bundleCreate enumerates the bundle objects', () => {
+    it('Then the wants are the wanted tips and the haves the excluded ones, in pending order', async () => {
+      // Arrange
+      const { ctx, mainCommit, featureCommit, base } = await buildDivergentRepo();
+      const enumerateSpy = vi.spyOn(enumerateBundleObjectsMod, 'enumerateBundleObjects');
+      const sut = bundleCreate;
+
+      // Act
+      await sut(ctx, { revs: [{ tip: 'main' }, { tip: 'feature' }, { exclude: 'main~1' }] });
+
+      // Assert
+      const input = enumerateSpy.mock.calls[0]?.[1];
+      expect({ wants: input?.wants, haves: input?.haves }).toEqual({
+        wants: [mainCommit, featureCommit],
+        haves: [base],
+      });
+      enumerateSpy.mockRestore();
+    });
+  });
+});
+
+describe('Given a repository with one commit on main', () => {
+  describe('When bundleCreate bundles every ref with all: true', () => {
+    it('Then the pack holds the commit and its tree', async () => {
+      // Arrange
+      const { ctx } = await buildSingleCommitRepo();
+      const sut = bundleCreate;
+
+      // Act
+      const result = await sut(ctx, { all: true });
+
+      // Assert
+      expect(result.objectCount).toBe(2);
+    });
+  });
+});
