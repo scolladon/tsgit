@@ -361,6 +361,33 @@ describe('pruneWorktrees', () => {
     });
   });
 
+  describe('Given a pruned admin entry that is a real directory', () => {
+    describe('When worktrees are pruned', () => {
+      it('Then the whole directory goes in one recursive removal, not child by child', async () => {
+        // Arrange
+        const base = await seed();
+        await writeAdmin(base, 'gone', '/repo/wts/gone/.git\n');
+        const removed: string[] = [];
+        const fs = {
+          ...base.fs,
+          rmRecursive: async (path: string) => {
+            removed.push(path);
+            await base.fs.rmRecursive(path);
+          },
+        };
+        const ctx: Context = { ...base, fs };
+        const sut = pruneWorktrees;
+
+        // Act
+        await sut(ctx, { cutoff: PRUNE_EVERYTHING, ignoreCase: false });
+
+        // Assert
+        expect(removed).toEqual([adminOf(ctx, 'gone')]);
+        expect(await ctx.fs.exists(adminOf(ctx, 'gone'))).toBe(false);
+      });
+    });
+  });
+
   describe('Given a locked admin dir whose gitdir is empty', () => {
     describe('When worktrees are pruned', () => {
       it('Then the locked admin dir is kept', async () => {

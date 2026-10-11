@@ -120,3 +120,54 @@ describe('previousCheckoutArg', () => {
     });
   });
 });
+
+describe('expandPriorCheckout reflog reads', () => {
+  describe('Given a reflog entry that merely mentions a switch in its text', () => {
+    describe('When @{-1} is expanded', () => {
+      it('Then only a checkout entry counts as a switch', async () => {
+        // Arrange
+        const ctx = await withHeadReflog([
+          'checkout: moving from main to side',
+          'checkout: moving from side to main',
+          'rebase (finish): returning to refs/heads/side',
+        ]);
+        const sut = expandPriorCheckout;
+
+        // Act
+        const result = await sut(ctx, '@{-1}');
+
+        // Assert
+        expect(result).toBe('side');
+      });
+    });
+  });
+
+  describe('Given the name @{-0}', () => {
+    describe('When it is expanded', () => {
+      it('Then HEAD reflog is not read, as there is no 0-th prior checkout', async () => {
+        // Arrange
+        const base = await withHeadReflog(HISTORY);
+        const touched: string[] = [];
+        const fs = new Proxy(base.fs, {
+          get: (target, property, receiver) => {
+            const member = Reflect.get(target, property, receiver);
+            if (typeof member !== 'function') return member;
+            return (...args: unknown[]) => {
+              touched.push(String(args[0]));
+              return member.apply(target, args);
+            };
+          },
+        });
+        const ctx: Context = { ...base, fs };
+        const sut = expandPriorCheckout;
+
+        // Act
+        const result = await sut(ctx, '@{-0}');
+
+        // Assert
+        expect(result).toBe('@{-0}');
+        expect(touched.filter((path) => path.endsWith('logs/HEAD'))).toEqual([]);
+      });
+    });
+  });
+});

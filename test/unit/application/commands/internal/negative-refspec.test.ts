@@ -30,6 +30,12 @@ describe('isExcludedByNegativeRefspec', () => {
       expected: false,
     },
     {
+      label: 'two positive refspecs of which only one maps the ref back to the negated source',
+      specs: [ORIGIN_HEADS, '+refs/tags/*:refs/remotes/origin/*', '^refs/heads/main'],
+      ref: 'refs/remotes/origin/main',
+      expected: true,
+    },
+    {
       label: 'a negative but no positive refspec mapping the ref back',
       specs: ['+refs/heads/*:refs/remotes/other/*', '^refs/heads/main'],
       ref: 'refs/remotes/origin/main',
