@@ -6,7 +6,7 @@ subjects:
 
 - **Status:** accepted
 - **Date:** 2026-10-03
-- **Design:** docs/design/alternates-object-lookup.md · **Supersedes/Refines:** refines ADR-625 (read containment), ADR-226
+- **Design:** docs/design/alternates-object-lookup.md · **Supersedes/Refines:** refines [ADR-625](625-git-parity-containment-posture.md) (read containment), ADR-226
 
 ## Context
 
@@ -15,7 +15,7 @@ filename before refusing: `check_filename` / `verify_filename` `lstat()` the arg
 current directory. The path is not normalised against the worktree root first, so `..` segments walk
 outside it. Live (git 2.55): with `$PARENT/outside` present, `rev-parse dg:a/../../outside` is taken
 as a filename (2 warnings, exit 0, the argument echoed); with it absent, 3 warnings then fatal.
-tsgit's adapters confine every path to the repository root (ADR-625), so the probe answered "absent"
+tsgit's adapters confine every path to the repository root ([ADR-625](625-git-parity-containment-posture.md)), so the probe answered "absent"
 for any `..` escape: one warning fewer and a refusal where git succeeds.
 
 ## Options considered
@@ -27,7 +27,7 @@ for any `..` escape: one warning fewer and a refusal where git succeeds.
 ## Decision
 
 **User-ratified — option 1.** The misspelt-revision probe performs git's existence check exactly,
-following `..` outside the worktree. This is a deliberate, narrowly scoped exception to ADR-625's read
+following `..` outside the worktree. This is a deliberate, narrowly scoped exception to [ADR-625](625-git-parity-containment-posture.md)'s read
 containment: only this probe, only an `lstat`-equivalent existence answer (no content is read, nothing
 is written), and only for the argument git itself would `lstat`.
 

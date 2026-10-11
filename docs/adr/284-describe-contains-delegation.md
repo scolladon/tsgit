@@ -70,5 +70,8 @@ which offers both).
 ### Neutral
 
 - `DescribeOptions` gains one field (`contains`); `DescribeResult` is unchanged.
-- The `--peel-tag` / `--name-only` flags git passes internally are rendering
-  concerns already absorbed by ADR-283 (`tagDeref` + caller short-naming).
+- `--name-only` is a rendering concern absorbed by caller short-naming. The
+  `--peel-tag` half is amended: `tagDeref` (ADR-283) does not absorb it. `nameRev`
+  names a tag, tree or blob only by a ref pointing straight at it, and `describe
+  --contains` gets git's peeled naming (a tag names its commit) through the
+  internal `nameRevPeeled`, which is not public surface.

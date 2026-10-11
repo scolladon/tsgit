@@ -1973,7 +1973,7 @@ npx vitest run --project unit test/unit/application/primitives/internal/ref-deco
   (src/ports/command-runner.ts; `Context.command` L304). Program resolution reuses
   src/application/primitives/sign-payload.ts (`DEFAULT_OPENPGP_PROGRAM` L7,
   `DEFAULT_SSH_PROGRAM` L8 — export them if needed, internal). The detached signature is staged
-  at `<gitDir>/GIT_VERIFY_BUFFER` (beside `GIT_SIGNING_BUFFER`, sign-payload.ts L93) and removed
+  at `<gitDir>/.git_vtag_tmpXXXXXX` (git's own temp-file name, created exclusively) (beside the SSH-signing buffer `.git_signing_buffer_tmpXXXXXX`, sign-payload.ts) and removed
   in `finally` on every exit; the module opens with a `@writes` block (surface name
   `verifyBuffer`, kind/format per tooling/audit-write-surfaces.ts grammar — copy
   sign-payload.ts's block if it has one). No runner / spawn failure → `N`, empty fields,

@@ -37,4 +37,4 @@ each alternate's capability also carries a **set-mtime** operation confined to t
 
 - New read surface outside the repository: exactly the object-shaped files of the design's
   §D9 list, transitively through nested alternates (≤ git's depth). The security review signs off on it.
-- A user-supplied `opts.fs` must supply the hook to reach out-of-root alternates; otherwise ADR-916 applies.
+- A user-supplied `opts.fs` bounds every read, alternates included: the runtime's host-reaching hooks are never used with it, so that `fs` must itself reach an out-of-root alternate; otherwise ADR-916 applies.

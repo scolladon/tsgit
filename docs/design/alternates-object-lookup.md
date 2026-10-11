@@ -1103,8 +1103,15 @@ writeStreamedBlob(ctx, fullPath, id, mode?):              // entry.c:streaming_w
     throw refusal
   }
   if (located === undefined) throw objectNotFound(id)      // git: NULL stream → unlink → in-core read fails: no file
+  let source
+  try { source = await serveLocatedBlob(ctx, located, …) }
+  catch (refusal) {                                        // git: odb_read_stream_open dies on a loose header that does not unpack
+    if (located.arm !== 'loose' || isOperationAborted(refusal)) throw refusal   // other arms decline to the in-core read: no file
+    await createEmptyOutput(ctx, fullPath, refusal, mode)  // the empty file stays: die skips the unlink
+    throw refusal
+  }
   try {
-    await ctx.fs.writeStream(fullPath, sourceChunks(await serveLocatedBlob(ctx, located, …)))
+    await ctx.fs.writeStream(fullPath, sourceChunks(source))
     if (mode !== undefined) await ctx.fs.chmod(fullPath, permFor(mode))
   } catch (failure) {                                      // git: readlen < 0 / non-blob → unlink(path)
     await rmIfExists(ctx, fullPath)
@@ -1655,7 +1662,7 @@ three formats through `ctx.command` (the `CommandRunner` port; OpenPGP: `gpg.pro
 --status-fd=1 --verify <sig-file> -`, status lines parsed as `parse_gpg_output`; SSH:
 `ssh-keygen -Y find-principals`/`-Y verify` with `gpg.ssh.allowedSignersFile` and
 `gpg.ssh.revocationFile`; X.509: `gpgsm`). The signature is written to a transient file under
-the git dir (`<gitDir>/GIT_VERIFY_BUFFER`, beside `sign-payload.ts` L93's `GIT_SIGNING_BUFFER`; declared in a `@writes` block, ADR-138) (git uses `$TMPDIR`; tsgit has no temp
+the git dir (`<gitDir>/.git_vtag_tmpXXXXXX` (git's own temp-file name, created exclusively), beside the SSH-signing buffer `.git_signing_buffer_tmpXXXXXX` in `sign-payload.ts`; declared in a `@writes` block, ADR-138) (git uses `$TMPDIR`; tsgit has no temp
 port), removed in `finally`. Without a `CommandRunner` (browser) or when the program cannot be
 spawned, the result is git's cannot-exec outcome: `N`, empty fields, `undefined` trust (S14).
 
@@ -2365,7 +2372,7 @@ to "reproduce git" vs "diverge"; the faithful option is designed, none is a cand
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
 | DC-21 | How `export-subst` transcodes for a commit whose `encoding` header is not UTF-8 (G19). git uses `iconv`; tsgit has no dependency and only the platform's WHATWG `TextDecoder` (decode-only, a smaller label set than `iconv`) | (a) **WHATWG-backed**: decode with `TextDecoder(label, { fatal: true })`; encoders derived from the decoder and memoised per label — single-byte labels by 256 decodes, the CJK labels (Shift_JIS, EUC-JP, EUC-KR, GBK, Big5) by one pass over their 65 536 two-byte sequences; forms outside that pass (`gb18030` four-byte, EUC-JP three-byte), labels WHATWG lacks and any failure behave as git's failed `iconv` (buffer unconverted) — the residual is recorded in the ADR; (b) **byte-transparent**: never transcode — exact for every UTF-8 commit and for non-UTF-8 commits whose files and inserted text are ASCII; diverges on the S16c/S16d shapes; (c) **refuse** expansion for a non-UTF-8 commit — a refusal git does not have | **(a)** | (a) matches git on every label both stacks know, including S16c/S16d, at ~150 `src` lines and a one-off table build only when such a commit is archived; (b) costs nothing but ships known-wrong bytes for any non-UTF-8 commit whose expansion touches the header and whose file holds non-ASCII text before it; (c) adds a divergence (ADR-226) to avoid one |
-| DC-22 | Where signature verification puts the detached signature `gpg`/`ssh-keygen` read from a file (git: a `$TMPDIR` temp file; tsgit's `FileSystem` is repo-rooted and has no temp port) | (a) **transient file under the git dir** (`<gitDir>/GIT_VERIFY_BUFFER`), removed in `finally` — the `sign-payload.ts` L93 SSH-signing precedent; `archive` gains a `@writes` entry (ADR-138) for a read-only command; (b) **adapter-owned temp file**: `CommandRunner` gains an optional "stage these bytes as a file argument" capability, the Node adapter writing under `os.tmpdir()` — git's location, a port change on one adapter; (c) **no verification**: `%G*` always renders the unsigned outcome — a divergence for signed commits | **(a)** | (a) reuses the existing signing mechanism and confines the write to the git dir; the transient file is the only observable difference from git and exists only while the process runs. (b) matches git's location at the cost of a port extension used by one caller. (c) ships wrong `%G?` bytes for every signed commit |
+| DC-22 | Where signature verification puts the detached signature `gpg`/`ssh-keygen` read from a file (git: a `$TMPDIR` temp file; tsgit's `FileSystem` is repo-rooted and has no temp port) | (a) **transient file under the git dir** (`<gitDir>/.git_vtag_tmpXXXXXX` (git's own temp-file name, created exclusively)), removed in `finally` — the `sign-payload.ts` SSH-signing precedent; `archive` gains a `@writes` entry (ADR-138) for a read-only command; (b) **adapter-owned temp file**: `CommandRunner` gains an optional "stage these bytes as a file argument" capability, the Node adapter writing under `os.tmpdir()` — git's location, a port change on one adapter; (c) **no verification**: `%G*` always renders the unsigned outcome — a divergence for signed commits | **(a)** | (a) reuses the existing signing mechanism and confines the write to the git dir; the transient file is the only observable difference from git and exists only while the process runs. (b) matches git's location at the cost of a port extension used by one caller. (c) ships wrong `%G?` bytes for every signed commit |
 
 ## Test strategy
 

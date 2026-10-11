@@ -4,6 +4,8 @@
 - **Date:** 2026-08-13
 - **Design:** docs/design/git-parity-containment.md · **Supersedes/Refines:** supersedes the "every access is contained" invariant of `docs/understand/security.md` (Node read side); refines [ADR-042](042-canonical-root-lazy-realpath.md), [ADR-485](485-status-clean-containment-tax-amortisation.md), [ADR-541](541-raw-node-adapter-layout-root-set.md)
 
+> Number shared with [625-one-shared-pack-offset-sort-for-idx-and-rev](625-one-shared-pack-offset-sort-for-idx-and-rev.md), published the same week. Cite either by filename; "ADR-625" in the code base and in later ADRs means this one (path containment).
+
 ## Context
 
 The Node adapter runs a realpath-based containment check on every filesystem access —

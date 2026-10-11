@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Proposed; equal-date tie-break amended (see Consequences → Neutral)
 
 ## Context
 
@@ -147,10 +147,12 @@ follow-up, to be built only if a converged porcelain demonstrably needs it.
 
 - New public surface is limited to the `walkCommitsByDate` binding + its options
   type; `reports/api.json` regenerates to include them.
-- The deterministic tie-break (oid-ascending on equal committer dates) is
-  inherited from the shared `precedes`; git's equal-date heap order is
-  unspecified, so faithfulness goldens use strictly-decreasing dates and the
-  tie-break is pinned by a unit test, not by parity.
+- Equal committer dates: amended — git's order is not unspecified. Its commit
+  priority queue breaks ties by insertion order, so equal-date commits come
+  out in the order they were enqueued (seeds as given, parents in parent
+  order), and the walk reproduces that, pinned against git by interop rather
+  than by a unit test alone. The oid-ascending tie-break this bullet first
+  described no longer applies.
 - Unifying `describe`'s bespoke date walk onto this primitive is **not** done
   here — its candidate-reachability bookkeeping is entangled and rule-of-three is
   not met (this is the second general consumer); re-evaluated in the architecture

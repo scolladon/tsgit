@@ -4,6 +4,8 @@
 - **Date:** 2026-08-13
 - **Design:** docs/design/rev-on-idx-write.md (DC-2)
 
+> Number shared with [625-git-parity-containment-posture](625-git-parity-containment-posture.md), published the same week. Cite either by filename; this is the pack-offset sort decision (design DC-2), not the containment one.
+
 ## Context
 
 The `.rev` body is the permutation of index positions ordered by pack offset. That
