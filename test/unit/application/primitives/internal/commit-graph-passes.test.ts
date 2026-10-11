@@ -19,10 +19,20 @@ const AUTHOR = { name: 'A', email: 'a@a', timestamp: 7, timezoneOffset: '+0000' 
 const ABSENT = 'c'.repeat(40) as ObjectId;
 const NOT_IN_GRAPH = (): boolean => false;
 
-const loggingContext = (): { readonly ctx: Context; readonly logged: string[] } => {
+const loggingContext = (): {
+  readonly ctx: Context;
+  readonly logged: string[];
+  readonly contexts: unknown[];
+} => {
   const logged: string[] = [];
-  const ctx = { ...createMemoryContext(), logger: { error: (line: string) => logged.push(line) } };
-  return { ctx, logged };
+  const contexts: unknown[] = [];
+  const logger = {
+    error: (line: string, context?: unknown) => {
+      logged.push(line);
+      contexts.push(context);
+    },
+  };
+  return { ctx: { ...createMemoryContext(), logger }, logged, contexts };
 };
 
 const writeBlob = (ctx: Context, text: string): Promise<ObjectId> => {
@@ -103,6 +113,24 @@ describe('commit-graph passes', () => {
             ...sorted.flatMap((id) => lineOf.get(id) ?? []),
           ],
         });
+      });
+    });
+  });
+
+  describe('Given a commit whose parent is a blob', () => {
+    describe('When the reachable closure is taken', () => {
+      it('Then the logged failure names the parent in its context', async () => {
+        // Arrange
+        const { ctx, contexts } = loggingContext();
+        const blob = await writeBlob(ctx, 'hi');
+        const tip = await writeCommit(ctx, [blob], 'tip');
+        const sut = closeReachable;
+
+        // Act
+        await sut(createCommitGraphParser(ctx), [tip], NOT_IN_GRAPH);
+
+        // Assert
+        expect(contexts).toEqual([{ id: blob }]);
       });
     });
   });

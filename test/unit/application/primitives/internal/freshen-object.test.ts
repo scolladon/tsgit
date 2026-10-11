@@ -223,6 +223,29 @@ describe('freshenObject', () => {
     });
   });
 
+  describe('Given a pack whose first freshen is refused and whose second is allowed', () => {
+    describe('When freshenObject runs twice for an object of that pack', () => {
+      it('Then the refusal is not remembered and the second call touches the pack', async () => {
+        // Arrange
+        const ctx = await contextWithAlternate();
+        const id = await packedBlobIn(ctx, PRIMARY, 'refused-once');
+        const path = `${packPath(PRIMARY, 'refused-once')}.pack`;
+        const utimeNow = vi
+          .spyOn(ctx.fs, 'utimeNow')
+          .mockRejectedValueOnce(permissionDenied(path))
+          .mockResolvedValue(undefined);
+
+        // Act
+        const sut = freshenObject;
+        const results = [await sut(ctx, id), await sut(ctx, id)];
+
+        // Assert
+        expect(results).toEqual([false, true]);
+        expect(utimeNow).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
+
   describe('Given the filesystem has no utimeNow', () => {
     describe('When freshenObject for a loose and a packed object', () => {
       it('Then false is returned for both', async () => {
