@@ -5,6 +5,7 @@ import {
   assertEagerConfigValid,
   assertNoPendingOperation,
   assertOperationalRepository,
+  assertOperationalRepositorySettingsFirst,
   assertRepository,
   branchRefFromHead,
   currentBranchRef,
@@ -1582,6 +1583,35 @@ describe('internal/repo-state', () => {
             code: 'CONFIG_BAD_NUMERIC_VALUE',
             key: 'core.maxtreedepth',
           });
+        });
+      });
+    });
+  });
+
+  describe('assertOperationalRepositorySettingsFirst', () => {
+    describe('Given a layout carrying a version refusal plus a malformed core.packedGitLimit', () => {
+      describe('When called', () => {
+        it("Then setup's format refusal is named ahead of the repo-settings class", async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tpackedGitLimit = abc\n');
+          const rejected = withFormatRefusal(ctx, { kind: 'version', version: 99 });
+          const sut = assertOperationalRepositorySettingsFirst;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(rejected);
+            expect.unreachable();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          const data = (caught as TsgitError).data as FormatVersionData;
+          expect(data.code).toBe('REPOSITORY_FORMAT_VERSION_UNSUPPORTED');
+          expect(data.version).toBe(99);
         });
       });
     });
