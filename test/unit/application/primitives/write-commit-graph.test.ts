@@ -10,7 +10,10 @@ import {
   reflogPath,
   shallowFilePath,
 } from '../../../../src/application/primitives/path-layout.js';
-import { writeCommitGraph } from '../../../../src/application/primitives/write-commit-graph.js';
+import {
+  makeReplaceable,
+  writeCommitGraph,
+} from '../../../../src/application/primitives/write-commit-graph.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeSplitCommitGraph } from '../../../../src/application/primitives/write-split-commit-graph.js';
 import { parseCommitGraphLayer, positionOf } from '../../../../src/domain/commit/commit-graph.js';
@@ -564,6 +567,82 @@ describe('Given a ref whose object read fails unexpectedly', () => {
 
       // Assert
       expect(caught).toBe(fault);
+    });
+  });
+});
+
+describe('makeReplaceable', () => {
+  describe('Given a chmod refused for a reason other than absence', () => {
+    describe('When makeReplaceable runs', () => {
+      it('Then the refusal propagates', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const path = `${commonGitDir(base)}/objects/info/commit-graph`;
+        const ctx: Context = {
+          ...base,
+          fs: { ...base.fs, chmod: () => Promise.reject(permissionDenied(path)) },
+        };
+        const sut = makeReplaceable;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, path);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual(permissionDenied(path).data);
+      });
+    });
+  });
+
+  describe('Given a path that does not exist', () => {
+    describe('When makeReplaceable runs', () => {
+      it('Then it resolves without a refusal', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const sut = makeReplaceable;
+
+        // Act
+        const result = await sut(ctx, `${commonGitDir(ctx)}/objects/info/commit-graph`);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('writeCommitGraph over a repository without split layers', () => {
+  describe('Given no split layers directory', () => {
+    describe('When writeCommitGraph replaces the single file', () => {
+      it('Then only the chain manifest is a removal target', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const gitDir = commonGitDir(base);
+        const commitId = await rootCommit(base, AUTHOR.timestamp, 'root');
+        await pointRef(base, 'refs/heads/main', commitId);
+        const removed: string[] = [];
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            rm: (path: string) => {
+              removed.push(path);
+              return base.fs.rm(path);
+            },
+          },
+        };
+        const sut = writeCommitGraph;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(removed).toEqual([commitGraphChainPath(gitDir)]);
+      });
     });
   });
 });
