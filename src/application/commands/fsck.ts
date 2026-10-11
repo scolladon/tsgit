@@ -357,10 +357,8 @@ async function runPackPasses(
   const { ctx, auditCtx, opts, catalogue } = audit;
   const pack = await runPackHealthPass(ctx, opts);
   const verifyPack = await runVerifyPackPass(auditCtx, opts, catalogue);
-  const deferred =
-    opts.connectivityOnly === true
-      ? { findings: [], exitBit: 0 }
-      : await runDeferredSpecialBlobChecks(auditCtx, catalogue, audit.promised);
+  // Connectivity-only checks no tree's content, so no special blob is ever queued and this stays empty there.
+  const deferred = await runDeferredSpecialBlobChecks(auditCtx, catalogue, audit.promised);
   return { pack, verifyPack, deferred };
 }
 
@@ -637,7 +635,6 @@ function connectivityBit(
 ): number {
   const missing =
     walk.missingIds.size > 0 ||
-    walk.brokenEdges.length > 0 ||
     invalidReflogEntries.length > 0 ||
     walk.typeFindings.some((f) => f.type === 'unresolved-link');
   return missing ? EXIT_MISSING : 0;
