@@ -5,6 +5,7 @@ import {
   expandRevisionArguments,
 } from '../../../../../src/application/commands/internal/revision-argument.js';
 import { createObjectTypeTable } from '../../../../../src/application/primitives/internal/object-type-table.js';
+import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
@@ -107,6 +108,62 @@ describe('expandRevisionArgument', () => {
       });
     });
   });
+});
+
+describe('expandRevisionArgument ambiguous reports', () => {
+  const SHARED = 'abcd';
+  /** Two blob contents whose ids share the abbreviation `abcd`. */
+  const SHARING_ABCD = ['x20507\n', 'x115828\n'];
+  const encoder = new TextEncoder();
+
+  const sharedRepo = async () => {
+    const logged: Array<readonly [string, string, unknown]> = [];
+    const { ctx: base } = await history();
+    const ctx: Context = {
+      ...base,
+      logger: {
+        error: (message, context) => logged.push(['error', message, context]),
+        warn: (message, context) => logged.push(['warn', message, context]),
+      },
+    };
+    const ids: ObjectId[] = [];
+    for (const text of SHARING_ABCD) {
+      ids.push(
+        await writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: encoder.encode(text) }),
+      );
+    }
+    const candidates = ids.sort().map((id) => ({ id, type: 'blob' }));
+    const report = [
+      ['error', `short object ID ${SHARED} is ambiguous`, { prefix: SHARED }],
+      ['warn', 'The candidates are:', { prefix: SHARED, candidates }],
+    ];
+    return { ctx, logged, report };
+  };
+
+  describe.each([
+    { source: 'command-line', reads: 2 },
+    { source: 'stdin', reads: 1 },
+  ] as const)(
+    'Given an ambiguous abbreviation below a tilde, read from the $source',
+    ({ source, reads }) => {
+      describe('When abcd~1 is expanded', () => {
+        it('Then it reports the candidates once per read git makes aloud', async () => {
+          // Arrange
+          const { ctx, logged, report } = await sharedRepo();
+          const sut = expandRevisionArgument;
+
+          // Act
+          const result = await sut(ctx, createObjectTypeTable(), 'abcd~1', source).catch(
+            (error: TsgitError) => error.data.code,
+          );
+
+          // Assert
+          expect(result).toBe('AMBIGUOUS_OID_PREFIX');
+          expect(logged).toEqual(Array.from({ length: reads }, () => report).flat());
+        });
+      });
+    },
+  );
 });
 
 describe('expandRevisionArgument symmetric walk', () => {

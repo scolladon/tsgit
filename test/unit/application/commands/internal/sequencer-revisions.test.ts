@@ -49,7 +49,7 @@ const buildHistory = async (spec: Spec): Promise<History> => {
   return { ctx, id, names: (oids) => oids.map((oid) => byId.get(oid) as string) };
 };
 
-/** x (500) ← i (1000); x ← e1 … e6 (299 … 294, clock-skewed) ← e (400); r ← a1 ← a2, r ← b1 ← b2; r ← q1 ← q3, r ← q2. */
+/** x (500) ← i (1000); x ← e1 … e6 (299 … 294, clock-skewed) ← e (400); r ← a1 ← a2, r ← b1 ← b2; r ← q1 ← q3, r ← q2; r ← s1, and mg merges a2 and s1. */
 const SPEC: Spec = [
   ['x', 500, []],
   ['i', 1000, ['x']],
@@ -68,6 +68,8 @@ const SPEC: Spec = [
   ['q1', 300, ['r']],
   ['q2', 300, ['r']],
   ['q3', 300, ['q1']],
+  ['s1', 250, ['r']],
+  ['mg', 600, ['a2', 's1']],
 ];
 
 /**
@@ -225,6 +227,52 @@ describe('resolveSequencerRevisions', () => {
           revision,
           type,
         });
+      });
+    });
+  });
+
+  describe.each([
+    { form: 'a range', args: (id: string) => [`${id}:..${id}`] },
+    { form: 'a caret', args: (id: string) => [`^${id}:`, id] },
+  ])('Given $form excluding a tree', ({ args }) => {
+    describe('When the sequencer resolves it', () => {
+      it('Then it refuses the excluded tree by the name it was given', async () => {
+        // Arrange
+        const history = await buildHistory(SPEC);
+        const sut = resolveSequencerRevisions;
+        const a1 = history.id('a1');
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(history.ctx, args(a1));
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'CANNOT_PICK_NON_COMMIT',
+          revision: `${a1}:`,
+          type: 'tree',
+        });
+      });
+    });
+  });
+
+  describe('Given a range whose tip merges a side branch', () => {
+    describe('When the sequencer resolves it', () => {
+      it('Then it walks the side branch too, not only the first parents', async () => {
+        // Arrange
+        const history = await buildHistory(SPEC);
+        const sut = resolveSequencerRevisions;
+        const range = `${history.id('r')}..${history.id('mg')}`;
+
+        // Act
+        const result = await sut(history.ctx, [range]);
+
+        // Assert
+        expect(history.names(result.commits)).toEqual(['mg', 'a2', 's1', 'a1']);
       });
     });
   });

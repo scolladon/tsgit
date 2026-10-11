@@ -40,6 +40,10 @@ describe('internal/rev-parse-grammar', () => {
             label: "'HEAD@{12' (a multi-character body with no closing brace)",
           },
           { raw: 'x@{-1}', label: "'x@{-1}' (a prior checkout that does not lead the name)" },
+          {
+            raw: 'main@{u}@{-1}',
+            label: "'main@{u}@{-1}' (a prior checkout after a branch mark)",
+          },
           { raw: '@{1}@{-1}', label: "'@{1}@{-1}' (a prior checkout after a selector)" },
           { raw: '@{-1}x', label: "'@{-1}x' (a prior checkout trailed by a name)" },
           { raw: ':0:', label: "':0:' (empty path)" },
@@ -481,6 +485,25 @@ describe('internal/rev-parse-grammar', () => {
             kind: 'ref-or-hex',
             base: 'x}}',
             reflog: { kind: 'index', n: 0 },
+            operations: [],
+          } satisfies RevExpression);
+        });
+      });
+    });
+
+    describe("Given 'abcd}' (a closing brace with no '@{' before it)", () => {
+      describe('When parseExpression', () => {
+        it('Then the whole name is the base, with no selector', () => {
+          // Arrange
+          const sut = parseExpression;
+
+          // Act
+          const result = sut('abcd}');
+
+          // Assert
+          expect(result).toEqual({
+            kind: 'ref-or-hex',
+            base: 'abcd}',
             operations: [],
           } satisfies RevExpression);
         });
