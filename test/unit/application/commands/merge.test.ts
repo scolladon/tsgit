@@ -4989,6 +4989,50 @@ describe('merge default message', () => {
     });
   });
 
+  describe('Given a signed annotated tag with a tagger under a configured gpg.program', () => {
+    const SIGNATURE = '-----BEGIN PGP SIGNATURE-----\n\nAAAA\n-----END PGP SIGNATURE-----\n';
+
+    describe('When it is merged', () => {
+      it('Then the verifier is fed the tag object without its signature', async () => {
+        // Arrange
+        const { ctx: base, feature } = await divergedRepo('[gpg]\n  program = stub-gpg\n');
+        const fed: string[] = [];
+        const ctx: Context = {
+          ...base,
+          command: {
+            run: async (request) => {
+              fed.push(new TextDecoder().decode(request.stdin));
+              return { exitCode: 1, stdout: new Uint8Array(0), stderr: new Uint8Array(0) };
+            },
+          },
+        };
+        const tag = await writeObject(ctx, {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: {
+            object: feature,
+            objectType: 'commit',
+            tagName: 'st',
+            message: 'signed body\n',
+            gpgSignature: SIGNATURE,
+            extraHeaders: [],
+            tagger: { ...author, name: 'T' },
+          },
+        });
+        await seedRef(ctx, 'refs/tags/st' as RefName, tag, { reflogMessage: 'seed' });
+        const sut = mergedMessage;
+
+        // Act
+        await sut(ctx, 'st');
+
+        // Assert
+        expect(fed).toEqual([
+          `object ${feature}\ntype commit\ntag st\ntagger T <ada@example.com> 1700000000 +0000\n\nsigned body\n`,
+        ]);
+      });
+    });
+  });
+
   describe('Given signed and unsigned annotated tags on diverged commits', () => {
     const SIGNATURE = '-----BEGIN PGP SIGNATURE-----\n\nAAAA\n-----END PGP SIGNATURE-----\n';
 
@@ -5201,6 +5245,18 @@ describe('merge default message', () => {
         ' into main',
       ],
       ['an empty value clearing them', '[merge]\n  suppressDest =\n', 'main', ' into main'],
+      [
+        'an empty value clearing the patterns before it',
+        '[merge]\n  suppressDest = main\n  suppressDest =\n',
+        'main',
+        ' into main',
+      ],
+      [
+        'several patterns and no empty value',
+        '[merge]\n  suppressDest = main\n  suppressDest = x\n  suppressDest = y\n',
+        'main',
+        '',
+      ],
       ['a glob that does not cross a slash', '[merge]\n  suppressDest = a*\n', 'a/b', ' into a/b'],
     ])('When merging into a branch under %s', (_label, config, branch, into) => {
       it('Then the destination is named only when no pattern matches', async () => {
@@ -5226,6 +5282,28 @@ describe('merge default message', () => {
 
         // Act
         const error = await sut(ctx, { rev: 'feature', author }).catch((e: unknown) => e);
+
+        // Assert
+        expect((error as TsgitError).data).toMatchObject({
+          code: 'CONFIG_MISSING_VALUE',
+          key: 'merge.suppressdest',
+        });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a valueless merge.suppressDest and a caller message', () => {
+    describe('When merging', () => {
+      it('Then it refuses with the missing value although no title is formatted', async () => {
+        // Arrange
+        const { ctx } = await divergedRepo('[merge]\n  suppressDest\n');
+        const sut = mergeRun;
+
+        // Act
+        const error = await sut(ctx, { rev: 'feature', message: 'custom', author }).catch(
+          (e: unknown) => e,
+        );
 
         // Assert
         expect((error as TsgitError).data).toMatchObject({
