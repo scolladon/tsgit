@@ -777,6 +777,29 @@ describe('commit — hooks', () => {
       });
     });
   });
+
+  describe('Given an unreadable SQUASH_MSG and a given message', () => {
+    describe('When commit', () => {
+      it('Then the draft is never read and the commit succeeds', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/SQUASH_MSG`, 'draft\n');
+        const read = ctx.fs.readUtf8.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path) => {
+          if (path.endsWith('/SQUASH_MSG')) throw new Error('unreadable SQUASH_MSG');
+          return read(path);
+        });
+        const sut = commit;
+
+        // Act
+        const result = await sut(ctx, { message: 'given', author });
+
+        // Assert
+        const created = await readObject(ctx, result.id);
+        expect(created.type === 'commit' && created.data.message).toBe('given\n');
+      });
+    });
+  });
 });
 
 describe('commit — signing', () => {

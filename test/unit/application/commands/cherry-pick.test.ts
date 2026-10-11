@@ -922,6 +922,29 @@ describe('cherryPickRun', () => {
     });
   });
 
+  describe('Given two clean picks named second-first', () => {
+    describe('When run', () => {
+      it('Then they are applied in argument order, not reversed', async () => {
+        // Arrange
+        const { ctx, feature } = await seedFeature();
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(work(ctx, 'feat2.txt'), 'feat2\n');
+        await add(ctx, ['feat2.txt']);
+        const second = await commit(ctx, { message: 'add feat2', author: FEAT_AUTHOR });
+        await checkout(ctx, { rev: 'main' });
+        const sut = cherryPickRun;
+
+        // Act
+        const result = await sut(ctx, { commits: [second.id, feature] });
+
+        // Assert
+        expect(result.kind).toBe('picked');
+        if (result.kind !== 'picked') return;
+        expect(result.commits.map((picked) => picked.source)).toEqual([second.id, feature]);
+      });
+    });
+  });
+
   describe('Given a parentless (root) commit to pick', () => {
     describe('When run', () => {
       it('Then applies it against an empty base', async () => {

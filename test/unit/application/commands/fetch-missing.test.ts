@@ -8,6 +8,7 @@ import {
   fetchMissing,
 } from '../../../../src/application/commands/fetch-missing.js';
 import { looseObjectPath } from '../../../../src/application/primitives/path-layout.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import { encodePktStream } from '../../../../src/domain/protocol/pkt-line.js';
@@ -823,6 +824,104 @@ describe('fetchMissing', () => {
           ['fetchMissing: promisor remote failed, trying the next', 'a'],
           ...fetchChild,
         ]);
+      });
+    });
+
+    describe('When a failing remote leaves every wanted object landed locally', () => {
+      it('Then the later remote is never contacted and the failing one is reported as serving', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, `${remote('a', URL_A)}${remote('origin', URL)}`);
+        const { packBytes, blobId } = await onePackedBlob(base, 'lazy content\n');
+        const origin = originOnly(packBytes);
+        const urls: string[] = [];
+        const transport: HttpTransport = {
+          request: async (req: HttpRequest): Promise<HttpResponse> => {
+            urls.push(req.url);
+            if (!req.url.startsWith(URL_A)) return origin.transport.request(req);
+            await writeObject(base, {
+              type: 'blob',
+              id: '' as ObjectId,
+              content: ENCODER.encode('lazy content\n'),
+            });
+            return { statusCode: 500, headers: {}, body: streamOf(new Uint8Array()) };
+          },
+        };
+        const ctx: Context = { ...base, transport, logger: { warn: vi.fn() } };
+        const sut = fetchMissing;
+
+        // Act
+        const result = await sut(ctx, { oids: [blobId] });
+
+        // Assert
+        expect(result).toEqual({ remote: 'a', requested: 1, fetched: 1 });
+        expect(urls.some((url) => url.startsWith(URL))).toBe(false);
+      });
+    });
+
+    describe('When the first remote fails with an error that is not a classified failure', () => {
+      it('Then it propagates untouched and the later remote is never contacted', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, `${remote('a', URL_A)}${remote('origin', URL)}`);
+        const { packBytes, blobId } = await onePackedBlob(base, 'lazy content\n');
+        const origin = originOnly(packBytes);
+        const urls: string[] = [];
+        const socketReset = new Error('socket reset');
+        const transport: HttpTransport = {
+          request: async (req: HttpRequest): Promise<HttpResponse> => {
+            urls.push(req.url);
+            if (req.url.startsWith(URL_A)) throw socketReset;
+            return origin.transport.request(req);
+          },
+        };
+        const warn = vi.fn();
+        const ctx: Context = { ...base, transport, logger: { warn } };
+        const sut = fetchMissing;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { oids: [blobId] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(socketReset);
+        expect(urls.some((url) => url.startsWith(URL))).toBe(false);
+        expect(warn).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When the first remote answers but the wanted object is still missing', () => {
+      it('Then the fetch is deemed served by it and the later remote is never contacted', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, `${remote('a', URL_A)}${remote('origin', URL)}`);
+        const wanted = await onePackedBlob(base, 'lazy content\n');
+        const other = await onePackedBlob(base, 'something else\n');
+        const origin = fakeRemote(wanted.packBytes);
+        const first = fakeRemote(other.packBytes);
+        const urls: string[] = [];
+        const transport: HttpTransport = {
+          request: async (req: HttpRequest): Promise<HttpResponse> => {
+            urls.push(req.url);
+            return (req.url.startsWith(URL_A) ? first : origin).transport.request(req);
+          },
+        };
+        const ctx: Context = { ...base, transport };
+        const sut = fetchMissing;
+
+        // Act
+        const result = await sut(ctx, { oids: [wanted.blobId] });
+
+        // Assert
+        expect(result.remote).toBe('a');
+        expect(urls.some((url) => url.startsWith(URL))).toBe(false);
       });
     });
 
