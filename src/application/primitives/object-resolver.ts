@@ -384,7 +384,6 @@ async function tryResolveViaSources(
   mode: LooseReadMode,
 ): Promise<(ObjectContent & { chainDepth: number; declaredSize: number }) | undefined> {
   for (const source of store.sources) {
-    if (source !== store.primary) await source.registry.assertLoadable();
     const found = await tryResolveViaSource(
       ctx,
       store,
