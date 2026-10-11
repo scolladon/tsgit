@@ -82,6 +82,42 @@ describe('runFilterProcess', () => {
     });
   });
 
+  describe('Given a context carrying an abort signal', () => {
+    describe('When a path is cleaned', () => {
+      it('Then the process is spawned with the signal and GIT_DIR alone in its environment', async () => {
+        // Arrange
+        const signal = new AbortController().signal;
+        const ctx = { ...createMemoryContext(), signal };
+        const scripted = scriptedCommandRunner(concat(HANDSHAKE, success('A\n')));
+        const sut = runFilterProcess;
+
+        // Act
+        await sut(ctx, scripted.runner, 'proc', clean('a'));
+
+        // Assert
+        expect(scripted.requests[0]?.signal).toBe(signal);
+        expect(scripted.requests[0]?.env).toEqual({ GIT_DIR: ctx.layout.gitDir });
+      });
+    });
+  });
+
+  describe('Given a context without an abort signal', () => {
+    describe('When a path is cleaned', () => {
+      it('Then the spawn request names no signal', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const scripted = scriptedCommandRunner(concat(HANDSHAKE, success('A\n')));
+        const sut = runFilterProcess;
+
+        // Act
+        await sut(ctx, scripted.runner, 'proc', clean('a'));
+
+        // Assert
+        expect(Object.keys(scripted.requests[0] ?? {})).not.toContain('signal');
+      });
+    });
+  });
+
   describe('Given a smudge carrying checkout metadata', () => {
     describe('When the request is sent', () => {
       it('Then ref, treeish and blob follow the pathname in git’s order', async () => {
