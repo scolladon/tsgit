@@ -597,7 +597,7 @@ const reachesDepthFirst = async (
     read: memoizedReader(ctx, typedLoggedMeta(table), new Map([[target.id, target.meta]])),
     target: target.id,
     minGeneration: target.meta.generation,
-    assigned: new Set([from.id]),
+    assigned: new Set(),
     reached: new Set(),
   };
   const stack = [from];
