@@ -37,12 +37,10 @@ const CANCELLED_OPERATIONS = [
   { marker: REVERT_HEAD as RefName, warning: 'cancelling a revert in progress' },
 ] as const;
 
-/** Remove `<gitDir>/<name>`; whether it was there. */
-const removeStateFile = async (ctx: Context, name: string): Promise<boolean> => {
+/** Remove `<gitDir>/<name>` when it is there. */
+const removeStateFile = async (ctx: Context, name: string): Promise<void> => {
   const path = `${ctx.layout.gitDir}/${name}`;
-  if (!(await ctx.fs.exists(path))) return false;
-  await ctx.fs.rm(path);
-  return true;
+  if (await ctx.fs.exists(path)) await ctx.fs.rm(path);
 };
 
 /** git's `remove_merge_branch_state`: the stopped merge's files; its autostash goes to the stash list. */
