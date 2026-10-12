@@ -6,10 +6,15 @@ import type { Commit, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { type BoundedReader, createBoundedReader } from './bounded-reader.js';
 import { limitFor } from './concurrency.js';
-import { assignObjectType, type ObjectTypeTable, typeWalkedCommit } from './object-type-table.js';
+import {
+  assignObjectType,
+  type ObjectTypeTable,
+  typeParentPointers,
+  typeWalkedCommitAndTree,
+} from './object-type-table.js';
 import { readCommit } from './read-commit.js';
 import { commitHeader, generationNumbersEnabled } from './read-commit-graph.js';
-import { resolveShallow } from './shallow-set.js';
+import { loadShallowSet, resolveShallow } from './shallow-set.js';
 
 /** git's `SLOP`: uninteresting commits still examined once only uninteresting ones remain. */
 const SLOP = 5;
@@ -170,6 +175,8 @@ interface LimitState {
   interestingCache: ObjectId | undefined;
   /** Lowest generation among commits taken into the shown list. */
   lowestShownGeneration: number;
+  /** The repository's shallow set as the typing reads it, once the first parent typing needs it. */
+  typingShallow: ReadonlySet<ObjectId> | undefined;
 }
 
 /**
@@ -254,6 +261,7 @@ const createState = (ctx: Context, options: LimitListOptions): LimitState => ({
   arrivals: 0,
   interestingCache: undefined,
   lowestShownGeneration: OUTSIDE_GRAPH,
+  typingShallow: undefined,
 });
 
 /**
@@ -372,9 +380,17 @@ const typeParsed = async (state: LimitState, id: ObjectId): Promise<boolean> => 
   }
   // git marks a commit parsed only once its parse succeeds: a failed one is
   // parsed, and fails, again at every reach.
-  const typed = await typeWalkedCommit(state.ctx, table, body);
+  const typed =
+    typeWalkedCommitAndTree(state.ctx, table, body) &&
+    typeParentPointers(state.ctx, table, body, state.typingShallow ?? (await typingShallow(state)));
   if (typed) settleTyped(state, id);
   return typed;
+};
+
+/** The shallow set the typing cuts parents at, read once a walk first types a commit's parents. */
+const typingShallow = async (state: LimitState): Promise<ReadonlySet<ObjectId>> => {
+  state.typingShallow = await loadShallowSet(state.ctx);
+  return state.typingShallow;
 };
 
 /** A typed commit is never typed again: a heads-only walk no longer needs its body. */
@@ -412,6 +428,7 @@ const parseInOrder = async (
   state: LimitState,
   parents: ReadonlyArray<ObjectId>,
 ): Promise<ReadonlyArray<Parsed | undefined>> => {
+  if (parents.length === 1) return [await parse(state, parents[0] as ObjectId, 'strict')];
   const settled = await Promise.allSettled(parents.map((parent) => parse(state, parent, 'strict')));
   return settled.map((result) => {
     if (result.status === 'rejected') throw result.reason;

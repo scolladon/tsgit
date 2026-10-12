@@ -8,6 +8,7 @@ import {
 } from '../../../../../src/application/primitives/internal/limit-list.js';
 import { createObjectTypeTable } from '../../../../../src/application/primitives/internal/object-type-table.js';
 import { readCommit } from '../../../../../src/application/primitives/internal/read-commit.js';
+import * as shallowSetModule from '../../../../../src/application/primitives/internal/shallow-set.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import type { AuthorIdentity, ObjectId, Tree } from '../../../../../src/domain/objects/index.js';
 import { computeLooseObjectPath } from '../../../../../src/domain/storage/loose-path.js';
@@ -1248,6 +1249,33 @@ describe('limitList excluded parents reached late', () => {
         // Assert
         expect(result.shown.map(history.name)).toEqual(['t']);
         expect(result.dropped).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('limitList typing cost', () => {
+  const CHAIN: Spec = [
+    ['c0', 0, []],
+    ['c1', 10, ['c0']],
+    ['c2', 20, ['c1']],
+  ];
+
+  describe('Given a chain the walk types as it parses', () => {
+    describe('When it is limited', () => {
+      it("Then the repository's shallow set is loaded once for the whole walk", async () => {
+        // Arrange
+        const history = await buildHistory(CHAIN);
+        const objectTypes = createObjectTypeTable();
+        const load = vi.spyOn(shallowSetModule, 'loadShallowSet');
+        const sut = limitList;
+
+        // Act
+        const result = await sut(history.ctx, optionsFor(history, ['c2'], [], { objectTypes }));
+
+        // Assert
+        expect(result.shown.map(history.name)).toEqual(['c2', 'c1', 'c0']);
+        expect(load).toHaveBeenCalledTimes(1);
       });
     });
   });

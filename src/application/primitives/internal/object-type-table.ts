@@ -66,21 +66,28 @@ const reportBadPointer = (ctx: Context, pointer: string, target: ObjectId, id: O
   return false;
 };
 
-/**
- * git's `parse_commit_buffer`: the commit's tree typed a tree, then each
- * parent a commit — none for a shallow commit, whose parents git cuts. A
- * first conflict stops the parse.
- */
-const assignCommitPointers = async (
+/** git's `parse_commit_buffer`, first pointer: the commit's tree typed a tree. */
+const typeTreePointer = (
   ctx: Context,
   table: ObjectTypeTable,
   id: ObjectId,
   { data }: Commit,
-): Promise<boolean> => {
-  if (!assignObjectType(ctx, table, data.tree, 'tree')) {
-    return reportBadPointer(ctx, 'bad tree pointer', data.tree, id);
-  }
-  if ((await loadShallowSet(ctx)).has(id)) return true;
+): boolean =>
+  assignObjectType(ctx, table, data.tree, 'tree') ||
+  reportBadPointer(ctx, 'bad tree pointer', data.tree, id);
+
+/**
+ * git's `parse_commit_buffer`, after the tree: each parent typed a commit —
+ * none for a commit in `shallow`, whose parents git cuts. A first conflict
+ * stops the parse.
+ */
+export const typeParentPointers = (
+  ctx: Context,
+  table: ObjectTypeTable,
+  { id, data }: Commit,
+  shallow: ReadonlySet<ObjectId>,
+): boolean => {
+  if (shallow.has(id)) return true;
   for (const parent of data.parents) {
     if (!assignObjectType(ctx, table, parent, 'commit')) {
       return reportBadPointer(ctx, 'bad parent', parent, id);
@@ -88,6 +95,31 @@ const assignCommitPointers = async (
   }
   return true;
 };
+
+/**
+ * git's `parse_commit_buffer`: the commit's tree typed a tree, then each
+ * parent a commit against the repository's shallow set, read only once the
+ * tree is typed.
+ */
+const assignCommitPointers = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  commit: Commit,
+): Promise<boolean> =>
+  typeTreePointer(ctx, table, commit.id, commit) &&
+  typeParentPointers(ctx, table, commit, await loadShallowSet(ctx));
+
+/**
+ * The first half of {@link typeWalkedCommit}, for a walk that holds the
+ * shallow set itself: the commit typed a commit, then its tree.
+ */
+export const typeWalkedCommitAndTree = (
+  ctx: Context,
+  table: ObjectTypeTable,
+  commit: Commit,
+): boolean =>
+  assignObjectType(ctx, table, commit.id, 'commit') &&
+  typeTreePointer(ctx, table, commit.id, commit);
 
 /**
  * git's `repo_parse_commit` of a commit the walk reached through a parent
@@ -99,8 +131,8 @@ export const typeWalkedCommit = async (
   table: ObjectTypeTable,
   commit: Commit,
 ): Promise<boolean> =>
-  assignObjectType(ctx, table, commit.id, 'commit') &&
-  (await assignCommitPointers(ctx, table, commit.id, commit));
+  typeWalkedCommitAndTree(ctx, table, commit) &&
+  typeParentPointers(ctx, table, commit, await loadShallowSet(ctx));
 
 /**
  * git's `fill_commit_in_graph`: a commit served by the commit-graph types each
@@ -130,7 +162,7 @@ const assignPointers = async (
 ): Promise<boolean> => {
   if (object.type === 'tag') return assignTagPointer(ctx, table, id, object);
   if (object.type === 'commit' && table !== undefined) {
-    return assignCommitPointers(ctx, table, id, object);
+    return assignCommitPointers(ctx, table, object);
   }
   return true;
 };
