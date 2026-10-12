@@ -739,20 +739,27 @@ const continueStop = async (ctx: Context, state: RebaseState): Promise<RebaseRes
   });
 };
 
-/** The resolution commit, or `undefined` when the index matches HEAD and no
- *  merge is pending — HEAD then stands in for the stopped commit. */
+/** The resolution commit, or `undefined` when the index matches HEAD, a pending
+ *  merge included — HEAD then stands in for the stopped commit. */
 const commitResolution = async (
   ctx: Context,
   state: RebaseState,
   tree: ObjectId,
   parents: { readonly head: ObjectId; readonly mergeHead: ObjectId | undefined },
 ): Promise<ObjectId | undefined> => {
-  if (parents.mergeHead === undefined && (await treeMatchesCommit(ctx, tree, parents.head))) {
+  if (await treeMatchesCommit(ctx, tree, parents.head)) {
+    if (parents.mergeHead !== undefined) await dropPendingMerge(ctx);
     return undefined;
   }
   const resolutionId = await commitStoppedResolution(ctx, state, tree, parents);
   await concludeStopCommit(ctx);
   return resolutionId;
+};
+
+/** A merge resolved to HEAD's own tree commits nothing; its MERGE_HEAD and MERGE_MSG go, MERGE_MODE stays, as in git. */
+const dropPendingMerge = async (ctx: Context): Promise<void> => {
+  await ctx.fs.rm(`${ctx.layout.gitDir}/MERGE_HEAD`);
+  await clearMergeMsg(ctx);
 };
 
 /** git's `has_unstaged_changes` gate: a tracked file changed but not staged stops `--continue`. */

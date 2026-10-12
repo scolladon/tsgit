@@ -327,6 +327,44 @@ describe('rebaseRun with rebaseMerges', () => {
       });
     });
 
+    describe('When the conflict is resolved to the tree HEAD already holds and the rebase continued', () => {
+      it('Then no merge commit is made, as git commits nothing for an index equal to HEAD', async () => {
+        // Arrange
+        const { ctx } = await conflictingSeed();
+        await rebaseRun(ctx, { upstream: 'main', rebaseMerges: true });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/y`, 't\n');
+        await add(ctx, ['y']);
+        const sut = rebaseContinue;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.kind).toBe('rebased');
+        const tip = await readCommit(ctx, await resolveRef(ctx, 'refs/heads/topic' as RefName));
+        const beneath = await readCommit(ctx, tip.parents[0]!);
+        expect({
+          tip: tip.message,
+          beneath: beneath.message,
+          parents: beneath.parents.length,
+        }).toEqual({
+          tip: 'c3\n',
+          beneath: 'y\n',
+          parents: 1,
+        });
+        const left = (await ctx.fs.readdir(ctx.layout.gitDir)).map((entry) => entry.name);
+        expect(left.filter((name) => /^(MERGE|AUTO)/.test(name)).sort()).toEqual([
+          'AUTO_MERGE',
+          'MERGE_MODE',
+        ]);
+        expect(await headReflog(ctx, 3)).toEqual([
+          'rebase (finish): returning to refs/heads/topic',
+          'rebase (pick): c3',
+          'rebase (pick): y',
+        ]);
+      });
+    });
+
     describe('When the merge is skipped', () => {
       it('Then the rebase finishes without it', async () => {
         // Arrange
