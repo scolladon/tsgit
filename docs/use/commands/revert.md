@@ -37,8 +37,12 @@ type RevertResult =
 
 - **Single vs range.** `commits: ['HEAD']` reverts one commit; `commits:
   ['main..HEAD']` expands the range **newest-first** (to undo a span you revert
-  its tip first — the opposite of cherry-pick). `A...B` / `^`-exclusion forms are
-  rejected (`INVALID_OPTION`), never mis-expanded.
+  its tip first — the opposite of cherry-pick). Arguments follow git's
+  `setup_revisions`: `^X` exclusions are accepted, `A...B` still refuses
+  `INVALID_OPTION`, a left-out range side reads as `HEAD`, and only the first argument may be `-`. With no
+  exclusion each named commit is taken once, in argument order. A named object
+  that peels to no commit refuses `CANNOT_PICK_NON_COMMIT`; arguments that
+  resolve to no commit at all refuse `EMPTY_COMMIT_SET`.
 - **Conflict.** Returns `{ kind: 'conflict', ... }`, writing `REVERT_HEAD`, a
   `MERGE_MSG` draft (the `Revert "…"` message plus a `# Conflicts:` block),
   stage-1/2/3 index entries, and `<<<<<<<` markers. Resolve with
@@ -83,7 +87,9 @@ type RevertResult =
 - `OPERATION_IN_PROGRESS` — another operation (merge / cherry-pick / revert)
   is already pending.
 - `NO_OPERATION_IN_PROGRESS` — `continue`/`skip`/`abort` with nothing in progress.
-- `INVALID_OPTION` — an unsupported revision form (`A...B`, `^`-exclusion).
+- `INVALID_OPTION` — an unsupported revision form (`A...B`).
+- `CANNOT_PICK_NON_COMMIT` — a named object peels to no commit.
+- `EMPTY_COMMIT_SET` — the arguments resolve to no commit.
 - `REVERT_MERGE_NO_MAINLINE` — reverting a merge commit (≥2 parents) without `-m`.
 - `AMBIGUOUS_OID_PREFIX` — an abbreviated commit-ish matched more than one object.
 - `INVALID_SEQUENCER_TODO` — a corrupt `.git/sequencer/todo` on resume.
