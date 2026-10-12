@@ -2500,3 +2500,24 @@ describe('MemoryFileSystem config-path capabilities', () => {
     });
   });
 });
+
+describe('MemoryFileSystem lstatIfReachable', () => {
+  describe('Given a path outside the root', () => {
+    describe('When lstatIfReachable probes it', () => {
+      it('Then it refuses PERMISSION_DENIED as lstat does, rather than reading a miss', async () => {
+        // Arrange
+        const sut = new MemoryFileSystem({ rootDir: '/repo' });
+
+        // Act
+        const result = await sut.lstatIfReachable('/elsewhere/x').catch((err: unknown) => err);
+
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect((result as TsgitError).data).toEqual({
+          code: 'PERMISSION_DENIED',
+          path: '/elsewhere/x',
+        });
+      });
+    });
+  });
+});
