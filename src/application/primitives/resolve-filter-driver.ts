@@ -1,4 +1,9 @@
-import { type AttributeValue, resolveAttribute } from '../../domain/attributes/index.js';
+import {
+  type AttributeSource,
+  type AttributeValue,
+  type MacroRegistry,
+  resolveAttribute,
+} from '../../domain/attributes/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from './config-read.js';
@@ -50,6 +55,15 @@ const choiceFromFilterValue = (ctx: Context, value: AttributeValue): Promise<Fil
   return namedFilterChoice(ctx, value.set);
 };
 
+/** The filter choice a path's already-fetched attribute sources select. */
+export const filterChoiceFromSources = (
+  ctx: Context,
+  sources: ReadonlyArray<AttributeSource>,
+  macros: MacroRegistry,
+  path: FilePath,
+): Promise<FilterChoice> =>
+  choiceFromFilterValue(ctx, resolveAttribute(sources, path, 'filter', macros));
+
 /**
  * Resolve the filter driver for `path` using a single `sourcesForPath` lookup.
  * Returns `{ kind: 'identity' }` when no `filter=<name>` attribute is active,
@@ -79,7 +93,7 @@ export const resolveFilterDriver = async (
     });
   }
   const { sources, macros } = await provider.sourcesForPath(path);
-  return choiceFromFilterValue(ctx, resolveAttribute(sources, path, 'filter', macros));
+  return filterChoiceFromSources(ctx, sources, macros, path);
 };
 
 /**
