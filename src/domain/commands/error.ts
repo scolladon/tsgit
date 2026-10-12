@@ -1,3 +1,4 @@
+import type { EolRoundTrip, RoundTripLoss } from '../eol/crlf-conversion.js';
 import { sanitizeForDisplay, TsgitError } from '../error.js';
 import type { HookName } from '../hooks/index.js';
 import type { AmbiguousCandidate, CandidateReadFault } from '../objects/ambiguous-candidate.js';
@@ -199,6 +200,13 @@ export type CommandError =
       readonly filter: string;
       /** Absent when the driver configures no clean command to run. */
       readonly exitCode?: number;
+    }
+  | {
+      readonly code: 'EOL_ROUND_TRIP_UNSAFE';
+      readonly path: FilePath;
+      readonly loss: RoundTripLoss;
+      readonly crlf: number;
+      readonly loneLf: number;
     }
   | {
       readonly code: 'FILTER_UNSUPPORTED_CAPABILITY';
@@ -916,6 +924,15 @@ export const cleanFilterFailed = (path: FilePath, filter: string, exitCode?: num
     path,
     filter,
     ...(exitCode !== undefined && { exitCode }),
+  });
+
+export const eolRoundTripUnsafe = (roundTrip: EolRoundTrip): TsgitError =>
+  new TsgitError({
+    code: 'EOL_ROUND_TRIP_UNSAFE',
+    path: roundTrip.path,
+    loss: roundTrip.loss,
+    crlf: roundTrip.crlf,
+    loneLf: roundTrip.loneLf,
   });
 
 export const filterUnsupportedCapability = (command: string, capability: string): TsgitError =>

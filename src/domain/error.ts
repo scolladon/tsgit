@@ -281,6 +281,11 @@ const unknownOptionDetail = (option: string): string =>
     ? `unknown option \`${option.slice(2)}'`
     : `unknown switch \`${option.slice(1)}'`;
 
+const eolLossDetail = (loss: 'crlf-to-lf' | 'lf-to-crlf', path: string): string =>
+  loss === 'crlf-to-lf'
+    ? `CRLF would be replaced by LF in ${path}`
+    : `LF would be replaced by CRLF in ${path}`;
+
 function extractDetail(data: TsgitErrorData): string {
   switch (data.code) {
     case 'INVALID_OBJECT_ID':
@@ -568,6 +573,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `hook ${data.hook} failed with exit code ${data.exitCode}`;
     case 'CLEAN_FILTER_FAILED':
       return `clean filter '${data.filter}' failed for ${basename(data.path)}${exitSuffix(data.exitCode)}`;
+    case 'EOL_ROUND_TRIP_UNSAFE':
+      return eolLossDetail(data.loss, data.path);
     case 'FILTER_UNSUPPORTED_CAPABILITY':
       return `subprocess '${data.command}' requested unsupported capability '${data.capability}'`;
     case 'SMUDGE_FILTER_FAILED':

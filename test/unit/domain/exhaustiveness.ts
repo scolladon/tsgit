@@ -164,6 +164,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'REFLOG_ENTRY_OUT_OF_RANGE':
     case 'HOOK_FAILED':
     case 'CLEAN_FILTER_FAILED':
+    case 'EOL_ROUND_TRIP_UNSAFE':
     case 'FILTER_UNSUPPORTED_CAPABILITY':
     case 'SMUDGE_FILTER_FAILED':
     case 'TEXTCONV_FAILED':
