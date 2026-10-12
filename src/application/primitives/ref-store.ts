@@ -48,11 +48,11 @@ import {
 import { type TakenNameIndex, takenNameIndex } from '../../domain/refs/taken-name-index.js';
 import { isRefsLinkText } from '../../domain/repository/head-ref.js';
 import type { Context } from '../../ports/context.js';
-import type { DirEntry, FileStat } from '../../ports/file-system.js';
+import type { DirEntry, FileStat, FileSystem } from '../../ports/file-system.js';
 import { atomicWriteFile, atomicWriteRef, withLockFile } from './atomic-write.js';
 import { boundedMapFor } from './internal/concurrency.js';
 import { removeEmptyDirectory, removeEmptyDirectoryTree } from './internal/empty-directories.js';
-import { lstatIfPresent } from './internal/fs-probes.js';
+import { lstatIfPresent, lstatIfReachable } from './internal/fs-probes.js';
 import { invalidateHeadSlot, readHeadFile } from './internal/head-file.js';
 import {
   isCheckedWhenAbsent,
@@ -401,6 +401,9 @@ const BLOCKED_LEAF: LooseLeaf = { kind: 'blocked' };
 const SYMLINK_LEAF: LooseLeaf = { kind: 'symlink' };
 const MISSING: ResolveDirectResult = { kind: 'missing' };
 
+/** A no-follow probe of one path: its `lstat`, or `undefined` on the misses it folds. */
+type LeafProbe = (fs: FileSystem, path: string) => Promise<FileStat | undefined>;
+
 /** How the loose walk treats one directory entry: descend it, list it, or
  *  drop it. */
 type ListedKind = 'directory' | 'ref' | 'unlisted';
@@ -719,8 +722,8 @@ function createFilesRefStore(ctx: Context): RefStore {
   /** `packed-refs`' followed `stat`, `undefined` when absent. The no-follow probe
    *  answers a regular file — and an absence — itself, with no refusal; only a
    *  symbolic link pays the following `stat`. */
-  async function statPackedRefs(path: string): Promise<FileStat | undefined> {
-    const leaf = await lstatIfPresent(ctx.fs, path);
+  async function statPackedRefs(path: string, probe: LeafProbe): Promise<FileStat | undefined> {
+    const leaf = await probe(ctx.fs, path);
     if (leaf === undefined || !leaf.isSymbolicLink) return leaf;
     try {
       return await ctx.fs.stat(path);
@@ -730,9 +733,9 @@ function createFilesRefStore(ctx: Context): RefStore {
     }
   }
 
-  async function loadPackedRefs(): Promise<LoadedPackedRefs> {
+  async function loadPackedRefs(probe: LeafProbe = lstatIfPresent): Promise<LoadedPackedRefs> {
     const path = packedRefsPath(commonGitDir(ctx));
-    const stat = await statPackedRefs(path);
+    const stat = await statPackedRefs(path, probe);
     if (stat === undefined) return EMPTY_PACKED_REFS;
     const key = packedCacheKey(stat);
     if (packedCache !== undefined && packedCache.mtimeKey === key) {
@@ -830,34 +833,18 @@ function createFilesRefStore(ctx: Context): RefStore {
   }
 
   /**
-   * `name`'s loose leaf. git `lstat`s before it reads; a no-follow open asks
-   * the same question within the calls a plain read already makes, so only a
-   * refused open pays more: `PERMISSION_DENIED` one `lstat`, to tell a link
-   * from an unreadable file, and any other refusal — an adapter without the
-   * open, a regular file in the path — the plain reader, which decides those.
+   * `name`'s loose leaf, once a probe found something at `path`. git `lstat`s
+   * before it reads; a no-follow open asks the same question within the calls
+   * a plain read already makes, so only a refused open pays more:
+   * `PERMISSION_DENIED` one `lstat`, to tell a link from an unreadable file,
+   * and any other refusal — an adapter without the open, a regular file in the
+   * path — the plain reader, which decides those.
    */
   async function readLooseLeaf(name: RefName, path: string): Promise<LooseLeaf> {
-    if (await isPlainlyAbsent(path)) return NO_LEAF;
     try {
       return await readRegularLeaf(path);
     } catch (err) {
       return leafAfterRefusedOpen(name, path, err);
-    }
-  }
-
-  /**
-   * Whether nothing stands at `path` — answered by the adapter's refusal-free
-   * `tryLstat`, so a missing ref, the common dwim miss, never builds an error.
-   * A regular file in the path is left to the open, which decides it; an
-   * adapter without the probe always answers `false`.
-   */
-  async function isPlainlyAbsent(path: string): Promise<boolean> {
-    if (ctx.fs.tryLstat === undefined) return false;
-    try {
-      return (await ctx.fs.tryLstat(path)) === undefined;
-    } catch (err) {
-      if (errorCodeOf(err) === 'NOT_A_DIRECTORY') return false;
-      throw err;
     }
   }
 
@@ -886,9 +873,70 @@ function createFilesRefStore(ctx: Context): RefStore {
     return entry === undefined ? MISSING : { kind: 'direct', id: entry.id };
   }
 
+  /**
+   * Whether nothing is reachable at `path` — answered by a refusal-free probe,
+   * so a missing ref, the common dwim miss, never builds an error. An adapter
+   * without any no-follow probe leaves every case to the open, which decides it.
+   */
+  async function isLooseMiss(path: string): Promise<boolean> {
+    if (ctx.fs.lstatIfReachable === undefined && ctx.fs.tryLstat === undefined) return false;
+    return (await lstatIfReachable(ctx.fs, path)) === undefined;
+  }
+
+  /**
+   * Whether a loose miss at `path` was git's `ENOTDIR` — a regular file in its
+   * directory chain — rather than a plain absence: one `stat` of the parent,
+   * which re-resolves that same chain.
+   */
+  async function isBlockedMiss(path: string): Promise<boolean> {
+    try {
+      return !(await ctx.fs.stat(dirname(path))).isDirectory;
+    } catch (err) {
+      const code = errorCodeOf(err);
+      if (code === 'FILE_NOT_FOUND') return false;
+      if (code === 'NOT_A_DIRECTORY') return true;
+      throw err;
+    }
+  }
+
+  /**
+   * `packed-refs`' entry for a name whose loose file missed. Under the same
+   * directory as `packed-refs`, a miss of `packed-refs` itself is told from
+   * nothing: a regular file in that directory's chain blocks the loose path
+   * too, and a blocked name is missing whatever `packed-refs` holds.
+   */
+  async function packedEntryAfterMiss(
+    name: RefName,
+    dir: string,
+  ): Promise<PackedRefEntry | undefined> {
+    const probe = dir === commonGitDir(ctx) ? lstatIfReachable : lstatIfPresent;
+    return (await loadPackedRefs(probe)).byName().get(name);
+  }
+
+  /**
+   * git's `files_read_raw_ref` after a failed `lstat`: only `ENOENT` reads
+   * `packed-refs`. Both causes agree whenever `packed-refs` has no answer, so
+   * the cause is asked only when it holds the name — or faults, which a
+   * blocked name never reaches.
+   */
+  async function resolveAfterLooseMiss(
+    name: RefName,
+    dir: string,
+    path: string,
+  ): Promise<ResolveDirectResult> {
+    const entry = await packedEntryAfterMiss(name, dir).catch(async (err: unknown) => {
+      if (await isBlockedMiss(path)) return undefined;
+      throw err;
+    });
+    if (entry === undefined || (await isBlockedMiss(path))) return MISSING;
+    return { kind: 'direct', id: entry.id };
+  }
+
   async function resolveDirect(name: RefName): Promise<ResolveDirectResult> {
     if (name === HEAD_NAME) return resolveHeadDirect();
-    const path = looseRefPath(refDir(name), name);
+    const dir = refDir(name);
+    const path = looseRefPath(dir, name);
+    if (await isLooseMiss(path)) return resolveAfterLooseMiss(name, dir, path);
     const leaf = await readLooseLeaf(name, path);
     if (leaf.kind === 'symlink') {
       return resolveSymlinkedRef(name, path, await ctx.fs.readlink(path));

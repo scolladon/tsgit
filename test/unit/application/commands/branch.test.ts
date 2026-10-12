@@ -14,7 +14,7 @@ import {
   __resetConfigCacheForTests,
   invalidateConfigCache,
 } from '../../../../src/application/primitives/config-read.js';
-import { lstatIfPresent } from '../../../../src/application/primitives/internal/fs-probes.js';
+import { lstatIfReachable } from '../../../../src/application/primitives/internal/fs-probes.js';
 import { looseObjectPath, objectsDir } from '../../../../src/application/primitives/path-layout.js';
 import { getRefStore, refExists } from '../../../../src/application/primitives/ref-store.js';
 import {
@@ -1832,8 +1832,8 @@ describe('branch', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            tryLstat: async (path) => {
-              if (path !== racedPath) return lstatIfPresent(ctx.fs, path);
+            lstatIfReachable: async (path) => {
+              if (path !== racedPath) return lstatIfReachable(ctx.fs, path);
               reads += 1;
               if (reads === 1) return undefined;
               await ctx.fs.writeUtf8(racedPath, `${commitId}\n`);

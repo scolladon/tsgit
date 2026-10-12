@@ -1732,7 +1732,7 @@ describe('ref-store', () => {
         const ctx = await buildSeededContext();
         const loosePath = `${ctx.layout.gitDir}/refs/heads/main`;
         const fault = permissionDenied(loosePath);
-        vi.spyOn(ctx.fs, 'tryLstat').mockRejectedValue(fault);
+        vi.spyOn(ctx.fs, 'lstatIfReachable').mockRejectedValue(fault);
         const open = vi.spyOn(ctx.fs, 'openWithNoFollow');
         const sut = createRefStore(ctx);
 
@@ -3706,16 +3706,16 @@ describe('ref-store', () => {
         const base = await buildSeededContext({
           refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
         });
-        // The listing's read of the ref is answered; every later probe of it
-        // — the duplicate check packRefs makes before pruning — refuses.
+        // The listing's read of the ref goes through the cause-blind probe and
+        // is answered; the cause-telling probe of it — the duplicate check
+        // packRefs makes before pruning — refuses.
         const loosePath = `${base.layout.gitDir}/refs/heads/main`;
-        let probes = 0;
         const ctx: Context = {
           ...base,
           fs: {
             ...base.fs,
             tryLstat: async (path) => {
-              if (path === loosePath && probes++ > 0) throw permissionDenied(path);
+              if (path === loosePath) throw permissionDenied(path);
               return lstatIfPresent(base.fs, path);
             },
           },
@@ -3913,6 +3913,161 @@ describe('ref-store', () => {
 
         // Assert
         expect(refusal).toEqual({ code: 'REF_CHAIN_TOO_DEEP', depth, chain: [] });
+      });
+    });
+  });
+});
+
+describe('ref-store — what a loose miss costs', () => {
+  const PACKED_ID = 'b'.repeat(40) as ObjectId;
+
+  /** Every probe a loose miss can spend, recorded in order against `base`'s own fs. */
+  const probing = (base: Context) => {
+    const spies = {
+      lstatIfReachable: vi.spyOn(base.fs, 'lstatIfReachable'),
+      tryLstat: vi.spyOn(base.fs, 'tryLstat'),
+      lstat: vi.spyOn(base.fs, 'lstat'),
+      stat: vi.spyOn(base.fs, 'stat'),
+    };
+    const calls = (method: keyof typeof spies) => spies[method].mock.calls.map(([path]) => path);
+    return { calls };
+  };
+
+  describe('Given a name with no loose file and no packed-refs', () => {
+    describe('When resolveDirect reads it', () => {
+      it('Then the loose path and packed-refs are probed once each, and nothing tells the miss apart', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { calls } = probing(ctx);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('refs/tags/absent' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'missing' });
+        expect(calls('lstatIfReachable')).toEqual([
+          '/repo/.git/refs/tags/absent',
+          '/repo/.git/packed-refs',
+        ]);
+        expect([...calls('tryLstat'), ...calls('lstat'), ...calls('stat')]).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a name packed-refs holds and no loose file', () => {
+    describe('When resolveDirect reads it', () => {
+      it("Then it answers the packed id after one stat of the loose path's parent", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/packed-refs', `${PACKED_ID} refs/tags/packed\n`);
+        const { calls } = probing(ctx);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('refs/tags/packed' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id: PACKED_ID });
+        expect(calls('stat')).toEqual(['/repo/.git/refs/tags']);
+        expect(calls('tryLstat')).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given packed-refs holds a name whose parent directory is missing', () => {
+    describe('When resolveDirect reads it', () => {
+      it('Then the packed id answers, as git reads packed-refs on a plain absence', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/packed-refs', `${PACKED_ID} refs/remotes/o/main\n`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('refs/remotes/o/main' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id: PACKED_ID });
+      });
+    });
+  });
+
+  describe('Given a regular file two levels above a name packed-refs holds', () => {
+    describe('When resolveDirect reads it', () => {
+      it('Then the name is missing, as git never reaches packed-refs past the file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/remotes/q', `${PACKED_ID}\n`);
+        await ctx.fs.writeUtf8('/repo/.git/packed-refs', `${PACKED_ID} refs/remotes/q/z/w\n`);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('refs/remotes/q/z/w' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'missing' });
+      });
+    });
+  });
+
+  describe('Given a regular file in the path of a name, and a directory at packed-refs', () => {
+    describe('When resolveDirect reads it', () => {
+      it("Then the name is missing and packed-refs' fault never surfaces, as git never opens it", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/remotes/q', `${PACKED_ID}\n`);
+        await ctx.fs.mkdir('/repo/.git/packed-refs');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('refs/remotes/q/z' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'missing' });
+      });
+    });
+  });
+
+  describe("Given the stat of a missed name's parent faults for a reason no path fault explains", () => {
+    describe('When resolveDirect reads a name packed-refs holds', () => {
+      it('Then the fault propagates rather than choosing an answer', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/packed-refs', `${PACKED_ID} refs/tags/packed\n`);
+        const fault = permissionDenied('/repo/.git/refs/tags');
+        vi.spyOn(ctx.fs, 'stat').mockRejectedValue(fault);
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut
+          .resolveDirect('refs/tags/packed' as RefName)
+          .catch((error: unknown) => error);
+
+        // Assert
+        expect(result).toBe(fault);
+      });
+    });
+  });
+
+  describe('Given a linked worktree whose common dir is a regular file', () => {
+    describe('When resolveDirect reads a per-worktree name with no loose file', () => {
+      it("Then packed-refs' NOT_A_DIRECTORY propagates, as git dies opening it", async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await base.fs.writeUtf8('/repo/common', 'not a directory\n');
+        const ctx: Context = { ...base, layout: { ...base.layout, commonDir: '/repo/common' } };
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut
+          .resolveDirect('refs/bisect/bad' as RefName)
+          .catch((error: unknown) => error);
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'NOT_A_DIRECTORY',
+          path: '/repo/common/packed-refs',
+        });
       });
     });
   });
