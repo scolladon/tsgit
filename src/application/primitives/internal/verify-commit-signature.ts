@@ -275,6 +275,7 @@ const withoutBlankLines = (text: string): string =>
     .map((line) => line.replace(TRAILING_SPACE, ''))
     .filter((line) => line !== '')
     .map((line) => `${line}\n`)
+    // Stryker disable next-line StringLiteral: equivalent — every kept line already ends in a newline, so a separator only ever lands after the first newline, and `firstLine` (the sole caller) reads nothing past it.
     .join('');
 
 /** git parses the first line of the stripped stdout, then the unstripped find-principals stderr, then the stripped stderr. */
