@@ -268,13 +268,25 @@ const SSH_KEY_MARKER = 'key ';
 /** git's own `isspace` leaves out the vertical tab and the form feed. */
 const TRAILING_SPACE = /[ \t\r]+$/;
 
-const firstLine = (text: string): string =>
-  text.slice(0, indexOrEnd(text, '\n', 0)).replace(TRAILING_SPACE, '');
+/** git's `strbuf_stripspace` as far as the first line goes: blank lines vanish, every kept line loses its trailing blanks and ends in a newline. */
+const withoutBlankLines = (text: string): string =>
+  text
+    .split('\n')
+    .map((line) => line.replace(TRAILING_SPACE, ''))
+    .filter((line) => line !== '')
+    .map((line) => `${line}\n`)
+    .join('');
+
+/** git parses the first line of the stripped stdout, then the unstripped find-principals stderr, then the stripped stderr. */
+const firstLine = (tool: ToolRun, principalsStderr: string): string => {
+  const text = withoutBlankLines(tool.stdout) + principalsStderr + withoutBlankLines(tool.stderr);
+  return text.slice(0, indexOrEnd(text, '\n', 0));
+};
 
 /** git's `parse_ssh_output`: "Good "git" signature [for <principal>] with <algo> key <fingerprint>". */
-const parseSshOutput = (tool: ToolRun): SignatureVerdict => {
+const parseSshOutput = (tool: ToolRun, principalsStderr: string): SignatureVerdict => {
   const output = tool.stdout + tool.stderr;
-  const line = firstLine(tool.stdout);
+  const line = firstLine(tool, principalsStderr);
   const withPrincipal = line.startsWith(SSH_GOOD_FOR);
   if (!withPrincipal && !line.startsWith(SSH_GOOD_WITH)) return { ...BAD_SSH, output };
   const body = line.slice((withPrincipal ? SSH_GOOD_FOR : SSH_GOOD_WITH).length);
@@ -327,7 +339,7 @@ const verifyWithoutPrincipal = async (
   principalsStderr: string,
 ): Promise<SignatureVerdict> => {
   const tool = await run(program, ['-Y', 'check-novalidate', '-n', 'git', '-s', sigPath], payload);
-  const verdict = parseSshOutput(tool);
+  const verdict = parseSshOutput(tool, principalsStderr);
   if (tool.exitCode !== 0) return verdict;
   return { ...verdict, output: tool.stdout + principalsStderr + NO_PRINCIPAL_NOTICE + tool.stderr };
 };
@@ -354,7 +366,7 @@ const verifyWithSsh = async (
     (principal) => sshVerifyArgs(sigPath, allowed, principal, gpg?.revocationFile),
     payload,
   );
-  return parseSshOutput(verified);
+  return parseSshOutput(verified, found.stderr);
 };
 
 type SignatureFormat = 'openpgp' | 'x509' | 'ssh';

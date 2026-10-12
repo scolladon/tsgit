@@ -1224,6 +1224,16 @@ describe('verifyCommitSignature', () => {
       expected: { result: 'G', signer: '', trust: 'fully', key: 'SHA256:x' },
     },
     {
+      label: 'leading blank lines',
+      stdout: '\n\n\nGood "git" signature for al with ED25519 key SHA256:x\n',
+      expected: { result: 'G', signer: 'al', trust: 'fully', key: 'SHA256:x' },
+    },
+    {
+      label: 'leading lines holding only blanks',
+      stdout: '\r\n\t\n \nGood "git" signature for al with ED25519 key SHA256:x\n',
+      expected: { result: 'G', signer: 'al', trust: 'fully', key: 'SHA256:x' },
+    },
+    {
       label: 'trailing blanks',
       stdout: 'Good "git" signature for alice with ED25519 key SHA256:abc \t\r\n',
       expected: { result: 'G', signer: 'alice', key: 'SHA256:abc' },
@@ -1257,6 +1267,11 @@ describe('verifyCommitSignature', () => {
     {
       label: 'a good line whose key marker opens the line',
       stdout: 'Good "git" signature with key SHA256:x\n',
+      expected: { result: 'G', trust: 'undefined', key: 'SHA256:x' },
+    },
+    {
+      label: 'a good line after a blank line',
+      stdout: '\nGood "git" signature with ED25519 key SHA256:x\n',
       expected: { result: 'G', trust: 'undefined', key: 'SHA256:x' },
     },
     {
@@ -1333,4 +1348,35 @@ describe('verifyCommitSignature', () => {
       });
     });
   });
+
+  describe.each([
+    {
+      label: 'a blank stdout',
+      stdout: '\n',
+      stderr: 'Good "git" signature with ED25519 key SHA256:x\n',
+      expected: { result: 'G', trust: 'undefined', key: 'SHA256:x' },
+    },
+    {
+      label: 'a stdout of blanks',
+      stdout: '  \n',
+      stderr: 'Good "git" signature for al with ED25519 key SHA256:x\n',
+      expected: { result: 'G', signer: 'al', trust: 'fully', key: 'SHA256:x' },
+    },
+  ])(
+    'Given ssh-keygen printing the good line on stderr after $label',
+    ({ stdout, stderr, expected }) => {
+      describe('When the signature is verified', () => {
+        it('Then the verdict is the one git reaches', async () => {
+          // Arrange
+          const sut = sshVerdict;
+
+          // Act
+          const result = await sut(stdout, { stderr });
+
+          // Assert
+          expect(result).toMatchObject(expected);
+        });
+      });
+    },
+  );
 });
