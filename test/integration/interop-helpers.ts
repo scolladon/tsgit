@@ -45,12 +45,15 @@
  * names a file holding one fixed `user.name`/`user.email`, read at the global
  * scope so a repository's own `user.*` and a call's `GIT_AUTHOR_*` /
  * `GIT_COMMITTER_*` still win, exactly as they would over a developer's
- * `~/.gitconfig`. The file is content-addressed under `os.tmpdir()`, published
- * whole by a hard link so a concurrent worker never reads it half-written.
+ * `~/.gitconfig`. The file lives in one directory per account, created `0700`
+ * and refused unless it is still a directory this account owns and keeps
+ * private, so no other account can plant or swap the config git reads; it is
+ * replaced by a rename, so a concurrent worker never reads it half-written.
  */
+
 import { execFile, execFileSync, spawnSync } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
-import { linkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { lstatSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -66,31 +69,29 @@ const ISOLATED_HOME = path.join(os.tmpdir(), 'tsgit-interop-nonexistent-home');
 /** git's own test-suite author, the identity a commit falls back to. */
 const FALLBACK_IDENTITY_CONFIG = '[user]\n\tname = A U Thor\n\temail = author@example.com\n';
 
-/** Hex digits of the content hash naming the identity file — enough to tell versions apart. */
-const IDENTITY_DIGEST_LENGTH = 12;
+const IDENTITY_DIR = path.join(os.tmpdir(), `tsgit-interop-identity-${os.userInfo().username}`);
+const PRIVATE_DIR_MODE = 0o700;
+const GROUP_OR_OTHER_BITS = 0o077;
 
-const isAlreadyPublished = (failure: NodeJS.ErrnoException): boolean => failure.code === 'EEXIST';
-
-/** Create `target` holding `content` atomically; a concurrent creator's identical copy stands. */
-const publishWhole = (target: string, content: string): void => {
-  const staging = `${target}.${process.pid}-${randomUUID()}`;
-  writeFileSync(staging, content);
-  try {
-    linkSync(staging, target);
-  } catch (failure) {
-    if (!isAlreadyPublished(failure as NodeJS.ErrnoException)) throw failure;
-  } finally {
-    unlinkSync(staging);
-  }
+/** Windows keeps `%TEMP%` per account and reports no POSIX owner or mode bits to check. */
+export const isPrivateToThisAccount = (dir: string): boolean => {
+  const stats = lstatSync(dir);
+  if (!stats.isDirectory()) return false;
+  if (process.platform === 'win32' || process.getuid === undefined) return true;
+  return stats.uid === process.getuid() && (stats.mode & GROUP_OR_OTHER_BITS) === 0;
 };
 
 const publishIdentityConfig = (): string => {
-  const digest = createHash('sha256').update(FALLBACK_IDENTITY_CONFIG).digest('hex');
-  const target = path.join(
-    os.tmpdir(),
-    `tsgit-interop-identity-${digest.slice(0, IDENTITY_DIGEST_LENGTH)}.gitconfig`,
-  );
-  publishWhole(target, FALLBACK_IDENTITY_CONFIG);
+  mkdirSync(IDENTITY_DIR, { recursive: true, mode: PRIVATE_DIR_MODE });
+  if (!isPrivateToThisAccount(IDENTITY_DIR)) {
+    throw new Error(
+      `refusing an identity config directory another account can write: ${IDENTITY_DIR}`,
+    );
+  }
+  const target = path.join(IDENTITY_DIR, '.gitconfig');
+  const staging = `${target}.${process.pid}-${randomUUID()}`;
+  writeFileSync(staging, FALLBACK_IDENTITY_CONFIG);
+  renameSync(staging, target);
   return target;
 };
 
