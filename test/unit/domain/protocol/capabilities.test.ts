@@ -236,13 +236,14 @@ describe('CLIENT_CAPABILITIES_FETCH', () => {
 describe('CLIENT_CAPABILITIES_PUSH', () => {
   describe('Given CLIENT_CAPABILITIES_PUSH', () => {
     describe('When inspected', () => {
-      it.each(['report-status', 'side-band-64k', 'ofs-delta', 'atomic', 'delete-refs', AGENT])(
-        'Then it includes %j',
-        (cap) => {
-          // Arrange + Assert
-          expect(CLIENT_CAPABILITIES_PUSH).toContain(cap);
-        },
-      );
+      it('Then it lists what git asks for on every push, in its order', () => {
+        // Arrange + Assert
+        expect(CLIENT_CAPABILITIES_PUSH).toEqual(['report-status', 'side-band-64k', 'quiet']);
+      });
+      it('Then it does NOT include the atomic token', () => {
+        // Arrange + Assert — atomic is requested only by an atomic push
+        expect(CLIENT_CAPABILITIES_PUSH).not.toContain('atomic');
+      });
       it('Then it does NOT include the push-cert token', () => {
         // Arrange + Assert — push-cert is conditional, added only when signing
         expect(CLIENT_CAPABILITIES_PUSH).not.toContain(PUSH_CERT);

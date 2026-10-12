@@ -44,6 +44,8 @@ export {
   type BranchListResult,
   type BranchRenameInput,
   type BranchRenameResult,
+  type BranchTrack,
+  type BranchUpstream,
   branchCreate,
   branchDelete,
   branchList,
@@ -123,7 +125,13 @@ export {
 } from './continue-merge.js';
 export { type DescribeOptions, type DescribeResult, describe } from './describe.js';
 export { type DiffOptions, diff } from './diff.js';
-export { type FetchOptions, type FetchResult, fetch } from './fetch.js';
+export {
+  type FetchOptions,
+  type FetchRejection,
+  type FetchResult,
+  type FetchUpdate,
+  fetch,
+} from './fetch.js';
 export {
   createPromisorRemote,
   type FetchMissingOptions,
@@ -184,11 +192,12 @@ export {
   bindWorktreeNamespace,
   type WorktreeNamespace,
 } from './internal/worktree-namespace.js';
-export { type LogEntry, type LogOptions, type LogOrder, log } from './log.js';
+export { type LogEntry, type LogOptions, type LogOrder, type LogTopoOrder, log } from './log.js';
 export {
   type MaintenanceOptions,
   type MaintenanceResult,
   type MaintenanceTask,
+  type MaintenanceTaskFailure,
   maintenance,
 } from './maintenance.js';
 export { type MergeResult, type MergeRunInput, mergeRun } from './merge.js';
@@ -227,7 +236,13 @@ export {
 } from './pack-objects.js';
 export { type PackRefsResult, packRefs } from './pack-refs.js';
 export { type PullOptions, type PullResult, pull } from './pull.js';
-export { type PushOptions, type PushResult, push } from './push.js';
+export {
+  type PushedRef,
+  type PushOptions,
+  type PushRejection,
+  type PushResult,
+  push,
+} from './push.js';
 export {
   type RangeDiffCommit,
   type RangeDiffEntry,
@@ -284,7 +299,7 @@ export {
   type RevListResult,
   revList,
 } from './rev-list.js';
-export { revParse } from './rev-parse.js';
+export { type RevParseEntry, revParse } from './rev-parse.js';
 export {
   type RevertAbortResult,
   type RevertConflict,

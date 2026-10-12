@@ -7,7 +7,7 @@ Remove files from the index, and by default from the working tree. Accepts the s
 ```ts
 repo.rm(
   paths: ReadonlyArray<string>,
-  opts?: { cached?: boolean; force?: boolean },
+  opts?: { cached?: boolean; force?: boolean; recursive?: boolean },
 ): Promise<RmResult>;
 
 interface RmResult {
@@ -21,6 +21,7 @@ interface RmResult {
 |---|---|---|---|
 | `cached` | `boolean` | `false` | Index only — leave the working-tree file in place. |
 | `force` | `boolean` | `false` | Override the safety valve (`-f`) — remove even staged or locally-modified paths. |
+| `recursive` | `boolean` | `false` | Allow a pathspec naming a directory to remove everything tracked beneath it (`-r`). |
 
 > Breaking a stale `.git/index.lock` is repository-environment policy, set once on `openRepository({ config: { breakStaleLockMs } })` — not a per-call option. It applies to every index-mutating command.
 
@@ -51,6 +52,9 @@ await repo.rm(['secret.env'], { cached: true });
 // Force removal of a staged / modified path
 await repo.rm(['wip.txt'], { force: true });
 
+// A whole directory (git's -r)
+await repo.rm(['build'], { recursive: true });
+
 // Glob
 await repo.rm(['*.log']);
 ```
@@ -58,6 +62,7 @@ await repo.rm(['*.log']);
 ## Throws
 
 - `PATHSPEC_NO_MATCH` — a literal pattern matched nothing. (Glob no-match is a silent no-op.)
+- `RM_RECURSIVE_WITHOUT_R` — a literal pathspec reached only paths beneath a directory and `recursive` was not set; `data.pattern` is the pathspec as given. Nothing is removed.
 - `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
 - `RM_STAGED_CHANGES` / `RM_LOCAL_MODIFICATIONS` / `RM_STAGED_AND_LOCAL_CHANGES` — the safety valve refused (see above); each `data.paths` lists the refused paths.
 

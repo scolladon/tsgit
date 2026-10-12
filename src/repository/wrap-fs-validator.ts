@@ -36,57 +36,26 @@ const hasDotDotSegment = (path: string): boolean =>
 const sanitizeAllowlist = (paths: ReadonlyArray<string>): ReadonlyArray<string> =>
   paths.filter((p) => p.length > 0 && !hasDotDotSegment(p));
 
-/**
- * `lexists` is optional on the port, so it is forwarded only when the adapter provides it: an
- * absent probe has to stay absent for callers to take their `lstat` fallback. It is invoked on
- * the adapter itself, because a class-based adapter's method reads its own receiver.
- */
-const guardedLexists = (
-  fs: FileSystem,
-  readGuard: (path: string) => void,
-): Pick<FileSystem, 'lexists'> => {
-  const { lexists } = fs;
-  if (lexists === undefined) return {};
-  return {
-    lexists: (p) => {
-      readGuard(p);
-      return lexists.call(fs, p);
-    },
-  };
-};
+/** The port's optional one-path read probes. */
+type OptionalPathProbe = 'lexists' | 'tryLstat' | 'lstatIfReachable' | 'tryReadUtf8';
 
 /**
- * `tryLstat` is optional on the port for the same reason `lexists` is: an absent probe stays
- * absent behind the wrapper, so a caller that finds it missing takes its `lstat` fallback. It is
+ * An optional probe is forwarded only when the adapter provides it: an absent probe has to stay
+ * absent behind the wrapper, so a caller that finds it missing takes its throwing fallback. It is
  * invoked on the adapter itself, because a class-based adapter's method reads its own receiver.
  */
-const guardedTryLstat = (
+const guardedPathProbe = <K extends OptionalPathProbe>(
   fs: FileSystem,
   readGuard: (path: string) => void,
-): Pick<FileSystem, 'tryLstat'> => {
-  const { tryLstat } = fs;
-  if (tryLstat === undefined) return {};
-  return {
-    tryLstat: (p) => {
-      readGuard(p);
-      return tryLstat.call(fs, p);
-    },
+  key: K,
+): Partial<Pick<FileSystem, K>> => {
+  const probe: ((path: string) => Promise<unknown>) | undefined = fs[key];
+  if (probe === undefined) return {};
+  const guarded = (p: string): Promise<unknown> => {
+    readGuard(p);
+    return probe.call(fs, p);
   };
-};
-
-/** `tryReadUtf8`'s twin of {@link guardedTryLstat}. */
-const guardedTryReadUtf8 = (
-  fs: FileSystem,
-  readGuard: (path: string) => void,
-): Pick<FileSystem, 'tryReadUtf8'> => {
-  const { tryReadUtf8 } = fs;
-  if (tryReadUtf8 === undefined) return {};
-  return {
-    tryReadUtf8: (p) => {
-      readGuard(p);
-      return tryReadUtf8.call(fs, p);
-    },
-  };
+  return { [key]: guarded } as Partial<Pick<FileSystem, K>>;
 };
 
 /**
@@ -105,6 +74,24 @@ const guardedAtomicRename = (
       guard(s);
       guard(d);
       return atomicRename.call(fs, s, d);
+    },
+  };
+};
+
+/**
+ * `utimeNow` is optional on the port (OPFS omits it): the wrapper stays without it there so
+ * callers keep their write-a-fresh-copy path, and guards it as a write where it exists.
+ */
+const guardedUtimeNow = (
+  fs: FileSystem,
+  guard: (path: string) => void,
+): Pick<FileSystem, 'utimeNow'> => {
+  const { utimeNow } = fs;
+  if (utimeNow === undefined) return {};
+  return {
+    utimeNow: (p) => {
+      guard(p);
+      return utimeNow.call(fs, p);
     },
   };
 };
@@ -222,9 +209,10 @@ export const wrapFsValidator = (
       readGuard(p);
       return fs.lstat(p);
     },
-    ...guardedLexists(fs, readGuard),
-    ...guardedTryLstat(fs, readGuard),
-    ...guardedTryReadUtf8(fs, readGuard),
+    ...guardedPathProbe(fs, readGuard, 'lexists'),
+    ...guardedPathProbe(fs, readGuard, 'tryLstat'),
+    ...guardedPathProbe(fs, readGuard, 'lstatIfReachable'),
+    ...guardedPathProbe(fs, readGuard, 'tryReadUtf8'),
     readdir: (p) => {
       readGuard(p);
       return fs.readdir(p);
@@ -243,6 +231,7 @@ export const wrapFsValidator = (
       return fs.rename(s, d);
     },
     ...guardedAtomicRename(fs, guard),
+    ...guardedUtimeNow(fs, guard),
     readlink: (p) => {
       readGuard(p);
       return fs.readlink(p);

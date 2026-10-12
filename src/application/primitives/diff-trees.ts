@@ -19,6 +19,7 @@ import {
   type TreeDiff,
 } from '../../domain/diff/index.js';
 import { scanEqual } from '../../domain/diff/line-digest-scanner.js';
+import { isGitlink } from '../../domain/diff/mode-kind.js';
 import { diffRawTrees } from '../../domain/diff/raw-tree-diff.js';
 import type { RenameDetectOptions } from '../../domain/diff/rename-detect.js';
 import { computeRewriteStatFields } from '../../domain/diff/stat-fields.js';
@@ -40,6 +41,7 @@ import type { Context } from '../../ports/context.js';
 import { detectBreakRewrites, detectSimilarityRenames } from './detect-similarity-renames.js';
 import { boundedMapFor, limiterFor } from './internal/concurrency.js';
 import type { ConcurrencyLimiter } from './internal/concurrency-limiter.js';
+import { patchWeighsBlob, statWeighsBlob } from './internal/diff-binary-weighing.js';
 import {
   type FlattenBounds,
   flattenRawTree,
@@ -48,6 +50,7 @@ import {
 import { peelChain } from './internal/peel-chain.js';
 import { joinPath, readRawTreeById as readRawTree } from './internal/raw-tree-io.js';
 import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
+import { assertBigFileThresholdValid } from './internal/repo-settings-gate.js';
 import { resolveMaxTreeDepth } from './internal/resolve-max-tree-depth.js';
 import { walkRawSubtree } from './internal/walk-raw-subtree.js';
 import { isWhitespaceOnlyModify } from './internal/whitespace-drop-predicate.js';
@@ -193,6 +196,56 @@ function statOptionsFor(
   return undefined;
 }
 
+/** A change with a blob side git weighs for binary-ness — a gitlink has none. */
+const weighsContent = (change: DiffChange): boolean => {
+  if (change.type === 'add') return !isGitlink(change.newMode);
+  if (change.type === 'delete') return !isGitlink(change.oldMode);
+  return !isGitlink(change.oldMode) || !isGitlink(change.newMode);
+};
+
+type BlobWeighing = (ctx: Context, provider: AttributeProvider, path: FilePath) => Promise<boolean>;
+
+const anyBlobWeighed = async (
+  ctx: Context,
+  changes: ReadonlyArray<DiffChange>,
+  getProvider: () => Promise<AttributeProvider>,
+  weighsBlob: BlobWeighing,
+): Promise<boolean> => {
+  for (const change of changes) {
+    if (
+      weighsContent(change) &&
+      (await weighsBlob(ctx, await getProvider(), primaryPath(change)))
+    ) {
+      return true;
+    }
+  }
+  return false;
+};
+
+/**
+ * git's `diff_filespec_is_binary` reads `core.bigFileThreshold` for a blob
+ * side whose attributes leave binary-ness open.
+ */
+const readThresholdWhenWeighing = async (
+  ctx: Context,
+  changes: ReadonlyArray<DiffChange>,
+  getProvider: () => Promise<AttributeProvider>,
+  weighsBlob: BlobWeighing,
+): Promise<void> => {
+  if (await anyBlobWeighed(ctx, changes, getProvider, weighsBlob)) {
+    await assertBigFileThresholdValid(ctx);
+  }
+};
+
+/** One provider per pass, built on first need. */
+const lazyProvider = (ctx: Context): (() => Promise<AttributeProvider>) => {
+  let providerPromise: Promise<AttributeProvider> | undefined;
+  return () => {
+    providerPromise ??= buildAttributeProvider(ctx);
+    return providerPromise;
+  };
+};
+
 /**
  * Route the drop-pass predicate and the stat pass to the cheapest mechanism
  * for what the caller asked for. `lineKeyActive && !withStat` (the common
@@ -241,7 +294,13 @@ async function applyStatPass(
   ignoreBlankLines: boolean,
   withStat: boolean,
 ): Promise<TreeDiff | StatTreeDiff> {
-  const files = await materialisePatchFiles(ctx, diff.changes, { applyTextconv: true });
+  const getProvider = lazyProvider(ctx);
+  const files = await materialisePatchFiles(ctx, diff.changes, {
+    applyTextconv: true,
+    runTextconv: false,
+    getProvider,
+  });
+  await readThresholdWhenWeighing(ctx, diff.changes, getProvider, statWeighsBlob);
   const surviving: Array<DiffChange | StatDiffChange> = [];
   for (const file of files) {
     // git's builtin_diffstat never calls fill_textconv — numstat/stat (and the
@@ -286,11 +345,8 @@ async function applyDropPredicate(
   // One lazily-built provider per drop pass: the streaming predicate is
   // blind to `.gitattributes`, so attribute-affected paths must be detected
   // up front and routed through the materialise-based verdict instead.
-  let providerPromise: Promise<AttributeProvider> | undefined;
-  const getProvider = (): Promise<AttributeProvider> => {
-    providerPromise ??= buildAttributeProvider(ctx);
-    return providerPromise;
-  };
+  const getProvider = lazyProvider(ctx);
+  await readThresholdWhenWeighing(ctx, diff.changes, getProvider, patchWeighsBlob);
   const drops = await boundedMapFor(ctx, 'ioBound', diff.changes, (change) =>
     changeShouldDrop(ctx, change, lineKey, ignoreBlankLines, getProvider),
   );
@@ -481,7 +537,7 @@ interface PeeledTree {
 
 /**
  * Peel a commit or tag oid down to the tree it ultimately points at. Shares
- * `readTree`'s peel loop (`peelChain`, same `MAX_PEEL_DEPTH` bound, same
+ * `readTree`'s peel loop (`peelChain`, same revisit guard, same
  * non-tree refusal) but reads every hop once as raw bytes, parsing only the
  * commit/tag body needed to find the next hop's id — the terminal tree is
  * never parsed, only read, so a peel never pays for a `Tree` parse it

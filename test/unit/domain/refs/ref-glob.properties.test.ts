@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { matchRefGlob } from '../../../../src/domain/refs/ref-glob.js';
+import { compilePathnameGlob, matchRefGlob } from '../../../../src/domain/refs/ref-glob.js';
 import { arbGlobLiteral, arbGlobText, arbPlainGlobChar } from './arbitraries.js';
 
 describe('Given any ASCII pattern and ref', () => {
@@ -168,6 +168,81 @@ describe('Given a pattern that opens with a non-empty literal prefix', () => {
           expect(sut(`${prefix}${rest}`, ref)).toBe(false);
         }),
         { numRuns: 50 },
+      );
+    });
+  });
+});
+
+describe('Given a metacharacter-free literal pathname pattern', () => {
+  describe('When matched under WM_PATHNAME', () => {
+    it('Then it matches exactly itself', () => {
+      // Arrange
+      const sut = compilePathnameGlob;
+      const arbCase = fc.record({ pattern: arbGlobLiteral(), text: arbGlobLiteral() });
+
+      // Act + Assert
+      fc.assert(
+        fc.property(arbCase, ({ pattern, text }) => {
+          expect(sut(pattern)(text)).toBe(text === pattern);
+        }),
+        { numRuns: 100 },
+      );
+    });
+  });
+});
+
+describe('Given a lone `*` pathname pattern', () => {
+  describe('When matched under WM_PATHNAME', () => {
+    it('Then it matches exactly the texts holding no slash', () => {
+      // Arrange
+      const sut = compilePathnameGlob;
+
+      // Act + Assert
+      fc.assert(
+        fc.property(arbGlobText(), (text) => {
+          expect(sut('*')(text)).toBe(!text.includes('/'));
+        }),
+        { numRuns: 100 },
+      );
+    });
+  });
+});
+
+describe('Given a lone `**` pathname pattern', () => {
+  describe('When matched under WM_PATHNAME', () => {
+    it('Then it matches every text', () => {
+      // Arrange
+      const sut = compilePathnameGlob;
+
+      // Act + Assert
+      fc.assert(
+        fc.property(arbGlobText(), (text) => {
+          expect(sut('**')(text)).toBe(true);
+        }),
+        { numRuns: 100 },
+      );
+    });
+  });
+});
+
+describe('Given a `<dir>/**/<leaf>` pathname pattern', () => {
+  describe('When matched against the leaf under any number of literal directories', () => {
+    it('Then it matches', () => {
+      // Arrange
+      const sut = compilePathnameGlob;
+      const segment = fc.stringMatching(/^[a-z0-9]{1,5}$/);
+      const arbCase = fc.record({
+        dir: segment,
+        leaf: segment,
+        middle: fc.array(segment, { maxLength: 3 }),
+      });
+
+      // Act + Assert
+      fc.assert(
+        fc.property(arbCase, ({ dir, leaf, middle }) => {
+          expect(sut(`${dir}/**/${leaf}`)([dir, ...middle, leaf].join('/'))).toBe(true);
+        }),
+        { numRuns: 100 },
       );
     });
   });

@@ -1,14 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import * as configReadMod from '../../../../src/application/primitives/config-read.js';
 import { deriveContext } from '../../../../src/application/primitives/derive-context.js';
 import { assertRepoSettingsValid } from '../../../../src/application/primitives/internal/repo-settings-gate.js';
 import { assertOperationalRepository } from '../../../../src/application/primitives/internal/repo-state.js';
+import { getObjectStore } from '../../../../src/application/primitives/object-store.js';
 import * as packRegistryMod from '../../../../src/application/primitives/pack-registry.js';
 import {
   disposePackRegistry,
   getPackRegistry,
   peekPackRegistry,
+  readDeclaredObjectSize,
   readObject,
+  readObjectMetadata,
   readObjectStreamed,
   readObjectWithSize,
   readRawObject,
@@ -16,7 +20,12 @@ import {
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { fileNotFound, type TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
-import { EMPTY_TREE_OID, serializeObject } from '../../../../src/domain/objects/index.js';
+import {
+  EMPTY_TREE_OID,
+  serializeHeader,
+  serializeObject,
+} from '../../../../src/domain/objects/index.js';
+import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { PromisorRemote } from '../../../../src/ports/promisor.js';
 import {
@@ -26,7 +35,7 @@ import {
   writeLooseWithDeclaredSize,
   writeRawObjectBytes,
 } from './fixtures.js';
-import { writeSyntheticPack } from './pack-fixture.js';
+import { writeSyntheticPack, writeSyntheticPackIn } from './pack-fixture.js';
 
 const seedHead = async (ctx: Context): Promise<void> => {
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
@@ -521,6 +530,11 @@ describe('readObject', () => {
             readUtf8: async (path: string) => {
               if (path === '/elsewhere/.git/config') throw fileNotFound(path);
               return ctx.fs.readUtf8(path);
+            },
+            // The same absence for the objects directory's alternates list.
+            read: async (path: string) => {
+              if (path === '/elsewhere/.git/objects/info/alternates') throw fileNotFound(path);
+              return ctx.fs.read(path);
             },
           },
         });
@@ -1551,6 +1565,282 @@ describe('readObject — lazy-fetch (partial clone)', () => {
 
         // Assert — each sequential miss issued its own fetch.
         expect(calls.count).toBe(2);
+      });
+    });
+  });
+});
+
+const ENC = new TextEncoder();
+const PRIMARY_OBJECTS = '/repo/.git/objects';
+const ALT_OBJECTS = '/repo/alt/objects';
+const OTHER_ALT_OBJECTS = '/repo/other/objects';
+const FLIPPED_SIGNATURE_MIDX = Uint8Array.from([
+  0x00,
+  0x49,
+  0x44,
+  0x58,
+  1,
+  1,
+  1,
+  0,
+  ...new Array(8).fill(0),
+]);
+
+const contextWithAlternates = async (...alternates: ReadonlyArray<string>): Promise<Context> => {
+  const ctx = createMemoryContext({
+    files: { [`${PRIMARY_OBJECTS}/info/alternates`]: ENC.encode(`${alternates.join('\n')}\n`) },
+  });
+  for (const dir of alternates) await ctx.fs.mkdir(dir);
+  return ctx;
+};
+
+const writeLooseIn = async (
+  ctx: Context,
+  objectsDir: string,
+  content: Uint8Array,
+): Promise<ObjectId> => {
+  const bytes = new Uint8Array([...serializeHeader('blob', content.length), ...content]);
+  const id = (await ctx.hash.hashHex(bytes)) as ObjectId;
+  await ctx.fs.write(
+    `${objectsDir}/${computeLooseObjectPath(id)}`,
+    await ctx.compressor.deflate(bytes),
+  );
+  return id;
+};
+
+const blobContent = (object: { readonly type: string }): string =>
+  new TextDecoder().decode((object as Blob).content);
+
+describe('reading through alternates', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given an object only in an alternate pack', () => {
+    describe('When readObject', () => {
+      it('Then its content is returned', async () => {
+        // Arrange
+        const ctx = await contextWithAlternates(ALT_OBJECTS);
+        const [id] = await writeSyntheticPackIn(ctx, ALT_OBJECTS, 'alt', [
+          { kind: 'base', type: 'blob', content: ENC.encode('in the alternate pack') },
+        ]);
+
+        // Act
+        const result = await readObject(ctx, id as ObjectId);
+
+        // Assert
+        expect(blobContent(result)).toBe('in the alternate pack');
+      });
+    });
+  });
+
+  describe('Given an object only loose in an alternate', () => {
+    describe('When readObject', () => {
+      it('Then its content is returned', async () => {
+        // Arrange
+        const ctx = await contextWithAlternates(ALT_OBJECTS);
+        const id = await writeLooseIn(ctx, ALT_OBJECTS, ENC.encode('loose in the alternate'));
+
+        // Act
+        const result = await readObject(ctx, id);
+
+        // Assert
+        expect(blobContent(result)).toBe('loose in the alternate');
+      });
+    });
+  });
+
+  describe('Given an object loose in the primary and packed in an alternate', () => {
+    describe('When readObject', () => {
+      it('Then the primary copy is served and the alternate registry is never loaded', async () => {
+        // Arrange
+        const ctx = await contextWithAlternates(ALT_OBJECTS);
+        const content = ENC.encode('held by both');
+        const id = await writeLooseIn(ctx, PRIMARY_OBJECTS, content);
+        await writeSyntheticPackIn(ctx, ALT_OBJECTS, 'alt', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const store = await getObjectStore(ctx);
+        const assertLoadable = vi.spyOn(
+          store.sources.find((source) => !source.local)?.registry ?? expect.unreachable(),
+          'assertLoadable',
+        );
+
+        // Act
+        const result = await readObject(ctx, id);
+
+        // Assert
+        expect(blobContent(result)).toBe('held by both');
+        expect(assertLoadable).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given an alternate with a flipped-signature midx and an object only in a later alternate', () => {
+    describe('When readObject', () => {
+      it('Then the read rejects with the midx error data', async () => {
+        // Arrange
+        const ctx = await contextWithAlternates(ALT_OBJECTS, OTHER_ALT_OBJECTS);
+        await ctx.fs.write(`${ALT_OBJECTS}/pack/multi-pack-index`, FLIPPED_SIGNATURE_MIDX);
+        const id = await writeLooseIn(ctx, OTHER_ALT_OBJECTS, ENC.encode('beyond the bad midx'));
+
+        // Act
+        let caught: unknown;
+        try {
+          await readObject(ctx, id);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_MULTI_PACK_INDEX');
+        if (data.code === 'INVALID_MULTI_PACK_INDEX') expect(data.check).toBe('signature');
+      });
+    });
+  });
+
+  describe.each([
+    {
+      reader: 'readObjectMetadata',
+      read: (ctx: Context, id: ObjectId): Promise<unknown> => readObjectMetadata(ctx, id),
+    },
+    {
+      reader: 'readDeclaredObjectSize',
+      read: (ctx: Context, id: ObjectId): Promise<unknown> => readDeclaredObjectSize(ctx, id),
+    },
+  ])(
+    'Given an alternate with a flipped-signature midx and an object only in a later alternate',
+    ({ reader, read }) => {
+      describe(`When ${reader} reads the object`, () => {
+        it('Then the read rejects with the midx error data', async () => {
+          // Arrange
+          const ctx = await contextWithAlternates(ALT_OBJECTS, OTHER_ALT_OBJECTS);
+          await ctx.fs.write(`${ALT_OBJECTS}/pack/multi-pack-index`, FLIPPED_SIGNATURE_MIDX);
+          const id = await writeLooseIn(ctx, OTHER_ALT_OBJECTS, ENC.encode('beyond the bad midx'));
+
+          // Act
+          let caught: unknown;
+          try {
+            await read(ctx, id);
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('INVALID_MULTI_PACK_INDEX');
+          if (data.code === 'INVALID_MULTI_PACK_INDEX') expect(data.check).toBe('signature');
+        });
+      });
+    },
+  );
+
+  describe('Given a pack added to an alternate after the first scan', () => {
+    describe('When readObject misses then retries', () => {
+      it('Then the object is found', async () => {
+        // Arrange
+        const ctx = await contextWithAlternates(ALT_OBJECTS);
+        await writeLooseIn(ctx, ALT_OBJECTS, ENC.encode('already there'));
+        await readObject(ctx, 'f'.repeat(40) as ObjectId).catch(() => undefined);
+        const [id] = await writeSyntheticPackIn(ctx, ALT_OBJECTS, 'late', [
+          { kind: 'base', type: 'blob', content: ENC.encode('arrived later') },
+        ]);
+
+        // Act
+        const result = await readObject(ctx, id as ObjectId);
+
+        // Assert
+        expect(blobContent(result)).toBe('arrived later');
+      });
+    });
+  });
+
+  describe('Given a loose object added to an alternate after its fanout was listed', () => {
+    describe('When readObject misses then retries', () => {
+      it('Then the object is found', async () => {
+        // Arrange
+        const ctx = await contextWithAlternates(ALT_OBJECTS);
+        const first = await writeLooseIn(ctx, ALT_OBJECTS, ENC.encode('first'));
+        await readObject(ctx, first);
+        const late = new Uint8Array(ENC.encode('second'));
+        const bytes = new Uint8Array([...serializeHeader('blob', late.length), ...late]);
+        const id = (await ctx.hash.hashHex(bytes)) as ObjectId;
+        await readObject(ctx, id).catch(() => undefined);
+        await ctx.fs.write(
+          `${ALT_OBJECTS}/${computeLooseObjectPath(id)}`,
+          await ctx.compressor.deflate(bytes),
+        );
+
+        // Act
+        const result = await readObject(ctx, id);
+
+        // Assert
+        expect(blobContent(result)).toBe('second');
+      });
+    });
+  });
+
+  describe('Given a REF_DELTA entry whose base sits in the same alternate pack', () => {
+    describe('When readObject and readObjectMetadata', () => {
+      it('Then the delta is resolved against the base from that alternate', async () => {
+        // Arrange
+        const ctx = await contextWithAlternates(ALT_OBJECTS);
+        const base = ENC.encode('the shared base content');
+        const target = ENC.encode('the shared base content, extended');
+        const baseId = (await ctx.hash.hashHex(
+          new Uint8Array([...serializeHeader('blob', base.length), ...base]),
+        )) as ObjectId;
+        const [, deltaId] = await writeSyntheticPackIn(ctx, ALT_OBJECTS, 'alt', [
+          { kind: 'base', type: 'blob', content: base },
+          { kind: 'ref-delta', baseId, baseUncompressed: base, targetContent: target },
+        ]);
+
+        // Act
+        const object = await readObject(ctx, deltaId as ObjectId);
+        const metadata = await readObjectMetadata(ctx, deltaId as ObjectId);
+
+        // Assert
+        expect(blobContent(object)).toBe('the shared base content, extended');
+        expect(metadata).toEqual({ type: 'blob', uncompressedSize: target.length });
+      });
+    });
+  });
+
+  describe('Given an object only in an alternate pack', () => {
+    describe('When readObjectMetadata and readDeclaredObjectSize', () => {
+      it('Then both report its type and size', async () => {
+        // Arrange
+        const ctx = await contextWithAlternates(ALT_OBJECTS);
+        const [id] = await writeSyntheticPackIn(ctx, ALT_OBJECTS, 'alt', [
+          { kind: 'base', type: 'blob', content: ENC.encode('twelve bytes') },
+        ]);
+
+        // Act
+        const metadata = await readObjectMetadata(ctx, id as ObjectId);
+        const declared = await readDeclaredObjectSize(ctx, id as ObjectId);
+
+        // Assert
+        expect(metadata).toEqual({ type: 'blob', uncompressedSize: 12 });
+        expect(declared).toBe(12);
+      });
+    });
+  });
+
+  describe('Given an object only loose in an alternate', () => {
+    describe('When readObjectMetadata and readDeclaredObjectSize', () => {
+      it('Then both report its type and size', async () => {
+        // Arrange
+        const ctx = await contextWithAlternates(ALT_OBJECTS);
+        const id = await writeLooseIn(ctx, ALT_OBJECTS, ENC.encode('eleven byte'));
+
+        // Act
+        const metadata = await readObjectMetadata(ctx, id);
+        const declared = await readDeclaredObjectSize(ctx, id);
+
+        // Assert
+        expect(metadata).toEqual({ type: 'blob', uncompressedSize: 11 });
+        expect(declared).toBe(11);
       });
     });
   });

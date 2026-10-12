@@ -1,49 +1,23 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { precedes } from '../../../../src/domain/commit/priority-queue.js';
-import type { ObjectId } from '../../../../src/domain/objects/index.js';
+import { precedesByArrival } from '../../../../src/domain/commit/priority-queue.js';
 
-// Small alphabets so equal-date and equal-oid ties occur often enough to exercise
-// the oid tie-break and the stable full-equality branch.
-const oidArb: fc.Arbitrary<ObjectId> = fc
-  .constantFrom('a', 'b', 'c', 'd')
-  .map((char) => char.repeat(40) as ObjectId);
+const arrivedArb = fc.record({
+  date: fc.integer({ min: 0, max: 4 }),
+  arrival: fc.integer({ min: 0, max: 4 }),
+});
 
-const orderedArb = fc.record({ oid: oidArb, date: fc.integer({ min: 0, max: 4 }) });
-
-describe('Given an arbitrary ordered pair, When comparing with precedes', () => {
-  it('Then no entry precedes itself', () => {
+describe('Given an arbitrary arrival pair, When comparing with precedesByArrival', () => {
+  it('Then exactly one direction precedes for any two distinct arrivals, and none for equal ones', () => {
     // Arrange
     fc.assert(
-      fc.property(orderedArb, (sut) => {
-        // Act + Assert
-        expect(precedes(sut, sut)).toBe(false);
-      }),
-      { numRuns: 200 },
-    );
-  });
+      fc.property(arrivedArb, arrivedArb, (a, b) => {
+        // Act
+        const result = [precedesByArrival(a, b), precedesByArrival(b, a)];
 
-  it('Then precedes is asymmetric', () => {
-    // Arrange
-    fc.assert(
-      fc.property(orderedArb, orderedArb, (a, b) => {
-        // Act + Assert
-        if (precedes(a, b)) expect(precedes(b, a)).toBe(false);
-      }),
-      { numRuns: 200 },
-    );
-  });
-
-  it('Then exactly one direction precedes for any two distinct entries', () => {
-    // Arrange
-    fc.assert(
-      fc.property(orderedArb, orderedArb, (a, b) => {
-        // Arrange
-        const distinct = a.date !== b.date || a.oid !== b.oid;
-        fc.pre(distinct);
-
-        // Act + Assert — a strict total order on (date desc, oid asc).
-        expect(precedes(a, b) !== precedes(b, a)).toBe(true);
+        // Assert — a strict total order on (date desc, arrival asc).
+        const distinct = a.date !== b.date || a.arrival !== b.arrival;
+        expect(result.filter(Boolean).length).toBe(distinct ? 1 : 0);
       }),
       { numRuns: 200 },
     );

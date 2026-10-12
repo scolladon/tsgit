@@ -566,6 +566,13 @@ function refSectionEnd(reftable: Reftable): number {
   if (followingPositions.length > 0) {
     return Math.min(...followingPositions);
   }
+  return blockAreaEnd(reftable);
+}
+
+/** Where every block section ends: the footer's start, git's `t->size`, past
+ *  which no block is ever read — an aligned stride landing in the footer ends
+ *  the walk instead of reading the footer's bytes as a block. */
+function blockAreaEnd(reftable: Reftable): number {
   const footerLength = FOOTER_LENGTH_BY_HEADER_LENGTH.get(reftable.header.headerLength)!;
   return reftable._bytes.length - footerLength;
 }
@@ -659,8 +666,8 @@ function resolveBlockOffset(reftable: Reftable, position: number): number {
  * A level spans as many blocks as its entries need and the footer names only
  * the first, so a `target` sorting past one block's last key is answered by
  * the block that FOLLOWS it — never by absence. Stops where the level's blocks
- * do: `undefined` once the next block is not an index block (or runs past the
- * file), which is also the honest answer for a target sorting past every key
+ * do: `undefined` once the next block is not an index block (or starts at the
+ * footer), which is also the honest answer for a target sorting past every key
  * the level holds.
  */
 function descendIndexLevel(
@@ -668,15 +675,14 @@ function descendIndexLevel(
   levelStart: number,
   target: Uint8Array,
 ): number | undefined {
+  const areaEnd = blockAreaEnd(reftable);
   let position = levelStart;
-  while (
-    position + BLOCK_HEADER_SIZE <= reftable._bytes.length &&
-    blockTypeAt(reftable, position) === 'i'
-  ) {
+  while (blockTypeAt(reftable, position) === 'i') {
     const bounds = blockBoundsAt(reftable, position);
     const found = findInBlock(reftable._bytes, bounds, target, decodeIndexRecord);
     if (found !== undefined) return resolveBlockOffset(reftable, found.payload);
     position = nextBlockStart(reftable.header, bounds.blockEnd);
+    if (position >= areaEnd) return undefined;
   }
   return undefined;
 }

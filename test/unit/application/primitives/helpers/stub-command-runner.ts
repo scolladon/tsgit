@@ -7,6 +7,8 @@ import type {
 export interface StubCommandRunnerOptions {
   readonly exitCode?: number;
   readonly stdout?: Uint8Array;
+  /** Bytes returned as captured stderr — a signer's status lines or diagnostics. */
+  readonly stderr?: Uint8Array;
   readonly onRun?: (request: CommandRequest) => void | Promise<void>;
 }
 
@@ -28,7 +30,21 @@ export const stubCommandRunner = (options: StubCommandRunnerOptions = {}): StubC
       calls.push(request);
       await options.onRun?.(request);
       const exitCode = options.exitCode ?? 0;
-      return options.stdout !== undefined ? { exitCode, stdout: options.stdout } : { exitCode };
+      return {
+        exitCode,
+        ...(options.stdout !== undefined ? { stdout: options.stdout } : {}),
+        ...(options.stderr !== undefined ? { stderr: options.stderr } : {}),
+      };
     },
   };
 };
+
+/** gpg's status-fd line announcing a created signature, which a gpg signer must report. */
+const SIG_CREATED_STATUS = '[GNUPG:] SIG_CREATED D 22 10 00 1700000000 FPR\n';
+
+/** A gpg signer that succeeds: exit 0, `armor` on stdout and `SIG_CREATED` on its status fd. */
+export const gpgSignerStub = (armor: string): StubCommandRunner =>
+  stubCommandRunner({
+    stdout: new TextEncoder().encode(armor),
+    stderr: new TextEncoder().encode(SIG_CREATED_STATUS),
+  });

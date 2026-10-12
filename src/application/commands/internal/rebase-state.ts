@@ -13,28 +13,41 @@
  */
 
 import { invalidSequencerTodo } from '../../../domain/commands/error.js';
-import type { ObjectId } from '../../../domain/objects/index.js';
+import type { ObjectId, RefName } from '../../../domain/objects/index.js';
 import {
   type AuthorIdentity,
   parseAuthorScript,
   parseRebaseTodo,
   type RebaseBackupHeader,
+  type RebaseLabelLine,
+  type RebaseResetLine,
   type RebaseTodoAction,
-  type RebaseTodoEntry,
+  type RebaseTodoLine,
   rebaseTodoBackup,
   serializeAuthorScript,
   serializeRebaseTodo,
 } from '../../../domain/rebase/index.js';
+import { MERGE_MSG, REBASE_HEAD } from '../../../domain/refs/state-files.js';
 import type { Context } from '../../../ports/context.js';
+import { deleteRootRef, readRootRef, writeRootRef } from '../../primitives/internal/root-ref.js';
 import { resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
 import { readOptionalOidFile } from './oid-file.js';
 
-/** A todo/done entry with its oid resolved to a full ObjectId. */
-export interface ResolvedRebaseTodoEntry {
-  readonly action: RebaseTodoAction;
-  readonly oid: ObjectId;
-  readonly subject: string;
-}
+/** A todo/done line with its oid resolved to a full ObjectId. */
+export type ResolvedRebaseTodoEntry =
+  | {
+      readonly action: RebaseTodoAction;
+      readonly oid: ObjectId;
+      readonly subject: string;
+    }
+  | {
+      readonly action: 'merge';
+      readonly oid: ObjectId;
+      readonly labels: ReadonlyArray<string>;
+      readonly subject: string;
+    }
+  | RebaseLabelLine
+  | RebaseResetLine;
 
 /** One melded member of an in-flight squash/fixup group (`current-fixups`). */
 export interface CurrentFixup {
@@ -48,9 +61,9 @@ export interface RebaseStop {
   readonly onto: ObjectId;
   readonly origHead: ObjectId;
   /** Completed instructions, including the stopped one (last). */
-  readonly done: ReadonlyArray<RebaseTodoEntry>;
+  readonly done: ReadonlyArray<RebaseTodoLine>;
   /** Instructions still to apply (the live `git-rebase-todo`). */
-  readonly remaining: ReadonlyArray<RebaseTodoEntry>;
+  readonly remaining: ReadonlyArray<RebaseTodoLine>;
   readonly stoppedSha: ObjectId;
   readonly stoppedAuthor: AuthorIdentity;
   readonly message: string;
@@ -72,6 +85,10 @@ export interface RebaseStop {
   readonly rewrittenPending?: ReadonlyArray<ObjectId>;
   /** Backup of the running combined message (`message-squash`). */
   readonly messageSquash?: string;
+  /** The group base's message while every melded member is a plain fixup (`message-fixup`). */
+  readonly messageFixup?: string;
+  /** The message a conflict stop leaves in `MERGE_MSG` for the resolving commit. */
+  readonly mergeMsg?: string;
 }
 
 /** The aggregated read used by `continue` / `skip` / `abort`. */
@@ -95,7 +112,8 @@ export interface RebaseState {
 
 const dir = (ctx: Context): string => `${ctx.layout.gitDir}/rebase-merge`;
 const file = (ctx: Context, name: string): string => `${dir(ctx)}/${name}`;
-const rebaseHeadPath = (ctx: Context): string => `${ctx.layout.gitDir}/REBASE_HEAD`;
+const REBASE_HEAD_REF = REBASE_HEAD as RefName;
+const mergeMsgPath = (ctx: Context): string => `${ctx.layout.gitDir}/${MERGE_MSG}`;
 
 /**
  * Serialise rewritten `[old, new]` pairs to git's `<old> SP <new> LF` lines —
@@ -127,33 +145,65 @@ export const writeRebaseStop = async (ctx: Context, stop: RebaseStop): Promise<v
   await write('drop_redundant_commits', '');
   await write('no-reschedule-failed-exec', '');
   await write('stopped-sha', `${stop.stoppedSha}\n`);
-  if (stop.amend !== undefined) await write('amend', `${stop.amend}\n`);
-  if (stop.currentFixups !== undefined) {
-    await write('current-fixups', stop.currentFixups.map((f) => `${f.action} ${f.oid}\n`).join(''));
+  const labels = stop.done.filter((line) => line.action === 'label');
+  if (labels.length > 0) {
+    await write('refs-to-delete', labels.map((l) => `refs/rewritten/${l.label}\n`).join(''));
   }
-  if (stop.rewrittenPending !== undefined) {
-    await write('rewritten-pending', stop.rewrittenPending.map((oid) => `${oid}\n`).join(''));
-  }
+  await writeStopMarkers(ctx, stop);
   if (stop.messageSquash !== undefined) await write('message-squash', stop.messageSquash);
-  await ctx.fs.writeUtf8(rebaseHeadPath(ctx), `${stop.stoppedSha}\n`);
+  if (stop.mergeMsg !== undefined) await ctx.fs.writeUtf8(mergeMsgPath(ctx), stop.mergeMsg);
+  await writeRootRef(ctx, REBASE_HEAD_REF, stop.stoppedSha);
+};
+
+/** git unlinks `amend` before every step and drops `current-fixups` /
+ *  `rewritten-pending` once their group ends, so a stop leaves exactly the
+ *  markers it carries — a stale one would steer the next `continue`. */
+const writeStopMarkers = async (ctx: Context, stop: RebaseStop): Promise<void> => {
+  await writeOrRemove(ctx, 'amend', stop.amend === undefined ? undefined : `${stop.amend}\n`);
+  await writeOrRemove(ctx, 'message-fixup', stop.messageFixup);
+  await writeOrRemove(
+    ctx,
+    'current-fixups',
+    stop.currentFixups?.map((f) => `${f.action} ${f.oid}\n`).join(''),
+  );
+  await writeOrRemove(
+    ctx,
+    'rewritten-pending',
+    stop.rewrittenPending?.map((oid) => `${oid}\n`).join(''),
+  );
+};
+
+const writeOrRemove = async (
+  ctx: Context,
+  name: string,
+  body: string | undefined,
+): Promise<void> => {
+  if (body !== undefined) return ctx.fs.writeUtf8(file(ctx, name), body);
+  if (await ctx.fs.exists(file(ctx, name))) await ctx.fs.rm(file(ctx, name));
 };
 
 export const readRebaseHead = (ctx: Context): Promise<ObjectId | undefined> =>
-  readOptionalOidFile(ctx, rebaseHeadPath(ctx));
+  readRootRef(ctx, REBASE_HEAD_REF);
 
 export const rebaseInProgress = (ctx: Context): Promise<boolean> => ctx.fs.exists(dir(ctx));
 
 /** Resolve each parsed todo entry's (possibly abbreviated) oid to a full ObjectId. */
+const resolveEntry = async (
+  ctx: Context,
+  entry: RebaseTodoLine,
+): Promise<ResolvedRebaseTodoEntry> => {
+  if (entry.action === 'label' || entry.action === 'reset') return entry;
+  const oid = await resolveOidPrefix(ctx, entry.oid);
+  if (oid === undefined) throw invalidSequencerTodo(`cannot resolve commit ${entry.oid}`);
+  return { ...entry, oid };
+};
+
 const resolveEntries = async (
   ctx: Context,
-  entries: ReadonlyArray<RebaseTodoEntry>,
+  entries: ReadonlyArray<RebaseTodoLine>,
 ): Promise<ReadonlyArray<ResolvedRebaseTodoEntry>> => {
   const resolved: ResolvedRebaseTodoEntry[] = [];
-  for (const entry of entries) {
-    const oid = await resolveOidPrefix(ctx, entry.oid);
-    if (oid === undefined) throw invalidSequencerTodo(`cannot resolve commit ${entry.oid}`);
-    resolved.push({ action: entry.action, oid, subject: entry.subject });
-  }
+  for (const entry of entries) resolved.push(await resolveEntry(ctx, entry));
   return resolved;
 };
 
@@ -231,8 +281,25 @@ export const readRewrittenList = async (
   return pairs;
 };
 
+const FIXUP_GROUP_FILES = ['message-fixup', 'message-squash', 'current-fixups'] as const;
+
+/** git's `commit_staged_changes` over a fixup/squash group the caller finished
+ *  by hand: the group's messages and member list no longer apply. */
+export const dropFixupGroup = async (ctx: Context): Promise<void> => {
+  for (const name of FIXUP_GROUP_FILES) {
+    if (await ctx.fs.exists(file(ctx, name))) await ctx.fs.rm(file(ctx, name));
+  }
+};
+
+/** `rebase-merge/autostash`: the stash a `--autostash` rebase re-applies as it ends. */
+export const writeAutostash = (ctx: Context, stash: ObjectId): Promise<void> =>
+  ctx.fs.writeUtf8(file(ctx, 'autostash'), `${stash}\n`);
+
+export const readAutostash = (ctx: Context): Promise<ObjectId | undefined> =>
+  readOptionalOidFile(ctx, file(ctx, 'autostash'));
+
 /** Remove the whole `.git/rebase-merge/` dir and `.git/REBASE_HEAD`. Idempotent. */
 export const clearRebaseState = async (ctx: Context): Promise<void> => {
   if (await ctx.fs.exists(dir(ctx))) await ctx.fs.rmRecursive(dir(ctx));
-  if (await ctx.fs.exists(rebaseHeadPath(ctx))) await ctx.fs.rm(rebaseHeadPath(ctx));
+  await deleteRootRef(ctx, REBASE_HEAD_REF);
 };

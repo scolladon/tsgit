@@ -7,10 +7,12 @@ import type { CommandRunner } from './command-runner.js';
 import type { Compressor } from './compressor.js';
 import type { EnvReader } from './env-reader.js';
 import type { FileSystem } from './file-system.js';
+import type { FilenameProbe } from './filename-probe.js';
 import type { HashService } from './hash-service.js';
 import type { HookRunner } from './hook-runner.js';
 import type { HttpTransport } from './http-transport.js';
 import type { Logger } from './logger.js';
+import type { AlternatePathProbe, ObjectSourceAccess } from './object-source-access.js';
 import type { ProgressReporter } from './progress-reporter.js';
 import type { PromisorRemote } from './promisor.js';
 import type { SshTransport } from './ssh-channel.js';
@@ -298,8 +300,8 @@ export interface Context {
   readonly hooks?: HookRunner;
   /**
    * Optional shell-command runner. Absent ⇒ a configured external merge driver
-   * falls back to the built-in merge (browser / memory adapters cannot spawn a
-   * process).
+   * falls back to the built-in merge and a required clean/smudge driver refuses
+   * (browser / memory adapters cannot spawn a process).
    */
   readonly command?: CommandRunner;
   /**
@@ -326,6 +328,34 @@ export interface Context {
    * the adapter root.
    */
   readonly worktreeFs?: (worktreePath: string | ReadonlyArray<string>) => FileSystem;
+  /**
+   * Optional facade capability returning the read-only view one object source
+   * (an alternate's objects dir) is read through: confined to that directory,
+   * write-mode opens refused, and only `utimeNow` allowed to touch the disk.
+   * Absent on a hand-built `Context`; the object store then narrows `ctx.fs`.
+   */
+  readonly objectSourceAccess?: (objectsDir: string) => ObjectSourceAccess;
+  /**
+   * Optional facade capability returning a metadata-only view (`lstat`,
+   * `readlink`, `stat`) used to resolve an alternate's or a worktree admin
+   * entry's path wherever it lives. Supplied by the facade and by
+   * `createNodeContext`; absent on a `Context` assembled from bare parts,
+   * where callers then narrow `ctx.fs`.
+   */
+  readonly alternatePathProbe?: (path: string) => AlternatePathProbe;
+  /**
+   * Optional capability answering git's `check_filename` existence check for a
+   * revision argument that climbs with `..` or is absolute: the reads the
+   * misspelt-revision probe makes outside the repository, existence only.
+   * Supplied by the node runtime; absent on browser / memory, where every such
+   * path reads as absent.
+   */
+  readonly filenameProbe?: FilenameProbe;
+  /**
+   * True when the filesystem reads paths the Windows way — `\` separators, drive letters, UNC
+   * shares — as git for Windows does (the node adapter on Windows). Absent ⇒ POSIX paths.
+   */
+  readonly windowsPathSyntax?: boolean;
 }
 
 export interface CreateContextParts {

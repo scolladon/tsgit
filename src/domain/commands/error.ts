@@ -1,7 +1,9 @@
 import { sanitizeForDisplay, TsgitError } from '../error.js';
 import type { HookName } from '../hooks/index.js';
-import { MAX_OBJECT_ID_IN_ERROR } from '../objects/error.js';
+import type { AmbiguousCandidate, CandidateReadFault } from '../objects/ambiguous-candidate.js';
+import { MAX_OBJECT_ID_IN_ERROR, type ObjectType } from '../objects/error.js';
 import type { FilePath, ObjectId, RefName } from '../objects/object-id.js';
+import type { RevParseEntry } from '../objects/rev-parse-entry.js';
 import type { ReceivePackResponse as ReportStatus } from '../protocol/receive-pack.js';
 import type { PendingOperation } from '../sequencer/operation-labels.js';
 import type { ConfigScope } from './config-scope.js';
@@ -17,6 +19,17 @@ export type BundleBadHeaderDetails =
   | { readonly reason: 'malformed-header'; readonly line: string; readonly length: number }
   | { readonly reason: 'unknown-capability'; readonly capability: string }
   | { readonly reason: 'unknown-hash-algorithm'; readonly algorithm: string };
+
+/** Why git's `update_local_ref` refused a ref update a refspec without `+` asked for. */
+export type FetchRejection = 'non-fast-forward' | 'would-clobber-existing-tag';
+
+/** A local ref a fetch left at `oldId` instead of moving it to `newId`. */
+export interface RejectedFetchUpdate {
+  readonly name: RefName;
+  readonly oldId: ObjectId;
+  readonly newId: ObjectId;
+  readonly rejection: FetchRejection;
+}
 
 export type CommandError =
   | {
@@ -42,6 +55,22 @@ export type CommandError =
   | { readonly code: 'TARGET_DIRECTORY_NOT_EMPTY'; readonly path: FilePath }
   | { readonly code: 'REMOTE_ADVERTISES_NO_REFS' }
   | { readonly code: 'NO_PROMISOR_REMOTE' }
+  | {
+      readonly code: 'OCTOPUS_MERGE_FAILED';
+      /** The head git's octopus could not merge on its own — the name it was given. */
+      readonly head: string;
+      readonly reason: OctopusFailureReason;
+    }
+  /** git's `refusing to merge unrelated histories`: the heads share no commit. */
+  | { readonly code: 'UNRELATED_HISTORIES' }
+  /** git's push `The current branch <b> has multiple upstream branches, refusing to push.` */
+  | { readonly code: 'PUSH_MULTIPLE_UPSTREAMS'; readonly branch: RefName }
+  /** git's pull `Cannot fast-forward to multiple branches.` */
+  | { readonly code: 'FAST_FORWARD_MULTIPLE_BRANCHES' }
+  | { readonly code: 'PULL_REBASE_MULTIPLE_BRANCHES' }
+  | { readonly code: 'PULL_EMPTY_HEAD_MULTIPLE_BRANCHES' }
+  | { readonly code: 'PULL_REBASE_UNBORN_INDEX' }
+  | { readonly code: 'PULL_DIVERGENT_BRANCHES' }
   | {
       readonly code: 'NON_FAST_FORWARD';
       readonly ref: RefName;
@@ -70,8 +99,40 @@ export type CommandError =
       readonly expression: string;
       readonly candidates: ReadonlyArray<ObjectId>;
     }
-  | { readonly code: 'REVPARSE_UNRESOLVED'; readonly expression: string }
-  | { readonly code: 'PATH_NOT_IN_TREE'; readonly rev: string; readonly path: string }
+  | {
+      /**
+       * git's revision walk dying on a commit it could not parse: `Failed to
+       * traverse parents of commit <commit>` while walking, or `revision walk
+       * setup failed` (no `commit`) while limiting the walk.
+       */
+      readonly code: 'REVISION_WALK_FAILED';
+      readonly commit?: ObjectId;
+    }
+  | {
+      /** git's `could not find commit <id>`: a commit-graph parent an earlier lookup typed otherwise. */
+      readonly code: 'COMMIT_LOOKUP_FAILED';
+      readonly id: ObjectId;
+    }
+  | {
+      /** git's `could not parse commit <id>`: a walk reached a parent that fails to parse. */
+      readonly code: 'COMMIT_PARSE_FAILED';
+      readonly id: ObjectId;
+      /** What `rev-parse` had printed before refusing. */
+      readonly printed?: ReadonlyArray<RevParseEntry>;
+    }
+  | {
+      readonly code: 'REVPARSE_UNRESOLVED';
+      readonly expression: string;
+      /** What `rev-parse` had printed before refusing. */
+      readonly printed?: ReadonlyArray<RevParseEntry>;
+    }
+  | {
+      readonly code: 'PATH_NOT_IN_TREE';
+      readonly rev: string;
+      readonly path: string;
+      /** What `rev-parse` had printed before refusing. */
+      readonly printed?: ReadonlyArray<RevParseEntry>;
+    }
   | { readonly code: 'WORKTREE_FILE_ABSENT'; readonly path: string }
   | { readonly code: 'EMPTY_PATHSPEC' }
   | {
@@ -85,6 +146,8 @@ export type CommandError =
   | { readonly code: 'MAX_REFSPECS_EXCEEDED'; readonly count: number; readonly limit: number }
   | { readonly code: 'REMOTE_NOT_CONFIGURED'; readonly remote: string }
   | { readonly code: 'NO_UPSTREAM_CONFIGURED'; readonly branch: RefName }
+  | ({ readonly code: 'BRANCH_MARK_UNRESOLVED' } & BranchMarkFailure)
+  | ({ readonly code: 'REBASE_REVISION_INVALID' } & RebaseRevisionFailure)
   | { readonly code: 'REMOTE_EXISTS'; readonly remote: string }
   | { readonly code: 'REMOTE_NAME_INVALID'; readonly name: string; readonly reason: string }
   | { readonly code: 'INVALID_OPTION'; readonly option: string; readonly reason: string }
@@ -134,13 +197,37 @@ export type CommandError =
       readonly code: 'CLEAN_FILTER_FAILED';
       readonly path: FilePath;
       readonly filter: string;
-      readonly exitCode: number;
+      /** Absent when the driver configures no clean command to run. */
+      readonly exitCode?: number;
+    }
+  | {
+      readonly code: 'FILTER_UNSUPPORTED_CAPABILITY';
+      readonly command: string;
+      readonly capability: string;
     }
   | {
       readonly code: 'SMUDGE_FILTER_FAILED';
       readonly path: FilePath;
       readonly filter: string;
-      readonly exitCode: number;
+      /** Absent when the driver ran no smudge command, or its process answered no smudge. */
+      readonly exitCode?: number;
+    }
+  | { readonly code: 'UPSTREAM_NOT_BRANCH'; readonly startPoint: string }
+  | { readonly code: 'UPSTREAM_MISSING'; readonly startPoint: string }
+  | {
+      readonly code: 'TRACKING_AMBIGUOUS';
+      readonly ref: RefName;
+      readonly remotes: ReadonlyArray<string>;
+    }
+  | {
+      readonly code: 'TRACKING_INHERIT_REBASE_MULTIPLE';
+      readonly merges: ReadonlyArray<RefName>;
+    }
+  | {
+      readonly code: 'TEXTCONV_FAILED';
+      readonly command: string;
+      /** Absent when the command could not be run at all. */
+      readonly exitCode?: number;
     }
   | {
       readonly code: 'CONFIG_KEY_INVALID';
@@ -166,7 +253,37 @@ export type CommandError =
       readonly source: string;
       readonly line: number;
     }
+  | {
+      readonly code: 'CONFIG_NEGATIVE_LENGTH';
+      readonly key: string;
+      readonly value: string;
+      readonly source: string;
+      readonly line: number;
+    }
+  | {
+      readonly code: 'CONFIG_UNKNOWN_VALUE';
+      readonly key: string;
+      readonly value: string;
+      readonly source: string;
+      readonly line: number;
+    }
   | { readonly code: 'MERGE_DRIVER_MISSING_COMMAND'; readonly name: string }
+  | { readonly code: 'INCOMPATIBLE_OPTIONS'; readonly options: readonly [string, string] }
+  | {
+      readonly code: 'UNKNOWN_MERGE_STRATEGY';
+      readonly strategy: string;
+      readonly available: ReadonlyArray<string>;
+    }
+  | { readonly code: 'UNKNOWN_OPTION'; readonly option: string }
+  | {
+      readonly code: 'AMBIGUOUS_OPTION';
+      readonly option: string;
+      readonly candidates: readonly [string, string];
+    }
+  | { readonly code: 'BAD_BRANCH_MERGE_OPTIONS'; readonly branch: string; readonly reason: string }
+  | { readonly code: 'UNKNOWN_STRATEGY_OPTION'; readonly option: string }
+  | { readonly code: 'MERGE_STRATEGY_FAILED'; readonly strategy: string }
+  | { readonly code: 'NO_MERGE_STRATEGY_HANDLED'; readonly strategies: ReadonlyArray<string> }
   | {
       readonly code: 'CONFIG_BAD_NUMERIC_VALUE';
       readonly key: string;
@@ -192,6 +309,30 @@ export type CommandError =
       readonly key?: string;
       readonly source?: string;
       readonly line?: number;
+    }
+  | { readonly code: 'EMPTY_COMMIT_SET' }
+  | {
+      readonly code: 'CANNOT_PICK_NON_COMMIT';
+      /** The argument as given, or a range side. */
+      readonly revision: string;
+      /** The named object's own type — a tag when its chain ends short of a commit. */
+      readonly type: ObjectType;
+    }
+  | {
+      readonly code: 'CHECKOUT_NON_COMMIT';
+      /** The switch argument as given — git's `-` spelt `@{-1}`. */
+      readonly revision: string;
+    }
+  | {
+      readonly code: 'CHECKOUT_START_POINT_NOT_COMMIT';
+      /** The start point as given, which names no revision. */
+      readonly revision: string;
+      /** The branch the switch would have created. */
+      readonly branch: string;
+    }
+  | {
+      readonly code: 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM';
+      readonly value: string;
     }
   | {
       readonly code: 'CONFIG_INVALID_ENUM_VALUE';
@@ -286,13 +427,20 @@ export type CommandError =
   | { readonly code: 'RM_STAGED_CHANGES'; readonly paths: ReadonlyArray<FilePath> }
   | { readonly code: 'RM_LOCAL_MODIFICATIONS'; readonly paths: ReadonlyArray<FilePath> }
   | { readonly code: 'RM_STAGED_AND_LOCAL_CHANGES'; readonly paths: ReadonlyArray<FilePath> }
+  /** git rm's `not removing '<pathspec>' recursively without -r`. */
+  | { readonly code: 'RM_RECURSIVE_WITHOUT_R'; readonly pattern: string }
   | { readonly code: 'NO_INITIAL_COMMIT' }
   | { readonly code: 'STASH_NOT_FOUND'; readonly index: number; readonly stackSize: number }
   | { readonly code: 'STASH_APPLY_WOULD_OVERWRITE'; readonly paths: ReadonlyArray<FilePath> }
   | {
       readonly code: 'AMBIGUOUS_OID_PREFIX';
       readonly prefix: string;
-      readonly candidates: ReadonlyArray<ObjectId>;
+      /** The objects git's `hint:` lists, in its order: unreadable objects, tags, commits, trees, then blobs, each by id. */
+      readonly candidates: ReadonlyArray<AmbiguousCandidate>;
+      /** Every failed type read git made while sorting and showing the candidates, in read order; absent when none failed. */
+      readonly readFaults?: ReadonlyArray<CandidateReadFault>;
+      /** What `rev-parse` had printed before refusing. */
+      readonly printed?: ReadonlyArray<RevParseEntry>;
     }
   | { readonly code: 'INVALID_SEQUENCER_TODO'; readonly reason: string }
   | { readonly code: 'CHERRY_PICK_MERGE_NO_MAINLINE'; readonly commit: ObjectId }
@@ -302,7 +450,18 @@ export type CommandError =
   | { readonly code: 'NO_REACHABLE_NAMES'; readonly oid: ObjectId }
   | { readonly code: 'NO_EXACT_MATCH'; readonly oid: ObjectId }
   | { readonly code: 'CANNOT_DESCRIBE'; readonly oid: ObjectId }
-  | { readonly code: 'BUNDLE_EMPTY'; readonly reason: 'no-refs' | 'no-objects' }
+  | { readonly code: 'BUNDLE_EMPTY'; readonly reason: 'no-refs' }
+  | {
+      readonly code: 'INVALID_SYMMETRIC_RANGE';
+      readonly expression: string;
+      readonly nonCommits: ReadonlyArray<SymmetricRangeNonCommit>;
+    }
+  | { readonly code: 'INVALID_REVISION_RANGE'; readonly expression: string }
+  | {
+      /** git range-diff's `need two commit ranges`: `expression` excludes all it includes. */
+      readonly code: 'NEED_TWO_COMMIT_RANGES';
+      readonly expression: string;
+    }
   | { readonly code: 'BUNDLE_READ_FAILED'; readonly path: string }
   | ({ readonly code: 'BUNDLE_BAD_HEADER'; readonly path: string } & BundleBadHeaderDetails)
   | {
@@ -327,9 +486,43 @@ export type CommandError =
       readonly code: 'SIGNING_FAILED';
       readonly reason: 'off-node' | 'unsupported-format' | 'signer-failed';
       readonly format?: 'openpgp' | 'ssh' | 'x509';
+      /** `signer-failed` only: the signer's captured stderr, which git prints with its refusal. */
+      readonly output?: string;
     }
   | { readonly code: 'SIGNED_PUSH_UNSUPPORTED'; readonly remote: string }
+  | { readonly code: 'ATOMIC_PUSH_UNSUPPORTED'; readonly remote: string }
+  | {
+      readonly code: 'PUSH_REFSPEC_UNMATCHED';
+      readonly url: string;
+      readonly unmatched: ReadonlyArray<PushUnmatchedRefspec>;
+    }
   | { readonly code: 'PUSH_DETACHED_NO_REFSPEC' }
+  | { readonly code: 'REMOTE_REF_NOT_FOUND'; readonly ref: string }
+  | {
+      readonly code: 'FETCH_REFSPEC_CONFLICT';
+      /** `cannot-fetch-both`: two fetched refs; `tracks-both`: two tracking updates. */
+      readonly reason: 'cannot-fetch-both' | 'tracks-both';
+      readonly target: string;
+      readonly sources: readonly [string, string];
+    }
+  /** git fetch's `refusing to fetch into branch '<branch>' checked out at '<path>'`. */
+  | {
+      readonly code: 'FETCH_INTO_CHECKED_OUT_BRANCH';
+      readonly branch: RefName;
+      readonly path: string;
+    }
+  | {
+      readonly code: 'FETCH_REJECTED';
+      readonly remote: string;
+      readonly rejected: ReadonlyArray<RejectedFetchUpdate>;
+    }
+  | {
+      readonly code: 'PULL_NO_MERGE_CANDIDATES';
+      readonly reason: PullNoMergeCandidatesReason;
+      readonly remote: string;
+      /** The configured `branch.<current>.merge`, for `merge-ref-not-fetched`. */
+      readonly ref?: string;
+    }
   | { readonly code: 'PUSH_DEFAULT_NOTHING' }
   | {
       readonly code: 'PUSH_REMOTE_NOT_UPSTREAM';
@@ -347,7 +540,24 @@ export type CommandError =
       readonly source: string;
       readonly line: number;
     }
-  | { readonly code: 'GREP_LINE_TOO_LONG'; readonly length: number; readonly limit: number };
+  | { readonly code: 'GREP_LINE_TOO_LONG'; readonly length: number; readonly limit: number }
+  | {
+      readonly code: 'FORMAT_PLACEHOLDER_UNSUPPORTED';
+      readonly placeholder: string;
+      readonly reason: FormatPlaceholderReason;
+    }
+  | {
+      readonly code: 'TIMESTAMP_OUT_OF_RANGE';
+      readonly reason: TimestampRangeReason;
+      readonly timestamp: string;
+      readonly zone: number;
+    };
+
+/** `before-epoch`: the zone puts the instant before 1970; `too-large`: the shifted instant exceeds what git's calendar holds. */
+export type TimestampRangeReason = 'before-epoch' | 'too-large';
+
+/** `not-supported`: git's `%(count)`/`%(total)` refusal; `unparsable`: a `%C(always,…)` it cannot parse. */
+export type FormatPlaceholderReason = 'not-supported' | 'unparsable';
 
 export const sanitize = sanitizeForDisplay;
 
@@ -420,6 +630,46 @@ export const remoteAdvertisesNoRefs = (): TsgitError =>
 
 export const noPromisorRemote = (): TsgitError => new TsgitError({ code: 'NO_PROMISOR_REMOTE' });
 
+/**
+ * Why git's octopus strategy gave up (`Merge with strategy octopus failed.`):
+ * a head before the last left conflicts.
+ */
+export type OctopusFailureReason = 'conflict-before-last-head';
+
+export const octopusMergeFailed = (head: string, reason: OctopusFailureReason): TsgitError =>
+  new TsgitError({ code: 'OCTOPUS_MERGE_FAILED', head, reason });
+
+export const unrelatedHistories = (): TsgitError => new TsgitError({ code: 'UNRELATED_HISTORIES' });
+
+export const pushMultipleUpstreams = (branch: RefName): TsgitError =>
+  new TsgitError({ code: 'PUSH_MULTIPLE_UPSTREAMS', branch });
+
+export const fastForwardMultipleBranches = (): TsgitError =>
+  new TsgitError({ code: 'FAST_FORWARD_MULTIPLE_BRANCHES' });
+
+/** git pull's `Cannot rebase onto multiple branches.`: a rebasing pull fetched several heads. */
+export const pullRebaseMultipleBranches = (): TsgitError =>
+  new TsgitError({ code: 'PULL_REBASE_MULTIPLE_BRANCHES' });
+
+/** git pull's `Cannot merge multiple branches into empty head.`: an unborn HEAD fetched several heads. */
+export const pullEmptyHeadMultipleBranches = (): TsgitError =>
+  new TsgitError({ code: 'PULL_EMPTY_HEAD_MULTIPLE_BRANCHES' });
+
+/**
+ * git pull's `Updating an unborn branch with changes added to the index.`: a
+ * rebasing pull of an unborn HEAD refuses a non-empty index before it fetches.
+ */
+export const pullRebaseUnbornIndex = (): TsgitError =>
+  new TsgitError({ code: 'PULL_REBASE_UNBORN_INDEX' });
+
+/**
+ * git pull's `Need to specify how to reconcile divergent branches.`: the
+ * branches diverged and neither a rebase choice nor a fast-forward policy —
+ * given or configured — says how to integrate them.
+ */
+export const pullDivergentBranches = (): TsgitError =>
+  new TsgitError({ code: 'PULL_DIVERGENT_BRANCHES' });
+
 export const nonFastForward = (ref: RefName, local: ObjectId, remote: ObjectId): TsgitError =>
   new TsgitError({ code: 'NON_FAST_FORWARD', ref, local, remote });
 
@@ -463,6 +713,26 @@ export const revparseAmbiguous = (
   candidates: ReadonlyArray<ObjectId>,
 ): TsgitError => new TsgitError({ code: 'REVPARSE_AMBIGUOUS', expression, candidates });
 
+export const revisionWalkFailed = (commit?: ObjectId): TsgitError =>
+  new TsgitError(
+    commit === undefined
+      ? { code: 'REVISION_WALK_FAILED' }
+      : { code: 'REVISION_WALK_FAILED', commit },
+  );
+
+export const commitLookupFailed = (id: ObjectId): TsgitError =>
+  new TsgitError({ code: 'COMMIT_LOOKUP_FAILED', id });
+
+export const commitParseFailed = (
+  id: ObjectId,
+  printed?: ReadonlyArray<RevParseEntry>,
+): TsgitError =>
+  new TsgitError(
+    printed === undefined
+      ? { code: 'COMMIT_PARSE_FAILED', id }
+      : { code: 'COMMIT_PARSE_FAILED', id, printed },
+  );
+
 export const revparseUnresolved = (expression: string): TsgitError =>
   new TsgitError({ code: 'REVPARSE_UNRESOLVED', expression });
 
@@ -493,6 +763,55 @@ export const remoteNotConfigured = (remote: string): TsgitError =>
 export const noUpstreamConfigured = (branch: RefName): TsgitError =>
   new TsgitError({ code: 'NO_UPSTREAM_CONFIGURED', branch });
 
+/**
+ * Why git's `branch_get_upstream` / `branch_get_push` named no ref for a
+ * `<branch>@{upstream}` or `<branch>@{push}` — git dies with the matching message.
+ */
+export type BranchMarkFailure =
+  /** `HEAD does not point to a branch` */
+  | { readonly reason: 'detached-head' }
+  /** `no such branch: '<branch>'` */
+  | { readonly reason: 'no-such-branch'; readonly branch: string }
+  /** `no upstream configured for branch '<branch>'` */
+  | { readonly reason: 'no-upstream'; readonly branch: string }
+  /** `upstream branch '<upstream>' not stored as a remote-tracking branch` */
+  | { readonly reason: 'upstream-not-tracked'; readonly upstream: string }
+  /** `push refspecs for '<remote>' do not include '<branch>'` */
+  | {
+      readonly reason: 'push-refspecs-exclude-branch';
+      readonly remote: string;
+      readonly branch: string;
+    }
+  /** `push destination '<destination>' on remote '<remote>' has no local tracking branch` */
+  | {
+      readonly reason: 'push-destination-untracked';
+      readonly destination: string;
+      readonly remote: string;
+    }
+  /** `push has no destination (push.default is 'nothing')` */
+  | { readonly reason: 'push-default-nothing' }
+  /** `cannot resolve 'simple' push to a single destination` */
+  | { readonly reason: 'simple-push-ambiguous' };
+
+export const branchMarkUnresolved = (failure: BranchMarkFailure): TsgitError =>
+  new TsgitError({ code: 'BRANCH_MARK_UNRESOLVED', ...failure });
+
+/** Why git rebase found no commit in its `<upstream>` or `--onto <newbase>`; git dies with the matching message. */
+export type RebaseRevisionFailure =
+  /** `invalid upstream '<revision>'` */
+  | { readonly reason: 'invalid-upstream'; readonly revision: string }
+  /** `Does not point to a valid commit '<revision>'` */
+  | { readonly reason: 'invalid-onto'; readonly revision: string }
+  /** `'<revision>': need exactly one merge base` — an `A...B` onto */
+  | { readonly reason: 'onto-merge-base-not-unique'; readonly revision: string };
+
+export const rebaseRevisionInvalid = (failure: RebaseRevisionFailure): TsgitError =>
+  new TsgitError({
+    code: 'REBASE_REVISION_INVALID',
+    reason: failure.reason,
+    revision: sanitizeForDisplay(failure.revision),
+  });
+
 export const remoteExists = (remote: string): TsgitError =>
   new TsgitError({ code: 'REMOTE_EXISTS', remote });
 
@@ -501,6 +820,29 @@ export const remoteNameInvalid = (name: string, reason: string): TsgitError =>
     code: 'REMOTE_NAME_INVALID',
     name: sanitizeForDisplay(name),
     reason: sanitizeForDisplay(reason),
+  });
+
+/**
+ * A cherry-pick or revert whose arguments name no commit to replay — every
+ * range is empty (`A..A`). git refuses before it touches the work tree or
+ * writes any sequencer state.
+ */
+export const emptyCommitSet = (): TsgitError => new TsgitError({ code: 'EMPTY_COMMIT_SET' });
+
+/** git's `sequencer_pick_revisions`: a named object that peels to no commit. */
+export const cannotPickNonCommit = (revision: string, type: ObjectType): TsgitError =>
+  new TsgitError({ code: 'CANNOT_PICK_NON_COMMIT', revision, type });
+
+/** git checkout's `Cannot switch branch to a non-commit`: a tree-ish that peels to no commit. */
+export const checkoutNonCommit = (revision: string): TsgitError =>
+  new TsgitError({ code: 'CHECKOUT_NON_COMMIT', revision: sanitizeForDisplay(revision) });
+
+/** git checkout `-b`'s start point that names no revision: no branch can be created from it. */
+export const checkoutStartPointNotCommit = (revision: string, branch: string): TsgitError =>
+  new TsgitError({
+    code: 'CHECKOUT_START_POINT_NOT_COMMIT',
+    revision: sanitizeForDisplay(revision),
+    branch: sanitizeForDisplay(branch),
   });
 
 export const invalidOption = (option: string, reason: string): TsgitError =>
@@ -568,11 +910,43 @@ export const hookFailed = (hook: HookName, exitCode: number, stderr: string): Ts
     stderr: sanitizeForDisplay(stderr).slice(0, MAX_HOOK_STDERR_IN_ERROR),
   });
 
-export const cleanFilterFailed = (path: FilePath, filter: string, exitCode: number): TsgitError =>
-  new TsgitError({ code: 'CLEAN_FILTER_FAILED', path, filter, exitCode });
+export const cleanFilterFailed = (path: FilePath, filter: string, exitCode?: number): TsgitError =>
+  new TsgitError({
+    code: 'CLEAN_FILTER_FAILED',
+    path,
+    filter,
+    ...(exitCode !== undefined && { exitCode }),
+  });
 
-export const smudgeFilterFailed = (path: FilePath, filter: string, exitCode: number): TsgitError =>
-  new TsgitError({ code: 'SMUDGE_FILTER_FAILED', path, filter, exitCode });
+export const filterUnsupportedCapability = (command: string, capability: string): TsgitError =>
+  new TsgitError({ code: 'FILTER_UNSUPPORTED_CAPABILITY', command, capability });
+
+export const smudgeFilterFailed = (path: FilePath, filter: string, exitCode?: number): TsgitError =>
+  new TsgitError({
+    code: 'SMUDGE_FILTER_FAILED',
+    path,
+    filter,
+    ...(exitCode !== undefined && { exitCode }),
+  });
+
+export const upstreamNotBranch = (startPoint: string): TsgitError =>
+  new TsgitError({ code: 'UPSTREAM_NOT_BRANCH', startPoint });
+
+export const upstreamMissing = (startPoint: string): TsgitError =>
+  new TsgitError({ code: 'UPSTREAM_MISSING', startPoint });
+
+export const trackingAmbiguous = (ref: RefName, remotes: ReadonlyArray<string>): TsgitError =>
+  new TsgitError({ code: 'TRACKING_AMBIGUOUS', ref, remotes });
+
+export const trackingInheritRebaseMultiple = (merges: ReadonlyArray<RefName>): TsgitError =>
+  new TsgitError({ code: 'TRACKING_INHERIT_REBASE_MULTIPLE', merges });
+
+export const textconvFailed = (command: string, exitCode?: number): TsgitError =>
+  new TsgitError({
+    code: 'TEXTCONV_FAILED',
+    command,
+    ...(exitCode !== undefined && { exitCode }),
+  });
 
 export const configKeyInvalid = (
   key: string,
@@ -619,6 +993,100 @@ export const configParseError = (
  */
 export const configMissingValue = (key: string, source: string, line: number): TsgitError =>
   new TsgitError({ code: 'CONFIG_MISSING_VALUE', key: sanitizeForDisplay(key), source, line });
+
+/**
+ * A length-typed config key (`merge.log`, `merge.summary`) holds a negative
+ * integer at the 1-based `line` of `source`: git's `<key>: negative length
+ * <value>` error, which fails the config read as a `bad config variable`.
+ */
+export const configNegativeLength = (
+  key: string,
+  value: string,
+  source: string,
+  line: number,
+): TsgitError =>
+  new TsgitError({
+    code: 'CONFIG_NEGATIVE_LENGTH',
+    key: sanitizeForDisplay(key),
+    value: sanitizeForDisplay(value),
+    source,
+    line,
+  });
+
+/**
+ * A config key restricted to a set of names (`diff.algorithm`) holds none of
+ * them, at the 1-based `line` of `source`: git's `unknown value for config
+ * '<key>': <value>` — fatal on its own, or followed by `bad config variable
+ * '<key>' in file '<source>' at line <line>` when the key is read with the
+ * command's whole config.
+ */
+export const configUnknownValue = (
+  key: string,
+  value: string,
+  source: string,
+  line: number,
+): TsgitError =>
+  new TsgitError({
+    code: 'CONFIG_UNKNOWN_VALUE',
+    key: sanitizeForDisplay(key),
+    value: sanitizeForDisplay(value),
+    source,
+    line,
+  });
+
+/**
+ * Two options git refuses together, named by their git flags (`--squash`,
+ * `--no-ff`): git's `options '<a>' and '<b>' cannot be used together`.
+ */
+export const incompatibleOptions = (first: string, second: string): TsgitError =>
+  new TsgitError({ code: 'INCOMPATIBLE_OPTIONS', options: [first, second] });
+
+/** git's `get_strategy` refusal: `strategy` is none of the `available` ones. */
+export const unknownMergeStrategy = (
+  strategy: string,
+  available: ReadonlyArray<string>,
+): TsgitError => new TsgitError({ code: 'UNKNOWN_MERGE_STRATEGY', strategy, available });
+
+/**
+ * git's `unknown option `<name>'` / `unknown switch `<c>'` (exit 129): a
+ * command-line option git's option table does not hold, spelt with its dashes.
+ */
+export const unknownOption = (option: string): TsgitError =>
+  new TsgitError({ code: 'UNKNOWN_OPTION', option: sanitizeForDisplay(option) });
+
+/**
+ * git's `ambiguous option: <arg> (could be --<a> or --<b>)`: an abbreviation
+ * more than one long option starts; the candidates are the last two git saw.
+ */
+export const ambiguousOption = (
+  option: string,
+  candidates: readonly [string, string],
+): TsgitError =>
+  new TsgitError({ code: 'AMBIGUOUS_OPTION', option: sanitizeForDisplay(option), candidates });
+
+/**
+ * git's `Bad branch.<branch>.mergeoptions string: <reason>`: the branch's
+ * mergeoptions do not split into a command line (`unclosed quote`,
+ * `cmdline ends with \`).
+ */
+export const badBranchMergeOptions = (branch: string, reason: string): TsgitError =>
+  new TsgitError({
+    code: 'BAD_BRANCH_MERGE_OPTIONS',
+    branch: sanitizeForDisplay(branch),
+    reason,
+  });
+
+/** git's `unknown strategy option: -X<option>`: a `-X` value the merge strategy does not parse. */
+export const unknownStrategyOption = (option: string): TsgitError =>
+  new TsgitError({ code: 'UNKNOWN_STRATEGY_OPTION', option });
+
+/** git's `Merge with strategy <s> failed.`: the strategy does not handle this merge. */
+export const mergeStrategyFailed = (strategy: string): TsgitError =>
+  new TsgitError({ code: 'MERGE_STRATEGY_FAILED', strategy });
+
+/** git's `No merge strategy handled the merge.`: none of several strategies handles this merge. */
+export const noMergeStrategyHandled = (strategies: ReadonlyArray<string>): TsgitError =>
+  new TsgitError({ code: 'NO_MERGE_STRATEGY_HANDLED', strategies });
 
 /**
  * A `[merge "<name>"]` section is registered (`name` and/or `recursive` set) but
@@ -695,6 +1163,18 @@ export const configBadDateValue = (
     ...(location !== undefined
       ? { key: sanitizeForDisplay(location.key), source: location.source, line: location.line }
       : {}),
+  });
+
+/**
+ * `fetch.negotiationAlgorithm` holds a value outside git's case-insensitive
+ * `skipping` / `noop` / `consecutive` / `default` set. git reads it with the
+ * other repo settings, so any command reaching the object store refuses on
+ * it — `log` as much as `fetch`. Its refusal names the value alone.
+ */
+export const configUnknownNegotiationAlgorithm = (value: string): TsgitError =>
+  new TsgitError({
+    code: 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM',
+    value: sanitizeForDisplay(value),
   });
 
 /**
@@ -860,6 +1340,11 @@ export const rmLocalModifications = (paths: ReadonlyArray<FilePath>): TsgitError
 export const rmStagedAndLocalChanges = (paths: ReadonlyArray<FilePath>): TsgitError =>
   new TsgitError({ code: 'RM_STAGED_AND_LOCAL_CHANGES', paths });
 
+/** A pathspec that only reached paths beneath a directory, without `-r`. `pattern`
+ *  is the pathspec as the caller spelled it. */
+export const rmRecursiveWithoutR = (pattern: string): TsgitError =>
+  new TsgitError({ code: 'RM_RECURSIVE_WITHOUT_R', pattern });
+
 // `stash` errors. `NO_INITIAL_COMMIT` mirrors git's refusal to stash on an
 // unborn branch; `STASH_NOT_FOUND` carries the selector index + stack size so
 // callers can render `stash@{index}`; `STASH_APPLY_WOULD_OVERWRITE` mirrors
@@ -873,13 +1358,19 @@ export const stashNotFound = (index: number, stackSize: number): TsgitError =>
 export const stashApplyWouldOverwrite = (paths: ReadonlyArray<FilePath>): TsgitError =>
   new TsgitError({ code: 'STASH_APPLY_WOULD_OVERWRITE', paths });
 
-// Abbreviated-oid resolution. `candidates` is capped by the caller so a hostile
-// near-collision cannot inflate the thrown error payload; `prefix` is the
-// validated 4–39-hex query, embedded verbatim.
+// Abbreviated-oid resolution. `candidates` holds every match git's hint lists,
+// uncapped as git's is; `prefix` is the validated 4–39-hex query, embedded verbatim.
 export const ambiguousOidPrefix = (
   prefix: string,
-  candidates: ReadonlyArray<ObjectId>,
-): TsgitError => new TsgitError({ code: 'AMBIGUOUS_OID_PREFIX', prefix, candidates });
+  candidates: ReadonlyArray<AmbiguousCandidate>,
+  readFaults: ReadonlyArray<CandidateReadFault> = [],
+): TsgitError =>
+  new TsgitError({
+    code: 'AMBIGUOUS_OID_PREFIX',
+    prefix,
+    candidates,
+    ...(readFaults.length === 0 ? {} : { readFaults }),
+  });
 
 // Corrupt `.git/sequencer/todo` line. `reason` embeds the offending line
 // (sanitised — a mid-write crash can leave control bytes behind).
@@ -918,11 +1409,41 @@ export const noExactMatch = (oid: ObjectId): TsgitError =>
 export const cannotDescribe = (oid: ObjectId): TsgitError =>
   new TsgitError({ code: 'CANNOT_DESCRIBE', oid });
 
-// `bundle create` refusals. `reason` discriminates between a zero-ref selection
-// (git `Refusing to create empty bundle.`) and a zero-object closure (same message
-// but triggered when all selected tips are identical to their exclusions).
-export const bundleEmpty = (reason: 'no-refs' | 'no-objects'): TsgitError =>
+// `bundle create`'s refusal when no ref line survives the walk — git's
+// `Refusing to create empty bundle.`; an empty pack is never refused.
+export const bundleEmpty = (reason: 'no-refs'): TsgitError =>
   new TsgitError({ code: 'BUNDLE_EMPTY', reason });
+
+/** One side of `A...B` that peels to no commit: the object as named, and the type it peels to. */
+export interface SymmetricRangeNonCommit {
+  readonly id: ObjectId;
+  readonly type: ObjectType;
+}
+
+// `A...B` whose sides do not both peel to a commit — git's `error: object <id>
+// is a <type>, not a commit` per such side, then `Invalid symmetric difference
+// expression A...B`. `expression` is caller-supplied and sanitised.
+export const invalidSymmetricRange = (
+  expression: string,
+  nonCommits: ReadonlyArray<SymmetricRangeNonCommit>,
+): TsgitError =>
+  new TsgitError({
+    code: 'INVALID_SYMMETRIC_RANGE',
+    expression: sanitizeForDisplay(expression),
+    nonCommits,
+  });
+
+// git's `dotdot_missing` for `A..B`: either end names no object, or one whose
+// parse failed. `expression` is caller-supplied and sanitised before embedding.
+// git: `fatal: Invalid revision range <A..B>`.
+export const invalidRevisionRange = (expression: string): TsgitError =>
+  new TsgitError({ code: 'INVALID_REVISION_RANGE', expression: sanitizeForDisplay(expression) });
+
+// `range-diff`'s `is_range_diff_range` refusal: `A..B` whose ends are one
+// object, so the range includes nothing it does not exclude. `expression` is
+// caller-supplied and sanitised. git: `fatal: need two commit ranges` (exit 129).
+export const needTwoCommitRanges = (expression: string): TsgitError =>
+  new TsgitError({ code: 'NEED_TWO_COMMIT_RANGES', expression: sanitizeForDisplay(expression) });
 
 // `bundle verify`/`bundle list-heads` open-failure: the path does not exist or is
 // unreadable. `path` is caller-supplied and sanitised before embedding.
@@ -1027,11 +1548,10 @@ export const notesObjectHasNone = (object: ObjectId): TsgitError =>
 export const notesRefOutside = (ref: string): TsgitError =>
   new TsgitError({ code: 'NOTES_REF_OUTSIDE', ref });
 
-// Signing refusal: the signer produced no usable signature (off-node — no
-// CommandRunner; unsupported-format — x509; signer-failed — non-zero exit or
-// no well-formed armor on stdout). Nothing is written when this is thrown.
+// Signing refusal before any signer ran (off-node — no CommandRunner;
+// unsupported-format — x509). Nothing is written when this is thrown.
 export const signingFailed = (
-  reason: 'off-node' | 'unsupported-format' | 'signer-failed',
+  reason: 'off-node' | 'unsupported-format',
   format?: 'openpgp' | 'ssh' | 'x509',
 ): TsgitError =>
   new TsgitError(
@@ -1040,11 +1560,79 @@ export const signingFailed = (
       : { code: 'SIGNING_FAILED', reason, format },
   );
 
+// Signing refusal: the signer ran but produced no usable signature (non-zero
+// exit, no `SIG_CREATED` status from gpg, or no well-formed armor). Carries
+// the signer's stderr, which git prints after `gpg failed to sign the data`.
+// Nothing is written when this is thrown.
+export const signerFailed = (format: 'openpgp' | 'ssh' | 'x509', output: string): TsgitError =>
+  new TsgitError({ code: 'SIGNING_FAILED', reason: 'signer-failed', format, output });
+
 // Refusal: `--signed` (mode 'yes') was requested but the receiving end's
 // capability advertisement carries no `push-cert` token. Thrown before any
 // signing attempt or wire exchange — the push is aborted, nothing is sent.
 export const signedPushUnsupported = (remote: string): TsgitError =>
   new TsgitError({ code: 'SIGNED_PUSH_UNSUPPORTED', remote });
+
+/**
+ * Why a push refspec's destination matched no single remote ref: git's
+ * `unable to delete '<dst>': remote ref does not exist` and
+ * `dst refspec <dst> matches more than one`.
+ */
+export interface PushUnmatchedRefspec {
+  readonly dst: string;
+  readonly reason: 'remote-ref-missing' | 'ambiguous';
+}
+
+// Refusal: one or more refspecs matched no single remote ref. git reports each
+// and then sends nothing at all.
+export const pushRefspecUnmatched = (
+  url: string,
+  unmatched: ReadonlyArray<PushUnmatchedRefspec>,
+): TsgitError => new TsgitError({ code: 'PUSH_REFSPEC_UNMATCHED', url, unmatched });
+
+// Refusal: a fetch refspec naming one remote ref the remote does not advertise.
+export const remoteRefNotFound = (ref: string): TsgitError =>
+  new TsgitError({ code: 'REMOTE_REF_NOT_FOUND', ref });
+
+// Refusal: git's `ref_remove_duplicates` — two remote refs mapped onto one local ref.
+export const fetchRefspecConflict = (
+  reason: 'cannot-fetch-both' | 'tracks-both',
+  target: string,
+  sources: readonly [string, string],
+): TsgitError => new TsgitError({ code: 'FETCH_REFSPEC_CONFLICT', reason, target, sources });
+
+// Refusal: git's `check_not_current_branch` — a refspec writes a branch a worktree holds.
+export const fetchIntoCheckedOutBranch = (branch: RefName, path: string): TsgitError =>
+  new TsgitError({ code: 'FETCH_INTO_CHECKED_OUT_BRANCH', branch, path });
+
+/** Why git's `die_no_merge_candidates` found nothing to merge in FETCH_HEAD. */
+// Refusal: a pull whose fetch rejected a ref update, as git's pull stops on fetch's exit 1.
+export const fetchRejected = (
+  remote: string,
+  rejected: ReadonlyArray<RejectedFetchUpdate>,
+): TsgitError => new TsgitError({ code: 'FETCH_REJECTED', remote, rejected });
+
+export type PullNoMergeCandidatesReason =
+  | 'refspec-unmatched'
+  | 'not-default-remote'
+  | 'merge-ref-not-fetched';
+
+// Refusal: a pull whose fetch marked no ref for merging.
+export const pullNoMergeCandidates = (
+  reason: PullNoMergeCandidatesReason,
+  remote: string,
+  ref?: string,
+): TsgitError =>
+  new TsgitError(
+    ref === undefined
+      ? { code: 'PULL_NO_MERGE_CANDIDATES', reason, remote }
+      : { code: 'PULL_NO_MERGE_CANDIDATES', reason, remote, ref },
+  );
+
+// Refusal: an atomic push to a server whose advertisement carries no `atomic`
+// token. Thrown after the `pre-push` hook and before anything is sent.
+export const atomicPushUnsupported = (remote: string): TsgitError =>
+  new TsgitError({ code: 'ATOMIC_PUSH_UNSUPPORTED', remote });
 
 // Refusal: `push.default=current` needs the branch HEAD currently points
 // at, but HEAD is detached. Thrown before the remote is resolved or
@@ -1088,3 +1676,22 @@ export const invalidPushDefault = (value: string, source: string, line: number):
 // patterns never reach this: they match on raw bytes, with no decode.
 export const grepLineTooLong = (length: number, limit: number): TsgitError =>
   new TsgitError({ code: 'GREP_LINE_TOO_LONG', length, limit });
+
+const UNPARSABLE_COLOR = '%C';
+
+// `$Format:` expansion reached a placeholder git dies on. `%C` stands for an
+// unparsable `%C(always,…)` spec, which git reports as a format parse failure.
+export const formatPlaceholderUnsupported = (placeholder: string): TsgitError =>
+  new TsgitError({
+    code: 'FORMAT_PLACEHOLDER_UNSUPPORTED',
+    placeholder,
+    reason: placeholder === UNPARSABLE_COLOR ? 'unparsable' : 'not-supported',
+  });
+
+// `timestamp` is the decimal text git prints: the author's for `before-epoch`, the zone-shifted one for `too-large`.
+export const timestampOutOfRange = (
+  reason: TimestampRangeReason,
+  timestamp: bigint,
+  zone: number,
+): TsgitError =>
+  new TsgitError({ code: 'TIMESTAMP_OUT_OF_RANGE', reason, timestamp: String(timestamp), zone });

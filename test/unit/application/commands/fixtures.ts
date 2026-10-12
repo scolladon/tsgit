@@ -7,6 +7,8 @@
  * looks like" than to the internal object/ref/index shapes.
  */
 
+import { vi } from 'vitest';
+import { getObjectStore } from '../../../../src/application/primitives/object-store.js';
 import { serializeObject } from '../../../../src/domain/objects/git-object.js';
 import type {
   AuthorIdentity,
@@ -254,4 +256,31 @@ export const withProgress = (ctx: Context, reporter: ProgressReporter): Context 
 export const asBareContext = (ctx: Context): Context => {
   const { workDir: _workDir, ...bareLayout } = ctx.layout;
   return { ...ctx, layout: { ...bareLayout, bare: true } };
+};
+
+const collectFiles = async (
+  ctx: Context,
+  dir: string,
+  into: Map<string, string>,
+): Promise<void> => {
+  for (const entry of await ctx.fs.readdir(dir)) {
+    const path = `${dir}/${entry.name}`;
+    if (entry.isDirectory) await collectFiles(ctx, path, into);
+    else if (entry.isFile) into.set(path, Buffer.from(await ctx.fs.read(path)).toString('base64'));
+  }
+};
+
+/** Every file under the work tree (git dir included) keyed by path, for before/after equality. */
+export const snapshotFiles = async (ctx: Context): Promise<ReadonlyMap<string, string>> => {
+  const files = new Map<string, string>();
+  await collectFiles(ctx, ctx.layout.workDir ?? ctx.layout.gitDir, files);
+  return files;
+};
+
+/** Makes the primary object source refuse to load; returns the error it rejects with. */
+export const failSourceLoad = async (ctx: Context): Promise<Error> => {
+  const loadError = new Error('source cannot load');
+  const store = await getObjectStore(ctx);
+  vi.spyOn(store.primary.registry, 'assertLoadable').mockRejectedValue(loadError);
+  return loadError;
 };

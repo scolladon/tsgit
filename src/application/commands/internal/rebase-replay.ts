@@ -1,0 +1,99 @@
+import { sortInTopologicalOrder } from '../../../domain/commit/topological-sort.js';
+import type { Commit, ObjectId } from '../../../domain/objects/index.js';
+import type { Context } from '../../../ports/context.js';
+import { resolveLimitOptions, walkLimited } from '../../primitives/internal/limit-list.js';
+import { mergeBasesOf } from '../../primitives/merge-base.js';
+import { computePatchId } from '../../primitives/patch-id.js';
+
+export interface RebaseReplayInput {
+  readonly upstream: ObjectId;
+  readonly head: ObjectId;
+}
+
+/**
+ * git's `sequencer_make_script` walk (`<upstream>...<head>`, `--right-only
+ * --cherry-mark --no-merges --topo-order --reverse`): both sides walked
+ * together down to their merge bases (`limit_list`), sorted in graph order
+ * across both, then the head side's non-merge commits whose patch the
+ * upstream side does not already carry — oldest first.
+ */
+export const resolveRebaseReplay = async (
+  ctx: Context,
+  input: RebaseReplayInput,
+): Promise<ReadonlyArray<ObjectId>> => {
+  const range = await walkRebaseRange(ctx, input);
+  const replayed: ObjectId[] = [];
+  for (const commit of range.headSide) {
+    if (!isMerge(commit) && !(await range.isUpstream(commit))) replayed.push(commit.id);
+  }
+  return replayed;
+};
+
+/** The walked `<upstream>...<head>` range: the head side oldest first, merges included. */
+export interface RebaseRange {
+  readonly headSide: ReadonlyArray<Commit>;
+  /** git's `--cherry-mark` patch-same mark: a non-merge whose patch upstream already carries. */
+  readonly isUpstream: (commit: Commit) => Promise<boolean>;
+  /** The merge bases the walk stopped at (git's `BOTTOM` revisions), first one first. */
+  readonly bases: ReadonlyArray<ObjectId>;
+}
+
+export const walkRebaseRange = async (
+  ctx: Context,
+  input: RebaseReplayInput,
+): Promise<RebaseRange> => {
+  const bases = await mergeBasesOf(ctx, [input.upstream, input.head], { all: true });
+  const walked = sortInTopologicalOrder(await walkBothSides(ctx, input, bases), 'graph');
+  const upstreamSide = reachableWithin(walked, input.upstream);
+  const upstreamPatches = await patchIdsOf(
+    ctx,
+    walked.filter((commit) => upstreamSide.has(commit.id) && !isMerge(commit)),
+  );
+  return {
+    headSide: walked.filter((commit) => !upstreamSide.has(commit.id)).reverse(),
+    isUpstream: async (commit) =>
+      !isMerge(commit) && upstreamPatches.has(await computePatchId(ctx, commit.id)),
+    bases,
+  };
+};
+
+const walkBothSides = async (
+  ctx: Context,
+  input: RebaseReplayInput,
+  bases: ReadonlyArray<ObjectId>,
+): Promise<ReadonlyArray<Commit>> => {
+  const options = await resolveLimitOptions(
+    ctx,
+    { from: [input.upstream, input.head] },
+    { until: new Set(bases), firstParent: false, settle: 'slop' },
+  );
+  const commits: Commit[] = [];
+  for await (const commit of walkLimited(ctx, options)) commits.push(commit);
+  return commits;
+};
+
+/** git's `SYMMETRIC_LEFT` side: the walked commits `tip` reaches through walked parents. */
+const reachableWithin = (walked: ReadonlyArray<Commit>, tip: ObjectId): ReadonlySet<ObjectId> => {
+  const byId = new Map(walked.map((commit) => [commit.id, commit]));
+  const reached = new Set<ObjectId>();
+  const pending = byId.has(tip) ? [tip] : [];
+  for (let id = pending.pop(); id !== undefined; id = pending.pop()) {
+    if (reached.has(id)) continue;
+    reached.add(id);
+    // Stryker disable next-line MethodExpression: equivalent — a parent outside the walk has no entry in byId, so it adds to reached an id no walked commit can match and expands to nothing.
+    pending.push(...(byId.get(id)?.data.parents.filter((parent) => byId.has(parent)) ?? []));
+  }
+  return reached;
+};
+
+/** git computes no patch-id for a merge (`patch_id_defined`). */
+const isMerge = (commit: Commit): boolean => commit.data.parents.length > 1;
+
+const patchIdsOf = async (
+  ctx: Context,
+  commits: ReadonlyArray<Commit>,
+): Promise<ReadonlySet<string>> => {
+  const ids = new Set<string>();
+  for (const commit of commits) ids.add(await computePatchId(ctx, commit.id));
+  return ids;
+};

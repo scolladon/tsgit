@@ -1,6 +1,7 @@
-import { homedir } from 'node:os';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import * as nodePath from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   buildLayout,
   createNodeContext,
@@ -9,13 +10,31 @@ import {
 import { NodeCommandRunner } from '../../../../src/adapters/node/node-command-runner.js';
 import { NodeCompressor } from '../../../../src/adapters/node/node-compressor.js';
 import { NodeFileSystem } from '../../../../src/adapters/node/node-file-system.js';
+import { nodeFilenameProbe } from '../../../../src/adapters/node/node-filename-probe.js';
 import { NodeHashService } from '../../../../src/adapters/node/node-hash-service.js';
 import { NodeHookRunner } from '../../../../src/adapters/node/node-hook-runner.js';
 import { NodeHttpTransport } from '../../../../src/adapters/node/node-http-transport.js';
 import { NodeSshTransport } from '../../../../src/adapters/node/node-ssh-transport.js';
 import { parsedObjectMemoFor } from '../../../../src/application/primitives/internal/object-caches.js';
+import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import { SHA1_CONFIG, SHA256_CONFIG } from '../../../../src/domain/objects/hash-config.js';
+import type { ObjectId } from '../../../../src/domain/objects/index.js';
+
+// Every temp directory a test below creates; afterEach removes them all.
+const createdDirs: string[] = [];
+
+const tempBase = async (prefix: string): Promise<string> => {
+  const base = await realpath(await mkdtemp(nodePath.join(tmpdir(), prefix)));
+  createdDirs.push(base);
+  return base;
+};
+
+afterEach(async () => {
+  const dirs = createdDirs.splice(0);
+  await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+});
 
 describe('createNodeContext', () => {
   describe('Given workDir only', () => {
@@ -32,6 +51,173 @@ describe('createNodeContext', () => {
         expect(sut.layout.gitDir).toBe(nodePath.join(nodePath.resolve(workDir), '.git'));
         expect(sut.layout.bare).toBe(false);
         expect(sut.layout.refStorage).toBe('files');
+      });
+    });
+  });
+
+  describe('Given a path outside workDir', () => {
+    describe('When its alternate path probe reads it', () => {
+      it('Then it reads its metadata and nothing more', async () => {
+        // Arrange
+        const ctx = createNodeContext({ workDir: '/tmp/tsgit-ctx-test' });
+        const outside = process.cwd();
+        const sut = ctx.alternatePathProbe;
+
+        // Act
+        const probe = sut?.(outside);
+        const result = await probe?.lstat(outside);
+
+        // Assert
+        expect(result?.isDirectory).toBe(true);
+        expect(Object.keys(probe ?? {}).sort()).toEqual(['lstat', 'readlink', 'stat']);
+      });
+    });
+  });
+
+  describe('Given workDir only', () => {
+    describe('When its filename probe is read', () => {
+      it('Then it is the node lstat existence probe', () => {
+        // Arrange
+        const sut = createNodeContext;
+
+        // Act
+        const result = sut({ workDir: '/tmp/tsgit-ctx-test' }).filenameProbe;
+
+        // Assert
+        expect(result).toBe(nodeFilenameProbe);
+      });
+    });
+  });
+
+  describe('Given a worktree directory outside workDir', () => {
+    const outsideTree = async (): Promise<{
+      readonly worktree: string;
+      readonly sibling: string;
+    }> => {
+      const base = await tempBase('tsgit-node-wt-');
+      const worktree = nodePath.join(base, 'wt');
+      const sibling = nodePath.join(base, 'sibling');
+      await mkdir(worktree);
+      await mkdir(sibling);
+      await writeFile(nodePath.join(worktree, 'f'), 'x');
+      await writeFile(nodePath.join(sibling, 'f'), 'y');
+      return { worktree, sibling };
+    };
+
+    describe('When its worktree fs reads inside it', () => {
+      it('Then it reaches the file there', async () => {
+        // Arrange
+        const { worktree } = await outsideTree();
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-ctx-test' }).worktreeFs;
+
+        // Act
+        const result = await sut?.(worktree).readUtf8(nodePath.join(worktree, 'f'));
+
+        // Assert
+        expect(result).toBe('x');
+      });
+    });
+
+    describe('When its worktree fs reads beside it', () => {
+      it('Then it refuses the path outside the worktree', async () => {
+        // Arrange
+        const { worktree, sibling } = await outsideTree();
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-ctx-test' }).worktreeFs;
+
+        // Act
+        const result = await sut?.(worktree)
+          .readUtf8(nodePath.join(sibling, 'f'))
+          .catch((error: unknown) => error);
+
+        // Assert
+        expect((result as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+
+    describe('When the same worktree fs is asked for twice', () => {
+      it('Then it hands back the one it built first', async () => {
+        // Arrange
+        const { worktree } = await outsideTree();
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-ctx-test' }).worktreeFs;
+
+        // Act
+        const result = sut?.(worktree);
+
+        // Assert
+        expect(result).toBeDefined();
+        expect(sut?.(worktree)).toBe(result);
+      });
+    });
+  });
+
+  describe('Given a repository whose objects/info/alternates names a store outside workDir', () => {
+    const borrowerOfAlternate = async (): Promise<{
+      readonly base: string;
+      readonly borrower: string;
+      readonly alternateObjects: string;
+    }> => {
+      const base = await tempBase('tsgit-node-alt-');
+      const borrower = nodePath.join(base, 'borrower');
+      const alternateObjects = nodePath.join(base, 'source', '.git', 'objects');
+      await mkdir(nodePath.join(borrower, '.git', 'objects', 'info'), { recursive: true });
+      await mkdir(alternateObjects, { recursive: true });
+      await writeFile(
+        nodePath.join(borrower, '.git', 'objects', 'info', 'alternates'),
+        `${alternateObjects}\n`,
+      );
+      return { base, borrower, alternateObjects };
+    };
+
+    describe('When it reads an object only the alternate holds', () => {
+      it('Then it returns that object', async () => {
+        // Arrange
+        const { base, borrower } = await borrowerOfAlternate();
+        const content = new TextEncoder().encode('borrowed\n');
+        const source = createNodeContext({ workDir: nodePath.join(base, 'source') });
+        const id = await writeObject(source, { type: 'blob', content, id: '' as ObjectId });
+        const sut = createNodeContext;
+
+        // Act
+        const result = await readObject(sut({ workDir: borrower }), id);
+
+        // Assert
+        expect(result).toMatchObject({ type: 'blob', content });
+      });
+    });
+
+    describe('When its object source access reads outside that store', () => {
+      it('Then it refuses the path with PERMISSION_DENIED', async () => {
+        // Arrange
+        const { base, alternateObjects } = await borrowerOfAlternate();
+        const outside = nodePath.join(base, 'outside');
+        await writeFile(outside, 'secret');
+        const sut = createNodeContext;
+
+        // Act
+        const result = await sut({ workDir: nodePath.join(base, 'borrower') })
+          .objectSourceAccess?.(alternateObjects)
+          .read(outside)
+          .catch((error: unknown) => error);
+
+        // Assert
+        expect((result as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+
+    describe('When the same store is asked for twice', () => {
+      it('Then it hands back the access it built first', async () => {
+        // Arrange
+        const { base, alternateObjects } = await borrowerOfAlternate();
+        const sut = createNodeContext;
+
+        // Act
+        const ctx = sut({ workDir: nodePath.join(base, 'borrower') });
+        const first = ctx.objectSourceAccess?.(alternateObjects);
+        const result = ctx.objectSourceAccess?.(alternateObjects);
+
+        // Assert
+        expect(result).toBeDefined();
+        expect(result).toBe(first);
       });
     });
   });

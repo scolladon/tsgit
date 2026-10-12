@@ -7,9 +7,11 @@
  * resulting on-disk layout. That isolates the benchmark to read-path
  * performance rather than write-path differences.
  */
+import { execFile } from 'node:child_process';
 import { mkdtemp, realpath, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { promisify } from 'node:util';
 
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { createCommit } from '../../src/application/primitives/create-commit.js';
@@ -93,6 +95,25 @@ export const setupSmallRepo = async (opts: { commits?: number } = {}): Promise<B
     headCommitId,
     firstBlobId,
   };
+};
+
+const execFileAsync = promisify(execFile);
+
+// GIT_* stripped so a hook's GIT_DIR cannot redirect the clone.
+const scrubbedGitEnv = (): NodeJS.ProcessEnv =>
+  Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+
+/**
+ * A `git clone --shared` borrower of `source`: its own object directory is
+ * empty and every object is reached through `objects/info/alternates`.
+ */
+export const setupSharedBorrower = async (source: BenchRepo): Promise<BenchRepo> => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), 'tsgit-bench-shared-'));
+  const cwd = path.join(parent, 'borrower');
+  await execFileAsync('git', ['clone', '--shared', '--quiet', source.cwd, cwd], {
+    env: scrubbedGitEnv(),
+  });
+  return { cwd, headCommitId: source.headCommitId, firstBlobId: source.firstBlobId };
 };
 
 export const setupDirtyWorkingTree = async (

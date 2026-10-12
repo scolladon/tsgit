@@ -7,6 +7,7 @@ describe('primitives barrel', () => {
       it('Then all primitives are exposed as functions', () => {
         // Arrange
         const names = [
+          'abbreviateObjectId',
           'appendReflog',
           'applyChangeset',
           'applyConfigOpInText',
@@ -45,6 +46,7 @@ describe('primitives barrel', () => {
           'materializeTree',
           'materializeWorktreeFromHead',
           'mergeBase',
+          'objectSources',
           'parseIniSections',
           'readBlob',
           'readConfig',
@@ -104,6 +106,7 @@ describe('primitives barrel', () => {
       it('Then only expected public surface is exposed', () => {
         // Arrange
         const expected = new Set([
+          'abbreviateObjectId',
           'appendReflog',
           'applyChangeset',
           'applyConfigOpInText',
@@ -144,6 +147,7 @@ describe('primitives barrel', () => {
           'materializeWorktreeFromHead',
           'MAX_SPARSE_PATTERN_FILE_BYTES',
           'mergeBase',
+          'objectSources',
           'parseIniSections',
           'readBlob',
           'readConfig',

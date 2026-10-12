@@ -34,7 +34,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
-import type { BundleCreateOptions } from '../../src/application/commands/bundle-create.js';
+import type {
+  BundleCreateOptions,
+  BundleRevArg,
+} from '../../src/application/commands/bundle-create.js';
 import { bundleCreate } from '../../src/application/commands/bundle-create.js';
 import { bundleListHeads } from '../../src/application/commands/bundle-list-heads.js';
 import { bundleVerify } from '../../src/application/commands/bundle-verify.js';
@@ -1426,6 +1429,538 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
         } finally {
           await deltaPair.dispose();
         }
+      });
+    });
+  });
+});
+
+/** `git commit-tree` at `1_700_000_000 + offset`, owning one file named `name`. */
+const commitAt = (
+  dir: string,
+  name: string,
+  offset: number,
+  parents: ReadonlyArray<string>,
+): string => {
+  const blob = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: name }).trim();
+  const tree = runGit(['-C', dir, 'mktree'], {
+    input: `100644 blob ${blob}\t${name}.txt\n`,
+  }).trim();
+  const date = `${1_700_000_000 + offset} +0000`;
+  return runGit(
+    ['-C', dir, 'commit-tree', tree, '-m', name, ...parents.flatMap((p) => ['-p', p])],
+    {
+      env: { ...runGitEnv(), GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+    },
+  ).trim();
+};
+
+/** The object count a bundle's pack header declares. */
+const packedCount = (bundleBytes: Uint8Array): number => {
+  const pack = bundleBytes.subarray(parseBundleHeader(bundleBytes, '<test>').packOffset);
+  return new DataView(pack.buffer, pack.byteOffset + 8, 4).getUint32(0);
+};
+
+describe.skipIf(!GIT_AVAILABLE)('bundle interop — clock-skewed have lines', () => {
+  let dir: string;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-bundle-skewed-'));
+    runGit(['-C', dir, 'init', '-q', '-b', 'main']);
+    const ancestor = commitAt(dir, 'ancestor', 500, []);
+    runGit(['-C', dir, 'update-ref', 'refs/heads/main', commitAt(dir, 'tip', 1000, [ancestor])]);
+    for (const [branch, depth] of [
+      ['far', 6],
+      ['near', 3],
+    ] as const) {
+      let line = ancestor;
+      for (let step = 1; step <= depth; step += 1) {
+        line = commitAt(dir, `${branch}-${step}`, 300 - step, [line]);
+      }
+      runGit(['-C', dir, 'update-ref', `refs/heads/${branch}`, commitAt(dir, branch, 400, [line])]);
+    }
+  });
+
+  afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+  describe.each(['far', 'near'])(
+    'Given bundleCreate main ^%s, When comparing to git bundle create',
+    (excluded) => {
+      it('Then the header and the packed object count match git, which gives up on a deep skewed line', async () => {
+        // Arrange
+        const gitBytes = gitBundleCreate(
+          dir,
+          path.join(dir, `${excluded}.bundle`),
+          ['main', `^${excluded}`],
+          runGitEnv(),
+        );
+        const ctx = createNodeContext({ workDir: dir });
+        const sut = bundleCreate;
+
+        // Act
+        const result = await sut(ctx, { revs: [{ tip: 'main' }, { exclude: excluded }] });
+
+        // Assert
+        expect(headerBytes(result.bytes)).toEqual(headerBytes(gitBytes));
+        expect(packedCount(result.bytes)).toBe(packedCount(gitBytes));
+      });
+    },
+  );
+});
+
+const annotatedTag = (dir: string, name: string, target: string): void => {
+  const date = '1700000000 +0000';
+  runGit(['-C', dir, 'tag', '-a', '-m', name, name, target], {
+    env: { ...runGitEnv(), GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+  });
+};
+
+/** `base` <- `main`; refs name each one's tree and `main`'s own blob, plus tags of a tree, of a tag and of `base`. */
+const buildNonCommitTipRepo = async (prefix: string): Promise<string> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), prefix));
+  runGit(['-C', dir, 'init', '-q', '-b', 'main']);
+  const base = commitAt(dir, 'base', 0, []);
+  const baseBlob = runGit(['-C', dir, 'rev-parse', `${base}:base.txt`]).trim();
+  const tipBlob = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: 'tip' }).trim();
+  const mainTree = runGit(['-C', dir, 'mktree'], {
+    input: `100644 blob ${baseBlob}\tbase.txt\n100644 blob ${tipBlob}\ttip.txt\n`,
+  }).trim();
+  const date = '1700000100 +0000';
+  const main = runGit(['-C', dir, 'commit-tree', mainTree, '-m', 'main', '-p', base], {
+    env: { ...runGitEnv(), GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+  }).trim();
+  const baseTree = runGit(['-C', dir, 'rev-parse', `${base}^{tree}`]).trim();
+  for (const [ref, oid] of [
+    ['refs/heads/main', main],
+    ['refs/heads/base', base],
+    ['refs/tags/main-tree', mainTree],
+    ['refs/tags/base-tree', baseTree],
+    ['refs/tags/tip-blob', tipBlob],
+  ] as const) {
+    runGit(['-C', dir, 'update-ref', ref, oid]);
+  }
+  annotatedTag(dir, 'tag-tree', mainTree);
+  annotatedTag(dir, 'tag-tag', 'tag-tree');
+  annotatedTag(dir, 'tag-base', base);
+  return dir;
+};
+
+/** git's command-line revision words as `bundleCreate` rev args. */
+const revArgsOf = (words: ReadonlyArray<string>): ReadonlyArray<BundleRevArg> =>
+  words.map((word) => {
+    if (word.includes('..')) return { range: word.split('..') as [string, string] };
+    if (word.startsWith('^')) return { exclude: word.slice(1) };
+    return { tip: word };
+  });
+
+describe.skipIf(!GIT_AVAILABLE)('bundle interop — tag, tree and blob tips', () => {
+  let dir: string;
+
+  beforeAll(async () => {
+    dir = await buildNonCommitTipRepo('tsgit-bundle-non-commit-');
+  });
+
+  afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+  describe.each([
+    ['main', '^main-tree'],
+    ['main', '^tag-tree'],
+    ['main', '^tip-blob'],
+    ['main-tree..main'],
+    ['main', 'tag-tree', '^tag-tag'],
+    ['base', 'main', '^base'],
+    ['base..main', 'base-tree'],
+    ['tag-tree', '^main-tree'],
+    ['main..main-tree'],
+    ['tag-base', '^base'],
+  ])('Given bundleCreate %s, When comparing to git bundle create', (...words) => {
+    it('Then the header and the packed object count match git', async () => {
+      // Arrange
+      const gitBytes = gitBundleCreate(dir, path.join(dir, 'b.bundle'), words, runGitEnv());
+      const ctx = createNodeContext({ workDir: dir });
+      const sut = bundleCreate;
+
+      // Act
+      const result = await sut(ctx, { revs: revArgsOf(words) });
+
+      // Assert
+      expect(headerBytes(result.bytes)).toEqual(headerBytes(gitBytes));
+      expect(packedCount(result.bytes)).toBe(packedCount(gitBytes));
+    });
+  });
+
+  describe.each([
+    ['main', 'main-tree'],
+    ['tag-tree', 'main'],
+    ['tip-blob', 'base'],
+    ['main-tree', 'tip-blob'],
+  ])('Given bundleCreate %s...%s, When a side peels to no commit', (left, right) => {
+    it('Then it refuses the expression, naming each side git errors on', async () => {
+      // Arrange
+      const expression = `${left}...${right}`;
+      const gitRun = tryRunGitWithExit([
+        '-C',
+        dir,
+        'bundle',
+        'create',
+        path.join(dir, 's.bundle'),
+        expression,
+      ]);
+      const ctx = createNodeContext({ workDir: dir });
+      const sut = bundleCreate;
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut(ctx, { revs: [{ symmetricRange: [left, right] }] });
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      const nonCommits = [
+        ...gitRun.stderr.matchAll(/^error: object ([0-9a-f]+) is a (\w+), not a commit$/gm),
+      ].map(([, id, type]) => ({ id, type }));
+      expect(gitRun.exitCode).toBe(128);
+      expect(gitRun.stderr).toContain(
+        `fatal: Invalid symmetric difference expression ${expression}`,
+      );
+      expect((caught as TsgitError).data).toEqual({
+        code: 'INVALID_SYMMETRIC_RANGE',
+        expression,
+        nonCommits,
+      });
+    });
+  });
+
+  describe.each([
+    ['base', '^main'],
+    ['main..main'],
+    ['tip-blob', '^main-tree'],
+    ['tag-tree', '^tag-tree'],
+  ])('Given bundleCreate %s, When every ref it names is left uninteresting', (...words) => {
+    it('Then it refuses with no-refs where git refuses to create an empty bundle', async () => {
+      // Arrange
+      const gitRun = tryRunGitWithExit([
+        '-C',
+        dir,
+        'bundle',
+        'create',
+        path.join(dir, 'e.bundle'),
+        ...words,
+      ]);
+      const ctx = createNodeContext({ workDir: dir });
+      const sut = bundleCreate;
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut(ctx, { revs: revArgsOf(words) });
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(gitRun.exitCode).toBe(128);
+      expect(gitRun.stderr).toContain('Refusing to create empty bundle.');
+      expect((caught as TsgitError).data).toEqual({ code: 'BUNDLE_EMPTY', reason: 'no-refs' });
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'bundle interop — a bitmap leaving a tree tip nothing to pack',
+  () => {
+    let dir: string;
+
+    beforeAll(async () => {
+      dir = await buildNonCommitTipRepo('tsgit-bundle-bitmap-tree-');
+      runGit(['-C', dir, 'repack', '-a', '-d', '-b', '-q']);
+    });
+
+    afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+    describe('Given bundleCreate main..main-tree, When comparing to git bundle create', () => {
+      it('Then both write the tree ref line over an empty pack, byte for byte', async () => {
+        // Arrange
+        const gitBytes = gitBundleCreate(
+          dir,
+          path.join(dir, 'b.bundle'),
+          ['main..main-tree'],
+          runGitEnv(),
+        );
+        const ctx = createNodeContext({ workDir: dir });
+        const sut = bundleCreate;
+
+        // Act
+        const result = await sut(ctx, { revs: [{ range: ['main', 'main-tree'] }] });
+
+        // Assert
+        expect(packedCount(gitBytes)).toBe(0);
+        expect(result.bytes).toEqual(gitBytes);
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)('bundle interop — object types assigned while enumerating', () => {
+  const IDENT = 'author a <a@b> 1700000000 +0000\ncommitter a <a@b> 1700000000 +0000\n\nm\n';
+  const ABSENT_PARENT = `cd${'0'.repeat(38)}`;
+  const dirs: string[] = [];
+
+  afterAll(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A commit stored as spelt, naming `tree` and `parents` whatever they are. */
+  const writeLiteralCommit = (dir: string, tree: string, parents: ReadonlyArray<string>): string =>
+    runGit(['-C', dir, 'hash-object', '-t', 'commit', '-w', '--stdin', '--literally'], {
+      input: `tree ${tree}\n${parents.map((p) => `parent ${p}\n`).join('')}${IDENT}`,
+    }).trim();
+
+  /** `root` an empty-tree commit and `main` the commit `naming` builds over it. */
+  const buildRepo = (naming: (dir: string, blob: string, root: string) => string): string => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'tsgit-interop-bundle-types-'));
+    dirs.push(dir);
+    runGit(['init', '-q', '-b', 'main', dir]);
+    const blob = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: 'hi\n' }).trim();
+    const root = writeLiteralCommit(dir, runGit(['-C', dir, 'mktree'], { input: '' }).trim(), []);
+    runGit(['-C', dir, 'update-ref', 'refs/heads/root', root]);
+    runGit(['-C', dir, 'update-ref', 'refs/heads/main', naming(dir, blob, root)]);
+    return dir;
+  };
+
+  const emptyTree = (dir: string): string => runGit(['-C', dir, 'mktree'], { input: '' }).trim();
+
+  /** git's death, rebuilt from the logged `error:` lines and the refusal's data. */
+  const deathOf = (logged: ReadonlyArray<string>, error: unknown): string => {
+    const data = (error as { data?: { code?: string; commit?: string; id?: string } }).data;
+    const commit = data?.commit;
+    const walkFatal =
+      commit === undefined
+        ? 'fatal: revision walk setup failed'
+        : `fatal: Failed to traverse parents of commit ${commit}`;
+    const fatal =
+      data?.code === 'BAD_TREE_OBJECT' ? `fatal: bad tree object ${data.id}` : walkFatal;
+    return `${logged.map((line) => `error: ${line}\n`).join('')}${fatal}\n`;
+  };
+
+  const treeNamingBlob = (dir: string, blob: string, root: string): string =>
+    writeLiteralCommit(dir, blob, [root]);
+  const parentNamingBlob = (dir: string, blob: string, root: string): string =>
+    writeLiteralCommit(dir, emptyTree(dir), [root, blob]);
+  const parentAbsent = (dir: string, _blob: string, root: string): string =>
+    writeLiteralCommit(dir, emptyTree(dir), [root, ABSENT_PARENT]);
+  const ALONE = { args: ['main'], revs: [{ tip: 'main' }] } as const;
+  const RANGE = { args: ['root..main'], revs: [{ range: ['root', 'main'] }] } as const;
+
+  describe.each([
+    ['names a blob as its tree', treeNamingBlob, 'alone', ALONE],
+    ['names a blob as its parent', parentNamingBlob, 'alone', ALONE],
+    ['names a blob as its parent', parentNamingBlob, 'as a range from the root', RANGE],
+    ['names a parent the store lacks', parentAbsent, 'alone', ALONE],
+    ['names a parent the store lacks', parentAbsent, 'as a range from the root', RANGE],
+  ] as const)('Given a branch whose commit %s', (_label, naming, how, { args, revs }) => {
+    describe(`When both tools bundle it ${how}`, () => {
+      it('Then both die enumerating it the same way', async () => {
+        // Arrange
+        const dir = buildRepo(naming);
+        const git = tryRunGitWithExit([
+          '-C',
+          dir,
+          'bundle',
+          'create',
+          path.join(dir, 'g.bundle'),
+          ...args,
+        ]);
+        const logged: string[] = [];
+        const base = createNodeContext({ workDir: dir });
+        const ctx = { ...base, logger: { error: (line: string) => logged.push(line) } };
+        const sut = bundleCreate;
+
+        // Act
+        const thrown = await sut(ctx, { revs }).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+
+        // Assert
+        expect(git.exitCode).not.toBe(0);
+        expect(git.stderr.startsWith(deathOf(logged, thrown))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a blob named before a branch whose commit names that blob as its tree', () => {
+    describe('When both tools bundle them', () => {
+      it('Then both log the conflicting tree pointer and die on the branch as a bad object', async () => {
+        // Arrange
+        const dir = buildRepo(treeNamingBlob);
+        const blob = runGit(['-C', dir, 'hash-object', '--stdin'], { input: 'hi\n' }).trim();
+        const git = tryRunGitWithExit([
+          '-C',
+          dir,
+          'bundle',
+          'create',
+          path.join(dir, 'g.bundle'),
+          blob,
+          'main',
+        ]);
+        const logged: string[] = [];
+        const base = createNodeContext({ workDir: dir });
+        const ctx = { ...base, logger: { error: (line: string) => logged.push(line) } };
+        const sut = bundleCreate;
+
+        // Act
+        const thrown = await sut(ctx, { revs: [{ tip: blob }, { tip: 'main' }] }).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+
+        // Assert
+        const { id } = (thrown as { data: { id: string } }).data;
+        expect(git.exitCode).toBe(128);
+        expect(git.stderr).toBe(
+          `${logged.map((line) => `error: ${line}\n`).join('')}fatal: bad object ${id}\n`,
+        );
+      });
+    });
+  });
+
+  interface ArgumentRefusal {
+    readonly code: string;
+    readonly expression?: string;
+    readonly id?: string;
+    readonly nonCommits?: ReadonlyArray<{ readonly id: string; readonly type: string }>;
+  }
+
+  /** git's argument-setup death, rebuilt from the logged `error:` lines and the refusal's data. */
+  const argumentDeathOf = (logged: ReadonlyArray<string>, error: unknown): string => {
+    const data = (error as { data: ArgumentRefusal }).data;
+    const nonCommits = (data.nonCommits ?? []).map(
+      (side) => `object ${side.id} is a ${side.type}, not a commit`,
+    );
+    const fatalLines: Readonly<Record<string, string>> = {
+      INVALID_REVISION_RANGE: `Invalid revision range ${data.expression}`,
+      INVALID_SYMMETRIC_RANGE: `Invalid symmetric difference expression ${data.expression}`,
+      OBJECT_NOT_FOUND: `bad object ${data.id}`,
+    };
+    const errors = [...logged, ...nonCommits].map((line) => `error: ${line}\n`).join('');
+    return `${errors}fatal: ${fatalLines[data.code]}\n`;
+  };
+
+  const blobOf = (dir: string): string =>
+    runGit(['-C', dir, 'hash-object', '--stdin'], { input: 'hi\n' }).trim();
+
+  describe.each([
+    [
+      'the range from the blob to the branch',
+      (b: string) => [`${b}..main`],
+      (b: string) => ({ range: [b, 'main'] as const }),
+    ],
+    [
+      'the range from the branch to the blob',
+      (b: string) => [`main..${b}`],
+      (b: string) => ({ range: ['main', b] as const }),
+    ],
+    [
+      'the symmetric range from the blob to the branch',
+      (b: string) => [`${b}...main`],
+      (b: string) => ({ symmetricRange: [b, 'main'] as const }),
+    ],
+  ] as const)(
+    'Given a branch whose commit names a blob as its tree, and %s',
+    (_label, argsOf, revOf) => {
+      describe('When both tools bundle it', () => {
+        it('Then both log the typing conflict and refuse the range the same way', async () => {
+          // Arrange
+          const dir = buildRepo(treeNamingBlob);
+          const blob = blobOf(dir);
+          const git = tryRunGitWithExit([
+            '-C',
+            dir,
+            'bundle',
+            'create',
+            path.join(dir, 'g.bundle'),
+            ...argsOf(blob),
+          ]);
+          const logged: string[] = [];
+          const base = createNodeContext({ workDir: dir });
+          const ctx = { ...base, logger: { error: (line: string) => logged.push(line) } };
+          const sut = bundleCreate;
+
+          // Act
+          const thrown = await sut(ctx, { revs: [revOf(blob)] }).then(
+            () => undefined,
+            (error: unknown) => error,
+          );
+
+          // Assert
+          expect({ exitCode: git.exitCode, stderr: git.stderr }).toEqual({
+            exitCode: 128,
+            stderr: argumentDeathOf(logged, thrown),
+          });
+        });
+      });
+    },
+  );
+
+  describe.each([
+    ['--tags', ['--tags'], { tags: true }],
+    ['--all', ['--all'], { all: true }],
+  ] as const)(
+    'Given a tag on a commit naming a blob as its tree, then a tag on that blob',
+    (flag, args, opts) => {
+      describe(`When both tools bundle ${flag}`, () => {
+        it('Then both log the typing conflict and die on the second tag as a bad object', async () => {
+          // Arrange
+          const dir = buildRepo(treeNamingBlob);
+          const blob = blobOf(dir);
+          runGit(['-C', dir, 'update-ref', 'refs/tags/a', 'main']);
+          runGit(['-C', dir, 'update-ref', 'refs/tags/b', blob]);
+          const git = tryRunGitWithExit([
+            '-C',
+            dir,
+            'bundle',
+            'create',
+            path.join(dir, 'g.bundle'),
+            ...args,
+          ]);
+          const logged: string[] = [];
+          const base = createNodeContext({ workDir: dir });
+          const ctx = { ...base, logger: { error: (line: string) => logged.push(line) } };
+          const sut = bundleCreate;
+
+          // Act
+          const thrown = await sut(ctx, opts).then(
+            () => undefined,
+            (error: unknown) => error,
+          );
+
+          // Assert
+          expect({ exitCode: git.exitCode, stderr: git.stderr }).toEqual({
+            exitCode: 128,
+            stderr: argumentDeathOf(logged, thrown),
+          });
+        });
+      });
+    },
+  );
+
+  describe('Given an unborn HEAD beside a branch', () => {
+    describe('When both tools bundle --all', () => {
+      it('Then both skip HEAD and write the same bundle', async () => {
+        // Arrange
+        const dir = buildRepo((_dir, _blob, root) => root);
+        runGit(['-C', dir, 'symbolic-ref', 'HEAD', 'refs/heads/unborn']);
+        const gitBytes = gitBundleCreate(dir, path.join(dir, 'g.bundle'), ['--all'], runGitEnv());
+        const ctx = createNodeContext({ workDir: dir });
+        const sut = bundleCreate;
+
+        // Act
+        const result = await sut(ctx, { all: true });
+
+        // Assert
+        expect(result.bytes).toEqual(gitBytes);
       });
     });
   });

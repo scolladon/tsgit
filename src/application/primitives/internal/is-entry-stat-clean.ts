@@ -22,7 +22,7 @@ const truncate32 = (n: number): number => n >>> 0;
  * in which a subsequent edit could land without visibly changing the stat.
  * Mirrors git's `is_racy_timestamp`: `indexMtime <= entry mtime`.
  */
-const isRacy = (entry: IndexEntry, indexMtime: IndexMtime): boolean => {
+export const isRacy = (entry: IndexEntry, indexMtime: IndexMtime): boolean => {
   if (entry.mtimeSeconds > indexMtime.seconds) return true;
   if (entry.mtimeSeconds < indexMtime.seconds) return false;
   return entry.mtimeNanoseconds >= indexMtime.nanoseconds;
@@ -47,7 +47,7 @@ const matchesCtime = (entry: IndexEntry, stat: FileStat): boolean => {
  * `unchanged`/`mode-changed` verdict from the mode comparison itself, so a
  * pure exec-bit change never forces a re-hash).
  */
-const matchesContentStat = (entry: IndexEntry, stat: FileStat): boolean =>
+export const matchesContentStat = (entry: IndexEntry, stat: FileStat): boolean =>
   matchesMtime(entry, stat) &&
   matchesCtime(entry, stat) &&
   entry.uid === stat.uid &&

@@ -1,6 +1,7 @@
 import { sanitizeForDisplay, TsgitError } from '../error.js';
 import { errorDataCode } from '../error-data-code.js';
 import type { ObjectId } from './object-id.js';
+import type { RevParseEntry } from './rev-parse-entry.js';
 
 export { TsgitError } from '../error.js';
 
@@ -8,7 +9,12 @@ export type ObjectType = 'blob' | 'tree' | 'commit' | 'tag';
 
 export type DomainObjectError =
   | { readonly code: 'INVALID_OBJECT_ID'; readonly value: string }
-  | { readonly code: 'INVALID_OBJECT_HEADER'; readonly reason: string }
+  | {
+      readonly code: 'INVALID_OBJECT_HEADER';
+      readonly reason: string;
+      /** Set when the header never ended within git's fixed-size header buffer of this many bytes. */
+      readonly headerLimit?: number;
+    }
   | {
       readonly code: 'INVALID_TREE_ENTRY';
       readonly offset: number;
@@ -22,7 +28,12 @@ export type DomainObjectError =
       readonly line: string;
       readonly reason: string;
     }
-  | { readonly code: 'OBJECT_NOT_FOUND'; readonly id: ObjectId }
+  | {
+      readonly code: 'OBJECT_NOT_FOUND';
+      readonly id: ObjectId;
+      /** What `rev-parse` had printed before refusing. */
+      readonly printed?: ReadonlyArray<RevParseEntry>;
+    }
   | {
       readonly code: 'OBJECT_HASH_MISMATCH';
       readonly expected: ObjectId;
@@ -35,6 +46,17 @@ export type DomainObjectError =
       readonly id: ObjectId;
     }
   | { readonly code: 'TREE_CYCLE_DETECTED'; readonly id: ObjectId }
+  /** git's `bad tree object <id>`: a tree the object walk could not parse as one. */
+  | { readonly code: 'BAD_TREE_OBJECT'; readonly id: ObjectId }
+  /** git's `unable to read tree (<id>)`: `id` named where a tree was needed cannot be read as one. */
+  | { readonly code: 'TREE_UNREADABLE'; readonly id: ObjectId }
+  | {
+      /** git's `entry '<entry>' in tree <tree> has <mode> mode, but is not a <mode>`. */
+      readonly code: 'TREE_ENTRY_TYPE_MISMATCH';
+      readonly tree: ObjectId;
+      readonly entry: string;
+      readonly mode: 'tree' | 'blob';
+    }
   | { readonly code: 'TREE_DEPTH_EXCEEDED'; readonly depth: number }
   | {
       readonly code: 'TREE_ENTRY_LIMIT_EXCEEDED';
@@ -62,6 +84,14 @@ export const invalidObjectId = (value: string): TsgitError =>
 export const invalidObjectHeader = (reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_OBJECT_HEADER', reason });
 
+/** git's `header for <id> too long, exceeds <limit> bytes`: no NUL within its `limit`-byte header buffer. */
+export const looseHeaderTooLong = (id: string, limit: number): TsgitError =>
+  new TsgitError({
+    code: 'INVALID_OBJECT_HEADER',
+    reason: `header for ${id} too long, exceeds ${limit} bytes`,
+    headerLimit: limit,
+  });
+
 export const invalidTreeEntry = (offset: number, reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_TREE_ENTRY', offset, reason });
 
@@ -79,6 +109,12 @@ export const invalidIdentity = (line: string, reason: string): TsgitError =>
 
 export const objectNotFound = (id: ObjectId): TsgitError =>
   new TsgitError({ code: 'OBJECT_NOT_FOUND', id });
+
+export const treeEntryTypeMismatch = (
+  tree: ObjectId,
+  entry: string,
+  mode: 'tree' | 'blob',
+): TsgitError => new TsgitError({ code: 'TREE_ENTRY_TYPE_MISMATCH', tree, entry, mode });
 
 /**
  * True when `err` carries the `OBJECT_NOT_FOUND` code in `data.code` — the
@@ -99,6 +135,12 @@ export const unexpectedObjectType = (
   actual: ObjectType,
   id: ObjectId,
 ): TsgitError => new TsgitError({ code: 'UNEXPECTED_OBJECT_TYPE', expected, actual, id });
+
+export const badTreeObject = (id: ObjectId): TsgitError =>
+  new TsgitError({ code: 'BAD_TREE_OBJECT', id });
+
+export const treeUnreadable = (id: ObjectId): TsgitError =>
+  new TsgitError({ code: 'TREE_UNREADABLE', id });
 
 export const treeCycleDetected = (id: ObjectId): TsgitError =>
   new TsgitError({ code: 'TREE_CYCLE_DETECTED', id });

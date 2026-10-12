@@ -9,8 +9,12 @@ import {
   type WorkingTreeComparison,
 } from '../../../../src/application/primitives/compare-working-tree-entry.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
-import { buildAttributeProvider } from '../../../../src/application/primitives/internal/read-gitattributes.js';
+import {
+  type AttributeProvider,
+  buildAttributeProvider,
+} from '../../../../src/application/primitives/internal/read-gitattributes.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
+import type { TsgitError } from '../../../../src/domain/error.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index-entry.js';
 import type {
   CommandRequest,
@@ -403,14 +407,12 @@ describe('compareWorkingTreeDelta', () => {
 
   describe('Given a converting caller (provider + command wired) and [filter "zed"].required = maybe with NO attributes, working file otherwise unchanged', () => {
     describe('When comparing the delta', () => {
-      it('Then the content path degrades to \'modified\' — eager validation refuses even though no attribute selects "zed"', async () => {
+      it('Then it refuses the malformed value as git does, even though no attribute selects "zed"', async () => {
         // Arrange — no .gitattributes at all; only the malformed [filter "zed"]
         // section, and the working file is byte-identical to the staged blob.
-        // Real code's eager clean-tier validation throws inside
-        // cleanWorktreeBytes, which the outer try/catch converts to
-        // 'modified'. A dropped eagerSectionValidation flag would instead
-        // compute the real (matching) hash and report 'unchanged' — that's
-        // the observable difference the {}/false mutants would produce.
+        // git's re-hash of a racy or stat-dirty file runs the convert
+        // machinery and dies on the value; a dropped eagerSectionValidation
+        // flag would compute the real (matching) hash and report 'unchanged'.
         const { ctx, entry } = await seedFile('a.txt', 'hello\n');
         await ctx.fs.writeUtf8(
           `${ctx.layout.gitDir}/config`,
@@ -426,10 +428,106 @@ describe('compareWorkingTreeDelta', () => {
         const provider = await buildAttributeProvider(enrichedCtx);
 
         // Act
+        const result = await compareWorkingTreeDelta(enrichedCtx, entry, provider).catch(
+          (err: unknown) => err,
+        );
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'filter.zed.required',
+          source: expect.any(String),
+          value: 'maybe',
+        });
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'configures no clean command', section: '\trequired = true\n', exitCode: undefined },
+    {
+      label: 'configures an empty clean command',
+      section: '\tclean =\n\trequired = true\n',
+      exitCode: undefined,
+    },
+    {
+      label: 'runs a clean command that fails',
+      section: '\tclean = c\n\trequired = true\n',
+      exitCode: 3,
+    },
+  ])('Given a required driver that $label over an untouched file', ({ section, exitCode }) => {
+    describe('When comparing the delta', () => {
+      it("Then it refuses with CLEAN_FILTER_FAILED, as git's convert_to_git dies", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'a.txt filter=d\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[filter "d"]\n${section}`);
+        invalidateConfigCache(ctx);
+        const runner: CommandRunner = {
+          run: async () => ({ exitCode: 3, stdout: new Uint8Array(0) }),
+        };
+        const enrichedCtx: Context = { ...ctx, command: runner };
+        const provider = await buildAttributeProvider(enrichedCtx);
+
+        // Act
+        const result = await compareWorkingTreeDelta(enrichedCtx, entry, provider).catch(
+          (err: unknown) => err,
+        );
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'CLEAN_FILTER_FAILED',
+          path: 'a.txt',
+          filter: 'd',
+          ...(exitCode !== undefined && { exitCode }),
+        });
+      });
+    });
+  });
+
+  describe('Given a context that cannot run commands and a required clean driver', () => {
+    describe('When comparing the delta of an untouched file', () => {
+      it('Then it refuses with CLEAN_FILTER_FAILED, as the driver cannot start', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'a.txt filter=d\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "d"]\n\tclean = c\n\trequired = true\n',
+        );
+        invalidateConfigCache(ctx);
+        const provider = await buildAttributeProvider(ctx);
+        const sut = compareWorkingTreeDelta;
+
+        // Act
+        const result = await sut(ctx, entry, provider).catch((err: unknown) => err);
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'CLEAN_FILTER_FAILED',
+          path: 'a.txt',
+          filter: 'd',
+        });
+      });
+    });
+  });
+
+  describe('Given an optional driver configuring no clean command over an untouched file', () => {
+    describe('When comparing the delta', () => {
+      it('Then it hashes the raw bytes and reports unchanged', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'a.txt filter=d\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[filter "d"]\n\tsmudge = s\n');
+        invalidateConfigCache(ctx);
+        const enrichedCtx: Context = { ...ctx, command: new FakeRunner() };
+        const provider = await buildAttributeProvider(enrichedCtx);
+
+        // Act
         const result = await compareWorkingTreeDelta(enrichedCtx, entry, provider);
 
         // Assert
-        expect(result.status).toBe('modified');
+        expect(result.status).toBe('unchanged');
       });
     });
   });
@@ -795,6 +893,136 @@ describe('compareWorkingTreeDelta — lstat cost', () => {
         // Assert
         expect(result.status).toBe('absent');
       });
+    });
+  });
+});
+
+describe('Given a malformed core.bigFileThreshold', () => {
+  const withMalformedThreshold = async (ctx: Context): Promise<void> => {
+    const configPath = `${ctx.layout.gitDir}/config`;
+    const config = await ctx.fs.readUtf8(configPath);
+    await ctx.fs.writeUtf8(configPath, `${config}[core]\n\tbigFileThreshold = x\n`);
+    invalidateConfigCache(ctx);
+  };
+  const racyAgainst = (entry: IndexEntry) => ({ seconds: entry.mtimeSeconds, nanoseconds: 0 });
+  const cleanAgainst = (entry: IndexEntry) => ({
+    seconds: entry.mtimeSeconds + 10,
+    nanoseconds: 0,
+  });
+
+  describe('When the stat cache sends a racy regular file to be hashed', () => {
+    it('Then it refuses with the key, as git reads it before hashing', async () => {
+      // Arrange
+      const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+      await withMalformedThreshold(ctx);
+      const sut = compareWorkingTreeDelta;
+
+      // Act
+      const result = await sut(ctx, entry, undefined, racyAgainst(entry)).catch(
+        (err: { data: unknown }) => err.data,
+      );
+
+      // Assert
+      expect(result).toMatchObject({
+        code: 'CONFIG_BAD_NUMERIC_VALUE',
+        key: 'core.bigfilethreshold',
+        value: 'x',
+      });
+    });
+  });
+
+  describe('When the stat cache settles a non-racy regular file', () => {
+    it('Then it compares without reading the threshold', async () => {
+      // Arrange
+      const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+      await withMalformedThreshold(ctx);
+      const sut = compareWorkingTreeDelta;
+
+      // Act
+      const result = await sut(ctx, entry, undefined, cleanAgainst(entry));
+
+      // Assert
+      expect(result.status).toBe('unchanged');
+    });
+  });
+
+  describe('When the stat cache sends a racy symlink to be hashed', () => {
+    it('Then it compares without reading the threshold', async () => {
+      // Arrange
+      const { ctx, entry } = await seedSymlink('link', 'target');
+      await withMalformedThreshold(ctx);
+      const sut = compareWorkingTreeDelta;
+
+      // Act
+      const result = await sut(ctx, entry, undefined, racyAgainst(entry));
+
+      // Assert
+      expect(result.status).toBe('unchanged');
+    });
+  });
+
+  describe('When a regular file is hashed without the stat cache', () => {
+    it('Then it compares without reading the threshold, as git would not hash it', async () => {
+      // Arrange
+      const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+      await withMalformedThreshold(ctx);
+      const sut = compareWorkingTreeDelta;
+
+      // Act
+      const result = await sut(ctx, entry);
+
+      // Assert
+      expect(result.status).toBe('unchanged');
+    });
+  });
+});
+
+describe('Given a malformed core.bigFileThreshold and a filter driver engaged on the path', () => {
+  /** `a.txt` staged under `filter=d`, the threshold malformed after the fact. */
+  const seedUnderDriver = async (
+    driver: string,
+  ): Promise<{ ctx: Context; entry: IndexEntry; provider: AttributeProvider }> => {
+    const { ctx: bare, entry } = await seedFile('a.txt', 'hello\n');
+    const ctx: Context = { ...bare, command: new FakeRunner((bytes) => bytes) };
+    await ctx.fs.writeUtf8(work(ctx, '.gitattributes'), 'a.txt filter=d\n');
+    const configPath = `${ctx.layout.gitDir}/config`;
+    const config = await ctx.fs.readUtf8(configPath);
+    await ctx.fs.writeUtf8(
+      configPath,
+      `${config}[filter "d"]\n${driver}[core]\n\tbigFileThreshold = x\n`,
+    );
+    invalidateConfigCache(ctx);
+    return { ctx, entry, provider: await buildAttributeProvider(ctx) };
+  };
+  const racyAgainst = (entry: IndexEntry) => ({ seconds: entry.mtimeSeconds, nanoseconds: 0 });
+
+  describe('When the stat cache sends the racy file under a required driver to be hashed', () => {
+    it('Then it compares without reading the threshold, as git streams it through the filter', async () => {
+      // Arrange
+      const { ctx, entry, provider } = await seedUnderDriver('\tclean = cat\n\trequired = true\n');
+      const sut = compareWorkingTreeDelta;
+
+      // Act
+      const result = await sut(ctx, entry, provider, racyAgainst(entry));
+
+      // Assert
+      expect(result.status).toBe('unchanged');
+    });
+  });
+
+  describe('When the stat cache sends the racy file under an optional driver to be hashed', () => {
+    it('Then it refuses with the key', async () => {
+      // Arrange
+      const { ctx, entry, provider } = await seedUnderDriver('\tclean = cat\n');
+      const sut = compareWorkingTreeDelta;
+
+      // Act
+      const result = await sut(ctx, entry, provider, racyAgainst(entry)).catch(
+        (err: { data: unknown }) => err.data,
+      );
+
+      // Assert
+      expect(result).toMatchObject({ code: 'CONFIG_BAD_NUMERIC_VALUE', value: 'x' });
     });
   });
 });

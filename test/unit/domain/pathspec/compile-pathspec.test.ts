@@ -14,6 +14,23 @@ describe('compilePathspec', () => {
     });
   });
 
+  describe('Given the whole-tree literal (an empty body)', () => {
+    describe('When compiled', () => {
+      it('Then yields a literal entry matching every path', () => {
+        // Arrange
+        const sut = compilePathspec;
+
+        // Act
+        const result = sut(['']);
+
+        // Assert
+        expect(result[0]?.isLiteral).toBe(true);
+        expect(result[0]?.compiled.test('a')).toBe(true);
+        expect(result[0]?.compiled.test('d/b')).toBe(true);
+      });
+    });
+  });
+
   describe('Given a single literal "src/foo.ts"', () => {
     describe('When compiled', () => {
       it('Then yields one literal entry with regex matching path-or-descendants', () => {

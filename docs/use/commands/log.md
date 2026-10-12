@@ -8,15 +8,18 @@ Walk commit history starting from a tip. By default this is git's default `git l
 repo.log(opts?: LogOptions): Promise<ReadonlyArray<LogEntry>>;
 
 type LogOrder = 'date' | 'first-parent';
+type LogTopoOrder = 'graph' | 'commit-date' | 'author-date';
 
 interface LogOptions {
   readonly rev?: string;                      // commit-ish, full grammar; default 'HEAD'
   readonly order?: LogOrder;                  // default 'date'
   readonly limit?: number;                    // bound the walk
   readonly excluding?: ReadonlyArray<string>; // commit-ish stops (negative range)
-  readonly before?: Date;                     // only commits with committer.timestamp < before
+  readonly before?: Date;                     // only commits with committer.timestamp <= before
   readonly minParents?: number;               // keep only commits with at least this many parents
   readonly maxParents?: number;               // keep only commits with at most this many parents
+  readonly topoOrder?: LogTopoOrder;          // re-sort the walked commits topologically
+  readonly reverse?: boolean;                 // newest last, applied after `limit`
 }
 
 interface LogEntry {
@@ -33,6 +36,8 @@ interface LogEntry {
 
 - **Order — `'date'` (default):** every reachable commit across all parents, newest committer-date first (git's default `git log`). **`'first-parent'`:** follows only the first parent of each merge (`git log --first-parent`).
 - **`rev` / `excluding` grammar:** both resolve through the full rev grammar — short names, `~`/`^`, `@{…}`, abbreviated oids, and annotated-tag peeling (`repo.log({ rev: 'v1.0~3' })` works). An unresolvable `rev` or `excluding` entry refuses (it is not silently skipped).
+- **`topoOrder`:** re-sorts the walked commits so no commit precedes all its children. `'graph'` keeps each line of history together (`--topo-order`); `'commit-date'` (`--date-order`) and `'author-date'` (`--author-date-order`) show the newest ready commit first.
+- **`reverse`:** returns the result newest-last (`--reverse`). It applies after `limit`, so `{ limit: 3, reverse: true }` is the three newest commits, oldest of the three first.
 - **`minParents` / `maxParents` — parent-count filter:** an output filter, not a traversal pruner — the walk still follows all parents, so `maxParents: 0` from a multi-root tip returns every reachable root. A commit is kept iff `parents.length >= minParents` (when set) and `parents.length <= maxParents` (when set); `minParents > maxParents` yields empty. The filter applies **before** `limit` (filter-then-limit), matching git's `--max-parents=1 -n 1` → newest non-merge semantics. Common cases: roots = `{ maxParents: 0 }`, merges only = `{ minParents: 2 }`, no merges = `{ maxParents: 1 }`, no roots = `{ minParents: 1 }`.
 - **Message:** the raw commit-object body, returned verbatim. Since the `commit` porcelain applies git's `stripspace` normalization, a message written via [`repo.commit`](commit.md) ends with exactly one trailing `\n` (e.g. `'fix bug\n'`). Fold it yourself (e.g. first line) for a subject.
 

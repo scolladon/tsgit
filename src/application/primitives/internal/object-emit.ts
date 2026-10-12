@@ -4,9 +4,10 @@
 // implement a cap-guarded emitter and a tag-chain resolver with the same algorithm.
 // Canonical, fully-commented source: enumerate-push-objects.ts.
 import { TsgitError } from '../../../domain/error.js';
+import { objectNotFound } from '../../../domain/objects/error.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import { readObject } from '../read-object.js';
+import { type ObjectTypeTable, parseTypedObject } from './object-type-table.js';
 
 export interface EmitState {
   readonly emitted: Set<ObjectId>;
@@ -34,10 +35,12 @@ export const tryEmit = (state: EmitState, id: ObjectId): boolean => {
  * Follow a tag chain (annotated tag → annotated tag →... → commit)
  * yielding each tag oid through `recordTag`. Returns the terminal
  * commit oid for the caller to use as a commit-walk seed. Non-tag
- * oids pass through untouched.
+ * oids pass through untouched. Each object is typed into `table`, the
+ * invocation's.
  */
 export const resolveTagChain = async (
   ctx: Context,
+  table: ObjectTypeTable | undefined,
   id: ObjectId,
   recordTag: (id: ObjectId) => void,
 ): Promise<ObjectId> => {
@@ -47,7 +50,8 @@ export const resolveTagChain = async (
   // we already use for symbolic ref resolution to avoid an infinite loop
   // if a tag points back at itself (corrupt object).
   for (let i = 0; i < 16; i += 1) {
-    const obj = await readObject(ctx, current);
+    const obj = await parseTypedObject(ctx, table, current);
+    if (obj === undefined) throw objectNotFound(current);
     if (obj.type !== 'tag') return current;
     recordTag(current);
     current = obj.data.object;

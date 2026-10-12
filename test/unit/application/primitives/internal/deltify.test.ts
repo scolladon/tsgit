@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { DEFAULT_BIG_FILE_THRESHOLD_BYTES } from '../../../../../src/application/primitives/internal/big-file-threshold.js';
+import * as blobSourceModule from '../../../../../src/application/primitives/internal/blob-source.js';
 import {
   type DeltifiedEntry,
   deltifyEntries,
@@ -13,6 +15,7 @@ import * as deltaEncodeModule from '../../../../../src/domain/storage/delta-enco
 import type { DeltaPolicy } from '../../../../../src/domain/storage/delta-policy.js';
 import { PACK_ENTRY_TYPE } from '../../../../../src/domain/storage/pack-entry.js';
 import { buildSeededContext } from '../fixtures.js';
+import { writeSyntheticPackIn } from '../pack-fixture.js';
 
 /** A pure function of (seed, index) — never a stateful generator — so two
  *  calls with the same seed and different lengths always agree on their
@@ -26,11 +29,14 @@ function pseudoRandomBytes(seed: number, length: number): Uint8Array {
   return Uint8Array.from({ length }, (_unused, i) => pseudoRandomByte(seed, i));
 }
 
+const BIG_FILE_THRESHOLD = 100;
+
 const DEFAULT_POLICY: DeltaPolicy = {
   enabled: true,
   window: 10,
   maxDepth: 50,
   windowMemoryBudget: 0,
+  bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
 };
 
 async function writeBlob(ctx: Awaited<ReturnType<typeof buildSeededContext>>, content: Uint8Array) {
@@ -79,6 +85,35 @@ describe('deltifyEntries', () => {
     });
   });
 
+  describe.each([
+    ['both blobs above the threshold', 300, 301, 0],
+    ['the larger blob above the threshold and the smaller one within it', 300, 150, 0],
+    ['both blobs within the threshold, the larger exactly at it', 199, 200, 1],
+  ] as const)('Given two near-identical blobs with %s', (_label, firstSize, secondSize, deltas) => {
+    describe('When deltifyEntries runs with core.bigFileThreshold = 200', () => {
+      it(`Then ${deltas} entries are OFS_DELTA`, async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const shared = pseudoRandomBytes(1, Math.max(firstSize, secondSize));
+        const idA = await writeBlob(ctx, shared.slice(0, firstSize));
+        const idC = await writeBlob(ctx, Uint8Array.from([...shared.slice(0, secondSize - 1), 1]));
+        const policy: DeltaPolicy = { ...DEFAULT_POLICY, bigFileThreshold: 200 };
+        const sut = deltifyEntries;
+
+        // Act
+        const result = await sut(
+          ctx,
+          [idA, idC].map((id) => ({ id })),
+          policy,
+        );
+
+        // Assert
+        const emitted = result.filter((r) => r.entry.type === PACK_ENTRY_TYPE.OFS_DELTA);
+        expect(emitted).toHaveLength(deltas);
+      });
+    });
+  });
+
   describe('Given a corpus of incompressible, mutually unrelated blobs', () => {
     describe('When deltifyEntries runs', () => {
       it('Then zero OFS_DELTA entries are emitted', async () => {
@@ -122,6 +157,7 @@ describe('deltifyEntries', () => {
           window: 1,
           maxDepth: 50,
           windowMemoryBudget: 0,
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const spy = vi.spyOn(deltaEncodeModule, 'encodeDeltaFromIndex');
         const sut = deltifyEntries;
@@ -170,6 +206,7 @@ describe('deltifyEntries', () => {
           window: 2,
           maxDepth: 3,
           windowMemoryBudget: 0,
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const sut = deltifyEntries;
 
@@ -223,6 +260,7 @@ describe('deltifyEntries', () => {
           window: 1,
           maxDepth: 1,
           windowMemoryBudget: 0,
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const sut = deltifyEntries;
 
@@ -274,6 +312,7 @@ describe('deltifyEntries', () => {
           window: 10,
           maxDepth: 50,
           windowMemoryBudget: 0,
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const sut = deltifyEntries;
 
@@ -313,6 +352,7 @@ describe('deltifyEntries', () => {
           window: 10,
           maxDepth: 50,
           windowMemoryBudget: 0,
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const sut = deltifyEntries;
 
@@ -345,6 +385,7 @@ describe('deltifyEntries', () => {
           window: 10,
           maxDepth: 50,
           windowMemoryBudget: 250,
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const sut = deltifyEntries;
 
@@ -390,6 +431,7 @@ describe('deltifyEntries', () => {
           window: 10,
           maxDepth: 50,
           windowMemoryBudget: bigContent.length + 1,
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const sut = deltifyEntries;
 
@@ -439,6 +481,7 @@ describe('deltifyEntries', () => {
           window: 10,
           maxDepth: 50,
           windowMemoryBudget: chargedWeight(r1) + chargedWeight(r2),
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const sut = deltifyEntries;
 
@@ -655,6 +698,7 @@ describe('deltifyEntries', () => {
           window: 10,
           maxDepth: 0,
           windowMemoryBudget: 0,
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const spy = vi.spyOn(deltaEncodeModule, 'encodeDeltaFromIndex');
         const sut = deltifyEntries;
@@ -707,6 +751,7 @@ describe('deltifyEntries', () => {
           window: 10,
           maxDepth: 2,
           windowMemoryBudget: 0,
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const sut = deltifyEntries;
 
@@ -918,6 +963,7 @@ describe('deltifyEntries', () => {
           window: 4,
           maxDepth: 50,
           windowMemoryBudget: 0,
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const sut = deltifyEntries;
 
@@ -963,6 +1009,7 @@ describe('deltifyEntries', () => {
           window: 2,
           maxDepth: 50,
           windowMemoryBudget: 0,
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const sut = deltifyEntries;
 
@@ -1017,6 +1064,7 @@ describe('deltifyEntries', () => {
           window: 2,
           maxDepth: 3,
           windowMemoryBudget: 0,
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const sut = deltifyEntries;
 
@@ -1070,6 +1118,7 @@ describe('deltifyEntries', () => {
           window: 2,
           maxDepth: 5,
           windowMemoryBudget: 0,
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const sut = deltifyEntries;
 
@@ -1126,6 +1175,7 @@ describe('deltifyEntries', () => {
           window: 10,
           maxDepth: 50,
           windowMemoryBudget: obj0Weight + obj1Weight,
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const sut = deltifyEntries;
 
@@ -1165,6 +1215,7 @@ describe('deltifyEntries', () => {
           window: 10,
           maxDepth: 50,
           windowMemoryBudget: 0,
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const spy = vi.spyOn(deltaEncodeModule, 'createDeltaIndex');
         const sut = deltifyEntries;
@@ -1373,6 +1424,36 @@ describe('searchBound', () => {
         expect(sameDepth).toBe(100);
         expect(deeper).toBe(85);
         expect(shallower).toBe(104);
+      });
+    });
+  });
+
+  describe.each([
+    ['blob', 'above', BIG_FILE_THRESHOLD + 1, true],
+    ['blob', 'at', BIG_FILE_THRESHOLD, false],
+    ['commit', 'above', BIG_FILE_THRESHOLD + 1, false],
+  ] as const)('Given a packed %s %s bigFileThreshold', (type, _label, size, streamed) => {
+    describe('When deltifyEntries emits it', () => {
+      it(`Then the stream-order read is ${streamed ? '' : 'not '}used`, async () => {
+        // Arrange
+        const content = pseudoRandomBytes(41, size);
+        const ctx = await buildSeededContext();
+        const [id] = await writeSyntheticPackIn(ctx, `${ctx.layout.gitDir}/objects`, 'p', [
+          { kind: 'base', type, content },
+        ]);
+        const streamSpy = vi.spyOn(blobSourceModule, 'readBlobContentInStreamOrder');
+        const sut = deltifyEntries;
+
+        // Act
+        const result = await sut(ctx, [{ id: id as ObjectId }], {
+          ...DEFAULT_POLICY,
+          bigFileThreshold: BIG_FILE_THRESHOLD,
+        });
+
+        // Assert
+        expect(streamSpy).toHaveBeenCalledTimes(streamed ? 1 : 0);
+        expect(result).toHaveLength(1);
+        vi.restoreAllMocks();
       });
     });
   });

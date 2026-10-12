@@ -20,10 +20,11 @@ export interface Logger {
 export const noopLogger: Logger = Object.freeze({});
 
 /**
- * Wrap a user-supplied logger so every `message` + every string value in the
- * `context` object passes through `sanitize()` before reaching
- * the sink. the facade applies this at construction time so no
- * downstream caller ever feeds raw control bytes to a user-controlled sink.
+ * Wrap a user-supplied logger so every `message` + every string key and value in
+ * the `context` object — arrays and plain objects walked to a bounded depth —
+ * passes through `sanitize()` before reaching the sink. The facade applies this
+ * at construction time so no downstream caller ever feeds raw control bytes to
+ * a user-controlled sink.
  *
  * Methods that the user did not supply are absent on the wrapper (preserves
  * the optional-method contract). Throws from the underlying sink are caught
@@ -55,12 +56,41 @@ export const wrapLoggerSanitizer = (logger: Logger): Logger => {
   return Object.freeze(wrapped);
 };
 
+/** Container levels walked, the context itself included; deeper containers are elided. */
+const MAX_CONTEXT_NESTING = 16;
+const TRUNCATED_MARKER = '[Truncated]';
+const CIRCULAR_MARKER = '[Circular]';
+
+type Ancestors = ReadonlySet<object>;
+
+const isPlainObject = (value: object): value is Readonly<Record<string, unknown>> => {
+  const prototype: unknown = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+};
+
 const sanitizeContext = (
   context: Readonly<Record<string, unknown>>,
-): Readonly<Record<string, unknown>> => {
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(context)) {
-    out[key] = typeof value === 'string' ? sanitize(value) : value;
-  }
-  return out;
+): Readonly<Record<string, unknown>> => sanitizeRecord(context, new Set([context]));
+
+// Ancestors are the containers on the current path only, so a shared sibling is
+// walked twice while a back-reference is cut; plain objects and arrays are the
+// only containers walked — class instances (bytes, dates, errors) pass by identity.
+const sanitizeValue = (value: unknown, ancestors: Ancestors): unknown => {
+  if (typeof value === 'string') return sanitize(value);
+  if (typeof value !== 'object' || value === null) return value;
+  const isArray = Array.isArray(value);
+  if (!isArray && !isPlainObject(value)) return value;
+  if (ancestors.has(value)) return CIRCULAR_MARKER;
+  if (ancestors.size >= MAX_CONTEXT_NESTING) return TRUNCATED_MARKER;
+  const path = new Set(ancestors).add(value);
+  return isArray ? value.map((item) => sanitizeValue(item, path)) : sanitizeRecord(value, path);
 };
+
+// `fromEntries` defines own properties, so a `__proto__` key never reaches a setter.
+const sanitizeRecord = (
+  record: Readonly<Record<string, unknown>>,
+  path: Ancestors,
+): Readonly<Record<string, unknown>> =>
+  Object.fromEntries(
+    Object.entries(record).map(([key, value]) => [sanitize(key), sanitizeValue(value, path)]),
+  );

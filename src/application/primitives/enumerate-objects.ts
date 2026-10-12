@@ -2,9 +2,9 @@ import type { ObjectId } from '../../domain/objects/index.js';
 import { allObjectIds } from '../../domain/storage/pack-index.js';
 import type { Context } from '../../ports/context.js';
 import { boundedMapFor } from './internal/concurrency.js';
+import { getObjectStore, type ObjectSource } from './object-store.js';
 import type { RegisteredPack } from './pack-registry.js';
-import { commonGitDir, objectsDir } from './path-layout.js';
-import { getPackRegistry, peekPackRegistry } from './read-object.js';
+import { fanoutDirIn } from './path-layout.js';
 
 export interface EnumerateObjectsOptions {
   /** Include objects from pack files (default: true). */
@@ -19,6 +19,13 @@ export interface EnumerateObjectsOptions {
    * must keep doing so.
    */
   readonly accessiblePacksOnly?: boolean;
+  /**
+   * Which object stores contribute (default: `'all'`): the primary plus every
+   * alternate, or `'local'` for the primary alone. Maintenance that owns and
+   * rewrites objects (`gc`) must pass `'local'` — an alternate's objects are
+   * never its to count or touch.
+   */
+  readonly scope?: 'all' | 'local';
 }
 
 export async function enumerateObjects(
@@ -26,17 +33,32 @@ export async function enumerateObjects(
   opts?: EnumerateObjectsOptions,
 ): Promise<ReadonlyArray<ObjectId>> {
   const includePacks = opts?.includePacks !== false;
-  const accessiblePacksOnly = opts?.accessiblePacksOnly === true;
+  const packs: PackSelection = opts?.accessiblePacksOnly === true ? 'accessible' : 'all';
+  const store = await getObjectStore(ctx);
+  const sources = opts?.scope === 'local' ? [store.primary] : store.sources;
   const ids = new Set<ObjectId>();
 
-  await collectLooseObjectIds(ctx, ids);
-  if (includePacks) {
-    const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
-    const packs = accessiblePacksOnly ? (await registry.health()).accessible : await registry.all();
-    await collectPackedObjectIds(packs, ids);
+  for (const source of sources) {
+    await collectLooseObjectIds(ctx, source, ids);
+    if (includePacks) await collectSourcePackIds(source, packs, ids);
   }
 
   return [...ids].sort();
+}
+
+/** Which of a source's packs contribute ids: every registered one, or only those the registry can open. */
+type PackSelection = 'all' | 'accessible';
+
+async function collectSourcePackIds(
+  source: ObjectSource,
+  selection: PackSelection,
+  ids: Set<ObjectId>,
+): Promise<void> {
+  const packs =
+    selection === 'accessible'
+      ? (await source.registry.health()).accessible
+      : await source.registry.all();
+  await collectPackedObjectIds(packs, ids);
 }
 
 const HEX_DIGITS = /^[0-9a-f]+$/;
@@ -58,12 +80,12 @@ function isLooseObjectSuffix(suffix: string, expectedLength: number): boolean {
  *  `exists`-then-`readdir` round trip against its own directory. */
 async function collectPrefixObjectIds(
   ctx: Context,
-  gitDir: string,
+  source: ObjectSource,
   prefix: string,
 ): Promise<ReadonlyArray<ObjectId>> {
-  const dir = objectsDir(gitDir, prefix);
-  if (!(await ctx.fs.exists(dir))) return [];
-  const entries = await ctx.fs.readdir(dir);
+  const dir = fanoutDirIn(source.objectsDir, prefix);
+  if (!(await source.fs.exists(dir))) return [];
+  const entries = await source.fs.readdir(dir);
   const suffixLength = ctx.hashConfig.hexLength - prefix.length;
   const ids: ObjectId[] = [];
   for (const entry of entries) {
@@ -75,18 +97,28 @@ async function collectPrefixObjectIds(
 }
 
 /**
- * Up to 256 fanout directories, each its own `exists`-then-`readdir` round
+ * One source's loose object ids in the order git's `for_each_loose_file_in_source`
+ * meets them: fanout directory by directory, each in its listing order. Up
+ * to 256 fanout directories, each its own `exists`-then-`readdir` round
  * trip — fanned out across the `ioBound` pool rather than walked serially,
  * since none of the 256 probes depends on another's result.
  */
-async function collectLooseObjectIds(ctx: Context, ids: Set<ObjectId>): Promise<void> {
-  const gitDir = commonGitDir(ctx);
+export async function listLooseObjectIds(
+  ctx: Context,
+  source: ObjectSource,
+): Promise<ReadonlyArray<ObjectId>> {
   const perPrefix = await boundedMapFor(ctx, 'ioBound', HEX_PREFIXES, (prefix) =>
-    collectPrefixObjectIds(ctx, gitDir, prefix),
+    collectPrefixObjectIds(ctx, source, prefix),
   );
-  for (const prefixIds of perPrefix) {
-    for (const id of prefixIds) ids.add(id);
-  }
+  return perPrefix.flat();
+}
+
+async function collectLooseObjectIds(
+  ctx: Context,
+  source: ObjectSource,
+  ids: Set<ObjectId>,
+): Promise<void> {
+  for (const id of await listLooseObjectIds(ctx, source)) ids.add(id);
 }
 
 async function collectPackedObjectIds(

@@ -137,6 +137,15 @@ export interface FileSystem {
   readonly tryLstat?: (path: string) => Promise<FileStat | undefined>;
 
   /**
+   * {@link tryLstat} blind to WHY nothing is reachable: resolves `undefined` wherever `lstat`
+   * refuses FILE_NOT_FOUND or NOT_A_DIRECTORY, and rejects with every other refusal `lstat`
+   * raises. OPTIONAL: the cheapest miss probe, for a caller whose answer is the same whichever
+   * cause it was — telling them apart can cost a second call. A caller that finds it absent
+   * calls `tryLstat` (or `lstat`) and reads either refusal as the miss, which answers identically.
+   */
+  readonly lstatIfReachable?: (path: string) => Promise<FileStat | undefined>;
+
+  /**
    * Read entire file as a UTF-8 string, exactly as {@link readUtf8} does, except that it
    * resolves `undefined` exactly where `readUtf8` refuses FILE_NOT_FOUND — every other refusal
    * `readUtf8` raises still rejects, a directory included. OPTIONAL: a miss probe that spends no
@@ -148,7 +157,11 @@ export interface FileSystem {
   /** List directory entries. Throws NOT_A_DIRECTORY if not a directory, FILE_NOT_FOUND if absent. */
   readonly readdir: (path: string) => Promise<ReadonlyArray<DirEntry>>;
 
-  /** Create directory and all parents. No-op if already exists. */
+  /**
+   * Create directory and all parents. No-op if a directory (or a symlink to one) already holds
+   * the leaf; a regular file (or a symlink to one) holding it refuses FILE_EXISTS, as POSIX mkdir
+   * reports EEXIST.
+   */
   readonly mkdir: (path: string) => Promise<void>;
 
   /** Remove file or empty directory. Throws FILE_NOT_FOUND if not found. */
@@ -214,6 +227,16 @@ export interface FileSystem {
 
   /** Set file permissions. No-op on platforms without permission support (OPFS). */
   readonly chmod: (path: string, mode: number) => Promise<void>;
+
+  /**
+   * Set an existing entry's access and modification times to the current time — git's
+   * `utime(path, NULL)`. Never creates the entry. Refuses a symbolic-link leaf with
+   * PERMISSION_DENIED (no portable no-follow utime exists — the `chmod` posture), a missing
+   * entry with FILE_NOT_FOUND, and a path outside the containment roots with PERMISSION_DENIED.
+   * OPTIONAL: an adapter that cannot set times omits it (OPFS). A caller that finds it absent
+   * treats the times as not set — git's freshen then writes a fresh copy instead.
+   */
+  readonly utimeNow?: (path: string) => Promise<void>;
 
   /**
    * Recursively remove a file or directory tree.

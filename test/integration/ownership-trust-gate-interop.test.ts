@@ -40,6 +40,7 @@ import {
   git,
   runGit,
   runGitEnv,
+  runGitEnvWithoutGlobalConfig,
   tryRunGitWithExit,
 } from './interop-helpers.js';
 import { trackedRepositories } from './repository-lifecycle.js';
@@ -447,7 +448,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           // Arrange
           const g = tryRunGitWithExit(
             ['-C', bare, '-c', 'safe.bareRepository=explicit', 'config', 'user.name'],
-            { env: runGitEnv() },
+            { env: runGitEnvWithoutGlobalConfig() },
           );
 
           // Act

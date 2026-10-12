@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../../src/adapters/memory/memory-adapter.js';
 import {
+  buildObjectCache,
   type CachedGitObject,
   collectUnreadablePackMemberIds,
   hasPackCopy,
   withUnreadableOverrides,
 } from '../../../../../../src/application/commands/internal/fsck/object-cache.js';
 import type { ObjectId } from '../../../../../../src/domain/objects/index.js';
-import { writeSyntheticPack } from '../../../primitives/pack-fixture.js';
+import type { Context } from '../../../../../../src/ports/context.js';
+import { writeSyntheticPack, writeSyntheticPackIn } from '../../../primitives/pack-fixture.js';
 
 const enc = new TextEncoder();
 
@@ -136,6 +138,102 @@ describe('Given a cache mixing typed, unreadable pack-backed and unreadable non-
       expect(result.has(unclaimedUnreadable)).toBe(false);
       expect(result.has(BLOB_A)).toBe(false);
       expect(result.size).toBe(1);
+    });
+  });
+});
+
+describe('Given a tree whose loose bytes live only in an alternate and do not parse', () => {
+  describe('When buildObjectCache classifies unreadable objects', () => {
+    it('Then the header type is recovered from the alternate holder', async () => {
+      // Arrange
+      const donorObjects = '/repo/donor/objects';
+      const ctx = createMemoryContext({
+        files: { '/repo/.git/objects/info/alternates': enc.encode(`${donorObjects}\n`) },
+      });
+      await ctx.fs.mkdir(donorObjects);
+      const raw = enc.encode('tree 3\0abc');
+      const id = (await ctx.hash.hashHex(raw)) as ObjectId;
+      await ctx.fs.write(
+        `${donorObjects}/${id.slice(0, 2)}/${id.slice(2)}`,
+        await ctx.compressor.deflate(raw),
+      );
+      const sut = buildObjectCache;
+
+      // Act
+      const result = await sut(ctx, new Set([id]), 'classify');
+
+      // Assert
+      expect(result.recovered.get(id)).toBe('tree');
+    });
+  });
+});
+
+const DONOR_OBJECTS = '/repo/donor/objects';
+
+const donorPackMember = async (): Promise<{ readonly ctx: Context; readonly id: ObjectId }> => {
+  const ctx = createMemoryContext({
+    files: { '/repo/.git/objects/info/alternates': enc.encode(`${DONOR_OBJECTS}\n`) },
+  });
+  await ctx.fs.mkdir(DONOR_OBJECTS);
+  const [id] = await writeSyntheticPackIn(ctx, DONOR_OBJECTS, 'donor-member', [
+    { kind: 'base', type: 'blob', content: enc.encode('x'.repeat(2000)) },
+  ]);
+  return { ctx, id: id as ObjectId };
+};
+
+const corruptDonorPackEntry = async (ctx: Context): Promise<void> => {
+  const packPath = `${DONOR_OBJECTS}/pack/pack-donor-member.pack`;
+  const bytes = (await ctx.fs.read(packPath)).slice();
+  bytes[20] = (bytes[20] ?? 0) ^ 0xff;
+  bytes[21] = (bytes[21] ?? 0) ^ 0xff;
+  await ctx.fs.write(packPath, bytes);
+};
+
+describe('Given an id claimed only by a pack in an alternate', () => {
+  describe('When hasPackCopy is called', () => {
+    it('Then it returns true', async () => {
+      // Arrange
+      const sut = hasPackCopy;
+      const { ctx, id } = await donorPackMember();
+
+      // Act
+      const result = await sut(ctx, id);
+
+      // Assert
+      expect(result).toBe(true);
+    });
+  });
+});
+
+describe('Given an unreadable id claimed only by a pack in an alternate', () => {
+  describe('When collectUnreadablePackMemberIds is called', () => {
+    it('Then it returns that id', async () => {
+      // Arrange
+      const sut = collectUnreadablePackMemberIds;
+      const { ctx, id } = await donorPackMember();
+
+      // Act
+      const result = await sut(ctx, new Map<ObjectId, CachedGitObject>([[id, null]]));
+
+      // Assert
+      expect(result.has(id)).toBe(true);
+    });
+  });
+});
+
+describe('Given a donor pack member whose entry bytes are corrupt', () => {
+  describe('When buildObjectCache classifies unreadable objects', () => {
+    it('Then the type is recovered from the donor pack entry header', async () => {
+      // Arrange
+      const { ctx, id } = await donorPackMember();
+      await corruptDonorPackEntry(ctx);
+      const sut = buildObjectCache;
+
+      // Act
+      const result = await sut(ctx, new Set([id]), 'classify');
+
+      // Assert
+      expect(result.recovered.get(id)).toBe('blob');
     });
   });
 });

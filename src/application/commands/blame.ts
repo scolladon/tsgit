@@ -15,9 +15,10 @@ import { splitAgainstParent } from '../../domain/blame/split-blame.js';
 import type { BlameEntry } from '../../domain/blame/types.js';
 import { invalidOption, pathNotInTree, worktreeFileAbsent } from '../../domain/commands/error.js';
 import { BinaryHeap } from '../../domain/commit/binary-heap.js';
-import { precedes, type QueueEntry } from '../../domain/commit/priority-queue.js';
+import { precedesByArrival, type QueueEntry } from '../../domain/commit/priority-queue.js';
 import type { TreeDiff } from '../../domain/diff/diff-change.js';
 import { diffPresplitLines, splitLines } from '../../domain/diff/line-diff.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import { FILE_MODE } from '../../domain/objects/file-mode.js';
@@ -138,10 +139,14 @@ interface Suspect {
   readonly commitData: CommitData;
 }
 
+type ScheduledSuspect = QueueEntry<Suspect> & { readonly arrival: number };
+
 interface Scoreboard {
   readonly ctx: Context;
-  readonly queue: BinaryHeap<QueueEntry<Suspect>>;
+  readonly queue: BinaryHeap<ScheduledSuspect>;
   readonly finalized: BlameLine[];
+  /** Next arrival ticket; advanced in place, once per scheduled suspect. */
+  arrivals: number;
 }
 
 const DEFAULT_REV = 'HEAD';
@@ -155,8 +160,9 @@ export const blame = async (
   const filePath = FilePathFactory.from(path);
   const board: Scoreboard = {
     ctx,
-    queue: new BinaryHeap<QueueEntry<Suspect>>(precedes),
+    queue: new BinaryHeap<ScheduledSuspect>(precedesByArrival),
     finalized: [],
+    arrivals: 0,
   };
   if (opts.worktree === true) {
     if (opts.rev !== undefined) {
@@ -341,7 +347,7 @@ const seed = async (
 
 const walk = async (sb: Scoreboard): Promise<void> => {
   while (sb.queue.size() > 0) {
-    const { value } = sb.queue.pop() as QueueEntry<Suspect>;
+    const { value } = sb.queue.pop() as ScheduledSuspect;
     await processSuspect(sb, value);
   }
 };
@@ -469,6 +475,27 @@ type ResolvedParent =
       readonly commitData: CommitData;
     };
 
+/** Why git's `repo_parse_commit` fails on `parent`, for the failures `pass_blame` steps over. */
+const UNPARSABLE_PARENT: ReadonlyMap<string | undefined, (parent: ObjectId) => string> = new Map([
+  ['OBJECT_NOT_FOUND', (parent: ObjectId) => `Could not read ${parent}`],
+  ['UNEXPECTED_OBJECT_TYPE', (parent: ObjectId) => `Object ${parent} not a commit`],
+]);
+
+/**
+ * git's `pass_blame` skips a parent it cannot parse — reporting why — and
+ * leaves the lines with the child; any other failure still refuses.
+ */
+const readParentData = async (ctx: Context, parent: ObjectId): Promise<CommitData | undefined> => {
+  try {
+    return await readCommitData(ctx, parent);
+  } catch (error) {
+    const reason = UNPARSABLE_PARENT.get(errorDataCode(error));
+    if (reason === undefined) throw error;
+    ctx.logger?.warn?.(reason(parent), { id: parent });
+    return undefined;
+  }
+};
+
 /**
  * Resolve the suspect's path in one parent. The per-level oid chain is
  * compared to the suspect's BEFORE any blob is read: a match at any level
@@ -485,7 +512,8 @@ const resolveInParent = async (
   childTree: ObjectId,
   suspect: Suspect,
 ): Promise<ResolvedParent | undefined> => {
-  const commitData = await readCommitData(ctx, parent);
+  const commitData = await readParentData(ctx, parent);
+  if (commitData === undefined) return undefined;
   const resolution = await descendMatchingTreeChain(
     ctx,
     commitData.tree,
@@ -577,13 +605,16 @@ const renamedSource = async (
   return undefined;
 };
 
-/** Queue a suspect for the lines now blamed on it (newest commit date pops first). */
+/** Queue a suspect for the lines now blamed on it: newest commit date pops
+ *  first, equal dates in scheduling order (git's `prio_queue` insertion order). */
 const schedule = (sb: Scoreboard, suspect: Suspect): void => {
   // Stryker disable next-line ConditionalExpression: equivalent — an empty entry list would enqueue a suspect that finalizes no lines; the guard only avoids needlessly walking ancestors, so output is identical
   if (suspect.entries.length === 0) return;
   sb.queue.push({
     oid: suspect.commit,
     date: suspect.commitData.committer.timestamp,
+    arrival: sb.arrivals,
     value: suspect,
   });
+  sb.arrivals += 1;
 };

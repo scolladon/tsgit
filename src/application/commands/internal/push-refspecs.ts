@@ -12,6 +12,7 @@ import {
   noUpstreamConfigured,
   pushDefaultNothing,
   pushDetachedNoRefspec,
+  pushMultipleUpstreams,
   pushRemoteNotUpstream,
   pushUpstreamNameMismatch,
 } from '../../../domain/commands/error.js';
@@ -25,7 +26,12 @@ import { defaultRemoteName, resolvePushRemote } from './default-remote.js';
 import { type ParsedRefspec, parseRefspec } from './refspec.js';
 
 export type PushRefspecPlan =
-  | { readonly kind: 'explicit'; readonly refspecs: ReadonlyArray<ParsedRefspec> }
+  | {
+      readonly kind: 'explicit';
+      readonly refspecs: ReadonlyArray<ParsedRefspec>;
+      /** Each refspec as written, which `match_explicit` resolves against the refs. */
+      readonly written: ReadonlyArray<string>;
+    }
   | { readonly kind: 'fixed'; readonly refspecs: ReadonlyArray<ParsedRefspec> }
   | { readonly kind: 'matching' };
 
@@ -63,7 +69,7 @@ export const planPushRefspecs = async (
   head: HeadState,
 ): Promise<PushRefspecPlan> => {
   if (opts.refspecs !== undefined && opts.refspecs.length > 0) {
-    return { kind: 'explicit', refspecs: opts.refspecs.map(parseRefspec) };
+    return { kind: 'explicit', refspecs: opts.refspecs.map(parseRefspec), written: opts.refspecs };
   }
   if (config.push?.default === 'current') {
     return planCurrent(head);
@@ -98,7 +104,9 @@ interface BranchRemoteInfo {
   readonly fetchRemote: string;
   readonly pushRemote: string;
   readonly triangular: boolean;
+  /** `branch.<name>.merge` — git's `merge[0]`, an upstream only with a `branch.<name>.remote`. */
   readonly merge: string | undefined;
+  readonly mergeCount: number;
 }
 
 const resolveBranchRemoteInfo = (
@@ -109,13 +117,22 @@ const resolveBranchRemoteInfo = (
   const cur = shortBranchName(branchFull);
   const fetchRemote = defaultRemoteName(config, undefined, cur);
   const pushRemote = resolvePushRemote(config, opts.remote, cur);
+  const tracking = config.branch?.get(cur);
   return {
     branchFull,
     fetchRemote,
     pushRemote,
     triangular: pushRemote !== fetchRemote,
-    merge: config.branch?.get(cur)?.merge,
+    merge: tracking?.remote !== undefined ? tracking.merge : undefined,
+    mergeCount: tracking?.merges?.length ?? 0,
   };
+};
+
+/** git's `get_upstream_ref`: the branch's one upstream, refusing none or several. */
+const upstreamRef = (info: BranchRemoteInfo): string => {
+  if (info.merge === undefined) throw noUpstreamConfigured(info.branchFull);
+  if (info.mergeCount > 1) throw pushMultipleUpstreams(info.branchFull);
+  return info.merge;
 };
 
 const planUpstream = (
@@ -127,18 +144,11 @@ const planUpstream = (
   if (branch === undefined) {
     throw pushDetachedNoRefspec();
   }
-  const { branchFull, pushRemote, triangular, merge } = resolveBranchRemoteInfo(
-    config,
-    opts,
-    branch,
-  );
-  if (triangular) {
-    throw pushRemoteNotUpstream(pushRemote, branchFull);
+  const info = resolveBranchRemoteInfo(config, opts, branch);
+  if (info.triangular) {
+    throw pushRemoteNotUpstream(info.pushRemote, info.branchFull);
   }
-  if (merge === undefined) {
-    throw noUpstreamConfigured(branchFull);
-  }
-  return { kind: 'fixed', refspecs: [parseRefspec(`${branchFull}:${merge}`)] };
+  return { kind: 'fixed', refspecs: [parseRefspec(`${info.branchFull}:${upstreamRef(info)}`)] };
 };
 
 /**
@@ -157,14 +167,12 @@ const planSimple = (
   if (branch === undefined) {
     throw pushDetachedNoRefspec();
   }
-  const { branchFull, triangular, merge } = resolveBranchRemoteInfo(config, opts, branch);
-  if (triangular) {
+  const info = resolveBranchRemoteInfo(config, opts, branch);
+  const branchFull = info.branchFull;
+  if (info.triangular) {
     return { kind: 'fixed', refspecs: [parseRefspec(`${branchFull}:${branchFull}`)] };
   }
-  if (merge === undefined) {
-    throw noUpstreamConfigured(branchFull);
-  }
-  const upstream = RefName.from(merge);
+  const upstream = RefName.from(upstreamRef(info));
   if (shortBranchName(upstream) !== shortBranchName(branchFull)) {
     throw pushUpstreamNameMismatch(branchFull, upstream);
   }

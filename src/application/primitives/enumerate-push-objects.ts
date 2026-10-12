@@ -45,7 +45,7 @@ const collectCommitSeeds = async (
 ): Promise<ObjectId[]> => {
   const seeds: ObjectId[] = [];
   for (const want of wants) {
-    const seed = await resolveTagChain(ctx, want, (oid) => {
+    const seed = await resolveTagChain(ctx, undefined, want, (oid) => {
       tryEmit(state, oid);
     });
     seeds.push(seed);

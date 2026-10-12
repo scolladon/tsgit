@@ -193,8 +193,18 @@ export async function writeSyntheticPack(
   name: string,
   entries: ReadonlyArray<EntrySpec>,
 ): Promise<ReadonlyArray<string>> {
+  return writeSyntheticPackIn(ctx, `${ctx.layout.gitDir}/objects`, name, entries);
+}
+
+/** Like `writeSyntheticPack`, into an arbitrary `objects` directory (an alternate's). */
+export async function writeSyntheticPackIn(
+  ctx: Context,
+  objectsDir: string,
+  name: string,
+  entries: ReadonlyArray<EntrySpec>,
+): Promise<ReadonlyArray<string>> {
   const result = await buildSyntheticPack(ctx, entries);
-  const base = `${ctx.layout.gitDir}/objects/pack/pack-${name}`;
+  const base = `${objectsDir}/pack/pack-${name}`;
   await ctx.fs.write(`${base}.pack`, result.packBytes);
   await ctx.fs.write(`${base}.idx`, result.idxBytes);
   return result.ids;
@@ -261,6 +271,21 @@ export async function restampPackHeader(
   const checksumHex = await ctx.hash.hashHex(bytes.subarray(0, bytes.length - digestLength));
   bytes.set(hexToBytes(checksumHex), bytes.length - digestLength);
   await ctx.fs.write(packPath, bytes);
+  await recordPackChecksumInIndex(ctx, packPath.replace(/\.pack$/, '.idx'), checksumHex);
+}
+
+/** Rewrite the pack checksum an `.idx` records, then restamp the `.idx`'s own trailer. */
+export async function recordPackChecksumInIndex(
+  ctx: Context,
+  idxPath: string,
+  checksumHex: string,
+): Promise<void> {
+  const idx = await ctx.fs.read(idxPath);
+  const digestLength = ctx.hashConfig.digestLength;
+  idx.set(hexToBytes(checksumHex), idx.length - 2 * digestLength);
+  const idxChecksumHex = await ctx.hash.hashHex(idx.subarray(0, idx.length - digestLength));
+  idx.set(hexToBytes(idxChecksumHex), idx.length - digestLength);
+  await ctx.fs.write(idxPath, idx);
 }
 
 const REV_MAGIC = 0x52494458; // 'RIDX'

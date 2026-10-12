@@ -37,18 +37,26 @@ export type Pathspec = ReadonlyArray<PathspecEntry>;
 export const compilePathspec = (patterns: ReadonlyArray<string>): Pathspec =>
   patterns.map(compileOne);
 
+/** The whole tree — git's `.` once its `.` components collapse to the empty prefix. */
+const WHOLE_TREE: GlobMatcher = { test: () => true };
+
+/** A trailing-slash literal names a directory only: it matches the paths beneath it. */
+const compileDirectory = (body: string): GlobMatcher => ({
+  test: (path) => path.startsWith(body),
+});
+
+const compileLiteral = (body: string): GlobMatcher => {
+  if (body === '') return WHOLE_TREE;
+  if (body.endsWith('/')) return compileDirectory(body);
+  return compileGlob(body, { anchored: true, withDirSuffix: true });
+};
+
 const compileOne = (raw: string): PathspecEntry => {
   const negated = raw.startsWith('!');
   const body = negated ? raw.slice(1) : raw;
   const isLiteral = !containsGlob(body);
   if (isLiteral) {
-    return {
-      pattern: raw,
-      body,
-      negated,
-      isLiteral: true,
-      compiled: compileGlob(body, { anchored: true, withDirSuffix: true }),
-    };
+    return { pattern: raw, body, negated, isLiteral: true, compiled: compileLiteral(body) };
   }
   return {
     pattern: raw,

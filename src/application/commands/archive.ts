@@ -1,15 +1,22 @@
 import type { ArchiveEntry, ArchiveResult } from '../../domain/archive/index.js';
+import { resolveAttribute } from '../../domain/attributes/index.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import { FILE_MODE } from '../../domain/objects/file-mode.js';
-import type { ObjectId } from '../../domain/objects/index.js';
+import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { readStrictBigFileThreshold } from '../primitives/internal/big-file-threshold.js';
+import { readBlobContentInStreamOrder } from '../primitives/internal/blob-source.js';
 import { peel } from '../primitives/internal/peel.js';
+import { buildTreeAttributeProvider } from '../primitives/internal/read-gitattributes.js';
 import { readBlob } from '../primitives/read-blob.js';
-import { readObject } from '../primitives/read-object.js';
+import { readDeclaredObjectHeader, readObject } from '../primitives/read-object.js';
+import type { WalkTreeEntry } from '../primitives/types.js';
 import { walkTree } from '../primitives/walk-tree.js';
+import { createSubstExpander, type SubstExpander } from './internal/archive-subst.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
-import { revParse } from './rev-parse.js';
+import { dwimRefNameWarning } from './internal/revision-name.js';
+import { evaluateRevision } from './rev-parse.js';
 
 export type { ArchiveEntry, ArchiveResult } from '../../domain/archive/index.js';
 
@@ -29,17 +36,20 @@ export interface ArchiveOptions {
  *
  * Refusal conditions (thrown, never mid-stream):
  * - `NOT_A_REPOSITORY`: `ctx` does not point at a git repository.
- * - Unborn HEAD or unresolvable expression: propagated from `revParse`.
+ * - Unborn HEAD or unresolvable expression: propagated from `evaluateRevision`.
  * - `UNEXPECTED_OBJECT_TYPE`: treeish resolves to a blob, not a tree/commit/tag.
  */
 export async function archive(ctx: Context, opts: ArchiveOptions): Promise<ArchiveResult> {
   await assertOperationalRepository(ctx);
-  const oid = await revParse(ctx, opts.treeish);
+  // git's `parse_treeish_arg`: a `dwim_ref` of the whole name, then one `get_oid` read.
+  await dwimRefNameWarning(ctx, opts.treeish);
+  const oid = await evaluateRevision(ctx, opts.treeish);
   const classified = await classifyOid(ctx, oid);
   const { tree } = classified;
   if ('commit' in classified) {
     const { commit, commitTime } = classified;
-    return { tree, commit, commitTime, entries: buildEntryStream(ctx, tree) };
+    const entries = buildEntryStream(ctx, tree, createSubstExpander(ctx, { commit, tree }));
+    return { tree, commit, commitTime, entries };
   }
   return { tree, entries: buildEntryStream(ctx, tree) };
 }
@@ -69,7 +79,7 @@ async function classifyOid(ctx: Context, oid: ObjectId): Promise<ClassifyResult>
     return { tree: obj.data.tree, commit: oid, commitTime: obj.data.committer.timestamp };
   }
   if (obj.type === 'tag') {
-    const commitOid = await peel(ctx, oid, 'commit');
+    const commitOid = await peel(ctx, undefined, oid, 'commit');
     const commitObj = await readObject(ctx, commitOid);
     if (commitObj.type !== 'commit') {
       throw unexpectedObjectType('commit', commitObj.type, commitOid);
@@ -85,6 +95,25 @@ async function classifyOid(ctx: Context, oid: ObjectId): Promise<ClassifyResult>
   }
   // git refuses a blob treeish with "fatal: not a tree object"
   throw unexpectedObjectType('tree', obj.type, oid);
+}
+
+const isRegularFileMode = (mode: FileMode): boolean =>
+  mode === FILE_MODE.REGULAR || mode === FILE_MODE.EXECUTABLE;
+
+const readInCore = async (ctx: Context, id: ObjectId): Promise<Uint8Array> =>
+  (await readBlob(ctx, id)).content;
+
+/**
+ * git's archive streams a regular blob above `core.bigFileThreshold` and reads
+ * every other entry whole, so only the former is opened in stream order.
+ */
+async function readRegularContent(ctx: Context, id: ObjectId): Promise<Uint8Array> {
+  const { type, declaredSize } = await readDeclaredObjectHeader(ctx, id);
+  if (type !== 'blob') return readInCore(ctx, id);
+  if (declaredSize > (await readStrictBigFileThreshold(ctx))) {
+    return readBlobContentInStreamOrder(ctx, id);
+  }
+  return readInCore(ctx, id);
 }
 
 /**
@@ -103,17 +132,107 @@ async function classifyOid(ctx: Context, oid: ObjectId): Promise<ClassifyResult>
  * validated here, before it is yielded as a tar/zip member name, so the
  * refusal fires at the same boundary git's own `archive` refuses it.
  */
-async function* buildEntryStream(ctx: Context, tree: ObjectId): AsyncIterable<ArchiveEntry> {
+async function* buildEntryStream(
+  ctx: Context,
+  tree: ObjectId,
+  subst?: SubstExpander,
+): AsyncIterable<ArchiveEntry> {
+  const plan = await createEntryPlanner(ctx, tree, subst);
   for await (const entry of walkTree(ctx, tree, {
     maxEntries: Number.MAX_SAFE_INTEGER,
   })) {
-    const { path, id, mode } = entry;
-    validateIndexPath(path, NO_PARSER_OFFSET, mode);
-    if (mode === FILE_MODE.DIRECTORY || mode === FILE_MODE.GITLINK) {
-      yield { path, mode, oid: id };
-    } else {
-      const blob = await readBlob(ctx, id);
-      yield { path, mode, oid: id, content: blob.content };
-    }
+    validateIndexPath(entry.path, NO_PARSER_OFFSET, entry.mode);
+    yield* await plan(entry);
   }
 }
+
+const EXPORT_IGNORE = 'export-ignore';
+const EXPORT_SUBST = 'export-subst';
+
+type AttributeCheck = (key: string, attribute: string) => Promise<boolean>;
+
+/** An archive attribute counts only when set — a string value or an unset is not. */
+const createAttributeCheck = async (ctx: Context, tree: ObjectId): Promise<AttributeCheck> => {
+  const provider = await buildTreeAttributeProvider(ctx, tree);
+  return async (key, attribute) => {
+    const { sources, macros } = await provider.sourcesForPath(key as FilePath);
+    return resolveAttribute(sources, key, attribute, macros) === true;
+  };
+};
+
+/**
+ * git's `write_archive_entry`: only a regular file is converted, and a converted
+ * file is read whole whatever its size — the attribute decides, not whether a
+ * commit is there to expand against.
+ */
+const readEntryContent = async (
+  ctx: Context,
+  entry: WalkTreeEntry,
+  isSet: AttributeCheck,
+  subst: SubstExpander | undefined,
+): Promise<Uint8Array> => {
+  if (!isRegularFileMode(entry.mode)) return readInCore(ctx, entry.id);
+  if (!(await isSet(entry.path, EXPORT_SUBST))) return readRegularContent(ctx, entry.id);
+  const content = await readInCore(ctx, entry.id);
+  return subst === undefined ? content : subst.expandFile(content);
+};
+
+const isInside = (path: string, directory: string): boolean => path.startsWith(`${directory}/`);
+
+const isOutside = (path: string, directory: ArchiveEntry | undefined): boolean =>
+  directory !== undefined && !isInside(path, directory.path);
+
+/**
+ * Held-back directories always form one ancestor chain, deepest last, so the
+ * trim stops at the first one still holding `path`.
+ */
+const keepAncestorsOf = (queued: ArchiveEntry[], path: string): void => {
+  while (isOutside(path, queued.at(-1))) queued.pop();
+};
+
+const attributeKey = (path: string, mode: FileMode): string =>
+  mode === FILE_MODE.GITLINK ? `${path}/` : path;
+
+/**
+ * git's `queue_or_write_archive_entry`: a directory is held back until a
+ * non-directory descendant reaches its own export-ignore check, so a directory
+ * with nothing left to export is never emitted. The directory is flushed
+ * before that check, which is why `dir/**` keeps `dir` itself.
+ */
+const createEntryPlanner = async (
+  ctx: Context,
+  tree: ObjectId,
+  subst: SubstExpander | undefined,
+): Promise<(entry: WalkTreeEntry) => Promise<ReadonlyArray<ArchiveEntry>>> => {
+  const isSet = await createAttributeCheck(ctx, tree);
+  const isExportIgnored = (key: string) => isSet(key, EXPORT_IGNORE);
+  let queued: ArchiveEntry[] = [];
+  let ignoredDirectory: string | undefined;
+  return async (entry) => {
+    const { path, id, mode } = entry;
+    if (ignoredDirectory !== undefined && isInside(path, ignoredDirectory)) return [];
+    keepAncestorsOf(queued, path);
+    if (mode === FILE_MODE.DIRECTORY) {
+      if (await isExportIgnored(`${path}/`)) ignoredDirectory = path;
+      else queued.push({ path, mode, oid: id });
+      return [];
+    }
+    const flushed = queued;
+    queued = [];
+    if (await isExportIgnored(attributeKey(path, mode))) return flushed;
+    return [...flushed, await archiveLeaf(ctx, entry, isSet, subst)];
+  };
+};
+
+/** A non-directory entry, not export-ignored, as archived. */
+const archiveLeaf = async (
+  ctx: Context,
+  entry: WalkTreeEntry,
+  isSet: AttributeCheck,
+  subst: SubstExpander | undefined,
+): Promise<ArchiveEntry> => {
+  const { path, id, mode } = entry;
+  if (mode === FILE_MODE.GITLINK) return { path, mode, oid: id };
+  const content = await readEntryContent(ctx, entry, isSet, subst);
+  return { path, mode, oid: id, content };
+};

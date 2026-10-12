@@ -1,0 +1,472 @@
+/**
+ * Cross-tool interop — the commit-graph a read walk loads. Each row damages a
+ * real `git commit-graph write` result, runs real `git log`, and opens the same
+ * repository through tsgit: the layers tsgit serves and the warnings it logs
+ * must be the ones git's loader settles on and prints.
+ *
+ * @proves
+ *   surface:        log, walkCommits
+ *   bucket:         cross-tool-interop
+ *   unique:         the commit-graph read path loads, refuses and warns about layers as git's loader does
+ *   interopSurface: commit-graph
+ */
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { commitHeader } from '../../src/application/primitives/internal/read-commit-graph.js';
+import type { TsgitError } from '../../src/domain/error.js';
+import type { ObjectId } from '../../src/domain/objects/index.js';
+import { openRepository } from '../../src/index.node.js';
+import {
+  disableAutoMaintenance,
+  GIT_AVAILABLE,
+  runGit,
+  runGitEnv,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
+
+const ROW_TIMEOUT = 30_000;
+const GIT_SUCCEEDED = 0;
+const GIT_DIED = 128;
+const GENERATION_OVERFLOW_FLAG = 0x80000000;
+const WARNING_PREFIX = /^(warning|error): /;
+const LOGGER_PREFIX = 'commitGraph: ';
+
+let root: string;
+let rowCount = 0;
+
+beforeAll(() => {
+  root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'tsgit-interop-cgraph-read-')));
+});
+
+afterAll(() => {
+  rmSync(root, { recursive: true, force: true });
+});
+
+interface Linear {
+  readonly dir: string;
+  /** Oldest first. */
+  readonly commits: ReadonlyArray<ObjectId>;
+  readonly layersDir: string;
+}
+
+const linearHistory = (count: number): Linear => {
+  rowCount += 1;
+  const dir = path.join(root, `repo-${rowCount}`);
+  runGit(['init', '-q', '-b', 'main', dir]);
+  disableAutoMaintenance(dir);
+  for (let n = 1; n <= count; n += 1) {
+    const date = `@${1_700_000_000 + n} +0000`;
+    runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', `c${n}`], {
+      env: { ...runGitEnv(), GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+    });
+  }
+  const commits = runGit(['-C', dir, 'rev-list', '--reverse', 'HEAD']).trim().split('\n');
+  const layersDir = path.join(dir, '.git', 'objects', 'info', 'commit-graphs');
+  return { dir, commits: commits as ObjectId[], layersDir };
+};
+
+const writeSplitAt = (repo: Linear, tip: ObjectId): void => {
+  runGit(['-C', repo.dir, 'commit-graph', 'write', '--split=no-merge', '--stdin-commits'], {
+    input: `${tip}\n`,
+  });
+};
+
+const chainPath = (repo: Linear): string => path.join(repo.layersDir, 'commit-graph-chain');
+
+const chainLines = (repo: Linear): ReadonlyArray<string> =>
+  readFileSync(chainPath(repo), 'utf8').trim().split('\n');
+
+const layerPath = (repo: Linear, hash: string): string =>
+  path.join(repo.layersDir, `graph-${hash}.graph`);
+
+/** Write a reachable single-file graph, then hide its EDGE chunk from readers. */
+const writeGraphWithoutEdgeChunk = (repo: Linear): void => {
+  runGit(['-C', repo.dir, 'commit-graph', 'write', '--reachable']);
+  const file = path.join(repo.dir, '.git', 'objects', 'info', 'commit-graph');
+  chmodSync(file, 0o644);
+  const bytes = new Uint8Array(readFileSync(file));
+  const rows = Buffer.from(bytes.subarray(0, 8 + 12 * ((bytes[6] as number) + 1)));
+  bytes.set(Buffer.from('ZZZZ', 'latin1'), rows.indexOf('EDGE', 8, 'latin1'));
+  writeFileSync(file, bytes);
+};
+
+const gitWarnings = (repo: Linear): { readonly exitCode: number; readonly lines: string[] } => {
+  const result = tryRunGitWithExit(['-C', repo.dir, 'log', '--format=%H']);
+  const lines = result.stderr
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => line.replace(WARNING_PREFIX, ''));
+  return { exitCode: result.exitCode, lines };
+};
+
+const tsgitServes = async (repo: Linear, ids: ReadonlyArray<ObjectId>) => {
+  const warnings: string[] = [];
+  const logger = { warn: (message: string) => warnings.push(message) };
+  const opened = await openRepository({ cwd: repo.dir, logger });
+  try {
+    const served: boolean[] = [];
+    for (const id of ids) served.push((await commitHeader(opened.ctx, id)) !== undefined);
+    return { served, warnings: warnings.map((line) => line.replace(LOGGER_PREFIX, '')) };
+  } finally {
+    await opened.dispose?.();
+  }
+};
+
+describe.skipIf(!GIT_AVAILABLE)('commit-graph read interop', () => {
+  describe('Given a chain whose second line names a layer built on a different base', () => {
+    describe('When both tools load the graph', () => {
+      it(
+        'Then both warn the chain does not match and serve only the first layer',
+        async () => {
+          // Arrange
+          const repo = linearHistory(4);
+          const [c1, c2, , c4] = repo.commits as [ObjectId, ObjectId, ObjectId, ObjectId];
+          writeSplitAt(repo, c1);
+          const [foreign] = chainLines(repo) as [string];
+          const foreignBytes = readFileSync(layerPath(repo, foreign));
+          rmSync(repo.layersDir, { recursive: true });
+          writeSplitAt(repo, c2);
+          writeSplitAt(repo, c4);
+          const [, tip] = chainLines(repo) as [string, string];
+          chmodSync(chainPath(repo), 0o644);
+          writeFileSync(layerPath(repo, foreign), foreignBytes);
+          writeFileSync(chainPath(repo), `${foreign}\n${tip}\n`);
+
+          // Act
+          const git = gitWarnings(repo);
+          const ours = await tsgitServes(repo, [c1, c2, c4]);
+
+          // Assert
+          expect(git.exitCode).toBe(GIT_SUCCEEDED);
+          expect(git.lines).toEqual([
+            'commit-graph chain does not match',
+            'unable to find all commit-graph files',
+          ]);
+          expect(ours.warnings).toEqual(git.lines);
+          expect(ours.served).toEqual([true, false, false]);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe.each([
+    { label: 'more base graphs than its BASE chunk holds', declared: 2 },
+    { label: 'no base graph at all', declared: 0 },
+  ])('Given a tip layer whose header declares $label', ({ declared }) => {
+    describe('When both tools load the graph', () => {
+      it(
+        'Then both read BASE by its chunk and serve every layer without a warning',
+        async () => {
+          // Arrange
+          const repo = linearHistory(3);
+          const [c1, , c3] = repo.commits as [ObjectId, ObjectId, ObjectId];
+          writeSplitAt(repo, c1);
+          writeSplitAt(repo, c3);
+          const [, tip] = chainLines(repo) as [string, string];
+          const tipFile = layerPath(repo, tip);
+          chmodSync(tipFile, 0o644);
+          const bytes = new Uint8Array(readFileSync(tipFile));
+          bytes[7] = declared;
+          writeFileSync(tipFile, bytes);
+
+          // Act
+          const git = gitWarnings(repo);
+          const ours = await tsgitServes(repo, [c1, c3]);
+
+          // Assert
+          expect(git.exitCode).toBe(GIT_SUCCEEDED);
+          expect(git.lines).toEqual([]);
+          expect(ours.warnings).toEqual(git.lines);
+          expect(ours.served).toEqual([true, true]);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a single-file graph whose GDA2 chunk is one entry short', () => {
+    describe('When both tools load the graph', () => {
+      it(
+        'Then both report the generations chunk wrong-sized and still serve the graph',
+        async () => {
+          // Arrange
+          const repo = linearHistory(2);
+          runGit(['-C', repo.dir, 'commit-graph', 'write', '--reachable']);
+          const file = path.join(repo.dir, '.git', 'objects', 'info', 'commit-graph');
+          chmodSync(file, 0o644);
+          const bytes = new Uint8Array(readFileSync(file));
+          const view = new DataView(bytes.buffer);
+          const rows = Buffer.from(bytes.subarray(0, 8 + 12 * ((bytes[6] as number) + 1)));
+          const endOffsetLow = rows.indexOf('GDA2', 8, 'latin1') + 12 + 8;
+          view.setUint32(endOffsetLow, view.getUint32(endOffsetLow) - 4);
+          writeFileSync(file, bytes);
+
+          // Act
+          const git = gitWarnings(repo);
+          const ours = await tsgitServes(repo, [...repo.commits]);
+
+          // Assert
+          expect(git.exitCode).toBe(GIT_SUCCEEDED);
+          expect(git.lines).toEqual(['commit-graph generations chunk is wrong size']);
+          expect(ours.warnings).toEqual(git.lines);
+          expect(ours.served).toEqual([true, true]);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a single-file graph whose signature is smashed', () => {
+    describe('When both tools load the graph', () => {
+      it(
+        'Then both refuse the file and report the signature it carries',
+        async () => {
+          // Arrange
+          const repo = linearHistory(2);
+          runGit(['-C', repo.dir, 'commit-graph', 'write', '--reachable']);
+          const file = path.join(repo.dir, '.git', 'objects', 'info', 'commit-graph');
+          chmodSync(file, 0o644);
+          const bytes = new Uint8Array(readFileSync(file));
+          bytes[0] = 0x58;
+          writeFileSync(file, bytes);
+          const failures: unknown[] = [];
+          const opened = await openRepository({
+            cwd: repo.dir,
+            logger: { warn: (_message, context) => failures.push(context?.failure) },
+          });
+
+          // Act
+          const git = gitWarnings(repo);
+          const served = await commitHeader(opened.ctx, repo.commits[0] as ObjectId);
+          await opened.dispose?.();
+
+          // Assert
+          const [failure] = failures as [{ kind: string; found: number }];
+          expect(git.exitCode).toBe(GIT_SUCCEEDED);
+          expect(served).toBeUndefined();
+          expect(git.lines).toEqual([
+            `commit-graph signature ${failure.found.toString(16).toUpperCase()} does not match signature 43475048`,
+          ]);
+          expect(failure.kind).toBe('signature');
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a single-file graph whose first GDA2 entry demands overflow data with no GDO2 chunk', () => {
+    describe('When both tools walk the history by date', () => {
+      it(
+        'Then both stop after the same commits and refuse with the same reason',
+        async () => {
+          // Arrange
+          const repo = linearHistory(4);
+          runGit(['-C', repo.dir, 'commit-graph', 'write', '--reachable']);
+          const file = path.join(repo.dir, '.git', 'objects', 'info', 'commit-graph');
+          chmodSync(file, 0o644);
+          const bytes = new Uint8Array(readFileSync(file));
+          const view = new DataView(bytes.buffer);
+          const rows = Buffer.from(bytes.subarray(0, 8 + 12 * ((bytes[6] as number) + 1)));
+          const gda2Start = view.getUint32(rows.indexOf('GDA2', 8, 'latin1') + 8);
+          view.setUint32(gda2Start, GENERATION_OVERFLOW_FLAG);
+          writeFileSync(file, bytes);
+          const opened = await openRepository({ cwd: repo.dir });
+          const yielded: string[] = [];
+          let caught: unknown;
+
+          // Act
+          const git = tryRunGitWithExit(['-C', repo.dir, 'log', '--format=%H']);
+          try {
+            const tip = repo.commits.at(-1) as ObjectId;
+            for await (const commit of opened.primitives.walkCommitsByDate({ from: [tip] })) {
+              yielded.push(commit.id);
+            }
+          } catch (error) {
+            caught = error;
+          } finally {
+            await opened.dispose?.();
+          }
+
+          // Assert
+          expect(git.exitCode).toBe(GIT_DIED);
+          expect(yielded).toEqual(git.stdout.split('\n').filter((line) => line.length > 0));
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_COMMIT_GRAPH_CHUNK',
+            reason: git.stderr.replace(/^fatal: /, '').trimEnd(),
+          });
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a single-file graph whose octopus merge has no EDGE chunk to read', () => {
+    describe('When both tools log the history', () => {
+      it(
+        'Then both report the extra-edges pointer, fall back for that commit and keep the graph',
+        async () => {
+          // Arrange
+          const repo = linearHistory(1);
+          const [root] = repo.commits as [ObjectId];
+          const commitTree = (message: string, parents: ReadonlyArray<string>): string =>
+            runGit([
+              '-C',
+              repo.dir,
+              'commit-tree',
+              `${root}^{tree}`,
+              ...parents.flatMap((parent) => ['-p', parent]),
+              '-m',
+              message,
+            ]).trim();
+          const sides = ['s1', 's2'].map((message) => commitTree(message, [root]));
+          const octopus = commitTree('octopus', [root, ...sides]);
+          runGit(['-C', repo.dir, 'update-ref', 'refs/heads/main', octopus]);
+          writeGraphWithoutEdgeChunk(repo);
+          const warnings: string[] = [];
+          const opened = await openRepository({
+            cwd: repo.dir,
+            logger: { warn: (message: string) => warnings.push(message) },
+          });
+
+          // Act
+          const git = tryRunGitWithExit(['-C', repo.dir, 'log', '--format=%H %P']);
+          const ours = await opened.log();
+          const sideServed = await commitHeader(opened.ctx, sides[0] as ObjectId);
+          await opened.dispose?.();
+
+          // Assert
+          expect(git.exitCode).toBe(GIT_SUCCEEDED);
+          expect(git.stderr).toBe('error: commit-graph extra-edges pointer out of bounds\n');
+          expect(warnings.map((line) => `error: ${line.replace(LOGGER_PREFIX, '')}\n`)).toEqual([
+            git.stderr,
+          ]);
+          expect(ours.map((entry) => [entry.id, ...entry.parents].join(' '))).toEqual(
+            git.stdout.trimEnd().split('\n'),
+          );
+          expect(sideServed).toBeDefined();
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a chain that lists its tip layer without the base it builds on', () => {
+    describe('When both tools log the history', () => {
+      it(
+        'Then both refuse on the first parent position past the tip layer',
+        async () => {
+          // Arrange
+          const repo = linearHistory(4);
+          const [, c2, , c4] = repo.commits as [ObjectId, ObjectId, ObjectId, ObjectId];
+          writeSplitAt(repo, c2);
+          writeSplitAt(repo, c4);
+          const [, tip] = chainLines(repo) as [string, string];
+          chmodSync(chainPath(repo), 0o644);
+          writeFileSync(chainPath(repo), `${tip}\n`);
+          const opened = await openRepository({ cwd: repo.dir });
+          let caught: unknown;
+
+          // Act
+          const git = tryRunGitWithExit(['-C', repo.dir, 'log', '--format=%H']);
+          try {
+            await opened.log();
+          } catch (error) {
+            caught = error;
+          } finally {
+            await opened.dispose?.();
+          }
+
+          // Assert
+          expect(git.exitCode).toBe(GIT_DIED);
+          expect(git.stdout).toBe('');
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_COMMIT_GRAPH_CHUNK',
+            reason: git.stderr.replace(/^fatal: /, '').trimEnd(),
+          });
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given commitGraph.generationVersion=1 and a single-file graph whose GDA2 chunk is one entry short', () => {
+    describe('When both tools load the graph', () => {
+      it(
+        'Then neither reads GDA2: no error, every commit served',
+        async () => {
+          // Arrange
+          const repo = linearHistory(2);
+          runGit(['-C', repo.dir, 'commit-graph', 'write', '--reachable']);
+          runGit(['-C', repo.dir, 'config', 'commitGraph.generationVersion', '1']);
+          const file = path.join(repo.dir, '.git', 'objects', 'info', 'commit-graph');
+          chmodSync(file, 0o644);
+          const bytes = new Uint8Array(readFileSync(file));
+          const view = new DataView(bytes.buffer);
+          const rows = Buffer.from(bytes.subarray(0, 8 + 12 * ((bytes[6] as number) + 1)));
+          const endOffsetLow = rows.indexOf('GDA2', 8, 'latin1') + 12 + 8;
+          view.setUint32(endOffsetLow, view.getUint32(endOffsetLow) - 4);
+          writeFileSync(file, bytes);
+
+          // Act
+          const git = gitWarnings(repo);
+          const ours = await tsgitServes(repo, [...repo.commits]);
+
+          // Assert
+          expect(git.exitCode).toBe(GIT_SUCCEEDED);
+          expect(git.lines).toEqual([]);
+          expect(ours.warnings).toEqual(git.lines);
+          expect(ours.served).toEqual([true, true]);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+  describe('Given a graph whose unreadable octopus sits below two children on the first-parent line', () => {
+    describe('When both tools log the first-parent history', () => {
+      it(
+        'Then the extra-edges pointer is reported once, as git reports it once per process',
+        async () => {
+          // Arrange
+          const repo = linearHistory(1);
+          const [root] = repo.commits as [ObjectId];
+          const commitTree = (message: string, parents: ReadonlyArray<string>): string =>
+            runGit([
+              '-C',
+              repo.dir,
+              'commit-tree',
+              `${root}^{tree}`,
+              ...parents.flatMap((parent) => ['-p', parent]),
+              '-m',
+              message,
+            ]).trim();
+          const sides = ['s1', 's2'].map((message) => commitTree(message, [root]));
+          const octopus = commitTree('octopus', [root, ...sides]);
+          const children = ['c1', 'c2'].map((message) => commitTree(message, [octopus]));
+          runGit(['-C', repo.dir, 'update-ref', 'refs/heads/main', commitTree('top', children)]);
+          writeGraphWithoutEdgeChunk(repo);
+          const warnings: string[] = [];
+          const opened = await openRepository({
+            cwd: repo.dir,
+            logger: { warn: (message: string) => warnings.push(message) },
+          });
+
+          // Act
+          const git = tryRunGitWithExit(['-C', repo.dir, 'log', '--first-parent', '--format=%H']);
+          const ours = await opened.log({ order: 'first-parent' });
+          await opened.dispose?.();
+
+          // Assert
+          expect(git.stderr).toBe('error: commit-graph extra-edges pointer out of bounds\n');
+          expect(warnings.map((line) => `error: ${line.replace(LOGGER_PREFIX, '')}\n`)).toEqual([
+            git.stderr,
+          ]);
+          expect(ours.map((entry) => entry.id)).toEqual(git.stdout.trimEnd().split('\n'));
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+});

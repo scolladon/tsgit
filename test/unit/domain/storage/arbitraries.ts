@@ -616,3 +616,38 @@ export function arbBitmapSpec(): fc.Arbitrary<BitmapSpec> {
       .map((r): BitmapSpec => ({ ...r, digestLength })),
   );
 }
+
+const QUOTE = 0x22;
+const BACKSLASH = 0x5c;
+const OCTAL_RADIX = 8;
+
+/** Test-side C-quoter, independent of the parser: every byte but printable ASCII
+ *  (and `"`/`\\`) is written as a 3-digit octal escape. */
+export const cQuote = (path: Uint8Array): Uint8Array => {
+  const out: number[] = [QUOTE];
+  for (const byte of path) {
+    const printable = byte >= 0x20 && byte < 0x7f && byte !== QUOTE && byte !== BACKSLASH;
+    if (printable) {
+      out.push(byte);
+      continue;
+    }
+    const octal = byte.toString(OCTAL_RADIX).padStart(3, '0');
+    out.push(BACKSLASH, ...[...octal].map((digit) => digit.charCodeAt(0)));
+  }
+  out.push(QUOTE);
+  return new Uint8Array(out);
+};
+
+/** Raw bytes biased towards the grammar's structural bytes: `#`, `"`, `\\`, `\n`, NUL. */
+export const arbAlternatesFileBytes = (): fc.Arbitrary<Uint8Array> =>
+  fc
+    .array(fc.oneof(fc.constantFrom(0x23, QUOTE, BACKSLASH, 0x0a, 0x00, 0x20, 0x30), fc.nat(255)), {
+      maxLength: 64,
+    })
+    .map((values) => new Uint8Array(values));
+
+/** A non-empty line that git treats as a plain entry: no `#`/`"` first, no `\n`, no NUL. */
+export const arbPlainAlternateLine = (): fc.Arbitrary<string> =>
+  fc
+    .string({ minLength: 1, maxLength: 24 })
+    .filter((line) => !/[\n\0]/.test(line) && line[0] !== '#' && line[0] !== '"');

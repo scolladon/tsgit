@@ -14,15 +14,21 @@ export const CLIENT_CAPABILITIES_FETCH: ReadonlyArray<string> = [
   AGENT,
 ];
 
+// Server capability that allows a push to delete refs.
+export const DELETE_REFS = 'delete-refs';
+
+// What git's send-pack asks for on every push, in its order, each only when
+// the server advertises it. `quiet` because a push reports no progress of its
+// own; `ofs-delta` and `delete-refs` only steer the client, so are never sent.
 export const CLIENT_CAPABILITIES_PUSH: ReadonlyArray<string> = [
   'report-status',
   'side-band-64k',
-  'ofs-delta',
-  'atomic',
-  'delete-refs',
-  AGENT,
+  'quiet',
 ];
 
+// Bare atomic capability token. Requested only by an atomic push, so it is
+// kept out of the default CLIENT_CAPABILITIES_PUSH set like push-cert.
+export const ATOMIC = 'atomic';
 // Bare push-cert capability token. Advertised by the client only when a push
 // is being signed, so it is kept out of the default CLIENT_CAPABILITIES_PUSH
 // set and added conditionally by the caller building the wants list.

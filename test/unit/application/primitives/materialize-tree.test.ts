@@ -9,6 +9,7 @@ import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId, TreeEntry } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
+import { scriptedCommandRunner } from '../../../fixtures/scripted-command-runner.js';
 import { recordingProgress } from '../commands/fixtures.js';
 import { buildSeededContext } from './fixtures.js';
 
@@ -757,6 +758,46 @@ describe('materializeTree', () => {
           offset: -1,
           reason: "'..' segment rejected",
         });
+      });
+    });
+  });
+
+  describe('Given a process filter driver and checkout metadata', () => {
+    describe('When materializeTree checks out a file', () => {
+      it('Then the process is told the pathname, ref, commit and blob in git’s order', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'HELLO');
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'a.y' as FilePath, blobId),
+        ]);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[filter "myf"]\n\tprocess = proc\n');
+        const pkt = (text: string): string =>
+          `${(text.length + 4).toString(16).padStart(4, '0')}${text}`;
+        const { runner, requests } = scriptedCommandRunner(
+          new TextEncoder().encode(
+            `${pkt('git-filter-server\n')}${pkt('version=2\n')}0000${pkt('capability=smudge\n')}0000` +
+              `${pkt('status=success\n')}0000${pkt('hello')}00000000`,
+          ),
+        );
+        const treeish = 'c'.repeat(40) as ObjectId;
+        const sut = materializeTree;
+
+        // Act
+        await sut(
+          { ...ctx, command: runner },
+          {
+            targetTree: treeId,
+            currentIndex: EMPTY_INDEX,
+            checkoutMetadata: { ref: 'refs/heads/other', treeish },
+          },
+        );
+
+        // Assert
+        expect(new TextDecoder().decode(requests[0]?.stdin)).toContain(
+          `${pkt('command=smudge\n')}${pkt('pathname=a.y\n')}${pkt('ref=refs/heads/other\n')}${pkt(`treeish=${treeish}\n`)}${pkt(`blob=${blobId}\n`)}0000`,
+        );
       });
     });
   });

@@ -1,0 +1,357 @@
+import { permissionDenied } from '../../domain/error.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
+import type { Context } from '../../ports/context.js';
+import type { FileSystem } from '../../ports/file-system.js';
+import type { AlternatePathProbe, ObjectSourceAccess } from '../../ports/object-source-access.js';
+import {
+  type AlternateChainIo,
+  type AlternateDiagnostic,
+  resolveObjectSources,
+  type SourceReports,
+} from './internal/alternate-chain.js';
+import { readBigFileThreshold } from './internal/big-file-threshold.js';
+import { type GitPathSyntax, gitPathSyntaxOf } from './internal/git-path-syntax.js';
+import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
+import {
+  assertRepoSettingsValid,
+  repoSettingsVerdictSettled,
+} from './internal/repo-settings-gate.js';
+import type { SourceLocation } from './internal/source-location.js';
+import { createPackRegistry, type PackRegistry } from './pack-registry.js';
+import { commonGitDir, objectsDirOf } from './path-layout.js';
+
+export interface ObjectSource extends SourceLocation {
+  readonly local: boolean;
+  readonly registry: PackRegistry;
+}
+
+export interface ObjectStore {
+  readonly sources: ReadonlyArray<ObjectSource>;
+  readonly primary: ObjectSource;
+  readonly diagnostics: ReadonlyArray<AlternateDiagnostic>;
+  readonly bigFileThreshold: number;
+  refresh(): void;
+  reprepare(): Promise<void>;
+  dispose(): Promise<void>;
+}
+
+/** The loose-cache key for `source`: the primary keeps its session-keyed cache (no location). */
+export const looseCacheLocation = (
+  store: Pick<ObjectStore, 'primary'>,
+  source: ObjectSource,
+): SourceLocation | undefined => (source === store.primary ? undefined : source);
+
+const ABSENT_LIST_CODES: ReadonlySet<string | undefined> = new Set([
+  'FILE_NOT_FOUND',
+  'NOT_A_DIRECTORY',
+]);
+
+/** The primary's alternates file: its bytes, absent, or unreadable — resolution then reports why. */
+type PrimaryList = Uint8Array | 'absent' | 'unreadable';
+
+const readPrimaryList = async (ctx: Context, objectsDir: string): Promise<PrimaryList> => {
+  try {
+    return await ctx.fs.read(`${objectsDir}/info/alternates`);
+  } catch (error) {
+    return ABSENT_LIST_CODES.has(errorDataCode(error)) ? 'absent' : 'unreadable';
+  }
+};
+
+const PARENT_SEGMENT = '..';
+
+const isContained = (syntax: GitPathSyntax, path: string, objectsDir: string): boolean =>
+  path.startsWith(objectsDir) &&
+  syntax.isSeparator(path[objectsDir.length]) &&
+  !syntax.components(path).includes(PARENT_SEGMENT);
+
+const containedUtimeNow =
+  (fs: FileSystem, objectsDir: string, syntax: GitPathSyntax) =>
+  async (path: string): Promise<void> => {
+    if (!isContained(syntax, path, objectsDir)) throw permissionDenied(path);
+    await fs.utimeNow?.(path);
+  };
+
+/**
+ * A fresh, read-only view of `fs` for one object store: a write-mode open is refused outright and
+ * the freshen touch is confined lexically to `objectsDir`, read with the separators `syntax` knows,
+ * so a source can never be written through.
+ */
+export const narrowObjectSourceAccess = (
+  fs: FileSystem,
+  objectsDir: string,
+  syntax: GitPathSyntax,
+): ObjectSourceAccess => ({
+  read: fs.read.bind(fs),
+  readUtf8: fs.readUtf8.bind(fs),
+  readSlice: fs.readSlice.bind(fs),
+  readdir: fs.readdir.bind(fs),
+  stat: fs.stat.bind(fs),
+  lstat: fs.lstat.bind(fs),
+  exists: fs.exists.bind(fs),
+  readlink: fs.readlink.bind(fs),
+  openWithNoFollow: (path, mode) => {
+    if (mode === 'write') return Promise.reject(permissionDenied(path));
+    return fs.openWithNoFollow(path, mode);
+  },
+  ...(fs.utimeNow === undefined ? {} : { utimeNow: containedUtimeNow(fs, objectsDir, syntax) }),
+});
+
+export const narrowAlternatePathProbe = (fs: FileSystem): AlternatePathProbe => ({
+  lstat: fs.lstat.bind(fs),
+  readlink: fs.readlink.bind(fs),
+  stat: fs.stat.bind(fs),
+});
+
+const accessFor = (ctx: Context, objectsDir: string): ObjectSourceAccess =>
+  ctx.objectSourceAccess?.(objectsDir) ??
+  narrowObjectSourceAccess(ctx.fs, objectsDir, gitPathSyntaxOf(ctx));
+
+const chainIo = (ctx: Context): AlternateChainIo => ({
+  probe: (path) => ctx.alternatePathProbe?.(path) ?? narrowAlternatePathProbe(ctx.fs),
+  reader: (objectsDir) => accessFor(ctx, objectsDir),
+  pathSyntax: gitPathSyntaxOf(ctx),
+});
+
+/** The repository's own object directory, or one reached through `info/alternates`. */
+type SourceKind = 'local' | 'alternate';
+
+const buildSource = async (
+  ctx: Context,
+  objectsDir: string,
+  kind: SourceKind,
+): Promise<ObjectSource> => {
+  const local = kind === 'local';
+  const fs = local ? ctx.fs : accessFor(ctx, objectsDir);
+  return { objectsDir, fs, local, registry: await createPackRegistry(ctx, { objectsDir, fs }) };
+};
+
+/** Each alternate's registry, built concurrently, in list order. */
+const buildAlternates = (
+  ctx: Context,
+  dirs: ReadonlyArray<string>,
+): Promise<ReadonlyArray<ObjectSource>> =>
+  Promise.all(dirs.map((dir) => buildSource(ctx, dir, 'alternate')));
+
+interface Discovery {
+  readonly alternates: ReadonlyArray<string>;
+  readonly diagnostics: ReadonlyArray<AlternateDiagnostic>;
+  readonly reports: SourceReports;
+}
+
+/** The sources an earlier read linked and what each of them reported then. */
+interface Held {
+  readonly held: ReadonlyArray<string>;
+  readonly heldReports: SourceReports;
+}
+
+const NOTHING_HELD: Held = { held: [], heldReports: new Map() };
+
+const discover = async (
+  ctx: Context,
+  objectsDir: string,
+  prior: Held = NOTHING_HELD,
+): Promise<Discovery> => {
+  const list = await readPrimaryList(ctx, objectsDir);
+  if (list === 'absent') return { alternates: [], diagnostics: [], reports: new Map() };
+  const primaryList = list === 'unreadable' ? {} : { primaryList: list };
+  const { sources, diagnostics, reports } = await resolveObjectSources(ctx, chainIo(ctx), {
+    ...prior,
+    ...primaryList,
+  });
+  const alternates = sources.filter((s) => !s.local).map((s) => s.objectsDir);
+  return { alternates, diagnostics, reports };
+};
+
+/** The store plus the one internal hook the session memo needs: bringing a stale list up to date. */
+interface StoreHandle {
+  readonly store: ObjectStore;
+  readonly isStale: () => boolean;
+  readonly resolveAgain: () => Promise<void>;
+}
+
+interface StoreState {
+  sources: ReadonlyArray<ObjectSource>;
+  diagnostics: ReadonlyArray<AlternateDiagnostic>;
+  reports: SourceReports;
+  stale: boolean;
+  inflight: Promise<void> | undefined;
+}
+
+/**
+ * A held alternate's list is never read again, so what it reported stays true; the
+ * primary's list is re-read and reports afresh.
+ */
+const heldAlternateDiagnostics = (state: StoreState): ReadonlyArray<AlternateDiagnostic> => {
+  const heldAlternates = new Set(
+    state.sources.filter((source) => !source.local).map((source) => source.objectsDir),
+  );
+  return state.diagnostics.filter(({ listedIn }) => heldAlternates.has(listedIn));
+};
+
+/**
+ * The re-read replays what a held alternate reported where it meets it again; one the list
+ * no longer reaches keeps its diagnostics after the re-read's.
+ */
+const withKeptNotReplayed = (
+  found: ReadonlyArray<AlternateDiagnostic>,
+  kept: ReadonlyArray<AlternateDiagnostic>,
+): ReadonlyArray<AlternateDiagnostic> => [
+  ...found,
+  ...kept.filter((diagnostic) => !found.includes(diagnostic)),
+];
+
+/** Add-only: a source already held keeps its registry even when the list no longer names it. */
+const appendDiscovered = async (ctx: Context, state: StoreState): Promise<void> => {
+  const [primary] = state.sources as readonly [ObjectSource, ...ObjectSource[]];
+  const held = state.sources.map((source) => source.objectsDir);
+  const found = await discover(ctx, primary.objectsDir, { held, heldReports: state.reports });
+  const added = await buildAlternates(ctx, found.alternates);
+  const kept = heldAlternateDiagnostics(state);
+  state.sources = [...state.sources, ...added];
+  state.diagnostics = withKeptNotReplayed(found.diagnostics, kept);
+  state.reports = new Map([...state.reports, ...found.reports]);
+};
+
+const storeOver = (state: StoreState, bigFileThreshold: number): ObjectStore => {
+  const [primary] = state.sources as readonly [ObjectSource, ...ObjectSource[]];
+  return {
+    get sources() {
+      return state.sources;
+    },
+    primary,
+    get diagnostics() {
+      return state.diagnostics;
+    },
+    bigFileThreshold,
+    refresh: () => refreshStore(state, primary),
+    reprepare: () => reprepareSources(state),
+    dispose: () => disposeSources(state),
+  };
+};
+
+/** Re-scan the primary's packs now; re-read the alternates on the next resolve. */
+const refreshStore = (state: StoreState, primary: ObjectSource): void => {
+  primary.registry.refresh();
+  state.stale = true;
+};
+
+const reprepareSources = async (state: StoreState): Promise<void> => {
+  await Promise.all(state.sources.map((s) => s.registry.reprepare()));
+};
+
+const disposeSources = async (state: StoreState): Promise<void> => {
+  await Promise.all(state.sources.map((s) => s.registry.dispose()));
+};
+
+const resolveAgain = (ctx: Context, state: StoreState): Promise<void> => {
+  if (state.inflight !== undefined) return state.inflight;
+  state.stale = false;
+  state.inflight = appendDiscovered(ctx, state).finally(() => {
+    state.inflight = undefined;
+  });
+  return state.inflight;
+};
+
+const createHandle = (
+  ctx: Context,
+  primary: ObjectSource,
+  discovery: Discovery,
+  alternates: ReadonlyArray<ObjectSource>,
+  bigFileThreshold: number,
+): StoreHandle => {
+  const state: StoreState = {
+    sources: [primary, ...alternates],
+    diagnostics: discovery.diagnostics,
+    reports: discovery.reports,
+    stale: false,
+    inflight: undefined,
+  };
+  return {
+    store: storeOver(state, bigFileThreshold),
+    isStale: () => state.stale || state.inflight !== undefined,
+    resolveAgain: () => resolveAgain(ctx, state),
+  };
+};
+
+const buildHandle = async (ctx: Context): Promise<StoreHandle> => {
+  const objectsDir = objectsDirOf(commonGitDir(ctx));
+  const [primary, discovery, bigFileThreshold] = await Promise.all([
+    buildSource(ctx, objectsDir, 'local'),
+    discover(ctx, objectsDir),
+    readBigFileThreshold(ctx),
+  ]);
+  const alternates = await buildAlternates(ctx, discovery.alternates);
+  return createHandle(ctx, primary, discovery, alternates, bigFileThreshold);
+};
+
+const memos = new WeakMap<Context['session'], PromiseMemo<StoreHandle>>();
+const resolvedHandles = new WeakMap<Context['session'], StoreHandle>();
+
+export const getObjectStore = async (ctx: Context): Promise<ObjectStore> => {
+  if (!repoSettingsVerdictSettled(ctx)) await assertRepoSettingsValid(ctx);
+  let memo = memos.get(ctx.session);
+  if (memo === undefined) {
+    memo = createPromiseMemo(() =>
+      buildHandle(ctx).then((handle) => {
+        resolvedHandles.set(ctx.session, handle);
+        return handle;
+      }),
+    );
+    memos.set(ctx.session, memo);
+  }
+  const handle = await memo.get();
+  if (handle.isStale()) await handle.resolveAgain();
+  return handle.store;
+};
+
+/** The settled store for a session whose repo-settings verdict is current; never starts a build. */
+export const peekObjectStore = (ctx: Context): ObjectStore | undefined =>
+  repoSettingsVerdictSettled(ctx) ? settledFreshStore(ctx) : undefined;
+
+const settledFreshStore = (ctx: Context): ObjectStore | undefined => {
+  const handle = resolvedHandles.get(ctx.session);
+  return handle === undefined || handle.isStale() ? undefined : handle.store;
+};
+
+export const refreshObjectStore = (ctx: Context): void => {
+  resolvedHandles.get(ctx.session)?.store.refresh();
+};
+
+/** Disposal never starts a build; a build that failed has nothing left to close. */
+export const disposeObjectStore = async (ctx: Context): Promise<void> => {
+  const pending = memos.get(ctx.session)?.peek();
+  const handle = await pending?.catch(() => undefined);
+  await handle?.store.dispose();
+};
+
+export interface ObjectSourcesView {
+  readonly sources: ReadonlyArray<{ readonly objectsDir: string; readonly local: boolean }>;
+  readonly unusable: ReadonlyArray<AlternateDiagnostic>;
+}
+
+/** Which object stores a session reads, and which listed alternates it could not use. */
+export const objectSources = async (ctx: Context): Promise<ObjectSourcesView> => {
+  const store = await getObjectStore(ctx);
+  return {
+    sources: store.sources.map(({ objectsDir, local }) => ({ objectsDir, local })),
+    unusable: store.diagnostics,
+  };
+};
+
+/** Gates every source's store setup, primary first; the first rejection propagates. */
+export const assertEverySourceLoadable = async (ctx: Context): Promise<void> => {
+  const store = await getObjectStore(ctx);
+  for (const source of store.sources) await source.registry.assertLoadable();
+};
+
+/** `assertEverySourceLoadable` settled to a boolean: only a coded (adapter or
+ *  `TsgitError`) rejection is a verdict, anything else is a defect and rethrows. */
+export const everySourceLoadable = async (ctx: Context): Promise<boolean> => {
+  try {
+    await assertEverySourceLoadable(ctx);
+    return true;
+  } catch (error) {
+    if (errorDataCode(error) === undefined) throw error;
+    return false;
+  }
+};

@@ -26,6 +26,7 @@ export type FsOperations = Pick<
   | 'appendFile'
   | 'chmod'
   | 'lstat'
+  | 'lutimes'
   | 'mkdir'
   | 'open'
   | 'readdir'

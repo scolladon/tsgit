@@ -1810,7 +1810,7 @@ describe.skipIf(!GIT_AVAILABLE)(
   'Given a REFERENCED blob backed only by a corrupt PACKED entry',
   () => {
     describe('When fsck runs', () => {
-      it('Then never reports it missing, dangling, unreachable or broken-link (git exit 4; tsgit does not model ERROR_PACK for this)', async () => {
+      it('Then never reports it missing, dangling, unreachable or broken-link, and both exit 4', async () => {
         // Arrange
         const gitResult = gitFsck(referencedCorruptPackDir);
         const sha = referencedCorruptPackBlobSha;
@@ -1822,12 +1822,8 @@ describe.skipIf(!GIT_AVAILABLE)(
         expect(gitResult.stdout).not.toContain(`missing blob ${sha}`);
         expect(gitResult.exitCode).toBe(4);
 
-        // Assert — tsgit: never missing/dangling/unreachable/broken-link for this id.
-        // tsgit's own content-validation still reports `bad-object`/badType for
-        // it (exit bit 1) — the SAME gap that predates this fix (0447291c
-        // exited 1 for this shape too); tsgit does not model git's ERROR_PACK
-        // (bit 4) for a per-entry pack corruption (see `object-cache.ts`'s
-        // `hasPackCopy` — a membership check, never a CRC verification).
+        // Assert — tsgit: never missing/dangling/unreachable/broken-link for
+        // this id; the damaged entry is verify_pack's, bit 4 alone.
         const spuriousTypes = result.findings
           .filter(
             (f) =>
@@ -1838,7 +1834,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         expect(spuriousTypes).not.toContain('dangling');
         expect(spuriousTypes).not.toContain('unreachable');
         expect(spuriousTypes).not.toContain('broken-link');
-        expect(result.exitCode & 2).toBe(0);
+        expect(result.exitCode).toBe(gitResult.exitCode);
       });
     });
   },

@@ -16,7 +16,7 @@ export async function streamBlob(
   id: ObjectId,
   options?: StreamBlobOptions,
 ): Promise<BlobStream> {
-  const source = await openBlobSource(ctx, id, NEVER_BUFFER, options);
+  const source = await openBlobSource(ctx, id, NEVER_BUFFER, { ...options, order: 'stream' });
 
   if (source.type !== 'blob') {
     // Refusing discards the stream, so cancel its inflate pipeline first.

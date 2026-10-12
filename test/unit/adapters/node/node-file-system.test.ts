@@ -111,6 +111,11 @@ async function buildContractEnv(
     // as a directory as ENOENT or EINVAL rather than ENOTDIR, and its reparse-point loops
     // do not surface ELOOP on every surface.
     ...(process.platform === WINDOWS_PLATFORM ? {} : { segmentRefusals: 'pinned' as const }),
+    createBackdatedFile: async (path: string) => {
+      await fsPromises.writeFile(path, Buffer.from([1]));
+      const backdated = new Date('2001-01-01');
+      await fsPromises.utimes(path, backdated, backdated);
+    },
     cleanup: async () => {
       await fsPromises.rm(rootDir, { recursive: true, force: true });
       await fsPromises.rm(siblingDir, { recursive: true, force: true });
@@ -2215,6 +2220,26 @@ describe('NodeFileSystem — read over the sync gate, real fs', () => {
 
         // Assert
         await expect(attempt).rejects.toMatchObject({ code: 'EBADF' });
+      });
+    });
+  });
+
+  describe('Given an adapter rooted at the filesystem root', () => {
+    describe('When it reads a file anywhere below that root', () => {
+      it('Then the read is contained and succeeds', async () => {
+        // Arrange
+        const root = nodePath.parse(os.tmpdir()).root;
+        const sut = new NodeFileSystem([root]);
+        const dir = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-root-fs-'));
+        const file = nodePath.join(dir, 'f');
+        await fsPromises.writeFile(file, 'hello');
+
+        // Act
+        const result = await sut.readUtf8(file);
+
+        // Assert
+        expect(result).toBe('hello');
+        await fsPromises.rm(dir, { recursive: true, force: true });
       });
     });
   });

@@ -377,6 +377,31 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       });
     });
 
+    describe.each(MODES)(
+      'Given a BASE repo whose .rev swaps its first two positions, RESTAMPED, When fsck runs ($label)',
+      ({ flags, opts }) => {
+        it('Then both tools exit alike and tsgit reads every entry, as git bounds none by its .rev', async () => {
+          // Arrange
+          const fixture = await freshBase('r15swap');
+          mutateOrThrowRev(fixture, (bytes) => {
+            const first = bytes.readUInt32BE(bodyOffset(0));
+            bytes.writeUInt32BE(bytes.readUInt32BE(bodyOffset(1)), bodyOffset(0));
+            bytes.writeUInt32BE(first, bodyOffset(1));
+            return restampRevIndex(bytes);
+          });
+          const gitResult = gitFsck(fixture.dir, ...flags);
+          const sut = trackedNodeContext(fixture.dir);
+
+          // Act
+          const result = await fsck(sut, opts);
+
+          // Assert
+          expect(gitResult.exitCode & 64).toBe(64);
+          expect(result.exitCode).toBe(gitResult.exitCode);
+        });
+      },
+    );
+
     describe('Given a BASE repo with N1 two body positions wrong, RESTAMPED, When fsck runs', () => {
       it('Then git reports two invalid-rev-index-position lines under one bit-64 verdict, and tsgit reports exactly two position-mismatch findings', async () => {
         // Arrange

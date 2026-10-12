@@ -12,7 +12,7 @@
  *   unique:         boolean refusal tier boundaries pinned against canonical git
  *   interopSurface: config
  */
-import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -404,6 +404,131 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
       });
     });
   });
+  describe('Given a /-leading remote registered as a promisor by three entries', () => {
+    describe('When git and tsgit each run fsck', () => {
+      it("Then tsgit warns each registration git warns about, in git's order", async () => {
+        // Arrange
+        runGit(
+          [
+            '-C',
+            ours,
+            '-c',
+            'user.name=t',
+            '-c',
+            'user.email=t@t',
+            'commit',
+            '--allow-empty',
+            '-q',
+            '-m',
+            'c1',
+          ],
+          { env: runGitEnv() },
+        );
+        await writeConfig(
+          '[core]\n\trepositoryformatversion = 0\n[remote "/x"]\n\tpromisor = true\n' +
+            '\tpartialclonefilter = blob:none\n\tpromisor = true\n',
+        );
+        const warnings: string[] = [];
+        const logger = {
+          warn: (message: string, context?: Record<string, unknown>): void => {
+            if (message.endsWith("promisor remote name cannot begin with '/'")) {
+              warnings.push(
+                `warning: promisor remote name cannot begin with '/': ${context?.remote}`,
+              );
+            }
+          },
+        };
+
+        // Act
+        const g = tryRunGitWithExit(['-C', ours, 'fsck'], { env: runGitEnv() });
+        const repo = await openTrackedRepository({ cwd: ours, logger });
+        await repo.fsck();
+        await repo.dispose();
+
+        // Assert
+        const gitWarnings = g.stderr
+          .split('\n')
+          .filter((line) => line.includes('promisor remote name'));
+        expect(gitWarnings).toHaveLength(3);
+        expect(warnings).toEqual(gitWarnings);
+      });
+    });
+  });
+
+  describe('Given an unborn repository with a /-leading promisor remote and nothing rooted', () => {
+    describe('When git and tsgit each run fsck', () => {
+      it('Then neither warns — no walk consults a promisor remote', async () => {
+        // Arrange
+        runGit(['-C', ours, 'hash-object', '-w', '--stdin'], { input: 'a\n', env: runGitEnv() });
+        await writeConfig(
+          '[core]\n\trepositoryformatversion = 0\n[remote "/x"]\n\tpromisor = true\n',
+        );
+        const warnings: string[] = [];
+        const logger = {
+          warn: (message: string, context?: Record<string, unknown>): void => {
+            if (message.endsWith("promisor remote name cannot begin with '/'")) {
+              warnings.push(
+                `warning: promisor remote name cannot begin with '/': ${context?.remote}`,
+              );
+            }
+          },
+        };
+
+        // Act
+        const g = tryRunGitWithExit(['-C', ours, 'fsck'], { env: runGitEnv() });
+        const repo = await openTrackedRepository({ cwd: ours, logger });
+        await repo.fsck();
+        await repo.dispose();
+
+        // Assert
+        const gitWarnings = g.stderr
+          .split('\n')
+          .filter((line) => line.includes('promisor remote name'));
+        expect(gitWarnings).toEqual([]);
+        expect(warnings).toEqual(gitWarnings);
+      });
+    });
+  });
+
+  describe('Given an unborn repository with a /-leading promisor remote and a reflog entry naming a missing object', () => {
+    describe('When git and tsgit each run fsck', () => {
+      it('Then both warn once — git asks whether the missing object is promised', async () => {
+        // Arrange
+        await mkdir(path.join(ours, '.git', 'logs'), { recursive: true });
+        await writeFile(
+          path.join(ours, '.git', 'logs', 'HEAD'),
+          `${'0'.repeat(40)} ${'1'.repeat(40)} A <a@b> 1700000000 +0000\tx\n`,
+        );
+        await writeConfig(
+          '[core]\n\trepositoryformatversion = 0\n[remote "/x"]\n\tpromisor = true\n',
+        );
+        const warnings: string[] = [];
+        const logger = {
+          warn: (message: string, context?: Record<string, unknown>): void => {
+            if (message.endsWith("promisor remote name cannot begin with '/'")) {
+              warnings.push(
+                `warning: promisor remote name cannot begin with '/': ${context?.remote}`,
+              );
+            }
+          },
+        };
+
+        // Act
+        const g = tryRunGitWithExit(['-C', ours, 'fsck'], { env: runGitEnv() });
+        const repo = await openTrackedRepository({ cwd: ours, logger });
+        await repo.fsck();
+        await repo.dispose();
+
+        // Assert
+        const gitWarnings = g.stderr
+          .split('\n')
+          .filter((line) => line.includes('promisor remote name'));
+        expect(gitWarnings).toHaveLength(1);
+        expect(warnings).toEqual(gitWarnings);
+      });
+    });
+  });
+
   describe('Given X17 — remote.origin.promisor = maybe, the command-split pin', () => {
     beforeEach(() =>
       writeConfig('[core]\n\trepositoryformatversion = 0\n[remote "origin"]\n\tpromisor = maybe\n'),
@@ -457,6 +582,43 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
         // Assert
         expect(g.exitCode).toBe(0);
         expect(entries).toHaveLength(1);
+      });
+    });
+  });
+  describe.each([
+    {
+      label: 'a valueless remote.y.partialclonefilter before a malformed remote.x.promisor',
+      config: '[remote "y"]\n\tpartialclonefilter\n[remote "x"]\n\tpromisor = maybe\n',
+      gitMessage: "missing value for 'remote.y.partialclonefilter'",
+      expected: { code: 'CONFIG_MISSING_VALUE', key: 'remote.y.partialclonefilter' },
+    },
+    {
+      label: 'a malformed remote.x.promisor before a valueless remote.x.partialclonefilter',
+      config: '[remote "x"]\n\tpromisor = maybe\n\tpartialclonefilter\n',
+      gitMessage: "bad boolean config value 'maybe' for 'remote.x.promisor'",
+      expected: { code: 'CONFIG_BAD_BOOLEAN_VALUE', key: 'remote.x.promisor' },
+    },
+    {
+      label:
+        "a valueless partialclonefilter under the '/'-named remote./x before a malformed remote.z.promisor",
+      config: '[remote "/x"]\n\tpartialclonefilter\n[remote "z"]\n\tpromisor = maybe\n',
+      gitMessage: "bad boolean config value 'maybe' for 'remote.z.promisor'",
+      expected: { code: 'CONFIG_BAD_BOOLEAN_VALUE', key: 'remote.z.promisor' },
+    },
+  ])('Given $label', ({ config, gitMessage, expected }) => {
+    describe('When git status and tsgit status run', () => {
+      it('Then both refuse the entry git meets first in the file', async () => {
+        // Arrange
+        await writeConfig(`[core]\n\trepositoryformatversion = 0\n${config}`);
+
+        // Act
+        const g = tryRunGitWithExit(['-C', ours, 'status'], { env: runGitEnv() });
+        const caught = await withRepo(ours, (repo) => captureThrow(() => repo.status()));
+
+        // Assert
+        expect(g.exitCode).toBe(128);
+        expect(g.stderr).toContain(gitMessage);
+        expect((caught as TsgitError).data).toMatchObject(expected);
       });
     });
   });
@@ -536,6 +698,128 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
         expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
         expect(data.key).toBe('diff.rt.binary');
         expect(data.value).toBe('bogus');
+      });
+    });
+  });
+
+  describe('Given X20 — branch.autoSetupMerge = Always (its literals compare case-sensitively)', () => {
+    beforeEach(() =>
+      writeConfig('[core]\n\trepositoryformatversion = 0\n[branch]\n\tautoSetupMerge = Always\n'),
+    );
+
+    describe.each([
+      {
+        verb: 'branch --list',
+        git: ['branch', '--list'],
+        run: (repo: Repository) => repo.branch.list(),
+      },
+      {
+        verb: 'branch --no-track z',
+        git: ['branch', '--no-track', 'z'],
+        run: (repo: Repository) => repo.branch.create({ name: 'z', noTrack: true }),
+      },
+    ])('When git $verb and tsgit run', ({ git, run }) => {
+      it('Then both refuse with exit 128 / CONFIG_BAD_BOOLEAN_VALUE naming branch.autosetupmerge', async () => {
+        // Arrange & Act — armed in beforeEach
+        const g = tryRunGitWithExit(['-C', ours, ...git], { env: runGitEnv() });
+        const caught = await withRepo(ours, (repo) => captureThrow(() => run(repo)));
+
+        // Assert — git
+        expect(g.exitCode).toBe(128);
+        expect(g.stderr).toContain("bad boolean config value 'Always' for 'branch.autosetupmerge'");
+        // Assert — tsgit
+        const data = asBadBoolean(caught);
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('branch.autosetupmerge');
+        expect(data.value).toBe('Always');
+      });
+    });
+  });
+  describe.each([
+    {
+      label: 'valueless',
+      line: '\tautoSetupRebase\n',
+      stderr: "error: missing value for 'branch.autosetuprebase'",
+      data: { code: 'CONFIG_MISSING_VALUE', key: 'branch.autosetuprebase', line: 4 },
+    },
+    {
+      label: 'outside its literals',
+      line: '\tautoSetupRebase = Always\n',
+      stderr: 'error: malformed value for branch.autosetuprebase',
+      data: {
+        code: 'CONFIG_INVALID_ENUM_VALUE',
+        key: 'branch.autosetuprebase',
+        value: 'Always',
+        line: 4,
+      },
+    },
+  ])('Given branch.autoSetupRebase $label', ({ line, stderr, data }) => {
+    beforeEach(() => writeConfig(`[core]\n\trepositoryformatversion = 0\n[branch]\n${line}`));
+
+    describe.each([
+      {
+        verb: 'branch --list',
+        git: ['branch', '--list'],
+        run: (repo: Repository) => repo.branch.list(),
+      },
+      { verb: 'status', git: ['status'], run: (repo: Repository) => repo.status() },
+    ])('When git $verb and tsgit run', ({ git, run }) => {
+      it('Then both die on the config line', async () => {
+        // Arrange & Act — armed in beforeEach
+        const g = tryRunGitWithExit(['-C', ours, ...git], { env: runGitEnv() });
+        const caught = await withRepo(ours, (repo) => captureThrow(() => run(repo)));
+
+        // Assert
+        expect(g.exitCode).toBe(128);
+        expect(g.stderr.split('\n')[0]).toBe(stderr);
+        expect(g.stderr).toContain(
+          "bad config variable 'branch.autosetuprebase' in file '.git/config' at line 4",
+        );
+        expect((caught as TsgitError).data).toMatchObject(data);
+      });
+    });
+  });
+  describe.each([
+    {
+      label: 'valueless',
+      line: '\tdisambiguate\n',
+      stderr: "error: missing value for 'core.disambiguate'",
+      data: { code: 'CONFIG_MISSING_VALUE', key: 'core.disambiguate', line: 3 },
+    },
+    {
+      label: 'outside its hint types',
+      line: '\tdisambiguate = bogus\n',
+      stderr: "error: unknown hint type for 'core.disambiguate': bogus",
+      data: {
+        code: 'CONFIG_INVALID_ENUM_VALUE',
+        key: 'core.disambiguate',
+        value: 'bogus',
+        line: 3,
+      },
+    },
+  ])('Given core.disambiguate $label', ({ line, stderr, data }) => {
+    beforeEach(() => writeConfig(`[core]\n\trepositoryformatversion = 0\n${line}`));
+
+    describe.each([
+      {
+        verb: 'branch --list',
+        git: ['branch', '--list'],
+        run: (repo: Repository) => repo.branch.list(),
+      },
+      { verb: 'status', git: ['status'], run: (repo: Repository) => repo.status() },
+    ])('When git $verb and tsgit run', ({ git, run }) => {
+      it('Then both die on the config line', async () => {
+        // Arrange & Act — armed in beforeEach
+        const g = tryRunGitWithExit(['-C', ours, ...git], { env: runGitEnv() });
+        const caught = await withRepo(ours, (repo) => captureThrow(() => run(repo)));
+
+        // Assert
+        expect(g.exitCode).toBe(128);
+        expect(g.stderr.split('\n')[0]).toBe(stderr);
+        expect(g.stderr).toContain(
+          "bad config variable 'core.disambiguate' in file '.git/config' at line 3",
+        );
+        expect((caught as TsgitError).data).toMatchObject(data);
       });
     });
   });

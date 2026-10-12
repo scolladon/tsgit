@@ -11,12 +11,25 @@
  * Ordering is deterministic for a given call but is not git's own order —
  * every equality check against the result compares it as a set.
  */
-import type { FilePath, ObjectId } from '../../domain/objects/index.js';
+import { objectNotFound } from '../../domain/objects/error.js';
+import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
-import { type ClosureTier, computeClosure } from '../primitives/internal/closure-engine.js';
+import {
+  type ClosureObject,
+  type ClosureTier,
+  type ClosureTip,
+  computeClosure,
+} from '../primitives/internal/closure-engine.js';
+import {
+  createObjectTypeTable,
+  type ObjectTypeTable,
+} from '../primitives/internal/object-type-table.js';
+import { readRefCandidate } from '../primitives/resolve-ref.js';
+import { worktreeContexts } from './internal/fsck/roots.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
-import { revParse } from './rev-parse.js';
+import { requireReference } from './internal/require-reference.js';
+import { expandRevisionArguments } from './internal/revision-argument.js';
 
 export interface RevListOptions {
   /** Revisions to walk from. Defaults to `['HEAD']`, unless `all` is set. */
@@ -33,10 +46,13 @@ export interface RevListOptions {
    */
   readonly count?: boolean;
   /**
-   * Union the tips of every ref (branches, tags, remotes, `HEAD`) into
-   * `wants`, deduplicated. A ref that does not peel to an object — a
-   * symbolic `HEAD` on an unborn branch is the live case — is skipped
-   * rather than refusing the call.
+   * Union the tips of every ref (branches, tags, remotes, `HEAD`) and every
+   * other worktree's `HEAD` into `wants`, deduplicated. A symbolic ref whose
+   * target does not resolve — a `HEAD` on an unborn branch is the live case —
+   * is skipped, as is another worktree's unreadable `HEAD`; a ref whose
+   * content is unreadable, or that names an absent object, refuses with
+   * `OBJECT_NOT_FOUND` naming that ref (`worktrees/<id>/HEAD` or
+   * `main-worktree/HEAD` for another worktree's), as git's `bad object <ref>`.
    */
   readonly all?: boolean;
   /**
@@ -80,33 +96,88 @@ export interface RevListResult {
 
 const DEFAULT_WANTS: ReadonlyArray<string> = ['HEAD'];
 
+const HEAD_REF = 'HEAD' as RefName;
+
+/** git's `--all` iteration order: every ref under `refs/`, then `HEAD`. */
+const allRefNames = async (ctx: Context): Promise<RefName[]> => {
+  const names = await enumerateRefs(ctx);
+  return [...names.filter((name) => name.startsWith('refs/')), HEAD_REF];
+};
+
 /**
- * Every ref's tip, resolved through the same peel path as an explicit want
- * (`revParse`). A ref that does not peel to an object — a symbolic `HEAD` on
- * an unborn branch — contributes nothing rather than refusing the call.
+ * One `--all` tip as git's paranoid ref iteration hands it to
+ * `get_reference`: a dangling symref (an unborn `HEAD` included) is omitted,
+ * a broken ref — or one naming an object the repository lacks — dies
+ * `bad object <name>`, and any other fault propagates.
  */
-const resolveAllRefTips = async (ctx: Context): Promise<ObjectId[]> => {
-  const refs = await enumerateRefs(ctx);
+const readAllRefTip = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  name: RefName,
+): Promise<ObjectId | undefined> => {
+  const outcome = await readRefCandidate(ctx, name);
+  if (outcome.kind === 'broken') throw objectNotFound(name as string as ObjectId);
+  if (outcome.kind !== 'found') return undefined;
+  await requireReference(ctx, table, name, outcome.id);
+  return outcome.id;
+};
+
+/**
+ * git's `other_head_refs`: every other worktree's HEAD, under its
+ * per-worktree prefix — one that resolves to nothing (unborn, dangling,
+ * unreadable) is skipped, one naming an absent object dies there.
+ */
+const otherWorktreeHeadTips = async (ctx: Context, table: ObjectTypeTable): Promise<ObjectId[]> => {
   const tips: ObjectId[] = [];
-  for (const ref of refs) {
-    try {
-      tips.push(await revParse(ctx, ref));
-    } catch {
-      // Does not peel to an object — skip, per `all`'s own semantics above.
-    }
+  for (const { ref, worktreeCtx } of await worktreeContexts(ctx)) {
+    if (worktreeCtx === ctx) continue;
+    const outcome = await readRefCandidate(worktreeCtx, HEAD_REF);
+    if (outcome.kind !== 'found') continue;
+    await requireReference(ctx, table, ref, outcome.id);
+    tips.push(outcome.id);
   }
   return tips;
 };
 
+const resolveAllRefTips = async (ctx: Context, table: ObjectTypeTable): Promise<ObjectId[]> => {
+  const tips: ObjectId[] = [];
+  for (const name of await allRefNames(ctx)) {
+    const tip = await readAllRefTip(ctx, table, name);
+    if (tip !== undefined) tips.push(tip);
+  }
+  return [...tips, ...(await otherWorktreeHeadTips(ctx, table))];
+};
+
+interface RevListTips {
+  readonly wants: ReadonlyArray<ObjectId>;
+  readonly not: ReadonlyArray<ObjectId>;
+  readonly tips: ReadonlyArray<ClosureTip>;
+}
+
 /**
- * Explicit `wants` union `all`'s ref tips, deduplicated. `all` supplies its
- * own tips, so the `['HEAD']` default only applies when `all` is unset.
+ * Explicit `wants` and `not`, each expanded in turn as git's
+ * `handle_revision_arg` reads it, union `all`'s ref tips, deduplicated. `all`
+ * supplies its own tips, so the `['HEAD']` default only applies when `all` is unset.
  */
-const resolveRevListWants = async (ctx: Context, opts: RevListOptions): Promise<ObjectId[]> => {
+const resolveRevListTips = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  opts: RevListOptions,
+): Promise<RevListTips> => {
   const explicitInputs = opts.wants ?? (opts.all === true ? [] : DEFAULT_WANTS);
-  const explicit = await Promise.all(explicitInputs.map((rev) => revParse(ctx, rev)));
-  if (opts.all !== true) return explicit;
-  return [...new Set([...explicit, ...(await resolveAllRefTips(ctx))])];
+  const tips = await expandRevisionArguments(
+    ctx,
+    table,
+    { wants: explicitInputs, not: opts.not ?? [] },
+    'command-line',
+  );
+  if (opts.all !== true) return tips;
+  const refTips = await resolveAllRefTips(ctx, table);
+  return {
+    not: tips.not,
+    wants: [...new Set([...tips.wants, ...refTips])],
+    tips: [...tips.tips, ...refTips.map((id) => ({ id, excluded: false }))],
+  };
 };
 
 /**
@@ -119,23 +190,27 @@ const resolveRevListWants = async (ctx: Context, opts: RevListOptions): Promise<
 const closureTierFor = (opts: RevListOptions): ClosureTier =>
   opts.useBitmapIndex === true && opts.maxCount === undefined ? 'bitmap' : 'walk';
 
+const toEntry = (object: ClosureObject): RevListEntry =>
+  object.path === undefined
+    ? { id: object.id, type: object.type }
+    : { id: object.id, type: object.type, path: object.path };
+
+/** One invocation, with its own object-type table as git's process has. */
 export const revList = async (ctx: Context, opts: RevListOptions = {}): Promise<RevListResult> => {
   await assertOperationalRepository(ctx);
-  const wants = await resolveRevListWants(ctx, opts);
-  const not = await Promise.all((opts.not ?? []).map((rev) => revParse(ctx, rev)));
+  const objectTypes = createObjectTypeTable();
+  const { wants, not, tips } = await resolveRevListTips(ctx, objectTypes, opts);
   const closure = await computeClosure(ctx, {
+    objectTypes,
     wants,
     not,
+    tips,
     objects: opts.objects ?? false,
     tier: closureTierFor(opts),
     firstParent: opts.firstParent ?? false,
     noWalk: opts.noWalk ?? false,
     ...(opts.maxCount !== undefined ? { maxCount: opts.maxCount } : {}),
   });
-  const entries: RevListEntry[] = closure.objects.map((object) =>
-    object.path === undefined
-      ? { id: object.id, type: object.type }
-      : { id: object.id, type: object.type, path: object.path },
-  );
+  const entries = closure.objects.map(toEntry);
   return { entries, count: entries.length };
 };

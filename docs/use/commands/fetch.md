@@ -9,7 +9,8 @@ repo.fetch(opts?: FetchOptions): Promise<FetchResult>;
 
 interface FetchOptions {
   readonly remote?: string;                    // default: branch.<current>.remote ?? sole configured remote ?? 'origin'
-  readonly refspecs?: ReadonlyArray<string>;   // default '+refs/heads/*:refs/remotes/<remote>/*'
+  readonly refspecs?: ReadonlyArray<string>;   // default: remote.<remote>.fetch
+  readonly refmap?: ReadonlyArray<string>;     // git --refmap; needs refspecs
   readonly prune?: boolean;                    // default false
   readonly depth?: number;                     // shallow fetch boundary
 }
@@ -21,11 +22,13 @@ interface FetchResult {
   readonly unshallow: ReadonlyArray<ObjectId>;
 }
 
-interface FetchUpdate {
-  readonly name: RefName;
-  readonly oldId: ObjectId | undefined;
-  readonly newId: ObjectId;
-}
+type FetchUpdate =
+  | { readonly name: RefName; readonly source: RefName; readonly oldId: ObjectId | undefined;
+      readonly newId: ObjectId; readonly status: 'ok' }
+  | { readonly name: RefName; readonly source: RefName; readonly oldId: ObjectId;
+      readonly newId: ObjectId; readonly status: 'rejected'; readonly rejection: FetchRejection };
+
+type FetchRejection = 'non-fast-forward' | 'would-clobber-existing-tag';
 ```
 
 ## Options
@@ -33,7 +36,8 @@ interface FetchUpdate {
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `remote` | `string` | resolved chain | Remote name. Resolved as `branch.<current>.remote` → the sole configured remote (only when exactly one `remote.*` block exists) → `'origin'`; an explicit value always wins. Detached HEAD skips the `branch.<current>.remote` rung. |
-| `refspecs` | `ReadonlyArray<string>` | branches refspec | Explicit refspec list. |
+| `refspecs` | `ReadonlyArray<string>` | `remote.<remote>.fetch` | git's command-line `<refspec>…`: fetched instead of the configured refspecs. A short source is matched against the advertisement the way git's `find_ref_by_name_abbrev` does (`main` → `refs/heads/main`, a tag before a branch); a short destination lands under `refs/heads/`. Every ref they name is listed for merging in `FETCH_HEAD`, and still updates the tracking ref the configured refspecs map it onto. |
+| `refmap` | `ReadonlyArray<string>` | (configured) | git's `--refmap=<refspec>`, one entry per flag: the refspecs that map the `refspecs` refs onto tracking refs, in place of `remote.<remote>.fetch`. `['']` (git's `--refmap=`) updates no tracking ref. Refused with `INVALID_OPTION` without `refspecs`. |
 | `prune` | `boolean` | `false` | Delete `refs/remotes/<remote>/*` entries the server no longer advertises. Local branches and tags are never touched. |
 | `depth` | `number` | (full) | Shallow fetch depth. Writes `.git/shallow`. |
 
@@ -45,9 +49,23 @@ interface FetchUpdate {
 - **Protocol negotiation:** `fetch` opts into smart-HTTP protocol v2 (`ls-refs` + `fetch` commands) and falls back to v1 when the server doesn't advertise `version 2`; SSH remotes always use v1. Both legs, including partial-clone `filter`, are supported.
 - **Incremental fetch:** a remote that has advanced since the last fetch returns the new objects, on either protocol version.
 - **No-op short-circuit:** when every wanted object already exists locally, `fetch` skips the pack round-trip entirely — no `fetch`/upload-pack exchange, no packfile written. The everything-local check rechecks the pack directory on a miss (`hasObject`'s `{ mode: 'recheck' }`), as git's own `check_exist_and_connected` does, so an object a concurrent lazy fetch or `git repack` already landed is not wrongly asked for again.
+- **`FETCH_HEAD`:** truncated before the remote's refs are listed, then written as git's `store_updated_refs` writes it — `<oid>\t<marker>\t<kind> '<name>' of <url>` per fetched ref, the refs for merging first (empty marker), the rest `not-for-merge`, the url anonymized and stripped of trailing slashes and `.git`. The refs for merging are every command-line refspec's; without them, the current branch's `branch.<b>.merge` when `branch.<b>.remote` is the fetched remote (fetched even when no refspec maps it), else the first configured refspec when it is exact; with no configured refspec at all, the remote's `HEAD`. A ref for merging whose object is not a commit is listed `not-for-merge`, as git lists it. [`pull`](pull.md) merges what this file marks for merging.
+- **Tags follow the fetched history** (git's `find_non_local_tags`), when a refspec in force stores into a ref: a tag the repository lacks is fetched, in name order, only when its object — or the commit an annotated tag peels to — is about to be fetched or already present; `include-tag` is requested (on v1 and v2) only then. Once the pack is in, a tag whose object arrived with it is backfilled and listed after the other refs (git's `backfill_tags`); one whose own object is still absent would need git's second fetch, which tsgit does not make. A tag pointing outside the fetched history is never fetched.
+- **Rejected updates** (git's `update_local_ref`): a ref mapped by a refspec without `+` is not moved when the fetched commit does not descend from it (`rejection: 'non-fast-forward'`), and an existing `refs/tags/*` ref is never moved without `+` (`'would-clobber-existing-tag'`). The rejected ref keeps `oldId` and gets no reflog entry; every other ref still updates and `FETCH_HEAD` still lists the fetched object, then `fetch` resolves — git exits 1 here, and [`pull`](pull.md) refuses with `FETCH_REJECTED`. A ref whose old or new object is not a commit is stored without the check, as git stores it. With `fetch.showForcedUpdates` set false, the ancestry check is skipped and every commit update is stored as a fast-forward, with git's warning that the check is disabled on `ctx.logger.warn` once per ref-storing round (twice when tags are backfilled) unless `advice.fetchShowForcedUpdates` is false; a value git's boolean grammar refuses throws `CONFIG_BAD_BOOLEAN_VALUE` before anything is fetched. `source` is the remote ref each local ref was fetched from.
+- **Wants and haves:** only the ref map's objects are wanted; every local ref under `refs/` seeds the haves, as git's negotiation seeds from `for_each_ref`.
 - **Atomic ref updates:** all ref updates land under a single lock or none do.
-- **Reflog:** updates land in `.git/logs/` via the standard `recordRefUpdate` writer.
+- **Reflog:** updates land in `.git/logs/` via the standard `recordRefUpdate` writer, under git's argv-derived action: `fetch`, then the remote when `remote` or `refspecs` is given, then each refspec (`fetch origin main:other: storing head`). Option flags are not part of the reconstructed action.
 - **Shallow boundaries:** after a shallow fetch, commit traversals (e.g. [`walkCommits`](../primitives/walk-commits.md)) automatically stop at the recorded `.git/shallow` boundaries — no caller action needed.
+
+### Remote HEAD
+
+A fetch by the remote's own configured refspecs (no `refspecs` given) points
+`refs/remotes/<remote>/HEAD` at the tracking ref of the branch the remote's HEAD
+names, as git's `remote.<remote>.followRemoteHEAD` says: `create` (the default)
+writes it only when absent, `always` rewrites it on every fetch, `warn` (or
+`warn-if-not-<branch>`) behaves like `create` and logs a local HEAD that differs,
+`never` leaves it alone. The reflog entry reads `fetch`; an unrecognised value is
+ignored with a warning, as git does.
 
 ## Examples
 
@@ -70,7 +88,11 @@ console.log(result.prunedRefs);
 - `INVALID_URL` — malformed remote URL; HTTP: failed SSRF validation; SSH/scp: a control character, or the host/path begins with `-` (argv-injection guard).
 - `ADAPTER_UNAVAILABLE` — an `ssh://`/scp-like remote given to a runtime with no `SshTransport` wired (Browser, Memory).
 - `NETWORK_ERROR` — transport failure (reason varies; SSH surfaces the `ssh` child's exit code).
-- `REFSPEC_INVALID` — refspec syntactically invalid.
+- `REFSPEC_INVALID` — a `refspecs` or `refmap` entry git's fetch refspec grammar refuses (`reason: 'not a valid refspec'`).
+- `FETCH_REFSPEC_CONFLICT` — two remote refs map onto one local ref (git's `ref_remove_duplicates`); a command-line ref beside the tracking update it displaces only warns through `ctx.logger.warn`.
+- `FETCH_INTO_CHECKED_OUT_BRANCH` — a refspec writes a branch some worktree holds — its HEAD's branch (born or unborn), or the branch an in-progress rebase or bisect will return to (git's `refusing to fetch into branch '<branch>' checked out at '<path>'`; `data.branch`, `data.path`). Checked before any object is fetched or ref written; `FETCH_HEAD` is left truncated. `pull` is exempt, as git's pull passes `--update-head-ok`.
+- `REMOTE_REF_NOT_FOUND` — an exact `refspecs` or configured `remote.<name>.fetch` source, or the `HEAD` a remote with no fetch refspec is fetched by, names no advertised ref (git's `couldn't find remote ref <name>`). `FETCH_HEAD` is left truncated.
+- `INVALID_OPTION` — `refmap` given without `refspecs` (`option: 'refmap'`).
 - `REMOTE_FILTER_UNSUPPORTED` — the repo's stored `partialclonefilter` can't be re-applied because the server's capabilities lack `filter` support (v1 capability list or v2 `fetch` command's sub-features).
 - `SHALLOW_FILE_MALFORMED` — persisting the server's `shallow`/`unshallow` lines would exceed the entry cap or include a foreign-width oid; refuses before any repository state changes (refs unmoved).
 - `UNSUPPORTED_OBJECT_FORMAT` — the peer's declared hash algorithm (v1 advertisement token or v2 capability line) differs from this repository's own (`local` set), or lies outside the closed `sha1`/`sha256` set (`local` absent). Refused before any pack is requested, so nothing is written.

@@ -25,6 +25,32 @@ export const lstatIfPresent = async (
   return fs.tryLstat(path);
 };
 
+async function lstatIfReachableFallback(
+  fs: FileSystem,
+  path: string,
+): Promise<FileStat | undefined> {
+  try {
+    return await lstatIfPresent(fs, path);
+  } catch (err) {
+    if (isAbsent(err)) return undefined;
+    throw err;
+  }
+}
+
+/**
+ * `lstat`, answered without a refusal wherever nothing is reachable at
+ * `path` — absent, or beneath a regular file — without telling which. Uses
+ * `fs.lstatIfReachable` when the adapter provides it; otherwise folds
+ * {@link lstatIfPresent}'s NOT_A_DIRECTORY too. Every other refusal still rejects.
+ */
+export const lstatIfReachable = async (
+  fs: FileSystem,
+  path: string,
+): Promise<FileStat | undefined> => {
+  if (fs.lstatIfReachable === undefined) return lstatIfReachableFallback(fs, path);
+  return fs.lstatIfReachable(path);
+};
+
 async function readUtf8Fallback(fs: FileSystem, path: string): Promise<string | undefined> {
   try {
     return await fs.readUtf8(path);
@@ -46,3 +72,18 @@ export const readUtf8IfPresent = async (
   if (fs.tryReadUtf8 === undefined) return readUtf8Fallback(fs, path);
   return fs.tryReadUtf8(path);
 };
+
+/** A missing file, or a missing directory on its path: nothing there to remove, list or stat. */
+export const isAbsent = (error: unknown): boolean => {
+  const code = errorDataCode(error);
+  return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';
+};
+
+/** `rm`, answered without a refusal where the path is {@link isAbsent absent}. */
+export async function removeIfPresent(fs: FileSystem, path: string): Promise<void> {
+  try {
+    await fs.rm(path);
+  } catch (error) {
+    if (!isAbsent(error)) throw error;
+  }
+}

@@ -1618,3 +1618,120 @@ describe('Given a worktree-less repository that is NOT bare', () => {
     });
   });
 });
+
+describe('Given a merge of two equal-date parents whose own parents are missing', () => {
+  const writeFileTree = async (ctx: Context, content: string): Promise<ObjectId> => {
+    const blobId = await writeObject(ctx, {
+      type: 'blob',
+      id: '' as ObjectId,
+      content: new TextEncoder().encode(content),
+    } as Blob);
+    return writeObject(ctx, {
+      type: 'tree',
+      id: '' as ObjectId,
+      entries: [treeEntry(FILE_MODE.REGULAR, 'f', blobId)],
+    } as Tree);
+  };
+  const commitAt = (ctx: Context, tree: ObjectId, parents: ObjectId[], message: string) =>
+    createCommit(ctx, {
+      tree,
+      parents,
+      author: ident('same', 1_700_000_000),
+      committer: ident('same', 1_700_000_000),
+      message,
+    });
+
+  describe('When the merge lists the higher-oid parent first', () => {
+    it('Then each side keeps its lines and the unreadable parents are reported in walk order', async () => {
+      // Arrange
+      const base = await seed();
+      const warnings: Array<readonly [string, unknown]> = [];
+      const ctx: Context = {
+        ...base,
+        logger: { warn: (message, context) => warnings.push([message, context]) },
+      };
+      const missingOfA = '1'.repeat(40) as ObjectId;
+      const missingOfB = '2'.repeat(40) as ObjectId;
+      const a = await commitAt(ctx, await writeFileTree(ctx, 'A\n2\n3\n'), [missingOfA], 'a');
+      const b = await commitAt(ctx, await writeFileTree(ctx, '1\n2\nB\n'), [missingOfB], 'b');
+      const [low, high] = a < b ? [a, b] : [b, a];
+      const [missingOfHigh, missingOfLow] =
+        high === a ? [missingOfA, missingOfB] : [missingOfB, missingOfA];
+      const merge = await commitAt(ctx, await writeFileTree(ctx, 'A\n2\nB\n'), [high, low], 'm');
+
+      // Act
+      const result = await blame(ctx, 'f', { rev: merge });
+
+      // Assert
+      expect(committedLines(result).map((line) => line.commit)).toEqual([a, high, b]);
+      expect(committedLines(result).map((line) => line.boundary)).toEqual([false, false, false]);
+      expect(warnings).toEqual([
+        [`Could not read ${missingOfHigh}`, { id: missingOfHigh }],
+        [`Could not read ${missingOfLow}`, { id: missingOfLow }],
+      ]);
+    });
+  });
+
+  describe('When a parent names an object that is not a commit', () => {
+    it('Then the child keeps every line and the parent is reported as not a commit', async () => {
+      // Arrange
+      const base = await seed();
+      const warnings: string[] = [];
+      const ctx: Context = { ...base, logger: { warn: (message) => warnings.push(message) } };
+      const notCommit = await writeFileTree(ctx, '1\n2\n');
+      const child = await commitAt(ctx, await writeFileTree(ctx, 'A\n2\n'), [notCommit], 'c');
+
+      // Act
+      const result = await blame(ctx, 'f', { rev: child });
+
+      // Assert
+      expect(committedLines(result).map((line) => line.commit)).toEqual([child, child]);
+      expect(warnings).toEqual([`Object ${notCommit} not a commit`]);
+    });
+  });
+
+  describe('When a parent object is corrupt', () => {
+    it('Then blame refuses as git dies on the corrupt object', async () => {
+      // Arrange
+      const ctx = await seed();
+      const corrupt = '4'.repeat(40) as ObjectId;
+      await ctx.fs.write(
+        `${ctx.layout.gitDir}/objects/${corrupt.slice(0, 2)}/${corrupt.slice(2)}`,
+        new TextEncoder().encode('not zlib'),
+      );
+      const child = await commitAt(ctx, await writeFileTree(ctx, 'A\n'), [corrupt], 'c');
+
+      // Act
+      let caught: unknown;
+      try {
+        await blame(ctx, 'f', { rev: child });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+    });
+  });
+
+  describe('When a readable parent misses its own tree', () => {
+    it('Then blame refuses on the missing tree', async () => {
+      // Arrange
+      const ctx = await seed();
+      const missingTree = '3'.repeat(40) as ObjectId;
+      const parent = await commitAt(ctx, missingTree, [], 'p');
+      const child = await commitAt(ctx, await writeFileTree(ctx, 'A\n'), [parent], 'c');
+
+      // Act
+      let caught: unknown;
+      try {
+        await blame(ctx, 'f', { rev: child });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: missingTree });
+    });
+  });
+});

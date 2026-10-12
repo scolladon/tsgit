@@ -298,6 +298,7 @@ describe.skipIf(!GIT_AVAILABLE || !GPG_AVAILABLE)('tag signing interop', () => {
           code: 'SIGNING_FAILED',
           reason: 'signer-failed',
           format: 'openpgp',
+          output: '',
         });
         expect(tryRunGit(['-C', gitDir, 'rev-parse', 'refs/tags/v-fail']).ok).toBe(false);
         expect(tryRunGit(['-C', tsDir, 'rev-parse', 'refs/tags/v-fail']).ok).toBe(false);

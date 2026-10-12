@@ -8,6 +8,7 @@ import { createRawTreeResolver } from './adapters/snapshot-resolvers/raw-tree-re
 import { createSingleFlightIndexResolver } from './adapters/snapshot-resolvers/single-flight-index-resolver.js';
 import * as commands from './application/commands/index.js';
 import * as primitives from './application/primitives/index.js';
+import { gitPathSyntaxOf } from './application/primitives/internal/git-path-syntax.js';
 import { invalidateShallowSet } from './application/primitives/internal/shallow-set.js';
 import { invalidateIndexCache } from './application/primitives/read-index.js';
 import { disposePackRegistry } from './application/primitives/read-object.js';
@@ -31,6 +32,7 @@ import {
 } from './ports/context.js';
 import type { EnvReader } from './ports/env-reader.js';
 import type { FileSystem } from './ports/file-system.js';
+import type { FilenameProbe } from './ports/filename-probe.js';
 import type { HashService } from './ports/hash-service.js';
 import type { HookRunner } from './ports/hook-runner.js';
 import type { HttpTransport } from './ports/http-transport.js';
@@ -44,8 +46,13 @@ import { deepFreeze } from './repository/deep-freeze.js';
 import { defaultCwd } from './repository/default-cwd.js';
 import type { RepositoryLayoutInput } from './repository/layout-input.js';
 import { layoutRootsOf } from './repository/layout-roots.js';
+import {
+  createAlternatePathProbe,
+  createObjectSourceAccess,
+} from './repository/object-source-access.js';
 import { resolveAlgorithm } from './repository/resolve-algorithm.js';
 import { validateOptions } from './repository/validate-options.js';
+import { createWorktreeFs } from './repository/worktree-fs.js';
 import { wrapFsValidator } from './repository/wrap-fs-validator.js';
 import { wrapTransportValidator } from './repository/wrap-transport-validator.js';
 
@@ -295,10 +302,20 @@ export interface RuntimeFallback {
    * Build a raw (adapter-level) `FileSystem` able to reach `worktreePaths`
    * (which may lie outside `workDir`) as well as the repository itself — for the
    * worktree containment escape (ADR-298). The node shim roots a fresh adapter
-   * at the common ancestor of the workDir and the worktree paths; sandboxed
+   * at the workDir plus exactly the paths asked for; sandboxed
    * runtimes (memory/browser) omit it and fall back to the repo-rooted fs.
    */
   readonly makeWorktreeFs?: (worktreePaths: ReadonlyArray<string>) => FileSystem;
+  /**
+   * Builds a raw fs rooted at exactly `roots` — the read capability an alternate's
+   * objects dir (or the root an alternate path resolves under) is served through.
+   * Absent on sandboxed adapters, where the one adapter root is already the bound.
+   */
+  readonly makeConfinedFs?: (roots: ReadonlyArray<string>) => FileSystem;
+  /** Whether the runtime's filesystem reads paths the Windows way (see `Context`). */
+  readonly windowsPathSyntax?: boolean;
+  /** The runtime's existence-only filename probe (see `Context`); absent on sandboxed runtimes. */
+  readonly filenameProbe?: FilenameProbe;
 }
 
 /**
@@ -400,9 +417,10 @@ export interface Repository {
   /** Nested `repo.worktree.{list,add,move,remove}` namespace. */
   readonly worktree: commands.WorktreeNamespace;
 
-  // Tier-2 primitives (25) — bound under .primitives.* to keep the top-level
+  // Tier-2 primitives (27) — bound under .primitives.* to keep the top-level
   // surface focused on user-facing commands.
   readonly primitives: {
+    readonly abbreviateObjectId: BindCtx<typeof primitives.abbreviateObjectId>;
     readonly bisectMidpoint: BindCtx<typeof primitives.bisectMidpoint>;
     readonly catFileBatch: BindCtx<typeof primitives.catFileBatch>;
     readonly createCommit: BindCtx<typeof primitives.createCommit>;
@@ -413,6 +431,7 @@ export interface Repository {
     readonly hashBlob: BindCtx<typeof primitives.hashBlob>;
     readonly isIgnored: BindCtx<typeof primitives.isIgnored>;
     readonly mergeBase: BindCtx<typeof primitives.mergeBase>;
+    readonly objectSources: BindCtx<typeof primitives.objectSources>;
     readonly readBlob: BindCtx<typeof primitives.readBlob>;
     readonly readIndex: BindCtx<typeof primitives.readIndex>;
     readonly readObject: BindCtx<typeof primitives.readObject>;
@@ -495,6 +514,8 @@ interface OptionalCtxInputs {
   readonly ssh: SshTransport | undefined;
   readonly concurrency: ConcurrencyLimits | undefined;
   readonly cacheBudgets: Context['cacheBudgets'];
+  readonly windowsPathSyntax: boolean | undefined;
+  readonly filenameProbe: FilenameProbe | undefined;
 }
 
 /**
@@ -512,6 +533,10 @@ const buildOptionalCtxFields = (inputs: OptionalCtxInputs) => ({
   ...(inputs.ssh !== undefined ? { ssh: inputs.ssh } : {}),
   ...(inputs.concurrency !== undefined ? { concurrency: inputs.concurrency } : {}),
   ...(inputs.cacheBudgets !== undefined ? { cacheBudgets: inputs.cacheBudgets } : {}),
+  ...(inputs.windowsPathSyntax !== undefined
+    ? { windowsPathSyntax: inputs.windowsPathSyntax }
+    : {}),
+  ...(inputs.filenameProbe !== undefined ? { filenameProbe: inputs.filenameProbe } : {}),
 });
 
 /**
@@ -553,6 +578,18 @@ const forgetSessionCaches = (ctx: Context): void => {
   invalidateIndexCache(ctx);
 };
 
+/** The runtime's host-reaching capabilities: each one bypasses `detected.fs`. */
+type HostHooks = Pick<RuntimeFallback, 'makeConfinedFs' | 'makeWorktreeFs' | 'filenameProbe'>;
+
+const NO_HOST_HOOKS: HostHooks = {};
+
+/**
+ * The host hooks are the runtime's own reach, so they serve only the runtime's own fs: a caller
+ * who supplied `opts.fs` bounded every read to it, and a hook would read the host behind its back.
+ */
+const hostHooksFor = (opts: OpenRepositoryOptions, fallback: RuntimeFallback): HostHooks =>
+  opts.fs === undefined ? fallback : NO_HOST_HOOKS;
+
 /**
  * Factory for the Repository handle. The runtime fallback (adapters + layout)
  * is supplied by the calling shim — `openRepository` itself is runtime-agnostic.
@@ -593,36 +630,36 @@ export const openRepository = async (
   // ADR-298: a linked worktree lives outside workDir and a worktree Context must
   // reach BOTH the worktree path and the layout roots (workDir/gitDir/commonDir).
   // `worktreeFs` asks the runtime for a raw fs wide enough to reach the worktree
-  // paths (the node shim roots a fresh adapter at the common ancestor), then
+  // paths (the node shim roots a fresh adapter at exactly those roots), then
   // confines it with a multi-root validator to exactly those subtrees (or
   // returns the raw fs when containment is opted out).
   //
-  // Memoised by root set: `listWorktrees` calls this once per worktree, and a
-  // fresh adapter + validator pair on every call was pure waste when the same
-  // worktree (or the same handful of worktrees) gets asked for repeatedly.
-  const worktreeFsCache = new Map<string, FileSystem>();
-  // `fallback.makeWorktreeFs`, when present, is ALWAYS a first-party adapter —
+  // `hostHooks.makeWorktreeFs`, when present, is ALWAYS a first-party adapter —
   // it is a runtime capability (never something `opts` can supply), so its
   // output carries the same "own read path enforces containment" guarantee
   // `fsIsFirstParty` establishes for `detected.fs`. When absent, `worktreeFs`
   // falls back to `detected.fs` itself, whose provenance is `fsIsFirstParty`.
-  const worktreeRawIsFirstParty = fallback.makeWorktreeFs !== undefined || fsIsFirstParty;
-  const worktreeFs = (worktreePath: string | ReadonlyArray<string>): FileSystem => {
-    const paths = typeof worktreePath === 'string' ? [worktreePath] : worktreePath;
-    const roots = [...paths, ...layoutRoots];
-    const cacheKey = roots.join('\0');
-    const cached = worktreeFsCache.get(cacheKey);
-    if (cached !== undefined) return cached;
-    const raw = fallback.makeWorktreeFs?.(roots) ?? detected.fs;
-    const built =
-      opts.unsafeRawAdapters === true
-        ? raw
-        : wrapFsValidator(raw, roots, computeConfigScopePaths(raw), {
-            guardReads: !worktreeRawIsFirstParty,
-          });
-    worktreeFsCache.set(cacheKey, built);
-    return built;
-  };
+  const hostHooks = hostHooksFor(opts, fallback);
+  const worktreeRawIsFirstParty = hostHooks.makeWorktreeFs !== undefined || fsIsFirstParty;
+  const worktreeFs = createWorktreeFs(layoutRoots, (roots) => {
+    const raw = hostHooks.makeWorktreeFs?.(roots) ?? detected.fs;
+    return opts.unsafeRawAdapters === true
+      ? raw
+      : wrapFsValidator(raw, roots, computeConfigScopePaths(raw), {
+          guardReads: !worktreeRawIsFirstParty,
+        });
+  });
+  // Narrowing is not containment: the raw fs comes from the runtime hook rooted at
+  // exactly the alternate's objects dir, so `unsafeRawAdapters` still narrows.
+  const pathSyntax = gitPathSyntaxOf(fallback);
+  const objectSourceAccess = createObjectSourceAccess(
+    (objectsDir) => hostHooks.makeConfinedFs?.([objectsDir]) ?? detected.fs,
+    pathSyntax,
+  );
+  const alternatePathProbe = createAlternatePathProbe(
+    (root) => hostHooks.makeConfinedFs?.([root]) ?? detected.fs,
+    pathSyntax,
+  );
   const config = opts.config !== undefined ? deepFreeze({ ...opts.config }) : undefined;
   const controller = new AbortController();
   const signal =
@@ -665,6 +702,8 @@ export const openRepository = async (
     deltaCache: fallback.deltaCache,
     signal,
     worktreeFs,
+    objectSourceAccess,
+    alternatePathProbe,
   };
   const sanitizedLogger = opts.logger !== undefined ? wrapLoggerSanitizer(opts.logger) : undefined;
   // `false` fully disables hooks; otherwise an explicit runner overrides the
@@ -692,6 +731,8 @@ export const openRepository = async (
       ssh: fallback.ssh,
       concurrency: fallback.concurrency,
       cacheBudgets: fallback.cacheBudgets,
+      windowsPathSyntax: fallback.windowsPathSyntax,
+      filenameProbe: hostHooks.filenameProbe,
     }),
     promisor,
     session: createSession(),
@@ -928,6 +969,10 @@ export const openRepository = async (
     }) as Repository['whatchanged'],
     worktree: commands.bindWorktreeNamespace(ctx, guard),
     primitives: Object.freeze({
+      abbreviateObjectId: ((id) => {
+        guard();
+        return primitives.abbreviateObjectId(ctx, id);
+      }) as Repository['primitives']['abbreviateObjectId'],
       bisectMidpoint: ((good, bad) => {
         guard();
         return primitives.bisectMidpoint(ctx, good, bad);
@@ -968,6 +1013,10 @@ export const openRepository = async (
         guard();
         return primitives.mergeBase(ctx, commits, options);
       }) as Repository['primitives']['mergeBase'],
+      objectSources: (() => {
+        guard();
+        return primitives.objectSources(ctx);
+      }) as Repository['primitives']['objectSources'],
       readBlob: ((id, options) => {
         guard();
         return primitives.readBlob(ctx, id, options);

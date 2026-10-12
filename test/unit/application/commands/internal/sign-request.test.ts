@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { resolveSignRequest as sut } from '../../../../../src/application/commands/internal/sign-request.js';
+import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
+import {
+  resolveSignRequest,
+  signOrThrow,
+} from '../../../../../src/application/commands/internal/sign-request.js';
 import type { ParsedConfig } from '../../../../../src/application/primitives/config-read.js';
+import { TsgitError } from '../../../../../src/domain/error.js';
 import type { AuthorIdentity } from '../../../../../src/domain/objects/index.js';
+import { stubCommandRunner } from '../../primitives/helpers/stub-command-runner.js';
 
 const identity: AuthorIdentity = {
   name: 'A U Thor',
@@ -19,6 +25,8 @@ describe('resolveSignRequest', () => {
         // Arrange
         const config: ParsedConfig = {};
 
+        const sut = resolveSignRequest;
+
         // Act
         const result = sut(config, identity, undefined);
 
@@ -33,6 +41,8 @@ describe('resolveSignRequest', () => {
       it('Then the format is ssh and the selector is the empty string', () => {
         // Arrange
         const config: ParsedConfig = { gpg: { format: 'ssh' } };
+
+        const sut = resolveSignRequest;
 
         // Act
         const result = sut(config, identity, undefined);
@@ -91,7 +101,10 @@ describe('resolveSignRequest', () => {
             'format openpgp with both an override signKey and user.signingKey has the override win over both',
         },
       ])('Then $label', ({ config, override, expectedSelector }) => {
-        // Arrange + Act
+        // Arrange
+        const sut = resolveSignRequest;
+
+        // Act
         const result = sut(config, identity, override);
 
         // Assert
@@ -105,6 +118,8 @@ describe('resolveSignRequest', () => {
       it('Then the request carries gpg.program', () => {
         // Arrange
         const config: ParsedConfig = { gpg: { format: 'openpgp', program: '/usr/bin/gpg2' } };
+
+        const sut = resolveSignRequest;
 
         // Act
         const result = sut(config, identity, undefined);
@@ -123,6 +138,8 @@ describe('resolveSignRequest', () => {
           gpg: { format: 'ssh', program: '/usr/bin/gpg2', ssh: { program: '/usr/bin/ssh-keygen' } },
         };
 
+        const sut = resolveSignRequest;
+
         // Act
         const result = sut(config, identity, undefined);
 
@@ -138,11 +155,44 @@ describe('resolveSignRequest', () => {
         // Arrange
         const config: ParsedConfig = { gpg: { format: 'openpgp' } };
 
+        const sut = resolveSignRequest;
+
         // Act
         const result = sut(config, identity, undefined);
 
         // Assert
         expect('program' in result).toBe(false);
+      });
+    });
+  });
+});
+
+describe('signOrThrow', () => {
+  describe('Given a signer that fails with a diagnostic on stderr', () => {
+    describe('When the payload is signed', () => {
+      it('Then it throws SIGNING_FAILED carrying the format and the diagnostic', async () => {
+        // Arrange
+        const runner = stubCommandRunner({
+          exitCode: 2,
+          stderr: new TextEncoder().encode('gpg: no key\n'),
+        });
+        const ctx = createMemoryContext({ command: runner });
+        const sut = signOrThrow;
+
+        // Act
+        const result = await sut(ctx, new Uint8Array([1]), {
+          format: 'openpgp',
+          selector: 'K',
+        }).catch((error: unknown) => error);
+
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect((result as TsgitError).data).toEqual({
+          code: 'SIGNING_FAILED',
+          reason: 'signer-failed',
+          format: 'openpgp',
+          output: 'gpg: no key\n',
+        });
       });
     });
   });

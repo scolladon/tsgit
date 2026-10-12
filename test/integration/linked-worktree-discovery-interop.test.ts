@@ -21,7 +21,14 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import type { Repository } from '../../src/repository.js';
-import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  git,
+  revParseStdout,
+  runGit,
+  runGitEnv,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
 import { trackedRepositories } from './repository-lifecycle.js';
 
 const openTrackedRepository = trackedRepositories();
@@ -156,7 +163,7 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
         const expected = git(wt, 'rev-parse', 'HEAD').trim();
 
         // Act
-        const result = await repo.revParse('HEAD');
+        const result = revParseStdout(await repo.revParse('HEAD'));
 
         // Assert
         expect(result).toBe(expected);
@@ -211,7 +218,9 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
           // Assert
           expect(nested.ctx.layout.gitDir).toBe(expectedGitDir);
           expect(nested.ctx.layout.commonDir).toBe(expectedCommonDir);
-          expect(await nested.revParse('HEAD')).toBe(await repo.revParse('HEAD'));
+          expect(revParseStdout(await nested.revParse('HEAD'))).toBe(
+            revParseStdout(await repo.revParse('HEAD')),
+          );
         } finally {
           await nested.dispose();
         }
@@ -289,7 +298,7 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
 
         try {
           // Act
-          const result = await repo.revParse('HEAD');
+          const result = revParseStdout(await repo.revParse('HEAD'));
 
           // Assert
           expect(result).toBe(expectedSubHead);
@@ -344,7 +353,7 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
 
         try {
           // Act
-          const result = await repo.revParse('HEAD');
+          const result = revParseStdout(await repo.revParse('HEAD'));
 
           // Assert
           expect(result).toBe(expected);

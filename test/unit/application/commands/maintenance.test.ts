@@ -32,6 +32,11 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import * as retentionRootsMod from '../../../../src/application/commands/internal/fsck/roots.js';
 import {
+  readGcSettings,
+  runGcTask,
+} from '../../../../src/application/commands/internal/gc-pipeline.js';
+import { assertOperationalRepository } from '../../../../src/application/commands/internal/repo-state.js';
+import {
   type MaintenanceTask,
   maintenance,
 } from '../../../../src/application/commands/maintenance.js';
@@ -42,6 +47,9 @@ import { probeLooseOid } from '../../../../src/application/primitives/internal/l
 import { deriveWorktreeContext } from '../../../../src/application/primitives/internal/worktree-context.js';
 import * as writePackArtifactsMod from '../../../../src/application/primitives/internal/write-pack-artifacts.js';
 import {
+  commitGraphChainPath,
+  commitGraphLayerPath,
+  commitGraphPath,
   commonGitDir,
   looseObjectPath,
   multiPackIndexPath,
@@ -53,20 +61,37 @@ import {
   refreshPackRegistry,
 } from '../../../../src/application/primitives/read-object.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
+import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { MAX_REFLOG_BYTES } from '../../../../src/application/primitives/types.js';
-import * as writeCommitGraphMod from '../../../../src/application/primitives/write-commit-graph.js';
+import { updateRef } from '../../../../src/application/primitives/update-ref.js';
 import * as writeObjectMod from '../../../../src/application/primitives/write-object.js';
-import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import { fileNotFound, notADirectory, TsgitError } from '../../../../src/domain/error.js';
+import {
+  writeLooseObject,
+  writeObject,
+} from '../../../../src/application/primitives/write-object.js';
+import * as writeSplitCommitGraphMod from '../../../../src/application/primitives/write-split-commit-graph.js';
+import {
+  fileNotFound,
+  notADirectory,
+  permissionDenied,
+  TsgitError,
+} from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
-import { FILE_MODE } from '../../../../src/domain/objects/index.js';
+import { FILE_MODE, serializeHeader } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { packNameHash, parseCruftMtimes } from '../../../../src/domain/storage/index.js';
+import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import { allObjectIds } from '../../../../src/domain/storage/pack-index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildMidx } from '../../domain/storage/arbitraries.js';
-import { writeSyntheticPack } from '../primitives/pack-fixture.js';
+import { writeSyntheticPack, writeSyntheticPackIn } from '../primitives/pack-fixture.js';
 import { withReftableStorage } from '../primitives/reftable-fixtures.js';
+
+/** The gc task as `maintenance` runs it, its refusal surfaced rather than reported as a failed task. */
+const gcTask = async (ctx: Context): Promise<unknown> => {
+  await assertOperationalRepository(ctx);
+  return runGcTask(ctx, { auto: undefined, settings: await readGcSettings(ctx) });
+};
 
 const AUTHOR: AuthorIdentity = {
   name: 'Ada',
@@ -98,6 +123,18 @@ const writeLooseBlob = (ctx: Context, content: string): Promise<ObjectId> =>
 
 const appendConfig = (ctx: Context, text: string): Promise<void> =>
   ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, text);
+
+const readConfigText = (ctx: Context): Promise<string> =>
+  ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+
+/** Make every `readUtf8` of `denied` fail the way an unreadable file does. */
+const denyReadOf = (ctx: Context, denied: string): void => {
+  const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+  vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+    if (path === denied) throw permissionDenied(path);
+    return originalReadUtf8(path);
+  });
+};
 
 const packDirOf = (ctx: Context): string => packsDir(commonGitDir(ctx));
 
@@ -242,6 +279,33 @@ async function writePromisorPack(
   return ids as ReadonlyArray<ObjectId>;
 }
 
+describe('maintenance gc with an alternate', () => {
+  describe('Given a borrower with donor loose objects', () => {
+    describe('When gc', () => {
+      it('Then no donor object is counted or touched', async () => {
+        // Arrange
+        const withoutDonor = await seedOneCommit();
+        const expectedLoose = (await maintenance(withoutDonor, { tasks: ['gc'] }))
+          .looseObjectsBefore;
+        const ctx = await seedOneCommit();
+        const donorObjects = '/repo/donor/objects';
+        await ctx.fs.mkdir(donorObjects);
+        await ctx.fs.writeUtf8(`${commonGitDir(ctx)}/objects/info/alternates`, `${donorObjects}\n`);
+        const donorPath = `${donorObjects}/ab/${'c'.repeat(38)}`;
+        await ctx.fs.write(donorPath, new Uint8Array([1]));
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.looseObjectsBefore).toBe(expectedLoose);
+        expect(await ctx.fs.exists(donorPath)).toBe(true);
+      });
+    });
+  });
+});
+
 describe('maintenance', () => {
   describe('Given tasks: []', () => {
     describe('When maintenance is called', () => {
@@ -298,7 +362,7 @@ describe('maintenance', () => {
 
   describe('Given tasks: ["commit-graph"] against a repository with one commit', () => {
     describe('When maintenance runs', () => {
-      it('Then the graph is written, commitsInGraph matches the reachable count, and tasksRun echoes the task', async () => {
+      it('Then a split chain layer is written, commitsInGraph matches the reachable count, and tasksRun echoes the task', async () => {
         // Arrange
         const ctx = await seedOneCommit();
         const sut = maintenance;
@@ -310,6 +374,85 @@ describe('maintenance', () => {
         expect(result.commitGraphWritten).toBe(true);
         expect(result.commitsInGraph).toBe(1);
         expect(result.tasksRun).toEqual(['commit-graph']);
+        expect(await ctx.fs.exists(commitGraphChainPath(commonGitDir(ctx)))).toBe(true);
+        expect(await ctx.fs.exists(commitGraphPath(commonGitDir(ctx)))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given core.commitGraph disables the commit-graph', () => {
+    describe('When maintenance runs the commit-graph task', () => {
+      it('Then it writes nothing and still reports the task ran, as git skips it', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '[core]\n\tcommitGraph = true\n\tcommitGraph = off\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['commit-graph'] });
+
+        // Assert
+        expect(result.commitGraphWritten).toBe(false);
+        expect(result.commitsInGraph).toBe(0);
+        expect(result.tasksRun).toEqual(['commit-graph']);
+        expect(await ctx.fs.exists(commitGraphPath(commonGitDir(ctx)))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a valueless core.commitGraph, which git reads as true', () => {
+    describe('When maintenance runs the commit-graph task', () => {
+      it('Then the graph is written', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '[core]\n\tcommitGraph\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['commit-graph'] });
+
+        // Assert
+        expect(result.commitGraphWritten).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an explicit core.commitGraph = true', () => {
+    describe('When maintenance runs the commit-graph task', () => {
+      it('Then the graph is written, as only a false value disables it', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '[core]\n\tcommitGraph = true\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['commit-graph'] });
+
+        // Assert
+        expect(result.commitGraphWritten).toBe(true);
+        expect(result.commitsInGraph).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a malformed core.commitGraph', () => {
+    describe('When maintenance runs the commit-graph task', () => {
+      it('Then it refuses on the value, as prepare_repo_settings dies', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '[core]\n\tcommitGraph = sometimes\n');
+        const sut = maintenance;
+
+        // Act
+        const [outcome] = await Promise.allSettled([sut(ctx, { tasks: ['commit-graph'] })]);
+
+        // Assert
+        expect((outcome as PromiseRejectedResult).reason.data).toMatchObject({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'core.commitgraph',
+          value: 'sometimes',
+        });
+        expect(await ctx.fs.exists(commitGraphPath(commonGitDir(ctx)))).toBe(false);
       });
     });
   });
@@ -339,7 +482,7 @@ describe('maintenance', () => {
 
   describe('Given tasks: ["gc"] only, against a repository with one commit', () => {
     describe('When maintenance runs', () => {
-      it('Then the commit-graph task does not run', async () => {
+      it('Then gc itself writes the reachable commit-graph, as git gc does with gc.writeCommitGraph unset', async () => {
         // Arrange
         const ctx = await seedOneCommit();
         const sut = maintenance;
@@ -349,9 +492,216 @@ describe('maintenance', () => {
 
         // Assert
         expect(result.tasksRun).toEqual(['gc']);
+        expect(result.commitGraphWritten).toBe(true);
+        expect(result.commitsInGraph).toBe(1);
+        expect(await ctx.fs.exists(commitGraphPath(commonGitDir(ctx)))).toBe(true);
+      });
+    });
+  });
+
+  describe.each([
+    {
+      setting: 'gc.writeCommitGraph=false',
+      text: '[gc]\n\twriteCommitGraph = true\n\twriteCommitGraph = false\n',
+    },
+    {
+      setting: 'core.commitGraph=false',
+      text: '[core]\n\tcommitGraph = true\n\tcommitGraph = false\n',
+    },
+  ])('Given $setting', ({ text }) => {
+    describe('When maintenance runs the gc task', () => {
+      it('Then gc packs but writes no commit-graph', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, text);
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.tasksRun).toEqual(['gc']);
+        expect(result.packId).toBeDefined();
         expect(result.commitGraphWritten).toBe(false);
         expect(result.commitsInGraph).toBe(0);
-        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/objects/info/commit-graph`)).toBe(false);
+        expect(await ctx.fs.exists(commitGraphPath(commonGitDir(ctx)))).toBe(false);
+      });
+    });
+  });
+
+  describe.each([
+    {
+      label: 'core.commitGraph=false under the gc task',
+      text: '[core]\n\tcommitGraph = false\n',
+      tasks: ['gc'] as const,
+      written: false,
+      warnings: ["attempting to write a commit-graph, but 'core.commitGraph' is disabled"],
+    },
+    {
+      label: 'core.commitGraph=false and gc.writeCommitGraph=false under the gc task',
+      text: '[core]\n\tcommitGraph = false\n[gc]\n\twriteCommitGraph = false\n',
+      tasks: ['gc'] as const,
+      written: false,
+      warnings: [],
+    },
+    {
+      label: 'core.commitGraph=false under the commit-graph task',
+      text: '[core]\n\tcommitGraph = false\n',
+      tasks: ['commit-graph'] as const,
+      written: false,
+      warnings: [],
+    },
+    {
+      label: 'commitGraph.changedPathsVersion=3 under the commit-graph task',
+      text: '[commitGraph]\n\tchangedPathsVersion = 3\n',
+      tasks: ['commit-graph'] as const,
+      written: false,
+      warnings: [
+        "attempting to write a commit-graph, but 'commitGraph.changedPathsVersion' (3) is not supported",
+      ],
+    },
+    {
+      label: 'commitGraph.changedPathsVersion=-2 under the gc task',
+      text: '[commitGraph]\n\tchangedPathsVersion = -2\n',
+      tasks: ['gc'] as const,
+      written: false,
+      warnings: [
+        "attempting to write a commit-graph, but 'commitGraph.changedPathsVersion' (-2) is not supported",
+      ],
+    },
+    {
+      label: 'commitGraph.changedPathsVersion=-1 under the commit-graph task',
+      text: '[commitGraph]\n\tchangedPathsVersion = -1\n',
+      tasks: ['commit-graph'] as const,
+      written: true,
+      warnings: [],
+    },
+    {
+      label: 'commitGraph.changedPathsVersion=2 under the gc task',
+      text: '[commitGraph]\n\tchangedPathsVersion = 2\n',
+      tasks: ['gc'] as const,
+      written: true,
+      warnings: [],
+    },
+  ])('Given $label', ({ text, tasks, warnings, written }) => {
+    describe('When maintenance runs', () => {
+      it('Then it warns, and declines the write, only where git does', async () => {
+        // Arrange
+        const seeded = await seedOneCommit();
+        const logged: string[] = [];
+        const ctx: Context = { ...seeded, logger: { warn: (message) => logged.push(message) } };
+        await appendConfig(ctx, text);
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks });
+
+        // Assert
+        expect(logged).toEqual(warnings);
+        expect(result.commitGraphWritten).toBe(written);
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'a shallow file', setup: 'shallow', tasks: ['commit-graph'], written: false },
+    { label: 'a shallow file', setup: 'shallow', tasks: ['gc'], written: false },
+    { label: 'a graft', setup: 'graft', tasks: ['commit-graph'], written: false },
+    { label: 'a graft', setup: 'graft', tasks: ['gc'], written: false },
+    {
+      label: 'a grafts file of comments and bad data',
+      setup: 'bad-graft',
+      tasks: ['gc'],
+      written: true,
+    },
+    { label: 'a replace ref', setup: 'replace', tasks: ['commit-graph'], written: true },
+    { label: 'a replace ref', setup: 'replace', tasks: ['gc'], written: false },
+    { label: 'a replace ref git ignores', setup: 'replace-off', tasks: ['gc'], written: true },
+    { label: 'a non-oid replace ref', setup: 'replace-named', tasks: ['gc'], written: true },
+  ] as const)('Given $label', ({ setup, tasks, written }) => {
+    describe(`When maintenance runs ${tasks[0]}`, () => {
+      it(`Then a commit-graph is ${written ? '' : 'not '}written, as git's commit_graph_compatible decides`, async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        const gitDir = commonGitDir(ctx);
+        if (setup === 'shallow') await ctx.fs.writeUtf8(`${gitDir}/shallow`, `${head}\n`);
+        if (setup === 'graft') await ctx.fs.writeUtf8(`${gitDir}/info/grafts`, `# c\n${head}\n`);
+        if (setup === 'bad-graft')
+          await ctx.fs.writeUtf8(`${gitDir}/info/grafts`, `# c\n\nzz\n${head} x\n`);
+        if (setup.startsWith('replace')) {
+          const name = setup === 'replace-named' ? 'refs/replace/topic' : `refs/replace/${head}`;
+          await updateRef(ctx, name as RefName, head, { reflogMessage: 'r' });
+        }
+        if (setup === 'replace-off') await appendConfig(ctx, '[core]\n\tuseReplaceRefs = false\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks });
+
+        // Assert
+        const graphFile = tasks[0] === 'gc' ? commitGraphPath : commitGraphChainPath;
+        expect(result.commitGraphWritten).toBe(written);
+        expect(await ctx.fs.exists(graphFile(gitDir))).toBe(written);
+      });
+    });
+  });
+
+  describe('Given a gc.auto gate that declines', () => {
+    describe('When maintenance runs the gc task with auto', () => {
+      it('Then no commit-graph is written', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '[gc]\n\tauto = 0\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'], auto: true });
+
+        // Assert
+        expect(result.tasksRun).toEqual([]);
+        expect(result.commitGraphWritten).toBe(false);
+        expect(await ctx.fs.exists(commitGraphPath(commonGitDir(ctx)))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an existing split commit-graph chain', () => {
+    describe('When maintenance runs the gc task', () => {
+      it('Then gc replaces it with one commit-graph file and removes the chain and its layers', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const gitDir = commonGitDir(ctx);
+        const layer = commitGraphLayerPath(gitDir, 'a'.repeat(40));
+        await ctx.fs.writeUtf8(commitGraphChainPath(gitDir), `${'a'.repeat(40)}\n`);
+        await ctx.fs.writeUtf8(layer, 'stale layer');
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await ctx.fs.exists(commitGraphPath(gitDir))).toBe(true);
+        expect(await ctx.fs.exists(commitGraphChainPath(gitDir))).toBe(false);
+        expect(await ctx.fs.exists(layer)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given tasks: ["commit-graph", "gc"] where gc.writeCommitGraph is false', () => {
+    describe('When maintenance runs', () => {
+      it('Then the commit-graph task outcome is kept', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '[gc]\n\twriteCommitGraph = false\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['commit-graph', 'gc'] });
+
+        // Assert
+        expect(result.commitGraphWritten).toBe(true);
+        expect(result.commitsInGraph).toBe(1);
       });
     });
   });
@@ -364,7 +714,7 @@ describe('maintenance', () => {
         // not a fixed internal priority.
         const ctx = await seedOneCommit();
         const enumerateSpy = vi.spyOn(enumerateObjectsMod, 'enumerateObjects');
-        const writeGraphSpy = vi.spyOn(writeCommitGraphMod, 'writeCommitGraph');
+        const writeGraphSpy = vi.spyOn(writeSplitCommitGraphMod, 'writeSplitCommitGraph');
         const sut = maintenance;
 
         // Act
@@ -391,7 +741,7 @@ describe('maintenance', () => {
         // not a fixed internal priority.
         const ctx = await seedOneCommit();
         const enumerateSpy = vi.spyOn(enumerateObjectsMod, 'enumerateObjects');
-        const writeGraphSpy = vi.spyOn(writeCommitGraphMod, 'writeCommitGraph');
+        const writeGraphSpy = vi.spyOn(writeSplitCommitGraphMod, 'writeSplitCommitGraph');
         const sut = maintenance;
 
         // Act
@@ -399,6 +749,7 @@ describe('maintenance', () => {
 
         // Assert
         expect(result.tasksRun).toEqual(['gc', 'commit-graph']);
+        expect(result.commitGraphWritten).toBe(true);
         const gcOrder = Math.min(...enumerateSpy.mock.invocationCallOrder);
         const graphOrder = Math.min(...writeGraphSpy.mock.invocationCallOrder);
         enumerateSpy.mockRestore();
@@ -546,6 +897,252 @@ describe('maintenance', () => {
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      });
+    });
+  });
+
+  describe.each([
+    { key: 'gc.auto', config: 'auto = bogus', code: 'CONFIG_BAD_NUMERIC_VALUE' },
+    { key: 'gc.cruftPacks', config: 'cruftPacks = maybe', code: 'CONFIG_BAD_BOOLEAN_VALUE' },
+    { key: 'gc.pruneExpire', config: 'pruneExpire = all', code: 'CONFIG_BAD_DATE_VALUE' },
+    {
+      key: 'gc.worktreePruneExpire',
+      config: 'worktreePruneExpire = 2099-01-01',
+      code: 'CONFIG_BAD_DATE_VALUE',
+    },
+    { key: 'valueless gc.pruneExpire', config: 'pruneExpire', code: 'CONFIG_MISSING_VALUE' },
+    {
+      key: 'valueless gc.worktreePruneExpire',
+      config: 'worktreePruneExpire',
+      code: 'CONFIG_MISSING_VALUE',
+    },
+    { key: 'gc.logExpiry', config: 'logExpiry = garbage', code: 'CONFIG_BAD_DATE_VALUE' },
+    { key: 'valueless gc.logExpiry', config: 'logExpiry', code: 'CONFIG_MISSING_VALUE' },
+    { key: 'gc.autoPackLimit', config: 'autoPackLimit = abc', code: 'CONFIG_BAD_NUMERIC_VALUE' },
+    {
+      key: 'gc.autoPackLimit beyond a C int',
+      config: 'autoPackLimit = 3g',
+      code: 'CONFIG_BAD_NUMERIC_VALUE',
+    },
+    {
+      key: 'gc.bigPackThreshold',
+      config: 'bigPackThreshold = abc',
+      code: 'CONFIG_BAD_NUMERIC_VALUE',
+    },
+    {
+      key: 'signed gc.bigPackThreshold',
+      config: 'bigPackThreshold = -0',
+      code: 'CONFIG_BAD_NUMERIC_VALUE',
+    },
+    {
+      key: 'valueless gc.bigPackThreshold',
+      config: 'bigPackThreshold',
+      code: 'CONFIG_BAD_NUMERIC_VALUE',
+    },
+    {
+      key: 'gc.pruneExpire whose last entry is valueless',
+      config: 'pruneExpire = 2.weeks.ago\n\tpruneExpire',
+      code: 'CONFIG_MISSING_VALUE',
+    },
+  ])('Given a malformed $key', ({ config, code }) => {
+    describe.each([
+      { run: 'the gc task under an auto gate that declines', tasks: ['gc'] as const, auto: true },
+      { run: 'the commit-graph task alone', tasks: ['commit-graph'] as const, auto: false },
+    ])('When maintenance runs $run', ({ tasks, auto }) => {
+      it('Then it refuses before any task, as git reads gc config first', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, `\n[gc]\n\t${config}\n`);
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: [...tasks], auto });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe(code);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/objects/info/commit-graph`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a valueless gc.worktreePruneExpire', () => {
+    describe('When maintenance runs the gc task', () => {
+      it('Then the refusal names the key and its config line, as git does', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '\n[gc]\n\tworktreePruneExpire\n');
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        const lines = (await readConfigText(ctx)).split('\n');
+        expect((caught as TsgitError).data).toEqual({
+          code: 'CONFIG_MISSING_VALUE',
+          key: 'gc.worktreepruneexpire',
+          source: `${ctx.layout.gitDir}/config`,
+          line: lines.indexOf('\tworktreePruneExpire') + 1,
+        });
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'gc.auto', config: 'auto = abc\n\tauto = 0' },
+    { label: 'gc.autoPackLimit', config: 'autoPackLimit = abc\n\tautoPackLimit = 50' },
+    { label: 'gc.cruftPacks', config: 'cruftPacks = maybe\n\tcruftPacks = true' },
+    { label: 'gc.logExpiry', config: 'logExpiry = garbage\n\tlogExpiry = never' },
+    { label: 'gc.bigPackThreshold', config: 'bigPackThreshold = abc\n\tbigPackThreshold = +5' },
+  ])('Given a malformed $label followed by a valid one', ({ config }) => {
+    describe('When maintenance runs the gc task', () => {
+      it('Then it runs, as git reads only the last entry', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, `\n[gc]\n\t${config}\n`);
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.tasksRun).toEqual(['gc']);
+      });
+    });
+  });
+
+  describe.each([
+    {
+      label: 'a malformed gc.cruftPacks before a malformed gc.autoPackLimit',
+      config: 'cruftPacks = maybe\n\tautoPackLimit = abc',
+      expected: { code: 'CONFIG_BAD_NUMERIC_VALUE', key: 'gc.autopacklimit', value: 'abc' },
+    },
+    {
+      label: 'a malformed gc.bigPackThreshold before a malformed gc.logExpiry',
+      config: 'bigPackThreshold = abc\n\tlogExpiry = garbage',
+      expected: { code: 'CONFIG_BAD_DATE_VALUE', value: 'garbage' },
+    },
+    {
+      label: 'a malformed gc.logExpiry before a malformed gc.worktreePruneExpire',
+      config: 'logExpiry = garbage\n\tworktreePruneExpire = rubbish',
+      expected: { code: 'CONFIG_BAD_DATE_VALUE', value: 'rubbish' },
+    },
+  ])('Given $label', ({ config, expected }) => {
+    describe('When maintenance runs the gc task', () => {
+      it("Then it refuses the key git's gc_config reads first", async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, `\n[gc]\n\t${config}\n`);
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toMatchObject(expected);
+      });
+    });
+  });
+
+  describe('Given a valueless gc.pruneExpire followed by a valid one', () => {
+    describe('When maintenance runs the gc task', () => {
+      it('Then it runs, as git reads only the last entry', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire\n\tpruneExpire = 2.weeks.ago\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.tasksRun).toEqual(['gc']);
+      });
+    });
+  });
+
+  describe('Given a valueless remote partialclonefilter and a malformed pack.window', () => {
+    describe('When maintenance runs the gc task', () => {
+      it('Then it refuses the filter first, where git repack loads promisor remotes', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '\n[pack]\n\twindow = abc\n[remote "x"]\n\tpartialclonefilter\n');
+        const sut = gcTask;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        const lines = (await readConfigText(ctx)).split('\n');
+        expect((caught as TsgitError).data).toEqual({
+          code: 'CONFIG_MISSING_VALUE',
+          key: 'remote.x.partialclonefilter',
+          source: `${ctx.layout.gitDir}/config`,
+          line: lines.indexOf('\tpartialclonefilter') + 1,
+        });
+        expect(await ctx.fs.readdir(packDirOf(ctx))).toEqual([]);
+      });
+    });
+  });
+
+  describe.each([
+    { run: 'the gc task under an auto gate that declines', tasks: ['gc'] as const, auto: true },
+    { run: 'the commit-graph task alone', tasks: ['commit-graph'] as const, auto: false },
+  ])(
+    'Given a valueless remote partialclonefilter, When maintenance runs $run',
+    ({ tasks, auto }) => {
+      it('Then it does not load promisor remotes, as git gc_config does not', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '\n[gc]\n\tauto = 100\n[remote "x"]\n\tpartialclonefilter\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: [...tasks], auto });
+
+        // Assert
+        expect(result.packsAfter).toBe(0);
+      });
+    },
+  );
+
+  describe('Given a malformed pack.window and an auto gate that declines', () => {
+    describe('When maintenance runs the gc task', () => {
+      it('Then gc declines without reading the pack config, as git does', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '\n[gc]\n\tauto = 100\n[pack]\n\twindow = abc\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'], auto: true });
+
+        // Assert
+        expect(result.tasksRun).toEqual([]);
       });
     });
   });
@@ -864,17 +1461,17 @@ describe('maintenance', () => {
     });
   });
 
-  describe('Given a linked worktree admin dir whose gitdir file read fails with a genuine I/O fault', () => {
+  describe('Given a linked worktree admin dir whose gitdir file read fails with an unclassified I/O fault', () => {
     describe('When gc runs the retention-root scan', () => {
       it('Then the fault propagates rather than being swallowed as prunable', async () => {
-        // Arrange — only FILE_NOT_FOUND is a prunable-worktree signal; any
-        // OTHER fault means the read never happened and must abort the run.
+        // Arrange — only a file that cannot be opened skips the worktree;
+        // any OTHER fault means the read never happened and must abort the run.
         const ctx = await seedOneCommit();
         const adminDir = `${ctx.layout.gitDir}/worktrees/wt-eacces`;
         await ctx.fs.writeUtf8(`${adminDir}/gitdir`, '/tmp/nonexistent-wt-eacces/.git\n');
         const gitdirPath = `${adminDir}/gitdir`;
         const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
-        const eacces = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        const eacces = Object.assign(new Error('EIO: i/o error'), { code: 'EIO' });
         vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
           if (path === gitdirPath) throw eacces;
           return originalReadUtf8(path);
@@ -1027,8 +1624,10 @@ describe('maintenance', () => {
         // Act
         await sut(wtCtx, { tasks: ['gc'] });
 
-        // Assert
-        expect(readCalls.filter((p) => p === selfGitdirPath).length).toBe(0);
+        // Assert — the one read is gc's worktree-prune step, which reads every
+        // admin entry's gitdir as git's `should_prune_worktree` does; the
+        // retention scan itself adds none.
+        expect(readCalls.filter((p) => p === selfGitdirPath).length).toBe(1);
       });
     });
   });
@@ -1044,14 +1643,14 @@ describe('maintenance', () => {
         const ctx = await seedOneCommit();
         const blobId = await writeLooseBlob(ctx, 'aged');
         const { forceMtimeSeconds } = installLstatOverrides(ctx);
-        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), blobId), 2_000_000_000);
-        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = @1999999999\n');
+        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), blobId), 1_500_000_000);
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = @1499999999\n');
         const sut = maintenance;
 
         // Act
         const result = await sut(ctx, { tasks: ['gc'] });
 
-        // Assert — survives (2_000_000_000 > 1_999_999_999) into the cruft pack.
+        // Assert — survives (1_500_000_000 > 1_499_999_999) into the cruft pack.
         expect(result.cruftPackId).toBeDefined();
         expect(result.cruftObjectsAdded).toBe(1);
         expect(result.cruftObjectsExpired).toBe(0);
@@ -1097,12 +1696,12 @@ describe('maintenance', () => {
 
         // Act — write it loose again with a NEWER forced mtime ("freshen").
         await writeLooseBlob(ctx, 'freshen-loose-newer');
-        forceMtimeSeconds(loosePath, 3_000_000_000);
-        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = @2999999999\n');
+        forceMtimeSeconds(loosePath, 1_700_000_000);
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = @1699999999\n');
         const result = await sut(ctx, { tasks: ['gc'] });
 
-        // Assert — survives because the NEWER loose mtime (3e9) beats the
-        // cutoff (2_999_999_999), even though the carried value (1e9) would not.
+        // Assert — survives because the NEWER loose mtime (1.7e9) beats the
+        // cutoff (1_699_999_999), even though the carried value (1e9) would not.
         expect(result.cruftObjectsRetained).toBe(1);
         expect(result.cruftObjectsExpired).toBe(0);
       });
@@ -1117,19 +1716,19 @@ describe('maintenance', () => {
         const blobId = await writeLooseBlob(ctx, 'freshen-carried-newer');
         const { forceMtimeSeconds } = installLstatOverrides(ctx);
         const loosePath = looseObjectPath(commonGitDir(ctx), blobId);
-        forceMtimeSeconds(loosePath, 3_000_000_000);
+        forceMtimeSeconds(loosePath, 1_700_000_000);
         await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
         const sut = maintenance;
-        await sut(ctx, { tasks: ['gc'] }); // crufts it with carried mtime 3_000_000_000
+        await sut(ctx, { tasks: ['gc'] }); // crufts it with carried mtime 1_700_000_000
 
         // Act — resurrect it loose with an OLDER forced mtime than the carried one.
         await writeLooseBlob(ctx, 'freshen-carried-newer');
         forceMtimeSeconds(loosePath, 1_000_000_000);
-        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = @1999999999\n');
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = @1499999999\n');
         const result = await sut(ctx, { tasks: ['gc'] });
 
-        // Assert — survives because the carried mtime (3e9) beats the cutoff
-        // (1_999_999_999), even though the fresh loose mtime (1e9) would not.
+        // Assert — survives because the carried mtime (1.7e9) beats the cutoff
+        // (1_499_999_999), even though the fresh loose mtime (1e9) would not.
         expect(result.cruftObjectsRetained).toBe(1);
         expect(result.cruftObjectsExpired).toBe(0);
       });
@@ -1179,12 +1778,12 @@ describe('maintenance', () => {
         const loosePath = looseObjectPath(commonGitDir(ctx), blobId);
         const { forceFailure } = installLstatOverrides(ctx);
         forceFailure(loosePath, fileNotFound(loosePath));
-        const sut = maintenance;
+        const sut = gcTask;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -1356,12 +1955,12 @@ describe('maintenance', () => {
         const ctx = await seedOneCommit();
         const oversized = 'x'.repeat(MAX_REFLOG_BYTES + 1);
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/HEAD`, oversized);
-        const sut = maintenance;
+        const sut = gcTask;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -1397,14 +1996,14 @@ describe('maintenance', () => {
     });
   });
 
-  describe('Given a genuine EACCES fault reading one reflog during the retention-root scan', () => {
+  describe('Given an unclassified I/O fault reading one reflog during the retention-root scan', () => {
     describe('When gc runs', () => {
       it('Then it aborts rather than silently rooting nothing and destroying the subgraph', async () => {
         // Arrange
         const ctx = await seedOneCommit();
         const reflogPath = `${ctx.layout.gitDir}/logs/HEAD`;
         const originalRead = ctx.fs.read.bind(ctx.fs);
-        const eacces = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        const eacces = Object.assign(new Error('EIO: i/o error'), { code: 'EIO' });
         vi.spyOn(ctx.fs, 'read').mockImplementation(async (path: string) => {
           if (path === reflogPath) throw eacces;
           return originalRead(path);
@@ -1420,13 +2019,108 @@ describe('maintenance', () => {
           caught = error;
         }
 
-        // Assert — a genuine I/O fault still aborts even though a
-        // parse-shaped reflog fault is now tolerated.
+        // Assert — an I/O fault still aborts even though an unopenable
+        // reflog and a parse-shaped reflog line are tolerated.
         expect(caught).toBe(eacces);
         expect((await (await getPackRegistry(ctx)).all()).length).toBe(0);
       });
     });
   });
+
+  describe.each([
+    { label: 'PERMISSION_DENIED', fault: permissionDenied },
+    { label: 'NOT_A_DIRECTORY', fault: notADirectory },
+  ])('Given the only reflog naming a loose blob cannot be opened ($label)', ({ fault }) => {
+    describe('When gc runs with prune=now', () => {
+      it('Then it treats the reflog as absent and prunes the blob', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const blobId = await writeLooseBlob(ctx, 'named-only-by-an-unreadable-reflog');
+        const head = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`)).trim();
+        const reflogPath = `${ctx.layout.gitDir}/logs/refs/heads/main`;
+        await ctx.fs.appendUtf8(
+          reflogPath,
+          `${blobId} ${head} Ada <ada@example.com> 1700000000 +0000\treset: moving\n`,
+        );
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = now\n');
+        const originalRead = ctx.fs.read.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'read').mockImplementation(async (path: string) => {
+          if (path === reflogPath) throw fault(path);
+          return originalRead(path);
+        });
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.cruftObjectsExpired).toBe(1);
+        expect(await probeLooseOid(ctx, blobId)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a linked worktree whose own HEAD reflog cannot be opened and is the only one naming a loose blob', () => {
+    describe('When gc runs with prune=now', () => {
+      it('Then it treats that reflog as absent and prunes the blob', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const blobId = await writeLooseBlob(ctx, 'named-only-by-a-worktree-reflog');
+        const head = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`)).trim();
+        const adminDir = `${ctx.layout.gitDir}/worktrees/wt-reflog-denied`;
+        const reflogPath = `${adminDir}/logs/HEAD`;
+        await ctx.fs.writeUtf8(`${adminDir}/HEAD`, `${head}\n`);
+        await ctx.fs.writeUtf8(`${adminDir}/gitdir`, '/tmp/nonexistent-wt-reflog-denied/.git\n');
+        await ctx.fs.writeUtf8(
+          reflogPath,
+          `${blobId} ${head} Ada <ada@example.com> 1700000000 +0000\tcheckout: moving\n`,
+        );
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = now\n');
+        const originalRead = ctx.fs.read.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'read').mockImplementation(async (path: string) => {
+          if (path === reflogPath) throw permissionDenied(path);
+          return originalRead(path);
+        });
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.cruftObjectsExpired).toBe(1);
+        expect(await probeLooseOid(ctx, blobId)).toBe(false);
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'unreadable', spoil: (ctx: Context, path: string) => denyReadOf(ctx, path) },
+    { label: 'empty', spoil: (ctx: Context, path: string) => ctx.fs.writeUtf8(path, '') },
+  ])(
+    'Given a linked worktree whose gitdir file is $label and whose HEAD alone names a loose blob',
+    ({ spoil }) => {
+      describe('When gc runs with prune=now', () => {
+        it('Then it skips that worktree and prunes the blob', async () => {
+          // Arrange
+          const ctx = await seedOneCommit();
+          const blobId = await writeLooseBlob(ctx, 'named-only-by-a-skipped-worktree');
+          const adminDir = `${ctx.layout.gitDir}/worktrees/wt-skipped`;
+          await ctx.fs.writeUtf8(`${adminDir}/HEAD`, `${blobId}\n`);
+          await ctx.fs.writeUtf8(`${adminDir}/gitdir`, '/tmp/nonexistent-wt-skipped/.git\n');
+          await spoil(ctx, `${adminDir}/gitdir`);
+          await appendConfig(ctx, '\n[gc]\n\tpruneExpire = now\n');
+          const sut = maintenance;
+
+          // Act
+          const result = await sut(ctx, { tasks: ['gc'] });
+
+          // Assert
+          expect(result.cruftObjectsExpired).toBe(1);
+          expect(await probeLooseOid(ctx, blobId)).toBe(false);
+        });
+      });
+    },
+  );
 
   describe('Given a reftable-backed repository where a commit is reachable only from a reflog', () => {
     describe('When gc runs with prune=now', () => {
@@ -1595,13 +2289,18 @@ describe('maintenance', () => {
     });
   });
 
-  describe('Given a malformed gc.pruneExpire value', () => {
+  describe.each([
+    { label: 'malformed', value: 'not-a-date' },
+    { label: 'the reflog-only keyword "all"', value: 'all' },
+    { label: 'the reflog-only keyword "false"', value: 'false' },
+    { label: 'future-dated', value: '2099-01-01' },
+  ])('Given a $label gc.pruneExpire value', ({ value }) => {
     describe('When gc runs', () => {
       it('Then it refuses and writes nothing', async () => {
         // Arrange
         const ctx = await seedOneCommit();
         await writeLooseBlob(ctx, 'irrelevant');
-        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = not-a-date\n');
+        await appendConfig(ctx, `\n[gc]\n\tpruneExpire = ${value}\n`);
         const sut = maintenance;
         const packDir = packDirOf(ctx);
 
@@ -1639,8 +2338,8 @@ describe('maintenance', () => {
         forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), idA), 2_000_000_000);
         forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), idB), 2_000_000_000);
         await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
-        const sut = maintenance;
-        const first = await sut(ctx, { tasks: ['gc'] });
+        const sut = gcTask;
+        const first = await maintenance(ctx, { tasks: ['gc'] });
         expect(first.cruftPackId).toBeDefined();
         const packDir = packDirOf(ctx);
         const mtimesPath = `${packDir}/pack-${first.cruftPackId}.mtimes`;
@@ -1653,7 +2352,7 @@ describe('maintenance', () => {
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -1681,8 +2380,8 @@ describe('maintenance', () => {
         forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), idA), 2_000_000_000);
         forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), idB), 2_000_000_000);
         await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
-        const sut = maintenance;
-        const first = await sut(ctx, { tasks: ['gc'] });
+        const sut = gcTask;
+        const first = await maintenance(ctx, { tasks: ['gc'] });
         expect(first.cruftPackId).toBeDefined();
         const packDir = packDirOf(ctx);
         const mtimesPath = `${packDir}/pack-${first.cruftPackId}.mtimes`;
@@ -1695,7 +2394,7 @@ describe('maintenance', () => {
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -1715,8 +2414,8 @@ describe('maintenance', () => {
         const ctx = await seedOneCommit();
         await writeLooseBlob(ctx, 'truncated-sidecar');
         await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
-        const sut = maintenance;
-        const first = await sut(ctx, { tasks: ['gc'] });
+        const sut = gcTask;
+        const first = await maintenance(ctx, { tasks: ['gc'] });
         expect(first.cruftPackId).toBeDefined();
         const packDir = packDirOf(ctx);
         const mtimesPath = `${packDir}/pack-${first.cruftPackId}.mtimes`;
@@ -1725,7 +2424,7 @@ describe('maintenance', () => {
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -1762,23 +2461,23 @@ describe('maintenance', () => {
         const packDir = packDirOf(ctx);
 
         await writeLooseBlob(ctx, oidAContent); // freshen oidA
-        forceMtimeSeconds(loosePathA, 3_000_000_000);
+        forceMtimeSeconds(loosePathA, 1_700_000_000);
         const blobB = await writeLooseBlob(ctx, 'merge-max-b');
-        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), blobB), 3_800_000_000);
+        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), blobB), 1_750_000_000);
         const originalRm = ctx.fs.rm.bind(ctx.fs);
         const rmSpy = vi.spyOn(ctx.fs, 'rm').mockImplementation(async (path: string) => {
           if (path.startsWith(`${packDir}/pack-${c1Sha}.`)) return;
           return originalRm(path);
         });
-        const second = await sut(ctx, { tasks: ['gc'] }); // c2: oidA -> 3e9, oidB -> 3.8e9
+        const second = await sut(ctx, { tasks: ['gc'] }); // c2: oidA -> 1.7e9, oidB -> 1.75e9
         rmSpy.mockRestore();
         expect(second.cruftPackId).toBeDefined();
         expect(second.cruftPackId).not.toBe(c1Sha);
         expect(second.cruftObjectsRetained + second.cruftObjectsAdded).toBe(2);
 
         // Act — cutoff strictly between oidA's two recorded mtimes: only
-        // the MAX (3e9) beats it; oidB (3.8e9) survives regardless.
-        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = @2000000000\n');
+        // the MAX (1.7e9) beats it; oidB (1.75e9) survives regardless.
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = @1500000000\n');
         const third = await sut(ctx, { tasks: ['gc'] });
 
         // Assert
@@ -2518,12 +3217,12 @@ describe('maintenance', () => {
         // Arrange
         const ctx = await seedOneCommit();
         await appendConfig(ctx, '\n[pack]\n\tdepth = abc\n');
-        const sut = maintenance;
+        const sut = gcTask;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -2549,12 +3248,12 @@ describe('maintenance', () => {
         const ctx = createMemoryContext();
         await init(ctx);
         await appendConfig(ctx, '\n[pack]\n\twindow = 2147483648\n');
-        const sut = maintenance;
+        const sut = gcTask;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -2644,7 +3343,7 @@ describe('maintenance', () => {
         const ctx = await seedOneCommit();
         const blobId = await writeLooseBlob(ctx, 'already-loose-write-back');
         await appendConfig(ctx, '\n[gc]\n\tcruftPacks = false\n');
-        const writeSpy = vi.spyOn(writeObjectMod, 'writeObject');
+        const writeSpy = vi.spyOn(writeObjectMod, 'writeLooseObject');
         const sut = maintenance;
 
         // Act
@@ -2655,6 +3354,56 @@ describe('maintenance', () => {
         expect(await isLoose(ctx, blobId)).toBe(true);
         expect(writeSpy).not.toHaveBeenCalled();
         writeSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given gc.cruftPacks=false and a fresh unreachable object also held by a pack gc supersedes', () => {
+    describe('When gc runs', () => {
+      it('Then its loose copy outlives the retired pack and still reads back', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const content = 'loose-and-in-a-superseded-pack';
+        const blobId = await writeLooseBlob(ctx, content);
+        await writeSyntheticPack(ctx, 'superseded-twin', [
+          { kind: 'base', type: 'blob', content: enc.encode(content) },
+        ]);
+        await appendConfig(ctx, '\n[gc]\n\tcruftPacks = false\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.packsRetired).toBe(1);
+        expect(await isLoose(ctx, blobId)).toBe(true);
+        const readBack = await readObject(ctx, blobId, { verifyHash: true });
+        expect(readBack.id).toBe(blobId);
+      });
+    });
+  });
+
+  describe('Given a normal pack whose bytes are exactly the cruft pack gc is about to write', () => {
+    describe('When gc runs', () => {
+      it('Then that pack is kept as the cruft pack and its object still reads back', async () => {
+        // Arrange — a cruft pack stripped of its `.mtimes` reads as a normal
+        // pack holding exactly the bytes the next cruft build reproduces.
+        const ctx = await seedOneCommit();
+        const blobId = await writeLooseBlob(ctx, 'cruft-twin-of-a-normal-pack');
+        const sut = maintenance;
+        const first = await sut(ctx, { tasks: ['gc'] });
+        const packDir = packDirOf(ctx);
+        await ctx.fs.rm(`${packDir}/pack-${first.cruftPackId}.mtimes`);
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.cruftPackId).toBe(first.cruftPackId);
+        expect(await ctx.fs.exists(`${packDir}/pack-${first.cruftPackId}.pack`)).toBe(true);
+        expect(await ctx.fs.exists(`${packDir}/pack-${first.cruftPackId}.mtimes`)).toBe(true);
+        const readBack = await readObject(ctx, blobId, { verifyHash: true });
+        expect(readBack.id).toBe(blobId);
       });
     });
   });
@@ -2710,12 +3459,12 @@ describe('maintenance', () => {
           if (path === loosePath) throw genericFault;
           return originalRm(path);
         });
-        const sut = maintenance;
+        const sut = gcTask;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -2823,7 +3572,7 @@ describe('maintenance', () => {
         const ctx = await seedOneCommit();
         const blobId = await writeLooseBlob(ctx, 'half-written-cruft');
         await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
-        const sut = maintenance;
+        const sut = gcTask;
         const originalWriteExclusive = ctx.fs.writeExclusive.bind(ctx.fs);
         const spy = vi
           .spyOn(ctx.fs, 'writeExclusive')
@@ -2835,7 +3584,7 @@ describe('maintenance', () => {
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
         } catch (error) {
           caught = error;
         }
@@ -2870,12 +3619,12 @@ describe('maintenance', () => {
         const rawBytes = new TextEncoder().encode('blob 3\0xyz');
         const compressed = await ctx.compressor.deflate(rawBytes);
         await ctx.fs.write(looseObjectPath(commonGitDir(ctx), fakeId), compressed);
-        const sut = maintenance;
+        const sut = gcTask;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -3378,12 +4127,12 @@ describe('maintenance', () => {
         const ctx = await seedOneCommit();
         const fanoutPath = `${ctx.layout.gitDir}/objects/cd`;
         await ctx.fs.write(fanoutPath, new Uint8Array([0x78]));
-        const sut = maintenance;
+        const sut = gcTask;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -3407,12 +4156,12 @@ describe('maintenance', () => {
           if (path === fanoutDir) throw fault;
           return original(path);
         });
-        const sut = maintenance;
+        const sut = gcTask;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -3440,12 +4189,12 @@ describe('maintenance', () => {
           if (path === fanoutDir) throw genericFault;
           return original(path);
         });
-        const sut = maintenance;
+        const sut = gcTask;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -3618,6 +4367,7 @@ describe('maintenance', () => {
         expect(Object.keys(result).sort()).toEqual(
           [
             'tasksRun',
+            'tasksFailed',
             'commitGraphWritten',
             'commitsInGraph',
             'looseObjectsBefore',
@@ -3636,6 +4386,7 @@ describe('maintenance', () => {
             'packBytesAfter',
           ].sort(),
         );
+        expect(result.tasksFailed).toEqual([]);
         expect(typeof result.commitGraphWritten).toBe('boolean');
         expect(typeof result.commitsInGraph).toBe('number');
         expect(typeof result.looseObjectsBefore).toBe('number');
@@ -3707,7 +4458,7 @@ describe('maintenance', () => {
         const packDir = packDirOf(ctx);
         await ctx.fs.write(`${packDir}/pack-${first.packId}.keep`, new Uint8Array(0));
         const commitObj = await readObject(ctx, commitId, { verifyHash: true });
-        await writeObject(ctx, commitObj);
+        await writeLooseObject(ctx, commitObj);
         expect(await isLoose(ctx, commitId)).toBe(true);
 
         // Act
@@ -3946,7 +4697,7 @@ describe('maintenance', () => {
   // ---------------------------------------------------------------------
 
   describe('Given an object present in all three mtime sources at once', () => {
-    const CUTOFF = 2_000_000_000;
+    const CUTOFF = 1_500_000_000;
 
     /** Seeds an object that is simultaneously loose, carried forward in an
      *  existing cruft sidecar (from a prior gc run), and present inside a
@@ -3977,7 +4728,7 @@ describe('maintenance', () => {
         // Arrange
         const ctx = await seedOneCommit();
         await seedTripleSourceObject(ctx, 'triple-loose-wins', {
-          loose: 3_000_000_000,
+          loose: 1_700_000_000,
           carried: 1_000_000_000,
           normalPack: 1_000_000_000,
         });
@@ -3999,7 +4750,7 @@ describe('maintenance', () => {
         const ctx = await seedOneCommit();
         await seedTripleSourceObject(ctx, 'triple-carried-wins', {
           loose: 1_000_000_000,
-          carried: 3_000_000_000,
+          carried: 1_700_000_000,
           normalPack: 1_000_000_000,
         });
         await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
@@ -4021,7 +4772,7 @@ describe('maintenance', () => {
         await seedTripleSourceObject(ctx, 'triple-normal-pack-wins', {
           loose: 1_000_000_000,
           carried: 1_000_000_000,
-          normalPack: 3_000_000_000,
+          normalPack: 1_700_000_000,
         });
         await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
         const sut = maintenance;
@@ -4081,15 +4832,15 @@ describe('maintenance', () => {
         const { forceMtimeSeconds } = installLstatOverrides(ctx);
         const packDir = packDirOf(ctx);
         forceMtimeSeconds(`${packDir}/pack-dup-src-a.pack`, 1_000_000_000);
-        forceMtimeSeconds(`${packDir}/pack-dup-src-b.pack`, 3_000_000_000);
-        const CUTOFF = 2_000_000_000;
+        forceMtimeSeconds(`${packDir}/pack-dup-src-b.pack`, 1_700_000_000);
+        const CUTOFF = 1_500_000_000;
         await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
         const sut = maintenance;
 
         // Act
         const result = await sut(ctx, { tasks: ['gc'] });
 
-        // Assert — survives because the MAX (3e9) beats the cutoff, even
+        // Assert — survives because the MAX (1.7e9) beats the cutoff, even
         // though the MIN (1e9) would not.
         expect(result.cruftObjectsAdded).toBe(1);
         expect(result.cruftObjectsExpired).toBe(0);
@@ -4183,13 +4934,13 @@ describe('maintenance', () => {
     });
   });
 
-  describe('Given a pack retirement following the post-write verify and prune-packable scan', () => {
+  describe('Given a pack retirement following the post-write verify scan', () => {
     describe('When gc runs', () => {
       it("Then refresh drains that scan's own handles before settleRefresh, ahead of any pack unlink", async () => {
         // Arrange — force a normal-pack retirement on the second run, so
-        // this run's own step-8 verify loop and step-9 `packedAnywhere`
-        // scan open pack-read handles that must be drained before the
-        // superseded pack's files are unlinked (Windows-unlink safety).
+        // this run's own post-write verify loop opens pack-read handles that
+        // must be drained before the superseded pack's files are unlinked
+        // (Windows-unlink safety).
         const ctx = await seedOneCommit();
         const sut = maintenance;
         const first = await sut(ctx, { tasks: ['gc'] });
@@ -4209,17 +4960,9 @@ describe('maintenance', () => {
 
         // Assert
         expect(second.packsRetired).toBeGreaterThan(0);
-        const lastLookupOrder = Math.max(-1, ...lookupSpy.mock.invocationCallOrder);
-        const drainOrders = refreshSpy.mock.invocationCallOrder.filter(
-          (order) => order > lastLookupOrder,
-        );
-        expect(drainOrders.length).toBeGreaterThan(0);
-        const drainOrder = Math.min(...drainOrders);
-        const settleOrder = Math.min(...settleSpy.mock.invocationCallOrder);
-        expect(settleOrder).toBeGreaterThan(drainOrder);
         // Only the RETIRED (first) pack's own unlinks — a fresh pack's
         // stale-sibling cleanup in the quarantine writer also touches
-        // `/pack-` paths, but under the NEW sha and long before step 8.
+        // `/pack-` paths, but under the NEW sha and long before the verify.
         const retiredPackUnlinkOrders = rmSpy.mock.calls
           .map((call, i) => ({ path: call[0] as string, order: rmSpy.mock.invocationCallOrder[i] }))
           .filter(
@@ -4228,7 +4971,19 @@ describe('maintenance', () => {
           )
           .map((entry) => entry.order);
         expect(retiredPackUnlinkOrders.length).toBeGreaterThan(0);
-        expect(Math.min(...retiredPackUnlinkOrders)).toBeGreaterThan(settleOrder);
+        const firstUnlinkOrder = Math.min(...retiredPackUnlinkOrders);
+        const lastLookupOrder = Math.max(
+          -1,
+          ...lookupSpy.mock.invocationCallOrder.filter((order) => order < firstUnlinkOrder),
+        );
+        const drainOrders = refreshSpy.mock.invocationCallOrder.filter(
+          (order) => order > lastLookupOrder,
+        );
+        expect(drainOrders.length).toBeGreaterThan(0);
+        const drainOrder = Math.min(...drainOrders);
+        const settleOrder = Math.min(...settleSpy.mock.invocationCallOrder);
+        expect(settleOrder).toBeGreaterThan(drainOrder);
+        expect(firstUnlinkOrder).toBeGreaterThan(settleOrder);
       });
     });
   });
@@ -4433,8 +5188,8 @@ describe('maintenance', () => {
       it('Then it rethrows rather than tolerating the fault as absence', async () => {
         // Arrange
         const ctx = await seedOneCommit();
-        const sut = maintenance;
-        const first = await sut(ctx, { tasks: ['gc'] });
+        const sut = gcTask;
+        const first = await maintenance(ctx, { tasks: ['gc'] });
         const packDir = packDirOf(ctx);
         const midxPath = multiPackIndexPath(packDir);
         await writeMinimalMidx(ctx, packDir, [`pack-${first.packId}.idx`]);
@@ -4459,7 +5214,7 @@ describe('maintenance', () => {
         // is non-empty and the midx read is actually attempted.
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -5122,6 +5877,215 @@ describe('maintenance', () => {
 
         // Assert
         expect(await ctx.fs.exists(multiPackIndexPath(packDir))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a borrower whose closure reaches donor objects', () => {
+    const DONOR_OBJECTS = '/repo/alt/objects';
+
+    const borrower = async (): Promise<Context> => {
+      const ctx = createMemoryContext({
+        files: { '/repo/.git/objects/info/alternates': enc.encode(`${DONOR_OBJECTS}\n`) },
+      });
+      await ctx.fs.mkdir(DONOR_OBJECTS);
+      await init(ctx);
+      return ctx;
+    };
+
+    const commitTreeOf = async (ctx: Context, blobId: ObjectId): Promise<void> => {
+      const treeId = await writeObject(ctx, {
+        type: 'tree' as const,
+        id: '' as ObjectId,
+        entries: [treeEntry(FILE_MODE.REGULAR, 'f.txt', blobId)],
+      });
+      const commitId = await writeObject(ctx, {
+        type: 'commit' as const,
+        id: '' as ObjectId,
+        data: {
+          tree: treeId,
+          parents: [],
+          author: AUTHOR,
+          committer: AUTHOR,
+          message: 'borrowed',
+          extraHeaders: [],
+        },
+      });
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+    };
+
+    const looseInDonor = async (ctx: Context, content: string): Promise<ObjectId> => {
+      const bytes = enc.encode(content);
+      const raw = new Uint8Array([...serializeHeader('blob', bytes.length), ...bytes]);
+      const id = (await ctx.hash.hashHex(raw)) as ObjectId;
+      await ctx.fs.write(
+        `${DONOR_OBJECTS}/${computeLooseObjectPath(id)}`,
+        await ctx.compressor.deflate(raw),
+      );
+      return id;
+    };
+
+    describe('When gc', () => {
+      it('Then donor objects are not packed into the local pack', async () => {
+        // Arrange
+        const ctx = await borrower();
+        const donorBlob = await looseInDonor(ctx, 'donor-owned');
+        await commitTreeOf(ctx, donorBlob);
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        const local = await enumerateObjectsMod.enumerateObjects(ctx, { scope: 'local' });
+        expect(local).not.toContain(donorBlob);
+        expect(local).toHaveLength(2);
+      });
+
+      it('Then a donor loose file is never unlinked', async () => {
+        // Arrange
+        const ctx = await borrower();
+        const donorBlob = await looseInDonor(ctx, 'donor-owned');
+        await commitTreeOf(ctx, donorBlob);
+        const unreachable = await looseInDonor(ctx, 'donor-garbage');
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = now\n');
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        const donorFile = (id: ObjectId) => `${DONOR_OBJECTS}/${computeLooseObjectPath(id)}`;
+        expect(await ctx.fs.exists(donorFile(donorBlob))).toBe(true);
+        expect(await ctx.fs.exists(donorFile(unreachable))).toBe(true);
+      });
+    });
+
+    describe('When gc and the borrower holds a loose copy of a donor-packed object', () => {
+      it('Then the loose copy is pruned and no local pack is written', async () => {
+        // Arrange
+        const ctx = await borrower();
+        const [donorPacked] = await writeSyntheticPackIn(ctx, DONOR_OBJECTS, 'donor', [
+          { kind: 'base', type: 'blob', content: enc.encode('donor-packed') },
+        ]);
+        const looseCopy = await writeLooseObject(ctx, makeBlob('donor-packed'));
+        expect(await isLoose(ctx, looseCopy)).toBe(true);
+        await commitTreeOf(ctx, donorPacked as ObjectId);
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await isLoose(ctx, looseCopy)).toBe(false);
+        const local = await enumerateObjectsMod.enumerateObjects(ctx, { scope: 'local' });
+        expect(local).not.toContain(donorPacked);
+        expect(local).toHaveLength(2);
+      });
+
+      it('Then an unreachable loose copy is pruned rather than crufted', async () => {
+        // Arrange
+        const ctx = await borrower();
+        const [donorPacked] = await writeSyntheticPackIn(ctx, DONOR_OBJECTS, 'donor', [
+          { kind: 'base', type: 'blob', content: enc.encode('donor-packed') },
+        ]);
+        const looseCopy = await writeLooseObject(ctx, makeBlob('donor-packed'));
+        await commitTreeOf(ctx, await writeObject(ctx, makeBlob('other')));
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await isLoose(ctx, looseCopy)).toBe(false);
+        const local = await enumerateObjectsMod.enumerateObjects(ctx, { scope: 'local' });
+        expect(local).not.toContain(donorPacked);
+      });
+    });
+
+    describe('When gc and the borrower holds a loose copy of a reachable donor-loose object', () => {
+      it('Then the copy stays loose and out of the local pack', async () => {
+        // Arrange
+        const ctx = await borrower();
+        const donorLoose = await looseInDonor(ctx, 'donor-loose');
+        const looseCopy = await writeLooseObject(ctx, makeBlob('donor-loose'));
+        await commitTreeOf(ctx, donorLoose);
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await isLoose(ctx, looseCopy)).toBe(true);
+        const packed = await packMemberOids(ctx, result.packId as string);
+        expect(packed.size).toBe(2);
+        expect(packed.has(donorLoose)).toBe(false);
+        expect(result.cruftPackId).toBeUndefined();
+      });
+    });
+
+    describe('When gc and the borrower holds a loose copy of an unreachable donor-loose object', () => {
+      it('Then a copy inside the grace period stays loose and is never crufted', async () => {
+        // Arrange
+        const ctx = await borrower();
+        await looseInDonor(ctx, 'donor-garbage');
+        const looseCopy = await writeLooseObject(ctx, makeBlob('donor-garbage'));
+        await commitTreeOf(ctx, await writeObject(ctx, makeBlob('other')));
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await isLoose(ctx, looseCopy)).toBe(true);
+        expect(result.cruftPackId).toBeUndefined();
+        expect(result.cruftObjectsExpired).toBe(0);
+      });
+
+      it('Then an expired copy is pruned as a loose file, not counted as data destroyed', async () => {
+        // Arrange
+        const ctx = await borrower();
+        await looseInDonor(ctx, 'donor-garbage');
+        const looseCopy = await writeLooseObject(ctx, makeBlob('donor-garbage'));
+        await commitTreeOf(ctx, await writeObject(ctx, makeBlob('other')));
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = now\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await isLoose(ctx, looseCopy)).toBe(false);
+        expect(result.cruftPackId).toBeUndefined();
+        expect(result.cruftObjectsExpired).toBe(0);
+        expect(result.prunedLooseObjects).toBe(result.looseObjectsBefore);
+        expect(result.looseObjectsPacked).toBe(result.looseObjectsBefore - 1);
+      });
+    });
+
+    describe('When gc and the borrower packs an unreachable object a donor holds loose', () => {
+      it('Then the pack copy is crufted and nothing is destroyed', async () => {
+        // Arrange
+        const ctx = await borrower();
+        const donorGarbage = await looseInDonor(ctx, 'donor-garbage');
+        const [packedCopy] = await writeSyntheticPack(ctx, 'garbage', [
+          { kind: 'base', type: 'blob', content: enc.encode('donor-garbage') },
+        ]);
+        await commitTreeOf(ctx, await writeObject(ctx, makeBlob('other')));
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        const local = await enumerateObjectsMod.enumerateObjects(ctx, { scope: 'local' });
+        expect(local).not.toContain(packedCopy);
+        expect(local).toHaveLength(3);
+        expect(result.cruftPackId).toBeUndefined();
+        expect(result.packsRetired).toBe(1);
+        expect(
+          await ctx.fs.exists(`${DONOR_OBJECTS}/${computeLooseObjectPath(donorGarbage)}`),
+        ).toBe(true);
       });
     });
   });

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { writeConflictMarkers } from '../../../../src/domain/merge/conflict-markers.js';
+import {
+  writeBaseShowingConflictMarkers,
+  writeConflictMarkers,
+} from '../../../../src/domain/merge/conflict-markers.js';
 import { MAX_CONFLICT_OUTPUT_BYTES } from '../../../../src/domain/merge/merge-types.js';
 
 const encoder = new TextEncoder();
@@ -192,6 +195,42 @@ describe('writeConflictMarkers — unsupported diff3', () => {
               labels: { ours: 'HEAD', theirs: 'HEAD' },
             }),
           'diff3',
+        );
+      });
+    });
+  });
+});
+
+describe('writeConflictMarkers — unsupported zdiff3', () => {
+  describe("Given conflictStyle 'zdiff3' option", () => {
+    describe('When writeConflictMarkers called', () => {
+      it('Then throws INVALID_MERGE_INPUT naming the zdiff3 style', () => {
+        // Arrange
+        const sut = writeConflictMarkers;
+
+        // Act + Assert
+        expectMergeError(
+          () => sut([], [], { conflictStyle: 'zdiff3' }),
+          'zdiff3 conflict style requires base lines',
+        );
+      });
+    });
+  });
+});
+
+describe('writeBaseShowingConflictMarkers — output-size cap', () => {
+  describe('Given base lines alone one byte over MAX_CONFLICT_OUTPUT_BYTES', () => {
+    describe('When writeBaseShowingConflictMarkers called', () => {
+      it('Then throws INVALID_MERGE_INPUT containing cap name', () => {
+        // Arrange — one shared chunk repeated, so the size is reached without allocating it
+        const sut = writeBaseShowingConflictMarkers;
+        const chunk = new Uint8Array(MAX_CONFLICT_OUTPUT_BYTES / 4);
+        const baseLines = [chunk, chunk, chunk, chunk, Uint8Array.of(0x61)];
+
+        // Act + Assert
+        expectMergeError(
+          () => sut([], baseLines, [], { conflictStyle: 'diff3' }),
+          'MAX_CONFLICT_OUTPUT_BYTES',
         );
       });
     });

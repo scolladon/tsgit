@@ -54,6 +54,7 @@ import {
   initBothRepos,
   makePeerPair,
   type PeerPair,
+  revParseStdout,
   runGit,
   runGitEnv,
   tryRunGitWithExit,
@@ -539,7 +540,7 @@ describe.skipIf(!GIT_AVAILABLE)('packRefs interop — files backend', () => {
           );
           let resolved: unknown;
           try {
-            resolved = await revParse(ours, packedName);
+            resolved = revParseStdout(await revParse(ours, packedName));
           } catch (err) {
             resolved = (err as TsgitError).data.code;
           }

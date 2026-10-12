@@ -89,7 +89,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const data = (caught as TsgitError).data;
         expect(data.code).toBe('INVALID_OBJECT_HEADER');
         if (data.code === 'INVALID_OBJECT_HEADER') {
-          expect(data.reason).toBe(`no NUL terminator found in inflated object ${ID}`);
+          expect(data.reason).toBe(`header for ${ID} too long, exceeds 32 bytes`);
         }
       });
     });

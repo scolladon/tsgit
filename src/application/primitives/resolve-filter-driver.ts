@@ -18,6 +18,7 @@ export type FilterChoice =
       readonly name: string;
       readonly clean?: string;
       readonly smudge?: string;
+      readonly process?: string;
       readonly required: boolean;
     };
 
@@ -37,6 +38,7 @@ const namedFilterChoice = async (ctx: Context, name: string): Promise<FilterChoi
     name,
     ...(section.clean !== undefined && { clean: section.clean }),
     ...(section.smudge !== undefined && { smudge: section.smudge }),
+    ...(section.process !== undefined && { process: section.process }),
     required: section.required ?? false,
   };
 };
@@ -79,3 +81,11 @@ export const resolveFilterDriver = async (
   const { sources, macros } = await provider.sourcesForPath(path);
   return choiceFromFilterValue(ctx, resolveAttribute(sources, path, 'filter', macros));
 };
+
+/**
+ * git's `would_convert_to_git_filter_fd`: a configured driver marked required
+ * cleans a working file straight off its descriptor (`index_stream_convert_blob`),
+ * the one hashing path that never reads `core.bigFileThreshold`.
+ */
+export const streamsThroughFilter = (choice: FilterChoice): boolean =>
+  choice.kind === 'external' && choice.required;

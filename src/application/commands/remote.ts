@@ -14,6 +14,7 @@ import { REMOTE_REMOVE_REFLOG } from '../../domain/reflog/reflog-messages.js';
 import { invalidRef, refUpdateConflict } from '../../domain/refs/error.js';
 import type { Context } from '../../ports/context.js';
 import type { ParsedConfig } from '../primitives/config-read.js';
+import { readConfig } from '../primitives/config-read.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { transactionLogging } from '../primitives/internal/ref-transaction-logging.js';
 import { resolveWriteChain } from '../primitives/internal/ref-write-chain.js';
@@ -52,9 +53,11 @@ export interface RemoteInfo {
 /** Local-only `show` payload: config view + tracking refs + tracking branches. */
 export interface RemoteShow extends RemoteInfo {
   readonly trackingRefs: ReadonlyMap<RefName, ObjectId>;
+  /** Branches merging from this remote: every `branch.<b>.merge` value, each split on spaces
+   *  as git's `remote show` reads it; a branch configuring no merge is omitted. */
   readonly trackedBy: ReadonlyArray<{
     readonly branch: RefName;
-    readonly merge: string | undefined;
+    readonly merge: ReadonlyArray<string>;
   }>;
 }
 
@@ -529,7 +532,7 @@ export const remoteSetUrl = async (
       value: input.url,
     },
   ]);
-  const refreshed = (await readRemoteConfig(ctx)).remote?.get(input.name);
+  const refreshed = (await readConfig(ctx)).remote?.get(input.name);
   return { remote: toRemoteInfo(input.name, refreshed) };
 };
 
@@ -565,6 +568,16 @@ const adHocRemote = (name: string): RemoteInfo => ({
   fetchRefspecs: [],
 });
 
+/** git's `config_read_branches` + `add_local_to_show_info`: each merge value splits on
+ *  spaces, and a branch with no merge value drops out. */
+const mergingBranches = (config: ParsedConfig, remoteName: string): RemoteShow['trackedBy'] =>
+  listBranchReferrers(config, remoteName)
+    .map((referrer) => ({
+      branch: referrer.ref,
+      merge: referrer.merges.flatMap((value) => value.split(' ')),
+    }))
+    .filter((entry) => entry.merge.length > 0);
+
 export const remoteShow = async (
   ctx: Context,
   input: RemoteShowInput,
@@ -575,7 +588,6 @@ export const remoteShow = async (
   if (entry === undefined && input.name === '') throw remoteNotConfigured(input.name);
   const info = entry === undefined ? adHocRemote(input.name) : toRemoteInfo(input.name, entry);
   const trackingRefs = await directTrackingValues(ctx, await fetchedRefs(ctx, info));
-  const referrers = listBranchReferrers(config, input.name);
-  const trackedBy = referrers.map((referrer) => ({ branch: referrer.ref, merge: referrer.merge }));
+  const trackedBy = mergingBranches(config, input.name);
   return { remote: { ...info, trackingRefs, trackedBy } };
 };

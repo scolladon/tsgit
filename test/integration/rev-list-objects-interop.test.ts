@@ -11,16 +11,41 @@
  *                    including the identical-tree-commit over-report shape
  *   interopSurface: closure
  */
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { packObjects } from '../../src/application/commands/pack-objects.js';
 import { revList } from '../../src/application/commands/rev-list.js';
 import type { Context } from '../../src/ports/context.js';
-import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
+import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import { trackedRepositories } from './repository-lifecycle.js';
 
 const SETUP_TIMEOUT = 60_000;
+
+interface SkewedMergeFixture {
+  readonly dir: string;
+  readonly ids: Readonly<Record<string, string>>;
+}
+
+/** m (100) merges a (50, on a1 at 80) and b (90); t (95) is a second tip; all on r. */
+const buildSkewedMergeFixture = async (): Promise<SkewedMergeFixture> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-list-skewed-merge-'));
+  runGit(['init', '-q', '-b', 'main', dir]);
+  const make = (name: string, offset: number, parents: ReadonlyArray<string>): string => {
+    const blob = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: name }).trim();
+    const tree = runGit(['-C', dir, 'mktree'], { input: `100644 blob ${blob}\t${name}\n` }).trim();
+    const parentArgs = parents.flatMap((parent) => ['-p', parent]);
+    return runGit(['-C', dir, 'commit-tree', tree, ...parentArgs, '-m', name], {
+      env: datedEnv(1_700_000_000 + offset),
+    }).trim();
+  };
+  const r = make('r', 10, []);
+  const a = make('a', 50, [make('a1', 80, [r])]);
+  const b = make('b', 90, [r]);
+  return { dir, ids: { m: make('m', 100, [a, b]), t: make('t', 95, [r]) } };
+};
 
 /** Deterministic author/committer dates for every commit this suite makes. */
 const datedEnv = (epoch: number): NodeJS.ProcessEnv => ({
@@ -45,18 +70,99 @@ const commit = (
 };
 
 /**
- * `git rev-list <args>` stdout, as a bare id set. Each line is either a bare
+ * `git rev-list <args>` stdout, as bare ids in git's order. Each line is either a bare
  * id (commits without `--objects`) or `id path` (`--objects`' trees/blobs,
  * a root tree's own empty path included) — only the id counts here.
  */
-const gitIdSet = (dir: string, ...args: ReadonlyArray<string>): ReadonlySet<string> => {
-  const ids = new Set<string>();
-  for (const line of git(dir, 'rev-list', ...args).split('\n')) {
-    if (line.length === 0) continue;
-    const spaceIndex = line.indexOf(' ');
-    ids.add(spaceIndex === -1 ? line : line.slice(0, spaceIndex));
+const gitIds = (dir: string, ...args: ReadonlyArray<string>): ReadonlyArray<string> =>
+  git(dir, 'rev-list', ...args)
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => line.split(' ')[0] as string);
+
+interface SkewedExclusionFixture {
+  readonly dir: string;
+  /** Newest commit, on the shared ancestor. */
+  readonly tip: string;
+  /** Reaches the ancestor through six commits dated before it. */
+  readonly farTip: string;
+  /** Reaches the ancestor through three commits dated before it. */
+  readonly nearTip: string;
+  /** Reuses the tree of an ancestor the walk lists before `lateTip` reaches it. */
+  readonly sharedTreeTip: string;
+  /** Reaches `sharedTreeTip`'s ancestors only through a commit dated after them. */
+  readonly lateTip: string;
+}
+
+/** A plumbing-built commit at `1_700_000_000 + offset`, owning one file named `name`. */
+const commitAt = (
+  dir: string,
+  name: string,
+  offset: number,
+  parents: ReadonlyArray<string>,
+  tree?: string,
+): string => {
+  const blob = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: name }).trim();
+  const ownTree =
+    tree ?? runGit(['-C', dir, 'mktree'], { input: `100644 blob ${blob}\t${name}.txt\n` }).trim();
+  const parentArgs = parents.flatMap((parent) => ['-p', parent]);
+  return runGit(['-C', dir, 'commit-tree', ownTree, '-m', name, ...parentArgs], {
+    env: datedEnv(1_700_000_000 + offset),
+  }).trim();
+};
+
+const skewedLine = (dir: string, base: string, depth: number): string => {
+  let line = base;
+  for (let step = 1; step <= depth; step += 1) {
+    line = commitAt(dir, `line${depth}-${step}`, 300 - step, [line]);
   }
-  return ids;
+  return commitAt(dir, `tip${depth}`, 400, [line]);
+};
+
+const annotatedTag = (dir: string, name: string, target: string): void => {
+  runGit(['-C', dir, 'tag', '-a', '-m', name, name, target], { env: datedEnv(1_700_000_000) });
+};
+
+/** `base` <- `main`; refs name each one's tree and blob, plus tags of a tree and of a tag. */
+const buildNonCommitTipFixture = async (): Promise<string> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-list-non-commit-'));
+  git(dir, 'init', '-q', '-b', 'main');
+  const base = commitAt(dir, 'base', 0, []);
+  const baseBlob = git(dir, 'rev-parse', `${base}:base.txt`).trim();
+  const tipBlob = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: 'tip' }).trim();
+  const tipTree = runGit(['-C', dir, 'mktree'], {
+    input: `100644 blob ${baseBlob}\tbase.txt\n100644 blob ${tipBlob}\ttip.txt\n`,
+  }).trim();
+  git(dir, 'update-ref', 'refs/heads/main', commitAt(dir, 'tip', 100, [base], tipTree));
+  git(dir, 'update-ref', 'refs/heads/base', base);
+  git(dir, 'update-ref', 'refs/tags/tip-tree', tipTree);
+  git(dir, 'update-ref', 'refs/tags/tip-blob', tipBlob);
+  git(dir, 'update-ref', 'refs/tags/base-tree', git(dir, 'rev-parse', `${base}^{tree}`).trim());
+  git(dir, 'update-ref', 'refs/tags/base-blob', baseBlob);
+  annotatedTag(dir, 'tag-tree', tipTree);
+  annotatedTag(dir, 'tag-tag', 'tag-tree');
+  annotatedTag(dir, 'tag-base', base);
+  return dir;
+};
+
+const buildSkewedExclusionFixture = async (): Promise<SkewedExclusionFixture> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-list-skewed-'));
+  git(dir, 'init', '-q', '-b', 'main');
+  const ancestor = commitAt(dir, 'ancestor', 500, []);
+  const tip = commitAt(dir, 'tip', 1000, [ancestor]);
+  const older = commitAt(dir, 'older', 700, []);
+  const olderTree = git(dir, 'rev-parse', `${older}^{tree}`).trim();
+  const middle = commitAt(dir, 'middle', 800, [older]);
+  const sharedTreeTip = commitAt(dir, 'sharedTreeTip', 1000, [middle], olderTree);
+  const late = commitAt(dir, 'late', 900, [middle]);
+  return {
+    dir,
+    tip,
+    farTip: skewedLine(dir, ancestor, 6),
+    nearTip: skewedLine(dir, ancestor, 3),
+    sharedTreeTip,
+    lateTip: commitAt(dir, 'late-tip', 500, [late]),
+  };
 };
 
 interface SharedSubtreeFixture {
@@ -228,17 +334,16 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
     afterAll(async () => rm(fixture.dir, { recursive: true, force: true }));
 
     describe('When revList walks the objects closure from HEAD', () => {
-      it('Then the object id set matches git rev-list --objects HEAD exactly', async () => {
+      it('Then the object ids match git rev-list --objects HEAD exactly, in order', async () => {
         // Arrange
-        const expected = gitIdSet(fixture.dir, '--objects', 'HEAD');
+        const expected = gitIds(fixture.dir, '--objects', 'HEAD');
         const sut = revList;
 
         // Act
         const result = await sut(fixture.ctx, { wants: ['HEAD'], objects: true });
 
         // Assert
-        const actual = new Set(result.entries.map((entry) => entry.id));
-        expect([...actual].sort()).toEqual([...expected].sort());
+        expect(result.entries.map((entry) => entry.id)).toEqual(expected);
       });
     });
 
@@ -261,12 +366,12 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
     });
 
     describe('When revList walks the objects closure from HEAD excluding HEAD~2', () => {
-      it('Then the object id set matches git rev-list --objects HEAD ^HEAD~2 — including its over-report', async () => {
+      it('Then the object ids match git rev-list --objects HEAD ^HEAD~2 in order — including its over-report', async () => {
         // Arrange — a fresh Context: the graph/fanout caches are per session,
         // and the prior rows already read through this one.
         const freshCtx = createNodeContext({ workDir: fixture.dir });
         const notTipId = git(fixture.dir, 'rev-parse', 'HEAD~2').trim();
-        const expected = gitIdSet(fixture.dir, '--objects', 'HEAD', '--not', notTipId);
+        const expected = gitIds(fixture.dir, '--objects', 'HEAD', '--not', notTipId);
         const sut = revList;
 
         // Act
@@ -277,8 +382,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
         });
 
         // Assert
-        const actual = new Set(result.entries.map((entry) => entry.id));
-        expect([...actual].sort()).toEqual([...expected].sort());
+        expect(result.entries.map((entry) => entry.id)).toEqual(expected);
       });
     });
   });
@@ -293,12 +397,12 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
     afterAll(async () => rm(fixture.dir, { recursive: true, force: true }));
 
     describe('When revList walks the objects closure excluding that tip', () => {
-      it('Then the object id set matches git rev-list --objects want ^have, over-report and all', async () => {
+      it('Then the object ids match git rev-list --objects want ^have in order, over-report and all', async () => {
         // Arrange — `gitIdSet` spawns git through `execFileSync`, which throws
         // on any non-zero exit: git succeeding here IS the pinned behaviour.
         // A fresh Context, cut after the object was removed, so no cache
         // carries a reading of the vanished tree.
-        const expected = gitIdSet(fixture.dir, '--objects', 'HEAD', '--not', fixture.notTip);
+        const expected = gitIds(fixture.dir, '--objects', 'HEAD', '--not', fixture.notTip);
         const ctx = createNodeContext({ workDir: fixture.dir });
         const sut = revList;
 
@@ -310,8 +414,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
         });
 
         // Assert
-        const actual = new Set(result.entries.map((entry) => entry.id));
-        expect([...actual].sort()).toEqual([...expected].sort());
+        expect(result.entries.map((entry) => entry.id)).toEqual(expected);
       });
     });
   });
@@ -325,15 +428,9 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
     afterAll(async () => rm(fixture.dir, { recursive: true, force: true }));
 
     describe('When revList walks the objects closure from the want excluding the unrelated tip', () => {
-      it('Then the shared blob is still emitted — the set matches git rev-list --objects want ^T', async () => {
+      it('Then the shared blob is still emitted — the ids match git rev-list --objects want ^T in order', async () => {
         // Arrange
-        const expected = gitIdSet(
-          fixture.dir,
-          '--objects',
-          fixture.wantTip,
-          '--not',
-          fixture.notTip,
-        );
+        const expected = gitIds(fixture.dir, '--objects', fixture.wantTip, '--not', fixture.notTip);
         const ctx = createNodeContext({ workDir: fixture.dir });
         const sut = revList;
 
@@ -345,8 +442,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
         });
 
         // Assert
-        const actual = new Set(result.entries.map((entry) => entry.id));
-        expect([...actual].sort()).toEqual([...expected].sort());
+        expect(result.entries.map((entry) => entry.id)).toEqual(expected);
       });
     });
   });
@@ -362,7 +458,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
     describe('When revList excludes the root with maxCount 1 under objects', () => {
       it('Then it marks the edge parent tree over the full walk — matching git rev-list --objects -n 1 W3 ^P', async () => {
         // Arrange
-        const expected = gitIdSet(
+        const expected = gitIds(
           fixture.dir,
           '--objects',
           '-n',
@@ -383,15 +479,14 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
         });
 
         // Assert
-        const actual = new Set(result.entries.map((entry) => entry.id));
-        expect([...actual].sort()).toEqual([...expected].sort());
+        expect(result.entries.map((entry) => entry.id)).toEqual(expected);
       });
     });
 
     describe('When revList excludes the root under noWalk and objects', () => {
       it('Then noWalk is ignored with a range, matching git rev-list --no-walk --objects W2 ^P', async () => {
         // Arrange
-        const expected = gitIdSet(
+        const expected = gitIds(
           fixture.dir,
           '--objects',
           '--no-walk',
@@ -411,8 +506,1280 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
         });
 
         // Assert
-        const actual = new Set(result.entries.map((entry) => entry.id));
-        expect([...actual].sort()).toEqual([...expected].sort());
+        expect(result.entries.map((entry) => entry.id)).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given excluded lines reaching the shared ancestor through clock-skewed commits', () => {
+    let fixture: SkewedExclusionFixture;
+
+    beforeAll(async () => {
+      fixture = await buildSkewedExclusionFixture();
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => rm(fixture.dir, { recursive: true, force: true }));
+
+    describe.each([
+      { label: 'six', excluded: () => fixture.farTip, objects: false },
+      { label: 'six', excluded: () => fixture.farTip, objects: true },
+      { label: 'three', excluded: () => fixture.nearTip, objects: true },
+    ])(
+      'When revList excludes the line $label commits deep (objects: $objects)',
+      ({ excluded, objects }) => {
+        it('Then it lists what git rev-list lists, giving up on the excluded side as git does', async () => {
+          // Arrange
+          const flags = objects ? ['--objects'] : [];
+          const expected = gitIds(fixture.dir, ...flags, fixture.tip, '--not', excluded());
+          const ctx = createNodeContext({ workDir: fixture.dir });
+          const sut = revList;
+
+          // Act
+          const result = await sut(ctx, { wants: [fixture.tip], not: [excluded()], objects });
+
+          // Assert
+          expect(result.entries.map((entry) => entry.id)).toEqual(expected);
+        });
+      },
+    );
+
+    describe('When packObjects packs the tip excluding the line six commits deep', () => {
+      it('Then it packs as many objects as git pack-objects --revs', async () => {
+        // Arrange
+        const out = await mkdtemp(path.join(os.tmpdir(), 'tsgit-skewed-pack-'));
+        const stem = runGit(['-C', fixture.dir, 'pack-objects', '--revs', '-q', `${out}/git`], {
+          input: `${fixture.tip}\n^${fixture.farTip}\n`,
+        }).trim();
+        const gitCount = runGit(['show-index'], {
+          input: await readFile(`${out}/git-${stem}.idx`),
+        })
+          .split('\n')
+          .filter((line) => line.length > 0).length;
+        const ctx = createNodeContext({ workDir: fixture.dir });
+        const sut = packObjects;
+
+        // Act
+        const result = await sut(ctx, {
+          wants: [fixture.tip],
+          not: [fixture.farTip],
+          outputDirectory: path.join(fixture.dir, '.git', 'tsgit-pack-out'),
+        });
+
+        // Assert
+        expect(result.objectCount).toBe(gitCount);
+        await rm(out, { recursive: true, force: true });
+      });
+    });
+
+    describe('When revList lists, with objects, a want whose listed ancestor the excluded side reaches late', () => {
+      it("Then that ancestor's tree is excluded as git rev-list --objects excludes it", async () => {
+        // Arrange
+        const expected = gitIds(
+          fixture.dir,
+          '--objects',
+          fixture.sharedTreeTip,
+          '--not',
+          fixture.lateTip,
+        );
+        const ctx = createNodeContext({ workDir: fixture.dir });
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, {
+          wants: [fixture.sharedTreeTip],
+          not: [fixture.lateTip],
+          objects: true,
+        });
+
+        // Assert
+        expect(result.entries.map((entry) => entry.id)).toEqual(expected);
+      });
+    });
+  });
+  describe('Given tag, tree and blob tips on either side of a range', () => {
+    let dir: string;
+
+    beforeAll(async () => {
+      dir = await buildNonCommitTipFixture();
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+    describe.each([
+      { wants: ['tip-tree'], not: ['tip-tree'] },
+      { wants: ['main', 'base-tree'], not: ['base'] },
+      { wants: ['main', 'base-blob'], not: ['base'] },
+      { wants: ['tag-tree'], not: ['tip-tree'] },
+      { wants: ['tag-tree'], not: ['tag-tree'] },
+      { wants: ['main', 'tag-tree'], not: ['tag-tag'] },
+      { wants: ['tip-blob'], not: ['tip-tree'] },
+      { wants: ['tip-tree'], not: ['main'] },
+      { wants: ['tag-base'], not: ['base'] },
+    ])('When revList lists $wants ^$not with objects', ({ wants, not }) => {
+      it('Then it shows the pending objects git rev-list --objects shows', async () => {
+        // Arrange
+        const expected = gitIds(dir, '--objects', ...wants, '--not', ...not);
+        const ctx = createNodeContext({ workDir: dir });
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants, not, objects: true });
+
+        // Assert
+        expect(result.entries.map((entry) => entry.id)).toEqual(expected);
+      });
+    });
+  });
+  describe('Given a merge whose first parent is dated before its second', () => {
+    let fixture: SkewedMergeFixture;
+
+    beforeAll(async () => {
+      fixture = await buildSkewedMergeFixture();
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => rm(fixture.dir, { recursive: true, force: true }));
+
+    describe.each([
+      { wants: ['m'], flags: [], maxCount: 2 },
+      { wants: ['t', 'm'], flags: ['--first-parent'], maxCount: 3 },
+      { wants: ['t', 'm'], flags: ['--objects'], maxCount: 3 },
+    ])('When revList walks $wants $flags with maxCount $maxCount', ({ wants, flags, maxCount }) => {
+      it('Then it keeps the commits git rev-list -n shows first, in commit-date order', async () => {
+        // Arrange
+        const tips = wants.map((name) => fixture.ids[name] as string);
+        const expected = gitIds(fixture.dir, ...flags, '-n', `${maxCount}`, ...tips);
+        const ctx = createNodeContext({ workDir: fixture.dir });
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, {
+          wants: tips,
+          maxCount,
+          firstParent: flags.includes('--first-parent'),
+          objects: flags.includes('--objects'),
+        });
+
+        // Assert
+        expect(result.entries.map((entry) => entry.id)).toEqual(expected);
+      });
+    });
+  });
+});
+
+/** One commit on `main`, then each of `looseRefs` written verbatim under `.git/`. */
+const buildLooseRefFixture = async (
+  looseRefs: Readonly<Record<string, string>>,
+): Promise<string> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-list-all-broken-'));
+  git(dir, 'init', '-q', '-b', 'main');
+  git(dir, 'config', 'user.name', 'A U Thor');
+  git(dir, 'config', 'user.email', 'author@example.com');
+  commit(dir, 'base', 1_700_000_000, ['--allow-empty']);
+  for (const [name, content] of Object.entries(looseRefs)) {
+    await writeFile(path.join(dir, '.git', name), content);
+  }
+  return dir;
+};
+
+/** git's `die("bad object %s")` line, rebuilt from the refusal's structured data. */
+const badObjectLine = (error: unknown): string =>
+  `fatal: bad object ${String((error as { data?: { id?: string } }).data?.id)}\n`;
+
+describe.skipIf(!GIT_AVAILABLE)('rev-list all interop — broken refs', () => {
+  const dirs: string[] = [];
+  afterAll(async () => {
+    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  describe.each([
+    ['a loose branch holding garbage', { 'refs/heads/broken': 'garbage\n' }],
+    ['two broken branches', { 'refs/heads/z-broken': 'garbage\n', 'refs/heads/a-broken': 'x\n' }],
+    [
+      'a symbolic branch whose target is broken',
+      { 'refs/heads/zz': 'garbage\n', 'refs/heads/aa': 'ref: refs/heads/zz\n' },
+    ],
+    ['a branch naming an absent object', { 'refs/heads/missing': `${'1'.repeat(40)}\n` }],
+    [
+      'an absent object after a broken branch',
+      { 'refs/heads/b-missing': `${'1'.repeat(40)}\n`, 'refs/heads/a-broken': 'x\n' },
+    ],
+  ] as const)('Given %s', (_label, looseRefs) => {
+    describe('When rev-list --all runs on both tools', () => {
+      it('Then both refuse with the same bad-object line', async () => {
+        // Arrange
+        const dir = await buildLooseRefFixture(looseRefs);
+        dirs.push(dir);
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', '--all']);
+        const sut = revList;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(createNodeContext({ workDir: dir }), { all: true });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(badObjectLine(caught)).toBe(peer.stderr);
+      });
+    });
+  });
+
+  describe('Given a symbolic branch whose target does not exist', () => {
+    describe('When rev-list --all runs on both tools', () => {
+      it('Then both skip it and list the same commits in order', async () => {
+        // Arrange
+        const dir = await buildLooseRefFixture({ 'refs/heads/sym': 'ref: refs/heads/nope\n' });
+        dirs.push(dir);
+        const peer = git(dir, 'rev-list', '--all').split('\n').filter(Boolean);
+        const sut = revList;
+
+        // Act
+        const result = await sut(createNodeContext({ workDir: dir }), { all: true });
+
+        // Assert
+        expect(result.entries.map((entry) => entry.id)).toEqual(peer);
+      });
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('rev-list interop — explicit tips naming absent objects', () => {
+  const ABSENT = '1'.repeat(40);
+  const dirs: string[] = [];
+  afterAll(async () => {
+    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  describe.each([
+    ['an absent full id', [ABSENT], { wants: [ABSENT] }],
+    ['a negated absent full id', ['HEAD', `^${ABSENT}`], { wants: ['HEAD', `^${ABSENT}`] }],
+    ['an absent full id before an unknown name', [ABSENT, 'nope'], { wants: [ABSENT, 'nope'] }],
+    ['the parents of an absent full id', [`${ABSENT}^@`], { wants: [`${ABSENT}^@`] }],
+    ['a branch naming an absent object', ['missing'], { wants: ['missing'] }],
+    [
+      'an excluded branch naming an absent object',
+      ['HEAD', '--not', 'missing'],
+      { wants: ['HEAD'], not: ['missing'] },
+    ],
+    ['a tag of an absent commit', ['t'], { wants: ['t'] }],
+    ['the parents of a tag of an absent commit', ['t^@'], { wants: ['t^@'] }],
+    ['a tag of an absent commit without its parents', ['t^!'], { wants: ['t^!'] }],
+    ['a tag of an absent commit without its first parent', ['t^-'], { wants: ['t^-'] }],
+  ] as const)('Given %s', (_label, args, opts) => {
+    describe('When rev-list runs on both tools', () => {
+      it('Then both refuse with the same bad-object line', async () => {
+        // Arrange
+        const dir = await buildLooseRefFixture({ 'refs/heads/missing': `${ABSENT}\n` });
+        dirs.push(dir);
+        const tag = runGit(['-C', dir, 'hash-object', '-t', 'tag', '-w', '--stdin'], {
+          input: `object ${ABSENT}\ntype commit\ntag t\ntagger a <a@b> 1700000000 +0000\n\nt\n`,
+        }).trim();
+        git(dir, 'update-ref', 'refs/tags/t', tag);
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', ...args]);
+        const sut = revList;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(createNodeContext({ workDir: dir }), opts);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(badObjectLine(caught)).toBe(peer.stderr);
+      });
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('rev-list all interop — other worktrees', () => {
+  const openTrackedRepository = trackedRepositories();
+  const dirs: string[] = [];
+  afterAll(async () => {
+    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  /** A repository with a detached linked worktree `wt` one commit ahead of every ref. */
+  const buildLinkedFixture = async (): Promise<{ readonly dir: string; readonly wt: string }> => {
+    const dir = await buildLooseRefFixture({});
+    const wt = `${dir}-wt`;
+    dirs.push(dir, wt);
+    git(dir, 'worktree', 'add', '-q', '--detach', wt);
+    commit(wt, 'linked', 1_700_000_100, ['--allow-empty']);
+    return { dir, wt };
+  };
+
+  describe('Given a linked worktree whose detached HEAD only it reaches', () => {
+    describe('When rev-list --all runs on both tools from the main worktree', () => {
+      it('Then both list the same commits in order', async () => {
+        // Arrange
+        const { dir } = await buildLinkedFixture();
+        const peer = git(dir, 'rev-list', '--all').split('\n').filter(Boolean);
+        const sut = revList;
+
+        // Act
+        const result = await sut(createNodeContext({ workDir: dir }), { all: true });
+
+        // Assert
+        expect(result.entries.map(({ id }) => id)).toEqual(peer);
+      });
+    });
+  });
+
+  describe.each([
+    ['unreadable', 'garbage\n'],
+    ['a dangling symref', 'ref: refs/heads/nope\n'],
+  ])('Given a linked worktree whose HEAD is %s', (_label, content) => {
+    describe('When rev-list --all runs on both tools from the main worktree', () => {
+      it('Then both skip it and list the same commits in order', async () => {
+        // Arrange
+        const { dir } = await buildLinkedFixture();
+        await writeFile(
+          path.join(dir, '.git', 'worktrees', path.basename(`${dir}-wt`), 'HEAD'),
+          content,
+        );
+        const peer = git(dir, 'rev-list', '--all').split('\n').filter(Boolean);
+        const sut = revList;
+
+        // Act
+        const result = await sut(createNodeContext({ workDir: dir }), { all: true });
+
+        // Assert
+        expect(result.entries.map(({ id }) => id)).toEqual(peer);
+      });
+    });
+  });
+
+  describe.each([
+    ['a linked worktree HEAD', 'linked'],
+    ['the main worktree HEAD read from the linked one', 'main'],
+  ] as const)('Given %s naming an absent object', (_label, broken) => {
+    describe('When rev-list --all runs on both tools', () => {
+      it('Then both refuse with the same bad-object line', async () => {
+        // Arrange
+        const { dir, wt } = await buildLinkedFixture();
+        const head =
+          broken === 'main'
+            ? path.join(dir, '.git', 'HEAD')
+            : path.join(dir, '.git', 'worktrees', path.basename(wt), 'HEAD');
+        await writeFile(head, `${'1'.repeat(40)}\n`);
+        const from = broken === 'main' ? wt : dir;
+        const peer = tryRunGitWithExit(['-C', from, 'rev-list', '--all']);
+        const sut = await openTrackedRepository({ cwd: from });
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.revList({ all: true });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(badObjectLine(caught)).toBe(peer.stderr);
+      });
+    });
+  });
+});
+
+/** The objects a range under test spells its ends from. */
+interface RangeEnds {
+  readonly blob: string;
+  /** A commit naming `blob` as its tree. */
+  readonly holder: string;
+  readonly head: string;
+}
+
+describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in one run', () => {
+  const dirs: string[] = [];
+  afterAll(async () => {
+    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  /** `refs/tags/t` naming a tag that declares `type commit` for blob `B`. */
+  const buildMistypedTagFixture = async (): Promise<{
+    readonly dir: string;
+    readonly blob: string;
+  }> => {
+    const dir = await buildLooseRefFixture({});
+    dirs.push(dir);
+    const blob = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: 'hi\n' }).trim();
+    const tag = runGit(['-C', dir, 'hash-object', '-t', 'tag', '-w', '--stdin'], {
+      input: `object ${blob}\ntype commit\ntag t\ntagger a <a@b> 1700000000 +0000\n\nt\n`,
+    }).trim();
+    git(dir, 'update-ref', '--no-deref', 'refs/tags/t', tag);
+    return { dir, blob };
+  };
+
+  /** git's stderr, rebuilt from the logged `error:` lines and the refusal's data. */
+  const stderrOf = (logged: ReadonlyArray<string>, error: unknown): string =>
+    `${logged.map((line) => `error: ${line}\n`).join('')}${badObjectLine(error)}`;
+
+  const capturing = (dir: string): { readonly ctx: Context; readonly logged: string[] } => {
+    const logged: string[] = [];
+    const base = createNodeContext({ workDir: dir });
+    return { ctx: { ...base, logger: { error: (line: string) => logged.push(line) } }, logged };
+  };
+
+  describe.each([
+    ['the tag alone', () => ['t'], () => ({ wants: ['t'] })],
+    ['every ref', () => ['--all'], () => ({ all: true })],
+    [
+      'the blob, then the tag',
+      (blob: string) => ['--objects', blob, 't'],
+      (blob: string) => ({ wants: [blob, 't'], objects: true }),
+    ],
+  ] as const)('Given a tag declaring a commit for a blob, walked from %s', (_label, args, opts) => {
+    describe('When rev-list runs on both tools', () => {
+      it('Then both log the same typing errors and refuse the same bad object', async () => {
+        // Arrange
+        const { dir, blob } = await buildMistypedTagFixture();
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', ...args(blob)]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, opts(blob));
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(stderrOf(logged, caught)).toBe(peer.stderr);
+      });
+    });
+  });
+
+  describe('Given a tag declaring a commit for a blob', () => {
+    describe('When pack-objects --revs reads it on both tools', () => {
+      it('Then both log the same typing error and refuse the same bad object', async () => {
+        // Arrange
+        const { dir } = await buildMistypedTagFixture();
+        const peer = tryRunGitWithExit(['-C', dir, 'pack-objects', '--revs', '--stdout'], {
+          input: 't\n',
+        });
+        const { ctx, logged } = capturing(dir);
+        const sut = packObjects;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { wants: ['t'] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(stderrOf(logged, caught)).toBe(peer.stderr);
+      });
+    });
+  });
+
+  const IDENT_LINES = 'author a <a@b> 1700000000 +0000\ncommitter a <a@b> 1700000000 +0000\n\nm\n';
+
+  /** A commit stored as spelt, naming `tree` and `parents` whatever they are. */
+  const writeLiteralCommit = (dir: string, tree: string, parents: ReadonlyArray<string>): string =>
+    runGit(['-C', dir, 'hash-object', '-t', 'commit', '-w', '--stdin', '--literally'], {
+      input: `tree ${tree}\n${parents.map((p) => `parent ${p}\n`).join('')}${IDENT_LINES}`,
+    }).trim();
+
+  const emptyTreeOf = (dir: string): string => runGit(['-C', dir, 'mktree'], { input: '' }).trim();
+
+  describe.each([
+    ['its tree', (dir: string, blob: string) => writeLiteralCommit(dir, blob, [])],
+    ['a parent', (dir: string, blob: string) => writeLiteralCommit(dir, emptyTreeOf(dir), [blob])],
+  ] as const)('Given a blob tip before a commit naming it as %s', (_label, commitNaming) => {
+    describe('When rev-list parses the commit on both tools', () => {
+      it('Then both log the same bad pointer and refuse the same bad object', async () => {
+        // Arrange
+        const { dir, blob } = await buildMistypedTagFixture();
+        const named = commitNaming(dir, blob);
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', blob, named]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { wants: [blob, named] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(stderrOf(logged, caught)).toBe(peer.stderr);
+      });
+    });
+  });
+
+  /** git's walk death, rebuilt from the refusal's data. */
+  const walkFatalOf = (error: unknown): string => {
+    const data = (error as { data?: { code?: string; commit?: string; id?: string } }).data;
+    if (data?.code === 'BAD_TREE_OBJECT') return `fatal: bad tree object ${data.id}\n`;
+    if (data?.code === 'COMMIT_LOOKUP_FAILED') return `fatal: could not find commit ${data.id}\n`;
+    const commit = data?.commit;
+    return commit === undefined
+      ? 'fatal: revision walk setup failed\n'
+      : `fatal: Failed to traverse parents of commit ${commit}\n`;
+  };
+
+  const walkStderrOf = (logged: ReadonlyArray<string>, error: unknown): string =>
+    `${logged.map((line) => `error: ${line}\n`).join('')}${walkFatalOf(error)}`;
+
+  const settled = async (run: () => Promise<unknown>): Promise<unknown> => {
+    try {
+      await run();
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  };
+
+  describe.each([
+    ['its tree', (dir: string, blob: string) => writeLiteralCommit(dir, blob, [])],
+    ['a parent', (dir: string, blob: string) => writeLiteralCommit(dir, emptyTreeOf(dir), [blob])],
+  ] as const)(
+    'Given a blob tip before a commit whose parent names it as %s',
+    (_label, parentNaming) => {
+      describe.each([
+        ['rev-list', false],
+        ['rev-list --objects', true],
+      ] as const)('When %s walks to that parent on both tools', (_command, objects) => {
+        it('Then both log the same bad pointer and fail to traverse the same commit', async () => {
+          // Arrange
+          const { dir, blob } = await buildMistypedTagFixture();
+          const child = writeLiteralCommit(dir, emptyTreeOf(dir), [parentNaming(dir, blob)]);
+          const flags = objects ? ['--objects'] : [];
+          const peer = tryRunGitWithExit(['-C', dir, 'rev-list', ...flags, blob, child]);
+          const { ctx, logged } = capturing(dir);
+          const sut = revList;
+
+          // Act
+          const result = await settled(() => sut(ctx, { wants: [blob, child], objects }));
+
+          // Assert
+          expect(peer.exitCode).toBe(128);
+          expect(walkStderrOf(logged, result)).toBe(peer.stderr);
+        });
+      });
+    },
+  );
+
+  const ABSENT_PARENT = `cd${'0'.repeat(38)}`;
+
+  describe.each([
+    ['rev-list', [], {}],
+    ['rev-list --objects', ['--objects'], { objects: true }],
+    ['rev-list --max-count=1', ['--max-count=1'], { maxCount: 1 }],
+  ] as const)('Given a commit whose parent object is missing', (command, flags, opts) => {
+    describe(`When ${command} walks it on both tools`, () => {
+      it('Then both cannot read the parent and fail to traverse the same commit', async () => {
+        // Arrange
+        const { dir } = await buildMistypedTagFixture();
+        const child = writeLiteralCommit(dir, emptyTreeOf(dir), [ABSENT_PARENT]);
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', ...flags, child]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const result = await settled(() => sut(ctx, { wants: [child], ...opts }));
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(walkStderrOf(logged, result)).toBe(peer.stderr);
+      });
+    });
+  });
+
+  describe('Given a commit whose parent object is missing and an excluded root', () => {
+    describe('When rev-list walks the range on both tools', () => {
+      it('Then both cannot read the parent and fail the walk setup', async () => {
+        // Arrange
+        const { dir } = await buildMistypedTagFixture();
+        const child = writeLiteralCommit(dir, emptyTreeOf(dir), [ABSENT_PARENT]);
+        const root = writeLiteralCommit(dir, emptyTreeOf(dir), []);
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', child, `^${root}`]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const result = await settled(() => sut(ctx, { wants: [child], not: [root] }));
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(walkStderrOf(logged, result)).toBe(peer.stderr);
+      });
+    });
+  });
+
+  describe('Given a commit whose parent object is missing', () => {
+    describe('When pack-objects --revs walks it on both tools', () => {
+      it('Then both cannot read the parent and fail to traverse the same commit', async () => {
+        // Arrange
+        const { dir } = await buildMistypedTagFixture();
+        const child = writeLiteralCommit(dir, emptyTreeOf(dir), [ABSENT_PARENT]);
+        const peer = tryRunGitWithExit(['-C', dir, 'pack-objects', '--revs', '--stdout'], {
+          input: `${child}\n`,
+        });
+        const { ctx, logged } = capturing(dir);
+        const sut = packObjects;
+
+        // Act
+        const result = await settled(() => sut(ctx, { wants: [child] }));
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(walkStderrOf(logged, result)).toBe(peer.stderr);
+      });
+    });
+  });
+
+  /** A three-commit line in a commit-graph whose middle commit's object is then deleted. */
+  const buildGraphOnlyMiddleFixture = async (): Promise<{
+    readonly dir: string;
+    readonly newest: string;
+    readonly middle: string;
+  }> => {
+    const { dir } = await buildMistypedTagFixture();
+    const oldest = writeLiteralCommit(dir, emptyTreeOf(dir), []);
+    const middle = writeLiteralCommit(dir, emptyTreeOf(dir), [oldest]);
+    const newest = writeLiteralCommit(dir, emptyTreeOf(dir), [middle]);
+    runGit(['-C', dir, 'commit-graph', 'write', '--stdin-commits'], { input: `${newest}\n` });
+    await rm(path.join(dir, '.git', 'objects', middle.slice(0, 2), middle.slice(2)));
+    return { dir, newest, middle };
+  };
+
+  describe.each([
+    ['rev-list', [], {}],
+    ['rev-list --objects', ['--objects'], { objects: true }],
+    ['rev-list --first-parent', ['--first-parent'], { firstParent: true }],
+  ] as const)('Given a commit-graph commit whose object is missing', (command, flags, opts) => {
+    describe(`When ${command} walks through it on both tools`, () => {
+      it('Then both list it from the graph', async () => {
+        // Arrange
+        const { dir, newest } = await buildGraphOnlyMiddleFixture();
+        const expected = gitIds(dir, ...flags, newest);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [newest], ...opts });
+
+        // Assert
+        expect({ ids: result.entries.map(({ id }) => id), logged }).toEqual({
+          ids: expected,
+          logged: [],
+        });
+      });
+    });
+  });
+
+  describe('Given a commit-graph commit whose object is missing', () => {
+    describe('When pack-objects --revs packs through it on both tools', () => {
+      it('Then both walk it from the graph and cannot read it to write it', async () => {
+        // Arrange
+        const { dir, newest, middle } = await buildGraphOnlyMiddleFixture();
+        const peer = tryRunGitWithExit(['-C', dir, 'pack-objects', '--revs', '--stdout'], {
+          input: `${newest}\n`,
+        });
+        const { ctx } = capturing(dir);
+        const sut = packObjects;
+
+        // Act
+        const result = await settled(() => sut(ctx, { wants: [newest] }));
+
+        // Assert
+        const data = (result as { data?: { code?: string; id?: string } }).data;
+        expect(peer.exitCode).toBe(128);
+        expect(data?.code).toBe('OBJECT_NOT_FOUND');
+        expect(`fatal: unable to read ${data?.id}\n`).toBe(peer.stderr);
+        expect(data?.id).toBe(middle);
+      });
+    });
+  });
+
+  describe('Given a blob, an annotated tag of it and a tree wanted without --objects', () => {
+    describe('When rev-list lists them on both tools', () => {
+      it('Then neither lists anything, commits being all git shows then', async () => {
+        // Arrange
+        const { dir, blob } = await buildMistypedTagFixture();
+        runGit(['-C', dir, 'tag', '-a', 'tb', '-m', 'tb', blob]);
+        const tree = emptyTreeOf(dir);
+        const peer = runGit(['-C', dir, 'rev-list', blob, 'tb', tree]);
+        const sut = revList;
+
+        // Act
+        const result = await sut(createNodeContext({ workDir: dir }), {
+          wants: [blob, 'tb', tree],
+        });
+
+        // Assert
+        expect(result.entries.map((entry) => `${entry.id}\n`).join('')).toBe(peer);
+      });
+    });
+  });
+
+  describe('Given a blob tip, a newer excluded line and an included line whose parents name it', () => {
+    describe('When rev-list limits the walk on both tools', () => {
+      it('Then both log the excluded line, go on, and fail the walk setup on the included one', async () => {
+        // Arrange
+        const { dir, blob } = await buildMistypedTagFixture();
+        const empty = emptyTreeOf(dir);
+        const excludedParent = writeLiteralCommit(dir, blob, []);
+        const excluded = runGit(
+          ['-C', dir, 'hash-object', '-t', 'commit', '-w', '--stdin', '--literally'],
+          {
+            input: `tree ${empty}\nparent ${excludedParent}\n${IDENT_LINES.replaceAll('1700000000', '1700000001')}`,
+          },
+        ).trim();
+        const included = writeLiteralCommit(dir, empty, [writeLiteralCommit(dir, empty, [blob])]);
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', blob, included, '--not', excluded]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const result = await settled(() => sut(ctx, { wants: [blob, included], not: [excluded] }));
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(walkStderrOf(logged, result)).toBe(peer.stderr);
+      });
+    });
+  });
+
+  describe('Given a commit whose parent is a blob nothing typed before', () => {
+    describe('When rev-list walks to that parent on both tools', () => {
+      it('Then both find it is not a commit and fail to traverse the commit naming it', async () => {
+        // Arrange
+        const { dir, blob } = await buildMistypedTagFixture();
+        const empty = emptyTreeOf(dir);
+        const child = writeLiteralCommit(dir, empty, [writeLiteralCommit(dir, empty, [blob])]);
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', child]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const result = await settled(() => sut(ctx, { wants: [child] }));
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(walkStderrOf(logged, result)).toBe(peer.stderr);
+      });
+    });
+  });
+
+  describe.each([
+    ['a commit whose tree is', (dir: string, blob: string) => writeLiteralCommit(dir, blob, [])],
+    [
+      'a tree whose tree-mode entry is',
+      (dir: string, blob: string) => writeLiteralTree(dir, [['40000', 'sub', blob]]),
+    ],
+  ] as const)('Given %s a blob nothing typed before', (_label, holderOf) => {
+    describe('When rev-list --objects walks it on both tools', () => {
+      it('Then both find it is not a tree and die on the same bad tree object', async () => {
+        // Arrange
+        const { dir, blob } = await buildMistypedTagFixture();
+        const holder = holderOf(dir, blob);
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', '--objects', holder]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const result = await settled(() => sut(ctx, { wants: [holder], objects: true }));
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(walkStderrOf(logged, result)).toBe(peer.stderr);
+      });
+    });
+  });
+
+  describe('Given a shallow commit whose stored parent is a blob tip before it', () => {
+    describe('When rev-list --objects parses the commit on both tools', () => {
+      it('Then neither types the cut parent and both list the same objects in order', async () => {
+        // Arrange
+        const { dir, blob } = await buildMistypedTagFixture();
+        const named = writeLiteralCommit(dir, emptyTreeOf(dir), [blob]);
+        await writeFile(path.join(dir, '.git', 'shallow'), `${named}\n`);
+        const peer = runGit(['-C', dir, 'rev-list', '--objects', blob, named]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [blob, named], objects: true });
+
+        // Assert
+        const listed = result.entries.map((e) => `${e.id} ${e.path ?? ''}`.trimEnd());
+        expect({ listed, logged }).toEqual({
+          listed: peer.split('\n').flatMap((line) => (line === '' ? [] : [line.trimEnd()])),
+          logged: [],
+        });
+      });
+    });
+  });
+
+  describe.each([
+    ['a blob tip listed with tree mode', '40000', 'blob'],
+    ['a blob nothing typed listed with tree mode', '40000', undefined],
+    ['the empty tree tip listed with blob mode', '100644', 'tree'],
+  ] as const)('Given an excluded parent whose tree holds %s', (_label, mode, tip) => {
+    describe('When rev-list --objects marks the excluded tree on both tools', () => {
+      it('Then both log the same entry, carry on and list the same objects in order', async () => {
+        // Arrange
+        const { dir, blob } = await buildMistypedTagFixture();
+        const empty = emptyTreeOf(dir);
+        const entryId = mode === '40000' ? blob : empty;
+        const excluded = writeLiteralCommit(dir, writeLiteralTree(dir, [[mode, 'e', entryId]]), []);
+        const included = writeLiteralCommit(dir, empty, [excluded]);
+        const wants = tip === undefined ? [included] : [entryId, included];
+        const peer = tryRunGitWithExit([
+          '-C',
+          dir,
+          'rev-list',
+          '--objects',
+          ...wants,
+          `^${excluded}`,
+        ]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants, not: [excluded], objects: true });
+
+        // Assert
+        const listed = result.entries.map((e) => `${e.id} ${e.path ?? ''}`.trimEnd());
+        expect({ listed, stderr: logged.map((line) => `error: ${line}\n`).join('') }).toEqual({
+          listed: peer.stdout.split('\n').flatMap((line) => (line === '' ? [] : [line.trimEnd()])),
+          stderr: peer.stderr,
+        });
+      });
+    });
+  });
+
+  describe('Given a commit-graph line whose oldest commit an excluded tree lists with blob mode', () => {
+    describe('When rev-list --objects parses the commit naming it from the graph on both tools', () => {
+      it('Then both log the same lookup and die on the same commit they could not find', async () => {
+        // Arrange
+        const { dir } = await buildMistypedTagFixture();
+        const empty = emptyTreeOf(dir);
+        const oldest = writeLiteralCommit(dir, empty, []);
+        const newest = writeLiteralCommit(dir, empty, [writeLiteralCommit(dir, empty, [oldest])]);
+        runGit(['-C', dir, 'commit-graph', 'write', '--stdin-commits'], { input: `${newest}\n` });
+        const excluded = writeLiteralTree(dir, [['100644', 'f', oldest]]);
+        const peer = tryRunGitWithExit([
+          '-C',
+          dir,
+          'rev-list',
+          '--objects',
+          `^${excluded}`,
+          newest,
+        ]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const result = await settled(() =>
+          sut(ctx, { wants: [newest], not: [excluded], objects: true }),
+        );
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(walkStderrOf(logged, result)).toBe(peer.stderr);
+      });
+    });
+  });
+
+  describe.each([
+    ['a second excluded commit', 8, false],
+    ['an included commit', 7, true],
+  ] as const)(
+    'Given a commit whose second parent is a blob tip, reached by an excluded commit then by %s',
+    (_label, offset, included) => {
+      describe('When rev-list limits the walk on both tools', () => {
+        it('Then both parse it again at each reach and agree on what follows', async () => {
+          // Arrange
+          const { dir, blob } = await buildMistypedTagFixture();
+          const empty = emptyTreeOf(dir);
+          const dated = (parents: ReadonlyArray<string>, at: number): string =>
+            runGit(['-C', dir, 'hash-object', '-t', 'commit', '-w', '--stdin', '--literally'], {
+              input: `tree ${empty}\n${parents.map((p) => `parent ${p}\n`).join('')}${IDENT_LINES.replaceAll('1700000000', String(1700000000 + at))}`,
+            }).trim();
+          const base = dated([], 0);
+          const failing = dated([base, blob], 5);
+          const excluded = dated([failing], 9);
+          const second = dated([failing], offset);
+          const wants = included ? [blob, second] : [blob, dated([base], 1)];
+          const not = included ? [excluded] : [excluded, second];
+          const notArgs = not.map((id) => `^${id}`);
+          const peer = tryRunGitWithExit(['-C', dir, 'rev-list', ...wants, ...notArgs]);
+          const { ctx, logged } = capturing(dir);
+          const sut = revList;
+
+          // Act
+          let stdout = '';
+          let fatal = '';
+          try {
+            const result = await sut(ctx, { wants, not });
+            stdout = result.entries.map((entry) => `${entry.id}\n`).join('');
+          } catch (error) {
+            fatal = walkFatalOf(error);
+          }
+
+          // Assert
+          const errors = logged.map((line) => `error: ${line}\n`).join('');
+          expect({ stdout, stderr: errors + fatal }).toEqual({
+            stdout: peer.stdout,
+            stderr: peer.stderr,
+          });
+        });
+      });
+    },
+  );
+
+  describe.each([
+    [3, false],
+    [2, true],
+    [2, false],
+  ] as const)(
+    'Given a three-commit line whose oldest commit names a blob parent (count %i, blob wanted: %s)',
+    (count, blobWanted) => {
+      describe('When rev-list -n walks it on both tools', () => {
+        it('Then both parse the same parents and agree on the refusal or the listing', async () => {
+          // Arrange
+          const { dir, blob } = await buildMistypedTagFixture();
+          const empty = emptyTreeOf(dir);
+          const oldest = writeLiteralCommit(dir, empty, [blob]);
+          const newest = writeLiteralCommit(dir, empty, [writeLiteralCommit(dir, empty, [oldest])]);
+          const wants = blobWanted ? [blob, newest] : [newest];
+          const peer = tryRunGitWithExit(['-C', dir, 'rev-list', `-n${count}`, ...wants]);
+          const { ctx, logged } = capturing(dir);
+          const sut = revList;
+
+          // Act
+          let stdout = peer.stdout;
+          let fatal = '';
+          try {
+            const result = await sut(ctx, { wants, maxCount: count });
+            stdout = result.entries.map((entry) => `${entry.id}\n`).join('');
+          } catch (error) {
+            fatal = walkFatalOf(error);
+          }
+
+          // Assert
+          const errors = logged.map((line) => `error: ${line}\n`).join('');
+          expect({ stdout, stderr: errors + fatal }).toEqual({
+            stdout: peer.stdout,
+            stderr: peer.stderr,
+          });
+        });
+      });
+    },
+  );
+
+  describe('Given an excluded tree listing the oldest commit of a line with blob mode', () => {
+    describe('When rev-list lists commits only on both tools', () => {
+      it('Then neither marks the tree and both list every commit in order', async () => {
+        // Arrange
+        const { dir } = await buildMistypedTagFixture();
+        const empty = emptyTreeOf(dir);
+        const oldest = writeLiteralCommit(dir, empty, []);
+        const newest = writeLiteralCommit(dir, empty, [writeLiteralCommit(dir, empty, [oldest])]);
+        const excluded = writeLiteralTree(dir, [['100644', 'f', oldest]]);
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', `^${excluded}`, newest]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [newest], not: [excluded] });
+
+        // Assert
+        expect({
+          stdout: result.entries.map((entry) => `${entry.id}\n`).join(''),
+          stderr: logged.map((line) => `error: ${line}\n`).join(''),
+        }).toEqual({ stdout: peer.stdout, stderr: peer.stderr });
+      });
+    });
+  });
+
+  describe.each([
+    ['the blob, the excluded line, then the included line', true, true, false],
+    ['the blob, the included line, then the excluded line', true, false, false],
+    ['the excluded line, then the included line, listing objects', false, true, true],
+  ] as const)(
+    'Given equal-dated excluded and included lines whose parents name a blob, named as %s',
+    (_label, blobFirst, excludedFirst, objects) => {
+      describe('When rev-list limits the walk on both tools', () => {
+        it('Then both pop the lines in command-line order and log the same failures', async () => {
+          // Arrange
+          const { dir, blob } = await buildMistypedTagFixture();
+          const empty = emptyTreeOf(dir);
+          const excluded = writeLiteralCommit(dir, empty, [writeLiteralCommit(dir, blob, [])]);
+          const included = writeLiteralCommit(dir, empty, [writeLiteralCommit(dir, empty, [blob])]);
+          const lines = excludedFirst ? [`^${excluded}`, included] : [included, `^${excluded}`];
+          const wants = blobFirst ? [blob, ...lines] : lines;
+          const flags = objects ? ['--objects'] : [];
+          const peer = tryRunGitWithExit(['-C', dir, 'rev-list', ...flags, ...wants]);
+          const { ctx, logged } = capturing(dir);
+          const sut = revList;
+
+          // Act
+          const result = await settled(() => sut(ctx, { wants, objects }));
+
+          // Assert
+          expect(peer.exitCode).toBe(128);
+          expect(walkStderrOf(logged, result)).toBe(peer.stderr);
+        });
+      });
+    },
+  );
+
+  /** A tree stored as spelt: `[mode, name, id]` entries, whatever their objects are. */
+  const writeLiteralTree = (
+    dir: string,
+    entries: ReadonlyArray<readonly [string, string, string]>,
+  ): string =>
+    runGit(['-C', dir, 'hash-object', '-t', 'tree', '-w', '--stdin', '--literally'], {
+      input: Buffer.concat(
+        entries.map(([mode, name, id]) =>
+          Buffer.concat([Buffer.from(`${mode} ${name}\0`), Buffer.from(id, 'hex')]),
+        ),
+      ),
+    }).trim();
+
+  /** git's `process_tree_contents` death, rebuilt from the refusal's data. */
+  const entryMismatchLine = (error: unknown): string => {
+    const { tree, entry, mode } = (error as { data: { tree: string; entry: string; mode: string } })
+      .data;
+    return `fatal: entry '${entry}' in tree ${tree} has ${mode} mode, but is not a ${mode}\n`;
+  };
+
+  describe.each([
+    [
+      'one tree listed as a tree, then as a blob',
+      (dir: string) => {
+        const empty = emptyTreeOf(dir);
+        return {
+          tips: [],
+          tree: writeLiteralTree(dir, [
+            ['40000', 'a', empty],
+            ['100644', 'b', empty],
+          ]),
+        };
+      },
+    ],
+    [
+      'a blob tip listed as a tree',
+      (dir: string, blob: string) => ({
+        tips: [blob],
+        tree: writeLiteralTree(dir, [['40000', 'b', blob]]),
+      }),
+    ],
+  ] as const)('Given %s', (_label, layout) => {
+    describe('When rev-list --objects walks it on both tools', () => {
+      it('Then both log the same typing error and die on the same entry', async () => {
+        // Arrange
+        const { dir, blob } = await buildMistypedTagFixture();
+        const { tips, tree } = layout(dir, blob);
+        const named = writeLiteralCommit(dir, tree, []);
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', '--objects', ...tips, named]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { wants: [...tips, named], objects: true });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(
+          `${logged.map((line) => `error: ${line}\n`).join('')}${entryMismatchLine(caught)}`,
+        ).toBe(peer.stderr);
+      });
+    });
+  });
+
+  describe('Given the tag and its blob walked by two concurrent runs', () => {
+    describe('When rev-list runs both at once on both tools', () => {
+      it('Then only the tag run refuses, the blob run listing the blob as git does', async () => {
+        // Arrange
+        const { dir, blob } = await buildMistypedTagFixture();
+        const tagPeer = tryRunGitWithExit(['-C', dir, 'rev-list', 't']);
+        const blobPeer = tryRunGitWithExit(['-C', dir, 'rev-list', '--objects', blob]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const [tagRun, blobRun] = await Promise.allSettled([
+          sut(ctx, { wants: ['t'] }),
+          sut(ctx, { wants: [blob], objects: true }),
+        ]);
+
+        // Assert
+        const tagError = tagRun.status === 'rejected' ? tagRun.reason : undefined;
+        const listed = blobRun.status === 'fulfilled' ? blobRun.value.entries : [];
+        expect({ tag: stderrOf(logged, tagError), blob: listed.map((e) => `${e.id} \n`) }).toEqual({
+          tag: tagPeer.stderr,
+          blob: [blobPeer.stdout],
+        });
+      });
+    });
+  });
+
+  /** pack-objects' stderr, rebuilt from the logged lines and the refusal or the packed count. */
+  const packStderrOf = (logged: ReadonlyArray<string>, error: unknown): string => {
+    const logs = logged.map((line) => `error: ${line}\n`).join('');
+    if (error === undefined) return logs;
+    const code = (error as { data?: { code?: string } }).data?.code;
+    return code === 'TREE_ENTRY_TYPE_MISMATCH'
+      ? `${logs}${entryMismatchLine(error)}`
+      : walkStderrOf(logged, error);
+  };
+
+  describe.each([
+    [
+      'an included commit naming a blob as its tree',
+      (dir: string, blob: string) => ({
+        excluded: writeLiteralCommit(dir, emptyTreeOf(dir), []),
+        includedTree: blob,
+      }),
+    ],
+    [
+      'an included tree holding a blob as a subtree the excluded tree holds as a tree',
+      (dir: string, blob: string, good: string) => ({
+        excluded: writeLiteralCommit(dir, writeLiteralTree(dir, [['40000', 'sub', good]]), []),
+        includedTree: writeLiteralTree(dir, [['40000', 'sub', blob]]),
+      }),
+    ],
+    [
+      'an excluded commit naming a blob as its tree',
+      (dir: string, blob: string, good: string) => ({
+        excluded: writeLiteralCommit(dir, blob, []),
+        includedTree: good,
+      }),
+    ],
+    [
+      'an excluded tree holding as a subtree a blob the included tree holds as a file',
+      (dir: string, blob: string, good: string) => ({
+        excluded: writeLiteralCommit(dir, writeLiteralTree(dir, [['40000', 'sub', blob]]), []),
+        includedTree: writeLiteralTree(dir, [
+          ['100644', 'f', blob],
+          ['40000', 'sub', good],
+        ]),
+      }),
+    ],
+  ] as const)('Given %s', (_label, sidesOf) => {
+    describe('When pack-objects --revs marks the excluded side sparsely on both tools', () => {
+      it('Then both log the same typing errors and end the same way', async () => {
+        // Arrange
+        const { dir, blob } = await buildMistypedTagFixture();
+        // pack-objects peels every tag ref when it orders a pack it writes.
+        git(dir, 'update-ref', '-d', 'refs/tags/t');
+        const other = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: 'yo\n' }).trim();
+        const good = writeLiteralTree(dir, [['100644', 'f', other]]);
+        const { excluded, includedTree } = sidesOf(dir, blob, good);
+        const included = writeLiteralCommit(dir, includedTree, [excluded]);
+        const peer = tryRunGitWithExit(['-C', dir, 'pack-objects', '--revs', '--stdout', '-q'], {
+          input: `${included}\n^${excluded}\n`,
+        });
+        const { ctx, logged } = capturing(dir);
+        const sut = packObjects;
+
+        // Act
+        const result = await settled(() => sut(ctx, { wants: [included], not: [excluded] }));
+
+        // Assert
+        expect(packStderrOf(logged, result)).toBe(peer.stderr);
+      });
+    });
+  });
+
+  /** git's `dotdot_missing` death, rebuilt from the logged lines and the refusal's data. */
+  const rangeStderrOf = (logged: ReadonlyArray<string>, error: unknown): string => {
+    const data = (error as { data: { code: string; expression: string } }).data;
+    const nonCommits =
+      (error as { data: { nonCommits?: ReadonlyArray<{ id: string; type: string }> } }).data
+        .nonCommits ?? [];
+    const lines = [
+      ...logged,
+      ...nonCommits.map((side) => `object ${side.id} is a ${side.type}, not a commit`),
+    ];
+    const fatal =
+      data.code === 'INVALID_SYMMETRIC_RANGE'
+        ? `Invalid symmetric difference expression ${data.expression}`
+        : `Invalid revision range ${data.expression}`;
+    return `${lines.map((line) => `error: ${line}\n`).join('')}fatal: ${fatal}\n`;
+  };
+
+  const ABSENT = 'cd00000000000000000000000000000000000000';
+
+  describe.each([
+    ['a blob up to a commit naming it as its tree', (e: RangeEnds) => `${e.blob}..${e.holder}`],
+    [
+      'a commit naming a blob as its tree up to that blob',
+      (e: RangeEnds) => `${e.holder}..${e.blob}`,
+    ],
+    ['a blob and a commit naming it as its tree', (e: RangeEnds) => `${e.blob}...${e.holder}`],
+    ['an absent object up to a commit', (e: RangeEnds) => `${ABSENT}..${e.head}`],
+    ['a commit up to an absent object', (e: RangeEnds) => `${e.head}..${ABSENT}`],
+    ['an absent object and a commit', (e: RangeEnds) => `${ABSENT}...${e.head}`],
+    ['a blob and a commit', (e: RangeEnds) => `${e.blob}...${e.head}`],
+  ] as const)('Given a range from %s', (_label, rangeOf) => {
+    const endsOf = async (): Promise<{ readonly dir: string; readonly range: string }> => {
+      const { dir, blob } = await buildMistypedTagFixture();
+      git(dir, 'update-ref', '-d', 'refs/tags/t');
+      const holder = writeLiteralCommit(dir, blob, []);
+      const head = git(dir, 'rev-parse', 'HEAD').trim();
+      return { dir, range: rangeOf({ blob, holder, head }) };
+    };
+
+    describe('When rev-list --objects reads it on both tools', () => {
+      it('Then both refuse the range the same way', async () => {
+        // Arrange
+        const { dir, range } = await endsOf();
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', '--objects', range]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const result = await settled(() => sut(ctx, { wants: [range], objects: true }));
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(rangeStderrOf(logged, result)).toBe(peer.stderr);
+      });
+    });
+
+    describe('When pack-objects --revs reads it on both tools', () => {
+      it('Then both refuse the range the same way', async () => {
+        // Arrange
+        const { dir, range } = await endsOf();
+        const peer = tryRunGitWithExit(['-C', dir, 'pack-objects', '--revs', '--stdout', '-q'], {
+          input: `${range}\n`,
+        });
+        const { ctx, logged } = capturing(dir);
+        const sut = packObjects;
+
+        // Act
+        const result = await settled(() => sut(ctx, { wants: [range] }));
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(rangeStderrOf(logged, result)).toBe(peer.stderr);
       });
     });
   });

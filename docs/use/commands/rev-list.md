@@ -35,11 +35,11 @@ interface RevListResult {
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `wants` | `ReadonlyArray<string>` | `['HEAD']` | Revisions to walk from (full rev grammar, resolved through `revParse`). |
+| `wants` | `ReadonlyArray<string>` | `['HEAD']` | Revisions to walk from, each read as git's `handle_revision_arg` reads an argument: `A..B` excludes A, `A...B` excludes their merge bases, `^X` excludes X, `X^@` walks X's parents, `X^!` and `X^-<n>` exclude X's parents (or its n-th) and walk X. Entries of `not` expand the same way with every tip flipped. |
 | `not` | `ReadonlyArray<string>` | `(none)` | Revisions whose reachability is excluded. |
 | `objects` | `boolean` | `false` | Include trees and blobs, not just commits and tags. |
 | `count` | `boolean` | `false` | Documents intent only — `entries` is always populated and `count` is always `entries.length` on the same call; there is no separate count-only fast path. |
-| `all` | `boolean` | `false` | Union the tip of every ref (branches, tags, remotes, `HEAD`) into `wants`, deduplicated. |
+| `all` | `boolean` | `false` | Union the tip of every ref (branches, tags, remotes, `HEAD`, every other worktree's `HEAD`) into `wants`, deduplicated. |
 | `maxCount` | `number` | `(unbounded)` | At most this many commits emitted; bounds the commit walk only, not the object stream. |
 | `firstParent` | `boolean` | `false` | Follow only the first parent of each commit. Ignored on the bitmap tier. |
 | `noWalk` | `boolean` | `false` | Emit the resolved tips themselves and stop — no parent traversal. Ignored on the bitmap tier. |
@@ -52,7 +52,7 @@ interface RevListResult {
 - **Empty `wants`** returns an empty result, never an error and never "everything". `wants` fully covered by `not` also returns empty.
 - **An unresolvable revision refuses**, on either side — never a silent degradation.
 - **Ordering is deterministic but unspecified.** It is not git's own order (git's own bitmap and walk paths do not even agree with each other), so a caller that needs a stable display order sorts the result itself; every equality check here compares the result as a set.
-- **`all`** resolves every ref's tip the same way an explicit want is resolved, then unions it with `wants` (deduplicated). A ref that does not peel to an object — a symbolic `HEAD` on an unborn branch is the live case — is skipped rather than refusing the whole call.
+- **`all`** resolves every ref's tip the same way an explicit want is resolved, then unions it with `wants` (deduplicated), in git's `--all` order: every ref under `refs/`, then `HEAD`, then every other worktree's `HEAD`. A symbolic ref whose target does not resolve — a `HEAD` on an unborn branch is the live case — is skipped, as is another worktree's unreadable `HEAD`. A ref whose content is unreadable, or that names an absent object, refuses `OBJECT_NOT_FOUND` naming that ref (`worktrees/<id>/HEAD` or `main-worktree/HEAD` for another worktree's), as git's `bad object <ref>`.
 - **`maxCount`** bounds the commit walk, not the object stream: with `objects`, it is still N commits and everything *they* reach, not N objects overall. `maxCount: 0` yields an empty result rather than an unbounded one.
 - **`firstParent`** follows only the first parent at each step, so a merge commit's second-parent branch is never walked.
 - **`noWalk`** emits the resolved tips themselves and stops there — no parent is ever enqueued. It has no effect once a `not` tip is present (a range): git ignores `--no-walk` there and runs the ordinary bounded walk, and so does this. Under `objects` with no `not` side, each tip's own tree still counts.

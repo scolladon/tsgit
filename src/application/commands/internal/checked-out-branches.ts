@@ -91,22 +91,23 @@ const branchesHeldBy = async (
     await rebasingBranch(ctx, adminDir),
     await bisectingBranch(ctx, adminDir),
   ];
-  // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. the only consumer asks `includes(name)` for a concrete RefName, which no undefined claim can equal, so keeping them changes no answer.
+  // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. every consumer looks a concrete RefName up in `heldBranches`, which no undefined claim can equal, so keeping them changes no answer.
   return claims.filter((claim): claim is RefName => claim !== undefined);
 };
 
 /**
- * The worktree holding `name`, or `undefined` when none does. git's map keeps
- * the LAST registration for a branch two worktrees both claim, so the walk
- * reports the last holder rather than the first.
+ * git's `current_checked_out_branches`: each held branch mapped to its
+ * worktree. git's map keeps the LAST registration for a branch two worktrees
+ * both claim, so a later worktree overwrites an earlier one.
  */
-export const worktreeHolding = async (
-  ctx: Context,
-  name: RefName,
-): Promise<FilePath | undefined> => {
-  let holder: FilePath | undefined;
+export const heldBranches = async (ctx: Context): Promise<ReadonlyMap<RefName, FilePath>> => {
+  const held = new Map<RefName, FilePath>();
   for (const worktree of await listWorktrees(ctx)) {
-    if ((await branchesHeldBy(ctx, worktree)).includes(name)) holder = worktree.path;
+    for (const branch of await branchesHeldBy(ctx, worktree)) held.set(branch, worktree.path);
   }
-  return holder;
+  return held;
 };
+
+/** The worktree holding `name`, or `undefined` when none does. */
+export const worktreeHolding = async (ctx: Context, name: RefName): Promise<FilePath | undefined> =>
+  (await heldBranches(ctx)).get(name);

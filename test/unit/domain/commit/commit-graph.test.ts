@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'vitest';
-
+import { DEFAULT_BLOOM_FILTER_SETTINGS } from '../../../../src/domain/commit/bloom-filter.js';
 import {
   commitDataAt,
+  graphParentsAt,
   parseCommitGraphLayer,
   positionOf,
+  storedBloomFilter,
 } from '../../../../src/domain/commit/commit-graph.js';
+import {
+  type CommitGraphWriterCommit,
+  serializeCommitGraph,
+} from '../../../../src/domain/commit/commit-graph-writer.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import { compareBytes } from '../../../../src/domain/objects/encoding.js';
+import { SHA1_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import {
   buildCommitGraphBytes,
@@ -326,6 +333,27 @@ describe('commit-graph', () => {
       });
     });
 
+    describe('Given a second octopus merge whose EDGE list starts after the first one', () => {
+      describe('When reading its graph parents', () => {
+        it('Then its own extra parents come back, not the first octopus ones', () => {
+          // Arrange
+          const sut = graphParentsAt;
+          const layer = parseCommitGraphLayer(
+            buildCommitGraphBytes({
+              ...octopusModel(),
+              commits: [...octopusModel().commits, commit('d4', [0, 2, 3])],
+            }),
+          );
+
+          // Act
+          const result = sut(layer, 4);
+
+          // Assert
+          expect(result).toEqual({ positions: [0, 2, 3], edgesOutOfBounds: false });
+        });
+      });
+    });
+
     describe('Given three oids sharing one fanout bucket', () => {
       describe('When calling positionOf for the smallest of them', () => {
         it('Then the binary search narrows past a greater probe and resolves index 0', () => {
@@ -531,11 +559,6 @@ describe('commit-graph', () => {
             reasonContains: 'truncated OIDL',
             label: 'an OIDL chunk shorter than commitCount * hashLength',
           },
-          {
-            bytes: shrinkChunkAfter(validBytes, 'GDA2', -4),
-            reasonContains: 'truncated GDA2',
-            label: 'a GDA2 chunk shorter than commitCount * 4',
-          },
         ])('Then throws INVALID_COMMIT_GRAPH_CHUNK for $label', ({ bytes, reasonContains }) => {
           // Arrange (bytes from the each-table row) + Act & Assert
           expectThrows(
@@ -573,9 +596,26 @@ describe('commit-graph', () => {
       });
     });
 
+    describe('Given a GDA2 chunk whose size is not commitCount * 4', () => {
+      describe('When parsing', () => {
+        it('Then the layer loads without generation data and flags the misfit, as git does', () => {
+          // Arrange
+          const bytes = shrinkChunkAfter(validBytes, 'GDA2', -4);
+
+          // Act
+          const result = parseCommitGraphLayer(bytes);
+
+          // Assert
+          expect(result._generationDataRange).toBeUndefined();
+          expect(result.generationDataMisfit).toBe(true);
+          expect(parseCommitGraphLayer(validBytes).generationDataMisfit).toBe(false);
+        });
+      });
+    });
+
     describe('Given a tip layer declaring base graphs with no BASE chunk', () => {
       describe('When parsing', () => {
-        it('Then throws INVALID_COMMIT_GRAPH_CHUNK for a missing BASE chunk', () => {
+        it('Then it loads with no base hash, as git reads BASE by its chunk alone', () => {
           // Arrange
           const bytes = renameChunkRowId(
             buildCommitGraphBytes(chainTipModel(oid('a2'))),
@@ -583,32 +623,50 @@ describe('commit-graph', () => {
             'XXXX',
           );
 
-          // Act & Assert
-          expectThrows(
-            () => parseCommitGraphLayer(bytes),
-            'INVALID_COMMIT_GRAPH_CHUNK',
-            'missing BASE',
-          );
+          // Act
+          const result = parseCommitGraphLayer(bytes);
+
+          // Assert
+          expect(result.numBaseGraphs).toBe(1);
+          expect(result.baseGraphHashes).toEqual([]);
         });
       });
     });
 
-    describe('Given a BASE chunk whose size does not match numBaseGraphs * hashLength', () => {
+    describe('Given a header base count that disagrees with the BASE chunk size', () => {
       describe('When parsing', () => {
-        it('Then throws INVALID_COMMIT_GRAPH_CHUNK for a truncated BASE chunk', () => {
+        it('Then every whole hash the BASE chunk holds is read, whatever the header says', () => {
+          // Arrange
+          const bytes = buildCommitGraphBytes(chainTipModel(oid('a2')));
+          const expected = parseCommitGraphLayer(bytes).baseGraphHashes;
+          const sut = bytes.slice();
+          sut[7] = 3;
+
+          // Act
+          const result = parseCommitGraphLayer(sut);
+
+          // Assert
+          expect(expected).toHaveLength(1);
+          expect(result.baseGraphHashes).toEqual(expected);
+        });
+      });
+    });
+
+    describe('Given a BASE chunk with a ragged tail', () => {
+      describe('When parsing', () => {
+        it('Then only whole hashes are read', () => {
           // Arrange
           const bytes = shrinkChunkAfter(
             buildCommitGraphBytes(chainTipModel(oid('a2'))),
             'BASE',
-            -20,
+            -1,
           );
 
-          // Act & Assert
-          expectThrows(
-            () => parseCommitGraphLayer(bytes),
-            'INVALID_COMMIT_GRAPH_CHUNK',
-            'truncated BASE',
-          );
+          // Act
+          const result = parseCommitGraphLayer(bytes);
+
+          // Assert
+          expect(result.baseGraphHashes).toEqual([]);
         });
       });
     });
@@ -670,7 +728,7 @@ describe('commit-graph', () => {
 
     describe('Given a GDA2 entry with its overflow bit set but no GDO2 chunk', () => {
       describe('When reading commit data', () => {
-        it('Then throws INVALID_COMMIT_GRAPH_CHUNK for the missing GDO2 chunk', () => {
+        it('Then throws INVALID_COMMIT_GRAPH_CHUNK with the missing-overflow-data reason git prints', () => {
           // Arrange
           const bytes = setGda2Overflow(buildCommitGraphBytes(fiveCommitModel()), 0);
           const layer = parseCommitGraphLayer(bytes);
@@ -679,7 +737,7 @@ describe('commit-graph', () => {
           expectThrows(
             () => commitDataAt(layer, 0, { correctedCommitDates: true }),
             'INVALID_COMMIT_GRAPH_CHUNK',
-            'missing GDO2',
+            'commit-graph requires overflow generation data but has none',
           );
         });
       });
@@ -696,7 +754,7 @@ describe('commit-graph', () => {
           expectThrows(
             () => commitDataAt(layer, 1, { correctedCommitDates: true }),
             'INVALID_COMMIT_GRAPH_CHUNK',
-            'out of range',
+            'commit-graph overflow generation data is too small',
           );
         });
       });
@@ -714,9 +772,190 @@ describe('commit-graph', () => {
           expectThrows(
             () => commitDataAt(layer, 1, { correctedCommitDates: true }),
             'INVALID_COMMIT_GRAPH_CHUNK',
-            'out of range',
+            'commit-graph overflow generation data is too small',
           );
         });
+      });
+    });
+  });
+});
+
+describe('parseCommitGraphLayer, changed-path settings', () => {
+  const root: CommitGraphWriterCommit = {
+    id: oid('a0'),
+    rootTree: oid('e0'),
+    parents: [],
+    committerDate: 1_700_000_000,
+  };
+  const side: CommitGraphWriterCommit = { ...root, id: oid('a1'), rootTree: oid('e1') };
+  const other: CommitGraphWriterCommit = { ...root, id: oid('a2'), rootTree: oid('e2') };
+  const octopus: CommitGraphWriterCommit = {
+    ...root,
+    id: oid('a3'),
+    parents: [root.id, side.id, other.id],
+  };
+  const commits = [root, side, other, octopus];
+  const changedPaths = {
+    settings: { ...DEFAULT_BLOOM_FILTER_SETTINGS, hashVersion: 2 as const, numHashes: 6 },
+    filters: new Map([[root.id, Uint8Array.of(0x01)]]),
+  };
+
+  describe('Given a layer written with changed-path filters', () => {
+    describe('When parsed', () => {
+      it("Then its BDAT header's settings are read back", () => {
+        // Arrange
+        const sut = parseCommitGraphLayer;
+        const bytes = serializeCommitGraph(commits, SHA1_CONFIG, undefined, changedPaths);
+
+        // Act
+        const result = sut(bytes);
+
+        // Assert
+        expect(result.bloomSettings).toEqual({ hashVersion: 2, numHashes: 6, bitsPerEntry: 10 });
+      });
+    });
+  });
+
+  describe('Given a layer whose BDAT holds its header and no filter bytes', () => {
+    describe('When parsed', () => {
+      it("Then its BDAT header's settings are still read back", () => {
+        // Arrange
+        const sut = parseCommitGraphLayer;
+        const bytes = serializeCommitGraph(commits, SHA1_CONFIG, undefined, {
+          ...changedPaths,
+          filters: new Map(),
+        });
+
+        // Act
+        const result = sut(bytes);
+
+        // Assert
+        expect(result.bloomSettings).toEqual({ hashVersion: 2, numHashes: 6, bitsPerEntry: 10 });
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'without changed-path filters', from: 'OIDF', to: 'OIDF', bloom: false },
+    { label: 'whose BDAT is missing', from: 'BDAT', to: 'XXXX', bloom: true },
+    { label: 'whose BIDX is missing', from: 'BIDX', to: 'YYYY', bloom: true },
+  ])('Given a layer $label', ({ from, to, bloom }) => {
+    describe('When parsed', () => {
+      it('Then it carries no changed-path settings', () => {
+        // Arrange
+        const sut = parseCommitGraphLayer;
+        const written = serializeCommitGraph(
+          commits,
+          SHA1_CONFIG,
+          undefined,
+          bloom ? changedPaths : undefined,
+        );
+
+        // Act
+        const result = sut(renameChunkRowId(written, from, to));
+
+        // Assert
+        expect(result.bloomSettings).toBeUndefined();
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'a BIDX not sized one entry per commit', bloomChunk: 'BIDX' },
+    { label: 'a BDAT shorter than its header', bloomChunk: 'BDAT' },
+  ])('Given a layer with $label', ({ bloomChunk }) => {
+    describe('When parsed', () => {
+      it('Then its changed-path chunks are ignored', () => {
+        // Arrange
+        const sut = parseCommitGraphLayer;
+        const written = serializeCommitGraph(commits, SHA1_CONFIG, undefined, changedPaths);
+        const misplaced = renameChunkRowId(
+          renameChunkRowId(written, bloomChunk, 'XXXX'),
+          'EDGE',
+          bloomChunk,
+        );
+
+        // Act
+        const result = sut(misplaced);
+
+        // Assert
+        expect(result.bloomSettings).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('storedBloomFilter', () => {
+  const commits: CommitGraphWriterCommit[] = ['a0', 'a1', 'a2'].map((prefix) => ({
+    id: oid(prefix),
+    rootTree: oid('e0'),
+    parents: [],
+    committerDate: 1_700_000_000,
+  }));
+  const changedPaths = {
+    settings: DEFAULT_BLOOM_FILTER_SETTINGS,
+    filters: new Map([
+      [oid('a0'), Uint8Array.of(0x11, 0x22)],
+      [oid('a2'), Uint8Array.of(0x33)],
+    ]),
+  };
+  const written = (): Uint8Array =>
+    serializeCommitGraph(commits, SHA1_CONFIG, undefined, changedPaths);
+  const bidxStart = (bytes: Uint8Array): number =>
+    new DataView(bytes.buffer).getUint32(8 + findChunkRowIndex(bytes, 'BIDX') * 12 + 8);
+
+  describe.each([
+    { label: 'the first commit', position: 0, expected: [0x11, 0x22] },
+    { label: 'a commit stored without a filter', position: 1, expected: [] },
+    { label: 'a later commit', position: 2, expected: [0x33] },
+  ])('Given a layer with filters, for $label', ({ position, expected }) => {
+    describe('When its stored filter is read', () => {
+      it('Then the bytes between its BIDX bounds come back', () => {
+        // Arrange
+        const sut = storedBloomFilter;
+
+        // Act
+        const result = sut(parseCommitGraphLayer(written()), position);
+
+        // Assert
+        expect([...(result ?? [])]).toEqual(expected);
+        expect(result).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a layer without filters', () => {
+    describe('When a stored filter is read', () => {
+      it('Then there is none', () => {
+        // Arrange
+        const sut = storedBloomFilter;
+
+        // Act
+        const result = sut(parseCommitGraphLayer(serializeCommitGraph(commits, SHA1_CONFIG)), 0);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'an end offset past the data', position: 0, entry: 0, value: 4 },
+    { label: 'a start offset past the data', position: 1, entry: 0, value: 4 },
+    { label: 'decreasing offsets', position: 1, entry: 1, value: 1 },
+  ])('Given a layer whose BIDX holds $label', ({ position, entry, value }) => {
+    describe('When the filter is read', () => {
+      it('Then it is ignored, as git ignores it', () => {
+        // Arrange
+        const bytes = written();
+        new DataView(bytes.buffer).setUint32(bidxStart(bytes) + entry * 4, value);
+        const sut = storedBloomFilter;
+
+        // Act
+        const result = sut(parseCommitGraphLayer(bytes), position);
+
+        // Assert
+        expect(result).toBeUndefined();
       });
     });
   });

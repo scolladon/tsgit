@@ -2618,7 +2618,51 @@ describe('application/commands/remote', () => {
           expect(result.remote.trackingRefs.size).toBe(1);
           expect(result.remote.trackingRefs.get('refs/remotes/origin/main' as never)).toBe(oid);
           expect(result.remote.trackedBy).toEqual([
-            { branch: 'refs/heads/main', merge: 'refs/heads/main' },
+            { branch: 'refs/heads/main', merge: ['refs/heads/main'] },
+          ]);
+        });
+      });
+    });
+
+    describe('Given a branch whose merge key holds two values', () => {
+      describe('When remoteShow runs', () => {
+        it('Then trackedBy lists both values in config order', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(
+            ctx,
+            '[remote "origin"]\n\turl = u\n[branch "b"]\n\tremote = origin\n\tmerge = refs/heads/one\n\tmerge = refs/heads/two\n',
+          );
+          const sut = remoteShow;
+
+          // Act
+          const result = await sut(ctx, { name: 'origin' });
+
+          // Assert
+          expect(result.remote.trackedBy).toEqual([
+            { branch: 'refs/heads/b', merge: ['refs/heads/one', 'refs/heads/two'] },
+          ]);
+        });
+      });
+    });
+
+    describe('Given a branch whose merge value holds space-separated names', () => {
+      describe('When remoteShow runs', () => {
+        it('Then trackedBy lists each name, an empty one between doubled spaces included', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(
+            ctx,
+            '[remote "origin"]\n\turl = u\n[branch "b"]\n\tremote = origin\n\tmerge = refs/heads/one  two\n',
+          );
+          const sut = remoteShow;
+
+          // Act
+          const result = await sut(ctx, { name: 'origin' });
+
+          // Assert
+          expect(result.remote.trackedBy).toEqual([
+            { branch: 'refs/heads/b', merge: ['refs/heads/one', '', 'two'] },
           ]);
         });
       });
@@ -2659,7 +2703,7 @@ describe('application/commands/remote', () => {
 
     describe('Given a remote tracked by a branch with no merge', () => {
       describe('When remoteShow runs', () => {
-        it('Then trackedBy[i].merge is undefined', async () => {
+        it('Then the branch is omitted from trackedBy', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx, '[remote "origin"]\n\turl = u\n[branch "main"]\n\tremote = origin\n');
@@ -2668,9 +2712,7 @@ describe('application/commands/remote', () => {
           const result = await remoteShow(ctx, { name: 'origin' });
 
           // Assert
-          expect(result.remote.trackedBy).toEqual([
-            { branch: 'refs/heads/main', merge: undefined },
-          ]);
+          expect(result.remote.trackedBy).toEqual([]);
         });
       });
     });

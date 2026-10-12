@@ -11,7 +11,7 @@
  * every delta's base precedes it in the same pack.
  */
 import { bytesToHex, hexToBytes } from '../../domain/objects/encoding.js';
-import { type GitObject, type ObjectId, serializeObject } from '../../domain/objects/index.js';
+import type { ObjectId, ObjectType } from '../../domain/objects/index.js';
 import { resolveDeltaPolicy } from '../../domain/storage/delta-policy.js';
 import {
   invalidPackInput,
@@ -23,8 +23,11 @@ import {
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from './config-read.js';
+import { readBlobContentInStreamOrder } from './internal/blob-source.js';
 import { deltifyEntries } from './internal/deltify.js';
-import { readObject } from './read-object.js';
+import { assertBigFileThresholdValid } from './internal/repo-settings-gate.js';
+import { assertEverySourceLoadable, getObjectStore, type ObjectStore } from './object-store.js';
+import { readObjectMetadataWithContent, readRawObject } from './read-object.js';
 
 export interface PackObjectInput {
   readonly id: ObjectId;
@@ -90,6 +93,9 @@ function assertUniformRecency(objects: ReadonlyArray<PackObjectInput>): void {
 
 export const buildPack = async (ctx: Context, input: BuildPackInput): Promise<BuildPackResult> => {
   assertUniformRecency(input.objects);
+  await assertEverySourceLoadable(ctx);
+  // git's pack-objects reads the threshold for every object it is to pack.
+  if (input.objects.length > 0) await assertBigFileThresholdValid(ctx);
   const plan = await resolveWriterPlan(ctx, input);
   const packfile = serializePackfile(plan.entries);
   const trailerBytes = await ctx.hash.hash(packfile.data);
@@ -129,7 +135,10 @@ export const buildPack = async (ctx: Context, input: BuildPackInput): Promise<Bu
 async function resolveWriterPlan(ctx: Context, input: BuildPackInput): Promise<WriterPlan> {
   if (input.delta !== true) return buildBaseEntries(ctx, input.objects);
   const config = await readConfig(ctx);
-  const policy = resolveDeltaPolicy(config.pack ?? {});
+  const policy = resolveDeltaPolicy(
+    config.pack ?? {},
+    (await getObjectStore(ctx)).bigFileThreshold,
+  );
   if (!policy.enabled) return buildBaseEntries(ctx, input.objects);
   const deltified = await deltifyEntries(ctx, input.objects, policy);
   const emissionOrder = new Uint32Array(deltified.length);
@@ -145,10 +154,10 @@ async function buildBaseEntries(
   ctx: Context,
   objects: ReadonlyArray<PackObjectInput>,
 ): Promise<WriterPlan> {
+  const store = await getObjectStore(ctx);
   const entries: PackWriterBaseEntry[] = [];
   for (const packObject of objects) {
-    const object = await readObject(ctx, packObject.id);
-    entries.push(await encodeEntry(ctx, object));
+    entries.push(await encodeEntry(ctx, await readBaseContent(ctx, packObject.id, store)));
   }
   // The base-only route emits in input order, so the permutation is identity.
   const emissionOrder = new Uint32Array(objects.length);
@@ -161,16 +170,31 @@ async function buildBaseEntries(
   return { ids: objects.map((o) => o.id), entries, emissionOrder };
 }
 
-const encodeEntry = async (ctx: Context, object: GitObject): Promise<PackWriterBaseEntry> => {
-  const loose = serializeObject(object, ctx.hashConfig);
-  const nul = loose.indexOf(0);
-  // loose came from our own serializeObject which always writes
-  // `<type> <size>\0...`, so `nul` is always > 0 by construction.
-  const content = loose.subarray(nul + 1);
-  const compressedData = await ctx.compressor.deflate(content);
+interface BaseContent {
+  readonly type: ObjectType;
+  readonly content: Uint8Array;
+}
+
+/** A blob above `core.bigFileThreshold` is read the way git streams it; the
+ *  content the loose route already inflated while sizing the object is reused. */
+const readBaseContent = async (
+  ctx: Context,
+  id: ObjectId,
+  store: ObjectStore,
+): Promise<BaseContent> => {
+  const meta = await readObjectMetadataWithContent(ctx, id);
+  if (meta.content !== undefined) return { type: meta.type, content: meta.content };
+  if (meta.type === 'blob' && meta.uncompressedSize > store.bigFileThreshold) {
+    return { type: meta.type, content: await readBlobContentInStreamOrder(ctx, id) };
+  }
+  return { type: meta.type, content: (await readRawObject(ctx, id)).content };
+};
+
+const encodeEntry = async (ctx: Context, object: BaseContent): Promise<PackWriterBaseEntry> => {
+  const compressedData = await ctx.compressor.deflate(object.content);
   return {
     type: objectTypeToPackEntryType(object.type),
-    uncompressedSize: content.length,
+    uncompressedSize: object.content.length,
     compressedData,
   };
 };

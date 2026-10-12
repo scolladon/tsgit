@@ -6,64 +6,82 @@
  *  2. Parse refspecs (default = current branch).
  *  3. Discover refs over smart-HTTP v1 (`info/refs?service=git-receive-pack`).
  *  4. Resolve every refspec → local oid + server oid + lease.
- *  5. Apply force-with-lease / non-fast-forward guards.
+ *  5. Judge each ref as git's `set_ref_status_for_push` does; a rejected ref
+ *     is reported, not thrown, and the push carries on with the rest.
  *  6. Enumerate the object closure missing on the remote (non-delete refspecs).
  *  7. Build the pack (non-delta,).
  *  8. POST `git-receive-pack` with ref-updates + pack body.
  *  9. Parse `report-status` (side-band demuxed when advertised).
- *  10. Update local `refs/remotes/<remote>/*` cache for accepted refs.
+ *  10. Update each accepted or up-to-date ref's remote-tracking ref, mapped
+ *      through `remote.<name>.fetch`; a delete deletes it.
  */
 import {
+  atomicPushUnsupported,
   configBadBooleanLiteral,
-  invalidOption,
   invalidPushDefault,
-  nonFastForward,
+  type PushUnmatchedRefspec,
+  pushRefspecUnmatched,
   pushRejected,
   sanitize,
   signedPushUnsupported,
 } from '../../domain/commands/error.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import { remoteNotConfigured } from '../../domain/index.js';
 import { type ObjectId, type RefName, zeroOid } from '../../domain/objects/index.js';
 import {
   type AdvertisedRef,
   type Advertisement,
+  ATOMIC,
   buildPushCertPayload,
   buildReceivePackRequest,
   buildSignedReceivePackRequest,
+  DELETE_REFS,
   decodePktStream,
   type PktLine,
   PUSH_CERT,
   parseReceivePackResponse,
   parseSideBand,
   type RefStatus,
+  type RefStatusReport,
   type RefUpdate,
   readObjectFormat,
 } from '../../domain/protocol/index.js';
 import { PUSH_UPDATE } from '../../domain/reflog/reflog-messages.js';
-import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
-import { isSafeRefName } from '../../domain/refs/ref-validation.js';
+import { HEADS_PREFIX, TAGS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { Context } from '../../ports/context.js';
 import { buildPack } from '../primitives/build-pack.js';
 import {
   findFirstInvalidPushGpgSign,
   findInvalidPushDefault,
+  findLastEntries,
+  parseGitBoolean,
   readConfig,
 } from '../primitives/config-read.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { hasObject } from '../primitives/has-object.js';
-import { computeClosure } from '../primitives/internal/closure-engine.js';
+import { assertValidBooleanConfig } from '../primitives/internal/boolean-config-guard.js';
+import { type ClosureTip, computeClosure } from '../primitives/internal/closure-engine.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
+import { lookupTypedCommitReferenceQuietly } from '../primitives/internal/lookup-commit-reference.js';
+import {
+  createObjectTypeTable,
+  type ObjectTypeTable,
+} from '../primitives/internal/object-type-table.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
-import { resolveRef } from '../primitives/resolve-ref.js';
+import { readReflog } from '../primitives/reflog-store.js';
+import { resolveRef, resolveRefOrMissing } from '../primitives/resolve-ref.js';
 import { runHook } from '../primitives/run-hook.js';
 import { resolveSigningSelector } from '../primitives/sign-payload.js';
-import { updateRef } from '../primitives/update-ref.js';
+import { deleteRefs, updateRef } from '../primitives/update-ref.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { assertValidRemoteName, resolvePushRemote } from './internal/default-remote.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
 import { isAncestor } from './internal/is-ancestor.js';
+import { readLocalPushRefs } from './internal/local-push-refs.js';
 import { assertPeerAlgorithm } from './internal/object-format-guard.js';
+import { matchDeleteTarget } from './internal/push-delete-target.js';
+import { type LocalPushRefs, matchExplicitPush } from './internal/push-explicit-match.js';
 import {
   finalizePushRefspecs,
   type PushRefspecPlan,
@@ -72,6 +90,7 @@ import {
 import { discoverReceivePackRefs, selectPushCapabilities } from './internal/receive-pack-client.js';
 import type { ParsedRefspec } from './internal/refspec.js';
 import { readRemoteConfig } from './internal/remote-config.js';
+import { findTrackingRef } from './internal/remote-tracking-ref.js';
 import { anonymizeRemoteUrl } from './internal/remote-url.js';
 import {
   assertOperationalRepository,
@@ -85,6 +104,13 @@ export interface PushOptions {
   readonly refspecs?: ReadonlyArray<string>;
   readonly force?: boolean;
   readonly forceWithLease?: ObjectId | 'auto';
+  /**
+   * git's `--force-if-includes`: under an `'auto'` lease, also require the
+   * remote-tracking tip to have been integrated locally — reachable from an
+   * entry of the local ref's reflog — else reject `'remote-ref-updated'`.
+   * Falls back to `push.useForceIfIncludes` when unset.
+   */
+  readonly forceIfIncludes?: boolean;
   /** Skip the `pre-push` hook (git's `--no-verify`). */
   readonly noVerify?: boolean;
   /**
@@ -93,14 +119,55 @@ export interface PushOptions {
    * to an unsigned push in that case. Falls back to `push.gpgSign` when unset.
    */
   readonly signed?: 'yes' | 'no' | 'if-asked';
+  /**
+   * All refs or none (git's `--atomic`): any ref rejected before sending fails
+   * the others as `'atomic-push-failed'` and nothing is sent. Throws
+   * `ATOMIC_PUSH_UNSUPPORTED` when the server does not advertise `atomic`.
+   */
+  readonly atomic?: boolean;
 }
+
+/**
+ * Why a ref was not updated. All but `'remote'` are judged locally before
+ * anything is sent: git's `REJECT_NONFASTFORWARD`, `REJECT_NEEDS_FORCE`,
+ * `REJECT_FETCH_FIRST`, `REJECT_ALREADY_EXISTS`, `REJECT_STALE` (a
+ * `forceWithLease` expectation the remote no longer holds),
+ * `REJECT_REMOTE_UPDATED` (under `forceIfIncludes`, a remote-tracking tip never
+ * integrated into the local ref),
+ * `REJECT_NODELETE` (a delete the server cannot take, lacking `delete-refs`)
+ * and `ATOMIC_PUSH_FAILED` (a ref held back because another failed an atomic
+ * push). `'remote'` is the receiving end's `ng`, whose text is kept in
+ * {@link PushedRef.reason}.
+ */
+export type PushRejection =
+  | 'non-fast-forward'
+  | 'needs-force'
+  | 'fetch-first'
+  | 'already-exists'
+  | 'stale-info'
+  | 'remote-ref-updated'
+  | 'remote-ref-not-deletable'
+  | 'atomic-push-failed'
+  | 'remote';
+
+type ClientRejection = Exclude<PushRejection, 'remote'>;
+/** A rejection a ref earns on its own, before an atomic push fails the rest. */
+type JudgedRejection = Exclude<ClientRejection, 'atomic-push-failed'>;
 
 export interface PushedRef {
   readonly name: RefName;
   readonly oldId: ObjectId;
   readonly newId: ObjectId;
   readonly status: 'ok' | 'rejected';
+  /** Set exactly when `status` is `'rejected'`. */
+  readonly rejection?: PushRejection;
   readonly reason?: string;
+  /**
+   * Set when a force — `force`, a `+` refspec or a holding lease — overrode a
+   * rejection the update earned, or when the receiving end's
+   * `report-status-v2` reports the ref as force-updated.
+   */
+  readonly forcedUpdate?: boolean;
 }
 
 export interface PushResult {
@@ -113,7 +180,32 @@ interface ResolvedRefspec {
   readonly parsed: ParsedRefspec;
   readonly localOid: ObjectId;
   readonly remoteOid: ObjectId;
+  readonly rejection?: JudgedRejection;
+  /** git's `forced_update`: a force overrode a rejection the update earned. */
+  readonly forced?: boolean;
 }
+
+interface SettledRefspec extends Omit<ResolvedRefspec, 'rejection'> {
+  readonly rejection?: ClientRejection;
+}
+
+/** git's `enum ref_status` value for each rejection, as its atomic error prints it. */
+const GIT_REF_STATUS: Readonly<Record<JudgedRejection, number>> = {
+  'non-fast-forward': 2,
+  'already-exists': 3,
+  'remote-ref-not-deletable': 4,
+  'fetch-first': 5,
+  'needs-force': 6,
+  'stale-info': 7,
+  'remote-ref-updated': 8,
+};
+
+/** git's `pre_push_hook_feed` skips a non-fast-forward, stale-lease or remote-updated ref.
+ *  A predicate, not a module-level Set, so mutation testing attributes each literal. */
+const fedToPrePush = (rejection: ClientRejection | undefined): boolean =>
+  rejection !== 'non-fast-forward' &&
+  rejection !== 'stale-info' &&
+  rejection !== 'remote-ref-updated';
 
 const PUSH_ENUMERATE_OBJECTS_OP = 'push:enumerate-objects';
 const PUSH_UPLOAD_OP = 'push:upload';
@@ -143,12 +235,25 @@ const assertValidPushConfig = async (ctx: Context): Promise<void> => {
 export const push = async (ctx: Context, opts: PushOptions = {}): Promise<PushResult> => {
   await assertOperationalRepository(ctx);
   await assertValidPushConfig(ctx);
+  const forceIfIncludes = await resolveForceIfIncludes(ctx, opts);
   ctx.progress.start(PUSH_ENUMERATE_OBJECTS_OP);
   try {
-    return await pushViaSession(ctx, opts);
+    return await pushViaSession(ctx, { ...opts, forceIfIncludes });
   } finally {
     ctx.progress.end(PUSH_ENUMERATE_OBJECTS_OP);
   }
+};
+
+const USE_FORCE_IF_INCLUDES = 'useForceIfIncludes';
+
+/** `opts.forceIfIncludes` wins; otherwise `push.useForceIfIncludes`, off by default. */
+const resolveForceIfIncludes = async (ctx: Context, opts: PushOptions): Promise<boolean> => {
+  await assertValidBooleanConfig(ctx, 'push', undefined, [USE_FORCE_IF_INCLUDES]);
+  if (opts.forceIfIncludes !== undefined) return opts.forceIfIncludes;
+  const [setting] = await findLastEntries(ctx, [['push', USE_FORCE_IF_INCLUDES]]);
+  if (setting === undefined) return false;
+  const parsed = parseGitBoolean(setting.value);
+  return parsed.ok && parsed.value;
 };
 
 const pushViaSession = async (ctx: Context, opts: PushOptions): Promise<PushResult> => {
@@ -159,38 +264,182 @@ const pushViaSession = async (ctx: Context, opts: PushOptions): Promise<PushResu
   const remoteName = resolvePushRemote(config, opts.remote, currentBranch);
   const url = await resolveRemoteUrl(ctx, remoteName);
   const plan = await planPushRefspecs(config, opts, head);
+  // Stryker disable next-line ArrayDeclaration: equivalent — the lone mutant makes the fallback a one-element spec without a colon, which `findTrackingRef` maps to nothing (`splitSides` leaves `dst` undefined, so `mapSource` returns undefined), exactly as the empty fallback does.
+  const remote = { name: remoteName, trackingSpecs: config.remote?.get(remoteName)?.fetch ?? [] };
   const session = openGitSession(ctx, url, 'git-receive-pack');
   try {
-    return await negotiateAndSend(ctx, opts, remoteName, url, plan, session);
+    return await negotiateAndSend(ctx, opts, remote, url, plan, session);
   } finally {
     await session.close();
   }
 };
 
+/** The remote pushed to: its name, and the fetch refspecs naming its tracking refs. */
+interface PushRemote {
+  readonly name: string;
+  readonly trackingSpecs: ReadonlyArray<string>;
+}
+
 const negotiateAndSend = async (
   ctx: Context,
   opts: PushOptions,
-  remoteName: string,
+  remote: PushRemote,
   url: string,
   plan: PushRefspecPlan,
   session: GitServiceSession,
 ): Promise<PushResult> => {
   const adv = await discoverReceivePackRefs(session);
-  const localHeads =
-    // Stryker disable next-line ConditionalExpression: equivalent — forcing the guard true also computes localHeads for non-matching plans, but finalizePushRefspecs ignores localHeads unless the plan is 'matching', so the extra value is discarded and the result is unchanged.
-    plan.kind === 'matching'
-      ? // Stryker disable next-line MethodExpression: equivalent — finalizePushRefspecs intersects localHeads with the head-only advertised set, so dropping this refs/heads/ pre-filter cannot change the resolved refspecs.
-        (await enumerateRefs(ctx)).filter((ref) => ref.startsWith(HEADS_PREFIX))
-      : [];
+  const refspecs = await targetRefspecs(ctx, plan, adv, url);
+  const resolved = await resolveAllRefspecs(ctx, refspecs, adv, remote, opts);
+  const movers = resolved.filter((r) => !isUpToDate(r));
+  const refresh = (): Promise<void> => updateUpToDateTracking(ctx, resolved, remote);
+  const pushedRefs =
+    movers.length === 0
+      ? []
+      : await refreshingOnUnpackFailure(
+          () => pushMovers(ctx, session, adv, movers, remote, opts, url),
+          refresh,
+        );
+  await refresh();
+  return { remote: remote.name, url, pushedRefs };
+};
+
+/** The refspecs a push sends, finalised against what the remote advertised. */
+const targetRefspecs = async (
+  ctx: Context,
+  plan: PushRefspecPlan,
+  adv: Advertisement,
+  url: string,
+): Promise<ReadonlyArray<ParsedRefspec>> => {
+  const localHeads = await matchingLocalHeads(ctx, plan);
+  const written = plan.kind === 'explicit' ? plan.written : [];
   const refspecs = finalizePushRefspecs(plan, adv, localHeads);
-  const resolved = await resolveAllRefspecs(ctx, refspecs, adv, remoteName, opts);
-  const movers = resolved.filter((r) => r.localOid !== r.remoteOid);
-  if (movers.length === 0) {
-    return { remote: remoteName, url, pushedRefs: [] };
+  return matchExplicitTargets(ctx, { refspecs, written }, adv, url);
+};
+
+/** Every local branch a `:` (matching) push considers; none for any other plan. */
+const matchingLocalHeads = async (
+  ctx: Context,
+  plan: PushRefspecPlan,
+): Promise<ReadonlyArray<RefName>> =>
+  // Stryker disable next-line ConditionalExpression: equivalent — forcing the guard true also computes localHeads for non-matching plans, but finalizePushRefspecs ignores localHeads unless the plan is 'matching', so the extra value is discarded and the result is unchanged.
+  plan.kind === 'matching'
+    ? // Stryker disable next-line MethodExpression: equivalent — finalizePushRefspecs intersects localHeads with the head-only advertised set, so dropping this refs/heads/ pre-filter cannot change the resolved refspecs.
+      (await enumerateRefs(ctx)).filter((ref) => ref.startsWith(HEADS_PREFIX))
+    : [];
+
+/** git refreshes every up-to-date ref's tracking ref even when the remote failed to unpack. */
+const refreshingOnUnpackFailure = async (
+  send: () => Promise<ReadonlyArray<PushedRef>>,
+  refresh: () => Promise<void>,
+): Promise<ReadonlyArray<PushedRef>> => {
+  try {
+    return await send();
+  } catch (error) {
+    if (errorDataCode(error) === 'PUSH_REJECTED') await refresh();
+    throw error;
   }
-  await runPrePushHook(ctx, opts.noVerify ?? false, remoteName, url, movers);
-  const pushedRefs = await sendUpdates(ctx, session, adv, movers, remoteName, opts, url);
-  return { remote: remoteName, url, pushedRefs };
+};
+
+const pushMovers = async (
+  ctx: Context,
+  session: GitServiceSession,
+  adv: Advertisement,
+  movers: ReadonlyArray<ResolvedRefspec>,
+  remote: PushRemote,
+  opts: PushOptions,
+  url: string,
+): Promise<ReadonlyArray<PushedRef>> => {
+  await runPrePushHook(ctx, opts.noVerify ?? false, remote.name, url, movers);
+  return sendUpdates(ctx, session, adv, movers, remote, opts, url);
+};
+
+/** git's up-to-date ref status: never a delete, which is always sent. */
+const isUpToDate = (ref: ResolvedRefspec): boolean =>
+  !ref.parsed.isDelete && ref.localOid === ref.remoteOid;
+
+/** One refspec once `match_explicit` resolved it, or the destination it could not. */
+type TargetOutcome =
+  | { readonly parsed: ParsedRefspec }
+  | { readonly unmatched: PushUnmatchedRefspec };
+
+const deleteOutcome = (parsed: ParsedRefspec, names: ReadonlyArray<string>): TargetOutcome => {
+  const match = matchDeleteTarget(parsed.dst, names);
+  return match.kind === 'matched'
+    ? { parsed: { ...parsed, dst: match.name } }
+    : { unmatched: { dst: parsed.dst, reason: match.reason } };
+};
+
+const explicitOutcome = (
+  parsed: ParsedRefspec,
+  written: string,
+  local: LocalPushRefs,
+  names: ReadonlyArray<string>,
+): TargetOutcome => {
+  const match = matchExplicitPush(written, parsed, local, names);
+  return match.kind === 'matched'
+    ? { parsed: { ...parsed, src: match.src, dst: match.dst } }
+    : { unmatched: { dst: match.dst, reason: match.reason } };
+};
+
+/** The refspecs to resolve, and how the user wrote them — none for a `push.default` plan. */
+interface ExplicitTargets {
+  readonly refspecs: ReadonlyArray<ParsedRefspec>;
+  readonly written: ReadonlyArray<string>;
+}
+
+/**
+ * git's `match_explicit_refs`: each refspec as written resolves its source
+ * against the local refs and its destination against the remote's; any
+ * destination that resolves to no single ref is reported, and then nothing at
+ * all is sent.
+ */
+const matchExplicitTargets = async (
+  ctx: Context,
+  { refspecs, written }: ExplicitTargets,
+  adv: Advertisement,
+  url: string,
+): Promise<ReadonlyArray<ParsedRefspec>> => {
+  const names = adv.refs.map((ref) => ref.name).filter((name) => name !== HAVE_LINE);
+  const local = written.length > 0 ? await readLocalPushRefs(ctx) : NO_LOCAL_REFS;
+  const outcomes = refspecs.map((parsed, at): TargetOutcome => {
+    if (parsed.isDelete) return deleteOutcome(parsed, names);
+    const spelled = written[at];
+    return spelled === undefined ? { parsed } : explicitOutcome(parsed, spelled, local, names);
+  });
+  const unmatched = outcomes.flatMap((outcome) =>
+    'unmatched' in outcome ? [outcome.unmatched] : [],
+  );
+  if (unmatched.length === 0) {
+    return outcomes.flatMap((outcome) => ('parsed' in outcome ? [outcome.parsed] : []));
+  }
+  for (const entry of unmatched) logUnmatched(ctx, entry);
+  throw pushRefspecUnmatched(anonymizeRemoteUrl(url), unmatched);
+};
+
+const NO_LOCAL_REFS: LocalPushRefs = { names: [], symrefs: new Map() };
+
+const logUnmatched = (ctx: Context, { dst, reason }: PushUnmatchedRefspec): void => {
+  const message =
+    reason === 'ambiguous'
+      ? `dst refspec ${dst} matches more than one`
+      : `unable to delete '${dst}': remote ref does not exist`;
+  ctx.logger?.error?.(message, { dst, reason });
+};
+
+/** git's `transport_update_tracking_ref` also refreshes an up-to-date ref's tracking ref. */
+const updateUpToDateTracking = async (
+  ctx: Context,
+  resolved: ReadonlyArray<ResolvedRefspec>,
+  remote: PushRemote,
+): Promise<void> => {
+  for (const ref of resolved.filter(isUpToDate)) {
+    await updateTrackingRef(
+      ctx,
+      { name: ref.parsed.dst as RefName, oldId: ref.remoteOid, newId: ref.localOid },
+      remote.trackingSpecs,
+    );
+  }
 };
 
 /**
@@ -206,7 +455,11 @@ const runPrePushHook = async (
   movers: ReadonlyArray<ResolvedRefspec>,
 ): Promise<void> => {
   if (noVerify) return;
-  const stdin = movers.map(prePushLine).join('');
+  // git's pre-push feed skips a ref that will not be pushed but lists the other rejections.
+  const stdin = movers
+    .filter((m) => fedToPrePush(m.rejection))
+    .map(prePushLine)
+    .join('');
   await runHook(ctx, 'pre-push', { args: [remoteName, url], stdin });
 };
 
@@ -232,19 +485,51 @@ const resolveRemoteUrl = async (ctx: Context, remoteName: string): Promise<strin
   return url;
 };
 
+/** What every refspec of one push resolves against: the advertised refs, the
+ *  remote and options, and the object table git's push process carries. */
+interface RefspecScope {
+  readonly remoteByName: ReadonlyMap<string, ObjectId>;
+  readonly remote: PushRemote;
+  readonly opts: PushOptions;
+  readonly table: ObjectTypeTable;
+}
+
 const resolveAllRefspecs = async (
   ctx: Context,
   refspecs: ReadonlyArray<ParsedRefspec>,
   adv: Advertisement,
-  remoteName: string,
+  remote: PushRemote,
   opts: PushOptions,
 ): Promise<ReadonlyArray<ResolvedRefspec>> => {
-  const remoteByName = buildRemoteMap(adv.refs);
-  const out: ResolvedRefspec[] = [];
+  const scope: RefspecScope = {
+    remoteByName: buildRemoteMap(adv.refs),
+    remote,
+    opts,
+    table: createObjectTypeTable(),
+  };
+  const located: ResolvedRefspec[] = [];
   for (const parsed of refspecs) {
-    out.push(await resolveOneRefspec(ctx, parsed, remoteByName, remoteName, opts));
+    located.push(await locateRefspec(ctx, parsed, scope));
+  }
+  const out: ResolvedRefspec[] = [];
+  for (const ref of inRemoteOrder(located, adv)) {
+    out.push(await judgeRefspec(ctx, ref, scope));
   }
   return out;
+};
+
+/**
+ * git's `remote_refs` list: the advertised refs in advertisement order, then
+ * each ref the push creates, appended in refspec order as it is matched.
+ */
+const inRemoteOrder = (
+  located: ReadonlyArray<ResolvedRefspec>,
+  adv: Advertisement,
+): ReadonlyArray<ResolvedRefspec> => {
+  const position = new Map(adv.refs.map((ref, index) => [ref.name, index]));
+  const rank = (ref: ResolvedRefspec): number =>
+    position.get(ref.parsed.dst) ?? Number.POSITIVE_INFINITY;
+  return [...located].sort((a, b) => rank(a) - rank(b));
 };
 
 const buildRemoteMap = (refs: ReadonlyArray<AdvertisedRef>): ReadonlyMap<string, ObjectId> => {
@@ -253,116 +538,268 @@ const buildRemoteMap = (refs: ReadonlyArray<AdvertisedRef>): ReadonlyMap<string,
   return map;
 };
 
-const resolveOneRefspec = async (
+const locateRefspec = async (
   ctx: Context,
   parsed: ParsedRefspec,
-  remoteByName: ReadonlyMap<string, ObjectId>,
-  remoteName: string,
-  opts: PushOptions,
+  scope: RefspecScope,
 ): Promise<ResolvedRefspec> => {
   const zero = zeroOid(ctx.hashConfig);
-  const remoteOid = remoteByName.get(parsed.dst) ?? zero;
-  if (parsed.isDelete) {
-    if (remoteOid === zero) {
-      throw invalidOption('refspecs', `delete target ${parsed.dst} is not advertised`);
-    }
-    return { parsed, localOid: zero, remoteOid };
-  }
-  const localOid = await resolveRef(ctx, parsed.src as RefName);
-  await enforceLeaseAndFastForward(ctx, parsed, localOid, remoteOid, remoteName, opts);
+  const remoteOid = scope.remoteByName.get(parsed.dst) ?? zero;
+  const localOid = parsed.isDelete ? zero : await resolveRef(ctx, parsed.src as RefName);
   return { parsed, localOid, remoteOid };
 };
 
-const enforceLeaseAndFastForward = async (
+const judgeRefspec = async (
   ctx: Context,
-  parsed: ParsedRefspec,
+  ref: ResolvedRefspec,
+  scope: RefspecScope,
+): Promise<ResolvedRefspec> => {
+  // git settles an up-to-date ref before the lease or any lookup.
+  if (isUpToDate(ref)) return ref;
+  const verdict = await judgeUpdate(ctx, ref, scope);
+  if (verdict.rejection === undefined) return ref;
+  return verdict.forced ? { ...ref, forced: true } : { ...ref, rejection: verdict.rejection };
+};
+
+/** The rejection an update earned, and whether a force overrides it. */
+interface UpdateVerdict {
+  readonly rejection: JudgedRejection | undefined;
+  readonly forced: boolean;
+}
+
+/**
+ * git's `set_ref_status_for_push`: a stale lease is rejected as stale info;
+ * otherwise a delete or a new ref is not judged and any other update is
+ * measured — forced or not, as git measures it before force overrides it.
+ * Force overrides every verdict; a lease that holds forces the update.
+ */
+const judgeUpdate = async (
+  ctx: Context,
+  ref: ResolvedRefspec,
+  scope: RefspecScope,
+): Promise<UpdateVerdict> => {
+  const lease = await resolveLease(ctx, ref.parsed, scope.remote.trackingSpecs, scope.opts);
+  const leaseRejection = lease === undefined ? undefined : await judgeLease(ctx, ref, scope, lease);
+  const rejection = leaseRejection ?? (await measureUpdate(ctx, scope.table, ref));
+  const forced =
+    (lease !== undefined && leaseRejection === undefined) || isForced(ref.parsed, scope.opts);
+  return { rejection, forced };
+};
+
+/** A lease the remote no longer holds is stale; one that holds may still find the
+ *  remote-tracking tip never integrated locally (`forceIfIncludes`). */
+const judgeLease = async (
+  ctx: Context,
+  ref: ResolvedRefspec,
+  scope: RefspecScope,
+  lease: ObjectId,
+): Promise<'stale-info' | 'remote-ref-updated' | undefined> => {
+  if (lease !== ref.remoteOid) return 'stale-info';
+  return (await updatedSinceCheckout(ctx, ref, scope)) ? 'remote-ref-updated' : undefined;
+};
+
+/** git's `check_if_includes_upstream`: run only for an automatic lease whose
+ *  remote-tracking ref exists. */
+const updatedSinceCheckout = async (
+  ctx: Context,
+  { parsed, remoteOid }: ResolvedRefspec,
+  scope: RefspecScope,
+): Promise<boolean> => {
+  if (scope.opts.forceWithLease !== 'auto' || scope.opts.forceIfIncludes !== true) return false;
+  const trackingRef = findTrackingRef(scope.remote.trackingSpecs, parsed.dst);
+  if (trackingRef === undefined || (await resolveRefOrMissing(ctx, trackingRef)) === undefined) {
+    return false;
+  }
+  const remote = await lookupTypedCommitReferenceQuietly(ctx, scope.table, remoteOid);
+  if (remote === undefined) return true;
+  return !(await reachableInReflog(ctx, scope.table, parsed.dst as RefName, remote, trackingRef));
+};
+
+/**
+ * git's `is_reachable_in_reflog`: walk the local ref's reflog newest first — an
+ * entry naming the remote tip settles it — collecting each entry's commit until
+ * one predates the remote-tracking ref's latest reflog entry, then ask whether
+ * any collected commit descends from the remote tip.
+ */
+const reachableInReflog = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  local: RefName,
+  remote: ObjectId,
+  trackingRef: RefName,
+): Promise<boolean> => {
+  const since = (await readReflog(ctx, trackingRef)).at(-1)?.identity.timestamp ?? 0;
+  const collected: ObjectId[] = [];
+  for (const entry of [...(await readReflog(ctx, local))].reverse()) {
+    if (entry.newId === remote) return true;
+    const commit = await lookupTypedCommitReferenceQuietly(ctx, table, entry.newId);
+    if (commit !== undefined) collected.push(commit);
+    if (entry.identity.timestamp < since) break;
+  }
+  for (const commit of collected) if (await isAncestor(ctx, remote, commit, table)) return true;
+  return false;
+};
+
+const isForced = (parsed: ParsedRefspec, opts: PushOptions): boolean =>
+  parsed.force === 'force' || opts.force === true;
+
+const measureUpdate = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  { parsed, localOid, remoteOid }: ResolvedRefspec,
+): Promise<JudgedRejection | undefined> => {
+  if (parsed.isDelete || remoteOid === zeroOid(ctx.hashConfig)) return undefined;
+  return rejectionOf(ctx, table, parsed.dst, localOid, remoteOid);
+};
+
+/**
+ * git's rules in order: a tag destination that exists, an advertised end not
+ * held locally, either end not a commit (looked up quietly, advertised end
+ * first, into the push's table), then `ref_newer`'s two-commit walk.
+ */
+const rejectionOf = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  dst: string,
   localOid: ObjectId,
   remoteOid: ObjectId,
-  remoteName: string,
-  opts: PushOptions,
-): Promise<void> => {
-  const lease = await resolveLease(ctx, parsed, remoteName, opts);
-  if (lease !== undefined) {
-    if (lease !== remoteOid) {
-      throw pushRejected(parsed.dst as RefName, 'lease-mismatch', emptyReport());
-    }
-    // Lease holds → treat as force, skip ancestor check.
-    return;
-  }
-  if (parsed.force === 'force' || opts.force === true) return;
-  if (remoteOid === zeroOid(ctx.hashConfig)) return; // creating a new ref
-  if (!(await isAncestor(ctx, remoteOid, localOid))) {
-    throw nonFastForward(parsed.dst as RefName, localOid, remoteOid);
-  }
+): Promise<JudgedRejection | undefined> => {
+  if (dst.startsWith(TAGS_PREFIX)) return 'already-exists';
+  if (!(await hasObject(ctx, remoteOid, { mode: 'recheck' }))) return 'fetch-first';
+  const old = await lookupTypedCommitReferenceQuietly(ctx, table, remoteOid);
+  if (old === undefined) return 'needs-force';
+  const fresh = await lookupTypedCommitReferenceQuietly(ctx, table, localOid);
+  if (fresh === undefined) return 'needs-force';
+  return (await isAncestor(ctx, old, fresh, table)) ? undefined : 'non-fast-forward';
 };
 
 const resolveLease = async (
   ctx: Context,
   parsed: ParsedRefspec,
-  remoteName: string,
+  trackingSpecs: ReadonlyArray<string>,
   opts: PushOptions,
 ): Promise<ObjectId | undefined> => {
   // Stryker disable next-line ConditionalExpression: equivalent — when `forceWithLease` is undefined the next line (`undefined !== 'auto'`) returns `opts.forceWithLease` which is `undefined`, the identical result.
   if (opts.forceWithLease === undefined) return undefined;
   if (opts.forceWithLease !== 'auto') return opts.forceWithLease;
-  if (!parsed.dst.startsWith(HEADS_PREFIX)) {
-    throw invalidOption('forceWithLease', 'lease-on-non-branch');
-  }
-  const branch = parsed.dst.slice(HEADS_PREFIX.length);
-  const trackingRef = `refs/remotes/${remoteName}/${branch}` as RefName;
-  return resolveRef(ctx, trackingRef);
+  return trackedValue(ctx, parsed.dst, trackingSpecs);
 };
 
-const emptyReport = (): { unpackOk: boolean; refUpdates: ReadonlyArray<RefStatus> } => ({
-  unpackOk: true,
-  refUpdates: [],
-});
+/**
+ * git's `remote_tracking` for an automatic lease: the ref the remote's fetch
+ * refspecs map the destination onto, or — when none maps it or it is
+ * missing — the null id, so the lease expects the remote ref absent.
+ */
+const trackedValue = async (
+  ctx: Context,
+  dst: string,
+  trackingSpecs: ReadonlyArray<string>,
+): Promise<ObjectId> => {
+  const absent = zeroOid(ctx.hashConfig);
+  const trackingRef = findTrackingRef(trackingSpecs, dst);
+  if (trackingRef === undefined) return absent;
+  return (await resolveRefOrMissing(ctx, trackingRef)) ?? absent;
+};
+
+// git's `need_pack_data` is false when every command sent is a delete: no pack,
+// so nothing is read from the object store.
+const buildPackfileFor = async (
+  ctx: Context,
+  accepted: ReadonlyArray<SettledRefspec>,
+  feed: ReadonlyArray<ClosureTip>,
+): Promise<Uint8Array | undefined> => {
+  if (accepted.every((m) => m.parsed.isDelete)) return undefined;
+  const oids = await collectObjects(ctx, feed);
+  const pack = await buildPack(ctx, { objects: oids.map((id) => ({ id })) });
+  return pack.bytes;
+};
 
 const sendUpdates = async (
   ctx: Context,
   session: GitServiceSession,
   adv: Advertisement,
   movers: ReadonlyArray<ResolvedRefspec>,
-  remoteName: string,
+  remote: PushRemote,
   opts: PushOptions,
   url: string,
 ): Promise<ReadonlyArray<PushedRef>> => {
   assertPeerAlgorithm(ctx.hashConfig.algorithm, readObjectFormat(adv.capabilities), 'push');
   const mode = await resolveSignedPushMode(ctx, opts);
   const nonce = parsePushCertNonce(adv.capabilities);
-  const intent = resolveSigningIntent(mode, nonce, remoteName);
-  const wants = movers.filter((m) => !m.parsed.isDelete).map((m) => m.localOid);
+  const intent = resolveSigningIntent(mode, nonce, remote.name);
+  const settled = settleBeforeSending(ctx, adv, movers, opts, remote.name);
+  const accepted = settled.filter((m) => m.rejection === undefined);
+  // git's send_pack sends no command, and so nothing at all, when every ref was rejected.
+  if (accepted.length === 0) return applyReportStatus(ctx, settled, [], remote.trackingSpecs);
   // Zero-oid-advertised refs (ref-creation sentinels) are kept verbatim in
-  // `haves`: `hasObject(ctx, zeroOid)` is always false (no pack hit, no loose
-  // file), so the sentinel drops out of `collectObjects`'s negatives on its
-  // own — one absent negative among others, not a special case.
-  const haves = adv.refs.map((r) => r.id);
-  const oids = await collectObjects(ctx, wants, haves);
-  const pack = await buildPack(ctx, { objects: oids.map((id) => ({ id })) });
+  // the feed: `hasObject(ctx, zeroOid)` is always false (no pack hit, no
+  // loose file), so the sentinel drops out of `collectObjects`'s negatives on
+  // its own — one absent negative among others, not a special case.
+  const packfile = await buildPackfileFor(ctx, accepted, sendPackFeed(adv, movers));
   const capabilities = selectPushCapabilities(
     adv.capabilities,
     ctx.hashConfig.algorithm,
-    intent.signing,
+    capabilityOptIns(opts),
   );
   const requestBody = intent.signing
-    ? await buildSignedRequestBody(ctx, capabilities, movers, pack.bytes, url, intent.nonce)
+    ? await buildSignedRequestBody(ctx, capabilities, accepted, packfile, url, intent.nonce)
     : buildReceivePackRequest({
-        updates: movers.map(toRefUpdate),
+        updates: accepted.map(toRefUpdate),
         capabilities,
-        packfile: pack.bytes,
+        packfile,
       });
   const pktSource = await exchangeReceivePack(ctx, session, requestBody);
   const parsed = await parseReceiveResponse(ctx, pktSource, capabilities);
   if (!parsed.unpackOk) {
     throw pushRejected(
-      movers[0]?.parsed.dst as RefName,
+      accepted[0]?.parsed.dst as RefName,
       // Stryker disable next-line StringLiteral: equivalent — `parseReceivePackResponse` always sets `unpackError` (a string) whenever `unpackOk` is false, so the `??` fallback is unreachable.
       parsed.unpackError ?? 'unpack failed',
       parsed,
     );
   }
-  const pushedRefs = await applyReportStatus(ctx, movers, parsed.refUpdates, remoteName);
-  return pushedRefs;
+  return applyReportStatus(ctx, settled, parsed.refUpdates, remote.trackingSpecs);
+};
+
+const capabilityOptIns = (opts: PushOptions): ReadonlyArray<string> =>
+  opts.atomic === true ? [ATOMIC] : [];
+
+/**
+ * git's `send_pack` before it writes a command: an atomic push the server
+ * cannot take dies, every delete is refused when the server lacks
+ * `delete-refs`, and an atomic push with any rejected ref fails the rest.
+ */
+const settleBeforeSending = (
+  ctx: Context,
+  adv: Advertisement,
+  movers: ReadonlyArray<ResolvedRefspec>,
+  opts: PushOptions,
+  remoteName: string,
+): ReadonlyArray<SettledRefspec> => {
+  const atomic = opts.atomic === true;
+  if (atomic && !adv.capabilities.includes(ATOMIC)) throw atomicPushUnsupported(remoteName);
+  const deletable = adv.capabilities.includes(DELETE_REFS);
+  const judged = movers.map((m) =>
+    m.parsed.isDelete && !deletable ? { ...m, rejection: 'remote-ref-not-deletable' as const } : m,
+  );
+  return atomic ? failAtomicPush(ctx, judged) : judged;
+};
+
+/** git's `reject_atomic_push`: the first rejected ref fails every accepted one. */
+const failAtomicPush = (
+  ctx: Context,
+  judged: ReadonlyArray<ResolvedRefspec>,
+): ReadonlyArray<SettledRefspec> => {
+  const first = judged.find((m) => m.rejection !== undefined);
+  if (first?.rejection === undefined) return judged;
+  const status = GIT_REF_STATUS[first.rejection];
+  ctx.logger?.error?.(`atomic push failed for ref ${first.parsed.dst}. status: ${status}`, {
+    ref: first.parsed.dst,
+    status,
+  });
+  return judged.map((m) =>
+    m.rejection === undefined ? { ...m, rejection: 'atomic-push-failed' as const } : m,
+  );
 };
 
 type SignedPushMode = 'yes' | 'no' | 'if-asked';
@@ -403,13 +840,13 @@ const resolveSigningIntent = (
 /**
  * Build the P.1 certificate envelope: resolve the pusher identity/selector
  * (same ident-fallback rule as commit/tag `-u`), sign the P.2 raw payload,
- * and frame it with the armor and the nonce-stripped opener capabilities.
+ * and frame it with the armor and the negotiated opener capabilities.
  */
 const buildSignedRequestBody = async (
   ctx: Context,
   negotiatedCapabilities: ReadonlyArray<string>,
-  movers: ReadonlyArray<ResolvedRefspec>,
-  packfile: Uint8Array,
+  movers: ReadonlyArray<SettledRefspec>,
+  packfile: Uint8Array | undefined,
   url: string,
   nonce: string,
 ): Promise<Uint8Array> => {
@@ -424,12 +861,9 @@ const buildSignedRequestBody = async (
   const updates = movers.map(toRefUpdate);
   const payload = buildPushCertPayload({ pusher, pushee, nonce, updates });
   const armor = await signOrThrow(ctx, payload, resolveSignRequest(config, identity, undefined));
-  const capabilities = negotiatedCapabilities.filter(
-    (c) => c !== PUSH_CERT && !c.startsWith(`${PUSH_CERT}=`),
-  );
   return buildSignedReceivePackRequest({
     updates,
-    capabilities,
+    capabilities: negotiatedCapabilities,
     armor,
     pusher,
     pushee,
@@ -438,21 +872,57 @@ const buildSignedRequestBody = async (
   });
 };
 
+const HAVE_LINE = '.have';
+
+/** One advertised ref's feed: its old value excluded, then any value pushed to it. */
+const refFeed = (old: ObjectId, pushed: ObjectId | undefined): ReadonlyArray<ClosureTip> => {
+  const excluded = { id: old, excluded: true };
+  return pushed === undefined ? [excluded] : [excluded, { id: pushed, excluded: false }];
+};
+
+/**
+ * git's send-pack `pack_objects` feed to `pack-objects --revs`: the remote's
+ * `.have`s, then each advertised ref's old value and the value pushed to it,
+ * then each ref the push creates — the order its walk types and pops in.
+ */
+const sendPackFeed = (
+  adv: Advertisement,
+  movers: ReadonlyArray<ResolvedRefspec>,
+): ReadonlyArray<ClosureTip> => {
+  const sent = movers.filter((m) => !m.parsed.isDelete);
+  const pushed = new Map(sent.map((m) => [m.parsed.dst, m.localOid]));
+  const refs = adv.refs.filter((ref) => ref.name !== HAVE_LINE);
+  const advertised = new Set(refs.map((ref) => ref.name));
+  return [
+    ...adv.refs.filter((ref) => ref.name === HAVE_LINE).map(({ id }) => ({ id, excluded: true })),
+    ...refs.flatMap((ref) => refFeed(ref.id, pushed.get(ref.name))),
+    ...sent
+      .filter((m) => !advertised.has(m.parsed.dst))
+      .map((m) => ({ id: m.localOid, excluded: false })),
+  ];
+};
+
 const collectObjects = async (
   ctx: Context,
-  wants: ReadonlyArray<ObjectId>,
-  haves: ReadonlyArray<ObjectId>,
+  feed: ReadonlyArray<ClosureTip>,
 ): Promise<ReadonlyArray<ObjectId>> => {
-  if (wants.length === 0) return [];
-  const distinctHaves = [...new Set(haves)];
+  const negatives = [...new Set(feed.filter((tip) => tip.excluded).map((tip) => tip.id))];
   // git's send-pack feed_object: a negative we do not hold locally is never fed.
-  const present = await boundedMapFor(ctx, 'ioBound', distinctHaves, (id) => hasObject(ctx, id));
-  const not = distinctHaves.filter((_, index) => present[index] === true);
-  const closure = await computeClosure(ctx, { wants, not, objects: true, tier: 'bitmap' });
+  const present = await boundedMapFor(ctx, 'ioBound', negatives, (id) => hasObject(ctx, id));
+  const held = new Set(negatives.filter((_, index) => present[index] === true));
+  const tips = feed.filter((tip) => !tip.excluded || held.has(tip.id));
+  const closure = await computeClosure(ctx, {
+    wants: tips.filter((tip) => !tip.excluded).map((tip) => tip.id),
+    not: [...held],
+    tips,
+    objects: true,
+    tier: 'bitmap',
+    objectTypes: createObjectTypeTable(),
+  });
   return closure.objects.map((object) => object.id);
 };
 
-const toRefUpdate = (m: ResolvedRefspec): RefUpdate => ({
+const toRefUpdate = (m: SettledRefspec): RefUpdate => ({
   name: m.parsed.dst,
   oldId: m.remoteOid,
   newId: m.localOid,
@@ -480,9 +950,9 @@ const parseReceiveResponse = async (
     const channel1 = parseSideBand(pktSource, {
       onProgress: (text) => ctx.progress.update(PUSH_UPLOAD_OP, 0, undefined, sanitize(text)),
     });
-    return parseReceivePackResponse(decodePktStream(channel1));
+    return parseReceivePackResponse(decodePktStream(channel1), ctx.hashConfig.hexLength);
   }
-  return parseReceivePackResponse(pktSource);
+  return parseReceivePackResponse(pktSource, ctx.hashConfig.hexLength);
 };
 
 const hasSideBand = (caps: ReadonlyArray<string>): boolean =>
@@ -490,43 +960,89 @@ const hasSideBand = (caps: ReadonlyArray<string>): boolean =>
 
 const applyReportStatus = async (
   ctx: Context,
-  movers: ReadonlyArray<ResolvedRefspec>,
+  movers: ReadonlyArray<SettledRefspec>,
   refUpdates: ReadonlyArray<RefStatus>,
-  remoteName: string,
+  trackingSpecs: ReadonlyArray<string>,
 ): Promise<ReadonlyArray<PushedRef>> => {
-  const statusByName = new Map<string, RefStatus>();
-  for (const s of refUpdates) statusByName.set(s.name, s);
+  const statusesByName = groupByName(refUpdates);
   const out: PushedRef[] = [];
   for (const m of movers) {
-    const status = statusByName.get(m.parsed.dst);
-    const accepted = status?.accepted === true;
-    if (accepted) await updateTrackingCache(ctx, m, remoteName);
-    out.push({
-      name: m.parsed.dst as RefName,
-      oldId: m.remoteOid,
-      newId: m.localOid,
-      status: accepted ? 'ok' : 'rejected',
-      ...(status?.reason !== undefined ? { reason: status.reason } : {}),
-    });
+    const statuses = statusesByName.get(m.parsed.dst) ?? [];
+    out.push(...(await reportRef(ctx, m, statuses, trackingSpecs)));
   }
   return out;
 };
 
-const updateTrackingCache = async (
+const groupByName = (
+  refUpdates: ReadonlyArray<RefStatus>,
+): ReadonlyMap<string, ReadonlyArray<RefStatus>> => {
+  const grouped = new Map<string, RefStatus[]>();
+  for (const status of refUpdates) {
+    const group = grouped.get(status.name);
+    if (group === undefined) grouped.set(status.name, [status]);
+    else group.push(status);
+  }
+  return grouped;
+};
+
+/**
+ * One ref's outcomes: its local verdict, else the remote's last word on it —
+ * an accepted ref reported once per `report-status-v2` rewrite, each under the
+ * name and ids the receiver gave it.
+ */
+const reportRef = async (
   ctx: Context,
-  m: ResolvedRefspec,
-  remoteName: string,
+  m: SettledRefspec,
+  statuses: ReadonlyArray<RefStatus>,
+  trackingSpecs: ReadonlyArray<string>,
+): Promise<ReadonlyArray<PushedRef>> => {
+  const ref = { name: m.parsed.dst as RefName, oldId: m.remoteOid, newId: m.localOid };
+  if (m.rejection !== undefined) return [{ ...ref, status: 'rejected', rejection: m.rejection }];
+  const final = statuses[statuses.length - 1];
+  if (final?.accepted !== true) return [remoteRejection(ref, final)];
+  const reports = statuses.flatMap((status) => status.report ?? []);
+  const forced = m.forced === true ? { forcedUpdate: true } : {};
+  const pushed =
+    reports.length === 0
+      ? [{ ...ref, status: 'ok' as const, ...forced }]
+      : reports.map((report) => ({ ...forced, ...rewritten(ref, report) }));
+  for (const entry of pushed) await updateTrackingRef(ctx, entry, trackingSpecs);
+  return pushed;
+};
+
+type UpdatedRef = Pick<PushedRef, 'name' | 'oldId' | 'newId'>;
+
+const remoteRejection = (ref: UpdatedRef, status: RefStatus | undefined): PushedRef => ({
+  ...ref,
+  status: 'rejected',
+  rejection: 'remote',
+  ...(status?.reason !== undefined ? { reason: status.reason } : {}),
+});
+
+/** git's push report: each id the receiver did not restate is the one pushed. */
+const rewritten = (ref: UpdatedRef, report: RefStatusReport): PushedRef => ({
+  name: (report.refName ?? ref.name) as RefName,
+  oldId: report.oldId ?? ref.oldId,
+  newId: report.newId ?? ref.newId,
+  status: 'ok',
+  ...(report.forcedUpdate === true ? { forcedUpdate: true } : {}),
+});
+
+/**
+ * git's `update_one_tracking_ref`: the ref the remote's fetch refspecs map the
+ * pushed ref onto follows it — deleted by a delete — and nothing is written
+ * when no refspec maps it.
+ */
+const updateTrackingRef = async (
+  ctx: Context,
+  { name, newId }: UpdatedRef,
+  trackingSpecs: ReadonlyArray<string>,
 ): Promise<void> => {
-  if (!m.parsed.dst.startsWith(HEADS_PREFIX)) return; // tags handled elsewhere
-  if (m.parsed.isDelete) return; // delete-only push doesn't update cache
-  const branch = m.parsed.dst.slice(HEADS_PREFIX.length);
-  const composed = `refs/remotes/${remoteName}/${branch}`;
-  // `remoteName` is gated by REMOTE_NAME_RE (resolveRemoteUrl) and `branch`
-  // derives from a server-advertised name matched against the local refspec
-  // via the remoteByName map, so `composed` is always a valid ref path. The
-  // guard is defense-in-depth for future refactors; it cannot fire on any
-  // input push() can construct, hence the equivalent-mutant suppression.
-  // Stryker disable next-line ConditionalExpression: equivalent — `composed` is always a valid ref path (see above); the guard never fires.
-  if (!isSafeRefName(composed)) return;
-  await updateRef(ctx, composed as RefName, m.localOid, { reflogMessage: PUSH_UPDATE });
+  const trackingRef = findTrackingRef(trackingSpecs, name);
+  if (trackingRef === undefined) return;
+  if (newId === zeroOid(ctx.hashConfig)) {
+    await deleteRefs(ctx, [trackingRef], {});
+    return;
+  }
+  await updateRef(ctx, trackingRef, newId, { reflogMessage: PUSH_UPDATE });
 };

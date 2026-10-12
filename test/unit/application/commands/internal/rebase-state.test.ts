@@ -12,6 +12,17 @@ import type { AuthorIdentity, ObjectId } from '../../../../../src/domain/objects
 import { rebaseTodoBackup } from '../../../../../src/domain/rebase/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
+// Object verification is updateRef's concern; these suites pin the state layout with ids no store holds.
+vi.mock(
+  '../../../../../src/application/primitives/internal/ref-target.js',
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import('../../../../../src/application/primitives/internal/ref-target.js')
+    >()),
+    assertRefTargetValid: async () => undefined,
+  }),
+);
+
 const ONTO = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as ObjectId;
 const ORIG = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' as ObjectId;
 const T1 = '1111111111111111111111111111111111111111' as ObjectId;
@@ -123,6 +134,17 @@ describe('rebase-state', () => {
 
         // Assert
         expect(await read(ctx, 'rewritten-list')).toBe(`${T1} ${NEW1}\n`);
+      });
+
+      it('Then no refs-to-delete file is written when no label was executed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRebaseStop(ctx, STOP);
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/refs-to-delete`)).toBe(false);
       });
 
       it('Then the empty marker files are written', async () => {
@@ -312,6 +334,26 @@ describe('rebase-state', () => {
           { action: 'fixup', oid: T3 },
         ]);
         expect(result?.rewrittenPending).toEqual([T1, T2]);
+      });
+    });
+
+    describe('When a later plain conflict stop is written over it', () => {
+      it('Then amend, current-fixups and rewritten-pending are removed while message-squash stays', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await writeRebaseStop(ctx, SQUASH_STOP);
+        const sut = writeRebaseStop;
+
+        // Act
+        await sut(ctx, STOP);
+
+        // Assert
+        const exists = (name: string): Promise<boolean> =>
+          ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/${name}`);
+        expect(await exists('amend')).toBe(false);
+        expect(await exists('current-fixups')).toBe(false);
+        expect(await exists('rewritten-pending')).toBe(false);
+        expect(await read(ctx, 'message-squash')).toBe('# This is a combination of 3 commits.\n');
       });
     });
 

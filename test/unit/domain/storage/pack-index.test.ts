@@ -1,7 +1,8 @@
+import { createHash } from 'node:crypto';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { TsgitError } from '../../../../src/domain/error.js';
-import { hexToBytes } from '../../../../src/domain/objects/encoding.js';
+import { bytesToHex, hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import {
   allObjectIds,
@@ -13,6 +14,8 @@ import {
   objectIdAt,
   offsetAtPackPosition,
   parsePackIndex,
+  recordedEntryCrc,
+  recordedPackChecksum,
 } from '../../../../src/domain/storage/pack-index.js';
 import { type PackRevIndex, parsePackRevIndex } from '../../../../src/domain/storage/rev-index.js';
 import { arbObjectId, buildRevIndex, buildTestIndex, type TestIndexEntry } from './arbitraries.js';
@@ -1244,6 +1247,77 @@ describe('pack-index', () => {
           expect(result).toBeUndefined();
         });
       });
+    });
+  });
+});
+
+/**
+ * A three-blob pack real git 2.55 wrote: `printf 'one\ntwo\nthree\n'` piped one
+ * line at a time through `git hash-object -w --stdin`, the ids through `git
+ * pack-objects`. Offsets and CRCs are `git show-index < pack-*.idx` (verify-pack
+ * prints no CRC); the trailers are the last 20 bytes of the `.pack` and the last
+ * 40 of the `.idx`. Rebuilding the index from those rows must hash to git's own
+ * `.idx` checksum, which proves the fixture is git's file byte for byte.
+ */
+const GIT_PACK_ENTRIES: ReadonlyArray<TestIndexEntry> = [
+  { id: '2bdf67abb163a4ffb2d7f3f0880c9fe5068ce782' as ObjectId, offset: 38, crc32: 0xcde25060 },
+  { id: '5626abf0f72e58d7a153368ba57db4c673c0e171' as ObjectId, offset: 12, crc32: 0x32ad21d5 },
+  { id: 'f719efd430d52bcfc8566a43b2eb655688d38871' as ObjectId, offset: 25, crc32: 0x1a77ea62 },
+];
+const GIT_PACK_CHECKSUM = '63010259f83a7dba36cb3ddd02c54e7a01e95211';
+const GIT_IDX_CHECKSUM = '5ad107dff10682e9576445322e89749588c65f72';
+const DIGEST_LENGTH = 20;
+
+const gitIndexBytes = (): Uint8Array => {
+  const bytes = buildTestIndex(GIT_PACK_ENTRIES);
+  bytes.set(hexToBytes(GIT_PACK_CHECKSUM), bytes.length - 2 * DIGEST_LENGTH);
+  const body = bytes.subarray(0, bytes.length - DIGEST_LENGTH);
+  bytes.set(createHash('sha1').update(body).digest(), bytes.length - DIGEST_LENGTH);
+  return bytes;
+};
+
+describe('Given the index git wrote for a three-blob pack', () => {
+  describe("When the rebuilt index is compared with git's file", () => {
+    it("Then it carries git's own .idx checksum", () => {
+      // Arrange
+      const rebuilt = gitIndexBytes();
+
+      // Act
+      const result = bytesToHex(rebuilt.subarray(rebuilt.length - DIGEST_LENGTH));
+
+      // Assert
+      expect(result).toBe(GIT_IDX_CHECKSUM);
+    });
+  });
+
+  describe('When recordedPackChecksum reads it', () => {
+    it('Then it returns the checksum that closes the .pack', () => {
+      // Arrange
+      const index = parsePackIndex(gitIndexBytes(), DIGEST_LENGTH);
+      const sut = recordedPackChecksum;
+
+      // Act
+      const result = sut(index);
+
+      // Assert
+      expect(bytesToHex(result)).toBe(GIT_PACK_CHECKSUM);
+    });
+  });
+
+  describe('When recordedEntryCrc reads the first and the last position', () => {
+    it.each([
+      { position: 0, expected: 0xcde25060 },
+      { position: 2, expected: 0x1a77ea62 },
+    ])('Then position $position holds the CRC git show-index prints', ({ position, expected }) => {
+      // Arrange
+      const index = parsePackIndex(gitIndexBytes(), DIGEST_LENGTH);
+      const sut = recordedEntryCrc;
+
+      // Act
+      const result = sut(index, position);
+
+      // Assert
+      expect(result).toBe(expected);
     });
   });
 });

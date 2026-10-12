@@ -19,7 +19,13 @@ import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { configGet, configGetRegexp, configList } from '../../src/application/commands/config.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
-import { GIT_AVAILABLE, runGit, runGitEnv, tryRunGit } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  runGit,
+  runGitEnv,
+  tryRunGit,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
 import { trackedRepositories } from './repository-lifecycle.js';
 
 const openTrackedRepository = trackedRepositories();
@@ -341,7 +347,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
 
   describe('Given a config with [branch "main"] but no upstream keys (absent upstream)', () => {
     describe('When tsgit pull is run', () => {
-      it('Then throws NO_UPSTREAM_CONFIGURED and NOT CONFIG_MISSING_VALUE', async () => {
+      it('Then the fetch refuses the unconfigured remote, NOT CONFIG_MISSING_VALUE', async () => {
         // Arrange
         initRepo(ours);
         await writeFile(path.join(ours, '.git', 'config'), ABSENT_BRANCH_UPSTREAM_FIXTURE);
@@ -358,7 +364,7 @@ describe.skipIf(!GIT_AVAILABLE)('missing-value-refusal interop', () => {
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
         const data = (caught as TsgitError).data;
-        expect(data.code).toBe('NO_UPSTREAM_CONFIGURED');
+        expect(data.code).toBe('REMOTE_NOT_CONFIGURED');
         expect(data.code).not.toBe('CONFIG_MISSING_VALUE');
       });
     });
@@ -3019,6 +3025,58 @@ describe.skipIf(process.platform === 'win32' || !GIT_AVAILABLE)(
           // Assert — absent ≠ empty: the default-dir hook fires and blocks
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data.code).toBe('HOOK_FAILED');
+        });
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'missing-value-refusal interop — valueless diff driver textconv',
+  () => {
+    let ours: string;
+
+    beforeEach(async () => {
+      ours = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-mv-textconv-')));
+      runGit(['init', '-q', '-b', 'main', ours]);
+      await writeFile(path.join(ours, '.gitattributes'), '*.t diff=x\n');
+      await writeFile(path.join(ours, 'a.t'), 'A\n');
+      runGit(['-C', ours, 'add', '.']);
+      runGit(['-C', ours, 'commit', '-q', '-m', 'root'], { env: CORE_AUTHOR_ENV });
+      await writeFile(path.join(ours, 'a.t'), 'B\n');
+      await writeFile(
+        path.join(ours, '.git', 'config'),
+        '[core]\n\trepositoryformatversion = 0\n[diff "x"]\n\ttextconv\n',
+      );
+    });
+
+    afterEach(async () => {
+      await rm(ours, { recursive: true, force: true });
+    });
+
+    describe('Given [diff "x"] textconv is valueless and a.t carries diff=x', () => {
+      describe('When git diff and tsgit diff run', () => {
+        it('Then both refuse naming diff.x.textconv at line 4', async () => {
+          // Arrange
+          const repo = await openTrackedRepository({ cwd: ours });
+
+          // Act
+          const g = tryRunGitWithExit(['-C', ours, 'diff', '--no-ext-diff']);
+          let caught: unknown;
+          try {
+            await repo.diff();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          const data = (caught as TsgitError).data as { code: string; key: string; line: number };
+          expect(g.exitCode).toBe(128);
+          expect(g.stderr).toContain(
+            `error: missing value for '${data.key}'\nfatal: bad config variable '${data.key}' in file '.git/config' at line ${data.line}`,
+          );
+          expect(data.code).toBe('CONFIG_MISSING_VALUE');
+          expect(data.key).toBe('diff.x.textconv');
         });
       });
     });

@@ -1015,6 +1015,43 @@ describe('mergeTrees — mode handling', () => {
     });
   });
 
+  describe.each([
+    { variant: 'ours', expectedId: ID_B },
+    { variant: 'theirs', expectedId: ID_C },
+  ] as const)(
+    'Given both sides changed a symlink under the $variant variant',
+    ({ variant, expectedId }) => {
+      describe.each([
+        { label: 'from a base symlink', base: tree([['p', entry(ID_A, FILE_MODE.SYMLINK)]]) },
+        { label: 'with no base (add/add)', base: tree([]) },
+      ])('When mergeTrees merges them $label', ({ base }) => {
+        it('Then that side’s symlink wins cleanly', async () => {
+          // Arrange
+          const sut = mergeTrees;
+          const ours = tree([['p', entry(ID_B, FILE_MODE.SYMLINK)]]);
+          const theirs = tree([['p', entry(ID_C, FILE_MODE.SYMLINK)]]);
+
+          // Act
+          const result = await sut(
+            base,
+            ours,
+            theirs,
+            noopMerger,
+            DEFAULT_MERGE_LABELS,
+            undefined,
+            variant,
+          );
+
+          // Assert
+          expect(result.cleanMerge).toBe(true);
+          expect(result.outcomes).toEqual([
+            { status: 'resolved-known', path: 'p', id: expectedId, mode: FILE_MODE.SYMLINK },
+          ]);
+        });
+      });
+    },
+  );
+
   describe('Given base symlink and both sides regular with different ids, through the ctx-taking shape', () => {
     describe('When merger returns a content conflict', () => {
       it('Then merger called once with no baseId/baseMode in ctx, conflict carries base fields', async () => {
@@ -1865,6 +1902,408 @@ describe('mergeTrees — distinct-types add/add rename conflict', () => {
           expect(result.conflicts[0]?.type).toBe('add-add');
         },
       );
+    });
+  });
+});
+
+describe('mergeTrees — renames', () => {
+  const OLD = 'old' as FilePath;
+  const NEW = 'new' as FilePath;
+
+  describe('Given theirs renamed a path ours modified', () => {
+    describe('When mergeTrees is called with the rename', () => {
+      it('Then the source is deleted and the three versions merge at the new path', async () => {
+        // Arrange
+        const base = tree([[OLD, entry(ID_A)]]);
+        const ours = tree([[OLD, entry(ID_B)]]);
+        const theirs = tree([[NEW, entry(ID_C)]]);
+        const merger = spyMerger({ status: 'clean', bytes: new Uint8Array([1]) });
+        const renames = { ours: [], theirs: [{ oldPath: OLD, newPath: NEW }] };
+        const sut = mergeTrees;
+
+        // Act
+        const result = await sut(base, ours, theirs, merger.fn, DEFAULT_MERGE_LABELS, renames);
+
+        // Assert
+        expect(result.outcomes).toEqual([
+          {
+            status: 'resolved-merged',
+            path: NEW,
+            bytes: new Uint8Array([1]),
+            mode: FILE_MODE.REGULAR,
+          },
+          { status: 'resolved-deleted', path: OLD },
+        ]);
+        expect(merger.ctxs).toEqual([
+          expect.objectContaining({
+            path: NEW,
+            baseId: ID_A,
+            ourId: ID_B,
+            theirId: ID_C,
+            sidePaths: { base: OLD, ours: OLD, theirs: NEW },
+          }),
+        ]);
+      });
+    });
+  });
+
+  describe('Given a content merge on a path no rename touched', () => {
+    describe('When mergeTrees is called with an unrelated rename', () => {
+      it('Then the merger context carries no side paths', async () => {
+        // Arrange
+        const base = tree([
+          [OLD, entry(ID_A)],
+          ['p', entry(ID_A)],
+        ]);
+        const ours = tree([
+          [OLD, entry(ID_A)],
+          ['p', entry(ID_B)],
+        ]);
+        const theirs = tree([
+          [NEW, entry(ID_A)],
+          ['p', entry(ID_C)],
+        ]);
+        const merger = spyMerger({ status: 'clean', bytes: new Uint8Array([1]) });
+        const renames = { ours: [], theirs: [{ oldPath: OLD, newPath: NEW }] };
+        const sut = mergeTrees;
+
+        // Act
+        await sut(base, ours, theirs, merger.fn, DEFAULT_MERGE_LABELS, renames);
+
+        // Assert
+        expect(merger.ctxs.map((ctx) => ctx.path)).toEqual(['p']);
+        expect(merger.ctxs[0]).not.toHaveProperty('sidePaths');
+      });
+    });
+  });
+});
+
+describe('mergeTrees — forced rename conflicts', () => {
+  describe('Given theirs renamed an unchanged path ours deleted', () => {
+    describe('When mergeTrees is called with the rename', () => {
+      it('Then a rename/delete conflict stands at the new path and the source is deleted', async () => {
+        // Arrange
+        const base = tree([['old', entry(ID_A)]]);
+        const theirs = tree([['new', entry(ID_A)]]);
+        const renames = {
+          ours: [],
+          theirs: [{ oldPath: 'old' as FilePath, newPath: 'new' as FilePath }],
+        };
+        const sut = mergeTrees;
+
+        // Act
+        const result = await sut(base, tree([]), theirs, noopMerger, DEFAULT_MERGE_LABELS, renames);
+
+        // Assert
+        const conflict = {
+          type: 'rename-delete',
+          path: 'new',
+          baseId: ID_A,
+          baseMode: FILE_MODE.REGULAR,
+          theirId: ID_A,
+          theirMode: FILE_MODE.REGULAR,
+        };
+        expect(result.outcomes).toEqual([
+          { status: 'conflict', conflict },
+          { status: 'resolved-deleted', path: 'old' },
+        ]);
+        expect(result.cleanMerge).toBe(false);
+      });
+    });
+  });
+});
+
+describe('mergeTrees — directory renames', () => {
+  const DIR_MOVE = [
+    { oldPath: 'dir/a' as FilePath, newPath: 'newdir/a' as FilePath },
+    { oldPath: 'dir/b' as FilePath, newPath: 'newdir/b' as FilePath },
+  ];
+  const base = tree([
+    ['dir/a', entry(ID_A)],
+    ['dir/b', entry(ID_B)],
+  ]);
+  const ours = tree([
+    ['dir/a', entry(ID_A)],
+    ['dir/b', entry(ID_B)],
+    ['dir/c', entry(ID_C)],
+  ]);
+  const theirs = tree([
+    ['newdir/a', entry(ID_A)],
+    ['newdir/b', entry(ID_B)],
+  ]);
+
+  describe('Given theirs renamed a directory ours added into, in conflict mode', () => {
+    describe('When mergeTrees is called', () => {
+      it('Then our addition sits at its moved path as a file-location conflict', async () => {
+        // Arrange
+        const renames = { ours: [], theirs: DIR_MOVE, directoryRenames: 'conflict' } as const;
+        const sut = mergeTrees;
+
+        // Act
+        const result = await sut(base, ours, theirs, noopMerger, DEFAULT_MERGE_LABELS, renames);
+
+        // Assert
+        expect(result.conflicts).toEqual([
+          {
+            type: 'file-location',
+            path: 'newdir/c',
+            ourId: ID_C,
+            ourMode: FILE_MODE.REGULAR,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given theirs renamed a directory ours added into, applied outright', () => {
+    describe('When mergeTrees is called', () => {
+      it('Then our addition merges cleanly at its moved path', async () => {
+        // Arrange
+        const renames = { ours: [], theirs: DIR_MOVE, directoryRenames: 'apply' } as const;
+        const sut = mergeTrees;
+
+        // Act
+        const result = await sut(base, ours, theirs, noopMerger, DEFAULT_MERGE_LABELS, renames);
+
+        // Assert
+        expect(result.cleanMerge).toBe(true);
+        expect(
+          result.outcomes.map((outcome) => (outcome.status === 'conflict' ? '' : outcome.path)),
+        ).toContain('newdir/c');
+      });
+    });
+  });
+
+  describe('Given theirs renamed a directory ours added into, applied outright, When mergeTrees is called', () => {
+    it('Then the vacated source path resolves as deleted', async () => {
+      // Arrange
+      const renames = { ours: [], theirs: DIR_MOVE, directoryRenames: 'apply' } as const;
+      const sut = mergeTrees;
+
+      // Act
+      const result = await sut(base, ours, theirs, noopMerger, DEFAULT_MERGE_LABELS, renames);
+
+      // Assert
+      expect(result.outcomes).toContainEqual({ status: 'resolved-deleted', path: 'dir/c' });
+    });
+  });
+
+  describe('Given the moved addition meets one the other side made there, When its content merges', () => {
+    it('Then each side is labelled with the path it held', async () => {
+      // Arrange
+      const renames = { ours: [], theirs: DIR_MOVE, directoryRenames: 'conflict' } as const;
+      const added = tree([...theirs.entries, ['newdir/c', entry(ID_D)]]);
+      const merger = spyMerger({ status: 'clean', bytes: new Uint8Array(0) });
+      const sut = mergeTrees;
+
+      // Act
+      await sut(base, ours, added, merger.fn, DEFAULT_MERGE_LABELS, renames);
+
+      // Assert
+      expect(merger.ctxs.map((ctx) => ctx.sidePaths)).toEqual([
+        { base: 'newdir/c', ours: 'dir/c', theirs: 'newdir/c' },
+      ]);
+    });
+  });
+
+  describe('Given the moved addition meets one the other side made there, in conflict mode', () => {
+    describe('When mergeTrees is called', () => {
+      it('Then the add/add conflict stands', async () => {
+        // Arrange
+        const renames = { ours: [], theirs: DIR_MOVE, directoryRenames: 'conflict' } as const;
+        const added = tree([...theirs.entries, ['newdir/c', entry(ID_D)]]);
+        const sut = mergeTrees;
+        const conflicting: ContentMerger = () => ({
+          status: 'conflict',
+          conflictType: 'content',
+          markedBytes: new Uint8Array(0),
+        });
+
+        // Act
+        const result = await sut(base, ours, added, conflicting, DEFAULT_MERGE_LABELS, renames);
+
+        // Assert
+        expect(result.conflicts.map((conflict) => [conflict.type, conflict.path])).toEqual([
+          ['add-add', 'newdir/c'],
+        ]);
+      });
+    });
+  });
+
+  describe('Given theirs split the directory ours added into between two destinations', () => {
+    describe('When mergeTrees is called', () => {
+      it('Then the merge is unclean with nothing to stage', async () => {
+        // Arrange
+        const split = tree([
+          ['n1/a', entry(ID_A)],
+          ['n2/b', entry(ID_B)],
+        ]);
+        const renames = {
+          ours: [],
+          theirs: [
+            { oldPath: 'dir/a' as FilePath, newPath: 'n1/a' as FilePath },
+            { oldPath: 'dir/b' as FilePath, newPath: 'n2/b' as FilePath },
+          ],
+          directoryRenames: 'apply',
+        } as const;
+        const sut = mergeTrees;
+
+        // Act
+        const result = await sut(base, ours, split, noopMerger, DEFAULT_MERGE_LABELS, renames);
+
+        // Assert
+        expect(result.cleanMerge).toBe(false);
+        expect(result.conflicts).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('mergeTrees — rename/rename to two paths', () => {
+  const SOURCE = 'src' as FilePath;
+  const MINE = 'mine' as FilePath;
+  const YOURS = 'yours' as FilePath;
+  const SPLIT = {
+    ours: [{ oldPath: SOURCE, newPath: MINE }],
+    theirs: [{ oldPath: SOURCE, newPath: YOURS }],
+  };
+  const MARKED = new Uint8Array([60, 10]);
+  const split = (ours: FlatTreeEntry, theirs: FlatTreeEntry, merger: ContentMerger) =>
+    mergeTrees(
+      tree([[SOURCE, entry(ID_A)]]),
+      tree([[MINE, ours]]),
+      tree([[YOURS, theirs]]),
+      merger,
+      DEFAULT_MERGE_LABELS,
+      SPLIT,
+    );
+  const destinations = (result: {
+    readonly conflicts: ReadonlyArray<{ readonly path: FilePath }>;
+  }) => result.conflicts.filter((conflict) => conflict.path !== SOURCE);
+
+  describe('Given both sides edited the content', () => {
+    describe('When the merge conflicts', () => {
+      it('Then both destinations carry the marked content, merged with the split paths and one extra marker', async () => {
+        // Arrange
+        const merger = spyMerger({
+          status: 'conflict',
+          markedBytes: MARKED,
+          conflictType: 'content',
+        });
+        const sut = split;
+
+        // Act
+        const result = await sut(entry(ID_B), entry(ID_C), merger.fn);
+
+        // Assert
+        const regular = FILE_MODE.REGULAR;
+        expect(destinations(result)).toEqual([
+          {
+            type: 'rename-rename',
+            path: MINE,
+            ourId: ID_B,
+            ourMode: regular,
+            conflictContent: MARKED,
+          },
+          {
+            type: 'rename-rename',
+            path: YOURS,
+            theirId: ID_C,
+            theirMode: regular,
+            conflictContent: MARKED,
+          },
+        ]);
+        expect(merger.ctxs).toEqual([
+          {
+            path: SOURCE,
+            baseId: ID_A,
+            ourId: ID_B,
+            theirId: ID_C,
+            baseMode: regular,
+            ourMode: regular,
+            theirMode: regular,
+            sidePaths: { base: SOURCE, ours: MINE, theirs: YOURS },
+            extraMarkerSize: 1,
+          },
+        ]);
+      });
+    });
+
+    describe('When the merge is clean and names its blob', () => {
+      it('Then both destinations stage that blob', async () => {
+        // Arrange
+        const merger = spyMerger({ status: 'clean', bytes: MARKED, id: ID_D });
+        const sut = split;
+
+        // Act
+        const result = await sut(entry(ID_B), entry(ID_C), merger.fn);
+
+        // Assert
+        expect(destinations(result)).toMatchObject([{ ourId: ID_D }, { theirId: ID_D }]);
+        expect(destinations(result)).not.toContainEqual(
+          expect.objectContaining({ conflictContent: MARKED }),
+        );
+      });
+    });
+
+    describe('When the merge is clean without a blob name', () => {
+      it('Then both destinations carry the merged bytes', async () => {
+        // Arrange
+        const merger = spyMerger({ status: 'clean', bytes: MARKED });
+        const sut = split;
+
+        // Act
+        const result = await sut(entry(ID_B), entry(ID_C), merger.fn);
+
+        // Assert
+        expect(destinations(result)).toMatchObject([
+          { ourId: ID_B, conflictContent: MARKED },
+          { theirId: ID_C, conflictContent: MARKED },
+        ]);
+      });
+    });
+  });
+
+  describe.each([
+    ['ours kept the base content', entry(ID_A), entry(ID_C), ID_C],
+    ['theirs kept the base content', entry(ID_B), entry(ID_A), ID_B],
+    ['both sides hold the same content', entry(ID_B), entry(ID_B), ID_B],
+  ])('Given %s', (_label, ours, theirs, staged) => {
+    describe('When merged', () => {
+      it('Then both destinations stage the changed content without a content merge', async () => {
+        // Arrange
+        const merger = spyMerger({ status: 'clean', bytes: MARKED });
+        const sut = split;
+
+        // Act
+        const result = await sut(ours, theirs, merger.fn);
+
+        // Assert
+        expect(destinations(result)).toMatchObject([{ ourId: staged }, { theirId: staged }]);
+        expect(merger.ctxs).toEqual([]);
+      });
+    });
+  });
+
+  describe.each([
+    ['ours made it executable', FILE_MODE.EXECUTABLE, FILE_MODE.REGULAR],
+    ['theirs made it executable', FILE_MODE.REGULAR, FILE_MODE.EXECUTABLE],
+  ])('Given %s', (_label, ourMode, theirMode) => {
+    describe('When merged', () => {
+      it('Then both destinations stage the executable mode', async () => {
+        // Arrange
+        const sut = split;
+
+        // Act
+        const result = await sut(entry(ID_B, ourMode), entry(ID_B, theirMode), noopMerger);
+
+        // Assert
+        const executable = FILE_MODE.EXECUTABLE;
+        expect(destinations(result)).toMatchObject([
+          { ourMode: executable },
+          { theirMode: executable },
+        ]);
+      });
     });
   });
 });

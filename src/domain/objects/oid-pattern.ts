@@ -1,4 +1,5 @@
 import type { HashConfig } from './hash-config.js';
+import type { ObjectId } from './object-id.js';
 
 /**
  * Repository-aware oid predicate. `isOid` is true iff `value` is exactly
@@ -32,4 +33,21 @@ export function oidPattern(config: HashConfig): RegExp {
 
 export function isOid(value: string, config: HashConfig): boolean {
   return oidPattern(config).test(value);
+}
+
+const SHA1_LEADING_OID_PATTERN = /^[0-9a-fA-F]{40}/;
+const SHA256_LEADING_OID_PATTERN = /^[0-9a-fA-F]{64}/;
+
+/**
+ * The oid a name starts with: its first `config.hexLength` characters read as
+ * hex in either case and returned lower-cased, whatever follows them. This is
+ * git's `get_oid_hex`, which parses a fixed width and never inspects the rest
+ * of the string — so `<oid>zz` names the same object as `<oid>`. `undefined`
+ * when the name is shorter or one of those characters is not hex.
+ */
+export function leadingOid(value: string, config: HashConfig): ObjectId | undefined {
+  const pattern =
+    config.algorithm === 'sha256' ? SHA256_LEADING_OID_PATTERN : SHA1_LEADING_OID_PATTERN;
+  const match = pattern.exec(value);
+  return match === null ? undefined : (match[0].toLowerCase() as ObjectId);
 }

@@ -17,9 +17,11 @@ import {
 import type { Context } from '../../../../ports/context.js';
 import { probeLooseOid } from '../../../primitives/internal/loose-oid-cache.js';
 import { loadShallowSet } from '../../../primitives/internal/shallow-set.js';
-import { looseCompressedBytes } from '../../../primitives/object-resolver.js';
+import { getObjectStore } from '../../../primitives/object-store.js';
 import type { PackLookupHit, PackRegistry } from '../../../primitives/pack-registry.js';
-import { getPackRegistry, readObject } from '../../../primitives/read-object.js';
+import { readObject } from '../../../primitives/read-object.js';
+import { looseBytesFromHolder } from './object-presence.js';
+import { attributeTo } from './source-attribution.js';
 import type { UnreadableMode } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -79,7 +81,7 @@ const BLOB_PROJECTION: ProjectedGitObject = { type: 'blob' };
  * variant a compile error (TS2366, "lacks ending return statement"), the
  * same pattern as `git-object.ts`'s `parseObject`/`serializeObject`.
  */
-function project(obj: GitObject): ProjectedGitObject {
+export function project(obj: GitObject): ProjectedGitObject {
   switch (obj.type) {
     case 'blob':
       return BLOB_PROJECTION;
@@ -171,6 +173,41 @@ async function lookupIfClaimed(
   }
 }
 
+interface PackClaim {
+  readonly registry: PackRegistry;
+  readonly hit: PackLookupHit;
+  readonly attribution: { readonly objectsDir?: string };
+}
+
+/** First source, in git order, whose registry claims `id`. The delta walk
+ *  stays on the claiming source's registry: a REF_DELTA base resolves there. */
+async function claimedBySource(ctx: Context, id: ObjectId): Promise<PackClaim | undefined> {
+  const store = await getObjectStore(ctx);
+  for (const source of store.sources) {
+    const hit = await lookupIfClaimed(source.registry, id);
+    if (hit !== undefined)
+      return { registry: source.registry, hit, attribution: attributeTo(store, source) };
+  }
+  return undefined;
+}
+
+/** Where a packed object lives — the pack and offset git names a damaged entry by. */
+export interface PackedLocation {
+  readonly pack: string;
+  readonly offset: number;
+  readonly attribution: { readonly objectsDir?: string };
+}
+
+/** The pack entry the store reads `id` from, when a pack claims it. */
+export async function packedLocationOf(
+  ctx: Context,
+  id: ObjectId,
+): Promise<PackedLocation | undefined> {
+  const claim = await claimedBySource(ctx, id);
+  if (claim === undefined) return undefined;
+  return { pack: claim.hit.pack.name, offset: claim.hit.offset, attribution: claim.attribution };
+}
+
 type TypedOrUntyped =
   | { readonly kind: 'typed'; readonly objectType: FsckObjectType }
   | { readonly kind: 'untyped' };
@@ -250,16 +287,12 @@ async function walkDeltaChain(
  * read. Types from the pack entry the registry claims for `id` — never
  * rejects (see `typeFromEntry`'s doc-comment).
  */
-async function packedStoredType(
-  ctx: Context,
-  registry: PackRegistry,
-  id: ObjectId,
-): Promise<TypedOrUntyped> {
-  const hit = await lookupIfClaimed(registry, id);
-  if (hit === undefined) {
+async function packedStoredType(ctx: Context, id: ObjectId): Promise<TypedOrUntyped> {
+  const claim = await claimedBySource(ctx, id);
+  if (claim === undefined) {
     return untypedFault(ctx, id, 'not loose and claimed by no accessible pack');
   }
-  return await typeFromEntry(ctx, registry, id, hit);
+  return await typeFromEntry(ctx, claim.registry, id, claim.hit);
 }
 
 /**
@@ -271,7 +304,7 @@ async function packedStoredType(
  */
 async function looseBytesForRecovery(ctx: Context, id: ObjectId): Promise<Uint8Array | undefined> {
   try {
-    return await looseCompressedBytes(ctx, id);
+    return await looseBytesFromHolder(ctx, id);
   } catch (err) {
     if (!isStoreFault(err)) throw err;
     return undefined;
@@ -316,10 +349,9 @@ async function recoverStoredType(
   id: ObjectId,
   readErr: unknown,
 ): Promise<RecoveryOutcome> {
-  const registry = await getPackRegistry(ctx);
   const looseBytes = await looseBytesForRecovery(ctx, id);
   if (looseBytes === undefined) {
-    return await packedStoredType(ctx, registry, id);
+    return await packedStoredType(ctx, id);
   }
   if (looseBytes.length === 0) {
     // Git treats an empty file as one it could not read, not one whose type
@@ -335,8 +367,8 @@ async function recoverStoredType(
     // fault, e.g. UNSUPPORTED_OPERATION) surfaces its own fault instead of
     // being laundered into an abort.
     if (!isRecoveryCandidate(probeErr)) throw probeErr;
-    const hit = await lookupIfClaimed(registry, id);
-    if (hit === undefined) {
+    const claim = await claimedBySource(ctx, id);
+    if (claim === undefined) {
       // The reject verdict is gated on the ORIGINAL read failure, not the
       // probe's — the settled two-code test; the cause keeps the store's own
       // code. A file whose damage class changed under the probe stays a
@@ -344,7 +376,7 @@ async function recoverStoredType(
       if (isRecoveryCandidate(readErr)) return { kind: 'unrecoverable', cause: readErr };
       return { kind: 'untyped' };
     }
-    return await typeFromEntry(ctx, registry, id, hit);
+    return await typeFromEntry(ctx, claim.registry, id, claim.hit);
   }
 }
 
@@ -490,8 +522,7 @@ export function withUnreadableOverrides(
  * can only ever make MORE ids look absent from a pack, never fewer.
  */
 export async function hasPackCopy(ctx: Context, id: ObjectId): Promise<boolean> {
-  const registry = await getPackRegistry(ctx);
-  return (await lookupIfClaimed(registry, id)) !== undefined;
+  return (await claimedBySource(ctx, id)) !== undefined;
 }
 
 /**
@@ -506,12 +537,11 @@ export async function collectUnreadablePackMemberIds(
   ctx: Context,
   cache: ReadonlyMap<ObjectId, CachedGitObject>,
 ): Promise<ReadonlySet<ObjectId>> {
-  const registry = await getPackRegistry(ctx);
   const members = new Set<ObjectId>();
   for (const [id, obj] of cache) {
     // Stryker disable next-line ConditionalExpression: equivalent — isContentUnreadable also requires objectCache.get(id) == null before ever reading packMemberIds, so a typed id landing in `members` here (as `false` would allow) changes no output; skipping it is purely the perf win this function's own doc comment names.
     if (obj !== null) continue;
-    if ((await lookupIfClaimed(registry, id)) !== undefined) members.add(id);
+    if ((await claimedBySource(ctx, id)) !== undefined) members.add(id);
   }
   return members;
 }

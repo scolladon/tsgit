@@ -14,7 +14,7 @@ import type {
   ObjectId,
   Tree,
 } from '../../../../src/domain/objects/index.js';
-import type { Context } from '../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../src/ports/context.js';
 import { buildSeededContext, instrumentedContext, writeCommitGraph } from './fixtures.js';
 
 const AUTHOR: AuthorIdentity = {
@@ -67,6 +67,27 @@ async function buildDiamond(
   const c = await commit('c', 3, [a]);
   const d = await commit('d', 4, [b, c]);
   return { a, b, c, d };
+}
+
+/**
+ * r ← {a, b, c, d}; n = merge(d, a); p = merge(n, c, b) — every commit at one
+ * date. `order` is git's `log` order for `p`, read off a live git: equal dates
+ * pop in the order they entered the queue, parents in parent order.
+ */
+async function buildEqualDateOctopus(
+  ctx: Awaited<ReturnType<typeof buildSeededContext>>,
+): Promise<{ readonly order: ReadonlyArray<ObjectId> }> {
+  const treeId = await emptyTree(ctx);
+  const commit = (message: string, parents: ObjectId[]): Promise<ObjectId> =>
+    createCommit(ctx, { tree: treeId, parents, author: AUTHOR, committer: AUTHOR, message });
+  const r = await commit('r', []);
+  const a = await commit('a', [r]);
+  const b = await commit('b', [r]);
+  const c = await commit('c', [r]);
+  const d = await commit('d', [r]);
+  const n = await commit('n', [d, a]);
+  const p = await commit('p', [n, c, b]);
+  return { order: [p, n, c, b, d, a, r] };
 }
 
 async function collect(iter: AsyncIterable<Commit>): Promise<Commit[]> {
@@ -267,7 +288,7 @@ describe('walkCommitsByDate', () => {
 
   describe('Given two roots with equal committer dates', () => {
     describe('When walkCommitsByDate is called from both', () => {
-      it('Then they pop in oid-ascending order', async () => {
+      it('Then they pop in seed order, not oid order', async () => {
         // Arrange — same timestamp, different messages → different oids.
         const ctx = await buildSeededContext();
         const treeId = await emptyTree(ctx);
@@ -284,10 +305,27 @@ describe('walkCommitsByDate', () => {
         const [lower, higher] = r1 < r2 ? [r1, r2] : [r2, r1];
 
         // Act
-        const commits = await collect(walkCommitsByDate(ctx, { from: [r1, r2] }));
+        const commits = await collect(walkCommitsByDate(ctx, { from: [higher, lower] }));
 
-        // Assert — kills the `a.oid < b.oid` tie-break mutant.
-        expect(idsOf(commits)).toEqual([lower, higher]);
+        // Assert — git's queue breaks equal dates by insertion, so the
+        // oid-descending seed order survives.
+        expect(idsOf(commits)).toEqual([higher, lower]);
+      });
+    });
+  });
+
+  describe('Given nested octopus merges whose commits all share one committer date', () => {
+    describe('When walkCommitsByDate is called from the outer merge', () => {
+      it('Then commits pop in the order their parents were enqueued', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { order } = await buildEqualDateOctopus(ctx);
+
+        // Act
+        const commits = await collect(walkCommitsByDate(ctx, { from: order.slice(0, 1) }));
+
+        // Assert
+        expect(idsOf(commits)).toEqual(order);
       });
     });
   });
@@ -407,19 +445,42 @@ describe('walkCommitsByDate', () => {
 
   describe('Given a seed listed in until', () => {
     describe('When the seed oid is missing and ignoreMissing is false', () => {
-      it('Then it is neither read nor yielded (no throw)', async () => {
-        // Arrange — the until-gate must fire before the eager read; a read-then-skip
-        // impl would throw OBJECT_NOT_FOUND on the synthetic oid.
+      it('Then it refuses, as git parses every named commit before walking', async () => {
+        // Arrange
         const ctx = await buildSeededContext();
         const missingId = 'f'.repeat(40) as ObjectId;
 
         // Act
-        const commits = await collect(
-          walkCommitsByDate(ctx, { from: [missingId], until: [missingId] }),
-        );
+        let caught: unknown;
+        try {
+          await collect(walkCommitsByDate(ctx, { from: [missingId], until: [missingId] }));
+        } catch (error) {
+          caught = error;
+        }
 
         // Assert
-        expect(commits).toEqual([]);
+        expect(caught).toMatchObject({ data: { code: 'OBJECT_NOT_FOUND', id: missingId } });
+      });
+    });
+  });
+
+  describe('Given empty from and a commit to exclude', () => {
+    describe('When walkCommitsByDate is iterated', () => {
+      it('Then it throws INVALID_WALK_INPUT before limiting', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const [rootId] = await linearChain(ctx, 1);
+
+        // Act
+        let caught: unknown;
+        try {
+          await collect(walkCommitsByDate(ctx, { from: [], until: [rootId!] }));
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toMatchObject({ data: { code: 'INVALID_WALK_INPUT' } });
       });
     });
   });
@@ -773,6 +834,23 @@ describe('walkCommitsByDate', () => {
       });
     });
 
+    describe('Given a commit-graph covering nested equal-date octopus merges', () => {
+      describe('When walkCommitsByDate is called from the outer merge', () => {
+        it('Then commits pop in the order their parents were enqueued', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { order } = await buildEqualDateOctopus(ctx);
+          await writeCommitGraph(ctx, [await asCommits(ctx, order)]);
+
+          // Act
+          const commits = await collect(walkCommitsByDate(ctx, { from: order.slice(0, 1) }));
+
+          // Assert
+          expect(idsOf(commits)).toEqual(order);
+        });
+      });
+    });
+
     describe('Given a chain/split graph covering the whole diamond (base=[a,b], tip=[c,d])', () => {
       describe('When walkCommitsByDate is called from the merge', () => {
         it('Then the yielded set/order is identical to the graph-absent walk', async () => {
@@ -854,7 +932,7 @@ describe('walkCommitsByDate', () => {
           const base = await buildSeededContext();
           const ids = await linearChain(base, 3);
           await writeCommitGraph(base, [await asCommits(base, ids)]);
-          const { ctx, calls } = instrumentedContext(base);
+          const { ctx, calls } = instrumentedContext({ ...base, session: createSession() });
 
           // Act
           await collect(walkCommitsByDate(ctx, { from: [ids.at(-1)!] }));

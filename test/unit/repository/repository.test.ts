@@ -315,6 +315,7 @@ describe('openRepository — Repository binding integrity', () => {
         // Assert
         expect(Object.keys(sut.primitives).sort()).toEqual(
           [
+            'abbreviateObjectId',
             'bisectMidpoint',
             'catFileBatch',
             'commonGitDir',
@@ -325,6 +326,7 @@ describe('openRepository — Repository binding integrity', () => {
             'hashBlob',
             'isIgnored',
             'mergeBase',
+            'objectSources',
             'readBlob',
             'readIndex',
             'readObject',
@@ -1079,6 +1081,55 @@ describe('openRepository — round-trip via memory adapter', () => {
 
         // Assert
         expect(ids).toEqual([a, b]);
+      });
+    });
+  });
+});
+
+describe('openRepository — abbreviateObjectId', () => {
+  describe('Given a fresh repository with one commit', () => {
+    describe('When repo.primitives.abbreviateObjectId(head) is called', () => {
+      it('Then it returns the 7-character prefix of the commit id', async () => {
+        // Arrange
+        const sut = await open();
+        await sut.init();
+        await sut.ctx.fs.writeUtf8('/repo/a.txt', 'a');
+        await sut.add(['a.txt']);
+        const { id } = await sut.commit({
+          message: 'seed',
+          author: {
+            name: 'Ada',
+            email: 'ada@example.com',
+            timestamp: 1_700_000_000,
+            timezoneOffset: '+0000',
+          },
+        });
+
+        // Act
+        const result = await sut.primitives.abbreviateObjectId(id);
+
+        // Assert
+        expect(result).toBe(id.slice(0, 7));
+      });
+    });
+  });
+});
+
+describe('openRepository — objectSources', () => {
+  describe('Given a fresh repository', () => {
+    describe('When repo.primitives.objectSources() is called', () => {
+      it('Then it lists the local store and no unusable alternate', async () => {
+        // Arrange
+        const sut = await open();
+
+        // Act
+        const result = await sut.primitives.objectSources();
+
+        // Assert
+        expect(result).toEqual({
+          sources: [{ objectsDir: expect.stringMatching(/\/objects$/), local: true }],
+          unusable: [],
+        });
       });
     });
   });

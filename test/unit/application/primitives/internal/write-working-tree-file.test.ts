@@ -1,26 +1,24 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { createLeadingPathScanner } from '../../../../../src/application/primitives/internal/symlinked-leading-path.js';
 import {
   removeWorkingTreeFile,
   writeRegularFile,
-  writeRegularFileStream,
+  writeStreamedBlob,
   writeWorkingTreeEntry,
   writeWorkingTreeEntryStream,
   writeWorkingTreeFile,
   writeWorkingTreeFileStream,
 } from '../../../../../src/application/primitives/internal/write-working-tree-file.js';
-import type { FilePath } from '../../../../../src/domain/objects/index.js';
+import type { TsgitError } from '../../../../../src/domain/error.js';
+import type { FilePath, ObjectId } from '../../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/index.js';
-import { buildSeededContext, instrumentedContext } from '../fixtures.js';
+import type { Context } from '../../../../../src/ports/context.js';
+import { buildSeededContext, instrumentedContext, writeRawObjectBytes } from '../fixtures.js';
+import { writeSyntheticPack } from '../pack-fixture.js';
 
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
-
-async function* chunks(...parts: Uint8Array[]): AsyncIterable<Uint8Array> {
-  for (const part of parts) {
-    yield part;
-  }
-}
 
 describe('write-working-tree-file', () => {
   describe('writeWorkingTreeFile', () => {
@@ -399,10 +397,10 @@ describe('write-working-tree-file', () => {
           const ctx = await buildSeededContext();
           const dirPath = `${ctx.layout.workDir}/dir`;
           await ctx.fs.symlink('/outside/secret', dirPath);
-          const source = chunks(encode('inside'));
+          const id = await writeRawObjectBytes(ctx, 'blob', encode('inside'));
 
           // Act
-          await writeWorkingTreeFileStream(ctx, 'dir/file.txt' as FilePath, source);
+          await writeWorkingTreeFileStream(ctx, 'dir/file.txt' as FilePath, id);
 
           // Assert
           const dirStat = await ctx.fs.lstat(dirPath);
@@ -421,15 +419,10 @@ describe('write-working-tree-file', () => {
           const ctx = await buildSeededContext();
           const dirPath = `${ctx.layout.workDir}/dir`;
           await ctx.fs.symlink('/outside/secret', dirPath);
-          const source = chunks(encode('inside'));
+          const id = await writeRawObjectBytes(ctx, 'blob', encode('inside'));
 
           // Act
-          await writeWorkingTreeEntryStream(
-            ctx,
-            'dir/file.txt' as FilePath,
-            source,
-            FILE_MODE.REGULAR,
-          );
+          await writeWorkingTreeEntryStream(ctx, 'dir/file.txt' as FilePath, id, FILE_MODE.REGULAR);
 
           // Assert
           const dirStat = await ctx.fs.lstat(dirPath);
@@ -575,15 +568,15 @@ describe('write-working-tree-file', () => {
   });
 
   describe('writeWorkingTreeFileStream', () => {
-    describe('Given a multi-chunk source', () => {
+    describe('Given a loose blob', () => {
       describe('When writeWorkingTreeFileStream writes the stream', () => {
         it('Then the working-tree file byte-equals the concatenated source', async () => {
           // Arrange
           const ctx = await buildSeededContext();
-          const source = chunks(encode('hel'), encode('lo'));
+          const id = await writeRawObjectBytes(ctx, 'blob', encode('hello'));
 
           // Act
-          await writeWorkingTreeFileStream(ctx, 'out.txt' as FilePath, source);
+          await writeWorkingTreeFileStream(ctx, 'out.txt' as FilePath, id);
 
           // Assert
           const result = await ctx.fs.read(`${ctx.layout.workDir}/out.txt`);
@@ -598,92 +591,34 @@ describe('write-working-tree-file', () => {
           // Arrange
           const ctx = await buildSeededContext();
           const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
-          const source = chunks(encode('x'));
+          const id = await writeRawObjectBytes(ctx, 'blob', encode('x'));
 
           // Act
-          await writeWorkingTreeFileStream(ctx, 'r.txt' as FilePath, source);
+          await writeWorkingTreeFileStream(ctx, 'r.txt' as FilePath, id);
 
           // Assert
           expect(chmodSpy).not.toHaveBeenCalled();
         });
       });
     });
-  });
-
-  describe('writeRegularFileStream', () => {
-    describe('Given an executable mode', () => {
-      describe('When writeRegularFileStream writes the stream', () => {
-        it('Then chmod is called with 0o755', async () => {
-          // Arrange
-          const ctx = await buildSeededContext();
-          const fullPath = `${ctx.layout.workDir}/x.sh`;
-          const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
-          const source = chunks(encode('exec'));
-
-          // Act
-          await writeRegularFileStream(ctx, fullPath, source, FILE_MODE.EXECUTABLE);
-
-          // Assert
-          expect(chmodSpy).toHaveBeenCalledWith(fullPath, 0o755);
-        });
-      });
-    });
-
-    describe('Given a regular mode', () => {
-      describe('When writeRegularFileStream writes the stream', () => {
-        it('Then chmod is called with 0o644', async () => {
-          // Arrange
-          const ctx = await buildSeededContext();
-          const fullPath = `${ctx.layout.workDir}/r.txt`;
-          const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
-          const source = chunks(encode('regular'));
-
-          // Act
-          await writeRegularFileStream(ctx, fullPath, source, FILE_MODE.REGULAR);
-
-          // Assert
-          expect(chmodSpy).toHaveBeenCalledWith(fullPath, 0o644);
-        });
-      });
-    });
-
-    describe('Given no mode argument', () => {
-      describe('When writeRegularFileStream writes the stream', () => {
-        it('Then chmod is never called', async () => {
-          // Arrange
-          const ctx = await buildSeededContext();
-          const fullPath = `${ctx.layout.workDir}/r.txt`;
-          const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
-          const source = chunks(encode('data'));
-
-          // Act
-          await writeRegularFileStream(ctx, fullPath, source);
-
-          // Assert
-          expect(chmodSpy).not.toHaveBeenCalled();
-        });
-      });
-    });
-
-    describe('Given a path currently occupied', () => {
-      describe('When writeRegularFileStream runs', () => {
-        it('Then rmIfExists runs before writeStream', async () => {
+    describe('Given a path currently occupied by a symlink', () => {
+      describe('When writeWorkingTreeFileStream runs', () => {
+        it('Then the occupant is removed before the stream is written', async () => {
           // Arrange
           const ctx = await buildSeededContext();
           const fullPath = `${ctx.layout.workDir}/r.txt`;
           await ctx.fs.symlink('old-target', fullPath);
           const { ctx: instrumented, calls } = instrumentedContext(ctx);
-          const source = chunks(encode('new'));
+          const id = await writeRawObjectBytes(ctx, 'blob', encode('new'));
 
           // Act
-          await writeRegularFileStream(instrumented, fullPath, source);
+          await writeWorkingTreeFileStream(instrumented, 'r.txt' as FilePath, id);
 
           // Assert
           const log = calls();
           const rmIndex = log.findIndex((c) => c.method === 'rm');
           const writeStreamIndex = log.findIndex((c) => c.method === 'writeStream');
           expect(rmIndex).toBeGreaterThanOrEqual(0);
-          expect(writeStreamIndex).toBeGreaterThanOrEqual(0);
           expect(rmIndex).toBeLessThan(writeStreamIndex);
         });
       });
@@ -691,16 +626,16 @@ describe('write-working-tree-file', () => {
   });
 
   describe('writeWorkingTreeEntryStream', () => {
-    describe('Given a regular mode and a multi-chunk source', () => {
-      describe('When writeWorkingTreeEntryStream writes the stream', () => {
-        it('Then the file byte-equals the concatenated source and chmod is called with 0o644', async () => {
+    describe('Given a regular mode and a loose blob', () => {
+      describe('When writeWorkingTreeEntryStream writes the blob', () => {
+        it('Then the file byte-equals the blob and chmod is called with 0o644', async () => {
           // Arrange
           const ctx = await buildSeededContext();
           const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
-          const source = chunks(encode('hel'), encode('lo'));
+          const id = await writeRawObjectBytes(ctx, 'blob', encode('hello'));
 
           // Act
-          await writeWorkingTreeEntryStream(ctx, 'r.txt' as FilePath, source, FILE_MODE.REGULAR);
+          await writeWorkingTreeEntryStream(ctx, 'r.txt' as FilePath, id, FILE_MODE.REGULAR);
 
           // Assert
           const result = await ctx.fs.read(`${ctx.layout.workDir}/r.txt`);
@@ -710,16 +645,16 @@ describe('write-working-tree-file', () => {
       });
     });
 
-    describe('Given an executable mode and a multi-chunk source', () => {
-      describe('When writeWorkingTreeEntryStream writes the stream', () => {
-        it('Then the file byte-equals the concatenated source and chmod is called with 0o755', async () => {
+    describe('Given an executable mode and a loose blob', () => {
+      describe('When writeWorkingTreeEntryStream writes the blob', () => {
+        it('Then the file byte-equals the blob and chmod is called with 0o755', async () => {
           // Arrange
           const ctx = await buildSeededContext();
           const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
-          const source = chunks(encode('ex'), encode('ec'));
+          const id = await writeRawObjectBytes(ctx, 'blob', encode('exec'));
 
           // Act
-          await writeWorkingTreeEntryStream(ctx, 'x.sh' as FilePath, source, FILE_MODE.EXECUTABLE);
+          await writeWorkingTreeEntryStream(ctx, 'x.sh' as FilePath, id, FILE_MODE.EXECUTABLE);
 
           // Assert
           const result = await ctx.fs.read(`${ctx.layout.workDir}/x.sh`);
@@ -757,6 +692,379 @@ describe('write-working-tree-file', () => {
           await expect(
             removeWorkingTreeFile(ctx, 'missing.txt' as FilePath),
           ).resolves.toBeUndefined();
+        });
+      });
+    });
+  });
+
+  describe('writeStreamedBlob', () => {
+    const PRIMARY_OBJECTS = '/repo/.git/objects';
+    const ALT_OBJECTS = '/repo/alt/objects';
+    const FLIPPED_SIGNATURE_MIDX = Uint8Array.from([
+      0x00,
+      0x49,
+      0x44,
+      0x58,
+      1,
+      1,
+      1,
+      0,
+      ...new Array(8).fill(0),
+    ]);
+    const MISSING_ID = 'a'.repeat(40) as ObjectId;
+    const REFUSAL = { code: 'INVALID_MULTI_PACK_INDEX' };
+
+    const unreadableAlternateContext = async (signal?: AbortSignal): Promise<Context> => {
+      const ctx = createMemoryContext({
+        ...(signal !== undefined ? { signal } : {}),
+        files: { [`${PRIMARY_OBJECTS}/info/alternates`]: encode(`${ALT_OBJECTS}\n`) },
+      });
+      await ctx.fs.mkdir(ALT_OBJECTS);
+      await ctx.fs.write(`${ALT_OBJECTS}/pack/multi-pack-index`, FLIPPED_SIGNATURE_MIDX);
+      return ctx;
+    };
+
+    const rejection = async (attempt: Promise<unknown>): Promise<unknown> => {
+      try {
+        await attempt;
+      } catch (error) {
+        return error;
+      }
+      return undefined;
+    };
+
+    describe('Given the locate is refused by an unreadable alternate and an executable mode', () => {
+      describe('When the blob is written', () => {
+        it('Then an empty 0o755 file is left and the refusal is thrown', async () => {
+          // Arrange
+          const ctx = await unreadableAlternateContext();
+          const fullPath = `${ctx.layout.workDir}/x.sh`;
+          const chmod = vi.spyOn(ctx.fs, 'chmod');
+
+          // Act
+          const failure = await rejection(
+            writeStreamedBlob(ctx, fullPath, MISSING_ID, FILE_MODE.EXECUTABLE),
+          );
+
+          // Assert
+          expect((failure as TsgitError).data).toMatchObject(REFUSAL);
+          expect((await ctx.fs.read(fullPath)).length).toBe(0);
+          expect(chmod).toHaveBeenCalledWith(fullPath, 0o755);
+        });
+      });
+    });
+
+    describe('Given the locate is refused and a regular mode', () => {
+      describe('When the blob is written', () => {
+        it('Then an empty 0o644 file is left', async () => {
+          // Arrange
+          const ctx = await unreadableAlternateContext();
+          const fullPath = `${ctx.layout.workDir}/r.txt`;
+          const chmod = vi.spyOn(ctx.fs, 'chmod');
+
+          // Act
+          await rejection(writeStreamedBlob(ctx, fullPath, MISSING_ID, FILE_MODE.REGULAR));
+
+          // Assert
+          expect((await ctx.fs.read(fullPath)).length).toBe(0);
+          expect(chmod).toHaveBeenCalledWith(fullPath, 0o644);
+        });
+      });
+    });
+
+    describe('Given the locate is refused and no mode', () => {
+      describe('When the blob is written', () => {
+        it('Then the empty file is left and chmod is never called', async () => {
+          // Arrange
+          const ctx = await unreadableAlternateContext();
+          const fullPath = `${ctx.layout.workDir}/m.txt`;
+          const chmod = vi.spyOn(ctx.fs, 'chmod');
+
+          // Act
+          await rejection(writeStreamedBlob(ctx, fullPath, MISSING_ID));
+
+          // Assert
+          expect((await ctx.fs.read(fullPath)).length).toBe(0);
+          expect(chmod).not.toHaveBeenCalled();
+        });
+      });
+    });
+
+    describe('Given the locate is refused and a modified file occupies the path', () => {
+      describe('When the blob is written', () => {
+        it('Then the occupant is replaced by the empty file', async () => {
+          // Arrange
+          const ctx = await unreadableAlternateContext();
+          const fullPath = `${ctx.layout.workDir}/o.txt`;
+          await ctx.fs.write(fullPath, encode('local edits'));
+
+          // Act
+          await rejection(writeStreamedBlob(ctx, fullPath, MISSING_ID, FILE_MODE.REGULAR));
+
+          // Assert
+          expect((await ctx.fs.read(fullPath)).length).toBe(0);
+        });
+      });
+    });
+
+    describe('Given a blob absent from every source and an occupant', () => {
+      describe('When the blob is written', () => {
+        it('Then no file is left and objectNotFound is thrown', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const fullPath = `${ctx.layout.workDir}/gone.txt`;
+          await ctx.fs.write(fullPath, encode('occupant'));
+
+          // Act
+          const failure = await rejection(
+            writeStreamedBlob(ctx, fullPath, MISSING_ID, FILE_MODE.REGULAR),
+          );
+
+          // Assert
+          expect((failure as TsgitError).data).toMatchObject({
+            code: 'OBJECT_NOT_FOUND',
+            id: MISSING_ID,
+          });
+          expect(await ctx.fs.exists(fullPath)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given the signal aborts during the locate', () => {
+      describe('When the blob is written', () => {
+        it('Then operationAborted is thrown and no file is created', async () => {
+          // Arrange
+          const controller = new AbortController();
+          const ctx = await unreadableAlternateContext(controller.signal);
+          controller.abort();
+          const fullPath = `${ctx.layout.workDir}/a.txt`;
+
+          // Act
+          const failure = await rejection(
+            writeStreamedBlob(ctx, fullPath, MISSING_ID, FILE_MODE.REGULAR),
+          );
+
+          // Assert
+          expect((failure as TsgitError).data.code).toBe('OPERATION_ABORTED');
+          expect(await ctx.fs.exists(fullPath)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a blob whose loose body is corrupt', () => {
+      describe('When the blob is written', () => {
+        it("Then the refused open leaves git's empty file and reports the inflate failure", async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const id = await writeRawObjectBytes(ctx, 'blob', encode('honest'));
+          await ctx.fs.write(
+            `${ctx.layout.gitDir}/objects/${id.slice(0, 2)}/${id.slice(2)}`,
+            new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]),
+          );
+          const fullPath = `${ctx.layout.workDir}/c.txt`;
+
+          // Act
+          const failure = await rejection(writeStreamedBlob(ctx, fullPath, id, FILE_MODE.REGULAR));
+
+          // Assert
+          expect((failure as TsgitError).data).toMatchObject({ code: 'DECOMPRESS_FAILED' });
+          expect((await ctx.fs.read(fullPath)).length).toBe(0);
+        });
+      });
+    });
+
+    describe('Given a packed delta blob whose base is in no store', () => {
+      describe('When the blob is written', () => {
+        it("Then the refused open leaves no file, as git's in-core fallback does", async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const base = encode('the absent base');
+          const [id] = await writeSyntheticPack(ctx, 'orphan', [
+            {
+              kind: 'ref-delta',
+              baseId: MISSING_ID,
+              baseUncompressed: base,
+              targetContent: encode('the delta target'),
+            },
+          ]);
+          const fullPath = `${ctx.layout.workDir}/d.txt`;
+
+          // Act
+          const failure = await rejection(
+            writeStreamedBlob(ctx, fullPath, id as ObjectId, FILE_MODE.REGULAR),
+          );
+
+          // Assert
+          expect((failure as TsgitError).data).toMatchObject({ code: 'OBJECT_NOT_FOUND' });
+          expect(await ctx.fs.exists(fullPath)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a signal aborted after the loose blob was located', () => {
+      describe('When the blob is written', () => {
+        it('Then the abort is thrown and no empty file is left', async () => {
+          // Arrange
+          const controller = new AbortController();
+          const base = await buildSeededContext({ signal: controller.signal });
+          const id = await writeRawObjectBytes(base, 'blob', encode('located then aborted'));
+          const loosePath = `${base.layout.gitDir}/objects/${id.slice(0, 2)}/${id.slice(2)}`;
+          const ctx: Context = {
+            ...base,
+            fs: {
+              ...base.fs,
+              read: async (path: string) => {
+                const bytes = await base.fs.read(path);
+                if (path === loosePath) controller.abort();
+                return bytes;
+              },
+            },
+          };
+          const fullPath = `${ctx.layout.workDir}/a.txt`;
+
+          // Act
+          const failure = await rejection(writeStreamedBlob(ctx, fullPath, id, FILE_MODE.REGULAR));
+
+          // Assert
+          expect((failure as TsgitError).data).toMatchObject({ code: 'OPERATION_ABORTED' });
+          expect(await ctx.fs.exists(fullPath)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given the id names a commit', () => {
+      describe('When the blob is written', () => {
+        it('Then unexpectedObjectType is thrown and no file is left', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const id = await writeRawObjectBytes(ctx, 'commit', encode('not a blob'));
+          const fullPath = `${ctx.layout.workDir}/t.txt`;
+          await ctx.fs.write(fullPath, encode('occupant'));
+
+          // Act
+          const failure = await rejection(writeStreamedBlob(ctx, fullPath, id, FILE_MODE.REGULAR));
+
+          // Assert
+          expect((failure as TsgitError).data).toMatchObject({
+            code: 'UNEXPECTED_OBJECT_TYPE',
+            expected: 'blob',
+            actual: 'commit',
+          });
+          expect(await ctx.fs.exists(fullPath)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given the locate is refused and creating the empty file fails', () => {
+      describe('When the blob is written', () => {
+        it('Then the create failure is thrown with the refusal as its cause', async () => {
+          // Arrange
+          const ctx = await unreadableAlternateContext();
+          const createFailure = new Error('disk full');
+          vi.spyOn(ctx.fs, 'write').mockRejectedValue(createFailure);
+
+          // Act
+          const failure = await rejection(
+            writeStreamedBlob(ctx, `${ctx.layout.workDir}/f.txt`, MISSING_ID, FILE_MODE.REGULAR),
+          );
+
+          // Assert
+          expect(failure).toBe(createFailure);
+          expect(((failure as Error).cause as TsgitError).data).toMatchObject(REFUSAL);
+        });
+      });
+    });
+
+    describe('Given the locate is refused and creating the empty file throws a non-Error', () => {
+      describe('When the blob is written', () => {
+        it('Then it is wrapped in an Error whose cause is the refusal', async () => {
+          // Arrange
+          const ctx = await unreadableAlternateContext();
+          vi.spyOn(ctx.fs, 'write').mockRejectedValue('nope');
+
+          // Act
+          const failure = await rejection(
+            writeStreamedBlob(ctx, `${ctx.layout.workDir}/n.txt`, MISSING_ID, FILE_MODE.REGULAR),
+          );
+
+          // Assert
+          expect((failure as Error).message).toBe('nope');
+          expect(((failure as Error).cause as TsgitError).data).toMatchObject(REFUSAL);
+        });
+      });
+    });
+
+    describe('Given a packed delta blob', () => {
+      describe('When the blob is written', () => {
+        it('Then the file holds the reconstructed content', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const [, id] = await writeSyntheticPack(ctx, 'delta', [
+            { kind: 'base', type: 'blob', content: encode('the delta base') },
+            { kind: 'ofs-delta', baseIndex: 0, targetContent: encode('the delta target') },
+          ]);
+          const fullPath = `${ctx.layout.workDir}/d.txt`;
+          const sut = writeStreamedBlob;
+
+          // Act
+          await sut(ctx, fullPath, id as ObjectId, FILE_MODE.REGULAR);
+
+          // Assert
+          expect(await ctx.fs.readUtf8(fullPath)).toBe('the delta target');
+        });
+      });
+    });
+
+    describe('Given a packed delta blob that reconstructs to nothing', () => {
+      describe('When the blob is written', () => {
+        it('Then the file is empty and no empty chunk is handed to the file system', async () => {
+          // Arrange
+          const seeded = await buildSeededContext();
+          const [, id] = await writeSyntheticPack(seeded, 'empty', [
+            { kind: 'base', type: 'blob', content: encode('the delta base') },
+            { kind: 'ofs-delta', baseIndex: 0, targetContent: new Uint8Array(0) },
+          ]);
+          const chunks: Uint8Array[] = [];
+          const ctx: Context = {
+            ...seeded,
+            fs: {
+              ...seeded.fs,
+              writeStream: async (path, source) => {
+                const collected: Uint8Array[] = [];
+                for await (const chunk of source) collected.push(chunk);
+                chunks.push(...collected);
+                await seeded.fs.write(path, new Uint8Array(0));
+              },
+            },
+          };
+          const fullPath = `${ctx.layout.workDir}/e.txt`;
+          const sut = writeStreamedBlob;
+
+          // Act
+          await sut(ctx, fullPath, id as ObjectId, FILE_MODE.REGULAR);
+
+          // Assert
+          expect(chunks).toEqual([]);
+          expect((await ctx.fs.read(fullPath)).byteLength).toBe(0);
+        });
+      });
+    });
+
+    describe('Given a small loose blob and an executable mode', () => {
+      describe('When the blob is written', () => {
+        it('Then the bytes land with 0o755', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const id = await writeRawObjectBytes(ctx, 'blob', encode('#!/bin/sh'));
+          const fullPath = `${ctx.layout.workDir}/ok.sh`;
+          const chmod = vi.spyOn(ctx.fs, 'chmod');
+
+          // Act
+          await writeStreamedBlob(ctx, fullPath, id, FILE_MODE.EXECUTABLE);
+
+          // Assert
+          expect(decode(await ctx.fs.read(fullPath))).toBe('#!/bin/sh');
+          expect(chmod).toHaveBeenCalledWith(fullPath, 0o755);
         });
       });
     });

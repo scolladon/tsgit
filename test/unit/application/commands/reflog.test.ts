@@ -3288,6 +3288,7 @@ describe('reflog command', () => {
             tree: TREE_OID,
             committerDate,
             generation: readCommitMetaMod.GENERATION_INFINITY,
+            source: 'object',
           });
           const agedMeta = metaOf([], epoch + 50);
           const special = new Map<ObjectId, readCommitMetaMod.CommitMeta>([

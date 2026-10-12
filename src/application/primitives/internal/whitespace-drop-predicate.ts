@@ -118,8 +118,14 @@ async function openBothSources(
   maxBufferedBytes: number,
 ): Promise<readonly [BlobSource, BlobSource]> {
   const opened = [
-    openBlobSource(ctx, change.oldId, maxBufferedBytes, { looseMode: 'buffered' }),
-    openBlobSource(ctx, change.newId, maxBufferedBytes, { looseMode: 'buffered' }),
+    openBlobSource(ctx, change.oldId, maxBufferedBytes, {
+      looseMode: 'buffered',
+      order: 'in-core',
+    }),
+    openBlobSource(ctx, change.newId, maxBufferedBytes, {
+      looseMode: 'buffered',
+      order: 'in-core',
+    }),
   ] as const;
   try {
     const sources = await Promise.all(opened);

@@ -353,6 +353,57 @@ describe('walkTree', () => {
     });
   });
 
+  describe('Given a directory entry naming a blob', () => {
+    const seedBlobDirectory = async () => {
+      const ctx = await buildSeededContext();
+      const blobId = await writeObject(ctx, {
+        type: 'blob',
+        content: new Uint8Array([1]),
+        id: '' as ObjectId,
+      } satisfies Blob);
+      const rootId = await writeTree(ctx, [treeEntry('040000' as FileMode, 'sub', blobId)]);
+      return { ctx, blobId, rootId };
+    };
+
+    describe('When walkTree is iterated without strictSubtrees', () => {
+      it('Then yields the entry and skips its descent', async () => {
+        // Arrange
+        const { ctx, blobId, rootId } = await seedBlobDirectory();
+        const sut = walkTree;
+
+        // Act
+        const result = await collect(sut(ctx, rootId));
+
+        // Assert
+        expect(result).toEqual([{ path: 'sub', id: blobId, mode: '40000' }]);
+      });
+    });
+
+    describe('When walkTree is iterated with strictSubtrees', () => {
+      it('Then it refuses the entry as not a tree', async () => {
+        // Arrange
+        const { ctx, blobId, rootId } = await seedBlobDirectory();
+        const sut = walkTree;
+
+        // Act
+        let caught: unknown;
+        try {
+          await collect(sut(ctx, rootId, { strictSubtrees: true }));
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as { data: unknown }).data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'tree',
+          actual: 'blob',
+          id: blobId,
+        });
+      });
+    });
+  });
+
   describe('Given no pathHasher option is supplied', () => {
     describe('When walkTree is iterated', () => {
       it('Then the yielded entry carries exactly path, id and mode — no nameHash key', async () => {

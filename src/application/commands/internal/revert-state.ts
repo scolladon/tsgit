@@ -1,5 +1,5 @@
 /**
- * Persisted single-revert state for `revert`. `.git/REVERT_HEAD` records the
+ * Persisted single-revert state for `revert`. The `REVERT_HEAD` root ref records the
  * commit currently being reverted; it is the parallel of `.git/CHERRY_PICK_HEAD`
  * but is **never** promoted to a parent (a revert is single-parent and authored
  * by the current identity). `commit` reads it to allow the resolving commit and
@@ -9,33 +9,23 @@
 
 import type { CommitData } from '../../../domain/objects/commit.js';
 import { subjectLine } from '../../../domain/objects/commit-message.js';
-import type { ObjectId } from '../../../domain/objects/index.js';
+import type { ObjectId, RefName } from '../../../domain/objects/index.js';
 import { REVERT_HEAD } from '../../../domain/refs/state-files.js';
 import type { Context } from '../../../ports/context.js';
-import { readOptionalOidFile } from './oid-file.js';
+import { deleteRootRef, readRootRef, writeRootRef } from '../../primitives/internal/root-ref.js';
 
-const revertHeadPath = (ctx: Context): string => `${ctx.layout.gitDir}/${REVERT_HEAD}`;
+const REVERT_HEAD_REF = REVERT_HEAD as RefName;
 
-/** Write `.git/REVERT_HEAD` containing the reverted commit id + LF. */
-export const writeRevertHead = async (ctx: Context, revertedId: ObjectId): Promise<void> => {
-  await ctx.fs.writeUtf8(revertHeadPath(ctx), `${revertedId}\n`);
-};
+/** Record the reverted commit in `REVERT_HEAD`. */
+export const writeRevertHead = (ctx: Context, revertedId: ObjectId): Promise<void> =>
+  writeRootRef(ctx, REVERT_HEAD_REF, revertedId);
 
-/**
- * Read `.git/REVERT_HEAD` and return the reverted commit id, or `undefined` when
- * absent/empty. A corrupt (non-40-hex) value throws `INVALID_OBJECT_ID` via the
- * ObjectId factory — a mid-write crash must not yield a malformed revert.
- */
+/** The reverted commit id, or `undefined` when `REVERT_HEAD` is absent or broken (git's reading). */
 export const readRevertHead = (ctx: Context): Promise<ObjectId | undefined> =>
-  readOptionalOidFile(ctx, revertHeadPath(ctx));
+  readRootRef(ctx, REVERT_HEAD_REF);
 
-/** Remove `.git/REVERT_HEAD`. Idempotent — missing is not an error. */
-export const clearRevertHead = async (ctx: Context): Promise<void> => {
-  const path = revertHeadPath(ctx);
-  if (await ctx.fs.exists(path)) {
-    await ctx.fs.rm(path);
-  }
-};
+/** Drop `REVERT_HEAD`. Idempotent — missing is not an error. */
+export const clearRevertHead = (ctx: Context): Promise<void> => deleteRootRef(ctx, REVERT_HEAD_REF);
 
 /**
  * Quote a commit subject the way git does for the revert message slot: wrap in

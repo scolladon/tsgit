@@ -15,13 +15,27 @@ export interface RefUpdate {
 export interface ReceivePackRequest {
   readonly updates: ReadonlyArray<RefUpdate>;
   readonly capabilities: ReadonlyArray<string>;
-  readonly packfile: Uint8Array;
+  readonly packfile?: Uint8Array | undefined;
+}
+
+/**
+ * What a `report-status-v2` receiver's `option` lines say about one `ok`: the
+ * ref it was really stored under and the ids it really moved between, each
+ * absent when the receiver did not say.
+ */
+export interface RefStatusReport {
+  readonly refName?: string;
+  readonly oldId?: ObjectId;
+  readonly newId?: ObjectId;
+  readonly forcedUpdate?: boolean;
 }
 
 export interface RefStatus {
   readonly name: string;
   readonly accepted: boolean;
   readonly reason?: string;
+  /** Set on an `ok` that `option` lines follow. */
+  readonly report?: RefStatusReport;
 }
 
 export interface ReceivePackResponse {
@@ -35,14 +49,20 @@ const updateLine = (update: RefUpdate, caps: ReadonlyArray<string>): Uint8Array 
   return TEXT_ENCODER.encode(`${update.oldId} ${update.newId} ${update.name}${tail}\n`);
 };
 
+// git sends commands + flush and no pack when every command is a delete.
+const withPackfile = (framed: Uint8Array, packfile: Uint8Array | undefined): Uint8Array => {
+  if (packfile === undefined) return framed;
+  const out = new Uint8Array(framed.byteLength + packfile.byteLength);
+  out.set(framed, 0);
+  out.set(packfile, framed.byteLength);
+  return out;
+};
+
 export const buildReceivePackRequest = (req: ReceivePackRequest): Uint8Array => {
   if (req.updates.length === 0) throw emptyReceiveUpdates();
   const payloads = req.updates.map((u, idx) => updateLine(u, idx === 0 ? req.capabilities : []));
   const framed = encodePktStream(payloads);
-  const out = new Uint8Array(framed.byteLength + req.packfile.byteLength);
-  out.set(framed, 0);
-  out.set(req.packfile, framed.byteLength);
-  return out;
+  return withPackfile(framed, req.packfile);
 };
 
 const CERT_VERSION_LINE = 'certificate version 0.1\n';
@@ -61,7 +81,7 @@ export interface SignedReceivePackRequest {
   readonly pusher: string;
   readonly pushee: string;
   readonly nonce: string;
-  readonly packfile: Uint8Array;
+  readonly packfile?: Uint8Array | undefined;
 }
 
 // The cert header (version/pusher/pushee/nonce/blank) plus the no-caps
@@ -101,10 +121,7 @@ export const buildSignedReceivePackRequest = (req: SignedReceivePackRequest): Ui
   const armorPayloads = armorLines(req.armor).map((line) => TEXT_ENCODER.encode(line));
   const endPayload = TEXT_ENCODER.encode('push-cert-end\n');
   const framed = encodePktStream([opener, ...certBodySegments(req), ...armorPayloads, endPayload]);
-  const out = new Uint8Array(framed.byteLength + req.packfile.byteLength);
-  out.set(framed, 0);
-  out.set(req.packfile, framed.byteLength);
-  return out;
+  return withPackfile(framed, req.packfile);
 };
 
 const stripTrailingNewline = (s: string): string => (s.endsWith('\n') ? s.slice(0, -1) : s);
@@ -153,16 +170,63 @@ const collectDataLines = async (source: AsyncIterable<PktLine>): Promise<string[
   return lines;
 };
 
+const OPTION_PREFIX = 'option ';
+const HEX_ID = /^[0-9a-f]+$/;
+
+/** git's object-id parse of an option value: the id the value starts with, when it does. */
+const parseOptionId = (value: string | undefined, hexLength: number): ObjectId | undefined => {
+  const hex = value?.slice(0, hexLength);
+  return hex?.length === hexLength && HEX_ID.test(hex) ? (hex as ObjectId) : undefined;
+};
+
+/** One `option <key> [<value>]` line folded into the report it extends; an unknown key or an unparseable id leaves it as it was. */
+const withOption = (report: RefStatusReport, line: string, hexLength: number): RefStatusReport => {
+  const body = line.slice(OPTION_PREFIX.length);
+  const space = body.indexOf(' ');
+  // Stryker disable next-line EqualityOperator: equivalent — a leading space makes the key '' or ' …', and neither names an option
+  const key = space < 0 ? body : body.slice(0, space);
+  // Stryker disable next-line EqualityOperator: equivalent — a leading space leaves a key that names no option, so the value is never read
+  const value = space < 0 ? undefined : body.slice(space + 1);
+  if (key === 'refname') return value === undefined ? report : { ...report, refName: value };
+  if (key === 'forced-update') return { ...report, forcedUpdate: true };
+  const id = parseOptionId(value, hexLength);
+  if (id === undefined) return report;
+  if (key === 'old-oid') return { ...report, oldId: id };
+  return key === 'new-oid' ? { ...report, newId: id } : report;
+};
+
+/** git's `receive_status`: an `option` line extends the report of the `ok` it follows. */
+const foldStatusLines = (
+  lines: ReadonlyArray<string>,
+  hexLength: number,
+): ReadonlyArray<RefStatus> => {
+  const statuses: RefStatus[] = [];
+  for (const line of lines) {
+    if (!line.startsWith(OPTION_PREFIX)) {
+      statuses.push(parseRefStatusLine(line));
+      continue;
+    }
+    const last = statuses[statuses.length - 1];
+    if (last?.accepted !== true) throw invalidReportStatus(line);
+    statuses[statuses.length - 1] = {
+      ...last,
+      report: withOption(last.report ?? {}, line, hexLength),
+    };
+  }
+  return statuses;
+};
+
 export const parseReceivePackResponse = async (
   source: AsyncIterable<PktLine>,
+  hexLength: 40 | 64 = 40,
 ): Promise<ReceivePackResponse> => {
   const lines = await collectDataLines(source);
   if (lines.length === 0) throw invalidReportStatus('');
   const [first, ...rest] = lines as [string, ...string[]];
   const unpack = parseUnpackLine(first);
-  if (!unpack.ok) {
-    return { unpackOk: false, unpackError: unpack.error, refUpdates: [] };
-  }
-  const refUpdates = rest.map(parseRefStatusLine);
-  return { unpackOk: true, refUpdates };
+  // git's `receive_status` keeps reading the per-ref statuses after a failed unpack.
+  const refUpdates = foldStatusLines(rest, hexLength);
+  return unpack.ok
+    ? { unpackOk: true, refUpdates }
+    : { unpackOk: false, unpackError: unpack.error, refUpdates };
 };

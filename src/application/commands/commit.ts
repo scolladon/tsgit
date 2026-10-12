@@ -1,10 +1,9 @@
-import { mergeHasConflicts } from '../../domain/commands/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { nothingToCommit } from '../../domain/index.js';
-import type { Commit, CommitData } from '../../domain/objects/commit.js';
+import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
-import type { AuthorIdentity, FilePath, ObjectId, TreeEntry } from '../../domain/objects/index.js';
-import { serializeCommitContent, zeroOid } from '../../domain/objects/index.js';
+import type { AuthorIdentity, ObjectId, TreeEntry } from '../../domain/objects/index.js';
+import { zeroOid } from '../../domain/objects/index.js';
 import type { RefName } from '../../domain/objects/object-id.js';
 import { treeEntry } from '../../domain/objects/tree.js';
 import {
@@ -17,6 +16,7 @@ import {
   CHERRY_PICK,
   MERGE,
   type PendingOperation,
+  REBASE,
   REVERT,
 } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
@@ -28,7 +28,9 @@ import {
   assertValidPromisorRemoteConfig,
 } from '../primitives/internal/boolean-config-guard.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
+import { assertOperationalRepositorySettingsFirst } from '../primitives/internal/repo-state.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
+import { reduceHeads } from '../primitives/merge-base.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { getRefStore } from '../primitives/ref-store.js';
@@ -36,7 +38,8 @@ import { resolveRef } from '../primitives/resolve-ref.js';
 import { runInformationalHook } from '../primitives/run-hook.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeTree } from '../primitives/write-tree.js';
-import { clearCherryPickHead, readCherryPickHead } from './internal/cherry-pick-state.js';
+import { removeCommittedState } from './internal/branch-state.js';
+import { readCherryPickHead } from './internal/cherry-pick-state.js';
 import {
   applyCommitMessageHooks,
   type PrepareCommitMsgSource,
@@ -49,19 +52,16 @@ import {
   stripComments,
 } from './internal/commit-message.js';
 import {
-  clearMergeMsg,
-  clearMergeState,
-  readMergeHead,
+  readMergeHeads,
   readMergeMsg,
+  readSquashMsg,
+  readsNoFastForward,
 } from './internal/merge-state.js';
-import {
-  assertNoPendingOperation,
-  assertOperationalRepository,
-  readHeadRaw,
-  requireWorkTree,
-} from './internal/repo-state.js';
-import { clearRevertHead, readRevertHead } from './internal/revert-state.js';
-import { resolveSignRequest, signOrThrow } from './internal/sign-request.js';
+import { assertNoPendingOperation, readHeadRaw, requireWorkTree } from './internal/repo-state.js';
+import { readRevertHead } from './internal/revert-state.js';
+import { signCommitData } from './internal/sign-request.js';
+import { rejectUnmergedIndex } from './internal/unmerged-index.js';
+import { applyMergeAutostash } from './stash.js';
 
 export interface CommitOptions {
   readonly message: string;
@@ -98,7 +98,7 @@ export interface CommitResult {
  * and `allowEmptyMessage` is not set.
  */
 export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitResult> => {
-  await assertOperationalRepository(ctx);
+  await assertOperationalRepositorySettingsFirst(ctx);
   requireWorkTree(ctx, 'commit');
   // git refuses a malformed commit.gpgSign before hooks run, before the tree is
   // written, and before the nothing-to-commit check — mirror that ordering.
@@ -106,23 +106,24 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   // Promisor-remote guard (see assertValidPromisorRemoteConfig) — loaded up front.
   await assertValidPromisorRemoteConfig(ctx);
   // Resolving a conflicted merge / cherry-pick / revert IS the legitimate way to
-  // clear its marker — skip that marker's check. All other in-progress operations
-  // still block. A cherry-pick / revert resolution stays single-parent (no
-  // MERGE_HEAD).
+  // clear its marker — skip that marker's check. A stopped rebase never blocks:
+  // git commits on top of it and `rebase --continue` picks up from the new HEAD.
+  // A cherry-pick / revert resolution stays single-parent (no MERGE_HEAD).
   const markers = await readPendingMarkers(ctx);
   const { mergeHead, cherryPickHead, revertHead } = markers;
-  const pendingExcept = pendingExceptOf(markers);
-  await assertNoPendingOperation(ctx, pendingExcept !== undefined ? { except: pendingExcept } : {});
+  await assertNoPendingOperation(ctx, { except: allowedPendingOf(markers) });
   const noVerify = opts.noVerify ?? false;
   // pre-commit runs before the index is read, so a hook that re-stages files
   // (e.g. a formatter) is reflected in the committed tree.
   await runPreCommitHook(ctx, noVerify);
-  // A resolution commit for a pending merge / cherry-pick / revert reuses
-  // MERGE_MSG as its draft — git's `merge` message source for prepare-commit-msg.
+  // A resolution commit for a pending merge / cherry-pick / revert reuses MERGE_MSG as its draft.
   const resolvingPending =
     mergeHead !== undefined || cherryPickHead !== undefined || revertHead !== undefined;
-  const messageSource: PrepareCommitMsgSource = resolvingPending ? 'merge' : 'message';
-  const resolved = await resolveCommitMessage(ctx, opts, resolvingPending);
+  // A given message never reads the drafts, as git's `-m` does not.
+  const squashDraft = opts.message.length > 0 ? undefined : await readSquashMsg(ctx);
+  const draftSource: DraftSource = resolvingPending ? 'merge' : 'message';
+  const messageSource = messageSourceOf(opts.message, draftSource, squashDraft);
+  const resolved = await resolveCommitMessage(ctx, opts, resolvingPending, squashDraft);
   const config = await readConfig(ctx);
   const configUser = toAuthor(config.user);
   if (opts.author === undefined && configUser === undefined) {
@@ -138,7 +139,7 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   const treeId = await buildTreeFromIndex(ctx, index.entries);
   const head = await readHeadRaw(ctx);
   const parentId = head.kind === 'symbolic' ? await tryResolve(ctx, head.target) : head.id;
-  const parents = buildParents(parentId, mergeHead);
+  const parents = await buildParents(ctx, parentId, markers.mergeHeads);
   if (!opts.allowEmpty && parentId !== undefined && mergeHead === undefined) {
     // Tree-equality guard intentionally skipped during a merge resolution
     // (mergeHead !== undefined). A merge commit with a tree identical to
@@ -171,34 +172,12 @@ export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitR
   const branch = head.kind === 'symbolic' ? head.target : undefined;
   const reflogMessage = commitReflogMessage(message, parentId, mergeHead, cherryPickHead);
   await writeCommitRef(ctx, { branch, id, parentId, reflogMessage });
-  await clearResolvedState(ctx, markers);
+  await removeCommittedState(ctx);
   // post-commit is informational — it runs after the commit lands and cannot
   // abort it (git ignores its exit code).
   await runInformationalHook(ctx, 'post-commit');
+  await applyMergeAutostash(ctx);
   return { id, tree: treeId, branch, parents };
-};
-
-/**
- * Sign the unsigned commit payload (the commit object without a `gpgsig`
- * header). Throws `SIGNING_FAILED` atomically on any signer refusal — the
- * caller must not proceed to `createCommit` when this throws.
- */
-const signCommit = async (
-  ctx: Context,
-  config: ParsedConfig,
-  data: CommitData,
-  committer: AuthorIdentity,
-  signKey: string | undefined,
-): Promise<string> => {
-  const request = resolveSignRequest(config, committer, signKey);
-  const unsigned: Commit = { type: 'commit', id: '' as ObjectId, data };
-  const payload = serializeCommitContent(unsigned);
-  const armor = await signOrThrow(ctx, payload, request);
-  // Signers terminate their armor block with a trailing newline; the header
-  // encoder (formatContinuationHeader) treats a trailing newline in a header
-  // value as an extra blank continuation line rather than a line terminator,
-  // so it is stripped here to match the stored gpgSignature convention.
-  return armor.endsWith('\n') ? armor.slice(0, -1) : armor;
 };
 
 /**
@@ -215,7 +194,7 @@ const resolveGpgSignature = async (
 ): Promise<string | undefined> => {
   const wantSign = opts.sign ?? config.commit?.gpgSign === true;
   if (!wantSign) return undefined;
-  return signCommit(ctx, config, commitData, committer, opts.signKey);
+  return signCommitData(ctx, config, { ...commitData, committer }, opts.signKey);
 };
 
 interface CommitRefUpdate {
@@ -254,54 +233,63 @@ const writeCommitRef = async (ctx: Context, update: CommitRefUpdate): Promise<vo
 
 interface PendingMarkers {
   readonly mergeHead: ObjectId | undefined;
+  /** Every MERGE_HEAD line; `mergeHead` is the first. */
+  readonly mergeHeads: ReadonlyArray<ObjectId> | undefined;
   readonly cherryPickHead: ObjectId | undefined;
   readonly revertHead: ObjectId | undefined;
 }
 
-const readPendingMarkers = async (ctx: Context): Promise<PendingMarkers> => ({
-  mergeHead: await readMergeHead(ctx),
-  cherryPickHead: await readCherryPickHead(ctx),
-  revertHead: await readRevertHead(ctx),
-});
+const readPendingMarkers = async (ctx: Context): Promise<PendingMarkers> => {
+  const mergeHeads = await readMergeHeads(ctx);
+  return {
+    mergeHead: mergeHeads?.[0],
+    mergeHeads,
+    cherryPickHead: await readCherryPickHead(ctx),
+    revertHead: await readRevertHead(ctx),
+  };
+};
 
-const pendingExceptOf = (m: PendingMarkers): PendingOperation | undefined => {
+const resolvedPendingOf = (m: PendingMarkers): PendingOperation | undefined => {
   if (m.mergeHead !== undefined) return MERGE;
   if (m.cherryPickHead !== undefined) return CHERRY_PICK;
   if (m.revertHead !== undefined) return REVERT;
   return undefined;
 };
 
-/** Clear the resolved operation's on-disk state after its commit lands. */
-const clearResolvedState = async (ctx: Context, m: PendingMarkers): Promise<void> => {
-  if (m.mergeHead !== undefined) {
-    await clearMergeState(ctx);
-    return;
-  }
-  if (m.cherryPickHead !== undefined) {
-    await clearCherryPickHead(ctx);
-    await clearMergeMsg(ctx);
-    return;
-  }
-  if (m.revertHead !== undefined) {
-    await clearRevertHead(ctx);
-    await clearMergeMsg(ctx);
-  }
+const allowedPendingOf = (m: PendingMarkers): ReadonlyArray<PendingOperation> => {
+  const resolved = resolvedPendingOf(m);
+  return resolved !== undefined ? [REBASE, resolved] : [REBASE];
 };
 
 const resolveCommitMessage = async (
   ctx: Context,
   opts: CommitOptions,
   usePendingDraft: boolean,
+  squashDraft: string | undefined,
 ): Promise<string> => {
-  if (opts.message.length > 0 || !usePendingDraft) {
-    return sanitizeMessage(opts.message, { allowEmpty: opts.allowEmptyMessage ?? false });
-  }
-  // Resolving a merge / cherry-pick with an empty user message — fall back to
-  // MERGE_MSG, stripping comment lines as git's editor cleanup does.
-  const draft = await readMergeMsg(ctx);
-  return sanitizeMessage(stripComments(draft ?? ''), {
-    allowEmpty: opts.allowEmptyMessage ?? false,
-  });
+  const allowEmpty = opts.allowEmptyMessage ?? false;
+  if (opts.message.length > 0) return sanitizeMessage(opts.message, { allowEmpty });
+  // An empty user message falls back to git's draft — SQUASH_MSG, then MERGE_MSG
+  // when resolving — stripping comment lines as git's editor cleanup does.
+  const pending = usePendingDraft ? ((await readMergeMsg(ctx)) ?? '') : '';
+  return sanitizeMessage(stripComments(`${squashDraft ?? ''}${pending}`), { allowEmpty });
+};
+
+/** The source an empty message without a squash draft falls back to: `merge` while resolving a pending operation. */
+type DraftSource = Extract<PrepareCommitMsgSource, 'merge' | 'message'>;
+
+/**
+ * git's `prepare-commit-msg` source: `message` for a given message (`-m`),
+ * else `squash` over a `SQUASH_MSG` draft, else `draftSource` — `merge` over a resolution's.
+ */
+const messageSourceOf = (
+  message: string,
+  draftSource: DraftSource,
+  squashDraft: string | undefined,
+): PrepareCommitMsgSource => {
+  if (message.length > 0) return 'message';
+  if (squashDraft !== undefined) return 'squash';
+  return draftSource;
 };
 
 /**
@@ -323,26 +311,19 @@ const commitReflogMessage = (
   return commitReflog(subject);
 };
 
-const buildParents = (
+/**
+ * git's `commit` parents: HEAD, then — resolving a merge — every MERGE_HEAD
+ * line, reduced by `reduce_heads` unless MERGE_MODE reads `no-ff`.
+ */
+const buildParents = async (
+  ctx: Context,
   parentId: ObjectId | undefined,
-  mergeHead: ObjectId | undefined,
-): ReadonlyArray<ObjectId> => {
-  const parents: ObjectId[] = [];
-  if (parentId !== undefined) parents.push(parentId);
-  if (mergeHead !== undefined) parents.push(mergeHead);
-  return parents;
-};
-
-const rejectUnmergedIndex = (entries: ReadonlyArray<IndexEntry>): void => {
-  const unmergedPaths = new Set<FilePath>();
-  for (const entry of entries) {
-    if (entry.flags.stage !== 0) {
-      unmergedPaths.add(entry.path);
-    }
-  }
-  if (unmergedPaths.size > 0) {
-    throw mergeHasConflicts(unmergedPaths.size, [...unmergedPaths]);
-  }
+  mergeHeads: ReadonlyArray<ObjectId> | undefined,
+): Promise<ReadonlyArray<ObjectId>> => {
+  const head = parentId === undefined ? [] : [parentId];
+  if (mergeHeads === undefined) return head;
+  const parents = [...head, ...mergeHeads];
+  return (await readsNoFastForward(ctx)) ? parents : reduceHeads(ctx, parents);
 };
 
 const toAuthor = (

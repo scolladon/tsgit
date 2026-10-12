@@ -2,7 +2,12 @@
 
 ## Status
 
-Accepted (at `d7ecbac`)
+Accepted (at `d7ecbac`); tag/untracked `'auto'` refusal and the delete exemption superseded
+
+> Two points are superseded to match git (ADR-226, ADR-942): an `'auto'` lease on a tag or an
+> untracked ref expects the remote ref absent (git's `apply_cas`), so it reports `stale-info` instead
+> of refusing `'lease-on-non-branch'`; and a lease is checked on a delete too, as git's
+> `set_ref_status_for_push` does. The rest of this decision stands.
 
 ## Context
 

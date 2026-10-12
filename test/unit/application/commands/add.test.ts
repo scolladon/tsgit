@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import type { AddOptions } from '../../../../src/application/commands/add.js';
 import { add, addAll as addAllInternal } from '../../../../src/application/commands/add.js';
@@ -136,6 +136,54 @@ describe('add', () => {
 
         // Act + Assert
         await expectError(() => add(ctx, ['nonexistent.txt']), 'PATHSPEC_NO_MATCH');
+      });
+    });
+  });
+
+  describe('Given a non-existent path spelled with a `./` component', () => {
+    describe('When add', () => {
+      it('Then PATHSPEC_NO_MATCH names the pathspec as spelled', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo();
+        const sut = add;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['./nomatch']), 'PATHSPEC_NO_MATCH');
+
+        // Assert
+        expect(err.data).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern: './nomatch' });
+      });
+    });
+  });
+
+  describe('Given a file named by a directory pathspec', () => {
+    describe('When add', () => {
+      it('Then throws PATHSPEC_NO_MATCH naming the directory pathspec', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ f: 'x' });
+        const sut = add;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['f/']), 'PATHSPEC_NO_MATCH');
+
+        // Assert
+        expect(err.data).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern: 'f/' });
+      });
+    });
+  });
+
+  describe('Given a directory named by a directory pathspec', () => {
+    describe('When add', () => {
+      it('Then the files beneath it are staged', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'd/x': 'x', dx: 'y' });
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['d/./']);
+
+        // Assert
+        expect(result.added).toEqual(['d/x']);
       });
     });
   });
@@ -2255,6 +2303,54 @@ describe('add', () => {
     });
   });
 
+  describe('Given a context that cannot run commands and a required clean driver', () => {
+    describe('When add stages the file', () => {
+      it('Then throws CLEAN_FILTER_FAILED, as git does when the driver cannot start', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'a.y': 'Hello World' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=f\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "f"]\n\tclean = x\n\trequired = true\n',
+        );
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['a.y']).catch((err: unknown) => err);
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'CLEAN_FILTER_FAILED',
+          path: 'a.y',
+          filter: 'f',
+        });
+      });
+    });
+  });
+
+  describe('Given a file under a required driver that configures no clean command', () => {
+    describe('When add stages the file', () => {
+      it('Then throws CLEAN_FILTER_FAILED with no exit code and nothing is staged', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'a.y': 'Hello World' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=f\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[filter "f"]\n\trequired = true\n');
+        const enrichedCtx = { ...ctx, command: new FakeRunner(0) };
+
+        // Act
+        const result = await add(enrichedCtx, ['a.y']).catch((err: unknown) => err);
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'CLEAN_FILTER_FAILED',
+          path: 'a.y',
+          filter: 'f',
+        });
+        expect((await readIndex(enrichedCtx)).entries.map((e) => e.path)).not.toContain('a.y');
+      });
+    });
+  });
+
   describe('Given a file with required=true clean filter that exits non-zero', () => {
     describe('When add stages the file', () => {
       it('Then throws CLEAN_FILTER_FAILED and nothing is staged', async () => {
@@ -2514,6 +2610,68 @@ describe('add — filter section validation', () => {
         expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
         expect(data.key).toBe('filter.zed.required');
       });
+    });
+  });
+});
+
+describe('Given a work tree with nothing to add', () => {
+  describe('When the whole tree is added with the `.` pathspec', () => {
+    it('Then nothing is staged and the whole-tree pathspec is not refused', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo();
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, ['.']);
+
+      // Assert
+      expect(result).toEqual({ added: [], modified: [], removed: [] });
+    });
+  });
+});
+
+describe('Given a nested work tree', () => {
+  describe('When the whole tree is added with the `.` pathspec', () => {
+    it('Then every file is staged', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ 'a.txt': 'a', 'd/b': 'b' });
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, ['.']);
+
+      // Assert
+      expect(result.added).toEqual(['a.txt', 'd/b']);
+    });
+  });
+});
+
+describe('Given a same-size rewrite in the tick of the index write, then an index rewrite a second later', () => {
+  const tickMs = 1_700_000_000_100;
+  const nextSecondMs = tickMs + 1000;
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  describe('When the rewritten file is added', () => {
+    it('Then its new content is staged', async () => {
+      // Arrange
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(tickMs);
+      const ctx = await seedFreshRepo({ 'm.txt': 'm1\n', 'y.txt': 'y\n' });
+      await add(ctx, ['m.txt']);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/m.txt`, 'm2\n');
+      vi.setSystemTime(nextSecondMs);
+      await add(ctx, ['y.txt']);
+      const sut = add;
+
+      // Act
+      await sut(ctx, ['m.txt']);
+
+      // Assert
+      const staged = (await readIndex(ctx)).entries.find((entry) => entry.path === 'm.txt');
+      expect(dec((await readBlob(ctx, staged?.id as ObjectId)).content)).toBe('m2\n');
     });
   });
 });

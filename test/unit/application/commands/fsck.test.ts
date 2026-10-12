@@ -41,7 +41,7 @@ import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { invalidPackIndex } from '../../../../src/domain/storage/index.js';
 import * as packEntryMod from '../../../../src/domain/storage/pack-entry.js';
-import type { Context } from '../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../src/ports/context.js';
 import { pseudoRandomBytes } from '../../../fixtures/pseudo-random-bytes.js';
 import {
   type BitmapSpec,
@@ -58,6 +58,7 @@ import {
   restampPackHeader,
   writeSyntheticBitmap,
   writeSyntheticPack,
+  writeSyntheticPackIn,
   writeSyntheticRevIndex,
 } from '../primitives/pack-fixture.js';
 import { findingIds } from './fsck-finding-ids.js';
@@ -116,6 +117,9 @@ const makeTag = (
 });
 
 /** Write an empty tree as blob, no refs: no reachable tree object. */
+/** A fresh cache identity over the same disk — what a new process sees after external edits. */
+const reopen = (ctx: Context): Context => ({ ...ctx, session: createSession() });
+
 const initBareCtx = async (options: { readonly homeDir?: string } = {}): Promise<Context> => {
   const ctx = createMemoryContext(options);
   // Seed HEAD so assertRepository passes
@@ -251,7 +255,7 @@ describe('Given a repo whose config holds an invalid core.maxTreeDepth', () => {
 
 describe('Given a repo with HEAD pointing to an unborn branch', () => {
   describe('When fsck runs', () => {
-    it('Then returns no findings and exit code 0', async () => {
+    it('Then only the no-default-references notice is returned, exit code 0', async () => {
       // Arrange
       const ctx = await initBareCtx();
       // HEAD -> refs/heads/main, no refs/heads/main file → unborn
@@ -259,8 +263,8 @@ describe('Given a repo with HEAD pointing to an unborn branch', () => {
       // Act
       const result = await fsck(ctx);
 
-      // Assert
-      expect(result.findings).toHaveLength(0);
+      // Assert — no ref names an object, so git notes it has no default reference.
+      expect(result.findings).toEqual([{ type: 'no-default-references' }]);
       expect(result.exitCode).toBe(0);
     });
   });
@@ -718,10 +722,12 @@ describe('Given a ref pointing to an annotated tag whose target is missing', () 
       expect(missingTarget).toMatchObject({ type: 'missing', objectType: 'commit' });
       expect(result.exitCode & 2).toBe(2);
 
-      // Assert — a genuinely ABSENT target is never `tagged`, unlike a
-      // present-but-unreadable one (see the sibling describe below).
+      // Assert — git's `fsck_obj` reports the tag's target by its declared
+      // type whether or not it is present.
       const tagged = result.findings.filter((f) => f.type === 'tagged');
-      expect(tagged).toHaveLength(0);
+      expect(tagged).toEqual([
+        { type: 'tagged', id: ghostTarget, objectType: 'commit', tagName: 'v1.0', tag: tagId },
+      ]);
     });
   });
 });
@@ -730,8 +736,8 @@ describe('Given a ref pointing to an annotated tag whose target is missing', () 
 // TAGGED — annotated tag pointing to a PRESENT but content-unreadable target
 // ---------------------------------------------------------------------------
 // git's tag walk marks a PRESENT target reachable (and so `tagged`)
-// regardless of whether it could be typed — only a genuinely ABSENT target
-// drops the report. Pinned live against git 2.55.0 (scrubbed env): `git
+// regardless of whether it could be typed — as it does an absent one, since
+// `fsck_obj` reports the declared target. Pinned live against git 2.55.0 (scrubbed env): `git
 // fsck --tags` on this exact shape prints both `tagged blob <oid> (tb) in
 // <tag>` AND `missing blob <oid>`, exit 3.
 
@@ -887,6 +893,36 @@ describe('Given a commit reachable only via reflog (reset --hard scenario)', () 
       expect(result.exitCode).toBe(0);
     });
   });
+
+  describe('When fsck runs while that reflog cannot be opened', () => {
+    it('Then it reads the reflog as absent and the old commit IS dangling', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const oldCommitId = await writeObject(ctx, makeCommit(treeId, [], 'old'));
+      const newCommitId = await writeObject(ctx, makeCommit(treeId, [], 'new'));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${newCommitId}\n`);
+      const reflogPath = `${ctx.layout.gitDir}/logs/refs/heads/main`;
+      await ctx.fs.writeUtf8(
+        reflogPath,
+        `${oldCommitId} ${newCommitId} Ada <ada@example.com> 1700000000 +0000\treset: moving to HEAD\n`,
+      );
+      const originalRead = ctx.fs.read.bind(ctx.fs);
+      vi.spyOn(ctx.fs, 'read').mockImplementation(async (path: string) => {
+        if (path === reflogPath) throw permissionDenied(path);
+        return originalRead(path);
+      });
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      const dangling = result.findings.filter((f) => f.type === 'dangling');
+      expect(dangling.some((f) => (f as { id: ObjectId }).id === oldCommitId)).toBe(true);
+      expect(result.exitCode).toBe(0);
+    });
+  });
 });
 
 describe('Given more reflogs than the ioBound limit', () => {
@@ -912,9 +948,9 @@ describe('Given more reflogs than the ioBound limit', () => {
       const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
       let inFlight = 0;
       let maxInFlight = 0;
-      const realReadReflog = reflogStoreMod.readReflog;
+      const realReadReflog = reflogStoreMod.readReflogLenient;
       const spy = vi
-        .spyOn(reflogStoreMod, 'readReflog')
+        .spyOn(reflogStoreMod, 'readReflogLenient')
         .mockImplementation(async (spyCtx, name) => {
           inFlight += 1;
           if (inFlight > maxInFlight) maxInFlight = inFlight;
@@ -2146,13 +2182,12 @@ describe('Given a repo with both a content-ERROR finding and a missing reference
 // MUTATION KILL TESTS
 // ---------------------------------------------------------------------------
 
-// Kill: fsck.ts line 45 (connectivityOnly skips buildBlobFilenameMap)
-// The blobFilenames map must NOT be built when connectivityOnly:true —
+// A connectivity-only run checks no content and queues no special blob —
 // otherwise a bad .gitmodules blob would trigger content findings in a
 // connectivity-only run, leaking EXIT_CONTENT_ERROR into the exit code.
 describe('Given repo .gitmodules blob with disallowed URL', () => {
   describe('When fsck runs connectivityOnly:true', () => {
-    it('Then no bad-object finding emitted (blobFilenames not built in connectivity-only mode)', async () => {
+    it('Then no bad-object finding emitted (no special blob is queued in connectivity-only mode)', async () => {
       // Arrange
       const ctx = await initBareCtx();
       const enc = new TextEncoder();
@@ -2656,56 +2691,6 @@ describe('Given reflog with entry where newId is zero OID (branch deletion event
       );
       expect(missingForZero).toHaveLength(0);
       expect(result.exitCode).toBe(0);
-    });
-  });
-});
-
-// Kill: roots.ts line 53 (stage === 0 guard in addIndexRoots)
-// Conflict-stage entries (stage 1/2/3) must NOT be added to roots.
-// Only stage-0 entries represent the current working-tree state.
-describe('Given index with only conflict-stage entries (stage 1, 2, 3, no stage 0)', () => {
-  describe('When fsck runs', () => {
-    it('Then conflict-stage blobs are dangling (not kept reachable by index)', async () => {
-      // Arrange
-      const { STAGE0_FLAGS } = await import('../../../../src/domain/git-index/index-entry.js');
-      const tempCtx = await initBareCtx();
-      const blobId = await writeObject(tempCtx, makeBlob('conflict content'));
-
-      // Build context with blob + an index that has stage=1 entry (conflict, not stage-0)
-      const ctx = await buildSeededContext({
-        objects: [makeBlob('conflict content')],
-        index: {
-          version: 2,
-          entries: [
-            {
-              ctimeSeconds: 0,
-              ctimeNanoseconds: 0,
-              mtimeSeconds: 0,
-              mtimeNanoseconds: 0,
-              dev: 0,
-              ino: 0,
-              mode: FILE_MODE.REGULAR,
-              uid: 0,
-              gid: 0,
-              fileSize: 0,
-              id: blobId,
-              flags: { ...STAGE0_FLAGS, stage: 1 },
-              path: 'conflict.txt' as FilePath,
-            },
-          ],
-          extensions: [],
-          trailerSha: new Uint8Array(0),
-        },
-      });
-      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
-
-      // Act
-      const result = await fsck(ctx);
-
-      // Assert — stage-1 blob is NOT reachable from index; it is dangling
-      const dangling = result.findings.filter((f) => f.type === 'dangling');
-      const danglingIds = dangling.map((f) => (f as { id: ObjectId }).id);
-      expect(danglingIds).toContain(blobId);
     });
   });
 });
@@ -3218,7 +3203,7 @@ describe('Given a pack whose .idx is corrupt (magic mismatch)', () => {
 
 describe('Given an orphan .idx with no sibling .pack file', () => {
   describe('When fsck runs', () => {
-    it('Then no finding is emitted and exit code is exactly 0', async () => {
+    it('Then only the no-default-references notice is emitted and exit code is exactly 0', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await writeSyntheticPack(ctx, 'orphan', onePackEntry('orphan-content'));
@@ -3227,8 +3212,8 @@ describe('Given an orphan .idx with no sibling .pack file', () => {
       // Act
       const result = await fsck(ctx);
 
-      // Assert
-      expect(result.findings).toHaveLength(0);
+      // Assert — no ref names an object, so git notes it has no default reference.
+      expect(result.findings).toEqual([{ type: 'no-default-references' }]);
       expect(result.exitCode).toBe(0);
     });
   });
@@ -3421,7 +3406,7 @@ describe('Given a pack with a broken .rev alongside an unrelated missing tree', 
       await writeSyntheticRevIndex(ctx, 'unrelated-broken-rev', [0], { magic: 0 });
 
       // Act
-      const result = await fsck(ctx);
+      const result = await fsck(reopen(ctx));
 
       // Assert
       expect(result.exitCode & 2).toBe(2);
@@ -3565,6 +3550,7 @@ async function writeIndexWithEntry(
   entryId: ObjectId,
   path: string,
   cacheTreeId: ObjectId | undefined,
+  extraExtensions: ReadonlyArray<{ readonly signature: string; readonly data: Uint8Array }> = [],
 ): Promise<void> {
   const index = {
     version: 2 as const,
@@ -3585,7 +3571,10 @@ async function writeIndexWithEntry(
         path: path as FilePath,
       },
     ],
-    extensions: cacheTreeId === undefined ? [] : [buildCacheTreeExtension(cacheTreeId)],
+    extensions: [
+      ...(cacheTreeId === undefined ? [] : [buildCacheTreeExtension(cacheTreeId)]),
+      ...extraExtensions,
+    ],
     trailerSha: new Uint8Array(0),
   };
   const indexBytes = await serializeIndexFixtureAsync(index, ctx);
@@ -3697,7 +3686,7 @@ describe('Given every loose object deleted, main and the index both pointing at 
       await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, blobId));
 
       // Act
-      const result = await fsck(ctx);
+      const result = await fsck(reopen(ctx));
 
       // Assert
       expect(result.exitCode).toBe(10);
@@ -3777,7 +3766,7 @@ describe('Given the pack removed but an unrelated loose-backed ref still resolve
       await ctx.fs.rm(idxFilePath(ctx, 'sole'));
 
       // Act
-      const result = await fsck(ctx);
+      const result = await fsck(reopen(ctx));
 
       // Assert
       expect(result.exitCode).toBe(2);
@@ -3960,12 +3949,48 @@ function encodeCacheTreeNode(node: CacheTreeNode): ReadonlyArray<number> {
   return [...header, ...oid, ...node.children.flatMap(encodeCacheTreeNode)];
 }
 
+describe('Given a cache-tree whose root resolves and whose two subtrees, listed d1 then d2, name absent trees', () => {
+  describe('When fsck runs', () => {
+    it('Then it reports each absent oid as an invalid cache-tree pointer, in cache-tree order, with bit 8', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('cache-tree pointers'));
+      const rootTree = await writeObject(
+        ctx,
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId)]),
+      );
+      const d1 = 'd1'.repeat(20) as ObjectId;
+      const d2 = 'd2'.repeat(20) as ObjectId;
+      const cacheTree: CacheTreeNode = {
+        path: '',
+        id: rootTree,
+        children: [
+          { path: 'd1', id: d1, children: [] },
+          { path: 'd2', id: d2, children: [] },
+        ],
+      };
+      await writeIndexWithRawCacheTree(ctx, blobId, new Uint8Array(encodeCacheTreeNode(cacheTree)));
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'invalid-cache-tree-pointer')).toEqual([
+        { type: 'invalid-cache-tree-pointer', id: d1, index: `${ctx.layout.gitDir}/index` },
+        { type: 'invalid-cache-tree-pointer', id: d2, index: `${ctx.layout.gitDir}/index` },
+      ]);
+      expect(result.exitCode & 8).toBe(8);
+    });
+  });
+});
+
 describe('Given a cache-tree walk that meets an absent oid, then one no artefact can route, then a live one', () => {
   describe('When fsck runs', () => {
     it('Then the proved missing entry point still reports and the live sibling still roots its tree', async () => {
-      // Arrange — the walk pops in reverse push order, so listing the live
-      // subtree first and the absent one last makes the refused route land
-      // between them: after the verdict is proved, before the last root.
+      // Arrange — the walk visits subtrees in git's pre-order, so listing the
+      // absent subtree first and the live one last makes the refused route
+      // land between them: after the verdict is proved, before the last root.
       // What this row pins is the drainage around that landing — a proved
       // verdict is retained and the entries still queued behind the refused
       // route are still rooted. It does not discriminate the refused entry's
@@ -3987,9 +4012,9 @@ describe('Given a cache-tree walk that meets an absent oid, then one no artefact
         path: '',
         id: undefined,
         children: [
-          { path: 'live', id: treeId, children: [] },
-          { path: 'refused', id: refusedRouteId, children: [] },
           { path: 'absent', id: 'ee'.repeat(20) as ObjectId, children: [] },
+          { path: 'refused', id: refusedRouteId, children: [] },
+          { path: 'live', id: treeId, children: [] },
         ],
       };
       await writeIndexWithRawCacheTree(ctx, blobId, new Uint8Array(encodeCacheTreeNode(cacheTree)));
@@ -4045,7 +4070,7 @@ describe('Given a cache-tree whose absent entry and whose refused-route entry ea
       );
 
       // Act
-      const result = await fsck(ctx);
+      const result = await fsck(reopen(ctx));
 
       // Assert
       const orphaned = result.findings.filter(
@@ -4073,12 +4098,41 @@ describe('Given a cache-tree naming only an oid a multi-pack-index routes past i
       await writeIndexWithEntry(ctx, blobId, 'a.txt', refusedRouteId);
 
       // Act
-      const result = await fsck(ctx);
+      const result = await fsck(reopen(ctx));
 
       // Assert
       const findings = result.findings.filter((f) => f.type === 'midx-unusable');
       expect(findings).toHaveLength(1);
       expect((findings[0] as { reason: string }).reason).toContain('pack index');
+      expect(result.exitCode).toBe(32);
+    });
+  });
+});
+
+describe('Given a resolve-undo stage naming only an oid a multi-pack-index routes past its own PNAM', () => {
+  describe('When fsck runs', () => {
+    it('Then no missing is claimed for the stage and the midx pass reports the route it cannot decode', async () => {
+      // Arrange — the oid lives nowhere but the midx OIDL, so the parse probe
+      // can say nothing and the stage must not be rooted.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('refused-route resolve-undo'));
+      const refusedRouteId = midxOid('cc2');
+      await writeFlatMidx(
+        ctx,
+        midxBaseSpec({ entries: [{ id: refusedRouteId, packIndex: 0, offset: 0 }] }),
+      );
+      const stage = [...enc.encode('a.txt\x00100644\x000\x000\x00'), ...hexToBytes(refusedRouteId)];
+      await writeIndexWithEntry(ctx, blobId, 'a.txt', undefined, [
+        { signature: 'REUC', data: Uint8Array.from(stage) },
+      ]);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(reopen(ctx));
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'missing')).toEqual([]);
+      expect(result.findings.filter((f) => f.type === 'midx-unusable')).toHaveLength(1);
       expect(result.exitCode).toBe(32);
     });
   });
@@ -4108,7 +4162,7 @@ describe('Given a packed cache-tree oid the multi-pack-index routes past its own
       await writeIndexWithEntry(ctx, looseId, 'a.txt', packedId as ObjectId);
 
       // Act
-      const result = await fsck(ctx, { connectivityOnly: true });
+      const result = await fsck(reopen(ctx), { connectivityOnly: true });
 
       // Assert
       expect(
@@ -4139,7 +4193,7 @@ describe('Given a cache-tree oid whose multi-pack-index offset word points past 
       await writeIndexWithEntry(ctx, looseId, 'a.txt', id);
 
       // Act
-      const result = await fsck(ctx);
+      const result = await fsck(reopen(ctx));
 
       // Assert
       const findings = result.findings.filter((f) => f.type === 'midx-unusable');
@@ -4171,7 +4225,7 @@ describe('Given a cache-tree oid a multi-pack-index routes to a pack whose index
       await writeIndexWithEntry(ctx, blobId, 'a.txt', routedId);
       const idxPath = `${packsDir(commonGitDir(ctx))}/${packNameIdx}`;
       const wrapped: Context = {
-        ...ctx,
+        ...reopen(ctx),
         fs: {
           ...ctx.fs,
           read: async (path: string) =>
@@ -4395,6 +4449,130 @@ describe('Given a reachable tree entry pointing at an unreadable (empty-file) bl
       expect(result.findings.filter((f) => f.type === 'unreachable')).toHaveLength(0);
       expect(result.findings.filter((f) => f.type === 'missing')).toHaveLength(0);
       expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given a reflog entry naming an unreadable (empty-file) loose object', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then the entry is not invalid, as git records every enumerated object, and the exit code is 0', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const damagedId = 'd7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7' as ObjectId;
+      await writeEmptyLooseObject(ctx, damagedId);
+      await writeObject(ctx, makeBlob('kept'));
+      await ctx.fs.mkdir(`${ctx.layout.gitDir}/logs/refs/heads`);
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/logs/refs/heads/main`,
+        `${'0'.repeat(40)} ${damagedId} Ada <ada@example.com> 1700000000 +0000\tbranch: Created\n`,
+      );
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx, { connectivityOnly: true });
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'invalid-reflog-entry')).toEqual([]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given a packed object whose loose copy hashes to another id', () => {
+  const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904' as ObjectId;
+  const IDENT = 'a <a@a> 1700000000 +0000';
+  const plantMisHashedLooseCopy = async (ctx: Context, id: ObjectId, other: ObjectId) => {
+    const otherPath = looseObjectPath(ctx.layout.gitDir, other);
+    const bytes = await ctx.fs.read(otherPath);
+    await ctx.fs.rm(otherPath);
+    await ctx.fs.write(looseObjectPath(ctx.layout.gitDir, id), bytes);
+  };
+
+  describe('When it is a root commit', () => {
+    it('Then the pack copy is still reported as a root beside the hash-mismatch', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const ids = await writeSyntheticPack(ctx, 'p', [
+        { kind: 'base', type: 'tree', content: new Uint8Array(0) },
+        {
+          kind: 'base',
+          type: 'commit',
+          content: enc.encode(`tree ${EMPTY_TREE}\nauthor ${IDENT}\ncommitter ${IDENT}\n\nc\n`),
+        },
+      ]);
+      const packed = ids[1] as ObjectId;
+      const other = await writeObject(ctx, makeCommit(EMPTY_TREE, [], 'd'));
+      await plantMisHashedLooseCopy(ctx, packed, other);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings).toContainEqual({ type: 'hash-mismatch', id: packed, actual: other });
+      expect(result.findings).toContainEqual({ type: 'root', id: packed });
+    });
+  });
+
+  describe('When no pack holds it', () => {
+    it('Then no root is reported for the mis-hashed loose copy', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const looseOnly = await writeObject(ctx, makeCommit(EMPTY_TREE, [], 'c'));
+      const other = await writeObject(ctx, makeCommit(EMPTY_TREE, [], 'd'));
+      await plantMisHashedLooseCopy(ctx, looseOnly, other);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings).toContainEqual({
+        type: 'hash-mismatch',
+        id: looseOnly,
+        actual: other,
+      });
+      expect(result.findings.filter((f) => f.type === 'root')).toEqual([]);
+    });
+  });
+
+  describe('When it is an annotated tag', () => {
+    it('Then the pack copy is still reported as tagged beside the hash-mismatch', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const ids = await writeSyntheticPack(ctx, 'p', [
+        { kind: 'base', type: 'tree', content: new Uint8Array(0) },
+        {
+          kind: 'base',
+          type: 'commit',
+          content: enc.encode(`tree ${EMPTY_TREE}\nauthor ${IDENT}\ncommitter ${IDENT}\n\nc\n`),
+        },
+      ]);
+      const commit = ids[1] as ObjectId;
+      const tagBody = enc.encode(`object ${commit}\ntype commit\ntag v1\ntagger ${IDENT}\n\nmsg\n`);
+      const packedTag = (
+        await writeSyntheticPack(ctx, 'q', [{ kind: 'base', type: 'tag', content: tagBody }])
+      )[0] as ObjectId;
+      const other = await writeObject(ctx, makeTag(commit, 'commit', 'v2'));
+      await plantMisHashedLooseCopy(ctx, packedTag, other);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings).toContainEqual({
+        type: 'hash-mismatch',
+        id: packedTag,
+        actual: other,
+      });
+      expect(result.findings).toContainEqual({
+        type: 'tagged',
+        id: commit,
+        objectType: 'commit',
+        tagName: 'v1',
+        tag: packedTag,
+      });
     });
   });
 });
@@ -5436,6 +5614,7 @@ describe('Given a packed object whose entry reads reject with PERMISSION_DENIED,
       const id = blobId as ObjectId;
       await writeGarbageLooseObject(ctx, id, GARBAGE_BYTES);
       const packPath = packFilePath(ctx, 'd13-degrade-walk');
+      const trailerAt = (await ctx.fs.stat(packPath)).size - ctx.hashConfig.digestLength;
       const wrapped: Context = {
         ...ctx,
         fs: {
@@ -5443,8 +5622,9 @@ describe('Given a packed object whose entry reads reject with PERMISSION_DENIED,
           openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
             const handle = await ctx.fs.openWithNoFollow(path, mode);
             if (path !== packPath) return handle;
-            // The 12-byte header probe (position 0) rides the SAME handle and
-            // stays healthy — only a non-header entry read fails.
+            // The open gate's reads — the 12-byte header (position 0) and the
+            // trailer — ride the SAME handle and stay healthy; only an entry
+            // read fails.
             return {
               ...handle,
               read: async (
@@ -5453,7 +5633,9 @@ describe('Given a packed object whose entry reads reject with PERMISSION_DENIED,
                 length: number,
                 position?: number,
               ) => {
-                if (position === 0) return handle.read(buffer, bufferOffset, length, position);
+                if (position === 0 || position === trailerAt) {
+                  return handle.read(buffer, bufferOffset, length, position);
+                }
                 throw permissionDenied(path);
               },
             };
@@ -5750,7 +5932,7 @@ describe('Given a dangling REF_DELTA-encoded blob whose base pack was never writ
       ]);
       const deltaId = deltaIds[0] as ObjectId;
       await corruptTrailingPackEntryByte(ctx, packFilePath(ctx, 'd13-absent-base-delta'));
-      const { ctx: logged, calls } = withWarnLog(ctx);
+      const { ctx: logged, calls } = withWarnLog(reopen(ctx));
 
       // Act
       const result = await fsck(logged, { connectivityOnly: true });
@@ -6943,9 +7125,7 @@ describe('Given a packed object corrupted on disk but warm in the delta cache', 
       // oracle demands the corruption family specifically: a cache-trusting
       // audit reports this store clean.
       const corrupted = result.findings.some(
-        (f) =>
-          (f.type === 'bad-object' || f.type === 'hash-mismatch') &&
-          (f as { id: string }).id === blobId,
+        (f) => f.type === 'pack-entry-unpackable' && f.id === blobId,
       );
       expect(corrupted).toBe(true);
     });
@@ -7070,7 +7250,7 @@ describe('Given a midx-named pack fully deleted while a reachable commit points 
       await ctx.fs.rm(idxFilePath(ctx, 'midx-deleted'));
 
       // Act
-      const result = await fsck(ctx);
+      const result = await fsck(reopen(ctx));
 
       // Assert
       const packUnresolved = result.findings.filter((f) => f.type === 'midx-pack-unresolved');
@@ -7335,10 +7515,11 @@ describe('Given the same repository with and without its multi-pack-index', () =
       await ctx.fs.rm(idxFilePath(ctx, 'midx-diff'));
 
       // Act
-      const withMidx = await fsck(ctx);
+      const reopened = reopen(ctx);
+      const withMidx = await fsck(reopened);
       await ctx.fs.rm(multiPackIndexPath(midxDir(ctx)));
-      refreshPackRegistry(ctx);
-      const withoutMidx = await fsck(ctx);
+      refreshPackRegistry(reopened);
+      const withoutMidx = await fsck(reopened);
 
       // Assert
       expect(withMidx.exitCode & 32).toBe(32);
@@ -7376,7 +7557,8 @@ describe('Given a header-refused pack holding the only copy of a loose ref targe
         (f): f is FsckFinding & { readonly msgId: string } =>
           f.type === 'bad-ref' && (f as { msgId: string }).msgId === 'badRefOid',
       );
-      expect(badRefOid).toHaveLength(1);
+      // …and HEAD, which names main, is its own invalid pointer, as git snapshots it too.
+      expect(badRefOid.map((f) => (f as { ref: string }).ref)).toEqual(['refs/heads/main', 'HEAD']);
       expect(badRefOid[0]).toMatchObject({ ref: 'refs/heads/main', target: packedId });
       expect(result.exitCode & 2).toBe(2);
     });
@@ -7664,6 +7846,7 @@ describe('Given a dangling loose tree with a non-octal byte in the mode (full de
       // Assert — pins: `null` (unreadable) versus present in the cache, and
       // resolveObjectType's `recovered`-map fallback for a null entry.
       expect(result.findings).toEqual([
+        { type: 'no-default-references' },
         { type: 'unreachable', id: treeId, objectType: 'tree' },
         { type: 'dangling', id: treeId, objectType: 'tree' },
       ]);
@@ -7734,8 +7917,8 @@ describe('Given a tree carrying a GITLINK entry whose target commit is absent fr
 
 describe('Given a .gitmodules blob with a disallowed URL nested below the root tree', () => {
   describe('When fsck runs', () => {
-    it('Then the findings array carries the gitmodulesUrl bad-object finding — entry.name must survive the projection for buildBlobFilenameMap', async () => {
-      // Arrange — without `name` surviving the projection, buildBlobFilenameMap
+    it('Then the findings array carries the gitmodulesUrl bad-object finding — entry names must survive the projection for the special-blob ledger', async () => {
+      // Arrange — without the entry names surviving the projection, the ledger
       // could not recognise the blob as `.gitmodules` at any tree depth, and
       // the content-validation pass would never dispatch the gitmodules checks.
       const ctx = await initBareCtx();
@@ -8366,6 +8549,528 @@ describe('Given two fsck.skipList entries of which the first cannot be opened', 
         path: absent,
         reason: 'FILE_NOT_FOUND',
       });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ALTERNATES — the audit covers every object source
+// ---------------------------------------------------------------------------
+
+const DONOR_OBJECTS = '/repo/donor/objects';
+
+const borrowerContext = async (): Promise<Context> => {
+  const ctx = createMemoryContext({
+    files: { '/repo/.git/objects/info/alternates': enc.encode(`${DONOR_OBJECTS}\n`) },
+  });
+  await ctx.fs.mkdir(DONOR_OBJECTS);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+  return ctx;
+};
+
+const moveLooseToDonor = async (ctx: Context, id: ObjectId): Promise<void> => {
+  const from = looseObjectPath(ctx.layout.gitDir, id);
+  const bytes = await ctx.fs.read(from);
+  await ctx.fs.write(`${DONOR_OBJECTS}/${id.slice(0, 2)}/${id.slice(2)}`, bytes);
+  await ctx.fs.rm(from);
+};
+
+describe('Given a borrower whose reachable commit lives only in a donor', () => {
+  describe('When fsck runs', () => {
+    it('Then it reports no missing finding', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      const blobId = await writeObject(ctx, makeBlob('donor blob'));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId)]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      for (const id of [blobId, treeId, commitId]) await moveLooseToDonor(ctx, id);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'missing')).toEqual([]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given a borrower whose donor holds a loose object stored under the wrong hash', () => {
+  describe('When fsck runs', () => {
+    it('Then it reports the hash-mismatch finding with the actual id', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      const expectedId = await writeObject(ctx, makeBlob('hello'));
+      const actualId = await writeObject(ctx, makeBlob('world'));
+      const wrongBytes = await ctx.fs.read(looseObjectPath(ctx.layout.gitDir, actualId));
+      await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, actualId));
+      await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, expectedId));
+      await ctx.fs.write(
+        `${DONOR_OBJECTS}/${expectedId.slice(0, 2)}/${expectedId.slice(2)}`,
+        wrongBytes,
+      );
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
+      expect(mismatch).toMatchObject({ type: 'hash-mismatch', id: expectedId, actual: actualId });
+      expect(result.exitCode & 1).toBe(1);
+    });
+  });
+});
+
+describe('Given a borrower whose donor carries a corrupt multi-pack-index', () => {
+  describe('When fsck runs', () => {
+    it('Then the run rejects with INVALID_MULTI_PACK_INDEX', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      await ctx.fs.write(
+        `${DONOR_OBJECTS}/pack/multi-pack-index`,
+        Uint8Array.from([0x00, 0x49, 0x44, 0x58, 1, 1, 1, 0, ...new Array(8).fill(0)]),
+      );
+      const sut = fsck;
+
+      // Act
+      let data: unknown;
+      try {
+        await sut(ctx);
+      } catch (error) {
+        data = (error as TsgitError).data;
+      }
+
+      // Assert
+      expect(data).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX' });
+    });
+  });
+});
+
+describe('Given a borrower whose donor holds a pack that fails its header gate', () => {
+  describe('When fsck runs', () => {
+    it('Then the pack-inaccessible finding carries the donor objects dir', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      await writeSyntheticPackIn(
+        ctx,
+        DONOR_OBJECTS,
+        'donor-refused',
+        onePackEntry('donor-refused'),
+      );
+      await restampPackHeader(ctx, `${DONOR_OBJECTS}/pack/pack-donor-refused.pack`, {
+        version: 99,
+      });
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      const inaccessible = result.findings.filter((f) => f.type === 'pack-inaccessible');
+      expect(inaccessible).toEqual([
+        {
+          type: 'pack-inaccessible',
+          pack: 'pack-donor-refused',
+          reason: expect.any(String),
+          objectsDir: DONOR_OBJECTS,
+        },
+      ]);
+      expect(result.exitCode & 4).toBe(4);
+    });
+  });
+});
+
+describe('Given a borrower whose own pack fails its header gate while it has a donor', () => {
+  describe('When fsck runs', () => {
+    it('Then the pack-inaccessible finding carries no objectsDir key', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      await writeSyntheticPack(ctx, 'own-refused', onePackEntry('own-refused'));
+      await restampPackHeader(ctx, packFilePath(ctx, 'own-refused'), { version: 99 });
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      const inaccessible = result.findings.filter((f) => f.type === 'pack-inaccessible');
+      expect(inaccessible).toHaveLength(1);
+      expect('objectsDir' in inaccessible[0]!).toBe(false);
+    });
+  });
+});
+
+describe('Given a borrower whose donor multi-pack-index trailer disagrees with its bytes', () => {
+  describe('When fsck runs', () => {
+    it('Then the midx-checksum-mismatch finding carries the donor objects dir and bit 32 is set', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      const good = await stampMidxTrailer(ctx, buildMidx(midxBaseSpec()));
+      const flipped = good.slice();
+      flipped[flipped.length - 1] = (flipped[flipped.length - 1]! ^ 0xff) & 0xff;
+      await ctx.fs.write(multiPackIndexPath(`${DONOR_OBJECTS}/pack`), flipped);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      const mismatches = result.findings.filter((f) => f.type === 'midx-checksum-mismatch');
+      expect(mismatches).toEqual([
+        { type: 'midx-checksum-mismatch', artefact: 'multi-pack-index', objectsDir: DONOR_OBJECTS },
+      ]);
+      expect(result.exitCode & 32).toBe(32);
+    });
+  });
+});
+
+describe('Given a borrower whose own multi-pack-index trailer is corrupt while a donor exists', () => {
+  describe('When fsck runs', () => {
+    it('Then the midx-checksum-mismatch finding carries no objectsDir key', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      const good = await stampMidxTrailer(ctx, buildMidx(midxBaseSpec()));
+      const flipped = good.slice();
+      flipped[flipped.length - 1] = (flipped[flipped.length - 1]! ^ 0xff) & 0xff;
+      await ctx.fs.write(multiPackIndexPath(midxDir(ctx)), flipped);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      const mismatches = result.findings.filter((f) => f.type === 'midx-checksum-mismatch');
+      expect(mismatches).toHaveLength(1);
+      expect('objectsDir' in mismatches[0]!).toBe(false);
+    });
+  });
+});
+
+describe('Given a pack whose .idx trailer is corrupt', () => {
+  describe('When fsck runs', () => {
+    it('Then it reports the index checksum mismatch and sets bit 4', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(ctx, 'idx-trailer', onePackEntry('idx-trailer-content'));
+      const idx = await ctx.fs.read(idxFilePath(ctx, 'idx-trailer'));
+      idx[idx.length - 1] = idx[idx.length - 1]! ^ 0xff;
+      await ctx.fs.write(idxFilePath(ctx, 'idx-trailer'), idx);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings).toContainEqual({
+        type: 'pack-index-checksum-mismatch',
+        pack: 'pack-idx-trailer',
+      });
+      expect(result.exitCode & 4).toBe(4);
+    });
+  });
+});
+
+describe('Given a ref whose tip is a pack entry that cannot be unpacked', () => {
+  const damagedTip = async (): Promise<{ readonly ctx: Context; readonly id: ObjectId }> => {
+    const ctx = await initBareCtx();
+    const [id] = await writeSyntheticPack(ctx, 'tip', onePackEntry('damaged tip content'));
+    const pack = await ctx.fs.read(packFilePath(ctx, 'tip'));
+    pack[pack.length - 24] = pack[pack.length - 24]! ^ 0xff;
+    await ctx.fs.write(packFilePath(ctx, 'tip'), pack);
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/t`, `${id}\n`);
+    return { ctx, id: id as ObjectId };
+  };
+
+  describe.each([
+    { label: 'default', opts: {} },
+    { label: 'full: false', opts: { full: false } },
+    { label: 'connectivityOnly', opts: { connectivityOnly: true } },
+  ])('When fsck runs ($label)', ({ opts }) => {
+    it('Then it rejects naming the packed object and its pack, as git dies reading the ref tip', async () => {
+      // Arrange
+      const { ctx, id } = await damagedTip();
+
+      // Act
+      let caught: unknown;
+      try {
+        await fsck(ctx, opts);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data).toEqual({
+        code: 'INVALID_PACK_ENTRY',
+        offset: 12,
+        reason: `packed object ${id} (stored in pack-tip) is corrupt`,
+      });
+    });
+  });
+});
+
+describe('Given a ref tip in a pack whose .rev disagrees with its index', () => {
+  describe('When fsck runs', () => {
+    it('Then it does not refuse — git reads entries without the .rev, so its tip is not damaged', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const ids = await writeSyntheticPack(ctx, 'bad-rev', [
+        ...onePackEntry('first entry content'),
+        ...onePackEntry('second entry content'),
+      ]);
+      await writeSyntheticRevIndex(ctx, 'bad-rev', [1, 1]);
+      for (const [n, id] of ids.entries()) {
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/t${n}`, `${id}\n`);
+      }
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings.some((f) => f.type === 'pack-rev-index-position-mismatch')).toBe(true);
+    });
+  });
+});
+
+describe('Given objects git parses before any check, stored as damaged pack entries', () => {
+  const damageLastEntry = async (ctx: Context, name: string): Promise<void> => {
+    const pack = await ctx.fs.read(packFilePath(ctx, name));
+    pack[pack.length - 24] = pack[pack.length - 24]! ^ 0xff;
+    await ctx.fs.write(packFilePath(ctx, name), pack);
+  };
+
+  const packedDamaged = async (
+    ctx: Context,
+    type: 'commit' | 'tree' | 'blob',
+    content: Uint8Array,
+  ): Promise<ObjectId> => {
+    const [id] = await writeSyntheticPack(ctx, 'damaged', [{ kind: 'base', type, content }]);
+    await damageLastEntry(ctx, 'damaged');
+    return id as ObjectId;
+  };
+
+  const refusalData = async (pending: Promise<unknown>): Promise<unknown> => {
+    try {
+      await pending;
+    } catch (error) {
+      return (error as TsgitError).data;
+    }
+    return undefined;
+  };
+
+  const corruptRefusal = (id: ObjectId) => ({
+    code: 'INVALID_PACK_ENTRY',
+    offset: 12,
+    reason: `packed object ${id} (stored in pack-damaged) is corrupt`,
+  });
+
+  const treeBody = (ctx: Context, blobId: ObjectId) =>
+    serializeTreeContent(makeTree([treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId)]), ctx.hashConfig);
+
+  // Packs before any loose write: the first store access settles the pack list.
+  const LEAF = '1111111111111111111111111111111111111111' as ObjectId;
+  const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904' as ObjectId;
+
+  const commitBody = (tree: ObjectId) =>
+    enc.encode(`tree ${tree}\nauthor A <a@a> 0 +0000\ncommitter A <a@a> 0 +0000\n\nold\n`);
+
+  describe.each([
+    { label: 'default', opts: {} },
+    { label: 'full: false', opts: { full: false } },
+    { label: 'connectivityOnly', opts: { connectivityOnly: true } },
+  ])('When the index cache-tree names a damaged packed tree and fsck runs ($label)', ({ opts }) => {
+    it('Then it rejects naming that tree, as git dies parsing the cache-tree', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await packedDamaged(ctx, 'tree', treeBody(ctx, LEAF));
+      await writeIndexWithEntry(ctx, LEAF, 'a.txt', treeId);
+
+      // Act
+      const result = await refusalData(fsck(ctx, opts));
+
+      // Assert
+      expect(result).toEqual(corruptRefusal(treeId));
+    });
+  });
+
+  describe('When a reachable non-tip commit is damaged', () => {
+    const arrange = async (): Promise<{ readonly ctx: Context; readonly parent: ObjectId }> => {
+      const ctx = await initBareCtx();
+      const parent = await packedDamaged(ctx, 'commit', commitBody(EMPTY_TREE));
+      const treeId = await writeObject(ctx, makeTree([]));
+      const tip = await writeObject(ctx, makeCommit(treeId, [parent]));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${tip}\n`);
+      return { ctx, parent };
+    };
+
+    it('Then connectivityOnly rejects naming it, as git dies walking it', async () => {
+      // Arrange
+      const { ctx, parent } = await arrange();
+
+      // Act
+      const result = await refusalData(fsck(ctx, { connectivityOnly: true }));
+
+      // Assert
+      expect(result).toEqual(corruptRefusal(parent));
+    });
+
+    it('Then the default run does not reject, as verify_pack reports it instead', async () => {
+      // Arrange
+      const { ctx } = await arrange();
+
+      // Act
+      const result = await refusalData(fsck(ctx));
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe.each([
+    { type: 'tree' as const, refused: true },
+    { type: 'blob' as const, refused: false },
+  ])(
+    'When a reachable $type no ref names is damaged and fsck runs connectivityOnly',
+    ({ type, refused }) => {
+      it('Then it rejects only a tree, as git parses trees and never blobs', async () => {
+        // Arrange
+        const ctx = await initBareCtx();
+        const content = type === 'tree' ? treeBody(ctx, LEAF) : enc.encode('damaged leaf');
+        const damaged = await packedDamaged(ctx, type, content);
+        const entries = [
+          treeEntry(type === 'tree' ? FILE_MODE.DIRECTORY : FILE_MODE.REGULAR, 'd', damaged),
+        ];
+        const rootTree = await writeObject(ctx, makeTree(entries));
+        const tip = await writeObject(ctx, makeCommit(rootTree, []));
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${tip}\n`);
+
+        // Act
+        const result = await refusalData(fsck(ctx, { connectivityOnly: true }));
+
+        // Assert
+        expect(result).toEqual(refused ? corruptRefusal(damaged) : undefined);
+      });
+    },
+  );
+});
+
+describe('Given objects git never parsed, named by the index, a reflog or HEAD', () => {
+  const ABSENT = 'abababababababababababababababababababab' as ObjectId;
+  const ZERO = '0000000000000000000000000000000000000000';
+  const WHO = 'Ada <ada@example.com> 1700000000 +0000';
+
+  const healthyMain = async (ctx: Context): Promise<ObjectId> => {
+    const treeId = await writeObject(ctx, makeTree([]));
+    const commitId = await writeObject(ctx, makeCommit(treeId, []));
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+    return commitId;
+  };
+
+  describe('When an index entry names a blob no store holds and fsck runs', () => {
+    it('Then it reports that blob missing as a blob, as git looks it up as one', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await healthyMain(ctx);
+      await writeIndexWithEntry(ctx, ABSENT, 'a.txt', undefined);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings).toContainEqual({ type: 'missing', id: ABSENT, objectType: 'blob' });
+    });
+  });
+
+  describe('When a reflog entry names an object no store holds and fsck runs', () => {
+    it('Then it reports an invalid reflog entry with bit 2 and never that object missing', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const commitId = await healthyMain(ctx);
+      await ctx.fs.mkdir(`${ctx.layout.gitDir}/logs/refs/heads`);
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/logs/refs/heads/main`,
+        `${ZERO} ${ABSENT} ${WHO}\tone\n${ABSENT} ${commitId} ${WHO}\ttwo\n`,
+      );
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const invalid = { type: 'invalid-reflog-entry', ref: 'refs/heads/main', id: ABSENT };
+      expect(result.findings.filter((f) => f.type === 'invalid-reflog-entry')).toEqual([
+        invalid,
+        invalid,
+      ]);
+      expect(result.findings.some((f) => f.type === 'missing')).toBe(false);
+      expect(result.exitCode).toBe(2);
+    });
+  });
+
+  describe('When HEAD resolves to an object no store holds and fsck runs', () => {
+    it('Then it reports HEAD an invalid pointer beside the branch, as git snapshots HEAD too', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${ABSENT}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const pointers = result.findings.filter(
+        (f) => f.type === 'bad-ref' && f.msgId === 'badRefOid',
+      );
+      expect(pointers).toEqual([
+        {
+          type: 'bad-ref',
+          ref: 'refs/heads/main',
+          msgId: 'badRefOid',
+          severity: 'error',
+          target: ABSENT,
+        },
+        { type: 'bad-ref', ref: 'HEAD', msgId: 'badRefOid', severity: 'error', target: ABSENT },
+      ]);
+    });
+  });
+});
+
+describe('Given loose history over packed objects, and fsck run with full: false', () => {
+  describe('When a loose tree names a packed blob and a tag names a packed commit', () => {
+    it('Then nothing is missing, broken or an invalid pointer, as git excuses what a pack holds', async () => {
+      // Arrange — packs before any loose write: the first store access settles the pack list.
+      const ctx = await initBareCtx();
+      const emptyTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+      const [blobId, packedCommit] = await writeSyntheticPack(ctx, 'history', [
+        { kind: 'base', type: 'blob', content: enc.encode('packed blob') },
+        {
+          kind: 'base',
+          type: 'commit',
+          content: enc.encode(
+            `tree ${emptyTree}\nauthor A <a@a> 1700000000 +0000\ncommitter A <a@a> 1700000000 +0000\n\nold\n`,
+          ),
+        },
+      ]);
+      const treeId = await writeObject(
+        ctx,
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId as ObjectId)]),
+      );
+      const tip = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${tip}\n`);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/old`, `${packedCommit}\n`);
+
+      // Act
+      const result = await fsck(ctx, { full: false });
+
+      // Assert
+      const faults = result.findings.filter((f) =>
+        ['missing', 'broken-link', 'bad-ref'].includes(f.type),
+      );
+      expect(faults).toEqual([]);
+      expect(result.exitCode).toBe(0);
     });
   });
 });

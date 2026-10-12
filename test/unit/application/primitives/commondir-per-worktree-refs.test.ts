@@ -358,7 +358,7 @@ describe('common-dir per-worktree-ref sweep', () => {
 
     describe('Given a worktree child Context with only an admin-dir decoy branch ref', () => {
       describe('When checkout switches to that branch', () => {
-        it('Then it throws BRANCH_NOT_FOUND — the common dir is checked, not the decoy', async () => {
+        it('Then it refuses as an unmatched pathspec — the common dir is checked, not the decoy', async () => {
           // Arrange — HEAD (admin) must resolve so switchBranch reaches the
           // branchRef existence check for 'ghost' rather than failing earlier.
           const ctx = await buildSeededContext({
@@ -373,7 +373,7 @@ describe('common-dir per-worktree-ref sweep', () => {
             await checkout(sut, { rev: 'ghost' });
             expect.unreachable();
           } catch (err) {
-            expect((err as TsgitError).data.code).toBe('BRANCH_NOT_FOUND');
+            expect((err as TsgitError).data.code).toBe('PATHSPEC_NO_MATCH');
           }
         });
       });
@@ -390,7 +390,7 @@ describe('common-dir per-worktree-ref sweep', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`, `${oldOid}\n`);
           await ctx.fs.writeUtf8(
             `${ctx.layout.gitDir}/config`,
-            '[remote "origin"]\n  url = https://example.com/r.git\n',
+            '[remote "origin"]\n  url = https://example.com/r.git\n  fetch = +refs/heads/*:refs/remotes/origin/*\n',
           );
           const built = await buildSyntheticPack(ctx, [
             { kind: 'base', type: 'blob', content: ENCODER.encode('per-worktree-refs fetch a\n') },
@@ -423,7 +423,7 @@ describe('common-dir per-worktree-ref sweep', () => {
           await ctx.fs.writeUtf8(`${adminDir(ctx)}/refs/remotes/origin/main`, `${decoyOid}\n`);
           await ctx.fs.writeUtf8(
             `${ctx.layout.gitDir}/config`,
-            '[remote "origin"]\n  url = https://example.com/r.git\n',
+            '[remote "origin"]\n  url = https://example.com/r.git\n  fetch = +refs/heads/*:refs/remotes/origin/*\n',
           );
           const built = await buildSyntheticPack(ctx, [
             { kind: 'base', type: 'blob', content: ENCODER.encode('per-worktree-refs fetch b\n') },

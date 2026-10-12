@@ -19,11 +19,24 @@
  *   unique:  the shared git spawn helper closes every ambient-config vector git would otherwise read, one guard per vector
  */
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { GIT_AVAILABLE, runGitEnv, tryRunGit } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  isPrivateToThisAccount,
+  runGit,
+  runGitEnv,
+  tryRunGit,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
+
+const initScratchRepository = async (prefix: string): Promise<string> => {
+  const repo = await mkdtemp(path.join(os.tmpdir(), prefix));
+  runGit(['init', '-q', repo]);
+  return repo;
+};
 
 describe.skipIf(!GIT_AVAILABLE)('interop-env-hardening', () => {
   describe('Given the hardened interop spawn env', () => {
@@ -96,6 +109,7 @@ describe.skipIf(!GIT_AVAILABLE)('interop-env-hardening', () => {
         expect(gitKeys.sort()).toEqual([
           'GIT_CEILING_DIRECTORIES',
           'GIT_CONFIG_COUNT',
+          'GIT_CONFIG_GLOBAL',
           'GIT_CONFIG_KEY_0',
           'GIT_CONFIG_KEY_1',
           'GIT_CONFIG_KEY_2',
@@ -125,6 +139,133 @@ describe.skipIf(!GIT_AVAILABLE)('interop-env-hardening', () => {
           'gc.autoDetach': 'false',
           'maintenance.auto': 'false',
         });
+      });
+    });
+  });
+
+  describe('Given a repository naming no identity of its own', () => {
+    let repo: string;
+
+    beforeAll(async () => {
+      repo = await initScratchRepository('tsgit-interop-env-ident-');
+    });
+
+    afterAll(async () => {
+      await rm(repo, { recursive: true, force: true });
+    });
+
+    describe('When git resolves the committer', () => {
+      it('Then it is the fixed fallback identity, whatever the account running it', () => {
+        // Arrange
+        const sut = ['-C', repo, 'var', 'GIT_COMMITTER_IDENT'];
+
+        // Act
+        const result = tryRunGitWithExit(sut);
+
+        // Assert
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toMatch(/^A U Thor <author@example\.com> /);
+      });
+    });
+  });
+
+  describe('Given a repository configuring its own user.name', () => {
+    let repo: string;
+
+    beforeAll(async () => {
+      repo = await initScratchRepository('tsgit-interop-env-own-ident-');
+      runGit(['-C', repo, 'config', 'user.name', 'Repo Owner']);
+    });
+
+    afterAll(async () => {
+      await rm(repo, { recursive: true, force: true });
+    });
+
+    describe('When git resolves the author', () => {
+      it('Then the repository name wins over the fallback one', () => {
+        // Arrange
+        const sut = ['-C', repo, 'var', 'GIT_AUTHOR_IDENT'];
+
+        // Act
+        const result = tryRunGitWithExit(sut);
+
+        // Assert
+        expect(result.stdout).toMatch(/^Repo Owner <author@example\.com> /);
+      });
+    });
+  });
+
+  describe('Given a stdin payload larger than the pipe buffer', () => {
+    describe('When git exits before draining it', () => {
+      it("Then git's own exit code and stderr are reported, not the EPIPE", () => {
+        // Arrange
+        const overPipeBuffer = 'x'.repeat(4 * 1024 * 1024);
+        const missingDir = path.join(os.tmpdir(), 'tsgit-interop-epipe-missing-dir');
+
+        // Act
+        const result = tryRunGitWithExit(['-C', missingDir, 'cat-file', '--batch'], {
+          input: overPipeBuffer,
+        });
+
+        // Assert
+        expect(result).toEqual({
+          stdout: '',
+          stderr: `fatal: cannot change to '${missingDir}': No such file or directory\n`,
+          exitCode: 128,
+        });
+      });
+    });
+  });
+});
+
+describe('interop identity config directory', () => {
+  const OPEN_TO_EVERYONE = 0o777;
+  const PRIVATE = 0o700;
+  let base: string;
+
+  beforeAll(async () => {
+    base = await mkdtemp(path.join(os.tmpdir(), 'tsgit-identity-dir-'));
+  });
+
+  afterAll(async () => {
+    await rm(base, { recursive: true, force: true });
+  });
+
+  describe.each([
+    { label: 'a directory only this account can enter', mode: PRIVATE, expected: true },
+    { label: 'a directory every account can write', mode: OPEN_TO_EVERYONE, expected: false },
+  ])('Given $label', ({ mode, expected }) => {
+    describe('When it is checked before holding the identity config', () => {
+      it(`Then it is ${expected ? 'accepted' : 'refused'}`, async () => {
+        // Arrange
+        const dir = await mkdtemp(path.join(base, 'dir-'));
+        await chmod(dir, mode);
+
+        const sut = isPrivateToThisAccount;
+
+        // Act
+        const result = sut(dir);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a regular file where the directory should be', () => {
+    describe('When it is checked before holding the identity config', () => {
+      it('Then it is refused', async () => {
+        // Arrange
+        const file = path.join(base, 'not-a-directory');
+        await writeFile(file, '');
+
+        const sut = isPrivateToThisAccount;
+
+        // Act
+        const result = sut(file);
+
+        // Assert
+        expect(result).toBe(false);
       });
     });
   });

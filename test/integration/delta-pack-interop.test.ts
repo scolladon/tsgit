@@ -20,6 +20,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { bundleCreate } from '../../src/application/commands/bundle-create.js';
 import { fsck } from '../../src/application/commands/fsck.js';
+import { readGcSettings, runGcTask } from '../../src/application/commands/internal/gc-pipeline.js';
 import { maintenance } from '../../src/application/commands/maintenance.js';
 import { packObjects } from '../../src/application/commands/pack-objects.js';
 import { buildPack } from '../../src/application/primitives/build-pack.js';
@@ -310,11 +311,12 @@ async function appendConfigLines(dir: string, lines: string): Promise<void> {
   await writeFile(configPath, `${existing}${lines}`);
 }
 
+/** The gc task's own refusal — `maintenance` reports it as a failed task, as git's repack child dies with it. */
 async function tsgitGcRefusal(dir: string): Promise<TsgitError> {
   const ctx = trackedNodeContext(dir);
   try {
-    await maintenance(ctx, { tasks: ['gc'] });
-    throw new Error('expected maintenance to reject');
+    await runGcTask(ctx, { auto: undefined, settings: await readGcSettings(ctx) });
+    throw new Error('expected the gc task to reject');
   } catch (error) {
     if (error instanceof TsgitError) return error;
     throw error;
@@ -876,6 +878,7 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
     { key: 'depth', value: '2147483648', reason: 'out of range' },
     { key: 'window', value: '-2147483649', reason: 'out of range' },
     { key: 'windowmemory', value: '-1', reason: 'invalid unit' },
+    { key: 'windowmemory', value: '-0', reason: 'invalid unit' },
     { key: 'windowmemory', value: '18446744073709551616', reason: 'out of range' },
   ];
 
@@ -1158,6 +1161,95 @@ describe.skipIf(!GIT_AVAILABLE)(
         expect(result.baseCount).toBeGreaterThanOrEqual(1);
         expect(result.baseCount).toBeLessThanOrEqual(4);
         expect(result.deltaCount).toBe(AT_CAP_VERSIONS - result.baseCount);
+      });
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// core.bigFileThreshold — the per-blob whole/delta verdict equals git's
+// ---------------------------------------------------------------------------
+
+const BIG_FILE_LINES = 30;
+const BIG_FILE_VERSIONS = 4;
+const BIG_FILE_LINE_BYTES = 9;
+const BIG_FILE_BASE_BYTES = BIG_FILE_LINES * BIG_FILE_LINE_BYTES;
+
+/** One path, four versions each appending one fixed-width high-entropy
+ *  line, so blob sizes are 270, 279, 288 and 297 bytes — every pair is a
+ *  profitable delta, and only the threshold decides which are attempted. */
+async function buildBigFileVersionsRepo(slug: string): Promise<string> {
+  const dir = await freshRepo(slug);
+  const filePath = path.join(dir, 'big.txt');
+  const line = (index: number): string => `${mix32(index).toString(16).padStart(8, '0')}\n`;
+  for (let version = 0; version < BIG_FILE_VERSIONS; version += 1) {
+    const lines = Array.from({ length: BIG_FILE_LINES + version }, (_, i) => line(i));
+    await writeFile(filePath, lines.join(''));
+    git(dir, 'add', '-A');
+    commitAt(dir, version, `version ${version}`);
+  }
+  return dir;
+}
+
+/** Blob oid -> whether `git verify-pack -v` lists it as a delta. */
+function blobVerdicts(verifyOutput: string): ReadonlyMap<string, boolean> {
+  const verdicts = new Map<string, boolean>();
+  for (const line of verifyOutput.split('\n')) {
+    const tokens = line.trim().split(/\s+/);
+    if (tokens[1] === 'blob') verdicts.set(tokens[0] ?? '', tokens.length >= 7);
+  }
+  return verdicts;
+}
+
+async function packedBlobVerdicts(dir: string): Promise<ReadonlyMap<string, boolean>> {
+  const { idxPath } = await solePackIdx(dir);
+  return blobVerdicts(git(dir, 'verify-pack', '-v', idxPath));
+}
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'delta search honours core.bigFileThreshold, against real git',
+  () => {
+    let source: string;
+
+    beforeAll(async () => {
+      source = await buildBigFileVersionsRepo('big-file-source');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await Promise.all(tmpDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+    });
+
+    describe.each([
+      ['below every blob', BIG_FILE_BASE_BYTES - 1],
+      ['exactly the second-smallest blob', BIG_FILE_BASE_BYTES + BIG_FILE_LINE_BYTES],
+      ['one under the second-smallest blob', BIG_FILE_BASE_BYTES + BIG_FILE_LINE_BYTES - 1],
+      ['above every blob', BIG_FILE_BASE_BYTES + BIG_FILE_VERSIONS * BIG_FILE_LINE_BYTES],
+    ] as const)('Given core.bigFileThreshold set to %s', (_label, threshold) => {
+      describe('When tsgit gc and git repack -f each pack the history', () => {
+        it(
+          'Then every blob is whole or delta in tsgit exactly as in git',
+          async () => {
+            // Arrange
+            const tsgitDir = await tmp('big-file-tsgit');
+            const gitDir = await tmp('big-file-git');
+            for (const dir of [tsgitDir, gitDir]) {
+              await cp(source, dir, { recursive: true });
+              git(dir, 'config', 'core.bigFileThreshold', String(threshold));
+            }
+            const ctx = trackedNodeContext(tsgitDir);
+            const sut = maintenance;
+
+            // Act
+            await sut(ctx, { tasks: ['gc'] });
+            await disposePackRegistry(ctx);
+            runGit(['-C', gitDir, '-c', 'pack.threads=1', 'repack', '-a', '-d', '-f', '-q']);
+            const result = await packedBlobVerdicts(tsgitDir);
+
+            // Assert
+            expect(result).toEqual(await packedBlobVerdicts(gitDir));
+          },
+          ROW_TIMEOUT,
+        );
       });
     });
   },

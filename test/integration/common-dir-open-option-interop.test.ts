@@ -22,7 +22,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readShallow } from '../../src/application/primitives/shallow-file.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../src/domain/objects/index.js';
 import { isPerWorktreeRef } from '../../src/domain/refs/index.js';
-import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  git,
+  revParseStdout,
+  runGit,
+  runGitEnv,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
 import { trackedRepositories } from './repository-lifecycle.js';
 
 const openTrackedRepository = trackedRepositories();
@@ -113,7 +120,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
         try {
           // Act
           const result = repo.ctx.layout;
-          const revParsed = await repo.revParse('HEAD');
+          const revParsed = revParseStdout(await repo.revParse('HEAD'));
           const log = await repo.log();
           const status = await repo.status();
 
@@ -855,7 +862,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
           });
           let explicitCaught: unknown;
           try {
-            await explicitRepo.revParse('HEAD');
+            revParseStdout(await explicitRepo.revParse('HEAD'));
           } catch (err) {
             explicitCaught = err;
           } finally {

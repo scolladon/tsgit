@@ -23,12 +23,13 @@ import type {
   Tree,
 } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { readBlobContentInStreamOrder } from '../primitives/internal/blob-source.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
 import { loadShallowSet } from '../primitives/internal/shallow-set.js';
-import { readObjectStreamed } from '../primitives/read-object.js';
+import { readDeclaredObjectHeader, readObjectStreamed } from '../primitives/read-object.js';
 import { diffCommitAgainstParent } from './internal/commit-diff.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
-import { revParse } from './rev-parse.js';
+import { resolveRevision } from './rev-parse.js';
 
 export type ShowInput = string | ReadonlyArray<string>;
 
@@ -119,11 +120,19 @@ export async function show(
 }
 
 const buildForRev = async (ctx: Context, rev: string, withStat: boolean): Promise<ShowResult> => {
-  const id = await revParse(ctx, rev);
+  const id = await resolveRevision(ctx, rev);
   // Promisor-remote guard (see assertValidPromisorRemoteConfig) — after rev resolution.
   await assertValidPromisorRemoteConfig(ctx);
-  return buildResult(ctx, await readObjectStreamed(ctx, id), withStat);
+  return buildResult(ctx, await readShowTarget(ctx, id), withStat);
 };
+
+/** Header first, so a blob is opened in git's stream order; every other type
+ *  keeps the streamed read. */
+async function readShowTarget(ctx: Context, id: ObjectId): Promise<GitObject> {
+  const { type } = await readDeclaredObjectHeader(ctx, id);
+  if (type !== 'blob') return readObjectStreamed(ctx, id);
+  return { type: 'blob', id, content: await readBlobContentInStreamOrder(ctx, id) };
+}
 
 async function buildResult(ctx: Context, obj: GitObject, withStat: boolean): Promise<ShowResult> {
   switch (obj.type) {
@@ -160,6 +169,6 @@ async function buildCommit(
 }
 
 async function buildTag(ctx: Context, obj: Tag, withStat: boolean): Promise<ShowTagResult> {
-  const target = await buildResult(ctx, await readObjectStreamed(ctx, obj.data.object), withStat);
+  const target = await buildResult(ctx, await readShowTarget(ctx, obj.data.object), withStat);
   return { kind: 'tag', id: obj.id, tag: obj.data, target };
 }

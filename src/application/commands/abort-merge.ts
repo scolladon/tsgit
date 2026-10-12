@@ -5,13 +5,16 @@ import { resetMovingTo } from '../../domain/reflog/reflog-messages.js';
 import { MERGE, MERGE_ABORT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import { updateRef } from '../primitives/update-ref.js';
-import { clearMergeState, readMergeHead, readOrigHead } from './internal/merge-state.js';
+import { removeBranchState } from './internal/branch-state.js';
+import { takeMergeAutostash } from './internal/merge-autostash.js';
+import { readMergeHead, readOrigHead } from './internal/merge-state.js';
 import {
-  assertOperationalRepository,
+  assertOperationalRepositorySettingsFirst,
   readHeadRaw,
   requireWorkTree,
 } from './internal/repo-state.js';
 import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
+import { applyAutostash } from './stash.js';
 
 export interface MergeAbortResult {
   /** The commit `ORIG_HEAD` recorded; HEAD now points at this id. */
@@ -22,7 +25,7 @@ export interface MergeAbortResult {
 
 /**
  * Abort a conflicting merge. Restores the working tree, index, and branch
- * ref to `ORIG_HEAD`, then clears `MERGE_HEAD` and `MERGE_MSG`. `ORIG_HEAD`
+ * ref to `ORIG_HEAD`, then clears the branch state as git's `reset --merge` does. `ORIG_HEAD`
  * is preserved on disk as a cross-operation recovery aid (ADR-173).
  *
  * Refuses when no merge is in progress (`MERGE_HEAD` absent) or when the
@@ -33,7 +36,7 @@ export interface MergeAbortResult {
  * fire on the very `MERGE_HEAD` we're about to clear). See ADR-170.
  */
 export const mergeAbort = async (ctx: Context): Promise<MergeAbortResult> => {
-  await assertOperationalRepository(ctx);
+  await assertOperationalRepositorySettingsFirst(ctx);
   requireWorkTree(ctx, MERGE_ABORT);
   const mergeHead = await readMergeHead(ctx);
   // Load-bearing under the ADR-027 write order: `merge`'s conflict path
@@ -48,12 +51,15 @@ export const mergeAbort = async (ctx: Context): Promise<MergeAbortResult> => {
   if (head.kind !== 'symbolic') {
     throw unsupportedOperation(MERGE_ABORT, 'cannot abort with detached HEAD');
   }
+  // git takes MERGE_AUTOSTASH before its reset, so the reset cannot file it away.
+  const autostash = await takeMergeAutostash(ctx);
   await hardResetWorktreeToCommit(ctx, origHead);
   // git's `merge --abort` delegates to a `reset` whose rev argument is the
   // symbolic `HEAD`, so the coupled-HEAD reflog reads `reset: moving to HEAD`
   // (the literal `HEAD`, not the oid) — and the write itself goes through
   // the literal `HEAD` too, as git's own reset does.
   await updateRef(ctx, 'HEAD' as RefName, origHead, { reflogMessage: resetMovingTo('HEAD') });
-  await clearMergeState(ctx);
+  await removeBranchState(ctx, 'silent');
+  if (autostash !== undefined) await applyAutostash(ctx, autostash);
   return { origHead, branch: head.target };
 };

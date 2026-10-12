@@ -147,3 +147,28 @@ describe('receive-pack integration — the error packet', () => {
     });
   });
 });
+
+describe('receive-pack integration — ref options', () => {
+  describe('Given an old-oid option whose value runs past the object id', () => {
+    describe('When parsed end-to-end', () => {
+      it('Then the id the value starts with is reported', async () => {
+        // Arrange
+        const id = 'a'.repeat(40);
+        const body = concat(
+          pkt('unpack ok\n'),
+          pkt('ok refs/heads/main\n'),
+          pkt(`option old-oid ${id}tail\n`),
+          FLUSH,
+        );
+
+        // Act
+        const result = await parseReceivePackResponse(await decodeAll(body));
+
+        // Assert
+        expect(result.refUpdates).toEqual([
+          { name: 'refs/heads/main', accepted: true, report: { oldId: id } },
+        ]);
+      });
+    });
+  });
+});

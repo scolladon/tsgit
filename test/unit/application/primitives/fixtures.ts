@@ -3,6 +3,8 @@
  */
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
+import type { ObjectStore } from '../../../../src/application/primitives/object-store.js';
+import type { PackRegistry } from '../../../../src/application/primitives/pack-registry.js';
 import {
   commitGraphChainPath,
   commitGraphPath,
@@ -11,6 +13,7 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { GitIndex } from '../../../../src/domain/git-index/index-entry.js';
 import { serializeIndex } from '../../../../src/domain/git-index/index-writer.js';
+import { bytesToHex } from '../../../../src/domain/objects/encoding.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import { serializeObject } from '../../../../src/domain/objects/git-object.js';
 import type {
@@ -313,6 +316,34 @@ export async function writeRawObjectBytes(
   await ctx.fs.write(loosePath, compressed);
   return id;
 }
+
+const FORGED_TAG_ID = 'a1'.repeat(20) as ObjectId;
+
+/**
+ * Plant a loose tag naming `target` under `id`, an id its bytes do not hash
+ * to — links a chain only a store read without hash verification can follow.
+ */
+export async function writeForgedTag(
+  ctx: Context,
+  id: ObjectId,
+  target: ObjectId,
+): Promise<ObjectId> {
+  const content = new TextEncoder().encode(
+    `object ${target}\ntype tag\ntag loop\ntagger A <a@a> 0 +0000\n\nloop\n`,
+  );
+  const header = serializeHeader('tag', content.length);
+  const bytes = new Uint8Array([...header, ...content]);
+  const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+  await ctx.fs.write(loosePath, await ctx.compressor.deflate(bytes));
+  return id;
+}
+
+/**
+ * Plant a loose tag naming itself under an id its bytes do not hash to — a
+ * loop only a store read without hash verification can hold.
+ */
+export const writeForgedTagLoop = (ctx: Context): Promise<ObjectId> =>
+  writeForgedTag(ctx, FORGED_TAG_ID, FORGED_TAG_ID);
 
 /**
  * Overwrite an already-hashed loose object's on-disk file with a header
@@ -652,13 +683,92 @@ export async function writeCommitGraph(
 
   const hashes: ObjectId[] = [];
   for (const sorted of sortedLayers) {
-    const baseGraphHashes = hashes.length > 0 ? [hashes[hashes.length - 1]!] : [];
     const bytes = buildCommitGraphBytes(
-      layerModelFor(sorted, positionOf, generations, baseGraphHashes),
+      layerModelFor(sorted, positionOf, generations, [...hashes]),
     );
-    const hash = (await ctx.hash.hashHex(bytes)) as ObjectId;
+    const hash = await stampTrailer(ctx, bytes);
     hashes.push(hash);
     await ctx.fs.write(`${gitDir}/objects/info/commit-graphs/graph-${hash}.graph`, bytes);
   }
   await ctx.fs.writeUtf8(commitGraphChainPath(gitDir), `${hashes.join('\n')}\n`);
 }
+
+const GRAPH_HEADER_SIZE = 8;
+const GRAPH_CHUNK_ROW_SIZE = 12;
+const GRAPH_OID_SIZE = 20;
+const GRAPH_FANOUT_LAST_BUCKET = 255;
+const GENERATION_OVERFLOW_FLAG = 0x80000000;
+
+const graphChunkStart = (view: DataView, id: string): number => {
+  for (let row = GRAPH_HEADER_SIZE; ; row += GRAPH_CHUNK_ROW_SIZE) {
+    const rowId = String.fromCharCode(...new Uint8Array(view.buffer, view.byteOffset + row, 4));
+    if (rowId === id) return view.getUint32(row + 8);
+    if (view.getUint32(row) === 0) throw new Error(`chunk ${id} not present in fixture`);
+  }
+};
+
+/**
+ * Sets git's GDA2 overflow flag (index 0 into GDO2) on `id`'s entry of the
+ * single-file graph — a graph that, without a GDO2 chunk, demands overflow
+ * generation data it does not carry.
+ */
+export async function flagGenerationOverflow(ctx: Context, id: ObjectId): Promise<void> {
+  const path = commitGraphPath(ctx.layout.gitDir);
+  const bytes = (await ctx.fs.read(path)).slice();
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const fanout = graphChunkStart(view, 'OIDF');
+  const count = view.getUint32(fanout + GRAPH_FANOUT_LAST_BUCKET * 4);
+  const oids = graphChunkStart(view, 'OIDL');
+  const position = Array.from({ length: count }, (_, at) => at).find(
+    (at) =>
+      bytesToHex(bytes.subarray(oids + at * GRAPH_OID_SIZE, oids + (at + 1) * GRAPH_OID_SIZE)) ===
+      id,
+  );
+  if (position === undefined) throw new Error(`${id} not present in fixture graph`);
+  view.setUint32(graphChunkStart(view, 'GDA2') + position * 4, GENERATION_OVERFLOW_FLAG);
+  await ctx.fs.write(path, bytes);
+}
+
+const GRAPH_DATE_HIGH_BITS = 0x3;
+
+/**
+ * Clears the topological level of the first commit in the graph file at
+ * `path`, keeping its committer-date high bits — what a graph written before
+ * git computed generation numbers holds.
+ */
+export async function zeroFirstTopologicalLevel(ctx: Context, path: string): Promise<void> {
+  const bytes = (await ctx.fs.read(path)).slice();
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const levelWord = graphChunkStart(view, 'CDAT') + GRAPH_OID_SIZE + 8;
+  view.setUint32(levelWord, view.getUint32(levelWord) & GRAPH_DATE_HIGH_BITS);
+  await ctx.fs.write(path, bytes);
+}
+
+/** As git names a layer: by the checksum it writes as the file's trailer, every base listed in BASE. */
+export async function stampTrailer(ctx: Context, bytes: Uint8Array): Promise<ObjectId> {
+  const trailerStart = bytes.length - ctx.hashConfig.digestLength;
+  const checksum = await ctx.hash.hash(bytes.subarray(0, trailerStart));
+  bytes.set(checksum, trailerStart);
+  return bytesToHex(checksum) as ObjectId;
+}
+
+const NO_BIG_FILE_THRESHOLD = Number.POSITIVE_INFINITY;
+
+/** A store whose only source is the primary, backed by an explicitly built `registry`. */
+export const soleSourceStore = (ctx: Context, registry: PackRegistry): ObjectStore => {
+  const primary = {
+    objectsDir: `${ctx.layout.gitDir}/objects`,
+    fs: ctx.fs,
+    local: true,
+    registry,
+  };
+  return {
+    sources: [primary],
+    primary,
+    diagnostics: [],
+    bigFileThreshold: NO_BIG_FILE_THRESHOLD,
+    refresh: () => registry.refresh(),
+    reprepare: () => registry.reprepare(),
+    dispose: () => registry.dispose(),
+  };
+};

@@ -1,12 +1,15 @@
 import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
+import type { SidePaths } from './merge-renames.js';
 
 export type ConflictType =
   | 'content'
   | 'add-add'
   | 'distinct-types'
   | 'modify-delete'
+  | 'rename-delete'
   | 'type-change'
   | 'rename-rename'
+  | 'file-location'
   | 'gitlink'
   | 'binary';
 
@@ -79,10 +82,21 @@ export interface ContentMergeContext {
   readonly baseMode?: FileMode;
   readonly ourMode: FileMode;
   readonly theirMode: FileMode;
+  /** Where base, ours and theirs held the path, present only when a rename makes them differ. */
+  readonly sidePaths?: SidePaths;
+  /** Characters added to the path's conflict-marker-size, so a nested merge's markers outgrow the outer ones. */
+  readonly extraMarkerSize?: number;
 }
 
-/** How an overlapping region is resolved: `none` → conflict markers, `union` → both sides concatenated. */
-export type MergeFavor = 'none' | 'union';
+/**
+ * How an overlapping region is resolved: `none` → conflict markers, `union` →
+ * both sides concatenated, `ours` / `theirs` → that side alone (git's `-X ours`
+ * / `-X theirs`, which also settle a binary merge on that side).
+ */
+export type MergeFavor = 'none' | 'union' | 'ours' | 'theirs';
+
+/** git's `merge.conflictStyle`: plain markers, or a `|||||||` base section (`zdiff3` trims common edges). */
+export type ConflictStyle = 'merge' | 'diff3' | 'zdiff3';
 
 export interface ConflictMarkerOptions {
   readonly labels?: {
@@ -90,7 +104,7 @@ export interface ConflictMarkerOptions {
     readonly base?: string;
     readonly theirs?: string;
   };
-  readonly conflictStyle?: 'merge' | 'diff3';
+  readonly conflictStyle?: ConflictStyle;
   /** Marker run length (git's `conflict-marker-size`); defaults to 7 when omitted. */
   readonly markerSize?: number;
 }

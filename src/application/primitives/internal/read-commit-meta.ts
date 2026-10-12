@@ -26,6 +26,8 @@ export interface CommitMeta {
   /** Graph generation — topo level or corrected commit date — or
    *  GENERATION_INFINITY when no graph serves this commit (or serves it with 0). */
   readonly generation: number;
+  /** Where the read came from: git's `fill_commit_in_graph` or `parse_commit_buffer`. */
+  readonly source: 'graph' | 'object';
 }
 
 /** The graph probe, skipped outright once the session knows no graph serves
@@ -39,6 +41,7 @@ const fromHeader = (header: CommitHeader): CommitMeta => ({
   tree: header.rootTree,
   committerDate: header.committerDate,
   generation: header.generation > 0 ? header.generation : GENERATION_INFINITY,
+  source: 'graph',
 });
 
 /** Graph first; `readObject` + `applyGraft` fallback. `undefined` for a non-commit
@@ -58,6 +61,7 @@ export const readCommitMeta = async (
     tree: grafted.data.tree,
     committerDate: grafted.data.committer.timestamp,
     generation: GENERATION_INFINITY,
+    source: 'object',
   };
 };
 
@@ -71,5 +75,6 @@ export const commitMetaOf = async (ctx: Context, commit: Commit): Promise<Commit
     tree: commit.data.tree,
     committerDate: commit.data.committer.timestamp,
     generation: header === undefined ? GENERATION_INFINITY : fromHeader(header).generation,
+    source: 'object',
   };
 };

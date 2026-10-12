@@ -22,13 +22,16 @@ import { init } from '../../../../src/application/commands/init.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { getRefStore, refExists } from '../../../../src/application/primitives/ref-store.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/index.js';
+import type { FileMode } from '../../../../src/domain/objects/file-mode.js';
 import type {
   AuthorIdentity,
   ObjectId,
   ObjectType,
   RefName,
 } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { withReftableStorage } from '../primitives/reftable-fixtures.js';
 
@@ -60,6 +63,15 @@ const writeCommitOn = (
     data: { tree, parents, author, committer: author, message, extraHeaders: [] },
   });
 
+const writeBlob = (ctx: Context, text: string): Promise<ObjectId> =>
+  writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: new TextEncoder().encode(text) });
+
+/** `ctx` with every `error:` line it logs collected in order. */
+const loggingErrors = (base: Context): { readonly ctx: Context; readonly errors: string[] } => {
+  const errors: string[] = [];
+  return { ctx: { ...base, logger: { error: (message: string) => errors.push(message) } }, errors };
+};
+
 const writeAnnotatedTag = (
   ctx: Context,
   object: ObjectId,
@@ -87,6 +99,12 @@ const configureUpstream = async (ctx: Context, upstream: RefName): Promise<void>
   const path = `${ctx.layout.gitDir}/config`;
   const current = await ctx.fs.readUtf8(path);
   await ctx.fs.writeUtf8(path, `${current}[branch "topic"]\n\tremote = .\n\tmerge = ${upstream}\n`);
+  invalidateConfigCache(ctx);
+};
+
+const appendCoreSetting = async (ctx: Context, setting: string): Promise<void> => {
+  const path = `${ctx.layout.gitDir}/config`;
+  await ctx.fs.writeUtf8(path, `${await ctx.fs.readUtf8(path)}[core]\n\t${setting}\n`);
   invalidateConfigCache(ctx);
 };
 
@@ -249,6 +267,59 @@ describe.each(['files', 'reftable'] as const)('branch delete — %s ref backend'
     });
   });
 
+  describe('Given a local upstream short name two namespaces carry, the ambiguity check off', () => {
+    describe('When branch delete runs unforced on a branch only the first namespace contains', () => {
+      it('Then the first namespace stands as the upstream and the ref is removed', async () => {
+        // Arrange
+        const { ctx, root, side } = await seed(refStorage);
+        await plantRef(ctx, TOPIC, side);
+        await plantRef(ctx, 'refs/tags/up' as RefName, side);
+        await plantRef(ctx, UPSTREAM, root);
+        await configureUpstream(ctx, 'up' as RefName);
+        await appendCoreSetting(ctx, 'warnAmbiguousRefs = false');
+        const sut = branchDelete;
+
+        // Act
+        const result = await sut(ctx, { name: 'topic' });
+
+        // Assert
+        expect(result).toEqual({ name: TOPIC });
+      });
+    });
+  });
+
+  describe('Given a local upstream short name a dangling tag symref shadows', () => {
+    describe('When branch delete runs unforced on a branch the branch namespace contains', () => {
+      it('Then it warns the skipped symref and the ref is removed', async () => {
+        // Arrange
+        const { ctx: base, side } = await seed(refStorage);
+        const warnings: string[] = [];
+        const ctx = { ...base, logger: { warn: (message: string) => warnings.push(message) } };
+        await plantRef(ctx, TOPIC, side);
+        await plantRef(ctx, UPSTREAM, side);
+        await getRefStore(ctx).applyRefUpdates([
+          {
+            kind: 'setSymbolic',
+            name: 'refs/tags/up' as RefName,
+            target: 'refs/tags/nope' as RefName,
+          },
+        ]);
+        await configureUpstream(ctx, 'up' as RefName);
+        const sut = branchDelete;
+
+        // Act
+        const result = await sut(ctx, { name: 'topic' });
+
+        // Assert
+        expect(result).toEqual({ name: TOPIC });
+        expect(warnings).toEqual([
+          'ignoring dangling symref refs/tags/up',
+          "deleting branch 'topic' that has been merged to\n         'refs/heads/up', but not yet merged to HEAD",
+        ]);
+      });
+    });
+  });
+
   describe('Given an upstream standing on a tree and a branch HEAD contains', () => {
     describe('When branch delete runs unforced', () => {
       it('Then HEAD stands in for the upstream that names no commit and the ref is removed', async () => {
@@ -285,6 +356,83 @@ describe.each(['files', 'reftable'] as const)('branch delete — %s ref backend'
         expect(caught.data.code).toBe('BRANCH_NOT_FULLY_MERGED');
         expect(caught.data).toEqual({ code: 'BRANCH_NOT_FULLY_MERGED', name: TOPIC });
         expect(await refExists(ctx, TOPIC)).toBe(true);
+      });
+    });
+  });
+
+  describe("Given HEAD whose second parent is the object the tip's tree names", () => {
+    describe('When branch delete runs unforced', () => {
+      it('Then HEAD is typed first and the tip fails to parse, refusing COMMIT_PARSE_FAILED', async () => {
+        // Arrange
+        const seeded = await seed(refStorage);
+        const { ctx, errors } = loggingErrors(seeded.ctx);
+        const blob = await writeBlob(ctx, 'b');
+        const tip = await writeCommitOn(ctx, blob, [], 'tip');
+        const head = await writeCommitOn(ctx, seeded.tree, [seeded.root, blob], 'head');
+        await plantRef(ctx, MAIN, head);
+        await plantRef(ctx, TOPIC, tip);
+        const sut = branchDelete;
+
+        // Act
+        const caught = await refusalOf(() => sut(ctx, { name: 'topic' }));
+
+        // Assert
+        expect(caught.data).toEqual({ code: 'COMMIT_PARSE_FAILED', id: tip });
+        expect(errors).toEqual([
+          `object ${blob} is a commit, not a tree`,
+          `bad tree pointer ${blob} in commit ${tip}`,
+        ]);
+        expect(await refExists(ctx, TOPIC)).toBe(true);
+      });
+    });
+  });
+
+  describe("Given HEAD's parent whose own parent is the tree HEAD carries", () => {
+    describe('When branch delete runs unforced on an unrelated tip', () => {
+      it('Then the walk parses that parent against the table and refuses COMMIT_PARSE_FAILED on it', async () => {
+        // Arrange
+        const seeded = await seed(refStorage);
+        const { ctx, errors } = loggingErrors(seeded.ctx);
+        const { tree } = seeded;
+        const parentTree = await writeTree(ctx, [
+          treeEntry('100644' as FileMode, 'b', await writeBlob(ctx, 'b')),
+        ]);
+        const parent = await writeCommitOn(ctx, parentTree, [tree], 'parent');
+        const head = await writeCommitOn(ctx, tree, [parent], 'head');
+        const tip = await writeCommitOn(ctx, tree, [], 'tip');
+        await plantRef(ctx, MAIN, head);
+        await plantRef(ctx, TOPIC, tip);
+        const sut = branchDelete;
+
+        // Act
+        const caught = await refusalOf(() => sut(ctx, { name: 'topic' }));
+
+        // Assert
+        expect(caught.data).toEqual({ code: 'COMMIT_PARSE_FAILED', id: parent });
+        expect(errors).toEqual([
+          `object ${tree} is a tree, not a commit`,
+          `bad parent ${tree} in commit ${parent}`,
+        ]);
+        expect(await refExists(ctx, TOPIC)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a branch standing on a tree, logging errors', () => {
+    describe('When branch delete runs with force', () => {
+      it("Then the tip's failed lookup is logged and the ref is removed", async () => {
+        // Arrange
+        const seeded = await seed(refStorage);
+        const { ctx, errors } = loggingErrors(seeded.ctx);
+        await plantRef(ctx, TOPIC, seeded.tree);
+        const sut = branchDelete;
+
+        // Act
+        const result = await sut(ctx, { name: 'topic', force: true });
+
+        // Assert
+        expect(result).toEqual({ name: TOPIC });
+        expect(errors).toEqual([`object ${seeded.tree} is a tree, not a commit`]);
       });
     });
   });

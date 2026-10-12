@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { add } from '../../../../src/application/commands/add.js';
@@ -13,16 +13,18 @@ import {
   rebaseRun,
   rebaseSkip,
 } from '../../../../src/application/commands/rebase.js';
+import { reset } from '../../../../src/application/commands/reset.js';
+import { rm } from '../../../../src/application/commands/rm.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { invalidateShallowSet } from '../../../../src/application/primitives/internal/shallow-set.js';
+import * as objectStoreMod from '../../../../src/application/primitives/object-store.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
-import { REASON_SKIP_TARGET_PARENTLESS } from '../../../../src/application/primitives/validators.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
-import { TsgitError } from '../../../../src/domain/error.js';
+import type { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type {
   AuthorIdentity,
@@ -32,7 +34,7 @@ import type {
 } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { asBareContext } from './fixtures.js';
+import { asBareContext, failSourceLoad, snapshotFiles } from './fixtures.js';
 
 const FEAT_AUTHOR: AuthorIdentity = {
   name: 'Feat',
@@ -719,6 +721,45 @@ describe('rebaseContinue', () => {
     });
   });
 
+  describe('Given a conflict resolved and committed by the caller', () => {
+    describe('When continued', () => {
+      it('Then it keeps the caller commit and creates none of its own', async () => {
+        // Arrange
+        const ctx = await seedConflict();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nRESOLVED\n');
+        await add(ctx, ['f.txt']);
+        const manual = (await commit(ctx, { message: 'manual', author: FEAT_AUTHOR })).id;
+
+        // Act
+        const result = await rebaseContinue(ctx);
+
+        // Assert
+        expect(result).toEqual({ kind: 'rebased', commits: [] });
+        expect(await resolveRef(ctx, 'refs/heads/topic' as RefName)).toBe(manual);
+        expect(await headIsSymbolic(ctx)).toBe(true);
+      });
+    });
+  });
+
+  describe("Given a conflict resolved back to HEAD's tree", () => {
+    describe('When continued', () => {
+      it('Then the stopped pick is dropped', async () => {
+        // Arrange
+        const ctx = await seedConflict();
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nMAIN\n');
+        await add(ctx, ['f.txt']);
+
+        // Act
+        const result = await rebaseContinue(ctx);
+
+        // Assert
+        expect(result).toEqual({ kind: 'rebased', commits: [] });
+        expect(await resolveRef(ctx, 'refs/heads/topic' as RefName)).toBe(head);
+      });
+    });
+  });
+
   describe('Given an unresolved (still-conflicted) index', () => {
     describe('When continued', () => {
       it('Then it refuses with MERGE_HAS_CONFLICTS naming the conflicted path', async () => {
@@ -731,6 +772,40 @@ describe('rebaseContinue', () => {
         // Assert
         expect(data.code).toBe('MERGE_HAS_CONFLICTS');
         expect(data.paths).toContain('f.txt');
+      });
+    });
+  });
+
+  describe('Given an interactive rebase stopped on a modify/delete conflict left unresolved', () => {
+    describe('When continued', () => {
+      it('Then it refuses with MERGE_HAS_CONFLICTS naming the conflicted path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await writeAddCommit(ctx, 'f.txt', 'L\n', 'base');
+        await writeAddCommit(ctx, 'keep.txt', 'k\n', 'keep');
+        await branchCreate(ctx, { name: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
+        const t1 = await writeAddCommit(ctx, 'f.txt', 'TOPIC\n', 't1 subject');
+        const t2 = await writeAddCommit(ctx, 'g.txt', 'g\n', 't2 subject');
+        await checkout(ctx, { rev: 'main' });
+        await rm(ctx, ['f.txt']);
+        await commit(ctx, { message: 'del', author: FEAT_AUTHOR });
+        await checkout(ctx, { rev: 'topic' });
+        await rebaseRun(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'drop', oid: t2 },
+          ],
+        });
+
+        // Act
+        const data = await dataOf(() => rebaseContinue(ctx));
+
+        // Assert
+        expect(data).toMatchObject({ code: 'MERGE_HAS_CONFLICTS', paths: ['f.txt'] });
       });
     });
   });
@@ -1470,11 +1545,17 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
     });
   });
 
-  describe('Given an edit stop that is skipped', () => {
-    describe('When skip is called', () => {
-      it('Then the edit commit is dropped and the rest replays onto its parent', async () => {
+  describe('Given an edit stop continued with no tree change and a post-rewrite hook', () => {
+    describe('When continue is called', () => {
+      it('Then post-rewrite still maps the edited commit to HEAD', async () => {
         // Arrange
-        const { ctx, base, c1, c2 } = await seedLinear();
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await init(ctx);
+        await setUser(ctx);
+        const base = await writeAddCommit(ctx, 'base.txt', 'base\n', 'base');
+        const c1 = await writeAddCommit(ctx, '1.txt', '1\n', 'c1 subject');
+        const c2 = await writeAddCommit(ctx, '2.txt', '2\n', 'c2 subject');
         await rebaseRun(ctx, {
           upstream: base,
           interactive: [
@@ -1484,13 +1565,88 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
         });
 
         // Act
+        await rebaseContinue(ctx);
+
+        // Assert
+        const result = runner.calls.filter((call) => call.name === 'post-rewrite');
+        expect(result.map((call) => call.stdin)).toEqual([`${c1} ${c1}\n${c2} ${c2}\n`]);
+      });
+    });
+  });
+
+  describe('Given an edit stop where the caller committed on top', () => {
+    describe('When continued', () => {
+      it('Then the caller commit is kept and the edited commit is not amended', async () => {
+        // Arrange
+        const { ctx, base, c1, c2 } = await seedLinear();
+        await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'edit', oid: c1 },
+            { action: 'pick', oid: c2 },
+          ],
+        });
+        const extra = await writeAddCommit(ctx, 'extra.txt', 'extra\n', 'extra');
+
+        // Act
+        await rebaseContinue(ctx);
+
+        // Assert
+        const result = await readCommit(ctx, await mainTipOid(ctx));
+        expect(result.message).toBe('c2 subject\n');
+        expect(result.parents).toEqual([extra]);
+        expect((await readCommit(ctx, extra)).parents).toEqual([c1]);
+      });
+    });
+  });
+
+  describe('Given an edit stop where the caller committed on top and staged more', () => {
+    describe('When continued', () => {
+      it('Then it refuses with WORKING_TREE_DIRTY naming the staged path', async () => {
+        // Arrange
+        const { ctx, base, c1 } = await seedLinear();
+        await rebaseRun(ctx, { upstream: base, interactive: [{ action: 'edit', oid: c1 }] });
+        await writeAddCommit(ctx, 'extra.txt', 'extra\n', 'extra');
+        await ctx.fs.writeUtf8(work(ctx, 'extra.txt'), 'more\n');
+        await add(ctx, ['extra.txt']);
+
+        // Act
+        const result = await dataOf(() => rebaseContinue(ctx));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['extra.txt'],
+          untracked: [],
+        });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an edit stop that is skipped', () => {
+    describe('When skip is called', () => {
+      it('Then the already-made edit commit is kept and the rest replays on top of it', async () => {
+        // Arrange
+        const { ctx, base, c1, c2 } = await seedLinear();
+        await rebaseRun(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'edit', oid: c1 },
+            { action: 'pick', oid: c2 },
+          ],
+        });
+        await ctx.fs.writeUtf8(work(ctx, 'scratch.txt'), 'discarded\n');
+        await add(ctx, ['scratch.txt']);
+
+        // Act
         const result = await rebaseSkip(ctx);
 
-        // Assert — c1 dropped; c2 reparented onto base
+        // Assert — skip discards the staged change only; c1 stays, c2 fast-forwards onto it
         expect(result.kind).toBe('rebased');
-        const tip = await readCommit(ctx, await mainTipOid(ctx));
-        expect(tip.message).toBe('c2 subject\n');
-        expect(tip.parents).toEqual([base]);
+        expect(await mainTipOid(ctx)).toBe(c2);
+        expect((await readCommit(ctx, c2)).parents).toEqual([c1]);
+        expect(await ctx.fs.exists(work(ctx, 'scratch.txt'))).toBe(false);
       });
     });
   });
@@ -1522,6 +1678,91 @@ describe('rebaseRun (interactive edit / continue / skip)', () => {
         const head = await reflogMessages(ctx, 'HEAD');
         expect(head[0]).toBe('rebase (finish): returning to refs/heads/topic');
         expect(head[1]).toBe('rebase (continue): t2 subject');
+      });
+    });
+
+    describe('When the resolution is committed by the caller and continued', () => {
+      it('Then the caller commit stands in for the stopped pick', async () => {
+        // Arrange
+        const { ctx, t1, t2, t3 } = await seedTopicConflict();
+        await rebaseRun(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'pick', oid: t2 },
+            { action: 'drop', oid: t3 },
+          ],
+        });
+        const manual = await writeAddCommit(ctx, 'f.txt', 'RESOLVED\n', 'manual');
+
+        // Act
+        const result = await rebaseContinue(ctx);
+
+        // Assert
+        expect(result).toEqual({ kind: 'rebased', commits: [] });
+        expect(await resolveRef(ctx, 'refs/heads/topic' as RefName)).toBe(manual);
+      });
+    });
+
+    describe.each(['fixup', 'squash'] as const)(
+      'When a conflicted %s is amended into its group by hand and continued',
+      (action) => {
+        it('Then the hand-made message stands and the group state is dropped', async () => {
+          // Arrange
+          const { ctx, t1, t2, t3 } = await seedTopicConflict();
+          await rebaseRun(ctx, {
+            upstream: 'main',
+            interactive: [
+              { action: 'pick', oid: t1 },
+              { action, oid: t2 },
+              { action: 'pick', oid: t3 },
+            ],
+          });
+          await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'RESOLVED\n');
+          await add(ctx, ['f.txt']);
+          await reset(ctx, { mode: 'soft', rev: 'HEAD~1' });
+          const amended = (await commit(ctx, { message: 't1 by hand', author: FEAT_AUTHOR })).id;
+          const sut = rebaseContinue;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result.kind).toBe('rebased');
+          const tip = await resolveRef(ctx, 'refs/heads/topic' as RefName);
+          expect((await readCommit(ctx, tip)).parents).toEqual([amended]);
+          expect((await readCommit(ctx, amended)).message).toBe('t1 by hand\n');
+        });
+      },
+    );
+
+    describe('When a conflicted squash is amended by hand and the rebase stops again later', () => {
+      it('Then the later stop carries no group state', async () => {
+        // Arrange
+        const { ctx, t1, t2, t3 } = await seedTopicConflict();
+        await rebaseRun(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'squash', oid: t2 },
+            { action: 'edit', oid: t3 },
+          ],
+        });
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'RESOLVED\n');
+        await add(ctx, ['f.txt']);
+        await reset(ctx, { mode: 'soft', rev: 'HEAD~1' });
+        await commit(ctx, { message: 't1 by hand', author: FEAT_AUTHOR });
+        const sut = rebaseContinue;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.kind).toBe('stopped');
+        const present = async (name: string) =>
+          ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/${name}`);
+        expect(await present('current-fixups')).toBe(false);
+        expect(await present('message-squash')).toBe(false);
       });
     });
 
@@ -1752,6 +1993,50 @@ describe('rebaseRun (interactive squash / fixup)', () => {
   });
 
   describe('Given a squash whose meld conflicts', () => {
+    describe('When the rebase stops on it', () => {
+      it('Then amend records HEAD, the group commit the resolution amends', async () => {
+        // Arrange
+        const { ctx, t1, t2 } = await seedTopicConflict();
+        const sut = rebaseRun;
+
+        // Act
+        await sut(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'squash', oid: t2 },
+          ],
+        });
+
+        // Assert
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        expect(await readMerge(ctx, 'amend')).toBe(`${head}\n`);
+      });
+    });
+
+    describe('When the meld is skipped', () => {
+      it('Then the group commit at HEAD is kept, not dropped like an edit', async () => {
+        // Arrange
+        const { ctx, t1, t2 } = await seedTopicConflict();
+        await rebaseRun(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'squash', oid: t2 },
+          ],
+        });
+        const groupHead = await resolveRef(ctx, 'HEAD' as RefName);
+        const sut = rebaseSkip;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.kind).toBe('rebased');
+        expect(await resolveRef(ctx, 'refs/heads/topic' as RefName)).toBe(groupHead);
+      });
+    });
+
     describe('When resolved and continued', () => {
       it('Then it commits the combined group and persists the group state at the stop', async () => {
         // Arrange — t1 clean onto main; squash t2 melds a conflicting f.txt
@@ -1800,7 +2085,7 @@ describe('rebaseRun (interactive squash / fixup)', () => {
 
   describe('Given a squash whose meld produces a distinct-types conflict', () => {
     describe('When the meld stops', () => {
-      it('Then MERGE_MSG lists recorded paths from the distinct-types conflict', async () => {
+      it('Then message and MERGE_MSG carry message-squash, with no conflicts list as git writes', async () => {
         // Arrange — base has `p` regular; t1 adds unrelated a.txt; t2 squashes
         // and changes `p` regular; main replaces `p` with a symlink.
         // Squash meld of t1+t2 onto main hits distinct-types on `p`.
@@ -1832,14 +2117,12 @@ describe('rebaseRun (interactive squash / fixup)', () => {
           ],
         });
 
-        // Assert — conflict; message lists both recorded paths
+        // Assert — a meld stop keeps the combined message as is
         expect(stop.kind).toBe('conflict');
         const msg = await readMerge(ctx, 'message');
-        expect(msg).toContain('# Conflicts:\n');
-        expect(msg).toContain('#\tp\n');
-        // The regular side (theirs = t2) is renamed p~<t2-abbrev> (t2 sub)
-        const abbrev = t2.slice(0, 7);
-        expect(msg).toContain(`#\tp~${abbrev} (t2 sub)\n`);
+        expect(msg).toBe(await readMerge(ctx, 'message-squash'));
+        expect(msg).not.toContain('# Conflicts:');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(msg);
       });
     });
   });
@@ -1957,6 +2240,151 @@ describe('rebaseRun (interactive squash / fixup)', () => {
         expect(await readMerge(ctx, 'message-squash')).toContain(
           '# The commit message #2 will be skipped:',
         );
+      });
+    });
+  });
+
+  describe('Given a fixup that follows its pick and whose meld conflicts', () => {
+    describe('When the stop state is persisted', () => {
+      it("Then message-fixup holds the group base's message and message and MERGE_MSG carry message-squash", async () => {
+        // Arrange
+        const { ctx, t1, t2, t3 } = await seedTopicConflict();
+        const sut = rebaseRun;
+
+        // Act
+        await sut(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'fixup', oid: t2 },
+            { action: 'drop', oid: t3 },
+          ],
+        });
+
+        // Assert
+        const squash = await readMerge(ctx, 'message-squash');
+        expect(await readMerge(ctx, 'message-fixup')).toBe((await readCommit(ctx, t1)).message);
+        expect(await readMerge(ctx, 'message')).toBe(squash);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(squash);
+      });
+    });
+  });
+
+  describe('Given a squash then a fixup whose meld conflicts', () => {
+    describe('When the stop state is persisted', () => {
+      it('Then no message-fixup is left, as a squash in the group drops it', async () => {
+        // Arrange
+        const { ctx, t1, t2, t3 } = await seedTopicConflict();
+        const sut = rebaseRun;
+
+        // Act
+        await sut(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'squash', oid: t2 },
+            { action: 'fixup', oid: t3 },
+          ],
+        });
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/message-fixup`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a squash group whose second member conflicts', () => {
+    describe('When the interactive rebase stops on that member', () => {
+      it('Then the stop lists every melded member and the oid folded after the group base, in meld order', async () => {
+        // Arrange — t3 (c.txt) melds cleanly into t1; t2 (f.txt) then conflicts with main
+        const { ctx, t1, t2, t3 } = await seedTopicConflict();
+        const sut = rebaseRun;
+
+        // Act
+        await sut(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'squash', oid: t3 },
+            { action: 'squash', oid: t2 },
+          ],
+        });
+
+        // Assert
+        const linesOf = async (name: string): Promise<ReadonlyArray<string>> =>
+          (await readMerge(ctx, name)).trimEnd().split('\n');
+        expect(await linesOf('current-fixups')).toEqual([`squash ${t3}`, `squash ${t2}`]);
+        expect((await linesOf('rewritten-pending')).slice(1)).toEqual([t3]);
+      });
+    });
+  });
+
+  describe('Given a conflicted squash resolved and continued onto two edit stops', () => {
+    describe('When the first edit stop is continued with a clean tree', () => {
+      it('Then the second stop still carries the group message-squash, as git leaves it', async () => {
+        // Arrange
+        const { ctx, t1, t2, t3 } = await seedTopicConflict();
+        const t4 = await writeAddCommit(ctx, 'd.txt', 'd\n', 't4 subject');
+        await rebaseRun(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'squash', oid: t2 },
+            { action: 'edit', oid: t3 },
+            { action: 'edit', oid: t4 },
+          ],
+        });
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'R\n');
+        await add(ctx, ['f.txt']);
+        await rebaseContinue(ctx);
+        const sut = rebaseContinue;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/rebase-merge/message-squash`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an interactive rebase stopped on an edit', () => {
+    describe('When the stop is skipped', () => {
+      it('Then post-rewrite maps the edited commit to HEAD, as git does', async () => {
+        // Arrange
+        const runner = new MemoryHookRunner();
+        const ctx = createMemoryContext({ hooks: runner });
+        await init(ctx);
+        await setUser(ctx);
+        await writeAddCommit(ctx, 'f.txt', 'L\n', 'base');
+        await branchCreate(ctx, { name: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
+        const t1 = await writeAddCommit(ctx, 'a.txt', 'a\n', 't1 subject');
+        const t2 = await writeAddCommit(ctx, 'f.txt', 'TOPIC\n', 't2 subject');
+        const t3 = await writeAddCommit(ctx, 'c.txt', 'c\n', 't3 subject');
+        await checkout(ctx, { rev: 'main' });
+        await writeAddCommit(ctx, 'f.txt', 'MAIN\n', 'm1');
+        await checkout(ctx, { rev: 'topic' });
+        await rebaseRun(ctx, {
+          upstream: 'main',
+          interactive: [
+            { action: 'pick', oid: t1 },
+            { action: 'drop', oid: t2 },
+            { action: 'edit', oid: t3 },
+          ],
+        });
+        const sut = rebaseSkip;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const tip = await resolveRef(ctx, 'refs/heads/topic' as RefName);
+        const parent = (await readCommit(ctx, tip)).parents[0];
+        const stdin = runner.calls
+          .filter((call) => call.name === 'post-rewrite')
+          .map((call) => call.stdin);
+        expect(stdin).toEqual([`${t1} ${parent}\n${t3} ${tip}\n`]);
       });
     });
   });
@@ -2301,30 +2729,19 @@ describe('rebase — hooks', () => {
 describe('rebase at a shallow boundary', () => {
   describe('Given an edit stop whose amend commit is a masked shallow boundary', () => {
     describe('When skip is called', () => {
-      it('Then refuses INVALID_SEQUENCER_TODO: there is no parent to return to', async () => {
-        // Arrange — masking the edit'd commit makes it parentless, so "drop
-        // the commit and move HEAD to its parent" has no destination.
+      it('Then it keeps the boundary commit and finishes — skip never needs its parent', async () => {
+        // Arrange
         const { ctx, base, c1 } = await seedLinear();
         await rebaseRun(ctx, { upstream: base, interactive: [{ action: 'edit', oid: c1 }] });
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${c1}\n`);
         invalidateShallowSet(ctx);
 
         // Act
-        let caught: unknown;
-        try {
-          await rebaseSkip(ctx);
-          expect.unreachable();
-        } catch (err) {
-          caught = err;
-        }
+        const result = await rebaseSkip(ctx);
 
         // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        if (!(caught instanceof TsgitError)) throw caught;
-        expect(caught.data.code).toBe('INVALID_SEQUENCER_TODO');
-        expect(caught.data.code === 'INVALID_SEQUENCER_TODO' && caught.data.reason).toBe(
-          REASON_SKIP_TARGET_PARENTLESS,
-        );
+        expect(result.kind).toBe('rebased');
+        expect(await mainTipOid(ctx)).toBe(c1);
       });
     });
 
@@ -2348,6 +2765,302 @@ describe('rebase at a shallow boundary', () => {
         expect(tip).not.toBe(c1);
         const tipData = await readCommit(ctx, tip);
         expect(tipData.parents).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('Given an alternate that fails to load', () => {
+  describe('When rebaseRun', () => {
+    it('Then it rejects with the alternate error and leaves every file untouched', async () => {
+      // Arrange
+      const { ctx } = await seedDivergent();
+      const before = await snapshotFiles(ctx);
+      const loadError = await failSourceLoad(ctx);
+      const sut = rebaseRun;
+
+      // Act
+      const attempt = sut(ctx, { upstream: 'main' });
+
+      // Assert
+      await expect(attempt).rejects.toBe(loadError);
+      expect(await snapshotFiles(ctx)).toEqual(before);
+      vi.restoreAllMocks();
+    });
+  });
+  describe('When rebaseRun has nothing to replay', () => {
+    it('Then it reports up-to-date without gating every source', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await setUser(ctx);
+      await writeAddCommit(ctx, 'base.txt', 'base\n', 'base');
+      const gate = vi.spyOn(objectStoreMod, 'assertEverySourceLoadable');
+      const sut = rebaseRun;
+
+      // Act
+      const result = await sut(ctx, { upstream: 'main' });
+
+      // Assert
+      expect(result).toEqual({ kind: 'up-to-date' });
+      expect(gate).not.toHaveBeenCalled();
+      vi.restoreAllMocks();
+    });
+  });
+  describe('When rebaseRun is interactive', () => {
+    it('Then it rejects with the alternate error and leaves every file untouched', async () => {
+      // Arrange
+      const { ctx, base, c1 } = await seedLinear();
+      const before = await snapshotFiles(ctx);
+      const loadError = await failSourceLoad(ctx);
+      const sut = rebaseRun;
+
+      // Act
+      const attempt = sut(ctx, { upstream: base, interactive: [{ action: 'pick', oid: c1 }] });
+
+      // Assert
+      await expect(attempt).rejects.toBe(loadError);
+      expect(await snapshotFiles(ctx)).toEqual(before);
+      vi.restoreAllMocks();
+    });
+  });
+  describe('When rebaseContinue', () => {
+    it('Then it rejects with the alternate error and leaves every file untouched', async () => {
+      // Arrange
+      const ctx = await seedConflict();
+      const before = await snapshotFiles(ctx);
+      const loadError = await failSourceLoad(ctx);
+      const sut = rebaseContinue;
+
+      // Act
+      const attempt = sut(ctx);
+
+      // Assert
+      await expect(attempt).rejects.toBe(loadError);
+      expect(await snapshotFiles(ctx)).toEqual(before);
+      vi.restoreAllMocks();
+    });
+  });
+  describe('When rebaseSkip', () => {
+    it('Then it rejects with the alternate error and leaves every file untouched', async () => {
+      // Arrange
+      const ctx = await seedConflict();
+      const before = await snapshotFiles(ctx);
+      const loadError = await failSourceLoad(ctx);
+      const sut = rebaseSkip;
+
+      // Act
+      const attempt = sut(ctx);
+
+      // Assert
+      await expect(attempt).rejects.toBe(loadError);
+      expect(await snapshotFiles(ctx)).toEqual(before);
+      vi.restoreAllMocks();
+    });
+  });
+});
+
+describe('rebase — stop markers and continue refusals', () => {
+  describe('Given an edit that does not fast-forward', () => {
+    describe('When the rebase stops at it', () => {
+      it('Then stopped-sha and REBASE_HEAD name the commit the todo picked', async () => {
+        // Arrange
+        const { ctx, base, c1, c2 } = await seedLinear();
+        const sut = rebaseRun;
+
+        // Act
+        await sut(ctx, {
+          upstream: base,
+          interactive: [
+            { action: 'drop', oid: c1 },
+            { action: 'edit', oid: c2 },
+          ],
+        });
+
+        // Assert
+        const result = await readMerge(ctx, 'stopped-sha');
+        expect(result).toBe(`${c2}\n`);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/REBASE_HEAD`)).toBe(`${c2}\n`);
+      });
+    });
+  });
+
+  describe('Given an edit stop with a tracked file changed but not staged', () => {
+    describe('When continue runs', () => {
+      it('Then it refuses on the unstaged path and keeps the stop', async () => {
+        // Arrange
+        const { ctx, base, c1 } = await seedLinear();
+        await rebaseRun(ctx, { upstream: base, interactive: [{ action: 'edit', oid: c1 }] });
+        await ctx.fs.writeUtf8(work(ctx, '1.txt'), 'changed\n');
+        const sut = rebaseContinue;
+
+        // Act
+        const result = await sut(ctx).catch((error: unknown) => error);
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['1.txt'],
+          untracked: [],
+        });
+        expect(await readMerge(ctx, 'amend')).toBe(`${c1}\n`);
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(c1);
+      });
+    });
+  });
+
+  describe('Given an edit stop with only an untracked file added', () => {
+    describe('When continue runs', () => {
+      it('Then the rebase completes', async () => {
+        // Arrange
+        const { ctx, base, c1 } = await seedLinear();
+        await rebaseRun(ctx, { upstream: base, interactive: [{ action: 'edit', oid: c1 }] });
+        await ctx.fs.writeUtf8(work(ctx, 'loose.txt'), 'loose\n');
+        const sut = rebaseContinue;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.kind).toBe('rebased');
+      });
+    });
+  });
+
+  describe('Given a conflict stop resolved with another tracked file left unstaged', () => {
+    describe('When continue runs', () => {
+      it('Then it refuses on the unstaged path', async () => {
+        // Arrange
+        const { ctx } = await seedTopicConflict();
+        await rebaseRun(ctx, { upstream: 'main' });
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'RESOLVED\n');
+        await add(ctx, ['f.txt']);
+        await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'changed\n');
+        const sut = rebaseContinue;
+
+        // Act
+        const result = await sut(ctx).catch((error: unknown) => error);
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['a.txt'],
+          untracked: [],
+        });
+      });
+    });
+  });
+});
+
+describe('rebase AUTO_MERGE lifecycle', () => {
+  describe('Given a stop on the last pick resolved with `add`', () => {
+    describe('When continued', () => {
+      it('Then AUTO_MERGE is gone once the resolution is committed', async () => {
+        // Arrange
+        const ctx = await seedConflict();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nRESOLVED\n');
+        await add(ctx, ['f.txt']);
+        const sut = rebaseContinue;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a topic whose picks each merge cleanly', () => {
+    describe('When rebased', () => {
+      it("Then AUTO_MERGE names the last pick's result tree", async () => {
+        // Arrange
+        const { ctx } = await seedDivergent();
+        const sut = rebaseRun;
+
+        // Act
+        await sut(ctx, { upstream: 'main' });
+
+        // Assert
+        const tip = await readCommit(ctx, await resolveRef(ctx, 'refs/heads/topic' as RefName));
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe(`${tip.tree}\n`);
+      });
+    });
+  });
+
+  describe('Given a stale AUTO_MERGE and a branch already on its upstream', () => {
+    describe('When rebased', () => {
+      it("Then AUTO_MERGE is gone, as git's up-to-date finish drops it", async () => {
+        // Arrange
+        const { ctx, mainTip } = await seedDivergent();
+        const [base] = (await readCommit(ctx, mainTip)).parents;
+        const stale = await resolveRef(ctx, 'HEAD' as RefName);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`, `${stale}\n`);
+        const sut = rebaseRun;
+
+        // Act
+        await sut(ctx, { upstream: base! });
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe(false);
+      });
+    });
+  });
+  describe('Given a last pick whose change upstream already made', () => {
+    describe('When rebased', () => {
+      it('Then AUTO_MERGE is gone, as git drops it with the emptied pick', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await writeAddCommit(ctx, 'base.txt', 'base\n', 'base');
+        await branchCreate(ctx, { name: 'topic' });
+        await checkout(ctx, { rev: 'topic' });
+        await writeAddCommit(ctx, 't1.txt', 't1\n', 't1');
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(work(ctx, 'm1.txt'), 'm1\n');
+        await add(ctx, ['m1.txt']);
+        await writeAddCommit(ctx, 't1.txt', 't1\n', 'm1');
+        await checkout(ctx, { rev: 'topic' });
+        const sut = rebaseRun;
+
+        // Act
+        await sut(ctx, { upstream: 'main' });
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe(false);
+      });
+    });
+  });
+  describe('Given a pick that conflicts', () => {
+    describe('When the rebase stops on it', () => {
+      it('Then MERGE_MSG holds the stop message, as git leaves it for the commit', async () => {
+        // Arrange
+        const sut = seedConflict;
+
+        // Act
+        const ctx = await sut();
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(
+          await readMerge(ctx, 'message'),
+        );
+      });
+    });
+
+    describe('When the resolution is continued', () => {
+      it('Then MERGE_MSG is gone with the commit', async () => {
+        // Arrange
+        const ctx = await seedConflict();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nRESOLVED\n');
+        await add(ctx, ['f.txt']);
+        const sut = rebaseContinue;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(false);
       });
     });
   });

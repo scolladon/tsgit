@@ -37,18 +37,63 @@
  * and it fails soft to "no config". The path is never created — read/init/add/
  * commit (signing off) write nothing under `HOME` — so there is nothing to set
  * up and nothing to clean up.
+ *
+ * **Fallback identity (what the closed vectors used to supply).** With no
+ * global config, git derives an identity from the account: a full name from the
+ * passwd GECOS field, so a commit succeeds on a workstation and dies with
+ * `empty ident name` on a CI runner whose account has none. `GIT_CONFIG_GLOBAL`
+ * names a file holding one fixed `user.name`/`user.email`, read at the global
+ * scope so a repository's own `user.*` and a call's `GIT_AUTHOR_*` /
+ * `GIT_COMMITTER_*` still win, exactly as they would over a developer's
+ * `~/.gitconfig`. The file lives in one directory per account, created `0700`
+ * and refused unless it is still a directory this account owns and keeps
+ * private, so no other account can plant or swap the config git reads; it is
+ * replaced by a rename, so a concurrent worker never reads it half-written.
  */
+
 import { execFile, execFileSync, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { lstatSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
+import type { RevParseEntry } from '../../src/application/commands/rev-parse.js';
 
 const execFileAsync = promisify(execFile);
 
 // Single source for the isolation HOME: a deterministic path under os.tmpdir()
 // that is never created, so git's global/XDG config lookups miss and fail soft.
 const ISOLATED_HOME = path.join(os.tmpdir(), 'tsgit-interop-nonexistent-home');
+
+/** git's own test-suite author, the identity a commit falls back to. */
+const FALLBACK_IDENTITY_CONFIG = '[user]\n\tname = A U Thor\n\temail = author@example.com\n';
+
+const IDENTITY_DIR = path.join(os.tmpdir(), `tsgit-interop-identity-${os.userInfo().username}`);
+const PRIVATE_DIR_MODE = 0o700;
+const GROUP_OR_OTHER_BITS = 0o077;
+
+/** Windows keeps `%TEMP%` per account and reports no POSIX owner or mode bits to check. */
+export const isPrivateToThisAccount = (dir: string): boolean => {
+  const stats = lstatSync(dir);
+  if (!stats.isDirectory()) return false;
+  if (process.platform === 'win32' || process.getuid === undefined) return true;
+  return stats.uid === process.getuid() && (stats.mode & GROUP_OR_OTHER_BITS) === 0;
+};
+
+const publishIdentityConfig = (): string => {
+  mkdirSync(IDENTITY_DIR, { recursive: true, mode: PRIVATE_DIR_MODE });
+  if (!isPrivateToThisAccount(IDENTITY_DIR)) {
+    throw new Error(
+      `refusing an identity config directory another account can write: ${IDENTITY_DIR}`,
+    );
+  }
+  const target = path.join(IDENTITY_DIR, '.gitconfig');
+  const staging = `${target}.${process.pid}-${randomUUID()}`;
+  writeFileSync(staging, FALLBACK_IDENTITY_CONFIG);
+  renameSync(staging, target);
+  return target;
+};
 
 const buildSafeEnv = (): NodeJS.ProcessEnv => {
   const env: NodeJS.ProcessEnv = {};
@@ -60,6 +105,7 @@ const buildSafeEnv = (): NodeJS.ProcessEnv => {
   env.HOME = ISOLATED_HOME;
   env.GIT_CONFIG_NOSYSTEM = '1';
   env.XDG_CONFIG_HOME = path.join(ISOLATED_HOME, '.config');
+  env.GIT_CONFIG_GLOBAL = publishIdentityConfig();
   // Same guarantee `disableAutoMaintenance` gives one repo, given to every
   // repo any interop test spawns git against — including the ones that never
   // call it. A detached `gc --auto` / `maintenance run --auto` mutates
@@ -126,6 +172,16 @@ export const runGit = (
 
 /** Snapshot of the sanitised env, for tests that need to extend it. */
 export const runGitEnv = (): NodeJS.ProcessEnv => ({ ...SAFE_ENV });
+
+/**
+ * The sanitised env with no global config at all, fallback identity included:
+ * for a test probing that git finds no `user.*` key, which the pinned
+ * tsgit side never has.
+ */
+export const runGitEnvWithoutGlobalConfig = (): NodeJS.ProcessEnv => ({
+  ...SAFE_ENV,
+  GIT_CONFIG_GLOBAL: path.join(ISOLATED_HOME, '.gitconfig'),
+});
 
 /**
  * Async counterpart to `runGit` — spawns git without blocking the event
@@ -273,14 +329,28 @@ export const topReflogSubject = (dir: string, ref: string): string =>
   git(dir, 'log', '-g', '--format=%gs', ref).split('\n')[0] ?? '';
 
 /**
+ * A git that refuses before reading its stdin (a fatal in setup, a bad
+ * argument) closes the pipe while the parent is still writing a payload
+ * larger than the pipe buffer, so `spawnSync` reports `EPIPE` alongside the
+ * real exit status. That is git's verdict, not a spawn failure.
+ */
+const isStdinClosedByExitedGit = (result: {
+  readonly error?: Error;
+  readonly status: number | null;
+}): boolean =>
+  (result.error as NodeJS.ErrnoException | undefined)?.code === 'EPIPE' && result.status !== null;
+
+/**
  * Run `git`, capturing stdout, stderr AND the numeric exit code (never
  * throws on a normal git refusal) — for co-refusal assertions where the
  * exact exit code matters, not just success/failure. `tryRunGit` above only
  * distinguishes ok/not-ok; this reports the code so a caller can assert
  * git's documented refusal exit (128 for a structural `fatal:`, 1 for
- * `fsck`'s WARN/ERROR bits). Rethrows on EVERY spawn failure (`result.error`
+ * `fsck`'s WARN/ERROR bits). Rethrows on every spawn failure (`result.error`
  * — a timeout kill included, but also an unresolvable binary or any other
- * reason the child never ran) and on `status === null` (killed by a signal
+ * reason the child never ran) except an `EPIPE` that arrives with an exit
+ * status, which is git refusing before it read its stdin (see
+ * `isStdinClosedByExitedGit`), and on `status === null` (killed by a signal
  * with no `error` set): `spawnSync`'s own invariant is that `status` is
  * `null` exactly when the process never exited normally, so coercing either
  * case to a fake `1` would misreport a process that never actually ran as a
@@ -298,7 +368,7 @@ export const tryRunGitWithExit = (
     ...(options.input === undefined ? {} : { input: options.input }),
   };
   const result = spawnSync('git', args as string[], opts);
-  if (result.error !== undefined) {
+  if (result.error !== undefined && !isStdinClosedByExitedGit(result)) {
     throw new Error(`git ${args.join(' ')} failed to spawn: ${result.error.message}`);
   }
   if (result.status === null) {
@@ -341,3 +411,15 @@ export const tryRunGit = (
     };
   }
 };
+
+const EXCLUDED_MARK = '^';
+
+const revParseLine = (entry: RevParseEntry): string =>
+  entry.kind === 'path' ? entry.path : `${entry.negated ? EXCLUDED_MARK : ''}${entry.id}`;
+
+/**
+ * `git rev-parse`'s stdout rebuilt from `revParse`'s entries: one line each,
+ * an excluded object marked `^`, a path as given.
+ */
+export const revParseStdout = (entries: ReadonlyArray<RevParseEntry>): string =>
+  entries.map(revParseLine).join('\n');

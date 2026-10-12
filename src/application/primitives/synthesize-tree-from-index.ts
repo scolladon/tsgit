@@ -74,19 +74,30 @@ const assertDepthBounded = (path: string, maxDepth: number): void => {
   }
 };
 
-const stage0Entries = (entries: ReadonlyArray<IndexEntry>, maxDepth: number): PendingEntry[] => {
+type EntryCheck = (entry: IndexEntry, maxDepth: number) => void;
+
+// Defence-in-depth: re-validate paths. `parseIndex` already calls this on
+// every entry it constructs, so this is a no-op for parser-sourced indices.
+// Callers constructing IndexEntry records outside the parser (test fixtures,
+// future in-memory builders) benefit from the second check. We pass
+// NO_PARSER_OFFSET because these entries did not come from a parsed byte
+// buffer — see `path-validator.ts` for the contract.
+const indexEntryCheck: EntryCheck = (entry, maxDepth) => {
+  validateIndexPath(entry.path, NO_PARSER_OFFSET, entry.mode);
+  assertDepthBounded(entry.path, maxDepth);
+};
+
+const depthCheck: EntryCheck = (entry, maxDepth) => assertDepthBounded(entry.path, maxDepth);
+
+const stage0Entries = (
+  entries: ReadonlyArray<IndexEntry>,
+  maxDepth: number,
+  check: EntryCheck,
+): PendingEntry[] => {
   const out: PendingEntry[] = [];
   for (const entry of entries) {
     if (entry.flags.stage !== 0) continue;
-    // Defence-in-depth: re-validate paths. `parseIndex` already calls
-    // this on every entry it constructs, so this is a no-op for
-    // parser-sourced indices. Callers constructing IndexEntry records
-    // outside the parser (test fixtures, future in-memory builders)
-    // benefit from the second check. We pass NO_PARSER_OFFSET because
-    // these entries did not come from a parsed byte buffer — see
-    // `path-validator.ts` for the contract.
-    validateIndexPath(entry.path, NO_PARSER_OFFSET, entry.mode);
-    assertDepthBounded(entry.path, maxDepth);
+    check(entry, maxDepth);
     out.push({ path: entry.path, id: entry.id, mode: entry.mode });
   }
   return out;
@@ -207,6 +218,18 @@ export const synthesizeTreeFromIndex = async (
   entries: ReadonlyArray<IndexEntry>,
 ): Promise<ObjectId> => {
   const maxDepth = await resolveMaxTreeDepth(ctx);
-  const pending = stage0Entries(entries, maxDepth);
+  const pending = stage0Entries(entries, maxDepth, indexEntryCheck);
   return writeTrieFrames(ctx, buildTrieFrames(pending));
+};
+
+/**
+ * A merge's result tree, written as git's ort writes it: depth-bounded but
+ * without the index's path rules, which only gate what reaches an index.
+ */
+export const synthesizeResultTree = async (
+  ctx: Context,
+  entries: ReadonlyArray<IndexEntry>,
+): Promise<ObjectId> => {
+  const maxDepth = await resolveMaxTreeDepth(ctx);
+  return writeTrieFrames(ctx, buildTrieFrames(stage0Entries(entries, maxDepth, depthCheck)));
 };

@@ -58,9 +58,12 @@ const asWorktreeChild = (ctx: Context): Context => ({
   layout: { ...ctx.layout, gitDir: adminDir(ctx), commonDir: ctx.layout.gitDir },
 });
 
-/** Give the child's own (admin) gitdir the `HEAD` file `assertOperationalRepository` requires. */
-const seedAdminHead = (ctx: Context): Promise<void> =>
-  ctx.fs.writeUtf8(`${adminDir(ctx)}/HEAD`, 'ref: refs/heads/main\n');
+/** Give the child's own (admin) gitdir the `HEAD` file `assertOperationalRepository` requires,
+ *  and the `gitdir` pointer every registered worktree carries. */
+const seedAdminHead = async (ctx: Context): Promise<void> => {
+  await ctx.fs.writeUtf8(`${adminDir(ctx)}/HEAD`, 'ref: refs/heads/main\n');
+  await ctx.fs.writeUtf8(`${adminDir(ctx)}/gitdir`, `${ctx.layout.workDir}/wt/.git\n`);
+};
 
 const forbiddenTransport = (): HttpTransport => ({
   request: async (): Promise<HttpResponse> => {
@@ -386,7 +389,7 @@ describe('common-dir write sweep (writes ⇒ commonGitDir)', () => {
         );
         await ctx.fs.writeUtf8(
           `${ctx.layout.gitDir}/config`,
-          '[remote "origin"]\n  url = https://example.com/r.git\n',
+          '[remote "origin"]\n  url = https://example.com/r.git\n  fetch = +refs/heads/*:refs/remotes/origin/*\n',
         );
         const built = await buildSyntheticPack(ctx, [
           { kind: 'base', type: 'blob', content: ENCODER.encode('commondir haves\n') },
@@ -420,7 +423,7 @@ describe('common-dir write sweep (writes ⇒ commonGitDir)', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/feature-x`, `${stale}\n`);
         await ctx.fs.writeUtf8(
           `${ctx.layout.gitDir}/config`,
-          '[remote "origin"]\n  url = https://example.com/r.git\n',
+          '[remote "origin"]\n  url = https://example.com/r.git\n  fetch = +refs/heads/*:refs/remotes/origin/*\n',
         );
         const built = await buildSyntheticPack(ctx, [
           { kind: 'base', type: 'blob', content: ENCODER.encode('commondir prune\n') },

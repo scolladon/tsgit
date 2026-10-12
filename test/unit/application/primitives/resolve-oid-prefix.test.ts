@@ -1,16 +1,55 @@
-import { describe, expect, it } from 'vitest';
-import {
-  MAX_OID_PREFIX_CANDIDATES,
-  resolveOidPrefix,
-} from '../../../../src/application/primitives/resolve-oid-prefix.js';
+import { createHash } from 'node:crypto';
+import { describe, expect, it, vi } from 'vitest';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { readDeclaredObjectHeader } from '../../../../src/application/primitives/read-object.js';
+import { resolveOidPrefix } from '../../../../src/application/primitives/resolve-oid-prefix.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { permissionDenied, TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { buildSeededContext, instrumentedContext } from './fixtures.js';
-import { writeSyntheticPack } from './pack-fixture.js';
+import { buildSeededContext, instrumentedContext, writeRawObjectBytes } from './fixtures.js';
+import { writeSyntheticPack, writeSyntheticPackIn } from './pack-fixture.js';
 
 const blobOf = (content: Uint8Array): Blob => ({ type: 'blob', id: '' as ObjectId, content });
+
+const SHARED_PREFIX = 'abcd';
+const MORE_THAN_SIXTEEN = 18;
+const encoder = new TextEncoder();
+
+/** The first `count` blob contents whose sha1 id starts with `SHARED_PREFIX`. */
+const contentsSharingPrefix = (count: number): ReadonlyArray<Uint8Array> => {
+  const found: Uint8Array[] = [];
+  for (let attempt = 0; found.length < count; attempt += 1) {
+    const content = encoder.encode(`x${attempt}\n`);
+    const header = `blob ${content.length}\0`;
+    const id = createHash('sha1').update(header).update(content).digest('hex');
+    if (id.startsWith(SHARED_PREFIX)) found.push(content);
+  }
+  return found;
+};
+
+/** `count` loose blobs sharing `SHARED_PREFIX`, their ids ascending. */
+const writeBlobsSharingPrefix = async (
+  ctx: Context,
+  count: number,
+): Promise<ReadonlyArray<ObjectId>> => {
+  const ids: ObjectId[] = [];
+  for (const content of contentsSharingPrefix(count))
+    ids.push(await writeObject(ctx, blobOf(content)));
+  return ids.sort();
+};
+
+/** `template` with `@@` replaced by the first counter whose `type` id starts with `SHARED_PREFIX`. */
+const contentSharingPrefix = (type: string, template: string): Uint8Array => {
+  for (let attempt = 0; ; attempt += 1) {
+    const content = encoder.encode(template.replace('@@', String(attempt)));
+    const header = `${type} ${content.length}\0`;
+    const id = createHash('sha1').update(header).update(content).digest('hex');
+    if (id.startsWith(SHARED_PREFIX)) return content;
+  }
+};
+
+const asBlobs = (ids: ReadonlyArray<ObjectId>) => ids.map((id) => ({ id, type: 'blob' }));
 
 /** Write a controlled loose object file (name-based scan does not parse content). */
 const writeLooseNamed = async (
@@ -107,56 +146,139 @@ describe('resolveOidPrefix', () => {
 
   describe('Given two loose objects sharing the queried prefix', () => {
     describe('When resolveOidPrefix is called', () => {
-      it('Then throws AMBIGUOUS_OID_PREFIX carrying both candidates', async () => {
-        // Arrange — both oids start abcdef
+      it('Then throws AMBIGUOUS_OID_PREFIX carrying both candidates in id order', async () => {
+        // Arrange
         const ctx = await buildSeededContext();
-        const a = `abcdef${'0'.repeat(34)}`;
-        const b = `abcdef${'1'.repeat(34)}`;
-        await writeLooseNamed(ctx, a);
-        await writeLooseNamed(ctx, b);
+        const ids = await writeBlobsSharingPrefix(ctx, 2);
 
         // Act
         let caught: TsgitError | undefined;
         try {
-          await resolveOidPrefix(ctx, 'abcdef');
+          await resolveOidPrefix(ctx, SHARED_PREFIX);
         } catch (err) {
           caught = err as TsgitError;
         }
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
-        expect(caught?.data.code).toBe('AMBIGUOUS_OID_PREFIX');
-        if (caught?.data.code === 'AMBIGUOUS_OID_PREFIX') {
-          expect(caught.data.prefix).toBe('abcdef');
-          expect([...caught.data.candidates].sort()).toEqual([a, b]);
-        }
+        expect(caught?.data).toEqual({
+          code: 'AMBIGUOUS_OID_PREFIX',
+          prefix: SHARED_PREFIX,
+          candidates: asBlobs(ids),
+        });
       });
     });
   });
 
-  describe('Given more matches than the candidate cap', () => {
-    describe('When resolveOidPrefix is called', () => {
-      it('Then the thrown candidate list is capped', async () => {
-        // Arrange — MAX+2 loose objects sharing prefix 'abcd'
+  describe('Given two loose objects sharing the queried prefix and a disambiguation filter', () => {
+    describe('When only one candidate passes the filter', () => {
+      it('Then resolves to that candidate', async () => {
+        // Arrange
         const ctx = await buildSeededContext();
-        const count = MAX_OID_PREFIX_CANDIDATES + 2;
-        for (let i = 0; i < count; i += 1) {
-          await writeLooseNamed(ctx, `abcd${i.toString().padStart(36, '0')}`);
-        }
+        const [, b] = await writeBlobsSharingPrefix(ctx, 2);
+        const sut = resolveOidPrefix;
+
+        // Act
+        const result = await sut(ctx, SHARED_PREFIX, async (id) => id === b);
+
+        // Assert
+        expect(result).toBe(b);
+      });
+    });
+
+    describe.each([
+      { label: 'both candidates pass', passes: true },
+      { label: 'no candidate passes', passes: false },
+    ])('When $label', ({ passes }) => {
+      it('Then throws AMBIGUOUS_OID_PREFIX carrying both candidates', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await writeBlobsSharingPrefix(ctx, 2);
+        const sut = resolveOidPrefix;
 
         // Act
         let caught: TsgitError | undefined;
         try {
-          await resolveOidPrefix(ctx, 'abcd');
+          await sut(ctx, SHARED_PREFIX, async () => passes);
         } catch (err) {
           caught = err as TsgitError;
         }
 
         // Assert
-        expect(caught?.data.code).toBe('AMBIGUOUS_OID_PREFIX');
-        if (caught?.data.code === 'AMBIGUOUS_OID_PREFIX') {
-          expect(caught.data.candidates.length).toBe(MAX_OID_PREFIX_CANDIDATES);
+        expect(caught?.data).toEqual({
+          code: 'AMBIGUOUS_OID_PREFIX',
+          prefix: SHARED_PREFIX,
+          candidates: asBlobs(ids),
+        });
+      });
+    });
+  });
+
+  describe('Given three loose objects sharing the queried prefix, two passing the filter', () => {
+    describe('When resolveOidPrefix is called', () => {
+      it('Then the ambiguity lists only the two the filter kept', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const [a, b, c] = await writeBlobsSharingPrefix(ctx, 3);
+        const sut = resolveOidPrefix;
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await sut(ctx, SHARED_PREFIX, async (id) => id !== b);
+        } catch (err) {
+          caught = err as TsgitError;
         }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'AMBIGUOUS_OID_PREFIX',
+          prefix: SHARED_PREFIX,
+          candidates: asBlobs([a, c] as ReadonlyArray<ObjectId>),
+        });
+      });
+    });
+  });
+
+  describe('Given one loose object matching the prefix and a filter it fails', () => {
+    describe('When resolveOidPrefix is called', () => {
+      it('Then still resolves to the sole candidate', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const only = `abcdef${'0'.repeat(34)}`;
+        await writeLooseNamed(ctx, only);
+        const sut = resolveOidPrefix;
+
+        // Act
+        const result = await sut(ctx, 'abcdef', async () => false);
+
+        // Assert
+        expect(result).toBe(only);
+      });
+    });
+  });
+
+  describe('Given more than sixteen matches', () => {
+    describe('When resolveOidPrefix is called', () => {
+      it('Then the thrown candidate list holds every match in id order', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await writeBlobsSharingPrefix(ctx, MORE_THAN_SIXTEEN);
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await resolveOidPrefix(ctx, SHARED_PREFIX);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'AMBIGUOUS_OID_PREFIX',
+          prefix: SHARED_PREFIX,
+          candidates: asBlobs(ids),
+        });
       });
     });
   });
@@ -448,4 +570,444 @@ describe('resolveOidPrefix on an over-long hex string', () => {
       });
     });
   });
+});
+
+const ALT_OBJECTS = '/repo/alt/objects';
+
+const borrowerContext = async (): Promise<Context> => {
+  const ctx = createMemoryContext({
+    files: {
+      '/repo/.git/objects/info/alternates': new TextEncoder().encode(`${ALT_OBJECTS}\n`),
+    },
+  });
+  await ctx.fs.mkdir(ALT_OBJECTS);
+  return ctx;
+};
+
+const writeLooseNamedIn = async (ctx: Context, objectsDir: string, oid: string): Promise<void> => {
+  await ctx.fs.write(`${objectsDir}/${oid.slice(0, 2)}/${oid.slice(2)}`, new Uint8Array([1]));
+};
+
+describe('resolveOidPrefix through alternates', () => {
+  describe('Given a prefix matching only a loose object in an alternate', () => {
+    describe('When resolveOidPrefix is called', () => {
+      it('Then it resolves to the full id', async () => {
+        // Arrange
+        const ctx = await borrowerContext();
+        const oid = `abcdef${'0'.repeat(34)}`;
+        await writeLooseNamedIn(ctx, ALT_OBJECTS, oid);
+
+        // Act
+        const result = await resolveOidPrefix(ctx, 'abcdef');
+
+        // Assert
+        expect(result).toBe(oid);
+      });
+    });
+  });
+
+  describe('Given a prefix matching only a packed object in an alternate', () => {
+    describe('When resolveOidPrefix is called', () => {
+      it('Then it resolves to the full id', async () => {
+        // Arrange
+        const ctx = await borrowerContext();
+        const [id] = await writeSyntheticPackIn(ctx, ALT_OBJECTS, 'a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('alt packed') },
+        ]);
+
+        // Act
+        const result = await resolveOidPrefix(ctx, (id as string).slice(0, 8));
+
+        // Assert
+        expect(result).toBe(id);
+      });
+    });
+  });
+
+  describe('Given the same object loose in the primary and the alternate', () => {
+    describe('When resolveOidPrefix is called', () => {
+      it('Then the union de-duplicates and it resolves', async () => {
+        // Arrange
+        const ctx = await borrowerContext();
+        const oid = `abcdef${'0'.repeat(34)}`;
+        await writeLooseNamedIn(ctx, `${ctx.layout.gitDir}/objects`, oid);
+        await writeLooseNamedIn(ctx, ALT_OBJECTS, oid);
+
+        // Act
+        const result = await resolveOidPrefix(ctx, 'abcdef');
+
+        // Assert
+        expect(result).toBe(oid);
+      });
+    });
+  });
+
+  describe('Given a prefix shared by a primary object and an alternate object', () => {
+    describe('When resolveOidPrefix is called', () => {
+      it('Then it throws AMBIGUOUS_OID_PREFIX carrying both candidates', async () => {
+        // Arrange
+        const ctx = await borrowerContext();
+        const [primary, alternate] = contentsSharingPrefix(2) as [Uint8Array, Uint8Array];
+        const [theirs] = await writeSyntheticPackIn(ctx, ALT_OBJECTS, 'a', [
+          { kind: 'base', type: 'blob', content: alternate },
+        ]);
+        const mine = await writeObject(ctx, blobOf(primary));
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await resolveOidPrefix(ctx, SHARED_PREFIX);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'AMBIGUOUS_OID_PREFIX',
+          prefix: SHARED_PREFIX,
+          candidates: asBlobs([mine, theirs as ObjectId].sort()),
+        });
+      });
+    });
+  });
+});
+
+describe('resolveOidPrefix over unreadable candidates', () => {
+  describe('Given a blob, a tag without a tag line and an unreadable loose object sharing a prefix', () => {
+    describe('When resolveOidPrefix is called without a hint', () => {
+      it('Then the bad object and the bad tag are listed first, with every unreadable read in git order', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const badTag = await writeRawObjectBytes(
+          ctx,
+          'tag',
+          contentSharingPrefix('tag', `object ${'0'.repeat(40)}\ntype commit\n\nm@@\n`),
+        );
+        const badObject = `${SHARED_PREFIX}${'f'.repeat(36)}` as ObjectId;
+        await writeLooseNamed(ctx, badObject);
+        const [blob] = await writeBlobsSharingPrefix(ctx, 1);
+        const sut = resolveOidPrefix;
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await sut(ctx, SHARED_PREFIX);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        // The memory adapter's inflate names a one-byte body's failure in its own words.
+        const fault = { id: badObject, reason: 'unexpected end of deflate stream' };
+        expect(caught?.data).toEqual({
+          code: 'AMBIGUOUS_OID_PREFIX',
+          prefix: SHARED_PREFIX,
+          candidates: [
+            { id: badObject, type: 'bad-object' },
+            { id: badTag, type: 'bad-tag' },
+            { id: blob, type: 'blob' },
+          ],
+          readFaults: [fault, fault, fault],
+        });
+      });
+    });
+  });
+
+  describe('Given a blob and an unreadable loose object sharing a prefix', () => {
+    describe('When resolveOidPrefix is called with a hint that reads each candidate', () => {
+      it('Then the unreadable one fails the hint, its read is logged, and the blob wins', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const badObject = `${SHARED_PREFIX}${'f'.repeat(36)}` as ObjectId;
+        await writeLooseNamed(base, badObject);
+        const [blob] = await writeBlobsSharingPrefix(base, 1);
+        const error = vi.fn();
+        const ctx: Context = { ...base, logger: { error } };
+        const sut = resolveOidPrefix;
+
+        // Act
+        const result = await sut(ctx, SHARED_PREFIX, async (id) => {
+          await readDeclaredObjectHeader(ctx, id);
+          return true;
+        });
+
+        // Assert
+        expect(result).toBe(blob);
+        expect(error.mock.calls).toEqual([
+          [
+            'inflate: data stream error (unexpected end of deflate stream)',
+            { id: badObject, reason: 'unexpected end of deflate stream' },
+          ],
+          [`unable to unpack ${badObject} header`, { id: badObject }],
+        ]);
+      });
+    });
+  });
+
+  describe('Given a blob and a loose object whose header never ends sharing a prefix', () => {
+    describe('When resolveOidPrefix is called without a hint', () => {
+      it("Then each read of the bad object reports git's header-too-long fault", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const badObject = `${SHARED_PREFIX}${'f'.repeat(36)}` as ObjectId;
+        const unterminated = await ctx.compressor.deflate(encoder.encode('blob 12'));
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/objects/${badObject.slice(0, 2)}/${badObject.slice(2)}`,
+          unterminated,
+        );
+        const [blob] = await writeBlobsSharingPrefix(ctx, 1);
+        const sut = resolveOidPrefix;
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await sut(ctx, SHARED_PREFIX);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        const fault = { id: badObject, headerLimit: 32 };
+        expect(caught?.data).toEqual({
+          code: 'AMBIGUOUS_OID_PREFIX',
+          prefix: SHARED_PREFIX,
+          candidates: [
+            { id: badObject, type: 'bad-object' },
+            { id: blob, type: 'blob' },
+          ],
+          readFaults: [fault, fault],
+        });
+      });
+    });
+  });
+
+  describe('Given a blob and a loose object whose header ends but does not parse sharing a prefix', () => {
+    describe('When resolveOidPrefix is called without a hint', () => {
+      it('Then the header refusal propagates rather than listing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const badObject = `${SHARED_PREFIX}${'f'.repeat(36)}` as ObjectId;
+        const unparsable = await ctx.compressor.deflate(encoder.encode('blob\0x'));
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/objects/${badObject.slice(0, 2)}/${badObject.slice(2)}`,
+          unparsable,
+        );
+        await writeBlobsSharingPrefix(ctx, 1);
+        const sut = resolveOidPrefix;
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await sut(ctx, SHARED_PREFIX);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'INVALID_OBJECT_HEADER',
+          reason: 'missing space between type and size',
+        });
+      });
+    });
+  });
+
+  describe('Given two blobs and an unreadable loose object sharing a prefix', () => {
+    describe('When resolveOidPrefix is called with a hint both blobs pass', () => {
+      it('Then the listing sorts every candidate and re-runs the hint, reporting each unreadable read', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const badObject = `${SHARED_PREFIX}${'f'.repeat(36)}` as ObjectId;
+        await writeLooseNamed(base, badObject);
+        const blobs = await writeBlobsSharingPrefix(base, 2);
+        const error = vi.fn();
+        const ctx: Context = { ...base, logger: { error } };
+        const sut = resolveOidPrefix;
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await sut(ctx, SHARED_PREFIX, async (id) => {
+            await readDeclaredObjectHeader(ctx, id);
+            return true;
+          });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        const fault = { id: badObject, reason: 'unexpected end of deflate stream' };
+        expect(error).not.toHaveBeenCalled();
+        expect(caught?.data).toEqual({
+          code: 'AMBIGUOUS_OID_PREFIX',
+          prefix: SHARED_PREFIX,
+          candidates: asBlobs(blobs),
+          readFaults: [fault, fault, fault],
+        });
+      });
+    });
+  });
+
+  describe('Given three blobs sharing a prefix, the middle one failing the hint', () => {
+    describe('When resolveOidPrefix is called with that hint', () => {
+      it('Then the hint runs once per candidate until the second pass, then once per listed candidate', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const [first, middle, last] = [...(await writeBlobsSharingPrefix(ctx, 3))].sort();
+        const hinted: ObjectId[] = [];
+        const sut = resolveOidPrefix;
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await sut(ctx, SHARED_PREFIX, async (id) => {
+            hinted.push(id);
+            return id !== middle;
+          });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(hinted).toEqual([first, middle, last, first, middle, last]);
+        expect(caught?.data).toEqual({
+          code: 'AMBIGUOUS_OID_PREFIX',
+          prefix: SHARED_PREFIX,
+          candidates: asBlobs([first as ObjectId, last as ObjectId]),
+        });
+      });
+    });
+  });
+
+  describe('Given a blob sharing a prefix with a candidate whose hint read faults unexpectedly', () => {
+    describe('When resolveOidPrefix is called with that hint', () => {
+      it('Then the fault propagates', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeBlobsSharingPrefix(ctx, 2);
+        const fault = permissionDenied('/objects');
+        const sut = resolveOidPrefix;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, SHARED_PREFIX, async () => {
+            throw fault;
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBe(fault);
+      });
+    });
+  });
+});
+
+/** A commit and two blobs sharing `SHARED_PREFIX`, under `[core] disambiguate = <hint>` when one is given. */
+const disambiguatedRepo = async (
+  hint?: string,
+): Promise<{
+  readonly ctx: Context;
+  readonly commit: ObjectId;
+  readonly blobs: ReadonlyArray<ObjectId>;
+}> => {
+  const ctx = await buildSeededContext();
+  if (hint !== undefined)
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[core]\n\tdisambiguate = ${hint}\n`);
+  const tree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+  const commit = await writeRawObjectBytes(
+    ctx,
+    'commit',
+    contentSharingPrefix(
+      'commit',
+      `tree ${tree}\nauthor A <a@a> 1 +0000\ncommitter A <a@a> 1 +0000\n\nc@@\n`,
+    ),
+  );
+  return { ctx, commit, blobs: await writeBlobsSharingPrefix(ctx, 2) };
+};
+
+const ambiguityOf = async (run: () => Promise<unknown>): Promise<unknown> => {
+  try {
+    return await run();
+  } catch (err) {
+    return (err as TsgitError).data;
+  }
+};
+
+describe('resolveOidPrefix under core.disambiguate', () => {
+  describe.each(['commit', 'COMMIT', 'committish', 'treeish'])(
+    'Given a commit and two blobs sharing a prefix under the %s hint',
+    (hint) => {
+      describe('When resolveOidPrefix is called without a hint of its own', () => {
+        it('Then the commit wins', async () => {
+          // Arrange
+          const { ctx, commit } = await disambiguatedRepo(hint);
+          const sut = resolveOidPrefix;
+
+          // Act
+          const result = await sut(ctx, SHARED_PREFIX);
+
+          // Assert
+          expect(result).toBe(commit);
+        });
+      });
+    },
+  );
+
+  describe('Given a commit and two blobs sharing a prefix under the blob hint', () => {
+    describe('When resolveOidPrefix is called without a hint of its own', () => {
+      it('Then only the blobs are listed', async () => {
+        // Arrange
+        const { ctx, blobs } = await disambiguatedRepo('blob');
+        const sut = resolveOidPrefix;
+
+        // Act
+        const result = await ambiguityOf(() => sut(ctx, SHARED_PREFIX));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'AMBIGUOUS_OID_PREFIX',
+          prefix: SHARED_PREFIX,
+          candidates: asBlobs(blobs),
+        });
+      });
+    });
+
+    describe('When resolveOidPrefix is called with a commit hint of its own', () => {
+      it('Then the caller hint overrides the configured one and the commit wins', async () => {
+        // Arrange
+        const { ctx, commit } = await disambiguatedRepo('blob');
+        const sut = resolveOidPrefix;
+
+        // Act
+        const result = await sut(ctx, SHARED_PREFIX, async (id) => id === commit);
+
+        // Assert
+        expect(result).toBe(commit);
+      });
+    });
+  });
+
+  describe.each(['tree', 'none', 'bogus', undefined])(
+    'Given a commit and two blobs sharing a prefix under the %s hint',
+    (hint) => {
+      describe('When resolveOidPrefix is called without a hint of its own', () => {
+        it('Then every candidate is listed', async () => {
+          // Arrange
+          const { ctx, commit, blobs } = await disambiguatedRepo(hint);
+          const sut = resolveOidPrefix;
+
+          // Act
+          const result = (await ambiguityOf(() => sut(ctx, SHARED_PREFIX))) as {
+            readonly candidates: ReadonlyArray<{ readonly id: ObjectId }>;
+          };
+
+          // Assert
+          expect(result.candidates.map(({ id }) => id)).toEqual([commit, ...blobs]);
+        });
+      });
+    },
+  );
 });

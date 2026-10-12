@@ -23,10 +23,11 @@
  *   unique:         a rebase either tool starts is resumable by the other, and both drop the same already-upstream commit
  *   interopSurface: rebaseMerge, reflog
  */
-import { writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.node.js';
 import {
   GIT_AVAILABLE,
@@ -37,6 +38,7 @@ import {
   runGitEnv,
   topReflogSubject,
   tryRunGit,
+  tryRunGitWithExit,
   writeTreeOf,
 } from './interop-helpers.js';
 
@@ -148,6 +150,35 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interop', () => {
     });
   });
 
+  describe('Given a rebase stopped on a conflict, When the resolution is committed by hand and the rebase continued', () => {
+    it('Then tsgit keeps the hand-made commit like git, adding none of its own', async () => {
+      // Arrange
+      buildConflict(pair.peer);
+      buildConflict(pair.ours);
+      tryRunGit(['-C', pair.peer, '-c', 'core.editor=true', 'rebase', 'main']);
+      writeWork(pair.peer, 'f.txt', 'l1\nRESOLVED\n');
+      git(pair.peer, 'add', 'f.txt');
+      gitCommit(pair.peer, 'manual');
+      runGit(['-C', pair.peer, '-c', 'core.editor=true', 'rebase', '--continue']);
+      const repo = await openRepository({ cwd: pair.ours });
+      await repo.rebase.run({ upstream: 'main' });
+      writeWork(pair.ours, 'f.txt', 'l1\nRESOLVED\n');
+      git(pair.ours, 'add', 'f.txt');
+      await repo.commit({ message: 'manual' });
+
+      // Act
+      const result = await repo.rebase.continue();
+      await repo.dispose();
+
+      // Assert
+      expect(result).toEqual({ kind: 'rebased', commits: [] });
+      const subjects = (dir: string): string => git(dir, 'log', '--format=%s', 'main..topic');
+      expect(subjects(pair.ours)).toBe(subjects(pair.peer));
+      expect(writeTreeOf(pair.ours)).toBe(writeTreeOf(pair.peer));
+      expect(git(pair.ours, 'symbolic-ref', 'HEAD').trim()).toBe('refs/heads/topic');
+    });
+  });
+
   describe('Given a rebase aborted mid-conflict, When both tools abort', () => {
     it('Then tsgit and git write the same faithful abort reflog, branch untouched', async () => {
       // Arrange — identical conflict in both; run each to the stop.
@@ -193,6 +224,26 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interop', () => {
     });
   });
 
+  describe('Given a merge on main of a side branch forked at the base, When main is rebased onto the base', () => {
+    it('Then tsgit, like git, replays the non-linear history rather than calling it up to date', async () => {
+      // Arrange — identical history in both repos
+      buildMergedSide(pair.peer);
+      buildMergedSide(pair.ours);
+      git(pair.peer, 'rebase', 'base');
+      const repo = await openRepository({ cwd: pair.ours });
+
+      // Act
+      const result = await repo.rebase.run({ upstream: 'base' });
+      await repo.dispose();
+
+      // Assert
+      expect(result.kind).toBe('rebased');
+      expect(commitCount(pair.ours)).toBe(commitCount(pair.peer));
+      expect(writeTreeOf(pair.ours)).toBe(writeTreeOf(pair.peer));
+      expect(headParents(pair.ours)).toBe(headParents(pair.peer));
+    });
+  });
+
   describe('Given two unrelated histories (no common ancestor), When the feature branch is rebased onto main', () => {
     it('Then tsgit matches git: same resulting tree, commit count, single-parent tip', async () => {
       // Arrange — identical orphan-branch history in both repos
@@ -211,6 +262,78 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interop', () => {
       expect(commitCount(pair.ours)).toBe(commitCount(pair.peer));
       expect(headParents(pair.ours)).toBe(1);
       expect(headParents(pair.peer)).toBe(1);
+    });
+  });
+
+  describe('Given rebase sides spelt as revisions', () => {
+    const refusalOf = async (run: () => Promise<unknown>): Promise<unknown> => {
+      try {
+        await run();
+        return undefined;
+      } catch (error) {
+        return (error as TsgitError).data;
+      }
+    };
+
+    describe.each([
+      [['HEAD~1'], { upstream: 'HEAD~1' }],
+      [['--onto', 'main~1...main', 'HEAD~1'], { upstream: 'HEAD~1', onto: 'main~1...main' }],
+      [['@{u}'], { upstream: '@{u}' }],
+    ])('When git rebase %j and tsgit rebase it', (args, input) => {
+      it('Then both land on the same base with the same reflog', async () => {
+        // Arrange
+        buildRevisionSides(pair.peer);
+        buildRevisionSides(pair.ours);
+        tryRunGit(['-C', pair.peer, 'rebase', ...args]);
+        const repo = await openRepository({ cwd: pair.ours });
+
+        // Act
+        await repo.rebase.run(input);
+        await repo.dispose();
+
+        // Assert
+        expect(writeTreeOf(pair.ours)).toBe(writeTreeOf(pair.peer));
+        expect(git(pair.ours, 'rev-parse', 'HEAD~1')).toBe(git(pair.peer, 'rev-parse', 'HEAD~1'));
+        expect(topReflogSubject(pair.ours, 'HEAD')).toBe(topReflogSubject(pair.peer, 'HEAD'));
+      });
+    });
+
+    describe.each([
+      [['absent'], { upstream: 'absent' }, "invalid upstream 'absent'", 'invalid-upstream'],
+      [
+        ['HEAD^{tree}'],
+        { upstream: 'HEAD^{tree}' },
+        "invalid upstream 'HEAD^{tree}'",
+        'invalid-upstream',
+      ],
+      [
+        ['--onto', 'absent', 'HEAD~1'],
+        { upstream: 'HEAD~1', onto: 'absent' },
+        "Does not point to a valid commit 'absent'",
+        'invalid-onto',
+      ],
+      [
+        ['--onto', 'absent...main', 'HEAD~1'],
+        { upstream: 'HEAD~1', onto: 'absent...main' },
+        "'absent...main': need exactly one merge base",
+        'onto-merge-base-not-unique',
+      ],
+    ])('When git rebase %j and tsgit rebase it', (args, input, message, reason) => {
+      it('Then both refuse it', async () => {
+        // Arrange
+        buildRevisionSides(pair.peer);
+        buildRevisionSides(pair.ours);
+        const refused = tryRunGitWithExit(['-C', pair.peer, 'rebase', ...args]);
+        const repo = await openRepository({ cwd: pair.ours });
+
+        // Act
+        const result = await refusalOf(() => repo.rebase.run(input));
+        await repo.dispose();
+
+        // Assert
+        expect(refused.stderr).toContain(`fatal: ${message}`);
+        expect(result).toMatchObject({ code: 'REBASE_REVISION_INVALID', reason });
+      });
     });
   });
 });
@@ -303,6 +426,27 @@ function buildUnrelated(dir: string): void {
   gitCommit(dir, 'feature one');
 }
 
+/** base (branch `base`); side adds s.txt; main adds m1.txt, then merges side. HEAD on main. */
+function buildMergedSide(dir: string): void {
+  runGit(['init', '-q', '-b', 'main', dir]);
+  configGit(dir);
+  writeWork(dir, 'base.txt', 'base\n');
+  git(dir, 'add', 'base.txt');
+  gitCommit(dir, 'base');
+  git(dir, 'branch', 'base');
+  git(dir, 'checkout', '-q', '-b', 'side');
+  writeWork(dir, 's.txt', 's\n');
+  git(dir, 'add', 's.txt');
+  gitCommit(dir, 'side');
+  git(dir, 'checkout', '-q', 'main');
+  writeWork(dir, 'm1.txt', 'm1\n');
+  git(dir, 'add', 'm1.txt');
+  gitCommit(dir, 'm1');
+  runGit(['-C', dir, 'merge', '-q', '--no-ff', '-m', 'merge side', 'side'], {
+    env: { ...runGitEnv(), GIT_AUTHOR_DATE: FIXED_DATE, GIT_COMMITTER_DATE: FIXED_DATE },
+  });
+}
+
 // ── interactive (`rebase -i`) ───────────────────────────────────────────────
 
 /** base; c1, c2, c3 each adding an independent file. HEAD on main. */
@@ -327,6 +471,11 @@ const gitRebaseInteractive = (dir: string, perlTodo: string, editor = 'true'): v
 };
 
 const oidAt = (dir: string, rev: string): string => git(dir, 'rev-parse', rev).trim();
+
+/** The stop's `stopped-sha` and `REBASE_HEAD`, as written. */
+const stopMarkers = (dir: string): string =>
+  readFileSync(path.join(dir, '.git', 'rebase-merge', 'stopped-sha'), 'utf8') +
+  readFileSync(path.join(dir, '.git', 'REBASE_HEAD'), 'utf8');
 
 describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
   let pair: PeerPair;
@@ -382,6 +531,152 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
           expect(commitCount(pair.ours)).toBe(commitCount(pair.peer));
         },
       );
+    });
+
+    describe.each([
+      ['reword', 'X', 'HEAD~1'],
+      ['fixup', 'Y', 'HEAD'],
+    ] as const)(
+      'When the todo %ss %s over a commit carrying extra headers',
+      (action, target, carrier) => {
+        it('Then the amended commit keeps the same extra headers as git', async () => {
+          // Arrange
+          buildHeadered(pair.peer);
+          buildHeadered(pair.ours);
+          runGit(['-C', pair.peer, 'rebase', '-i', 'HEAD~2'], {
+            env: {
+              ...runGitEnv(),
+              GIT_SEQUENCE_EDITOR: `perl -i -pe 's/^pick (.*${target} subject)/${action} $1/'`,
+              GIT_EDITOR: "perl -i -pe 's/X subject/reworded/'",
+            },
+          });
+          const x = oidAt(pair.ours, 'HEAD~1');
+          const y = oidAt(pair.ours, 'HEAD');
+          const repo = await openRepository({ cwd: pair.ours });
+          const first =
+            action === 'reword'
+              ? { action, oid: x, message: 'reworded' }
+              : { action: 'pick' as const, oid: x };
+          const second =
+            action === 'fixup' ? { action, oid: y } : { action: 'pick' as const, oid: y };
+
+          // Act
+          await repo.rebase.run({
+            upstream: oidAt(pair.ours, 'HEAD~2'),
+            interactive: [first, second],
+          });
+          await repo.dispose();
+
+          // Assert
+          expect(extraHeaderLines(pair.ours, carrier)).toBe(extraHeaderLines(pair.peer, carrier));
+          expect(extraHeaderLines(pair.peer, carrier)).toContain('x-custom hello');
+        });
+      },
+    );
+
+    describe('When the todo drops c1 and stops to edit c2', () => {
+      it('Then both name the picked commit in stopped-sha and REBASE_HEAD', async () => {
+        // Arrange
+        buildInteractiveLinear(pair.peer);
+        buildInteractiveLinear(pair.ours);
+        gitRebaseInteractive(
+          pair.peer,
+          's/^pick (.*c1 subject)/drop $1/; s/^pick (.*c2 subject)/edit $1/',
+        );
+        const base = oidAt(pair.ours, 'HEAD~3');
+        const [c1, c2, c3] = ['HEAD~2', 'HEAD~1', 'HEAD'].map((r) => oidAt(pair.ours, r));
+        // Commit on git's second, so a run straddling a second boundary still compares oids.
+        const committedAt = Number(git(pair.peer, 'log', '-1', '--format=%ct', 'HEAD').trim());
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(committedAt * 1000);
+        const repo = await openRepository({ cwd: pair.ours });
+        const sut = repo.rebase.run;
+
+        // Act
+        await sut({
+          upstream: base,
+          interactive: [
+            { action: 'drop', oid: c1 as string },
+            { action: 'edit', oid: c2 as string },
+            { action: 'pick', oid: c3 as string },
+          ],
+        });
+        await repo.dispose();
+        vi.useRealTimers();
+
+        // Assert
+        const result = stopMarkers(pair.ours);
+        expect(result).toBe(stopMarkers(pair.peer));
+        expect(oidAt(pair.ours, 'HEAD')).toBe(oidAt(pair.peer, 'HEAD'));
+      });
+    });
+
+    describe('When the rebase stops to edit c1 and is then skipped', () => {
+      it('Then both keep c1 and replay the rest on top of it', async () => {
+        // Arrange
+        buildInteractiveLinear(pair.peer);
+        buildInteractiveLinear(pair.ours);
+        gitRebaseInteractive(pair.peer, 's/^pick (.*c1 subject)/edit $1/');
+        git(pair.peer, 'rebase', '--skip');
+        const base = oidAt(pair.ours, 'HEAD~3');
+        const [c1, c2, c3] = ['HEAD~2', 'HEAD~1', 'HEAD'].map((r) => oidAt(pair.ours, r));
+        const repo = await openRepository({ cwd: pair.ours });
+        await repo.rebase.run({
+          upstream: base,
+          interactive: [
+            { action: 'edit', oid: c1 as string },
+            { action: 'pick', oid: c2 as string },
+            { action: 'pick', oid: c3 as string },
+          ],
+        });
+        const sut = repo.rebase.skip;
+
+        // Act
+        const result = await sut();
+        await repo.dispose();
+
+        // Assert
+        expect(result.kind).toBe('rebased');
+        expect(oidAt(pair.ours, 'main')).toBe(oidAt(pair.peer, 'main'));
+        expect(commitCount(pair.ours)).toBe(commitCount(pair.peer));
+      });
+    });
+
+    describe('When the edit stop has a tracked file changed but not staged', () => {
+      it('Then both refuse to continue and keep the stop', async () => {
+        // Arrange
+        buildInteractiveLinear(pair.peer);
+        buildInteractiveLinear(pair.ours);
+        gitRebaseInteractive(pair.peer, 's/^pick (.*c1 subject)/edit $1/');
+        const base = oidAt(pair.ours, 'HEAD~3');
+        const [c1, c2, c3] = ['HEAD~2', 'HEAD~1', 'HEAD'].map((r) => oidAt(pair.ours, r));
+        const repo = await openRepository({ cwd: pair.ours });
+        await repo.rebase.run({
+          upstream: base,
+          interactive: [
+            { action: 'edit', oid: c1 as string },
+            { action: 'pick', oid: c2 as string },
+            { action: 'pick', oid: c3 as string },
+          ],
+        });
+        writeWork(pair.peer, '1.txt', 'changed\n');
+        writeWork(pair.ours, '1.txt', 'changed\n');
+        const sut = repo.rebase.continue;
+
+        // Act
+        const gitRun = tryRunGitWithExit(['-C', pair.peer, 'rebase', '--continue']);
+        const result = await sut().catch((error: unknown) => error);
+        await repo.dispose();
+
+        // Assert
+        expect(gitRun.exitCode).toBe(1);
+        expect((result as TsgitError).data).toMatchObject({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['1.txt'],
+        });
+        expect(oidAt(pair.ours, 'HEAD')).toBe(oidAt(pair.peer, 'HEAD'));
+        expect(stopMarkers(pair.ours)).toBe(stopMarkers(pair.peer));
+      });
     });
 
     describe('When the interactive todo is an all-pick no-op', () => {
@@ -466,4 +761,215 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interactive interop', () => {
       });
     });
   });
+
+  describe('Given a topic whose second commit conflicts with main', () => {
+    /** base f; topic c1 adds a, c2 sets f, c3 adds c; main sets f. HEAD on topic. */
+    const buildConflictingTopic = (dir: string): void => {
+      runGit(['init', '-q', '-b', 'main', dir]);
+      configGit(dir);
+      writeWork(dir, 'f.txt', 'base\n');
+      git(dir, 'add', 'f.txt');
+      gitCommit(dir, 'base');
+      git(dir, 'checkout', '-q', '-b', 'topic');
+      for (const [rel, body, title] of [
+        ['a.txt', 'a\n', 'c1'],
+        ['f.txt', 'TOPIC\n', 'c2'],
+        ['c.txt', 'c\n', 'c3'],
+      ] as const) {
+        writeWork(dir, rel, body);
+        git(dir, 'add', rel);
+        gitCommit(dir, title);
+      }
+      git(dir, 'checkout', '-q', 'main');
+      writeWork(dir, 'f.txt', 'MAIN\n');
+      git(dir, 'add', 'f.txt');
+      gitCommit(dir, 'main');
+      git(dir, 'checkout', '-q', 'topic');
+    };
+    const MARKERS = ['amend', 'current-fixups', 'rewritten-pending', 'message-squash'];
+    const markersOf = (dir: string): ReadonlyArray<string> =>
+      MARKERS.filter((name) => existsSync(path.join(dir, '.git', 'rebase-merge', name)));
+    const gitRebaseOntoMain = (dir: string, perlTodo: string): void => {
+      tryRunGit(['-C', dir, 'rebase', '-i', 'main'], {
+        env: {
+          ...runGitEnv(),
+          GIT_SEQUENCE_EDITOR: `perl -i -pe '${perlTodo}'`,
+          GIT_EDITOR: 'true',
+        },
+      });
+    };
+    const runTodo = async (dir: string, verbs: readonly [string, string]): Promise<void> => {
+      const [c1, c2, c3] = ['topic~2', 'topic~1', 'topic'].map((r) => oidAt(dir, r) as string);
+      const repo = await openRepository({ cwd: dir });
+      await repo.rebase.run({
+        upstream: 'main',
+        interactive: [
+          { action: verbs[0] as 'edit', oid: c1 as string },
+          { action: verbs[1] as 'pick', oid: c2 as string },
+          { action: 'pick', oid: c3 as string },
+        ],
+      });
+      await repo.dispose();
+    };
+    const resolveF = (dir: string): void => {
+      writeWork(dir, 'f.txt', 'RESOLVED\n');
+      git(dir, 'add', 'f.txt');
+    };
+    const subjects = (dir: string): string => git(dir, 'log', '--format=%s', 'HEAD');
+
+    describe('When `edit c1, pick c2` stops on c2 and is continued', () => {
+      it('Then the stop carries no stale amend and c2 stays its own commit, as git', async () => {
+        // Arrange
+        buildConflictingTopic(pair.peer);
+        buildConflictingTopic(pair.ours);
+        gitRebaseOntoMain(pair.peer, 's/^pick (.* c1)$/edit $1/');
+        tryRunGit(['-C', pair.peer, '-c', 'core.editor=true', 'rebase', '--continue']);
+        await runTodo(pair.ours, ['edit', 'pick']);
+        const repo = await openRepository({ cwd: pair.ours });
+        await repo.rebase.continue();
+        const sut = repo.rebase;
+
+        // Act
+        const ourMarkers = markersOf(pair.ours);
+        resolveF(pair.ours);
+        resolveF(pair.peer);
+        const result = await sut.continue();
+        await repo.dispose();
+
+        // Assert
+        expect(ourMarkers).toEqual(markersOf(pair.peer));
+        runGit(['-C', pair.peer, '-c', 'core.editor=true', 'rebase', '--continue']);
+        expect(result.kind).toBe('rebased');
+        expect(subjects(pair.ours)).toBe(subjects(pair.peer));
+      });
+    });
+
+    describe('When `pick c1, squash c2` stops on the squash', () => {
+      it('Then the stop writes the same markers as git, amend included', async () => {
+        // Arrange
+        buildConflictingTopic(pair.peer);
+        buildConflictingTopic(pair.ours);
+        gitRebaseOntoMain(pair.peer, 's/^pick (.* c2)$/squash $1/');
+        const sut = runTodo;
+
+        // Act
+        await sut(pair.ours, ['pick', 'squash']);
+
+        // Assert
+        expect(markersOf(pair.ours)).toEqual(markersOf(pair.peer));
+        const amendOf = (dir: string) =>
+          readFileSync(path.join(dir, '.git', 'rebase-merge', 'amend'), 'utf8');
+        expect(amendOf(pair.ours)).toBe(`${oidAt(pair.ours, 'HEAD')}\n`);
+        expect(amendOf(pair.peer)).toBe(`${oidAt(pair.peer, 'HEAD')}\n`);
+      });
+    });
+  });
+
+  describe.each(['fixup', 'squash'])(
+    'Given a %s that conflicts, amended into its group by hand',
+    (verb) => {
+      /** base f=L; topic t1 adds a, t2 sets f, t3 adds c; main sets f too. Stops on t2. */
+      const stopOnGroup = (dir: string): void => {
+        runGit(['init', '-q', '-b', 'main', dir]);
+        configGit(dir);
+        writeWork(dir, 'f.txt', 'L\n');
+        git(dir, 'add', 'f.txt');
+        gitCommit(dir, 'base');
+        git(dir, 'checkout', '-q', '-b', 'topic');
+        for (const [rel, body, title] of [
+          ['a.txt', 'a\n', 't1 subject'],
+          ['f.txt', 'TOPIC\n', 't2 subject'],
+          ['c.txt', 'c\n', 't3 subject'],
+        ] as const) {
+          writeWork(dir, rel, body);
+          git(dir, 'add', rel);
+          gitCommit(dir, title);
+        }
+        git(dir, 'checkout', '-q', 'main');
+        writeWork(dir, 'f.txt', 'MAIN\n');
+        git(dir, 'add', 'f.txt');
+        gitCommit(dir, 'm1');
+        git(dir, 'checkout', '-q', 'topic');
+        tryRunGit(['-C', dir, 'rebase', '-i', 'main'], {
+          env: {
+            ...runGitEnv(),
+            GIT_SEQUENCE_EDITOR: `perl -i -pe 's/^pick (.*t2 subject)/${verb} $1/'`,
+            GIT_EDITOR: 'true',
+          },
+        });
+        writeWork(dir, 'f.txt', 'RESOLVED\n');
+        git(dir, 'add', 'f.txt');
+        git(dir, 'reset', '-q', '--soft', 'HEAD~1');
+        gitCommit(dir, 't1 by hand');
+      };
+
+      describe('When git and tsgit each continue it', () => {
+        it('Then both keep the hand-made commit and replay the rest alike', async () => {
+          // Arrange
+          stopOnGroup(pair.peer);
+          stopOnGroup(pair.ours);
+          runGit(['-C', pair.peer, '-c', 'core.editor=true', 'rebase', '--continue']);
+          const repo = await openRepository({ cwd: pair.ours });
+          const sut = repo.rebase;
+
+          // Act
+          const result = await sut.continue();
+          await repo.dispose();
+
+          // Assert
+          expect(result.kind).toBe('rebased');
+          expect(oidAt(pair.ours, 'HEAD~1')).toBe(oidAt(pair.peer, 'HEAD~1'));
+          expect(oidAt(pair.ours, 'HEAD^{tree}')).toBe(oidAt(pair.peer, 'HEAD^{tree}'));
+          const headMessage = (dir: string) => git(dir, 'log', '-1', '--format=%B', 'HEAD');
+          expect(headMessage(pair.ours)).toBe(headMessage(pair.peer));
+        });
+      });
+    },
+  );
 });
+
+/** main: a-b-c-d; `side` at b; `feat` off `side` adds f and tracks main. HEAD left on feat. */
+function buildRevisionSides(dir: string): void {
+  runGit(['init', '-q', '-b', 'main', dir]);
+  configGit(dir);
+  for (const name of ['a', 'b', 'c', 'd']) commitFileNamed(dir, name);
+  git(dir, 'branch', 'side', 'HEAD~2');
+  git(dir, 'checkout', '-q', '-b', 'feat', 'side');
+  commitFileNamed(dir, 'f');
+  git(dir, 'config', 'branch.feat.remote', '.');
+  git(dir, 'config', 'branch.feat.merge', 'refs/heads/main');
+}
+
+function commitFileNamed(dir: string, name: string): void {
+  writeWork(dir, name, `${name}\n`);
+  git(dir, 'add', name);
+  gitCommit(dir, name);
+}
+
+/** base; X on base carries a mergetag and a custom header; Y on X. HEAD left on main. */
+function buildHeadered(dir: string): void {
+  runGit(['init', '-q', '-b', 'main', dir]);
+  configGit(dir);
+  commitFileNamed(dir, 'base');
+  const base = git(dir, 'rev-parse', 'HEAD').trim();
+  const tree = git(dir, 'write-tree').trim();
+  const identity = 'Ada <ada@example.com> 1700000000 +0000';
+  const raw = `tree ${tree}\nparent ${base}\nauthor ${identity}\ncommitter ${identity}\nmergetag object ${base}\n type commit\n tag t\n tagger T <t@x> 1700000000 +0000\n \n t\nx-custom hello\n\nX subject\n`;
+  const x = runGit(['-C', dir, 'hash-object', '-t', 'commit', '-w', '--literally', '--stdin'], {
+    input: raw,
+  }).trim();
+  git(dir, 'update-ref', 'refs/heads/main', x);
+  writeWork(dir, 'y.txt', 'y\n');
+  git(dir, 'add', 'y.txt');
+  gitCommit(dir, 'Y subject');
+}
+
+/** A commit's headers past `committer`, as written. */
+function extraHeaderLines(dir: string, rev: string): string {
+  const raw = git(dir, 'cat-file', 'commit', rev);
+  return raw
+    .slice(0, raw.indexOf('\n\n'))
+    .split('\n')
+    .filter((line) => !/^(tree|parent|author|committer) /.test(line))
+    .join('\n');
+}

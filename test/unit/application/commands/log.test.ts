@@ -4,9 +4,10 @@ import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { log } from '../../../../src/application/commands/log.js';
+import { writeCommitGraph } from '../../../../src/application/primitives/write-commit-graph.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { AuthorIdentity, CommitData, ObjectId } from '../../../../src/domain/objects/index.js';
-import type { Context } from '../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../src/ports/context.js';
 import { seedRepo } from './fixtures.js';
 
 const author: AuthorIdentity = {
@@ -84,6 +85,73 @@ const seedDiamond = async () => {
   const d = await writeCommitAt(ctx, [b, c], 4000, 'D');
   await seedRepo(ctx, { refs: { 'refs/heads/main': d } });
   return { ctx, a, b, c, d };
+};
+
+/** Write a loose commit whose committer and author timestamps differ. */
+const writeCommitDated = (
+  ctx: Context,
+  parents: ReadonlyArray<ObjectId>,
+  dates: { readonly committed: number; readonly authored: number },
+  message: string,
+): Promise<ObjectId> => {
+  const identity = (timestamp: number): AuthorIdentity => ({ ...author, timestamp });
+  const data: CommitData = {
+    tree: TREE_OID,
+    parents: [...parents],
+    author: identity(dates.authored),
+    committer: identity(dates.committed),
+    message,
+    extraHeaders: [],
+  };
+  return writeObject(ctx, { type: 'commit', id: '' as ObjectId, data });
+};
+
+/**
+ * r ← a1 ← a2, r ← b1 ← b2 (b2 committed before b1), m = merge(a2, b2),
+ * a1 ← c1, n = merge(m, c1) on `main`; author dates order the commits
+ * differently from their committer dates.
+ */
+const seedSkewedHistory = async () => {
+  const ctx = createMemoryContext();
+  const at = (committed: number, authored: number) => ({ committed, authored });
+  const r = await writeCommitDated(ctx, [], at(100, 100), 'r');
+  const a1 = await writeCommitDated(ctx, [r], at(200, 500), 'a1');
+  const a2 = await writeCommitDated(ctx, [a1], at(400, 300), 'a2');
+  const b1 = await writeCommitDated(ctx, [r], at(300, 200), 'b1');
+  const b2 = await writeCommitDated(ctx, [b1], at(150, 600), 'b2');
+  const m = await writeCommitDated(ctx, [a2, b2], at(500, 100), 'm');
+  const c1 = await writeCommitDated(ctx, [a1], at(450, 450), 'c1');
+  const n = await writeCommitDated(ctx, [m, c1], at(600, 600), 'n');
+  await seedRepo(ctx, { refs: { 'refs/heads/main': n } });
+  return ctx;
+};
+
+/** i ← x on `main`; `excluded` reaches x through six commits all dated before x. */
+const seedSkewedExclusion = async (withCommitGraph: boolean) => {
+  const ctx = createMemoryContext();
+  const x = await writeCommitAt(ctx, [], 500, 'x');
+  const i = await writeCommitAt(ctx, [x], 1000, 'i');
+  let tip = x;
+  for (const offset of [1, 2, 3, 4, 5, 6]) {
+    tip = await writeCommitAt(ctx, [tip], 300 - offset, `e${offset}`);
+  }
+  const excluded = await writeCommitAt(ctx, [tip], 400, 'e');
+  await seedRepo(ctx, { refs: { 'refs/heads/main': i, 'refs/heads/excluded': excluded } });
+  if (!withCommitGraph) return ctx;
+  await writeCommitGraph(ctx);
+  // A fresh session: the write's own walk memoised the graph as absent.
+  return { ...ctx, session: createSession() };
+};
+
+/** f ← a (newer than f) and f ← b (older than f); e = merge(a, b) on `main`. */
+const seedParentNewerThanChild = async () => {
+  const ctx = createMemoryContext();
+  const f = await writeCommitAt(ctx, [], 8, 'f');
+  const a = await writeCommitAt(ctx, [f], 9, 'a');
+  const b = await writeCommitAt(ctx, [f], 1, 'b');
+  const e = await writeCommitAt(ctx, [a, b], 10, 'e');
+  await seedRepo(ctx, { refs: { 'refs/heads/main': e } });
+  return ctx;
 };
 
 /** Write an annotated tag object pointing at a commit `target`. */
@@ -256,15 +324,15 @@ describe('log', () => {
 
   describe('Given before exactly equal to a commit timestamp', () => {
     describe('When log', () => {
-      it('Then that commit is excluded (>= boundary)', async () => {
+      it('Then that commit is shown, as git --before keeps a commit dated at the boundary', async () => {
         // Arrange — threshold 2000s equals the `middle` commit's timestamp.
         const { ctx } = await seedTimestampChain();
 
         // Act
         const result = await log(ctx, { before: new Date(2000 * 1000) });
 
-        // Assert — `>=` excludes the commit AT the boundary; `>` would keep it.
-        expect(result.map((e) => e.message)).toEqual(['oldest']);
+        // Assert — git skips only a commit dated after the boundary (`date > min_age`).
+        expect(result.map((e) => e.message)).toEqual(['middle', 'oldest']);
       });
     });
   });
@@ -615,6 +683,162 @@ describe('log', () => {
 
         // Assert — HEAD~1 = middle; walk stops there; newest has 1 parent and passes
         expect(result.map((e) => e.message)).toEqual(['newest']);
+      });
+    });
+  });
+  describe('Given a history with clock skew and diverging author dates', () => {
+    describe.each([
+      { label: 'graph topo order', opts: { topoOrder: 'graph' }, expected: 'n c1 m b2 b1 a2 a1 r' },
+      {
+        label: 'commit-date topo order',
+        opts: { topoOrder: 'commit-date' },
+        expected: 'n m c1 a2 a1 b2 b1 r',
+      },
+      {
+        label: 'author-date topo order',
+        opts: { topoOrder: 'author-date' },
+        expected: 'n c1 m b2 a2 a1 b1 r',
+      },
+      { label: 'reverse', opts: { reverse: true }, expected: 'r b1 b2 a1 a2 c1 m n' },
+      {
+        label: 'graph topo order reversed',
+        opts: { topoOrder: 'graph', reverse: true },
+        expected: 'r a1 a2 b1 b2 m c1 n',
+      },
+      {
+        label: 'author-date topo order reversed',
+        opts: { topoOrder: 'author-date', reverse: true },
+        expected: 'r b1 a1 a2 b2 m c1 n',
+      },
+      {
+        label: 'commit-date topo order limited to 4 then reversed',
+        opts: { topoOrder: 'commit-date', limit: 4, reverse: true },
+        expected: 'a2 c1 m n',
+      },
+      {
+        label: 'graph topo order on the first-parent line',
+        opts: { topoOrder: 'graph', order: 'first-parent' },
+        expected: 'n m a2 a1 r',
+      },
+    ] as const)('When log runs with $label', ({ opts, expected }) => {
+      it("Then the commits come in git's order", async () => {
+        // Arrange
+        const ctx = await seedSkewedHistory();
+        const sut = log;
+
+        // Act
+        const result = await sut(ctx, opts);
+
+        // Assert
+        expect(result.map((entry) => entry.message).join(' ')).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a tip that an excluded line reaches only through commits dated before it', () => {
+    describe.each([
+      { label: 'date order without a commit-graph', graph: false, opts: {}, expected: 'i x' },
+      { label: 'date order over a commit-graph', graph: true, opts: {}, expected: 'i x' },
+      {
+        label: 'graph topo order without a commit-graph',
+        graph: false,
+        opts: { topoOrder: 'graph' },
+        expected: 'i x',
+      },
+      {
+        label: 'graph topo order over a commit-graph',
+        graph: true,
+        opts: { topoOrder: 'graph' },
+        expected: 'i',
+      },
+      {
+        label: 'first-parent topo order over a commit-graph',
+        graph: true,
+        opts: { topoOrder: 'graph', order: 'first-parent' },
+        expected: 'i',
+      },
+    ] as const)('When log excludes that line with $label', ({ graph, opts, expected }) => {
+      it('Then it shows what git shows', async () => {
+        // Arrange
+        const ctx = await seedSkewedExclusion(graph);
+        const sut = log;
+
+        // Act
+        const result = await sut(ctx, { ...opts, rev: 'main', excluding: ['excluded'] });
+
+        // Assert
+        expect(result.map((entry) => entry.message).join(' ')).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a double-skewed history whose excluded line reaches the shown line late', () => {
+    /** K ← Y ← A on `main`, Y dated before K; Y ← W640 … W700 ← V ← X on `x`, V dated before the W line. */
+    const seedDoubleSkew = async () => {
+      const ctx = createMemoryContext();
+      const k = await writeCommitAt(ctx, [], 950, 'K');
+      const y = await writeCommitAt(ctx, [k], 500, 'Y');
+      const a = await writeCommitAt(ctx, [y], 1000, 'A');
+      let tip = y;
+      for (const date of [640, 650, 660, 670, 680, 690, 700]) {
+        tip = await writeCommitAt(ctx, [tip], date, `W${date}`);
+      }
+      const v = await writeCommitAt(ctx, [tip], 100, 'V');
+      const x = await writeCommitAt(ctx, [v], 2000, 'X');
+      await seedRepo(ctx, { refs: { 'refs/heads/main': a, 'refs/heads/x': x } });
+      return ctx;
+    };
+
+    describe('When log excludes x and leaves out commits after K', () => {
+      it('Then the left-out K never moves the date the excluded line is weighed against', async () => {
+        // Arrange
+        const ctx = await seedDoubleSkew();
+        const sut = log;
+
+        // Act
+        const result = await sut(ctx, { rev: 'main', excluding: ['x'], before: new Date(900_000) });
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a parent committed after one of its two children', () => {
+    describe.each([
+      { label: 'the default order', opts: {}, expected: 'e a f b' },
+      { label: 'commit-date topo order', opts: { topoOrder: 'commit-date' }, expected: 'e a b f' },
+    ] as const)('When log runs with $label', ({ opts, expected }) => {
+      it("Then the commits come in git's order", async () => {
+        // Arrange
+        const ctx = await seedParentNewerThanChild();
+        const sut = log;
+
+        // Act
+        const result = await sut(ctx, opts);
+
+        // Assert
+        expect(result.map((entry) => entry.message).join(' ')).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given nothing excluded and a history whose oldest commit is missing', () => {
+    describe('When log is limited to the newest commit', () => {
+      it('Then the walk stops before reading the missing parent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const missing = 'f'.repeat(40) as ObjectId;
+        const middle = await writeCommitAt(ctx, [missing], 2000, 'middle');
+        const newest = await writeCommitAt(ctx, [middle], 3000, 'newest');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': newest } });
+        const sut = log;
+
+        // Act
+        const result = await sut(ctx, { limit: 1 });
+
+        // Assert
+        expect(result.map((entry) => entry.message)).toEqual(['newest']);
       });
     });
   });

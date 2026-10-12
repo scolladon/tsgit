@@ -1,4 +1,5 @@
 import { revparseUnresolved } from '../../../domain/commands/error.js';
+import { findBranchMark } from '../../../domain/refs/branch-mark.js';
 
 /**
  * Pure parser for the revision-expression grammar. Turns a raw expression into
@@ -8,32 +9,43 @@ import { revparseUnresolved } from '../../../domain/commands/error.js';
  * Grammar (subset accepted):
  *   - empty                       throws REVPARSE_UNRESOLVED
  *   - `:<stage>:<path>`           IndexStage (stage in 0..3, path non-empty)
- *   - `<tree-ish>:<path>`         TreePath — a `:` outside any `@{…}` splits the
- *                                 tree-ish from the path (path may be empty)
+ *   - `:<path>`                   IndexStage at stage 0
+ *   - `:/<regex>`                 MessageSearch from every ref and HEAD
+ *   - `<tree-ish>:<path>`         TreePath — a `:` outside any `@{…}`/`^{…}`
+ *                                 splits the tree-ish from the path (path may be empty)
  *   - `<base>` `<op>*`            RefOrHex with chained operations
  *
- * Operations:
- *   - `~N`            ancestor (first-parent N times); `~` alone is invalid
- *   - `^`             parent 1
- *   - `^N`            parent N (1-based; 1 = first parent)
- *   - `^^^`           sequence of parent ops
- *   - `^{<type>}`     peel to type (commit | tree | blob | tag)
+ * Operations, read from the right as git's `get_oid_1` does:
+ *   - `~N`            ancestor (first-parent N times); `~` alone is `~1`
+ *   - `^N`            parent N (1-based; 1 = first parent); `^` alone is `^1`
+ *   - `^{<type>}`     peel to type (commit | tree | blob | tag), or `object`: any kind
+ *   - `^{}`           dereference tags until a non-tag
+ *   - `^{/<regex>}`   the youngest commit reachable from the peeled commit whose
+ *                     message matches; `^{/}` is the commit itself
+ * A peel opens at the last `^{` and its kind is read from the start of what
+ * follows, the rest up to the final `}` ignored (`HEAD^{commit}x}`), so a
+ * search pattern may hold any character.
  *
- * A reflog `@{…}` selector binds to the base ref, before any `~`/`^`:
+ * A reflog `@{…}` selector closes the base, before any operation:
  *   `<base> @{ <selector> } <op>*`
  * A digits-only body is an index; anything else is a date string the evaluator
  * resolves. An empty base (bare `@{N}`) is allowed and resolves against the
  * current branch.
- * Hex prefixes shorter than 7 are rejected at parse time; 7+ are deferred to
- * the evaluator (which scans loose objects + pack indices).
  */
 
-export type PeelTarget = 'commit' | 'tree' | 'blob' | 'tag';
+type IndexStage = 0 | 1 | 2 | 3;
+
+export type PeelTarget = 'commit' | 'tree' | 'blob' | 'tag' | 'object';
 
 export type RevOperation =
   | { readonly kind: 'parent'; readonly n: number }
   | { readonly kind: 'ancestor'; readonly n: number }
-  | { readonly kind: 'peel'; readonly target: PeelTarget };
+  /** `name` spells the expression up to this operator's `}` — the name git reports a mismatch under. */
+  | { readonly kind: 'peel'; readonly target: PeelTarget; readonly name: string }
+  /** `name` spells the expression before this `^{}` — the name git reports a missing object under. */
+  | { readonly kind: 'deref'; readonly name: string }
+  /** `name` spells the expression up to this operator's `}`, as for `peel`. */
+  | { readonly kind: 'search'; readonly pattern: string; readonly name: string };
 
 export type ReflogSelector =
   | { readonly kind: 'index'; readonly n: number }
@@ -48,21 +60,31 @@ export type RevExpression =
     }
   | {
       readonly kind: 'index-stage';
-      readonly stage: 0 | 1 | 2 | 3;
+      readonly stage: IndexStage;
       readonly path: string;
     }
+  | { readonly kind: 'message-search'; readonly pattern: string }
   | {
       readonly kind: 'tree-path';
       readonly rev: string;
       readonly path: string;
     };
 
-const VALID_PEEL_TARGETS = new Set<string>(['commit', 'tree', 'blob', 'tag']);
-const INDEX_STAGE_PATTERN = /^:(\d):(.+)$/;
-// Reject only 1–3 hex chars: shorter than git's minimum abbreviation (4), so
-// they can never resolve as an abbreviated object id. 4+ hex chars are accepted
-// and routed through `resolveBase`, which tries refs then `resolveOidPrefix`.
-const SHORT_HEX_PATTERN = /^[0-9a-f]{1,3}$/;
+const PEEL_TARGETS: ReadonlyArray<PeelTarget> = ['commit', 'tree', 'blob', 'tag', 'object'];
+const INDEX_STAGE_PATTERN = /^:([0-3]):/;
+const MESSAGE_SEARCH_PREFIX = ':/';
+const TRAILING_STEP_PATTERN = /([~^])(\d*)$/;
+const DIGITS_ONLY_PATTERN = /^\d+$/;
+/** What no ref name, object id or describe output can hold. */
+const FOREIGN_BASE_PATTERN = /[~^]|@\{/;
+/** git's `@{-<n>}` prior-checkout opener: only a whole base may start with it. */
+const PRIOR_CHECKOUT_PATTERN = /^@\{-\d+\}$/;
+const PRIOR_CHECKOUT_MARK = '-';
+const PEEL_OPENER = '^{';
+const REFLOG_OPENER = '@{';
+const CLOSER = '}';
+/** git's reflog scan needs room for the `@{` opener, a body and the closer. */
+const MIN_BRACED_LENGTH = 4;
 
 const fail = (raw: string): never => {
   throw revparseUnresolved(raw);
@@ -72,141 +94,144 @@ export const parseExpression = (raw: string): RevExpression => {
   // Stryker disable next-line ConditionalExpression: equivalent — when this guard is removed, '' still fails identically: parseRefOrHex's `base === ''` guard throws revparseUnresolved('') for the same input.
   if (raw === '') fail(raw);
   if (raw.startsWith(':')) return parseIndexStage(raw);
-  // A colon outside any `@{…}` selector splits `<tree-ish>:<path>` — git resolves
-  // this everywhere, not just in `show`. Colons inside `@{…}` (ISO dates carry
-  // them) are part of the reflog selector, so the scan tracks `@{…}` depth.
+  // A colon outside any `@{…}` selector or `^{…}` peel splits `<tree-ish>:<path>`
+  // — git resolves this everywhere, not just in `show`. Colons inside the
+  // braces (ISO dates, search patterns) belong to them, so the scan tracks depth.
   const colon = findTreePathColon(raw);
   if (colon !== -1) {
     return { kind: 'tree-path', rev: raw.slice(0, colon), path: raw.slice(colon + 1) };
   }
-  if (raw.includes('@{')) return parseReflog(raw);
   return parseRefOrHex(raw);
 };
 
-/** Index of the first `:` outside any `@{…}` region, or -1. */
+/**
+ * git's `get_oid_with_context_1` reads a name whole before splitting it at a
+ * colon. Only a trailing `^{/<pattern>}` can hold a colon the depth scan
+ * misplaces — a `}` in the pattern closes the scan's brace early — so only
+ * such a name can read whole.
+ */
+export const mayReadWhole = (raw: string): boolean => trailingPeel(raw)?.op.kind === 'search';
+
+/** The name read whole, ignoring any colon in it — refused as `parseExpression` refuses a base. */
+export const parseWholeName = (raw: string): RevExpression => parseRefOrHex(raw);
+
+/** Index of the first `:` outside any `@{…}`/`^{…}` region, or -1. */
 const findTreePathColon = (raw: string): number => {
-  let inSelector = false;
-  // Stryker disable next-line EqualityOperator: equivalent — at i === raw.length, raw[i] is undefined and matches none of '@'/'}'/':' , so the extra iteration is a harmless no-op.
+  let depth = 0;
+  // Stryker disable next-line EqualityOperator: equivalent — at i === raw.length, raw[i] is undefined and matches none of '@'/'^'/'}'/':' , so the extra iteration is a harmless no-op.
   for (let i = 0; i < raw.length; i += 1) {
-    if (!inSelector && raw[i] === '@' && raw[i + 1] === '{') {
-      inSelector = true;
-      // Stryker disable next-line AssignmentOperator: equivalent — the loop's re-increment cancels this decrement; the revisited '@' and '{' are no-ops while inSelector is true, so every input yields the same colon index (and it cannot loop: re-entry needs !inSelector, now false).
-      i += 1;
-    } else if (inSelector && raw[i] === '}') {
-      inSelector = false;
-    } else if (!inSelector && raw[i] === ':') {
+    const ch = raw[i];
+    if ((ch === '@' || ch === '^') && raw[i + 1] === '{') {
+      depth += 1;
+    } else if (depth > 0 && ch === CLOSER) {
+      depth -= 1;
+    } else if (depth === 0 && ch === ':') {
       return i;
     }
   }
   return -1;
 };
 
+/** git's `:/<regex>`: a leading `:/` with a pattern after it. */
+export const isMessageSearch = (raw: string): boolean =>
+  raw.length > MESSAGE_SEARCH_PREFIX.length && raw.startsWith(MESSAGE_SEARCH_PREFIX);
+
+/**
+ * git's leading-colon forms: `:/<regex>` (longer than `:/`) searches every
+ * ref's history; `:<0-3>:<path>` names an index stage and any other `:<path>`
+ * stage 0 — so `:4:x` is the path `4:x`.
+ */
 const parseIndexStage = (raw: string): RevExpression => {
-  const match = INDEX_STAGE_PATTERN.exec(raw);
-  if (match === null) fail(raw);
-  const stageStr = (match as RegExpMatchArray)[1] as string;
-  const path = (match as RegExpMatchArray)[2] as string;
-  const stage = Number(stageStr);
-  // `INDEX_STAGE_PATTERN` captures a single digit, so `stage` is always 0..9 — only the upper bound can be exceeded.
-  if (stage > 3) fail(raw);
-  // The `(.+)` capture in `INDEX_STAGE_PATTERN` guarantees `path` is non-empty,
-  // so no empty-path guard is needed here.
-  return { kind: 'index-stage', stage: stage as 0 | 1 | 2 | 3, path };
+  if (isMessageSearch(raw)) {
+    return { kind: 'message-search', pattern: raw.slice(MESSAGE_SEARCH_PREFIX.length) };
+  }
+  const staged = INDEX_STAGE_PATTERN.exec(raw);
+  const stage = staged === null ? 0 : (Number(staged[1]) as IndexStage);
+  const path = raw.slice(staged === null ? 1 : staged[0].length);
+  if (path === '') fail(raw);
+  return { kind: 'index-stage', stage, path };
 };
 
+interface Step {
+  readonly op: RevOperation;
+  readonly rest: string;
+}
+
+/** git's `get_oid_1`: strip operations off the right until only the base remains. */
 const parseRefOrHex = (raw: string): RevExpression => {
-  const opStart = findOperatorStart(raw);
-  const base = opStart === -1 ? raw : raw.slice(0, opStart);
-  if (base === '') fail(raw);
-  if (SHORT_HEX_PATTERN.test(base) && opStart === -1) fail(raw);
-  const operations = opStart === -1 ? [] : parseOperations(raw, opStart);
-  return { kind: 'ref-or-hex', base, operations };
+  const reversed: RevOperation[] = [];
+  let rest = raw;
+  for (let step = trailingStep(rest); step !== undefined; step = trailingStep(rest)) {
+    reversed.push(step.op);
+    rest = step.rest;
+  }
+  return { ...parseBase(rest, raw), operations: reversed.reverse() };
 };
 
-const DIGITS_ONLY_PATTERN = /^\d+$/;
+const trailingStep = (name: string): Step | undefined => trailingCount(name) ?? trailingPeel(name);
 
-/** Parse `<base>@{<selector>}<op>*`. The base may be empty (bare `@{N}`). */
-const parseReflog = (raw: string): RevExpression => {
-  const at = raw.indexOf('@{');
-  // A missing `}` needs no explicit guard: `slice(at + 2, -1)` then yields
-  // either an empty body (rejected just below) or an `operations` slice that
-  // still contains `@{` — never a valid op-chain — so parseOperations fails
-  // with the same revparseUnresolved(raw). The guard would be dead code.
-  const close = raw.indexOf('}', at + 2);
-  const base = raw.slice(0, at);
-  const body = raw.slice(at + 2, close);
-  if (body === '') fail(raw);
+/** A trailing `~<n>` or `^<n>`; no count steps once. */
+const trailingCount = (name: string): Step | undefined => {
+  const match = TRAILING_STEP_PATTERN.exec(name);
+  if (match === null) return undefined;
+  const [, operator, digits] = match as unknown as readonly [string, string, string];
+  const n = digits === '' ? 1 : Number(digits);
+  const op: RevOperation = operator === '~' ? { kind: 'ancestor', n } : { kind: 'parent', n };
+  return { op, rest: name.slice(0, match.index) };
+};
+
+/** git's `peel_onion`: the last `^{`, its kind read from what follows it. */
+const trailingPeel = (name: string): Step | undefined => {
+  if (!name.endsWith(CLOSER)) return undefined;
+  const opener = name.lastIndexOf(PEEL_OPENER);
+  if (opener === -1) return undefined;
+  const op = peelOperation(name, opener);
+  return op === undefined ? undefined : { op, rest: name.slice(0, opener) };
+};
+
+const peelOperation = (name: string, opener: number): RevOperation | undefined => {
+  const body = name.slice(opener + PEEL_OPENER.length);
+  const target = PEEL_TARGETS.find((type) => body.startsWith(`${type}${CLOSER}`));
+  if (target !== undefined) return { kind: 'peel', target, name };
+  if (body.startsWith(CLOSER)) return { kind: 'deref', name: name.slice(0, opener) };
+  if (body.startsWith('/')) return { kind: 'search', pattern: body.slice(1, -1), name };
+  return undefined;
+};
+
+/** The base and its reflog selector; a base no ref, oid or describe name can spell is refused. */
+const parseBase = (
+  name: string,
+  raw: string,
+): { readonly kind: 'ref-or-hex'; readonly base: string; readonly reflog?: ReflogSelector } => {
+  const selected = splitReflog(name, raw);
+  const base = selected?.base ?? name;
+  if (FOREIGN_BASE_PATTERN.test(base) && !spellsBranchName(base)) fail(raw);
+  if (selected === undefined) {
+    if (base === '') fail(raw);
+    return { kind: 'ref-or-hex', base };
+  }
+  return { kind: 'ref-or-hex', base, reflog: selected.reflog };
+};
+
+/** A base git's `interpret_branch_name` may still spell: `@{-<n>}`, or a branch mark. */
+const spellsBranchName = (base: string): boolean =>
+  PRIOR_CHECKOUT_PATTERN.test(base) || findBranchMark(base) !== undefined;
+
+/** git's `get_oid_basic`: a closing `@{<body>}`, its opener the last one with a
+ *  non-empty body; a `@{-<n>}` there is no selector, and only leads the name,
+ *  and an `@{upstream}` / `@{push}` mark is none either. */
+const splitReflog = (
+  name: string,
+  raw: string,
+): { readonly base: string; readonly reflog: ReflogSelector } | undefined => {
+  if (name.length < MIN_BRACED_LENGTH || !name.endsWith(CLOSER)) return undefined;
+  const at = name.lastIndexOf(REFLOG_OPENER, name.length - MIN_BRACED_LENGTH);
+  if (at === -1) return undefined;
+  const body = name.slice(at + REFLOG_OPENER.length, -1);
+  if (body.startsWith(PRIOR_CHECKOUT_MARK)) return at === 0 ? undefined : fail(raw);
+  if (findBranchMark(name.slice(at))?.branch === '') return undefined;
   const reflog: ReflogSelector = DIGITS_ONLY_PATTERN.test(body)
     ? { kind: 'index', n: Number(body) }
     : { kind: 'date', raw: body };
-  // parseOperations returns [] for an empty tail, so no separate empty guard.
-  const operations = parseOperations(raw.slice(close + 1), 0);
-  return { kind: 'ref-or-hex', base, reflog, operations };
+  return { base: name.slice(0, at), reflog };
 };
-
-/** Returns the index of the first `~` or `^` that begins an operator chain, or -1. */
-const findOperatorStart = (raw: string): number => {
-  // Stryker disable next-line EqualityOperator: equivalent — raw[raw.length] is undefined, which equals neither '~' nor '^', so one extra harmless iteration changes nothing.
-  for (let i = 0; i < raw.length; i += 1) {
-    const ch = raw[i];
-    if (ch === '~' || ch === '^') return i;
-  }
-  return -1;
-};
-
-const parseOperations = (raw: string, start: number): ReadonlyArray<RevOperation> => {
-  const out: RevOperation[] = [];
-  let i = start;
-  while (i < raw.length) {
-    const ch = raw[i];
-    if (ch === '~') {
-      const result = parseTilde(raw, i);
-      out.push(result.op);
-      i = result.next;
-    } else if (ch === '^') {
-      const result = parseCaret(raw, i);
-      out.push(result.op);
-      i = result.next;
-    } else {
-      fail(raw);
-    }
-  }
-  return out;
-};
-
-const parseTilde = (
-  raw: string,
-  i: number,
-): { readonly op: RevOperation; readonly next: number } => {
-  let j = i + 1;
-  // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — at j === raw.length, charCodeAt returns NaN, isDigit(NaN) is false, so the `isDigit` operand terminates the loop whether or not the `j < raw.length` bound holds.
-  while (j < raw.length && isDigit(raw.charCodeAt(j))) j += 1;
-  if (j === i + 1) fail(raw); // no digits after `~`
-  const n = Number(raw.slice(i + 1, j));
-  return { op: { kind: 'ancestor', n }, next: j };
-};
-
-const parseCaret = (
-  raw: string,
-  i: number,
-): { readonly op: RevOperation; readonly next: number } => {
-  if (raw[i + 1] === '{') {
-    const closeIdx = raw.indexOf('}', i + 2);
-    // Stryker disable next-line ConditionalExpression,UnaryOperator: equivalent — when `closeIdx === -1` this guard is bypassed, `targetStr` becomes `raw.slice(i + 2, -1)` and `next` becomes 0; either the slice is not a valid peel target (fails at L130) or parseOperations re-enters at index 0 where the non-empty base's first char is neither `~` nor `^` (fails in the else branch). Both paths throw revparseUnresolved(raw) with identical `raw`.
-    if (closeIdx === -1) fail(raw);
-    const targetStr = raw.slice(i + 2, closeIdx);
-    if (!VALID_PEEL_TARGETS.has(targetStr)) fail(raw);
-    return {
-      op: { kind: 'peel', target: targetStr as PeelTarget },
-      next: closeIdx + 1,
-    };
-  }
-  let j = i + 1;
-  // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — at j === raw.length, charCodeAt returns NaN, isDigit(NaN) is false, so the `isDigit` operand terminates the loop whether or not the `j < raw.length` bound holds.
-  while (j < raw.length && isDigit(raw.charCodeAt(j))) j += 1;
-  const digitsStr = raw.slice(i + 1, j);
-  const n = digitsStr === '' ? 1 : Number(digitsStr);
-  return { op: { kind: 'parent', n }, next: j };
-};
-
-const isDigit = (code: number): boolean => code >= 0x30 && code <= 0x39;

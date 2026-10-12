@@ -99,6 +99,17 @@ Every `read` / `write` on the Memory adapter clones the `Uint8Array`. Caller mut
 
 tsgit never infers the algorithm from **data** — an object id's width, a `.rev` file's hash id, a `multi-pack-index` or `commit-graph`'s hash-version byte — only from the repository's own **declaration**. Inferring from data would let planted bytes choose their own verifier: a hostile object store could declare itself SHA-256-shaped by construction and steer verification toward whichever function is easiest to forge for its payload. The declaration-only rule also fails **closed**: a repository declared SHA-1 that holds 64-hex object ids cannot resolve them. The pack-index and multi-pack-index searches refuse a target whose width is not the index's own, so such an id reads as *absent* rather than being compared byte-by-byte against a wider slot — a comparison that would run off the end of the target and, because `NaN` is neither less nor greater than zero, could otherwise settle on an unrelated object. Absent, not reinterpreted, and not dependent on the hash check to catch it afterwards.
 
+## Alternate object stores
+
+`objects/info/alternates` is read, as git reads it: every listed object directory is an extra source for loose objects, packs, multi-pack-indexes, bitmaps and the commit-graph chain, searched in git's depth-first order after the repository's own, to git's nesting depth ([ADR-914](../adr/914-unusable-alternates-surface-as-structured-diagnostics.md), [ADR-918](../adr/918-each-object-directory-is-an-explicit-object-source.md), [ADR-921](../adr/921-acceleration-files-are-honoured-in-every-source.md)).
+
+An alternate lives outside the repository, so reads of it do not go through the repository's containment roots. Each alternate gets its own reader rooted at that object directory alone, and the path is canonicalised through a metadata-only probe that can open no file content ([ADR-915](../adr/915-alternates-are-read-through-a-reader-confined-to-each-objects-dir.md), [ADR-917](../adr/917-alternate-paths-are-canonicalised-by-a-realpath-walk-through-the-port.md)). The one write that reaches an alternate is the mtime refresh git's freshen performs on an object it already holds ([ADR-922](../adr/922-writes-freshen-an-existing-copy-in-any-source-as-git-does.md)); it changes no content. With a caller-supplied `fs` the caller's `fs` bounds every read, so it must itself reach an out-of-root alternate. The browser adapter cannot freshen, and writes a local copy instead ([ADR-925](../adr/925-browser-freshen-fails-and-falls-back-to-a-local-write.md)).
+
+- **Unusable alternates** (unresolvable path, not a directory, unreadable list, nesting too deep, unreachable by the adapter) are skipped and logged, and listed by [`objectSources`](../use/primitives/object-sources.md); a read never fails because of one.
+- **`fsck`** audits every source's objects and acceleration files.
+- **`gc`, `prune`, `repack`** touch only the repository's own objects, as git's `repack -l` and `prune` do. A loose copy of an object an alternate already packs is removed.
+- **Not supported:** `GIT_ALTERNATE_OBJECT_DIRECTORIES` ([ADR-923](../adr/923-git-alternate-object-directories-is-not-supported.md)).
+
 ## Object & pack size caps
 
 | Cap | Default | Where enforced |

@@ -1,5 +1,8 @@
+import { errorDataCode } from '../error-data-code.js';
 import type { RefName } from '../objects/index.js';
 import { invalidRef } from './error.js';
+
+const INVALID_REF = 'INVALID_REF';
 
 const FORBIDDEN_SIMPLE = new Set(['~', '^', ':', '?', '*', '[', '\\', ' ']);
 
@@ -65,7 +68,8 @@ export function isSafeRefName(name: string): boolean {
   try {
     validateRefName(name);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (errorDataCode(error) === INVALID_REF) return false;
+    throw error;
   }
 }

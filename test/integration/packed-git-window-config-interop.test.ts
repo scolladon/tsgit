@@ -1,10 +1,12 @@
 /**
- * Cross-tool interop — the eager `core.packedGitWindowSize` /
- * `core.packedGitLimit` refusal (the pack window cache's config pin). Builds
- * one clean repository, then for every accepted operand of the pinned
- * unsigned-long grammar proves cat-file, rev-parse and status all agree with
- * git; for every malformed operand proves all three refuse identically,
- * rebuilding git's own fatal line from tsgit's structured error data.
+ * Cross-tool interop — the `core.packedGitWindowSize` / `core.packedGitLimit`
+ * refusal (the pack window cache's config pin, read with git's repo
+ * settings). Builds one clean repository, then for every accepted operand of
+ * the pinned unsigned-long grammar proves cat-file, rev-parse and status all
+ * agree with git; for every malformed operand proves all three refuse
+ * identically, rebuilding git's own fatal line from tsgit's structured error
+ * data — while branch and tag listing, which never reach the object store,
+ * accept it as git does.
  *
  * @proves
  *   surface:        config-read
@@ -12,21 +14,30 @@
  *   unique:         core.packedGitWindowSize / core.packedGitLimit accept and
  *                    refuse the exact operands git 2.55.0 does, on every
  *                    command git validates the key in
- *   interopSurface: cat-file, rev-parse, status
+ *   interopSurface: cat-file, rev-parse, status, branch, tag
  */
 import { cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { branchList } from '../../src/application/commands/branch.js';
 import { catFile } from '../../src/application/commands/cat-file.js';
 import { revParse } from '../../src/application/commands/rev-parse.js';
 import { status } from '../../src/application/commands/status.js';
+import { tagList } from '../../src/application/commands/tag.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { Commit } from '../../src/domain/objects/index.js';
 import { ObjectId, serializeIdentity } from '../../src/domain/objects/index.js';
 import type { Context } from '../../src/ports/context.js';
-import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  git,
+  revParseStdout,
+  runGit,
+  runGitEnv,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
 
@@ -64,6 +75,7 @@ interface RefusedRow {
 const refusedRowsFor = (key: PackedGitKey): ReadonlyArray<RefusedRow> => [
   { key, slug: 'letters', lines: `\t${key} = abc\n`, reported: 'abc', reason: 'invalid unit' },
   { key, slug: 'negative', lines: `\t${key} = -1\n`, reported: '-1', reason: 'invalid unit' },
+  { key, slug: 'minus-zero', lines: `\t${key} = -0\n`, reported: '-0', reason: 'invalid unit' },
   { key, slug: 'empty', lines: `\t${key} = \n`, reported: '', reason: 'invalid unit' },
   { key, slug: 'valueless', lines: `\t${key}\n`, reported: '', reason: 'invalid unit' },
   {
@@ -192,9 +204,125 @@ describe.skipIf(!GIT_AVAILABLE)(
             throw new Error('expected a resolved commit entry');
           }
           expect(reconstructCatFileText(entry.object)).toBe(catFileGit.stdout);
-          await expect(revParse(ctx, 'HEAD')).resolves.toBe(headId);
+          expect(revParseStdout(await revParse(ctx, 'HEAD'))).toBe(headId);
           const statusResult = await status(ctx);
           expect(statusResult.changes).toEqual([]);
+        });
+      });
+    });
+
+    describe.each(PACKED_GIT_KEYS)('Given core.%s set twice, malformed and then valid', (key) => {
+      describe('When cat-file, rev-parse and status run on both tools', () => {
+        it('Then both accept — git reads only the last entry', async () => {
+          // Arrange
+          const { dir, ctx } = await caseRepo(
+            `${key}-bad-then-valid`,
+            `\t${key} = x\n\t${key} = 1\n`,
+          );
+
+          // Act
+          const gitExits = [
+            tryRunGitWithExit(['-C', dir, 'cat-file', '-p', 'HEAD']).exitCode,
+            tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']).exitCode,
+            tryRunGitWithExit(['-C', dir, 'status']).exitCode,
+          ];
+
+          // Assert
+          expect(gitExits).toEqual([0, 0, 0]);
+          expect(revParseStdout(await revParse(ctx, 'HEAD'))).toBe(headId);
+          expect((await status(ctx)).changes).toEqual([]);
+        });
+      });
+
+      describe('When the valid entry comes first and rev-parse runs on both tools', () => {
+        it("Then both refuse on the last entry, matching git's fatal line", async () => {
+          // Arrange
+          const { dir, ctx } = await caseRepo(
+            `${key}-valid-then-bad`,
+            `\t${key} = 1\n\t${key} = x\n`,
+          );
+
+          // Act
+          const revParseGit = tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']);
+
+          // Assert
+          expect(revParseGit.exitCode).toBe(128);
+          expect(revParseGit.stderr).toBe(badNumericFatal(key, 'x', 'invalid unit'));
+          await assertRefusesWithBadNumeric(
+            () => revParse(ctx, 'HEAD'),
+            `core.${key.toLowerCase()}`,
+            path.join(dir, '.git', 'config'),
+            'x',
+            'invalid unit',
+          );
+        });
+      });
+    });
+
+    describe('Given core.packedGitLimit then core.packedGitWindowSize, both malformed', () => {
+      describe('When rev-parse runs on both tools', () => {
+        it('Then both name packedGitWindowSize, the key git reads first', async () => {
+          // Arrange
+          const lines = '\tpackedGitLimit = x\n\tpackedGitWindowSize = y\n';
+          const { dir, ctx } = await caseRepo('limit-then-window-size', lines);
+
+          // Act
+          const revParseGit = tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']);
+
+          // Assert
+          expect(revParseGit.stderr).toBe(
+            badNumericFatal('packedGitWindowSize', 'y', 'invalid unit'),
+          );
+          await assertRefusesWithBadNumeric(
+            () => revParse(ctx, 'HEAD'),
+            'core.packedgitwindowsize',
+            path.join(dir, '.git', 'config'),
+            'y',
+            'invalid unit',
+          );
+        });
+      });
+    });
+
+    describe('Given only a malformed core.packedGitLimit', () => {
+      describe('When branch --list and tag --list run on both tools', () => {
+        it('Then both list — git reads the bound only on the way to the object store', async () => {
+          // Arrange
+          const { dir, ctx } = await caseRepo('lists', '\tpackedGitLimit = x\n');
+
+          // Act
+          const gitExits = [
+            tryRunGitWithExit(['-C', dir, 'branch', '--list']).exitCode,
+            tryRunGitWithExit(['-C', dir, 'tag', '--list']).exitCode,
+          ];
+
+          // Assert
+          expect(gitExits).toEqual([0, 0]);
+          await expect(branchList(ctx)).resolves.toBeDefined();
+          await expect(tagList(ctx)).resolves.toBeDefined();
+        });
+      });
+    });
+
+    describe('Given core.ignoreCase = x on a line before core.packedGitLimit = x', () => {
+      describe('When status runs on both tools', () => {
+        it('Then both name core.packedgitlimit — status reads the repo settings before its config', async () => {
+          // Arrange
+          const lines = '\tignoreCase = x\n\tpackedGitLimit = x\n';
+          const { dir, ctx } = await caseRepo('ignore-case-then-limit', lines);
+
+          // Act
+          const statusGit = tryRunGitWithExit(['-C', dir, 'status']);
+
+          // Assert
+          expect(statusGit.stderr).toBe(badNumericFatal('packedGitLimit', 'x', 'invalid unit'));
+          await assertRefusesWithBadNumeric(
+            () => status(ctx),
+            'core.packedgitlimit',
+            path.join(dir, '.git', 'config'),
+            'x',
+            'invalid unit',
+          );
         });
       });
     });

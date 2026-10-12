@@ -1480,6 +1480,7 @@ describe('clone — partial clone', () => {
         expect(parsed.branch?.get('main')).toEqual({
           remote: 'origin',
           merge: 'refs/heads/main',
+          merges: ['refs/heads/main'],
         });
         const packDir = await ctx.fs.readdir(`${ctx.layout.gitDir}/objects/pack`);
         expect(packDir.some((e) => e.name.endsWith('.promisor'))).toBe(true);
@@ -1569,6 +1570,7 @@ describe('clone — partial clone', () => {
         expect(parsed.branch?.get('main')).toEqual({
           remote: 'origin',
           merge: 'refs/heads/main',
+          merges: ['refs/heads/main'],
         });
         const config = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
         expect(config).not.toContain('[extensions]');

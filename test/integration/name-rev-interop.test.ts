@@ -30,6 +30,7 @@ import {
   runGitAsync,
   runGitEnv,
   tryRunGit,
+  tryRunGitWithExit,
 } from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
@@ -48,7 +49,9 @@ const suffix = (r: NameRevResult): string =>
   r.steps.map((s) => (s.kind === 'ancestor' ? `~${s.count}` : `^${s.number}`)).join('');
 
 /** Reconstruct `git name-rev --name-only` (strip `refs/heads/`, else `refs/`). */
-const renderNameRev = (r: NameRevResult): string => {
+/** A skipped argument prints nothing on stdout. */
+const renderNameRev = (r: NameRevResult | undefined): string => {
+  if (r === undefined) return '';
   if (r.ref === undefined) return 'undefined';
   const base = r.ref.startsWith('refs/heads/')
     ? r.ref.slice('refs/heads/'.length)
@@ -58,7 +61,8 @@ const renderNameRev = (r: NameRevResult): string => {
 };
 
 /** Reconstruct `git describe --contains` (rev-parse short name: strip `refs/tags/`). */
-const renderContains = (r: NameRevResult): string => {
+const renderContains = (r: NameRevResult | undefined): string => {
+  if (r === undefined) return '';
   const base = (r.ref as string).replace(/^refs\/tags\//, '').replace(/^refs\//, '');
   if (r.steps.length === 0) return r.tagDeref ? `${base}^0` : base;
   return base + suffix(r);
@@ -119,6 +123,30 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
       { label: 'a lightweight tag, rendering without `^0`', rev: () => c1 },
       { label: 'a first-parent ancestor, rendering with `~n`', rev: () => c0 },
     ];
+
+    describe.each([
+      { label: 'a name that resolves to nothing', rev: () => 'nope~1' },
+      {
+        label: 'a full object id naming no object',
+        rev: () => '0123456789012345678901234567890123456789',
+      },
+    ])('When nameRevCmd reads $label', ({ rev }) => {
+      it('Then it skips the argument with the note git prints and names nothing', async () => {
+        // Arrange
+        const notes: string[] = [];
+        const noted = { ...ctx, logger: { info: (message: string) => notes.push(message) } };
+        const gitRun = tryRunGitWithExit(['-C', dir, 'name-rev', '--name-only', rev()]);
+        const sut = nameRevCmd;
+
+        // Act
+        const result = await sut(noted, rev());
+
+        // Assert
+        expect(gitRun.exitCode).toBe(0);
+        expect(renderNameRev(result)).toBe(gitRun.stdout.trim());
+        expect(notes.map((note) => `${note}\n`).join('')).toBe(gitRun.stderr);
+      });
+    });
 
     describe('When nameRevCmd renders each rev kind', () => {
       it.each(REV_RENDER_MATRIX)('Then $label', async ({ rev }) => {
@@ -321,7 +349,7 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
         const result = await nameRevCmd(ctx, c0, { tags: true });
 
         // Assert
-        expect(result.ref).toBeUndefined();
+        expect(result?.ref).toBeUndefined();
         expect(renderNameRev(result)).toBe(gitNameRev(dir, c0, '--tags'));
       });
     });
@@ -358,7 +386,7 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
         const result = await nameRevCmd(freshCtx, c0, { tags: true });
 
         // Assert
-        expect(result.ref).toBeUndefined();
+        expect(result?.ref).toBeUndefined();
         expect(renderNameRev(result)).toBe(gitNameRev(dir, c0, '--tags'));
       });
 
@@ -613,6 +641,179 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
         // Assert
         expect(result).toBe(gitNameRev(dir, root, `--exclude=${pattern}`));
         expect(result).toBe('mXin~1');
+      });
+    });
+  });
+
+  describe('Given refs git cannot load beside an annotated tag: a dangling branch, a tag of an unknown type and a tag of a malformed commit', () => {
+    let dir = '';
+    let ctx: Context;
+
+    const hashLiterally = (type: string, body: string): string =>
+      runGit(['-C', dir, 'hash-object', '-t', type, '-w', '--literally', '--stdin'], {
+        input: body,
+      }).trim();
+
+    const tagBody = (target: string, type: string): string =>
+      `object ${target}\ntype ${type}\ntag x\ntagger A <a@x> 1700000000 +0000\n\nx\n`;
+
+    /** Written past `update-ref`, which refuses a target it cannot load. */
+    const plantRef = (name: string, target: string): Promise<void> =>
+      writeFile(path.join(dir, '.git', name), `${target}\n`);
+
+    beforeAll(async () => {
+      dir = await makeRepo('broken-tips');
+      await commitFile(dir, 'c1');
+      annotate(dir, 'v1', clock + 30);
+      const missing = '1234567890123456789012345678901234567890';
+      await plantRef('refs/heads/dangling', missing);
+      await plantRef('refs/tags/a-bogus', hashLiterally('tag', tagBody(missing, 'bogus')));
+      const malformed = hashLiterally('commit', 'not a commit\n');
+      await plantRef('refs/tags/a-malformed', hashLiterally('tag', tagBody(malformed, 'commit')));
+      ctx = createNodeContext({ workDir: dir });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    describe('When nameRevCmd names HEAD', () => {
+      it('Then it skips the refs it cannot load and names HEAD by the tag as git does', async () => {
+        // Arrange
+        const gitRun = tryRunGitWithExit(['-C', dir, 'name-rev', '--name-only', 'HEAD']);
+        const sut = nameRevCmd;
+
+        // Act
+        const result = renderNameRev(await sut(ctx, 'HEAD'));
+
+        // Assert
+        expect(gitRun.exitCode).toBe(0);
+        expect(result).toBe(gitRun.stdout.trim());
+        expect(result).toBe('tags/v1^0');
+      });
+    });
+  });
+
+  describe('Given tags of a commit, a tree and a blob, and a lightweight tag of the tree', () => {
+    let dir = '';
+    let ctx: Context;
+
+    beforeAll(async () => {
+      dir = await makeRepo('non-commit');
+      await commitFile(dir, 'c1');
+      await commitFile(dir, 'c2');
+      runGit(['-C', dir, 'tag', '-a', 'tc', '-m', 'tc', 'HEAD~1'], { env: datedEnv(clock) });
+      runGit(['-C', dir, 'tag', '-a', 'tt', '-m', 'tt', 'HEAD^{tree}'], { env: datedEnv(clock) });
+      git(dir, 'tag', 'lt', 'HEAD^{tree}');
+      runGit(['-C', dir, 'tag', '-a', 'tb', '-m', 'tb', 'HEAD:c1.txt'], { env: datedEnv(clock) });
+      ctx = createNodeContext({ workDir: dir });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    const NON_COMMIT_MATRIX: ReadonlyArray<{ label: string; rev: () => string; named: string }> = [
+      { label: 'an annotated tag of a commit', rev: () => 'tc', named: 'tags/tc' },
+      { label: 'an annotated tag of a tree', rev: () => 'tt', named: 'tags/tt' },
+      { label: 'a lightweight tag of a tree', rev: () => 'lt', named: 'tags/lt' },
+      { label: 'an annotated tag of a blob', rev: () => 'tb', named: 'tags/tb' },
+      {
+        label: 'a tag object by its id',
+        rev: () => git(dir, 'rev-parse', 'tc').trim(),
+        named: 'tags/tc',
+      },
+      {
+        label: 'a tree by its id',
+        rev: () => git(dir, 'rev-parse', 'HEAD^{tree}').trim(),
+        named: 'tags/lt',
+      },
+      { label: 'an untagged blob', rev: () => 'HEAD:c2.txt', named: 'undefined' },
+      { label: 'an untagged tree', rev: () => 'HEAD~1^{tree}', named: 'undefined' },
+    ];
+
+    describe('When nameRevCmd names each object', () => {
+      it.each(NON_COMMIT_MATRIX)(
+        'Then $label is named by exact ref match as git does',
+        async ({ rev, named }) => {
+          // Arrange
+          const sut = nameRevCmd;
+
+          // Act
+          const result = renderNameRev(await sut(ctx, rev()));
+
+          // Assert
+          expect(result).toBe(gitNameRev(dir, rev()));
+          expect(result).toBe(named);
+        },
+      );
+    });
+
+    describe('When describeCmd runs with --contains on the tag of a tree', () => {
+      it('Then it skips the tag with the note git prints and describes nothing', async () => {
+        // Arrange
+        const notes: string[] = [];
+        const noted = { ...ctx, logger: { info: (message: string) => notes.push(message) } };
+        const gitRun = tryRunGitWithExit(['-C', dir, 'describe', '--contains', 'tt']);
+        const sut = describeCmd;
+
+        // Act
+        const result = await sut(noted, 'tt', { contains: true });
+
+        // Assert
+        expect(gitRun.exitCode).toBe(0);
+        expect(renderContains(result)).toBe(gitRun.stdout.trim());
+        expect(notes.map((note) => `${note}\n`).join('')).toBe(gitRun.stderr);
+      });
+    });
+
+    describe('When describeCmd runs with --contains on the tag of a commit', () => {
+      it('Then it still names the peeled commit, as git passes --peel-tag', async () => {
+        // Arrange & Act
+        const result = renderContains(await describeCmd(ctx, 'tc', { contains: true }));
+
+        // Assert
+        expect(result).toBe(git(dir, 'describe', '--contains', 'tc').trim());
+        expect(result).toBe('tc^0');
+      });
+    });
+  });
+
+  describe('Given tag A wrapping a newer inner tag of a commit, and tag B of the same commit dated between them', () => {
+    let dir = '';
+    let ctx: Context;
+    let tagged = '';
+
+    const mktag = (target: string, type: string, name: string, epoch: number): string =>
+      runGit(['-C', dir, 'mktag'], {
+        input: `object ${target}\ntype ${type}\ntag ${name}\ntagger A <a@x> ${epoch} +0000\n\n${name}\n`,
+      }).trim();
+
+    beforeAll(async () => {
+      dir = await makeRepo('innermost-date');
+      tagged = await commitFile(dir, 'c1');
+      await commitFile(dir, 'c2');
+      const inner = mktag(tagged, 'commit', 'inner', 5000);
+      git(dir, 'update-ref', 'refs/tags/A', mktag(inner, 'tag', 'A', 1000));
+      git(dir, 'update-ref', 'refs/tags/B', mktag(tagged, 'commit', 'B', 3000));
+      ctx = createNodeContext({ workDir: dir });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    describe('When nameRevCmd names the tagged commit', () => {
+      it('Then the innermost tagger date ranks the chains, as git does', async () => {
+        // Arrange
+        const sut = nameRevCmd;
+
+        // Act
+        const result = renderNameRev(await sut(ctx, tagged));
+
+        // Assert
+        expect(result).toBe(gitNameRev(dir, tagged));
+        expect(result).toBe('tags/B^0');
       });
     });
   });

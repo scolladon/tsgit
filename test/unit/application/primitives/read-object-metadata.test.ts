@@ -2,6 +2,7 @@ import { deflateRawSync } from 'node:zlib';
 import { describe, expect, it, vi } from 'vitest';
 import {
   getPackRegistry,
+  readDeclaredObjectHeader,
   readDeclaredObjectSize,
   readObjectMetadata,
 } from '../../../../src/application/primitives/read-object.js';
@@ -409,6 +410,28 @@ describe('readObjectMetadata', () => {
       });
     });
   });
+
+  describe('Given a loose object that appears after its id missed and whose bytes do not hash to its id', () => {
+    describe('When readObjectMetadata reads it', () => {
+      it('Then its type and size are served without verifying the hash', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const planted = 'a'.repeat(40) as ObjectId;
+        await readObjectMetadata(ctx, planted).catch(() => undefined);
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(planted)}`,
+          await ctx.compressor.deflate(ENC.encode('blob 3\0xyz')),
+        );
+        const sut = readObjectMetadata;
+
+        // Act
+        const result = await sut(ctx, planted);
+
+        // Assert
+        expect(result).toEqual({ type: 'blob', uncompressedSize: 3 });
+      });
+    });
+  });
 });
 
 describe('readDeclaredObjectSize', () => {
@@ -485,7 +508,7 @@ describe('readDeclaredObjectSize', () => {
 
   describe('Given a whole-file fallback whose real payload decodes to under 32 bytes with no NUL', () => {
     describe('When readDeclaredObjectSize is called', () => {
-      it('Then rejects the no-NUL-terminator reason through the SAME capped probe, never header-too-long', async () => {
+      it("Then rejects with git's header-too-long reason through the SAME capped probe", async () => {
         // Arrange — the same empty-stored-block run pushes the payload past the
         // 1024-byte probe window, forcing the whole-file fallback; unlike the
         // "hello" row above, this payload never terminates with a NUL AND never
@@ -507,7 +530,7 @@ describe('readDeclaredObjectSize', () => {
           const data = (error as TsgitError).data;
           expect(data.code).toBe('INVALID_OBJECT_HEADER');
           if (data.code === 'INVALID_OBJECT_HEADER') {
-            expect(data.reason).toBe(`no NUL terminator found in inflated object ${id}`);
+            expect(data.reason).toBe(`header for ${id} too long, exceeds 32 bytes`);
           }
         }
       });
@@ -581,7 +604,7 @@ describe('readDeclaredObjectSize', () => {
 
   describe('Given a loose file whose entire content has no NUL but stays at or under 32 bytes', () => {
     describe('When readDeclaredObjectSize is called', () => {
-      it('Then rejects INVALID_OBJECT_HEADER with the no-NUL-terminator reason, with no whole-file fallback read', async () => {
+      it("Then rejects INVALID_OBJECT_HEADER with git's header-too-long reason, with no whole-file fallback read", async () => {
         // Arrange — the whole file fits inside the 1024-byte probe and never
         // reaches the 32-byte header cap, so the "never catch" branch applies:
         // no fallback, the plain no-NUL error propagates as-is. Warm the
@@ -604,7 +627,7 @@ describe('readDeclaredObjectSize', () => {
           const data = (error as TsgitError).data;
           expect(data.code).toBe('INVALID_OBJECT_HEADER');
           if (data.code === 'INVALID_OBJECT_HEADER') {
-            expect(data.reason).toBe(`no NUL terminator found in inflated object ${id}`);
+            expect(data.reason).toBe(`header for ${id} too long, exceeds 32 bytes`);
           }
         }
         // isPrefixTruncated correctly reads false here (the prefix IS the
@@ -771,7 +794,7 @@ describe('readDeclaredObjectSize', () => {
           const data = (error as TsgitError).data;
           expect(data.code).toBe('INVALID_OBJECT_HEADER');
           if (data.code === 'INVALID_OBJECT_HEADER') {
-            expect(data.reason).toBe(`no NUL terminator found in inflated object ${id}`);
+            expect(data.reason).toBe(`header for ${id} too long, exceeds 32 bytes`);
           }
         }
       });
@@ -924,6 +947,69 @@ describe('readDeclaredObjectSize', () => {
         expect(caught).toBe(rejection);
         const data = (caught as TsgitError).data;
         expect(data.code).toBe('NOT_A_DIRECTORY');
+      });
+    });
+  });
+});
+
+describe('readDeclaredObjectHeader', () => {
+  describe('Given a loose commit', () => {
+    describe('When readDeclaredObjectHeader is called', () => {
+      it('Then returns the header type and declared size without inflating the content', async () => {
+        // Arrange
+        const content = ENC.encode('tree-ish');
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'commit', content);
+        const sut = readDeclaredObjectHeader;
+
+        // Act
+        const result = await sut(ctx, id);
+
+        // Assert
+        expect(result).toEqual({ type: 'commit', declaredSize: content.length });
+      });
+    });
+  });
+
+  describe('Given a size-lying loose blob', () => {
+    describe('When readDeclaredObjectHeader is called', () => {
+      it('Then returns the blob type with the header claim', async () => {
+        // Arrange
+        const content = ENC.encode('hello world!');
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        await writeLooseWithDeclaredSize(ctx, id, 'blob', 5, content);
+        const sut = readDeclaredObjectHeader;
+
+        // Act
+        const result = await sut(ctx, id);
+
+        // Assert
+        expect(result).toEqual({ type: 'blob', declaredSize: 5 });
+      });
+    });
+  });
+
+  describe('Given a packed base entry and a packed delta of it', () => {
+    describe('When readDeclaredObjectHeader is called on each', () => {
+      it('Then both report the base type and their own declared size', async () => {
+        // Arrange
+        const baseContent = ENC.encode('abcd');
+        const targetContent = ENC.encode('abcdefgh');
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'header-ofs', [
+          { kind: 'base', type: 'blob', content: baseContent },
+          { kind: 'ofs-delta', baseIndex: 0, targetContent },
+        ]);
+        const sut = readDeclaredObjectHeader;
+
+        // Act
+        const base = await sut(ctx, ids[0] as ObjectId);
+        const delta = await sut(ctx, ids[1] as ObjectId);
+
+        // Assert
+        expect(base).toEqual({ type: 'blob', declaredSize: 4 });
+        expect(delta).toEqual({ type: 'blob', declaredSize: 8 });
       });
     });
   });

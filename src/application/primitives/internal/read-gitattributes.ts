@@ -6,13 +6,18 @@ import {
   parseGitattributes,
 } from '../../../domain/attributes/index.js';
 import { gitattributesFileTooLarge } from '../../../domain/commands/error.js';
-import type { FilePath } from '../../../domain/objects/object-id.js';
+import { decode } from '../../../domain/objects/encoding.js';
+import { FILE_MODE, isDirectory } from '../../../domain/objects/file-mode.js';
+import type { FilePath, ObjectId } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../config-read.js';
 import { commonGitDir } from '../path-layout.js';
+import { readBlob } from '../read-blob.js';
+import { readDeclaredObjectHeader } from '../read-object.js';
 import { MAX_GITATTRIBUTES_BYTES } from '../types.js';
 import { joinPath } from './join-working-tree-path.js';
 import { expandUserPath, loadCappedUtf8 } from './read-capped-file.js';
+import { findTreeEntry } from './resolve-tree-path.js';
 
 /** Load + parse one attributes file; `undefined` when absent, symlink, or a directory. */
 const loadAndParse = async (ctx: Context, path: string): Promise<ParsedAttributes | undefined> => {
@@ -29,13 +34,86 @@ const loadAndParse = async (ctx: Context, path: string): Promise<ParsedAttribute
  * unaffected — neither lives in the work tree — so only this source is
  * skipped, never the whole provider.
  */
-const readDir = (ctx: Context, dir: FilePath | ''): Promise<ParsedAttributes | undefined> => {
+const workTreeDirReader: DirReader = (ctx, dir) => {
   const workDir = ctx.layout.workDir;
   if (workDir === undefined) return Promise.resolve(undefined);
   return loadAndParse(
     ctx,
     joinPath(workDir, dir === '' ? '.gitattributes' : `${dir}/.gitattributes`),
   );
+};
+
+type DirReader = (ctx: Context, dir: FilePath | '') => Promise<ParsedAttributes | undefined>;
+
+const GITATTRIBUTES_FILE = '.gitattributes';
+
+/** Symlink-mode entries are never read (git refuses to follow them for attributes). */
+const isReadableMode = (mode: string): boolean =>
+  mode === FILE_MODE.REGULAR || mode === FILE_MODE.EXECUTABLE;
+
+/** Refuses on the header's claim so a hostile tree never allocates an oversize blob. */
+const assertDeclaredSizeWithinCap = async (ctx: Context, id: ObjectId): Promise<void> => {
+  const { declaredSize } = await readDeclaredObjectHeader(ctx, id);
+  if (declaredSize > MAX_GITATTRIBUTES_BYTES) {
+    throw gitattributesFileTooLarge(
+      GITATTRIBUTES_FILE as FilePath,
+      declaredSize,
+      MAX_GITATTRIBUTES_BYTES,
+    );
+  }
+};
+
+const NO_SEPARATOR = -1;
+
+/** The directory holding `path`: `a/b/c` → `a/b`, a top-level name → the root `''`. */
+const parentDir = (path: string): string => {
+  const slash = path.lastIndexOf('/');
+  return slash === NO_SEPARATOR ? '' : path.slice(0, slash);
+};
+
+const DIRECTORY_MARKER = '/';
+
+/** The directory a queried path sits in — a `dir/` key names `dir` inside its parent. */
+const containingDir = (path: string): string =>
+  parentDir(path.endsWith(DIRECTORY_MARKER) ? path.slice(0, -DIRECTORY_MARKER.length) : path);
+
+/**
+ * Each directory's tree, found by one exact-name lookup in its parent's tree,
+ * so a walk-ordered lookup reads one level per directory instead of
+ * re-descending from the root. Only an exact descent is cached — a directory
+ * reached any other way is left to the root descent, which owns the
+ * prefix-boundary fallback.
+ */
+// Pending lookups are cached too, so concurrent lookups of one directory share a read.
+const createDirTreeIndex = (tree: ObjectId) => {
+  const dirTrees = new Map<string, Promise<ObjectId | undefined>>([['', Promise.resolve(tree)]]);
+  const lookUp = async (ctx: Context, dir: string): Promise<ObjectId | undefined> => {
+    const parent = await dirTrees.get(parentDir(dir));
+    if (parent === undefined) return undefined;
+    const entry = await findTreeEntry(ctx, parent, dir.slice(dir.lastIndexOf('/') + 1));
+    return entry !== undefined && isDirectory(entry.mode) ? entry.id : undefined;
+  };
+  return (ctx: Context, dir: string): Promise<ObjectId | undefined> => {
+    const cached = dirTrees.get(dir);
+    if (cached !== undefined) return cached;
+    const pending = lookUp(ctx, dir);
+    dirTrees.set(dir, pending);
+    return pending;
+  };
+};
+
+const treeDirReader = (tree: ObjectId): DirReader => {
+  const dirTreeOf = createDirTreeIndex(tree);
+  return async (ctx, dir) => {
+    const dirTree = await dirTreeOf(ctx, dir);
+    const entry = await (dirTree === undefined
+      ? findTreeEntry(ctx, tree, `${dir}/${GITATTRIBUTES_FILE}`)
+      : findTreeEntry(ctx, dirTree, GITATTRIBUTES_FILE));
+    if (entry === undefined || !isReadableMode(entry.mode)) return undefined;
+    await assertDeclaredSizeWithinCap(ctx, entry.id);
+    const { content } = await readBlob(ctx, entry.id);
+    return parseGitattributes(decode(content));
+  };
 };
 
 const readInfo = (ctx: Context): Promise<ParsedAttributes | undefined> =>
@@ -47,16 +125,6 @@ const readGlobal = async (ctx: Context): Promise<ParsedAttributes | undefined> =
   const resolved = expandUserPath(ctx, raw);
   if (resolved === undefined) return undefined;
   return loadAndParse(ctx, resolved);
-};
-
-/** Directories whose `.gitattributes` govern `path`, deepest first, root (`''`) last. */
-const dirChain = (path: FilePath): ReadonlyArray<string> => {
-  const parts = path.split('/');
-  parts.pop(); // drop the filename
-  const dirs: string[] = [];
-  for (let i = parts.length; i >= 1; i -= 1) dirs.push(parts.slice(0, i).join('/'));
-  dirs.push('');
-  return dirs;
 };
 
 /**
@@ -78,9 +146,8 @@ const WINDOWS_DRIVE_ABSOLUTE_RE = /^[A-Za-z]:/;
  * Windows drive letter), or a `..` (or Win32-canonicalises-to-`..`) segment.
  * Real git diffs such trees cleanly; this is the boundary that lets tsgit do
  * the same without ever asking the filesystem about a path outside the
- * worktree. Never called with `''` — the root directory key is pre-seeded
- * into `dirCache` before any lookup, so `loadDir` never reaches this guard
- * for it.
+ * worktree. Never called with `''` — the root's stack is pre-seeded before
+ * any lookup, so no load ever reaches this guard for it.
  */
 const dirEscapesWorktree = (dir: string): boolean => {
   const normalized = dir.replace(/\\/g, '/');
@@ -97,6 +164,37 @@ export interface AttributeProvider {
   }>;
 }
 
+type DirLoader = (dir: string) => Promise<ParsedAttributes | undefined>;
+
+/**
+ * Each directory's sources from its own `.gitattributes` up to the root's,
+ * deepest first, built on its parent's stack so a walk-ordered lookup loads
+ * and copies one level instead of re-deriving the whole chain. A fresh chain
+ * still loads deepest first.
+ */
+const createDirectoryStacks = (
+  loadDir: DirLoader,
+  rootStack: ReadonlyArray<AttributeSource>,
+): ((dir: string) => Promise<ReadonlyArray<AttributeSource>>) => {
+  // Pending loads are cached too, so concurrent lookups under one directory share its read.
+  const stacks = new Map<string, Promise<ReadonlyArray<AttributeSource>>>([
+    ['', Promise.resolve(rootStack)],
+  ]);
+  const load = async (dir: string): Promise<ReadonlyArray<AttributeSource>> => {
+    const parsed = await loadDir(dir);
+    const above = await stackOf(parentDir(dir));
+    return parsed === undefined ? above : [{ basedir: dir, rules: parsed.rules }, ...above];
+  };
+  const stackOf = (dir: string): Promise<ReadonlyArray<AttributeSource>> => {
+    const cached = stacks.get(dir);
+    if (cached !== undefined) return cached;
+    const pending = load(dir);
+    stacks.set(dir, pending);
+    return pending;
+  };
+  return stackOf;
+};
+
 /**
  * Build an `AttributeProvider` for a context. `info/attributes`, the global
  * `core.attributesFile`, and the root `.gitattributes` are read once; macros
@@ -105,42 +203,55 @@ export interface AttributeProvider {
  * from the path's own up to the root, then global — loading and caching each
  * directory's `.gitattributes` on demand.
  */
-export const buildAttributeProvider = async (ctx: Context): Promise<AttributeProvider> => {
+const buildAttributeProviderFrom = async (
+  ctx: Context,
+  readDir: DirReader,
+): Promise<AttributeProvider> => {
   const info = await readInfo(ctx);
   const global = await readGlobal(ctx);
   const root = await readDir(ctx, '');
-  const macros = buildMacroRegistry([
-    ...(info?.macros ?? []),
-    ...(root?.macros ?? []),
-    ...(global?.macros ?? []),
-  ]);
-  const dirCache = new Map<string, ParsedAttributes | undefined>([['', root]]);
-  const loadDir = async (dir: string): Promise<ParsedAttributes | undefined> => {
-    if (dirCache.has(dir)) return dirCache.get(dir);
-    if (dirEscapesWorktree(dir)) {
-      dirCache.set(dir, undefined);
-      return undefined;
-    }
-    const parsed = await readDir(ctx, dir as FilePath);
-    dirCache.set(dir, parsed);
-    return parsed;
-  };
+  const macros = buildMacroRegistry([info, root, global].flatMap((file) => file?.macros ?? []));
+  const stackOf = createDirectoryStacks(
+    (dir) => (dirEscapesWorktree(dir) ? Promise.resolve(undefined) : readDir(ctx, dir as FilePath)),
+    rootSourceOf(root),
+  );
+  const highest = rootSourceOf(info);
+  const lowest = rootSourceOf(global);
   const sourcesForPath = async (
     path: FilePath,
-  ): Promise<{ sources: ReadonlyArray<AttributeSource>; macros: MacroRegistry }> => {
-    const sources: AttributeSource[] = [];
-    if (info !== undefined) sources.push({ basedir: '', rules: info.rules });
-    for (const dir of dirChain(path)) {
-      const parsed = await loadDir(dir);
-      if (parsed !== undefined) sources.push({ basedir: dir, rules: parsed.rules });
-    }
-    if (global !== undefined) sources.push({ basedir: '', rules: global.rules });
-    return { sources, macros };
-  };
+  ): Promise<{ sources: ReadonlyArray<AttributeSource>; macros: MacroRegistry }> => ({
+    sources: [...highest, ...(await stackOf(containingDir(path))), ...lowest],
+    macros,
+  });
   return { sourcesForPath };
 };
 
-export const maybeBuildAttributeProvider = (
+/** A file read at the top of the work tree, as the one source it contributes. */
+const rootSourceOf = (file: ParsedAttributes | undefined): ReadonlyArray<AttributeSource> =>
+  file === undefined ? [] : [{ basedir: '', rules: file.rules }];
+
+export const buildAttributeProvider = (ctx: Context): Promise<AttributeProvider> =>
+  buildAttributeProviderFrom(ctx, workTreeDirReader);
+
+/** Same precedence as the work-tree provider, but each `.gitattributes` is read from `tree`. */
+export const buildTreeAttributeProvider = (
+  ctx: Context,
+  tree: ObjectId,
+): Promise<AttributeProvider> => buildAttributeProviderFrom(ctx, treeDirReader(tree));
+
+const requiresAnyFilter = async (ctx: Context): Promise<boolean> => {
+  const drivers = (await readConfig(ctx)).filter?.values() ?? [];
+  return [...drivers].some((driver) => driver.required === true);
+};
+
+/**
+ * The provider clean/smudge drivers are resolved through. A runner-less
+ * context skips it unless some driver is required: an optional driver it
+ * cannot start leaves the bytes as stored, but git refuses a required one.
+ */
+export const maybeBuildAttributeProvider = async (
   ctx: Context,
 ): Promise<AttributeProvider | undefined> =>
-  ctx.command !== undefined ? buildAttributeProvider(ctx) : Promise.resolve(undefined);
+  ctx.command !== undefined || (await requiresAnyFilter(ctx))
+    ? buildAttributeProvider(ctx)
+    : undefined;

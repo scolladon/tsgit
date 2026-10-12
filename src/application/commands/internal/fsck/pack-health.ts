@@ -1,7 +1,8 @@
 import type { Context } from '../../../../ports/context.js';
-import { faultReason } from '../../../primitives/pack-registry.js';
-import { getPackRegistry } from '../../../primitives/read-object.js';
+import { getObjectStore, type ObjectSource } from '../../../primitives/object-store.js';
+import { faultReason, type UnusablePack } from '../../../primitives/pack-registry.js';
 import { EXIT_PACK, EXIT_PACK_REV_INDEX } from './exit-codes.js';
+import { attributeTo } from './source-attribution.js';
 import type { FsckFinding, FsckOptions } from './types.js';
 
 /**
@@ -31,30 +32,54 @@ export async function runPackHealthPass(
   ctx: Context,
   opts: FsckOptions,
 ): Promise<{ readonly findings: ReadonlyArray<FsckFinding>; readonly exitBit: number }> {
-  const registry = await getPackRegistry(ctx);
-  const gated = packAccessibilityReported(opts);
-  const unusable = gated ? (await registry.health()).unusable : await registry.indexFaults();
-
+  const store = await getObjectStore(ctx);
   const findings: FsckFinding[] = [];
   let exitBit = 0;
-
-  for (const entry of unusable) {
-    const reason = faultReason(entry.data);
-
-    if (gated) {
-      findings.push({
-        type: entry.layer === 'index' ? 'pack-index-unusable' : 'pack-inaccessible',
-        pack: entry.name,
-        reason,
-      });
-      exitBit |= EXIT_PACK;
-    }
-
-    if (entry.layer === 'index') {
-      findings.push({ type: 'pack-rev-index-unusable', pack: entry.name, reason });
-      exitBit |= EXIT_PACK_REV_INDEX;
-    }
+  for (const source of store.sources) {
+    const attribution = attributeTo(store, source);
+    exitBit |= await reportSourcePacks(source, opts, attribution, findings);
   }
-
   return { findings, exitBit };
+}
+
+async function reportSourcePacks(
+  source: ObjectSource,
+  opts: FsckOptions,
+  attribution: { readonly objectsDir?: string },
+  findings: FsckFinding[],
+): Promise<number> {
+  const gated = packAccessibilityReported(opts);
+  const unusable = gated
+    ? (await source.registry.health()).unusable
+    : await source.registry.indexFaults();
+  const report = { gated, attribution, findings };
+  return unusable.reduce((exitBit, entry) => exitBit | reportUnusablePack(entry, report), 0);
+}
+
+/** Where one source's unusable packs are reported, and whether accessibility is. */
+interface UnusablePackReport {
+  readonly gated: boolean;
+  readonly attribution: { readonly objectsDir?: string };
+  readonly findings: FsckFinding[];
+}
+
+/** Report one unusable pack: its accessibility when gated, its `.rev` when its index failed. */
+function reportUnusablePack(entry: UnusablePack, report: UnusablePackReport): number {
+  const { attribution, findings } = report;
+  const reason = faultReason(entry.data);
+  let exitBit = 0;
+  if (report.gated) {
+    findings.push({
+      type: entry.layer === 'index' ? 'pack-index-unusable' : 'pack-inaccessible',
+      pack: entry.name,
+      reason,
+      ...attribution,
+    });
+    exitBit |= EXIT_PACK;
+  }
+  if (entry.layer === 'index') {
+    findings.push({ type: 'pack-rev-index-unusable', pack: entry.name, reason, ...attribution });
+    exitBit |= EXIT_PACK_REV_INDEX;
+  }
+  return exitBit;
 }

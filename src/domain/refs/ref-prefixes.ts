@@ -4,3 +4,6 @@
  * instead of re-typing the string literal.
  */
 export const HEADS_PREFIX = 'refs/heads/';
+
+/** The on-disk prefix for tag refs. */
+export const TAGS_PREFIX = 'refs/tags/';

@@ -30,6 +30,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { __resetConfigCacheForTests } from '../../../src/application/primitives/config-read.js';
 import type { ObjectId, RefName } from '../../../src/domain/objects/object-id.js';
 import type { Repository } from '../../../src/index.node.js';
+import { mergedPull } from '../../fixtures/merged-pull.js';
 import { git, gitAsync, runGit, runGitEnv } from '../interop-helpers.js';
 import { trackedRepositories } from '../repository-lifecycle.js';
 
@@ -203,7 +204,7 @@ describe.skipIf(SKIP_REASON !== false)('pull — end-to-end against git-http-bac
       await repo.clone({ url });
 
       // Act
-      const result = await repo.pull();
+      const result = mergedPull(await repo.pull());
 
       // Assert — fetch ran against the real backend and merge integrated cleanly.
       expect(result.fetch.remote).toBe('origin');
@@ -245,7 +246,7 @@ describe.skipIf(SKIP_REASON !== false)('pull — end-to-end against git-http-bac
       const c1 = git(seedDir, 'rev-parse', 'HEAD').trim() as ObjectId;
 
       // Act
-      const result = await repo.pull();
+      const result = mergedPull(await repo.pull());
 
       // Assert — fetch delivered exactly the new commit and merge
       // fast-forwarded the local branch onto it (no `pull` code change needed
@@ -345,7 +346,7 @@ describe.skipIf(SKIP_REASON !== false)(
     });
 
     describe('Given exactly one non-origin remote configured and no branch.main.remote, When pull runs with no explicit remote', () => {
-      it('Then it integrates from the same remote real git resolves to', async () => {
+      it('Then it fetches the same remote real git resolves to and refuses as git does', async () => {
         // Arrange — real-git twin: only "solo" configured, no branch.main.remote.
         // Real git's `pull` porcelain refuses this exact shape outright — it
         // requires a full branch.<name>.remote + branch.<name>.merge upstream
@@ -399,22 +400,33 @@ describe.skipIf(SKIP_REASON !== false)(
         git(advanceDir, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'advance');
         git(advanceDir, 'push', '-q', 'origin', 'HEAD:main');
 
-        // Act (real-git twin) — resolve the sole remote and fast-forward.
-        await gitAsync(gitDir, 'fetch', '-q');
-        git(gitDir, 'merge', '-q', '--ff-only', 'refs/remotes/solo/main');
-        const gitOid = git(gitDir, 'rev-parse', 'HEAD').trim();
+        // Act (real-git twin) — git's pull fetches from the sole remote, then
+        // refuses: a merge without a branch remote is no upstream at all.
+        let gitRefusal = '';
+        try {
+          await gitAsync(gitDir, 'pull', '-q', '--no-rebase');
+        } catch (error) {
+          gitRefusal = String(error);
+        }
+        const gitTracking = git(gitDir, 'rev-parse', 'refs/remotes/solo/main').trim();
 
         // Act (tsgit twin)
-        const result = await repo.pull();
+        let caught: unknown;
+        try {
+          await repo.pull();
+        } catch (error) {
+          caught = error;
+        }
 
-        // Assert — tsgit fetched from the same remote real git resolved to,
-        // and the merge fast-forwarded onto the same commit.
-        expect(result.fetch.remote).toBe('solo');
-        expect(result.merge).toEqual({
-          kind: 'fast-forward',
-          id: gitOid as ObjectId,
-          branch: 'refs/heads/main' as RefName,
+        // Assert — both fetched the same remote, and both refused to merge.
+        expect(gitRefusal).toContain('There is no tracking information for the current branch.');
+        expect((caught as { data?: unknown }).data).toEqual({
+          code: 'NO_UPSTREAM_CONFIGURED',
+          branch: 'refs/heads/main',
         });
+        expect(git(repo.ctx.layout.gitDir, 'rev-parse', 'refs/remotes/solo/main').trim()).toBe(
+          gitTracking,
+        );
       });
     });
   },

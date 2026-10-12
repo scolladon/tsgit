@@ -1,11 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { streamBlob } from '../../../../src/application/primitives/stream-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
-import type { Blob, Commit, ObjectId } from '../../../../src/domain/objects/index.js';
+import {
+  type Blob,
+  bytesToHex,
+  type Commit,
+  type ObjectId,
+} from '../../../../src/domain/objects/index.js';
 import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
-import type { Context } from '../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../src/ports/context.js';
 import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
 import {
   buildSeededContext,
@@ -13,7 +19,12 @@ import {
   writeLooseWithDeclaredSize,
   writeRawObjectBytes,
 } from './fixtures.js';
-import { buildSyntheticPack, writeSyntheticPack } from './pack-fixture.js';
+import {
+  buildSyntheticPack,
+  recordPackChecksumInIndex,
+  writeSyntheticPack,
+  writeSyntheticPackIn,
+} from './pack-fixture.js';
 
 const ZERO_ID = '0'.repeat(40) as ObjectId;
 
@@ -621,6 +632,12 @@ describe('streamBlob', () => {
       const packBase = `${ctxBase.layout.gitDir}/objects/pack/pack-corrupt-genuine`;
       await ctxBase.fs.write(`${packBase}.pack`, packB.packBytes);
       await ctxBase.fs.write(`${packBase}.idx`, packA.idxBytes);
+      // A's index now records B's pack checksum, so the open gate admits the pair.
+      await recordPackChecksumInIndex(
+        ctxBase,
+        `${packBase}.idx`,
+        bytesToHex(packB.packBytes.subarray(-ctxBase.hashConfig.digestLength)),
+      );
 
       const id = packA.ids[0] as ObjectId;
 
@@ -674,6 +691,12 @@ describe('streamBlob', () => {
       const packBase = `${ctxBase.layout.gitDir}/objects/pack/pack-corrupt-no-verify`;
       await ctxBase.fs.write(`${packBase}.pack`, packB.packBytes);
       await ctxBase.fs.write(`${packBase}.idx`, packA.idxBytes);
+      // A's index now records B's pack checksum, so the open gate admits the pair.
+      await recordPackChecksumInIndex(
+        ctxBase,
+        `${packBase}.idx`,
+        bytesToHex(packB.packBytes.subarray(-ctxBase.hashConfig.digestLength)),
+      );
 
       const id = packA.ids[0] as ObjectId;
 
@@ -996,7 +1019,7 @@ describe('streamBlob', () => {
 
   describe('Given a cold Context and a loose blob', () => {
     describe('When streamBlob opens it', () => {
-      it('Then the ledger matches readObject: objects/pack listed once for the shared listing, no .idx touch', async () => {
+      it('Then objects/pack is listed once for the shared listing, and the packs are probed before the loose arm', async () => {
         // Arrange
         const blob: Blob = {
           type: 'blob',
@@ -1012,7 +1035,7 @@ describe('streamBlob', () => {
           { kind: 'base', type: 'blob', content: ENC.encode('b') },
         ]);
         await writeMidxBytes(baseCtx, buildMidx(healthyMidxSpec()));
-        const { ctx, calls } = instrumentedContext(baseCtx);
+        const { ctx, calls } = instrumentedContext({ ...baseCtx, session: createSession() });
 
         // Act
         const sut = await streamBlob(ctx, id);
@@ -1024,7 +1047,7 @@ describe('streamBlob', () => {
         );
         expect(packDirReaddirCalls).toHaveLength(1);
         const idxTouches = calls().filter((call) => call.path.endsWith('.idx'));
-        expect(idxTouches).toEqual([]);
+        expect(idxTouches.length).toBeGreaterThan(0);
       });
     });
   });
@@ -1048,7 +1071,7 @@ describe('streamBlob', () => {
         // Act
         let caught: unknown;
         try {
-          const sut = await streamBlob(ctx, id);
+          const sut = await streamBlob({ ...ctx, session: createSession() }, id);
           await collect(sut);
         } catch (error) {
           caught = error;
@@ -1061,6 +1084,39 @@ describe('streamBlob', () => {
         if (data.code === 'INVALID_MULTI_PACK_INDEX') {
           expect(data.check).toBe('signature');
         }
+      });
+    });
+  });
+});
+
+describe('streamBlob through an corrupt alternate', () => {
+  describe('Given a small packed blob in the primary and an corrupt alternate', () => {
+    describe('When streamBlob', () => {
+      it("Then it rejects with the alternate's error data", async () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          files: { '/repo/.git/objects/info/alternates': ENC.encode('/repo/alt/objects\n') },
+        });
+        await ctx.fs.mkdir('/repo/alt/objects');
+        await ctx.fs.write(
+          '/repo/alt/objects/pack/multi-pack-index',
+          Uint8Array.from([0x00, 0x49, 0x44, 0x58, 1, 1, 1, 0, ...new Array(8).fill(0)]),
+        );
+        const [id] = await writeSyntheticPackIn(ctx, '/repo/.git/objects', 'p', [
+          { kind: 'base', type: 'blob', content: ENC.encode('small packed') },
+        ]);
+
+        // Act
+        const sut = streamBlob;
+        let caught: unknown;
+        try {
+          await sut(ctx, id as ObjectId);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('INVALID_MULTI_PACK_INDEX');
       });
     });
   });

@@ -1,10 +1,6 @@
 import { TsgitError } from '../../domain/error.js';
 import { indexOf } from '../../domain/objects/encoding.js';
-import {
-  invalidObjectHeader,
-  isObjectNotFound,
-  objectNotFound,
-} from '../../domain/objects/error.js';
+import { isObjectNotFound, objectNotFound } from '../../domain/objects/error.js';
 import { parseHeader } from '../../domain/objects/header.js';
 import type { GitObject, ObjectId, ObjectType } from '../../domain/objects/index.js';
 import {
@@ -18,11 +14,7 @@ import {
 import type { Context } from '../../ports/context.js';
 import type { PromisorRemote } from '../../ports/promisor.js';
 import { forgetLooseOidPrefix, probeLooseOid } from './internal/loose-oid-cache.js';
-import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
-import {
-  assertRepoSettingsValid,
-  repoSettingsVerdictSettled,
-} from './internal/repo-settings-gate.js';
+import { looseLocationOf, type SourceLocation } from './internal/source-location.js';
 import {
   assertChainDepthWithinCap,
   isBase,
@@ -30,42 +22,23 @@ import {
   looseHeaderTooLong,
   ofsDeltaBaseOffset,
   readEntryHeaderWithChunk,
+  resolveLooseArm,
   resolveObject,
   resolveObjectContentWithDepth,
   resolveObjectWithSize,
 } from './object-resolver.js';
 import {
-  createPackRegistry,
-  nextOffsetForEntry,
-  type PackLookupHit,
-  type PackRegistry,
-} from './pack-registry.js';
-import { commonGitDir, looseObjectPath } from './path-layout.js';
+  disposeObjectStore,
+  getObjectStore,
+  looseCacheLocation,
+  type ObjectSource,
+  type ObjectStore,
+  peekObjectStore,
+  refreshObjectStore,
+} from './object-store.js';
+import { nextOffsetForEntry, type PackLookupHit, type PackRegistry } from './pack-registry.js';
+import { looseObjectPathIn } from './path-layout.js';
 import type { RawObject, ReadObjectOptions } from './types.js';
-
-/**
- * Per-session single-flight registry construction. Keyed by `ctx.session`
- * (not the Context instance itself) so that every Context derived from the
- * same `openRepository()`/`createXContext()` call — a long-running walk
- * (walkCommits, walkTree), or a same-repository derivation such as fsck's
- * audit view — reuses the parsed .idx files across thousands of object reads
- * instead of re-scanning the pack directory each time. `PromiseMemo`, not a
- * plain `WeakMap<Session, PackRegistry>`: `createPackRegistry` now crosses an
- * `await` (it reads `core.deltaBaseCacheLimit`), so two concurrent first
- * reads racing on an empty cache must join the same construction instead of
- * each starting — and finishing — their own registry.
- */
-const registryMemos = new WeakMap<Context['session'], PromiseMemo<PackRegistry>>();
-
-/**
- * The settled registry for a session that has already resolved once — the
- * synchronous surface both `refreshPackRegistry` and `peekPackRegistry`
- * read, the latter on every warm object read, so this is a hot-path map and
- * not merely a refresh hook. A registry still under construction has not
- * scanned the pack directory yet, so there is nothing for a concurrent
- * `refresh()` to do and nothing for a peek to serve; both simply miss.
- */
-const resolvedRegistries = new WeakMap<Context['session'], PackRegistry>();
 
 /**
  * Per-session in-flight lazy-fetch map. Concurrent reads of the same missing
@@ -73,26 +46,8 @@ const resolvedRegistries = new WeakMap<Context['session'], PackRegistry>();
  */
 const inflightCache = new WeakMap<Context['session'], Map<string, Promise<boolean>>>();
 
-export const getPackRegistry = async (ctx: Context): Promise<PackRegistry> => {
-  if (!repoSettingsVerdictSettled(ctx)) await assertRepoSettingsValid(ctx);
-  let memo = registryMemos.get(ctx.session);
-  if (memo === undefined) {
-    // `resolvedRegistries.set` rides the CONSTRUCTION's own `.then`, not
-    // every call: once per registry build, not once per read. A call that
-    // joins an already-settled memo returns straight from `memo.get()`
-    // without ever re-touching `resolvedRegistries` — `peekPackRegistry`
-    // already served the sync case, and this async path pays a `WeakMap.set`
-    // it does not need to repeat.
-    memo = createPromiseMemo(() =>
-      createPackRegistry(ctx).then((registry) => {
-        resolvedRegistries.set(ctx.session, registry);
-        return registry;
-      }),
-    );
-    registryMemos.set(ctx.session, memo);
-  }
-  return memo.get();
-};
+export const getPackRegistry = async (ctx: Context): Promise<PackRegistry> =>
+  (await getObjectStore(ctx)).primary.registry;
 
 /**
  * The synchronous fast path `getPackRegistry` cannot be: a settled registry
@@ -110,7 +65,7 @@ export const getPackRegistry = async (ctx: Context): Promise<PackRegistry> => {
  * this peek inherits that protection instead of re-deriving it.
  */
 export const peekPackRegistry = (ctx: Context): PackRegistry | undefined =>
-  repoSettingsVerdictSettled(ctx) ? resolvedRegistries.get(ctx.session) : undefined;
+  peekObjectStore(ctx)?.primary.registry;
 
 /**
  * Drop the per-session pack-registry's cached `.idx` scan so the next read
@@ -120,7 +75,7 @@ export const peekPackRegistry = (ctx: Context): PackRegistry | undefined =>
  * exposed when its `merge` step could not see freshly-fetched commits.
  */
 export function refreshPackRegistry(ctx: Context): void {
-  resolvedRegistries.get(ctx.session)?.refresh();
+  refreshObjectStore(ctx);
 }
 
 /**
@@ -137,9 +92,7 @@ export function refreshPackRegistry(ctx: Context): void {
  * construction has nothing left to close.
  */
 export async function disposePackRegistry(ctx: Context): Promise<void> {
-  const pending = registryMemos.get(ctx.session)?.peek();
-  const registry = await pending?.catch(() => undefined);
-  await registry?.dispose();
+  await disposeObjectStore(ctx);
 }
 
 function getInflight(ctx: Context): Map<string, Promise<boolean>> {
@@ -216,9 +169,9 @@ export async function readObject(
   options?: ReadObjectOptions,
 ): Promise<GitObject> {
   const verifyHash = options?.verifyHash ?? false;
-  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
-  return withLazyFetchRetry(ctx, id, registry, () =>
-    resolveObject(ctx, registry, id, verifyHash, options?.maxBytes),
+  const store = peekObjectStore(ctx) ?? (await getObjectStore(ctx));
+  return withLazyFetchRetry(ctx, id, store.primary.registry, () =>
+    resolveObject(ctx, store, id, verifyHash, options?.maxBytes),
   );
 }
 
@@ -233,9 +186,9 @@ export async function readObjectWithSize(
   options?: ReadObjectOptions,
 ): Promise<{ readonly object: GitObject; readonly size: number }> {
   const verifyHash = options?.verifyHash ?? false;
-  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
-  return withLazyFetchRetry(ctx, id, registry, () =>
-    resolveObjectWithSize(ctx, registry, id, verifyHash, options?.maxBytes, 'streamed'),
+  const store = peekObjectStore(ctx) ?? (await getObjectStore(ctx));
+  return withLazyFetchRetry(ctx, id, store.primary.registry, () =>
+    resolveObjectWithSize(ctx, store, id, verifyHash, options?.maxBytes, 'streamed'),
   );
 }
 
@@ -252,9 +205,9 @@ export async function readObjectStreamed(
   options?: ReadObjectOptions,
 ): Promise<GitObject> {
   const verifyHash = options?.verifyHash ?? false;
-  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
-  return withLazyFetchRetry(ctx, id, registry, () =>
-    resolveObject(ctx, registry, id, verifyHash, options?.maxBytes, 'streamed'),
+  const store = peekObjectStore(ctx) ?? (await getObjectStore(ctx));
+  return withLazyFetchRetry(ctx, id, store.primary.registry, () =>
+    resolveObject(ctx, store, id, verifyHash, options?.maxBytes, 'streamed'),
   );
 }
 
@@ -264,11 +217,11 @@ export async function readRawObject(
   options?: ReadObjectOptions,
 ): Promise<RawObject> {
   const verifyHash = options?.verifyHash ?? false;
-  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
-  return withLazyFetchRetry(ctx, id, registry, async () => {
+  const store = peekObjectStore(ctx) ?? (await getObjectStore(ctx));
+  return withLazyFetchRetry(ctx, id, store.primary.registry, async () => {
     const { type, content } = await resolveObjectContentWithDepth(
       ctx,
-      registry,
+      store,
       id,
       verifyHash,
       options?.maxBytes,
@@ -326,9 +279,9 @@ export async function readObjectMetadataWithContent(
   ctx: Context,
   id: ObjectId,
 ): Promise<ObjectMetadataWithContent> {
-  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
-  return withLazyFetchRetry(ctx, id, registry, () =>
-    resolveObjectMetadataWithContent(ctx, registry, id),
+  const store = peekObjectStore(ctx) ?? (await getObjectStore(ctx));
+  return withLazyFetchRetry(ctx, id, store.primary.registry, () =>
+    resolveObjectMetadataWithContent(ctx, store, id),
   );
 }
 
@@ -350,25 +303,43 @@ const LOOSE_HEADER_PROBE_BYTES = 1024;
  * header-only via `readPackedMetadata` — reused as-is.
  */
 export async function readDeclaredObjectSize(ctx: Context, id: ObjectId): Promise<number> {
-  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
-  return withLazyFetchRetry(ctx, id, registry, () => resolveDeclaredSize(ctx, registry, id));
+  return (await readDeclaredObjectHeader(ctx, id)).declaredSize;
 }
 
-async function resolveDeclaredSize(
+/** The type and declared size of an object, read header-only: the loose
+ *  header's claim or the pack entry's own header, never an inflate of the
+ *  content. Lets a caller pick its read order by type before reading. */
+export async function readDeclaredObjectHeader(
   ctx: Context,
-  registry: PackRegistry,
   id: ObjectId,
-): Promise<number> {
-  const hit = await registry.lookup(id);
-  if (hit !== undefined) {
-    return (await readPackedMetadata(ctx, registry, hit, id)).uncompressedSize;
+): Promise<DeclaredObjectHeader> {
+  const store = peekObjectStore(ctx) ?? (await getObjectStore(ctx));
+  return withLazyFetchRetry(ctx, id, store.primary.registry, () =>
+    resolveDeclaredHeader(ctx, store, id),
+  );
+}
+
+export interface DeclaredObjectHeader {
+  readonly type: ObjectType;
+  readonly declaredSize: number;
+}
+
+async function resolveDeclaredHeader(
+  ctx: Context,
+  store: ObjectStore,
+  id: ObjectId,
+): Promise<DeclaredObjectHeader> {
+  for (const source of store.sources) {
+    const hit = await source.registry.lookup(id);
+    if (hit !== undefined) {
+      const { type, uncompressedSize } = await readPackedMetadata(ctx, source.registry, hit, id);
+      return { type, declaredSize: uncompressedSize };
+    }
+    const looseHeader = await readLooseDeclaredHeader(ctx, id, looseCacheLocation(store, source));
+    if (looseHeader !== undefined) return looseHeader;
   }
-  const looseSize = await readLooseDeclaredSize(ctx, id);
-  if (looseSize !== undefined) return looseSize;
   throw objectNotFound(id);
 }
-
-const loosePathFor = (ctx: Context, id: ObjectId): string => looseObjectPath(commonGitDir(ctx), id);
 
 /**
  * Reads only the first `LOOSE_HEADER_PROBE_BYTES` compressed bytes off disk
@@ -377,23 +348,28 @@ const loosePathFor = (ctx: Context, id: ObjectId): string => looseObjectPath(com
  * file between the membership probe and this read is a git-faithful MISS,
  * not a refusal.
  */
-async function readLooseDeclaredSize(ctx: Context, id: ObjectId): Promise<number | undefined> {
-  if (!(await probeLooseOid(ctx, id))) return undefined;
+async function readLooseDeclaredHeader(
+  ctx: Context,
+  id: ObjectId,
+  location?: SourceLocation,
+): Promise<DeclaredObjectHeader | undefined> {
+  if (!(await probeLooseOid(ctx, id, location))) return undefined;
   let prefix: Uint8Array;
   try {
-    prefix = await ctx.fs.readSlice(loosePathFor(ctx, id), 0, LOOSE_HEADER_PROBE_BYTES);
+    const loose = looseLocationOf(ctx, location);
+    prefix = await loose.fs.readSlice(
+      looseObjectPathIn(loose.objectsDir, id),
+      0,
+      LOOSE_HEADER_PROBE_BYTES,
+    );
   } catch (error) {
     if (error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND') {
-      forgetLooseOidPrefix(ctx, id);
+      forgetLooseOidPrefix(ctx, id, location);
       return undefined;
     }
     throw error;
   }
-  return resolveDeclaredSizeFromPrefix(ctx, id, prefix);
-}
-
-function noNulTerminator(id: ObjectId): TsgitError {
-  return invalidObjectHeader(`no NUL terminator found in inflated object ${id}`);
+  return resolveDeclaredHeaderFromPrefix(ctx, id, prefix, location);
 }
 
 /** One header probe's outcome: the declared size once a NUL is found within
@@ -402,7 +378,7 @@ function noNulTerminator(id: ObjectId): TsgitError {
  *  still under the window — the only outcome a whole-file fallback can ever
  *  help with. */
 type HeaderProbeOutcome =
-  | { readonly status: 'found'; readonly size: number }
+  | { readonly status: 'found'; readonly header: DeclaredObjectHeader }
   | { readonly status: 'tooLong' }
   | { readonly status: 'incomplete' };
 
@@ -414,6 +390,11 @@ type HeaderProbeOutcome =
  * many with no NUL means the header could never terminate inside git's own
  * fixed-size buffer, however much more of `compressed` is left unread.
  */
+function declaredHeaderOf(headerBytes: Uint8Array): DeclaredObjectHeader {
+  const { type, size } = parseHeader(headerBytes);
+  return { type, declaredSize: size };
+}
+
 async function probeDeclaredSize(
   ctx: Context,
   compressed: Uint8Array,
@@ -421,7 +402,7 @@ async function probeDeclaredSize(
   const head = await ctx.compressor.inflateHead(compressed, LOOSE_HEADER_WINDOW);
   const nullPos = indexOf(head, 0x00, 0);
   if (nullPos !== -1)
-    return { status: 'found', size: parseHeader(head.subarray(0, nullPos + 1)).size };
+    return { status: 'found', header: declaredHeaderOf(head.subarray(0, nullPos + 1)) };
   return head.length >= LOOSE_HEADER_WINDOW ? { status: 'tooLong' } : { status: 'incomplete' };
 }
 
@@ -433,30 +414,33 @@ async function probeDeclaredSize(
  * ambiguous as a clean `incomplete` outcome: only a prefix that already hit
  * the read budget (`LOOSE_HEADER_PROBE_BYTES`; more of the file may exist
  * unread) routes either one to the whole-file fallback. A prefix that IS
- * already the whole file propagates its own fault, or its plain no-NUL
- * error, as-is. A `tooLong` outcome always throws immediately regardless of
+ * already the whole file propagates its own fault as-is; a stream that ends,
+ * or is cut short, before any NUL is git's `header … too long` — its
+ * `git_inflate` takes a starved stream for a clean stop, and an unterminated
+ * header for one longer than its buffer. A `tooLong` outcome always throws immediately regardless of
  * how much of the file is left unread — git's own fixed-size header buffer
  * refuses the same way independent of the object's total length, so it is
  * checked BEFORE the fallback decision, never inside the catch a hard fault
  * shares with it.
  */
-async function resolveDeclaredSizeFromPrefix(
+async function resolveDeclaredHeaderFromPrefix(
   ctx: Context,
   id: ObjectId,
   prefix: Uint8Array,
-): Promise<number> {
+  location?: SourceLocation,
+): Promise<DeclaredObjectHeader> {
   const isPrefixTruncated = prefix.length === LOOSE_HEADER_PROBE_BYTES;
   let outcome: HeaderProbeOutcome;
   try {
     outcome = await probeDeclaredSize(ctx, prefix);
   } catch (error) {
-    if (isPrefixTruncated) return readDeclaredSizeFromWholeFile(ctx, id);
+    if (isPrefixTruncated) return readDeclaredHeaderFromWholeFile(ctx, id, location);
     throw error;
   }
-  if (outcome.status === 'found') return outcome.size;
+  if (outcome.status === 'found') return outcome.header;
   if (outcome.status === 'tooLong') throw looseHeaderTooLong(id);
-  if (isPrefixTruncated) return readDeclaredSizeFromWholeFile(ctx, id);
-  throw noNulTerminator(id);
+  if (isPrefixTruncated) return readDeclaredHeaderFromWholeFile(ctx, id, location);
+  throw looseHeaderTooLong(id);
 }
 
 /** The rare fallback: a header whose NUL never appeared inside the probe
@@ -464,40 +448,72 @@ async function resolveDeclaredSizeFromPrefix(
  *  bounded `inflateHead`, never a one-shot whole-buffer inflate, so a
  *  hostile object whose header never terminates still refuses after
  *  `LOOSE_HEADER_WINDOW` output bytes instead of decompressing without limit. */
-async function readDeclaredSizeFromWholeFile(ctx: Context, id: ObjectId): Promise<number> {
-  const compressed = await ctx.fs.read(loosePathFor(ctx, id));
+async function readDeclaredHeaderFromWholeFile(
+  ctx: Context,
+  id: ObjectId,
+  location?: SourceLocation,
+): Promise<DeclaredObjectHeader> {
+  const loose = looseLocationOf(ctx, location);
+  const compressed = await loose.fs.read(looseObjectPathIn(loose.objectsDir, id));
   const outcome = await probeDeclaredSize(ctx, compressed);
-  if (outcome.status === 'found') return outcome.size;
-  if (outcome.status === 'tooLong') throw looseHeaderTooLong(id);
-  throw noNulTerminator(id);
+  if (outcome.status === 'found') return outcome.header;
+  throw looseHeaderTooLong(id);
 }
 
 async function resolveObjectMetadataWithContent(
   ctx: Context,
-  registry: PackRegistry,
+  store: ObjectStore,
   id: ObjectId,
 ): Promise<ObjectMetadataWithContent> {
-  const hit = await registry.lookup(id);
-  if (hit === undefined) {
-    // No pack claims this id: read the streaming tier directly — this
-    // metadata stays content-derived, never the header claim a size-lying
-    // blob carries, so it must never route through the buffered default the
-    // public `readRawObject` now takes. The outer `withLazyFetchRetry` on
-    // `readObjectMetadataWithContent` already covers the partial-clone
-    // retry `readRawObject` would otherwise add. Hand the inflated content
-    // back too — the loose route already paid for it.
-    const { type, content } = await resolveObjectContentWithDepth(
-      ctx,
-      registry,
-      id,
-      false,
-      undefined,
-      0,
-      'streamed',
-    );
-    return { type, uncompressedSize: content.length, content };
+  for (const source of store.sources) {
+    const hit = await source.registry.lookup(id);
+    if (hit !== undefined) return readPackedMetadata(ctx, source.registry, hit, id);
+    const loose = await metadataFromLoose(ctx, store, source, id);
+    if (loose !== undefined) return loose;
   }
-  return readPackedMetadata(ctx, registry, hit, id);
+  return metadataAfterFullMiss(ctx, store, id);
+}
+
+/** This metadata stays content-derived, never the header claim a size-lying
+ *  blob carries, so the loose read takes the streaming tier — never the
+ *  buffered default the public `readRawObject` takes. The loose route already
+ *  paid for the inflate, so the content is handed back too. */
+async function metadataFromLoose(
+  ctx: Context,
+  store: ObjectStore,
+  source: ObjectSource,
+  id: ObjectId,
+): Promise<ObjectMetadataWithContent | undefined> {
+  const loose = await resolveLooseArm(
+    ctx,
+    looseCacheLocation(store, source),
+    id,
+    undefined,
+    false,
+    'streamed',
+  );
+  if (loose === undefined) return undefined;
+  return { type: loose.type, uncompressedSize: loose.content.length, content: loose.content };
+}
+
+/** No source claimed `id`: the full resolver owns the virtual empty tree, the
+ *  delta cache and the one rescan retry, and throws the not-found. The outer
+ *  `withLazyFetchRetry` already covers the partial-clone retry. */
+async function metadataAfterFullMiss(
+  ctx: Context,
+  store: ObjectStore,
+  id: ObjectId,
+): Promise<ObjectMetadataWithContent> {
+  const { type, content } = await resolveObjectContentWithDepth(
+    ctx,
+    store,
+    id,
+    false,
+    undefined,
+    0,
+    'streamed',
+  );
+  return { type, uncompressedSize: content.length, content };
 }
 
 async function readPackedMetadata(

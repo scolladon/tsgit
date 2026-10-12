@@ -17,6 +17,7 @@ import type {
   TypeChangeChange,
 } from '../../../../src/domain/diff/index.js';
 import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
+import type { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import type { CommandRunner } from '../../../../src/ports/command-runner.js';
@@ -1006,8 +1007,8 @@ describe('materialiseOne', () => {
 
   describe('Given a modify change with diff=empty and textconv set to empty string in git config', () => {
     describe('When materialisePatchFiles is called with applyTextconv: true', () => {
-      it('Then empty textconv is treated as absent — no transform and no binary override', async () => {
-        // Arrange — textconv = '' is a misconfigured entry; must resolve to undefined (no command)
+      it('Then the empty command is configured and the diff dies with TEXTCONV_FAILED without running it', async () => {
+        // Arrange — git keeps an empty textconv value and fails to start it ("cannot run :")
         let runnerCalled = false;
         const runner: CommandRunner = {
           run: async () => {
@@ -1033,14 +1034,53 @@ describe('materialiseOne', () => {
         };
 
         // Act
-        const result = await materialisePatchFiles(ctx, [change], { applyTextconv: true });
+        let caught: unknown;
+        try {
+          await materialisePatchFiles(ctx, [change], { applyTextconv: true });
+        } catch (error) {
+          caught = error;
+        }
 
-        // Assert — empty textconv → command is undefined → no override, no runner call
-        expect(result).toHaveLength(1);
-        expect(result[0]?.patchBinaryOverride).toBeUndefined();
-        expect(result[0]?.numstatBinaryOverride).toBeUndefined();
-        expect(result[0]?.oldContent).toEqual(utf8.encode('old content\n'));
-        expect(result[0]?.newContent).toEqual(utf8.encode('new content\n'));
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'TEXTCONV_FAILED', command: '' });
+        expect(runnerCalled).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a configured textconv driver and runTextconv: false', () => {
+    describe('When materialisePatchFiles is called with applyTextconv: true', () => {
+      it('Then the raw bytes come back with the driver override resolved and the driver never runs', async () => {
+        // Arrange
+        let runnerCalled = false;
+        const runner: CommandRunner = {
+          run: async () => {
+            runnerCalled = true;
+            return { exitCode: 0, stdout: utf8.encode('CONVERTED\n') };
+          },
+        };
+        const ctx = createMemoryContext({ command: runner });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'f.t diff=t\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[diff "t"]\n\ttextconv = cat\n');
+        const change: ModifyChange = {
+          type: 'modify',
+          path: 'f.t' as FilePath,
+          oldId: await writeBlob(ctx, 'old\n'),
+          newId: await writeBlob(ctx, 'new\n'),
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.REGULAR,
+        };
+
+        // Act
+        const result = await materialisePatchFiles(ctx, [change], {
+          applyTextconv: true,
+          runTextconv: false,
+        });
+
+        // Assert
+        expect(result[0]?.oldContent).toEqual(utf8.encode('old\n'));
+        expect(result[0]?.newContent).toEqual(utf8.encode('new\n'));
+        expect(result[0]?.numstatBinaryOverride).toBe('text');
         expect(runnerCalled).toBe(false);
       });
     });
@@ -1373,9 +1413,9 @@ describe('materialiseOne', () => {
         await materialisePatchFiles(ctx, [change], { applyTextconv: true });
 
         // Assert — the temp-file token embeds only the first 64 sanitized chars (".txt" dropped)
-        const marker = 'TEXTCONV_INPUT_new_';
+        const marker = '_new_';
         const tmpPath = capturedCommand.split(' ').pop() ?? '';
-        const sanitized = tmpPath.slice(tmpPath.indexOf(marker) + marker.length);
+        const sanitized = tmpPath.slice(tmpPath.lastIndexOf(marker) + marker.length);
         expect(sanitized).toBe('a'.repeat(64));
         expect(sanitized).toHaveLength(64);
         expect(sanitized.endsWith('_txt')).toBe(false);

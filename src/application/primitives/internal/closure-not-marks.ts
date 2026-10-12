@@ -3,44 +3,38 @@
  * must NOT emit, and the asymmetry between how commits and trees earn that
  * exclusion.
  *
- * A `not` tip's *entire* commit ancestry is marked uninteresting — git's own
- * merge-base exclusion, propagated through every parent edge, so a commit
- * reachable from BOTH a `want` and a `not` (a shared ancestor) is still
- * excluded. Trees are marked more narrowly, and NEVER for a `not` tip merely
- * for being a tip: only the own tree of every commit the *interesting* walk's
- * parent pointers discover to be uninteresting (a "boundary" commit — the
- * merge-base is the common case, a diamond can surface more than one), which
- * `markBoundaryTrees` marks under `--objects`. git's limited walk does the same
- * (`mark_edges_uninteresting` marks only edge parents' trees), so a `not` tip
- * no interesting walk reaches leaves its own tree unmarked and a blob it shares
- * with a `want` is still emitted — reproducing git's set, not a tighter one.
+ * A commit `not` tip is only collected here: which of its ancestors are
+ * uninteresting is the closure's limited walk to decide — git's `limit_list`,
+ * which walks both sides together by commit date and gives up on the
+ * excluded side once it has stayed all-uninteresting for a few commits, so a
+ * clock-skewed excluded line can leave a shared ancestor listed. Trees are
+ * marked more narrowly, and NEVER for a `not` tip merely for being a tip:
+ * only the own tree of every uninteresting commit the limited walk lists as
+ * an edge (a parent of a listed commit, or a commit listed before it turned
+ * uninteresting), which `markBoundaryTrees` marks under `--objects` — git's
+ * `mark_edges_uninteresting`. A `not` tip no interesting walk reaches leaves
+ * its own tree unmarked and a blob it shares with a `want` is still emitted —
+ * reproducing git's set, not a tighter one.
  */
-import { invalidWalkInput, operationAborted } from '../../../domain/error.js';
+import { operationAborted } from '../../../domain/error.js';
 import { isObjectNotFound, treeDepthExceeded } from '../../../domain/objects/error.js';
-import { type GitObject, isDirectory, type ObjectId } from '../../../domain/objects/index.js';
+import {
+  type GitObject,
+  isDirectory,
+  type ObjectId,
+  type Tree,
+} from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readObject } from '../read-object.js';
-import { MAX_WALK_QUEUE_SIZE } from '../types.js';
-import { isGitlink, REASON_WALK_QUEUE_OVERFLOW } from '../validators.js';
+import { isGitlink } from '../validators.js';
+import { assignObjectType, type ObjectTypeTable } from './object-type-table.js';
 import { type CommitMeta, readCommitMeta } from './read-commit-meta.js';
 import { resolveMaxTreeDepth } from './resolve-max-tree-depth.js';
 
-/** The slice of a walked commit `markBoundaryTrees` needs — its own id and
- *  tree, plus the parents that discover further boundary commits. Declared
- *  here (not `closure-engine.ts`) so the existing dependency direction —
- *  `closure-engine.ts` already imports from this module — stays a DAG. */
-export interface WalkedCommit {
-  readonly id: ObjectId;
-  readonly tree: ObjectId;
-  readonly parents: ReadonlyArray<ObjectId>;
-}
-
 export interface NotMarks {
-  readonly commits: ReadonlySet<ObjectId>;
-  /** Every marked commit's own tree id, populated alongside `commits` by
-   *  `markCommitAncestry` — `markBoundaryTrees` looks a marked parent up
-   *  here instead of re-reading it. */
-  readonly commitTrees: ReadonlyMap<ObjectId, ObjectId>;
+  /** Every commit `not` tip, tags peeled, in argument order — the limited
+   *  walk's excluded seeds. */
+  readonly commitTips: ReadonlyArray<ObjectId>;
   /** Mutable: the interesting walk extends this with boundary commits' own
    *  trees as it discovers them — see `markBoundaryTrees`. */
   readonly objects: Set<ObjectId>;
@@ -50,22 +44,21 @@ export interface NotMarks {
   /** Resolved once by `markNotSide` from `core.maxTreeDepth` — `markBoundaryTrees`
    *  reads it back from here instead of resolving it again. */
   readonly maxDepth: number;
+  /** The invocation's object-type table the marked entries are typed into; omitted, nothing is typed. */
+  readonly objectTypes?: ObjectTypeTable;
 }
 
-/**
- * The mutable working set every `not` tip contributes to. `markNotSide` returns
- * the read-only {@link NotMarks} view of it. `missing` is an internal dedup memo
- * — a parent the store cannot serve, remembered so a later child (in this tip's
- * walk or a sibling tip's) never pays the miss twice — and is not part of that
- * view.
- */
-interface NotMarksAccumulator {
-  readonly commits: Set<ObjectId>;
-  readonly commitTrees: Map<ObjectId, ObjectId>;
-  readonly objects: Set<ObjectId>;
-  readonly seenTrees: Set<ObjectId>;
-  readonly missing: Set<ObjectId>;
-  readonly maxDepth: number;
+/** The marks as tips are added, each in git's pending order. */
+export interface NotMarksAccumulator extends NotMarks {
+  readonly commitTips: ObjectId[];
+  readonly objectsListed: boolean;
+}
+
+/** What the walk marking the `not` side lists, and the table it types into. */
+export interface NotSideScope {
+  /** Whether trees and blobs are listed — without them, git never marks one. */
+  readonly objects: boolean;
+  readonly objectTypes?: ObjectTypeTable;
 }
 
 /**
@@ -95,46 +88,98 @@ const readTreeIfPresent = async (
 
 /**
  * Recursively mark `treeId` and its non-gitlink contents uninteresting.
+ * Under typing, each entry is looked up as its mode types it — git's
+ * `mark_tree_contents_uninteresting` — and an entry an earlier lookup typed
+ * otherwise is logged and left unmarked.
  *
  * This descent was measured honouring `core.maxTreeDepth` exactly, to 100000
  * (2026-08-15): depth 100000 completes, and a fixture one level deeper refuses
  * cleanly with `TREE_DEPTH_EXCEEDED` at depth 100001 — so the configured cap,
  * not the call stack, is what bounds it. Deeper than that is unmeasured.
  */
-async function markTree(
-  ctx: Context,
-  treeId: ObjectId,
-  marked: Set<ObjectId>,
-  seenTrees: Set<ObjectId>,
-  maxDepth: number,
-  depth = 0,
-): Promise<void> {
-  if (seenTrees.has(treeId)) return;
-  seenTrees.add(treeId);
-  if (depth > maxDepth) throw treeDepthExceeded(depth);
+async function markTree(ctx: Context, treeId: ObjectId, marks: NotMarks, depth = 0): Promise<void> {
+  if (marks.seenTrees.has(treeId)) return;
+  marks.seenTrees.add(treeId);
+  if (depth > marks.maxDepth) throw treeDepthExceeded(depth);
   // Stryker disable next-line ConditionalExpression: equivalent — the readObject below re-checks ctx.signal and throws the identical operationAborted; the only mark this guard saves is discarded by that same throw.
   if (ctx.signal?.aborted) throw operationAborted();
-  marked.add(treeId);
-  const treeObj = await readTreeIfPresent(ctx, treeId);
-  if (treeObj === undefined) return;
-  if (treeObj.type !== 'tree') return;
-  for (const entry of treeObj.entries) {
+  marks.objects.add(treeId);
+  const tree = await readMarkedTree(ctx, treeId, marks.objectTypes);
+  if (tree === undefined) return;
+  for (const entry of tree.entries) {
     if (isGitlink(entry.mode)) continue;
-    if (!isDirectory(entry.mode)) {
-      marked.add(entry.id);
-      continue;
-    }
-    await markTree(ctx, entry.id, marked, seenTrees, maxDepth, depth + 1);
+    const type = isDirectory(entry.mode) ? 'tree' : 'blob';
+    if (!assignObjectType(ctx, marks.objectTypes, entry.id, type)) continue;
+    if (type === 'blob') marks.objects.add(entry.id);
+    else await markTree(ctx, entry.id, marks, depth + 1);
   }
 }
 
 /**
- * The negative side's tolerance for a commit it cannot resolve: `undefined`
- * for a locally absent object, every other failure rethrown. `readCommitMeta`
- * already answers `undefined` for an oid that resolves to something other
- * than a commit, so both kinds of parent the marker cannot follow reach the same skip.
+ * git's `parse_tree_gently` on the excluded side: a missing tree is skipped
+ * quietly, one stored as something else is `Object X not a tree` under typing.
  */
-const readCommitMetaIfPresent = async (
+const readMarkedTree = async (
+  ctx: Context,
+  treeId: ObjectId,
+  objectTypes: ObjectTypeTable | undefined,
+): Promise<Tree | undefined> => {
+  const object = await readTreeIfPresent(ctx, treeId);
+  if (object === undefined || object.type === 'tree') return object;
+  if (objectTypes !== undefined) ctx.logger?.error?.(`Object ${treeId} not a tree`, { id: treeId });
+  return undefined;
+};
+
+/**
+ * Mark one `not` tip uninteresting: peel a tag chain, marking every tag on it
+ * as git's `handle_commit` flags each object it peels, then collect a commit
+ * for the limited walk (its own tree is left to `markBoundaryTrees`), or mark
+ * a tree/blob tip directly. Answers the commit collected, if any.
+ */
+export async function markNotTip(
+  ctx: Context,
+  id: ObjectId,
+  acc: NotMarksAccumulator,
+): Promise<ObjectId | undefined> {
+  const obj = await readObject(ctx, id);
+  if (obj.type === 'tag') {
+    acc.objects.add(id);
+    return markNotTip(ctx, obj.data.object, acc);
+  }
+  if (obj.type === 'commit') {
+    acc.commitTips.push(id);
+    return id;
+  }
+  // git's `handle_commit` drops a tree or blob tip unless the walk lists
+  // objects, and otherwise marks it outright, a tree with its contents.
+  if (!acc.objectsListed) return undefined;
+  if (obj.type === 'tree') await markTree(ctx, id, acc);
+  else acc.objects.add(id);
+  return undefined;
+}
+
+/** Empty marks for one walk, ready for its `not` tips. */
+export async function createNotMarks(
+  ctx: Context,
+  scope: NotSideScope,
+): Promise<NotMarksAccumulator> {
+  const { objects: objectsListed, objectTypes } = scope;
+  return {
+    commitTips: [],
+    objects: new Set<ObjectId>(),
+    seenTrees: new Set<ObjectId>(),
+    maxDepth: await resolveMaxTreeDepth(ctx),
+    objectsListed,
+    ...(objectTypes === undefined ? {} : { objectTypes }),
+  };
+}
+
+/**
+ * The negative side's tolerance for a boundary commit it cannot resolve:
+ * `undefined` for a locally absent object, every other failure rethrown —
+ * git's `mark_tree_uninteresting` returns on a commit with no tree to give.
+ */
+export const readCommitMetaIfPresent = async (
   ctx: Context,
   id: ObjectId,
 ): Promise<CommitMeta | undefined> => {
@@ -147,164 +192,115 @@ const readCommitMetaIfPresent = async (
 };
 
 /**
- * Marks `id` and its FULL commit ancestry uninteresting — git's own
- * merge-base exclusion: a commit reachable from a `not` tip is excluded from
- * the walk even when it is ALSO reachable from a `want`, however many parent
- * edges separate it from the tip. `acc.commits` doubles as the visited set
- * and the short-circuit on a commit a prior `not` id's own pass already
- * covered, so overlapping ancestries are walked once. Distinct from tree
- * marking (`markTree`, above), which stays scoped to specific commits' own
- * trees — that asymmetry is what reproduces git's own over-report.
- *
- * Records each walked commit's own tree in `commitTrees` too, so
- * `markBoundaryTrees` can look a marked ancestor's tree up later instead of
- * reading it — and, since it only ever reads that map at a key `commits`
- * also gained here, the lookup is proven to hit.
- *
- * Root tree and parents are the only two fields this needs, and
- * `readCommitMeta` serves both from the commit-graph without touching the
- * object store. That is git's own behaviour on the negative side:
- * `repo_parse_commit` answers a commit from the graph whether or not its body
- * is still there, and walks the parents the graph names. The deferred enqueue
- * in `walkCommits` exists to protect a YIELDING walk under `ignoreMissing`,
- * which only needs to hold because the body it yields must exist; nothing
- * here is yielded, so nothing here needs the body. A shallow repository
- * disables the graph outright, so the fallback's grafted parents still cut
- * the ancestry at the boundary exactly as before.
- */
-async function markCommitAncestry(
-  ctx: Context,
-  id: ObjectId,
-  acc: NotMarksAccumulator,
-): Promise<void> {
-  const frontier: AncestryFrontier = { queue: [id], queued: new Set([id]) };
-  for (let head = 0; head < frontier.queue.length; head += 1) {
-    if (ctx.signal?.aborted) throw operationAborted();
-    const current = frontier.queue[head] as ObjectId;
-    frontier.queued.delete(current);
-    if (acc.commits.has(current)) continue;
-    const meta = await readCommitMetaIfPresent(ctx, current);
-    if (meta === undefined) {
-      acc.missing.add(current);
-      continue;
-    }
-    acc.commits.add(current);
-    acc.commitTrees.set(current, meta.tree);
-    enqueueUnmarkedParents(frontier, meta.parents, acc);
-  }
-}
-
-/**
- * The ancestry walk's head-cursor frontier. `queued` is git's ENQUEUED flag:
- * a parent named by many children is queued once, and the bound counts
- * distinct pending ids — the same discipline and the same refusal
- * `walkCommits` applies to its own frontier.
- */
-interface AncestryFrontier {
-  readonly queue: ObjectId[];
-  readonly queued: Set<ObjectId>;
-}
-
-function enqueueUnmarkedParents(
-  frontier: AncestryFrontier,
-  parents: ReadonlyArray<ObjectId>,
-  acc: NotMarksAccumulator,
-): void {
-  for (const parent of parents) {
-    if (acc.commits.has(parent) || frontier.queued.has(parent) || acc.missing.has(parent)) {
-      continue;
-    }
-    if (frontier.queued.size >= MAX_WALK_QUEUE_SIZE) {
-      throw invalidWalkInput(REASON_WALK_QUEUE_OVERFLOW);
-    }
-    frontier.queue.push(parent);
-    frontier.queued.add(parent);
-  }
-}
-
-/**
- * Mark one `not` tip uninteresting: peel a tag chain, then mark a commit's
- * full ancestry (commits only — its own tree is left to `markBoundaryTrees`),
- * or mark a tree/blob tip directly.
- */
-async function markUninteresting(
-  ctx: Context,
-  id: ObjectId,
-  acc: NotMarksAccumulator,
-): Promise<void> {
-  const obj = await readObject(ctx, id);
-  if (obj.type === 'tag') {
-    await markUninteresting(ctx, obj.data.object, acc);
-    return;
-  }
-  if (obj.type === 'commit') {
-    // A commit `not` tip contributes only its ancestry commits — NOT its own
-    // tree. git's limited walk marks a tree uninteresting only when the
-    // interesting walk's parent pointers reach the commit that owns it (an edge
-    // parent), which `markBoundaryTrees` replicates under `--objects`; a tip no
-    // interesting walk touches leaves its tree unmarked, exactly as git does.
-    await markCommitAncestry(ctx, id, acc);
-    return;
-  }
-  if (obj.type === 'tree') {
-    // A directly-named tree/blob `not` id is marked outright — git's
-    // `handle_commit` marks a pending object of that type directly.
-    await markTree(ctx, id, acc.objects, acc.seenTrees, acc.maxDepth);
-    return;
-  }
-  acc.objects.add(id);
-}
-
-/** Mark every `not` tip's full commit ancestry; a directly-named tree/blob tip
- *  outright. A tip's own tree is left to `markBoundaryTrees` — see this
- *  module's own doc. */
-export async function markNotSide(ctx: Context, not: ReadonlyArray<ObjectId>): Promise<NotMarks> {
-  const acc: NotMarksAccumulator = {
-    commits: new Set<ObjectId>(),
-    commitTrees: new Map<ObjectId, ObjectId>(),
-    objects: new Set<ObjectId>(),
-    seenTrees: new Set<ObjectId>(),
-    missing: new Set<ObjectId>(),
-    maxDepth: await resolveMaxTreeDepth(ctx),
-  };
-  for (const notId of not) {
-    await markUninteresting(ctx, notId, acc);
-  }
-  return {
-    commits: acc.commits,
-    commitTrees: acc.commitTrees,
-    objects: acc.objects,
-    seenTrees: acc.seenTrees,
-    maxDepth: acc.maxDepth,
-  };
-}
-
-/**
- * For every parent of a walked (interesting) commit that falls in the
- * not-side's full ancestor closure, mark THAT parent's own tree
- * uninteresting too — git's own boundary-commit behaviour: any uninteresting
- * commit the interesting walk's own parent pointers touch gets its tree
- * marked, not only the tips the caller passed (the merge-base is the common
- * case, but a diamond can surface more than one). Idempotent per parent id,
- * and must complete before ANY of `walked`'s trees are emitted — a boundary
- * discovered only by a later commit in the list must still gate an earlier
- * one's tree walk.
+ * Mark the own tree of every `boundary` commit uninteresting — git's
+ * `mark_edges_uninteresting`, which must complete before ANY interesting
+ * tree is emitted: a boundary a later commit surfaces must still gate an
+ * earlier one's tree walk. The tree comes from the commit-graph when the
+ * commit is in it, as git's `repo_get_commit_tree` reads it.
  */
 export async function markBoundaryTrees(
   ctx: Context,
-  walked: ReadonlyArray<WalkedCommit>,
+  boundary: Iterable<ObjectId>,
   marks: NotMarks,
 ): Promise<void> {
-  const seenBoundary = new Set<ObjectId>();
-  for (const commit of walked) {
-    for (const parentId of commit.parents) {
-      if (!marks.commits.has(parentId) || seenBoundary.has(parentId)) continue;
-      seenBoundary.add(parentId);
-      // `parentId` passed the `marks.commits` check above, and
-      // `markCommitAncestry` always sets `commitTrees` alongside `commits`
-      // for the same id — this lookup is guaranteed to hit.
-      const parentTree = marks.commitTrees.get(parentId) as ObjectId;
-      await markTree(ctx, parentTree, marks.objects, marks.seenTrees, marks.maxDepth);
-    }
+  for (const commitId of boundary) {
+    const meta = await readCommitMetaIfPresent(ctx, commitId);
+    if (meta === undefined) continue;
+    await markTree(ctx, meta.tree, marks);
   }
 }
+
+/** A commit tree git's sparse marking starts from, excluded when its commit is. */
+export interface SparseTreeSeed {
+  readonly tree: ObjectId;
+  readonly excluded: boolean;
+}
+
+/**
+ * git's `pack.useSparse` marking (`mark_trees_uninteresting_sparse`): group
+ * the listed commits' trees and their parents' by path, and descend only a
+ * path both an excluded and an included tree hold. An excluded tree marks
+ * its direct children whatever their path; a subtree an included commit
+ * holds under a path no excluded tree shares stays in the closure even when
+ * an excluded tree holds it elsewhere.
+ */
+export async function markSparseTrees(
+  ctx: Context,
+  seeds: Iterable<SparseTreeSeed>,
+  marks: NotMarks,
+): Promise<void> {
+  const trees = new Set<ObjectId>();
+  for (const seed of seeds) {
+    if (seed.excluded) marks.objects.add(seed.tree);
+    trees.add(seed.tree);
+  }
+  await markTreeGroup(ctx, trees, marks, 0);
+}
+
+async function markTreeGroup(
+  ctx: Context,
+  trees: ReadonlySet<ObjectId>,
+  marks: NotMarks,
+  depth: number,
+): Promise<void> {
+  if (!holdsBothSides(ctx, trees, marks)) return;
+  if (depth > marks.maxDepth) throw treeDepthExceeded(depth);
+  const byName = new Map<string, Set<ObjectId>>();
+  for (const tree of trees) {
+    if (lookupTree(ctx, marks, tree)) await addChildrenByName(ctx, tree, byName, marks);
+  }
+  for (const group of byName.values()) await markTreeGroup(ctx, group, marks, depth + 1);
+}
+
+/** git's `lookup_tree`: under typing, an object typed otherwise is logged and skipped. */
+const lookupTree = (ctx: Context, marks: NotMarks, id: ObjectId): boolean =>
+  assignObjectType(ctx, marks.objectTypes, id, 'tree');
+
+/**
+ * Whether the group holds both sides, each tree looked up. git stops looking
+ * once it knows, in its oid set's hash order; looking every tree up logs a
+ * conflicting one as git does when its order reaches that tree first.
+ */
+const holdsBothSides = (ctx: Context, trees: ReadonlySet<ObjectId>, marks: NotMarks): boolean => {
+  let excluded = false;
+  let included = false;
+  for (const tree of trees) {
+    if (!lookupTree(ctx, marks, tree)) continue;
+    if (marks.objects.has(tree)) excluded = true;
+    else included = true;
+  }
+  return excluded && included;
+};
+
+/** Lossless map key for an entry name: one code unit per name byte. */
+const nameKey = (bytes: Uint8Array): string => String.fromCharCode(...bytes);
+
+/**
+ * git's `add_children_by_path`: each subtree grouped by name, and an
+ * excluded tree's children marked once looked up as their mode types them.
+ */
+async function addChildrenByName(
+  ctx: Context,
+  treeId: ObjectId,
+  byName: Map<string, Set<ObjectId>>,
+  marks: NotMarks,
+): Promise<void> {
+  const tree = await readMarkedTree(ctx, treeId, marks.objectTypes);
+  if (tree === undefined) return;
+  const excluded = marks.objects.has(treeId);
+  for (const entry of tree.entries) {
+    if (isGitlink(entry.mode)) continue;
+    const type = isDirectory(entry.mode) ? 'tree' : 'blob';
+    if (excluded && assignObjectType(ctx, marks.objectTypes, entry.id, type)) {
+      marks.objects.add(entry.id);
+    }
+    if (type === 'tree') groupByName(byName, entry.nameBytes, entry.id);
+  }
+}
+
+const groupByName = (byName: Map<string, Set<ObjectId>>, name: Uint8Array, id: ObjectId): void => {
+  const key = nameKey(name);
+  const group = byName.get(key) ?? new Set<ObjectId>();
+  group.add(id);
+  byName.set(key, group);
+};

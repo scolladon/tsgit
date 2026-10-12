@@ -25,6 +25,7 @@ import { compareWorkingTreeEntry } from '../primitives/compare-working-tree-entr
 import { createCommit } from '../primitives/create-commit.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { hashBlob } from '../primitives/hash-blob.js';
+import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import { pathIsOccupied } from '../primitives/internal/path-occupied.js';
 import { maybeBuildAttributeProvider } from '../primitives/internal/read-gitattributes.js';
@@ -55,11 +56,11 @@ import {
   type StashDropResult,
   type StashStackEntry,
 } from '../primitives/stash-ref.js';
-import { streamBlob } from '../primitives/stream-blob.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { acquireIndexLock } from './internal/index-update.js';
+import { takeMergeAutostash } from './internal/merge-autostash.js';
 import {
   indexMessage,
   onMessage,
@@ -177,6 +178,25 @@ interface UntrackedProjection {
   readonly entries: ReadonlyArray<IndexEntry>;
 }
 
+/** The index's tree, the work tree projected over it, and — when asked — the untracked files. */
+const snapshotLocalChanges = async (
+  ctx: Context,
+  workDir: string,
+  opts: StashPushInput,
+): Promise<{
+  readonly iTree: ObjectId;
+  readonly working: WorkingTreeProjection;
+  readonly untracked: UntrackedProjection;
+}> => {
+  const index = await readIndex(ctx);
+  const iTree = await synthesizeTreeFromIndex(ctx, index.entries);
+  const working = await projectWorkingTree(ctx, workDir, index);
+  const untracked = opts.includeUntracked
+    ? await collectUntracked(ctx, workDir, index)
+    : { paths: [], entries: [] };
+  return { iTree, working, untracked };
+};
+
 /** Collect the untracked (non-ignored) working files as synthetic index entries. */
 const collectUntracked = async (
   ctx: Context,
@@ -216,26 +236,38 @@ export const stashPush = async (
 ): Promise<StashPushResult> => {
   const workDir = await gateStash(ctx, 'stash');
   await assertNoPendingOperation(ctx);
+  return stashAndReset(ctx, workDir, opts, (w) => pushStashRef(ctx, w.stash, w.message));
+};
+
+/** git's `stash create` then `reset --hard`: the local changes as an unrecorded stash. */
+export const createAutostash = async (ctx: Context): Promise<ObjectId | undefined> => {
+  const workDir = requireWorkTree(ctx, 'rebase');
+  const result = await stashAndReset(ctx, workDir, { message: AUTOSTASH }, async () => {});
+  return result.kind === 'saved' ? result.stash : undefined;
+};
+
+const AUTOSTASH = 'autostash';
+
+/** Snapshot the local changes into stash commits, `record` them, then reset the tree. */
+const stashAndReset = async (
+  ctx: Context,
+  workDir: string,
+  opts: StashPushInput,
+  record: (w: { readonly stash: ObjectId; readonly message: string }) => Promise<void>,
+): Promise<StashPushResult> => {
   const head = await readHeadRaw(ctx);
   const base = await resolveBase(ctx, head);
 
   const lock = await acquireIndexLock(ctx);
   try {
-    const index = await readIndex(ctx);
-    const iTree = await synthesizeTreeFromIndex(ctx, index.entries);
-    const working = await projectWorkingTree(ctx, workDir, index);
-    const untracked = opts.includeUntracked
-      ? await collectUntracked(ctx, workDir, index)
-      : { paths: [], entries: [] };
-
+    const { iTree, working, untracked } = await snapshotLocalChanges(ctx, workDir, opts);
     const stagedDirty = iTree !== base.bTree;
     const hasUntracked = untracked.paths.length > 0;
     if (!stagedDirty && !working.dirty && !hasUntracked) {
       return { kind: 'no-local-changes' };
     }
-
     const w = await createStashCommits(ctx, { base, iTree, working, untracked, opts });
-    await pushStashRef(ctx, w.stash, w.message);
+    await record(w);
     await resetAfterPush(ctx, lock, { base, iTree, untracked, opts });
     return { kind: 'saved', stash: w.stash, message: w.message };
   } finally {
@@ -328,7 +360,7 @@ interface ResetInputs {
 /** Reset the working tree + index to HEAD (or the index tree under `--keep-index`). */
 const resetAfterPush = async (
   ctx: Context,
-  lock: Awaited<ReturnType<typeof acquireIndexLock>>,
+  lock: IndexLock,
   inputs: ResetInputs,
 ): Promise<void> => {
   const { base, iTree, untracked, opts } = inputs;
@@ -410,15 +442,14 @@ const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> =>
   // one `lstat` per distinct directory, not one per path.
   const scanner = createLeadingPathScanner(ctx);
   for (const [path, entry] of flat.entries) {
-    const stream = await streamBlob(ctx, entry.id);
-    await writeWorkingTreeFileStream(ctx, path, stream, scanner);
+    await writeWorkingTreeFileStream(ctx, path, entry.id, scanner);
   }
 };
 
 /** Reinstate the staged state (`--index`) when the index-side 3-way merge is clean. */
 const reinstateIndex = async (
   ctx: Context,
-  lock: Awaited<ReturnType<typeof acquireIndexLock>>,
+  lock: IndexLock,
   args: {
     readonly bTree: ObjectId;
     readonly cTree: ObjectId;
@@ -448,51 +479,121 @@ export const stashApply = async (
 ): Promise<StashApplyResult> => {
   const workDir = await gateStash(ctx, 'stash apply');
   await assertNoPendingOperation(ctx);
-  const w = await resolveStashEntry(ctx, input.index ?? 0);
+  return applyStashCommit(ctx, workDir, await resolveStashEntry(ctx, input.index ?? 0), input);
+};
+
+/**
+ * git's `apply_autostash`: re-apply the autostash; on a conflict keep the
+ * conflicted tree and store the stash in `refs/stash` (`autostash`).
+ */
+export const applyAutostash = async (ctx: Context, w: ObjectId): Promise<void> => {
+  const workDir = requireWorkTree(ctx, 'rebase');
+  const result = await applyStashCommit(ctx, workDir, w, {});
+  if (result.kind === 'applied') {
+    ctx.logger?.info?.('Applied autostash.');
+    return;
+  }
+  await pushStashRef(ctx, w, AUTOSTASH);
+  ctx.logger?.warn?.(AUTOSTASH_CONFLICT);
+};
+
+/** git's `apply_autostash_ref(MERGE_AUTOSTASH)`: re-apply a merge's autostash, if any. */
+export const applyMergeAutostash = async (ctx: Context): Promise<void> => {
+  const stash = await takeMergeAutostash(ctx);
+  if (stash !== undefined) await applyAutostash(ctx, stash);
+};
+
+const AUTOSTASH_CONFLICT =
+  'Your local changes are stashed, however applying them\n' +
+  'resulted in conflicts.  You can either resolve the conflicts\n' +
+  'and then discard the stash with "git stash drop", or, if you\n' +
+  'do not want to resolve them now, run "git reset --hard" and\n' +
+  'apply the local changes later by running "git stash pop".';
+
+const applyStashCommit = async (
+  ctx: Context,
+  workDir: string,
+  w: ObjectId,
+  input: StashApplyInput,
+): Promise<StashApplyResult> => {
   const parsed = await parseStashCommit(ctx, w);
   const bTree = await commitTreeOf(ctx, parsed.base);
   const uTree =
     parsed.untrackedParent !== undefined
       ? await commitTreeOf(ctx, parsed.untrackedParent)
       : undefined;
-
   const lock = await acquireIndexLock(ctx);
   try {
-    const currentIndex = await readIndex(ctx);
-    const cTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
-    if (uTree !== undefined) {
-      const clobbered = await untrackedOverwrites(ctx, workDir, uTree);
-      if (clobbered.length > 0) throw stashApplyWouldOverwrite(clobbered);
-    }
-    const result = await applyMergeToWorktree(ctx, {
-      baseTree: bTree,
-      oursTree: cTree,
-      theirsTree: parsed.wTree,
-      currentIndex,
-      labels: STASH_LABELS,
-    });
-    if (result.kind === 'would-overwrite')
-      throw stashApplyWouldOverwrite([...result.localChanges, ...result.untracked]);
-    if (result.kind === 'conflict') {
-      await lock.commit(result.indexEntries);
-      return {
-        kind: 'conflict',
-        conflicts: result.conflicts.map((c) => ({ path: c.path, type: c.type })),
-      };
-    }
-    if (input.restoreIndex === true) {
-      await reinstateIndex(ctx, lock, {
-        bTree,
-        cTree,
-        indexParent: parsed.indexParent,
-        currentIndex,
-      });
-    }
-    if (uTree !== undefined) await restoreUntracked(ctx, uTree);
-    return { kind: 'applied', stash: w };
+    return await applyUnderLock(ctx, lock, { workDir, w, input, parsed, bTree, uTree });
   } finally {
     await lock.release();
   }
+};
+
+/** A stash being applied: its commit, its parents' trees and how to apply it. */
+interface StashApplication {
+  readonly workDir: string;
+  readonly w: ObjectId;
+  readonly input: StashApplyInput;
+  readonly parsed: StashParents;
+  readonly bTree: ObjectId;
+  readonly uTree: ObjectId | undefined;
+}
+
+/** Merge the stash into the index and work tree, then restore its index and untracked files. */
+const applyUnderLock = async (
+  ctx: Context,
+  lock: IndexLock,
+  { workDir, w, input, parsed, bTree, uTree }: StashApplication,
+): Promise<StashApplyResult> => {
+  const currentIndex = await readIndex(ctx);
+  const cTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
+  if (uTree !== undefined) await refuseUntrackedOverwrites(ctx, workDir, uTree);
+  const result = await mergeStash(ctx, { bTree, cTree, wTree: parsed.wTree, currentIndex });
+  if (result.kind === 'conflict') {
+    await lock.commit(result.indexEntries);
+    return {
+      kind: 'conflict',
+      conflicts: result.conflicts.map((c) => ({ path: c.path, type: c.type })),
+    };
+  }
+  if (input.restoreIndex === true) {
+    const indexParent = parsed.indexParent;
+    await reinstateIndex(ctx, lock, { bTree, cTree, indexParent, currentIndex });
+  }
+  if (uTree !== undefined) await restoreUntracked(ctx, uTree);
+  return { kind: 'applied', stash: w };
+};
+
+const refuseUntrackedOverwrites = async (
+  ctx: Context,
+  workDir: string,
+  uTree: ObjectId,
+): Promise<void> => {
+  const clobbered = await untrackedOverwrites(ctx, workDir, uTree);
+  if (clobbered.length > 0) throw stashApplyWouldOverwrite(clobbered);
+};
+
+/** Three-way merge the stash's work tree onto the current index; refuse a clobber. */
+const mergeStash = async (
+  ctx: Context,
+  trees: {
+    readonly bTree: ObjectId;
+    readonly cTree: ObjectId;
+    readonly wTree: ObjectId;
+    readonly currentIndex: GitIndex;
+  },
+) => {
+  const result = await applyMergeToWorktree(ctx, {
+    baseTree: trees.bTree,
+    oursTree: trees.cTree,
+    theirsTree: trees.wTree,
+    currentIndex: trees.currentIndex,
+    labels: STASH_LABELS,
+  });
+  if (result.kind === 'would-overwrite')
+    throw stashApplyWouldOverwrite([...result.localChanges, ...result.untracked]);
+  return result;
 };
 
 export type StashPopResult =

@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { probeLooseOid } from '../../../../../src/application/primitives/internal/loose-oid-cache.js';
 import { rescanOnFullMiss } from '../../../../../src/application/primitives/internal/pack-miss-rescan.js';
+import { getObjectStore } from '../../../../../src/application/primitives/object-store.js';
 import { createPackRegistry } from '../../../../../src/application/primitives/pack-registry.js';
 import type { ObjectId } from '../../../../../src/domain/objects/index.js';
 import { computeLooseObjectPath } from '../../../../../src/domain/storage/loose-path.js';
-import { buildSeededContext } from '../fixtures.js';
+import { buildSeededContext, soleSourceStore } from '../fixtures.js';
 
 const idOf = (n: number): ObjectId => n.toString(16).padStart(2, '0').repeat(20) as ObjectId;
 
@@ -34,7 +36,9 @@ describe('rescanOnFullMiss', () => {
 
         // Act
         await Promise.all(
-          Array.from({ length: 5 }, (_unused, i) => rescanOnFullMiss(ctx, registry, idOf(i))),
+          Array.from({ length: 5 }, (_unused, i) =>
+            rescanOnFullMiss(ctx, soleSourceStore(ctx, registry), idOf(i)),
+          ),
         );
 
         // Assert
@@ -50,10 +54,10 @@ describe('rescanOnFullMiss', () => {
         const ctx = await buildSeededContext();
         const registry = await createPackRegistry(ctx);
         const reprepareSpy = vi.spyOn(registry, 'reprepare');
-        await rescanOnFullMiss(ctx, registry, idOf(0));
+        await rescanOnFullMiss(ctx, soleSourceStore(ctx, registry), idOf(0));
 
         // Act
-        await rescanOnFullMiss(ctx, registry, idOf(1));
+        await rescanOnFullMiss(ctx, soleSourceStore(ctx, registry), idOf(1));
 
         // Assert
         expect(reprepareSpy).toHaveBeenCalledTimes(2);
@@ -73,8 +77,10 @@ describe('rescanOnFullMiss', () => {
           .mockResolvedValueOnce(undefined);
 
         // Act
-        await expect(rescanOnFullMiss(ctx, registry, idOf(0))).rejects.toThrow('boom');
-        await rescanOnFullMiss(ctx, registry, idOf(1));
+        await expect(
+          rescanOnFullMiss(ctx, soleSourceStore(ctx, registry), idOf(0)),
+        ).rejects.toThrow('boom');
+        await rescanOnFullMiss(ctx, soleSourceStore(ctx, registry), idOf(1));
 
         // Assert
         expect(reprepareSpy).toHaveBeenCalledTimes(2);
@@ -104,10 +110,10 @@ describe('rescanOnFullMiss', () => {
         // itself, so it runs right after the wave's own `.then` — once the
         // entry is already gone — and starts a fresh wave of its own. B's
         // loose bytes land on disk before the wave settles at all.
-        const waveA = rescanOnFullMiss(ctx, registry, idA);
+        const waveA = rescanOnFullMiss(ctx, soleSourceStore(ctx, registry), idA);
         let waveB: Promise<void> | undefined;
         reprepareGate.then(() => {
-          waveB = rescanOnFullMiss(ctx, registry, idB);
+          waveB = rescanOnFullMiss(ctx, soleSourceStore(ctx, registry), idB);
         });
         const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(idB)}`;
         await ctx.fs.write(loosePath, new Uint8Array([1, 2, 3]));
@@ -137,8 +143,8 @@ describe('rescanOnFullMiss', () => {
 
         // Act — B joins the wave A already started, both calls made before
         // reprepare() ever settles, so B never starts its own wave.
-        const waveA = rescanOnFullMiss(ctx, registry, idA);
-        const waveB = rescanOnFullMiss(ctx, registry, idB);
+        const waveA = rescanOnFullMiss(ctx, soleSourceStore(ctx, registry), idA);
+        const waveB = rescanOnFullMiss(ctx, soleSourceStore(ctx, registry), idB);
         const loosePathB = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(idB)}`;
         await ctx.fs.write(loosePathB, new Uint8Array([1, 2, 3]));
         settleReprepare();
@@ -171,12 +177,12 @@ describe('rescanOnFullMiss', () => {
         // microtask tick); B starts a fresh wave in the gap before A's
         // `.finally` runs (a second tick); C arrives once A's `.finally`
         // has already run its (guarded) drop.
-        const waveA = rescanOnFullMiss(ctx, registry, idA);
+        const waveA = rescanOnFullMiss(ctx, soleSourceStore(ctx, registry), idA);
         gates[0]?.();
         await Promise.resolve();
-        const waveB = rescanOnFullMiss(ctx, registry, idB);
+        const waveB = rescanOnFullMiss(ctx, soleSourceStore(ctx, registry), idB);
         await Promise.resolve();
-        const waveC = rescanOnFullMiss(ctx, registry, idC);
+        const waveC = rescanOnFullMiss(ctx, soleSourceStore(ctx, registry), idC);
         gates[1]?.();
         gates[2]?.();
         await waveA;
@@ -186,6 +192,32 @@ describe('rescanOnFullMiss', () => {
         // Assert — exactly two reprepare() calls: A's own, and B's, which C
         // joined rather than starting a third.
         expect(reprepareSpy).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
+
+  describe('Given an alternate whose fanout listing for the missed prefix is cached empty', () => {
+    describe('When the wave settles after a loose file appeared in that alternate', () => {
+      it("Then the alternate's listing was forgotten and the file is seen", async () => {
+        // Arrange
+        const alternate = '/repo/alt/objects';
+        const ctx = createMemoryContext({
+          files: {
+            '/repo/.git/objects/info/alternates': new TextEncoder().encode(`${alternate}\n`),
+          },
+        });
+        await ctx.fs.mkdir(alternate);
+        const store = await getObjectStore(ctx);
+        const location = store.sources.find((source) => !source.local) ?? expect.unreachable();
+        const id = idOf(0xcc);
+        expect(await probeLooseOid(ctx, id, location)).toBe(false);
+        await ctx.fs.write(`${alternate}/${computeLooseObjectPath(id)}`, new Uint8Array([1, 2, 3]));
+
+        // Act
+        await rescanOnFullMiss(ctx, store, id);
+
+        // Assert
+        expect(await probeLooseOid(ctx, id, location)).toBe(true);
       });
     });
   });

@@ -3,6 +3,7 @@ export type { IndexEntry } from '../../domain/git-index/index.js';
 export type { TreeEntry } from '../../domain/objects/index.js';
 export type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 export type { SparseMatcher } from '../../domain/sparse/index.js';
+export { abbreviateObjectId } from './abbreviate-object-id.js';
 export type { ApplyChangesetOpts, ApplyChangesetResult } from './apply-changeset.js';
 export { applyChangeset, isWorkingTreeDirty } from './apply-changeset.js';
 export { bisectMidpoint } from './bisect-midpoint.js';
@@ -51,6 +52,7 @@ export type { HasObjectMode, HasObjectOptions } from './has-object.js';
 export { hasObject } from './has-object.js';
 export type { HashBlobOptions } from './hash-blob.js';
 export { hashBlob } from './hash-blob.js';
+export type { AlternateDiagnostic, AlternateDiagnosticReason } from './internal/alternate-chain.js';
 export type {
   IsIgnoredMatch,
   IsIgnoredMatchSource,
@@ -64,6 +66,8 @@ export { materializeTree } from './materialize-tree.js';
 export { materializeWorktreeFromHead } from './materialize-worktree-from-head.js';
 export type { MergeBaseOptions } from './merge-base.js';
 export { mergeBase } from './merge-base.js';
+export type { ObjectSourcesView } from './object-store.js';
+export { objectSources } from './object-store.js';
 export { commonDirOf, commonGitDir, getRepoRoot, sparseCheckoutPath } from './path-layout.js';
 export { readBlob } from './read-blob.js';
 export { readHeadTree } from './read-head-tree.js';

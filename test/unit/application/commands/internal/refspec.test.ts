@@ -95,14 +95,12 @@ describe('parseRefspec — happy paths', () => {
 
   describe('Given a short delete ":feature"', () => {
     describe('When parsed', () => {
-      it('Then dst expands to refs/heads/feature', () => {
-        // Arrange & Act — short-form expansion happens on the dst even in
-        // the delete path (dst can be `feature` short form, kills the
-        // expandShort-only-when-non-empty mutant).
+      it("Then dst stays as written, for the remote's refs to resolve", () => {
+        // Arrange & Act
         const result = parseRefspec(':feature');
 
         // Assert
-        expect(result.dst).toBe('refs/heads/feature');
+        expect(result.dst).toBe('feature');
         expect(result.isDelete).toBe(true);
       });
     });

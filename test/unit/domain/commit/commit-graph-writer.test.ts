@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest';
+import { DEFAULT_BLOOM_FILTER_SETTINGS } from '../../../../src/domain/commit/bloom-filter.js';
 import {
   EDGE_LAST_FLAG,
   GENERATION_OVERFLOW_FLAG,
   NO_PARENT,
   OCTOPUS_FLAG,
 } from '../../../../src/domain/commit/commit-graph.js';
-import type { CommitGraphWriterCommit } from '../../../../src/domain/commit/commit-graph-writer.js';
+import type {
+  CommitGraphBase,
+  CommitGraphWriterCommit,
+} from '../../../../src/domain/commit/commit-graph-writer.js';
 import {
+  type CommitGraphChangedPaths,
+  computeCommitGraphGenerations,
   MAX_GENERATION_OFFSET,
   serializeCommitGraph,
 } from '../../../../src/domain/commit/commit-graph-writer.js';
@@ -367,6 +373,38 @@ describe('serializeCommitGraph', () => {
     });
   });
 
+  describe('Given a chain whose corrected-date offset would overflow, and a skipped corrected-date pass', () => {
+    describe('When serialized', () => {
+      it('Then only OIDF, OIDL and CDAT are written — neither GDA2 nor GDO2', () => {
+        // Arrange
+        const parent = commit('c0', [], { committerDate: 0x7fffffff + 5 });
+        const child = commit('c1', [parent.id], { committerDate: 0 });
+        const generations = new Map([
+          [parent.id, { level: 1, correctedDate: 1 }],
+          [child.id, { level: 2, correctedDate: 0x7fffffff + 6 }],
+        ]);
+        const sut = serializeCommitGraph;
+
+        // Act
+        const result = sut(
+          [parent, child],
+          SHA1_CONFIG,
+          undefined,
+          undefined,
+          generations,
+          'skipped',
+        );
+
+        // Assert
+        const ids = [0, 1, 2].map((row) => decode(result.subarray(8 + row * 12, 12 + row * 12)));
+        expect({ numChunks: result[6], ids }).toEqual({
+          numChunks: 3,
+          ids: ['OIDF', 'OIDL', 'CDAT'],
+        });
+      });
+    });
+  });
+
   describe('Given a chain whose corrected-date offset exceeds 0x7fffffff', () => {
     describe('When serialized', () => {
       it('Then numChunks is 5 (adds GDO2, no EDGE)', () => {
@@ -424,6 +462,345 @@ describe('serializeCommitGraph', () => {
         // Assert
         expect(bytes[6]).toBe(6);
         expect(findChunkRowIndex(bytes, 'GDO2')).toBeLessThan(findChunkRowIndex(bytes, 'EDGE'));
+      });
+    });
+  });
+
+  describe('Given a layer written over a two-layer base', () => {
+    const baseParent = oid('b1');
+    const otherBaseParent = oid('b2');
+    const base: CommitGraphBase = {
+      layerHashes: [oid('a1'), oid('a2')],
+      commitCount: 7,
+      commits: new Map([
+        [baseParent, { position: 4, generation: { level: 5, correctedDate: 1_800_000_000 } }],
+        [otherBaseParent, { position: 6, generation: { level: 2, correctedDate: 1_600_000_000 } }],
+      ]),
+    };
+    const local = commit('c0', [baseParent]);
+    const child = commit('c1', [local.id, otherBaseParent]);
+    const octopus = commit('c2', [local.id, baseParent, otherBaseParent]);
+
+    describe('When serialized', () => {
+      it('Then the header counts the base layers and the BASE chunk, last, names them base-first', () => {
+        // Arrange
+        const sut = serializeCommitGraph;
+
+        // Act
+        const result = sut([local, child], SHA1_CONFIG, base);
+
+        // Assert
+        const view = new DataView(result.buffer);
+        const baseChunk = chunkRange(result, view, 'BASE');
+        expect(result[6]).toBe(5);
+        expect(result[7]).toBe(2);
+        expect(findChunkRowIndex(result, 'BASE')).toBe(4);
+        expect(baseChunk.end - baseChunk.start).toBe(40);
+        expect(Buffer.from(result.subarray(baseChunk.start, baseChunk.end)).toString('hex')).toBe(
+          `${oid('a1')}${oid('a2')}`,
+        );
+      });
+
+      it('Then a parent in the base keeps its base position and a local one is offset past the base', () => {
+        // Arrange
+        const sut = serializeCommitGraph;
+
+        // Act
+        const result = sut([local, child], SHA1_CONFIG, base);
+
+        // Assert
+        const view = new DataView(result.buffer);
+        const cdat = chunkRange(result, view, 'CDAT');
+        expect(view.getUint32(cdat.start + 20)).toBe(4);
+        expect(view.getUint32(cdat.start + 36 + 20)).toBe(7);
+        expect(view.getUint32(cdat.start + 36 + 24)).toBe(6);
+      });
+
+      it("Then generations continue from the base parents' levels and corrected dates", () => {
+        // Arrange
+        const sut = serializeCommitGraph;
+
+        // Act
+        const result = sut([local, child], SHA1_CONFIG, base);
+
+        // Assert
+        const view = new DataView(result.buffer);
+        const cdat = chunkRange(result, view, 'CDAT');
+        const gda2 = chunkRange(result, view, 'GDA2');
+        expect(view.getUint32(cdat.start + 28) >>> 2).toBe(6);
+        expect(view.getUint32(cdat.start + 36 + 28) >>> 2).toBe(7);
+        expect(view.getUint32(gda2.start)).toBe(1_800_000_001 - 1_700_000_000);
+        expect(view.getUint32(gda2.start + 4)).toBe(1_800_000_002 - 1_700_000_000);
+      });
+
+      it('Then an octopus EDGE list names its base parents by their base positions', () => {
+        // Arrange
+        const sut = serializeCommitGraph;
+
+        // Act
+        const result = sut([local, octopus], SHA1_CONFIG, base);
+
+        // Assert
+        const view = new DataView(result.buffer);
+        const edge = chunkRange(result, view, 'EDGE');
+        expect(view.getUint32(edge.start)).toBe(4);
+        expect(view.getUint32(edge.start + 4)).toBe((6 | EDGE_LAST_FLAG) >>> 0);
+      });
+    });
+  });
+
+  describe('Given changed-path filters for a layer over a base, with an octopus merge', () => {
+    const baseParent = oid('b1');
+    const base: CommitGraphBase = {
+      layerHashes: [oid('a1')],
+      commitCount: 3,
+      commits: new Map([
+        [baseParent, { position: 2, generation: { level: 3, correctedDate: 1_700_000_000 } }],
+      ]),
+    };
+    const first = commit('c0', [baseParent]);
+    const second = commit('c1', [first.id]);
+    const octopus = commit('c2', [first.id, second.id, baseParent]);
+    const changedPaths: CommitGraphChangedPaths = {
+      settings: { ...DEFAULT_BLOOM_FILTER_SETTINGS, hashVersion: 2 },
+      filters: new Map([
+        [octopus.id, Uint8Array.of(0xff)],
+        [first.id, Uint8Array.of(0x01, 0x02, 0x03)],
+      ]),
+    };
+
+    describe('When serialized', () => {
+      it('Then BIDX and BDAT sit after EDGE and before BASE', () => {
+        // Arrange
+        const sut = serializeCommitGraph;
+
+        // Act
+        const result = sut([octopus, second, first], SHA1_CONFIG, base, changedPaths);
+
+        // Assert
+        const ids = Array.from({ length: result[6]! }, (_, i) =>
+          decode(result.subarray(8 + i * 12, 12 + i * 12)),
+        );
+        expect(ids).toEqual(['OIDF', 'OIDL', 'CDAT', 'GDA2', 'EDGE', 'BIDX', 'BDAT', 'BASE']);
+      });
+
+      it("Then BIDX holds each commit's cumulative filter end in oid order, a missing filter adding none", () => {
+        // Arrange
+        const sut = serializeCommitGraph;
+
+        // Act
+        const result = sut([octopus, second, first], SHA1_CONFIG, base, changedPaths);
+
+        // Assert
+        const view = new DataView(result.buffer);
+        const bidx = chunkRange(result, view, 'BIDX');
+        const ends = [0, 1, 2].map((i) => view.getUint32(bidx.start + i * 4));
+        expect(ends).toEqual([3, 3, 4]);
+        expect(bidx.end - bidx.start).toBe(12);
+      });
+
+      it('Then BDAT holds the settings header and the filters concatenated in oid order', () => {
+        // Arrange
+        const sut = serializeCommitGraph;
+
+        // Act
+        const result = sut([octopus, second, first], SHA1_CONFIG, base, changedPaths);
+
+        // Assert
+        const view = new DataView(result.buffer);
+        const bdat = chunkRange(result, view, 'BDAT');
+        expect([0, 4, 8].map((at) => view.getUint32(bdat.start + at))).toEqual([2, 7, 10]);
+        expect([...result.subarray(bdat.start + 12, bdat.end)]).toEqual([0x01, 0x02, 0x03, 0xff]);
+      });
+    });
+  });
+
+  describe('Given no changed-path filters', () => {
+    describe('When serialized', () => {
+      it('Then neither BIDX nor BDAT is written', () => {
+        // Arrange
+        const sut = serializeCommitGraph;
+
+        // Act
+        const result = sut([commit('c0', [])], SHA1_CONFIG);
+
+        // Assert
+        expect(() => findChunkRowIndex(result, 'BIDX')).toThrow('chunk BIDX not present');
+        expect(() => findChunkRowIndex(result, 'BDAT')).toThrow('chunk BDAT not present');
+      });
+    });
+  });
+});
+
+/** A walk view over `commits`, recording every id the walk parses. */
+function recordingView(commits: readonly CommitGraphWriterCommit[]): {
+  readonly parses: ObjectId[];
+  readonly view: Parameters<typeof computeCommitGraphGenerations>[2];
+} {
+  const byId = new Map(commits.map((c) => [c.id, c]));
+  const parses: ObjectId[] = [];
+  return { parses, view: { parse: (id) => parses.push(id), parsed: (id) => byId.get(id) } };
+}
+
+const NO_BASE_LAYERS: CommitGraphBase = { layerHashes: [], commitCount: 0, commits: new Map() };
+
+describe('computeCommitGraphGenerations', () => {
+  describe('Given a commit whose only parent fails to parse and sorts after it', () => {
+    describe('When the generations are computed', () => {
+      it('Then each walk parses the parent on every visit and again in its own turn', () => {
+        // Arrange
+        const broken = oid('b');
+        const child = commit('a', [broken]);
+        const { parses, view } = recordingView([child]);
+        const sut = computeCommitGraphGenerations;
+
+        // Act
+        const result = sut([child.id, broken], NO_BASE_LAYERS, view);
+
+        // Assert
+        expect({ parses, child: result.get(child.id), broken: result.get(broken) }).toEqual({
+          parses: [child.id, broken, broken, broken, child.id, broken, broken, broken],
+          child: { level: 2, correctedDate: 1_700_000_000 },
+          broken: { level: 1, correctedDate: 1 },
+        });
+      });
+    });
+  });
+
+  describe('Given a commit whose only parent fails to parse and sorts before it', () => {
+    describe('When the generations are computed', () => {
+      it('Then each walk parses the parent first, then once more under the child', () => {
+        // Arrange
+        const broken = oid('a');
+        const child = commit('b', [broken]);
+        const { parses, view } = recordingView([child]);
+        const sut = computeCommitGraphGenerations;
+
+        // Act
+        sut([broken, child.id], NO_BASE_LAYERS, view);
+
+        // Assert
+        expect(parses).toEqual([broken, child.id, broken, broken, child.id, broken]);
+      });
+    });
+  });
+
+  describe('Given a chain whose child sorts first', () => {
+    describe('When the generations are computed', () => {
+      it('Then a commit already settled under its child is parsed in its turn and not walked again', () => {
+        // Arrange
+        const root = commit('c', []);
+        const middle = commit('b', [root.id]);
+        const tip = commit('a', [middle.id]);
+        const { parses, view } = recordingView([root, middle, tip]);
+        const walk = [tip.id, middle.id, root.id, root.id, middle.id, middle.id, root.id];
+        const sut = computeCommitGraphGenerations;
+
+        // Act
+        sut([tip.id, middle.id, root.id], NO_BASE_LAYERS, view);
+
+        // Assert
+        expect(parses).toEqual([...walk, ...walk]);
+      });
+    });
+  });
+
+  describe('Given a root and its child both dated zero', () => {
+    describe('When the generations are computed', () => {
+      it('Then each corrected date counts up from one, as a dateless commit does in git', () => {
+        // Arrange
+        const root = commit('a', [], { committerDate: 0 });
+        const child = commit('b', [root.id], { committerDate: 0 });
+        const { view } = recordingView([root, child]);
+        const sut = computeCommitGraphGenerations;
+
+        // Act
+        const result = sut([root.id, child.id], NO_BASE_LAYERS, view);
+
+        // Assert
+        expect([result.get(root.id), result.get(child.id)]).toEqual([
+          { level: 1, correctedDate: 1 },
+          { level: 2, correctedDate: 2 },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a commit over a base-layer parent at the topological level cap', () => {
+    describe('When the generations are computed', () => {
+      it("Then the child's level stays at the cap and its date follows the base's", () => {
+        // Arrange
+        const parent = oid('a');
+        const child = commit('b', [parent], { committerDate: 5 });
+        const base: CommitGraphBase = {
+          layerHashes: [oid('f')],
+          commitCount: 1,
+          commits: new Map([
+            [parent, { position: 0, generation: { level: 0x3fffffff, correctedDate: 9 } }],
+          ]),
+        };
+        const { parses, view } = recordingView([child]);
+        const sut = computeCommitGraphGenerations;
+
+        // Act
+        const result = sut([child.id], base, view);
+
+        // Assert
+        expect({ parses, child: result.get(child.id) }).toEqual({
+          parses: [child.id, parent, child.id, parent],
+          child: { level: 0x3fffffff, correctedDate: 10 },
+        });
+      });
+    });
+  });
+  describe('Given a commit over a base-layer parent, and an untrusted corrected-date pass', () => {
+    describe('When the generations are computed', () => {
+      it("Then every commit is parsed once more first and the date follows the base's level", () => {
+        // Arrange
+        const parent = oid('a');
+        const child = commit('b', [parent], { committerDate: 5 });
+        const base: CommitGraphBase = {
+          layerHashes: [oid('f')],
+          commitCount: 1,
+          commits: new Map([[parent, { position: 0, generation: { level: 7, correctedDate: 9 } }]]),
+        };
+        const { parses, view } = recordingView([child]);
+        const sut = computeCommitGraphGenerations;
+
+        // Act
+        const result = sut([child.id], base, view, 'untrusted');
+
+        // Assert
+        expect({ parses, child: result.get(child.id) }).toEqual({
+          parses: [child.id, parent, child.id, child.id, parent],
+          child: { level: 8, correctedDate: 8 },
+        });
+      });
+    });
+  });
+
+  describe('Given a commit over a base-layer parent, and a skipped corrected-date pass', () => {
+    describe('When the generations are computed', () => {
+      it('Then only the level walk parses, its level standing in for the unwritten date', () => {
+        // Arrange
+        const parent = oid('a');
+        const child = commit('b', [parent], { committerDate: 5 });
+        const base: CommitGraphBase = {
+          layerHashes: [oid('f')],
+          commitCount: 1,
+          commits: new Map([[parent, { position: 0, generation: { level: 7, correctedDate: 9 } }]]),
+        };
+        const { parses, view } = recordingView([child]);
+        const sut = computeCommitGraphGenerations;
+
+        // Act
+        const result = sut([child.id], base, view, 'skipped');
+
+        // Assert
+        expect({ parses, child: result.get(child.id) }).toEqual({
+          parses: [child.id, parent],
+          child: { level: 8, correctedDate: 8 },
+        });
       });
     });
   });

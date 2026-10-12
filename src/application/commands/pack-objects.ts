@@ -22,12 +22,18 @@ import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { buildPack } from '../primitives/build-pack.js';
 import { assertValidPackIntConfig } from '../primitives/config-read.js';
-import { type ClosureTier, computeClosure } from '../primitives/internal/closure-engine.js';
+import {
+  type ClosureObject,
+  type ClosureTier,
+  computeClosure,
+} from '../primitives/internal/closure-engine.js';
+import { createObjectTypeTable } from '../primitives/internal/object-type-table.js';
+import { packUseSparse } from '../primitives/internal/pack-use-sparse.js';
 import { writePackArtifacts } from '../primitives/internal/write-pack-artifacts.js';
 import { commonGitDir, packsDir } from '../primitives/path-layout.js';
 import { refreshPackRegistry } from '../primitives/read-object.js';
-import { assertOperationalRepository } from './internal/repo-state.js';
-import { revParse } from './rev-parse.js';
+import { assertOperationalRepositorySettingsFirst } from './internal/repo-state.js';
+import { expandRevisionArguments } from './internal/revision-argument.js';
 
 export interface PackObjectsOptions {
   readonly wants: ReadonlyArray<string>;
@@ -71,22 +77,38 @@ export interface PackObjectsResult {
 const closureTierFor = (opts: PackObjectsOptions): ClosureTier =>
   opts.useBitmapIndex === false ? 'walk' : 'bitmap';
 
+/** The objects to pack, typed into one invocation's own table as git's process has. */
+const selectObjects = async (
+  ctx: Context,
+  opts: PackObjectsOptions,
+): Promise<ReadonlyArray<ClosureObject>> => {
+  // git reads `--revs` lines from stdin, where no argument can be a filename.
+  const objectTypes = createObjectTypeTable();
+  const { wants, not, tips } = await expandRevisionArguments(
+    ctx,
+    objectTypes,
+    { wants: opts.wants, not: opts.not ?? [] },
+    'stdin',
+  );
+  const closure = await computeClosure(ctx, {
+    objectTypes,
+    wants,
+    not,
+    tips,
+    objects: true,
+    tier: closureTierFor(opts),
+    sparse: await packUseSparse(ctx),
+  });
+  return closure.objects;
+};
+
 export const packObjects = async (
   ctx: Context,
   opts: PackObjectsOptions,
 ): Promise<PackObjectsResult> => {
-  await assertOperationalRepository(ctx);
+  await assertOperationalRepositorySettingsFirst(ctx);
   await assertValidPackIntConfig(ctx);
-  const wants = await Promise.all(opts.wants.map((rev) => revParse(ctx, rev)));
-  const not = await Promise.all((opts.not ?? []).map((rev) => revParse(ctx, rev)));
-  const closure = await computeClosure(ctx, {
-    wants,
-    not,
-    objects: true,
-    tier: closureTierFor(opts),
-  });
-
-  const pack = await buildPack(ctx, { objects: closure.objects, delta: true });
+  const pack = await buildPack(ctx, { objects: await selectObjects(ctx, opts), delta: true });
   const outputDirectory = opts.outputDirectory ?? packsDir(commonGitDir(ctx));
   const written = await writePackArtifacts(ctx, {
     packDir: outputDirectory,

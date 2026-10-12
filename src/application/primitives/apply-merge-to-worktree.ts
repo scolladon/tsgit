@@ -31,8 +31,12 @@ import {
 import { FILE_MODE, type FilePath, type ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { buildContentMerger } from './build-content-merger.js';
+import { detectMergeRenames } from './detect-merge-renames.js';
 import { changedPaths, findWouldOverwrite } from './find-would-overwrite.js';
 import { flattenTree } from './flatten-tree.js';
+import { writeAutoMerge } from './internal/auto-merge-ref.js';
+import { readUiDiffAlgorithm } from './internal/merge-rename-config.js';
+import { mergedBlobEntries } from './internal/merged-blob-entries.js';
 import {
   createLeadingPathScanner,
   type LeadingPathScanner,
@@ -47,12 +51,20 @@ import {
   writeWorkingTreeFileStream,
 } from './internal/write-working-tree-file.js';
 import { type MaterializeTreeResult, materializeTree } from './materialize-tree.js';
+import { mergeCollidingRenameSources } from './merge-colliding-rename-sources.js';
 import { readBlob } from './read-blob.js';
-import { streamBlob } from './stream-blob.js';
-import { synthesizeTreeFromIndex } from './synthesize-tree-from-index.js';
+import { synthesizeResultTree, synthesizeTreeFromIndex } from './synthesize-tree-from-index.js';
 import { writeObject } from './write-object.js';
 
-const UNSUPPORTED_CONFLICT_TYPES: ReadonlySet<ConflictType> = new Set(['rename-rename', 'gitlink']);
+const UNSUPPORTED_CONFLICT_TYPES: ReadonlySet<ConflictType> = new Set(['gitlink']);
+
+/** Conflicts whose working-tree file is the one side that still holds the path. */
+const SURVIVOR_CONFLICT_TYPES: ReadonlySet<ConflictType> = new Set([
+  'modify-delete',
+  'rename-delete',
+  'rename-rename',
+  'file-location',
+]);
 
 export interface ApplyMergeInput {
   readonly baseTree: ObjectId | undefined;
@@ -80,25 +92,20 @@ export type ApplyMergeResult =
       readonly untracked: ReadonlyArray<FilePath>;
     };
 
+/** Stage-0 entries for the clean outcomes a committed blob already backs. */
+const blobBackedEntries = (outcomes: ReadonlyArray<MergeOutcome>): ReadonlyArray<IndexEntry> =>
+  outcomes.flatMap((outcome) =>
+    outcome.status === 'unchanged' || outcome.status === 'resolved-known'
+      ? [stage0Entry(outcome.path, outcome.id, outcome.mode)]
+      : [],
+  );
+
 /** Write the clean outcomes' merged blobs and synthesise the merged root tree. */
 const synthesiseMergedTree = async (
   ctx: Context,
   outcomes: ReadonlyArray<MergeOutcome>,
 ): Promise<ObjectId> => {
-  const leaves: IndexEntry[] = [];
-  for (const outcome of outcomes) {
-    if (outcome.status === 'resolved-deleted' || outcome.status === 'conflict') continue;
-    if (outcome.status === 'resolved-merged') {
-      const id = await writeObject(ctx, {
-        type: 'blob',
-        content: outcome.bytes,
-        id: '' as ObjectId,
-      });
-      leaves.push(stage0Entry(outcome.path, id, outcome.mode));
-      continue;
-    }
-    leaves.push(stage0Entry(outcome.path, outcome.id, outcome.mode));
-  }
+  const leaves = [...blobBackedEntries(outcomes), ...(await mergedBlobEntries(ctx, outcomes))];
   return synthesizeTreeFromIndex(ctx, leaves);
 };
 
@@ -117,7 +124,7 @@ const conflictBytes = async (
 ): Promise<Uint8Array | undefined> => {
   // Covers markered `content` conflicts and content-merged `add-add` (both carry `conflictContent`).
   if (conflict.conflictContent !== undefined) return conflict.conflictContent;
-  if (conflict.type === 'modify-delete') {
+  if (SURVIVOR_CONFLICT_TYPES.has(conflict.type)) {
     const survivorId = conflict.ourId ?? conflict.theirId;
     if (survivorId !== undefined) {
       // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.
@@ -193,11 +200,8 @@ const writeChangedOutcome = async (
     await writeWorkingTreeFile(ctx, outcome.path, outcome.bytes, scanner);
     return;
   }
-  // Stryker disable next-line ConditionalExpression: equivalent — only `resolved-known` reaches here after the deleted/merged guards; the `if(true)` variant changes nothing (the remaining outcomes are resolved-known), and `if(false)` is killed by the clean-side-written assertion.
-  if (outcome.status === 'resolved-known') {
-    const stream = await streamBlob(ctx, outcome.id);
-    await writeWorkingTreeFileStream(ctx, outcome.path, stream, scanner);
-  }
+  // Known and unchanged outcomes alike: an unchanged one is changed only once a rename moved it.
+  await writeWorkingTreeFileStream(ctx, outcome.path, outcome.id, scanner);
 };
 
 /**
@@ -253,14 +257,9 @@ const writeConflictWorktree = async (
 const buildUnmergedIndex = (
   outcomes: ReadonlyArray<MergeOutcome>,
   conflicts: ReadonlyArray<MergeConflict>,
+  merged: ReadonlyArray<IndexEntry>,
 ): ReadonlyArray<IndexEntry> => {
-  const stage0: IndexEntry[] = [];
-  for (const outcome of outcomes) {
-    // Stryker disable next-line ConditionalExpression: equivalent — `unchanged`/`resolved-known` are the only blob-backed clean outcomes; an `unchanged` stage-0 entry equals the current index (committing it is a no-op), so dropping that half of the disjunction is observationally identical to the index the caller commits.
-    if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
-      stage0.push(stage0Entry(outcome.path, outcome.id, outcome.mode));
-    }
-  }
+  const stage0 = [...blobBackedEntries(outcomes), ...merged];
   const combined = [...stage0, ...conflictsToIndexEntries(conflicts, zeroStat)];
   combined.sort((a, b) => {
     if (a.path < b.path) return -1;
@@ -283,6 +282,85 @@ const rejectUnsupported = (conflicts: ReadonlyArray<MergeConflict>): void => {
   }
 };
 
+/** The blob a conflicted path holds in the result tree: the bytes its working-tree file gets. */
+const conflictBlobId = async (
+  ctx: Context,
+  conflict: MergeConflict,
+): Promise<ObjectId | undefined> => {
+  if (conflict.conflictContent !== undefined) {
+    const blob = { type: 'blob', content: conflict.conflictContent, id: '' as ObjectId } as const;
+    return writeObject(ctx, blob);
+  }
+  if (SURVIVOR_CONFLICT_TYPES.has(conflict.type)) return conflict.ourId ?? conflict.theirId;
+  return conflict.ourId;
+};
+
+/** A distinct-types conflict keeps each side at its own recorded path. */
+const distinctTypesLeaves = (conflict: MergeConflict): ReadonlyArray<IndexEntry> => {
+  const { ourPath, ourId, ourMode, theirPath, theirId, theirMode } = conflict;
+  const ourSide =
+    ourPath !== undefined && ourId !== undefined && ourMode !== undefined
+      ? [stage0Entry(ourPath, ourId, ourMode)]
+      : [];
+  const theirSide =
+    theirPath !== undefined && theirId !== undefined && theirMode !== undefined
+      ? [stage0Entry(theirPath, theirId, theirMode)]
+      : [];
+  return [...ourSide, ...theirSide];
+};
+
+const conflictLeaves = async (
+  ctx: Context,
+  conflict: MergeConflict,
+): Promise<ReadonlyArray<IndexEntry>> => {
+  if (conflict.type === 'distinct-types') return distinctTypesLeaves(conflict);
+  const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
+  const id = await conflictBlobId(ctx, conflict);
+  return mode === undefined || id === undefined ? [] : [stage0Entry(conflict.path, id, mode)];
+};
+
+/**
+ * git's ort result tree for a conflicted merge: every clean entry (`merged`
+ * carries the line-merged blobs) plus each conflicted path as its working-tree
+ * file holds it.
+ */
+export const conflictResultTree = async (
+  ctx: Context,
+  outcomes: ReadonlyArray<MergeOutcome>,
+  conflicts: ReadonlyArray<MergeConflict>,
+  merged: ReadonlyArray<IndexEntry>,
+): Promise<ObjectId> => {
+  const leaves = [...blobBackedEntries(outcomes), ...merged];
+  for (const conflict of conflicts) leaves.push(...(await conflictLeaves(ctx, conflict)));
+  return synthesizeResultTree(ctx, leaves);
+};
+
+/** Materialise a conflicted merge: working tree, `AUTO_MERGE`, and the unmerged index it stages. */
+const materialiseConflict = async (
+  ctx: Context,
+  merged: {
+    readonly outcomes: ReadonlyArray<MergeOutcome>;
+    readonly conflicts: ReadonlyArray<MergeConflict>;
+  },
+  changed: ReadonlySet<FilePath>,
+): Promise<ApplyMergeResult> => {
+  // Whole-set path gate, hoisted above the write wave: a hostile name
+  // anywhere in the batch refuses before the FIRST byte is written, not
+  // partway through it.
+  validateMergeWritePaths(merged.outcomes, merged.conflicts, changed);
+  await writeConflictWorktree(ctx, merged.outcomes, merged.conflicts, changed);
+  const mergedBlobs = await mergedBlobEntries(ctx, merged.outcomes);
+  await writeAutoMerge(
+    ctx,
+    await conflictResultTree(ctx, merged.outcomes, merged.conflicts, mergedBlobs),
+  );
+  return {
+    kind: 'conflict',
+    conflicts: merged.conflicts,
+    indexEntries: buildUnmergedIndex(merged.outcomes, merged.conflicts, mergedBlobs),
+  };
+};
+
 export const applyMergeToWorktree = async (
   ctx: Context,
   input: ApplyMergeInput,
@@ -292,13 +370,13 @@ export const applyMergeToWorktree = async (
     flattenTree(ctx, input.oursTree),
     flattenTree(ctx, input.theirsTree),
   ]);
-  const merged = await mergeTrees(
-    base,
-    ours,
-    theirs,
-    buildContentMerger(ctx, input.labels),
-    input.labels,
-  );
+  const detected = await detectMergeRenames(ctx, base, ours, theirs);
+  const diffAlgorithm = await readUiDiffAlgorithm(ctx);
+  const settings = diffAlgorithm === undefined ? {} : { diffAlgorithm };
+  const contentMerger = buildContentMerger(ctx, input.labels, settings);
+  const trees = { base, ours, theirs };
+  const renames = await mergeCollidingRenameSources(ctx, trees, detected, contentMerger);
+  const merged = await mergeTrees(base, ours, theirs, contentMerger, input.labels, renames);
   // Stryker disable next-line ConditionalExpression: equivalent — `rejectUnsupported` over an empty conflict list is a no-op, so the `if(true)` variant behaves identically on a clean merge; `if(false)` is killed by the gitlink-rejection test.
   if (!merged.cleanMerge) rejectUnsupported(merged.conflicts);
 
@@ -320,18 +398,10 @@ export const applyMergeToWorktree = async (
       // Stryker disable next-line BooleanLiteral: equivalent — `findWouldOverwrite` has already returned every dirty path as `would-overwrite` above, so by here no changed path is dirty and `force: false` would behave identically (nothing to refuse).
       force: true,
     });
+    await writeAutoMerge(ctx, mergedTree);
     return { kind: 'clean', mergedTree, result };
   }
-  // Whole-set path gate, hoisted above the write wave: a hostile name
-  // anywhere in the batch refuses before the FIRST byte is written, not
-  // partway through it.
-  validateMergeWritePaths(merged.outcomes, merged.conflicts, changed);
-  await writeConflictWorktree(ctx, merged.outcomes, merged.conflicts, changed);
-  return {
-    kind: 'conflict',
-    conflicts: merged.conflicts,
-    indexEntries: buildUnmergedIndex(merged.outcomes, merged.conflicts),
-  };
+  return materialiseConflict(ctx, merged, changed);
 };
 
 export type MergeTreesResult =

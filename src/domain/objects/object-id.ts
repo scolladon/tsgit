@@ -106,6 +106,17 @@ export function emptyTreeOid(config: HashConfig): ObjectId {
   return config.algorithm === 'sha256' ? EMPTY_TREE_OID_SHA256 : EMPTY_TREE_OID;
 }
 
+const EMPTY_BLOB_OID_SHA1: ObjectId = ObjectId.from('e69de29bb2d1d6434b8b29ae775ad8c2e48c5391');
+
+const EMPTY_BLOB_OID_SHA256: ObjectId = ObjectId.from(
+  '473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813',
+);
+
+/** The canonical empty-blob oid for `config`'s hash algorithm. */
+export function emptyBlobOid(config: HashConfig): ObjectId {
+  return config.algorithm === 'sha256' ? EMPTY_BLOB_OID_SHA256 : EMPTY_BLOB_OID_SHA1;
+}
+
 export type RefName = string & { readonly __brand: unique symbol };
 
 export const RefName = {

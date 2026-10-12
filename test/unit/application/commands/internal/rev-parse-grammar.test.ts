@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  mayReadWhole,
   parseExpression,
+  parseWholeName,
   type RevExpression,
 } from '../../../../../src/application/commands/internal/rev-parse-grammar.js';
 import { TsgitError } from '../../../../../src/domain/index.js';
@@ -23,9 +25,7 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it.each([
           { raw: '', label: "'' (empty string)" },
-          { raw: ':4:f.txt', label: "':4:f.txt' (out-of-range stage)" },
           { raw: 'HEAD^{garbage}', label: "'HEAD^{garbage}' (unknown peel type)" },
-          { raw: 'HEAD~~', label: "'HEAD~~' (~ with no number after)" },
           {
             raw: 'HEAD@{}',
             // an empty body is neither an index nor a date.
@@ -39,20 +39,18 @@ describe('internal/rev-parse-grammar', () => {
             // can reject it.
             label: "'HEAD@{12' (a multi-character body with no closing brace)",
           },
-          { raw: 'abc', label: "'abc' (3 hex chars, shorter than git's min abbreviation)" },
+          { raw: 'x@{-1}', label: "'x@{-1}' (a prior checkout that does not lead the name)" },
+          {
+            raw: 'main@{u}@{-1}',
+            label: "'main@{u}@{-1}' (a prior checkout after a branch mark)",
+          },
+          { raw: '@{1}@{-1}', label: "'@{1}@{-1}' (a prior checkout after a selector)" },
+          { raw: '@{-1}x', label: "'@{-1}x' (a prior checkout trailed by a name)" },
           { raw: ':0:', label: "':0:' (empty path)" },
           { raw: ':', label: "':' alone" },
           { raw: 'HEAD^{', label: "'HEAD^{' (peel with no closing brace)" },
-          { raw: ':0', label: "':0' (stage with no path separator)" },
           { raw: 'HEAD^x', label: "'HEAD^x' (non-operator char inside the operation chain)" },
           { raw: '^1', label: "'^1' (empty base before an operator)" },
-          { raw: ':5:f.txt', label: "':5:f.txt' (single-digit out-of-range stage)" },
-          {
-            raw: 'HEAD~',
-            // `~` must be followed by a digit; with none, the digit loop
-            // never advances (`j === i + 1`) and parseTilde fails.
-            label: "'HEAD~' (a '~' with no digit)",
-          },
           {
             raw: 'HEAD~2z',
             // `isDigit` must reject 'z' (0x7a): the digit-consuming loop stops
@@ -189,6 +187,55 @@ describe('internal/rev-parse-grammar', () => {
       });
     });
 
+    describe.each([
+      { raw: 'HEAD~', operations: [{ kind: 'ancestor', n: 1 }] },
+      {
+        raw: 'HEAD~~',
+        operations: [
+          { kind: 'ancestor', n: 1 },
+          { kind: 'ancestor', n: 1 },
+        ],
+      },
+    ] as const)("Given '$raw' (a '~' with no count)", ({ raw, operations }) => {
+      describe('When parseExpression', () => {
+        it('Then each bare ~ is a first-parent step, as git reads it', () => {
+          // Arrange
+          const sut = parseExpression;
+
+          // Act
+          const result = sut(raw);
+
+          // Assert
+          expect(result).toEqual({ kind: 'ref-or-hex', base: 'HEAD', operations });
+        });
+      });
+    });
+
+    describe.each([
+      { raw: 'tc^{}', operations: [{ kind: 'deref', name: 'tc' }] },
+      {
+        raw: 'tc^{}^{}',
+        operations: [
+          { kind: 'deref', name: 'tc' },
+          { kind: 'deref', name: 'tc^{}' },
+        ],
+      },
+      { raw: 'tc^{object}', operations: [{ kind: 'peel', target: 'object', name: 'tc^{object}' }] },
+    ] as const)("Given '$raw' (a peel to any object)", ({ raw, operations }) => {
+      describe('When parseExpression', () => {
+        it('Then ^{} dereferences tags under the name before it and ^{object} peels to any kind', () => {
+          // Arrange
+          const sut = parseExpression;
+
+          // Act
+          const result = sut(raw);
+
+          // Assert
+          expect(result).toEqual({ kind: 'ref-or-hex', base: 'tc', operations });
+        });
+      });
+    });
+
     describe("Given 'HEAD^'", () => {
       describe('When parseExpression', () => {
         it('Then operations=[parent 1]', () => {
@@ -247,7 +294,7 @@ describe('internal/rev-parse-grammar', () => {
           expect(result).toEqual({
             kind: 'ref-or-hex',
             base: 'HEAD',
-            operations: [{ kind: 'peel', target: 'tree' }],
+            operations: [{ kind: 'peel', target: 'tree', name: 'HEAD^{tree}' }],
           });
         });
       });
@@ -262,6 +309,7 @@ describe('internal/rev-parse-grammar', () => {
           expect(result.kind === 'ref-or-hex' && result.operations[0]).toEqual({
             kind: 'peel',
             target: 'commit',
+            name: 'HEAD^{commit}',
           });
         });
       });
@@ -443,6 +491,25 @@ describe('internal/rev-parse-grammar', () => {
       });
     });
 
+    describe("Given 'abcd}' (a closing brace with no '@{' before it)", () => {
+      describe('When parseExpression', () => {
+        it('Then the whole name is the base, with no selector', () => {
+          // Arrange
+          const sut = parseExpression;
+
+          // Act
+          const result = sut('abcd}');
+
+          // Assert
+          expect(result).toEqual({
+            kind: 'ref-or-hex',
+            base: 'abcd}',
+            operations: [],
+          } satisfies RevExpression);
+        });
+      });
+    });
+
     describe("Given 'abcd' (4 hex chars, the minimum abbreviation length)", () => {
       describe('When parseExpression', () => {
         it('Then accepted as ref-or-hex (resolveBase tries ref then abbreviated oid)', () => {
@@ -549,13 +616,33 @@ describe('internal/rev-parse-grammar', () => {
       });
     });
 
+    describe("Given 'abc' (a hex name too short to abbreviate an object id)", () => {
+      describe('When parseExpression', () => {
+        it('Then accepted as ref-or-hex, left for the ref lookup to resolve as git does', () => {
+          // Arrange
+          const sut = parseExpression;
+
+          // Act
+          const result = sut('abc');
+
+          // Assert
+          expect(result).toEqual({
+            kind: 'ref-or-hex',
+            base: 'abc',
+            operations: [],
+          } satisfies RevExpression);
+        });
+      });
+    });
+
     describe("Given 'abc^' (short hex base followed by an operator)", () => {
       describe('When parseExpression', () => {
         it('Then accepted as ref-or-hex with operations', () => {
-          // Arrange / Act
-          // A short hex base only fails when it stands alone (opStart === -1).
-          // With an operator chain it is a valid ref-or-hex expression.
-          const result = parseExpression('abc^');
+          // Arrange
+          const sut = parseExpression;
+
+          // Act
+          const result = sut('abc^');
 
           // Assert
           expect(result).toEqual({
@@ -580,8 +667,8 @@ describe('internal/rev-parse-grammar', () => {
             kind: 'ref-or-hex',
             base: 'HEAD',
             operations: [
-              { kind: 'peel', target: 'tag' },
-              { kind: 'peel', target: 'tree' },
+              { kind: 'peel', target: 'tag', name: 'HEAD^{tag}' },
+              { kind: 'peel', target: 'tree', name: 'HEAD^{tag}^{tree}' },
             ],
           } satisfies RevExpression);
         });
@@ -716,5 +803,221 @@ describe('internal/rev-parse-grammar', () => {
         });
       });
     });
+
+    describe('Given a peel whose braces git reads from the last ^{', () => {
+      describe('When parseExpression', () => {
+        it.each([
+          {
+            raw: 'HEAD^{commit}x}',
+            operations: [{ kind: 'peel', target: 'commit', name: 'HEAD^{commit}x}' }],
+          },
+          {
+            raw: 'HEAD^{commit}@{0}',
+            operations: [{ kind: 'peel', target: 'commit', name: 'HEAD^{commit}@{0}' }],
+          },
+          { raw: 'HEAD^{}x}', operations: [{ kind: 'deref', name: 'HEAD' }] },
+          {
+            raw: 'HEAD^{/fix}',
+            operations: [{ kind: 'search', pattern: 'fix', name: 'HEAD^{/fix}' }],
+          },
+          { raw: 'HEAD^{/}', operations: [{ kind: 'search', pattern: '', name: 'HEAD^{/}' }] },
+          {
+            raw: 'HEAD^{/a}b}',
+            operations: [{ kind: 'search', pattern: 'a}b', name: 'HEAD^{/a}b}' }],
+          },
+          {
+            raw: 'HEAD^{/a~1}',
+            operations: [{ kind: 'search', pattern: 'a~1', name: 'HEAD^{/a~1}' }],
+          },
+          {
+            raw: 'HEAD^{/a:b}',
+            operations: [{ kind: 'search', pattern: 'a:b', name: 'HEAD^{/a:b}' }],
+          },
+          {
+            raw: 'HEAD^{/sec}~1',
+            operations: [
+              { kind: 'search', pattern: 'sec', name: 'HEAD^{/sec}' },
+              { kind: 'ancestor', n: 1 },
+            ],
+          },
+          {
+            raw: 'HEAD^{/sec}^{/first}',
+            operations: [
+              { kind: 'search', pattern: 'sec', name: 'HEAD^{/sec}' },
+              { kind: 'search', pattern: 'first', name: 'HEAD^{/sec}^{/first}' },
+            ],
+          },
+        ])('Then $raw reads as $operations', ({ raw, operations }) => {
+          // Arrange
+          const sut = parseExpression;
+
+          // Act
+          const result = sut(raw);
+
+          // Assert
+          expect(result).toEqual({ kind: 'ref-or-hex', base: 'HEAD', operations });
+        });
+
+        it.each([{ raw: 'HEAD^{/x^{y}' }, { raw: '^{/x}' }, { raw: 'HEAD^{commit}x' }])(
+          'Then $raw throws REVPARSE_UNRESOLVED',
+          ({ raw }) => {
+            // Arrange
+            const sut = parseExpression;
+
+            // Act / Assert
+            expectError(() => sut(raw), 'REVPARSE_UNRESOLVED');
+          },
+        );
+      });
+    });
+
+    describe('Given an index path git reads at stage 0 or a message search', () => {
+      describe('When parseExpression', () => {
+        it.each([
+          { raw: ':f', expected: { kind: 'index-stage', stage: 0, path: 'f' } },
+          { raw: ':./f', expected: { kind: 'index-stage', stage: 0, path: './f' } },
+          { raw: ':4:f.txt', expected: { kind: 'index-stage', stage: 0, path: '4:f.txt' } },
+          { raw: ':5:f.txt', expected: { kind: 'index-stage', stage: 0, path: '5:f.txt' } },
+          { raw: ':0', expected: { kind: 'index-stage', stage: 0, path: '0' } },
+          { raw: ':/', expected: { kind: 'index-stage', stage: 0, path: '/' } },
+          { raw: ':/tip', expected: { kind: 'message-search', pattern: 'tip' } },
+          { raw: ':/!-a:b', expected: { kind: 'message-search', pattern: '!-a:b' } },
+        ])('Then $raw reads as git reads it', ({ raw, expected }) => {
+          // Arrange
+          const sut = parseExpression;
+
+          // Act
+          const result = sut(raw);
+
+          // Assert
+          expect(result).toEqual(expected);
+        });
+      });
+    });
+
+    describe('Given the shortest braced operators', () => {
+      describe('When parseExpression', () => {
+        it.each([
+          {
+            raw: 'a^{}',
+            expected: { kind: 'ref-or-hex', base: 'a', operations: [{ kind: 'deref', name: 'a' }] },
+          },
+          {
+            raw: '@{1}',
+            expected: {
+              kind: 'ref-or-hex',
+              base: '',
+              reflog: { kind: 'index', n: 1 },
+              operations: [],
+            },
+          },
+          { raw: 'a}:b', expected: { kind: 'tree-path', rev: 'a}', path: 'b' } },
+        ])('Then $raw reads as git reads it', ({ raw, expected }) => {
+          // Arrange
+          const sut = parseExpression;
+
+          // Act
+          const result = sut(raw);
+
+          // Assert
+          expect(result).toEqual(expected);
+        });
+
+        it('Then an empty @{} throws REVPARSE_UNRESOLVED', () => {
+          // Arrange
+          const sut = parseExpression;
+
+          // Act / Assert
+          expectError(() => sut('@{}'), 'REVPARSE_UNRESOLVED');
+        });
+      });
+    });
+
+    describe('Given a colon after a closed ^{…}', () => {
+      describe('When parseExpression', () => {
+        it('Then it splits the tree-path after the braces', () => {
+          // Arrange
+          const sut = parseExpression;
+
+          // Act
+          const result = sut('HEAD^{/fix}:f');
+
+          // Assert
+          expect(result).toEqual({ kind: 'tree-path', rev: 'HEAD^{/fix}', path: 'f' });
+        });
+      });
+    });
+  });
+
+  describe.each([
+    ['@{-1}', { kind: 'ref-or-hex', base: '@{-1}', operations: [] }],
+    [
+      '@{-2}@{3}',
+      { kind: 'ref-or-hex', base: '@{-2}', reflog: { kind: 'index', n: 3 }, operations: [] },
+    ],
+    ['@{-1}~2', { kind: 'ref-or-hex', base: '@{-1}', operations: [{ kind: 'ancestor', n: 2 }] }],
+  ] as const)('Given the prior-checkout expression %s', (raw, expected) => {
+    describe('When parseExpression', () => {
+      it('Then @{-<n>} is the whole base, never a reflog selector', () => {
+        // Arrange
+        const sut = parseExpression;
+
+        // Act
+        const result = sut(raw);
+
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
   });
 });
+
+describe('Given a name whose last operation is a message search', () => {
+  describe('When mayReadWhole checks it', () => {
+    it('Then it may read whole', () => {
+      // Arrange
+      const sut = mayReadWhole;
+
+      // Act
+      const result = sut('HEAD^{/a}:b}');
+
+      // Assert
+      expect(result).toBe(true);
+    });
+  });
+
+  describe('When parseWholeName reads it', () => {
+    it('Then the colon stays inside the search pattern', () => {
+      // Arrange
+      const sut = parseWholeName;
+
+      // Act
+      const result = sut('HEAD^{/a}:b}');
+
+      // Assert
+      expect(result).toEqual({
+        kind: 'ref-or-hex',
+        base: 'HEAD',
+        operations: [{ kind: 'search', pattern: 'a}:b', name: 'HEAD^{/a}:b}' }],
+      });
+    });
+  });
+});
+
+describe.each(['HEAD:a', 'HEAD^{tree}:a', 'HEAD^{/a}:b^{tree}'])(
+  'Given %s, whose last operation is no message search',
+  (raw) => {
+    describe('When mayReadWhole checks it', () => {
+      it('Then it only reads as a tree path', () => {
+        // Arrange
+        const sut = mayReadWhole;
+
+        // Act
+        const result = sut(raw);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  },
+);

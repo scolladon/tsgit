@@ -563,3 +563,67 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
     );
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)('blame equal-date merge parents (interop)', () => {
+  const SHARED_EPOCH = 1_700_000_000;
+  let dir: string;
+  let merge: string;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-blame-equal-date-'));
+    git(dir, 'init', '-q', '-b', 'main');
+    const env = datedEnv(SHARED_EPOCH);
+    const treeOf = (content: string): string => {
+      const blob = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: content }).trim();
+      return runGit(['-C', dir, 'mktree'], { input: `100644 blob ${blob}\tf\n` }).trim();
+    };
+    const commit = (tree: string, parents: ReadonlyArray<string>, message: string): string =>
+      runGit(
+        ['-C', dir, 'commit-tree', tree, ...parents.flatMap((p) => ['-p', p]), '-m', message],
+        {
+          env,
+        },
+      ).trim();
+    const base = treeOf('1\n2\n3\n');
+    const pa = commit(base, [], 'pa');
+    const pb = commit(base, [], 'pb');
+    const a = commit(treeOf('A\n2\n3\n'), [pa], 'a');
+    const b = commit(treeOf('1\n2\nB\n'), [pb], 'b');
+    const [low, high] = a < b ? [a, b] : [b, a];
+    merge = commit(treeOf('A\n2\nB\n'), [high, low], 'm');
+    for (const missing of [pa, pb]) {
+      await rm(path.join(dir, '.git', 'objects', missing.slice(0, 2), missing.slice(2)));
+    }
+  }, SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  describe('Given a merge of two equal-date parents whose own parents are missing', () => {
+    describe('When both tools blame through the merge', () => {
+      it('Then tsgit blames past the unreadable parents and warns as git does', async () => {
+        // Arrange
+        const warnings: string[] = [];
+        const ctx: Context = {
+          ...createNodeContext({ workDir: dir }),
+          logger: { warn: (message) => warnings.push(message) },
+        };
+        const gitResult = tryRunGitWithExit(['-C', dir, 'blame', '--porcelain', merge, '--', 'f'], {
+          env: runGitEnv(),
+        });
+        const unreadable = [...gitResult.stderr.matchAll(/error: (Could not read [0-9a-f]{40})/g)]
+          .map((match) => match[1])
+          .filter((message, at, all) => all.indexOf(message) === at);
+
+        // Act
+        const result = await blame(ctx, 'f', { rev: merge });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(renderPorcelain(result)).toBe(gitResult.stdout);
+        expect(warnings).toEqual(unreadable);
+      });
+    });
+  });
+});

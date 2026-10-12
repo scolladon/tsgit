@@ -14,6 +14,20 @@ const sourceAt = (basedir: string, text: string): AttributeSource => ({
   rules: parseGitattributes(text).rules,
 });
 
+/** The same source, with every path its rules' matchers are asked about appended to `seen`. */
+const recordingMatches = (source: AttributeSource, seen: string[]): AttributeSource => ({
+  ...source,
+  rules: source.rules.map((rule) => ({
+    ...rule,
+    compiled: {
+      test: (path: string) => {
+        seen.push(path);
+        return rule.compiled.test(path);
+      },
+    },
+  })),
+});
+
 describe('resolveAttribute', () => {
   describe('Given no sources', () => {
     describe('When resolving any attribute', () => {
@@ -26,6 +40,26 @@ describe('resolveAttribute', () => {
 
         // Assert
         expect(result).toBe('unspecified');
+      });
+    });
+  });
+
+  describe('Given a directory-only pattern `foo/ text`', () => {
+    describe('When resolving a path', () => {
+      it.each<{ label: string; path: string; expected: unknown }>([
+        { label: 'a file named foo', path: 'foo', expected: 'unspecified' },
+        { label: 'the directory foo/', path: 'foo/', expected: true },
+        { label: 'a nested directory x/foo/', path: 'x/foo/', expected: true },
+        { label: 'a file x/foo', path: 'x/foo', expected: 'unspecified' },
+      ])('Then $label yields $expected', ({ path, expected }) => {
+        // Arrange
+        const sources = [sourceAt('', 'foo/ text')];
+
+        // Act
+        const result = resolveAttribute(sources, path, 'text', BUILTIN_MACROS);
+
+        // Assert
+        expect(result).toEqual(expected);
       });
     });
   });
@@ -134,13 +168,18 @@ describe('resolveAttribute', () => {
       });
     });
 
-    describe('When the path lies outside that basedir', () => {
-      it('Then the source is skipped', () => {
+    describe('When an anchored pattern meets a path outside that basedir', () => {
+      it.each([
+        { label: 'in its parent', path: 'a/x.txt' },
+        { label: 'in a sibling sharing its name as a prefix', path: 'a/bcx.txt' },
+        { label: 'in a sibling as long as it', path: 'a/c/x.txt' },
+      ])('Then the rule is skipped for a path $label', ({ path }) => {
         // Arrange
-        const sources = [sourceAt('a/b', '*.txt merge=sub')];
+        const sources = [sourceAt('a/b', '/x.txt merge=sub')];
+        const sut = resolveAttribute;
 
         // Act
-        const result = resolveAttribute(sources, 'a/x.txt', 'merge', BUILTIN_MACROS);
+        const result = sut(sources, path, 'merge', BUILTIN_MACROS);
 
         // Assert
         expect(result).toBe('unspecified');
@@ -158,6 +197,68 @@ describe('resolveAttribute', () => {
 
         // Assert
         expect(result).toEqual({ set: 'anchored' });
+      });
+    });
+  });
+
+  describe('Given a pattern with no slash', () => {
+    describe('When resolving a path several directories deep', () => {
+      it('Then its matcher sees only the basename, never the directories above it', () => {
+        // Arrange
+        const seen: string[] = [];
+        const sources = [recordingMatches(sourceAt('a', '*.txt merge=deep'), seen)];
+        const sut = resolveAttribute;
+
+        // Act
+        const result = sut(sources, 'a/b/c/d/e.txt', 'merge', BUILTIN_MACROS);
+
+        // Assert
+        expect(result).toEqual({ set: 'deep' });
+        expect(seen).toEqual(['e.txt']);
+      });
+    });
+
+    describe('When its source sits deep above the path', () => {
+      it("Then the source's directory is never compared against the path", () => {
+        // Arrange
+        let basedirReads = 0;
+        const { rules } = sourceAt('', '*.txt merge=deep');
+        const source: AttributeSource = {
+          rules,
+          get basedir() {
+            basedirReads += 1;
+            return 'a/b/c';
+          },
+        };
+        const sut = resolveAttribute;
+
+        // Act
+        const result = sut([source], 'a/b/c/d/e.txt', 'merge', BUILTIN_MACROS);
+
+        // Assert
+        expect(result).toEqual({ set: 'deep' });
+        expect(basedirReads).toBe(0);
+      });
+    });
+
+    describe('When its `**` would only match across a directory boundary', () => {
+      it.each<{ label: string; path: string; expected: unknown }>([
+        { label: 'a basename it spans', path: 'x/ab', expected: true },
+        {
+          label: 'a path whose basename it does not span',
+          path: 'q/a/xb',
+          expected: 'unspecified',
+        },
+      ])('Then $label yields $expected', ({ path, expected }) => {
+        // Arrange
+        const sources = [sourceAt('', 'a**b foo')];
+        const sut = resolveAttribute;
+
+        // Act
+        const result = sut(sources, path, 'foo', BUILTIN_MACROS);
+
+        // Assert
+        expect(result).toEqual(expected);
       });
     });
   });

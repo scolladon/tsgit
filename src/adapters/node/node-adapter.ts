@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import * as nodePath from 'node:path';
+import { gitPathSyntaxOf } from '../../application/primitives/internal/git-path-syntax.js';
 import { deriveLimits } from '../../domain/concurrency/derive-limits.js';
 import { configFor } from '../../domain/objects/hash-config.js';
 import type { ObjectContent } from '../../domain/objects/index.js';
@@ -11,16 +12,25 @@ import {
   type RepositoryLayout,
 } from '../../ports/context.js';
 import { noopProgress } from '../../progress.js';
+import { layoutRootsOf } from '../../repository/layout-roots.js';
+import {
+  createAlternatePathProbe,
+  createObjectSourceAccess,
+} from '../../repository/object-source-access.js';
+import { createWorktreeFs } from '../../repository/worktree-fs.js';
 import { NodeCommandRunner } from './node-command-runner.js';
 import { NodeCompressor } from './node-compressor.js';
 import { nativeMachineFacts } from './node-concurrency.js';
 import { NodeEnvReader } from './node-env-reader.js';
 import { NodeFileSystem } from './node-file-system.js';
+import { nodeFilenameProbe } from './node-filename-probe.js';
 import { NodeHashService } from './node-hash-service.js';
 import { NodeHookRunner } from './node-hook-runner.js';
 import { NodeHttpTransport } from './node-http-transport.js';
 import { NodeSshTransport } from './node-ssh-transport.js';
-import { syncIoPolicyFor } from './sync-io-budget.js';
+import { nodeWorktreeFileSystem } from './node-worktree-fs.js';
+import { nativePolicy } from './path-policy.js';
+import { type SyncIoPolicy, syncIoPolicyFor } from './sync-io-budget.js';
 
 const DEFAULT_DELTA_CACHE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_DELTA_CACHE_ENTRIES = 65_536;
@@ -75,6 +85,9 @@ export interface NodeAdapterOptions {
   readonly io?: 'sync-fast-path' | 'threadpool';
 }
 
+const syncIoOptions = (syncIo: SyncIoPolicy | undefined): { readonly syncIo?: SyncIoPolicy } =>
+  syncIo === undefined ? {} : { syncIo };
+
 export function createNodeContext(options: NodeAdapterOptions): Context {
   const workDir = nodePath.resolve(options.workDir);
   const gitDir =
@@ -83,13 +96,14 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
       : nodePath.join(workDir, '.git');
   const algorithm = options.algorithm ?? 'sha1';
   const syncIo = syncIoPolicyFor(options.io);
-  const fs = new NodeFileSystem(workDir, syncIo === undefined ? {} : { syncIo });
+  const fs = new NodeFileSystem(workDir, syncIoOptions(syncIo));
   const hash = new NodeHashService(algorithm);
   const compressor = new NodeCompressor();
   const transport = new NodeHttpTransport({
     allowInsecureHttp: options.allowInsecureHttp ?? false,
   });
   const layout = buildLayout(workDir, gitDir, options.bare ?? false, safeHomedir());
+  const pathSyntax = gitPathSyntaxOf({ windowsPathSyntax: nativePolicy.windowsSyntax });
   const deltaCache = createLruCache<ObjectContent>(
     options.deltaCacheMaxBytes ?? DEFAULT_DELTA_CACHE_BYTES,
     options.deltaCacheMaxEntries ?? DEFAULT_DELTA_CACHE_ENTRIES,
@@ -115,6 +129,20 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     ...(options.command === false ? {} : { command: new NodeCommandRunner() }),
     ...(options.ssh === false ? {} : { ssh: new NodeSshTransport() }),
     env: new NodeEnvReader(),
+    worktreeFs: createWorktreeFs(
+      layoutRootsOf(layout),
+      nodeWorktreeFileSystem(workDir, syncIoOptions(syncIo)),
+    ),
+    objectSourceAccess: createObjectSourceAccess(
+      (objectsDir) => new NodeFileSystem([objectsDir], syncIoOptions(syncIo)),
+      pathSyntax,
+    ),
+    alternatePathProbe: createAlternatePathProbe(
+      (root) => new NodeFileSystem(root, syncIoOptions(syncIo)),
+      pathSyntax,
+    ),
+    filenameProbe: nodeFilenameProbe,
+    windowsPathSyntax: nativePolicy.windowsSyntax,
   };
   return createContext(parts);
 }

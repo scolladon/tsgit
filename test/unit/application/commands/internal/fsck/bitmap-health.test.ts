@@ -23,6 +23,7 @@ import {
   buildSyntheticPack,
   writeSyntheticBitmap,
   writeSyntheticPack,
+  writeSyntheticPackIn,
 } from '../../../primitives/pack-fixture.js';
 
 const sut = runBitmapHealthPass;
@@ -835,5 +836,86 @@ describe('Given the in-use midx bitmap trailer is flipped', () => {
         expect(result.exitBit).toBe(128);
       },
     );
+  });
+});
+
+const DONOR_OBJECTS = '/repo/donor/objects';
+
+const borrowerContext = async (): Promise<Context> => {
+  const ctx = createMemoryContext({
+    files: { '/repo/.git/objects/info/alternates': enc.encode(`${DONOR_OBJECTS}\n`) },
+  });
+  await ctx.fs.mkdir(DONOR_OBJECTS);
+  return ctx;
+};
+
+const writeDonorMidxBitmapFlipped = async (ctx: Context): Promise<string> => {
+  const digestLength = ctx.hashConfig.digestLength;
+  const midx = await stampTrailer(ctx, buildMidx(midxBaseSpec(digestLength)));
+  await ctx.fs.write(`${DONOR_OBJECTS}/pack/multi-pack-index`, midx);
+  const hex = storedTrailerHex(midx, digestLength);
+  await writeSyntheticBitmap(
+    ctx,
+    `${DONOR_OBJECTS}/pack/multi-pack-index-${hex}.bitmap`,
+    buildBitmap(healthyBitmapSpec(digestLength)),
+    { flipTrailer: true },
+  );
+  return `multi-pack-index-${hex}.bitmap`;
+};
+
+describe('Given a donor midx bitmap and a primary pack bitmap, both corrupt', () => {
+  describe('When the bitmap health pass runs', () => {
+    it('Then the donor midx bitmap is reported first, attributed to the donor', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      const digestLength = ctx.hashConfig.digestLength;
+      await writeSyntheticPack(ctx, 'own-bm', onePackEntry('own-bm'));
+      await writeSyntheticBitmap(
+        ctx,
+        packBitmapPath(ctx, 'own-bm'),
+        buildBitmap(healthyBitmapSpec(digestLength)),
+        { flipTrailer: true },
+      );
+      const midxArtefact = await writeDonorMidxBitmapFlipped(ctx);
+
+      // Act
+      const result = await sut(ctx, {});
+
+      // Assert
+      expect(result.findings).toEqual([
+        { type: 'bitmap-checksum-mismatch', artefact: midxArtefact, objectsDir: DONOR_OBJECTS },
+        { type: 'bitmap-checksum-mismatch', artefact: 'pack-own-bm.bitmap' },
+      ]);
+      expect(result.exitBit).toBe(128);
+    });
+  });
+});
+
+describe('Given a donor pack whose bitmap trailer is flipped', () => {
+  describe('When the bitmap health pass runs', () => {
+    it('Then the finding carries the donor objects dir', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      await writeSyntheticPackIn(ctx, DONOR_OBJECTS, 'donor-bm', onePackEntry('donor-bm'));
+      await writeSyntheticBitmap(
+        ctx,
+        `${DONOR_OBJECTS}/pack/pack-donor-bm.bitmap`,
+        buildBitmap(healthyBitmapSpec(ctx.hashConfig.digestLength)),
+        { flipTrailer: true },
+      );
+
+      // Act
+      const result = await sut(ctx, {});
+
+      // Assert
+      expect(result.findings).toEqual([
+        {
+          type: 'bitmap-checksum-mismatch',
+          artefact: 'pack-donor-bm.bitmap',
+          objectsDir: DONOR_OBJECTS,
+        },
+      ]);
+      expect(result.exitBit).toBe(128);
+    });
   });
 });

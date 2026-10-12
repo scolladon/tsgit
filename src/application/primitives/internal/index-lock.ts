@@ -3,13 +3,14 @@ import { type IndexEntry, serializeIndex } from '../../../domain/git-index/index
 import type { Context } from '../../../ports/context.js';
 import { indexPath, lockSuffix } from '../path-layout.js';
 import { invalidateIndexCache } from '../read-index.js';
+import { smudgeRacilyClean } from './smudge-racily-clean.js';
 
 interface AcquireOptions {
   /** Injectable clock — defaults to `Date.now`. Tests override to simulate stale/skewed locks. */
   readonly now?: () => number;
 }
 
-interface IndexLock {
+export interface IndexLock {
   /** Drop the lock without modifying the index on disk. Idempotent. */
   readonly release: () => Promise<void>;
   /**
@@ -123,7 +124,7 @@ const makeLock = (ctx: Context, lockPath: string, indexFile: string): IndexLock 
       const body = serializeIndex(
         {
           version: 2,
-          entries: [...entries],
+          entries: [...(await smudgeRacilyClean(ctx, entries))],
           extensions: [],
           trailerSha: new Uint8Array(0),
         },

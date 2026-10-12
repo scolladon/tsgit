@@ -15,7 +15,7 @@ interface MergeFfResult {
   readonly featureCommitId: string;
   readonly mergeKind: string;
   readonly mergeId: string;
-  readonly mergeBranch: string;
+  readonly mergeBranch: string | undefined;
 }
 
 export const mergeFfScenario: Scenario<MergeFfResult> = {

@@ -103,7 +103,7 @@ describe('rangeDiff', () => {
       const tip = await commitFile(ctx, clock, 'f.txt', 'x\n', 'add f');
 
       // Act
-      const result = await rangeDiff(ctx, { old: { base, tip: base }, new: { base, tip } });
+      const result = await rangeDiff(ctx, { old: { base: tip, tip: base }, new: { base, tip } });
 
       // Assert
       expect(result.map((e) => e.status)).toEqual(['only-new']);
@@ -125,7 +125,10 @@ describe('rangeDiff', () => {
       await mergeRun(ctx, { rev: 'feat', author: clock() });
 
       // Act — old has the two real commits (merge excluded); new is empty
-      const result = await rangeDiff(ctx, { old: { base, tip: 'main' }, new: { base, tip: base } });
+      const result = await rangeDiff(ctx, {
+        old: { base, tip: 'main' },
+        new: { base: 'main', tip: base },
+      });
 
       // Assert — only the two non-merge commits, both deletions
       expect(result).toHaveLength(2);
@@ -326,7 +329,7 @@ describe('rangeDiff', () => {
       const spy = vi.spyOn(rangeDiffDomainMod, 'rangeDiffEntries');
 
       // Act
-      await rangeDiff(ctx, { old: { base, tip: base }, new: { base, tip } });
+      await rangeDiff(ctx, { old: { base: tip, tip: base }, new: { base, tip } });
 
       // Assert
       try {
@@ -380,7 +383,7 @@ describe('rangeDiff', () => {
       try {
         const consumer = rangeDiff(ctx, {
           old: { base: seed, tip },
-          new: { base: seed, tip: seed },
+          new: { base: tip, tip: seed },
         });
         // Real repository plumbing (resolveCommit, walkCommitsByDate) precedes
         // hydration and spans a variable number of macrotask hops of its own

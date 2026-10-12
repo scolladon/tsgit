@@ -1,7 +1,9 @@
 import { invalidWalkInput } from '../../domain/error.js';
 import type { Commit, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { asIdSet } from './internal/as-id-set.js';
 import { commitDateWalk } from './internal/commit-date-walk.js';
+import { resolveLimitOptions, walkLimited } from './internal/limit-list.js';
 import type { WalkCommitsByDateOptions } from './types.js';
 import {
   exceedsMaxWalkSeeds,
@@ -12,10 +14,12 @@ import {
 
 /**
  * Walk every commit reachable from `from` across **all** parents, yielding them
- * in commit-date priority order — newest committer date first, oid-ascending on
- * ties. A thin wrapper over the shared {@link commitDateWalk} core: it owns the
- * public `INVALID_WALK_INPUT` seed contract (empty / too-many seeds) and
- * delegates the all-parents traversal. The core's first-parent variant is
+ * in commit-date priority order — newest committer date first, and on equal
+ * dates in the order they were enqueued (seeds as given, parents in parent
+ * order), as git's commit priority queue does. A thin wrapper over the
+ * shared {@link commitDateWalk} core: it owns the public `INVALID_WALK_INPUT`
+ * seed contract (empty / too-many seeds) and delegates the all-parents
+ * traversal. The core's first-parent variant is
  * internal — no public consumer needs date + first-parent yet (`log` routes
  * `--first-parent` through `walkCommits`'s lazy FIFO).
  *
@@ -44,6 +48,8 @@ export function walkCommitsByDate(
   ctx: Context,
   options: WalkCommitsByDateOptions,
 ): AsyncIterable<Commit> {
+  const until = asIdSet(options.until);
+  if (until.size > 0) return walkExcluding(ctx, options, until);
   let source: AsyncIterator<{ readonly commit: Commit }> | undefined;
   let validated = false;
   const iterator: AsyncIterator<Commit> = {
@@ -70,6 +76,20 @@ export function walkCommitsByDate(
       return iterator;
     },
   };
+}
+
+/**
+ * With commits to exclude, git limits the walk first (`limit_list`): every
+ * ancestor of an excluded commit is left out, whichever path reaches it.
+ */
+async function* walkExcluding(
+  ctx: Context,
+  options: WalkCommitsByDateOptions,
+  until: ReadonlySet<ObjectId>,
+): AsyncGenerator<Commit, void, undefined> {
+  assertValidSeeds(options.from);
+  const limits = { until, firstParent: false, settle: 'slop' } as const;
+  yield* walkLimited(ctx, await resolveLimitOptions(ctx, options, limits));
 }
 
 const assertValidSeeds = (from: ReadonlyArray<ObjectId>): void => {

@@ -12,6 +12,9 @@ import { assertInitialised, cleanGitEnv, spawnGitInTmp } from './git-tmp.js';
 const execFileAsync = promisify(execFile);
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..', '..');
 const SCRIPT = path.join(REPO_ROOT, '.github', 'scripts', 'has-code-changes.sh');
+// ~3000 names of ~110 bytes: several times a 64 KiB pipe buffer.
+const LARGE_DIFF_FILE_COUNT = 3000;
+const LONG_DOC_SEGMENT = 'a-directory-name-long-enough-to-push-the-changed-file-list-well-past-a-pipe-buffer';
 
 interface GitCtx {
   readonly dir: string;
@@ -203,6 +206,23 @@ describe('has-code-changes.sh', () => {
     // Assert
     expect(stdout).toMatch(/no base SHA \(push event\) - assuming code=true/);
     expect(output).toContain('code=true');
+  });
+
+  it('Given a code path listed ahead of a file list larger than a pipe buffer, When run, Then code=true', async () => {
+    // Arrange — the match comes first, so a reader that stops there leaves most of the list unread
+    writeRel(ctx.dir, '.github/workflows/x.yml', 'on: push\n');
+    for (let index = 0; index < LARGE_DIFF_FILE_COUNT; index++) {
+      writeRel(ctx.dir, `docs/${LONG_DOC_SEGMENT}/page-${index}.md`, '# page\n');
+    }
+    await ctx.git('add', '.');
+    await ctx.git('commit', '-m', 'large');
+
+    // Act
+    const sut = await runScript(ctx, 'HEAD~1');
+
+    // Assert
+    expect(sut.output).toContain('code=true');
+    expect(sut.stdout).toMatch(/has-code-changes: code paths changed/);
   });
 
   it('Given a BASE_SHA with shell metacharacters, When run, Then exits 2 (SHA guard)', async () => {

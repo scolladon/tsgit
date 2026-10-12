@@ -1,7 +1,9 @@
 export {
   AGENT,
+  ATOMIC,
   CLIENT_CAPABILITIES_FETCH,
   CLIENT_CAPABILITIES_PUSH,
+  DELETE_REFS,
   formatCapabilities,
   isSupportedObjectFormat,
   negotiateCapabilities,
@@ -57,6 +59,7 @@ export type {
   ReceivePackRequest,
   ReceivePackResponse,
   RefStatus,
+  RefStatusReport,
   RefUpdate,
   SignedReceivePackRequest,
 } from './receive-pack.js';

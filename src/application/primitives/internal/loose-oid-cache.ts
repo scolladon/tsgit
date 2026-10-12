@@ -31,7 +31,9 @@
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import { commonGitDir, objectsDir } from '../path-layout.js';
+import type { ObjectSourceReader } from '../../../ports/object-source-access.js';
+import { fanoutDirIn } from '../path-layout.js';
+import { looseLocationOf, type SourceLocation } from './source-location.js';
 
 const fanoutCache = new WeakMap<Context['session'], Map<string, Set<string>>>();
 
@@ -47,32 +49,67 @@ export function isMissingFanoutDir(error: unknown): boolean {
   return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';
 }
 
-async function loadFanoutSet(ctx: Context, prefix: string): Promise<Set<string>> {
+const locationCache = new WeakMap<SourceLocation, Map<string, Set<string>>>();
+
+const primaryPrefixMap = (ctx: Context): Map<string, Set<string>> => {
   let byPrefix = fanoutCache.get(ctx.session);
   if (byPrefix === undefined) {
     byPrefix = new Map();
     fanoutCache.set(ctx.session, byPrefix);
   }
+  return byPrefix;
+};
+
+const locationPrefixMap = (location: SourceLocation): Map<string, Set<string>> => {
+  let byPrefix = locationCache.get(location);
+  if (byPrefix === undefined) {
+    byPrefix = new Map();
+    locationCache.set(location, byPrefix);
+  }
+  return byPrefix;
+};
+
+async function listSuffixes(fs: ObjectSourceReader, dir: string): Promise<Set<string>> {
+  try {
+    const entries = await fs.readdir(dir);
+    return new Set(entries.map((entry) => entry.name));
+  } catch (error) {
+    if (!isMissingFanoutDir(error)) throw error;
+    return new Set();
+  }
+}
+
+async function loadFanoutSet(
+  ctx: Context,
+  prefix: string,
+  location?: SourceLocation,
+): Promise<Set<string>> {
+  const byPrefix = location === undefined ? primaryPrefixMap(ctx) : locationPrefixMap(location);
   const cached = byPrefix.get(prefix);
   if (cached !== undefined) return cached;
 
-  let suffixes: Set<string>;
-  try {
-    const entries = await ctx.fs.readdir(objectsDir(commonGitDir(ctx), prefix));
-    suffixes = new Set(entries.map((entry) => entry.name));
-  } catch (error) {
-    if (!isMissingFanoutDir(error)) throw error;
-    suffixes = new Set();
-  }
+  const loose = looseLocationOf(ctx, location);
+  const suffixes = await listSuffixes(loose.fs, fanoutDirIn(loose.objectsDir, prefix));
   byPrefix.set(prefix, suffixes);
   return suffixes;
 }
 
-/** Membership test for a loose object, backed by the lazy per-prefix cache. */
-export async function probeLooseOid(ctx: Context, id: ObjectId): Promise<boolean> {
-  const suffixes = await loadFanoutSet(ctx, prefixOf(id));
+/** Membership test for a loose object, backed by the lazy per-prefix cache. With a `location`
+ *  the listing is read through that location's fs and cached by the location's identity. */
+export async function probeLooseOid(
+  ctx: Context,
+  id: ObjectId,
+  location?: SourceLocation,
+): Promise<boolean> {
+  const suffixes = await loadFanoutSet(ctx, prefixOf(id), location);
   return suffixes.has(suffixOf(id));
 }
+
+const cachedPrefixes = (
+  ctx: Context,
+  location: SourceLocation | undefined,
+): Map<string, Set<string>> | undefined =>
+  location === undefined ? fanoutCache.get(ctx.session) : locationCache.get(location);
 
 /**
  * Record a just-written loose object into its prefix's cached set. A write
@@ -82,8 +119,8 @@ export async function probeLooseOid(ctx: Context, id: ObjectId): Promise<boolean
  * stays lazy. Call after a loose object is written under this Context.
  * `forgetLooseOidPrefix` (below) is the removal counterpart a pruner calls.
  */
-export function invalidateLooseOid(ctx: Context, id: ObjectId): void {
-  fanoutCache.get(ctx.session)?.get(prefixOf(id))?.add(suffixOf(id));
+export function invalidateLooseOid(ctx: Context, id: ObjectId, location?: SourceLocation): void {
+  cachedPrefixes(ctx, location)?.get(prefixOf(id))?.add(suffixOf(id));
 }
 
 /**
@@ -97,6 +134,6 @@ export function invalidateLooseOid(ctx: Context, id: ObjectId): void {
  * cache. Either caller's goal is the same: the next probe re-reads the
  * directory instead of trusting a listing that may now be stale.
  */
-export function forgetLooseOidPrefix(ctx: Context, id: ObjectId): void {
-  fanoutCache.get(ctx.session)?.delete(prefixOf(id));
+export function forgetLooseOidPrefix(ctx: Context, id: ObjectId, location?: SourceLocation): void {
+  cachedPrefixes(ctx, location)?.delete(prefixOf(id));
 }

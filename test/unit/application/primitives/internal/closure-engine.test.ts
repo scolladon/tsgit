@@ -5,6 +5,7 @@
  *  - commits-only vs `objects: true` (trees/blobs, each carrying a path)
  *  - tag peeling (single tag, tag-of-tag chain)
  *  - non-commit wants (a tree want's own subtree; a blob want alone)
+ *  - pending tag/tree/blob wants the not side or a boundary tree marks
  *  - gitlink entries are skipped
  *  - empty wants / wants fully covered by `not` / an unborn repository
  *  - the haves relation: the walk's superset over the exact difference, and
@@ -14,16 +15,17 @@
  *  - dedup across commits sharing a tree
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 
-import { enumerateBundleObjects } from '../../../../../src/application/primitives/enumerate-bundle-objects.js';
 import { computeClosure } from '../../../../../src/application/primitives/internal/closure-engine.js';
-import * as closureNotMarksModule from '../../../../../src/application/primitives/internal/closure-not-marks.js';
+import * as midxBitmapBindingModule from '../../../../../src/application/primitives/internal/midx-bitmap-binding.js';
+import { createObjectTypeTable } from '../../../../../src/application/primitives/internal/object-type-table.js';
+import * as packBitmapBindingModule from '../../../../../src/application/primitives/internal/pack-bitmap-binding.js';
 import * as readCommitMetaModule from '../../../../../src/application/primitives/internal/read-commit-meta.js';
 import * as resolveMaxTreeDepthModule from '../../../../../src/application/primitives/internal/resolve-max-tree-depth.js';
+import { getObjectStore } from '../../../../../src/application/primitives/object-store.js';
 import * as readObjectModule from '../../../../../src/application/primitives/read-object.js';
 import { getPackRegistry } from '../../../../../src/application/primitives/read-object.js';
-import { MAX_WALK_QUEUE_SIZE } from '../../../../../src/application/primitives/types.js';
-import { REASON_WALK_QUEUE_OVERFLOW } from '../../../../../src/application/primitives/validators.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
 import { invalidWalkInput } from '../../../../../src/domain/error.js';
@@ -56,7 +58,7 @@ import {
   seedMaxTreeDepth,
   writeCommitGraph,
 } from '../fixtures.js';
-import { writeSyntheticBitmap, writeSyntheticPack } from '../pack-fixture.js';
+import { writeSyntheticBitmap, writeSyntheticPack, writeSyntheticPackIn } from '../pack-fixture.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'A',
@@ -103,10 +105,35 @@ const writeCommit = async (
   return writeObject(ctx, commit);
 };
 
+const writeDatedCommit = async (
+  ctx: Context,
+  tree: ObjectId,
+  parents: ReadonlyArray<ObjectId>,
+  timestamp: number,
+): Promise<ObjectId> => {
+  const signature: AuthorIdentity = { ...AUTHOR, timestamp };
+  const commit: Commit = {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: {
+      tree,
+      parents,
+      author: signature,
+      committer: signature,
+      message: `at ${timestamp}`,
+      extraHeaders: [],
+    },
+  };
+  return writeObject(ctx, commit);
+};
+
+const singleFileTree = async (ctx: Context, name: string): Promise<ObjectId> =>
+  writeTree(ctx, [treeEntry('100644' as FileMode, `${name}.txt`, await writeBlob(ctx, name))]);
+
 const writeTag = async (
   ctx: Context,
   target: ObjectId,
-  targetType: 'commit' | 'tag',
+  targetType: Tag['data']['objectType'],
   tagName: string,
 ): Promise<ObjectId> => {
   const tag: Tag = {
@@ -205,6 +232,20 @@ const buildHavesFixture = async (): Promise<HavesFixture> => {
   const want = await writeCommit(ctx, rootTree, [have], 'want');
 
   return { ctx, root, have, want };
+};
+
+/** Every object `want` reaches that `have` does not — the exact set difference. */
+const exactDifference = async (
+  ctx: Context,
+  want: ObjectId,
+  have: ObjectId,
+): Promise<ReadonlySet<ObjectId>> => {
+  const reach = async (tip: ObjectId): Promise<ReadonlyArray<ObjectId>> =>
+    (await computeClosure(ctx, { tier: 'walk', wants: [tip], not: [], objects: true })).objects.map(
+      (object) => object.id,
+    );
+  const excluded = new Set(await reach(have));
+  return new Set((await reach(want)).filter((id) => !excluded.has(id)));
 };
 
 afterEach(() => {
@@ -315,11 +356,11 @@ describe('computeClosure', () => {
         const sut = computeClosure;
 
         // Act
-        const result = await sut(ctx, { tier: 'walk', wants: [tagId], not: [], objects: false });
+        const result = await sut(ctx, { tier: 'walk', wants: [tagId], not: [], objects: true });
 
         // Assert — a tag has no path, so it carries nameHash 0, like a commit.
         const ids = new Set(result.objects.map((o) => o.id));
-        expect(ids).toEqual(new Set([tagId, commitId]));
+        expect(ids).toEqual(new Set([tagId, commitId, treeId, blobId]));
         expect(result.objects.find((o) => o.id === tagId)).toStrictEqual({
           id: tagId,
           type: 'tag',
@@ -346,21 +387,20 @@ describe('computeClosure', () => {
           tier: 'walk',
           wants: [outerTagId],
           not: [],
-          objects: false,
+          objects: true,
         });
 
         // Assert
         const ids = new Set(result.objects.map((o) => o.id));
-        expect(ids).toEqual(new Set([outerTagId, innerTagId, commitId]));
+        expect(ids).toEqual(new Set([outerTagId, innerTagId, commitId, treeId, blobId]));
       });
     });
   });
 
   describe('Given a want that resolves to a tree', () => {
-    describe('When computeClosure is called with objects: false', () => {
+    describe('When computeClosure is called with objects: true', () => {
       it('Then it contributes itself plus its own subtree', async () => {
-        // Arrange — the subtree is emitted regardless of `objects`, since a
-        // tree want has no parents to gate that flag against.
+        // Arrange
         const ctx = await buildSeededContext();
         const nestedBlobId = await writeBlob(ctx, 'nested');
         const subTreeId = await writeTree(ctx, [
@@ -378,7 +418,7 @@ describe('computeClosure', () => {
           tier: 'walk',
           wants: [rootTreeId],
           not: [],
-          objects: false,
+          objects: true,
         });
 
         // Assert
@@ -403,7 +443,7 @@ describe('computeClosure', () => {
         const sut = computeClosure;
 
         // Act
-        const result = await sut(ctx, { tier: 'walk', wants: [blobId], not: [], objects: false });
+        const result = await sut(ctx, { tier: 'walk', wants: [blobId], not: [], objects: true });
 
         // Assert — no path, and the directly-wanted-blob divergence: git
         // would use the pending object's own name, tsgit names it 0.
@@ -534,11 +574,11 @@ describe('computeClosure', () => {
     });
   });
 
-  describe('Given the same shared-subtree not tree, with objects: false', () => {
+  describe('Given the same shared-subtree not tree as the want commit tree', () => {
     describe('When computeClosure marks it uninteresting', () => {
       it('Then the shared subtree is read once, not once per reference', async () => {
-        // Arrange — objects: false keeps the want side from walking any tree,
-        // so every read of `sharedTreeId` is one the marking pass made.
+        // Arrange — the want commit's tree is the marked one, so the want side
+        // never walks it and every read of `sharedTreeId` is the marking pass's.
         const ctx = await buildSeededContext();
         const sharedBlobId = await writeBlob(ctx, 'shared-leaf');
         const sharedTreeId = await writeTree(ctx, [
@@ -553,7 +593,7 @@ describe('computeClosure', () => {
 
         // Act
         const reads = await countLooseReadsOf(ctx, sharedTreeId, () =>
-          sut(ctx, { tier: 'walk', wants: [commitId], not: [outerTreeId], objects: false }),
+          sut(ctx, { tier: 'walk', wants: [commitId], not: [outerTreeId], objects: true }),
         );
 
         // Assert
@@ -737,7 +777,7 @@ describe('computeClosure', () => {
           tier: 'walk',
           wants: [commitId],
           not: [notTreeId],
-          objects: false,
+          objects: true,
         });
 
         // Assert — no throw; the unrelated want commit is still emitted
@@ -759,7 +799,7 @@ describe('computeClosure', () => {
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tier: 'walk', wants: [commitId], not: [notTreeId], objects: false });
+          await sut(ctx, { tier: 'walk', wants: [commitId], not: [notTreeId], objects: true });
         } catch (err) {
           caught = err;
         }
@@ -790,7 +830,7 @@ describe('computeClosure', () => {
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tier: 'walk', wants: [commitId], not: [notTreeId], objects: false });
+          await sut(ctx, { tier: 'walk', wants: [commitId], not: [notTreeId], objects: true });
         } catch (err) {
           caught = err;
         }
@@ -823,7 +863,7 @@ describe('computeClosure', () => {
           tier: 'walk',
           wants: [commitId],
           not: [notTreeId],
-          objects: false,
+          objects: true,
         });
 
         // Assert — no throw; the unrelated want commit is still emitted
@@ -845,7 +885,7 @@ describe('computeClosure', () => {
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tier: 'walk', wants: [commitId], not: [notTreeId], objects: false });
+          await sut(ctx, { tier: 'walk', wants: [commitId], not: [notTreeId], objects: true });
         } catch (err) {
           caught = err;
         }
@@ -888,6 +928,129 @@ describe('computeClosure', () => {
     });
   });
 
+  describe('Given a tree want the not side names too', () => {
+    describe('When computeClosure is called with objects: true', () => {
+      it('Then nothing is emitted, as git skips an uninteresting pending tree', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const treeId = await singleFileTree(ctx, 'both-sides');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [treeId],
+          not: [treeId],
+          objects: true,
+        });
+
+        // Assert
+        expect(result.objects).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a blob want held by an excluded tree', () => {
+    describe('When computeClosure is called with objects: true', () => {
+      it('Then nothing is emitted, as the excluded tree marks its contents', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'inside');
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'in.txt', blobId)]);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [blobId],
+          not: [treeId],
+          objects: true,
+        });
+
+        // Assert
+        expect(result.objects).toEqual([]);
+      });
+    });
+  });
+
+  describe("Given tree and blob wants that are a boundary commit's own tree and blob", () => {
+    describe('When computeClosure walks with objects: true', () => {
+      it('Then neither is emitted, as the boundary marks its tree before pending objects are shown', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const baseBlobId = await writeBlob(ctx, 'base');
+        const baseTreeId = await writeTree(ctx, [
+          treeEntry('100644' as FileMode, 'base.txt', baseBlobId),
+        ]);
+        const baseId = await writeCommit(ctx, baseTreeId, [], 'base');
+        const tipTreeId = await singleFileTree(ctx, 'tip');
+        const tipId = await writeCommit(ctx, tipTreeId, [baseId], 'tip');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [tipId, baseTreeId, baseBlobId],
+          not: [baseId],
+          objects: true,
+        });
+
+        // Assert
+        const ids = new Set(result.objects.map((o) => o.id));
+        expect(ids.has(tipId)).toBe(true);
+        expect(ids.has(baseTreeId)).toBe(false);
+        expect(ids.has(baseBlobId)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a tag-of-tree want whose tree the not side names', () => {
+    describe('When computeClosure is called with objects: true', () => {
+      it('Then only the tag is emitted', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const treeId = await singleFileTree(ctx, 'tagged');
+        const tagId = await writeTag(ctx, treeId, 'tree', 'on-tree');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [tagId],
+          not: [treeId],
+          objects: true,
+        });
+
+        // Assert
+        expect(result.objects).toStrictEqual([{ id: tagId, type: 'tag', nameHash: 0 }]);
+      });
+    });
+  });
+
+  describe('Given a tag-of-tree want the not side reaches through a tag-of-tag', () => {
+    describe('When computeClosure is called with objects: true', () => {
+      it('Then nothing is emitted, as peeling the excluded chain marks every tag on it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const treeId = await singleFileTree(ctx, 'tagged-twice');
+        const innerTagId = await writeTag(ctx, treeId, 'tree', 'inner');
+        const outerTagId = await writeTag(ctx, innerTagId, 'tag', 'outer');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [innerTagId],
+          not: [outerTagId],
+          objects: true,
+        });
+
+        // Assert
+        expect(result.objects).toEqual([]);
+      });
+    });
+  });
+
   describe('Given an empty wants array on a repository with existing history', () => {
     describe('When computeClosure is called', () => {
       it('Then it returns an empty result without throwing', async () => {
@@ -901,6 +1064,71 @@ describe('computeClosure', () => {
 
         // Assert
         expect(result.objects).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a listed ancestor the excluded side reaches only through a later-dated commit', () => {
+    describe('When computeClosure walks with objects: true', () => {
+      it("Then that ancestor's own tree is marked, so a want reusing it emits nothing but itself", async () => {
+        // Arrange — `older` and `middle` are listed before the excluded side
+        // reaches them through `skewed`, dated after both
+        const ctx = await buildSeededContext();
+        const olderTree = await singleFileTree(ctx, 'older');
+        const older = await writeDatedCommit(ctx, olderTree, [], 700);
+        const middle = await writeDatedCommit(
+          ctx,
+          await singleFileTree(ctx, 'middle'),
+          [older],
+          800,
+        );
+        const want = await writeDatedCommit(ctx, olderTree, [middle], 1000);
+        const skewed = await writeDatedCommit(
+          ctx,
+          await singleFileTree(ctx, 'skewed'),
+          [middle],
+          900,
+        );
+        const notTip = await writeDatedCommit(ctx, await singleFileTree(ctx, 'not'), [skewed], 500);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [want],
+          not: [notTip],
+          objects: true,
+        });
+
+        // Assert
+        expect(result.objects.map((object) => object.id)).toEqual([want]);
+      });
+    });
+  });
+
+  describe('Given a merge whose newer parent is its second, with an unrelated commit excluded', () => {
+    describe('When computeClosure walks with maxCount: 2', () => {
+      it('Then it lists the merge and its newer parent, in commit-date order', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const tree = await writeTree(ctx, []);
+        const firstParent = await writeDatedCommit(ctx, tree, [], 100);
+        const secondParent = await writeDatedCommit(ctx, tree, [], 900);
+        const merge = await writeDatedCommit(ctx, tree, [firstParent, secondParent], 1000);
+        const unrelated = await writeDatedCommit(ctx, tree, [], 50);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [merge],
+          not: [unrelated],
+          objects: false,
+          maxCount: 2,
+        });
+
+        // Assert
+        expect(result.objects.map((object) => object.id)).toEqual([merge, secondParent]);
       });
     });
   });
@@ -1085,7 +1313,7 @@ describe('computeClosure', () => {
 
         // Act
         const actual = await sut(ctx, { tier: 'walk', wants: [want], not: [have], objects: true });
-        const exact = await enumerateBundleObjects(ctx, { wants: [want], haves: [have] });
+        const exactIds = await exactDifference(ctx, want, have);
         const reachableFromNotTip = await sut(ctx, {
           tier: 'walk',
           wants: [have],
@@ -1095,7 +1323,6 @@ describe('computeClosure', () => {
 
         // Assert — the walk's answer is a superset of the exact difference.
         const actualIds = new Set(actual.objects.map((o) => o.id));
-        const exactIds = new Set(exact.objects.map((o) => o.id));
         for (const id of exactIds) {
           expect(actualIds.has(id)).toBe(true);
         }
@@ -1119,11 +1346,10 @@ describe('computeClosure', () => {
 
         // Act
         const actual = await sut(ctx, { tier: 'walk', wants: [want], not: [have], objects: true });
-        const exact = await enumerateBundleObjects(ctx, { wants: [want], haves: [have] });
+        const exactIds = await exactDifference(ctx, want, have);
 
         // Assert
         const actualIds = new Set(actual.objects.map((o) => o.id));
-        const exactIds = new Set(exact.objects.map((o) => o.id));
         const extra = [...actualIds].filter((id) => !exactIds.has(id));
         expect(extra.length).toBeGreaterThan(0);
       });
@@ -1222,32 +1448,6 @@ describe('computeClosure', () => {
         expect(ids.has(boundaryOnlyBlob)).toBe(false);
         expect(ids.has(left)).toBe(true);
         expect(ids.has(right)).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a walk-tier closure over two linked commits with objects: true', () => {
-    describe('When computeClosure buffers the walked commits for markBoundaryTrees', () => {
-      it('Then each buffered record carries exactly id, tree and parents', async () => {
-        // Arrange — a spy on the callee, not `toEqual` on the whole record: a
-        // subset comparison cannot see an extra key (e.g. a full `Commit`'s
-        // `data`/`type`) left on the buffered value.
-        const ctx = await buildSeededContext();
-        const treeId = await writeTree(ctx, []);
-        const rootId = await writeCommit(ctx, treeId, [], 'root');
-        const headId = await writeCommit(ctx, treeId, [rootId], 'head');
-        const boundarySpy = vi.spyOn(closureNotMarksModule, 'markBoundaryTrees');
-        const sut = computeClosure;
-
-        // Act
-        await sut(ctx, { tier: 'walk', wants: [headId], not: [], objects: true });
-
-        // Assert
-        const walked = boundarySpy.mock.calls[0]![1];
-        expect(walked).toHaveLength(2);
-        for (const record of walked) {
-          expect(Object.keys(record).sort()).toEqual(['id', 'parents', 'tree']);
-        }
       });
     });
   });
@@ -1491,13 +1691,28 @@ describe('computeClosure', () => {
           objects: true,
         });
 
-        // Assert — the exact ordered entry list captured on the unpruned
-        // walk; the closure prune must reproduce it
+        // Assert — the exact ordered entry list, every commit ahead of the
+        // trees as git's traversal lists them; the closure prune must reproduce it
         // byte-for-byte (equivalence argument: a pruned subtree contributes
         // nothing to this sequence today either).
         expect(result.objects).toStrictEqual([
           {
             id: '00a4e3116c60e67c73ad2b29fbbbd9b5cb828617' as ObjectId,
+            type: 'commit',
+            nameHash: 0,
+          },
+          {
+            id: 'f86601129a7fbbf8b94617d239aa6e93712ce2f5' as ObjectId,
+            type: 'commit',
+            nameHash: 0,
+          },
+          {
+            id: '0c390bf764a562d037f67f4c6ba65b769926f8fd' as ObjectId,
+            type: 'commit',
+            nameHash: 0,
+          },
+          {
+            id: '1834ee9324eab6e6fa7d7df9a8c6915b81e86920' as ObjectId,
             type: 'commit',
             nameHash: 0,
           },
@@ -1544,16 +1759,6 @@ describe('computeClosure', () => {
             nameHash: 2501771264,
           },
           {
-            id: 'f86601129a7fbbf8b94617d239aa6e93712ce2f5' as ObjectId,
-            type: 'commit',
-            nameHash: 0,
-          },
-          {
-            id: '0c390bf764a562d037f67f4c6ba65b769926f8fd' as ObjectId,
-            type: 'commit',
-            nameHash: 0,
-          },
-          {
             id: 'e6cdd70da23364b27db4b180bbce0d4ad9ce0e2f' as ObjectId,
             type: 'tree',
             path: '',
@@ -1564,11 +1769,6 @@ describe('computeClosure', () => {
             type: 'tree',
             path: 'b',
             nameHash: 1644167168,
-          },
-          {
-            id: '1834ee9324eab6e6fa7d7df9a8c6915b81e86920' as ObjectId,
-            type: 'commit',
-            nameHash: 0,
           },
           {
             id: '2b5396c9a8aa16db82ed23f17eebd290688e2f98' as ObjectId,
@@ -2269,256 +2469,13 @@ describe('computeClosure — marking the not side', () => {
   });
 });
 
-describe("computeClosure — the not-side ancestry walk keeps the commit walk's frontier discipline", () => {
-  const buildWantOver = async (
-    ctx: Context,
-    notTip: ObjectId,
-  ): Promise<{
-    readonly wantId: ObjectId;
-    readonly treeId: ObjectId;
-    readonly blobId: ObjectId;
-  }> => {
-    const blobId = await writeBlob(ctx, 'want-side content');
-    const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'w.txt', blobId)]);
-    const wantId = await writeCommit(ctx, treeId, [notTip], 'want');
-    return { wantId, treeId, blobId };
-  };
-
-  describe('Given a commit-graph covering the not side and a signal aborted right after the tip is consulted', () => {
-    describe('When computeClosure marks the not side', () => {
-      it('Then the ancestry walk stops at its own loop-top check before consulting the parent', async () => {
-        // Arrange — under a graph the marker performs no object read inside
-        // its loop, so no other abort check can fire there: the loop-top check
-        // is the only thing between consulting the tip and consulting its
-        // parent. The abort lands as the tip's meta resolves.
-        const ctx = await buildSeededContext();
-        const blobId = await writeBlob(ctx, 'have');
-        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'h.txt', blobId)]);
-        const rootId = await writeCommit(ctx, treeId, [], 'root');
-        const notTipId = await writeCommit(ctx, treeId, [rootId], 'have');
-        const { wantId } = await buildWantOver(ctx, notTipId);
-        const layer = await Promise.all(
-          [rootId, notTipId, wantId].map(
-            async (id) => (await readObjectModule.readObject(ctx, id)) as Commit,
-          ),
-        );
-        await writeCommitGraph(ctx, [layer]);
-        const controller = new AbortController();
-        const original = readCommitMetaModule.readCommitMeta;
-        const metaSpy = vi
-          .spyOn(readCommitMetaModule, 'readCommitMeta')
-          .mockImplementation(async (c, id) => {
-            const meta = await original(c, id);
-            controller.abort();
-            return meta;
-          });
-        const sut = computeClosure;
-
-        // Act
-        let caught: unknown;
-        try {
-          await sut(
-            { ...ctx, signal: controller.signal },
-            { tier: 'walk', wants: [wantId], not: [notTipId], objects: true },
-          );
-          expect.unreachable();
-        } catch (error) {
-          caught = error;
-        }
-
-        // Assert — the tip was consulted once; its parent never was
-        expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
-        expect(metaSpy).toHaveBeenCalledTimes(1);
-        metaSpy.mockRestore();
-      });
-    });
-  });
-
-  describe('Given a not tip naming more distinct parents than the frontier bound admits', () => {
-    describe('When computeClosure marks its ancestry', () => {
-      it("Then it refuses with the commit walk's own queue-overflow reason", async () => {
-        // Arrange — MAX_WALK_QUEUE_SIZE + 1 distinct, never-written parent
-        // oids: the marker must refuse exactly as `walkCommits` does, not walk
-        // an unbounded frontier.
-        const ctx = await buildSeededContext();
-        const blobId = await writeBlob(ctx, 'have');
-        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'h.txt', blobId)]);
-        const parents = Array.from(
-          { length: MAX_WALK_QUEUE_SIZE + 1 },
-          (_, i) => i.toString(16).padStart(40, '0') as ObjectId,
-        );
-        const notTipId = await writeCommit(ctx, treeId, parents, 'octopus have');
-        const { wantId } = await buildWantOver(ctx, notTipId);
-        const sut = computeClosure;
-
-        // Act
-        let caught: unknown;
-        try {
-          await sut(ctx, { tier: 'walk', wants: [wantId], not: [notTipId], objects: true });
-          expect.unreachable();
-        } catch (error) {
-          caught = error;
-        }
-
-        // Assert
-        expect((caught as TsgitError).data).toMatchObject({
-          code: 'INVALID_WALK_INPUT',
-          reason: REASON_WALK_QUEUE_OVERFLOW,
-        });
-      });
-    });
-  });
-
-  describe('Given a not-side layer every commit of the layer above names in full', () => {
-    describe('When computeClosure marks the not side', () => {
-      it('Then each parent is queued once, so 67,600 parent references stay under the bound', async () => {
-        // Arrange — 260 roots and 260 commits each naming all 260 roots, all
-        // below the not tip: 67,600 parent references, more than the bound
-        // admits as raw pushes, but at most 260 distinct pending ids.
-        const ctx = await buildSeededContext();
-        const blobId = await writeBlob(ctx, 'have');
-        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'h.txt', blobId)]);
-        const roots: ObjectId[] = [];
-        for (let i = 0; i < 260; i += 1)
-          roots.push(await writeCommit(ctx, treeId, [], `root ${i}`));
-        const layer: ObjectId[] = [];
-        for (let i = 0; i < 260; i += 1)
-          layer.push(await writeCommit(ctx, treeId, roots, `layer ${i}`));
-        const notTipId = await writeCommit(ctx, treeId, layer, 'have');
-        const {
-          wantId,
-          treeId: wantTreeId,
-          blobId: wantBlobId,
-        } = await buildWantOver(ctx, notTipId);
-        const sut = computeClosure;
-
-        // Act
-        const result = await sut(ctx, {
-          tier: 'walk',
-          wants: [wantId],
-          not: [notTipId],
-          objects: true,
-        });
-
-        // Assert — the whole not side is marked; only the want's own objects survive
-        expect(new Set(result.objects.map((o) => o.id))).toEqual(
-          new Set([wantId, wantTreeId, wantBlobId]),
-        );
-      });
-    });
-  });
-});
-
-describe('computeClosure — the not-side ancestry walk consults each commit once and rethrows what it cannot classify', () => {
+describe('computeClosure — the not side rethrows what it cannot classify', () => {
   const haveTree = async (ctx: Context): Promise<ObjectId> => {
     const blobId = await writeBlob(ctx, 'have');
     return writeTree(ctx, [treeEntry('100644' as FileMode, 'h.txt', blobId)]);
   };
   const consulted = (spy: { mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> } }): ObjectId[] =>
     spy.mock.calls.map((call) => call[1] as ObjectId);
-
-  describe('Given two not tips sharing an ancestry, When computeClosure marks the not side', () => {
-    it("Then the second tip's walk stops on the ancestry the first already marked, consulting no commit twice", async () => {
-      // Arrange
-      const ctx = await buildSeededContext();
-      const treeId = await haveTree(ctx);
-      const rootId = await writeCommit(ctx, treeId, [], 'root');
-      const tip2 = await writeCommit(ctx, treeId, [rootId], 'have two');
-      const tip1 = await writeCommit(ctx, treeId, [tip2], 'have one');
-      const wantId = await writeCommit(ctx, treeId, [tip1], 'want');
-      const metaSpy = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
-      const sut = computeClosure;
-
-      // Act
-      await sut(ctx, { tier: 'walk', wants: [wantId], not: [tip1, tip2], objects: true });
-
-      // Assert
-      const ids = consulted(metaSpy);
-      expect(new Set(ids).size).toBe(ids.length);
-      expect(new Set(ids)).toEqual(new Set([tip1, tip2, rootId]));
-      metaSpy.mockRestore();
-    });
-  });
-
-  describe('Given a not-side parent the store lacks, named by two children, When computeClosure marks the not side', () => {
-    it('Then the missing parent is consulted once — the miss is remembered', async () => {
-      // Arrange
-      const ctx = await buildSeededContext();
-      const treeId = await haveTree(ctx);
-      const missing = 'e'.repeat(40) as ObjectId;
-      const c1 = await writeCommit(ctx, treeId, [missing], 'child one');
-      const c2 = await writeCommit(ctx, treeId, [missing], 'child two');
-      const notTipId = await writeCommit(ctx, treeId, [c1, c2], 'have');
-      const wantId = await writeCommit(ctx, treeId, [notTipId], 'want');
-      const metaSpy = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
-      const sut = computeClosure;
-
-      // Act
-      await sut(ctx, { tier: 'walk', wants: [wantId], not: [notTipId], objects: true });
-
-      // Assert
-      expect(consulted(metaSpy).filter((id) => id === missing)).toHaveLength(1);
-      metaSpy.mockRestore();
-    });
-  });
-
-  describe('Given a not-side parent the store lacks, named again by a commit that pops after the miss, When computeClosure marks the not side', () => {
-    it('Then the parent is consulted once — the remembered miss stops the second enqueue', async () => {
-      // Arrange — the frontier is FIFO: tip → [c1, c2]; c1 → [missing]; c2 → [d];
-      // d → [missing]. It pops c1, c2, missing, d in that order, so d names the
-      // parent after its miss was recorded and after it left the pending set —
-      // only the remembered miss can stop the second consultation.
-      const ctx = await buildSeededContext();
-      const treeId = await haveTree(ctx);
-      const missing = 'e'.repeat(40) as ObjectId;
-      const c1 = await writeCommit(ctx, treeId, [missing], 'child one');
-      const d = await writeCommit(ctx, treeId, [missing], 'grandchild');
-      const c2 = await writeCommit(ctx, treeId, [d], 'child two');
-      const notTipId = await writeCommit(ctx, treeId, [c1, c2], 'have');
-      const wantId = await writeCommit(ctx, treeId, [notTipId], 'want');
-      const metaSpy = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
-      const sut = computeClosure;
-
-      // Act
-      await sut(ctx, { tier: 'walk', wants: [wantId], not: [notTipId], objects: true });
-
-      // Assert
-      expect(consulted(metaSpy).filter((id) => id === missing)).toHaveLength(1);
-      metaSpy.mockRestore();
-    });
-  });
-
-  describe('Given a not tip naming an already-marked parent beside exactly the bound of fresh parents', () => {
-    describe('When computeClosure marks the not side', () => {
-      it('Then the marked parent is not queued again, so the walk stays within the bound and completes', async () => {
-        // Arrange — M is marked when A pops; if A's reference to M were queued
-        // regardless, the pending count would reach the bound one push early
-        // and the walk would refuse instead of completing.
-        const ctx = await buildSeededContext();
-        const treeId = await haveTree(ctx);
-        const m = await writeCommit(ctx, treeId, [], 'marked first');
-        const fresh = Array.from(
-          { length: MAX_WALK_QUEUE_SIZE },
-          (_, i) => i.toString(16).padStart(40, '0') as ObjectId,
-        );
-        const a = await writeCommit(ctx, treeId, [m, ...fresh], 'octopus');
-        const notTipId = await writeCommit(ctx, treeId, [m, a], 'have');
-        const wantId = await writeCommit(ctx, treeId, [notTipId], 'want');
-        const sut = computeClosure;
-
-        // Act
-        const result = await sut(ctx, {
-          tier: 'walk',
-          wants: [wantId],
-          not: [notTipId],
-          objects: true,
-        });
-
-        // Assert
-        expect(result.objects.map((o) => o.id)).toContain(wantId);
-      });
-    });
-  });
 
   describe.each([
     { label: 'a classified refusal', make: () => invalidWalkInput('boom') },
@@ -2562,21 +2519,20 @@ describe('computeClosure — the not-side ancestry walk consults each commit onc
     { label: 'a classified refusal', make: () => invalidWalkInput('boom') },
     { label: 'an unclassified failure', make: () => new Error('boom') },
   ])(
-    'Given a not-side ancestor read that fails with $label, When computeClosure marks the not side',
+    'Given a boundary commit read that fails with $label, When computeClosure marks its tree',
     ({ make }) => {
-      it('Then computeClosure rethrows that very error instead of skipping the ancestor', async () => {
+      it('Then computeClosure rethrows that very error instead of skipping the boundary', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const treeId = await haveTree(ctx);
-        const rootId = await writeCommit(ctx, treeId, [], 'root');
-        const notTipId = await writeCommit(ctx, treeId, [rootId], 'have');
+        const notTipId = await writeCommit(ctx, treeId, [], 'have');
         const wantId = await writeCommit(ctx, treeId, [notTipId], 'want');
         const thrown = make();
         const original = readCommitMetaModule.readCommitMeta;
         const metaSpy = vi
           .spyOn(readCommitMetaModule, 'readCommitMeta')
           .mockImplementation(async (c, id) => {
-            if (id === rootId) throw thrown;
+            if (id === notTipId) throw thrown;
             return original(c, id);
           });
         const sut = computeClosure;
@@ -2660,26 +2616,583 @@ describe('computeClosure — the not-side ancestry walk consults each commit onc
       expect(ids).not.toContain(notTipId);
     });
   });
+});
 
-  describe('Given two not tips whose ancestries name the same absent parent, When computeClosure marks the not side', () => {
-    it('Then that parent is consulted once across both tips — the miss memo is shared', async () => {
-      // Arrange — tipA and tipB each name the same missing parent; the shared
-      // memo must stop the second tip from re-reading it.
-      const ctx = await buildSeededContext();
-      const treeId = await haveTree(ctx);
-      const missing = 'e'.repeat(40) as ObjectId;
-      const tipA = await writeCommit(ctx, treeId, [missing], 'have A');
-      const tipB = await writeCommit(ctx, treeId, [missing], 'have B');
-      const wantId = await writeCommit(ctx, treeId, [tipA, tipB], 'want');
-      const metaSpy = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
-      const sut = computeClosure;
+describe('computeClosure — bitmap search across object sources', () => {
+  const ENC = new TextEncoder();
+  const DONOR_OBJECTS = '/repo/alt/objects';
+  const SHARED_CONTENT = 'shared-bitmap-content';
+  const MIDX_FLAVOUR = 'midx';
+  const PACK_FLAVOUR = 'pack';
 
-      // Act
-      await sut(ctx, { tier: 'walk', wants: [wantId], not: [tipA, tipB], objects: true });
+  type Flavour = typeof MIDX_FLAVOUR | typeof PACK_FLAVOUR;
 
-      // Assert
-      expect(consulted(metaSpy).filter((id) => id === missing)).toHaveLength(1);
-      metaSpy.mockRestore();
+  const bitmapBody = (ctx: Context): Uint8Array =>
+    buildBitmap({
+      optionFlags: 1,
+      digestLength: ctx.hashConfig.digestLength,
+      checksum: new Uint8Array(ctx.hashConfig.digestLength).fill(0xbb),
+      typeStreams: [
+        { bitSize: 1, bits: [] },
+        { bitSize: 1, bits: [] },
+        { bitSize: 1, bits: [0] },
+        { bitSize: 1, bits: [] },
+      ],
+      entries: [],
+      trailingBytes: 0,
+    });
+
+  async function borrowerContext(): Promise<Context> {
+    const ctx = createMemoryContext({
+      files: { '/repo/.git/objects/info/alternates': ENC.encode(`${DONOR_OBJECTS}\n`) },
+    });
+    await ctx.fs.mkdir(DONOR_OBJECTS);
+    return ctx;
+  }
+
+  async function packWithBitmapIn(
+    ctx: Context,
+    objectsDir: string,
+    name: string,
+  ): Promise<ObjectId> {
+    const [id] = await writeSyntheticPackIn(ctx, objectsDir, name, [
+      { kind: 'base', type: 'blob', content: ENC.encode(SHARED_CONTENT) },
+    ]);
+    await writeSyntheticBitmap(ctx, `${objectsDir}/pack/pack-${name}.bitmap`, bitmapBody(ctx));
+    return id as ObjectId;
+  }
+
+  async function midxBitmapIn(
+    ctx: Context,
+    objectsDir: string,
+    name: string,
+    id: ObjectId,
+  ): Promise<void> {
+    const { digestLength } = ctx.hashConfig;
+    const index = parsePackIndex(await ctx.fs.read(`${objectsDir}/pack/pack-${name}.idx`), 20);
+    const offset = lookupPackIndex(index, id) as number;
+    const midxSpec: MidxSpec = {
+      version: 1,
+      hashVersion: digestLength === 32 ? 2 : 1,
+      digestLength,
+      numBaseFiles: 0,
+      packNames: [`pack-${name}.idx`],
+      entries: [{ id, packIndex: 0, offset }],
+      revBody: [0],
+    };
+    await ctx.fs.write(`${objectsDir}/pack/multi-pack-index`, buildMidx(midxSpec));
+    const hex = '00'.repeat(digestLength);
+    await writeSyntheticBitmap(
+      ctx,
+      `${objectsDir}/pack/multi-pack-index-${hex}.bitmap`,
+      bitmapBody(ctx),
+    );
+  }
+
+  /** The same blob packed in the primary and in the donor, each source carrying the given artefact. */
+  async function twoSources(primary: Flavour, donor: Flavour) {
+    const ctx = await borrowerContext();
+    const primaryObjects = `${ctx.layout.gitDir}/objects`;
+    const id = await packWithBitmapIn(ctx, primaryObjects, 'primary');
+    await packWithBitmapIn(ctx, DONOR_OBJECTS, 'donor');
+    if (primary === MIDX_FLAVOUR) await midxBitmapIn(ctx, primaryObjects, 'primary', id);
+    if (donor === MIDX_FLAVOUR) await midxBitmapIn(ctx, DONOR_OBJECTS, 'donor', id);
+    const { primary: primarySource, sources } = await getObjectStore(ctx);
+    const donorSource = sources.find((source) => source !== primarySource);
+    if (donorSource === undefined) throw new Error('expected a donor source');
+    return { ctx, id, primarySource, donorSource };
+  }
+
+  const request = (id: ObjectId) =>
+    ({ tier: 'bitmap', wants: [id], not: [], objects: true }) as const;
+
+  const packsLoaded = (spy: { mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> } }) =>
+    spy.mock.calls.map((call) => (call[1] as { name: string }).name);
+
+  describe('Given a pack bitmap in the primary and in the donor', () => {
+    describe('When a bitmap-tier closure is requested', () => {
+      it('Then the primary pack bitmap answers and the donor pack bitmap is never loaded', async () => {
+        // Arrange
+        const { ctx, id } = await twoSources(PACK_FLAVOUR, PACK_FLAVOUR);
+        const packSpy = vi.spyOn(packBitmapBindingModule, 'loadPackBitmapArtefact');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, request(id));
+
+        // Assert
+        expect(result.tier).toBe('bitmap');
+        expect(packsLoaded(packSpy)).toEqual(['pack-primary']);
+        packSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a pack bitmap in the primary and a midx bitmap in the donor', () => {
+    describe('When a bitmap-tier closure is requested', () => {
+      it('Then the donor midx bitmap answers and no pack bitmap is loaded', async () => {
+        // Arrange
+        const { ctx, id, donorSource } = await twoSources(PACK_FLAVOUR, MIDX_FLAVOUR);
+        const midxSpy = vi.spyOn(midxBitmapBindingModule, 'loadMidxBitmapArtefact');
+        const packSpy = vi.spyOn(packBitmapBindingModule, 'loadPackBitmapArtefact');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, request(id));
+
+        // Assert
+        expect(result.tier).toBe('bitmap');
+        expect(midxSpy.mock.calls).toHaveLength(2);
+        expect(midxSpy.mock.calls[1]?.[1]).toBe(await donorSource.registry.midxBitmap());
+        expect(packSpy).not.toHaveBeenCalled();
+        midxSpy.mockRestore();
+        packSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a midx bitmap in the primary and in the donor', () => {
+    describe('When a bitmap-tier closure is requested', () => {
+      it('Then the primary midx bitmap answers and the donor midx bitmap is never loaded', async () => {
+        // Arrange
+        const { ctx, id, primarySource } = await twoSources(MIDX_FLAVOUR, MIDX_FLAVOUR);
+        const midxSpy = vi.spyOn(midxBitmapBindingModule, 'loadMidxBitmapArtefact');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, request(id));
+
+        // Assert
+        expect(result.tier).toBe('bitmap');
+        expect(midxSpy.mock.calls).toHaveLength(1);
+        expect(midxSpy.mock.calls[0]?.[1]).toBe(await primarySource.registry.midxBitmap());
+        midxSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a midx bitmap in the primary and a donor whose midx refuses to load', () => {
+    describe('When a bitmap-tier closure is requested', () => {
+      it('Then the donor refusal surfaces before any midx bitmap is opened', async () => {
+        // Arrange
+        const { ctx, id, donorSource } = await twoSources(MIDX_FLAVOUR, PACK_FLAVOUR);
+        const refusal = new Error('donor midx refused');
+        vi.spyOn(donorSource.registry, 'assertLoadable').mockRejectedValue(refusal);
+        const midxSpy = vi.spyOn(midxBitmapBindingModule, 'loadMidxBitmapArtefact');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, request(id)).catch((error: unknown) => error);
+
+        // Assert
+        expect(result).toBe(refusal);
+        expect(midxSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a corrupt primary pack bitmap and a healthy donor pack bitmap', () => {
+    describe('When a bitmap-tier closure is requested', () => {
+      it('Then the donor pack bitmap answers', async () => {
+        // Arrange
+        const { ctx, id } = await twoSources(PACK_FLAVOUR, PACK_FLAVOUR);
+        await writeSyntheticBitmap(
+          ctx,
+          `${ctx.layout.gitDir}/objects/pack/pack-primary.bitmap`,
+          new Uint8Array([1, 2, 3]),
+        );
+        const packSpy = vi.spyOn(packBitmapBindingModule, 'loadPackBitmapArtefact');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, request(id));
+
+        // Assert
+        expect(result.tier).toBe('bitmap');
+        expect(packsLoaded(packSpy)).toEqual(['pack-primary', 'pack-donor']);
+        packSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a corrupt donor pack bitmap as the only bitmap', () => {
+    describe('When a bitmap-tier closure is requested', () => {
+      it('Then it falls back to the walk', async () => {
+        // Arrange
+        const ctx = await borrowerContext();
+        const id = (
+          await writeSyntheticPackIn(ctx, DONOR_OBJECTS, 'donor', [
+            { kind: 'base', type: 'blob', content: ENC.encode(SHARED_CONTENT) },
+          ])
+        )[0] as ObjectId;
+        await writeSyntheticBitmap(
+          ctx,
+          `${DONOR_OBJECTS}/pack/pack-donor.bitmap`,
+          new Uint8Array([1, 2, 3]),
+        );
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, request(id));
+
+        // Assert
+        expect(result.tier).toBe('walk');
+      });
+    });
+  });
+
+  describe('Given a donor multi-pack-index with a smashed signature and a primary pack bitmap', () => {
+    describe('When a bitmap-tier closure is requested', () => {
+      it('Then it throws INVALID_MULTI_PACK_INDEX with check signature', async () => {
+        // Arrange
+        const { ctx, id } = await twoSources(PACK_FLAVOUR, PACK_FLAVOUR);
+        const badMidx = new Uint8Array(16);
+        badMidx.set([0x00, 0x49, 0x44, 0x58, 1, 1, 1, 0], 0);
+        await ctx.fs.write(`${DONOR_OBJECTS}/pack/multi-pack-index`, badMidx);
+        const sut = computeClosure;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, request(id));
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_MULTI_PACK_INDEX');
+        if (data.code === 'INVALID_MULTI_PACK_INDEX') expect(data.check).toBe('signature');
+      });
+    });
+  });
+});
+
+describe('computeClosure — a tree stored as a blob, with no type table', () => {
+  describe('Given a commit whose tree is a blob', () => {
+    describe('When an untyped walk lists its objects', () => {
+      it('Then the root read refuses as an unexpected object type', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blob = await writeBlob(ctx, 'not a tree');
+        const commit = await writeCommit(ctx, blob, [], 'm');
+        const sut = computeClosure;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { wants: [commit], not: [], objects: true, tier: 'walk' });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'tree',
+          actual: 'blob',
+          id: blob,
+        });
+      });
+    });
+  });
+
+  describe('Given a wanted tree whose directory entry is a blob', () => {
+    describe('When an untyped walk lists its objects', () => {
+      it('Then the entry is listed and its descent skipped', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blob = await writeBlob(ctx, 'not a tree');
+        const holder = await writeTree(ctx, [treeEntry('40000' as FileMode, 'sub', blob)]);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, { wants: [holder], not: [], objects: true, tier: 'walk' });
+
+        // Assert
+        expect(result.objects.map(({ id, type }) => ({ id, type }))).toEqual([
+          { id: holder, type: 'tree' },
+          { id: blob, type: 'tree' },
+        ]);
+      });
+    });
+  });
+});
+
+describe('computeClosure — an excluded tree entry stored as a blob, with no type table', () => {
+  describe('Given an excluded parent whose tree lists a blob with tree mode', () => {
+    describe('When an untyped walk marks the excluded tree', () => {
+      it('Then it marks the entry quietly', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const logged: string[] = [];
+        const ctx: Context = { ...base, logger: { error: (message) => logged.push(message) } };
+        const blob = await writeBlob(ctx, 'not a tree');
+        const excluded = await writeCommit(
+          ctx,
+          await writeTree(ctx, [treeEntry('40000' as FileMode, 'sub', blob)]),
+          [],
+          'excluded',
+        );
+        const empty = await writeTree(ctx, []);
+        const included = await writeCommit(ctx, empty, [excluded], 'included');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          wants: [blob, included],
+          not: [excluded],
+          objects: true,
+          tier: 'walk',
+        });
+
+        // Assert
+        expect({ ids: result.objects.map(({ id }) => id), logged }).toEqual({
+          ids: [included, empty],
+          logged: [],
+        });
+      });
+    });
+  });
+});
+
+describe('computeClosure — the commit walk the request selects', () => {
+  /** A merge of an older first parent and a newer second parent, with an unrelated commit to exclude. */
+  const buildDatedMerge = async () => {
+    const ctx = await buildSeededContext();
+    const tree = await writeTree(ctx, []);
+    const older = await writeDatedCommit(ctx, tree, [], 100);
+    const newer = await writeDatedCommit(ctx, tree, [], 900);
+    const merge = await writeDatedCommit(ctx, tree, [older, newer], 1000);
+    const unrelated = await writeDatedCommit(ctx, tree, [], 50);
+    return { ctx, older, newer, merge, unrelated };
+  };
+
+  /** A commit whose only parent the repository lacks. */
+  const buildGraftedTip = async () => {
+    const ctx = await buildSeededContext();
+    const tree = await writeTree(ctx, []);
+    const absentParent = 'b'.repeat(40) as ObjectId;
+    const tip = await writeDatedCommit(ctx, tree, [absentParent], 1000);
+    const unrelated = await writeDatedCommit(ctx, tree, [], 50);
+    return { ctx, tip, unrelated };
+  };
+
+  describe('Given a merge and nothing excluded', () => {
+    describe('When computeClosure walks it with firstParent: true', () => {
+      it('Then only the first-parent line is listed', async () => {
+        // Arrange
+        const { ctx, older, merge } = await buildDatedMerge();
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [merge],
+          not: [],
+          objects: false,
+          firstParent: true,
+        });
+
+        // Assert
+        expect(result.objects.map((object) => object.id)).toEqual([merge, older]);
+      });
+    });
+
+    describe('When computeClosure walks it with firstParent omitted', () => {
+      it('Then every parent is listed, in parent order', async () => {
+        // Arrange
+        const { ctx, older, newer, merge } = await buildDatedMerge();
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, { tier: 'walk', wants: [merge], not: [], objects: false });
+
+        // Assert
+        expect(result.objects.map((object) => object.id)).toEqual([merge, older, newer]);
+      });
+    });
+
+    describe('When computeClosure walks it with maxCount: 2', () => {
+      it('Then it lists the merge and its newer parent, in commit-date order', async () => {
+        // Arrange
+        const { ctx, newer, merge } = await buildDatedMerge();
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [merge],
+          not: [],
+          objects: false,
+          maxCount: 2,
+        });
+
+        // Assert
+        expect(result.objects.map((object) => object.id)).toEqual([merge, newer]);
+      });
+    });
+  });
+
+  describe('Given a commit whose parent the repository lacks and nothing excluded', () => {
+    describe('When computeClosure walks it with maxCount: 5', () => {
+      it('Then the walk stops at the missing edge instead of refusing', async () => {
+        // Arrange
+        const { ctx, tip } = await buildGraftedTip();
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [tip],
+          not: [],
+          objects: false,
+          maxCount: 5,
+        });
+
+        // Assert
+        expect(result.objects.map((object) => object.id)).toEqual([tip]);
+      });
+    });
+  });
+
+  describe('Given a merge and an unrelated commit excluded', () => {
+    describe('When computeClosure walks it with firstParent: true', () => {
+      it('Then only the first-parent line is listed', async () => {
+        // Arrange
+        const { ctx, older, merge, unrelated } = await buildDatedMerge();
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [merge],
+          not: [unrelated],
+          objects: false,
+          firstParent: true,
+        });
+
+        // Assert
+        expect(result.objects.map((object) => object.id)).toEqual([merge, older]);
+      });
+    });
+  });
+
+  describe('Given a commit whose parent the repository lacks and an unrelated commit excluded', () => {
+    describe('When computeClosure walks it', () => {
+      it('Then the walk stops at the missing edge instead of refusing', async () => {
+        // Arrange
+        const { ctx, tip, unrelated } = await buildGraftedTip();
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [tip],
+          not: [unrelated],
+          objects: false,
+        });
+
+        // Assert
+        expect(result.objects.map((object) => object.id)).toEqual([tip]);
+      });
+    });
+  });
+});
+
+describe('computeClosure — what a typing request logs', () => {
+  const recordingContext = async () => {
+    const base = await buildSeededContext();
+    const logged: Array<{ message: string; context: unknown }> = [];
+    const ctx: Context = {
+      ...base,
+      logger: { error: (message, context) => logged.push({ message, context }) },
+    };
+    return { ctx, logged };
+  };
+
+  describe('Given a wanted commit whose tree is a blob', () => {
+    describe('When computeClosure lists its objects under typing', () => {
+      it('Then the blob is logged, with its id, as not a tree and the walk dies on a bad tree', async () => {
+        // Arrange
+        const { ctx, logged } = await recordingContext();
+        const blob = await writeBlob(ctx, 'not a tree');
+        const named = await writeCommit(ctx, blob, [], 'names a blob');
+        const sut = computeClosure;
+
+        // Act
+        const caught = await sut(ctx, {
+          tier: 'walk',
+          wants: [named],
+          not: [],
+          objects: true,
+          objectTypes: createObjectTypeTable(),
+        }).catch((error: unknown) => error);
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'BAD_TREE_OBJECT', id: blob },
+          logged: [{ message: `Object ${blob} not a tree`, context: { id: blob } }],
+        });
+      });
+    });
+  });
+
+  describe('Given an excluded commit whose tree is a blob', () => {
+    describe('When computeClosure marks the excluded side under typing', () => {
+      it('Then the blob is logged, with its id, as not a tree and the included side is listed', async () => {
+        // Arrange
+        const { ctx, logged } = await recordingContext();
+        const blob = await writeBlob(ctx, 'not a tree');
+        const excluded = await writeCommit(ctx, blob, [], 'excluded');
+        const empty = await writeTree(ctx, []);
+        const included = await writeCommit(ctx, empty, [excluded], 'included');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [included],
+          not: [excluded],
+          objects: true,
+          objectTypes: createObjectTypeTable(),
+        });
+
+        // Assert
+        expect({ ids: result.objects.map(({ id }) => id), logged }).toEqual({
+          ids: [included, empty],
+          logged: [{ message: `Object ${blob} not a tree`, context: { id: blob } }],
+        });
+      });
+    });
+  });
+
+  describe('Given an excluded tip that is a blob', () => {
+    describe('When computeClosure marks the excluded side under typing', () => {
+      it('Then nothing is logged, as a blob tip is marked outright and never parsed as a tree', async () => {
+        // Arrange
+        const { ctx, logged } = await recordingContext();
+        const blob = await writeBlob(ctx, 'excluded');
+        const tree = await writeTree(ctx, [treeEntry('100644' as FileMode, 'f.txt', blob)]);
+        const wanted = await writeCommit(ctx, tree, [], 'wanted');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [wanted],
+          not: [blob],
+          objects: true,
+          objectTypes: createObjectTypeTable(),
+        });
+
+        // Assert
+        expect({ ids: result.objects.map(({ id }) => id), logged }).toEqual({
+          ids: [wanted, tree],
+          logged: [],
+        });
+      });
     });
   });
 });

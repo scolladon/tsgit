@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
   assertRemoteNameUnnested,
-  assertRemoteRefspecsValid,
+  buildRemoteTable,
   fetchesInto,
   listBranchReferrers,
   mapsTrackingNamespace,
@@ -11,9 +12,12 @@ import {
 import type { ParsedConfig } from '../../../../../src/application/primitives/config-read.js';
 import { sanitizeForDisplay, type TsgitError } from '../../../../../src/domain/error.js';
 import type { RefName } from '../../../../../src/domain/objects/object-id.js';
+import type { Context } from '../../../../../src/ports/context.js';
 
 const buildBranch = (
-  entries: ReadonlyArray<readonly [string, { remote?: string; merge?: string }]>,
+  entries: ReadonlyArray<
+    readonly [string, { remote?: string; merge?: string; merges?: ReadonlyArray<string> }]
+  >,
 ): NonNullable<ParsedConfig['branch']> => new Map(entries);
 
 const buildRemote = (
@@ -181,30 +185,42 @@ describe('application/commands/internal/remote-config', () => {
     });
   });
 
-  describe('assertRemoteRefspecsValid', () => {
+  describe('buildRemoteTable', () => {
+    /** A memory repository whose local config is `content`. */
+    const repoWithConfig = async (content: string): Promise<Context> => {
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, content);
+      return ctx;
+    };
+
     describe('Given a remote configuring a refspec git would refuse', () => {
-      describe('When assertRemoteRefspecsValid runs', () => {
+      describe('When buildRemoteTable runs', () => {
         it.each([
           {
-            entry: { fetch: ['refs/heads/*'] },
+            config: '[remote "origin"]\n\tfetch = refs/heads/*\n',
             raw: 'refs/heads/*',
             label: 'a fetch spec is named verbatim with the reason it was refused for',
           },
           {
-            entry: { push: ['refs/heads/a:'] },
+            config: '[remote "origin"]\n\tpush = refs/heads/a:\n',
             raw: 'refs/heads/a:',
             label: 'a push spec is named verbatim with the reason it was refused for',
           },
-        ])('Then $label', ({ entry, raw }) => {
+          {
+            config: '[remote "a"]\n\tpush = refs/heads/a:\n[remote "a"]\n\tfetch = refs/heads/*\n',
+            raw: 'refs/heads/a:',
+            label: 'the first unusable spec in config order is the one named',
+          },
+        ])('Then $label', async ({ config, raw }) => {
           // Arrange
-          const sut = assertRemoteRefspecsValid;
-          const config: ParsedConfig = { remote: buildRemote([['origin', entry]]) };
+          const ctx = await repoWithConfig(config);
+          const sut = buildRemoteTable;
 
           // Act
-          const caught = catchError(() => sut(config));
+          const [outcome] = await Promise.allSettled([sut(ctx)]);
 
           // Assert
-          expect(caught?.data).toEqual({
+          expect((outcome as PromiseRejectedResult).reason.data).toEqual({
             code: 'REFSPEC_INVALID',
             raw,
             reason: 'not a valid refspec',
@@ -213,22 +229,27 @@ describe('application/commands/internal/remote-config', () => {
       });
     });
 
-    describe('Given every configured remote carries usable refspecs', () => {
-      describe('When assertRemoteRefspecsValid runs', () => {
-        it('Then it returns without refusing', () => {
+    describe('Given no entry git would die on', () => {
+      describe('When buildRemoteTable runs', () => {
+        it.each([
+          {
+            config:
+              '[remote "origin"]\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n\tpush = HEAD:refs/x\n',
+            label: 'usable refspecs',
+          },
+          { config: '[remote "origin"]\n\turl = refs/heads/*\n', label: 'a spec-shaped url' },
+          { config: '[remote "origin"]\n\tfetch\n', label: 'a valueless fetch' },
+          { config: '[remote "/x"]\n\tfetch = refs/heads/*\n', label: 'a /-named remote spec' },
+        ])('Then $label refuse nothing', async ({ config }) => {
           // Arrange
-          const sut = assertRemoteRefspecsValid;
-          const config: ParsedConfig = {
-            remote: buildRemote([
-              ['origin', { fetch: ['+refs/heads/*:refs/remotes/origin/*'], push: ['HEAD:refs/x'] }],
-            ]),
-          };
+          const ctx = await repoWithConfig(config);
+          const sut = buildRemoteTable;
 
           // Act
-          const caught = catchError(() => sut(config));
+          const result = await sut(ctx);
 
           // Assert
-          expect(caught).toBeUndefined();
+          expect(result).toBeUndefined();
         });
       });
     });
@@ -245,10 +266,20 @@ describe('application/commands/internal/remote-config', () => {
           },
           {
             config: {
-              branch: buildBranch([['main', { remote: 'origin', merge: 'refs/heads/main' }]]),
+              branch: buildBranch([
+                [
+                  'main',
+                  { remote: 'origin', merge: 'refs/heads/main', merges: ['refs/heads/main'] },
+                ],
+              ]),
             } as ParsedConfig,
             expected: [
-              { branch: 'main', ref: 'refs/heads/main' as RefName, merge: 'refs/heads/main' },
+              {
+                branch: 'main',
+                ref: 'refs/heads/main' as RefName,
+                merge: 'refs/heads/main',
+                merges: ['refs/heads/main'],
+              },
             ],
             label:
               'one branch tracking the named remote returns that branch with the paired merge value',
@@ -257,8 +288,11 @@ describe('application/commands/internal/remote-config', () => {
             config: {
               branch: buildBranch([['main', { remote: 'origin' }]]),
             } as ParsedConfig,
-            expected: [{ branch: 'main', ref: 'refs/heads/main' as RefName, merge: undefined }],
-            label: 'a branch with `remote = <name>` but no merge leaves merge undefined',
+            expected: [
+              { branch: 'main', ref: 'refs/heads/main' as RefName, merge: undefined, merges: [] },
+            ],
+            label:
+              'a branch with `remote = <name>` but no merge leaves merge undefined and merges empty',
           },
           {
             config: {

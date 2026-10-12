@@ -20,9 +20,10 @@ interface FetchMissingResult {
 
 ## Behaviour
 
-- Objects already present locally are filtered before the network call.
+- Objects already present locally are filtered before the network call: the object stores are re-read once, so a pack another process landed since the last scan is seen, then each oid is probed across every source.
 - The fetch goes to the promisor remote recorded in `.git/config`; an error is thrown if none exists.
 - Lazy-fetch sends **no filter** — the requested oids are delivered in full.
+- Like git's lazy-fetch `git fetch <remote> --filter=blob:none` child, it records `remote.<name>.partialclonefilter = blob:none` on a promisor remote that records none, and warns through `ctx.logger` for each promisor remote whose name starts with `/`. A remote with an absent or empty `url` refuses `REMOTE_NOT_CONFIGURED`.
 - Concurrent calls for the same oid share one in-flight fetch.
 
 ## Examples

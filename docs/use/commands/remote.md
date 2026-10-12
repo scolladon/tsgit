@@ -14,7 +14,7 @@ interface RemoteInfo {
 
 interface RemoteShow extends RemoteInfo {
   readonly trackingRefs: ReadonlyMap<RefName, ObjectId>;
-  readonly trackedBy: ReadonlyArray<{ branch: RefName; merge: string | undefined }>;
+  readonly trackedBy: ReadonlyArray<{ branch: RefName; merge: ReadonlyArray<string> }>;
 }
 
 interface RemoteNamespace {

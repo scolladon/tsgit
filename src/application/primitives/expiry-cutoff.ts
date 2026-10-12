@@ -1,6 +1,7 @@
 /**
- * Resolves the expiry date-expression grammar shared by `gc.pruneExpire`
- * and `reflog expire` to a unix-seconds cutoff. The keyword layer
+ * Resolves the expiry date-expression grammar of `reflog expire` and of
+ * the config expiries (`gc.pruneExpire`, `gc.worktreePruneExpire`) to a
+ * unix-seconds cutoff. The keyword layer
  * (`never`/`false`/`all`/`now` — see `resolveExpiryCutoff`) is handled
  * before delegation; every remaining form (`yesterday`, ISO-8601,
  * `@<epoch>`, `<n>.<unit>.ago`) goes to `parseApproxidate`.
@@ -18,8 +19,7 @@ export interface ExpiryCutoffOptions {
 }
 
 /**
- * git's `parse_expiry_date` grammar, shared by `gc.pruneExpire` and
- * `reflog expire`, pinned against git 2.55.0:
+ * git's `parse_expiry_date` grammar, as `reflog expire` reads it, pinned against git 2.55.0:
  * - exact `false` never expires anything; exact `all`/`now` expire
  *   EVERYTHING, future-dated entries included (git maps them to the
  *   maximum time, not the current one — measured: an entry stamped a year
@@ -41,11 +41,23 @@ export const resolveExpiryCutoff = (raw: string, nowSeconds: number): number | u
   return parseApproxidate(raw, nowSeconds);
 };
 
-/** Resolve `pruneExpire` (a raw `gc.pruneExpire` value, already defaulted by the caller) to a unix-seconds cutoff. */
-export const expiryCutoff = (pruneExpire: string, opts: ExpiryCutoffOptions = {}): number => {
-  const now = opts.now ?? (() => Date.now());
-  const nowSeconds = Math.floor(now() / 1000);
-  const cutoff = resolveExpiryCutoff(pruneExpire, nowSeconds);
-  if (cutoff === undefined) throw configBadDateValue(pruneExpire);
+const nowSecondsOf = (opts: ExpiryCutoffOptions): number =>
+  Math.floor((opts.now ?? (() => Date.now()))() / 1000);
+
+/**
+ * git's `repo_config_get_expiry` gate followed by `parse_expiry_date`, for an
+ * expiry read from config (`gc.pruneExpire`, `gc.worktreePruneExpire`). Only the exact `now`
+ * may reach the present; every other value must parse to a moment strictly
+ * before it — `all` and `false` included, which git's approxidate reads as
+ * the present — or git dies on the config value (measured, git 2.55.0).
+ */
+export const configExpiryCutoff = (raw: string, opts: ExpiryCutoffOptions = {}): number => {
+  if (raw === 'now') return Number.POSITIVE_INFINITY;
+  const nowSeconds = nowSecondsOf(opts);
+  const cutoff =
+    raw.trim().toLowerCase() === 'never'
+      ? Number.NEGATIVE_INFINITY
+      : parseApproxidate(raw, nowSeconds);
+  if (cutoff === undefined || cutoff >= nowSeconds) throw configBadDateValue(raw);
   return cutoff;
 };

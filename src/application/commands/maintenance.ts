@@ -5,7 +5,9 @@
  * check inside `status`, no write-path hook — a caller decides when
  * maintenance happens, and only the tasks it names run.
  *
- * Ships two tasks. `commit-graph` writes `objects/info/commit-graph`.
+ * Ships two tasks. `commit-graph` writes one split layer of the commit-graph
+ * chain, as `git commit-graph write --split --reachable` does — nothing when
+ * every reachable commit is already in the graph.
  * `gc` consolidates every pack it owns, by class: reachable objects — loose,
  * already packed, or living in a promisor pack — repack into one new normal
  * pack; every promisor object ALSO repacks whole into one new promisor
@@ -22,13 +24,28 @@
  * aged past `gc.pruneExpire` — `tmp_`-prefixed at `objects/` root and
  * `objects/pack/`, `tmp_obj_`-prefixed within a fanout dir — but only on a
  * run that actually proceeds past the `gc.auto` gate, never on a declined
- * one.
+ * one. A `gc` that ran then rewrites the reachable commit-graph as one file,
+ * dropping any split chain, unless `gc.writeCommitGraph` or
+ * `core.commitGraph` is false.
  */
 import { invalidOption } from '../../domain/commands/error.js';
+import { parseGitBoolean } from '../../domain/config/config-ini.js';
+import type { TsgitErrorData } from '../../domain/error.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { findLastEntry } from '../primitives/config-read.js';
+import { hasReplaceRefs } from '../primitives/internal/commit-graph-compatible.js';
+import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { writeCommitGraph } from '../primitives/write-commit-graph.js';
-import { GC_NOT_RUN, type GcResult, runGcTask } from './internal/gc-pipeline.js';
+import { writeSplitCommitGraph } from '../primitives/write-split-commit-graph.js';
+import {
+  GC_NOT_RUN,
+  type GcResult,
+  type GcSettings,
+  readGcSettings,
+  runGcTask,
+} from './internal/gc-pipeline.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 
 export type MaintenanceTask = 'commit-graph' | 'gc';
@@ -44,8 +61,19 @@ export interface MaintenanceOptions {
   readonly auto?: boolean;
 }
 
+/** A task git reports as `task '<name>' failed`: the run goes on and exits 1. */
+export interface MaintenanceTaskFailure {
+  readonly task: MaintenanceTask;
+  /** The error code of the refusal the task met. */
+  readonly code: string;
+  /** The refusal itself — enough to rebuild the `fatal:` line git's task child prints. */
+  readonly data: TsgitErrorData;
+}
+
 export interface MaintenanceResult {
   readonly tasksRun: ReadonlyArray<MaintenanceTask>;
+  /** Tasks that failed, in run order; any entry is git's exit status 1. */
+  readonly tasksFailed: ReadonlyArray<MaintenanceTaskFailure>;
   readonly commitGraphWritten: boolean;
   readonly commitsInGraph: number;
   readonly looseObjectsBefore: number;
@@ -81,12 +109,74 @@ const validateTasks = (tasks: ReadonlyArray<MaintenanceTask>): void => {
   }
 };
 
-const runCommitGraphTask = async (
-  ctx: Context,
-): Promise<Pick<MaintenanceResult, 'commitGraphWritten' | 'commitsInGraph'>> => {
+type CommitGraphOutcome = Pick<MaintenanceResult, 'commitGraphWritten' | 'commitsInGraph'>;
+
+const NO_COMMIT_GRAPH: CommitGraphOutcome = { commitGraphWritten: false, commitsInGraph: 0 };
+
+/** A boolean key set to false, its last value read as git's config set does. */
+const lastBooleanIsFalse = async (ctx: Context, section: string, key: string): Promise<boolean> => {
+  const last = await findLastEntry(ctx, section, key);
+  if (last?.value == null) return false;
+  const parsed = parseGitBoolean(last.value);
+  return parsed.ok && !parsed.value;
+};
+
+const writeReachableCommitGraph = async (ctx: Context): Promise<CommitGraphOutcome> => {
   const { commitCount } = await writeCommitGraph(ctx);
   return { commitGraphWritten: commitCount > 0, commitsInGraph: commitCount };
 };
+
+/** git's `maintenance_task_commit_graph`: `prepare_repo_settings` first, then a
+ *  disabled `core.commitGraph` skips the write, silently; otherwise one split
+ *  layer, `commitsInGraph` counting the whole chain. */
+const runCommitGraphTask = async (
+  ctx: Context,
+): Promise<CommitGraphOutcome | MaintenanceTaskFailure> => {
+  await assertRepoSettingsValid(ctx);
+  if (await lastBooleanIsFalse(ctx, 'core', 'commitGraph')) return NO_COMMIT_GRAPH;
+  const written = await failureOr('commit-graph', () => writeSplitCommitGraph(ctx));
+  if ('code' in written) return written;
+  return { commitGraphWritten: written.written, commitsInGraph: written.commitCount };
+};
+
+/** git's gc task: the parent's own object-store reads settle the repo settings
+ *  first, dying on a malformed one; then a coded refusal from the gc child
+ *  fails the task. */
+const runGcStep = async (
+  ctx: Context,
+  opts: MaintenanceOptions,
+  settings: GcSettings,
+): Promise<{ readonly ran: boolean; readonly result: GcResult } | MaintenanceTaskFailure> => {
+  await assertRepoSettingsValid(ctx);
+  return failureOr('gc', () => runGcTask(ctx, { auto: opts.auto, settings }));
+};
+
+const COMMIT_GRAPH_DISABLED_WARNING =
+  "attempting to write a commit-graph, but 'core.commitGraph' is disabled";
+
+/** git's `cmd_gc` tail: a gc that ran writes the reachable commit-graph unless
+ *  `gc.writeCommitGraph` is false — and `write_commit_graph` itself declines,
+ *  warning, when `core.commitGraph` is false, and silently while replace refs
+ *  apply, its in-process write not disabling them; `undefined` when nothing is written. */
+const writeGcCommitGraph = async (ctx: Context): Promise<CommitGraphOutcome | undefined> => {
+  await assertRepoSettingsValid(ctx);
+  if (await lastBooleanIsFalse(ctx, 'gc', 'writeCommitGraph')) return undefined;
+  if (await lastBooleanIsFalse(ctx, 'core', 'commitGraph')) {
+    ctx.logger?.warn?.(COMMIT_GRAPH_DISABLED_WARNING);
+    return undefined;
+  }
+  if (await hasReplaceRefs(ctx)) return undefined;
+  return writeReachableCommitGraph(ctx);
+};
+
+/** A commit-graph a gc already wrote stays written when a later task finds nothing new to add. */
+const laterOutcome = (
+  earlier: CommitGraphOutcome,
+  later: CommitGraphOutcome,
+): CommitGraphOutcome => ({
+  commitGraphWritten: earlier.commitGraphWritten || later.commitGraphWritten,
+  commitsInGraph: later.commitsInGraph,
+});
 
 /** `tasks` with later duplicates dropped, first occurrence's position kept —
  *  the shape `maintenance`'s task loop needs to run each requested task
@@ -102,39 +192,90 @@ function orderedUniqueTasks(tasks: ReadonlyArray<MaintenanceTask>): ReadonlyArra
   return ordered;
 }
 
+/**
+ * Run each requested maintenance task once, in the order first requested.
+ * Pinned against git 2.55.0 (`GIT_TRACE=1 git maintenance run --task=…
+ * --task=…`, both orderings): `git maintenance run` executes requested tasks
+ * in the order they were REQUESTED, not a fixed internal priority —
+ * `--task=commit-graph --task=gc` runs commit-graph first;
+ * `--task=gc --task=commit-graph` runs gc first. Mirrored here rather than
+ * hard-coding either task first.
+ */
 export const maintenance = async (
   ctx: Context,
   opts: MaintenanceOptions,
 ): Promise<MaintenanceResult> => {
   await assertOperationalRepository(ctx);
   validateTasks(opts.tasks);
-
-  // Pinned against git 2.55.0 (`GIT_TRACE=1 git maintenance run --task=…
-  // --task=…`, both orderings): `git maintenance run` executes requested
-  // tasks in the order they were REQUESTED, not a fixed internal priority —
-  // `--task=commit-graph --task=gc` runs commit-graph first;
-  // `--task=gc --task=commit-graph` runs gc first. Mirrored here rather
-  // than hard-coding either task first.
-  let commitGraphOutcome: Pick<MaintenanceResult, 'commitGraphWritten' | 'commitsInGraph'> = {
-    commitGraphWritten: false,
-    commitsInGraph: 0,
-  };
-  // Stryker disable next-line BooleanLiteral: equivalent — `gcOutcome.ran` is read only inside the loop below, immediately after `gcOutcome` is reassigned in that same iteration's `gc` branch; the final return spreads only `.result`, never `.ran`. This initial value is therefore never observed, whichever task list is requested.
-  let gcOutcome: { readonly ran: boolean; readonly result: GcResult } = {
-    ran: false,
-    result: GC_NOT_RUN,
-  };
-  const tasksRun: MaintenanceTask[] = [];
-
+  const gcSettings = await readGcSettings(ctx);
+  let progress = NOTHING_RUN;
   for (const task of orderedUniqueTasks(opts.tasks)) {
-    if (task === 'commit-graph') {
-      commitGraphOutcome = await runCommitGraphTask(ctx);
-      tasksRun.push('commit-graph');
-      continue;
-    }
-    gcOutcome = await runGcTask(ctx, { auto: opts.auto });
-    if (gcOutcome.ran) tasksRun.push('gc');
+    progress =
+      task === 'commit-graph'
+        ? await commitGraphStep(ctx, progress)
+        : await gcStep(ctx, { opts, settings: gcSettings }, progress);
   }
-
-  return { tasksRun, ...commitGraphOutcome, ...gcOutcome.result };
+  const { tasksRun, tasksFailed } = progress;
+  return { tasksRun, tasksFailed, ...progress.commitGraph, ...progress.gc };
 };
+
+/** What the tasks run so far have produced. */
+interface MaintenanceProgress {
+  readonly commitGraph: CommitGraphOutcome;
+  readonly gc: GcResult;
+  readonly tasksRun: ReadonlyArray<MaintenanceTask>;
+  readonly tasksFailed: ReadonlyArray<MaintenanceTaskFailure>;
+}
+
+const NOTHING_RUN: MaintenanceProgress = {
+  commitGraph: NO_COMMIT_GRAPH,
+  gc: GC_NOT_RUN,
+  tasksRun: [],
+  tasksFailed: [],
+};
+
+const failedStep = (
+  progress: MaintenanceProgress,
+  failure: MaintenanceTaskFailure,
+): MaintenanceProgress => ({ ...progress, tasksFailed: [...progress.tasksFailed, failure] });
+
+const commitGraphStep = async (
+  ctx: Context,
+  progress: MaintenanceProgress,
+): Promise<MaintenanceProgress> => {
+  const outcome = await runCommitGraphTask(ctx);
+  if ('code' in outcome) return failedStep(progress, outcome);
+  return {
+    ...progress,
+    commitGraph: laterOutcome(progress.commitGraph, outcome),
+    tasksRun: [...progress.tasksRun, 'commit-graph'],
+  };
+};
+
+/** A gc that ran is followed by the commit-graph write git's `cmd_gc` tail performs. */
+const gcStep = async (
+  ctx: Context,
+  config: { readonly opts: MaintenanceOptions; readonly settings: GcSettings },
+  progress: MaintenanceProgress,
+): Promise<MaintenanceProgress> => {
+  const gcRun = await runGcStep(ctx, config.opts, config.settings);
+  if ('code' in gcRun) return failedStep(progress, gcRun);
+  if (!gcRun.ran) return { ...progress, gc: gcRun.result };
+  const tasksRun = [...progress.tasksRun, 'gc' as const];
+  const commitGraph = (await writeGcCommitGraph(ctx)) ?? progress.commitGraph;
+  return { ...progress, gc: gcRun.result, tasksRun, commitGraph };
+};
+
+/** The write git runs as a child: its coded refusal fails the task; anything else is a bug and propagates. */
+async function failureOr<T extends object>(
+  task: MaintenanceTask,
+  run: () => Promise<T>,
+): Promise<T | MaintenanceTaskFailure> {
+  try {
+    return await run();
+  } catch (error) {
+    const code = errorDataCode(error);
+    if (code === undefined) throw error;
+    return { task, code, data: (error as { readonly data: TsgitErrorData }).data };
+  }
+}

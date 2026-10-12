@@ -23,19 +23,22 @@ const PATTERN_PLACEHOLDER = 'x';
 
 /** One refspec split the way `parse_refspec` splits it: the force/negative
  *  marker stripped, then the LAST colon, as git's own reverse search takes it. */
-interface RefspecSides {
+export interface RefspecSides {
   readonly negative: boolean;
+  /** The leading `+`: the ref it maps updates even when not a fast-forward. */
+  readonly force: boolean;
   readonly src: string;
   /** `undefined` when the spec carries no colon at all — not the same as empty. */
   readonly dst: string | undefined;
 }
 
-const splitSides = (spec: string): RefspecSides => {
+export const splitSides = (spec: string): RefspecSides => {
   const negative = spec.startsWith(NEGATIVE_PREFIX);
-  const body = negative || spec.startsWith(FORCE_PREFIX) ? spec.slice(1) : spec;
+  const force = spec.startsWith(FORCE_PREFIX);
+  const body = negative || force ? spec.slice(1) : spec;
   const colon = body.lastIndexOf(':');
-  if (colon === -1) return { negative, src: body, dst: undefined };
-  return { negative, src: body.slice(0, colon), dst: body.slice(colon + 1) };
+  if (colon === -1) return { negative, force, src: body, dst: undefined };
+  return { negative, force, src: body.slice(0, colon), dst: body.slice(colon + 1) };
 };
 
 /** git's `check_refname_format(side, REFNAME_ALLOW_ONELEVEL | pattern)`: a

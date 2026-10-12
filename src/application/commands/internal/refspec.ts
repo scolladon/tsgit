@@ -5,7 +5,7 @@
  *
  *  <src>:<dst> standard push
  *  +<src>:<dst> force push
- *  :<dst> delete remote dst
+ *  :<dst> delete remote dst, matched against the remote's refs as written
  *  <branch> shorthand for refs/heads/<branch>:refs/heads/<branch>
  *  +<branch> force shorthand
  *  HEAD source-side symbolic; resolver expands
@@ -73,12 +73,13 @@ export const parseRefspec = (raw: string): ParsedRefspec => {
   if (dstRaw === '') {
     throw refspecInvalid(raw, 'destination must not be empty');
   }
+  if (srcRaw === '') {
+    // A delete's destination is matched against the remote's refs as written.
+    return { force, src: '', dst: dstRaw, isDelete: true };
+  }
   const dst = expandShort(dstRaw);
   if (dst === 'HEAD') {
     throw refspecInvalid(raw, 'destination must not be HEAD');
-  }
-  if (srcRaw === '') {
-    return { force, src: '', dst, isDelete: true };
   }
   const src = expandShort(srcRaw);
   return { force, src, dst, isDelete: false };

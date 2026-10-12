@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
-import { branchCreate } from '../../../../../src/application/commands/branch.js';
+import { branchCreate, branchList } from '../../../../../src/application/commands/branch.js';
+import { commit } from '../../../../../src/application/commands/commit.js';
+import { status } from '../../../../../src/application/commands/status.js';
+import { tagList } from '../../../../../src/application/commands/tag.js';
 import {
   invalidateConfigCache,
   memoizeRepoSettingsVerdict,
@@ -55,6 +58,17 @@ const assertRefusesWithBadMaxTreeDepth = async (op: () => Promise<unknown>): Pro
   expect(data.key).toBe('core.maxtreedepth');
   expect(data.value).toBe('2.5');
   expect(data.reason).toBe('invalid unit');
+};
+
+/** The refusal `op` throws, as data; `undefined` when it resolves. */
+const refusalOf = async (op: () => Promise<unknown>): Promise<BadNumericData | undefined> => {
+  try {
+    await op();
+    return undefined;
+  } catch (err) {
+    expect(err).toBeInstanceOf(TsgitError);
+    return (err as TsgitError).data as BadNumericData;
+  }
 };
 
 describe('internal/repo-settings-gate', () => {
@@ -231,6 +245,88 @@ describe('internal/repo-settings-gate', () => {
           const data = (caught as TsgitError).data as BadNumericData;
           expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
           expect(data.key).toBe('core.maxtreedepth');
+        });
+      });
+    });
+  });
+
+  describe('assertRepoSettingsValid — the core.packedGit bounds join the class', () => {
+    describe.each(['packedGitWindowSize', 'packedGitLimit'])('Given a valueless core.%s', (key) => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_NUMERIC_VALUE naming the key, value empty', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, `[core]\n\t${key}\n`);
+          const sut = assertRepoSettingsValid;
+
+          // Act
+          const caught = await refusalOf(() => sut(ctx));
+
+          // Assert
+          expect(caught?.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(caught?.key).toBe(`core.${key.toLowerCase()}`);
+          expect(caught?.value).toBe('');
+          expect(caught?.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given core.packedGitWindowSize malformed on line 2 and core.deltaBaseCacheLimit on line 3', () => {
+      describe('When called', () => {
+        it('Then names core.deltabasecachelimit — prepare_repo_settings reads it first', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tpackedGitWindowSize = x\n\tdeltaBaseCacheLimit = x\n');
+          const sut = assertRepoSettingsValid;
+
+          // Act
+          const caught = await refusalOf(() => sut(ctx));
+
+          // Assert
+          expect(caught?.key).toBe('core.deltabasecachelimit');
+        });
+      });
+    });
+
+    describe('Given core.ignoreCase = x on line 2 and core.packedGitLimit = x on line 3', () => {
+      describe.each([
+        ['status', (ctx: Context) => status(ctx)],
+        ['commit', (ctx: Context) => commit(ctx, { message: 'm' })],
+      ] as const)('When %s runs', (_verb, sut) => {
+        it('Then it names core.packedgitlimit — its prologue reads the settings before its config', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tignoreCase = x\n\tpackedGitLimit = x\n');
+
+          // Act
+          const caught = await refusalOf(() => sut(ctx));
+
+          // Assert
+          expect(caught?.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(caught?.key).toBe('core.packedgitlimit');
+        });
+      });
+    });
+
+    describe('Given only a malformed core.packedGitLimit', () => {
+      describe.each([
+        ['branch list', branchList],
+        ['tag list', tagList],
+      ] as const)('When %s runs', (_verb, sut) => {
+        it('Then it lists — git reads the bound only on the way to the object store', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tpackedGitLimit = x\n');
+
+          // Act
+          const caught = await refusalOf(() => sut(ctx));
+
+          // Assert
+          expect(caught).toBeUndefined();
         });
       });
     });
@@ -593,6 +689,199 @@ describe('internal/repo-settings-gate', () => {
         expect(repoSettingsVerdictSettled(ctx)).toBe(false);
         await assertRefusesWithBadMaxTreeDepth(() => assertRepoSettingsValid(ctx));
       });
+    });
+  });
+});
+
+describe('Given a boolean prepare_repo_settings reads', () => {
+  describe.each([
+    { config: '[core]\n\tcommitGraph = x\n', refused: { key: 'core.commitgraph', value: 'x' } },
+    {
+      config: '[feature]\n\texperimental = no-way\n',
+      refused: { key: 'feature.experimental', value: 'no-way' },
+    },
+    { config: '[index]\n\tsparse = 2x\n', refused: { key: 'index.sparse', value: '2x' } },
+    {
+      config: '[core]\n\tuseReplaceRefs = maybe\n',
+      refused: { key: 'core.usereplacerefs', value: 'maybe' },
+    },
+    {
+      config: '[core]\n\tmaxTreeDepth = 2.5\n\tcommitGraph = y\n[feature]\n\tmanyFiles = z\n',
+      refused: { key: 'feature.manyfiles', value: 'z' },
+    },
+    {
+      config: '[core]\n\tmaxTreeDepth = 2.5\n\tcommitGraph = y\n',
+      refused: { key: 'core.commitgraph', value: 'y' },
+    },
+    { config: '[core]\n\tcommitGraph = x\n\tcommitGraph = false\n', refused: undefined },
+    { config: '[core]\n\tcommitGraph\n', refused: undefined },
+  ])('When the gate reads $config', ({ config, refused }) => {
+    it(`Then it ${refused === undefined ? 'accepts it' : `refuses ${refused.key}, in git's reading order`}`, async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx);
+      await seedConfig(ctx, config);
+      const sut = assertRepoSettingsValid;
+
+      // Act
+      const [outcome] = await Promise.allSettled([sut(ctx)]);
+
+      // Assert
+      const data = outcome.status === 'rejected' ? (outcome.reason as TsgitError).data : undefined;
+      expect(data).toEqual(
+        refused === undefined
+          ? undefined
+          : { code: 'CONFIG_BAD_BOOLEAN_VALUE', ...refused, source: `${ctx.layout.gitDir}/config` },
+      );
+    });
+  });
+});
+
+describe('Given commitGraph.generationVersion among the settings prepare_repo_settings reads', () => {
+  const numeric = (value: string, reason: string) => ({
+    code: 'CONFIG_BAD_NUMERIC_VALUE',
+    key: 'commitgraph.generationversion',
+    value,
+    reason,
+  });
+  describe.each([
+    {
+      config: '[commitGraph]\n\tgenerationVersion = abc\n',
+      refused: numeric('abc', 'invalid unit'),
+    },
+    {
+      config: '[commitGraph]\n\tgenerationVersion = 2147483648\n',
+      refused: numeric('2147483648', 'out of range'),
+    },
+    {
+      config: '[commitGraph]\n\tgenerationVersion = abc\n\treadChangedPaths = maybe\n',
+      refused: numeric('abc', 'invalid unit'),
+    },
+    {
+      config: '[core]\n\tmaxTreeDepth = zz\n[commitGraph]\n\tgenerationVersion = abc\n',
+      refused: numeric('abc', 'invalid unit'),
+    },
+    {
+      config: '[commitGraph]\n\tgenerationVersion = abc\n[core]\n\tcommitGraph = maybe\n',
+      refused: {
+        code: 'CONFIG_BAD_BOOLEAN_VALUE',
+        key: 'core.commitgraph',
+        value: 'maybe',
+      },
+    },
+    { config: '[commitGraph]\n\tgenerationVersion = 1k\n', refused: undefined },
+    {
+      config: '[commitGraph]\n\tgenerationVersion = abc\n\tgenerationVersion = 1\n',
+      refused: undefined,
+    },
+  ])('When the gate reads $config', ({ config, refused }) => {
+    it(`Then it ${refused === undefined ? 'accepts it' : `refuses ${refused.key}, in git's reading order`}`, async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx);
+      await seedConfig(ctx, config);
+      const sut = assertRepoSettingsValid;
+
+      // Act
+      const [outcome] = await Promise.allSettled([sut(ctx)]);
+
+      // Assert
+      const data = outcome.status === 'rejected' ? (outcome.reason as TsgitError).data : undefined;
+      expect(data).toEqual(
+        refused === undefined ? undefined : { ...refused, source: `${ctx.layout.gitDir}/config` },
+      );
+    });
+  });
+});
+
+describe('Given the ints and strings prepare_repo_settings reads after its booleans', () => {
+  const numeric = (key: string, value: string, reason = 'invalid unit') => ({
+    code: 'CONFIG_BAD_NUMERIC_VALUE',
+    key,
+    value,
+    reason,
+  });
+  const boolean = (key: string, value: string) => ({
+    code: 'CONFIG_BAD_BOOLEAN_VALUE',
+    key,
+    value,
+  });
+  const unknownAlgorithm = (value: string) => ({
+    code: 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM',
+    value,
+  });
+  describe.each([
+    {
+      config: '[commitGraph]\n\tchangedPathsVersion = abc\n',
+      refused: numeric('commitgraph.changedpathsversion', 'abc'),
+    },
+    {
+      config: '[commitGraph]\n\tchangedPathsVersion = 9999999999\n',
+      refused: numeric('commitgraph.changedpathsversion', '9999999999', 'out of range'),
+    },
+    {
+      config: '[commitGraph]\n\tchangedPathsVersion = abc\n\treadChangedPaths = maybe\n',
+      refused: boolean('commitgraph.readchangedpaths', 'maybe'),
+    },
+    {
+      config: '[commitGraph]\n\tchangedPathsVersion = abc\n[gc]\n\twriteCommitGraph = maybe\n',
+      refused: numeric('commitgraph.changedpathsversion', 'abc'),
+    },
+    { config: '[index]\n\tversion = abc\n', refused: numeric('index.version', 'abc') },
+    { config: '[index]\n\tversion\n', refused: numeric('index.version', '') },
+    {
+      config: '[index]\n\tversion = abc\n[core]\n\tuseReplaceRefs = maybe\n',
+      refused: boolean('core.usereplacerefs', 'maybe'),
+    },
+    {
+      config: '[index]\n\tversion = abc\n[core]\n\tmaxTreeDepth = zz\n',
+      refused: numeric('index.version', 'abc'),
+    },
+    { config: '[index]\n\tversion = 9\n', refused: undefined },
+    {
+      config: '[fetch]\n\tnegotiationAlgorithm = bogus\n',
+      refused: unknownAlgorithm('bogus'),
+    },
+    { config: '[fetch]\n\tnegotiationAlgorithm = ""\n', refused: unknownAlgorithm('') },
+    {
+      config: '[fetch]\n\tnegotiationAlgorithm = bogus\n[core]\n\tmaxTreeDepth = zz\n',
+      refused: numeric('core.maxtreedepth', 'zz'),
+    },
+    {
+      config: '[fetch]\n\tnegotiationAlgorithm = bogus\n[core]\n\tdeltaBaseCacheLimit = zz\n',
+      refused: unknownAlgorithm('bogus'),
+    },
+    {
+      config: '[fetch]\n\tnegotiationAlgorithm\n',
+      refused: { code: 'CONFIG_MISSING_VALUE', key: 'fetch.negotiationalgorithm', line: 2 },
+    },
+    { config: '[fetch]\n\tnegotiationAlgorithm = SKIPPING\n', refused: undefined },
+    { config: '[fetch]\n\tnegotiationAlgorithm = noop\n', refused: undefined },
+    { config: '[fetch]\n\tnegotiationAlgorithm = Consecutive\n', refused: undefined },
+    { config: '[fetch]\n\tnegotiationAlgorithm = default\n', refused: undefined },
+    {
+      config: '[fetch]\n\tnegotiationAlgorithm = bogus\n\tnegotiationAlgorithm = noop\n',
+      refused: undefined,
+    },
+  ])('When the gate reads $config', ({ config, refused }) => {
+    it(`Then it ${refused === undefined ? 'accepts it' : `refuses ${refused.code}, in git's reading order`}`, async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx);
+      await seedConfig(ctx, config);
+      const sut = assertRepoSettingsValid;
+
+      // Act
+      const [outcome] = await Promise.allSettled([sut(ctx)]);
+
+      // Assert
+      const data = outcome.status === 'rejected' ? (outcome.reason as TsgitError).data : undefined;
+      const source = `${ctx.layout.gitDir}/config`;
+      expect(data).toEqual(
+        refused === undefined || refused.code === 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM'
+          ? refused
+          : { ...refused, source },
+      );
     });
   });
 });

@@ -733,7 +733,10 @@ describe.skipIf(SKIP_REASON !== false)('push — remote resolution against git-h
 
         // Arrange — tsgit twin: the same sequence against its own bare.
         const { repo, dir } = await initTsgitRepo();
-        await appendConfig(repo, `[remote "${remote}"]\n  url = ${bareUrl(remote, 'ts')}`);
+        await appendConfig(
+          repo,
+          `[remote "${remote}"]\n  url = ${bareUrl(remote, 'ts')}\n  fetch = +refs/heads/*:refs/remotes/${remote}/*`,
+        );
         await repo.push({ refspecs: ['refs/heads/main:refs/heads/main'] });
         await plantTrackingSymref(dir, remote);
         await writeFile(path.join(dir, 'seed.txt'), 'second from tsgit\n');
@@ -1349,6 +1352,72 @@ describe.skipIf(SKIP_REASON !== false)('push — remote resolution against git-h
       await repo.dispose();
     }, 30_000);
   });
+
+  describe.each([
+    {
+      label: 'two branch.main.merge values under push.default=upstream',
+      name: 'multi-upstream',
+      pushDefault: 'upstream',
+      branch: ['remote = multi-upstream', 'merge = refs/heads/main', 'merge = refs/heads/two'],
+      stderr: /has multiple upstream branches, refusing to push/,
+      data: { code: 'PUSH_MULTIPLE_UPSTREAMS', branch: 'refs/heads/main' },
+    },
+    {
+      label: 'two branch.main.merge values under push.default=simple',
+      name: 'multi-simple',
+      pushDefault: 'simple',
+      branch: ['remote = multi-simple', 'merge = refs/heads/main', 'merge = refs/heads/two'],
+      stderr: /has multiple upstream branches, refusing to push/,
+      data: { code: 'PUSH_MULTIPLE_UPSTREAMS', branch: 'refs/heads/main' },
+    },
+    {
+      label: 'a branch.main.merge without branch.main.remote under push.default=upstream',
+      name: 'origin',
+      pushDefault: 'upstream',
+      branch: ['merge = refs/heads/main'],
+      stderr: /has no upstream branch/,
+      data: { code: 'NO_UPSTREAM_CONFIGURED', branch: 'refs/heads/main' },
+    },
+  ])(
+    'Given $label, When push runs with no explicit refspec',
+    ({ name, pushDefault, branch, stderr, data }) => {
+      it('Then both real git and tsgit refuse before contacting the remote', async () => {
+        // Arrange
+        const gitDir = await initGitRepo();
+        git(gitDir, 'remote', 'add', name, bareUrl(`${name}-${pushDefault}`, 'real'));
+        git(gitDir, 'config', 'push.default', pushDefault);
+        for (const line of branch) {
+          const [key, value] = line.split(' = ') as [string, string];
+          git(gitDir, 'config', '--add', `branch.main.${key}`, value);
+        }
+        const { repo } = await initTsgitRepo();
+        await appendConfig(
+          repo,
+          [
+            `[remote "${name}"]`,
+            `  url = ${bareUrl(`${name}-${pushDefault}`, 'ts')}`,
+            '[push]',
+            `  default = ${pushDefault}`,
+            '[branch "main"]',
+            ...branch.map((line) => `  ${line}`),
+          ].join('\n'),
+        );
+        const sut = repo.push;
+
+        // Act
+        const realRefusal = await gitAsync(gitDir, 'push', '-q').then(
+          () => ({ stderr: 'pushed' }),
+          (error: { readonly stderr?: string }) => error,
+        );
+        const result = await sut({}).catch((error: unknown) => error);
+
+        // Assert
+        expect(realRefusal.stderr ?? '').toMatch(stderr);
+        expect((result as { readonly data?: unknown }).data).toEqual(data);
+        await repo.dispose();
+      }, 30_000);
+    },
+  );
 
   describe('Given push.default=simple with a central remote and branch.main.merge set to a different name, When push runs with no explicit refspec', () => {
     it('Then both real git and tsgit refuse before contacting the remote', async () => {

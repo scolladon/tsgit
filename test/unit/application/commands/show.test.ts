@@ -3,7 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { revParse } from '../../../../src/application/commands/rev-parse.js';
+import { resolveRevision } from '../../../../src/application/commands/rev-parse.js';
 import { show } from '../../../../src/application/commands/show.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
@@ -11,6 +11,7 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, TagData } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { writeSyntheticPackIn } from '../primitives/pack-fixture.js';
 
 const author: AuthorIdentity = {
   name: 'A U Thor',
@@ -50,7 +51,7 @@ describe('show', () => {
     it('Then it returns the HEAD commit with its structured patch', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
-      const head = await revParse(ctx, 'HEAD');
+      const head = await resolveRevision(ctx, 'HEAD');
 
       // Act
       const result = await show(ctx);
@@ -70,7 +71,7 @@ describe('show', () => {
     it('Then the patch is computed against the empty tree (an add)', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
-      const root = await revParse(ctx, 'HEAD~1');
+      const root = await resolveRevision(ctx, 'HEAD~1');
 
       // Act
       const result = await show(ctx, root);
@@ -87,7 +88,7 @@ describe('show', () => {
     it('Then parents are empty and the patch is against the empty tree (a full add)', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
-      const head = await revParse(ctx, 'HEAD');
+      const head = await resolveRevision(ctx, 'HEAD');
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${head}\n`);
 
       // Act
@@ -174,7 +175,7 @@ describe('show', () => {
     it('Then both results are returned (no commit-style de-duplication)', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
-      const tree = await revParse(ctx, 'HEAD^{tree}');
+      const tree = await resolveRevision(ctx, 'HEAD^{tree}');
 
       // Act
       const result = await show(ctx, [tree, tree]);
@@ -189,7 +190,7 @@ describe('show', () => {
     it('Then the raw blob content is returned', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
-      const tree = await readObject(ctx, await revParse(ctx, 'HEAD^{tree}'));
+      const tree = await readObject(ctx, await resolveRevision(ctx, 'HEAD^{tree}'));
       if (tree.type !== 'tree') throw new Error('expected tree');
       const blobId = tree.entries.find((e) => e.name === 'a.txt')?.id;
       if (blobId === undefined) throw new Error('a.txt missing');
@@ -208,7 +209,7 @@ describe('show', () => {
     it('Then the tag data plus the recursed target commit are returned', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
-      const head = await revParse(ctx, 'HEAD');
+      const head = await resolveRevision(ctx, 'HEAD');
       const tagId = await writeAnnotatedTag(ctx, head);
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/v1.0`, `${tagId}\n`);
 
@@ -229,8 +230,8 @@ describe('show', () => {
     it('Then one diff per parent is returned and no single patch', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
-      const head = await revParse(ctx, 'HEAD');
-      const root = await revParse(ctx, 'HEAD~1');
+      const head = await resolveRevision(ctx, 'HEAD');
+      const root = await resolveRevision(ctx, 'HEAD~1');
       const headData = await readObject(ctx, head);
       if (headData.type !== 'commit') throw new Error('expected commit');
       const mergeId = await writeObject(ctx, {
@@ -265,8 +266,8 @@ describe('show', () => {
     it('Then one result per rev is returned in order', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
-      const head = await revParse(ctx, 'HEAD');
-      const root = await revParse(ctx, 'HEAD~1');
+      const head = await resolveRevision(ctx, 'HEAD');
+      const root = await resolveRevision(ctx, 'HEAD~1');
 
       // Act
       const result = await show(ctx, [head, root]);
@@ -337,6 +338,112 @@ describe('show — remote.promisor guard', () => {
         expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
         expect(data.key).toBe('remote.origin.promisor');
         expect(data.value).toBe('maybe');
+      });
+    });
+  });
+});
+
+const PRIMARY_OBJECTS = '/repo/.git/objects';
+const ALT_OBJECTS = '/repo/alt/objects';
+const ENC = new TextEncoder();
+const FLIPPED_SIGNATURE_MIDX = Uint8Array.from([
+  0x00,
+  0x49,
+  0x44,
+  0x58,
+  1,
+  1,
+  1,
+  0,
+  ...new Array(8).fill(0),
+]);
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+const COMMIT_BYTES = ENC.encode(
+  `tree ${EMPTY_TREE}\nauthor A <a@b> 1 +0000\ncommitter A <a@b> 1 +0000\n\nm\n`,
+);
+
+const contextWithCorruptAlternate = async (): Promise<Context> => {
+  const ctx = createMemoryContext({
+    files: {
+      '/repo/.git/HEAD': ENC.encode('ref: refs/heads/main\n'),
+      [`${PRIMARY_OBJECTS}/info/alternates`]: ENC.encode(`${ALT_OBJECTS}\n`),
+    },
+  });
+  await ctx.fs.mkdir(ALT_OBJECTS);
+  await ctx.fs.write(`${ALT_OBJECTS}/pack/multi-pack-index`, FLIPPED_SIGNATURE_MIDX);
+  return ctx;
+};
+
+const packedIds = async (
+  ctx: Context,
+  entries: Parameters<typeof writeSyntheticPackIn>[3],
+): Promise<ReadonlyArray<ObjectId>> =>
+  (await writeSyntheticPackIn(ctx, PRIMARY_OBJECTS, 'p', entries)) as ReadonlyArray<ObjectId>;
+
+const rejectionData = async (attempt: Promise<unknown>): Promise<unknown> => {
+  try {
+    await attempt;
+  } catch (error) {
+    return (error as TsgitError).data;
+  }
+  return undefined;
+};
+
+describe('show in git stream order', () => {
+  describe('Given a small packed blob and a corrupt alternate', () => {
+    describe('When show() runs on the blob', () => {
+      it('Then the alternate is reached', async () => {
+        // Arrange
+        const ctx = await contextWithCorruptAlternate();
+        const [id] = await packedIds(ctx, [
+          { kind: 'base', type: 'blob', content: ENC.encode('small') },
+        ]);
+
+        // Act
+        const result = await rejectionData(show(ctx, id as string));
+
+        // Assert
+        expect(result).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX' });
+      });
+    });
+  });
+
+  describe('Given a tag over a small packed blob and a corrupt alternate', () => {
+    describe('When show() runs on the tag', () => {
+      it('Then the target blob read reaches the alternate', async () => {
+        // Arrange
+        const ctx = await contextWithCorruptAlternate();
+        const [blobId] = await packedIds(ctx, [
+          { kind: 'base', type: 'blob', content: ENC.encode('small') },
+        ]);
+        const tag = ENC.encode(`object ${blobId}\ntype blob\ntag t\ntagger A <a@b> 1 +0000\n\nm\n`);
+        const [tagId] = await writeSyntheticPackIn(ctx, PRIMARY_OBJECTS, 'q', [
+          { kind: 'base', type: 'tag', content: tag },
+        ]);
+
+        // Act
+        const result = await rejectionData(show(ctx, tagId as string));
+
+        // Assert
+        expect(result).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX' });
+      });
+    });
+  });
+
+  describe('Given a packed root commit and a corrupt alternate', () => {
+    describe('When show() runs on the commit', () => {
+      it('Then the commit is served without reaching the alternate', async () => {
+        // Arrange
+        const ctx = await contextWithCorruptAlternate();
+        const [id] = await packedIds(ctx, [
+          { kind: 'base', type: 'commit', content: COMMIT_BYTES },
+        ]);
+
+        // Act
+        const result = await show(ctx, id as string);
+
+        // Assert
+        expect(result.kind).toBe('commit');
       });
     });
   });

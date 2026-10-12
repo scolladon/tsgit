@@ -1,22 +1,15 @@
 /**
- * git's per-worktree-ref rule (`is_per_worktree_ref` + the per-worktree
- * pseudoref set). A linked worktree keeps these refs in its own gitdir
+ * git's per-worktree-ref rule (`is_current_worktree_ref`): a root ref — a
+ * name of uppercase letters, `-` and `_` only — or a per-worktree namespace.
+ * A linked worktree keeps these refs in its own gitdir
  * (`<commonDir>/worktrees/<id>/`); every other ref is shared and lives in the
- * common dir. Pure predicate — no I/O.
+ * common dir. Pure predicates — no I/O.
  */
 import type { RefName } from '../objects/object-id.js';
-import { CHERRY_PICK_HEAD, FETCH_HEAD, MERGE_HEAD, ORIG_HEAD, REVERT_HEAD } from './state-files.js';
+import { FETCH_HEAD, MERGE_HEAD } from './state-files.js';
 
-/** Root pseudorefs git stores per-worktree (each checkout has its own). */
-const PER_WORKTREE_PSEUDOREFS: ReadonlySet<string> = new Set([
-  'HEAD',
-  ORIG_HEAD,
-  FETCH_HEAD,
-  MERGE_HEAD,
-  CHERRY_PICK_HEAD,
-  REVERT_HEAD,
-  'BISECT_HEAD',
-]);
+/** git's `is_root_ref_syntax`: uppercase letters, `-` and `_`, nothing else. */
+const ROOT_REF_SYNTAX = /^[A-Z_-]*$/;
 
 /** Ref namespaces git scopes to a single worktree. */
 const PER_WORKTREE_PREFIXES: ReadonlyArray<string> = [
@@ -25,7 +18,12 @@ const PER_WORKTREE_PREFIXES: ReadonlyArray<string> = [
   'refs/rewritten/',
 ];
 
+/** git's `is_pseudo_ref`: the refs read from a file in the git dir whatever the ref backend. */
+const PSEUDO_REFS: ReadonlySet<string> = new Set([FETCH_HEAD, MERGE_HEAD]);
+
 /** True when `name` resolves against a worktree's own gitdir, not the common dir. */
 export const isPerWorktreeRef = (name: RefName): boolean =>
-  PER_WORKTREE_PSEUDOREFS.has(name) ||
-  PER_WORKTREE_PREFIXES.some((prefix) => name.startsWith(prefix));
+  ROOT_REF_SYNTAX.test(name) || PER_WORKTREE_PREFIXES.some((prefix) => name.startsWith(prefix));
+
+/** True when git keeps `name` as a file beside the ref backend rather than in it. */
+export const isPseudoRef = (name: RefName): boolean => PSEUDO_REFS.has(name);

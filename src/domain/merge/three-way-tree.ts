@@ -2,10 +2,19 @@ import type { FlatTree, FlatTreeEntry } from '../diff/flat-tree.js';
 import { MAX_FLAT_TREE_ENTRIES } from '../diff/flat-tree.js';
 import { isSameKind, kindOf } from '../diff/mode-kind.js';
 import { sortByPath } from '../diff/path-compare.js';
-import type { FileMode, FilePath } from '../objects/index.js';
+import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
 import { FILE_MODE } from '../objects/index.js';
+import { applyDirectoryRenames } from './directory-renames.js';
 import { invalidMergeInput, invalidMergeTree } from './error.js';
 import { DEFAULT_MERGE_LABELS, type MergeLabels } from './merge-labels.js';
+import {
+  applyMergeRenames,
+  type MergeRenames,
+  NO_MERGE_RENAMES,
+  type RenamedMergeInput,
+  type SidePaths,
+  type SplitRename,
+} from './merge-renames.js';
 import type {
   ContentMergeContext,
   ContentMergeResult,
@@ -14,6 +23,7 @@ import type {
   TreeMergeResult,
 } from './merge-types.js';
 import { MAX_CONFLICT_OUTPUT_BYTES } from './merge-types.js';
+import type { OrtVariant } from './strategy-options.js';
 
 export type ContentMerger = (
   ctx: ContentMergeContext,
@@ -44,8 +54,9 @@ function buildUnionPaths(
   base: FlatTree | undefined,
   ours: FlatTree | undefined,
   theirs: FlatTree | undefined,
+  vacated: ReadonlySet<FilePath>,
 ): Set<FilePath> {
-  const paths = new Set<FilePath>();
+  const paths = new Set<FilePath>(vacated);
   for (const tree of [base, ours, theirs]) {
     if (tree === undefined) continue;
     for (const path of tree.entries.keys()) paths.add(path);
@@ -203,8 +214,7 @@ function resolveKindDispatch(
   our: FlatTreeEntry,
   their: FlatTreeEntry,
   contentMerger: ContentMerger,
-  labels: MergeLabels,
-  reserved: Set<FilePath>,
+  scope: PathScope,
 ): MergeOutcome | Promise<MergeOutcome> {
   if (isGitlink(our.mode) || isGitlink(their.mode)) {
     if (isGitlink(our.mode) && isGitlink(their.mode) && isGitlink(base.mode)) {
@@ -215,13 +225,13 @@ function resolveKindDispatch(
   const ourSymlink = isSymlinkKind(our.mode);
   const theirSymlink = isSymlinkKind(their.mode);
   if (ourSymlink && theirSymlink) {
-    return symlinkPairConflict(path, base, our, their);
+    return symlinkPair(path, base, our, their, scope.variant);
   }
   if (ourSymlink || theirSymlink) {
     if (isGitlink(base.mode)) {
       return typeChangeConflict(path, base, our, their);
     }
-    return distinctTypesConflict(path, our, their, labels, reserved, base);
+    return distinctTypesConflict(path, our, their, scope.labels, scope.reserved, base);
   }
   if (!isSameKind(base.mode, our.mode)) {
     return resolveKindChangedBase(path, base, our, their, contentMerger);
@@ -236,8 +246,7 @@ async function resolveBothPresent(
   our: FlatTreeEntry,
   their: FlatTreeEntry,
   contentMerger: ContentMerger,
-  labels: MergeLabels,
-  reserved: Set<FilePath>,
+  scope: PathScope,
 ): Promise<MergeOutcome> {
   const ourUnchanged = entriesEqual(base, our);
   const theirUnchanged = entriesEqual(base, their);
@@ -253,7 +262,7 @@ async function resolveBothPresent(
   if (entriesEqual(our, their)) {
     return { status: 'resolved-known', path, id: our.id, mode: our.mode };
   }
-  return resolveKindDispatch(path, base, our, their, contentMerger, labels, reserved);
+  return resolveKindDispatch(path, base, our, their, contentMerger, scope);
 }
 
 function isRegularKind(mode: FileMode): boolean {
@@ -319,6 +328,28 @@ function distinctTypesConflict(
     ourPath,
     theirPath,
   });
+}
+
+/** merge-ort.c's `merge_3way` symlink case: `-X ours` / `-X theirs` keep that side's link cleanly. */
+function favouredSymlink(
+  path: FilePath,
+  our: FlatTreeEntry,
+  their: FlatTreeEntry,
+  variant: OrtVariant,
+): MergeOutcome {
+  const kept = variant === 'ours' ? our : their;
+  return { status: 'resolved-known', path, id: kept.id, mode: kept.mode };
+}
+
+function symlinkPair(
+  path: FilePath,
+  base: FlatTreeEntry,
+  our: FlatTreeEntry,
+  their: FlatTreeEntry,
+  variant: OrtVariant | undefined,
+): MergeOutcome {
+  if (variant !== undefined) return favouredSymlink(path, our, their, variant);
+  return symlinkPairConflict(path, base, our, their);
 }
 
 function symlinkPairConflict(
@@ -432,8 +463,7 @@ async function resolveAddAdd(
   our: FlatTreeEntry,
   their: FlatTreeEntry,
   contentMerger: ContentMerger,
-  labels: MergeLabels,
-  reserved: Set<FilePath>,
+  scope: PathScope,
 ): Promise<MergeOutcome> {
   if (entriesEqual(our, their)) {
     return { status: 'resolved-known', path, id: our.id, mode: our.mode };
@@ -443,11 +473,24 @@ async function resolveAddAdd(
   const ourSymlink = isSymlinkKind(our.mode);
   const theirSymlink = isSymlinkKind(their.mode);
   if ((ourRegular && theirSymlink) || (ourSymlink && theirRegular)) {
-    return distinctTypesConflict(path, our, their, labels, reserved);
+    return distinctTypesConflict(path, our, their, scope.labels, scope.reserved);
+  }
+  if (ourSymlink && theirSymlink && scope.variant !== undefined) {
+    return favouredSymlink(path, our, their, scope.variant);
   }
   if (!ourRegular || !theirRegular) {
     return addAddConflict(path, our, their);
   }
+  return mergeAddAddContent(path, our, their, contentMerger);
+}
+
+/** Two regular files added at one path: merge their content without a base. */
+async function mergeAddAddContent(
+  path: FilePath,
+  our: FlatTreeEntry,
+  their: FlatTreeEntry,
+  contentMerger: ContentMerger,
+): Promise<MergeOutcome> {
   const contentResult = await mergeBaseless(path, our, their, contentMerger);
   if (contentResult.tag === 'resolved') return contentResult.outcome;
   return conflictOutcome({
@@ -462,14 +505,20 @@ async function resolveAddAdd(
   });
 }
 
+/** What every path's resolution shares: marker labels, taken paths, and the `-X` side. */
+interface PathScope {
+  readonly labels: MergeLabels;
+  readonly reserved: Set<FilePath>;
+  readonly variant: OrtVariant | undefined;
+}
+
 function resolvePath(
   path: FilePath,
   base: FlatTreeEntry | undefined,
   our: FlatTreeEntry | undefined,
   their: FlatTreeEntry | undefined,
   contentMerger: ContentMerger,
-  labels: MergeLabels,
-  reserved: Set<FilePath>,
+  scope: PathScope,
 ): MergeOutcome | Promise<MergeOutcome> {
   if (our === undefined && their === undefined) {
     return { status: 'resolved-deleted', path };
@@ -481,9 +530,50 @@ function resolvePath(
     return resolveOneSideAbsent(path, base, our, 'our');
   }
   if (base === undefined) {
-    return resolveAddAdd(path, our, their, contentMerger, labels, reserved);
+    return resolveAddAdd(path, our, their, contentMerger, scope);
   }
-  return resolveBothPresent(path, base, our, their, contentMerger, labels, reserved);
+  return resolveBothPresent(path, base, our, their, contentMerger, scope);
+}
+
+const sideIdsAt = (side: 'base' | 'our' | 'their', entry: FlatTreeEntry | undefined) =>
+  entry === undefined ? {} : { [`${side}Id`]: entry.id, [`${side}Mode`]: entry.mode };
+
+/** ort's `path_conflict` from a suggested directory rename: the moved path never merges clean. */
+function asFileLocation(
+  outcome: MergeOutcome,
+  path: FilePath,
+  entries: ReadonlyArray<FlatTreeEntry | undefined>,
+): MergeOutcome {
+  if (outcome.status === 'conflict') return outcome;
+  const [base, our, their] = entries;
+  return conflictOutcome({
+    type: 'file-location',
+    path,
+    ...sideIdsAt('base', base),
+    ...sideIdsAt('our', our),
+    ...sideIdsAt('their', their),
+  });
+}
+
+/** Directory renames move paths before file renames pair them; a side-less merge has none. */
+function withDirectoryRenames(
+  base: FlatTree | undefined,
+  ours: FlatTree | undefined,
+  theirs: FlatTree | undefined,
+  renames: MergeRenames,
+) {
+  if (ours === undefined || theirs === undefined) {
+    return {
+      ours,
+      theirs,
+      renames,
+      fileLocations: new Set<FilePath>(),
+      vacated: new Set<FilePath>(),
+      sidePaths: new Map<FilePath, SidePaths>(),
+      clean: true,
+    };
+  }
+  return applyDirectoryRenames(base, ours, theirs, renames);
 }
 
 function extractConflicts(outcomes: ReadonlyArray<MergeOutcome>): ReadonlyArray<MergeConflict> {
@@ -494,36 +584,155 @@ function extractConflicts(outcomes: ReadonlyArray<MergeOutcome>): ReadonlyArray<
   return out;
 }
 
+/** A rename's content merge learns where each side held the path, for git's `<label>:<path>` markers. */
+function withSidePaths(
+  contentMerger: ContentMerger,
+  sidePaths: ReadonlyMap<FilePath, SidePaths>,
+): ContentMerger {
+  if (sidePaths.size === 0) return contentMerger;
+  return (ctx, base, ours, theirs) => {
+    const paths = sidePaths.get(ctx.path);
+    const located = paths === undefined ? ctx : { ...ctx, sidePaths: paths };
+    return contentMerger(located, base, ours, theirs);
+  };
+}
+
+/** git's `merge_modes` for a split: a side that kept the base mode yields the other's. */
+const splitMode = ({ base, ours, theirs }: SplitRename): FileMode =>
+  ours.mode === base.mode ? theirs.mode : ours.mode;
+
+type SplitContent = { readonly id: ObjectId } | { readonly bytes: Uint8Array };
+
+/** ort's `handle_content_merge`: an unchanged side yields the other, else the sides merge. */
+async function splitContent(
+  split: SplitRename,
+  contentMerger: ContentMerger,
+): Promise<SplitContent> {
+  const { base, ours, theirs } = split;
+  if (ours.id === theirs.id || ours.id === base.id) return { id: theirs.id };
+  if (theirs.id === base.id) return { id: ours.id };
+  const ctx: ContentMergeContext = {
+    path: split.paths.base,
+    baseId: base.id,
+    ourId: ours.id,
+    theirId: theirs.id,
+    baseMode: base.mode,
+    ourMode: ours.mode,
+    theirMode: theirs.mode,
+    sidePaths: split.paths,
+    extraMarkerSize: 1,
+  };
+  const result = await contentMerger(ctx, undefined, EMPTY_BYTES, EMPTY_BYTES);
+  if (result.status === 'conflict') return { bytes: result.markedBytes };
+  return result.id === undefined ? { bytes: result.bytes } : { id: result.id };
+}
+
+/**
+ * ort stages a rename/rename(1to2)'s merged content at both destinations; a
+ * merged blob the domain cannot name rides as `conflictContent` for the caller
+ * to write.
+ */
+async function settleSplitRenames(
+  forced: ReadonlyMap<FilePath, MergeConflict>,
+  splits: ReadonlyArray<SplitRename>,
+  contentMerger: ContentMerger,
+): Promise<ReadonlyMap<FilePath, MergeConflict>> {
+  if (splits.length === 0) return forced;
+  const settled = new Map(forced);
+  for (const split of splits) {
+    const content = await splitContent(split, contentMerger);
+    const mode = splitMode(split);
+    const staged = (id: 'ourId' | 'theirId') =>
+      'id' in content ? { [id]: content.id } : { conflictContent: content.bytes };
+    const ours = settled.get(split.paths.ours) as MergeConflict;
+    const theirs = settled.get(split.paths.theirs) as MergeConflict;
+    settled.set(split.paths.ours, { ...ours, ourMode: mode, ...staged('ourId') });
+    settled.set(split.paths.theirs, { ...theirs, theirMode: mode, ...staged('theirId') });
+  }
+  return settled;
+}
+
 export async function mergeTrees(
   base: FlatTree | undefined,
   ours: FlatTree | undefined,
   theirs: FlatTree | undefined,
   contentMerger: ContentMerger,
   labels: MergeLabels = DEFAULT_MERGE_LABELS,
+  renames: MergeRenames = NO_MERGE_RENAMES,
+  variant?: OrtVariant,
 ): Promise<TreeMergeResult> {
   enforcePerInputCap(base, 'base');
   enforcePerInputCap(ours, 'ours');
   enforcePerInputCap(theirs, 'theirs');
-
-  const paths = buildUnionPaths(base, ours, theirs);
-  const sortedPaths = sortByPath([...paths], (p) => p);
-  const reserved = new Set<FilePath>(paths);
-
-  const outcomes: MergeOutcome[] = [];
-  for (const path of sortedPaths) {
-    const result = resolvePath(
-      path,
-      base?.entries.get(path),
-      ours?.entries.get(path),
-      theirs?.entries.get(path),
-      contentMerger,
-      labels,
-      reserved,
-    );
-    const outcome = result instanceof Promise ? await result : result;
-    outcomes.push(outcome);
-  }
-
+  const plan = planTreeMerge(base, ours, theirs, renames);
+  const scope: PathScope = { labels, reserved: new Set<FilePath>(plan.paths), variant };
+  const merger = withSidePaths(contentMerger, plan.sidePaths);
+  const { forced, splitRenames } = plan.renamed;
+  const forcedConflicts = await settleSplitRenames(forced, splitRenames, contentMerger);
+  const outcomes = await resolvePaths(plan, forcedConflicts, merger, scope);
   const conflicts = extractConflicts(outcomes);
-  return { outcomes, conflicts, cleanMerge: conflicts.length === 0 };
+  return { outcomes, conflicts, cleanMerge: conflicts.length === 0 && plan.located.clean };
+}
+
+/** Every path the merge visits, in git's order, once directory and file renames moved them. */
+interface TreeMergePlan {
+  readonly located: ReturnType<typeof withDirectoryRenames>;
+  readonly renamed: RenamedMergeInput;
+  readonly paths: ReadonlySet<FilePath>;
+  readonly sortedPaths: ReadonlyArray<FilePath>;
+  readonly sidePaths: RenamedMergeInput['sidePaths'];
+}
+
+function planTreeMerge(
+  base: FlatTree | undefined,
+  ours: FlatTree | undefined,
+  theirs: FlatTree | undefined,
+  renames: MergeRenames,
+): TreeMergePlan {
+  const located = withDirectoryRenames(base, ours, theirs, renames);
+  const renamed = applyMergeRenames(base, located.ours, located.theirs, located.renames);
+  const vacated = new Set([...renamed.vacated, ...located.vacated]);
+  const paths = buildUnionPaths(renamed.base, renamed.ours, renamed.theirs, vacated);
+  const sidePaths = new Map([...located.sidePaths, ...renamed.sidePaths]);
+  return { located, renamed, paths, sortedPaths: sortByPath([...paths], (p) => p), sidePaths };
+}
+
+type PathEntries = readonly [
+  FlatTreeEntry | undefined,
+  FlatTreeEntry | undefined,
+  FlatTreeEntry | undefined,
+];
+
+/** The path's base, ours and theirs entries, in that order. */
+function entriesAt(renamed: RenamedMergeInput, path: FilePath): PathEntries {
+  return [
+    renamed.base?.entries.get(path),
+    renamed.ours?.entries.get(path),
+    renamed.theirs?.entries.get(path),
+  ];
+}
+
+/** Resolve every path in order; a forced conflict stands in for its path's own resolution. */
+async function resolvePaths(
+  plan: TreeMergePlan,
+  forcedConflicts: ReadonlyMap<FilePath, MergeConflict>,
+  merger: ContentMerger,
+  scope: PathScope,
+): Promise<MergeOutcome[]> {
+  const { renamed, located } = plan;
+  const outcomes: MergeOutcome[] = [];
+  for (const path of plan.sortedPaths) {
+    const forced = forcedConflicts.get(path);
+    if (forced !== undefined) {
+      outcomes.push(conflictOutcome(forced));
+      continue;
+    }
+    const entries = entriesAt(renamed, path);
+    const result = resolvePath(path, ...entries, merger, scope);
+    const outcome = result instanceof Promise ? await result : result;
+    outcomes.push(
+      located.fileLocations.has(path) ? asFileLocation(outcome, path, entries) : outcome,
+    );
+  }
+  return outcomes;
 }

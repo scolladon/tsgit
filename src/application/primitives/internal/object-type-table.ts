@@ -1,0 +1,216 @@
+/**
+ * git's process-wide object table, scoped to one command invocation: the
+ * type each `lookup_<type>` call assigned an id — by a tag's `type` header or
+ * by parsing the object itself. A later assignment that disagrees is git's
+ * `object X is a <known>, not a <asked>` failure. Each command entry creates
+ * its own and threads it down, as each git command runs in its own process;
+ * a lookup given none (a primitive called outside a typing command) assigns
+ * nothing and never conflicts.
+ */
+
+import { commitLookupFailed } from '../../../domain/commands/error.js';
+import { isObjectNotFound } from '../../../domain/objects/error.js';
+import type {
+  Commit,
+  GitObject,
+  ObjectId,
+  ObjectType,
+  Tag,
+} from '../../../domain/objects/index.js';
+import type { Context } from '../../../ports/context.js';
+import { parseResolvedObject } from '../object-resolver.js';
+import { readObject, readRawObject } from '../read-object.js';
+import type { RawObject } from '../types.js';
+import { loadShallowSet } from './shallow-set.js';
+
+export type ObjectTypeTable = Map<ObjectId, ObjectType>;
+
+/** A fresh, empty table for one command invocation. */
+export const createObjectTypeTable = (): ObjectTypeTable => new Map();
+
+/**
+ * git's `lookup_<type>`: records `type` for `id` unless an earlier lookup
+ * typed it otherwise — then logs git's `error:` and answers `false`.
+ */
+export const assignObjectType = (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  id: ObjectId,
+  type: ObjectType,
+): boolean => {
+  const known = table?.get(id);
+  if (known === type) return true;
+  if (known === undefined) {
+    table?.set(id, type);
+    return true;
+  }
+  ctx.logger?.error?.(`object ${id} is a ${known}, not a ${type}`, { id, known, type });
+  return false;
+};
+
+/** git's `parse_tag_buffer`: the tag's `type` header assigns its target's type. */
+const assignTagPointer = (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  id: ObjectId,
+  tag: Tag,
+): boolean => {
+  const target = tag.data.object;
+  if (assignObjectType(ctx, table, target, tag.data.objectType)) return true;
+  ctx.logger?.error?.(`bad tag pointer to ${target} in ${id}`, { id, target });
+  return false;
+};
+
+const reportBadPointer = (ctx: Context, pointer: string, target: ObjectId, id: ObjectId): false => {
+  ctx.logger?.error?.(`${pointer} ${target} in commit ${id}`, { id, target });
+  return false;
+};
+
+/** git's `parse_commit_buffer`, first pointer: the commit's tree typed a tree. */
+const typeTreePointer = (
+  ctx: Context,
+  table: ObjectTypeTable,
+  id: ObjectId,
+  { data }: Commit,
+): boolean =>
+  assignObjectType(ctx, table, data.tree, 'tree') ||
+  reportBadPointer(ctx, 'bad tree pointer', data.tree, id);
+
+/**
+ * git's `parse_commit_buffer`, after the tree: each parent typed a commit —
+ * none for a commit in `shallow`, whose parents git cuts. A first conflict
+ * stops the parse.
+ */
+export const typeParentPointers = (
+  ctx: Context,
+  table: ObjectTypeTable,
+  { id, data }: Commit,
+  shallow: ReadonlySet<ObjectId>,
+): boolean => {
+  if (shallow.has(id)) return true;
+  for (const parent of data.parents) {
+    if (!assignObjectType(ctx, table, parent, 'commit')) {
+      return reportBadPointer(ctx, 'bad parent', parent, id);
+    }
+  }
+  return true;
+};
+
+/**
+ * git's `parse_commit_buffer`: the commit's tree typed a tree, then each
+ * parent a commit against the repository's shallow set, read only once the
+ * tree is typed.
+ */
+const assignCommitPointers = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  commit: Commit,
+): Promise<boolean> =>
+  typeTreePointer(ctx, table, commit.id, commit) &&
+  typeParentPointers(ctx, table, commit, await loadShallowSet(ctx));
+
+/**
+ * The first half of {@link typeWalkedCommit}, for a walk that holds the
+ * shallow set itself: the commit typed a commit, then its tree.
+ */
+export const typeWalkedCommitAndTree = (
+  ctx: Context,
+  table: ObjectTypeTable,
+  commit: Commit,
+): boolean =>
+  assignObjectType(ctx, table, commit.id, 'commit') &&
+  typeTreePointer(ctx, table, commit.id, commit);
+
+/**
+ * git's `repo_parse_commit` of a commit the walk reached through a parent
+ * line: typed a commit, then its tree and parents — `false` once a typing
+ * conflicted and git's `error:` lines are logged.
+ */
+export const typeWalkedCommit = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  commit: Commit,
+): Promise<boolean> =>
+  typeWalkedCommitAndTree(ctx, table, commit) &&
+  typeParentPointers(ctx, table, commit, await loadShallowSet(ctx));
+
+/**
+ * git's `fill_commit_in_graph`: a commit served by the commit-graph types each
+ * parent a commit — its tree waits until read — and a parent the table holds
+ * as another type is git's `die("could not find commit")`, after its line.
+ */
+export const typeGraphParents = (
+  ctx: Context,
+  table: ObjectTypeTable,
+  parents: readonly ObjectId[],
+): void => {
+  for (const parent of parents) {
+    if (!assignObjectType(ctx, table, parent, 'commit')) throw commitLookupFailed(parent);
+  }
+};
+
+/** What a peel reads of an object it steps over: a commit or tag parsed for its next hop, a
+ *  tree or blob only typed — git's `parse_tree_buffer` keeps a tree's entries unparsed. */
+export type PeelHopObject = GitObject | { readonly type: 'tree' | 'blob' };
+
+/** The pointers git's parse of `object` types: a tag's target, a commit's tree and parents. */
+const assignPointers = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  id: ObjectId,
+  object: PeelHopObject,
+): Promise<boolean> => {
+  if (object.type === 'tag') return assignTagPointer(ctx, table, id, object);
+  if (object.type === 'commit' && table !== undefined) {
+    return assignCommitPointers(ctx, table, object);
+  }
+  return true;
+};
+
+/**
+ * git's `parse_object` against the table: the object read and typed as
+ * stored — a tag also typing its target as declared, a commit its tree and
+ * parents — or `undefined` once a typing conflicted and git's `error:` lines
+ * are logged.
+ */
+export const parseTypedObject = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  id: ObjectId,
+): Promise<GitObject | undefined> => {
+  const object = await readObject(ctx, id);
+  if (!assignObjectType(ctx, table, id, object.type)) return undefined;
+  return (await assignPointers(ctx, table, id, object)) ? object : undefined;
+};
+
+const peelHopOf = (ctx: Context, id: ObjectId, { type, content }: RawObject): PeelHopObject =>
+  type === 'tree' || type === 'blob' ? { type } : parseResolvedObject(ctx, id, type, content);
+
+/**
+ * {@link parseTypedObject} as a peel needs it: typed and pointer-typed the same, but a tree or
+ * blob is read without being parsed, as git's `parse_object` leaves a tree's entries to the walk
+ * that reads them.
+ */
+export const parseTypedPeelHop = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  id: ObjectId,
+): Promise<PeelHopObject | undefined> => {
+  const object = peelHopOf(ctx, id, await readRawObject(ctx, id));
+  if (!assignObjectType(ctx, table, id, object.type)) return undefined;
+  return (await assignPointers(ctx, table, id, object)) ? object : undefined;
+};
+
+/** {@link parseTypedObject} answering `undefined` for an absent object too, as git's `parse_object` does. */
+export const parseTypedObjectOrAbsent = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  id: ObjectId,
+): Promise<GitObject | undefined> => {
+  try {
+    return await parseTypedObject(ctx, table, id);
+  } catch (error) {
+    if (isObjectNotFound(error)) return undefined;
+    throw error;
+  }
+};

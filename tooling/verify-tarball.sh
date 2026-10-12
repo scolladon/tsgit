@@ -295,7 +295,39 @@ done
 # shipped in every distribution form, none removable without giving back
 # git's own builtin_diffstat parity (numstat/stat count the RAW blob, never
 # the textconv OUTPUT the patch hunk renders).
-SIZE_CAP=$((1014 * 1024))
+# Raised 1014 -> 1367 KiB by the alternates object lookup and the git-faithfulness
+# work that shipped with it: the measured tarball lands at 1 397 649 B, 359 313 B
+# over the old cap (main packs 1 038 052 B on the same toolchain, so the branch
+# adds 359 597 B, +34.6%), measured on a clean build after a dedicated trim pass.
+# Attribution, by layer, all runtime code every distribution form ships plus the
+# matching `.d.ts`/`.d.cts` surface: the alternates chain in the object store and
+# fsck/gc's alternates handling; git's merge rename and directory-rename
+# detection and the merge command line; histogram, patience and match-trees
+# diff; ERE message search on a linear automaton with a bounded back-reference
+# matcher; the export-subst pretty expander (user format, trailers, dates,
+# re-encoding, wrapping, width tables); the rev-parse grammar and
+# ambiguous-name candidates; the push/fetch/pull rework with its ref map and
+# branch tracking; rebase-merges, octopus and autostash; and commit-graph split
+# chains, Bloom filters and their verification. The browser bundle carries the
+# same code (692 668 -> 997 046 B raw). This is the largest single raise in the
+# list because it folds a whole release's worth of git surface into one change
+# set; none is removable without dropping the parity each piece exists to add.
+# The per-call-overhead perf fixes that followed (ref-miss and root-ref probes,
+# peeled-tree type read, unordered status scan, fsck offset sort) add 652 B more
+# (1 398 301 B, past 1365 KiB), hence 1366. The git-faithfulness fixes found
+# while validating (gpg and ssh verifier output parsing, replace-ref names,
+# fsck roots / unreadable worktree HEAD / per-copy referents, branch-tracking
+# valueless merges, rebase keep-empty and label reflogs, raw --no-commit merge
+# message, squash ident reads, GBK euro sign) add 999 B more (1 399 300 B,
+# past 1366 KiB), hence 1367. The second ref-lookup perf round (a loose miss
+# tells absence from a file in its path only when packed-refs holds the name,
+# one read of a branch or start point per command, one unlink per branch-state
+# file, the rev-list typing walk's shallow set read once) adds 1 678 B more
+# (1 400 978 B, past 1368 KiB), hence 1369. The racily-clean smudge on index writes
+# (git's `do_write_index`, ADR-949) adds 969 B more (1 402 019 B, past 1369 KiB),
+# hence 1370.
+# Per-row size-limit attribution: docs/design/bundle-size-optimization.md.
+SIZE_CAP=$((1370 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
@@ -323,11 +355,6 @@ TARBALL="$PACKDIR/$(npm pack --silent --pack-destination "$PACKDIR")"
 INVENTORY=$(mktemp -t tsgit-tarball-inventory.XXXXXX)
 BUNDLE=$(mktemp -t tsgit-browser-bundle.XXXXXX)
 SIZE=$(wc -c < "$TARBALL" | tr -d ' ')
-
-if (( SIZE > SIZE_CAP )); then
-  echo "FAIL: tarball $(basename "$TARBALL") is ${SIZE} bytes (cap ${SIZE_CAP})" >&2
-  exit 1
-fi
 
 # Subpath resolution guard (ADR-644). `attw --pack` enumerates `exports`
 # keys literally and prints "(wildcard)" for a pattern without resolving
@@ -509,35 +536,49 @@ if LC_ALL=C grep -aqE '(import|from|require)[^"'\'']*["'\'']node:' "$BUNDLE"; th
   exit 1
 fi
 
-# The default entry (package.json "." default condition + ./auto/memory) is the
-# runtime-agnostic one: a node: specifier there hard-fails any runtime without
-# node builtins (plain browsers, workerd without nodejs_compat). Check the
-# entry file AND every chunk in its static import graph.
+# The default entry (package.json "." default condition + ./auto/memory) and
+# the browser entry are the runtime-agnostic ones: a node: specifier there
+# hard-fails any runtime without node builtins (plain browsers, workerd without
+# nodejs_compat). Check each entry file AND every chunk in its import graph,
+# and refuse the node adapter itself — a shared chunk that imports it drags
+# every node: external along, so naming the chunk pins the cause, not just the
+# symptom.
 DEFAULT_ENTRY_DIR=$(mktemp -d -t tsgit-default-entry.XXXXXX)
 tar -xzf "$TARBALL" -C "$DEFAULT_ENTRY_DIR" 'package/dist/esm'
 if ! DEFAULT_ENTRY_DIR="$DEFAULT_ENTRY_DIR" node --input-type=module -e '
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-const seen = new Set();
-const queue = [resolve(process.env.DEFAULT_ENTRY_DIR, "package/dist/esm/index.default.js")];
+import { dirname, relative, resolve } from "node:path";
+const esmRoot = resolve(process.env.DEFAULT_ENTRY_DIR, "package/dist/esm");
+const neutralEntries = ["index.default.js", "index.browser.js"];
+const nodeAdapterPathRe = /(?:^|\/)(?:chunks\/adapter-node-[^/]*|adapters\/node\/[^/]*)\.js$/;
 const specifierRe = /(?:import|from)\s*["'"'"']([^"'"'"']+)["'"'"']|import\s*\(\s*["'"'"']([^"'"'"']+)["'"'"']\s*\)/g;
-while (queue.length > 0) {
-  const file = queue.pop();
-  if (seen.has(file)) continue;
-  seen.add(file);
-  const source = readFileSync(file, "utf8");
-  for (const match of source.matchAll(specifierRe)) {
-    const spec = match[1] ?? match[2];
-    if (spec === undefined) continue;
-    if (spec.startsWith("node:")) {
-      console.error(`node: specifier "${spec}" reachable from index.default.js via ${file}`);
-      process.exit(1);
+const violationsFrom = (entry) => {
+  const violations = [];
+  const seen = new Set();
+  const queue = [resolve(esmRoot, entry)];
+  while (queue.length > 0) {
+    const file = queue.pop();
+    if (seen.has(file)) continue;
+    seen.add(file);
+    const fromFile = relative(esmRoot, file);
+    if (nodeAdapterPathRe.test(fromFile)) violations.push(`${entry} reaches the node adapter ${fromFile}`);
+    for (const match of readFileSync(file, "utf8").matchAll(specifierRe)) {
+      const spec = match[1] ?? match[2];
+      if (spec === undefined) continue;
+      if (spec.startsWith("node:")) violations.push(`${entry} reaches "${spec}" via ${fromFile}`);
+      if (spec.startsWith(".")) queue.push(resolve(dirname(file), spec));
     }
-    if (spec.startsWith(".")) queue.push(resolve(dirname(file), spec));
   }
+  return violations;
+};
+const violations = neutralEntries.flatMap(violationsFrom);
+if (violations.length > 0) {
+  console.error(violations.join("\n"));
+  process.exit(1);
 }
+console.log(`${neutralEntries.join(" and ")} reach no node: specifier and no node adapter.`);
 ' ; then
-  echo "FAIL: the default (runtime-agnostic) entry reaches a node: specifier" >&2
+  echo "FAIL: a runtime-agnostic entry (index.default.js / index.browser.js) reaches the node adapter or a node: specifier" >&2
   exit 1
 fi
 
@@ -577,6 +618,14 @@ if (( QUICK == 0 )); then
     echo "FAIL: arethetypeswrong reported issues" >&2
     exit 1
   }
+fi
+
+# Size cap last: every structural check above (subpath resolution, the
+# neutral-entry node:/adapter-node walk, bundle shape, types) reports first, so
+# an over-cap tarball can never hide a leak behind its size failure.
+if (( SIZE > SIZE_CAP )); then
+  echo "FAIL: tarball $(basename "$TARBALL") is ${SIZE} bytes (cap ${SIZE_CAP})" >&2
+  exit 1
 fi
 
 echo "OK: tarball $(basename "$TARBALL") verified at ${SIZE} bytes."

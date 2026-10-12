@@ -9,7 +9,8 @@
  *  - Happy single-ref push: request body is well-formed, pushedRefs is ok.
  *  - Per-ref `ng` from server → status 'rejected'.
  *  - `unpack <err>` from server → throws PUSH_REJECTED.
- *  - Non-fast-forward without force → NON_FAST_FORWARD.
+ *  - Client-side rejections (non-fast-forward, needs force, fetch first,
+ *    already exists) → reported per ref; the push carries on.
  *  - `force: true` skips the non-FF guard.
  *  - `forceWithLease: 'auto'` reads remote-tracking ref; mismatch → PUSH_REJECTED.
  *  - `forceWithLease: 'auto'` on a tag dst → INVALID_OPTION.
@@ -26,6 +27,7 @@ import { push } from '../../../../src/application/commands/push.js';
 import * as buildPackMod from '../../../../src/application/primitives/build-pack.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import * as closureMod from '../../../../src/application/primitives/internal/closure-engine.js';
+import { appendReflog, readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { computeLooseObjectPath, TsgitError } from '../../../../src/domain/index.js';
@@ -43,7 +45,7 @@ import type {
   HttpResponse,
   HttpTransport,
 } from '../../../../src/ports/http-transport.js';
-import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
+import { gpgSignerStub, stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
 import { recordingProgress, seedRepo, withProgress } from './fixtures.js';
 
 const ENCODER = new TextEncoder();
@@ -154,6 +156,7 @@ const writeOriginConfig = async (ctx: ReturnType<typeof createMemoryContext>): P
     `${ctx.layout.gitDir}/config`,
     '[remote "origin"]\n' +
       '  url = https://example.com/r.git\n' +
+      '  fetch = +refs/heads/*:refs/remotes/origin/*\n' +
       '[branch "main"]\n' +
       '  remote = origin\n' +
       '  merge = refs/heads/main\n',
@@ -828,6 +831,7 @@ describe('push — server responses', () => {
         expect(result.pushedRefs).toHaveLength(1);
         expect(result.pushedRefs[0]).toMatchObject({
           status: 'rejected',
+          rejection: 'remote',
           reason: 'pre-receive hook declined',
         });
       });
@@ -867,40 +871,214 @@ describe('push — server responses', () => {
   });
 });
 
-describe('push — force / non-fast-forward', () => {
-  describe('Given a non-FF update with no force', () => {
+describe('push — unpack failure', () => {
+  describe('Given an up-to-date branch with a stale tracking ref and a new branch the remote fails to unpack', () => {
     describe('When push runs', () => {
-      it('Then throws NON_FAST_FORWARD', async () => {
-        // Arrange — kills the ancestor-check skip mutant.
+      it("Then it throws PUSH_REJECTED carrying the per-ref statuses and still refreshes the up-to-date ref's tracking ref", async () => {
+        // Arrange
         const ctx = createMemoryContext();
-        const branchA = await seedCommit(ctx, [], 'branch-a');
-        const branchB = await seedCommit(ctx, [], 'branch-b'); // disjoint, NOT a descendant of branchA
-        await seedRepo(ctx, { refs: { 'refs/heads/main': branchB.id } });
+        const parent = await seedCommit(ctx, [], 'a');
+        const tip = await seedCommit(ctx, [parent.id], 'b');
+        await seedRepo(ctx, {
+          refs: {
+            'refs/heads/main': tip.id,
+            'refs/heads/new': parent.id,
+            'refs/remotes/origin/main': parent.id,
+          },
+        });
         await writeOriginConfig(ctx);
         const { transport } = fakeServer({
           url: 'https://example.com/r.git',
-          advertisedRefs: [{ name: 'refs/heads/main', id: branchA.id }],
-          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+          advertisedRefs: [{ name: 'refs/heads/main', id: tip.id }],
+          reportStatus: {
+            unpack: 'unpack-objects abnormal exit',
+            refs: [{ name: 'refs/heads/new', status: 'ng', reason: 'unpacker error' }],
+          },
         });
+        const sut = push;
 
         // Act
         let caught: unknown;
         try {
-          await push({ ...ctx, transport });
+          await sut({ ...ctx, transport }, { refspecs: ['main', 'new'] });
         } catch (err) {
           caught = err;
         }
 
         // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('NON_FAST_FORWARD');
+        expect((caught as TsgitError).data).toEqual({
+          code: 'PUSH_REJECTED',
+          ref: 'refs/heads/new',
+          reason: 'unpack-objects abnormal exit',
+          reportStatus: {
+            unpackOk: false,
+            unpackError: 'unpack-objects abnormal exit',
+            refUpdates: [{ name: 'refs/heads/new', accepted: false, reason: 'unpacker error' }],
+          },
+        });
+        expect(
+          (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`)).trim(),
+        ).toBe(tip.id);
+      });
+    });
+  });
+});
+
+describe('push — a failed send leaves tracking refs alone', () => {
+  describe('Given an up-to-date branch with a stale tracking ref and a pre-push hook that declines the other branch', () => {
+    describe('When push runs', () => {
+      it('Then it fails on the hook and the up-to-date ref keeps its tracking ref, as git aborts before updating any', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'a');
+        const tip = await seedCommit(ctx, [parent.id], 'b');
+        await seedRepo(ctx, {
+          refs: {
+            'refs/heads/main': tip.id,
+            'refs/heads/new': parent.id,
+            'refs/remotes/origin/main': parent.id,
+          },
+        });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: tip.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/new', status: 'ok' }] },
+        });
+        const hooks = new MemoryHookRunner({
+          'pre-push': { kind: 'ran', exitCode: 1, stdout: '', stderr: 'declined' },
+        });
+        const sut = push;
+
+        // Act
+        const outcome = await sut({ ...ctx, transport, hooks }, { refspecs: ['main', 'new'] }).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+
+        // Assert
+        expect((outcome as TsgitError).data).toEqual({
+          code: 'HOOK_FAILED',
+          hook: 'pre-push',
+          exitCode: 1,
+          stderr: 'declined',
+        });
+        expect(
+          (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`)).trim(),
+        ).toBe(parent.id);
+      });
+    });
+  });
+});
+
+describe('push — deleting a remote ref', () => {
+  describe('Given a remote-tracking ref with a reflog for the ref being deleted', () => {
+    describe('When push deletes the remote ref', () => {
+      it('Then the tracking ref and its reflog are removed, as git removes both', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const tip = await seedCommit(ctx, [], 'tip');
+        await seedRepo(ctx, {
+          refs: { 'refs/heads/main': tip.id, 'refs/remotes/origin/feature': tip.id },
+        });
+        await appendReflog(ctx, 'refs/remotes/origin/feature' as RefName, {
+          oldId: '0'.repeat(40) as ObjectId,
+          newId: tip.id,
+          identity: { name: 'A', email: 'a@a', timestamp: 100, timezoneOffset: '+0000' },
+          message: 'update by push',
+        });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/feature', id: tip.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/feature', status: 'ok' }] },
+        });
+        const sut = push;
+
+        // Act
+        await sut({ ...ctx, transport }, { refspecs: [':refs/heads/feature'] });
+
+        // Assert
+        expect({
+          ref: await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/feature`),
+          reflog: await ctx.fs.exists(`${ctx.layout.gitDir}/logs/refs/remotes/origin/feature`),
+        }).toEqual({ ref: false, reflog: false });
+      });
+    });
+  });
+
+  describe('Given a symbolic remote-tracking ref over the ref being deleted', () => {
+    describe('When push deletes the remote ref', () => {
+      it('Then the link logs the deletion with no message, as git deletes without one', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const tip = await seedCommit(ctx, [], 'tip');
+        await seedRepo(ctx, {
+          refs: { 'refs/heads/main': tip.id, 'refs/remotes/origin/feature': tip.id },
+        });
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/refs/remotes/origin/alias`,
+          'ref: refs/remotes/origin/feature\n',
+        );
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/alias', id: tip.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/alias', status: 'ok' }] },
+        });
+        const sut = push;
+
+        // Act
+        await sut({ ...ctx, transport }, { refspecs: [':refs/heads/alias'] });
+
+        // Assert
+        const log = await readReflog(ctx, 'refs/remotes/origin/alias' as RefName);
+        expect(log.map((entry) => [entry.oldId, entry.newId, entry.message])).toEqual([
+          [tip.id, ZERO_OID, ''],
+        ]);
+      });
+    });
+  });
+});
+
+describe('push — force / non-fast-forward', () => {
+  describe('Given a non-FF update with no force', () => {
+    describe('When push runs', () => {
+      it('Then it reports the ref rejected as non-fast-forward and sends nothing', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const branchA = await seedCommit(ctx, [], 'branch-a');
+        const branchB = await seedCommit(ctx, [], 'branch-b'); // disjoint, NOT a descendant of branchA
+        await seedRepo(ctx, { refs: { 'refs/heads/main': branchB.id } });
+        await writeOriginConfig(ctx);
+        const { transport, requests } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: branchA.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut({ ...ctx, transport });
+
+        // Assert
+        expect(result.pushedRefs).toEqual([
+          {
+            name: 'refs/heads/main',
+            oldId: branchA.id,
+            newId: branchB.id,
+            status: 'rejected',
+            rejection: 'non-fast-forward',
+          },
+        ]);
+        expect(requests).toHaveLength(1);
       });
     });
   });
 
   describe('Given a non-FF update with force=true', () => {
     describe('When push runs', () => {
-      it('Then the update is sent (no NON_FAST_FORWARD)', async () => {
+      it('Then the update is sent as a forced update (no NON_FAST_FORWARD)', async () => {
         // Arrange
         const ctx = createMemoryContext();
         const branchA = await seedCommit(ctx, [], 'branch-a');
@@ -918,6 +1096,34 @@ describe('push — force / non-fast-forward', () => {
 
         // Assert
         expect(result.pushedRefs[0]?.status).toBe('ok');
+        expect(result.pushedRefs[0]?.forcedUpdate).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a fast-forward update with force=true', () => {
+    describe('When push runs', () => {
+      it('Then the update is sent with no forced update to report', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'parent');
+        const tip = await seedCommit(ctx, [parent.id], 'tip');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut({ ...ctx, transport }, { force: true });
+
+        // Assert
+        expect(result.pushedRefs).toEqual([
+          { name: 'refs/heads/main', oldId: parent.id, newId: tip.id, status: 'ok' },
+        ]);
       });
     });
   });
@@ -951,7 +1157,326 @@ describe('push — force / non-fast-forward', () => {
   });
 });
 
+/** A commit over `tree` with `parents`, written as given — no typing gate. */
+const writeRawCommit = (
+  ctx: ReturnType<typeof createMemoryContext>,
+  tree: ObjectId,
+  parents: ReadonlyArray<ObjectId>,
+  message: string,
+): Promise<ObjectId> => {
+  const author = { name: 'A', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' };
+  const commit: Commit = {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: { tree, parents, author, committer: author, message, extraHeaders: [] },
+  };
+  return writeObject(ctx, commit);
+};
+
+describe('push — fast-forward walk against the push object table', () => {
+  describe.each([
+    ['unforced', {}],
+    ['forced', { force: true }],
+  ] as const)(
+    "Given the local tip's parent whose own parent is the tree the tip carries, %s",
+    (_, opts) => {
+      describe('When push measures the advertised unrelated commit against it', () => {
+        it('Then the walk parses that parent against the table and refuses COMMIT_PARSE_FAILED on it', async () => {
+          // Arrange
+          const base = createMemoryContext();
+          const errors: string[] = [];
+          const ctx = { ...base, logger: { error: (line: string) => errors.push(line) } };
+          const { tree } = await seedCommit(ctx, [], 'seed');
+          const { tree: parentTree } = await seedCommit(ctx, [], 'other');
+          const parent = await writeRawCommit(ctx, parentTree, [tree], 'parent');
+          const tip = await writeRawCommit(ctx, tree, [parent], 'tip');
+          const advertised = await writeRawCommit(ctx, tree, [], 'advertised');
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeOriginConfig(ctx);
+          const { transport } = fakeServer({
+            url: 'https://example.com/r.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: advertised }],
+            reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+          });
+          const sut = push;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut({ ...ctx, transport }, opts);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({ code: 'COMMIT_PARSE_FAILED', id: parent });
+          expect(errors).toEqual([
+            `object ${tree} is a tree, not a commit`,
+            `bad parent ${tree} in commit ${parent}`,
+          ]);
+        });
+      });
+    },
+  );
+});
+
+describe('push — client-side rejections per ref', () => {
+  describe('Given an advertised tip absent locally and no force', () => {
+    describe('When push runs', () => {
+      it('Then it reports the ref rejected as fetch-first without a logged line', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const errors: string[] = [];
+        const ctx = { ...base, logger: { error: (line: string) => errors.push(line) } };
+        const local = await seedCommit(ctx, [], 'local');
+        const absent = 'c'.repeat(40) as ObjectId;
+        await seedRepo(ctx, { refs: { 'refs/heads/main': local.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: absent }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut({ ...ctx, transport });
+
+        // Assert
+        expect(result.pushedRefs).toEqual([
+          {
+            name: 'refs/heads/main',
+            oldId: absent,
+            newId: local.id,
+            status: 'rejected',
+            rejection: 'fetch-first',
+          },
+        ]);
+        expect(errors).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an advertised end that is a tree', () => {
+    describe.each([
+      ['unforced', {}, { status: 'rejected', rejection: 'needs-force' }],
+      ['forced', { force: true }, { status: 'ok', forcedUpdate: true }],
+    ] as const)('When push runs %s', (_, opts, outcome) => {
+      it('Then the needs-force verdict follows the force', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const local = await seedCommit(ctx, [], 'local');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': local.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: local.tree }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut({ ...ctx, transport }, opts);
+
+        // Assert
+        expect(result.pushedRefs).toEqual([
+          { name: 'refs/heads/main', oldId: local.tree, newId: local.id, ...outcome },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a local end that is a tree over an advertised commit', () => {
+    describe('When push runs', () => {
+      it('Then it reports the ref rejected as needs-force', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const advertised = await seedCommit(ctx, [], 'advertised');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': advertised.tree } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: advertised.id }],
+          reportStatus: { unpack: 'ok', refs: [] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut({ ...ctx, transport });
+
+        // Assert
+        expect(result.pushedRefs.map((ref) => ref.rejection)).toEqual(['needs-force']);
+      });
+    });
+  });
+
+  describe('Given a receiving end that reports no status for a sent ref', () => {
+    describe('When push runs', () => {
+      it('Then the ref is reported rejected by the remote without a reason', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'parent');
+        const tip = await seedCommit(ctx, [parent.id], 'tip');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut({ ...ctx, transport });
+
+        // Assert
+        expect(result.pushedRefs).toEqual([
+          {
+            name: 'refs/heads/main',
+            oldId: parent.id,
+            newId: tip.id,
+            status: 'rejected',
+            rejection: 'remote',
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a tag destination the remote already carries at an object absent locally', () => {
+    describe('When push runs', () => {
+      it('Then it reports already-exists before looking the advertised end up', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const local = await seedCommit(ctx, [], 'local');
+        const absent = 'c'.repeat(40) as ObjectId;
+        await seedRepo(ctx, { refs: { 'refs/heads/main': local.id, 'refs/tags/v1': local.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/tags/v1', id: absent }],
+          reportStatus: { unpack: 'ok', refs: [] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut({ ...ctx, transport }, { refspecs: ['refs/tags/v1'] });
+
+        // Assert
+        expect(result.pushedRefs).toEqual([
+          {
+            name: 'refs/tags/v1',
+            oldId: absent,
+            newId: local.id,
+            status: 'rejected',
+            rejection: 'already-exists',
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a non-fast-forward ref beside a new ref', () => {
+    describe('When push runs', () => {
+      it('Then only the new ref is commanded while the rejected value still feeds the pack', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const advertised = await seedCommit(ctx, [], 'advertised');
+        const rejected = await seedCommit(ctx, [], 'rejected');
+        const created = await seedCommit(ctx, [], 'created');
+        await seedRepo(ctx, {
+          refs: { 'refs/heads/main': rejected.id, 'refs/heads/new': created.id },
+        });
+        await writeOriginConfig(ctx);
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: advertised.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/new', status: 'ok' }] },
+        });
+        const closureSpy = vi.spyOn(closureMod, 'computeClosure');
+        const sut = push;
+
+        // Act
+        const result = await sut({ ...ctx, transport }, { refspecs: ['main', 'new'] });
+
+        // Assert
+        const body = new TextDecoder().decode(requestBodies[0]);
+        expect({
+          commandsMain: body.includes(' refs/heads/main'),
+          commandsNew: body.includes(' refs/heads/new'),
+          wants: closureSpy.mock.calls[0]?.[1].wants,
+          outcomes: result.pushedRefs.map((ref) => [ref.name, ref.status, ref.rejection]),
+        }).toEqual({
+          commandsMain: false,
+          commandsNew: true,
+          wants: [rejected.id, created.id],
+          outcomes: [
+            ['refs/heads/main', 'rejected', 'non-fast-forward'],
+            ['refs/heads/new', 'ok', undefined],
+          ],
+        });
+        closureSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a non-fast-forward ref beside a needs-force ref and a pre-push hook', () => {
+    describe('When push runs', () => {
+      it('Then the hook runs and its stdin skips only the non-fast-forward ref', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const advertised = await seedCommit(ctx, [], 'advertised');
+        const local = await seedCommit(ctx, [], 'local');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': local.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [
+            { name: 'refs/heads/main', id: advertised.id },
+            { name: 'refs/misc/tree', id: advertised.tree },
+          ],
+          reportStatus: { unpack: 'ok', refs: [] },
+        });
+        const hooks = new MemoryHookRunner();
+        const sut = push;
+
+        // Act
+        await sut({ ...ctx, transport, hooks }, { refspecs: ['main', 'main:refs/misc/tree'] });
+
+        // Assert
+        expect(hooks.calls[0]?.stdin).toBe(
+          `refs/heads/main ${local.id} refs/misc/tree ${advertised.tree}\n`,
+        );
+      });
+    });
+  });
+});
+
 describe('push — force-with-lease', () => {
+  describe('Given an up-to-date ref and a stale explicit lease', () => {
+    describe('When push runs', () => {
+      it('Then the ref is not judged and nothing is pushed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const tip = await seedCommit(ctx, [], 'tip');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: tip.id }],
+          reportStatus: { unpack: 'ok', refs: [] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut({ ...ctx, transport }, { forceWithLease: tip.tree });
+
+        // Assert
+        expect(result.pushedRefs).toEqual([]);
+      });
+    });
+  });
+
   describe('Given `forceWithLease: "auto"` and the cached remote-tracking ref matches the server', () => {
     describe('When push runs', () => {
       it('Then the update succeeds without force', async () => {
@@ -983,8 +1508,8 @@ describe('push — force-with-lease', () => {
 
   describe('Given `forceWithLease: "auto"` with a stale cached value', () => {
     describe('When push runs', () => {
-      it('Then throws PUSH_REJECTED (lease-mismatch)', async () => {
-        // Arrange — kills the `lease !== remoteOid` guard mutant.
+      it('Then the ref is rejected as stale info and nothing is posted', async () => {
+        // Arrange
         const ctx = createMemoryContext();
         const a = await seedCommit(ctx, [], 'a');
         const b = await seedCommit(ctx, [], 'b');
@@ -1003,27 +1528,18 @@ describe('push — force-with-lease', () => {
         });
 
         // Act
-        let caught: unknown;
-        try {
-          await push({ ...ctx, transport }, { forceWithLease: 'auto' });
-        } catch (err) {
-          caught = err;
-        }
+        const result = await push({ ...ctx, transport }, { forceWithLease: 'auto' });
 
         // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data as {
-          code: string;
-          reason: string;
-          reportStatus: { unpackOk: boolean; refUpdates: ReadonlyArray<unknown> };
-        };
-        expect(data.code).toBe('PUSH_REJECTED');
-        expect(data.reason).toBe('lease-mismatch');
-        // emptyReport() attaches a synthetic all-clear report-status: unpackOk
-        // is `true`, refUpdates empty (kills the BooleanLiteral mutant).
-        expect(data.reportStatus.unpackOk).toBe(true);
-        expect(data.reportStatus.refUpdates).toEqual([]);
-        // POST was NOT issued (lease check is pre-flight).
+        expect(result.pushedRefs).toEqual([
+          {
+            name: 'refs/heads/main',
+            oldId: c.id,
+            newId: b.id,
+            status: 'rejected',
+            rejection: 'stale-info',
+          },
+        ]);
         expect(requests.map((r) => r.method)).toEqual(['GET']);
       });
     });
@@ -1060,8 +1576,8 @@ describe('push — force-with-lease', () => {
 
   describe('Given an explicit ObjectId lease that does NOT match the server tip', () => {
     describe('When push runs', () => {
-      it('Then throws PUSH_REJECTED (lease-mismatch)', async () => {
-        // Arrange — kills the lease comparison mutant on the explicit-oid path.
+      it('Then the ref is rejected as stale info and nothing is posted', async () => {
+        // Arrange
         const ctx = createMemoryContext();
         const a = await seedCommit(ctx, [], 'a');
         const b = await seedCommit(ctx, [], 'b');
@@ -1075,59 +1591,528 @@ describe('push — force-with-lease', () => {
         });
 
         // Act
-        let caught: unknown;
-        try {
-          await push({ ...ctx, transport }, { forceWithLease: a.id });
-        } catch (err) {
-          caught = err;
-        }
+        const result = await push({ ...ctx, transport }, { forceWithLease: a.id });
 
         // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data as { code: string; reason: string };
-        expect(data.code).toBe('PUSH_REJECTED');
-        expect(data.reason).toBe('lease-mismatch');
-        // POST is NOT issued.
+        expect(result.pushedRefs.map((ref) => ref.rejection)).toEqual(['stale-info']);
         expect(requests.map((r) => r.method)).toEqual(['GET']);
       });
     });
   });
 
-  describe('Given `forceWithLease: "auto"` on a tag refspec', () => {
+  describe.each([
+    { label: 'a tag', dst: 'refs/tags/v1.0' },
+    { label: 'a branch nothing tracks', dst: 'refs/heads/topic' },
+  ] as const)('Given `forceWithLease: "auto"` on $label the remote holds', ({ dst }) => {
     describe('When push runs', () => {
-      it('Then throws INVALID_OPTION (lease-on-non-branch)', async () => {
+      it('Then the lease expects it absent and rejects it as stale info', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const tip = await seedCommit(ctx, [], 'tagged');
-        await seedRepo(ctx, { refs: { 'refs/tags/v1.0': tip.id } });
+        const tip = await seedCommit(ctx, [], 'tip');
+        const held = await seedCommit(ctx, [], 'held');
+        await seedRepo(ctx, { refs: { [dst]: tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport, requests } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: dst, id: held.id }],
+          reportStatus: { unpack: 'ok', refs: [] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut(
+          { ...ctx, transport },
+          { refspecs: [`${dst}:${dst}`], forceWithLease: 'auto' },
+        );
+
+        // Assert
+        expect(result.pushedRefs.map((ref) => ref.rejection)).toEqual(['stale-info']);
+        expect(requests.map((r) => r.method)).toEqual(['GET']);
+      });
+    });
+  });
+
+  describe('Given `forceWithLease: "auto"` on a branch nothing tracks and the remote lacks', () => {
+    describe('When push runs', () => {
+      it('Then the lease holds and the new branch is sent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const tip = await seedCommit(ctx, [], 'tip');
+        await seedRepo(ctx, { refs: { 'refs/heads/topic': tip.id } });
         await writeOriginConfig(ctx);
         const { transport } = fakeServer({
           url: 'https://example.com/r.git',
-          advertisedRefs: [{ name: 'refs/tags/v1.0', id: '0'.repeat(40) }],
+          advertisedRefs: [],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/topic', status: 'ok' }] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut(
+          { ...ctx, transport },
+          { refspecs: ['refs/heads/topic:refs/heads/topic'], forceWithLease: 'auto' },
+        );
+
+        // Assert
+        expect(result.pushedRefs.map((ref) => [ref.name, ref.status])).toEqual([
+          ['refs/heads/topic', 'ok'],
+        ]);
+      });
+    });
+  });
+});
+
+describe('push — per-ref stale lease, undeletable refs and atomic pushes', () => {
+  const capsOf = (body: Uint8Array | undefined): ReadonlyArray<string> =>
+    (new TextDecoder().decode(body).split('\0')[1] ?? '').split('\n')[0]?.split(' ') ?? [];
+
+  describe('Given an explicit lease that holds for one ref and is stale for another', () => {
+    describe('When push runs', () => {
+      it('Then the stale ref is rejected as stale info and the other is sent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const expected = await seedCommit(ctx, [], 'expected');
+        const moved = await seedCommit(ctx, [], 'moved');
+        const local = await seedCommit(ctx, [], 'local');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': local.id, 'refs/heads/side': local.id } });
+        await writeOriginConfig(ctx);
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [
+            { name: 'refs/heads/main', id: expected.id },
+            { name: 'refs/heads/side', id: moved.id },
+          ],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut(
+          { ...ctx, transport },
+          { refspecs: ['main', 'side'], forceWithLease: expected.id },
+        );
+
+        // Assert
+        const body = new TextDecoder().decode(requestBodies[0]);
+        expect({
+          commandsMain: body.includes(' refs/heads/main'),
+          commandsSide: body.includes(' refs/heads/side'),
+          outcomes: result.pushedRefs.map((ref) => [ref.name, ref.status, ref.rejection]),
+        }).toEqual({
+          commandsMain: true,
+          commandsSide: false,
+          outcomes: [
+            ['refs/heads/main', 'ok', undefined],
+            ['refs/heads/side', 'rejected', 'stale-info'],
+          ],
+        });
+      });
+    });
+  });
+
+  describe('Given a stale lease and force', () => {
+    describe('When push runs', () => {
+      it('Then force overrides the stale lease and the ref is sent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const expected = await seedCommit(ctx, [], 'expected');
+        const moved = await seedCommit(ctx, [], 'moved');
+        const local = await seedCommit(ctx, [], 'local');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': local.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: moved.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut(
+          { ...ctx, transport },
+          { forceWithLease: expected.id, force: true },
+        );
+
+        // Assert
+        expect(result.pushedRefs.map((ref) => ref.status)).toEqual(['ok']);
+      });
+    });
+  });
+
+  describe('Given a stale lease on a delete refspec', () => {
+    describe('When push runs', () => {
+      it('Then the delete is rejected as stale info and nothing is posted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const expected = await seedCommit(ctx, [], 'expected');
+        const moved = await seedCommit(ctx, [], 'moved');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': expected.id } });
+        await writeOriginConfig(ctx);
+        const { transport, requests } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/feature', id: moved.id }],
           reportStatus: { unpack: 'ok', refs: [] },
         });
+        const sut = push;
+
+        // Act
+        const result = await sut(
+          { ...ctx, transport },
+          { refspecs: [':refs/heads/feature'], forceWithLease: expected.id },
+        );
+
+        // Assert
+        expect(result.pushedRefs).toEqual([
+          {
+            name: 'refs/heads/feature',
+            oldId: moved.id,
+            newId: ZERO_OID,
+            status: 'rejected',
+            rejection: 'stale-info',
+          },
+        ]);
+        expect(requests.map((r) => r.method)).toEqual(['GET']);
+      });
+    });
+  });
+
+  describe('Given a stale lease beside a held one and a pre-push hook', () => {
+    describe('When push runs', () => {
+      it('Then the hook stdin skips the stale ref', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const expected = await seedCommit(ctx, [], 'expected');
+        const moved = await seedCommit(ctx, [], 'moved');
+        const local = await seedCommit(ctx, [], 'local');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': local.id, 'refs/heads/side': local.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [
+            { name: 'refs/heads/main', id: expected.id },
+            { name: 'refs/heads/side', id: moved.id },
+          ],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+        const hooks = new MemoryHookRunner();
+        const sut = push;
+
+        // Act
+        await sut(
+          { ...ctx, transport, hooks },
+          { refspecs: ['main', 'side'], forceWithLease: expected.id },
+        );
+
+        // Assert
+        expect(hooks.calls[0]?.stdin).toBe(
+          `refs/heads/main ${local.id} refs/heads/main ${expected.id}\n`,
+        );
+      });
+    });
+  });
+
+  describe('Given a delete refspec and a server that does not advertise delete-refs', () => {
+    describe('When push runs with a pre-push hook', () => {
+      it('Then the hook still lists the delete and the ref is rejected as not deletable', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const feature = await seedCommit(ctx, [], 'feature');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': feature.id } });
+        await writeOriginConfig(ctx);
+        const { transport, requests } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/feature', id: feature.id }],
+          advertisedCaps: ['report-status', 'ofs-delta', 'atomic'],
+          reportStatus: { unpack: 'ok', refs: [] },
+        });
+        const hooks = new MemoryHookRunner();
+        const sut = push;
+
+        // Act
+        const result = await sut(
+          { ...ctx, transport, hooks },
+          { refspecs: [':refs/heads/feature'] },
+        );
+
+        // Assert
+        expect({
+          stdin: hooks.calls[0]?.stdin,
+          rejections: result.pushedRefs.map((ref) => ref.rejection),
+          methods: requests.map((r) => r.method),
+        }).toEqual({
+          stdin: `(delete) ${ZERO_OID} refs/heads/feature ${feature.id}\n`,
+          rejections: ['remote-ref-not-deletable'],
+          methods: ['GET'],
+        });
+      });
+    });
+  });
+
+  describe('Given an atomic push of a non-fast-forward ref beside a new ref', () => {
+    describe('When push runs', () => {
+      it('Then every other ref fails the atomic push, nothing is posted and git’s error is logged', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const errors: string[] = [];
+        const ctx = { ...base, logger: { error: (line: string) => errors.push(line) } };
+        const advertised = await seedCommit(base, [], 'advertised');
+        const rejected = await seedCommit(base, [], 'rejected');
+        const created = await seedCommit(base, [], 'created');
+        await seedRepo(base, {
+          refs: { 'refs/heads/main': rejected.id, 'refs/heads/new': created.id },
+        });
+        await writeOriginConfig(base);
+        const { transport, requests } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: advertised.id }],
+          reportStatus: { unpack: 'ok', refs: [] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut(
+          { ...ctx, transport },
+          { refspecs: ['new', 'main'], atomic: true },
+        );
+
+        // Assert
+        expect({
+          outcomes: result.pushedRefs.map((ref) => [ref.name, ref.status, ref.rejection]),
+          methods: requests.map((r) => r.method),
+          errors,
+        }).toEqual({
+          outcomes: [
+            ['refs/heads/main', 'rejected', 'non-fast-forward'],
+            ['refs/heads/new', 'rejected', 'atomic-push-failed'],
+          ],
+          methods: ['GET'],
+          errors: ['atomic push failed for ref refs/heads/main. status: 2'],
+        });
+      });
+    });
+  });
+
+  describe('Given an atomic push of an accepted ref ahead of a non-fast-forward ref', () => {
+    describe('When push runs', () => {
+      it('Then the accepted ref fails the atomic push and git’s error names the rejected one', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const errors: string[] = [];
+        const contexts: unknown[] = [];
+        const ctx = {
+          ...base,
+          logger: {
+            error: (line: string, context?: unknown) => {
+              errors.push(line);
+              contexts.push(context);
+            },
+          },
+        };
+        const parent = await seedCommit(base, [], 'parent');
+        const ahead = await seedCommit(base, [parent.id], 'ahead');
+        const advertisedDev = await seedCommit(base, [], 'advertised dev');
+        const rewrittenDev = await seedCommit(base, [], 'rewritten dev');
+        await seedRepo(base, {
+          refs: { 'refs/heads/main': ahead.id, 'refs/heads/dev': rewrittenDev.id },
+        });
+        await writeOriginConfig(base);
+        const { transport, requests } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [
+            { name: 'refs/heads/main', id: parent.id },
+            { name: 'refs/heads/dev', id: advertisedDev.id },
+          ],
+          reportStatus: { unpack: 'ok', refs: [] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut(
+          { ...ctx, transport },
+          { refspecs: ['main', 'dev'], atomic: true },
+        );
+
+        // Assert
+        expect({
+          outcomes: result.pushedRefs.map((ref) => [ref.name, ref.status, ref.rejection]),
+          methods: requests.map((r) => r.method),
+          errors,
+        }).toEqual({
+          outcomes: [
+            ['refs/heads/main', 'rejected', 'atomic-push-failed'],
+            ['refs/heads/dev', 'rejected', 'non-fast-forward'],
+          ],
+          methods: ['GET'],
+          errors: ['atomic push failed for ref refs/heads/dev. status: 2'],
+        });
+        expect(contexts).toEqual([{ ref: 'refs/heads/dev', status: 2 }]);
+      });
+    });
+  });
+
+  describe.each([
+    ['stale-info', 7],
+    ['remote-ref-not-deletable', 4],
+    ['fetch-first', 5],
+    ['needs-force', 6],
+    ['already-exists', 3],
+  ] as const)('Given an atomic push whose only rejection is %s', (rejection, status) => {
+    describe('When push runs', () => {
+      it(`Then git's error carries status ${status}`, async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const errors: string[] = [];
+        const ctx = { ...base, logger: { error: (line: string) => errors.push(line) } };
+        const local = await seedCommit(base, [], 'local');
+        const absent = '1'.repeat(40) as ObjectId;
+        const server: Readonly<
+          Record<typeof rejection, { ref: string; id: ObjectId; spec: string }>
+        > = {
+          'stale-info': { ref: 'refs/heads/main', id: local.tree, spec: 'main' },
+          'remote-ref-not-deletable': {
+            ref: 'refs/heads/gone',
+            id: local.id,
+            spec: ':refs/heads/gone',
+          },
+          'fetch-first': { ref: 'refs/heads/main', id: absent, spec: 'main' },
+          'needs-force': { ref: 'refs/heads/main', id: local.tree, spec: 'main' },
+          'already-exists': { ref: 'refs/tags/v1', id: local.tree, spec: 'main:refs/tags/v1' },
+        };
+        const { ref, id, spec } = server[rejection];
+        await seedRepo(base, { refs: { 'refs/heads/main': local.id } });
+        await writeOriginConfig(base);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: ref, id }],
+          advertisedCaps: ['report-status', 'atomic'],
+          reportStatus: { unpack: 'ok', refs: [] },
+        });
+        const lease = rejection === 'stale-info' ? { forceWithLease: local.id } : {};
+        const sut = push;
+
+        // Act
+        await sut({ ...ctx, transport }, { refspecs: [spec], atomic: true, ...lease });
+
+        // Assert
+        expect(errors).toEqual([`atomic push failed for ref ${ref}. status: ${status}`]);
+      });
+    });
+  });
+
+  describe('Given an atomic push and a server that does not advertise atomic', () => {
+    describe('When push runs with a pre-push hook', () => {
+      it('Then the hook runs and the push throws ATOMIC_PUSH_UNSUPPORTED before posting', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport, requests } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          advertisedCaps: ['report-status', 'delete-refs'],
+          reportStatus: { unpack: 'ok', refs: [] },
+        });
+        const hooks = new MemoryHookRunner();
+        const sut = push;
 
         // Act
         let caught: unknown;
         try {
-          await push(
-            { ...ctx, transport },
-            { refspecs: ['refs/tags/v1.0:refs/tags/v1.0'], forceWithLease: 'auto' },
-          );
+          await sut({ ...ctx, transport, hooks }, { atomic: true });
         } catch (err) {
           caught = err;
         }
 
-        // Assert — option literal is 'forceWithLease' (kills the StringLiteral mutant).
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data as {
-          code: string;
-          option: string;
-          reason: string;
-        };
-        expect(data.code).toBe('INVALID_OPTION');
-        expect(data.option).toBe('forceWithLease');
-        expect(data.reason).toBe('lease-on-non-branch');
+        // Assert
+        expect({
+          data: (caught as TsgitError).data,
+          hooks: hooks.calls.length,
+          methods: requests.map((r) => r.method),
+        }).toEqual({
+          data: { code: 'ATOMIC_PUSH_UNSUPPORTED', remote: 'origin' },
+          hooks: 1,
+          methods: ['GET'],
+        });
+      });
+    });
+  });
+
+  describe.each([
+    [{ atomic: true }, true],
+    [{ atomic: false }, false],
+    [{}, false],
+  ])('Given a server advertising atomic and push options %j', (opts, sendsAtomic) => {
+    describe('When push runs', () => {
+      it(`Then the atomic capability is ${sendsAtomic ? '' : 'not '}requested`, async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut({ ...ctx, transport }, opts);
+
+        // Assert
+        expect({
+          status: result.pushedRefs.map((ref) => ref.status),
+          atomic: capsOf(requestBodies[0]).includes('atomic'),
+        }).toEqual({ status: ['ok'], atomic: sendsAtomic });
+      });
+    });
+  });
+});
+
+describe('push — remote-ref order', () => {
+  describe('Given refspecs naming new refs between advertised ones', () => {
+    describe('When push runs with a pre-push hook', () => {
+      it('Then the hook and the result list advertised refs in advertisement order, then new refs in refspec order', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const old = await seedCommit(ctx, [], 'old');
+        const tip = await seedCommit(ctx, [old.id], 'tip');
+        const names = ['zeta', 'newer', 'alpha', 'anew'];
+        await seedRepo(ctx, {
+          refs: Object.fromEntries(names.map((name) => [`refs/heads/${name}`, tip.id])),
+        });
+        await writeOriginConfig(ctx);
+        const ordered = [
+          'refs/heads/alpha',
+          'refs/heads/zeta',
+          'refs/heads/newer',
+          'refs/heads/anew',
+        ];
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [
+            { name: 'refs/heads/alpha', id: old.id },
+            { name: 'refs/heads/zeta', id: old.id },
+          ],
+          reportStatus: {
+            unpack: 'ok',
+            refs: ordered.map((name) => ({ name, status: 'ok' as const })),
+          },
+        });
+        const hooks = new MemoryHookRunner();
+        const sut = push;
+
+        // Act
+        const result = await sut({ ...ctx, transport, hooks }, { refspecs: names });
+
+        // Assert
+        expect({
+          result: result.pushedRefs.map((ref) => ref.name),
+          hook: hooks.calls[0]?.stdin.split('\n').map((line) => line.split(' ')[2]),
+        }).toEqual({ result: ordered, hook: [...ordered, undefined] });
       });
     });
   });
@@ -1196,39 +2181,290 @@ describe('push — delete refspec', () => {
     });
   });
 
-  describe('Given a delete refspec for a ref the server does NOT advertise', () => {
+  describe('Given a fully qualified delete refspec for a ref the server does NOT advertise', () => {
     describe('When push runs', () => {
-      it('Then throws INVALID_OPTION', async () => {
+      it('Then the delete is sent from the null id and reported as the remote reports it', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await writeOriginConfig(ctx);
+        const main = await seedCommit(ctx, [], 'main');
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: main.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/nope', status: 'ok' }] },
+        });
+
+        // Act
+        const result = await push({ ...ctx, transport }, { refspecs: [':refs/heads/nope'] });
+
+        // Assert
+        expect(result.pushedRefs).toEqual([
+          { name: 'refs/heads/nope', oldId: ZERO_OID, newId: ZERO_OID, status: 'ok' },
+        ]);
+        const decoded = new TextDecoder().decode(requestBodies[0]);
+        expect(decoded).toContain(`${ZERO_OID} ${ZERO_OID} refs/heads/nope`);
+      });
+    });
+  });
+
+  // secretlint-disable @secretlint/secretlint-rule-basicauth
+  describe.each([
+    {
+      label: 'a short delete matching no advertised ref',
+      advertised: ['refs/heads/main'],
+      dst: 'nope',
+      reason: 'remote-ref-missing',
+      message: "unable to delete 'nope': remote ref does not exist",
+    },
+    {
+      label: 'a short delete matching both a branch and a tag',
+      advertised: ['refs/heads/x', 'refs/tags/x'],
+      dst: 'x',
+      reason: 'ambiguous',
+      message: 'dst refspec x matches more than one',
+    },
+    {
+      label: 'a short delete matching two refs only weakly',
+      advertised: ['refs/remotes/x', 'refs/remotes/x/HEAD'],
+      dst: 'x',
+      reason: 'ambiguous',
+      message: 'dst refspec x matches more than one',
+    },
+  ])('Given $label', ({ advertised, dst, reason, message }) => {
+    describe('When push runs beside a branch it would update', () => {
+      it("Then nothing is sent and the push fails naming git's error", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport, requests } = fakeServer({
+          url: 'https://user:secret@example.com/r.git',
+          advertisedRefs: advertised.map((name) => ({ name, id: parent.id })),
+          reportStatus: CLEAN_REPORT,
+        });
+        const errors: string[] = [];
+        const logger = { error: (text: string) => errors.push(text) };
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[remote "origin"]\n  url = https://user:secret@example.com/r.git\n',
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: unknown;
+        try {
+          await push({ ...ctx, transport, logger }, { refspecs: [`:${dst}`, 'main'] });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'PUSH_REFSPEC_UNMATCHED',
+          url: 'https://example.com/r.git',
+          unmatched: [{ dst, reason }],
+        });
+        expect(errors).toEqual([message]);
+        expect(requests.filter((req) => req.method === 'POST')).toEqual([]);
+      });
+    });
+  });
+  // secretlint-enable @secretlint/secretlint-rule-basicauth
+
+  describe('Given a destination the remote advertises ambiguously', () => {
+    describe('When push reports it', () => {
+      it('Then the logger receives the destination and reason as context', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: ['refs/heads/x', 'refs/tags/x'].map((name) => ({ name, id: parent.id })),
+          reportStatus: CLEAN_REPORT,
+        });
+        const error = vi.fn();
+        await writeOriginConfig(ctx);
+        const sut = push;
+
+        // Act
+        await sut({ ...ctx, transport, logger: { error } }, { refspecs: ['main:x'] }).catch(
+          () => undefined,
+        );
+
+        // Assert
+        expect(error).toHaveBeenCalledWith('dst refspec x matches more than one', {
+          dst: 'x',
+          reason: 'ambiguous',
+        });
+      });
+    });
+  });
+
+  describe('Given a short destination naming both a remote branch and a remote tag', () => {
+    describe('When push sends a branch to it', () => {
+      it("Then nothing is sent and the push fails naming git's ambiguity error", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        const { transport, requests } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: ['refs/heads/x', 'refs/tags/x'].map((name) => ({ name, id: parent.id })),
+          reportStatus: CLEAN_REPORT,
+        });
+        const errors: string[] = [];
+        const logger = { error: (text: string) => errors.push(text) };
+        await writeOriginConfig(ctx);
+        const sut = push;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut({ ...ctx, transport, logger }, { refspecs: ['main:x'] });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'PUSH_REFSPEC_UNMATCHED',
+          url: 'https://example.com/r.git',
+          unmatched: [{ dst: 'x', reason: 'ambiguous' }],
+        });
+        expect(errors).toEqual(['dst refspec x matches more than one']);
+        expect(requests.filter((req) => req.method === 'POST')).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a local tag pushed to a new short destination', () => {
+    describe('When push sends it', () => {
+      it('Then the destination lands beside the tag, as git guesses it from the source', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const tip = await seedCommit(ctx, [], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id, 'refs/tags/v1': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/tags/newtag', status: 'ok' }] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut({ ...ctx, transport }, { refspecs: ['v1:newtag'] });
+
+        // Assert
+        expect(result.pushedRefs).toEqual([
+          {
+            name: 'refs/tags/newtag',
+            oldId: ZERO_OID,
+            newId: tip.id,
+            status: 'ok',
+          },
+        ]);
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'a tag', advertised: 'refs/tags/t1', dst: 't1' },
+    { label: 'a lone weakly matched ref', advertised: 'refs/remotes/t1', dst: 't1' },
+    { label: 'a top-level ref', advertised: 'refs/t1', dst: 't1' },
+  ])('Given a short delete naming $label the server advertises', ({ advertised, dst }) => {
+    describe('When push runs', () => {
+      it('Then the advertised ref is deleted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const tagged = await seedCommit(ctx, [], 'tagged');
+        await seedRepo(ctx, {});
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: advertised, id: tagged.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: advertised, status: 'ok' }] },
+        });
+
+        // Act
+        const result = await push({ ...ctx, transport }, { refspecs: [`:${dst}`] });
+
+        // Assert
+        expect(result.pushedRefs.map((ref) => [ref.name, ref.status])).toEqual([
+          [advertised, 'ok'],
+        ]);
+      });
+    });
+  });
+
+  describe('Given a delete-only push', () => {
+    describe('When push runs', () => {
+      it('Then buildPack is not called and the request has no pack', async () => {
         // Arrange
         const ctx = createMemoryContext();
         const feature = await seedCommit(ctx, [], 'feature');
         await seedRepo(ctx, { refs: { 'refs/heads/feature': feature.id } });
         await writeOriginConfig(ctx);
-        const { transport } = fakeServer({
+        const { transport, requestBodies } = fakeServer({
           url: 'https://example.com/r.git',
-          advertisedRefs: [{ name: 'refs/heads/main', id: feature.id }],
-          reportStatus: { unpack: 'ok', refs: [] },
+          advertisedRefs: [{ name: 'refs/heads/feature', id: feature.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/feature', status: 'ok' }] },
         });
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
 
         // Act
-        let caught: unknown;
-        try {
-          await push({ ...ctx, transport }, { refspecs: [':refs/heads/feature'] });
-        } catch (err) {
-          caught = err;
-        }
+        await push({ ...ctx, transport }, { refspecs: [':refs/heads/feature'] });
 
-        // Assert — option literal is 'refspecs' and the message names the
-        // unadvertised delete target (kills both StringLiteral mutants).
-        expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data as {
-          code: string;
-          option: string;
-          reason: string;
-        };
-        expect(data.code).toBe('INVALID_OPTION');
-        expect(data.option).toBe('refspecs');
-        expect(data.reason).toBe('delete target refs/heads/feature is not advertised');
+        // Assert
+        expect(buildPackSpy).not.toHaveBeenCalled();
+        const decoded = new TextDecoder().decode(requestBodies[0]);
+        expect(decoded).not.toContain('PACK');
+        expect(decoded.endsWith('0000')).toBe(true);
+        buildPackSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a delete plus exactly one non-delete command', () => {
+    describe('When push runs', () => {
+      it('Then buildPack is called once and the request carries a pack', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const feature = await seedCommit(ctx, [], 'feature');
+        const tip = await seedCommit(ctx, [feature.id], 'tip');
+        await seedRepo(ctx, {
+          refs: { 'refs/heads/feature': feature.id, 'refs/heads/main': tip.id },
+        });
+        await writeOriginConfig(ctx);
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/feature', id: feature.id }],
+          reportStatus: {
+            unpack: 'ok',
+            refs: [
+              { name: 'refs/heads/feature', status: 'ok' },
+              { name: 'refs/heads/main', status: 'ok' },
+            ],
+          },
+        });
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+
+        // Act
+        await push(
+          { ...ctx, transport },
+          { refspecs: [':refs/heads/feature', 'refs/heads/main:refs/heads/main'] },
+        );
+
+        // Assert
+        expect(buildPackSpy).toHaveBeenCalledTimes(1);
+        expect(new TextDecoder().decode(requestBodies[0])).toContain('PACK');
+        buildPackSpy.mockRestore();
       });
     });
   });
@@ -1810,6 +3046,31 @@ describe('push — matching mode', () => {
 });
 
 describe('push — pack contents', () => {
+  describe('Given a new branch pushed while the remote holds the parent under another ref', () => {
+    describe('When push runs', () => {
+      it('Then only the tip objects ship, the ref not pushed excluding the parent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/other', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+        const sut = push;
+
+        // Act
+        await sut({ ...ctx, transport });
+
+        // Assert
+        expect(packObjectCount(requestBodies[0] as Uint8Array)).toBe(3);
+      });
+    });
+  });
+
   describe('Given a non-empty want set with an advertised parent', () => {
     describe('When push runs', () => {
       it('Then the request pack carries the tip object closure, excluding the parent via haves filtering', async () => {
@@ -1998,14 +3259,147 @@ describe('push — pack contents', () => {
   });
 });
 
-describe('push — non-fast-forward with a missing ancestor', () => {
+describe('push — object types assigned while enumerating', () => {
+  const AUTHOR = { name: 'A', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' };
+
+  const loggingContext = (): {
+    readonly ctx: ReturnType<typeof createMemoryContext>;
+    readonly logged: string[];
+  } => {
+    const logged: string[] = [];
+    const base = createMemoryContext();
+    return { ctx: { ...base, logger: { error: (line: string) => logged.push(line) } }, logged };
+  };
+
+  const writeBlob = (ctx: ReturnType<typeof createMemoryContext>): Promise<ObjectId> =>
+    writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: ENCODER.encode('hi\n') });
+
+  const writeCommitNaming = (
+    ctx: ReturnType<typeof createMemoryContext>,
+    tree: ObjectId,
+    parents: ReadonlyArray<ObjectId>,
+  ): Promise<ObjectId> =>
+    writeObject(ctx, {
+      type: 'commit',
+      id: '' as ObjectId,
+      data: { tree, parents, author: AUTHOR, committer: AUTHOR, message: 'm\n', extraHeaders: [] },
+    });
+
+  const pushRefused = async (
+    ctx: ReturnType<typeof createMemoryContext>,
+    tip: ObjectId,
+  ): Promise<unknown> => {
+    await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+    await writeOriginConfig(ctx);
+    const { transport } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [],
+      reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+    });
+    try {
+      await push({ ...ctx, transport });
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  };
+
+  describe('Given a branch whose commit names a blob as its tree', () => {
+    describe('When push enumerates its objects', () => {
+      it('Then it logs the blob is not a tree and refuses it as a bad tree object', async () => {
+        // Arrange
+        const { ctx, logged } = loggingContext();
+        const blob = await writeBlob(ctx);
+        const tip = await writeCommitNaming(ctx, blob, []);
+        const sut = pushRefused;
+
+        // Act
+        const caught = await sut(ctx, tip);
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'BAD_TREE_OBJECT', id: blob },
+          logged: [`Object ${blob} not a tree`],
+        });
+      });
+    });
+  });
+
+  describe('Given a branch whose commit names a blob as its parent', () => {
+    describe('When push enumerates its objects', () => {
+      it('Then it logs the blob is not a commit and fails to traverse that commit', async () => {
+        // Arrange
+        const { ctx, logged } = loggingContext();
+        const blob = await writeBlob(ctx);
+        const empty = await writeTree(ctx, []);
+        const tip = await writeCommitNaming(ctx, empty, [blob]);
+        const sut = pushRefused;
+
+        // Act
+        const caught = await sut(ctx, tip);
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED', commit: tip },
+          logged: [`Object ${blob} not a commit`],
+        });
+      });
+    });
+  });
+
+  describe('Given an alternate have, an updated ref and a created ref', () => {
+    describe('When push computes its closure', () => {
+      it("Then the tips follow send-pack's feed: haves, each ref's old then new, then created refs", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const alternate = await seedCommit(ctx, [], 'alt');
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [
+            { name: 'refs/heads/main', id: parent.id },
+            { name: 'refs/heads/gone', id: 'f'.repeat(40) },
+            { name: '.have', id: alternate.id },
+          ],
+          reportStatus: {
+            unpack: 'ok',
+            refs: [
+              { name: 'refs/heads/main', status: 'ok' },
+              { name: 'refs/heads/new', status: 'ok' },
+            ],
+          },
+        });
+        const closureSpy = vi.spyOn(closureMod, 'computeClosure');
+        const sut = push;
+
+        // Act
+        await sut({ ...ctx, transport }, { refspecs: ['main', 'main:refs/heads/new'] });
+
+        // Assert
+        const request = closureSpy.mock.calls[0]?.[1];
+        expect({ tips: request?.tips, typed: request?.objectTypes !== undefined }).toEqual({
+          tips: [
+            { id: alternate.id, excluded: true },
+            { id: parent.id, excluded: true },
+            { id: tip.id, excluded: false },
+            { id: tip.id, excluded: false },
+          ],
+          typed: true,
+        });
+        closureSpy.mockRestore();
+      });
+    });
+  });
+});
+
+describe('push — a tip with a missing ancestor', () => {
   describe('Given a tip whose parent commit is absent on disk', () => {
     describe('When push runs a non-FF update', () => {
-      it('Then it still surfaces NON_FAST_FORWARD', async () => {
-        // Arrange — kills the `ignoreMissing: true → false` mutant in
-        // isAncestor. The local tip references a parent oid that was never
-        // written; with `ignoreMissing: false` the commit walk throws
-        // OBJECT_NOT_FOUND instead of completing and reporting NON_FAST_FORWARD.
+      it('Then it refuses the parent it could not parse, as git exits before its non-fast-forward check', async () => {
+        // Arrange — the local tip references a parent oid that was never written.
         const ctx = createMemoryContext();
         const missingParentId = '1'.repeat(40) as ObjectId;
         const serverTip = await seedCommit(ctx, [], 'server-tip'); // disjoint
@@ -2026,10 +3420,11 @@ describe('push — non-fast-forward with a missing ancestor', () => {
           caught = err;
         }
 
-        // Assert — the walk tolerates the missing parent and the non-FF guard
-        // fires (not OBJECT_NOT_FOUND).
-        expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('NON_FAST_FORWARD');
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'COMMIT_PARSE_FAILED',
+          id: missingParentId,
+        });
       });
     });
   });
@@ -2173,7 +3568,7 @@ describe('push — signed', () => {
     describe('When push runs', () => {
       it('Then it sends a signed certificate and the ref is accepted', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = createMemoryContext({ command: runner });
         const { parent, tip } = await seedSignedPush(ctx);
         const { transport, requestBodies } = fakeServer({
@@ -2262,7 +3657,7 @@ describe('push — signed', () => {
     describe('When push runs', () => {
       it('Then it sends a signed certificate', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = createMemoryContext({ command: runner });
         const { parent } = await seedSignedPush(ctx);
         const { transport, requestBodies } = fakeServer({
@@ -2287,7 +3682,7 @@ describe('push — signed', () => {
     describe('When the server advertises push-cert', () => {
       it('Then it signs — the config default applies', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = createMemoryContext({ command: runner });
         const { parent } = await seedSignedPush(ctx, { otherExtra: '[push]\n  gpgSign = true\n' });
         const { transport, requestBodies } = fakeServer({
@@ -2334,7 +3729,7 @@ describe('push — signed', () => {
       it('Then it signs — the if-asked config default upgrades to signing', async () => {
         // Arrange — with a nonce advertised, the config `if-asked` mode must
         // resolve to a real signature; collapsing it to `no` would push unsigned.
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = createMemoryContext({ command: runner });
         const { parent } = await seedSignedPush(ctx, {
           otherExtra: '[push]\n  gpgSign = if-asked\n',
@@ -2537,7 +3932,7 @@ describe('push — signed', () => {
     describe('When push signs', () => {
       it('Then the cert pusher line uses the signing key, not the identity string', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = createMemoryContext({ command: runner });
         const { parent } = await seedSignedPush(ctx, {
           userExtra: '  signingKey = 5763ECD93FFE5F79\n',
@@ -2565,7 +3960,7 @@ describe('push — signed', () => {
     describe('When push signs', () => {
       it('Then the cert pushee strips the credentials', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = createMemoryContext({ command: runner });
         // secretlint-disable @secretlint/secretlint-rule-basicauth
         const credUrl = 'https://alice:s3cr3t@example.com/r.git';
@@ -2619,6 +4014,7 @@ describe('push — signed', () => {
           code: 'SIGNING_FAILED',
           reason: 'signer-failed',
           format: 'openpgp',
+          output: '',
         });
         expect(requests.map((r) => r.method)).toEqual(['GET']);
       });
@@ -2874,4 +4270,559 @@ describe('push — an advertised have whose tree is missing locally', () => {
       });
     });
   });
+});
+
+describe('push — remote-tracking refs mapped through the fetch refspecs', () => {
+  const MIRROR_CONFIG =
+    '[remote "origin"]\n  url = https://example.com/r.git\n' +
+    '  fetch = +refs/heads/*:refs/remotes/mirror/*\n';
+  const URL_ONLY_CONFIG = '[remote "origin"]\n  url = https://example.com/r.git\n';
+  const writeConfig = async (
+    ctx: ReturnType<typeof createMemoryContext>,
+    body: string,
+  ): Promise<void> => {
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, body);
+    __resetConfigCacheForTests();
+  };
+  const trackingRef = (ctx: ReturnType<typeof createMemoryContext>, name: string) =>
+    ctx.fs.exists(`${ctx.layout.gitDir}/${name}`);
+
+  describe('Given a fetch refspec mapping branches under refs/remotes/mirror/', () => {
+    describe('When an accepted push updates main', () => {
+      it('Then refs/remotes/mirror/main holds the pushed oid and refs/remotes/origin/main is absent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeConfig(ctx, MIRROR_CONFIG);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        await push({ ...ctx, transport }, { refspecs: ['main'] });
+
+        // Assert
+        const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/mirror/main`);
+        expect(result.trim()).toBe(tip.id);
+        expect(await trackingRef(ctx, 'refs/remotes/origin/main')).toBe(false);
+      });
+    });
+
+    describe('When an accepted push deletes a branch the mirror tracks', () => {
+      it('Then the mapped tracking ref is deleted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const gone = await seedCommit(ctx, [], 'gone');
+        await seedRepo(ctx, { refs: { 'refs/remotes/mirror/gone': gone.id } });
+        await writeConfig(ctx, MIRROR_CONFIG);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/gone', id: gone.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/gone', status: 'ok' }] },
+        });
+
+        // Act
+        await push({ ...ctx, transport }, { refspecs: [':refs/heads/gone'] });
+
+        // Assert
+        expect(await trackingRef(ctx, 'refs/remotes/mirror/gone')).toBe(false);
+      });
+    });
+
+    describe('When the pushed branch is already up to date and its tracking ref is missing', () => {
+      it('Then the tracking ref is written all the same', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const tip = await seedCommit(ctx, [], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeConfig(ctx, MIRROR_CONFIG);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: tip.id }],
+          reportStatus: CLEAN_REPORT,
+        });
+
+        // Act
+        await push({ ...ctx, transport }, { refspecs: ['main'] });
+
+        // Assert
+        const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/mirror/main`);
+        expect(result.trim()).toBe(tip.id);
+      });
+    });
+
+    describe('When an automatic lease reads a mapped tracking ref the remote still holds', () => {
+      it('Then the lease holds even though refs/remotes/origin/main disagrees', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const a = await seedCommit(ctx, [], 'a');
+        const b = await seedCommit(ctx, [], 'b');
+        await seedRepo(ctx, {
+          refs: {
+            'refs/heads/main': b.id,
+            'refs/remotes/mirror/main': a.id,
+            'refs/remotes/origin/main': b.id,
+          },
+        });
+        await writeConfig(ctx, MIRROR_CONFIG);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: a.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        const result = await push(
+          { ...ctx, transport },
+          { refspecs: ['main'], forceWithLease: 'auto' },
+        );
+
+        // Assert
+        expect(result.pushedRefs.map((ref) => ref.status)).toEqual(['ok']);
+      });
+    });
+  });
+
+  describe('Given a remote with no fetch refspec', () => {
+    describe('When an accepted push updates main', () => {
+      it('Then no tracking ref is written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeConfig(ctx, URL_ONLY_CONFIG);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+
+        // Act
+        await push({ ...ctx, transport }, { refspecs: ['main'] });
+
+        // Assert
+        expect(await trackingRef(ctx, 'refs/remotes')).toBe(false);
+      });
+    });
+  });
+});
+
+describe('push — report-status-v2 ref rewrites', () => {
+  const v2Report = (lines: ReadonlyArray<string>): Uint8Array =>
+    encodePktStream(['unpack ok\n', ...lines].map((line) => new TextEncoder().encode(line)));
+
+  describe('Given a receiver whose proc-receive hook stores one command under two refs', () => {
+    describe('When the command is pushed', () => {
+      it('Then each rewritten ref is reported and tracked under its own name and ids', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          advertisedCaps: ['report-status', 'report-status-v2', 'delete-refs'],
+          reportStatus: CLEAN_REPORT,
+          rawReport: v2Report([
+            'ok refs/for/main\n',
+            'option refname refs/heads/topic\n',
+            `option old-oid ${parent.id}\n`,
+            `option new-oid ${tip.id}\n`,
+            'ok refs/for/main\n',
+            'option refname refs/heads/other\n',
+            'option forced-update\n',
+          ]),
+        });
+
+        // Act
+        const result = await push({ ...ctx, transport }, { refspecs: ['main:refs/for/main'] });
+
+        // Assert
+        expect(result.pushedRefs).toEqual([
+          { name: 'refs/heads/topic', oldId: parent.id, newId: tip.id, status: 'ok' },
+          {
+            name: 'refs/heads/other',
+            oldId: ZERO_OID,
+            newId: tip.id,
+            status: 'ok',
+            forcedUpdate: true,
+          },
+        ]);
+        for (const tracked of ['topic', 'other']) {
+          const value = await ctx.fs.readUtf8(
+            `${ctx.layout.gitDir}/refs/remotes/origin/${tracked}`,
+          );
+          expect(value.trim()).toBe(tip.id);
+        }
+        expect(new TextDecoder().decode(requestBodies[0])).toContain('\0report-status-v2');
+      });
+    });
+  });
+
+  describe('Given a receiver rewriting a command to a deletion', () => {
+    describe('When the command is pushed', () => {
+      it('Then the rewritten ref reports the null id and its tracking ref is deleted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const tip = await seedCommit(ctx, [], 't');
+        await seedRepo(ctx, {
+          refs: { 'refs/heads/main': tip.id, 'refs/remotes/origin/gone': tip.id },
+        });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: tip.id }],
+          reportStatus: CLEAN_REPORT,
+          rawReport: v2Report([
+            'ok refs/for/main\n',
+            'option refname refs/heads/gone\n',
+            `option new-oid ${ZERO_OID}\n`,
+          ]),
+        });
+
+        // Act
+        const result = await push({ ...ctx, transport }, { refspecs: ['main:refs/for/main'] });
+
+        // Assert
+        expect(result.pushedRefs.map((ref) => [ref.name, ref.newId])).toEqual([
+          ['refs/heads/gone', ZERO_OID],
+        ]);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/gone`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a receiver that rewrites a ref and then rejects it', () => {
+    describe('When the command is pushed', () => {
+      it('Then the ref is reported rejected under its own name', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          reportStatus: CLEAN_REPORT,
+          rawReport: v2Report([
+            'ok refs/heads/main\n',
+            'option refname refs/heads/topic\n',
+            'ng refs/heads/main hook declined\n',
+          ]),
+        });
+
+        // Act
+        const result = await push({ ...ctx, transport }, { refspecs: ['main'] });
+
+        // Assert
+        expect(result.pushedRefs).toEqual([
+          {
+            name: 'refs/heads/main',
+            oldId: parent.id,
+            newId: tip.id,
+            status: 'rejected',
+            rejection: 'remote',
+            reason: 'hook declined',
+          },
+        ]);
+      });
+    });
+  });
+});
+
+describe('push force-if-includes', () => {
+  const ZERO = '0000000000000000000000000000000000000000' as ObjectId;
+  const logAt = (oldId: ObjectId, newId: ObjectId, timestamp: number) => ({
+    oldId,
+    newId,
+    identity: { name: 'A', email: 'a@a', timestamp, timezoneOffset: '+0000' },
+    message: 'm',
+  });
+  /** Tracking ref and server at `remote`; local main at `local` with `mainLog` as its reflog. */
+  const arrange = async (
+    config: string,
+    build: (ctx: ReturnType<typeof createMemoryContext>) => Promise<{
+      readonly remote: ObjectId;
+      readonly local: ObjectId;
+      readonly mainLog: ReadonlyArray<ReturnType<typeof logAt>>;
+    }>,
+  ) => {
+    const ctx = createMemoryContext();
+    const { remote, local, mainLog } = await build(ctx);
+    await seedRepo(ctx, {
+      refs: { 'refs/heads/main': local, 'refs/remotes/origin/main': remote },
+    });
+    await writeOriginConfig(ctx);
+    if (config !== '') {
+      const path = `${ctx.layout.gitDir}/config`;
+      await ctx.fs.writeUtf8(path, `${await ctx.fs.readUtf8(path)}${config}`);
+    }
+    __resetConfigCacheForTests();
+    for (const entry of mainLog) await appendReflog(ctx, 'refs/heads/main' as RefName, entry);
+    await appendReflog(ctx, 'refs/remotes/origin/main' as RefName, logAt(ZERO, remote, 150));
+    const { transport, requests } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [{ name: 'refs/heads/main', id: remote }],
+      reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+    });
+    return { ctx: { ...ctx, transport }, requests, local, remote };
+  };
+  /** The remote tip was fetched but never integrated: main was rewritten from scratch. */
+  const rewrittenWithoutRemote = async (ctx: ReturnType<typeof createMemoryContext>) => {
+    const remote = (await seedCommit(ctx, [], 'theirs')).id;
+    const local = (await seedCommit(ctx, [], 'mine')).id;
+    return { remote, local, mainLog: [logAt(ZERO, local, 200)] };
+  };
+
+  describe('Given an auto lease, forceIfIncludes, and a remote tip the local reflog never held', () => {
+    describe('When push runs', () => {
+      it('Then the ref is rejected as remote-ref-updated and nothing is posted', async () => {
+        // Arrange
+        const { ctx, requests, local, remote } = await arrange('', rewrittenWithoutRemote);
+        const sut = push;
+
+        // Act
+        const result = await sut(ctx, { forceWithLease: 'auto', forceIfIncludes: true });
+
+        // Assert
+        expect(result.pushedRefs).toEqual([
+          {
+            name: 'refs/heads/main',
+            oldId: remote,
+            newId: local,
+            status: 'rejected',
+            rejection: 'remote-ref-updated',
+          },
+        ]);
+        expect(requests.map((r) => r.method)).toEqual(['GET']);
+      });
+    });
+  });
+
+  describe.each([
+    ['push.useForceIfIncludes is true', '[push]\n  useForceIfIncludes = true\n', {}, 'rejected'],
+    [
+      'forceIfIncludes false overrides the config',
+      '[push]\n  useForceIfIncludes\n',
+      { forceIfIncludes: false },
+      'ok',
+    ],
+    ['push.useForceIfIncludes is false', '[push]\n  useForceIfIncludes = false\n', {}, 'ok'],
+    ['no forceIfIncludes and no config', '', {}, 'ok'],
+    ['force overrides it', '', { forceIfIncludes: true, force: true }, 'ok'],
+  ] as const)(
+    'Given an auto lease over a never-integrated remote tip and %s',
+    (_label, config, extra, status) => {
+      describe('When push runs', () => {
+        it(`Then the ref is ${status}`, async () => {
+          // Arrange
+          const { ctx } = await arrange(config, rewrittenWithoutRemote);
+          const sut = push;
+
+          // Act
+          const result = await sut(ctx, { forceWithLease: 'auto', ...extra });
+
+          // Assert
+          expect(result.pushedRefs[0]?.status).toBe(status);
+        });
+      });
+    },
+  );
+
+  describe('Given a malformed push.useForceIfIncludes', () => {
+    describe('When push runs', () => {
+      it('Then it refuses the bad boolean before contacting the remote', async () => {
+        // Arrange
+        const { ctx, requests } = await arrange(
+          '[push]\n  useForceIfIncludes = banana\n',
+          rewrittenWithoutRemote,
+        );
+        const sut = push;
+
+        // Act
+        const outcome = await sut(ctx, { forceWithLease: 'auto' }).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+
+        // Assert
+        expect((outcome as TsgitError).data).toEqual({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'push.useForceIfIncludes'.toLowerCase(),
+          source: `${ctx.layout.gitDir}/config`,
+          value: 'banana',
+        });
+        expect(requests).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a ref rejected as remote-ref-updated and a pre-push hook', () => {
+    describe('When push runs', () => {
+      it('Then the hook is fed nothing for it, as git skips refs that will not be pushed', async () => {
+        // Arrange
+        const { ctx } = await arrange('', rewrittenWithoutRemote);
+        const hooks = new MemoryHookRunner();
+        const sut = push;
+
+        // Act
+        await sut({ ...ctx, hooks }, { forceWithLease: 'auto', forceIfIncludes: true });
+
+        // Assert
+        expect(hooks.calls[0]?.stdin).toBe('');
+      });
+    });
+  });
+
+  describe('Given an auto lease and forceIfIncludes pushing a branch the remote lacks and no tracking ref', () => {
+    describe('When push runs', () => {
+      it('Then the ref is created, as git checks the reflog only against an existing tracking ref', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const local = (await seedCommit(ctx, [], 'mine')).id;
+        await seedRepo(ctx, { refs: { 'refs/heads/main': local } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut(
+          { ...ctx, transport },
+          { forceWithLease: 'auto', forceIfIncludes: true },
+        );
+
+        // Assert
+        expect(result.pushedRefs).toEqual([
+          { name: 'refs/heads/main', oldId: ZERO_OID, newId: local, status: 'ok' },
+        ]);
+      });
+    });
+  });
+
+  describe('Given an auto lease and forceIfIncludes over a remote tip missing from the local object store', () => {
+    describe('When push runs', () => {
+      it('Then the ref is rejected as remote-ref-updated, as git rejects before measuring it', async () => {
+        // Arrange
+        const unknown = 'a'.repeat(40) as ObjectId;
+        const { ctx, requests, local } = await arrange('', async (c) => {
+          const mine = (await seedCommit(c, [], 'mine')).id;
+          return { remote: unknown, local: mine, mainLog: [logAt(ZERO, mine, 200)] };
+        });
+        const sut = push;
+
+        // Act
+        const result = await sut(ctx, { forceWithLease: 'auto', forceIfIncludes: true });
+
+        // Assert
+        expect(result.pushedRefs).toEqual([
+          {
+            name: 'refs/heads/main',
+            oldId: unknown,
+            newId: local,
+            status: 'rejected',
+            rejection: 'remote-ref-updated',
+          },
+        ]);
+        expect(requests.map((r) => r.method)).toEqual(['GET']);
+      });
+    });
+  });
+
+  describe('Given an explicit lease and forceIfIncludes over a never-integrated remote tip', () => {
+    describe('When push runs', () => {
+      it('Then no reflog check applies and the lease forces the update', async () => {
+        // Arrange
+        const { ctx, remote } = await arrange('', rewrittenWithoutRemote);
+        const sut = push;
+
+        // Act
+        const result = await sut(ctx, { forceWithLease: remote, forceIfIncludes: true });
+
+        // Assert
+        expect(result.pushedRefs[0]?.status).toBe('ok');
+      });
+    });
+  });
+
+  describe.each([
+    [
+      'held the remote tip itself',
+      async (ctx: ReturnType<typeof createMemoryContext>) => {
+        const remote = (await seedCommit(ctx, [], 'theirs')).id;
+        const local = (await seedCommit(ctx, [], 'mine')).id;
+        return { remote, local, mainLog: [logAt(ZERO, remote, 100), logAt(remote, local, 200)] };
+      },
+      'ok',
+    ],
+    [
+      'held a descendant of the remote tip',
+      async (ctx: ReturnType<typeof createMemoryContext>) => {
+        const remote = (await seedCommit(ctx, [], 'theirs')).id;
+        const local = (await seedCommit(ctx, [remote], 'mine')).id;
+        return { remote, local, mainLog: [logAt(ZERO, local, 200)] };
+      },
+      'ok',
+    ],
+    [
+      'held a descendant until the very moment the remote-tracking ref last moved',
+      async (ctx: ReturnType<typeof createMemoryContext>) => {
+        const remote = (await seedCommit(ctx, [], 'theirs')).id;
+        const merged = (await seedCommit(ctx, [remote], 'merged')).id;
+        const reset = (await seedCommit(ctx, [], 'reset')).id;
+        const local = (await seedCommit(ctx, [], 'mine')).id;
+        const mainLog = [
+          logAt(ZERO, merged, 120),
+          logAt(merged, reset, 150),
+          logAt(reset, local, 200),
+        ];
+        return { remote, local, mainLog };
+      },
+      'ok',
+    ],
+    [
+      'held a descendant only before the remote-tracking ref last moved',
+      async (ctx: ReturnType<typeof createMemoryContext>) => {
+        const remote = (await seedCommit(ctx, [], 'theirs')).id;
+        const merged = (await seedCommit(ctx, [remote], 'merged')).id;
+        const reset = (await seedCommit(ctx, [], 'reset')).id;
+        const local = (await seedCommit(ctx, [], 'mine')).id;
+        const mainLog = [
+          logAt(ZERO, merged, 120),
+          logAt(merged, reset, 130),
+          logAt(reset, local, 200),
+        ];
+        return { remote, local, mainLog };
+      },
+      'rejected',
+    ],
+  ] as const)(
+    'Given an auto lease and forceIfIncludes where the local reflog %s',
+    (_label, build, status) => {
+      describe('When push runs', () => {
+        it(`Then the ref is ${status}`, async () => {
+          // Arrange
+          const { ctx } = await arrange('', build);
+          const sut = push;
+
+          // Act
+          const result = await sut(ctx, { forceWithLease: 'auto', forceIfIncludes: true });
+
+          // Assert
+          expect(result.pushedRefs[0]?.status).toBe(status);
+        });
+      });
+    },
+  );
 });

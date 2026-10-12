@@ -12,7 +12,7 @@
  *   unique:         worktree add/list/move/remove produce git-readable on-disk state
  *   interopSurface: worktree
  */
-import { readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { cp, readdir, readFile, realpath, rm, utimes, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
@@ -186,6 +186,138 @@ describe.skipIf(!GIT_AVAILABLE)('worktree interop', () => {
         // Assert
         expect(tsgitRefused).toBe(true);
         expect(tryRunGit(['-C', ours, 'worktree', 'remove', wt]).ok).toBe(false);
+      });
+    });
+  });
+
+  describe('Given stale and damaged worktree admin entries on both tools', () => {
+    const OLD = new Date('2000-01-01T00:00:00Z');
+
+    /** Registers worktrees under `root` with real git, then damages each the same way. */
+    const stage = async (root: string, prefix: string): Promise<void> => {
+      const admin = (id: string): string => path.join(root, '.git', 'worktrees', id);
+      for (const id of ['live', 'empty', 'missing', 'old', 'fresh', 'locked']) {
+        runGit(['-C', root, 'worktree', 'add', '-q', '--detach', path.join(prefix, id)]);
+      }
+      runGit(['-C', root, 'worktree', 'lock', path.join(prefix, 'locked')]);
+      await writeFile(path.join(admin('empty'), 'gitdir'), '');
+      await rm(path.join(admin('missing'), 'gitdir'));
+      for (const id of ['old', 'fresh', 'locked'])
+        await rm(path.join(prefix, id), { recursive: true });
+      await utimes(path.join(admin('old'), 'index'), OLD, OLD);
+      await utimes(path.join(admin('locked'), 'index'), OLD, OLD);
+      await cp(admin('live'), admin('live-dup'), { recursive: true });
+      await writeFile(path.join(root, '.git', 'worktrees', 'stray'), 'junk');
+    };
+
+    const entries = async (root: string): Promise<ReadonlyArray<string>> =>
+      (await readdir(path.join(root, '.git', 'worktrees'))).sort();
+
+    describe('When tsgit maintenance gc and git gc each run', () => {
+      it('Then both keep exactly the same admin entries', async () => {
+        // Arrange
+        const peer = await realpath(pair.peer);
+        runGit(['init', '-q', '-b', 'main', peer]);
+        await writeFile(path.join(peer, 'a.txt'), 'hello\n');
+        runGit(['-C', peer, 'add', 'a.txt'], { env: COMMIT_ENV });
+        runGit(['-C', peer, 'commit', '-q', '-m', 'seed commit'], { env: COMMIT_ENV });
+        await stage(ours, sibling('ours'));
+        await stage(peer, sibling('peer'));
+
+        // Act
+        await repo.maintenance({ tasks: ['gc'] });
+        runGit(['-C', peer, 'gc', '-q']);
+
+        // Assert
+        expect(await entries(ours)).toEqual(await entries(peer));
+        expect(await entries(ours)).toEqual(['fresh', 'live', 'locked']);
+      });
+    });
+  });
+
+  describe('Given a previous checkout of branch side on each tool', () => {
+    /** `side` at HEAD, checked out then left again — `@{-1}` names it. */
+    const leaveSide = (dir: string): void => {
+      const branch = git(dir, 'symbolic-ref', '--short', 'HEAD').trim();
+      runGit(['-C', dir, 'branch', 'side']);
+      runGit(['-C', dir, 'checkout', '-q', 'side']);
+      runGit(['-C', dir, 'checkout', '-q', branch]);
+    };
+
+    describe.each(['-', '@{-1}'])('When worktree.add starts at %j', (commitish) => {
+      it('Then the worktree is attached to side as git attaches it', async () => {
+        // Arrange
+        const peer = await realpath(pair.peer);
+        runGit(['init', '-q', '-b', 'main', peer]);
+        runGit(['-C', peer, 'commit', '-q', '--allow-empty', '-m', 'seed'], { env: COMMIT_ENV });
+        leaveSide(peer);
+        leaveSide(ours);
+        const peerWt = sibling('peer-prior');
+        runGit(['-C', peer, 'worktree', 'add', '-q', peerWt, commitish]);
+        const wt = sibling('prior');
+        const sut = await openRepository({ cwd: ours });
+
+        // Act
+        const result = await sut.worktree.add({ path: wt, commitish });
+        await sut.dispose();
+
+        // Assert
+        expect(git(wt, 'symbolic-ref', 'HEAD').trim()).toBe(
+          git(peerWt, 'symbolic-ref', 'HEAD').trim(),
+        );
+        expect(result).toMatchObject({ branch: 'refs/heads/side', detached: false });
+      });
+    });
+  });
+
+  describe('Given a reftable repository on each tool', () => {
+    const TABLE_NAME = /0x[0-9a-f]{12}-0x[0-9a-f]{12}-[0-9a-f]{8}\.ref$/;
+
+    const reftableRepo = (dir: string): void => {
+      runGit(['init', '-q', '-b', 'main', '--ref-format=reftable', dir]);
+      runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'seed'], { env: COMMIT_ENV });
+    };
+
+    /** Admin-dir listing, directories suffixed `/`, reftable table names normalised. */
+    const adminListing = async (admin: string): Promise<ReadonlyArray<string>> =>
+      (await readdir(admin, { recursive: true, withFileTypes: true }))
+        .map((entry) => {
+          const rel = path.relative(admin, path.join(entry.parentPath, entry.name));
+          return `${rel.replace(TABLE_NAME, '<table>.ref')}${entry.isDirectory() ? '/' : ''}`;
+        })
+        .sort();
+
+    describe('When tsgit worktree.add creates the linked worktree', () => {
+      it('Then git operates in it and the admin dir matches git', async () => {
+        // Arrange
+        const peer = sibling('rt-peer');
+        const tsRoot = sibling('rt-ours');
+        reftableRepo(peer);
+        reftableRepo(tsRoot);
+        runGit(['-C', peer, 'worktree', 'add', '-q', `${peer}-wt`]);
+        created.push(`${peer}-wt`);
+        const wt = sibling('rt-ours-wt');
+        const sut = await openRepository({ cwd: tsRoot });
+
+        // Act
+        await sut.worktree.add({ path: wt });
+        await sut.dispose();
+
+        // Assert
+        const ourAdmin = path.join(tsRoot, '.git', 'worktrees', path.basename(wt));
+        const peerAdmin = path.join(peer, '.git', 'worktrees', `${path.basename(peer)}-wt`);
+        expect(await adminListing(ourAdmin)).toEqual(await adminListing(peerAdmin));
+        for (const stub of ['HEAD', 'refs/heads']) {
+          expect(await readFile(path.join(ourAdmin, stub))).toEqual(
+            await readFile(path.join(peerAdmin, stub)),
+          );
+        }
+        expect(git(wt, 'rev-parse', 'HEAD').trim()).toBe(git(tsRoot, 'rev-parse', 'HEAD').trim());
+        expect(git(wt, 'status', '--porcelain')).toBe('');
+        runGit(['-C', wt, 'commit', '-q', '--allow-empty', '-m', 'in wt'], { env: COMMIT_ENV });
+        expect(
+          git(tsRoot, 'log', '-1', '--format=%s', `refs/heads/${path.basename(wt)}`).trim(),
+        ).toBe('in wt');
       });
     });
   });

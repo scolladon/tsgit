@@ -8,7 +8,12 @@ import type { RefName } from '../../../domain/objects/object-id.js';
 import { refspecInvalid } from '../../../domain/protocol/error.js';
 import { isSafeRefName } from '../../../domain/refs/ref-validation.js';
 import type { Context } from '../../../ports/context.js';
-import { type ParsedConfig, readConfig } from '../../primitives/config-read.js';
+import {
+  type ParsedConfig,
+  type RemoteTableEntry,
+  readConfig,
+  walkRemoteTable,
+} from '../../primitives/config-read.js';
 import { isValidFetchRefspec, isValidPushRefspec } from './refspec-grammar.js';
 
 /** git's `valid_remote_name` probes the name as the remote component of a
@@ -60,6 +65,8 @@ export interface BranchReferrer {
   readonly branch: string;
   readonly ref: RefName;
   readonly merge: string | undefined;
+  /** Every `branch.<X>.merge` value, in config order. */
+  readonly merges: ReadonlyArray<string>;
 }
 
 /**
@@ -78,41 +85,43 @@ export const listBranchReferrers = (
       branch: branchName,
       ref: `refs/heads/${branchName}` as RefName,
       merge: entry.merge,
+      merges: entry.merges ?? [],
     });
   }
   return referrers;
 };
 
-/**
- * git builds its whole remote table out of the config before any remote
- * command runs its own logic, and `parse_refspec` dies right there — so ONE
- * unusable `remote.<any>.fetch` or `remote.<any>.push` value refuses the
- * command whatever remote it names, and ahead of every name refusal the
- * command would otherwise raise.
- */
-export const assertRemoteRefspecsValid = (config: ParsedConfig): void => {
-  for (const [, entry] of config.remote ?? []) {
-    const invalid = firstInvalidRefspec(entry);
-    if (invalid !== undefined) throw refspecInvalid(invalid, 'not a valid refspec');
-  }
+const REFSPEC_REFUSAL = 'not a valid refspec';
+
+/** The refspec grammar each refspec-carrying `remote.<name>.<key>` is parsed with. */
+const REFSPEC_GRAMMARS: ReadonlyMap<string, (spec: string) => boolean> = new Map([
+  ['fetch', isValidFetchRefspec],
+  ['push', isValidPushRefspec],
+]);
+
+/** git's `refspec_append` as it reads one entry: an unusable spec is fatal. */
+const assertEntryRefspecValid = (entry: RemoteTableEntry): void => {
+  const isValid = REFSPEC_GRAMMARS.get(entry.key);
+  if (isValid === undefined || entry.value === null || isValid(entry.value)) return;
+  throw refspecInvalid(entry.value, REFSPEC_REFUSAL);
 };
 
-/** The first unusable refspec one remote configures — its fetch specs first,
- *  as git reads them, then its push specs. */
-const firstInvalidRefspec = (entry: {
-  readonly fetch?: ReadonlyArray<string>;
-  readonly push?: ReadonlyArray<string>;
-}): string | undefined =>
-  (entry.fetch ?? []).find((spec) => !isValidFetchRefspec(spec)) ??
-  (entry.push ?? []).find((spec) => !isValidPushRefspec(spec));
+/**
+ * git builds its whole remote table out of the config before any remote
+ * command runs its own logic, warning on each `/`-named remote entry and
+ * dying on the first unusable `remote.<any>.fetch` or `.push` in config
+ * order — whatever remote the command names, ahead of every name refusal it
+ * would otherwise raise, and before any later entry warns.
+ */
+export const buildRemoteTable = (ctx: Context): Promise<void> =>
+  walkRemoteTable(ctx, assertEntryRefspecValid);
 
 /** {@link readConfig} for a command that reaches a remote: the same read git
- *  builds its remote table from, and so the same point its refspec refusal
- *  lands at. */
+ *  builds its remote table from, and so the same point its `/`-named remote
+ *  warnings and its refspec refusal land at. */
 export const readRemoteConfig = async (ctx: Context): Promise<ParsedConfig> => {
-  const config = await readConfig(ctx);
-  assertRemoteRefspecsValid(config);
-  return config;
+  await buildRemoteTable(ctx);
+  return readConfig(ctx);
 };
 
 const TRACKING_DESTINATION_PREFIX = ':refs/remotes/';

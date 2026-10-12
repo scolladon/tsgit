@@ -177,6 +177,110 @@ describe('buildContentMerger', () => {
     });
   });
 
+  describe.each([
+    [
+      'no diff algorithm, so ort’s histogram',
+      {},
+      '<<<<<<< o\n=======\nb\nd\nb\nb\n}\nc\nb\nd\na\nd\n>>>>>>> t\n}\nd\n<<<<<<< o\nb\na\nb\nc\n}\n}\nd\nb\nd\n=======\n}\n}\n>>>>>>> t\nd\n',
+    ],
+    [
+      'diff-algorithm=myers',
+      { diffAlgorithm: 'myers' },
+      '<<<<<<< o\n}\n=======\nb\nd\nb\nb\n}\nc\n>>>>>>> t\nb\nd\nb\na\n<<<<<<< o\nb\nc\n}\n}\nd\nb\n=======\nd\n}\n>>>>>>> t\nd\n}\n}\nd\n',
+    ],
+  ] as const)(
+    'Given %s and sides the algorithms anchor differently',
+    (_label, settings, expected) => {
+      describe('When the built-in merge conflicts', () => {
+        it('Then the conflict regions sit where git’s merge puts them', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const sut = buildContentMerger(ctx, { ours: 'o', theirs: 't', base: 'b' }, settings);
+          const mergeCtx = await mergeCtxFor(ctx, {
+            base: 'd\nd\nb\nd\na\nc\nd\nc\n}\nb\nd\nd\n',
+            ours: '}\nb\nd\nb\na\nb\nc\n}\n}\nd\nb\nd\nd\n',
+            theirs: 'b\nd\nb\nb\n}\nc\nb\nd\na\nd\n}\nd\n}\n}\nd\n',
+          });
+
+          // Act
+          const result = await sut(mergeCtx, undefined, new Uint8Array(0), new Uint8Array(0));
+
+          // Assert
+          expect(result.status === 'conflict' && dec(result.markedBytes)).toBe(expected);
+        });
+      });
+    },
+  );
+
+  describe('Given a renamed path whose sides held it at different paths', () => {
+    describe('When the built-in merge conflicts', () => {
+      it('Then each marker label names its side path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = buildContentMerger(ctx, { ours: 'HEAD', theirs: 'side', base: 'abc1234' });
+        const mergeCtx = await mergeCtxFor(ctx, {
+          base: 'a\nb\nc\n',
+          ours: 'a\nX\nc\n',
+          theirs: 'a\nY\nc\n',
+          path: 'big2',
+        });
+        const sidePaths = {
+          base: 'big' as FilePath,
+          ours: 'big' as FilePath,
+          theirs: 'big2' as FilePath,
+        };
+
+        // Act
+        const result = await sut(
+          { ...mergeCtx, sidePaths },
+          undefined,
+          new Uint8Array(0),
+          new Uint8Array(0),
+        );
+
+        // Assert
+        const text = result.status === 'conflict' ? dec(result.markedBytes) : '';
+        expect(text).toContain('<<<<<<< HEAD:big\n');
+        expect(text).toContain('>>>>>>> side:big2\n');
+      });
+    });
+  });
+
+  describe('Given an external driver and a renamed path', () => {
+    describe('When merging', () => {
+      it('Then the driver receives each side label with its path', async () => {
+        // Arrange
+        let captured = '';
+        const ctx = createMemoryContext({
+          command: new MemoryCommandRunner(async (req) => {
+            captured = req.command;
+            const a = req.command.split(' ')[0] as string;
+            await ctx.fs.write(a, enc('done'));
+            return 0;
+          }),
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* merge=custom\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[merge "custom"]\n  driver = %A | %S | %X | %Y\n',
+        );
+        const sut = buildContentMerger(ctx, { ours: 'HEAD', theirs: 'feat', base: 'main' });
+        const mergeCtx = await mergeCtxFor(ctx, { base: 'B', ours: 'O', theirs: 'T' });
+        const sidePaths = {
+          base: 'old' as FilePath,
+          ours: 'new' as FilePath,
+          theirs: 'old' as FilePath,
+        };
+
+        // Act
+        await sut({ ...mergeCtx, sidePaths }, undefined, new Uint8Array(0), new Uint8Array(0));
+
+        // Assert
+        expect(captured.endsWith(' | main:old | HEAD:new | feat:old')).toBe(true);
+      });
+    });
+  });
+
   describe('Given conflict-marker-size=2 and an overlapping change', () => {
     describe('When the built-in merge conflicts', () => {
       it('Then the markers are two characters long', async () => {
@@ -233,6 +337,80 @@ describe('buildContentMerger', () => {
 
         // Assert
         expect(captured.endsWith(' | 9 | HEAD | feat')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a merge context asking for one extra marker character', () => {
+    describe('When the built-in merge conflicts', () => {
+      it('Then the markers are one character longer than the attribute size', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.workDir}/.gitattributes`,
+          '* conflict-marker-size=2\n',
+        );
+        const sut = buildContentMerger(ctx, { ours: 'HEAD', theirs: 'feature', base: 'main' });
+        const mergeCtx = await mergeCtxFor(ctx, {
+          base: 'a\nb\nc\n',
+          ours: 'a\nX\nc\n',
+          theirs: 'a\nY\nc\n',
+        });
+
+        // Act
+        const result = await sut(
+          { ...mergeCtx, extraMarkerSize: 1 },
+          undefined,
+          new Uint8Array(0),
+          new Uint8Array(0),
+        );
+
+        // Assert
+        const text = result.status === 'conflict' ? dec(result.markedBytes) : '';
+        expect(text.split('\n')).toEqual([
+          'a',
+          '<<< HEAD',
+          'X',
+          '===',
+          'Y',
+          '>>> feature',
+          'c',
+          '',
+        ]);
+      });
+    });
+  });
+
+  describe('Given an external driver and a merge context asking for one extra marker character', () => {
+    describe('When merging', () => {
+      it('Then the driver receives the enlarged %L', async () => {
+        // Arrange
+        let captured = '';
+        const ctx = createMemoryContext({
+          command: new MemoryCommandRunner(async (req) => {
+            captured = req.command;
+            await ctx.fs.write(req.command.split(' ')[0] as string, enc('done'));
+            return 0;
+          }),
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* merge=custom\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[merge "custom"]\n  driver = %A | %L\n',
+        );
+        const sut = buildContentMerger(ctx);
+        const mergeCtx = await mergeCtxFor(ctx, { base: 'B', ours: 'O', theirs: 'T' });
+
+        // Act
+        await sut(
+          { ...mergeCtx, extraMarkerSize: 1 },
+          undefined,
+          new Uint8Array(0),
+          new Uint8Array(0),
+        );
+
+        // Assert
+        expect(captured.endsWith(' | 8')).toBe(true);
       });
     });
   });
@@ -458,6 +636,138 @@ describe('buildContentMerger', () => {
         // Assert
         expect(result.status).toBe('conflict');
       });
+    });
+  });
+  describe.each([
+    ['ours', 'O\n'],
+    ['theirs', 'T\n'],
+  ] as const)('Given the %s variant and an overlapping change', (variant, expected) => {
+    describe('When the built-in merge runs', () => {
+      it('Then the overlap resolves cleanly to that side', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = buildContentMerger(ctx, undefined, { variant });
+        const mergeCtx = await mergeCtxFor(ctx, { base: 'B\n', ours: 'O\n', theirs: 'T\n' });
+
+        // Act
+        const result = await sut(mergeCtx, undefined, new Uint8Array(0), new Uint8Array(0));
+
+        // Assert
+        expect(result.status === 'clean' && dec(result.bytes)).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given the theirs variant and the merge attribute unset (`-merge`)', () => {
+    describe('When merging', () => {
+      it('Then the binary merge settles on theirs', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* -merge\n');
+        const sut = buildContentMerger(ctx, undefined, { variant: 'theirs' });
+        const mergeCtx = await mergeCtxFor(ctx, { base: 'b', ours: 'OURS', theirs: 'THEIRS' });
+
+        // Act
+        const result = await sut(mergeCtx, undefined, new Uint8Array(0), new Uint8Array(0));
+
+        // Assert
+        expect(result.status === 'clean' && dec(result.bytes)).toBe('THEIRS');
+      });
+    });
+  });
+
+  describe('Given the ours variant and merge=union on an overlapping change', () => {
+    describe('When merging', () => {
+      it('Then union still concatenates both sides', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* merge=union\n');
+        const sut = buildContentMerger(ctx, undefined, { variant: 'ours' });
+        const mergeCtx = await mergeCtxFor(ctx, { base: 'B\n', ours: 'O\n', theirs: 'T\n' });
+
+        // Act
+        const result = await sut(mergeCtx, undefined, new Uint8Array(0), new Uint8Array(0));
+
+        // Assert
+        expect(result.status === 'clean' && dec(result.bytes)).toBe('O\nT\n');
+      });
+    });
+  });
+
+  describe('Given ignored space changes and a whitespace-only edit on ours', () => {
+    describe('When the built-in merge runs', () => {
+      it("Then theirs' real edit wins the line cleanly", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const lineKey = { mode: 'change', ignoreCrAtEol: false } as const;
+        const sut = buildContentMerger(ctx, undefined, { lineKey });
+        const mergeCtx = await mergeCtxFor(ctx, { base: 'a b\n', ours: 'a  b\n', theirs: 'AB\n' });
+
+        // Act
+        const result = await sut(mergeCtx, undefined, new Uint8Array(0), new Uint8Array(0));
+
+        // Assert
+        expect(result.status === 'clean' && dec(result.bytes)).toBe('AB\n');
+      });
+    });
+  });
+});
+
+describe('buildContentMerger conflict style', () => {
+  const LABELS = { ours: 'HEAD', theirs: 'side', base: 'b8cdee5' };
+  const conflictOf = async (config: string): Promise<unknown> => {
+    const ctx = createMemoryContext();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+    const sut = buildContentMerger(ctx, LABELS);
+    const mergeCtx = await mergeCtxFor(ctx, { base: 'a\nx\n', ours: 'A1\nx\n', theirs: 'A2\nx\n' });
+    const result = await Promise.resolve()
+      .then(() => sut(mergeCtx, undefined, new Uint8Array(0), new Uint8Array(0)))
+      .catch((error: unknown) => error);
+    return 'markedBytes' in (result as object)
+      ? dec((result as { markedBytes: Uint8Array }).markedBytes)
+      : (result as { data?: unknown }).data;
+  };
+
+  describe('Given merge.conflictStyle = diff3, When the built-in merge conflicts', () => {
+    it('Then the markers carry the base section under the base label', async () => {
+      // Arrange
+      const config = '[merge]\n  conflictStyle = diff3\n';
+
+      // Act
+      const result = await conflictOf(config);
+
+      // Assert
+      expect(result).toBe('<<<<<<< HEAD\nA1\n||||||| b8cdee5\na\n=======\nA2\n>>>>>>> side\nx\n');
+    });
+  });
+
+  describe('Given merge.conflictStyle holding a style git does not know, When the merge runs', () => {
+    it('Then it refuses the value, as git dies on it', async () => {
+      // Arrange
+      const config = '[merge]\n  conflictStyle = bogus\n';
+
+      // Act
+      const result = await conflictOf(config);
+
+      // Assert
+      expect(result).toMatchObject({
+        code: 'CONFIG_UNKNOWN_VALUE',
+        key: 'merge.conflictstyle',
+        value: 'bogus',
+      });
+    });
+  });
+
+  describe('Given a valueless merge.conflictStyle, When the merge runs', () => {
+    it('Then it refuses the missing value', async () => {
+      // Arrange
+      const config = '[merge]\n  conflictStyle\n';
+
+      // Act
+      const result = await conflictOf(config);
+
+      // Assert
+      expect(result).toMatchObject({ code: 'CONFIG_MISSING_VALUE', key: 'merge.conflictstyle' });
     });
   });
 });

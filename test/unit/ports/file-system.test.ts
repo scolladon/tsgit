@@ -67,3 +67,18 @@ describe('Given a FileSystem test double that implements every required member a
     });
   });
 });
+
+describe('Given a FileSystem test double that implements every required member and omits utimeNow', () => {
+  describe('When utimeNow is read off the value', () => {
+    it('Then it is undefined — the port does not require the capability', () => {
+      // Arrange
+      const sut = requiredOnlyFs;
+
+      // Act
+      const result = sut.utimeNow;
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+  });
+});

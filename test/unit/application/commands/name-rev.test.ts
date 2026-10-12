@@ -192,8 +192,8 @@ describe('nameRev', () => {
         const result = await nameRev(ctx, c0);
 
         // Assert
-        expect(result.ref).toBe(RefName.from('refs/tags/v2.0'));
-        expect(result.steps).toEqual([{ kind: 'ancestor', count: 2 }]);
+        expect(result?.ref).toBe(RefName.from('refs/tags/v2.0'));
+        expect(result?.steps).toEqual([{ kind: 'ancestor', count: 2 }]);
       });
     });
   });
@@ -220,9 +220,9 @@ describe('nameRev', () => {
         const { base, m1, merge } = await buildMerge(ctx);
 
         // Act + Assert
-        expect((await nameRev(ctx, merge)).steps).toEqual([{ kind: 'ancestor', count: 1 }]);
-        expect((await nameRev(ctx, m1)).steps).toEqual([{ kind: 'ancestor', count: 2 }]);
-        expect((await nameRev(ctx, base)).steps).toEqual([{ kind: 'ancestor', count: 3 }]);
+        expect((await nameRev(ctx, merge))?.steps).toEqual([{ kind: 'ancestor', count: 1 }]);
+        expect((await nameRev(ctx, m1))?.steps).toEqual([{ kind: 'ancestor', count: 2 }]);
+        expect((await nameRev(ctx, base))?.steps).toEqual([{ kind: 'ancestor', count: 3 }]);
       });
     });
 
@@ -233,11 +233,11 @@ describe('nameRev', () => {
         const { s1, s2 } = await buildMerge(ctx);
 
         // Act + Assert
-        expect((await nameRev(ctx, s2)).steps).toEqual([
+        expect((await nameRev(ctx, s2))?.steps).toEqual([
           { kind: 'ancestor', count: 1 },
           { kind: 'parent', number: 2 },
         ]);
-        expect((await nameRev(ctx, s1)).steps).toEqual([
+        expect((await nameRev(ctx, s1))?.steps).toEqual([
           { kind: 'ancestor', count: 1 },
           { kind: 'parent', number: 2 },
           { kind: 'ancestor', count: 1 },
@@ -261,7 +261,7 @@ describe('nameRev', () => {
         const result = await nameRev(ctx, c0);
 
         // Assert
-        expect(result.ref).toBe(RefName.from('refs/tags/fartag'));
+        expect(result?.ref).toBe(RefName.from('refs/tags/fartag'));
       });
     });
   });
@@ -281,8 +281,8 @@ describe('nameRev', () => {
         const result = await nameRev(ctx, c0);
 
         // Assert
-        expect(result.ref).toBe(RefName.from('refs/tags/near'));
-        expect(result.steps).toEqual([{ kind: 'ancestor', count: 1 }]);
+        expect(result?.ref).toBe(RefName.from('refs/tags/near'));
+        expect(result?.steps).toEqual([{ kind: 'ancestor', count: 1 }]);
       });
     });
   });
@@ -302,8 +302,8 @@ describe('nameRev', () => {
         const result = await nameRev(ctx, c0);
 
         // Assert
-        expect(result.ref).toBe(RefName.from('refs/tags/aaa'));
-        expect(result.steps).toEqual([{ kind: 'ancestor', count: 1 }]);
+        expect(result?.ref).toBe(RefName.from('refs/tags/aaa'));
+        expect(result?.steps).toEqual([{ kind: 'ancestor', count: 1 }]);
       });
     });
   });
@@ -322,7 +322,7 @@ describe('nameRev', () => {
         const result = await nameRev(ctx, c0);
 
         // Assert
-        expect(result.ref).toBe(RefName.from('refs/tags/told'));
+        expect(result?.ref).toBe(RefName.from('refs/tags/told'));
       });
     });
   });
@@ -355,7 +355,7 @@ describe('nameRev', () => {
         const result = await nameRev(ctx, head, { refs: 'refs/tags/*' });
 
         // Assert
-        expect(result.ref).toBe(RefName.from('refs/tags/pick'));
+        expect(result?.ref).toBe(RefName.from('refs/tags/pick'));
       });
     });
 
@@ -370,7 +370,7 @@ describe('nameRev', () => {
         const result = await nameRev(ctx, head, { exclude: 'refs/tags/*' });
 
         // Assert
-        expect(result.ref).toBe(RefName.from('refs/heads/main'));
+        expect(result?.ref).toBe(RefName.from('refs/heads/main'));
       });
     });
   });
@@ -403,8 +403,8 @@ describe('nameRev', () => {
         const result = await nameRev(ctx);
 
         // Assert
-        expect(result.oid).toBe(head);
-        expect(result.ref).toBe(RefName.from('refs/heads/main'));
+        expect(result?.oid).toBe(head);
+        expect(result?.ref).toBe(RefName.from('refs/heads/main'));
       });
     });
   });
@@ -435,7 +435,7 @@ describe('nameRev', () => {
         const result = await nameRev(ctx, head);
 
         // Assert — the tree tag is dropped; the branch still names the commit.
-        expect(result.ref).toBe(RefName.from('refs/heads/main'));
+        expect(result?.ref).toBe(RefName.from('refs/heads/main'));
       });
     });
   });
@@ -456,38 +456,7 @@ describe('nameRev', () => {
         const result = await nameRev(ctx, head);
 
         // Assert
-        expect(result.ref).toBe(RefName.from('refs/heads/main'));
-      });
-    });
-  });
-
-  describe('Given a tag chain deeper than the peel bound', () => {
-    describe('When name-rev runs', () => {
-      it('Then the over-deep tag is dropped at the peel bound', async () => {
-        // Arrange — eight nested tags; the outermost exceeds the peel depth.
-        const ctx = await seed();
-        const c1 = await commitFile(ctx, 'c1');
-        let prev = c1;
-        let prevType: TagData['objectType'] = 'commit';
-        for (let i = 1; i <= 8; i += 1) {
-          const data: TagData = {
-            object: prev,
-            objectType: prevType,
-            tagName: `t${i}`,
-            tagger: ident(1_000 + i),
-            message: `t${i}\n`,
-            extraHeaders: [],
-          };
-          prev = await writeObject(ctx, { type: 'tag', id: '' as ObjectId, data });
-          await tagCreate(ctx, { name: `t${i}`, target: prev });
-          prevType = 'tag';
-        }
-
-        // Act
-        const result = await nameRev(ctx, c1, { tags: true });
-
-        // Assert — the oldest still-peelable tag (t1) names c1; t8 is dropped.
-        expect(result.ref).toBe(RefName.from('refs/tags/t1'));
+        expect(result?.ref).toBe(RefName.from('refs/heads/main'));
       });
     });
   });
@@ -508,8 +477,8 @@ describe('nameRev', () => {
         const result = await nameRev(ctx, corrupt);
 
         // Assert — the commit itself is named; the tree "parent" is skipped.
-        expect(result.ref).toBe(RefName.from('refs/heads/corrupt'));
-        expect(result.steps).toEqual([]);
+        expect(result?.ref).toBe(RefName.from('refs/heads/corrupt'));
+        expect(result?.steps).toEqual([]);
       });
     });
   });
@@ -537,8 +506,8 @@ describe('nameRev', () => {
         const result = await nameRev(ctx, head);
 
         // Assert
-        expect(result.ref).toBe(RefName.from('refs/heads/main'));
-        expect(result.steps).toEqual([]);
+        expect(result?.ref).toBe(RefName.from('refs/heads/main'));
+        expect(result?.steps).toEqual([]);
       });
     });
 
@@ -608,7 +577,7 @@ describe('Given a linear chain with an old root block and a recent tip block', (
       const result = await nameRev(counted, tip);
 
       // Assert
-      expect(result.ref).toBe(RefName.from('refs/heads/main'));
+      expect(result?.ref).toBe(RefName.from('refs/heads/main'));
     });
 
     it('Then the walk stops at the date cutoff instead of reading the whole chain', async () => {
@@ -671,7 +640,7 @@ describe('Given a recent branch and a disjoint branch whose tip is over a day ol
       const result = await nameRev(counted, target);
 
       // Assert
-      expect(result.ref).toBe(RefName.from('refs/heads/main'));
+      expect(result?.ref).toBe(RefName.from('refs/heads/main'));
     });
 
     it('Then the stale branch is never seeded so its ancestry is never read', async () => {
@@ -717,7 +686,7 @@ describe('Given a chain whose middle commit is dated exactly one day older than 
       const result = await nameRev(counted, tip);
 
       // Assert
-      expect(result.ref).toBe(RefName.from('refs/heads/main'));
+      expect(result?.ref).toBe(RefName.from('refs/heads/main'));
     });
 
     it('Then reading reaches the boundary commit and its parent, not just the tip', async () => {
@@ -762,8 +731,8 @@ describe('Given a diamond whose shared parent is reached by both merge sides', (
       const result = await nameRev(counted, shared);
 
       // Assert
-      expect(result.ref).toBe(RefName.from('refs/heads/main'));
-      expect(result.steps).toEqual([{ kind: 'ancestor', count: 2 }]);
+      expect(result?.ref).toBe(RefName.from('refs/heads/main'));
+      expect(result?.steps).toEqual([{ kind: 'ancestor', count: 2 }]);
     });
 
     it('Then the shared parent already named by the first-parent side is not re-read', async () => {
@@ -818,7 +787,7 @@ describe('Given a commit-graph covering a short, densely-timed chain (every comm
       // root. `tip` is ref-target verified by `pointBranch` before the
       // counter starts, and that verification now warms ctx.deltaCache too,
       // so only the remaining ancestors still cost a real read each.
-      expect(result.ref).toBe(RefName.from('refs/heads/main'));
+      expect(result?.ref).toBe(RefName.from('refs/heads/main'));
       expect(reads()).toBe(ancestors.length - 1);
     });
   });
@@ -839,7 +808,7 @@ describe('Given a commit-graph covering a short, densely-timed chain (every comm
       // Assert — the tip's own generation is the cutoff (no slop), so its
       // immediate parent already carries a strictly lower generation and is
       // never expanded; the returned name is unchanged from the no-graph run.
-      expect(result.ref).toBe(RefName.from('refs/heads/main'));
+      expect(result?.ref).toBe(RefName.from('refs/heads/main'));
       expect(reads()).toBe(1);
     });
   });
@@ -874,8 +843,8 @@ describe('Given a target covered by a commit-graph and a disjoint, graph-absent 
       const result = await nameRev(counted, target);
 
       // Assert
-      expect(result.ref).toBe(RefName.from('refs/heads/main'));
-      expect(result.steps).toEqual([]);
+      expect(result?.ref).toBe(RefName.from('refs/heads/main'));
+      expect(result?.steps).toEqual([]);
     });
 
     it('Then the graph-absent stale branch carries an infinite generation and is traversed in full', async () => {
@@ -1004,7 +973,7 @@ describe('Given the only ref is a descendant dated more than a day before the ta
       const result = await nameRev(ctx, target);
 
       // Assert — the skewed descendant seed is pruned, so nothing names target
-      expect(result.ref).toBeUndefined();
+      expect(result?.ref).toBeUndefined();
     });
   });
 });

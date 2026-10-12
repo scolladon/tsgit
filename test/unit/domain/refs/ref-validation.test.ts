@@ -301,4 +301,25 @@ describe('isSafeRefName', () => {
       });
     });
   });
+
+  describe('Given a value that is not a string', () => {
+    describe('When checking safety', () => {
+      it('Then the fault validation hits propagates instead of reading as unsafe', () => {
+        // Arrange
+        const sut = isSafeRefName;
+
+        // Act
+        const result = (() => {
+          try {
+            return sut(undefined as unknown as string);
+          } catch (error) {
+            return error;
+          }
+        })();
+
+        // Assert
+        expect(result).toBeInstanceOf(TypeError);
+      });
+    });
+  });
 });

@@ -23,7 +23,23 @@ interface SpawnCall {
   };
 }
 
-const makeHarness = (): {
+/** The host a Windows transport searches: its environment and the files that exist. */
+interface HostFixture {
+  readonly env: NodeJS.ProcessEnv;
+  readonly files: ReadonlyArray<string>;
+}
+
+const OPENSSH_PROGRAM = 'C:\\OpenSSH\\ssh.exe';
+
+const windowsHost = (files: ReadonlyArray<string>): HostFixture => ({
+  env: { PATH: 'C:\\OpenSSH' },
+  files,
+});
+
+const makeHarness = (
+  platform: NodeJS.Platform = 'linux',
+  host: HostFixture = { env: process.env, files: [] },
+): {
   transport: NodeSshTransport;
   child: FakeChild;
   calls: SpawnCall[];
@@ -35,8 +51,11 @@ const makeHarness = (): {
       calls.push({ command, args, options });
       return child;
     },
+    env: host.env,
+    cwd: () => 'C:\\work',
+    isFile: (path) => host.files.includes(path),
   };
-  return { transport: new NodeSshTransport(ops), child, calls };
+  return { transport: new NodeSshTransport(platform, ops), child, calls };
 };
 
 const baseRequest = (over: Partial<SshSpawnRequest> = {}): SshSpawnRequest => ({
@@ -100,6 +119,46 @@ describe('NodeSshTransport', () => {
 
         // Assert — kills the `{...process.env, ...req.env}` → `{...req.env, ...process.env}` mutant.
         expect(calls[0]?.options.env.PATH).toBe('overridden-path');
+      });
+    });
+  });
+
+  describe('Given the win32 platform and an ssh program planted in the working directory', () => {
+    describe('When open runs for the bare `ssh`', () => {
+      it('Then it spawns the absolute PATH program, never the planted one', async () => {
+        // Arrange
+        const host = windowsHost(['C:\\repo\\ssh.exe', OPENSSH_PROGRAM]);
+        const { transport: sut, calls } = makeHarness('win32', host);
+
+        // Act
+        await sut.open(baseRequest());
+
+        // Assert
+        expect(calls[0]?.command).toBe(OPENSSH_PROGRAM);
+      });
+    });
+  });
+
+  describe('Given the win32 platform and an ssh program on no PATH entry', () => {
+    describe('When open runs', () => {
+      it('Then nothing spawns, the output ends empty, the write rejects and the exit is 127', async () => {
+        // Arrange
+        const { transport: sut, calls } = makeHarness('win32', windowsHost(['C:\\repo\\ssh.exe']));
+
+        // Act
+        const channel = await sut.open(baseRequest());
+        const read = await channel.stdout.getReader().read();
+        const written = await channel.stdin
+          .getWriter()
+          .write(new Uint8Array([1]))
+          .catch((error: unknown) => error);
+        await channel.close();
+
+        // Assert
+        expect(calls).toEqual([]);
+        expect(read.done).toBe(true);
+        expect((written as Error).message).toBe('cannot run ssh: not found on PATH');
+        await expect(channel.exit).resolves.toBe(127);
       });
     });
   });

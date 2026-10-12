@@ -12,8 +12,10 @@ interface PushOptions {
   readonly refspecs?: ReadonlyArray<string>;
   readonly force?: boolean;
   readonly forceWithLease?: ObjectId | 'auto';
+  readonly forceIfIncludes?: boolean;
   readonly noVerify?: boolean;
   readonly signed?: 'yes' | 'no' | 'if-asked';
+  readonly atomic?: boolean;
 }
 
 interface PushResult {
@@ -22,9 +24,24 @@ interface PushResult {
 
 interface PushedRef {
   readonly name: RefName;
+  readonly oldId: ObjectId;
+  readonly newId: ObjectId;
   readonly status: 'ok' | 'rejected';
-  readonly reason?: string;     // server's `ng <reason>` line when rejected
+  readonly rejection?: PushRejection; // set exactly when rejected
+  readonly reason?: string;           // server's `ng <reason>` text when rejection is 'remote'
+  readonly forcedUpdate?: boolean;    // the receiver's `report-status-v2` `option forced-update`
 }
+
+type PushRejection =
+  | 'non-fast-forward' // git's `[rejected] (non-fast-forward)`
+  | 'needs-force'      // either end is not a commit: `(needs force)`
+  | 'fetch-first'      // the advertised end is not held locally: `(fetch first)`
+  | 'already-exists'   // a `refs/tags/` destination the remote already has: `(already exists)`
+  | 'stale-info'       // a `forceWithLease` the remote no longer holds: `(stale info)`
+  | 'remote-ref-updated' // `forceIfIncludes`: the tracking tip was never integrated: `(remote ref updated since checkout)`
+  | 'remote-ref-not-deletable' // a delete the server cannot take: `(remote does not support deleting refs)`
+  | 'atomic-push-failed' // held back by another ref's rejection in an atomic push: `(atomic push failed)`
+  | 'remote';          // the receiving end's `ng` line
 ```
 
 ## Options
@@ -33,9 +50,11 @@ interface PushedRef {
 |---|---|---|---|
 | `remote` | `string` | resolved chain | Remote name. Resolved as `branch.<current>.pushRemote` → `remote.pushDefault` → `branch.<current>.remote` → the sole configured remote → `'origin'`; an explicit value always wins. Detached HEAD skips both `branch.<current>.*` rungs. See Behaviour. |
 | `refspecs` | `ReadonlyArray<string>` | derived from `push.default` | Explicit `<src>:<dst>`, `+<src>:<dst>`, `:<dst>`, or short-form (`main`). `HEAD` permitted as source. Bypasses `push.default` entirely when given. See Behaviour. |
-| `force` | `boolean` | `false` | Skip the non-fast-forward guard for all refspecs in this call. |
-| `forceWithLease` | `ObjectId \| 'auto'` | (none) | `'auto'` reads `refs/remotes/<remote>/<branch>` as the lease; explicit `ObjectId` accepts a caller-supplied expected oid. Mismatch throws `PUSH_REJECTED`. |
+| `force` | `boolean` | `false` | Override every client-side rejection (see Behaviour) for all refspecs in this call. |
+| `forceWithLease` | `ObjectId \| 'auto'` | (none) | `'auto'` reads `refs/remotes/<remote>/<branch>` as the lease — a destination that is no branch, or that nothing tracks, is expected absent, so a remote holding it rejects it as `'stale-info'`; explicit `ObjectId` accepts a caller-supplied expected oid. A ref the remote no longer holds at that value is rejected as `'stale-info'` (see Behaviour). |
+| `forceIfIncludes` | `boolean` | `push.useForceIfIncludes`, else `false` | git's `--force-if-includes`. Only with `forceWithLease: 'auto'` and an existing remote-tracking ref: a lease that holds still rejects the ref as `'remote-ref-updated'` unless the tracking tip appears in, or is an ancestor of a commit in, the local ref's reflog (walked newest first, stopping after the first entry older than the tracking ref's latest reflog entry). `force` overrides it. |
 | `noVerify` | `boolean` | `false` | Skip the `pre-push` hook. |
+| `atomic` | `boolean` | `false` | All refs or none (git's `--atomic`): the only push that requests the server's `atomic` capability. Throws `ATOMIC_PUSH_UNSUPPORTED` when the server does not advertise it. |
 | `signed` | `'yes' \| 'no' \| 'if-asked'` | `push.gpgSign` | Send a signed push certificate (git's `--signed`). `'yes'` always signs and throws `SIGNED_PUSH_UNSUPPORTED` when the server does not advertise the `push-cert` capability; `'if-asked'` signs only when the server advertises it, else pushes unsigned; `'no'` never signs. Requires a signing program via the command runner. |
 
 ## Behaviour
@@ -49,8 +68,11 @@ interface PushedRef {
   - `matching` — pushes every local branch the remote already advertises under `refs/heads/`; a local branch the remote doesn't carry is simply not pushed. Works on a detached HEAD.
 
   An explicit `refspecs` option bypasses `push.default` entirely — none of the mode logic above runs. The one exception is validation: an unrecognized `push.default` value still refuses (`INVALID_PUSH_DEFAULT`) even when `refspecs` is given, since that check runs eagerly on every `push` call before the remote or refspec is resolved.
-- **Atomic ref updates.** All accepted refspecs land server-side under the same transaction.
-- **Local remote-tracking refresh.** On an accepted heads-branch push, `refs/remotes/<remote>/<branch>` is updated to the new oid.
+- **Per-ref rejections.** Each ref is judged before anything is sent, as git's `set_ref_status_for_push` does, in this order: a `forceWithLease` the remote no longer holds → `'stale-info'` (deletes included; nothing else is measured); under `forceIfIncludes`, an automatic lease that holds but whose tracking tip the local reflog never integrated → `'remote-ref-updated'`; a delete or a new ref is not judged further; a `refs/tags/` destination the remote already has → `'already-exists'` (no object is looked up); an advertised value not held locally → `'fetch-first'`; either end not a commit → `'needs-force'`; the new value not descending from the advertised one → `'non-fast-forward'`. `force` or a `+` refspec overrides every verdict, a stale lease included; a matching `forceWithLease` overrides the others. A delete sent to a server that does not advertise `delete-refs` → `'remote-ref-not-deletable'`. A rejected ref does not stop the push: the other refs are sent, the rejected ref's new value still feeds the pack, and every ref's outcome comes back in `pushedRefs`. When every ref is rejected nothing is sent. The `pre-push` hook still runs, and its stdin omits only the non-fast-forward, stale and remote-updated refs. A ref already at the advertised value is up to date and is neither judged nor checked against a lease.
+- **Ref order.** Refs are judged, fed to the `pre-push` hook and returned in `pushedRefs` in git's remote-ref order: the refs the remote advertised, in advertisement order, then the refs the push creates, in refspec order.
+- **Atomic pushes.** With `atomic: true`, any ref rejected before sending fails every other ref as `'atomic-push-failed'` and nothing is sent; `ctx.logger.error` receives git's `atomic push failed for ref <ref>. status: <n>` for the first rejected ref. The server then applies the sent refs in one transaction. Without it, the server applies each ref on its own.
+- **Local remote-tracking refresh.** Each accepted or already up-to-date ref updates the local ref `remote.<name>.fetch` maps it onto (`refs/remotes/<remote>/<branch>` under the default refspec, nothing when no refspec maps it), reflogged `update by push`; an accepted delete deletes it. An automatic `forceWithLease` reads its expectation through the same mapping.
+- **`report-status-v2`.** Push asks for `report-status-v2` whenever the server offers it, as git does. A receiver's `proc-receive` hook (the AGit `refs/for/<branch>` flow) may answer one command with `option` lines naming the refs it really stored: each becomes its own `PushedRef`, under the reported name and ids (an id the receiver does not restate is the pushed one), with `forcedUpdate` when the receiver says so, and each updates its own tracking ref.
 - **Hooks (Node only):** `pre-push` runs with git's canonical `<local-ref> <local-oid> <remote-ref> <remote-oid>` stdin.
 
 ## Examples
@@ -71,14 +93,14 @@ await repo.push({ refspecs: [':refs/heads/feature/x'] });
 // Per-refspec inspection
 const result = await repo.push({ refspecs: ['main', 'feature/y'] });
 for (const r of result.pushedRefs) {
-  console.log(r.name, r.status, r.reason ?? '');
+  console.log(r.name, r.status, r.rejection ?? '', r.reason ?? '');
 }
 ```
 
 ## Throws
 
-- `PUSH_REJECTED` — server returned `ng` for at least one ref (also covers `forceWithLease` mismatch). Surfaces in `pushedRefs[i].status`.
-- `NON_FAST_FORWARD` — non-fast-forward refspec without `force` / `forceWithLease`.
+- `PUSH_REJECTED` — `forceWithLease` mismatch, or the receiving end reported `unpack <error>`. A per-ref `ng` does not throw: it surfaces as `pushedRefs[i].rejection === 'remote'`.
+- `COMMIT_PARSE_FAILED` — the fast-forward check, in a repository with no commit-graph, reached a parent that fails to parse (git exits 128 there). With a commit-graph git's depth-first reach logs the parent's line and skips it instead.
 - `HOOK_FAILED` — `pre-push` returned non-zero exit (when hooks are enabled).
 - `INVALID_URL` — malformed remote URL; HTTP: failed SSRF validation; SSH/scp: a control character, or the host/path begins with `-` (argv-injection guard).
 - `ADAPTER_UNAVAILABLE` — an `ssh://`/scp-like remote given to a runtime with no `SshTransport` wired (Browser, Memory).
@@ -95,6 +117,8 @@ for (const r of result.pushedRefs) {
 - `NO_UPSTREAM_CONFIGURED` — `push.default` is `upstream` or `simple`, the remote isn't triangular, and `branch.<current>.merge` isn't configured. Carries `{ branch }`.
 - `PUSH_REMOTE_NOT_UPSTREAM` — `push.default` is `upstream` and the resolved push remote isn't the branch's fetch remote (a triangular workflow). Carries `{ remote, branch }`.
 - `PUSH_UPSTREAM_NAME_MISMATCH` — `push.default` is `simple`, the remote isn't triangular, and the configured upstream's branch name differs from the current branch's. Carries `{ branch, upstream }`.
+- `ATOMIC_PUSH_UNSUPPORTED` — `atomic: true` but the server does not advertise the `atomic` capability. Thrown after the `pre-push` hook; nothing is sent.
+- `PUSH_REFSPEC_UNMATCHED` — a delete refspec's destination matched no single remote ref. A full `refs/` destination the remote does not advertise is still sent, as git sends it; a short one (`:nope`) is matched against the remote's refs the way git's `count_refspec_match` does (`:t1` deletes the remote's `refs/tags/t1`), and when none or several match, each is logged through `ctx.logger.error` and nothing is sent — no hook, no request.
 - `SIGNED_PUSH_UNSUPPORTED` — `signed: 'yes'` but the server does not advertise the `push-cert` capability. Nothing is sent. (`'if-asked'` falls back to an unsigned push instead of throwing.)
 - `SIGNING_FAILED` — the push certificate could not be signed (signing program failed or unavailable, e.g. off-node).
 
@@ -102,4 +126,4 @@ for (const r of result.pushedRefs) {
 
 - Primitives: [`computeClosure`](../primitives/internals.md#computeclosure), [`buildPack`](../primitives/internals.md#buildpack)
 - Related commands: [`fetch`](fetch.md), [`branch`](branch.md), [`tag`](tag.md)
-- ADRs: [013](../../adr/013-push-pack-encoding.md), [014](../../adr/014-push-refspec-scope.md), [015](../../adr/015-push-force-with-lease.md), [016](../../adr/016-push-atomic-tx.md), [434](../../adr/434-git-service-session-transport-seam.md), [437](../../adr/437-browser-inert-via-absent-ssh-capability.md), [438](../../adr/438-ssh-refusal-error-taxonomy.md), [440](../../adr/440-parse-remote-url-ssh-scp-ssrf-boundary.md), [442](../../adr/442-reuse-command-runner-for-signing.md), [444](../../adr/444-signed-push-in-scope-v1.md), [447](../../adr/447-off-node-signing-hard-refuse.md), [456](../../adr/456-branch-remote-resolution-primitives.md), [458](../../adr/458-push-remote-and-push-default-canonical-git.md), [627](../../adr/627-boolean-config-values-are-refused-as-git-refuses-them.md)
+- ADRs: [013](../../adr/013-push-pack-encoding.md), [014](../../adr/014-push-refspec-scope.md), [015](../../adr/015-push-force-with-lease.md), [016](../../adr/016-push-atomic-tx.md), [434](../../adr/434-git-service-session-transport-seam.md), [437](../../adr/437-browser-inert-via-absent-ssh-capability.md), [438](../../adr/438-ssh-refusal-error-taxonomy.md), [440](../../adr/440-parse-remote-url-ssh-scp-ssrf-boundary.md), [442](../../adr/442-reuse-command-runner-for-signing.md), [444](../../adr/444-signed-push-in-scope-v1.md), [447](../../adr/447-off-node-signing-hard-refuse.md), [456](../../adr/456-branch-remote-resolution-primitives.md), [458](../../adr/458-push-remote-and-push-default-canonical-git.md), [627](../../adr/627-boolean-config-values-are-refused-as-git-refuses-them.md), [942](../../adr/942-push-reports-client-side-rejections-per-ref.md)

@@ -347,6 +347,15 @@ describe('Given a valid object', () => {
         }),
       },
       {
+        label: 'empty tree',
+        build: () => ({
+          kind: 'tree',
+          rawBody: new Uint8Array(0),
+          strict: false,
+          hashConfig: SHA1_CONFIG,
+        }),
+      },
+      {
         label: 'blob',
         build: () => ({ kind: 'blob', rawBody: encode('hello world\n'), strict: false }),
       },
@@ -1288,6 +1297,30 @@ describe('Given tree bytes that are malformed or truncated', () => {
           return raw;
         },
       },
+      {
+        label: 'a whole first entry whose id holds the tail NUL, then a name with no NUL',
+        build: () => {
+          // "1 a\0" + 20-byte id + "1 abc": 29 bytes; byte 8 (29 - 21) is id byte 4,
+          // zeroed so git's tail check passes and the second entry's own NUL search fails.
+          const raw = new Uint8Array(29).fill(0x61);
+          raw.set(encode('1 a\0'), 0);
+          raw[8] = 0x00;
+          raw.set(encode('1 abc'), 24);
+          return raw;
+        },
+      },
+      {
+        label: 'a whole first entry whose id holds the tail NUL, then an id cut short',
+        build: () => {
+          // "1 a\0" + 20-byte id + "1 b\0" + 10 id bytes: 38 bytes; byte 17 (38 - 21)
+          // is id byte 13, zeroed so git's tail check passes and the second id runs short.
+          const raw = new Uint8Array(38).fill(0x61);
+          raw.set(encode('1 a\0'), 0);
+          raw[17] = 0x00;
+          raw.set(encode('1 b\0'), 24);
+          return raw;
+        },
+      },
     ])('Then emits badTree at error severity — $label', ({ build }) => {
       // Arrange
       const rawBody = build();
@@ -1403,12 +1436,13 @@ describe('Given tree where .mailmap is a symlink', () => {
 });
 
 // ---------------------------------------------------------------------------
-// tree — gitmodulesBlob (ERROR): .gitmodules is not a regular file
+// tree — gitmodulesBlob is never a tree-level finding: git queues the entry
+// for its deferred blob check whatever its mode
 // ---------------------------------------------------------------------------
 
 describe('Given tree where .gitmodules is a directory (non-blob)', () => {
   describe('When validateObject runs', () => {
-    it('Then emits gitmodulesBlob at error severity', () => {
+    it('Then emits no gitmodulesBlob, as git defers it to the queued object', () => {
       // Arrange
       const rawBytes = buildTree(buildTreeEntry('40000', '.gitmodules', BLOB_SHA));
 
@@ -1421,18 +1455,19 @@ describe('Given tree where .gitmodules is a directory (non-blob)', () => {
       });
 
       // Assert
-      expect(result).toContainEqual({ msgId: 'gitmodulesBlob', severity: 'error' });
+      expect(result).toEqual([]);
     });
   });
 });
 
 // ---------------------------------------------------------------------------
-// tree — gitattributesBlob (ERROR): .gitattributes is not a regular file
+// tree — gitattributesBlob is never a tree-level finding: git queues the entry
+// for its deferred blob check whatever its mode
 // ---------------------------------------------------------------------------
 
 describe('Given tree where .gitattributes is a directory (non-blob)', () => {
   describe('When validateObject runs', () => {
-    it('Then emits gitattributesBlob at error severity', () => {
+    it('Then emits no gitattributesBlob, as git defers it to the queued object', () => {
       // Arrange
       const rawBytes = buildTree(buildTreeEntry('40000', '.gitattributes', BLOB_SHA));
 
@@ -1445,7 +1480,7 @@ describe('Given tree where .gitattributes is a directory (non-blob)', () => {
       });
 
       // Assert
-      expect(result).toContainEqual({ msgId: 'gitattributesBlob', severity: 'error' });
+      expect(result).toEqual([]);
     });
   });
 });
@@ -4338,6 +4373,101 @@ describe('Given a SHA-256 tree entry truncated to a 20-byte (SHA-1-width) oid', 
 
       // Assert
       expect(result).toEqual([{ msgId: 'badTree', severity: 'error' }]);
+    });
+  });
+});
+
+describe.each([
+  { name: 'a\\.git', mode: '100644', msgId: 'hasDotgit', severity: 'warning' },
+  { name: 'a\\git~1\\b', mode: '100644', msgId: 'hasDotgit', severity: 'warning' },
+  { name: 'a\\.gitmodules', mode: '120000', msgId: 'gitmodulesSymlink', severity: 'error' },
+  { name: 'a\\gi7eba~2', mode: '120000', msgId: 'gitmodulesSymlink', severity: 'error' },
+] as const)(
+  'Given a tree entry whose backslash segment $name is a dotgit alias',
+  ({ name, mode, msgId, severity }) => {
+    describe('When validateObject runs', () => {
+      it(`Then emits ${msgId}`, () => {
+        // Arrange
+        const rawBytes = buildTree(buildTreeEntry(mode, name, BLOB_SHA));
+        const sut = validateObject;
+
+        // Act
+        const result = sut({
+          kind: 'tree',
+          rawBody: rawBytes,
+          strict: false,
+          hashConfig: SHA1_CONFIG,
+        });
+
+        // Assert
+        expect(result).toEqual([{ msgId, severity }]);
+      });
+    });
+  },
+);
+
+describe('Given a symlink entry whose name and its backslash segment each read as .gitmodules', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits gitmodulesSymlink once per match, as git reports each', () => {
+      // Arrange
+      const rawBytes = buildTree(buildTreeEntry('120000', '.gitmodules:\\.gitmodules', BLOB_SHA));
+      const sut = validateObject;
+
+      // Act
+      const result = sut({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toEqual([
+        { msgId: 'gitmodulesSymlink', severity: 'error' },
+        { msgId: 'gitmodulesSymlink', severity: 'error' },
+      ]);
+    });
+  });
+});
+
+describe('Given a regular entry whose backslash segment reads as .gitmodules', () => {
+  describe('When validateObject runs', () => {
+    it('Then the tree itself carries no finding', () => {
+      // Arrange
+      const rawBytes = buildTree(buildTreeEntry('100644', 'a\\.gitmodules', BLOB_SHA));
+      const sut = validateObject;
+
+      // Act
+      const result = sut({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toEqual([]);
+    });
+  });
+});
+
+describe('Given a symlink entry whose backslash segment is no dotgit alias', () => {
+  describe('When validateObject runs', () => {
+    it('Then the tree carries no finding, as git fsck reports none', () => {
+      // Arrange
+      const rawBytes = buildTree(buildTreeEntry('120000', 'a\\b', BLOB_SHA));
+      const sut = validateObject;
+
+      // Act
+      const result = sut({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toEqual([]);
     });
   });
 });

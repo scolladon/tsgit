@@ -35,6 +35,11 @@ export interface FileSystemContractEnv {
    * `ENOENT` or `EINVAL`, so the rows are skipped there rather than asserting unpinned codes.
    */
   readonly segmentRefusals?: 'pinned';
+  /**
+   * Plants a regular file at `path` whose modification time lies far in the past, so a
+   * `utimeNow` row can observe the stamp advancing. Required by the rows that assert it.
+   */
+  readonly createBackdatedFile?: (path: string) => Promise<void>;
 }
 
 const SEGMENT_REFUSALS_UNPINNED =
@@ -87,6 +92,7 @@ const pathCalls: ReadonlyArray<PathCall> = [
   { name: 'readlink', invoke: (e, p) => e.fs.readlink(p) },
   { name: 'symlink', invoke: (e, p) => e.fs.symlink('target', p) },
   { name: 'chmod', invoke: (e, p) => e.fs.chmod(p, 0o644) },
+  { name: 'utimeNow', invoke: (e, p) => utimeNow(e.fs, p) },
   { name: 'rmRecursive', invoke: (e, p) => e.fs.rmRecursive(p) },
 ];
 
@@ -181,12 +187,26 @@ async function lexists(fs: FileSystem, path: string): Promise<boolean> {
   return fs.lexists(path);
 }
 
+/** Every adapter this suite runs against provides the optional timestamp refresh. */
+async function utimeNow(fs: FileSystem, path: string): Promise<void> {
+  if (fs.utimeNow === undefined) throw new Error('the adapter under contract provides no utimeNow');
+  return fs.utimeNow(path);
+}
+
 /** Every adapter this suite runs against provides the optional non-throwing lstat probe. */
 async function tryLstat(fs: FileSystem, path: string): Promise<FileStat | undefined> {
   if (fs.tryLstat === undefined) {
     throw new Error('the adapter under contract provides no tryLstat');
   }
   return fs.tryLstat(path);
+}
+
+/** Every adapter this suite runs against provides the optional cause-blind miss probe. */
+async function lstatIfReachable(fs: FileSystem, path: string): Promise<FileStat | undefined> {
+  if (fs.lstatIfReachable === undefined) {
+    throw new Error('the adapter under contract provides no lstatIfReachable');
+  }
+  return fs.lstatIfReachable(path);
 }
 
 /** Every adapter this suite runs against provides the optional non-throwing UTF-8 read probe. */
@@ -882,24 +902,29 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       expect(result).toEqual(new Uint8Array());
     });
 
-    it('Given mkdir on existing file path, When mkdir, Then throws FILE_EXISTS or NOT_A_DIRECTORY', async () => {
-      // Arrange
-      const path = `${env.rootDir}/file.txt`;
-      await env.fs.write(path, new Uint8Array([1]));
+    describe('Given a regular file occupies the mkdir target', () => {
+      for (const { label, leaf } of [
+        { label: 'the file itself', leaf: 'mkdir-file.txt' },
+        { label: 'a symlink to the file', leaf: 'mkdir-file-link' },
+      ]) {
+        it(`When mkdir is called on ${label}, Then it refuses FILE_EXISTS as POSIX mkdir does and keeps the occupant`, async () => {
+          // Arrange
+          await env.fs.write(`${env.rootDir}/mkdir-file.txt`, new Uint8Array([1]));
+          await env.fs.symlink('mkdir-file.txt', `${env.rootDir}/mkdir-file-link`);
 
-      // Act
-      let caught: unknown;
-      try {
-        await env.fs.mkdir(path);
-      } catch (err) {
-        caught = err;
+          // Act
+          let caught: unknown;
+          try {
+            await env.fs.mkdir(`${env.rootDir}/${leaf}`);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          assertFileExists(caught);
+          expect(await env.fs.read(`${env.rootDir}/${leaf}`)).toEqual(new Uint8Array([1]));
+        });
       }
-
-      // Assert — exact code is adapter-dependent: the node adapter's `mkdir -p` reports
-      // FILE_EXISTS for the file path itself, where the memory adapter keeps NOT_A_DIRECTORY.
-      expect(caught).toBeInstanceOf(TsgitError);
-      const code = (caught as TsgitError).data.code;
-      expect(['FILE_EXISTS', 'NOT_A_DIRECTORY']).toContain(code);
     });
 
     it('Given symlink, When lstat, Then isSymbolicLink is true', async () => {
@@ -1770,6 +1795,99 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       });
     });
 
+    describe('lstatIfReachable — the cause-blind miss probe', () => {
+      describe('Given a path with no entry', () => {
+        it('Then lstatIfReachable resolves undefined, where lstat refuses FILE_NOT_FOUND', async () => {
+          // Arrange
+          const path = `${env.rootDir}/reach-missing.bin`;
+
+          // Act
+          const result = await lstatIfReachable(env.fs, path);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+
+      for (const { label, segment } of fileSegments) {
+        describe(`Given ${label} occupying an intermediate path segment`, () => {
+          it('Then lstatIfReachable resolves undefined, where lstat refuses NOT_A_DIRECTORY', async (ctx) => {
+            ctx.skip(env.segmentRefusals !== 'pinned', SEGMENT_REFUSALS_UNPINNED);
+
+            // Arrange
+            await env.fs.write(`${env.rootDir}/refusal-file.bin`, new Uint8Array([1]));
+            await env.fs.symlink('refusal-file.bin', `${env.rootDir}/refusal-file-link`);
+
+            // Act
+            const result = await lstatIfReachable(env.fs, `${env.rootDir}/${segment}/x`);
+
+            // Assert
+            expect(result).toBeUndefined();
+          });
+        });
+      }
+
+      describe('Given a present regular file, a dangling symlink and a directory', () => {
+        it("Then lstatIfReachable equals lstat's no-follow view of each", async () => {
+          // Arrange
+          const file = `${env.rootDir}/reach-present.bin`;
+          const link = `${env.rootDir}/reach-dangling`;
+          const dir = `${env.rootDir}/reach-dir`;
+          await env.fs.write(file, new Uint8Array([1, 2, 3]));
+          await env.fs.symlink('reach-dangling-target', link);
+          await env.fs.mkdir(dir);
+
+          // Act
+          const result = await Promise.all(
+            [file, link, dir].map((p) => lstatIfReachable(env.fs, p)),
+          );
+
+          // Assert
+          expect(result).toEqual(await Promise.all([file, link, dir].map((p) => env.fs.lstat(p))));
+        });
+      });
+
+      describe('Given an ancestor directory whose search permission is revoked', () => {
+        it('Then lstatIfReachable refuses PERMISSION_DENIED wherever lstat does', async (ctx) => {
+          ctx.skip(process.platform === 'win32' || os.userInfo().uid === 0, POSIX_NON_ROOT_ONLY);
+
+          // Arrange
+          const dir = `${env.rootDir}/reach-locked`;
+          const leaf = `${dir}/leaf.txt`;
+          await env.fs.write(leaf, new Uint8Array([1]));
+          await env.fs.chmod(dir, 0o000);
+
+          try {
+            let twinCaught: unknown;
+            try {
+              await env.fs.lstat(leaf);
+            } catch (err) {
+              twinCaught = err;
+            }
+            // An adapter that never enforces permission bits (the memory adapter) has nothing to prove.
+            if (!isPermissionDeniedError(twinCaught)) {
+              ctx.skip();
+              return;
+            }
+
+            // Act
+            let caught: unknown;
+            try {
+              await lstatIfReachable(env.fs, leaf);
+              expect.fail('expected PERMISSION_DENIED');
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            assertPermissionDenied(caught);
+          } finally {
+            await env.fs.chmod(dir, 0o755);
+          }
+        });
+      });
+    });
+
     describe('tryLstat / tryReadUtf8 — non-throwing probes', () => {
       describe('Given a path with no entry', () => {
         it("Then tryLstat resolves undefined, matching lstat's FILE_NOT_FOUND", async () => {
@@ -2049,6 +2167,83 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
         // Assert
         assertPermissionDenied(caught);
+      });
+    });
+
+    describe('Given a back-dated regular file', () => {
+      describe('When utimeNow', () => {
+        it('Then stat().mtimeMs advances past the back-dated value', async () => {
+          // Arrange
+          const path = `${env.rootDir}/touched.bin`;
+          if (env.createBackdatedFile === undefined) throw new Error('no createBackdatedFile hook');
+          await env.createBackdatedFile(path);
+          const before = (await env.fs.stat(path)).mtimeMs;
+
+          // Act
+          await utimeNow(env.fs, path);
+
+          // Assert
+          expect((await env.fs.stat(path)).mtimeMs).toBeGreaterThan(before);
+        });
+      });
+    });
+
+    describe('Given a directory', () => {
+      describe('When utimeNow', () => {
+        it('Then it resolves', async () => {
+          // Arrange
+          await env.fs.mkdir(`${env.rootDir}/touched-dir`);
+
+          // Act
+          const result = await utimeNow(env.fs, `${env.rootDir}/touched-dir`);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a symlink at the leaf', () => {
+      describe('When utimeNow', () => {
+        it('Then it refuses PERMISSION_DENIED and leaves the target mtime unchanged', async () => {
+          // Arrange
+          const target = `${env.rootDir}/touched-target.bin`;
+          if (env.createBackdatedFile === undefined) throw new Error('no createBackdatedFile hook');
+          await env.createBackdatedFile(target);
+          await env.fs.symlink(target, `${env.rootDir}/touched-link`);
+          const before = (await env.fs.stat(target)).mtimeMs;
+
+          // Act
+          let caught: unknown;
+          try {
+            await utimeNow(env.fs, `${env.rootDir}/touched-link`);
+            expect.fail('expected PERMISSION_DENIED');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          assertPermissionDenied(caught);
+          expect((await env.fs.stat(target)).mtimeMs).toBe(before);
+        });
+      });
+    });
+
+    describe('Given a path with no entry', () => {
+      describe('When utimeNow', () => {
+        it('Then it refuses FILE_NOT_FOUND', async () => {
+          // Act
+          let caught: unknown;
+          try {
+            await utimeNow(env.fs, `${env.rootDir}/touched-never-created.bin`);
+            expect.fail('expected FILE_NOT_FOUND');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          assertFileNotFound(caught);
+        });
       });
     });
 

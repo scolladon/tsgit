@@ -1,4 +1,12 @@
-import { branchNotFound, invalidOption } from '../../domain/commands/error.js';
+import {
+  branchExists,
+  checkoutNonCommit,
+  checkoutStartPointNotCommit,
+  invalidOption,
+  pathspecNoMatch,
+  revparseUnresolved,
+} from '../../domain/commands/error.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import {
   FILE_MODE,
   type FilePath,
@@ -9,34 +17,62 @@ import { matchesPathspec } from '../../domain/pathspec/index.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
+import type { CheckoutMetadata } from '../primitives/internal/apply-smudge-filter.js';
+import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
+import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
+import type { HeadState } from '../primitives/internal/repo-state.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
+import { assertEverySourceLoadable } from '../primitives/object-store.js';
 import { readIndex } from '../primitives/read-index.js';
+import { readObject } from '../primitives/read-object.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { readTree } from '../primitives/read-tree.js';
-import { getRefStore, refExists } from '../primitives/ref-store.js';
-import { resolveRef } from '../primitives/resolve-ref.js';
+import { getRefStore } from '../primitives/ref-store.js';
+import {
+  refResolvesForReading,
+  resolveRef,
+  resolveRefForReading,
+} from '../primitives/resolve-ref.js';
 import { runInformationalHook } from '../primitives/run-hook.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { walkTree } from '../primitives/walk-tree.js';
+import { type BranchTrack, branchCreate } from './branch.js';
+import { removeBranchState } from './internal/branch-state.js';
+import { checkoutMetadataFor } from './internal/checkout-metadata.js';
 import { acquireIndexLock } from './internal/index-update.js';
+import { interpretBranchName, previousCheckoutArg } from './internal/prior-checkout.js';
 import {
-  assertNoPendingOperation,
   assertOperationalRepository,
   readHeadRaw,
   requireWorkTree,
 } from './internal/repo-state.js';
 import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
+import { resolveRevisionExpression } from './internal/revision-expression.js';
 import { resolveRevisionName } from './internal/revision-name.js';
+import { rejectUnmergedIndex } from './internal/unmerged-index.js';
+
+/** git's `checkout -b <name> [--track|--no-track] <rev>`: create `name` at `rev`, then switch to it. */
+export interface CheckoutCreateBranch {
+  readonly name: string;
+  readonly track?: BranchTrack;
+  readonly noTrack?: boolean;
+}
 
 export interface CheckoutSwitchOptions {
   readonly rev: string;
   readonly detach?: boolean;
   readonly force?: boolean;
+  readonly createBranch?: CheckoutCreateBranch;
 }
 
 export interface CheckoutPathsOptions {
   readonly paths: ReadonlyArray<string>;
-  readonly source?: 'index' | 'HEAD' | ObjectId;
+  /**
+   * Where the paths are restored from: `'index'` (the default), or a revision
+   * naming a commit or a tree — a branch or tag name, `HEAD`, an object id, a
+   * revision expression such as `HEAD~1`.
+   */
+  readonly source?: 'index' | string;
 }
 
 export type CheckoutOptions = CheckoutSwitchOptions | CheckoutPathsOptions;
@@ -49,6 +85,7 @@ export interface CheckoutResult {
 }
 
 const CHECKOUT_MATERIALIZE_OP = 'checkout:materialize';
+const INDEX_SOURCE = 'index';
 /** post-checkout's 3rd argument: `1` for a branch checkout, `0` for a file checkout. */
 const BRANCH_FLAG = '1';
 const FILE_FLAG = '0';
@@ -58,61 +95,140 @@ const isSwitch = (opts: CheckoutOptions): opts is CheckoutSwitchOptions =>
 const isPaths = (opts: CheckoutOptions): opts is CheckoutPathsOptions =>
   'paths' in opts && opts.paths !== undefined;
 
+/** A branch a switch attaches to, and the object that one read found it naming. */
+interface HeldBranch {
+  readonly ref: RefName;
+  readonly id: ObjectId;
+}
+
 /**
  * git's own branch-argument parse reads `refs/heads/<arg>` before anything else:
  * a name a branch carries keeps the switch on that branch, and only that.
  * `undefined` for a name that does not format as a refname either — git's own
  * `check_refname_format` gate before the same read.
  */
-const branchRefFor = async (ctx: Context, rev: string): Promise<RefName | undefined> => {
-  let name: RefName;
+const branchFor = async (ctx: Context, rev: string): Promise<HeldBranch | undefined> => {
+  const ref = formattedBranchRef(rev);
+  if (ref === undefined) return undefined;
+  // git's `refs_read_ref`: a dangling or broken branch is no branch to attach to.
+  const id = await resolveRefForReading(ctx, ref);
+  return id === undefined ? undefined : { ref, id };
+};
+
+const INVALID_REF_CODE = 'INVALID_REF';
+
+/** `refs/heads/<rev>` when it formats as a refname, else `undefined`; any other failure propagates. */
+const formattedBranchRef = (rev: string): RefName | undefined => {
   try {
-    name = validateRefName(`${HEADS_PREFIX}${rev}`);
-  } catch {
-    return undefined;
+    return validateRefName(`${HEADS_PREFIX}${rev}`);
+  } catch (error) {
+    if (errorDataCode(error) === INVALID_REF_CODE) return undefined;
+    throw error;
   }
-  return (await refExists(ctx, name)) ? name : undefined;
 };
 
-/** The object a switch detaches onto once no branch carries the name: git's
- *  `get_oid_mb` fallback over the revision ladder. */
-const resolveSwitchOid = async (ctx: Context, rev: string): Promise<ObjectId> => {
-  const id = await resolveRevisionName(ctx, rev);
-  if (id === undefined) throw branchNotFound(validateRefName(`${HEADS_PREFIX}${rev}`));
-  return id;
+/** git's `get_oid_mb`: the name through the ref ladder, else the whole revision grammar. */
+const resolveSwitchTarget = async (ctx: Context, arg: string): Promise<ObjectId | undefined> =>
+  (await resolveRevisionName(ctx, arg)) ?? resolveRevisionExpression(ctx, arg);
+
+/**
+ * A switch argument no revision answers: git hands it on as a pathspec, which
+ * matches nothing — or, under `-b`, names a start point no branch can come from.
+ */
+const unresolvedSwitch = (opts: CheckoutSwitchOptions) =>
+  opts.createBranch === undefined
+    ? pathspecNoMatch(opts.rev)
+    : checkoutStartPointNotCommit(opts.rev, opts.createBranch.name);
+
+/** What a switch argument names: its spelling, the branch it attaches to, and the object. */
+interface SwitchTarget {
+  readonly arg: string;
+  readonly branchName: string;
+  readonly onBranch: RefName | undefined;
+  readonly object: ObjectId;
+}
+
+/** git's `parse_branchname_arg`: the branch `refs/heads/<arg>` names, else the revision ladder. */
+const resolveSwitch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<SwitchTarget> => {
+  const arg = previousCheckoutArg(opts.rev);
+  const named = await resolveSwitchTarget(ctx, arg);
+  const branchName = await interpretBranchName(ctx, arg);
+  const branch = await branchFor(ctx, branchName);
+  if (branch !== undefined) return { arg, branchName, onBranch: branch.ref, object: branch.id };
+  if (named === undefined) throw unresolvedSwitch(opts);
+  return { arg, branchName, onBranch: undefined, object: named };
 };
 
-/** git's checkout reflog label: the branch short-name on a branch, the
- *  abbreviated oid when detached. A symbolic target outside `refs/heads/`
- *  (e.g. `refs/remotes/...`) falls back to its last path segment so the
- *  prefix-strip never mangles the name. */
-const headCheckoutLabel = (
-  head:
-    | { readonly kind: 'symbolic'; readonly target: RefName }
-    | { readonly kind: 'direct'; readonly id: ObjectId },
-): string => {
-  if (head.kind !== 'symbolic') return head.id.slice(0, 7);
-  if (head.target.startsWith(HEADS_PREFIX)) return head.target.slice(HEADS_PREFIX.length);
-  // A usable symbolic HEAD always begins `refs/` (the repository gate
-  // enforces the same grammar discovery does), so a slash is guaranteed and
-  // the basename slice is total.
-  return head.target.slice(head.target.lastIndexOf('/') + 1);
+/**
+ * git's `lookup_commit_reference_gently`: the commit the object peels to, or
+ * `undefined` for a tree — a blob or other non-tree-ish refuses here, as git's
+ * `unable to read tree` does before any branch is validated.
+ */
+const switchCommit = async (ctx: Context, object: ObjectId): Promise<ObjectId | undefined> => {
+  const { id, result } = await peelChain(ctx, object, readObject, tagHop);
+  if (result.type === 'commit') return id;
+  await readTree(ctx, object);
+  return undefined;
+};
+
+/** git's `old_desc`: the branch HEAD was on, else the full object id it named. */
+const headCheckoutLabel = (head: HeadState, oldOid: ObjectId): string =>
+  head.kind === 'symbolic' && head.target.startsWith(HEADS_PREFIX)
+    ? head.target.slice(HEADS_PREFIX.length)
+    : oldOid;
+
+/** git refuses `-b` with `--detach`, and an existing branch name, before the work tree moves. */
+const assertBranchCreatable = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<void> => {
+  if (opts.createBranch === undefined) return;
+  if (opts.detach === true) throw invalidOption('createBranch', 'cannot be combined with detach');
+  const name = validateRefName(`${HEADS_PREFIX}${opts.createBranch.name}`);
+  if (await refResolvesForReading(ctx, name)) throw branchExists(name);
+};
+
+const createRequestedBranch = async (
+  ctx: Context,
+  opts: CheckoutSwitchOptions,
+  startPoint: string,
+): Promise<RefName | undefined> => {
+  const request = opts.createBranch;
+  if (request === undefined) return undefined;
+  const created = await branchCreate(ctx, { ...request, startPoint });
+  return created.name;
+};
+
+interface HeadMove {
+  readonly attached: RefName | undefined;
+  readonly oid: ObjectId;
+  readonly oldOid: ObjectId;
+  readonly message: string;
+}
+
+const moveHead = (ctx: Context, move: HeadMove): Promise<void> => {
+  const reflog = { oldId: move.oldOid, newId: move.oid, message: move.message };
+  const update =
+    move.attached === undefined
+      ? { kind: 'set' as const, name: 'HEAD' as RefName, id: move.oid, reflog }
+      : { kind: 'setSymbolic' as const, name: 'HEAD' as RefName, target: move.attached, reflog };
+  return getRefStore(ctx).applyRefUpdates([update]);
 };
 
 const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<CheckoutResult> => {
   const priorHead = await readHeadRaw(ctx);
+  if (priorHead.kind !== 'symbolic') await assertEverySourceLoadable(ctx);
   const oldOid = await resolveRef(ctx, 'HEAD' as RefName);
   // The branch lookup runs whatever `detach` says — git reads
   // `refs/heads/<arg>` before its revision ladder either way, and only the
   // ATTACH decision consults the flag. A name no branch carries detaches, as
   // git's own fallback does: a tag, a remote-tracking path or an object id.
-  const onBranch = await branchRefFor(ctx, opts.rev);
+  // git names the argument through `get_oid_mb` first, branch or not — its
+  // warnings and its read of core.warnAmbiguousRefs happen either way.
+  const { arg, branchName, onBranch, object } = await resolveSwitch(ctx, opts);
+  const commitId = await switchCommit(ctx, object);
+  await assertBranchCreatable(ctx, opts);
+  if (commitId === undefined) throw checkoutNonCommit(arg);
+  const oid = commitId;
   const detached = opts.detach === true || onBranch === undefined;
   const branchRef = detached ? undefined : onBranch;
-  const oid =
-    onBranch === undefined
-      ? await resolveSwitchOid(ctx, opts.rev)
-      : await resolveRef(ctx, onBranch);
 
   // Read target tree — git objects are content-addressed and immutable, so
   // this can happen outside the index lock without risk.
@@ -131,10 +247,13 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
   let materializeResult: Awaited<ReturnType<typeof materializeTree>>;
   try {
     const currentIndex = await readIndex(ctx);
+    // git's `merge_working_tree`: only a forced switch may discard a conflict.
+    if (opts.force !== true) rejectUnmergedIndex(currentIndex.entries);
     materializeResult = await materializeTree(ctx, {
       targetTree: target.id,
       currentIndex,
       force: opts.force ?? false,
+      checkoutMetadata: await checkoutMetadataFor(ctx, branchName, oid),
       // `exactOptionalPropertyTypes`: add `sparse` only when a matcher exists.
       ...(matcher !== undefined ? { sparse: matcher } : {}),
     });
@@ -148,63 +267,61 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
     await lock.release();
   }
 
+  // git creates a `-b` branch only once the work tree has moved, then attaches HEAD to it.
+  const created = await createRequestedBranch(ctx, opts, arg);
+  const attached = created ?? branchRef;
   // Move HEAD — outside the index lock (HEAD writes are atomic on their own).
-  const fromLabel = headCheckoutLabel(priorHead);
-  if (detached) {
-    await getRefStore(ctx).applyRefUpdates([
-      {
-        kind: 'set',
-        name: 'HEAD' as RefName,
-        id: oid,
-        reflog: {
-          oldId: oldOid,
-          newId: oid,
-          // git echoes the argument it was handed, abbreviated or not.
-          message: `checkout: moving from ${fromLabel} to ${opts.rev}`,
-        },
-      },
-    ]);
-  } else {
-    await getRefStore(ctx).applyRefUpdates([
-      {
-        kind: 'setSymbolic',
-        name: 'HEAD' as RefName,
-        target: branchRef as RefName,
-        reflog: {
-          oldId: oldOid,
-          newId: oid,
-          message: `checkout: moving from ${fromLabel} to ${opts.rev}`,
-        },
-      },
-    ]);
-  }
+  // git echoes the argument it was handed, abbreviated or not.
+  const label = opts.createBranch?.name ?? branchName;
+  const message = `checkout: moving from ${headCheckoutLabel(priorHead, oldOid)} to ${label}`;
+  await moveHead(ctx, { attached, oid, oldOid, message });
+  await removeBranchState(ctx, 'announce');
   // post-checkout (informational) fires after the worktree + HEAD are updated;
   // a branch checkout (changing branches / detaching) flags `1`.
   await runInformationalHook(ctx, 'post-checkout', { args: [oldOid, oid, BRANCH_FLAG] });
   return {
-    branch: detached ? undefined : branchRef,
+    branch: attached,
     id: oid,
-    detached,
+    detached: attached === undefined,
     changedPaths: materializeResult.written + materializeResult.deleted,
   };
 };
 
-const resolvePathSource = async (ctx: Context, source: 'HEAD' | ObjectId): Promise<ObjectId> => {
-  if (source === 'HEAD') {
-    const head = await resolveRef(ctx, 'HEAD' as RefName);
-    const headTree = await readTree(ctx, head);
-    return headTree.id;
-  }
-  const tree = await readTree(ctx, source);
-  return tree.id;
+interface PathSource {
+  readonly tree: ObjectId;
+  readonly metadata: CheckoutMetadata;
+}
+
+/** git dies `invalid reference` naming the revision as given, whatever step of it failed. */
+const resolveSourceRevision = async (ctx: Context, rev: string): Promise<ObjectId> => {
+  const id = await resolveRevisionExpression(ctx, rev);
+  if (id === undefined) throw revparseUnresolved(rev);
+  return id;
 };
+
+/**
+ * git's `<tree-ish> -- <paths>` source: the tree to restore from, and the smudge
+ * metadata naming the commit the revision peels to — the named object itself
+ * when it is no commit — and the ref it resolves to.
+ */
+const resolvePathSource = async (ctx: Context, rev: string): Promise<PathSource> => {
+  const named = await resolveSourceRevision(ctx, rev);
+  const { id, result } = await peelChain(ctx, named, readObject, tagHop);
+  const tree = await readTree(ctx, id);
+  const treeish = result.type === 'commit' ? id : named;
+  return { tree: tree.id, metadata: await checkoutMetadataFor(ctx, rev, treeish) };
+};
+
+/** The revision a path restore reads from, or `undefined` for the index. */
+const pathSourceFor = (ctx: Context, source: string): Promise<PathSource | undefined> =>
+  source === INDEX_SOURCE ? Promise.resolve(undefined) : resolvePathSource(ctx, source);
 
 const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<CheckoutResult> => {
   if (opts.paths.length === 0) {
     throw invalidOption('paths', 'must not be empty');
   }
-  const source = opts.source ?? 'index';
-  const { matcher, literalMustMatch } = resolvePathspec(opts.paths);
+  const source = await pathSourceFor(ctx, opts.source ?? INDEX_SOURCE);
+  const { matcher, literalMustMatch, literalSpellings } = resolvePathspec(opts.paths);
 
   // Enumerate the source's flat path universe so globs (`*.ts`,
   // `src/**`) can be expanded into a concrete `pathSet` for the
@@ -214,7 +331,7 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
   // path). For `source: 'HEAD'` or an ObjectId, walk the tree once.
   const universe: ReadonlyArray<FilePath> = await enumerateSourcePaths(ctx, source);
   const matched = universe.filter((p) => matchesPathspec(matcher, p));
-  enforceLiteralMustMatch(literalMustMatch, matched);
+  enforceLiteralMustMatch(literalMustMatch, matched, literalSpellings);
   const pathSet = new Set<FilePath>(matched);
 
   // Glob with zero matches → no-op (literals already threw above).
@@ -232,9 +349,9 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
   // - 'HEAD' | ObjectId: commits the index. Lock-first ordering applies,
   //  same as.2/13.3 reset paths.
   const materializeResult =
-    source === 'index'
+    source === undefined
       ? await materializePathRestoreLockless(ctx, pathSet)
-      : await materializePathRestoreLocked(ctx, await resolvePathSource(ctx, source), pathSet);
+      : await materializePathRestoreLocked(ctx, source, pathSet);
 
   // HEAD unchanged. Resolve current HEAD for the result.
   const head = await resolveRef(ctx, 'HEAD' as RefName);
@@ -275,16 +392,17 @@ const materializePathRestoreLockless = async (
 
 const materializePathRestoreLocked = async (
   ctx: Context,
-  targetTree: ObjectId,
+  source: PathSource,
   pathSet: ReadonlySet<FilePath>,
 ): Promise<Awaited<ReturnType<typeof materializeTree>>> => {
   const lock = await acquireIndexLock(ctx);
   try {
     const currentIndex = await readIndex(ctx);
     const result = await materializeTree(ctx, {
-      targetTree,
+      targetTree: source.tree,
       currentIndex,
       force: true,
+      checkoutMetadata: source.metadata,
       // Path-restore from `HEAD` / ObjectId is the explicit
       // "give me this version" operation — canonical git always writes
       // the source content even when the index already records it (so
@@ -318,26 +436,38 @@ const materializePathRestoreLocked = async (
 // full list.
 const enumerateSourcePaths = async (
   ctx: Context,
-  source: 'index' | 'HEAD' | ObjectId,
+  source: PathSource | undefined,
 ): Promise<ReadonlyArray<FilePath>> => {
-  if (source === 'index') {
+  if (source === undefined) {
     const index = await readIndex(ctx);
     return index.entries.map((e) => e.path);
   }
-  const treeId = await resolvePathSource(ctx, source);
   const paths: FilePath[] = [];
-  for await (const entry of walkTree(ctx, treeId)) {
+  for await (const entry of walkTree(ctx, source.tree)) {
     // Stryker disable next-line ConditionalExpression: equivalent — directory entries in the universe are unobservable: materializeTree filters DIRECTORY modes itself and matches by exact path, and any pathspec matching a directory also matches its (non-empty) descendant files.
     if (entry.mode !== FILE_MODE.DIRECTORY) paths.push(entry.path);
   }
   return paths;
 };
 
-export const checkout = async (ctx: Context, opts: CheckoutOptions): Promise<CheckoutResult> => {
+export const checkout = (ctx: Context, opts: CheckoutOptions): Promise<CheckoutResult> =>
+  withFilterProcessPool(ctx, () => checkoutInScope(ctx, opts));
+
+const checkoutInScope = async (ctx: Context, opts: CheckoutOptions): Promise<CheckoutResult> => {
   await assertOperationalRepository(ctx);
   requireWorkTree(ctx, 'checkout');
-  await assertNoPendingOperation(ctx);
+  assertSingleCheckoutMode(opts);
 
+  ctx.progress.start(CHECKOUT_MATERIALIZE_OP);
+  try {
+    return isPaths(opts) ? await pathRestore(ctx, opts) : await switchBranch(ctx, opts);
+  } finally {
+    ctx.progress.end(CHECKOUT_MATERIALIZE_OP);
+  }
+};
+
+/** Refuses `rev` with `paths`, or neither. */
+const assertSingleCheckoutMode = (opts: CheckoutOptions): void => {
   const switchMode = isSwitch(opts);
   const pathsMode = isPaths(opts);
   if (switchMode && pathsMode) {
@@ -345,14 +475,5 @@ export const checkout = async (ctx: Context, opts: CheckoutOptions): Promise<Che
   }
   if (!switchMode && !pathsMode) {
     throw invalidOption('rev', 'either rev or paths must be provided');
-  }
-
-  ctx.progress.start(CHECKOUT_MATERIALIZE_OP);
-  try {
-    return pathsMode
-      ? await pathRestore(ctx, opts)
-      : await switchBranch(ctx, opts as CheckoutSwitchOptions);
-  } finally {
-    ctx.progress.end(CHECKOUT_MATERIALIZE_OP);
   }
 };

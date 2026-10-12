@@ -9,9 +9,8 @@
  *
  * The proof is CROSS-ADAPTER ONLY: it does not verify faithfulness against
  * real git (that is the job of filter-clean-smudge-interop.test.ts and
- * diff-textconv-interop.test.ts). It proves the `ctx.command !== undefined`
- * guard fires correctly on every chokepoint so that repos without a runner are
- * inert and never throw.
+ * diff-textconv-interop.test.ts). It proves every chokepoint treats an
+ * optional driver a runner-less repo cannot start as inert: it never throws.
  *
  * No real `git` binary is needed — the test is pure in-memory for memory
  * adapter and uses a local tmp dir (no spawned git) for node adapter.
@@ -58,13 +57,15 @@ const AUTHOR: AuthorIdentity = {
 const GITATTRIBUTES = '*.bin filter=lfs diff=lfs\n';
 
 /**
- * Git config that wires a clean and smudge driver under [filter "lfs"].
- * The driver commands would require `git-lfs` to be installed; without a
- * CommandRunner wired on the Context, the config section is irrelevant — the
- * inert fallback fires before any driver lookup.
+ * Git config that wires an optional clean and smudge driver under
+ * [filter "lfs"]. The driver commands would require `git-lfs` to be
+ * installed; without a CommandRunner wired on the Context the driver cannot
+ * start, and an optional driver that cannot start leaves the bytes as stored.
+ * A required one refuses instead, as git does — proved by the clean/smudge
+ * interop suite.
  */
 const GIT_CONFIG =
-  '[filter "lfs"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n\trequired = true\n';
+  '[filter "lfs"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n';
 
 const RAW_CONTENT_V1 = 'hello lfs content\n';
 const RAW_CONTENT_V2 = 'updated lfs content\n';

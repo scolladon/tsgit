@@ -14,64 +14,116 @@ import {
 } from '../../../domain/objects/index.js';
 import { refCandidates } from '../../../domain/refs/index.js';
 import type { Context } from '../../../ports/context.js';
-import { resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
-import { resolveRefOrMissing } from '../../primitives/resolve-ref.js';
+import { type CandidateFilter, resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
+import { type RefCandidateOutcome, readRefCandidate } from '../../primitives/resolve-ref.js';
+import { branchMarkRef } from './branch-mark.js';
+import { nthPriorCheckout } from './prior-checkout.js';
+import {
+  expandRef,
+  resolveRefLadder,
+  resolveSubstitutedRefLadder,
+  warnIfRefNamesObjectId,
+} from './refname-ambiguity.js';
+
+const MARK_OPENER = '@{';
 
 /**
- * The first candidate in `names` that resolves, or `undefined`. Never peels:
- * git's plain `get_oid` hands back an annotated tag's own id, and only a
- * commit-ish argument asks for more. A candidate that fails for any OTHER
- * reason — a dangling or broken ref — is skipped just as `expand_ref` skips
- * it, rather than failing the whole resolution.
+ * One candidate as `expand_ref` reads it. Never peels: git's plain `get_oid`
+ * hands back an annotated tag's own id, and only a commit-ish argument asks
+ * for more. A dangling or broken candidate is skipped, not a failure.
  */
-const firstResolving = async (
-  ctx: Context,
-  names: ReadonlyArray<RefName | 'HEAD'>,
-): Promise<ObjectId | undefined> => {
-  for (const candidate of names) {
-    try {
-      const id = await resolveRefOrMissing(ctx, candidate);
-      if (id !== undefined) return id;
-    } catch {
-      // Not this candidate — fall through to the next namespace.
-    }
-  }
-  return undefined;
-};
+const resolveCandidate =
+  (ctx: Context) =>
+  (candidate: RefName | 'HEAD'): Promise<RefCandidateOutcome> =>
+    readRefCandidate(ctx, candidate);
 
 /**
  * `name` as an object id: a full-width oid wins over a same-named ref (git
  * resolves an object name first), then the ref ladder, then an abbreviated
  * oid — which still throws `AMBIGUOUS_OID_PREFIX` when the prefix matches
- * more than one object. `undefined` when nothing matches.
+ * more than one object `accepts` cannot tell apart. `undefined` when nothing matches.
  */
 export const resolveRevisionName = async (
   ctx: Context,
   name: string,
+  accepts?: CandidateFilter,
 ): Promise<ObjectId | undefined> => {
-  if (isOid(name, ctx.hashConfig)) return ObjectIdFactory.from(name);
-  const byRef = await firstResolving(ctx, refCandidates(name));
+  if (isOid(name, ctx.hashConfig)) {
+    await warnIfRefNamesObjectId(ctx, name, resolveCandidate(ctx));
+    return ObjectIdFactory.from(name);
+  }
+  const prior = await nthPriorCheckout(ctx, name);
+  if (prior !== undefined) return resolvePriorCheckout(ctx, name, prior);
+  const marked = name.includes(MARK_OPENER) ? await branchMarkRef(ctx, name) : undefined;
+  if (marked !== undefined) {
+    return resolveSubstitutedRefLadder(ctx, name, marked, resolveCandidate(ctx));
+  }
+  const byRef = await resolveRefLadder(ctx, name, resolveCandidate(ctx));
   if (byRef !== undefined) return byRef;
-  return resolveOidPrefix(ctx, name);
+  return resolveOidPrefix(ctx, name, accepts);
 };
+
+/** git's `get_oid_basic` over `@{-<n>}`: a detached prior checkout is its
+ *  object id; a branch is read through the ref ladder alone, never as an
+ *  abbreviated object id. */
+const resolvePriorCheckout = (
+  ctx: Context,
+  name: string,
+  prior: string,
+): Promise<ObjectId | undefined> => {
+  if (isOid(prior, ctx.hashConfig)) return Promise.resolve(ObjectIdFactory.from(prior));
+  return resolveSubstitutedRefLadder(ctx, name, prior, resolveCandidate(ctx));
+};
+
+/** git's `substitute_branch_name` before `dwim_ref`: a branch mark spelt as the ref it names. */
+const substituteBranchMark = async (ctx: Context, name: string): Promise<string> =>
+  name.includes(MARK_OPENER) ? ((await branchMarkRef(ctx, name)) ?? name) : name;
 
 /**
  * Every object id `name`'s candidate namespaces resolve to, in ladder order —
- * git's `dwim_ref` count. Reading them all is what `dwim_ref` does too; only
- * `branch`'s start point consults the count, and it refuses more than one.
+ * git's `dwim_ref` count. Only `branch`'s start point consults the count, and
+ * it refuses more than one.
  */
 export const resolvingCandidates = async (
   ctx: Context,
   name: string,
-): Promise<ReadonlyArray<ObjectId>> => {
-  const found: ObjectId[] = [];
-  for (const candidate of refCandidates(name)) {
-    try {
-      const id = await resolveRefOrMissing(ctx, candidate);
-      if (id !== undefined) found.push(id);
-    } catch {
-      // A dangling or broken candidate is skipped, as `expand_ref` skips it.
-    }
+): Promise<ReadonlyArray<ObjectId>> =>
+  (await expandRef(ctx, await substituteBranchMark(ctx, name), resolveCandidate(ctx))).map(
+    (found) => found.id,
+  );
+
+/** Every real ref `name`'s candidate namespaces resolve to, in ladder order — the
+ *  `dwim_ref` count whose single answer `set_merge` keeps. */
+export const resolvingCandidateRefs = async (
+  ctx: Context,
+  name: string,
+): Promise<ReadonlyArray<RefName>> =>
+  (await expandRef(ctx, await substituteBranchMark(ctx, name), resolveCandidate(ctx))).map(
+    (found) => found.ref,
+  );
+
+/** git's `dwim_ref` as a command's own call reads it: the first namespace's
+ *  unpeeled object id and the ref it ends at, warning on each skipped namespace. */
+export const dwimRefWarning = async (
+  ctx: Context,
+  name: string,
+): Promise<{ readonly id: ObjectId; readonly ref: RefName } | undefined> =>
+  (await expandRef(ctx, await substituteBranchMark(ctx, name), resolveCandidate(ctx)))[0];
+
+/** git's `dwim_ref` real ref as a command's own `dwim_ref` call reads it, warning on each skipped namespace. */
+export const dwimRefNameWarning = async (
+  ctx: Context,
+  name: string,
+): Promise<RefName | undefined> =>
+  (await expandRef(ctx, await substituteBranchMark(ctx, name), resolveCandidate(ctx)))[0]?.ref;
+
+/** git's `dwim_ref` real ref: the first candidate namespace `name` resolves in,
+ *  symbolic refs followed to the ref they end at. A dangling or broken
+ *  candidate is skipped; this read is quiet, the counting one warns. */
+export const dwimRefName = async (ctx: Context, name: string): Promise<RefName | undefined> => {
+  for (const candidate of refCandidates(await substituteBranchMark(ctx, name))) {
+    const outcome = await readRefCandidate(ctx, candidate);
+    if (outcome.kind === 'found') return outcome.ref;
   }
-  return found;
+  return undefined;
 };

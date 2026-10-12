@@ -82,6 +82,22 @@ describe('compileSparseRule', () => {
     });
   });
 
+  describe('Given "/a**b", a star run inside one component', () => {
+    describe('When compiled', () => {
+      it('Then the run stays within the component, as git matches it under WM_PATHNAME', () => {
+        // Arrange
+        const sut = rule;
+
+        // Act
+        const result = sut('/a**b');
+
+        // Assert
+        expect(result.matcher.test('axb')).toBe(true);
+        expect(result.matcher.test('a/b')).toBe(false);
+      });
+    });
+  });
+
   describe('Given a "?"-wildcard last segment', () => {
     describe('When compiled', () => {
       it('Then it is non-recursive', () => {

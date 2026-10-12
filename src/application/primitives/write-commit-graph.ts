@@ -2,70 +2,235 @@
  * Writes `objects/info/commit-graph`, byte-identical to
  * `git commit-graph write --reachable` for the same commit set. Sources
  * commits from every resolvable REF (`--reachable`'s root set, distinct
- * from `gc`'s `HEAD + index + reflogs` retention roots) via `walkCommits` — never from an existing graph, corrupt or not, which
- * would encode a stale generation set instead of a fresh one.
+ * from `gc`'s `HEAD + index + reflogs` retention roots) through git's parse
+ * passes, each commit read from its object — never from an existing graph,
+ * corrupt or not, which would encode a stale generation set instead of a fresh
+ * one.
  *
  * @writes
  *   surface: commitGraph
  *   kind:    byte-identical
  *   format:  commit-graph-v1
  */
+import type { BloomFilterSettings } from '../../domain/commit/bloom-filter.js';
 import {
+  type CommitGraphBase,
+  type CommitGraphChangedPaths,
+  type CommitGraphGeneration,
   type CommitGraphWriterCommit,
+  type CorrectedDatePass,
+  computeCommitGraphGenerations,
+  EMPTY_COMMIT_GRAPH_BASE,
   serializeCommitGraph,
 } from '../../domain/commit/commit-graph-writer.js';
 import { TsgitError } from '../../domain/error.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { atomicWriteFile } from './atomic-write.js';
 import { enumerateRefs } from './enumerate-refs.js';
+import {
+  changedPathFilters,
+  type NewFilterBudget,
+  storedFilterLookup,
+} from './internal/changed-path-filters.js';
+import {
+  type ChangedPathsRequest,
+  resolveChangedPathsSettings,
+} from './internal/changed-paths-settings.js';
+import {
+  hasGrafts,
+  unsupportedChangedPathsVersion,
+  unsupportedChangedPathsWarning,
+} from './internal/commit-graph-compatible.js';
+import {
+  closeReachable,
+  copyOidsToCommits,
+  createCommitGraphParser,
+  parsedForWrite,
+  refusalFor,
+  rootCommits,
+  type UnparsedRefusal,
+} from './internal/commit-graph-passes.js';
+import { correctedDatePass } from './internal/corrected-date-pass.js';
+import { isAbsent, removeIfPresent } from './internal/fs-probes.js';
+import {
+  type LocalGraphLayer,
+  loadCommitGraphBaseLayers,
+} from './internal/local-commit-graph-layers.js';
+import { peel } from './internal/peel.js';
 import { isShallowRepository } from './internal/shallow-set.js';
-import { commitGraphPath, commonGitDir } from './path-layout.js';
-import { resolveRef } from './resolve-ref.js';
-import { walkCommits } from './walk-commits.js';
+import {
+  commitGraphChainPath,
+  commitGraphLayersDir,
+  commitGraphPath,
+  commonGitDir,
+} from './path-layout.js';
+import { resolveRefForReading } from './resolve-ref.js';
 
 export interface WriteCommitGraphResult {
   readonly commitCount: number;
 }
 
-const commitGraphLocked = (lockPath: string): TsgitError =>
+/** git creates every commit-graph file — single file, layer, chain — read-only. */
+export const COMMIT_GRAPH_FILE_MODE = 0o444;
+
+/**
+ * A read-only target cannot be renamed over on Windows; git for Windows
+ * clears the bit before replacing, and so does this, before every rewrite.
+ */
+export async function makeReplaceable(ctx: Context, path: string): Promise<void> {
+  try {
+    await ctx.fs.chmod(path, WRITABLE_FILE_MODE);
+  } catch (error) {
+    if (errorDataCode(error) !== 'FILE_NOT_FOUND') throw error;
+  }
+}
+
+const WRITABLE_FILE_MODE = 0o644;
+
+export const commitGraphLocked = (lockPath: string): TsgitError =>
   new TsgitError({ code: 'RESOURCE_LOCKED', resource: 'commit-graph', path: lockPath });
 
 /**
- * Every ref's peeled target (annotated tags follow through to the tagged
- * object, matching `--reachable`) — refs-only, not gc's wider retention
- * roots. An unresolvable ref (unborn HEAD, a dangling symref) roots
- * nothing rather than failing the whole write, mirroring fsck's own
- * `addRefRoots` tolerance for the same conditions.
+ * git's `add_ref_to_set` over `refs_for_each_ref`: every ref peeled through
+ * its tags (matching `--reachable`) that names a commit — refs-only, not
+ * gc's wider retention roots. A ref that does not resolve for reading
+ * (garbage, a dangling symref) is skipped by the iterator; a tag chain that
+ * does not peel leaves the tag, never a commit. Any other failure propagates.
  */
-async function commitGraphRoots(ctx: Context): Promise<readonly ObjectId[]> {
+export async function commitGraphRoots(ctx: Context): Promise<readonly ObjectId[]> {
   const refNames = await enumerateRefs(ctx);
   const roots = new Set<ObjectId>();
   for (const name of refNames) {
-    try {
-      roots.add(await resolveRef(ctx, name, { peel: true }));
-    } catch {
-      // Unresolvable ref — tolerated, roots nothing.
-    }
+    const id = await resolveRefForReading(ctx, name);
+    const root = id === undefined ? undefined : await peeledCommit(ctx, id);
+    if (root !== undefined) roots.add(root);
   }
   return [...roots];
 }
 
+/** Failures that leave a ref naming no commit: a missing or non-commit end, a tag that does not parse. */
+const NO_COMMIT_CODES: ReadonlySet<string> = new Set([
+  'OBJECT_NOT_FOUND',
+  'INVALID_OBJECT_ID',
+  'INVALID_TAG',
+]);
+
+const peeledCommit = async (ctx: Context, id: ObjectId): Promise<ObjectId | undefined> => {
+  try {
+    return await peel(ctx, undefined, id, 'commit');
+  } catch (error) {
+    // Stryker disable next-line StringLiteral: equivalent — the fallback only stands for an absent code and no member of NO_COMMIT_CODES is the empty string or any other literal
+    if (NO_COMMIT_CODES.has(errorDataCode(error) ?? '')) return undefined;
+    throw error;
+  }
+};
+
+const NOT_IN_GRAPH = (): boolean => false;
+
+interface ParsedGraphCommits {
+  readonly commits: readonly CommitGraphWriterCommit[];
+  readonly generations: ReadonlyMap<ObjectId, CommitGraphGeneration>;
+}
+
+/**
+ * git's non-split passes, each commit parsed without the graph: the reachable
+ * closure, its copy in byte order, both generation walks, then the entry
+ * write that refuses the first commit that did not parse.
+ */
 async function collectCommits(
   ctx: Context,
   roots: readonly ObjectId[],
-): Promise<CommitGraphWriterCommit[]> {
-  const commits: CommitGraphWriterCommit[] = [];
-  if (roots.length === 0) return commits;
-  for await (const commit of walkCommits(ctx, { from: roots })) {
-    commits.push({
-      id: commit.id,
-      rootTree: commit.data.tree,
-      parents: commit.data.parents,
-      committerDate: commit.data.committer.timestamp,
-    });
+  pass: CorrectedDatePass,
+  refuse: UnparsedRefusal,
+): Promise<ParsedGraphCommits> {
+  const parser = createCommitGraphParser(ctx);
+  const closed = await closeReachable(parser, await rootCommits(parser, roots), NOT_IN_GRAPH);
+  const order = await copyOidsToCommits(parser, closed, NOT_IN_GRAPH);
+  const generations = computeCommitGraphGenerations(order, EMPTY_COMMIT_GRAPH_BASE, parser, pass);
+  return { commits: parsedForWrite(parser, order, refuse), generations };
+}
+
+/** Warns and answers true when git would decline the write on the version alone. */
+export async function declinesChangedPathsVersion(ctx: Context): Promise<boolean> {
+  const unsupported = await unsupportedChangedPathsVersion(ctx);
+  if (unsupported === undefined) return false;
+  ctx.logger?.warn?.(unsupportedChangedPathsWarning(unsupported));
+  return true;
+}
+
+/** The Bloom filter settings a write carries, from the existing graph's top layer — `undefined` when it carries none. */
+export function changedPathsSettingsFor(
+  ctx: Context,
+  layers: readonly LocalGraphLayer[],
+  request: ChangedPathsRequest,
+): Promise<BloomFilterSettings | undefined> {
+  return resolveChangedPathsSettings(ctx, layers.at(-1)?.layer.bloomSettings, request);
+}
+
+/** The Bloom filters a write carries under `settings`, the existing graph's stored filters reused. */
+export async function changedPathsFor(
+  ctx: Context,
+  commits: readonly CommitGraphWriterCommit[],
+  layers: readonly LocalGraphLayer[],
+  settings: BloomFilterSettings | undefined,
+  budget?: NewFilterBudget,
+): Promise<CommitGraphChangedPaths | undefined> {
+  if (settings === undefined) return undefined;
+  const stored = storedFilterLookup(layers, settings);
+  return { settings, filters: await changedPathFilters(ctx, commits, settings, stored, budget) };
+}
+
+/**
+ * git's `write_commit_graph_file`: the serialized graph, closed by the checksum
+ * of every byte before it — the digest that also names a chain layer.
+ */
+export async function serializeCommitGraphFile(
+  ctx: Context,
+  commits: readonly CommitGraphWriterCommit[],
+  base: CommitGraphBase,
+  changedPaths: CommitGraphChangedPaths | undefined,
+  generations: ReadonlyMap<ObjectId, CommitGraphGeneration>,
+  pass: CorrectedDatePass,
+): Promise<{ readonly bytes: Uint8Array; readonly digest: Uint8Array }> {
+  const bytes = serializeCommitGraph(
+    commits,
+    ctx.hashConfig,
+    base,
+    changedPaths,
+    generations,
+    pass,
+  );
+  const trailerStart = bytes.length - ctx.hashConfig.digestLength;
+  const digest = await ctx.hash.hash(bytes.subarray(0, trailerStart));
+  bytes.set(digest, trailerStart);
+  return { bytes, digest };
+}
+
+export const GRAPH_LAYER_SUFFIX = '.graph';
+
+async function chainLayerNames(ctx: Context, layersDir: string): Promise<readonly string[]> {
+  try {
+    const entries = await ctx.fs.readdir(layersDir);
+    return entries.filter((entry) => entry.name.endsWith(GRAPH_LAYER_SUFFIX)).map((e) => e.name);
+  } catch (error) {
+    if (isAbsent(error)) return [];
+    throw error;
   }
-  return commits;
+}
+
+/**
+ * git's `expire_commit_graphs` after a non-split write: the single file now
+ * answers every lookup, so the chain manifest and every layer go.
+ */
+async function expireCommitGraphChain(ctx: Context): Promise<void> {
+  const gitDir = commonGitDir(ctx);
+  await removeIfPresent(ctx.fs, commitGraphChainPath(gitDir));
+  const layersDir = commitGraphLayersDir(gitDir);
+  for (const name of await chainLayerNames(ctx, layersDir)) {
+    await removeIfPresent(ctx.fs, `${layersDir}/${name}`);
+  }
 }
 
 /**
@@ -76,22 +241,34 @@ async function collectCommits(
  * generation-number invariant the graph format itself relies on unsound
  * (a shallow commit's true depth from its full history is unknown). This
  * is checked BEFORE the walk, not after, since a shallow repository never
- * needs one.
+ * needs one. A registered graft refuses the write likewise. Changed-path
+ * Bloom filters are written when the existing graph carries them, as `gc`'s
+ * in-process write keeps them.
  */
 export async function writeCommitGraph(ctx: Context): Promise<WriteCommitGraphResult> {
   if (await isShallowRepository(ctx)) return { commitCount: 0 };
+  if (await hasGrafts(ctx)) return { commitCount: 0 };
+  if (await declinesChangedPathsVersion(ctx)) return { commitCount: 0 };
 
   const roots = await commitGraphRoots(ctx);
-  const commits = await collectCommits(ctx, roots);
+  const layers = await loadCommitGraphBaseLayers(ctx);
+  const pass = await correctedDatePass(ctx, layers, []);
+  const settings = await changedPathsSettingsFor(ctx, layers, 'preserve');
+  const { commits, generations } = await collectCommits(ctx, roots, pass, refusalFor(settings));
   if (commits.length === 0) return { commitCount: 0 };
 
-  const bytes = serializeCommitGraph(commits, ctx.hashConfig);
-  const trailerStart = bytes.length - ctx.hashConfig.digestLength;
-  const digest = await ctx.hash.hash(bytes.subarray(0, trailerStart));
-  bytes.set(digest, trailerStart);
-
-  const path = commitGraphPath(commonGitDir(ctx));
-  await atomicWriteFile(ctx, path, bytes, commitGraphLocked);
-
+  const changedPaths = await changedPathsFor(ctx, commits, layers, settings);
+  const base = EMPTY_COMMIT_GRAPH_BASE;
+  const graph = await serializeCommitGraphFile(ctx, commits, base, changedPaths, generations, pass);
+  await replaceCommitGraphFile(ctx, graph.bytes);
   return { commitCount: commits.length };
+}
+
+/** Replace `objects/info/commit-graph` with `bytes`, then expire any split chain it supersedes. */
+async function replaceCommitGraphFile(ctx: Context, bytes: Uint8Array): Promise<void> {
+  const path = commitGraphPath(commonGitDir(ctx));
+  await makeReplaceable(ctx, path);
+  await atomicWriteFile(ctx, path, bytes, commitGraphLocked);
+  await ctx.fs.chmod(path, COMMIT_GRAPH_FILE_MODE);
+  await expireCommitGraphChain(ctx);
 }

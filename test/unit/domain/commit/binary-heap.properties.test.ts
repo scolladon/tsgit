@@ -21,7 +21,7 @@ const entriesArb: fc.Arbitrary<Entry[]> = fc
   .array(orderedArb, { maxLength: 12 })
   .map((rows) => rows.map((row, index) => ({ ...row, value: index })));
 
-/** Mirrors priority-queue's `precedes`: newest date first, oid-ascending on equal dates. */
+/** Newest date first, oid-ascending on equal dates. */
 const less = (a: Entry, b: Entry): boolean =>
   a.date > b.date || (a.date === b.date && a.oid < b.oid);
 

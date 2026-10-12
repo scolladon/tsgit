@@ -1,10 +1,12 @@
 import type { RenameDetectOptions, StatTreeDiff, TreeDiff } from '../../domain/diff/index.js';
+import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context, RepositoryConfig } from '../../ports/context.js';
 import { diffTrees } from '../primitives/diff-trees.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
+import { createObjectTypeTable } from '../primitives/internal/object-type-table.js';
 import type { DiffTreesOptions } from '../primitives/types.js';
-import { assertOperationalRepository } from './internal/repo-state.js';
-import { resolveTreeish } from './internal/resolve-rev.js';
+import { assertOperationalRepositorySettingsFirst } from './internal/repo-state.js';
+import { peelToTree, resolveReference } from './internal/resolve-rev.js';
 
 export interface DiffOptions {
   /** Resolve to a tree. Accepts any revision (ref, oid, `HEAD`, `~`/`^` grammar). */
@@ -54,13 +56,24 @@ export interface DiffOptions {
 export function diff(ctx: Context, opts: DiffOptions & { withStat: true }): Promise<StatTreeDiff>;
 export function diff(ctx: Context, opts?: DiffOptions): Promise<TreeDiff>;
 export async function diff(ctx: Context, opts: DiffOptions = {}): Promise<TreeDiff | StatTreeDiff> {
-  await assertOperationalRepository(ctx);
-  const from = await resolveTreeish(ctx, opts.from ?? 'HEAD');
-  const to = opts.to !== undefined ? await resolveTreeish(ctx, opts.to) : undefined;
+  await assertOperationalRepositorySettingsFirst(ctx);
+  const { from, to } = await resolveSides(ctx, opts);
   // Promisor-remote guard (see assertValidPromisorRemoteConfig) — after rev resolution.
   await assertValidPromisorRemoteConfig(ctx);
   const treeOptions = resolveDiffOptions(opts, ctx.config);
   return diffTrees(ctx, from, to, treeOptions);
+}
+
+/** git's `setup_revisions`: each expression parsed into the invocation's table, in order, before either is peeled. */
+async function resolveSides(
+  ctx: Context,
+  opts: DiffOptions,
+): Promise<{ readonly from: ObjectId; readonly to: ObjectId | undefined }> {
+  const table = createObjectTypeTable();
+  const fromId = await resolveReference(ctx, table, opts.from ?? 'HEAD');
+  const toId = opts.to === undefined ? undefined : await resolveReference(ctx, table, opts.to);
+  const from = await peelToTree(ctx, table, fromId);
+  return { from, to: toId === undefined ? undefined : await peelToTree(ctx, table, toId) };
 }
 
 function resolveDiffOptions(

@@ -18,6 +18,7 @@ import {
 import { TsgitError } from '../../domain/error.js';
 import type { FsckConfiguredSeverity } from '../../domain/fsck/index.js';
 import { CONFIGURABLE_MSG_IDS, FATAL_MSG_IDS, parseFsckSeverity } from '../../domain/fsck/index.js';
+import { parseDisambiguationHint } from '../../domain/objects/disambiguation-hint.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { ReflogExpiryConfigEntry } from '../../domain/reflog/expire-policy.js';
 import type { Context } from '../../ports/context.js';
@@ -61,6 +62,8 @@ export interface ParsedConfig {
     readonly notesRef?: string;
     readonly sparseCheckout?: boolean;
     readonly sparseCheckoutCone?: boolean;
+    /** `core.ignoreCase` — path comparisons fold ASCII case (git's `ignore_case`). */
+    readonly ignoreCase?: boolean;
     readonly looseCompression?: number;
     /** `core.maxTreeDepth` — max tree-recursion depth; git defaults to 2048 when unset. */
     readonly maxTreeDepth?: number;
@@ -92,6 +95,13 @@ export interface ParsedConfig {
      * the caller, not here.
      */
     readonly bigFileThreshold?: number;
+    /**
+     * `core.abbrev` — `auto`, `full` (a false-boolean text: git abbreviates to
+     * the whole hex length), or an explicit length of at least 4 that the
+     * caller clamps to its hash width. Absent when unset or unusable
+     * (lenient read); `assertValidAbbrevConfig` refuses an unusable value.
+     */
+    readonly abbrev?: 'auto' | 'full' | number;
   };
   readonly user?: { readonly name?: string; readonly email?: string; readonly signingKey?: string };
   readonly remote?: ReadonlyMap<
@@ -115,7 +125,10 @@ export interface ParsedConfig {
     string,
     {
       readonly remote?: string;
+      /** The first `branch.<name>.merge` value — the upstream git's `branch_get_upstream` reads. */
       readonly merge?: string;
+      /** Every `branch.<name>.merge` value, in config order — git merges them all. */
+      readonly merges?: ReadonlyArray<string>;
       /** `branch.<name>.pushRemote` — overrides the push-remote for this branch. */
       readonly pushRemote?: string;
     }
@@ -159,10 +172,13 @@ export interface ParsedConfig {
    * many recent objects the delta selector considers as bases (git default
    * `10`). `depth` bounds the longest delta chain the writer builds (git
    * default `50`). `windowMemory` bounds the window's total resident size in
-   * bytes; unset or `0` means unlimited (git default).
+   * bytes; unset or `0` means unlimited (git default). `useSparse` marks a
+   * `pack-objects --revs` excluded side only along the paths both sides hold
+   * (git default `true`).
    */
   readonly pack?: {
     readonly writeReverseIndex?: boolean;
+    readonly useSparse?: boolean;
     readonly window?: number;
     readonly depth?: number;
     readonly windowMemory?: number;
@@ -170,13 +186,15 @@ export interface ParsedConfig {
   /**
    * `[gc]` — maintenance's `gc` task settings. `auto` (git default `6700`) is
    * consulted only under `auto: true`; `pruneExpire` (git default
-   * `2.weeks.ago`) is the raw config string, resolved by `expiryCutoff`;
+   * `2.weeks.ago`) is the raw config string, resolved by `configExpiryCutoff`;
    * `cruftPacks` (git default `true`) routes surviving unreachable objects
    * to a cruft pack rather than loose files.
    */
   readonly gc?: {
     readonly auto?: number;
     readonly pruneExpire?: string;
+    /** `gc.worktreePruneExpire` (git default `3.months.ago`) — raw, resolved by `configExpiryCutoff`. */
+    readonly worktreePruneExpire?: string;
     readonly cruftPacks?: boolean;
   };
   readonly push?: {
@@ -185,12 +203,32 @@ export interface ParsedConfig {
     /** `push.default` — canonicalized push remote-selection mode (`tracking` maps to `upstream`). */
     readonly default?: PushDefaultMode;
   };
+  /** `[mailmap]` — extra mailmap sources layered on the worktree `.mailmap`. */
+  readonly mailmap?: {
+    /** `mailmap.file` — path of a mailmap file. */
+    readonly file?: string;
+    /** `mailmap.blob` — revision expression naming a mailmap blob. */
+    readonly blob?: string;
+  };
+  /** `[trailer]` — trailer parsing: the separator characters and per-token canonical keys. */
+  readonly trailer?: {
+    /** `trailer.separators` — characters accepted as the key/value separator. */
+    readonly separators?: string;
+    /** `trailer.<token>.key` — canonical key by token (subsection name, verbatim). */
+    readonly keys?: ReadonlyMap<string, string>;
+  };
   /** `[gpg]` — signing backend selection and the external program(s) invoked to sign/verify. */
   readonly gpg?: {
     readonly format?: 'openpgp' | 'ssh' | 'x509';
     readonly program?: string;
     /** `gpg.ssh.program` — the `ssh-keygen`-compatible binary used for `gpg.format = ssh`. */
-    readonly ssh?: { readonly program?: string };
+    readonly ssh?: {
+      readonly program?: string;
+      /** `gpg.ssh.allowedSignersFile` — signers file consulted when verifying SSH signatures. */
+      readonly allowedSignersFile?: string;
+      /** `gpg.ssh.revocationFile` — revoked-keys file consulted when verifying SSH signatures. */
+      readonly revocationFile?: string;
+    };
   };
 }
 
@@ -677,6 +715,50 @@ const matchesSection = (
 ): boolean =>
   tokenSection.toLowerCase() === section.toLowerCase() && tokenSubsection === subsection;
 
+type ConfigEntryToken = Extract<ConfigToken, { kind: 'entry' }>;
+type ConfigHeaderToken = Extract<ConfigToken, { kind: 'header' }>;
+
+/** One entry token with the subsection of the header it sits under. */
+interface SectionEntry {
+  readonly token: ConfigEntryToken;
+  readonly subsection: string | undefined;
+}
+
+/** Enters exactly `[<section> "<subsection>"]` (`undefined` ⇒ no subsection). */
+const exactSection =
+  (section: string, subsection?: string) =>
+  (header: ConfigHeaderToken): boolean =>
+    matchesSection(header.section, header.subsection, section, subsection);
+
+/** Enters `[<section>]` and every `[<section> "<any>"]` (case-insensitive section). */
+const anySubsectionOf = (section: string) => {
+  const loweredSection = section.toLowerCase();
+  return (header: ConfigHeaderToken): boolean => header.section.toLowerCase() === loweredSection;
+};
+
+/**
+ * Every entry token, in file order, under a header `enters` accepts. A plain
+ * loop collecting into an array: a generator's per-token resume cost shows on
+ * every config scan of a large config.
+ */
+function sectionEntries(
+  tokens: ReadonlyArray<ConfigToken>,
+  enters: (header: ConfigHeaderToken) => boolean,
+): ReadonlyArray<SectionEntry> {
+  const entries: SectionEntry[] = [];
+  let inSection = false;
+  let subsection: string | undefined;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = enters(token);
+      subsection = token.subsection;
+      continue;
+    }
+    if (inSection && token.kind === 'entry') entries.push({ token, subsection });
+  }
+  return entries;
+}
+
 /**
  * Valueless-entry detection: scan the repo-local config and return the FIRST
  * valueless (`value === null`) entry, by config-file line, whose key
@@ -692,15 +774,35 @@ export const findFirstValuelessEntry = async (
   subsection: string | undefined,
   keys: ReadonlyArray<string>,
 ): Promise<ValuelessEntry | undefined> => {
-  const { tokens, source: path } = await readConfigEntry(ctx);
+  const { tokens, source } = await readConfigEntry(ctx);
+  return firstValuelessInTokens(tokens, source, section, subsection, keys);
+};
+
+/**
+ * `findFirstValuelessEntry` over an arbitrary config file — a non-local scope
+ * the cached local read does not cover. The caller names a file it already read.
+ */
+export const findFirstValuelessEntryAt = async (
+  ctx: Context,
+  path: string,
+  section: string,
+  subsection: string | undefined,
+  keys: ReadonlyArray<string>,
+): Promise<ValuelessEntry | undefined> => {
+  const raw = await ctx.fs.readUtf8(path);
+  return firstValuelessInTokens(tokenizeConfig(raw, path), path, section, subsection, keys);
+};
+
+const firstValuelessInTokens = (
+  tokens: ReadonlyArray<ConfigToken>,
+  path: string,
+  section: string,
+  subsection: string | undefined,
+  keys: ReadonlyArray<string>,
+): ValuelessEntry | undefined => {
   const keySet = new Set(keys.map((k) => k.toLowerCase()));
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, section, subsection);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry' || token.value !== null) continue;
+  for (const { token } of sectionEntries(tokens, exactSection(section, subsection))) {
+    if (token.value !== null) continue;
     const loweredKey = token.key.toLowerCase();
     if (!keySet.has(loweredKey)) continue;
     const loweredSection = section.toLowerCase();
@@ -737,15 +839,8 @@ export const findFirstValuelessInSection = async (
   const { tokens, source: path } = await readConfigEntry(ctx);
   const keySet = new Set(keys.map((k) => k.toLowerCase()));
   const loweredSection = section.toLowerCase();
-  let subsection: string | undefined;
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = token.section.toLowerCase() === loweredSection;
-      subsection = token.subsection;
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry' || token.value !== null) continue;
+  for (const { token, subsection } of sectionEntries(tokens, anySubsectionOf(section))) {
+    if (token.value !== null) continue;
     if (requireSubsection && subsection === undefined) continue;
     const loweredKey = token.key.toLowerCase();
     if (!keySet.has(loweredKey)) continue;
@@ -756,6 +851,105 @@ export const findFirstValuelessInSection = async (
     return { key: qualifiedKey, source: path, line: token.startLine + 1 };
   }
   return undefined;
+};
+
+/** One config entry as git's config set holds it: `value` is `null` for a valueless key. */
+export interface LocatedConfigEntry extends ValuelessEntry {
+  readonly value: string | null;
+}
+
+/**
+ * git's config-set read (`repo_config_get_*`): the LAST entry, by config-file
+ * line, of `key` (case-insensitive) under the subsectionless `[<section>]` —
+ * earlier entries are never parsed, so a malformed one followed by a valid
+ * one is inert. Returns `undefined` when the key is absent.
+ */
+export const findLastEntry = async (
+  ctx: Context,
+  section: string,
+  key: string,
+): Promise<LocatedConfigEntry | undefined> => {
+  const { tokens, source } = await readConfigEntry(ctx);
+  return lastEntryIn(tokens, source, section, key);
+};
+
+/**
+ * {@link findLastEntry} under `[<section> "<subsection>"]` — the subsection
+ * matched case-sensitively, as git matches it — keyed `<section>.<subsection>.<key>`.
+ */
+export const findLastSubsectionEntry = async (
+  ctx: Context,
+  section: string,
+  subsection: string,
+  key: string,
+): Promise<LocatedConfigEntry | undefined> => {
+  const { tokens, source } = await readConfigEntry(ctx);
+  let last: LocatedConfigEntry | undefined;
+  for (const entry of entriesIn(tokens, source, section, key, subsection)) last = entry;
+  return last;
+};
+
+/** Every entry of `key` under `[<section> "<subsection>"]`, in config-file order — git's per-entry config callback. */
+export const findSubsectionEntries = async (
+  ctx: Context,
+  section: string,
+  subsection: string,
+  key: string,
+): Promise<ReadonlyArray<LocatedConfigEntry>> => {
+  const { tokens, source } = await readConfigEntry(ctx);
+  return [...entriesIn(tokens, source, section, key, subsection)];
+};
+
+/** {@link findLastEntry} for each `[section, key]`, in order, from ONE config read. */
+export const findLastEntries = async (
+  ctx: Context,
+  keys: ReadonlyArray<readonly [section: string, key: string]>,
+): Promise<ReadonlyArray<LocatedConfigEntry | undefined>> => {
+  const { tokens, source } = await readConfigEntry(ctx);
+  return keys.map(([section, key]) => lastEntryIn(tokens, source, section, key));
+};
+
+const lastEntryIn = (
+  tokens: ReadonlyArray<ConfigToken>,
+  source: string,
+  section: string,
+  key: string,
+): LocatedConfigEntry | undefined => {
+  let last: LocatedConfigEntry | undefined;
+  for (const entry of entriesIn(tokens, source, section, key)) last = entry;
+  return last;
+};
+
+/** Every entry of `key` (case-insensitive) under `[<section>]` (or its `subsection`), in file order. */
+function* entriesIn(
+  tokens: ReadonlyArray<ConfigToken>,
+  source: string,
+  section: string,
+  key: string,
+  subsection?: string,
+): Generator<LocatedConfigEntry> {
+  const loweredKey = key.toLowerCase();
+  const qualifiedSection =
+    subsection === undefined ? section.toLowerCase() : `${section.toLowerCase()}.${subsection}`;
+  const qualifiedKey = `${qualifiedSection}.${loweredKey}`;
+  for (const { token } of sectionEntries(tokens, exactSection(section, subsection))) {
+    if (token.key.toLowerCase() !== loweredKey) continue;
+    yield { key: qualifiedKey, source, line: token.startLine + 1, value: token.value };
+  }
+}
+
+/**
+ * git's multi-valued read (`repo_config_get_value_multi`): every entry of
+ * `key` (case-insensitive) under the subsectionless `[<section>]`, in
+ * config-file order.
+ */
+export const findEntries = async (
+  ctx: Context,
+  section: string,
+  key: string,
+): Promise<ReadonlyArray<LocatedConfigEntry>> => {
+  const { tokens, source } = await readConfigEntry(ctx);
+  return [...entriesIn(tokens, source, section, key)];
 };
 
 const REFLOG_EXPIRE_SLOTS: Readonly<Record<string, 'total' | 'unreachable'>> = {
@@ -775,15 +969,7 @@ export const readReflogExpiryConfig = async (
 ): Promise<ReadonlyArray<ReflogExpiryConfigEntry>> => {
   const { tokens, source } = await readConfigEntry(ctx);
   const entries: ReflogExpiryConfigEntry[] = [];
-  let inSection = false;
-  let subsection: string | undefined;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = token.section.toLowerCase() === 'gc';
-      subsection = token.subsection;
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry') continue;
+  for (const { token, subsection } of sectionEntries(tokens, anySubsectionOf('gc'))) {
     const entry = reflogExpiryEntry(token, subsection, source);
     if (entry !== undefined) entries.push(entry);
   }
@@ -841,13 +1027,7 @@ export const findFirstInvalidCompression = async (
   ctx: Context,
 ): Promise<InvalidCompressionEntry | undefined> => {
   const { tokens, source: path } = await readConfigEntry(ctx);
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, 'core', undefined);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry') continue;
+  for (const { token } of sectionEntries(tokens, exactSection('core'))) {
     const loweredKey = token.key.toLowerCase();
     if (!COMPRESSION_KEYS.has(loweredKey)) continue;
     const qualifiedKey = `core.${loweredKey}`;
@@ -879,57 +1059,6 @@ export const findFirstInvalidCompression = async (
     }
   }
   return undefined;
-};
-
-const GC_AUTO_KEY = 'auto';
-
-/** One invalid `gc.auto` entry returned by `findFirstInvalidGcAuto`. */
-export interface InvalidGcAutoEntry {
-  readonly key: string;
-  readonly source: string;
-  readonly value: string;
-  readonly reason: 'invalid unit' | 'out of range';
-}
-
-/**
- * Cold-path detection: walk the cached `[gc]` (subsectionless) tokens in
- * file order and return the FIRST `auto` entry whose value fails git's
- * integer grammar or the C `int` range. Returns `undefined` when the key is
- * absent or its first entry is valid. Runs ONLY on a command's refusal
- * path — `readConfig` stays lenient and merges an invalid `gc.auto` as
- * absent (see `mergeGc`).
- */
-export const findFirstInvalidGcAuto = async (
-  ctx: Context,
-): Promise<InvalidGcAutoEntry | undefined> => {
-  const { tokens, source: path } = await readConfigEntry(ctx);
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, 'gc', undefined);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry') continue;
-    if (token.key.toLowerCase() !== GC_AUTO_KEY) continue;
-    const parsed = parseGitInt(token.value);
-    if (parsed.ok && parsed.value >= GIT_C_INT_MIN && parsed.value <= GIT_C_INT_MAX) continue;
-    const reason = parsed.ok ? 'out of range' : parsed.reason;
-    return { key: `gc.${GC_AUTO_KEY}`, source: path, value: token.value ?? '', reason };
-  }
-  return undefined;
-};
-
-/**
- * Refuse with `CONFIG_BAD_NUMERIC_VALUE` when `gc.auto` holds a value git's
- * integer grammar refuses — the integer sibling of `assertValidBooleanConfig`,
- * same eager-gate posture `pack.writeReverseIndex` established: a refused
- * value must never be silently read back as absent-and-defaulted.
- */
-export const assertValidGcAutoConfig = async (ctx: Context): Promise<void> => {
-  const found = await findFirstInvalidGcAuto(ctx);
-  if (found !== undefined) {
-    throw configBadNumericValue(found.key, found.source, found.value, found.reason);
-  }
 };
 
 /** The `fsck.skipList` key is not a msg-id — it names an object-name list
@@ -980,15 +1109,7 @@ function* walkFsckEntries(
   tokens: ReadonlyArray<ConfigToken>,
   source: string,
 ): Generator<FsckConfigItem> {
-  let inSection = false;
-  let subsection: string | undefined;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = token.section.toLowerCase() === FSCK_SECTION;
-      subsection = token.subsection;
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry') continue;
+  for (const { token, subsection } of sectionEntries(tokens, anySubsectionOf(FSCK_SECTION))) {
     yield gradeFsckEntry(composeFsckMsgId(subsection, token.key), token, source);
   }
 }
@@ -1065,13 +1186,7 @@ export const findFirstInvalidPackInt = async (
   ctx: Context,
 ): Promise<InvalidPackIntEntry | undefined> => {
   const { tokens, source: path } = await readConfigEntry(ctx);
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, 'pack', undefined);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry') continue;
+  for (const { token } of sectionEntries(tokens, exactSection('pack'))) {
     const lowered = token.key.toLowerCase();
     const check = packIntChecker(lowered);
     if (check === undefined) continue;
@@ -1090,7 +1205,7 @@ export const findFirstInvalidPackInt = async (
 /**
  * Refuse with `CONFIG_BAD_NUMERIC_VALUE` when `pack.window`, `pack.depth` or
  * `pack.windowMemory` holds a value git's integer grammar (or that key's own
- * range) refuses — the pack-config sibling of `assertValidGcAutoConfig`.
+ * range) refuses — the pack-config sibling of `assertValidGcNumberConfig`.
  */
 export const assertValidPackIntConfig = async (ctx: Context): Promise<void> => {
   const found = await findFirstInvalidPackInt(ctx);
@@ -1126,113 +1241,124 @@ export interface InvalidNumericEntry {
  * line regardless of what follows it. Returns `undefined` when the key is
  * absent or its last entry is valid. Runs ONLY on a command's refusal path.
  */
-export const findLastInvalidMaxTreeDepth = async (
+export const findLastInvalidMaxTreeDepth = (
   ctx: Context,
-): Promise<InvalidNumericEntry | undefined> => {
-  const { tokens, source: path } = await readConfigEntry(ctx);
-  let inSection = false;
-  let last: { readonly value: string | null } | undefined;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, 'core', undefined);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry') continue;
-    if (token.key.toLowerCase() !== MAX_TREE_DEPTH_KEY) continue;
-    last = { value: token.value };
-  }
-  if (last === undefined) return undefined;
-  const key = `core.${MAX_TREE_DEPTH_KEY}`;
-  if (last.value === null) {
-    return { key, source: path, value: '', reason: 'invalid unit' };
-  }
-  const parsed = parseGitInt(last.value);
-  if (!parsed.ok) {
-    return { key, source: path, value: last.value, reason: parsed.reason };
-  }
+): Promise<InvalidNumericEntry | undefined> =>
+  findLastInvalidRepoInt(ctx, 'core', MAX_TREE_DEPTH_KEY);
+
+/** git's `git_config_int` grammar: why it dies on `value`, or `undefined` when it parses. */
+const cIntRefusal = (value: string | null): InvalidNumericEntry['reason'] | undefined => {
+  const parsed = parseGitInt(value);
+  if (!parsed.ok) return parsed.reason;
   // The C-`int` narrowing sits here, on top of `parseGitInt`: `parseGitInt`'s own
   // bounds are int64, so a magnitude like 4294967296 comes back `ok` from it —
-  // this comparison is what turns that into `out of range` for this key.
-  if (parsed.value < GIT_C_INT_MIN || parsed.value > GIT_C_INT_MAX) {
-    return { key, source: path, value: last.value, reason: 'out of range' };
-  }
+  // this comparison is what turns that into `out of range`.
+  if (parsed.value < GIT_C_INT_MIN || parsed.value > GIT_C_INT_MAX) return 'out of range';
   return undefined;
+};
+
+/**
+ * git's `repo_cfg_int` (`prepare_repo_settings`): the LAST entry of
+ * `<section>.<key>` under the C-`int` grammar. Returns it when git would die
+ * on it, else `undefined`. Runs ONLY on a command's refusal path.
+ */
+export const findLastInvalidRepoInt = async (
+  ctx: Context,
+  section: string,
+  key: string,
+): Promise<InvalidNumericEntry | undefined> => {
+  const last = await findLastEntry(ctx, section, key);
+  if (last === undefined) return undefined;
+  const reason = cIntRefusal(last.value);
+  if (reason === undefined) return undefined;
+  return { key: last.key, source: last.source, value: last.value ?? '', reason };
 };
 
 /**
  * Cold-path detection for `core.deltaBaseCacheLimit`: same last-wins model as
  * {@link findLastInvalidMaxTreeDepth} (git resolves both through its cached
  * config-set lookup), but git's unsigned-long grammar — reusing
- * `checkPackWindowMemoryBound`, the same bound `pack.windowMemory` uses — so
+ * `checkGitUnsignedLong`, the same bound `pack.windowMemory` uses — so
  * a negative value is `'invalid unit'` (this key has no signed
  * representation to be "out of range" of) and only a magnitude past
  * `GIT_UINT64_MAX` is `'out of range'`. Runs ONLY on a command's refusal
  * path — this is the eager twin of the lenient `applyDeltaBaseCacheLimitEntry`.
  */
-export const findLastInvalidDeltaBaseCacheLimit = async (
+export const findLastInvalidDeltaBaseCacheLimit = (
   ctx: Context,
+): Promise<InvalidNumericEntry | undefined> =>
+  findLastInvalidCoreUnsignedLong(ctx, DELTA_BASE_CACHE_LIMIT_KEY);
+
+/**
+ * git's config-set read of `core.<key>` under the unsigned-long grammar: the
+ * LAST entry, returned when git would die on it, else `undefined`.
+ */
+const findLastInvalidCoreUnsignedLong = async (
+  ctx: Context,
+  key: string,
 ): Promise<InvalidNumericEntry | undefined> => {
-  const { tokens, source: path } = await readConfigEntry(ctx);
-  let inSection = false;
-  let last: { readonly value: string | null } | undefined;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, 'core', undefined);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry') continue;
-    if (token.key.toLowerCase() !== DELTA_BASE_CACHE_LIMIT_KEY) continue;
-    last = { value: token.value };
-  }
+  const last = await findLastEntry(ctx, 'core', key);
   if (last === undefined) return undefined;
-  const key = `core.${DELTA_BASE_CACHE_LIMIT_KEY}`;
-  const checked = checkPackWindowMemoryBound(last.value);
+  const checked = checkGitUnsignedLong(last.value);
   if (checked.ok) return undefined;
-  return { key, source: path, value: last.value ?? '', reason: checked.reason };
+  return { key: last.key, source: last.source, value: last.value ?? '', reason: checked.reason };
 };
 
 /**
  * Cold-path detection for `core.packedGitWindowSize` / `core.packedGitLimit`:
- * walk the cached `[core]` (subsectionless) tokens in file order and return
- * the FIRST entry of EITHER key whose value fails `checkPackWindowMemoryBound`
- * — unlike `deltaBaseCacheLimit`'s last-write-wins resolution, git validates
- * both these keys in the streaming `git_default_core_config` callback, so the
- * first malformed line in file order is fatal regardless of what follows it.
- * Returns `undefined` when every recognised entry is valid or none is
- * present. Runs ONLY on a command's refusal path — `readConfig` stays
+ * git reads each through its config set (`prepare_repo_settings`), so only a
+ * key's LAST entry is parsed — a malformed entry a valid one follows is
+ * inert — and `packedGitWindowSize` is read before `packedGitLimit`, whatever
+ * their file order. Returns the first of the two (in that reading order)
+ * whose last value fails git's unsigned-long grammar, with its 1-based line,
+ * or `undefined`. Runs ONLY on a command's refusal path — `readConfig` stays
  * lenient.
  */
-export const findFirstInvalidPackedGitBound = async (
+export const findLastInvalidPackedGitBound = async (
   ctx: Context,
 ): Promise<(InvalidNumericEntry & { readonly line: number }) | undefined> => {
-  const { tokens, source: path } = await readConfigEntry(ctx);
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, 'core', undefined);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry') continue;
-    const lowered = token.key.toLowerCase();
-    if (lowered !== PACKED_GIT_WINDOW_SIZE_KEY && lowered !== PACKED_GIT_LIMIT_KEY) continue;
-    const checked = checkPackWindowMemoryBound(token.value);
+  // Both reads start on one tick, so they share one config read.
+  const entries = await Promise.all(
+    PACKED_GIT_READING_ORDER.map((key) => findLastEntry(ctx, 'core', key)),
+  );
+  for (const last of entries) {
+    if (last === undefined) continue;
+    const checked = checkGitUnsignedLong(last.value);
     if (checked.ok) continue;
-    return {
-      key: `core.${lowered}`,
-      source: path,
-      value: token.value ?? '',
-      reason: checked.reason,
-      line: token.startLine + 1,
-    };
+    const { key: qualifiedKey, source, line, value } = last;
+    return { key: qualifiedKey, source, value: value ?? '', reason: checked.reason, line };
   }
   return undefined;
 };
 
+/**
+ * Cold-path detection for `core.bigFileThreshold`: git reads it through its
+ * config set (`repo_settings_get_big_file_threshold`), so only the LAST entry
+ * is parsed, under the unsigned-long grammar. Returns that entry when it
+ * fails, else `undefined`. Runs ONLY on a command's refusal path —
+ * `readConfig` stays lenient.
+ */
+export const findLastInvalidBigFileThreshold = (
+  ctx: Context,
+): Promise<InvalidNumericEntry | undefined> =>
+  findLastInvalidCoreUnsignedLong(ctx, BIG_FILE_THRESHOLD_KEY);
+
+type MutableGpgSsh = { program?: string; allowedSignersFile?: string; revocationFile?: string };
+
 type MutableGpg = {
   format?: 'openpgp' | 'ssh' | 'x509';
   program?: string;
-  ssh?: { program?: string };
+  ssh?: MutableGpgSsh;
 };
+
+const GPG_SSH_FIELDS: ReadonlyMap<string, keyof MutableGpgSsh> = new Map(
+  (['program', 'allowedSignersFile', 'revocationFile'] as const).map((field) => [
+    field.toLowerCase(),
+    field,
+  ]),
+);
+
+type MutableTrailer = { separators?: string; keys?: ReadonlyMap<string, string> };
 
 interface MutableParsedConfig {
   core?: MutableCore;
@@ -1248,7 +1374,10 @@ interface MutableParsedConfig {
     }
   >;
   remotePushDefault?: string;
-  branch?: Map<string, { remote?: string; merge?: string; pushRemote?: string }>;
+  branch?: Map<
+    string,
+    { remote?: string; merge?: string; merges?: ReadonlyArray<string>; pushRemote?: string }
+  >;
   submodule?: Map<string, { url?: string; active?: boolean; update?: string }>;
   merge?: Map<string, { name?: string; driver?: string; recursive?: string }>;
   diff?: Map<string, { textconv?: string; cachetextconv?: boolean; binary?: boolean }>;
@@ -1257,22 +1386,26 @@ interface MutableParsedConfig {
   commit?: { gpgSign?: boolean };
   tag?: { gpgSign?: boolean };
   pack?: MutablePack;
-  gc?: { auto?: number; pruneExpire?: string; cruftPacks?: boolean };
+  gc?: MutableGc;
   push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
   gpg?: MutableGpg;
+  mailmap?: { file?: string; blob?: string };
+  trailer?: MutableTrailer;
 }
 
 const dispatchSubsection = (acc: MutableParsedConfig, sec: IniSection, name: string): void => {
   // Case-insensitive section match, as git does; the subsection `name` stays
   // case-sensitive, also as git does.
   const section = sec.section.toLowerCase();
-  if (section === 'remote') mergeRemote(acc, name, sec);
-  else if (section === 'branch') mergeBranch(acc, name, sec);
+  if (section === 'remote') {
+    if (isRegistrableRemoteName(name)) mergeRemote(acc, name, sec);
+  } else if (section === 'branch') mergeBranch(acc, name, sec);
   else if (section === 'submodule') mergeSubmodule(acc, name, sec);
   else if (section === 'merge') mergeMergeDriver(acc, name, sec);
   else if (section === 'diff') mergeDiffDriver(acc, name, sec);
   else if (section === 'filter') mergeFilterDriver(acc, name, sec);
   else if (section === 'gpg') mergeGpgSsh(acc, name, sec);
+  else if (section === 'trailer') mergeTrailerKey(acc, name, sec);
 };
 
 const dispatchSection = (acc: MutableParsedConfig, sec: IniSection): void => {
@@ -1303,6 +1436,10 @@ const dispatchSection = (acc: MutableParsedConfig, sec: IniSection): void => {
     mergePush(acc, sec);
   } else if (section === 'gpg') {
     mergeGpg(acc, sec);
+  } else if (section === 'mailmap') {
+    mergeMailmap(acc, sec);
+  } else if (section === 'trailer') {
+    mergeTrailer(acc, sec);
   }
 };
 
@@ -1323,6 +1460,7 @@ type MutableCore = {
   notesRef?: string;
   sparseCheckout?: boolean;
   sparseCheckoutCone?: boolean;
+  ignoreCase?: boolean;
   looseCompression?: number;
   maxTreeDepth?: number;
   sshCommand?: string;
@@ -1330,6 +1468,7 @@ type MutableCore = {
   packedGitWindowSize?: number;
   packedGitLimit?: number;
   bigFileThreshold?: number;
+  abbrev?: 'auto' | 'full' | number;
   /** Transient: true when looseCompression was set via loosecompression key (not compression).
    *  Dropped by finalizeCore. Guards order-independent precedence: loosecompression > compression. */
   looseCompressionFromLoose?: boolean;
@@ -1374,7 +1513,7 @@ const DELTA_BASE_CACHE_LIMIT_KEY = 'deltabasecachelimit';
 
 /**
  * Apply `core.deltaBaseCacheLimit`: git's unsigned-long grammar, reusing
- * `checkPackWindowMemoryBound` — the same bound `pack.windowMemory` uses
+ * `checkGitUnsignedLong` — the same bound `pack.windowMemory` uses
  * (decimal / hex / octal, one optional k/m/g unit, negative refused). Merges
  * as absent on any failure — this is the LENIENT read only; the eager
  * refusal for a malformed value is a separate finder, not added here.
@@ -1383,26 +1522,28 @@ const applyDeltaBaseCacheLimitEntry = (
   core: MutableCore,
   value: string,
 ): MutableCore | undefined => {
-  const checked = checkPackWindowMemoryBound(value);
+  const checked = checkGitUnsignedLong(value);
   return checked.ok ? { ...core, deltaBaseCacheLimit: checked.value } : undefined;
 };
 
 const PACKED_GIT_WINDOW_SIZE_KEY = 'packedgitwindowsize';
 const PACKED_GIT_LIMIT_KEY = 'packedgitlimit';
+/** `prepare_repo_settings` reads the window size before the limit. */
+const PACKED_GIT_READING_ORDER = [PACKED_GIT_WINDOW_SIZE_KEY, PACKED_GIT_LIMIT_KEY] as const;
 
 /**
  * Apply `core.packedGitWindowSize` / `core.packedGitLimit`: git's
- * unsigned-long grammar, reusing `checkPackWindowMemoryBound` exactly as
+ * unsigned-long grammar, reusing `checkGitUnsignedLong` exactly as
  * {@link applyDeltaBaseCacheLimitEntry} does. Merges as absent on any
  * failure — this is the LENIENT read only; the eager refusal for a
- * malformed value is `findFirstInvalidPackedGitBound`, not added here.
+ * malformed value is `findLastInvalidPackedGitBound`, not added here.
  */
 const applyPackedGitBoundEntry = (
   core: MutableCore,
   field: 'packedGitWindowSize' | 'packedGitLimit',
   value: string,
 ): MutableCore | undefined => {
-  const checked = checkPackWindowMemoryBound(value);
+  const checked = checkGitUnsignedLong(value);
   return checked.ok ? { ...core, [field]: checked.value } : undefined;
 };
 
@@ -1410,30 +1551,74 @@ const BIG_FILE_THRESHOLD_KEY = 'bigfilethreshold';
 
 /**
  * Apply `core.bigFileThreshold`: git's unsigned-long grammar, reusing
- * `checkPackWindowMemoryBound` exactly as {@link applyDeltaBaseCacheLimitEntry}
- * does. Merges as absent on any failure — this is the LENIENT read only; no
- * eager refusal is added for this key (mirrors `packedGitLimit`'s own
- * lenient-only surface where no command's preflight gate needs one yet).
+ * `checkGitUnsignedLong` exactly as {@link applyDeltaBaseCacheLimitEntry}
+ * does. Merges as absent on any failure — this is the LENIENT read only; the
+ * refusal for a malformed value is `findLastInvalidBigFileThreshold`, run
+ * where git first reads the key.
  */
 const applyBigFileThresholdEntry = (core: MutableCore, value: string): MutableCore | undefined => {
-  const checked = checkPackWindowMemoryBound(value);
+  const checked = checkGitUnsignedLong(value);
   return checked.ok ? { ...core, bigFileThreshold: checked.value } : undefined;
+};
+
+const ABBREV_KEY = 'abbrev';
+const MIN_ABBREV_LENGTH = 4;
+const FALSE_BOOLEAN_TEXTS: ReadonlySet<string> = new Set(['', 'no', 'false', 'off']);
+
+type AbbrevVerdict =
+  | { readonly ok: true; readonly value: 'auto' | 'full' | number }
+  | { readonly ok: false; readonly reason: 'invalid unit' | 'out of range' };
+
+/**
+ * git's `core.abbrev` grammar (`environment.c`): `auto`, a false-boolean text
+ * (full length), else an integer of at least 4 — anything else is a refusal.
+ */
+const classifyAbbrev = (value: string): AbbrevVerdict => {
+  const lowered = value.toLowerCase();
+  if (lowered === 'auto') return { ok: true, value: 'auto' };
+  if (FALSE_BOOLEAN_TEXTS.has(lowered)) return { ok: true, value: 'full' };
+  const parsed = parseGitInt(value);
+  if (!parsed.ok) return { ok: false, reason: parsed.reason };
+  if (parsed.value < MIN_ABBREV_LENGTH || parsed.value > GIT_C_INT_MAX) {
+    return { ok: false, reason: 'out of range' };
+  }
+  return { ok: true, value: parsed.value };
+};
+
+const applyAbbrevEntry = (core: MutableCore, value: string): MutableCore | undefined => {
+  const verdict = classifyAbbrev(value);
+  return verdict.ok ? { ...core, abbrev: verdict.value } : undefined;
+};
+
+/**
+ * Refuse with `CONFIG_BAD_NUMERIC_VALUE` when any `core.abbrev` entry holds a
+ * value git's grammar refuses, or `CONFIG_MISSING_VALUE` for a valueless key (git dies on each entry as it reads it, so a
+ * later valid entry does not rescue an earlier bad one).
+ */
+export const assertValidAbbrevConfig = async (ctx: Context): Promise<void> => {
+  const { tokens, source } = await readConfigEntry(ctx);
+  for (const { line, value } of entriesIn(tokens, source, 'core', ABBREV_KEY)) {
+    if (value === null) throw configMissingValue('core.abbrev', source, line);
+    const verdict = classifyAbbrev(value);
+    if (!verdict.ok) throw configBadNumericValue('core.abbrev', source, value, verdict.reason);
+  }
 };
 
 // One map is BOTH the key set and the field dispatch: a new boolean key
 // cannot join the set without naming its target field, so a silent
 // mis-assignment is structurally impossible.
 const CORE_BOOLEAN_FIELDS: Readonly<
-  Record<string, 'bare' | 'sparseCheckout' | 'sparseCheckoutCone'>
+  Record<string, 'bare' | 'sparseCheckout' | 'sparseCheckoutCone' | 'ignoreCase'>
 > = {
   bare: 'bare',
+  ignorecase: 'ignoreCase',
   sparsecheckout: 'sparseCheckout',
   sparsecheckoutcone: 'sparseCheckoutCone',
 };
 
 const CORE_BOOLEAN_KEYS = new Set(['logallrefupdates', ...Object.keys(CORE_BOOLEAN_FIELDS)]);
 
-/** Handles the four `[core]` keys whose value is boolean-typed (or the `always` tri-state). */
+/** Handles the `[core]` keys whose value is boolean-typed (or the `always` tri-state). */
 const applyCoreBooleanEntry = (
   core: MutableCore,
   lowered: string,
@@ -1469,6 +1654,15 @@ const applyCoreEntry = (
   if (lowered === 'hookspath') return { ...core, hooksPath: value };
   if (lowered === 'notesref') return { ...core, notesRef: value };
   if (lowered === 'sshcommand') return { ...core, sshCommand: value };
+  return applyCoreParsedEntry(core, lowered, value);
+};
+
+/** Handles the `[core]` keys whose value goes through a dedicated numeric grammar. */
+const applyCoreParsedEntry = (
+  core: MutableCore,
+  lowered: string,
+  value: string,
+): MutableCore | undefined => {
   if (lowered === 'loosecompression' || lowered === 'compression') {
     return applyLooseCompressionEntry(core, lowered, value);
   }
@@ -1480,6 +1674,7 @@ const applyCoreEntry = (
   if (lowered === PACKED_GIT_LIMIT_KEY)
     return applyPackedGitBoundEntry(core, 'packedGitLimit', value);
   if (lowered === BIG_FILE_THRESHOLD_KEY) return applyBigFileThresholdEntry(core, value);
+  if (lowered === ABBREV_KEY) return applyAbbrevEntry(core, value);
   return undefined;
 };
 
@@ -1592,6 +1787,9 @@ const mergeRemote = (
   acc.remote.set(name, compactRemote(mutable));
 };
 
+/** git's `handle_config` (remote.c) skips every `remote.<name>.*` entry whose name begins with `/`. */
+const isRegistrableRemoteName = (name: string): boolean => !name.startsWith('/');
+
 // `[remote]` (no subsection) — distinct from `[remote "<name>"]`. Only `pushDefault` lives here;
 // per-remote `pushDefault` is not read (pinned: `[remote "x"] pushDefault` is ignored by git).
 const mergeRemoteTopLevel = (acc: { remotePushDefault?: string }, sec: IniSection): void => {
@@ -1600,21 +1798,35 @@ const mergeRemoteTopLevel = (acc: { remotePushDefault?: string }, sec: IniSectio
   }
 };
 
+type MutableBranch = {
+  remote?: string;
+  merge?: string;
+  merges?: ReadonlyArray<string>;
+  pushRemote?: string;
+};
+
+const applyBranchEntry = (next: MutableBranch, key: string, value: string): void => {
+  if (key === 'remote') next.remote = value;
+  else if (key === 'merge') {
+    // git's upstream is `merge[0]`: the first value read.
+    next.merge ??= value;
+    next.merges = [...(next.merges ?? []), value];
+  }
+  // Git config keys are case-insensitive; compare pushRemote on the lower-cased key.
+  else if (key.toLowerCase() === 'pushremote') next.pushRemote = value;
+};
+
 const mergeBranch = (
-  acc: { branch?: Map<string, { remote?: string; merge?: string; pushRemote?: string }> },
+  acc: { branch?: Map<string, MutableBranch> },
   name: string,
   sec: IniSection,
 ): void => {
   acc.branch ??= new Map();
   const current = acc.branch.get(name) ?? {};
-  const next: { remote?: string; merge?: string; pushRemote?: string } = { ...current };
+  const next: MutableBranch = { ...current };
   for (const { key, value } of sec.entries) {
     // String-typed fields skip null (valueless key treated as absent).
-    if (value === null) continue;
-    if (key === 'remote') next.remote = value;
-    else if (key === 'merge') next.merge = value;
-    // Git config keys are case-insensitive; compare pushRemote on the lower-cased key.
-    else if (key.toLowerCase() === 'pushremote') next.pushRemote = value;
+    if (value !== null) applyBranchEntry(next, key, value);
   }
   acc.branch.set(name, next);
 };
@@ -1774,6 +1986,7 @@ const mergeTag = (acc: { tag?: { gpgSign?: boolean } }, sec: IniSection): void =
 
 type MutablePack = {
   writeReverseIndex?: boolean;
+  useSparse?: boolean;
   window?: number;
   depth?: number;
   windowMemory?: number;
@@ -1794,18 +2007,17 @@ const checkPackCIntBound: PackIntCheck = (value) => {
   return parsed;
 };
 
-// git's own unsigned-long grammar: a negative value is a syntax refusal
-// ('invalid unit'), not a magnitude refusal — unlike `window`/`depth`'s C
-// `int`, this key has no signed representation to be "out of range" of.
-// `parseGitInt` is given the unsigned-long ceiling (GIT_UINT64_MAX) instead
-// of its own int64 default, so a magnitude between int64-max and uint64-max
-// — refused for window/depth — reads as valid here.
-const checkPackWindowMemoryBound: PackIntCheck = (value) => {
-  const parsed = parseGitInt(value, GIT_UINT64_MAX);
-  if (!parsed.ok) return parsed;
-  if (parsed.value < 0) return { ok: false, reason: 'invalid unit' };
-  return parsed;
-};
+// git's own unsigned-long grammar: `git_parse_unsigned` refuses any `-`
+// before parsing (strtoumax would wrap it) — a syntax refusal ('invalid
+// unit'), not a magnitude one, so `-0` and `-1` alike refuse here although
+// the signed grammar reads `-0` as zero. `parseGitInt` is given the
+// unsigned-long ceiling (GIT_UINT64_MAX) instead of its own int64 default,
+// so a magnitude between int64-max and uint64-max — refused for
+// window/depth — reads as valid here.
+const checkGitUnsignedLong: PackIntCheck = (value) =>
+  value?.includes('-') === true
+    ? { ok: false, reason: 'invalid unit' }
+    : parseGitInt(value, GIT_UINT64_MAX);
 
 /**
  * Which bound rule (if any) governs a `[pack]` key. `undefined` means the key
@@ -1815,16 +2027,67 @@ const checkPackWindowMemoryBound: PackIntCheck = (value) => {
  */
 const packIntChecker = (lowered: string): PackIntCheck | undefined => {
   if (lowered === PACK_WINDOW_KEY || lowered === PACK_DEPTH_KEY) return checkPackCIntBound;
-  if (lowered === PACK_WINDOW_MEMORY_KEY) return checkPackWindowMemoryBound;
+  if (lowered === PACK_WINDOW_MEMORY_KEY) return checkGitUnsignedLong;
   return undefined;
 };
 
-const applyPackWriteReverseIndexEntry = (
+/** The integer grammar a `[gc]` key is read with: git's `int` or `unsigned long`. */
+export type GcNumberGrammar = 'int' | 'ulong';
+
+const GC_NUMBER_CHECKS: Readonly<Record<GcNumberGrammar, PackIntCheck>> = {
+  int: checkPackCIntBound,
+  ulong: checkGitUnsignedLong,
+};
+
+/** One `[gc]` numeric entry git's `gc_config` refuses. */
+export interface InvalidGcNumberEntry {
+  readonly key: string;
+  readonly source: string;
+  readonly value: string;
+  readonly reason: 'invalid unit' | 'out of range';
+}
+
+/**
+ * Cold-path detection for git's `repo_config_get_int` / `_ulong` on a
+ * subsectionless `[gc]` key: only the LAST entry is parsed, a valueless one
+ * reading as the empty string. Returns `undefined` when the key is absent or
+ * its last entry is valid. `readConfig` stays lenient (see `mergeGc`).
+ */
+export const findInvalidGcNumber = async (
+  ctx: Context,
+  key: string,
+  grammar: GcNumberGrammar,
+): Promise<InvalidGcNumberEntry | undefined> => {
+  const entry = await findLastEntry(ctx, 'gc', key);
+  if (entry === undefined) return undefined;
+  const checked = GC_NUMBER_CHECKS[grammar](entry.value);
+  if (checked.ok) return undefined;
+  return { key: entry.key, source: entry.source, value: entry.value ?? '', reason: checked.reason };
+};
+
+/**
+ * Refuse with `CONFIG_BAD_NUMERIC_VALUE` when a `[gc]` numeric key holds a
+ * value git's grammar refuses — a refused value must never be silently read
+ * back as absent-and-defaulted.
+ */
+export const assertValidGcNumberConfig = async (
+  ctx: Context,
+  key: string,
+  grammar: GcNumberGrammar,
+): Promise<void> => {
+  const found = await findInvalidGcNumber(ctx, key, grammar);
+  if (found !== undefined) {
+    throw configBadNumericValue(found.key, found.source, found.value, found.reason);
+  }
+};
+
+const applyPackBooleanEntry = (
   pack: MutablePack,
+  field: 'writeReverseIndex' | 'useSparse',
   value: string | null,
 ): MutablePack | undefined => {
   const parsed = parseGitBoolean(value);
-  return parsed.ok ? { ...pack, writeReverseIndex: parsed.value } : undefined;
+  return parsed.ok ? { ...pack, [field]: parsed.value } : undefined;
 };
 
 const applyPackIntEntry = (
@@ -1849,7 +2112,9 @@ const applyPackEntry = (
   lowered: string,
   value: string | null,
 ): MutablePack | undefined => {
-  if (lowered === 'writereverseindex') return applyPackWriteReverseIndexEntry(pack, value);
+  if (lowered === 'writereverseindex')
+    return applyPackBooleanEntry(pack, 'writeReverseIndex', value);
+  if (lowered === 'usesparse') return applyPackBooleanEntry(pack, 'useSparse', value);
   const check = packIntChecker(lowered);
   if (check === undefined) return undefined;
   const field =
@@ -1864,7 +2129,12 @@ const mergePack = (acc: { pack?: MutablePack }, sec: IniSection): void => {
   }
 };
 
-type MutableGc = { auto?: number; pruneExpire?: string; cruftPacks?: boolean };
+type MutableGc = {
+  auto?: number;
+  pruneExpire?: string;
+  worktreePruneExpire?: string;
+  cruftPacks?: boolean;
+};
 
 const applyGcAutoEntry = (gc: MutableGc, value: string | null): MutableGc | undefined => {
   const parsed = parseGitInt(value);
@@ -1877,9 +2147,9 @@ const applyGcAutoEntry = (gc: MutableGc, value: string | null): MutableGc | unde
  * when the key is not recognised or its value fails validation — the same
  * shape `applyCoreEntry` uses, so a malformed sibling never blocks a
  * well-formed key from being merged. `readConfig` stays total/lenient here —
- * the eager refusal for `gc.auto` lives in `assertValidGcAutoConfig`,
+ * the eager refusal for `gc.auto` lives in `assertValidGcNumberConfig`,
  * `gc.cruftPacks`'s in `assertValidBooleanConfig`, and `gc.pruneExpire`'s
- * grammar in `expiryCutoff`, mirroring `pack.writeReverseIndex`'s split
+ * grammar in `configExpiryCutoff`, mirroring `pack.writeReverseIndex`'s split
  * between a lenient merge and a separate refusal gate.
  */
 const applyGcEntry = (
@@ -1890,8 +2160,11 @@ const applyGcEntry = (
   if (lowered === 'auto') return applyGcAutoEntry(gc, value);
   if (lowered === 'pruneexpire') {
     // String-typed field: skip null (valueless key treated as absent).
-    // Grammar validated downstream by expiryCutoff — readConfig stays lenient.
+    // Grammar validated downstream by configExpiryCutoff — readConfig stays lenient.
     return value === null ? undefined : { ...gc, pruneExpire: value };
+  }
+  if (lowered === 'worktreepruneexpire') {
+    return value === null ? undefined : { ...gc, worktreePruneExpire: value };
   }
   if (lowered === 'cruftpacks') {
     const parsed = parseGitBoolean(value);
@@ -1952,15 +2225,9 @@ export const findInvalidPushDefault = async (
   ctx: Context,
 ): Promise<InvalidPushDefaultEntry | undefined> => {
   const { tokens, source: path } = await readConfigEntry(ctx);
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, 'push', undefined);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry' || token.key.toLowerCase() !== 'default') continue;
-    if (token.value === null || parsePushDefault(token.value) !== undefined) continue;
-    return { key: 'push.default', source: path, line: token.startLine + 1, value: token.value };
+  for (const { line, value } of entriesIn(tokens, path, 'push', 'default')) {
+    if (value === null || parsePushDefault(value) !== undefined) continue;
+    return { key: 'push.default', source: path, line, value };
   }
   return undefined;
 };
@@ -1995,14 +2262,45 @@ const mergeGpg = (acc: { gpg?: MutableGpg }, sec: IniSection): void => {
   }
 };
 
+const mergeMailmap = (
+  acc: { mailmap?: { file?: string; blob?: string } },
+  sec: IniSection,
+): void => {
+  for (const { key, value } of sec.entries) {
+    if (value === null) continue;
+    const lowered = key.toLowerCase();
+    if (lowered === 'file') acc.mailmap = { ...acc.mailmap, file: value };
+    else if (lowered === 'blob') acc.mailmap = { ...acc.mailmap, blob: value };
+  }
+};
+
+const mergeTrailer = (acc: { trailer?: MutableTrailer }, sec: IniSection): void => {
+  for (const { key, value } of sec.entries) {
+    if (value === null || key.toLowerCase() !== 'separators') continue;
+    acc.trailer = { ...acc.trailer, separators: value };
+  }
+};
+
+const mergeTrailerKey = (
+  acc: { trailer?: MutableTrailer },
+  token: string,
+  sec: IniSection,
+): void => {
+  for (const { key, value } of sec.entries) {
+    if (value === null || key.toLowerCase() !== 'key') continue;
+    const keys = new Map(acc.trailer?.keys).set(token, value);
+    acc.trailer = { ...acc.trailer, keys };
+  }
+};
+
 // `[gpg "ssh"]` is the only recognised `gpg.*` subsection; any other
 // subsection name (not a real git config surface today) is a silent no-op.
 const mergeGpgSsh = (acc: { gpg?: MutableGpg }, name: string, sec: IniSection): void => {
   if (name !== 'ssh') return;
   for (const { key, value } of sec.entries) {
-    if (key.toLowerCase() === 'program' && value !== null) {
-      acc.gpg = { ...acc.gpg, ssh: { ...acc.gpg?.ssh, program: value } };
-    }
+    const field = GPG_SSH_FIELDS.get(key.toLowerCase());
+    if (field === undefined || value === null) continue;
+    acc.gpg = { ...acc.gpg, ssh: { ...acc.gpg?.ssh, [field]: value } };
   }
 };
 
@@ -2018,6 +2316,7 @@ const finalizeCoreIdentityFields = (core: MutableCore): ParsedConfig['core'] => 
   ...(core.notesRef !== undefined ? { notesRef: core.notesRef } : {}),
   ...(core.sparseCheckout !== undefined ? { sparseCheckout: core.sparseCheckout } : {}),
   ...(core.sparseCheckoutCone !== undefined ? { sparseCheckoutCone: core.sparseCheckoutCone } : {}),
+  ...(core.ignoreCase !== undefined ? { ignoreCase: core.ignoreCase } : {}),
   ...(core.sshCommand !== undefined ? { sshCommand: core.sshCommand } : {}),
 });
 
@@ -2034,6 +2333,7 @@ const finalizeCoreSizeFields = (core: MutableCore): ParsedConfig['core'] => ({
     : {}),
   ...(core.packedGitLimit !== undefined ? { packedGitLimit: core.packedGitLimit } : {}),
   ...(core.bigFileThreshold !== undefined ? { bigFileThreshold: core.bigFileThreshold } : {}),
+  ...(core.abbrev !== undefined ? { abbrev: core.abbrev } : {}),
 });
 
 /**
@@ -2048,16 +2348,8 @@ const finalizeCore = (core: MutableCore | undefined): ParsedConfig['core'] => {
   return { ...finalizeCoreIdentityFields(core), ...finalizeCoreSizeFields(core) };
 };
 
-type FinalizeOut = {
-  diff?: ReadonlyMap<string, { textconv?: string; cachetextconv?: boolean; binary?: boolean }>;
-  filter?: ReadonlyMap<string, FilterEntry>;
-  commit?: { gpgSign?: boolean };
-  tag?: { gpgSign?: boolean };
-  pack?: MutablePack;
-  gc?: { auto?: number; pruneExpire?: string; cruftPacks?: boolean };
-  push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
-  gpg?: MutableGpg;
-};
+/** {@link ParsedConfig} with its top-level fields assignable, for `finalize` to fill in. */
+type FinalizeOut = { -readonly [Field in keyof ParsedConfig]: ParsedConfig[Field] };
 
 // Extracted to keep `finalize` under the cognitive-complexity ceiling.
 const finalizeDriverMaps = (acc: MutableParsedConfig, out: FinalizeOut): void => {
@@ -2096,50 +2388,12 @@ const finalizeScalarBuckets = (acc: MutableParsedConfig, out: FinalizeOut): void
   if (acc.gc !== undefined) out.gc = acc.gc;
   if (acc.push !== undefined) out.push = acc.push;
   if (acc.gpg !== undefined) out.gpg = acc.gpg;
+  if (acc.mailmap !== undefined) out.mailmap = acc.mailmap;
+  if (acc.trailer !== undefined) out.trailer = acc.trailer;
 };
 
 const finalize = (acc: MutableParsedConfig): ParsedConfig => {
-  const out: {
-    core?: {
-      bare?: boolean;
-      excludesFile?: string;
-      attributesFile?: string;
-      logAllRefUpdates?: boolean | 'always';
-      hooksPath?: string;
-      sparseCheckout?: boolean;
-      sparseCheckoutCone?: boolean;
-      looseCompression?: number;
-      maxTreeDepth?: number;
-      deltaBaseCacheLimit?: number;
-    };
-    user?: { name?: string; email?: string; signingKey?: string };
-    remote?: ReadonlyMap<
-      string,
-      {
-        url?: string;
-        pushUrl?: string;
-        fetch?: ReadonlyArray<string>;
-        promisor?: boolean;
-        partialCloneFilter?: string;
-      }
-    >;
-    remotePushDefault?: string;
-    branch?: ReadonlyMap<string, { remote?: string; merge?: string; pushRemote?: string }>;
-    submodule?: ReadonlyMap<string, { url?: string; active?: boolean; update?: string }>;
-    merge?: ReadonlyMap<string, { name?: string; driver?: string; recursive?: string }>;
-    diff?: ReadonlyMap<string, { textconv?: string; cachetextconv?: boolean; binary?: boolean }>;
-    filter?: ReadonlyMap<
-      string,
-      { clean?: string; smudge?: string; process?: string; required?: boolean }
-    >;
-    extensions?: { partialClone?: string };
-    commit?: { gpgSign?: boolean };
-    tag?: { gpgSign?: boolean };
-    pack?: MutablePack;
-    gc?: { auto?: number; pruneExpire?: string; cruftPacks?: boolean };
-    push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
-    gpg?: MutableGpg;
-  } = {};
+  const out: FinalizeOut = {};
   const core = finalizeCore(acc.core);
   if (core !== undefined) out.core = core;
   const user = finalizeUser(acc.user);
@@ -2231,15 +2485,9 @@ const findFirstRejectedBoolean = async (
 ): Promise<InvalidBooleanEntry | undefined> => {
   const { tokens, source: path } = await readConfigEntry(ctx);
   const keySet = new Set(target.keys.map((k) => k.toLowerCase()));
-  let subsection: string | undefined;
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      subsection = token.subsection;
-      inSection = headerEntersTarget(token.section, token.subsection, target);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry') continue;
+  const enters = (header: ConfigHeaderToken): boolean =>
+    headerEntersTarget(header.section, header.subsection, target);
+  for (const { token, subsection } of sectionEntries(tokens, enters)) {
     const value = token.value;
     if (!entryValueRejected(value, token.key, subsection, target, keySet)) continue;
     return {
@@ -2288,6 +2536,168 @@ export const findFirstInvalidBooleanInSection = async (
     accepts: acceptsGitBoolean,
   });
 
+/** A remote config key registering its remote as a promisor: `promisor` set
+ *  true, or any `partialclonefilter`. */
+const registersPromisor = (key: string, value: string | null): boolean => {
+  const lowered = key.toLowerCase();
+  if (lowered === 'partialclonefilter') return true;
+  if (lowered !== 'promisor') return false;
+  const parsed = parseGitBoolean(value);
+  return parsed.ok && parsed.value;
+};
+
+/** git's `promisor_remote_new` refuses a name starting with `/`. */
+const isRegistrablePromisorName = (name: string): boolean => !name.startsWith('/');
+
+/** The remote name of every entry registering a promisor, in config order, repeats kept. */
+const registeringRemoteNames = (tokens: ReadonlyArray<ConfigToken>): ReadonlyArray<string> => {
+  const names: string[] = [];
+  for (const { token, subsection } of sectionEntries(tokens, anySubsectionOf('remote'))) {
+    if (registersPromisor(token.key, token.value)) names.push(subsection ?? '');
+  }
+  return names;
+};
+
+const SLASH_LEADING_PROMISOR_WARNING =
+  "readPromisorRemoteNames: promisor remote name cannot begin with '/'";
+
+/** git's `promisor_remote_new` warning, once per attempt to register a `/`-leading name. */
+const warnSlashLeadingNames = (ctx: Context, attempts: ReadonlyArray<string>): void => {
+  for (const remote of attempts.filter((name) => !isRegistrablePromisorName(name))) {
+    ctx.logger?.warn?.(SLASH_LEADING_PROMISOR_WARNING, { remote });
+  }
+};
+
+/** Every promisor registration git attempts, in its order: each registering
+ *  entry, then the remote `extensions.partialClone` names. */
+const registrationAttempts = (
+  tokens: ReadonlyArray<ConfigToken>,
+  partialClone: string | undefined,
+): ReadonlyArray<string> => {
+  const registering = registeringRemoteNames(tokens);
+  return partialClone === undefined ? registering : [...registering, partialClone];
+};
+
+const SLASH_LEADING_REMOTE_WARNING =
+  "readRemoteConfig: config remote shorthand cannot begin with '/'";
+
+/** One `remote.<name>.<key>` entry of git's remote table, its key lower-cased. */
+export interface RemoteTableEntry {
+  readonly remote: string;
+  readonly key: string;
+  readonly value: string | null;
+}
+
+/** Every `remote.<name>.<key>` entry, in config order; a subsectionless `[remote]` names none. */
+const remoteTableEntries = (
+  tokens: ReadonlyArray<ConfigToken>,
+): ReadonlyArray<RemoteTableEntry> => {
+  const entries: RemoteTableEntry[] = [];
+  for (const { token, subsection: remote } of sectionEntries(tokens, anySubsectionOf('remote'))) {
+    if (remote === undefined) continue;
+    entries.push({ remote, key: token.key.toLowerCase(), value: token.value });
+  }
+  return entries;
+};
+
+/**
+ * git's `handle_config` (remote.c) walk, each time a command builds its remote
+ * table: one warning per entry of a `/`-leading remote — never registered —
+ * and `check` on every other entry, in config order, so a check that throws
+ * stops the walk where git dies and no later entry warns.
+ */
+export const walkRemoteTable = async (
+  ctx: Context,
+  check: (entry: RemoteTableEntry) => void,
+): Promise<void> => {
+  const { tokens } = await readConfigEntry(ctx);
+  for (const entry of remoteTableEntries(tokens)) {
+    if (!entry.remote.startsWith('/')) {
+      check(entry);
+      continue;
+    }
+    ctx.logger?.warn?.(SLASH_LEADING_REMOTE_WARNING, { remote: entry.remote, key: entry.key });
+  }
+};
+
+/**
+ * git's `promisor_remote_init` warnings: one per attempt to register a
+ * `/`-leading name, logged where a command first consults its promisor remotes.
+ */
+export const warnSlashLeadingPromisorRemotes = async (ctx: Context): Promise<void> => {
+  const { tokens, parsed } = await readConfigEntry(ctx);
+  warnSlashLeadingNames(ctx, registrationAttempts(tokens, parsed.extensions?.partialClone));
+};
+
+/**
+ * git's `promisor_remote_init`: every remote a `remote.<n>.promisor = true` or a
+ * `remote.<n>.partialclonefilter` ever registers — a later `promisor = false` never
+ * unregisters it, a subsectionless `[remote]` registers the name `""` — in config
+ * order, with the one `extensions.partialClone` names moved to (or appended at) the
+ * end, the order git tries them in. A `/`-leading name is never registered. Logs
+ * nothing: `warnSlashLeadingPromisorRemotes` is the warning half.
+ */
+export const readRegistrablePromisorRemoteNames = async (
+  ctx: Context,
+): Promise<ReadonlyArray<string>> => {
+  const { tokens, parsed } = await readConfigEntry(ctx);
+  const partialClone = parsed.extensions?.partialClone;
+  const names = new Set(registeringRemoteNames(tokens));
+  if (partialClone !== undefined) {
+    names.delete(partialClone);
+    names.add(partialClone);
+  }
+  return [...names].filter(isRegistrablePromisorName);
+};
+
+/** `readRegistrablePromisorRemoteNames`, warning on each `/`-leading attempt as git does. */
+export const readPromisorRemoteNames = async (ctx: Context): Promise<ReadonlyArray<string>> => {
+  await warnSlashLeadingPromisorRemotes(ctx);
+  return readRegistrablePromisorRemoteNames(ctx);
+};
+
+/** The `[remote*]` entry git's `promisor_remote_config` dies on. */
+export type PromisorConfigRefusal =
+  | { readonly kind: 'bad-boolean'; readonly entry: InvalidBooleanEntry }
+  | { readonly kind: 'missing-value'; readonly entry: ValuelessEntry };
+
+/** git reads `promisor` as a boolean, and a registrable remote's filter as a string. */
+const promisorEntryRefusal = (
+  token: ConfigEntryToken,
+  remoteName: string,
+  source: string,
+): PromisorConfigRefusal | undefined => {
+  const key = token.key.toLowerCase();
+  const located = {
+    key: remoteName === '' ? `remote.${key}` : `remote.${remoteName}.${key}`,
+    source,
+    line: token.startLine + 1,
+  };
+  if (key === 'promisor' && token.value !== null && !acceptsGitBoolean(token.value)) {
+    return { kind: 'bad-boolean', entry: { ...located, value: token.value } };
+  }
+  const unregistered = !isRegistrablePromisorName(remoteName);
+  if (key !== 'partialclonefilter' || token.value !== null || unregistered) return undefined;
+  return { kind: 'missing-value', entry: located };
+};
+
+/**
+ * git's `promisor_remote_config` walk: the FIRST `[remote*]` entry, in file
+ * order, it dies on — a `promisor` its boolean grammar refuses, or a valueless
+ * `partialclonefilter` under a remote it registers (a `/`-leading name is
+ * never registered, so its filter is never read).
+ */
+export const findFirstPromisorConfigRefusal = async (
+  ctx: Context,
+): Promise<PromisorConfigRefusal | undefined> => {
+  const { tokens, source } = await readConfigEntry(ctx);
+  for (const { token, subsection } of sectionEntries(tokens, anySubsectionOf('remote'))) {
+    const refusal = promisorEntryRefusal(token, subsection ?? '', source);
+    if (refusal !== undefined) return refusal;
+  }
+  return undefined;
+};
+
 /**
  * `core.logAllRefUpdates`-specific finder: the key accepts a third literal,
  * `always`, beyond git's boolean grammar (mirrors `parseLogAllRefUpdates`'s own
@@ -2316,6 +2726,64 @@ export const findFirstInvalidPushGpgSign = async (
     keys: ['gpgsign'],
     accepts: (value) => parsePushGpgSign(value) !== undefined,
     fixedKey: 'push.gpgsign',
+  });
+
+/** `branch.autoSetupMerge`'s literals, which git compares case-sensitively. */
+const AUTO_SETUP_MERGE_LITERALS: ReadonlySet<string> = new Set(['always', 'inherit', 'simple']);
+
+/**
+ * `branch.autoSetupMerge`-specific finder: `git_default_config` takes three
+ * exact literals before handing anything else to its boolean grammar, which
+ * dies — on every command, `rev-parse` included. A `[branch "<name>"]`
+ * subsection holds an unrelated per-branch variable.
+ */
+export const findFirstInvalidAutoSetupMerge = async (
+  ctx: Context,
+): Promise<InvalidBooleanEntry | undefined> =>
+  findFirstRejectedBoolean(ctx, {
+    section: 'branch',
+    keys: ['autosetupmerge'],
+    accepts: (value) => AUTO_SETUP_MERGE_LITERALS.has(value) || acceptsGitBoolean(value),
+    fixedKey: 'branch.autosetupmerge',
+  });
+
+/**
+ * `core.disambiguate`-specific finder: `git_default_config` dies `unknown hint
+ * type` on a value naming none of the hint types — on every command. A
+ * valueless entry is a separate refusal (`findFirstValuelessEntry`).
+ */
+export const findFirstInvalidDisambiguate = async (
+  ctx: Context,
+): Promise<InvalidBooleanEntry | undefined> =>
+  findFirstRejectedBoolean(ctx, {
+    section: 'core',
+    keys: ['disambiguate'],
+    accepts: (value) => parseDisambiguationHint(value) !== undefined,
+    fixedKey: 'core.disambiguate',
+  });
+
+/** `branch.autoSetupRebase`'s literals, which git compares case-sensitively. */
+const AUTO_SETUP_REBASE_LITERALS: ReadonlySet<string> = new Set([
+  'never',
+  'local',
+  'remote',
+  'always',
+]);
+
+/**
+ * `branch.autoSetupRebase`-specific finder: `git_default_config` accepts only
+ * its four exact literals and dies `malformed value` on any other value — on
+ * every command, `rev-parse` included. A valueless entry is a separate refusal
+ * (`findFirstValuelessEntry`).
+ */
+export const findFirstInvalidAutoSetupRebase = async (
+  ctx: Context,
+): Promise<InvalidBooleanEntry | undefined> =>
+  findFirstRejectedBoolean(ctx, {
+    section: 'branch',
+    keys: ['autosetuprebase'],
+    accepts: (value) => AUTO_SETUP_REBASE_LITERALS.has(value),
+    fixedKey: 'branch.autosetuprebase',
   });
 
 /**

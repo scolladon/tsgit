@@ -1,13 +1,14 @@
 /**
  * `fetchMissing` command + the `createPromisorRemote` port implementation.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
   createPromisorRemote,
   fetchMissing,
 } from '../../../../src/application/commands/fetch-missing.js';
 import { looseObjectPath } from '../../../../src/application/primitives/path-layout.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import { encodePktStream } from '../../../../src/domain/protocol/pkt-line.js';
@@ -17,7 +18,7 @@ import type {
   HttpResponse,
   HttpTransport,
 } from '../../../../src/ports/http-transport.js';
-import { buildSyntheticPack } from '../primitives/pack-fixture.js';
+import { buildSyntheticPack, writeSyntheticPackIn } from '../primitives/pack-fixture.js';
 import { seedRepo } from './fixtures.js';
 
 const ENCODER = new TextEncoder();
@@ -371,6 +372,35 @@ describe('fetchMissing', () => {
     });
   });
 
+  describe('Given a wanted id present only in an alternate', () => {
+    describe('When fetchMissing', () => {
+      it('Then it is not requested', async () => {
+        // Arrange
+        const altObjects = '/repo/alt/objects';
+        const ctx: Context = {
+          ...createMemoryContext({
+            files: {
+              ['/repo/.git/objects/info/alternates']: ENCODER.encode(`${altObjects}\n`),
+            },
+          }),
+          transport: forbiddenTransport(),
+        };
+        await ctx.fs.mkdir(altObjects);
+        await seedRepo(ctx, {});
+        await withConfig(ctx, PARTIAL_CONFIG);
+        const [id] = await writeSyntheticPackIn(ctx, altObjects, 'alt', [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('held by the alternate') },
+        ]);
+
+        // Act
+        const result = await fetchMissing(ctx, { oids: [id as ObjectId] });
+
+        // Assert
+        expect(result).toEqual({ remote: 'origin', requested: 1, fetched: 0 });
+      });
+    });
+  });
+
   describe('Given a missing oid', () => {
     describe('When fetchMissing', () => {
       it('Then the object is fetched and a promisor pack is written', async () => {
@@ -568,6 +598,49 @@ describe('fetchMissing', () => {
     });
   });
 
+  describe('Given a promisor remote with no partialclonefilter', () => {
+    describe('When fetchMissing fetches through it', () => {
+      it("Then it records git's lazy-fetch filter on that remote, as git's fetch child does", async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, PARTIAL_CONFIG);
+        const { packBytes, blobId } = await onePackedBlob(base, 'filtered\n');
+        const ctx: Context = { ...base, transport: fakeRemote(packBytes).transport };
+        const sut = fetchMissing;
+
+        // Act
+        await sut(ctx, { oids: [blobId] });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`)).toBe(
+          `${PARTIAL_CONFIG}\tpartialclonefilter = blob:none\n`,
+        );
+      });
+    });
+  });
+
+  describe('Given a promisor remote already recording a partialclonefilter', () => {
+    describe('When fetchMissing fetches through it', () => {
+      it('Then the config is left as it was', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        const config = `${PARTIAL_CONFIG}\tpartialclonefilter = tree:0\n`;
+        await withConfig(base, config);
+        const { packBytes, blobId } = await onePackedBlob(base, 'kept\n');
+        const ctx: Context = { ...base, transport: fakeRemote(packBytes).transport };
+        const sut = fetchMissing;
+
+        // Act
+        await sut(ctx, { oids: [blobId] });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`)).toBe(config);
+      });
+    });
+  });
+
   describe('Given a configured auth credential', () => {
     describe('When fetchMissing', () => {
       it('Then the fetch carries it', async () => {
@@ -616,6 +689,267 @@ describe('fetchMissing', () => {
         // the channel exactly once.
         expect(caught).toBeInstanceOf(TsgitError);
         expect(closeSpy.calls).toBe(1);
+      });
+    });
+  });
+
+  describe('Given several promisor remotes', () => {
+    const URL_A = 'https://example.com/a.git';
+    const URL_SLASH = 'https://example.com/slash.git';
+
+    /** `origin` serves the pack; every other url answers 500. */
+    const originOnly = (packBytes: Uint8Array) => {
+      const origin = fakeRemote(packBytes);
+      const urls: string[] = [];
+      const transport: HttpTransport = {
+        request: async (req: HttpRequest): Promise<HttpResponse> => {
+          urls.push(req.url);
+          if (req.url.startsWith(URL)) return origin.transport.request(req);
+          return { statusCode: 500, headers: {}, body: streamOf(new Uint8Array()) };
+        },
+      };
+      return { transport, urls };
+    };
+
+    const remote = (name: string, url: string, extra = '\tpromisor = true\n') =>
+      `[remote "${name}"]\n\turl = ${url}\n${extra}`;
+
+    describe.each([
+      {
+        label: 'extensions.partialClone names origin, listed first',
+        config: `[extensions]\n\tpartialClone = origin\n${remote('origin', URL, '')}${remote('a', URL_A)}`,
+        tried: [URL_A, URL],
+      },
+      {
+        label: 'no extensions.partialClone, origin a promisor listed first',
+        config: `${remote('origin', URL)}${remote('a', URL_A)}`,
+        tried: [URL],
+      },
+      {
+        label: 'a filter-only remote listed first, then origin',
+        config: `${remote('a', URL_A, '\tpartialclonefilter = blob:none\n')}${remote('origin', URL)}`,
+        tried: [URL_A, URL],
+      },
+      {
+        label: "a remote whose name begins with '/' listed first",
+        config: `${remote('/slash', URL_SLASH)}${remote('origin', URL)}`,
+        tried: [URL],
+      },
+    ])('When fetchMissing runs with $label', ({ config, tried }) => {
+      it("Then each remote is tried in git's order until one serves the object", async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, config);
+        const { packBytes, blobId } = await onePackedBlob(base, 'lazy content\n');
+        const { transport, urls } = originOnly(packBytes);
+        const ctx: Context = { ...base, transport };
+        const sut = fetchMissing;
+
+        // Act
+        const result = await sut(ctx, { oids: [blobId] });
+
+        // Assert
+        expect(result).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
+        const contacted = [...new Set(urls.map((url) => url.replace(/\.git\/.*$/, '.git')))];
+        expect(contacted).toEqual(tried);
+      });
+    });
+
+    describe('When the first remote fails and the next serves the object', () => {
+      it("Then the failure is warned with the remote's name and error, as git shows the child's stderr", async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, `${remote('a', URL_A)}${remote('origin', URL)}`);
+        const { packBytes, blobId } = await onePackedBlob(base, 'lazy content\n');
+        const { transport } = originOnly(packBytes);
+        const warn = vi.fn();
+        const ctx: Context = { ...base, transport, logger: { warn } };
+        const sut = fetchMissing;
+
+        // Act
+        const result = await sut(ctx, { oids: [blobId] });
+
+        // Assert
+        expect(result.remote).toBe('origin');
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith('fetchMissing: promisor remote failed, trying the next', {
+          remote: 'a',
+          error: {
+            code: 'HTTP_ERROR',
+            reason: 'git-upload-pack discovery returned 500',
+            statusCode: 500,
+          },
+        });
+      });
+    });
+
+    describe('When a /-named remote is configured and each fetch reaches a remote', () => {
+      const SHORTHAND = "readRemoteConfig: config remote shorthand cannot begin with '/'";
+      const PROMISOR = "readPromisorRemoteNames: promisor remote name cannot begin with '/'";
+
+      it("Then each attempt warns as git's fetch child does, after the lazy fetch's own warning", async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(
+          base,
+          `${remote('/slash', URL_SLASH)}${remote('a', URL_A)}${remote('origin', URL)}`,
+        );
+        const { packBytes, blobId } = await onePackedBlob(base, 'lazy content\n');
+        const { transport } = originOnly(packBytes);
+        const warn = vi.fn();
+        const ctx: Context = { ...base, transport, logger: { warn } };
+        const sut = fetchMissing;
+
+        // Act
+        await sut(ctx, { oids: [blobId] });
+
+        // Assert
+        const fetchChild = [
+          [SHORTHAND, { remote: '/slash', key: 'url' }],
+          [SHORTHAND, { remote: '/slash', key: 'promisor' }],
+          [PROMISOR, { remote: '/slash' }],
+          [PROMISOR, { remote: '/slash' }],
+        ];
+        expect(
+          warn.mock.calls.map(([message, context]) => [
+            message,
+            context.remote === 'a' ? 'a' : context,
+          ]),
+        ).toEqual([
+          [PROMISOR, { remote: '/slash' }],
+          ...fetchChild,
+          ['fetchMissing: promisor remote failed, trying the next', 'a'],
+          ...fetchChild,
+        ]);
+      });
+    });
+
+    describe('When a failing remote leaves every wanted object landed locally', () => {
+      it('Then the later remote is never contacted and the failing one is reported as serving', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, `${remote('a', URL_A)}${remote('origin', URL)}`);
+        const { packBytes, blobId } = await onePackedBlob(base, 'lazy content\n');
+        const origin = originOnly(packBytes);
+        const urls: string[] = [];
+        const transport: HttpTransport = {
+          request: async (req: HttpRequest): Promise<HttpResponse> => {
+            urls.push(req.url);
+            if (!req.url.startsWith(URL_A)) return origin.transport.request(req);
+            await writeObject(base, {
+              type: 'blob',
+              id: '' as ObjectId,
+              content: ENCODER.encode('lazy content\n'),
+            });
+            return { statusCode: 500, headers: {}, body: streamOf(new Uint8Array()) };
+          },
+        };
+        const ctx: Context = { ...base, transport, logger: { warn: vi.fn() } };
+        const sut = fetchMissing;
+
+        // Act
+        const result = await sut(ctx, { oids: [blobId] });
+
+        // Assert
+        expect(result).toEqual({ remote: 'a', requested: 1, fetched: 1 });
+        expect(urls.some((url) => url.startsWith(URL))).toBe(false);
+      });
+    });
+
+    describe('When the first remote fails with an error that is not a classified failure', () => {
+      it('Then it propagates untouched and the later remote is never contacted', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, `${remote('a', URL_A)}${remote('origin', URL)}`);
+        const { packBytes, blobId } = await onePackedBlob(base, 'lazy content\n');
+        const origin = originOnly(packBytes);
+        const urls: string[] = [];
+        const socketReset = new Error('socket reset');
+        const transport: HttpTransport = {
+          request: async (req: HttpRequest): Promise<HttpResponse> => {
+            urls.push(req.url);
+            if (req.url.startsWith(URL_A)) throw socketReset;
+            return origin.transport.request(req);
+          },
+        };
+        const warn = vi.fn();
+        const ctx: Context = { ...base, transport, logger: { warn } };
+        const sut = fetchMissing;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { oids: [blobId] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(socketReset);
+        expect(urls.some((url) => url.startsWith(URL))).toBe(false);
+        expect(warn).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When the first remote answers but the wanted object is still missing', () => {
+      it('Then the fetch is deemed served by it and the later remote is never contacted', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, `${remote('a', URL_A)}${remote('origin', URL)}`);
+        const wanted = await onePackedBlob(base, 'lazy content\n');
+        const other = await onePackedBlob(base, 'something else\n');
+        const origin = fakeRemote(wanted.packBytes);
+        const first = fakeRemote(other.packBytes);
+        const urls: string[] = [];
+        const transport: HttpTransport = {
+          request: async (req: HttpRequest): Promise<HttpResponse> => {
+            urls.push(req.url);
+            return (req.url.startsWith(URL_A) ? first : origin).transport.request(req);
+          },
+        };
+        const ctx: Context = { ...base, transport };
+        const sut = fetchMissing;
+
+        // Act
+        const result = await sut(ctx, { oids: [wanted.blobId] });
+
+        // Assert
+        expect(result.remote).toBe('a');
+        expect(urls.some((url) => url.startsWith(URL))).toBe(false);
+      });
+    });
+
+    describe('When every remote fails', () => {
+      it("Then the last remote's failure propagates, only the earlier ones warned", async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, `${remote('a', URL_A)}${remote('b', URL_SLASH)}`);
+        const { packBytes, blobId } = await onePackedBlob(base, 'lazy content\n');
+        const { transport, urls } = originOnly(packBytes);
+        const warn = vi.fn();
+        const ctx: Context = { ...base, transport, logger: { warn } };
+        const sut = fetchMissing;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { oids: [blobId] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect(urls.at(-1)?.startsWith(URL_SLASH)).toBe(true);
+        expect(urls.some((url) => url.startsWith(URL_A))).toBe(true);
+        expect(warn.mock.calls.map(([, context]) => context.remote)).toEqual(['a']);
       });
     });
   });

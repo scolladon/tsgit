@@ -137,8 +137,8 @@ const { entries } = await repo.reflog();
 for (const e of entries) console.log(e.selector, e.entry.message);
 
 // Resolve a ref at N moves ago, or at a date
-const previous = await repo.revParse('HEAD@{2}');
-const yesterday = await repo.revParse('main@{yesterday}');
+const [previous] = await repo.revParse('HEAD@{2}');
+const [yesterday] = await repo.revParse('main@{yesterday}');
 
 // Prune old entries
 await repo.reflog({ action: 'expire', all: true, expire: '90.days.ago' });

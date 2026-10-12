@@ -64,4 +64,21 @@ describe('resolve-attribute properties', () => {
       });
     });
   });
+
+  describe('Given a rule that is not directory-only', () => {
+    describe('When resolving a path with and without a trailing slash', () => {
+      it('Then both verdicts are identical', () => {
+        // Arrange + Act + Assert
+        fc.assert(
+          fc.property(arbAttributeName(), arbValue(), arbValue(), (name, value, segment) => {
+            const sources = sourcesFrom(`${segment} ${name}=${value}`);
+            expect(resolveAttribute(sources, `${segment}/`, name, BUILTIN_MACROS)).toEqual(
+              resolveAttribute(sources, segment, name, BUILTIN_MACROS),
+            );
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
 });

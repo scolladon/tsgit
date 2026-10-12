@@ -10,7 +10,7 @@ repo.primitives.walkCommits(options?: WalkCommitsOptions): AsyncIterable<Commit>
 interface WalkCommitsOptions {
   readonly from: ReadonlyArray<ObjectId>;     // seed commits (≥ 1)
   readonly until?: ReadonlyArray<ObjectId> | ReadonlySet<ObjectId>; // excluded boundaries
-  readonly order?: 'topo' | 'first-parent';   // default 'topo'
+  readonly order?: 'breadth-first' | 'topo' | 'topo-order' | 'first-parent'; // default 'breadth-first'
   readonly ignoreMissing?: boolean;           // skip a missing object instead of throwing
   readonly verifyHash?: boolean;              // default false (ADR-718)
   readonly shallow?: ReadonlySet<ObjectId>;   // yielded, but parents not walked
@@ -19,9 +19,9 @@ interface WalkCommitsOptions {
 
 ## Behaviour
 
-- DFS over reachable commits.
-- `until` excludes a commit before it is read — neither yielded nor expanded.
-- `order: 'first-parent'` mirrors [`log`](../commands/log.md)'s semantics; the default `'topo'` walks any parent order.
+- Walks the reachable commits in queue order: each commit after the one that reached it, parents in order.
+- `until` is settled first, as git's `limit_list` does: every ancestor of an excluded commit is left out, whichever path reaches it — not only the excluded commits themselves.
+- `order: 'breadth-first'` (the default; `'topo'` is its former name, kept as an alias) walks any parent order as a queue. `'first-parent'` mirrors [`log`](../commands/log.md)'s semantics. `'topo-order'` is git's `rev-list --topo-order`: every commit is read before the first is yielded, a commit comes after all its children, and each line of history is yielded whole.
 - Back-pressure: only advances when the consumer pulls.
 - When `.git/objects/info/commit-graph` is present (single-file or chain/split form), parents and dates are served from it, falling back to object reads for any commit it doesn't cover. Results are identical with or without a graph; a corrupt or stale graph is treated as absent, and the presence of a `.git/shallow` file (even 0-byte) disables graph consultation entirely — a stale graph can never re-introduce a masked parent.
 - `shallow` omitted ⇒ the repository's `.git/shallow` set is loaded automatically, so the walk stops at a fetched shallow boundary without the caller doing anything; supplied (including an explicit empty `Set`) ⇒ the caller's set governs which commits are masked (the commit-graph presence gate above still probes `.git/shallow` once per `Context`, whatever set is passed). A boundary commit is still yielded — only its parents are skipped, and the yielded commit's own `data.parents` reports empty, matching the boundary's true git-faithful shape.

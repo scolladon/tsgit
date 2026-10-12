@@ -11,6 +11,16 @@ import type { ObjectId, RefName } from '../objects/object-id.js';
  */
 export const WORKTREE_COMMONDIR = '../..';
 
+/**
+ * `<admin>/HEAD` placeholder under a non-files ref backend — git's
+ * ref-directory stubs: `is_git_directory` demands a `HEAD` that looks
+ * like a ref, while the real HEAD lives in the backend's own storage.
+ */
+export const PLACEHOLDER_HEAD_STUB = 'ref: refs/heads/.invalid';
+
+/** `<admin>/refs/heads` stub git writes so files-backend readers stop at a regular file. */
+export const REFTABLE_REFS_HEADS_STUB = 'this repository uses the reftable format';
+
 /** `<admin>/gitdir` content — the absolute path to the worktree's own `.git` file. */
 export const worktreeGitdirPointer = (absWorktreePath: string): string => `${absWorktreePath}/.git`;
 

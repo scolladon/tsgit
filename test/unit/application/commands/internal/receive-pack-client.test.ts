@@ -3,7 +3,7 @@
  *
  * Mirrors the upload-pack-client.test.ts contract:
  *  - discoverReceivePackRefs makes the right HTTP request.
- *  - selectPushCapabilities intersects + appends the agent slot.
+ *  - selectPushCapabilities requests what git's send-pack requests.
  */
 import { describe, expect, it } from 'vitest';
 import type { GitServiceSession } from '../../../../../src/application/commands/internal/git-service-session.js';
@@ -12,6 +12,7 @@ import {
   selectPushCapabilities,
 } from '../../../../../src/application/commands/internal/receive-pack-client.js';
 import { ObjectId as OID } from '../../../../../src/domain/objects/index.js';
+import { AGENT } from '../../../../../src/domain/protocol/capabilities.js';
 import {
   decodePktStream,
   encodePktStream,
@@ -65,55 +66,87 @@ describe('discoverReceivePackRefs', () => {
 describe('selectPushCapabilities', () => {
   describe('Given an advertised set with only report-status', () => {
     describe('When selectPushCapabilities runs', () => {
-      it('Then the agent slot is always appended', () => {
-        // Arrange & Act
-        const result = selectPushCapabilities(['report-status'], 'sha1');
+      it('Then no agent is sent, as git sends one only to a server advertising its own', () => {
+        // Arrange
+        const sut = selectPushCapabilities;
 
-        // Assert — pins the trailing `[...intersected, AGENT]` step.
-        expect(result.some((c) => c.startsWith('agent='))).toBe(true);
+        // Act
+        const result = sut(['report-status'], 'sha1', []);
+
+        // Assert
+        expect(result).toEqual(['report-status']);
+      });
+    });
+  });
+
+  describe("Given git's own receive-pack advertisement", () => {
+    describe('When selectPushCapabilities runs for an atomic push', () => {
+      it("Then it requests exactly what git's send-pack does, in its order", () => {
+        // Arrange
+        const advertised = [
+          'report-status',
+          'report-status-v2',
+          'delete-refs',
+          'side-band-64k',
+          'quiet',
+          'atomic',
+          'ofs-delta',
+          'object-format=sha1',
+          'agent=git/2.55.0',
+        ];
+        const sut = selectPushCapabilities;
+
+        // Act
+        const result = sut(advertised, 'sha1', ['atomic']);
+
+        // Assert
+        expect(result).toEqual([
+          'report-status-v2',
+          'side-band-64k',
+          'quiet',
+          'atomic',
+          'object-format=sha1',
+          AGENT,
+        ]);
       });
     });
   });
 
   describe('Given server advertises only %s', () => {
     describe('When selectPushCapabilities runs', () => {
-      it.each([
-        ['report-status'],
-        ['side-band-64k'],
-        ['ofs-delta'],
-        ['atomic'],
-        ['delete-refs'],
-      ] as const)('Then %s IS in the result', (cap) => {
-        // Arrange & Act
-        const result = selectPushCapabilities([cap], 'sha1');
+      it.each([['report-status'], ['report-status-v2'], ['side-band-64k'], ['quiet']] as const)(
+        'Then %s IS in the result',
+        (cap) => {
+          // Arrange & Act
+          const result = selectPushCapabilities([cap], 'sha1', []);
 
-        // Assert — the intersect keeps any v1-supported capability.
-        expect(result).toContain(cap);
-      });
+          // Assert
+          expect(result).toEqual([cap]);
+        },
+      );
     });
   });
 
-  describe('Given the server advertises a non-supported capability', () => {
+  describe('Given the server advertises a capability that only steers the client', () => {
     describe('When selectPushCapabilities runs', () => {
-      it('Then it is NOT in the result', () => {
-        // Arrange & Act — kills the no-intersect mutant. Without the intersect
-        // step, the function would echo unsupported capabilities back to the
-        // server.
-        const result = selectPushCapabilities(['quiet'], 'sha1');
+      it.each([['ofs-delta'], ['delete-refs'], ['no-thin']] as const)(
+        'Then %s is NOT in the result',
+        (cap) => {
+          // Arrange & Act
+          const result = selectPushCapabilities([cap], 'sha1', []);
 
-        // Assert
-        expect(result).not.toContain('quiet');
-      });
+          // Assert
+          expect(result).toEqual([]);
+        },
+      );
     });
   });
 
   describe('Given the server advertises its own agent string', () => {
     describe('When selectPushCapabilities runs', () => {
       it('Then the result has exactly one agent= entry (the client one)', () => {
-        // Arrange & Act — kills the `c !== AGENT` filter mutant on the clientWants
-        // step. Without it, AGENT would survive the intersect and then get
-        // appended again at the end, producing two agent= entries.
-        const result = selectPushCapabilities(['agent=git/2.x', 'report-status'], 'sha1');
+        // Arrange & Act — the server's own agent is never echoed back.
+        const result = selectPushCapabilities(['agent=git/2.x', 'report-status'], 'sha1', []);
 
         // Assert
         const agentEntries = result.filter((c) => c.startsWith('agent='));
@@ -123,12 +156,11 @@ describe('selectPushCapabilities', () => {
     });
   });
 
-  describe('Given the server does NOT advertise atomic', () => {
+  describe('Given the server advertises atomic and the push does not opt in', () => {
     describe('When selectPushCapabilities runs', () => {
       it('Then atomic is NOT in the result', () => {
-        // Arrange & Act — pins the negotiation contract: we only ask for what the
-        // server can give us.
-        const result = selectPushCapabilities(['report-status'], 'sha1');
+        // Arrange & Act
+        const result = selectPushCapabilities(['report-status', 'atomic'], 'sha1', []);
 
         // Assert
         expect(result).not.toContain('atomic');
@@ -136,23 +168,36 @@ describe('selectPushCapabilities', () => {
     });
   });
 
-  describe('Given signing=true and the server advertises push-cert=<nonce>', () => {
+  describe('Given the server advertises atomic and the push opts in', () => {
     describe('When selectPushCapabilities runs', () => {
-      it('Then the negotiated push-cert=<nonce> token IS in the result', () => {
+      it('Then atomic IS in the result', () => {
         // Arrange & Act
-        const result = selectPushCapabilities(['report-status', 'push-cert=abc123'], 'sha1', true);
+        const result = selectPushCapabilities(['report-status', 'atomic'], 'sha1', ['atomic']);
 
-        // Assert — negotiateCapabilities echoes back the SERVER's value.
-        expect(result).toContain('push-cert=abc123');
+        // Assert
+        expect(result).toContain('atomic');
       });
     });
   });
 
-  describe('Given signing is omitted (default) and the server advertises push-cert=<nonce>', () => {
+  describe('Given the server does NOT advertise atomic', () => {
+    describe('When selectPushCapabilities runs', () => {
+      it('Then atomic is NOT in the result', () => {
+        // Arrange & Act — pins the negotiation contract: we only ask for what the
+        // server can give us.
+        const result = selectPushCapabilities(['report-status'], 'sha1', ['atomic']);
+
+        // Assert
+        expect(result).not.toContain('atomic');
+      });
+    });
+  });
+
+  describe('Given no opt-in and the server advertises push-cert=<nonce>', () => {
     describe('When selectPushCapabilities runs', () => {
       it('Then no push-cert token is in the result', () => {
         // Arrange & Act — kills the "always want push-cert" mutant.
-        const result = selectPushCapabilities(['report-status', 'push-cert=abc123'], 'sha1');
+        const result = selectPushCapabilities(['report-status', 'push-cert=abc123'], 'sha1', []);
 
         // Assert
         expect(result.some((c) => c === 'push-cert' || c.startsWith('push-cert='))).toBe(false);
@@ -160,11 +205,11 @@ describe('selectPushCapabilities', () => {
     });
   });
 
-  describe('Given signing=true but the server does NOT advertise push-cert', () => {
+  describe('Given the push opts in to push-cert but the server does NOT advertise push-cert', () => {
     describe('When selectPushCapabilities runs', () => {
       it('Then no push-cert token is in the result', () => {
         // Arrange & Act — the intersect step still applies to push-cert.
-        const result = selectPushCapabilities(['report-status'], 'sha1', true);
+        const result = selectPushCapabilities(['report-status'], 'sha1', ['push-cert']);
 
         // Assert
         expect(result.some((c) => c === 'push-cert' || c.startsWith('push-cert='))).toBe(false);
@@ -179,7 +224,7 @@ describe('selectPushCapabilities', () => {
         // git gates its own token on `server_supports_hash()`. Sending one
         // regardless would put an unsolicited capability on every legacy
         // SHA-1 push.
-        const result = selectPushCapabilities(['report-status'], 'sha1');
+        const result = selectPushCapabilities(['report-status'], 'sha1', []);
 
         // Assert
         expect(result.some((capability) => capability.startsWith('object-format='))).toBe(false);
@@ -192,7 +237,7 @@ describe('selectPushCapabilities', () => {
       it('Then the result carries object-format=sha1 when the peer advertised the capability', () => {
         // Arrange & Act — the peer must advertise `object-format` for git to
         // send one; the value sent is OURS, never the peer's echoed back.
-        const result = selectPushCapabilities(['report-status', 'object-format=sha1'], 'sha1');
+        const result = selectPushCapabilities(['report-status', 'object-format=sha1'], 'sha1', []);
 
         // Assert
         expect(result).toContain('object-format=sha1');
@@ -204,7 +249,11 @@ describe('selectPushCapabilities', () => {
     describe('When selectPushCapabilities runs', () => {
       it('Then the result carries object-format=sha256, our own, regardless of the server advert', () => {
         // Arrange & Act
-        const result = selectPushCapabilities(['report-status', 'object-format=sha1'], 'sha256');
+        const result = selectPushCapabilities(
+          ['report-status', 'object-format=sha1'],
+          'sha256',
+          [],
+        );
 
         // Assert
         expect(result).toContain('object-format=sha256');

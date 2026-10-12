@@ -5,6 +5,7 @@ import {
   assertEagerConfigValid,
   assertNoPendingOperation,
   assertOperationalRepository,
+  assertOperationalRepositorySettingsFirst,
   assertRepository,
   branchRefFromHead,
   currentBranchRef,
@@ -566,6 +567,25 @@ describe('internal/repo-state', () => {
       });
     });
 
+    describe('Given a pending-operation marker that holds no object id', () => {
+      describe('When called', () => {
+        it.each(['CHERRY_PICK_HEAD', 'REVERT_HEAD', 'REBASE_HEAD'])(
+          'Then a broken %s does not count as in progress, as git reads it',
+          async (marker) => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${marker}`, 'oid\n');
+
+            // Act
+            const result = await assertNoPendingOperation(ctx);
+
+            // Assert
+            expect(result).toBeUndefined();
+          },
+        );
+      });
+    });
+
     describe('Given a single pending-operation marker file exists', () => {
       describe('When called', () => {
         it.each([
@@ -575,7 +595,7 @@ describe('internal/repo-state', () => {
         ])('Then .git/$label throws with operation $operation', async ({ marker, operation }) => {
           // Arrange
           const ctx = createMemoryContext();
-          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${marker}`, 'oid\n');
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${marker}`, `${'a'.repeat(40)}\n`);
 
           // Act
           let caught: unknown;
@@ -904,35 +924,25 @@ describe('internal/repo-state', () => {
         it.each([
           { key: 'packedGitWindowSize', label: 'core.packedGitWindowSize' },
           { key: 'packedGitLimit', label: 'core.packedGitLimit' },
-        ])('Then throws CONFIG_BAD_NUMERIC_VALUE for $label', async ({ key }) => {
+        ])("Then it resolves — $label is a repo-settings key, not this gate's", async ({ key }) => {
           // Arrange
           const ctx = createMemoryContext();
           await seedRepo(ctx);
           await seedConfig(ctx, `[core]\n\t${key}\n`);
+          const sut = assertOperationalRepository;
 
           // Act
-          let caught: unknown;
-          try {
-            await assertOperationalRepository(ctx);
-          } catch (err) {
-            caught = err;
-          }
+          const result = await sut(ctx);
 
-          // Assert — each field individually (mutation-resistant)
-          expect(caught).toBeInstanceOf(TsgitError);
-          const data = (caught as TsgitError).data as BadNumericData;
-          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
-          expect(data.key).toBe(`core.${key.toLowerCase()}`);
-          expect(data.source).toMatch(/\/config$/);
-          expect(data.value).toBe('');
-          expect(data.reason).toBe('invalid unit');
+          // Assert
+          expect(result).toBe(ctx.layout.workDir);
         });
       });
     });
 
     describe('Given a config with core.compression (line 2) earlier than a malformed core.packedGitWindowSize (line 3)', () => {
       describe('When called', () => {
-        it('Then throws CONFIG_BAD_NUMERIC_VALUE for core.compression (earlier line wins)', async () => {
+        it('Then throws CONFIG_BAD_NUMERIC_VALUE for core.compression', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seedRepo(ctx);
@@ -959,7 +969,7 @@ describe('internal/repo-state', () => {
 
     describe('Given a config with a malformed core.packedGitWindowSize (line 2) earlier than core.compression (line 3)', () => {
       describe('When called', () => {
-        it('Then throws CONFIG_BAD_NUMERIC_VALUE for core.packedGitWindowSize (earlier line wins)', async () => {
+        it("Then throws CONFIG_BAD_NUMERIC_VALUE for core.compression — the earlier bound is not this gate's", async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seedRepo(ctx);
@@ -977,8 +987,8 @@ describe('internal/repo-state', () => {
           expect(caught).toBeInstanceOf(TsgitError);
           const data = (caught as TsgitError).data as BadNumericData;
           expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
-          expect(data.key).toBe('core.packedgitwindowsize');
-          expect(data.value).toBe('-1');
+          expect(data.key).toBe('core.compression');
+          expect(data.value).toBe('');
           expect(data.reason).toBe('invalid unit');
         });
       });
@@ -1232,6 +1242,11 @@ describe('internal/repo-state', () => {
             label: 'core.logAllRefUpdates = maybe',
           },
           {
+            config: '[core]\n\tignoreCase = maybe\n',
+            expectedKey: 'core.ignorecase',
+            label: 'core.ignoreCase = maybe',
+          },
+          {
             config: '[diff "MyDriver"]\n\tcachetextconv = maybe\n',
             expectedKey: 'diff.MyDriver.cachetextconv',
             label: '[diff "MyDriver"] cachetextconv = maybe (subsection verbatim)',
@@ -1332,6 +1347,82 @@ describe('internal/repo-state', () => {
 
           // Act + Assert — must not throw
           await assertEagerConfigValid(ctx);
+        });
+      });
+    });
+
+    describe('Given a diff driver string key is valueless', () => {
+      describe('When called', () => {
+        it.each(['textconv', 'command', 'funcname', 'xfuncname', 'wordregex'])(
+          'Then diff.MyDriver.%s throws CONFIG_MISSING_VALUE naming its line',
+          async (key) => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seedRepo(ctx);
+            await seedConfig(ctx, `[diff "MyDriver"]\n\tbinary = true\n\t${key}\n`);
+            const sut = assertEagerConfigValid;
+
+            // Act
+            let caught: unknown;
+            try {
+              await sut(ctx);
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            const data = (caught as TsgitError).data as {
+              code: string;
+              key: string;
+              line: number;
+            };
+            expect(data.code).toBe('CONFIG_MISSING_VALUE');
+            expect(data.key).toBe(`diff.MyDriver.${key}`);
+            expect(data.line).toBe(3);
+          },
+        );
+      });
+    });
+
+    describe('Given a subsectionless [diff] textconv is valueless', () => {
+      describe('When called', () => {
+        it('Then resolves without throw — git only reads the key per driver subsection', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[diff]\n\ttextconv\n');
+          const sut = assertEagerConfigValid;
+
+          // Act
+          const result = sut(ctx);
+
+          // Assert
+          await expect(result).resolves.toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a diff driver trustExitCode holds a value git refuses', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_BOOLEAN_VALUE naming the key', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[diff "MyDriver"]\n\ttrustExitCode = maybe\n');
+          const sut = assertEagerConfigValid;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          const data = (caught as TsgitError).data as BadBooleanData;
+          expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+          expect(data.key).toBe('diff.MyDriver.trustexitcode');
         });
       });
     });
@@ -1492,6 +1583,35 @@ describe('internal/repo-state', () => {
             code: 'CONFIG_BAD_NUMERIC_VALUE',
             key: 'core.maxtreedepth',
           });
+        });
+      });
+    });
+  });
+
+  describe('assertOperationalRepositorySettingsFirst', () => {
+    describe('Given a layout carrying a version refusal plus a malformed core.packedGitLimit', () => {
+      describe('When called', () => {
+        it("Then setup's format refusal is named ahead of the repo-settings class", async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tpackedGitLimit = abc\n');
+          const rejected = withFormatRefusal(ctx, { kind: 'version', version: 99 });
+          const sut = assertOperationalRepositorySettingsFirst;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(rejected);
+            expect.unreachable();
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          const data = (caught as TsgitError).data as FormatVersionData;
+          expect(data.code).toBe('REPOSITORY_FORMAT_VERSION_UNSUPPORTED');
+          expect(data.version).toBe(99);
         });
       });
     });

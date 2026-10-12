@@ -31,9 +31,11 @@ function readParentPositions(
 /**
  * Independent "corrected commit date" fold, computed straight from the
  * generated DAG's own `committerDate`/`parents` fields — never through the
- * writer's `computeGenerations`, so it cannot share a bug with the SUT it
+ * writer's `computeCommitGraphGenerations`, so it cannot share a bug with the SUT it
  * checks. git's rule: a commit's corrected date is the max of its own
- * committer date and one more than every parent's corrected date. The DAG
+ * committer date and one more than every parent's corrected date, a commit
+ * dated zero counting as dateless — one more than its parents, so a dateless
+ * root is 1. The DAG
  * is acyclic by construction (`arbCommitGraphWriterDag` only lets a commit
  * name an EARLIER-positioned commit as a parent), so the memoised recursion
  * always terminates.
@@ -48,10 +50,9 @@ function correctedDateFold(
     if (memoized !== undefined) return memoized;
     const commit = byId.get(id);
     if (commit === undefined) throw new Error(`arbitrary DAG referenced unknown parent: ${id}`);
-    let corrected = commit.committerDate;
-    for (const parentId of commit.parents) {
-      corrected = Math.max(corrected, foldOne(parentId) + 1);
-    }
+    const parentFloor = Math.max(0, ...commit.parents.map(foldOne)) + 1;
+    const corrected =
+      commit.committerDate > 0 ? Math.max(commit.committerDate, parentFloor) : parentFloor;
     memo.set(id, corrected);
     return corrected;
   };

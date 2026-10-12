@@ -18,12 +18,26 @@
  *   interopSurface: gc
  */
 import { execFileSync } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import {
+  appendFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
-import { maintenance } from '../../src/application/commands/maintenance.js';
+import { type MaintenanceTask, maintenance } from '../../src/application/commands/maintenance.js';
 import { commonGitDir, packsDir } from '../../src/application/primitives/path-layout.js';
 import { disposePackRegistry } from '../../src/application/primitives/read-object.js';
 import { TsgitError } from '../../src/domain/error.js';
@@ -233,6 +247,12 @@ function catFileExists(dir: string, oid: string): boolean {
   return tryRunGitWithExit(['-C', dir, 'cat-file', '-e', oid]).exitCode === 0;
 }
 
+/** git's first `fatal:` line, newline-terminated; the maintenance wrapper's own lines follow it. */
+const firstFatalLineOf = (stderr: string): string | undefined => {
+  const line = stderr.split('\n').find((candidate) => candidate.startsWith('fatal: '));
+  return line === undefined ? undefined : `${line}\n`;
+};
+
 async function packDirEntries(dir: string): Promise<ReadonlyArray<string>> {
   return readdir(path.join(dir, '.git', 'objects', 'pack'));
 }
@@ -312,6 +332,15 @@ async function peerPackNamesContaining(dir: string, oid: string): Promise<Readon
   return hits;
 }
 
+/** `git pack-objects` over exactly `oids` into the repository's own pack directory. */
+function packOidsGit(dir: string, oids: ReadonlyArray<string>): string {
+  return execFileSync(
+    'git',
+    ['-C', dir, 'pack-objects', '--non-empty', path.join(dir, '.git', 'objects', 'pack', 'pack')],
+    { input: `${oids.join('\n')}\n`, encoding: 'utf8', env: runGitEnv() },
+  ).trim();
+}
+
 /**
  * Builds a pack from exactly `oids` via `git pack-objects` and marks it with
  * `suffix` (`.promisor`, `.keep`, …) — the same manual-construction shape
@@ -326,11 +355,7 @@ async function buildMarkedPack(
   oids: ReadonlyArray<string>,
   suffix: string,
 ): Promise<string> {
-  const packSha = execFileSync(
-    'git',
-    ['-C', dir, 'pack-objects', '--non-empty', path.join(dir, '.git', 'objects', 'pack', 'pack')],
-    { input: `${oids.join('\n')}\n`, encoding: 'utf8', env: runGitEnv() },
-  ).trim();
+  const packSha = packOidsGit(dir, oids);
   await writeFile(path.join(dir, '.git', 'objects', 'pack', `pack-${packSha}${suffix}`), '');
   return packSha;
 }
@@ -652,6 +677,49 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
     });
   });
 
+  describe('Given blobs only the index resolve-undo record names, When gc runs on both twins at pruneExpire=now', () => {
+    let baseDir: string;
+    let regularIds: ReadonlyArray<string>;
+    let symlinkId: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('resolve-undo-roots');
+      await addCommit(baseDir, 'c0');
+      regularIds = ['base', 'ours'].map((content) => writeLooseBlobGit(baseDir, content));
+      symlinkId = writeLooseBlobGit(baseDir, 'link-target');
+      git(baseDir, 'rm', '-q', '--cached', 'c0.txt');
+      execFileSync('git', ['-C', baseDir, 'update-index', '--index-info'], {
+        input: [
+          `100644 ${regularIds[0]} 1\tc0.txt`,
+          `100644 ${regularIds[1]} 2\tc0.txt`,
+          `120000 ${symlinkId} 3\tc0.txt`,
+          '',
+        ].join('\n'),
+        env: runGitEnv(),
+      });
+      git(baseDir, 'add', 'c0.txt');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then both keep the regular-file stages and prune the symlink stage', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'resolve-undo-roots');
+
+      // Act
+      await runBothGc(twin, ['gc.pruneExpire=now']);
+
+      // Assert
+      const survivors = (dir: string) =>
+        [...regularIds, symlinkId].map((id) => catFileExists(dir, id));
+      expect(survivors(twin.oursDir)).toEqual(survivors(twin.peerDir));
+      expect(survivors(twin.oursDir)).toEqual([true, true, false]);
+      await disposeTwin(twin);
+    });
+  });
+
   describe("Given a repository with refs and a reflog, When tsgit's gc runs", () => {
     let baseDir: string;
 
@@ -716,11 +784,16 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
     });
   });
 
-  describe('Given an unparseable gc.pruneExpire value, When gc runs on both twins', () => {
+  describe.each([
+    { label: 'an unparseable', value: 'not-a-date' },
+    { label: 'the reflog-only "all"', value: 'all' },
+    { label: 'the reflog-only "false"', value: 'false' },
+    { label: 'a future-dated', value: '2099-01-01' },
+  ])('Given $label gc.pruneExpire value, When gc runs on both twins', ({ value }) => {
     let baseDir: string;
 
     beforeAll(async () => {
-      baseDir = await initRepo('malformed-expiry');
+      baseDir = await initRepo(`malformed-expiry-${value}`);
       await addCommit(baseDir, 'c0');
       writeLooseBlobGit(baseDir, 'irrelevant');
     }, SETUP_TIMEOUT);
@@ -731,12 +804,12 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
 
     it('Then both tools refuse rather than silently defaulting the cutoff', async () => {
       // Arrange
-      const twin = await makeTwin(baseDir, 'malformed-expiry');
+      const twin = await makeTwin(baseDir, `malformed-expiry-${value}`);
       const peerResult = tryRunGitWithExit([
         '-C',
         twin.peerDir,
         '-c',
-        'gc.pruneExpire=not-a-date',
+        `gc.pruneExpire=${value}`,
         'gc',
       ]);
 
@@ -745,7 +818,7 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       // call precedes `runOursGc`'s Context construction).
       let oursCaught: unknown;
       try {
-        await setOursGcConfig(twin.oursDir, ['gc.pruneExpire=not-a-date']);
+        await setOursGcConfig(twin.oursDir, [`gc.pruneExpire=${value}`]);
         const ctx = trackedNodeContext(twin.oursDir, 'sha1');
         await maintenance(ctx, { tasks: ['gc'] });
       } catch (error) {
@@ -753,10 +826,480 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       }
 
       // Assert — both refuse; git with a non-zero exit, tsgit with a typed error.
-      expect(peerResult.exitCode).not.toBe(0);
+      expect(peerResult.exitCode).toBe(128);
       expect(oursCaught).toBeInstanceOf(TsgitError);
       expect((oursCaught as TsgitError).data.code).toBe('CONFIG_BAD_DATE_VALUE');
       await disposeTwin(twin);
+    });
+  });
+
+  describe.each([
+    { kv: 'gc.auto=bogus', code: 'CONFIG_BAD_NUMERIC_VALUE' },
+    { kv: 'gc.cruftPacks=maybe', code: 'CONFIG_BAD_BOOLEAN_VALUE' },
+    { kv: 'gc.pruneExpire=all', code: 'CONFIG_BAD_DATE_VALUE' },
+    { kv: 'gc.worktreePruneExpire=2099-01-01', code: 'CONFIG_BAD_DATE_VALUE' },
+    { kv: 'gc.autoPackLimit=3g', code: 'CONFIG_BAD_NUMERIC_VALUE' },
+    { kv: 'gc.logExpiry=garbage', code: 'CONFIG_BAD_DATE_VALUE' },
+    { kv: 'gc.bigPackThreshold=-0', code: 'CONFIG_BAD_NUMERIC_VALUE' },
+  ])('Given a malformed $kv', ({ kv, code }) => {
+    describe.each([
+      {
+        run: 'gc --auto under a declining gate',
+        gitArgs: ['gc', '--auto'],
+        opts: { tasks: ['gc'] as ReadonlyArray<MaintenanceTask>, auto: true },
+      },
+      {
+        run: 'the commit-graph maintenance task alone',
+        gitArgs: ['maintenance', 'run', '--task=commit-graph'],
+        opts: { tasks: ['commit-graph'] as ReadonlyArray<MaintenanceTask>, auto: false },
+      },
+    ])('When both tools run $run', ({ gitArgs, opts }) => {
+      it('Then both refuse before any task', async () => {
+        // Arrange
+        const slug = `gc-config-first-${kv.replace(/\W+/g, '-')}-${gitArgs.length}`;
+        const baseDir = await initRepo(slug);
+        await addCommit(baseDir, 'c0');
+        const twin = await makeTwin(baseDir, slug);
+        await rm(baseDir, { recursive: true, force: true });
+        const peer = tryRunGitWithExit(['-C', twin.peerDir, '-c', kv, ...gitArgs]);
+        await setOursGcConfig(twin.oursDir, [kv]);
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(trackedNodeContext(twin.oursDir, 'sha1'), {
+            tasks: opts.tasks,
+            auto: opts.auto,
+          });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect((caught as TsgitError).data.code).toBe(code);
+        await disposeTwin(twin);
+      });
+    });
+  });
+
+  describe.each([
+    { kv: 'core.commitGraph=off', code: undefined },
+    { kv: 'core.commitGraph=sometimes', code: 'CONFIG_BAD_BOOLEAN_VALUE' },
+    { kv: 'index.sparse=sometimes', code: 'CONFIG_BAD_BOOLEAN_VALUE' },
+  ])('Given $kv', ({ kv, code }) => {
+    describe('When both tools run the commit-graph maintenance task', () => {
+      it('Then both write no commit-graph, refusing exactly when git dies', async () => {
+        // Arrange
+        const slug = `commit-graph-setting-${kv.replace(/\W+/g, '-')}`;
+        const baseDir = await initRepo(slug);
+        await addCommit(baseDir, 'c0');
+        const twin = await makeTwin(baseDir, slug);
+        await rm(baseDir, { recursive: true, force: true });
+        const peer = tryRunGitWithExit([
+          '-C',
+          twin.peerDir,
+          '-c',
+          kv,
+          'maintenance',
+          'run',
+          '--task=commit-graph',
+        ]);
+        const [qualified = '', value] = kv.split('=');
+        const dot = qualified.indexOf('.');
+        await appendFile(
+          path.join(twin.oursDir, '.git', 'config'),
+          `[${qualified.slice(0, dot)}]\n\t${qualified.slice(dot + 1)} = ${value}\n`,
+        );
+        const sut = maintenance;
+
+        // Act
+        const [outcome] = await Promise.allSettled([
+          sut(trackedNodeContext(twin.oursDir, 'sha1'), { tasks: ['commit-graph'], auto: false }),
+        ]);
+
+        // Assert
+        const graph = path.join('.git', 'objects', 'info', 'commit-graph');
+        expect(peer.exitCode).toBe(code === undefined ? 0 : 128);
+        expect(outcome.status === 'rejected' ? outcome.reason.data.code : undefined).toBe(code);
+        expect(existsSync(path.join(twin.oursDir, graph))).toBe(false);
+        expect(existsSync(path.join(twin.peerDir, graph))).toBe(false);
+        await disposeTwin(twin);
+      });
+    });
+  });
+
+  /** Appends the same raw config text to both twins — `-c` cannot express every shape. */
+  const appendBothConfigs = async (twin: Twin, text: string): Promise<void> => {
+    for (const dir of [twin.peerDir, twin.oursDir]) {
+      await appendFile(path.join(dir, '.git', 'config'), text);
+    }
+  };
+
+  describe.each([
+    { label: 'valueless gc.pruneExpire', text: '[gc]\n\tpruneExpire\n' },
+    { label: 'valueless gc.worktreePruneExpire', text: '[gc]\n\tworktreePruneExpire\n' },
+    { label: 'valueless gc.logExpiry', text: '[gc]\n\tlogExpiry\n' },
+  ])('Given a $label', ({ text }) => {
+    describe.each([
+      { run: 'gc --auto', gitArgs: ['gc', '--auto'], tasks: ['gc'] as const, auto: true },
+      {
+        run: 'the commit-graph task',
+        gitArgs: ['maintenance', 'run', '--task=commit-graph'],
+        tasks: ['commit-graph'] as const,
+        auto: false,
+      },
+    ])('When both tools run $run', ({ gitArgs, tasks, auto }) => {
+      it('Then both refuse the missing value before any task', async () => {
+        // Arrange
+        const slug = `gc-valueless-${text.replace(/\W+/g, '-')}-${gitArgs.length}`;
+        const baseDir = await initRepo(slug);
+        await addCommit(baseDir, 'c0');
+        const twin = await makeTwin(baseDir, slug);
+        await rm(baseDir, { recursive: true, force: true });
+        await appendBothConfigs(twin, text);
+        const peer = tryRunGitWithExit(['-C', twin.peerDir, ...gitArgs]);
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(trackedNodeContext(twin.oursDir, 'sha1'), { tasks: [...tasks], auto });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(peer.stderr).toContain('missing value');
+        expect((caught as TsgitError).data.code).toBe('CONFIG_MISSING_VALUE');
+        await disposeTwin(twin);
+      });
+    });
+  });
+
+  describe('Given each numeric, boolean and expiry gc key malformed and then set validly', () => {
+    describe('When both tools run gc', () => {
+      it('Then both run, as git reads only the last entry', async () => {
+        // Arrange
+        const slug = 'gc-config-last-wins';
+        const baseDir = await initRepo(slug);
+        await addCommit(baseDir, 'c0');
+        const twin = await makeTwin(baseDir, slug);
+        await rm(baseDir, { recursive: true, force: true });
+        await appendBothConfigs(
+          twin,
+          [
+            '[gc]',
+            'auto = abc',
+            'auto = 0',
+            'autoPackLimit = abc',
+            'autoPackLimit = 50',
+            'cruftPacks = maybe',
+            'cruftPacks = true',
+            'logExpiry = garbage',
+            'logExpiry = never',
+            'bigPackThreshold = abc',
+            'bigPackThreshold = +5',
+            '',
+          ].join('\n\t'),
+        );
+        const peer = tryRunGitWithExit(['-C', twin.peerDir, 'gc', '-q']);
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(trackedNodeContext(twin.oursDir, 'sha1'), { tasks: ['gc'] });
+
+        // Assert
+        expect(peer.exitCode).toBe(0);
+        expect(result.tasksRun).toEqual(['gc']);
+        await disposeTwin(twin);
+      });
+    });
+  });
+
+  describe.each([
+    { setting: 'no commit-graph setting', kv: [] as readonly string[], written: true },
+    { setting: 'gc.writeCommitGraph=false', kv: ['gc.writeCommitGraph=false'], written: false },
+    { setting: 'core.commitGraph=false', kv: ['core.commitGraph=false'], written: false },
+  ])('Given $setting and a split commit-graph chain', ({ kv, written }) => {
+    describe('When both tools run gc', () => {
+      it('Then gc writes the same commit-graph git writes, or none, and drops the chain only when it writes', async () => {
+        // Arrange
+        const slug = `gc-commit-graph-${kv.join('').replace(/\W+/g, '-')}`;
+        const baseDir = await initRepo(slug);
+        await addCommit(baseDir, 'c0');
+        git(baseDir, 'tag', '-a', '-m', 't', 'v0');
+        await addCommit(baseDir, 'c1');
+        git(baseDir, 'commit-graph', 'write', '--reachable', '--split');
+        const twin = await makeTwin(baseDir, slug);
+        await rm(baseDir, { recursive: true, force: true });
+        const configArgs = kv.flatMap((pair) => ['-c', pair]);
+        const peer = tryRunGitWithExit(['-C', twin.peerDir, ...configArgs, 'gc', '-q']);
+        for (const pair of kv) git(twin.oursDir, 'config', ...pair.split('='));
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(trackedNodeContext(twin.oursDir, 'sha1'), { tasks: ['gc'] });
+
+        // Assert
+        const graph = path.join('.git', 'objects', 'info', 'commit-graph');
+        const graphBytes = (dir: string) =>
+          existsSync(path.join(dir, graph)) ? readFile(path.join(dir, graph)) : undefined;
+        const chain = path.join('.git', 'objects', 'info', 'commit-graphs', 'commit-graph-chain');
+        expect(peer.exitCode).toBe(0);
+        expect(result.commitGraphWritten).toBe(written);
+        expect(existsSync(path.join(twin.peerDir, graph))).toBe(written);
+        expect(existsSync(path.join(twin.oursDir, chain))).toBe(
+          existsSync(path.join(twin.peerDir, chain)),
+        );
+        expect(existsSync(path.join(twin.oursDir, chain))).toBe(!written);
+        expect(await graphBytes(twin.oursDir)).toEqual(await graphBytes(twin.peerDir));
+        await disposeTwin(twin);
+      });
+    });
+  });
+
+  describe('Given a valueless remote partialclonefilter', () => {
+    describe.each([
+      {
+        run: 'the gc task',
+        gitArgs: ['maintenance', 'run', '--task=gc'],
+        tasks: ['gc'] as const,
+        refuses: true,
+      },
+      {
+        run: 'the commit-graph task',
+        gitArgs: ['maintenance', 'run', '--task=commit-graph'],
+        tasks: ['commit-graph'] as const,
+        refuses: false,
+      },
+    ])('When both tools run $run', ({ gitArgs, tasks, refuses }) => {
+      it('Then the task fails only where git repack loads promisor remotes, writing no pack', async () => {
+        // Arrange
+        const slug = `gc-valueless-pcf-${gitArgs.length}`;
+        const baseDir = await initRepo(slug);
+        await addCommit(baseDir, 'c0');
+        const twin = await makeTwin(baseDir, slug);
+        await rm(baseDir, { recursive: true, force: true });
+        await appendBothConfigs(twin, '[remote "x"]\n\tpartialclonefilter\n');
+        const peer = tryRunGitWithExit(['-C', twin.peerDir, ...gitArgs]);
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(trackedNodeContext(twin.oursDir, 'sha1'), { tasks: [...tasks] });
+
+        // Assert
+        expect(peer.exitCode).toBe(refuses ? 1 : 0);
+        const fatalLines = result.tasksFailed.map(({ data }) =>
+          data.code === 'CONFIG_MISSING_VALUE'
+            ? `fatal: bad config variable '${data.key}' in file '${path.relative(twin.oursDir, data.source)}' at line ${data.line}\n`
+            : data.code,
+        );
+        expect(fatalLines).toEqual(refuses ? [firstFatalLineOf(peer.stderr)] : []);
+        expect(await packDirEntries(twin.oursDir)).toEqual(await packDirEntries(twin.peerDir));
+        await disposeTwin(twin);
+      });
+    });
+  });
+
+  describe('Given a worktrees registry entry that is a symlink', () => {
+    type LinkKind = 'live' | 'vanished' | 'dangling' | 'file';
+
+    /** A repo whose linked worktree's admin dir lives outside, `worktrees/wt` linking per `kind`. */
+    const buildLinkedAdmin = async (
+      slug: string,
+      kind: LinkKind,
+    ): Promise<{ readonly dir: string; readonly outside: string }> => {
+      const dir = await initRepo(slug);
+      await addCommit(dir, 'c0');
+      const outside = await tmpDir(`${slug}-outside`);
+      git(dir, 'worktree', 'add', '-q', '--detach', path.join(outside, 'wt'));
+      const registryEntry = path.join(dir, '.git', 'worktrees', 'wt');
+      await rename(registryEntry, path.join(outside, 'admin'));
+      if (kind === 'vanished') {
+        await rm(path.join(outside, 'wt'), { recursive: true });
+        await mkdir(path.join(outside, 'other'));
+        await writeFile(path.join(outside, 'other', 'kept'), 'o');
+        await symlink(path.join(outside, 'other'), path.join(outside, 'admin', 'nested'));
+      }
+      if (kind === 'file') await writeFile(path.join(outside, 'file'), 'x');
+      const target = { live: 'admin', vanished: 'admin', dangling: 'nowhere', file: 'file' }[kind];
+      await symlink(path.join(outside, target), registryEntry);
+      return { dir, outside };
+    };
+
+    const registryOf = (dir: string): Promise<ReadonlyArray<string>> =>
+      readdir(path.join(dir, '.git', 'worktrees')).catch(() => []);
+    const adminContentOf = (outside: string): Promise<ReadonlyArray<string>> =>
+      readdir(path.join(outside, 'admin')).then((names) => names.sort());
+
+    const runBoth = async (kind: LinkKind) => {
+      const peer = await buildLinkedAdmin(`wt-link-${kind}-peer`, kind);
+      const ours = await buildLinkedAdmin(`wt-link-${kind}-ours`, kind);
+      git(peer.dir, '-c', 'gc.worktreePruneExpire=now', 'gc', '-q');
+      await setOursGcConfig(ours.dir, ['gc.worktreePruneExpire=now']);
+      const repo = await openTrackedRepository({ cwd: ours.dir });
+      await repo.maintenance({ tasks: ['gc'] });
+      await repo.dispose();
+      return { peer, ours };
+    };
+
+    describe.each(['live', 'dangling', 'file'] as const)(
+      'When it names %s and both tools gc',
+      (kind) => {
+        it('Then both leave the same registry and link target', async () => {
+          // Arrange
+          const sut = runBoth;
+
+          // Act
+          const { peer, ours } = await sut(kind);
+
+          // Assert
+          expect(await registryOf(ours.dir)).toEqual(await registryOf(peer.dir));
+          expect(await adminContentOf(ours.outside)).toEqual(await adminContentOf(peer.outside));
+        });
+      },
+    );
+
+    describe('When it names the admin dir of a vanished worktree and both tools gc', () => {
+      it('Then both empty the directory it names and drop the link', async () => {
+        // Arrange
+        const sut = runBoth;
+
+        // Act
+        const { peer, ours } = await sut('vanished');
+
+        // Assert
+        expect(await registryOf(ours.dir)).toEqual(await registryOf(peer.dir));
+        expect(await adminContentOf(peer.outside)).toEqual([]);
+        expect(await adminContentOf(ours.outside)).toEqual([]);
+        expect(await readdir(path.join(ours.outside, 'other'))).toEqual(['kept']);
+        expect(await readdir(path.join(peer.outside, 'other'))).toEqual(['kept']);
+      });
+    });
+
+    describe.each(['live', 'vanished'] as const)(
+      'When it names the admin dir of a %s worktree and a hand-built node context gcs',
+      (kind) => {
+        it('Then it leaves the same registry and link target as git', async () => {
+          // Arrange
+          const peer = await buildLinkedAdmin(`wt-link-node-${kind}-peer`, kind);
+          const ours = await buildLinkedAdmin(`wt-link-node-${kind}-ours`, kind);
+          git(peer.dir, '-c', 'gc.worktreePruneExpire=now', 'gc', '-q');
+          await setOursGcConfig(ours.dir, ['gc.worktreePruneExpire=now']);
+          const sut = maintenance;
+
+          // Act
+          await sut(trackedNodeContext(ours.dir, 'sha1'), { tasks: ['gc'] });
+
+          // Assert
+          expect(await registryOf(ours.dir)).toEqual(await registryOf(peer.dir));
+          expect(await adminContentOf(ours.outside)).toEqual(await adminContentOf(peer.outside));
+        });
+      },
+    );
+
+    describe('When its gitdir names the live worktree relatively and a hand-built node context gcs', () => {
+      it('Then it resolves the pointer beside the link target and keeps the entry as git does', async () => {
+        // Arrange
+        const build = async (slug: string) => {
+          const built = await buildLinkedAdmin(slug, 'live');
+          await writeFile(path.join(built.outside, 'admin', 'gitdir'), '../wt/.git\n');
+          return built;
+        };
+        const peer = await build('wt-link-relative-peer');
+        const ours = await build('wt-link-relative-ours');
+        git(peer.dir, 'gc', '-q');
+        const sut = maintenance;
+
+        // Act
+        await sut(trackedNodeContext(ours.dir, 'sha1'), { tasks: ['gc'] });
+
+        // Assert
+        expect(await registryOf(ours.dir)).toEqual(['wt']);
+        expect(await registryOf(peer.dir)).toEqual(['wt']);
+        expect(await adminContentOf(ours.outside)).toEqual(await adminContentOf(peer.outside));
+      });
+    });
+  });
+
+  describe('Given admin entries whose absolute gitdir names a live worktree through ./ and // spellings', () => {
+    describe('When git and tsgit gc', () => {
+      it('Then both keep every spelling, comparing an absolute pointer as written', async () => {
+        // Arrange
+        const build = async (slug: string): Promise<string> => {
+          const dir = await realpath(await initRepo(slug));
+          await addCommit(dir, 'c0');
+          const live = `${dir}-live`;
+          git(dir, 'worktree', 'add', '-q', '--detach', live);
+          const spellings = {
+            dot: `${live}/./.git`,
+            slashes: `${path.dirname(live)}//${path.basename(live)}/.git`,
+            main: `${dir}/./.git`,
+          };
+          for (const [suffix, pointer] of Object.entries(spellings)) {
+            git(dir, 'worktree', 'add', '-q', '--detach', `${dir}-${suffix}`);
+            const admin = path.join(dir, '.git', 'worktrees', `${path.basename(dir)}-${suffix}`);
+            await writeFile(path.join(admin, 'gitdir'), `${pointer}\n`);
+          }
+          return dir;
+        };
+        const peer = await build('dup-spelling-peer');
+        const ours = await build('dup-spelling-ours');
+        git(peer, 'gc', '-q');
+        const repo = await openTrackedRepository({ cwd: ours });
+        const sut = repo.maintenance;
+
+        // Act
+        await sut({ tasks: ['gc'] });
+
+        // Assert
+        await repo.dispose();
+        const suffixesOf = async (dir: string): Promise<ReadonlyArray<string>> =>
+          (await readdir(path.join(dir, '.git', 'worktrees')))
+            .map((id) => id.slice(path.basename(dir).length))
+            .sort();
+        expect(await suffixesOf(peer)).toEqual(['-dot', '-live', '-main', '-slashes']);
+        expect(await suffixesOf(ours)).toEqual(await suffixesOf(peer));
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'the path the repository was opened at', realpathed: false },
+    { label: "the repository's resolved path", realpathed: true },
+  ])('Given an admin entry whose gitdir names the main .git through $label', ({ realpathed }) => {
+    describe('When git -C and tsgit gc', () => {
+      it('Then both keep or drop it as a duplicate of the main worktree alike', async () => {
+        // Arrange
+        const build = async (slug: string): Promise<string> => {
+          const dir = await initRepo(slug);
+          await addCommit(dir, 'c0');
+          const admin = path.join(dir, '.git', 'worktrees', 'dup');
+          await mkdir(admin, { recursive: true });
+          const main = realpathed ? await realpath(dir) : dir;
+          await writeFile(path.join(admin, 'gitdir'), `${path.join(main, '.git')}\n`);
+          await writeFile(path.join(admin, 'HEAD'), 'ref: refs/heads/main\n');
+          await writeFile(path.join(admin, 'commondir'), '../..\n');
+          return dir;
+        };
+        const peer = await build(`dup-main-${realpathed}-peer`);
+        const ours = await build(`dup-main-${realpathed}-ours`);
+        git(peer, 'gc', '-q');
+        const repo = await openTrackedRepository({ cwd: ours });
+        const sut = repo.maintenance;
+
+        // Act
+        await sut({ tasks: ['gc'] });
+
+        // Assert
+        await repo.dispose();
+        const registryOf = (dir: string) =>
+          readdir(path.join(dir, '.git', 'worktrees')).catch(() => []);
+        expect(await registryOf(ours)).toEqual(await registryOf(peer));
+      });
     });
   });
 
@@ -1493,6 +2036,299 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       expect(result.packBytesAfter).toBeGreaterThan(0);
       expect(result.packBytesAfter).toBeLessThan(result.packBytesBefore * 2);
       await disposeTwin(twin);
+    });
+  });
+
+  describe('Given a normal pack holding exactly the one fresh unreachable blob, When gc runs on both twins', () => {
+    let baseDir: string;
+    let blobId: string;
+    let handPackSha: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('cruft-name-collision');
+      await addCommit(baseDir, 'c0');
+      git(baseDir, 'gc', '-q');
+      blobId = writeLooseBlobGit(baseDir, 'parked-by-hand');
+      handPackSha = packOidsGit(baseDir, [blobId]);
+      await rm(looseGitPath(baseDir, blobId));
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then both tools keep that pack under its own name as the cruft pack, the blob still readable', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'cruft-name-collision');
+
+      // Act
+      const { result } = await runBothGc(twin);
+
+      // Assert
+      const placementOf = async (dir: string) => ({
+        readable: catFileExists(dir, blobId),
+        packs: await peerPackNamesContaining(dir, blobId),
+        mtimes: (await packDirEntries(dir)).includes(`pack-${handPackSha}.mtimes`),
+      });
+      const expected = { readable: true, packs: [`pack-${handPackSha}.pack`], mtimes: true };
+      expect(await placementOf(twin.peerDir)).toEqual(expected);
+      expect(await placementOf(twin.oursDir)).toEqual(expected);
+      expect(result.cruftPackId).toBe(handPackSha);
+      await disposeTwin(twin);
+    });
+  });
+
+  describe('Given gc.cruftPacks=false and a fresh unreachable blob both loose and in a superseded pack, When gc runs on both twins', () => {
+    let baseDir: string;
+    let blobId: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('loosened-duplicate');
+      await addCommit(baseDir, 'c0');
+      git(baseDir, 'gc', '-q');
+      blobId = writeLooseBlobGit(baseDir, 'loose-and-packed');
+      packOidsGit(baseDir, [blobId]);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then both tools keep it loose and in no pack', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'loosened-duplicate');
+
+      // Act
+      await runBothGc(twin, ['gc.cruftPacks=false']);
+
+      // Assert
+      const placementOf = async (dir: string) => ({
+        readable: catFileExists(dir, blobId),
+        loose: existsSync(looseGitPath(dir, blobId)),
+        packs: await peerPackNamesContaining(dir, blobId),
+      });
+      const expected = { readable: true, loose: true, packs: [] };
+      expect(await placementOf(twin.peerDir)).toEqual(expected);
+      expect(await placementOf(twin.oursDir)).toEqual(expected);
+      await disposeTwin(twin);
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('gc through a disabled commit-graph', () => {
+  const WARNING = "attempting to write a commit-graph, but 'core.commitGraph' is disabled";
+
+  describe.each([
+    { label: 'gc.writeCommitGraph=true', writeCommitGraph: 'true', warnings: [WARNING] },
+    { label: 'gc.writeCommitGraph=false', writeCommitGraph: 'false', warnings: [] },
+  ])('Given core.commitGraph=false and $label', ({ label, writeCommitGraph, warnings }) => {
+    describe('When git gc and tsgit maintenance gc run', () => {
+      it(
+        'Then both warn alike and write no commit-graph',
+        async () => {
+          // Arrange
+          const slug = `cg-off-${label.replace(/[^a-z]+/gi, '-')}`;
+          const theirs = await initRepo(`${slug}-git`);
+          const ours = await initRepo(`${slug}-ts`);
+          for (const dir of [theirs, ours]) {
+            await addCommit(dir, 'a');
+            git(dir, 'config', 'core.commitGraph', 'false');
+            git(dir, 'config', 'gc.writeCommitGraph', writeCommitGraph);
+          }
+          const logged: string[] = [];
+          const ctx: Context = {
+            ...trackedNodeContext(ours, 'sha1'),
+            logger: { warn: (message) => logged.push(message) },
+          };
+          liveContexts.push(ctx);
+          const sut = maintenance;
+
+          // Act
+          const expected = tryRunGitWithExit(['-C', theirs, 'gc', '-q']);
+          await sut(ctx, { tasks: ['gc'] });
+
+          // Assert
+          expect(expected.exitCode).toBe(0);
+          expect(expected.stderr).toBe(logged.map((line) => `warning: ${line}\n`).join(''));
+          expect(logged).toEqual(warnings);
+          expect(existsSync(path.join(ours, '.git', 'objects', 'info', 'commit-graph'))).toBe(
+            false,
+          );
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('commit-graph writes under commitGraph.changedPathsVersion', () => {
+  describe.each([
+    { version: '3', task: 'commit-graph', gitArgs: ['maintenance', 'run', '--task=commit-graph'] },
+    { version: '-2', task: 'gc', gitArgs: ['gc', '-q'] },
+    { version: '2', task: 'commit-graph', gitArgs: ['maintenance', 'run', '--task=commit-graph'] },
+    { version: '-1', task: 'gc', gitArgs: ['gc', '-q'] },
+  ] as const)('Given commitGraph.changedPathsVersion=$version', ({ version, task, gitArgs }) => {
+    describe(`When both tools run ${task}`, () => {
+      it(
+        'Then both warn alike, and write a commit-graph only where the version is supported',
+        async () => {
+          // Arrange
+          const slug = `cg-paths-version-${version}-${task}`;
+          const theirs = await initRepo(`${slug}-git`);
+          const ours = await initRepo(`${slug}-ts`);
+          for (const dir of [theirs, ours]) {
+            await addCommit(dir, 'a');
+            git(dir, 'config', 'commitGraph.changedPathsVersion', version);
+          }
+          const logged: string[] = [];
+          const ctx: Context = {
+            ...trackedNodeContext(ours, 'sha1'),
+            logger: { warn: (message) => logged.push(message) },
+          };
+          liveContexts.push(ctx);
+          const sut = maintenance;
+
+          // Act
+          const expected = tryRunGitWithExit(['-C', theirs, ...gitArgs]);
+          await sut(ctx, { tasks: [task] });
+
+          // Assert
+          const graphs = (dir: string): readonly string[] =>
+            ['commit-graph', 'commit-graphs/commit-graph-chain'].filter((name) =>
+              existsSync(path.join(dir, '.git', 'objects', 'info', name)),
+            );
+          expect(expected.exitCode).toBe(0);
+          expect(expected.stderr).toBe(logged.map((line) => `warning: ${line}\n`).join(''));
+          expect(graphs(ours)).toEqual(graphs(theirs));
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)("commit-graph writes under git's commit_graph_compatible", () => {
+  describe.each([
+    { label: 'a graft', setup: 'graft', task: 'gc' },
+    { label: 'a graft', setup: 'graft', task: 'commit-graph' },
+    { label: 'a replace ref', setup: 'replace', task: 'gc' },
+    { label: 'a replace ref', setup: 'replace', task: 'commit-graph' },
+  ] as const)('Given $label', ({ label, setup, task }) => {
+    describe(`When git and tsgit run the ${task} task`, () => {
+      it(
+        'Then both write a commit-graph, or neither does',
+        async () => {
+          // Arrange
+          const slug = `compat-${label.replace(/[^a-z]+/gi, '-')}-${task}`;
+          const theirs = await initRepo(`${slug}-git`);
+          const ours = await initRepo(`${slug}-ts`);
+          for (const dir of [theirs, ours]) {
+            await addCommit(dir, 'a');
+            const head = await addCommit(dir, 'b');
+            git(dir, 'config', 'gc.writeCommitGraph', 'true');
+            git(dir, 'config', 'advice.graftFileDeprecated', 'false');
+            if (setup === 'graft')
+              await writeFile(path.join(dir, '.git', 'info', 'grafts'), `${head}\n`);
+            if (setup === 'replace') git(dir, 'replace', 'HEAD', 'HEAD~1');
+          }
+          const sut = maintenance;
+          const graphOf = (dir: string): boolean =>
+            existsSync(path.join(dir, '.git', 'objects', 'info', 'commit-graph')) ||
+            existsSync(path.join(dir, '.git', 'objects', 'info', 'commit-graphs'));
+
+          // Act
+          const expected = tryRunGitWithExit([
+            '-C',
+            theirs,
+            'maintenance',
+            'run',
+            `--task=${task}`,
+          ]);
+          const result = await sut(trackedNodeContext(ours, 'sha1'), { tasks: [task] });
+
+          // Assert
+          expect(expected.exitCode).toBe(0);
+          expect(result.commitGraphWritten).toBe(graphOf(theirs));
+          expect(graphOf(ours)).toBe(graphOf(theirs));
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('maintenance interop — gc over a history git cannot walk', () => {
+  const dirs: string[] = [];
+
+  afterAll(async () => {
+    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  const gitWithInput = (dir: string, args: ReadonlyArray<string>, input: Buffer): string =>
+    execFileSync('git', ['-C', dir, ...args], { input, env: runGitEnv() })
+      .toString()
+      .trim();
+
+  /** `main` a commit whose root tree lists blob `B` under a tree mode. */
+  const buildRepo = async (): Promise<{ readonly dir: string; readonly blob: string }> => {
+    const dir = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-interop-gc-walk-')));
+    dirs.push(dir);
+    git(dir, 'init', '-q', '-b', 'main');
+    disableAutoMaintenance(dir);
+    const blob = gitWithInput(dir, ['hash-object', '-w', '--stdin'], Buffer.from('hi\n'));
+    const entry = Buffer.concat([Buffer.from('40000 sub\0'), Buffer.from(blob, 'hex')]);
+    const tree = gitWithInput(
+      dir,
+      ['hash-object', '-t', 'tree', '-w', '--stdin', '--literally'],
+      entry,
+    );
+    const body = `tree ${tree}\nauthor a <a@b> 1700000000 +0000\ncommitter a <a@b> 1700000000 +0000\n\nm\n`;
+    const commit = gitWithInput(
+      dir,
+      ['hash-object', '-t', 'commit', '-w', '--stdin', '--literally'],
+      Buffer.from(body),
+    );
+    git(dir, 'update-ref', 'refs/heads/main', commit);
+    return { dir, blob };
+  };
+
+  describe('Given a tree listing a blob as a subtree', () => {
+    describe('When both tools run the gc task, then the commit-graph task', () => {
+      it('Then gc fails on the bad tree object, the commit-graph task still runs and every loose object stays', async () => {
+        // Arrange
+        const { dir, blob } = await buildRepo();
+        const twin = `${dir}-twin`;
+        dirs.push(twin);
+        await cp(dir, twin, { recursive: true });
+        const peer = tryRunGitWithExit([
+          '-C',
+          twin,
+          'maintenance',
+          'run',
+          '--task=gc',
+          '--task=commit-graph',
+        ]);
+        const logged: string[] = [];
+        const base = createNodeContext({ workDir: dir });
+        const ctx: Context = { ...base, logger: { error: (line: string) => logged.push(line) } };
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc', 'commit-graph'] });
+
+        // Assert
+        const logLines = logged.map((line) => `error: ${line}\n`).join('');
+        expect(peer.exitCode).toBe(1);
+        const fatalLines = result.tasksFailed.map(({ data }) =>
+          data.code === 'BAD_TREE_OBJECT' ? `fatal: bad tree object ${data.id}\n` : data.code,
+        );
+        expect(peer.stderr).toBe(
+          `${logLines}${fatalLines.join('')}fatal: failed to run repack\nerror: task 'gc' failed\n`,
+        );
+        expect(fatalLines).toEqual([`fatal: bad tree object ${blob}\n`]);
+        expect(result.tasksRun).toEqual(['commit-graph']);
+        expect(git(dir, 'count-objects')).toBe(git(twin, 'count-objects'));
+      });
     });
   });
 });

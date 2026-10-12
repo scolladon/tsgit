@@ -9,16 +9,16 @@
  * over-refused verbs now run; the two fixture-conditional verbs agree with
  * git in BOTH fixtures; the transcribed per-builtin prologues refuse on
  * their own boundary-free paths, in git's OWN measured order against the
- * work-tree requirement; and the residual two-class ordering split this
- * tier deliberately does not close.
+ * work-tree requirement; and the two-class ordering split, which status
+ * closes by reading the tier in its own prologue as git does.
  *
  * @proves
  *   surface:        repo-settings-gate
  *   bucket:         cross-tool-interop
  *   unique:         the three over-refused verbs now run, the two
  *                    fixture-conditional verbs agree with git in both
- *                    fixtures, and the residual two-class ordering split is
- *                    pinned, not silently divergent
+ *                    fixtures, and the two-class ordering split is pinned
+ *                    per command, not silently divergent
  *   interopSurface: branch, tag, rev-parse, sparse-checkout, stash, reflog,
  *                    notes, pack-refs, status, show, submodule, worktree,
  *                    hash-object, write-tree
@@ -28,20 +28,25 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { mergeAbort } from '../../src/application/commands/abort-merge.js';
 import {
   branchCreate,
   branchDelete,
   branchList,
   branchRename,
 } from '../../src/application/commands/branch.js';
+import { diff } from '../../src/application/commands/diff.js';
 import { log } from '../../src/application/commands/log.js';
+import { mergeRun } from '../../src/application/commands/merge.js';
 import {
   notesAdd,
   notesList,
   notesRead,
   notesRemove,
 } from '../../src/application/commands/notes.js';
+import { packObjects } from '../../src/application/commands/pack-objects.js';
 import { packRefs } from '../../src/application/commands/pack-refs.js';
+import { rebaseAbort, rebaseRun } from '../../src/application/commands/rebase.js';
 import { reflog } from '../../src/application/commands/reflog.js';
 import { revParse } from '../../src/application/commands/rev-parse.js';
 import { show } from '../../src/application/commands/show.js';
@@ -61,7 +66,14 @@ import { TsgitError } from '../../src/domain/error.js';
 import { FILE_MODE, type ObjectId } from '../../src/domain/objects/index.js';
 import { treeEntry } from '../../src/domain/objects/tree.js';
 import type { Context } from '../../src/ports/context.js';
-import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  git,
+  revParseStdout,
+  runGit,
+  runGitEnv,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
 
@@ -682,7 +694,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
     afterAll(async () => rm(dir, { recursive: true, force: true }));
 
     describe('When status runs', () => {
-      it('Then git names the repo-settings class (maxtreedepth) but tsgit names the streaming class (loosecompression) — the recorded residual', async () => {
+      it('Then both name the repo-settings class (maxtreedepth) — status reads it in its prologue', async () => {
         // Arrange + Act — against the shared beforeAll repo, whose local
         // config already holds BOTH malformed classes.
         const g = tryRunGitWithExit(['-C', dir, 'status', '--porcelain']);
@@ -692,8 +704,8 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
         expect(g.exitCode).toBe(128);
         expect(g.stderr).toContain("'core.maxtreedepth'");
 
-        // Assert — tsgit's eager gate (the streaming five) still runs first;
-        // the repo-settings class no longer competes there.
+        // Assert — tsgit's status reads the repo-settings class before its
+        // eager gate, as git's prologue does.
         let caught: unknown;
         try {
           await status(ctx);
@@ -703,7 +715,50 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data).toMatchObject({
           code: 'CONFIG_BAD_NUMERIC_VALUE',
-          key: 'core.loosecompression',
+          key: 'core.maxtreedepth',
+        });
+      });
+    });
+
+    describe.each([
+      { verb: 'diff', git: ['diff'], run: (c: Context) => diff(c) },
+      {
+        verb: 'merge HEAD',
+        git: ['merge', 'HEAD'],
+        run: (c: Context) => mergeRun(c, { rev: 'HEAD' }),
+      },
+      { verb: 'merge --abort', git: ['merge', '--abort'], run: (c: Context) => mergeAbort(c) },
+      {
+        verb: 'rebase HEAD',
+        git: ['rebase', 'HEAD'],
+        run: (c: Context) => rebaseRun(c, { upstream: 'HEAD' }),
+      },
+      { verb: 'rebase --abort', git: ['rebase', '--abort'], run: (c: Context) => rebaseAbort(c) },
+      {
+        verb: 'pack-objects',
+        git: ['pack-objects', '--all', '--stdout'],
+        run: (c: Context) => packObjects(c, { wants: ['HEAD'] }),
+      },
+    ])('When $verb runs', ({ git: gitArgs, run }) => {
+      it('Then both name the repo-settings class (maxtreedepth) — its prologue reads it first', async () => {
+        // Arrange
+        const g = tryRunGitWithExit(['-C', dir, ...gitArgs]);
+        const sut = run;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(g.exitCode).toBe(128);
+        expect(g.stderr).toContain("'core.maxtreedepth'");
+        expect((caught as TsgitError).data).toMatchObject({
+          code: 'CONFIG_BAD_NUMERIC_VALUE',
+          key: 'core.maxtreedepth',
         });
       });
     });
@@ -711,8 +766,8 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
     describe('When log runs', () => {
       it('Then both name the streaming class (loosecompression) — a MAJORITY-set command where git and tsgit agree', async () => {
         // Arrange + Act — same shared beforeAll repo as the `status` case
-        // above; `status` sits in the 5-of-24 minority where git's own
-        // measured ordering diverges from tsgit's. `log` sits in the 19-of-24
+        // above; `status` sits in the 5-of-24 minority whose prologue
+        // reads the repo settings first. `log` sits in the 19-of-24
         // majority: git's `prepare_repo_settings` for `log` runs AFTER its
         // generic config validation, so git ALSO names the streaming class
         // first here — this is the majority-set row no prior test measured.
@@ -759,7 +814,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
         const g = tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']);
         let caught: unknown;
         try {
-          await revParse(ctx, 'HEAD');
+          revParseStdout(await revParse(ctx, 'HEAD'));
         } catch (err) {
           caught = err;
         }
@@ -787,7 +842,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
           'HEAD',
         ]);
         const overridden: Context = { ...ctx, cacheBudgets: { deltaBaseCacheMaxBytes: 1024 } };
-        const result = await revParse(overridden, 'HEAD');
+        const result = revParseStdout(await revParse(overridden, 'HEAD'));
 
         // Assert
         expect(g.exitCode).toBe(0);
@@ -819,7 +874,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
         const g = tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']);
         let caught: unknown;
         try {
-          await revParse(ctx, 'HEAD');
+          revParseStdout(await revParse(ctx, 'HEAD'));
         } catch (err) {
           caught = err;
         }
@@ -869,6 +924,12 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
         slug: 'negative',
         lines: '\tdeltaBaseCacheLimit = -1\n',
         reported: '-1',
+        reason: 'invalid unit',
+      },
+      {
+        slug: 'minus-zero',
+        lines: '\tdeltaBaseCacheLimit = -0\n',
+        reported: '-0',
         reason: 'invalid unit',
       },
       {
@@ -960,7 +1021,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
 
           // Act
           const gitResult = tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']);
-          const result = await revParse(ctx, 'HEAD');
+          const result = revParseStdout(await revParse(ctx, 'HEAD'));
 
           // Assert
           expect(gitResult.exitCode).toBe(0);
@@ -981,7 +1042,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
             const gitResult = tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']);
             let caught: unknown;
             try {
-              await revParse(ctx, 'HEAD');
+              revParseStdout(await revParse(ctx, 'HEAD'));
             } catch (err) {
               caught = err;
             }
@@ -1010,7 +1071,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
 
           // Act
           const gitResult = tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']);
-          const result = await revParse(ctx, 'HEAD');
+          const result = revParseStdout(await revParse(ctx, 'HEAD'));
 
           // Assert
           expect(gitResult.exitCode).toBe(0);

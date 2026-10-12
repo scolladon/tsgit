@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
-import { synthesizeTreeFromIndex } from '../../../../src/application/primitives/synthesize-tree-from-index.js';
+import {
+  synthesizeResultTree,
+  synthesizeTreeFromIndex,
+} from '../../../../src/application/primitives/synthesize-tree-from-index.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { DEFAULT_MAX_TREE_DEPTH } from '../../../../src/domain/diff/flat-tree.js';
@@ -522,6 +525,50 @@ describe('synthesizeTreeFromIndex', () => {
         // Assert
         const tree = (await readObject(ctx, treeId)) as Tree;
         expect(tree.entries[0]?.mode).toBe(FILE_MODE.EXECUTABLE);
+      });
+    });
+  });
+});
+
+describe('synthesizeResultTree', () => {
+  describe('Given a .gitmodules symlink the index path rules refuse', () => {
+    describe('When the result tree is written', () => {
+      it('Then it writes the tree the index writer would refuse', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'target');
+        const entries = [makeIndexEntry('.gitmodules', id, FILE_MODE.SYMLINK)];
+        const sut = synthesizeResultTree;
+
+        // Act
+        const result = await sut(ctx, entries);
+
+        // Assert
+        const expected = await writeTree(ctx, [
+          treeEntry(FILE_MODE.SYMLINK, '.gitmodules' as FilePath, id),
+        ]);
+        expect(result).toBe(expected);
+        await expect(synthesizeTreeFromIndex(ctx, entries)).rejects.toMatchObject({
+          data: { code: 'INVALID_INDEX_ENTRY' },
+        });
+      });
+    });
+  });
+
+  describe('Given a path deeper than core.maxTreeDepth', () => {
+    describe('When the result tree is written', () => {
+      it('Then it refuses with the depth bound', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '2');
+        const id = await writeBlob(ctx, 'deep');
+        const sut = synthesizeResultTree;
+
+        // Act
+        const result = sut(ctx, [makeIndexEntry('a/b/c/d', id)]);
+
+        // Assert
+        await expect(result).rejects.toMatchObject({ data: { code: 'TREE_DEPTH_EXCEEDED' } });
       });
     });
   });

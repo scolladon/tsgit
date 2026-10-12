@@ -3,7 +3,11 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import { add } from '../../../../../src/application/commands/add.js';
 import { commit } from '../../../../../src/application/commands/commit.js';
 import { init } from '../../../../../src/application/commands/init.js';
-import { assertCleanWorkTree } from '../../../../../src/application/commands/internal/clean-work-tree.js';
+import {
+  assertCleanWorkTree,
+  stagedChangePaths,
+  unstagedChangePaths,
+} from '../../../../../src/application/commands/internal/clean-work-tree.js';
 import { readIndex } from '../../../../../src/application/primitives/read-index.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
@@ -290,6 +294,52 @@ describe('assertCleanWorkTree', () => {
 
         // Act + Assert (does not throw — id still matches HEAD, disk skipped)
         await expect(assertCleanWorkTree(ctx, headTree)).resolves.toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('stagedChangePaths', () => {
+  describe('Given an addition and a deletion, the deleted path sorting first', () => {
+    describe('When listed', () => {
+      it('Then the paths come in byte order, not additions before deletions', async () => {
+        // Arrange — b.txt is staged in place of the committed a.txt
+        const { ctx, headTree } = await seedClean('a.txt', 'hello\n');
+        await writeFramedIndex(ctx, [stageEntry('b.txt', 'b'.repeat(40) as ObjectId, 0)]);
+        const sut = stagedChangePaths;
+
+        // Act
+        const result = await sut(ctx, headTree);
+
+        // Assert
+        expect(result).toEqual(['a.txt', 'b.txt']);
+      });
+    });
+  });
+});
+
+describe('unstagedChangePaths', () => {
+  describe('Given non-ASCII paths whose byte order differs from UTF-16 order', () => {
+    describe('When listed', () => {
+      it('Then the paths come in raw byte order, not the index entry order', async () => {
+        // Arrange — the index holds the names in UTF-16 order; none is on disk
+        const cjk = 'f-\u{4E2D}.txt';
+        const emoji = 'f-\u{1F600}.txt';
+        const bmp = 'f-\u{F8FF}.txt';
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await writeFramedIndex(ctx, [
+          stageEntry(cjk, 'a'.repeat(40) as ObjectId, 0),
+          stageEntry(emoji, 'b'.repeat(40) as ObjectId, 0),
+          stageEntry(bmp, 'c'.repeat(40) as ObjectId, 0),
+        ]);
+        const sut = unstagedChangePaths;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toEqual([cjk, bmp, emoji]);
       });
     });
   });

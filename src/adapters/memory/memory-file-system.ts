@@ -1,3 +1,4 @@
+import { errorDataCode } from '../../domain/error-data-code.js';
 import {
   directoryNotEmpty,
   fileExists,
@@ -203,6 +204,16 @@ export class MemoryFileSystem implements FileSystem {
     return this.lstatEntry(normalized);
   };
 
+  /** `tryLstat` blind to the miss's cause: a regular file in the path answers `undefined` too. */
+  lstatIfReachable = async (path: string): Promise<FileStat | undefined> => {
+    try {
+      return this.lstatEntry(this.walk(path, 'no-follow'));
+    } catch (err) {
+      if (errorDataCode(err) === 'NOT_A_DIRECTORY') return undefined;
+      throw err;
+    }
+  };
+
   /** Shared no-follow resolution for `lstat`/`tryLstat`: `undefined` when nothing stands there. */
   private lstatEntry(normalized: string): FileStat | undefined {
     const target = this.symlinks.get(normalized);
@@ -252,23 +263,23 @@ export class MemoryFileSystem implements FileSystem {
       this.mkdirThroughLeafSymlink(path);
       return;
     }
-    // The check below would refuse a file leaf too, but with the normalized key as its
-    // path; this guard keeps the caller's string, as every other leaf refusal does.
+    // A regular file holding the leaf is an occupant, not a blocked segment: POSIX mkdir
+    // reports EEXIST for it, which the Node adapter maps to FILE_EXISTS.
     if (this.files.has(normalized)) {
-      throw notADirectory(path);
+      throw fileExists(path);
     }
     this.addDirectoryRecursive(normalized);
   };
 
   /**
    * `mkdir` is the one write surface whose leaf follows a symlink: a link to an existing
-   * directory is a no-op, a link to a regular file keeps this adapter's own not-a-directory
-   * report, and a dangling link refuses without creating its target.
+   * directory is a no-op, a link to a regular file is an occupant as the file itself is, and a
+   * dangling link refuses without creating its target.
    */
   private mkdirThroughLeafSymlink(path: string): void {
     const followed = this.walk(path, 'follow');
     if (this.directories.has(followed)) return;
-    if (this.files.has(followed)) throw notADirectory(path);
+    if (this.files.has(followed)) throw fileExists(path);
     throw fileNotFound(path);
   }
 
@@ -426,6 +437,14 @@ export class MemoryFileSystem implements FileSystem {
     const normalized = this.walk(path, 'no-follow');
     if (this.symlinks.has(normalized)) throw permissionDenied(path);
     if (!this.occupied(normalized)) throw fileNotFound(path);
+  };
+
+  // Same refusals as `chmod`: a symlink leaf first, then a path with no entry.
+  utimeNow = async (path: string): Promise<void> => {
+    const normalized = this.walk(path, 'no-follow');
+    if (this.symlinks.has(normalized)) throw permissionDenied(path);
+    if (!this.occupied(normalized)) throw fileNotFound(path);
+    this.touch(normalized);
   };
 
   rmRecursive = async (path: string): Promise<void> => {

@@ -2,10 +2,11 @@
 
 The composable building blocks every Tier-1 command is built from. Same `Context` users get — you can compose them into custom workflows that don't fit the command surface.
 
-25 primitives bound on `repo.primitives.*`, alphabetical:
+27 primitives bound on `repo.primitives.*`, alphabetical:
 
 | Primitive | Summary |
 |---|---|
+| [`abbreviateObjectId`](abbreviate-object-id.md) | The shortest unambiguous prefix of an object id, as git computes it across every object source. |
 | [`bisectMidpoint`](bisect-midpoint.md) | Halve a bisect candidate set; returns structured midpoint data (`nextCommit`, counts, steps). |
 | [`catFileBatch`](cat-file-batch.md) | Streaming object reader; `AsyncIterable<CatFileBatchEntry>` in input order. |
 | [`createCommit`](create-commit.md) | Create a commit object from tree + parents. |
@@ -16,6 +17,7 @@ The composable building blocks every Tier-1 command is built from. Same `Context
 | [`hashBlob`](hash-blob.md) | Compute a blob OID for arbitrary bytes; `{ write: true }` persists the loose object. |
 | [`isIgnored`](is-ignored.md) | Per-path ignore lookup with rule provenance (kind, basedir, line, pattern). |
 | [`mergeBase`](merge-base.md) | Best common ancestor(s) of commits; supports `--all` and `--octopus`. |
+| [`objectSources`](object-sources.md) | The object stores a session reads and the listed alternates it could not use, as structured diagnostics. |
 | [`readBlob`](read-blob.md) | Read a blob by id; optional `maxBytes` cap. |
 | [`readIndex`](read-index.md) | Read `.git/index` (v2 or v3). |
 | [`readObject`](read-object.md) | Read any git object by id; transparent partial-clone lazy-fetch. |

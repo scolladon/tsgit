@@ -1,17 +1,24 @@
-import type { LineHunk } from '../diff/line-diff.js';
+import { diffPresplitLinesForMode, type LineHunk } from '../diff/line-diff.js';
 import { bytesEqual } from '../objects/encoding.js';
 
-/** A contiguous edit one side made against the base: replace `[baseStart, baseEnd)` with `replacement`. */
-export interface ChangeRange {
-  readonly baseStart: number;
-  readonly baseEnd: number;
-  readonly replacement: ReadonlyArray<Uint8Array>;
+/** One xdiff change: base lines `[i1, i1 + chg1)` became side lines `[i2, i2 + chg2)`. */
+export interface LineChange {
+  readonly i1: number;
+  readonly chg1: number;
+  readonly i2: number;
+  readonly chg2: number;
+}
+
+/** A side of a 3-way merge: its own lines and the changes its diff against the base made. */
+export interface SideEdit {
+  readonly lines: ReadonlyArray<Uint8Array>;
+  readonly changes: ReadonlyArray<LineChange>;
 }
 
 /**
  * One slice of the merged output. A `clean` slice is emitted verbatim; a
- * `conflict` slice holds the two sides' differing content (already edge-trimmed)
- * for the caller to render per favor (markers / union / …).
+ * `conflict` slice holds the two sides' differing content for the caller to
+ * render per favor (markers / union / …).
  */
 export type MergeSegment =
   | { readonly kind: 'clean'; readonly lines: ReadonlyArray<Uint8Array> }
@@ -19,288 +26,364 @@ export type MergeSegment =
       readonly kind: 'conflict';
       readonly ours: ReadonlyArray<Uint8Array>;
       readonly theirs: ReadonlyArray<Uint8Array>;
+      /** The base lines both sides replaced — present only for a base-showing style. */
+      readonly base?: ReadonlyArray<Uint8Array>;
     };
 
-/** git coalesces two conflict regions separated by at most this many base lines. */
+type LinesEqual = (a: Uint8Array, b: Uint8Array) => boolean;
+
+/** Diff a conflict's two sides with the merge's own line diff (algorithm and whitespace). */
+export type SideDiff = (
+  ours: ReadonlyArray<Uint8Array>,
+  theirs: ReadonlyArray<Uint8Array>,
+) => ReadonlyArray<LineHunk>;
+
+/** How the merge compares lines: the twin check's equality and the refinement's diff. */
+export interface LineModel {
+  readonly linesEqual: LinesEqual;
+  readonly diffSides: SideDiff;
+}
+
+const BYTE_EXACT: LineModel = {
+  linesEqual: bytesEqual,
+  diffSides: (ours, theirs) => diffPresplitLinesForMode(ours, theirs, 'myers').hunks,
+};
+
+/** git coalesces two conflicts separated by at most this many unchanged lines. */
 export const MAX_CONFLICT_COALESCE_GAP = 3;
 
-function lineArraysEqual(a: ReadonlyArray<Uint8Array>, b: ReadonlyArray<Uint8Array>): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (!bytesEqual(a[i]!, b[i]!)) return false;
+/** Collapse a diff's hunks into xdiff changes: one per run between common hunks. */
+export function changesFromHunks(hunks: ReadonlyArray<LineHunk>): LineChange[] {
+  const changes: LineChange[] = [];
+  let open: LineChange | undefined;
+  for (const hunk of hunks) {
+    if (hunk.kind === 'common') {
+      if (open !== undefined) changes.push(open);
+      open = undefined;
+      continue;
+    }
+    const i1 = open?.i1 ?? hunk.oursStart;
+    const i2 = open?.i2 ?? hunk.theirsStart;
+    open = { i1, chg1: hunk.oursEnd - i1, i2, chg2: hunk.theirsEnd - i2 };
+  }
+  if (open !== undefined) changes.push(open);
+  return changes;
+}
+
+const CONFLICT = 0;
+const TAKE_OURS = 1;
+const TAKE_THEIRS = 2;
+/** A conflict whose two sides refinement found identical: it emits nothing of its own. */
+const IDENTICAL = 4;
+
+/** xdiff's merge record: base `[i0, i0 + chg0)`, ours `[i1, i1 + chg1)`, theirs `[i2, i2 + chg2)`. */
+interface MergeRecord {
+  readonly mode: number;
+  readonly i0: number;
+  readonly chg0: number;
+  readonly i1: number;
+  readonly chg1: number;
+  readonly i2: number;
+  readonly chg2: number;
+}
+
+interface SidePair {
+  readonly ours: SideEdit;
+  readonly theirs: SideEdit;
+}
+
+/**
+ * xdiff's `xdl_append_merge`: a record touching the last one joins it. Records
+ * stand on a common base, so they touch in ours' lines exactly when they touch in
+ * theirs'; and only a conflict is ever touched, a one-sided record lying a base
+ * line clear of every later change.
+ */
+function appendRecord(records: MergeRecord[], next: MergeRecord): void {
+  const last = records[records.length - 1];
+  if (last === undefined || next.i1 > last.i1 + last.chg1) {
+    records.push(next);
+    return;
+  }
+  records[records.length - 1] = {
+    mode: CONFLICT,
+    i0: last.i0,
+    chg0: next.i0 + next.chg0 - last.i0,
+    i1: last.i1,
+    chg1: next.i1 + next.chg1 - last.i1,
+    i2: last.i2,
+    chg2: next.i2 + next.chg2 - last.i2,
+  };
+}
+
+/** An ours-only change, placed in theirs' lines by the offset theirs had reached. */
+function oursRecord(change: LineChange, theirsOffset: number): MergeRecord {
+  return {
+    mode: TAKE_OURS,
+    i0: change.i1,
+    chg0: change.chg1,
+    i1: change.i2,
+    chg1: change.chg2,
+    i2: change.i1 + theirsOffset,
+    chg2: change.chg1,
+  };
+}
+
+function theirsRecord(change: LineChange, oursOffset: number): MergeRecord {
+  return {
+    mode: TAKE_THEIRS,
+    i0: change.i1,
+    chg0: change.chg1,
+    i1: change.i1 + oursOffset,
+    chg1: change.chg1,
+    i2: change.i2,
+    chg2: change.chg2,
+  };
+}
+
+/**
+ * The conflict two overlapping changes form, from where the earlier one starts to
+ * each side's own change end: the change ending later stays in the walk, and the
+ * record it yields next joins this one up to that end.
+ */
+function conflictRecord(ours: LineChange, theirs: LineChange): MergeRecord {
+  const off = ours.i1 - theirs.i1;
+  const i0 = Math.min(ours.i1, theirs.i1);
+  const i1 = ours.i2 - Math.max(off, 0);
+  const i2 = theirs.i2 + Math.min(off, 0);
+  return {
+    mode: CONFLICT,
+    i0,
+    chg0: endOf(ours) - i0,
+    i1,
+    chg1: ours.i2 + ours.chg2 - i1,
+    i2,
+    chg2: theirs.i2 + theirs.chg2 - i2,
+  };
+}
+
+const endOf = (change: LineChange): number => change.i1 + change.chg1;
+
+function isTwin(ours: LineChange, theirs: LineChange, sides: SidePair, model: LineModel): boolean {
+  if (ours.i1 !== theirs.i1 || ours.chg1 !== theirs.chg1 || ours.chg2 !== theirs.chg2) return false;
+  for (let k = 0; k < ours.chg2; k++) {
+    if (!model.linesEqual(sides.ours.lines[ours.i2 + k]!, sides.theirs.lines[theirs.i2 + k]!)) {
+      return false;
+    }
   }
   return true;
 }
 
-/** Collapse a single side's diff hunks into base-range replacements (one per changed run). */
-export function changesFromHunks(
-  hunks: ReadonlyArray<LineHunk>,
-  sideLines: ReadonlyArray<Uint8Array>,
-): ChangeRange[] {
-  const changes: ChangeRange[] = [];
-  let pending: { baseStart: number; baseEnd: number; replacement: Uint8Array[] } | undefined;
+interface Advance {
+  readonly ours: boolean;
+  readonly theirs: boolean;
+}
 
-  const flush = (): void => {
-    if (pending !== undefined) {
-      changes.push({
-        baseStart: pending.baseStart,
-        baseEnd: pending.baseEnd,
-        replacement: pending.replacement,
-      });
-      pending = undefined;
-    }
-  };
+const ADVANCE_OURS: Advance = { ours: true, theirs: false };
+const ADVANCE_THEIRS: Advance = { ours: false, theirs: true };
 
-  for (const hunk of hunks) {
-    if (hunk.kind === 'common') {
-      flush();
-      continue;
-    }
-    if (pending === undefined) {
-      pending = { baseStart: hunk.oursStart, baseEnd: hunk.oursStart, replacement: [] };
-    }
-    if (hunk.kind === 'ours-only') {
-      pending.baseEnd = Math.max(pending.baseEnd, hunk.oursEnd);
-    } else {
-      for (let j = hunk.theirsStart; j < hunk.theirsEnd; j++) {
-        pending.replacement.push(sideLines[j]!);
-      }
-    }
+/**
+ * One step of xdiff's `xdl_do_merge` walk: a change apart from the other side's
+ * becomes a one-sided record; overlapping ones a conflict unless both sides
+ * made the same change (which records nothing — it lies between records,
+ * emitted from ours). Returns which side's change the walk is done with.
+ */
+function stepRecords(
+  records: MergeRecord[],
+  x1: LineChange,
+  x2: LineChange,
+  context: { readonly sides: SidePair; readonly model: LineModel },
+): Advance {
+  if (endOf(x1) < x2.i1) {
+    appendRecord(records, oursRecord(x1, x2.i2 - x2.i1));
+    return ADVANCE_OURS;
   }
-  flush();
-  return changes;
+  if (endOf(x2) < x1.i1) {
+    appendRecord(records, theirsRecord(x2, x1.i2 - x1.i1));
+    return ADVANCE_THEIRS;
+  }
+  if (!isTwin(x1, x2, context.sides, context.model)) appendRecord(records, conflictRecord(x1, x2));
+  return { ours: endOf(x2) >= endOf(x1), theirs: endOf(x1) >= endOf(x2) };
+}
+
+function buildRecords(baseLength: number, sides: SidePair, model: LineModel): MergeRecord[] {
+  const ours = sides.ours.changes;
+  const theirs = sides.theirs.changes;
+  const records: MergeRecord[] = [];
+  let a = 0;
+  let b = 0;
+  while (a < ours.length && b < theirs.length) {
+    const advance = stepRecords(records, ours[a]!, theirs[b]!, { sides, model });
+    if (advance.ours) a++;
+    if (advance.theirs) b++;
+  }
+  for (; a < ours.length; a++) {
+    appendRecord(records, oursRecord(ours[a]!, sides.theirs.lines.length - baseLength));
+  }
+  for (; b < theirs.length; b++) {
+    appendRecord(records, theirsRecord(theirs[b]!, sides.ours.lines.length - baseLength));
+  }
+  return records;
 }
 
 /**
- * Does change `a` overlap-or-touch base range `b`? git's `xdl_do_merge`
- * (xmerge.c) treats two hunks as separate only when one ends strictly before
- * the other starts (`i1 + chg1 < other.i1`); anything else — including two
- * ranges that merely touch at a shared boundary, or a zero-length insertion
- * sitting at the other's edge — goes through the same conflict/twin check.
+ * xdiff's `xdl_refine_conflicts`: diff a conflict's two sides and keep only the
+ * differing runs conflicted; sides found identical resolve to ours.
  */
-export function rangesOverlap(
-  a: { readonly baseStart: number; readonly baseEnd: number },
-  b: { readonly baseStart: number; readonly baseEnd: number },
-): boolean {
-  return !(a.baseEnd < b.baseStart || b.baseEnd < a.baseStart);
+function refineConflict(record: MergeRecord, sides: SidePair, model: LineModel): MergeRecord[] {
+  if (record.mode !== CONFLICT) return [record];
+  const hunks = model.diffSides(
+    sides.ours.lines.slice(record.i1, record.i1 + record.chg1),
+    sides.theirs.lines.slice(record.i2, record.i2 + record.chg2),
+  );
+  const runs = changesFromHunks(hunks);
+  if (runs.length === 0) return [{ ...record, mode: IDENTICAL }];
+  return runs.map((run) => ({
+    ...record,
+    mode: CONFLICT,
+    i1: record.i1 + run.i1,
+    chg1: run.chg1,
+    i2: record.i2 + run.i2,
+    chg2: run.chg2,
+  }));
 }
 
-/** Reconstruct one side's file content over base span `[start, end)`. */
-export function applyChangesToSpan(
-  baseLines: ReadonlyArray<Uint8Array>,
-  start: number,
-  end: number,
-  changes: ReadonlyArray<ChangeRange>,
-): Uint8Array[] {
-  const out: Uint8Array[] = [];
-  let cursor = start;
-  for (const change of changes) {
-    for (let i = cursor; i < change.baseStart; i++) out.push(baseLines[i]!);
-    for (const line of change.replacement) out.push(line);
-    cursor = change.baseEnd;
+/**
+ * xdiff's `xdl_simplify_non_conflicts`: two adjacent conflict records at most
+ * `MAX_CONFLICT_COALESCE_GAP` lines apart become one, the gap on both sides.
+ */
+function coalesceNearConflicts(records: ReadonlyArray<MergeRecord>): MergeRecord[] {
+  const out: MergeRecord[] = [];
+  for (const record of records) {
+    const last = out[out.length - 1];
+    const joins =
+      last !== undefined &&
+      last.mode === CONFLICT &&
+      record.mode === CONFLICT &&
+      record.i1 - (last.i1 + last.chg1) <= MAX_CONFLICT_COALESCE_GAP;
+    if (!joins) {
+      out.push(record);
+      continue;
+    }
+    out[out.length - 1] = {
+      ...last,
+      chg1: record.i1 + record.chg1 - last.i1,
+      chg2: record.i2 + record.chg2 - last.i2,
+    };
   }
-  for (let i = cursor; i < end; i++) out.push(baseLines[i]!);
   return out;
 }
 
-interface TrimmedConflict {
-  readonly prefix: ReadonlyArray<Uint8Array>;
-  readonly oursMid: ReadonlyArray<Uint8Array>;
-  readonly theirsMid: ReadonlyArray<Uint8Array>;
-  readonly suffix: ReadonlyArray<Uint8Array>;
-}
-
-/** Pull the common leading/trailing lines of a conflict's two sides out as clean runs (git zealous trim). */
-export function trimCommonEdges(
+/** A conflict segment, with the base lines it replaced when the style shows them. */
+function conflictSegment(
+  record: MergeRecord,
   ours: ReadonlyArray<Uint8Array>,
   theirs: ReadonlyArray<Uint8Array>,
-): TrimmedConflict {
-  const bound = Math.min(ours.length, theirs.length);
-  let prefix = 0;
-  while (prefix < bound && bytesEqual(ours[prefix]!, theirs[prefix]!)) prefix++;
-  let suffix = 0;
-  while (
-    suffix < bound - prefix &&
-    bytesEqual(ours[ours.length - 1 - suffix]!, theirs[theirs.length - 1 - suffix]!)
-  ) {
-    suffix++;
+  base: ReadonlyArray<Uint8Array> | undefined,
+): MergeSegment {
+  if (base === undefined) return { kind: 'conflict', ours, theirs };
+  return { kind: 'conflict', ours, theirs, base: base.slice(record.i0, record.i0 + record.chg0) };
+}
+
+/** xdiff's `xdl_fill_merge_buffer`: ours' lines between records, each record's own lines. */
+function toSegments(
+  records: ReadonlyArray<MergeRecord>,
+  sides: SidePair,
+  base?: ReadonlyArray<Uint8Array>,
+): MergeSegment[] {
+  const ours = sides.ours.lines;
+  const segments: MergeSegment[] = [];
+  let cursor = 0;
+  for (const record of records) {
+    if (record.mode === IDENTICAL) continue;
+    pushClean(segments, ours.slice(cursor, record.i1));
+    pushRecord(segments, record, sides, base);
+    cursor = record.i1 + record.chg1;
   }
-  return {
-    prefix: ours.slice(0, prefix),
-    oursMid: ours.slice(prefix, ours.length - suffix),
-    theirsMid: theirs.slice(prefix, theirs.length - suffix),
-    suffix: ours.slice(ours.length - suffix),
-  };
+  pushClean(segments, ours.slice(cursor));
+  return segments;
 }
 
-type Classification = 'clean-ours' | 'clean-theirs' | 'clean-twin' | 'conflict';
-
-interface RawGroup {
-  start: number;
-  end: number;
-  readonly ours: ChangeRange[];
-  readonly theirs: ChangeRange[];
+function pushClean(segments: MergeSegment[], lines: ReadonlyArray<Uint8Array>): void {
+  if (lines.length > 0) segments.push({ kind: 'clean', lines });
 }
 
-interface ClassifiedGroup extends RawGroup {
-  readonly classification: Classification;
-}
-
-type FinalRegion =
-  | {
-      readonly kind: 'clean';
-      readonly start: number;
-      readonly end: number;
-      readonly replacement: ReadonlyArray<Uint8Array>;
-    }
-  | {
-      readonly kind: 'conflict';
-      readonly start: number;
-      readonly end: number;
-      readonly ours: ReadonlyArray<ChangeRange>;
-      readonly theirs: ReadonlyArray<ChangeRange>;
-    };
-
-interface SidedChange extends ChangeRange {
-  readonly side: 'ours' | 'theirs';
-}
-
-function mergeSorted(
-  oursChanges: ReadonlyArray<ChangeRange>,
-  theirsChanges: ReadonlyArray<ChangeRange>,
-): SidedChange[] {
-  const tagged: SidedChange[] = [
-    ...oursChanges.map((c) => ({ ...c, side: 'ours' as const })),
-    ...theirsChanges.map((c) => ({ ...c, side: 'theirs' as const })),
-  ];
-  // Sort by base position only: changes sharing a baseStart overlap and land in
-  // one group regardless of their relative order, so no further tiebreak is
-  // load-bearing (a stable sort keeps ours before theirs, which is immaterial).
-  tagged.sort((a, b) => a.baseStart - b.baseStart);
-  return tagged;
-}
-
-function groupByOverlap(changes: ReadonlyArray<SidedChange>): RawGroup[] {
-  const groups: RawGroup[] = [];
-  let current: RawGroup | undefined;
-  for (const change of changes) {
-    if (
-      current !== undefined &&
-      rangesOverlap(change, { baseStart: current.start, baseEnd: current.end })
-    ) {
-      current.end = Math.max(current.end, change.baseEnd);
-    } else {
-      current = { start: change.baseStart, end: change.baseEnd, ours: [], theirs: [] };
-      groups.push(current);
-    }
-    (change.side === 'ours' ? current.ours : current.theirs).push(change);
+/** One differing record: a conflict, or the side it takes as clean lines. */
+function pushRecord(
+  segments: MergeSegment[],
+  record: MergeRecord,
+  sides: SidePair,
+  base: ReadonlyArray<Uint8Array> | undefined,
+): void {
+  const oursLines = sides.ours.lines.slice(record.i1, record.i1 + record.chg1);
+  const theirsLines = sides.theirs.lines.slice(record.i2, record.i2 + record.chg2);
+  if (record.mode === CONFLICT) {
+    segments.push(conflictSegment(record, oursLines, theirsLines, base));
+    return;
   }
-  return groups;
-}
-
-function classify(group: RawGroup): Classification {
-  const hasOurs = group.ours.length > 0;
-  const hasTheirs = group.theirs.length > 0;
-  if (!hasOurs) return 'clean-theirs';
-  if (!hasTheirs) return 'clean-ours';
-  const [oc] = group.ours;
-  const [tc] = group.theirs;
-  // Both `length === 1` guards are provably redundant: when the range guards
-  // (baseStart/baseEnd equal) hold, the group is necessarily 1-ours-1-theirs,
-  // because a second same-side change starts at or after the first change's end
-  // and so cannot reach back into the shared span to join the group. Forcing
-  // either guard true therefore never flips the verdict; their `=== 1 → false`
-  // halves are the killable direction, covered by the identical-change twin test.
-  const isTwin =
-    // Stryker disable next-line ConditionalExpression: equivalent — see above; forcing this true is subsumed by the range guards, and the `=== 1 → false` half is killed by the twin test.
-    group.ours.length === 1 &&
-    // Stryker disable next-line ConditionalExpression: equivalent — see above; forcing this true is subsumed by the range guards, and the `=== 1 → false` half is killed by the twin test.
-    group.theirs.length === 1 &&
-    oc!.baseStart === tc!.baseStart &&
-    oc!.baseEnd === tc!.baseEnd &&
-    lineArraysEqual(oc!.replacement, tc!.replacement);
-  return isTwin ? 'clean-twin' : 'conflict';
-}
-
-function cleanRegion(group: ClassifiedGroup): FinalRegion {
-  const replacement =
-    group.ours.length > 0 ? group.ours[0]!.replacement : group.theirs[0]!.replacement;
-  return { kind: 'clean', start: group.start, end: group.end, replacement };
+  pushClean(segments, record.mode === TAKE_OURS ? oursLines : theirsLines);
 }
 
 /**
- * Coalesce *directly-consecutive* conflict groups separated by at most
- * `MAX_CONFLICT_COALESCE_GAP` common base lines. A clean (single-side or twin)
- * group between two conflicts is a record of its own: it stops coalescing, so
- * the conflicts on either side stay distinct — matching git, which never folds a
- * one-sided change into an adjacent conflict.
- */
-function coalesce(groups: ReadonlyArray<ClassifiedGroup>): FinalRegion[] {
-  const regions: FinalRegion[] = [];
-  let i = 0;
-  while (i < groups.length) {
-    const group = groups[i]!;
-    if (group.classification !== 'conflict') {
-      regions.push(cleanRegion(group));
-      i++;
-      continue;
-    }
-    let end = group.end;
-    const ours = [...group.ours];
-    const theirs = [...group.theirs];
-    let j = i + 1;
-    while (j < groups.length) {
-      const next = groups[j]!;
-      if (next.classification !== 'conflict' || next.start - end > MAX_CONFLICT_COALESCE_GAP) {
-        break;
-      }
-      ours.push(...next.ours);
-      theirs.push(...next.theirs);
-      end = next.end;
-      j++;
-    }
-    regions.push({ kind: 'conflict', start: group.start, end, ours, theirs });
-    i = j;
-  }
-  return regions;
-}
-
-/**
- * Build the ordered merge segments for a 3-way content merge: clean runs
- * interleaved with conflict regions. Reproduces git's region construction,
- * conflict↔conflict coalescing (`MAX_CONFLICT_COALESCE_GAP`), and zealous
- * prefix/suffix trimming. `baseLines` may be empty (add/add).
+ * Build the ordered merge segments for a 3-way content merge, as xdiff's
+ * zealous `xdl_merge` does: records from the two sides' changes, conflicts
+ * refined over the sides' own diff, then near conflicts coalesced
+ * (`MAX_CONFLICT_COALESCE_GAP`). A side that changed nothing yields the other.
  */
 export function buildMergeSegments(
-  baseLines: ReadonlyArray<Uint8Array>,
-  oursChanges: ReadonlyArray<ChangeRange>,
-  theirsChanges: ReadonlyArray<ChangeRange>,
+  baseLength: number,
+  ours: SideEdit,
+  theirs: SideEdit,
+  model: LineModel = BYTE_EXACT,
 ): MergeSegment[] {
-  const groups = groupByOverlap(mergeSorted(oursChanges, theirsChanges)).map((g) => ({
-    ...g,
-    classification: classify(g),
-  }));
-  const regions = coalesce(groups);
+  if (ours.changes.length === 0) return [{ kind: 'clean', lines: theirs.lines }];
+  const sides = { ours, theirs };
+  const refined = buildRecords(baseLength, sides, model).flatMap((record) =>
+    refineConflict(record, sides, model),
+  );
+  return toSegments(coalesceNearConflicts(refined), sides);
+}
 
-  const segments: MergeSegment[] = [];
-  const pushClean = (lines: ReadonlyArray<Uint8Array>): void => {
-    if (lines.length > 0) segments.push({ kind: 'clean', lines });
-  };
-  let cursor = 0;
-  for (const region of regions) {
-    pushClean(baseLines.slice(cursor, region.start));
-    if (region.kind === 'clean') {
-      pushClean(region.replacement);
-    } else {
-      const ours = applyChangesToSpan(baseLines, region.start, region.end, region.ours);
-      const theirs = applyChangesToSpan(baseLines, region.start, region.end, region.theirs);
-      const trimmed = trimCommonEdges(ours, theirs);
-      pushClean(trimmed.prefix);
-      segments.push({ kind: 'conflict', ours: trimmed.oursMid, theirs: trimmed.theirsMid });
-      pushClean(trimmed.suffix);
-    }
-    cursor = region.end;
+/** git's base-showing conflict styles (`merge.conflictStyle`). */
+export type BaseShowingStyle = 'diff3' | 'zdiff3';
+
+/** xdiff's `xdl_refine_zdiff3_conflicts`: a conflict's common leading and trailing lines leave it. */
+function trimCommonEdges(record: MergeRecord, sides: SidePair, model: LineModel): MergeRecord {
+  if (record.mode !== CONFLICT) return record;
+  const same = (k1: number, k2: number): boolean =>
+    model.linesEqual(sides.ours.lines[k1]!, sides.theirs.lines[k2]!);
+  let { i1, chg1, i2, chg2 } = record;
+  while (chg1 > 0 && chg2 > 0 && same(i1, i2)) {
+    i1++;
+    i2++;
+    chg1--;
+    chg2--;
   }
-  pushClean(baseLines.slice(cursor));
-  return segments;
+  while (chg1 > 0 && chg2 > 0 && same(i1 + chg1 - 1, i2 + chg2 - 1)) {
+    chg1--;
+    chg2--;
+  }
+  return { ...record, i1, chg1, i2, chg2 };
+}
+
+/**
+ * The merge segments of a base-showing style, as xdiff's `xdl_do_merge` builds
+ * them: the level capped at eager (identical changes still merge), no conflict
+ * refinement nor coalescing; `zdiff3` only trims each conflict's common edges.
+ * Every conflict carries the base lines it replaced.
+ */
+export function buildBaseShowingSegments(
+  base: ReadonlyArray<Uint8Array>,
+  ours: SideEdit,
+  theirs: SideEdit,
+  options: { readonly style: BaseShowingStyle; readonly model?: LineModel },
+): MergeSegment[] {
+  if (ours.changes.length === 0) return [{ kind: 'clean', lines: theirs.lines }];
+  const model = options.model ?? BYTE_EXACT;
+  const sides = { ours, theirs };
+  const records = buildRecords(base.length, sides, model);
+  const refined =
+    options.style === 'zdiff3'
+      ? records.map((record) => trimCommonEdges(record, sides, model))
+      : records;
+  return toSegments(refined, sides, base);
 }

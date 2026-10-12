@@ -13,10 +13,9 @@ import { writeSymbolicRef } from '../../../../src/application/primitives/write-s
 import * as writeTreeMod from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
-import { ObjectId as ObjectIdFactory } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { HookResult, HookRunner } from '../../../../src/ports/hook-runner.js';
-import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
+import { gpgSignerStub, stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
 import { asBareContext } from './fixtures.js';
 
 const author: AuthorIdentity = {
@@ -25,6 +24,21 @@ const author: AuthorIdentity = {
   timestamp: 1_700_000_000,
   timezoneOffset: '+0000',
 };
+
+/** A root commit unrelated to the branch — a real head a merge resolution can record. */
+const sideCommit = async (ctx: Context): Promise<ObjectId> =>
+  writeObject(ctx, {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: {
+      tree: await writeTreeMod.writeTree(ctx, []),
+      parents: [],
+      author,
+      committer: author,
+      message: 'side\n',
+      extraHeaders: [],
+    },
+  });
 
 const seed = async (workingTree: Readonly<Record<string, string>> = { 'a.txt': 'a' }) => {
   const ctx = createMemoryContext();
@@ -315,7 +329,7 @@ describe('commit', () => {
         // so the tree equals HEAD's tree.
         const ctx = await seed();
         const first = await commit(ctx, { message: 'first', author });
-        const mergeHead = ObjectIdFactory.from('1'.repeat(40));
+        const mergeHead = await sideCommit(ctx);
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${mergeHead}\n`);
 
         // Act — the tree-equality guard must be skipped during a merge resolution.
@@ -337,7 +351,7 @@ describe('commit', () => {
         // prefix, not the plain `commit:` prefix and not an empty string.
         const ctx = await seed();
         await commit(ctx, { message: 'first', author });
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${'1'.repeat(40)}\n`);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${await sideCommit(ctx)}\n`);
 
         // Act
         await commit(ctx, { message: 'resolve the merge', author });
@@ -358,7 +372,7 @@ describe('commit', () => {
         // Arrange — both an explicit message and a MERGE_MSG draft are available.
         const ctx = await seed();
         await commit(ctx, { message: 'first', author });
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${'1'.repeat(40)}\n`);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${await sideCommit(ctx)}\n`);
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_MSG`, 'draft from merge');
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'changed');
         await add(ctx, ['a.txt']);
@@ -445,18 +459,17 @@ describe('commit', () => {
 
   describe('Given a stray MERGE_MSG but no merge in progress', () => {
     describe('When commit succeeds', () => {
-      it('Then merge state is left untouched', async () => {
-        // Arrange — a stray MERGE_MSG with no MERGE_HEAD: mergeHead resolves to
-        // undefined, so the resolving commit must NOT clear merge state.
+      it('Then the stray MERGE_MSG is removed, as git unlinks it on every commit', async () => {
+        // Arrange
         const ctx = await seed();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_MSG`, 'leftover draft');
 
         // Act
-        await commit(ctx, { message: 'normal commit', author });
+        const result = await commit(ctx, { message: 'normal commit', author });
 
-        // Assert — kills the ConditionalExpression mutant flipping `mergeHead !==
-        // undefined` to `true` (which would unconditionally clear merge state).
-        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(true);
+        // Assert — the draft is not the message: no merge was being resolved.
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(false);
+        expect(result.parents).toHaveLength(0);
       });
     });
   });
@@ -467,7 +480,7 @@ describe('commit', () => {
         // Arrange
         const ctx = await seed();
         await commit(ctx, { message: 'first', author });
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${'1'.repeat(40)}\n`);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${await sideCommit(ctx)}\n`);
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_MSG`, 'merge draft');
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'changed');
         await add(ctx, ['a.txt']);
@@ -730,24 +743,60 @@ describe('commit — hooks', () => {
     });
   });
 
-  describe('Given a merge resolution commit', () => {
+  describe.each([
+    ['a merge resolution given a message', 'resolve', ['MERGE_HEAD'], 'message'],
+    ['a merge resolution drafted from MERGE_MSG', '', ['MERGE_HEAD', 'MERGE_MSG'], 'merge'],
+    ['a squash drafted from SQUASH_MSG', '', ['SQUASH_MSG'], 'squash'],
+    ['a squash given a message', 'squashed', ['SQUASH_MSG'], 'message'],
+    ['a conflicted squash drafted from its messages', '', ['SQUASH_MSG', 'MERGE_MSG'], 'squash'],
+  ] as const)('Given %s', (_label, message, stateFiles, source) => {
     describe('When commit fires prepare-commit-msg', () => {
-      it('Then the message source argument is "merge"', async () => {
-        // Arrange — a populated MERGE_HEAD makes this a merge resolution.
+      it(`Then the message source argument is "${source}"`, async () => {
+        // Arrange
         const runner = new MemoryHookRunner();
         const ctx = createMemoryContext({ hooks: runner });
         await init(ctx);
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
         await add(ctx, ['a.txt']);
         await commit(ctx, { message: 'first', author });
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${'1'.repeat(40)}\n`);
+        const side = `${await sideCommit(ctx)}\n`;
+        for (const file of stateFiles) {
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/${file}`,
+            file === 'MERGE_HEAD' ? side : 'draft\n',
+          );
+        }
+        const sut = commit;
 
         // Act
-        await commit(ctx, { message: 'resolve', author });
+        await sut(ctx, { message, author, allowEmpty: true });
 
         // Assert
         const prepares = runner.calls.filter((c) => c.name === 'prepare-commit-msg');
-        expect(prepares[prepares.length - 1]?.args[1]).toBe('merge');
+        expect(prepares.at(-1)?.args[1]).toBe(source);
+      });
+    });
+  });
+
+  describe('Given an unreadable SQUASH_MSG and a given message', () => {
+    describe('When commit', () => {
+      it('Then the draft is never read and the commit succeeds', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/SQUASH_MSG`, 'draft\n');
+        const read = ctx.fs.readUtf8.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path) => {
+          if (path.endsWith('/SQUASH_MSG')) throw new Error('unreadable SQUASH_MSG');
+          return read(path);
+        });
+        const sut = commit;
+
+        // Act
+        const result = await sut(ctx, { message: 'given', author });
+
+        // Assert
+        const created = await readObject(ctx, result.id);
+        expect(created.type === 'commit' && created.data.message).toBe('given\n');
       });
     });
   });
@@ -782,7 +831,7 @@ describe('commit — signing', () => {
     describe('When commit is called', () => {
       it('Then the commit object carries the returned armor as gpgSignature', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = await seedSigning(runner);
 
         // Act
@@ -800,7 +849,7 @@ describe('commit — signing', () => {
     describe('When commit stores the signature', () => {
       it('Then the armor is stored verbatim — the strip only fires on a real trailing newline', async () => {
         // Arrange — signedArmor() already ends at `-----` with no trailing newline.
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(signedArmor()) });
+        const runner = gpgSignerStub(signedArmor());
         const ctx = await seedSigning(runner);
 
         // Act
@@ -819,7 +868,7 @@ describe('commit — signing', () => {
     describe('When commit signs', () => {
       it('Then the signer receives the unsigned payload on stdin with no gpgsig header', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = await seedSigning(runner);
 
         // Act
@@ -838,7 +887,7 @@ describe('commit — signing', () => {
     describe('When commit is called', () => {
       it('Then it signs — the config default applies', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = await seedSigning(runner, '[commit]\n\tgpgSign = true\n');
 
         // Act
@@ -856,7 +905,7 @@ describe('commit — signing', () => {
     describe('When commit is called', () => {
       it('Then it does not sign — the explicit false overrides the config default', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = await seedSigning(runner, '[commit]\n\tgpgSign = true\n');
 
         // Act
@@ -875,14 +924,14 @@ describe('commit — signing', () => {
     describe('When commit signs', () => {
       it('Then the signer invocation uses the override key, not the configured one', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = await seedSigning(runner, '[user]\n\tsigningKey = DEFAULTKEY\n');
 
         // Act
         await commit(ctx, { message: 'm', author, sign: true, signKey: 'OVERRIDEKEY' });
 
         // Assert
-        const invoked = runner.calls[0]?.command ?? '';
+        const invoked = runner.calls[0]?.args ?? [];
         expect(invoked).toContain('OVERRIDEKEY');
         expect(invoked).not.toContain('DEFAULTKEY');
       });
@@ -911,6 +960,7 @@ describe('commit — signing', () => {
           code: 'SIGNING_FAILED',
           reason: 'signer-failed',
           format: 'openpgp',
+          output: '',
         });
         expect(await ctx.fs.exists(branchRefPath(ctx))).toBe(false);
       });
@@ -1043,7 +1093,7 @@ describe('commit — signing', () => {
     describe('When commit is called', () => {
       it('Then it signs — the guard no-ops on an accepted value', async () => {
         // Arrange
-        const runner = stubCommandRunner({ stdout: new TextEncoder().encode(armor()) });
+        const runner = gpgSignerStub(armor());
         const ctx = await seedSigning(runner, '[commit]\n\tgpgSign = yes\n');
 
         // Act

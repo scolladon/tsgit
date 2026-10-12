@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
+import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import {
@@ -11,11 +12,13 @@ import {
   worktreeRemove,
 } from '../../../../src/application/commands/worktree.js';
 import { readTree } from '../../../../src/application/primitives/read-tree.js';
+import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext, seedMaxTreeDepth } from '../primitives/fixtures.js';
+import { withReftableStorage } from '../primitives/reftable-fixtures.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -342,6 +345,89 @@ describe('worktreeAdd', () => {
 
         // Assert
         expect(result.id).toBe('Stryker was here');
+      });
+    });
+  });
+
+  describe('Given a previous checkout of branch side', () => {
+    const leaveSide = async (): Promise<Context> => {
+      const { ctx } = await seedWithCommit();
+      await branchCreate(ctx, { name: 'side' });
+      await checkout(ctx, { rev: 'side' });
+      await checkout(ctx, { rev: '-' });
+      return ctx;
+    };
+
+    describe.each(['-', '@{-1}'])('When worktreeAdd starts at %j', (commitish) => {
+      it('Then the worktree is attached to side', async () => {
+        // Arrange
+        const ctx = await leaveSide();
+
+        // Act
+        const result = await worktreeAdd(ctx, { path: 'wt-prior', commitish });
+
+        // Assert
+        expect(result).toMatchObject({ branch: 'refs/heads/side', detached: false });
+        expect(await ctx.fs.readUtf8(adminFile(ctx, result.id, 'HEAD'))).toBe(
+          'ref: refs/heads/side\n',
+        );
+      });
+    });
+
+    describe('When worktreeAdd creates a new branch from `-`', () => {
+      it('Then the new branch starts at side', async () => {
+        // Arrange
+        const ctx = await leaveSide();
+        const side = await resolveRef(ctx, 'refs/heads/side' as RefName);
+
+        // Act
+        const result = await worktreeAdd(ctx, { path: 'wt-new', commitish: '-', branch: 'fresh' });
+
+        // Assert
+        expect(result).toMatchObject({ branch: 'refs/heads/fresh', head: side });
+      });
+    });
+  });
+
+  describe('Given a reftable repository', () => {
+    describe('When worktreeAdd lays down the admin dir', () => {
+      it('Then it writes the HEAD and refs/heads stubs git needs to recognise it', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        await init(ctx);
+        await getRefStore(ctx).applyRefUpdates([
+          { kind: 'setSymbolic', name: 'HEAD' as RefName, target: 'refs/heads/main' as RefName },
+        ]);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        const { id: commitId } = await commit(ctx, { message: 'first', author });
+
+        // Act
+        const result = await worktreeAdd(ctx, { path: 'wt-reftable' });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(adminFile(ctx, result.id, 'HEAD'))).toBe(
+          'ref: refs/heads/.invalid\n',
+        );
+        expect(await ctx.fs.readUtf8(adminFile(ctx, result.id, 'refs/heads'))).toBe(
+          'this repository uses the reftable format\n',
+        );
+        expect(result.head).toBe(commitId);
+      });
+    });
+  });
+
+  describe('Given a files repository', () => {
+    describe('When worktreeAdd lays down the admin dir', () => {
+      it('Then it writes no refs/heads stub', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+
+        // Act
+        const result = await worktreeAdd(ctx, { path: 'wt-files' });
+
+        // Assert
+        expect(await ctx.fs.exists(adminFile(ctx, result.id, 'refs/heads'))).toBe(false);
       });
     });
   });

@@ -7,8 +7,15 @@
  * three-way merge → working-tree application.
  */
 import { TsgitError } from '../../../domain/error.js';
-import { FILE_MODE, type FileMode, type FilePath } from '../../../domain/objects/index.js';
+import { objectNotFound, unexpectedObjectType } from '../../../domain/objects/error.js';
+import {
+  FILE_MODE,
+  type FileMode,
+  type FilePath,
+  type ObjectId,
+} from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
+import { type BlobSource, locateBlob, NEVER_BUFFER, serveLocatedBlob } from './blob-source.js';
 import { joinPath } from './join-working-tree-path.js';
 import { requireWorkTree } from './repo-state.js';
 import { createLeadingPathScanner, type LeadingPathScanner } from './symlinked-leading-path.js';
@@ -17,6 +24,10 @@ const decoder = new TextDecoder();
 
 const MODE_REGULAR_PERM = 0o644;
 const MODE_EXEC_PERM = 0o755;
+const EMPTY_CONTENT = new Uint8Array();
+
+const permFor = (mode: FileMode): number =>
+  mode === FILE_MODE.EXECUTABLE ? MODE_EXEC_PERM : MODE_REGULAR_PERM;
 
 /**
  * Remove a working-tree path if it exists, probing with `lstat` (no symlink
@@ -119,45 +130,113 @@ export const writeWorkingTreeEntry = async (
   await writeRegularFile(ctx, fullPath, content, mode);
 };
 
+const isOperationAborted = (failure: unknown): boolean =>
+  failure instanceof TsgitError && failure.data.code === 'OPERATION_ABORTED';
+
+const chunksOf = async function* (source: BlobSource): AsyncIterable<Uint8Array> {
+  if (source.kind === 'stream') {
+    yield* source.stream;
+    return;
+  }
+  if (source.content.length > 0) yield source.content;
+};
+
 /**
- * Streaming sibling of `writeRegularFile`. Preserves the exact
- * `rmIfExists` → `writeStream` → `chmod` order so symlink self-heal and
- * the write guard's containment and leaf no-follow both hold. Writes
- * straight into the final path (no temp/rename).
- * `chmod` runs only when a `mode` is given.
+ * What git leaves when a streamed checkout write is refused: the file exists
+ * and is empty. If creating it fails too, that failure is the one reported,
+ * with the refusal kept as its `cause`.
  */
-export const writeRegularFileStream = async (
+const createEmptyOutput = async (
   ctx: Context,
   fullPath: string,
-  source: AsyncIterable<Uint8Array>,
+  refusal: unknown,
   mode?: FileMode,
 ): Promise<void> => {
-  await rmIfExists(ctx, fullPath);
-  await ctx.fs.writeStream(fullPath, source);
-  if (mode !== undefined) {
-    await ctx.fs.chmod(
-      fullPath,
-      mode === FILE_MODE.EXECUTABLE ? MODE_EXEC_PERM : MODE_REGULAR_PERM,
-    );
+  try {
+    await ctx.fs.write(fullPath, EMPTY_CONTENT);
+    if (mode !== undefined) await ctx.fs.chmod(fullPath, permFor(mode));
+  } catch (createFailure) {
+    const error = createFailure instanceof Error ? createFailure : new Error(String(createFailure));
+    error.cause = refusal;
+    throw error;
+  }
+};
+
+/** git's `odb_read_stream_open` dies on a loose object whose header does not
+ *  unpack, after the output file was created and before any unlink: the empty
+ *  file stays. Any other arm declines to git's in-core read, which leaves no file. */
+const openServedBlob = async (
+  ctx: Context,
+  fullPath: string,
+  located: Parameters<typeof serveLocatedBlob>[1],
+  mode?: FileMode,
+): Promise<BlobSource> => {
+  try {
+    return await serveLocatedBlob(ctx, located, NEVER_BUFFER, { order: 'stream' });
+  } catch (refusal) {
+    if (located.arm !== 'loose' || isOperationAborted(refusal)) throw refusal;
+    await createEmptyOutput(ctx, fullPath, refusal, mode);
+    throw refusal;
+  }
+};
+
+const writeServedBlob = async (
+  ctx: Context,
+  fullPath: string,
+  located: Parameters<typeof serveLocatedBlob>[1],
+  mode?: FileMode,
+): Promise<void> => {
+  const source = await openServedBlob(ctx, fullPath, located, mode);
+  try {
+    if (source.type !== 'blob') {
+      if (source.kind === 'stream') await source.release();
+      throw unexpectedObjectType('blob', source.type, located.id);
+    }
+    await ctx.fs.writeStream(fullPath, chunksOf(source));
+    if (mode !== undefined) await ctx.fs.chmod(fullPath, permFor(mode));
+  } catch (failure) {
+    await rmIfExists(ctx, fullPath);
+    throw failure;
   }
 };
 
 /**
- * Streaming façade over `writeRegularFileStream` — no mode, so regular perm
- * is applied if/when the adapter defaults it. Mirrors `writeWorkingTreeFile`.
+ * Writes blob `id` to `fullPath` the way git's streaming checkout does: the
+ * occupant is unlinked first, a refused locate leaves an empty file, a failure
+ * while serving leaves nothing. The empty file is created only on refusal so
+ * the success path costs no extra syscall.
+ */
+export const writeStreamedBlob = async (
+  ctx: Context,
+  fullPath: string,
+  id: ObjectId,
+  mode?: FileMode,
+): Promise<void> => {
+  await rmIfExists(ctx, fullPath);
+  let located: Awaited<ReturnType<typeof locateBlob>>;
+  try {
+    located = await locateBlob(ctx, id, { order: 'stream' });
+  } catch (refusal) {
+    if (isOperationAborted(refusal)) throw refusal;
+    await createEmptyOutput(ctx, fullPath, refusal, mode);
+    throw refusal;
+  }
+  if (located === undefined) throw objectNotFound(id);
+  await writeServedBlob(ctx, fullPath, located, mode);
+};
+
+/**
+ * Streaming façade over `writeStreamedBlob` — no mode, so the adapter's
+ * default permissions apply. Mirrors `writeWorkingTreeFile`.
  */
 export const writeWorkingTreeFileStream = async (
   ctx: Context,
   path: FilePath,
-  source: AsyncIterable<Uint8Array>,
+  id: ObjectId,
   scanner?: LeadingPathScanner,
 ): Promise<void> => {
   await resolveScanner(ctx, scanner).unlinkSymlinkedLeadingComponent(path);
-  await writeRegularFileStream(
-    ctx,
-    joinPath(requireWorkTree(ctx, 'writeWorkingTreeFile'), path),
-    source,
-  );
+  await writeStreamedBlob(ctx, joinPath(requireWorkTree(ctx, 'writeWorkingTreeFile'), path), id);
 };
 
 /**
@@ -170,15 +249,15 @@ export const writeWorkingTreeFileStream = async (
 export const writeWorkingTreeEntryStream = async (
   ctx: Context,
   path: FilePath,
-  source: AsyncIterable<Uint8Array>,
+  id: ObjectId,
   mode: FileMode,
   scanner?: LeadingPathScanner,
 ): Promise<void> => {
   await resolveScanner(ctx, scanner).unlinkSymlinkedLeadingComponent(path);
-  await writeRegularFileStream(
+  await writeStreamedBlob(
     ctx,
     joinPath(requireWorkTree(ctx, 'writeWorkingTreeFile'), path),
-    source,
+    id,
     mode,
   );
 };

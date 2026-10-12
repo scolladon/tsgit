@@ -10,6 +10,8 @@ import {
 import * as buildPackMod from '../../../../src/application/primitives/build-pack.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
+import * as enumerateBundleObjectsMod from '../../../../src/application/primitives/enumerate-bundle-objects.js';
+import * as closureEngineMod from '../../../../src/application/primitives/internal/closure-engine.js';
 import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
@@ -144,6 +146,46 @@ const buildDivergentRepo = async (): Promise<DivergentRepo> => {
   return { ctx, base, mainCommit, featureCommit };
 };
 
+interface NonCommitRefRepo {
+  readonly ctx: Context;
+  readonly base: ObjectId;
+  readonly main: ObjectId;
+  readonly baseTree: ObjectId;
+}
+
+const makeTagOf = async (
+  ctx: Context,
+  object: ObjectId,
+  objectType: Tag['data']['objectType'],
+  tagName: string,
+): Promise<ObjectId> =>
+  writeObject(ctx, {
+    type: 'tag',
+    id: '' as ObjectId,
+    data: { object, objectType, tagName, message: tagName, extraHeaders: [] },
+  });
+
+/** `base` <- `main`, `main`'s tree reusing `base`'s blob; refs name both trees, a tag of `main`'s tree and a tag of that tag. */
+const buildNonCommitRefRepo = async (): Promise<NonCommitRefRepo> => {
+  const ctx = await initRepo();
+  const baseBlob = await makeBlob(ctx, 'base');
+  const baseTree = await writeTree(ctx, [treeEntry(BLOB_MODE, 'base.txt', baseBlob)]);
+  const base = await makeCommitObj(ctx, baseTree, [], 'base commit', 1);
+  const mainTree = await writeTree(ctx, [
+    treeEntry(BLOB_MODE, 'base.txt', baseBlob),
+    treeEntry(BLOB_MODE, 'tip.txt', await makeBlob(ctx, 'tip')),
+  ]);
+  const main = await makeCommitObj(ctx, mainTree, [base], 'main commit', 2);
+  const tagTree = await makeTagOf(ctx, mainTree, 'tree', 'tag-tree');
+  await setRef(ctx, 'refs/heads/main', main);
+  await setRef(ctx, 'refs/heads/base', base);
+  await setRef(ctx, 'refs/tags/main-tree', mainTree);
+  await setRef(ctx, 'refs/tags/base-tree', baseTree);
+  await setRef(ctx, 'refs/tags/tag-tree', tagTree);
+  await setRef(ctx, 'refs/tags/tag-tag', await makeTagOf(ctx, tagTree, 'tag', 'tag-tag'));
+  return { ctx, base, main, baseTree };
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper: extract the BUNDLE_EMPTY data or rethrow
 // ─────────────────────────────────────────────────────────────────────────────
@@ -213,7 +255,7 @@ describe('bundleCreate', () => {
           buildOpts: (): BundleCreateOptions => ({
             revs: [{ range: ['refs/heads/main', 'refs/heads/main'] }],
           }),
-          reason: 'no-objects',
+          reason: 'no-refs',
         },
       ])('Then throws BUNDLE_EMPTY with reason $reason ($label)', async ({ buildOpts, reason }) => {
         // Arrange
@@ -226,6 +268,103 @@ describe('bundleCreate', () => {
         // Assert
         expect(result.code).toBe('BUNDLE_EMPTY');
         expect(result.reason).toBe(reason);
+      });
+    });
+  });
+
+  // ── Tips the walk leaves uninteresting ────────────────────────────────────
+
+  describe('Given refs naming commits, trees and tags of trees', () => {
+    describe.each([
+      { label: 'a tree', exclude: 'main-tree' },
+      { label: 'a tag of a tree', exclude: 'tag-tree' },
+    ])('When bundleCreate excludes $label', ({ exclude }) => {
+      it('Then it bundles main without that tree or a prerequisite', async () => {
+        // Arrange
+        const { ctx, main } = await buildNonCommitRefRepo();
+        const sut = bundleCreate;
+
+        // Act
+        const result = await sut(ctx, { revs: [{ tip: 'main' }, { exclude }] });
+
+        // Assert
+        expect(result.refs).toEqual([{ name: 'refs/heads/main', oid: main }]);
+        expect(result.prerequisites).toEqual([]);
+        expect(result.objectCount).toBe(3);
+      });
+    });
+
+    describe('When bundleCreate wants a tag of a tree the excluded tag-of-tag reaches', () => {
+      it('Then it writes no ref line for that tag', async () => {
+        // Arrange
+        const { ctx, main } = await buildNonCommitRefRepo();
+        const sut = bundleCreate;
+
+        // Act
+        const result = await sut(ctx, {
+          revs: [{ tip: 'main' }, { tip: 'tag-tree' }, { exclude: 'tag-tag' }],
+        });
+
+        // Assert
+        expect(result.refs).toEqual([{ name: 'refs/heads/main', oid: main }]);
+      });
+    });
+
+    describe('When bundleCreate wants a commit that is an ancestor of an excluded commit', () => {
+      it('Then it writes no ref line for that commit', async () => {
+        // Arrange
+        const { ctx, base, main } = await buildNonCommitRefRepo();
+        const sut = bundleCreate;
+
+        // Act
+        const result = await sut(ctx, {
+          revs: [{ tip: 'base' }, { tip: 'main' }, { exclude: 'base' }],
+        });
+
+        // Assert
+        expect(result.refs).toEqual([{ name: 'refs/heads/main', oid: main }]);
+        expect(result.prerequisites).toEqual([{ oid: base, comment: 'base commit' }]);
+      });
+    });
+
+    describe("When bundleCreate wants the boundary commit's own tree alongside a range", () => {
+      it('Then it writes that tree ref line, though the boundary keeps the tree out of the pack', async () => {
+        // Arrange
+        const { ctx, main, baseTree } = await buildNonCommitRefRepo();
+        const sut = bundleCreate;
+
+        // Act
+        const result = await sut(ctx, {
+          revs: [{ range: ['base', 'main'] }, { tip: 'base-tree' }],
+        });
+
+        // Assert
+        expect(result.refs).toEqual([
+          { name: 'refs/heads/main', oid: main },
+          { name: 'refs/tags/base-tree', oid: baseTree },
+        ]);
+        expect(result.objectCount).toBe(3);
+      });
+    });
+  });
+
+  describe('Given a closure that leaves nothing to pack for a surviving ref', () => {
+    describe('When bundleCreate is called', () => {
+      it('Then it writes the bundle with an empty pack, as git does', async () => {
+        // Arrange
+        const { ctx, commit1 } = await buildSingleCommitRepo();
+        const enumerateSpy = vi
+          .spyOn(enumerateBundleObjectsMod, 'enumerateBundleObjects')
+          .mockResolvedValue({ objects: [], boundary: [], uninteresting: new Set() });
+        const sut = bundleCreate;
+
+        // Act
+        const result = await sut(ctx, { revs: [{ tip: 'main' }] });
+
+        // Assert
+        expect(result.refs).toEqual([{ name: 'refs/heads/main', oid: commit1 }]);
+        expect(result.objectCount).toBe(0);
+        enumerateSpy.mockRestore();
       });
     });
   });
@@ -364,11 +503,12 @@ describe('bundleCreate', () => {
         const captured = buildPackSpy.mock.calls[0]![1].objects;
         const commitInput = captured.find((object) => object.id === commit1);
         const blobInput = captured.find((object) => object.id === blob);
-        expect(commitInput).toStrictEqual({ id: commit1, nameHash: 0 });
-        expect(blobInput).toStrictEqual({
+        expect(commitInput).toMatchObject({ id: commit1, nameHash: 0 });
+        expect(blobInput).toMatchObject({
           id: blob,
           nameHash: packNameHash(new TextEncoder().encode('dir/f.txt')),
         });
+        expect(captured.some((object) => object.recency !== undefined)).toBe(false);
         buildPackSpy.mockRestore();
       });
     });
@@ -514,6 +654,42 @@ describe('bundleCreate', () => {
         ]);
       });
     });
+  });
+
+  describe('Given a symmetric range whose sides are not both commits', () => {
+    describe.each([
+      { left: 'tree', right: 'main', bad: ['tree'] },
+      { left: 'main', right: 'tree', bad: ['tree'] },
+      { left: 'tree', right: 'tree', bad: ['tree', 'tree'] },
+    ])(
+      'When bundleCreate is called with symmetricRange [$left, $right]',
+      ({ left, right, bad }) => {
+        it('Then it refuses the expression, naming each side that is no commit', async () => {
+          // Arrange
+          const { ctx, mainCommit } = await buildDivergentRepo();
+          const tree = (await readObjectMod.readObject(ctx, mainCommit)) as {
+            data: { tree: string };
+          };
+          const name = (side: string): string => (side === 'tree' ? tree.data.tree : side);
+          const sut = bundleCreate;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(ctx, { revs: [{ symmetricRange: [name(left), name(right)] }] });
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_SYMMETRIC_RANGE',
+            expression: `${name(left)}...${name(right)}`,
+            nonCommits: bad.map(() => ({ id: tree.data.tree, type: 'tree' })),
+          });
+        });
+      },
+    );
   });
 
   // ── SymmetricRange with multiple merge bases (criss-cross) ────────────────
@@ -1065,6 +1241,464 @@ describe('assertBoundaryCommit', () => {
         expect(result.type).toBe('commit');
         expect(result.id).toBe(commit1);
       });
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Object types — the bundle walk and its pack-objects feed each type objects
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('bundleCreate: object types assigned while enumerating', () => {
+  const MISSING = `cd${'0'.repeat(38)}` as ObjectId;
+
+  interface TypingRepo {
+    readonly ctx: Context;
+    readonly logged: string[];
+    readonly blob: ObjectId;
+    readonly root: ObjectId;
+    readonly empty: ObjectId;
+  }
+
+  const buildTypingRepo = async (): Promise<TypingRepo> => {
+    const base = await initRepo();
+    const logged: string[] = [];
+    const ctx: Context = { ...base, logger: { error: (line: string) => logged.push(line) } };
+    const blob = await makeBlob(ctx, 'hi\n');
+    const empty = await writeTree(ctx, []);
+    const root = await makeCommitObj(ctx, empty, [], 'root', 1);
+    await setRef(ctx, 'refs/heads/root', root);
+    return { ctx, logged, blob, root, empty };
+  };
+
+  /** A commit stored as spelt, naming `tree` and `parents` whatever they are. */
+  const writeCommitNaming = (
+    ctx: Context,
+    tree: ObjectId,
+    parents: ReadonlyArray<ObjectId>,
+  ): Promise<ObjectId> =>
+    writeObject(ctx, {
+      type: 'commit',
+      id: '' as ObjectId,
+      data: {
+        tree,
+        parents,
+        author: { ...AUTHOR, timestamp: 2 },
+        committer: { ...AUTHOR, timestamp: 2 },
+        message: 'm\n',
+        extraHeaders: [],
+      },
+    });
+
+  const refusalOf = async (ctx: Context, opts: BundleCreateOptions): Promise<unknown> => {
+    try {
+      await bundleCreate(ctx, opts);
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  };
+
+  describe('Given a blob named before a branch whose commit names that blob as its tree', () => {
+    describe('When bundleCreate resolves both', () => {
+      it('Then the blob typing conflicts with the tree pointer and the branch is a bad object', async () => {
+        // Arrange
+        const { ctx, logged, blob, root } = await buildTypingRepo();
+        const named = await writeCommitNaming(ctx, blob, [root]);
+        await setRef(ctx, 'refs/heads/main', named);
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(ctx, { revs: [{ tip: blob }, { tip: 'main' }] });
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: 'main' },
+          logged: [
+            `object ${blob} is a blob, not a tree`,
+            `bad tree pointer ${blob} in commit ${named}`,
+          ],
+        });
+      });
+    });
+  });
+
+  describe('Given a blob and a commit naming that blob as its tree', () => {
+    describe('When bundleCreate reads the range from the blob to the commit', () => {
+      it('Then the tree pointer conflicts and the range is invalid', async () => {
+        // Arrange
+        const { ctx, logged, blob, root } = await buildTypingRepo();
+        const named = await writeCommitNaming(ctx, blob, [root]);
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(ctx, { revs: [{ range: [blob, named] }] });
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'INVALID_REVISION_RANGE', expression: `${blob}..${named}` },
+          logged: [
+            `object ${blob} is a blob, not a tree`,
+            `bad tree pointer ${blob} in commit ${named}`,
+          ],
+        });
+      });
+    });
+
+    describe('When bundleCreate reads the range from the commit to the blob', () => {
+      it('Then the blob conflicts with its tree typing and the range is invalid', async () => {
+        // Arrange
+        const { ctx, logged, blob, root } = await buildTypingRepo();
+        const named = await writeCommitNaming(ctx, blob, [root]);
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(ctx, { revs: [{ range: [named, blob] }] });
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'INVALID_REVISION_RANGE', expression: `${named}..${blob}` },
+          logged: [`object ${blob} is a tree, not a blob`],
+        });
+      });
+    });
+
+    describe('When bundleCreate reads the symmetric range from the blob to the commit', () => {
+      it('Then the tree pointer conflicts and the symmetric difference is invalid', async () => {
+        // Arrange
+        const { ctx, logged, blob, root } = await buildTypingRepo();
+        const named = await writeCommitNaming(ctx, blob, [root]);
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(ctx, { revs: [{ symmetricRange: [blob, named] }] });
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: {
+            code: 'INVALID_SYMMETRIC_RANGE',
+            expression: `${blob}...${named}`,
+            nonCommits: [],
+          },
+          logged: [
+            `object ${blob} is a blob, not a tree`,
+            `bad tree pointer ${blob} in commit ${named}`,
+          ],
+        });
+      });
+    });
+  });
+
+  describe.each([
+    [['root', MISSING], `root..${MISSING}`],
+    [[MISSING, 'root'], `${MISSING}..root`],
+  ] as const)('Given the range %j with an end the store lacks', (range, expression) => {
+    describe('When bundleCreate reads it', () => {
+      it('Then the range is invalid', async () => {
+        // Arrange
+        const { ctx } = await buildTypingRepo();
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(ctx, { revs: [{ range }] });
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'INVALID_REVISION_RANGE', expression });
+      });
+    });
+  });
+
+  describe('Given a symmetric range whose walk reaches a parent the store lacks', () => {
+    describe('When bundleCreate reads it', () => {
+      it("Then it logs both of git's lines and refuses the whole range as one name", async () => {
+        // Arrange
+        const { ctx, logged, empty } = await buildTypingRepo();
+        const broken = await writeCommitNaming(ctx, empty, [MISSING]);
+        await setRef(ctx, 'refs/heads/broken', broken);
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(ctx, { revs: [{ symmetricRange: ['root', 'broken'] }] });
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: 'root...broken' },
+          logged: [`Could not read ${MISSING}`, `could not parse commit ${MISSING}`],
+        });
+      });
+    });
+  });
+
+  describe('Given a symmetric range whose walk fails and whose whole spelling names a commit', () => {
+    describe('When bundleCreate reads it', () => {
+      it('Then the commit the whole spelling names is the tip', async () => {
+        // Arrange
+        const { ctx, logged, empty, root } = await buildTypingRepo();
+        const alpha = await makeCommitObj(ctx, empty, [root], 'alpha - broken', 3);
+        await setRef(ctx, 'refs/heads/alpha', alpha);
+        await setRef(ctx, 'refs/heads/broken', await writeCommitNaming(ctx, empty, [MISSING]));
+        const sut = bundleCreate;
+
+        // Act
+        const result = await sut(ctx, {
+          revs: [{ tip: 'alpha' }, { symmetricRange: [':/alpha', 'broken'] }],
+        });
+
+        // Assert
+        expect({ refs: result.refs, objectCount: result.objectCount, logged }).toEqual({
+          refs: [{ name: 'refs/heads/alpha', oid: alpha }],
+          objectCount: 3,
+          logged: [`Could not read ${MISSING}`, `could not parse commit ${MISSING}`],
+        });
+      });
+    });
+  });
+
+  describe('Given a symmetric range with an end the store lacks', () => {
+    describe('When bundleCreate reads it', () => {
+      it('Then the symmetric difference is invalid with no non-commit side', async () => {
+        // Arrange
+        const { ctx } = await buildTypingRepo();
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(ctx, { revs: [{ symmetricRange: ['root', MISSING] }] });
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_SYMMETRIC_RANGE',
+          expression: `root...${MISSING}`,
+          nonCommits: [],
+        });
+      });
+    });
+  });
+
+  describe.each([
+    ['tags', { tags: true }, 'b'],
+    ['all', { all: true }, 'refs/tags/b'],
+  ] as const)(
+    'Given a tag on a commit naming a blob as its tree, then a tag on that blob',
+    (label, opts, name) => {
+      describe(`When bundleCreate expands --${label}`, () => {
+        it('Then the blob conflicts with its tree typing and its ref is a bad object', async () => {
+          // Arrange
+          const { ctx, logged, blob, root } = await buildTypingRepo();
+          await setRef(ctx, 'refs/tags/a', await writeCommitNaming(ctx, blob, [root]));
+          await setRef(ctx, 'refs/tags/b', blob);
+          const sut = refusalOf;
+
+          // Act
+          const caught = await sut(ctx, opts);
+
+          // Assert
+          expect({ data: (caught as TsgitError).data, logged }).toEqual({
+            data: { code: 'OBJECT_NOT_FOUND', id: name },
+            logged: [`object ${blob} is a tree, not a blob`],
+          });
+        });
+      });
+    },
+  );
+
+  describe.each([
+    ['branches', { branches: true }, 'gone'],
+    ['all', { all: true }, 'refs/heads/gone'],
+  ] as const)('Given a branch on an object the store lacks', (label, opts, name) => {
+    describe(`When bundleCreate expands --${label}`, () => {
+      it('Then its ref is a bad object', async () => {
+        // Arrange
+        const { ctx } = await buildTypingRepo();
+        await setRef(ctx, 'refs/heads/gone', MISSING);
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(ctx, opts);
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: name });
+      });
+    });
+  });
+
+  describe('Given an unborn HEAD beside a branch', () => {
+    describe('When bundleCreate expands --all', () => {
+      it('Then HEAD adds no ref and the branch alone is bundled', async () => {
+        // Arrange
+        const { ctx, root } = await buildTypingRepo();
+        const sut = bundleCreate;
+
+        // Act
+        const result = await sut(ctx, { all: true });
+
+        // Assert
+        expect(result.refs).toEqual([{ name: 'refs/heads/root', oid: root }]);
+      });
+    });
+  });
+
+  describe('Given a detached HEAD on an object the store lacks', () => {
+    describe('When bundleCreate expands --all', () => {
+      it('Then HEAD is a bad object', async () => {
+        // Arrange
+        const { ctx } = await buildTypingRepo();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${MISSING}\n`);
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(ctx, { all: true });
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: 'HEAD' });
+      });
+    });
+  });
+
+  describe('Given a branch whose commit names a blob as its tree', () => {
+    describe('When bundleCreate packs it', () => {
+      it('Then it logs the blob is not a tree and refuses it as a bad tree object', async () => {
+        // Arrange
+        const { ctx, logged, blob, root } = await buildTypingRepo();
+        await setRef(ctx, 'refs/heads/main', await writeCommitNaming(ctx, blob, [root]));
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(ctx, { revs: [{ tip: 'main' }] });
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'BAD_TREE_OBJECT', id: blob },
+          logged: [`Object ${blob} not a tree`],
+        });
+      });
+    });
+  });
+
+  describe.each([
+    ['names a blob as its parent', (repo: TypingRepo) => [repo.blob], 'blob'],
+    ['names a parent the store lacks', () => [MISSING], 'missing'],
+  ] as const)('Given a branch whose commit %s', (_label, parentsOf, kind) => {
+    const loggedFor = (repo: TypingRepo): string =>
+      kind === 'blob' ? `Object ${repo.blob} not a commit` : `Could not read ${MISSING}`;
+
+    describe('When bundleCreate walks it alone', () => {
+      it('Then it fails to traverse the parents of that commit', async () => {
+        // Arrange
+        const repo = await buildTypingRepo();
+        const tip = await writeCommitNaming(repo.ctx, repo.empty, parentsOf(repo));
+        await setRef(repo.ctx, 'refs/heads/main', tip);
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(repo.ctx, { revs: [{ tip: 'main' }] });
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged: repo.logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED', commit: tip },
+          logged: [loggedFor(repo)],
+        });
+      });
+    });
+
+    describe('When bundleCreate walks it as a range from an excluded root', () => {
+      it('Then it fails the walk setup', async () => {
+        // Arrange
+        const repo = await buildTypingRepo();
+        const parents = [repo.root, ...parentsOf(repo)];
+        await setRef(
+          repo.ctx,
+          'refs/heads/main',
+          await writeCommitNaming(repo.ctx, repo.empty, parents),
+        );
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(repo.ctx, { revs: [{ range: ['root', 'main'] }] });
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged: repo.logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED' },
+          logged: [loggedFor(repo)],
+        });
+      });
+    });
+  });
+
+  describe('Given a range, a tip the exclusion reaches and a symmetric range', () => {
+    describe('When bundleCreate feeds its pack walk', () => {
+      it("Then the tips follow git's pending order, flagged as the bundle walk left them", async () => {
+        // Arrange
+        const { ctx, root, empty } = await buildTypingRepo();
+        const left = await makeCommitObj(ctx, empty, [root], 'left', 3);
+        const right = await makeCommitObj(ctx, empty, [root], 'right', 4);
+        await setRef(ctx, 'refs/heads/left', left);
+        await setRef(ctx, 'refs/heads/right', right);
+        const closureSpy = vi.spyOn(closureEngineMod, 'computeClosure');
+        const sut = bundleCreate;
+
+        // Act
+        await sut(ctx, {
+          revs: [
+            { range: ['root', 'left'] },
+            { tip: 'root' },
+            { symmetricRange: ['left', 'right'] },
+          ],
+        });
+
+        // Assert
+        const request = closureSpy.mock.calls[0]?.[1];
+        expect({ tips: request?.tips, typed: request?.objectTypes !== undefined }).toEqual({
+          tips: [
+            { id: root, excluded: true },
+            { id: left, excluded: false },
+            { id: root, excluded: true },
+            { id: root, excluded: true },
+            { id: left, excluded: false },
+            { id: right, excluded: false },
+            { id: root, excluded: true },
+          ],
+          typed: true,
+        });
+        closureSpy.mockRestore();
+      });
+    });
+  });
+});
+
+describe('Given a wanted branch, a second wanted branch and an excluded commit', () => {
+  describe('When bundleCreate enumerates the bundle objects', () => {
+    it('Then the wants are the wanted tips and the haves the excluded ones, in pending order', async () => {
+      // Arrange
+      const { ctx, mainCommit, featureCommit, base } = await buildDivergentRepo();
+      const enumerateSpy = vi.spyOn(enumerateBundleObjectsMod, 'enumerateBundleObjects');
+      const sut = bundleCreate;
+
+      // Act
+      await sut(ctx, { revs: [{ tip: 'main' }, { tip: 'feature' }, { exclude: 'main~1' }] });
+
+      // Assert
+      const input = enumerateSpy.mock.calls[0]?.[1];
+      expect({ wants: input?.wants, haves: input?.haves }).toEqual({
+        wants: [mainCommit, featureCommit],
+        haves: [base],
+      });
+      enumerateSpy.mockRestore();
+    });
+  });
+});
+
+describe('Given a repository with one commit on main', () => {
+  describe('When bundleCreate bundles every ref with all: true', () => {
+    it('Then the pack holds the commit and its tree', async () => {
+      // Arrange
+      const { ctx } = await buildSingleCommitRepo();
+      const sut = bundleCreate;
+
+      // Act
+      const result = await sut(ctx, { all: true });
+
+      // Assert
+      expect(result.objectCount).toBe(2);
     });
   });
 });

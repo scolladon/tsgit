@@ -9,13 +9,21 @@
  * `rev-parse`.
  */
 import { ambiguousOidPrefix } from '../../domain/commands/error.js';
+import type { CandidateReadFault } from '../../domain/objects/ambiguous-candidate.js';
 import type { HashConfig } from '../../domain/objects/hash-config.js';
 import { isOid, type ObjectId } from '../../domain/objects/index.js';
 import { findByPrefix } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
+import {
+  type CandidateFilter,
+  describeCandidates,
+  logCandidateReadFault,
+  passesHint,
+} from './internal/ambiguous-candidates.js';
+import { configuredHint } from './internal/disambiguation-hints.js';
 import { isMissingFanoutDir } from './internal/loose-oid-cache.js';
-import { commonGitDir, objectsDir } from './path-layout.js';
-import { getPackRegistry, peekPackRegistry } from './read-object.js';
+import { getObjectStore, type ObjectSource } from './object-store.js';
+import { fanoutDirIn } from './path-layout.js';
 
 /** Lower bound of an abbreviated-oid prefix — independent of the repository's
  *  hash width (measured against real git: a 4-char prefix resolves under
@@ -56,21 +64,24 @@ function patternFor(
   return patterns[algorithm];
 }
 
-/** Max candidate oids embedded in an `AMBIGUOUS_OID_PREFIX` error payload. */
-export const MAX_OID_PREFIX_CANDIDATES = 16;
-
-/** Loose objects whose `<dir><name>` starts with `prefix` (name-based scan).
+/** Loose objects whose `<dir><name>` starts with `prefix` (name-based scan),
+ *  in id order as git's loose-object cache walks them, whatever order
+ *  `readdir` answers in.
  *  No `exists` pre-probe: `readdir` itself answers "nothing loose here yet"
  *  via `isMissingFanoutDir` (a missing directory or a file occupying the
  *  fanout path), folded to an empty scan; any other fault (e.g. a
  *  `PERMISSION_DENIED` directory) is rethrown, never silently swallowed. */
-const scanLoose = async (ctx: Context, prefix: string): Promise<ReadonlyArray<ObjectId>> => {
-  const dir = objectsDir(commonGitDir(ctx), prefix.slice(0, 2));
+export const scanLooseIn = async (
+  ctx: Context,
+  source: ObjectSource,
+  prefix: string,
+): Promise<ReadonlyArray<ObjectId>> => {
+  const dir = fanoutDirIn(source.objectsDir, prefix.slice(0, 2));
   const rest = prefix.slice(2);
   const looseName = patternFor(LOOSE_NAME_PATTERNS, ctx.hashConfig.algorithm);
   let entries: Awaited<ReturnType<Context['fs']['readdir']>>;
   try {
-    entries = await ctx.fs.readdir(dir);
+    entries = await source.fs.readdir(dir);
   } catch (error) {
     if (!isMissingFanoutDir(error)) throw error;
     return [];
@@ -82,13 +93,15 @@ const scanLoose = async (ctx: Context, prefix: string): Promise<ReadonlyArray<Ob
     if (!entry.name.startsWith(rest)) continue;
     found.push((prefix.slice(0, 2) + entry.name) as ObjectId);
   }
-  return found;
+  return found.sort();
 };
 
-/** Packed objects whose id starts with `prefix`, across every registered pack. */
-const scanPacks = async (ctx: Context, prefix: string): Promise<ReadonlyArray<ObjectId>> => {
-  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
-  const packs = await registry.all();
+/** Packed objects whose id starts with `prefix`, across every pack registered in `source`. */
+export const scanPacksIn = async (
+  source: ObjectSource,
+  prefix: string,
+): Promise<ReadonlyArray<ObjectId>> => {
+  const packs = await source.registry.all();
   const found: ObjectId[] = [];
   for (const pack of packs) {
     const index = await pack.index();
@@ -97,15 +110,65 @@ const scanPacks = async (ctx: Context, prefix: string): Promise<ReadonlyArray<Ob
   return found;
 };
 
+export type { CandidateFilter };
+
+/**
+ * `update_disambiguate_state`'s hint reads: each candidate once, in scan
+ * order, stopping at the second to pass — git needs no more to call the
+ * prefix ambiguous. A failed read is reported as it happens.
+ */
+const leadingPassers = async (
+  ctx: Context,
+  candidates: ReadonlyArray<ObjectId>,
+  accepts: CandidateFilter,
+): Promise<ReadonlyArray<ObjectId>> => {
+  const report = (fault: CandidateReadFault): void => logCandidateReadFault(ctx, fault);
+  const passers: ObjectId[] = [];
+  for (const id of candidates) {
+    if (passers.length === 2) break;
+    if (await passesHint(id, accepts, report)) passers.push(id);
+  }
+  return passers;
+};
+
+/**
+ * `finish_object_disambiguation` then `get_short_oid`'s listing: the single
+ * candidate passing `accepts` — or, when the caller names no hint,
+ * `core.disambiguate`'s — wins; otherwise the prefix is ambiguous, the
+ * listing still hinted when two passed it, else showing every match.
+ */
+const chooseCandidate = async (
+  ctx: Context,
+  prefix: string,
+  candidates: ReadonlyArray<ObjectId>,
+  accepts: CandidateFilter | undefined,
+): Promise<ObjectId> => {
+  const hint = accepts ?? (await configuredHint(ctx));
+  const [chosen, rival] = hint === undefined ? [] : await leadingPassers(ctx, candidates, hint);
+  if (chosen !== undefined && rival === undefined) return chosen;
+  const listingHint = rival === undefined ? undefined : hint;
+  const { candidates: described, readFaults } = await describeCandidates(
+    ctx,
+    candidates,
+    listingHint,
+  );
+  throw ambiguousOidPrefix(prefix, described, readFaults);
+};
+
 export const resolveOidPrefix = async (
   ctx: Context,
   prefix: string,
+  accepts?: CandidateFilter,
 ): Promise<ObjectId | undefined> => {
   if (isOid(prefix, ctx.hashConfig)) return prefix as ObjectId;
   if (!patternFor(OID_PREFIX_PATTERNS, ctx.hashConfig.algorithm).test(prefix)) return undefined;
-  const [loose, packed] = await Promise.all([scanLoose(ctx, prefix), scanPacks(ctx, prefix)]);
-  const unique = [...new Set<ObjectId>([...loose, ...packed])];
-  if (unique.length === 0) return undefined;
-  if (unique.length === 1) return unique[0];
-  throw ambiguousOidPrefix(prefix, unique.slice(0, MAX_OID_PREFIX_CANDIDATES));
+  const { sources } = await getObjectStore(ctx);
+  const perSource = await Promise.all(
+    sources.map((source) =>
+      Promise.all([scanLooseIn(ctx, source, prefix), scanPacksIn(source, prefix)]),
+    ),
+  );
+  const unique = [...new Set<ObjectId>(perSource.flat(2))];
+  if (unique.length <= 1) return unique[0];
+  return chooseCandidate(ctx, prefix, unique, accepts);
 };

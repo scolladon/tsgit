@@ -1,10 +1,10 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
+  type DiffAlgorithm,
   diffPresplitLinesForMode,
   type LineHunk,
 } from '../../../../../src/domain/diff/line-diff.js';
-import type { SearchMode } from '../../../../../src/domain/diff/xdiff/xdl-prepare.js';
 
 // A small, collision-prone alphabet so repeated content (the substance the
 // search matches, and compaction slides on) is common even at a small array
@@ -21,8 +21,8 @@ function arbLines(): fc.Arbitrary<ReadonlyArray<string>> {
   return fc.array(fc.constantFrom(...LINE_BODIES), { minLength: 0, maxLength: MAX_LINES_PER_SIDE });
 }
 
-function arbMode(): fc.Arbitrary<SearchMode> {
-  return fc.constantFrom<SearchMode>('git-default', 'minimal');
+function arbMode(): fc.Arbitrary<DiffAlgorithm> {
+  return fc.constantFrom<DiffAlgorithm>('myers', 'minimal', 'patience', 'histogram');
 }
 
 function encodeAll(lines: ReadonlyArray<string>): ReadonlyArray<Uint8Array> {
@@ -76,7 +76,7 @@ function changedCount(hunks: ReadonlyArray<LineHunk>, M: number, N: number): num
 }
 
 describe('the xdiff pipeline properties', () => {
-  describe('Given arbitrary ours/theirs line arrays, under either search mode', () => {
+  describe('Given arbitrary ours/theirs line arrays, under any diff algorithm', () => {
     describe('When diffPresplitLinesForMode runs', () => {
       it('Then re-walking the hunks in order reproduces both original sequences', () => {
         // Arrange
@@ -142,7 +142,7 @@ describe('the xdiff pipeline properties', () => {
       });
     });
 
-    describe('When diffPresplitLinesForMode runs under mode "git-default"', () => {
+    describe('When diffPresplitLinesForMode runs under mode "myers"', () => {
       it('Then the changed line count is never below the minimal M + N - 2·LCS bound', () => {
         // Arrange — the multi-match discard rule and the split's snake
         // heuristic/cost cap can only ever match fewer lines than the true
@@ -151,7 +151,7 @@ describe('the xdiff pipeline properties', () => {
         fc.assert(
           fc.property(arbLines(), arbLines(), (oursText, theirsText) => {
             // Act
-            const result = sut(encodeAll(oursText), encodeAll(theirsText), 'git-default');
+            const result = sut(encodeAll(oursText), encodeAll(theirsText), 'myers');
             const bound = oursText.length + theirsText.length - 2 * lcsLength(oursText, theirsText);
 
             // Assert

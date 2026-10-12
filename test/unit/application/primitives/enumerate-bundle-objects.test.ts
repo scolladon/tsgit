@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import {
   type BundleObjectClosure,
   enumerateBundleObjects,
 } from '../../../../src/application/primitives/enumerate-bundle-objects.js';
+import * as closureEngineModule from '../../../../src/application/primitives/internal/closure-engine.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -129,6 +130,60 @@ describe('enumerateBundleObjects', () => {
         // Assert
         expect(result.objects).toEqual([]);
         expect(result.boundary).toEqual([]);
+        expect(result.uninteresting).toEqual(new Set());
+      });
+    });
+  });
+
+  describe('Given an empty wants list and a have', () => {
+    describe('When enumerateBundleObjects is called', () => {
+      it('Then nothing is walked, so nothing is flagged uninteresting', async () => {
+        // Arrange
+        const { ctx, commit1 } = await buildLinearFixture();
+        const sut = enumerateBundleObjects;
+
+        // Act
+        const result = await sut(ctx, { wants: [], haves: [commit1] });
+
+        // Assert
+        expect(result).toEqual({ objects: [], boundary: [], uninteresting: new Set() });
+      });
+    });
+  });
+
+  describe('Given a closure of exactly maxObjects objects', () => {
+    describe('When enumerateBundleObjects is called', () => {
+      it('Then it returns them all without refusing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobA = await makeBlob(ctx, 'A');
+        const tree1 = await makeTree(ctx, [treeEntry(BLOB_MODE, 'f.txt', blobA)]);
+        const commit1 = await makeCommit(ctx, tree1, [], 'c', 1);
+        const sut = enumerateBundleObjects;
+
+        // Act
+        const result = await sut(ctx, { wants: [commit1], haves: [], maxObjects: 3 });
+
+        // Assert
+        expect(sorted(idsOf(result.objects))).toEqual(sorted([commit1, tree1, blobA]));
+      });
+    });
+  });
+
+  describe('Given a have whose child is wanted', () => {
+    describe('When enumerateBundleObjects is called', () => {
+      it('Then the closure excludes the haves and the boundary', async () => {
+        // Arrange
+        const { ctx, commit1, commit3 } = await buildLinearFixture();
+        const closureSpy = vi.spyOn(closureEngineModule, 'computeClosure');
+        const sut = enumerateBundleObjects;
+
+        // Act
+        await sut(ctx, { wants: [commit3], haves: [commit1] });
+
+        // Assert
+        expect(closureSpy.mock.calls[0]?.[1].not).toEqual([commit1, commit1]);
+        vi.restoreAllMocks();
       });
     });
   });
@@ -333,6 +388,102 @@ describe('enumerateBundleObjects', () => {
     });
   });
 
+  describe('Given wants with no haves', () => {
+    describe('When enumerateBundleObjects is called', () => {
+      it('Then nothing is uninteresting', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const tree = await makeTree(ctx, [treeEntry(BLOB_MODE, 'f.txt', await makeBlob(ctx, 'A'))]);
+        const commit = await makeCommit(ctx, tree, [], 'only', 1);
+        const sut = enumerateBundleObjects;
+
+        // Act
+        const result = await sut(ctx, { wants: [commit], haves: [] });
+
+        // Assert
+        expect(result.uninteresting).toEqual(new Set());
+      });
+    });
+  });
+
+  describe('Given a want that is an ancestor of the have', () => {
+    describe('When enumerateBundleObjects is called', () => {
+      it('Then the walk leaves that want and the have uninteresting', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const tree = await makeTree(ctx, [treeEntry(BLOB_MODE, 'f.txt', await makeBlob(ctx, 'A'))]);
+        const parent = await makeCommit(ctx, tree, [], 'parent', 1);
+        const child = await makeCommit(ctx, tree, [parent], 'child', 2);
+        const sut = enumerateBundleObjects;
+
+        // Act
+        const result = await sut(ctx, { wants: [parent], haves: [child] });
+
+        // Assert
+        expect(result.uninteresting).toEqual(new Set([child, parent]));
+      });
+    });
+  });
+
+  describe('Given a have that is a tag of a tree', () => {
+    describe('When enumerateBundleObjects is called with a commit want', () => {
+      it('Then the tag, its tree and the tree contents are uninteresting, and no commit is a boundary', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blob = await makeBlob(ctx, 'A');
+        const tree = await makeTree(ctx, [treeEntry(BLOB_MODE, 'f.txt', blob)]);
+        const commit = await makeCommit(ctx, tree, [], 'tip', 1);
+        const tag: Tag = {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: { object: tree, objectType: 'tree', tagName: 't', message: 't', extraHeaders: [] },
+        };
+        const tagId = await writeObject(ctx, tag);
+        const sut = enumerateBundleObjects;
+
+        // Act
+        const result = await sut(ctx, { wants: [commit], haves: [tagId] });
+
+        // Assert
+        expect(result.uninteresting).toEqual(new Set([tagId, tree, blob]));
+        expect(result.boundary).toEqual([]);
+        expect(idsOf(result.objects)).toEqual([commit]);
+      });
+    });
+  });
+
+  describe('Given an annotated tag pointing to a commit whose parent is a have', () => {
+    describe('When enumerateBundleObjects is called with wants=[tagOid] haves=[parent]', () => {
+      it('Then the walk starts from the tagged commit, so the parent is the boundary', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const tree = await makeTree(ctx, [treeEntry(BLOB_MODE, 'f.txt', await makeBlob(ctx, 'A'))]);
+        const parent = await makeCommit(ctx, tree, [], 'parent', 1);
+        const tagged = await makeCommit(ctx, tree, [parent], 'tagged', 2);
+        const tag: Tag = {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: {
+            object: tagged,
+            objectType: 'commit',
+            tagName: 'v1.1',
+            message: 'release 1.1',
+            extraHeaders: [],
+          },
+        };
+        const tagId = await writeObject(ctx, tag);
+        const sut = enumerateBundleObjects;
+
+        // Act
+        const result = await sut(ctx, { wants: [tagId], haves: [parent] });
+
+        // Assert
+        expect(result.boundary).toEqual([parent]);
+        expect(sorted(idsOf(result.objects))).toEqual(sorted([tagId, tagged]));
+      });
+    });
+  });
+
   describe('Given maxObjects cap of 1 and a commit with a tree', () => {
     describe('When enumerateBundleObjects is called', () => {
       it('Then throws PACK_TOO_LARGE when the second object would be emitted', async () => {
@@ -514,29 +665,28 @@ describe('enumerateBundleObjects — ignoreMissing on missing parents', () => {
 
   describe('Given a wants commit that references a non-existent parent', () => {
     describe('When enumerateBundleObjects is called with haves=[]', () => {
-      it('Then completes without error and emits the wants commit', async () => {
-        // Arrange — ignoreMissing:true in walkInteresting; without it the walk
-        // would throw when it cannot resolve the phantom parent.
-        const ctx = await buildSeededContext();
+      it('Then it cannot read the parent and fails to traverse the wants commit, as git does', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const logged: string[] = [];
+        const ctx = { ...base, logger: { error: (line: string) => logged.push(line) } };
         const PHANTOM_PARENT = 'e'.repeat(40) as ObjectId;
         const blobA = await makeBlob(ctx, 'A');
         const tree = await makeTree(ctx, [treeEntry(BLOB_MODE, 'a.txt', blobA)]);
         const wantCommit = await makeCommit(ctx, tree, [PHANTOM_PARENT], 'want', 1);
+        const sut = enumerateBundleObjects;
 
         // Act
-        let thrown: unknown;
-        const result = await enumerateBundleObjects(ctx, {
-          wants: [wantCommit],
-          haves: [],
-        }).catch((err) => {
-          thrown = err;
-          return null;
-        });
+        const thrown = await sut(ctx, { wants: [wantCommit], haves: [] }).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
 
-        // Assert — no error; wantCommit and its objects are emitted
-        expect(thrown).toBeUndefined();
-        expect(result).not.toBeNull();
-        expect(idsOf(result!.objects)).toContain(wantCommit);
+        // Assert
+        expect({ data: (thrown as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED', commit: wantCommit },
+          logged: [`Could not read ${PHANTOM_PARENT}`],
+        });
       });
     });
   });
@@ -1045,6 +1195,49 @@ describe('enumerateBundleObjects — name hash folding', () => {
 
         // Assert
         expect(nameHashOf(result.objects, tagId)).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a have line reaching the shared ancestor through six clock-skewed commits', () => {
+    const buildSkewed = async (): Promise<{
+      readonly ctx: Context;
+      readonly ancestor: ObjectId;
+      readonly tip: ObjectId;
+      readonly have: ObjectId;
+    }> => {
+      const ctx = await buildSeededContext();
+      const fileTree = async (name: string): Promise<ObjectId> =>
+        makeTree(ctx, [treeEntry(BLOB_MODE, `${name}.txt`, await makeBlob(ctx, name))]);
+      const ancestor = await makeCommit(ctx, await fileTree('ancestor'), [], 'ancestor', 500);
+      const tip = await makeCommit(ctx, await fileTree('tip'), [ancestor], 'tip', 1000);
+      let line = ancestor;
+      for (let step = 1; step <= 6; step += 1) {
+        line = await makeCommit(
+          ctx,
+          await fileTree(`line-${step}`),
+          [line],
+          `line ${step}`,
+          300 - step,
+        );
+      }
+      const have = await makeCommit(ctx, await fileTree('have'), [line], 'have', 400);
+      return { ctx, ancestor, tip, have };
+    };
+
+    describe('When enumerateBundleObjects bundles the tip excluding that line', () => {
+      it('Then the ancestor is bundled with its objects and nothing is a prerequisite, as git bundle create gives up on the line', async () => {
+        // Arrange
+        const { ctx, ancestor, tip, have } = await buildSkewed();
+        const sut = enumerateBundleObjects;
+
+        // Act
+        const result = await sut(ctx, { wants: [tip], haves: [have] });
+
+        // Assert
+        expect(idsOf(result.objects)).toContain(ancestor);
+        expect(result.objects).toHaveLength(6);
+        expect(result.boundary).toEqual([]);
       });
     });
   });

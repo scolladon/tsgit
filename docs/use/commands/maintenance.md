@@ -6,9 +6,9 @@ is no background scheduler, no threshold check inside `status`, and no
 write-path hook: a caller decides when maintenance happens, and only the
 tasks it names run.
 
-Ships two tasks. `commit-graph` writes `objects/info/commit-graph`
-byte-identical to `git commit-graph write --reachable` for the same commit
-set. `gc` consolidates every pack it owns, by class: **all** reachable
+Ships two tasks. `commit-graph` writes one split layer of the commit-graph
+chain, as `git commit-graph write --split --reachable` does, and nothing when
+every reachable commit is already in the graph. `gc` consolidates every pack it owns, by class: **all** reachable
 objects — loose, already packed, or living in a promisor pack — repack into
 one fresh normal pack; every promisor object *additionally* repacks whole
 into one fresh promisor pack (a reachable one duplicates into both — see
@@ -37,8 +37,19 @@ interface MaintenanceOptions {
   readonly auto?: boolean;
 }
 
+/** A task git reports as `task '<name>' failed`: the run goes on and exits 1. */
+interface MaintenanceTaskFailure {
+  readonly task: MaintenanceTask;
+  /** The error code of the refusal the task met. */
+  readonly code: string;
+  /** The refusal itself — enough to rebuild the `fatal:` line git's task child prints. */
+  readonly data: TsgitErrorData;
+}
+
 interface MaintenanceResult {
   readonly tasksRun: ReadonlyArray<MaintenanceTask>;
+  /** Tasks that failed, in run order; any entry is git's exit status 1. */
+  readonly tasksFailed: ReadonlyArray<MaintenanceTaskFailure>;
   readonly commitGraphWritten: boolean;
   readonly commitsInGraph: number;
   readonly looseObjectsBefore: number;
@@ -74,14 +85,39 @@ interface MaintenanceResult {
   `'gc'` is additionally omitted when the `auto` gate declines it (see
   below) — the caller tells "declined" from "ran and found nothing" by
   reading `tasksRun`, never a separate flag.
+- **A failing task does not stop the run.** As `git maintenance run` reports
+  `error: task '<name>' failed`, runs the next task and exits 1, a coded
+  refusal met inside a task lands in `tasksFailed` instead of throwing, and
+  the remaining tasks still run. `data` carries the refusal, so a caller can
+  print git's child line — a `gc` failing on `BAD_TREE_OBJECT` is git's
+  `fatal: bad tree object <data.id>`. A refusal met before any task starts
+  (an invalid option, a malformed repository setting) still throws.
 - **`commit-graph`** sources commits from every resolvable ref (the same
-  root set as `git commit-graph write --reachable`), writes
-  `objects/info/commit-graph`, and reports:
-  - `commitGraphWritten` — `true` only when the graph holds at least one
-    commit. A repository with no commits still runs the task (`tasksRun`
-    includes `'commit-graph'`) but reports `commitGraphWritten: false` —
-    "ran and found nothing" stays distinguishable from "declined."
-  - `commitsInGraph` — the number of commits the graph now holds.
+  root set as `git commit-graph write --reachable`) and writes one split
+  layer under `objects/info/commit-graphs/`: the reachable commits no existing
+  layer holds, folded with the tip layers git's default merge strategy
+  absorbs, then `commit-graph-chain` names the layers base first and every
+  `.graph` it no longer names is expired. It reports:
+  - `commitGraphWritten` — `true` only when a layer was written. A repository
+    with no commits, or one whose reachable commits are all in the graph
+    already, still runs the task (`tasksRun` includes `'commit-graph'`) but
+    reports `false` — "ran and found nothing" stays distinguishable from
+    "declined."
+  - `commitsInGraph` — the number of commits the whole chain now holds.
+
+  Nothing is written for a shallow repository or one with a registered graft,
+  and a `core.commitGraph` set to false skips the task silently. A `gc` that
+  ran then rewrites the reachable commit-graph as one file, dropping any
+  split chain, unless `gc.writeCommitGraph` or `core.commitGraph` is false.
+
+  A reachable object that does not parse as a commit (a blob named as a
+  parent, an absent parent) fails the task with `COMMIT_PARSE_FAILED`
+  (`data.id`, git's `fatal: unable to parse commit <id>`). As in git, each
+  pass that reaches it first logs `Object <id> not a commit` (or
+  `Could not read <id>`) through `ctx.logger.error` — once per parse, so the
+  same line repeats. With changed-path Bloom filters on, the task fails
+  computing them instead, with `TREE_UNREADABLE` (`data.id`, git's
+  `fatal: unable to read tree (<id>)`); the lines logged are the same.
 
 ### `gc` — the object lifecycle
 
@@ -170,7 +206,7 @@ interface MaintenanceResult {
 |---|---|
 | `looseObjectsBefore` | loose objects present when `gc` started |
 | `looseObjectsPacked` | loose objects that ended up in a pack (normal or cruft) |
-| `prunedLooseObjects` | every loose file unlinked — packed ones and destroyed ones alike, so it may exceed `looseObjectsPacked` |
+| `prunedLooseObjects` | every loose file unlinked — packed ones, destroyed ones, and expired copies of objects an alternate still holds alike, so it may exceed `looseObjectsPacked` |
 | `packsBefore` / `packsAfter` | pack count before and after the call |
 | `packId` | the normal pack's sha, or `undefined` |
 | `cruftObjectsAdded` | newly-unreachable objects that entered the cruft pack this run |
@@ -271,6 +307,13 @@ const gcResult = await repo.maintenance({ tasks: ['gc'] });
 // Same, but only when loose-object count exceeds gc.auto.
 const declined = await repo.maintenance({ tasks: ['gc'], auto: true });
 // declined.tasksRun omits 'gc' when the threshold was not exceeded.
+
+// A failed task is reported, not thrown; its refusal rebuilds git's child line.
+const { tasksFailed } = await repo.maintenance({ tasks: ['gc', 'commit-graph'] });
+for (const { task, data } of tasksFailed) {
+  if (data.code === 'BAD_TREE_OBJECT') console.error(`fatal: bad tree object ${data.id}`);
+  console.error(`error: task '${task}' failed`);
+}
 
 // An unknown task refuses rather than running nothing silently.
 await repo.maintenance({ tasks: ['bogus' as never] }); // throws INVALID_OPTION

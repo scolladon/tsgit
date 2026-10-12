@@ -3,6 +3,7 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import {
   assertValidBooleanConfig,
   assertValidBooleanConfigInSection,
+  assertValidPromisorRemoteConfig,
 } from '../../../../../src/application/primitives/internal/boolean-config-guard.js';
 import { TsgitError } from '../../../../../src/domain/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
@@ -146,6 +147,90 @@ describe('assertValidBooleanConfigInSection', () => {
 
         // Act + Assert
         await assertValidBooleanConfigInSection(ctx, 'diff', ['cachetextconv']);
+      });
+    });
+  });
+});
+
+describe('Given a remote whose partialclonefilter has no value', () => {
+  describe('When the promisor config is validated', () => {
+    it('Then it refuses with the missing value, as git dies loading its promisor remotes', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedConfig(ctx, '[core]\n\tbare = false\n[remote "x"]\n\tpartialclonefilter\n');
+      const sut = assertValidPromisorRemoteConfig;
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut(ctx);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toMatchObject({
+        code: 'CONFIG_MISSING_VALUE',
+        key: 'remote.x.partialclonefilter',
+        line: 4,
+      });
+    });
+  });
+});
+
+describe('assertValidPromisorRemoteConfig refusal order', () => {
+  describe.each([
+    {
+      label: 'a valueless partialclonefilter before a malformed promisor',
+      config: '[remote "y"]\n\tpartialclonefilter\n[remote "x"]\n\tpromisor = maybe\n',
+      expected: { code: 'CONFIG_MISSING_VALUE', key: 'remote.y.partialclonefilter', line: 2 },
+    },
+    {
+      label: 'a malformed promisor before a valueless partialclonefilter',
+      config: '[remote "x"]\n\tpromisor = maybe\n\tpartialclonefilter\n',
+      expected: { code: 'CONFIG_BAD_BOOLEAN_VALUE', key: 'remote.x.promisor', value: 'maybe' },
+    },
+    {
+      label: "a valueless partialclonefilter under a '/'-named remote before a malformed promisor",
+      config: '[remote "/x"]\n\tpartialclonefilter\n[remote "z"]\n\tpromisor = maybe\n',
+      expected: { code: 'CONFIG_BAD_BOOLEAN_VALUE', key: 'remote.z.promisor', value: 'maybe' },
+    },
+  ])('Given $label', ({ config, expected }) => {
+    describe('When the promisor config is validated', () => {
+      it('Then it refuses the entry git meets first in the file', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedConfig(ctx, config);
+        const sut = assertValidPromisorRemoteConfig;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toMatchObject(expected);
+      });
+    });
+  });
+
+  describe("Given a valueless partialclonefilter only under a '/'-named remote", () => {
+    describe('When the promisor config is validated', () => {
+      it('Then it accepts it, as git never registers that remote', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedConfig(ctx, '[remote "/x"]\n\tpartialclonefilter\n');
+        const sut = assertValidPromisorRemoteConfig;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
       });
     });
   });

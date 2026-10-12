@@ -1,10 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
+import { invalidateConfigCache } from '../../../../../src/application/primitives/config-read.js';
 import { createCommit } from '../../../../../src/application/primitives/create-commit.js';
 import {
   commitHeader,
   correctedCommitDatesEnabled,
+  generationNumbersEnabled,
+  graphCommitIds,
   insertBounded,
   isGraphKnownAbsent,
+  parseLayerOrUndefined,
 } from '../../../../../src/application/primitives/internal/read-commit-graph.js';
 import { assertOperationalRepository } from '../../../../../src/application/primitives/internal/repo-state.js';
 import {
@@ -23,17 +28,24 @@ import type {
   ObjectId,
   Tree,
 } from '../../../../../src/domain/objects/index.js';
-import type { Context } from '../../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../../src/ports/context.js';
+import type { Logger } from '../../../../../src/ports/logger.js';
 import { buildCommitGraphBytes } from '../../../domain/commit/arbitraries.js';
 import {
   buildSeededContext,
+  flagGenerationOverflow,
   instrumentedContext,
   seedMaxTreeDepth,
+  stampTrailer,
   writeCommitGraph,
+  zeroFirstTopologicalLevel,
 } from '../fixtures.js';
 
 const withFsOverride = (ctx: Context, overrides: Partial<Context['fs']>): Context => ({
   ...ctx,
+  // A fresh session: the object store of the original session is bound to the
+  // original fs, so an overridden fs is only observed by a store built after it.
+  session: createSession(),
   fs: { ...ctx.fs, ...overrides },
 });
 
@@ -45,6 +57,15 @@ function findChunkRowIndex(bytes: Uint8Array, id: string): number {
     if (decoder.decode(bytes.subarray(rowStart, rowStart + 4)) === id) return i;
   }
   throw new Error(`chunk ${id} not present in fixture`);
+}
+
+/** Moves the end boundary of `id`'s chunk by `delta` bytes, leaving every other chunk's start. */
+function shrinkChunkAfter(bytes: Uint8Array, id: string, delta: number): Uint8Array {
+  const copy = bytes.slice();
+  const view = new DataView(copy.buffer);
+  const endOffsetLow = 8 + (findChunkRowIndex(copy, id) + 1) * 12 + 8;
+  view.setUint32(endOffsetLow, view.getUint32(endOffsetLow) + delta);
+  return copy;
 }
 
 function renameChunkRowId(bytes: Uint8Array, id: string, newId: string): Uint8Array {
@@ -162,7 +183,7 @@ async function writeMixedGenerationChain(ctx: Context): Promise<MixedChainCommit
       },
     ],
   });
-  const baseHash = (await ctx.hash.hashHex(baseBytes)) as ObjectId;
+  const baseHash = await stampTrailer(ctx, baseBytes);
   const tipBytes = buildCommitGraphBytes({
     hashVersion: 1,
     numBaseGraphs: 1,
@@ -179,7 +200,7 @@ async function writeMixedGenerationChain(ctx: Context): Promise<MixedChainCommit
       },
     ],
   });
-  const tipHash = (await ctx.hash.hashHex(tipBytes)) as ObjectId;
+  const tipHash = await stampTrailer(ctx, tipBytes);
   const gitDir = commonGitDir(ctx);
   await ctx.fs.write(`${gitDir}/objects/info/commit-graphs/graph-${baseHash}.graph`, baseBytes);
   await ctx.fs.write(`${gitDir}/objects/info/commit-graphs/graph-${tipHash}.graph`, tipBytes);
@@ -219,7 +240,7 @@ async function writeBadCrossLayerChain(
       generationV2Offset: 0,
     })),
   });
-  const baseHash = (await ctx.hash.hashHex(baseBytes)) as ObjectId;
+  const baseHash = await stampTrailer(ctx, baseBytes);
   const tipBytes = buildCommitGraphBytes({
     hashVersion: 1,
     numBaseGraphs: 1,
@@ -236,7 +257,7 @@ async function writeBadCrossLayerChain(
       },
     ],
   });
-  const tipHash = (await ctx.hash.hashHex(tipBytes)) as ObjectId;
+  const tipHash = await stampTrailer(ctx, tipBytes);
   const gitDir = commonGitDir(ctx);
   await ctx.fs.write(`${gitDir}/objects/info/commit-graphs/graph-${baseHash}.graph`, baseBytes);
   await ctx.fs.write(`${gitDir}/objects/info/commit-graphs/graph-${tipHash}.graph`, tipBytes);
@@ -281,6 +302,30 @@ async function buildFiveCommitHistory(
   return { c0, c1, c2, c3, c4 };
 }
 
+/** d3 = octopus(d0, d1, d2) in a single-file graph whose EDGE chunk id is smashed. */
+async function buildOctopusWithoutEdgeChunk(ctx: Context): Promise<{ d0: Commit; d3: Commit }> {
+  const tree = await emptyTree(ctx);
+  const d0 = await makeCommit(ctx, tree, [], 1, 'd0');
+  const d1 = await makeCommit(ctx, tree, [], 2, 'd1');
+  const d2 = await makeCommit(ctx, tree, [], 3, 'd2');
+  const d3 = await makeCommit(ctx, tree, [d0.id, d1.id, d2.id], 4, 'd3');
+  await writeCommitGraph(ctx, [[d0, d1, d2, d3]]);
+  const graphPath = commitGraphPath(commonGitDir(ctx));
+  const original = await ctx.fs.read(graphPath);
+  await ctx.fs.write(graphPath, renameChunkRowId(original, 'EDGE', 'ZZZZ'));
+  return { d0, d3 };
+}
+
+/** The refusal `pending` rejects with, as its error data; fails when it resolves. */
+async function refusalOf(pending: Promise<unknown>): Promise<unknown> {
+  try {
+    await pending;
+  } catch (error) {
+    return (error as TsgitError).data;
+  }
+  return expect.fail('expected a refusal');
+}
+
 function expectHeaderMatchesCommit(
   header: Awaited<ReturnType<typeof commitHeader>>,
   commit: Commit,
@@ -293,6 +338,130 @@ function expectHeaderMatchesCommit(
 }
 
 describe('read-commit-graph', () => {
+  describe('graphCommitIds', () => {
+    describe('Given a chain/split commit-graph (base=[c0,c1,c2], tip=[c3,c4])', () => {
+      describe('When graphCommitIds runs', () => {
+        it('Then it lists every commit the graph holds, base layer first', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [
+            [c0, c1, c2],
+            [c3, c4],
+          ]);
+          const sut = graphCommitIds;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(new Set(result.slice(0, 3))).toEqual(new Set([c0.id, c1.id, c2.id]));
+          expect(new Set(result.slice(3))).toEqual(new Set([c3.id, c4.id]));
+        });
+      });
+    });
+
+    describe('Given no commit-graph', () => {
+      describe('When graphCommitIds runs', () => {
+        it('Then it lists nothing', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const sut = graphCommitIds;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toEqual([]);
+        });
+      });
+    });
+  });
+
+  describe('generationNumbersEnabled', () => {
+    describe('Given no commit-graph', () => {
+      describe('When generation numbers are probed', () => {
+        it('Then they are disabled', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const sut = generationNumbersEnabled;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a commit-graph holding no commit', () => {
+      describe('When generation numbers are probed', () => {
+        it('Then they are disabled', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await writeCommitGraph(ctx, [[]]);
+          const sut = generationNumbersEnabled;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a single-file commit-graph', () => {
+      describe.each([
+        { level: 'its computed level', zeroed: false, expected: true },
+        { level: 'a zero level', zeroed: true, expected: false },
+      ])('When its first commit carries $level', ({ zeroed, expected }) => {
+        it(`Then generation numbers are ${expected ? 'enabled' : 'disabled'}`, async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [[c0, c1, c2, c3, c4]]);
+          if (zeroed) await zeroFirstTopologicalLevel(ctx, commitGraphPath(ctx.layout.gitDir));
+          const sut = generationNumbersEnabled;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toBe(expected);
+        });
+      });
+    });
+
+    describe('Given a split commit-graph whose base layer starts with a zero level', () => {
+      describe('When generation numbers are probed', () => {
+        it('Then the tip layer decides, as git reads only the top graph', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [
+            [c0, c1, c2],
+            [c3, c4],
+          ]);
+          const chain = await ctx.fs.readUtf8(commitGraphChainPath(ctx.layout.gitDir));
+          const base = chain.split('\n')[0] as string;
+          await zeroFirstTopologicalLevel(
+            ctx,
+            `${ctx.layout.gitDir}/objects/info/commit-graphs/graph-${base}.graph`,
+          );
+          const sut = generationNumbersEnabled;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toBe(true);
+        });
+      });
+    });
+  });
+
   describe('commitHeader', () => {
     describe('Given a single-file commit-graph over a 5-commit merge history', () => {
       describe('When commitHeader is called for every commit', () => {
@@ -441,9 +610,8 @@ describe('read-commit-graph', () => {
 
     describe('Given a chain whose most-recent layer file has been deleted', () => {
       describe('When commitHeader is called for a commit that lives in the still-present base layer', () => {
-        it('Then the WHOLE graph is treated as absent (returns undefined)', async () => {
-          // Arrange — a chain referencing a missing layer is treated as
-          // absent, not "partially available".
+        it('Then the base layer is served (git keeps the loaded prefix)', async () => {
+          // Arrange
           const ctx = await buildSeededContext();
           const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
           await writeCommitGraph(ctx, [
@@ -455,11 +623,11 @@ describe('read-commit-graph', () => {
           const tipHash = chainText.trim().split('\n').at(-1)!;
           await ctx.fs.rm(`${gitDir}/objects/info/commit-graphs/graph-${tipHash}.graph`);
 
-          // Act — c0 lives entirely in the still-present base layer.
+          // Act
           const header = await commitHeader(ctx, c0.id);
 
           // Assert
-          expect(header).toBeUndefined();
+          expectHeaderMatchesCommit(header, c0);
         });
       });
     });
@@ -533,6 +701,30 @@ describe('read-commit-graph', () => {
       });
     });
 
+    describe('Given no commit-graph file and no chain file', () => {
+      describe('When commitHeader probes for a graph', () => {
+        it('Then no commit-graph path is ever read (the presence check answers first)', async () => {
+          // Arrange — a fresh session so the probe goes through the overridden fs
+          const base = await buildSeededContext();
+          const tree = await emptyTree(base);
+          const commit = await makeCommit(base, tree, [], 1, 'solo');
+          const readPaths: string[] = [];
+          const ctx = withFsOverride(base, {
+            read: async (path) => {
+              readPaths.push(path);
+              return base.fs.read(path);
+            },
+          });
+
+          // Act
+          await commitHeader(ctx, commit.id);
+
+          // Assert
+          expect(readPaths.filter((path) => path.includes('commit-graph'))).toEqual([]);
+        });
+      });
+    });
+
     describe('Given a commit-graph consulted across two separate commitHeader calls', () => {
       describe('When both calls target the same Context', () => {
         it('Then the graph file is read only once (parsed once, then cached)', async () => {
@@ -540,7 +732,7 @@ describe('read-commit-graph', () => {
           const base = await buildSeededContext();
           const { c0, c1 } = await buildFiveCommitHistory(base);
           await writeCommitGraph(base, [[c0, c1]]);
-          const { ctx, calls } = instrumentedContext(base);
+          const { ctx, calls } = instrumentedContext({ ...base, session: createSession() });
 
           // Act
           await commitHeader(ctx, c0.id);
@@ -689,7 +881,7 @@ describe('read-commit-graph', () => {
       });
     });
 
-    describe('Given ctx.fs.readUtf8 throws a non-FILE_NOT_FOUND error while probing the chain file', () => {
+    describe('Given ctx.fs.read throws a non-FILE_NOT_FOUND error while probing the chain file', () => {
       describe('When commitHeader is called', () => {
         it('Then the error propagates unchanged', async () => {
           // Arrange — no single-file graph, so loadGraphUncached falls to loadChain.
@@ -700,9 +892,9 @@ describe('read-commit-graph', () => {
           const chainPath = commitGraphChainPath(gitDir);
           const wrapped = withFsOverride(ctx, {
             exists: async (path) => (path === chainPath ? true : ctx.fs.exists(path)),
-            readUtf8: async (path) => {
+            read: async (path) => {
               if (path === chainPath) throw new TsgitError({ code: 'PERMISSION_DENIED', path });
-              return ctx.fs.readUtf8(path);
+              return ctx.fs.read(path);
             },
           });
 
@@ -717,7 +909,7 @@ describe('read-commit-graph', () => {
       });
     });
 
-    describe('Given ctx.fs.readUtf8 throws FILE_NOT_FOUND despite exists() reporting the chain file present', () => {
+    describe('Given ctx.fs.read throws FILE_NOT_FOUND despite exists() reporting the chain file present', () => {
       describe('When commitHeader is called', () => {
         it('Then the graph degrades to absent instead of throwing', async () => {
           // Arrange
@@ -728,9 +920,9 @@ describe('read-commit-graph', () => {
           const chainPath = commitGraphChainPath(gitDir);
           const wrapped = withFsOverride(ctx, {
             exists: async (path) => (path === chainPath ? true : ctx.fs.exists(path)),
-            readUtf8: async (path) => {
+            read: async (path) => {
               if (path === chainPath) throw new TsgitError({ code: 'FILE_NOT_FOUND', path });
-              return ctx.fs.readUtf8(path);
+              return ctx.fs.read(path);
             },
           });
 
@@ -744,12 +936,11 @@ describe('read-commit-graph', () => {
     });
 
     describe('Given a chain file whose hash lines carry leading/trailing whitespace', () => {
-      describe('When commitHeader is called for a commit in the (still-resolvable) base layer', () => {
-        it('Then the padded lines are trimmed before being used as layer filenames', async () => {
-          // Arrange — kills the `.trim()` drop: without it, the padded
-          // "  <hash>  " string never matches a real `graph-<hash>.graph`
-          // file, so the layer read fails and the whole chain degrades absent.
-          const ctx = await buildSeededContext();
+      describe('When commitHeader is called for a commit in the base layer', () => {
+        it('Then the first padded line is not a hash and no layer loads, as in git', async () => {
+          // Arrange — git reads each line's leading hex digits as the layer hash, untrimmed.
+          const warn = vi.fn<NonNullable<Logger['warn']>>();
+          const ctx = { ...(await buildSeededContext()), logger: { warn } };
           const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
           await writeCommitGraph(ctx, [
             [c0, c1, c2],
@@ -769,8 +960,173 @@ describe('read-commit-graph', () => {
           const header = await commitHeader(ctx, c0.id);
 
           // Assert
-          expect(header).toBeDefined();
-          expect(header?.rootTree).toBe(c0.data.tree);
+          expect(header).toBeUndefined();
+          expect(warn).toHaveBeenCalledWith(
+            'commitGraph: invalid commit-graph chain: line not a hash',
+            {
+              chain: chainPath,
+              layer: paddedText.split('\n')[0],
+              line: paddedText.split('\n')[0],
+            },
+          );
+        });
+      });
+    });
+
+    describe('Given a single-file graph whose signature is smashed', () => {
+      describe('When commitHeader is called', () => {
+        it("Then the file is refused with git's load failure logged", async () => {
+          // Arrange
+          const warn = vi.fn<NonNullable<Logger['warn']>>();
+          const ctx = { ...(await buildSeededContext()), logger: { warn } };
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [[c0, c1, c2, c3, c4]]);
+          const graphPath = commitGraphPath(commonGitDir(ctx));
+          const bytes = await ctx.fs.read(graphPath);
+          await ctx.fs.write(graphPath, Uint8Array.of(0x58, ...bytes.subarray(1)));
+
+          // Act
+          const header = await commitHeader(ctx, c0.id);
+
+          // Assert
+          expect(header).toBeUndefined();
+          expect(warn.mock.calls).toEqual([
+            [
+              'commitGraph: commit-graph file failed to load',
+              { path: graphPath, failure: { kind: 'signature', found: 0x58475048 } },
+            ],
+          ]);
+        });
+      });
+    });
+
+    describe('Given a single-file graph whose GDA2 entry demands overflow data it has no GDO2 chunk for', () => {
+      describe('When commitHeader is called for that commit', () => {
+        it("Then it refuses with git's reason and keeps the graph for every other commit", async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [[c0, c1, c2, c3, c4]]);
+          await flagGenerationOverflow(ctx, c1.id);
+          let caught: unknown;
+
+          // Act
+          try {
+            await commitHeader(ctx, c1.id);
+          } catch (error) {
+            caught = error;
+          }
+          const other = await commitHeader(ctx, c0.id);
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_COMMIT_GRAPH_CHUNK',
+            reason: 'commit-graph requires overflow generation data but has none',
+          });
+          expect(other?.rootTree).toBe(c0.data.tree);
+          expect(isGraphKnownAbsent(ctx)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given commitGraph.generationVersion=1 and a single-file graph whose GDA2 chunk is one entry short', () => {
+      describe('When commitHeader is called', () => {
+        it('Then GDA2 is never read: topological levels are served and nothing is logged', async () => {
+          // Arrange
+          const warn = vi.fn<NonNullable<Logger['warn']>>();
+          const ctx = { ...(await buildSeededContext()), logger: { warn } };
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [[c0, c1, c2, c3, c4]]);
+          const graphPath = commitGraphPath(commonGitDir(ctx));
+          const bytes = await ctx.fs.read(graphPath);
+          await ctx.fs.write(graphPath, shrinkChunkAfter(bytes, 'GDA2', -4));
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[commitGraph]\n\tgenerationVersion = 1\n',
+          );
+
+          // Act
+          const header = await commitHeader(ctx, c0.id);
+
+          // Assert
+          expect(header?.generation).toBe(1);
+          expect(warn).not.toHaveBeenCalled();
+          expect(await correctedCommitDatesEnabled(ctx)).toBe(false);
+        });
+      });
+    });
+
+    describe.each([
+      { label: 'explicitly 2', value: '2', refusal: undefined },
+      {
+        label: 'malformed',
+        value: 'two',
+        refusal: {
+          code: 'CONFIG_BAD_NUMERIC_VALUE',
+          key: 'commitgraph.generationversion',
+          value: 'two',
+          reason: 'invalid unit',
+        },
+      },
+    ])(
+      'Given commitGraph.generationVersion $label and a GDA2 chunk one entry short',
+      ({ value, refusal }) => {
+        describe('When commitHeader is called', () => {
+          it("Then GDA2 is read and git's wrong-size error is logged, unless the value is refused first", async () => {
+            // Arrange
+            const warn = vi.fn<NonNullable<Logger['warn']>>();
+            const ctx = { ...(await buildSeededContext()), logger: { warn } };
+            const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+            await writeCommitGraph(ctx, [[c0, c1, c2, c3, c4]]);
+            const graphPath = commitGraphPath(commonGitDir(ctx));
+            const bytes = await ctx.fs.read(graphPath);
+            await ctx.fs.write(graphPath, shrinkChunkAfter(bytes, 'GDA2', -4));
+            await ctx.fs.writeUtf8(
+              `${ctx.layout.gitDir}/config`,
+              `[commitGraph]\n\tgenerationVersion = ${value}\n`,
+            );
+
+            // Act
+            const [outcome] = await Promise.allSettled([commitHeader(ctx, c0.id)]);
+
+            // Assert
+            const refused =
+              outcome.status === 'rejected' ? (outcome.reason as TsgitError).data : undefined;
+            expect(refused).toEqual(
+              refusal === undefined
+                ? undefined
+                : { ...refusal, source: `${ctx.layout.gitDir}/config` },
+            );
+            expect(warn.mock.calls).toEqual(
+              refusal === undefined
+                ? [['commitGraph: commit-graph generations chunk is wrong size']]
+                : [],
+            );
+          });
+        });
+      },
+    );
+
+    describe('Given a single-file graph whose GDA2 chunk is one entry short', () => {
+      describe('When commitHeader is called', () => {
+        it("Then the graph serves topological levels and git's error is logged", async () => {
+          // Arrange
+          const warn = vi.fn<NonNullable<Logger['warn']>>();
+          const ctx = { ...(await buildSeededContext()), logger: { warn } };
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [[c0, c1, c2, c3, c4]]);
+          const graphPath = commitGraphPath(commonGitDir(ctx));
+          const bytes = await ctx.fs.read(graphPath);
+          await ctx.fs.write(graphPath, shrinkChunkAfter(bytes, 'GDA2', -4));
+
+          // Act
+          const header = await commitHeader(ctx, c0.id);
+
+          // Assert
+          expect(header?.generation).toBe(1);
+          expect(warn.mock.calls).toEqual([
+            ['commitGraph: commit-graph generations chunk is wrong size'],
+          ]);
         });
       });
     });
@@ -842,58 +1198,41 @@ describe('read-commit-graph', () => {
 
     describe('Given a single-file graph with an octopus merge whose EDGE chunk becomes unreadable after writing', () => {
       describe('When commitHeader is called for the merge commit', () => {
-        it('Then the graph degrades to absent instead of throwing, and stays poisoned for later calls', async () => {
-          // Arrange — a decode failure discovered mid-lookup (not at parse
-          // time) must still be caught by commitHeader's own try/catch and
-          // degrade the whole graph to absent for the rest of the lifetime.
-          const ctx = await buildSeededContext();
-          const tree = await emptyTree(ctx);
-          const d0 = await makeCommit(ctx, tree, [], 1, 'd0');
-          const d1 = await makeCommit(ctx, tree, [], 2, 'd1');
-          const d2 = await makeCommit(ctx, tree, [], 3, 'd2');
-          const d3 = await makeCommit(ctx, tree, [d0.id, d1.id, d2.id], 4, 'd3');
-          await writeCommitGraph(ctx, [[d0, d1, d2, d3]]);
-          const gitDir = commonGitDir(ctx);
-          const graphPath = commitGraphPath(gitDir);
-          const original = await ctx.fs.read(graphPath);
-          await ctx.fs.write(graphPath, renameChunkRowId(original, 'EDGE', 'ZZZZ'));
+        it("Then that commit alone falls back to its object and git's error is logged", async () => {
+          // Arrange
+          const warn = vi.fn<NonNullable<Logger['warn']>>();
+          const ctx = { ...(await buildSeededContext()), logger: { warn } };
+          const { d0, d3 } = await buildOctopusWithoutEdgeChunk(ctx);
 
           // Act
           const header = await commitHeader(ctx, d3.id);
-          const secondHeader = await commitHeader(ctx, d3.id);
 
           // Assert
           expect(header).toBeUndefined();
-          expect(secondHeader).toBeUndefined();
+          expect(isGraphKnownAbsent(ctx)).toBe(false);
+          expect(warn.mock.calls).toEqual([
+            ['commitGraph: commit-graph extra-edges pointer out of bounds', { id: d3.id }],
+          ]);
+          expect((await commitHeader(ctx, d0.id))?.rootTree).toBe(d0.data.tree);
         });
       });
+    });
 
-      describe('When a DIFFERENT, structurally-clean commit is looked up right after', () => {
-        it('Then it ALSO comes back absent — the whole graph degrades, not just the failing entry', async () => {
-          // Arrange — d0 is parentless: its own lookup never touches the
-          // corrupt EDGE chunk at all, so it can only come back absent here
-          // if the FIRST call's degrade actually poisoned the cached graph
-          // object itself, rather than the graph staying cached (structurally
-          // intact from d0's point of view) for a would-be-clean second read.
-          const ctx = await buildSeededContext();
-          const tree = await emptyTree(ctx);
-          const d0 = await makeCommit(ctx, tree, [], 1, 'd0');
-          const d1 = await makeCommit(ctx, tree, [], 2, 'd1');
-          const d2 = await makeCommit(ctx, tree, [], 3, 'd2');
-          const d3 = await makeCommit(ctx, tree, [d0.id, d1.id, d2.id], 4, 'd3');
-          await writeCommitGraph(ctx, [[d0, d1, d2, d3]]);
-          const gitDir = commonGitDir(ctx);
-          const graphPath = commitGraphPath(gitDir);
-          const original = await ctx.fs.read(graphPath);
-          await ctx.fs.write(graphPath, renameChunkRowId(original, 'EDGE', 'ZZZZ'));
+    describe('Given a single-file graph with an octopus merge whose EDGE chunk is unreadable', () => {
+      describe('When commitHeader is asked for the merge twice in one session', () => {
+        it("Then git's error is logged once and both answers fall back to the object", async () => {
+          // Arrange
+          const warn = vi.fn<NonNullable<Logger['warn']>>();
+          const ctx = { ...(await buildSeededContext()), logger: { warn } };
+          const { d3 } = await buildOctopusWithoutEdgeChunk(ctx);
+          const sut = commitHeader;
 
           // Act
-          const header = await commitHeader(ctx, d3.id);
-          const cleanHeader = await commitHeader(ctx, d0.id);
+          const result = [await sut(ctx, d3.id), await sut(ctx, d3.id)];
 
           // Assert
-          expect(header).toBeUndefined();
-          expect(cleanHeader).toBeUndefined();
+          expect(result).toEqual([undefined, undefined]);
+          expect(warn).toHaveBeenCalledTimes(1);
         });
       });
     });
@@ -919,101 +1258,78 @@ describe('read-commit-graph', () => {
 
     describe('Given a CDAT parent position far beyond every layer', () => {
       describe('When commitHeader is called for the commit that carries it', () => {
-        it('Then the graph degrades to absent and the session records it, instead of reading past the OID table', async () => {
-          // Arrange — git dies with `invalid parent position N`; tsgit's
-          // documented posture for a graph that fails to decode is to answer
-          // from objects for the rest of the session, so the position is
-          // refused as a decode fault and the graph becomes absent.
+        it("Then it refuses with git's invalid-parent-position reason and keeps the graph", async () => {
+          // Arrange
           const ctx = await buildSeededContext();
           const tree = await emptyTree(ctx);
           const c0 = await makeCommit(ctx, tree, [], 1, 'c0');
           const c1 = await makeCommit(ctx, tree, [c0.id], 2, 'c1');
           await writeCommitGraph(ctx, [[c0, c1]]);
-          const gitDir = commonGitDir(ctx);
-          const graphPath = commitGraphPath(gitDir);
+          const graphPath = commitGraphPath(commonGitDir(ctx));
           const original = await ctx.fs.read(graphPath);
           await ctx.fs.write(graphPath, corruptFirstRealParent1Position(original, 0x6fffffff));
 
           // Act
-          const header = await commitHeader(ctx, c1.id);
+          const caught = await refusalOf(commitHeader(ctx, c1.id));
 
           // Assert
-          expect(header).toBeUndefined();
-          expect(isGraphKnownAbsent(ctx)).toBe(true);
+          expect(caught).toEqual({
+            code: 'INVALID_COMMIT_GRAPH_CHUNK',
+            reason: 'invalid parent position 1879048191',
+          });
+          expect(isGraphKnownAbsent(ctx)).toBe(false);
         });
       });
     });
 
     describe('Given a CDAT parent position equal to the layer commit count (one past the last entry)', () => {
-      describe('When commitHeader is called for the commit that carries it', () => {
-        it('Then the graph degrades to absent rather than fabricating a parent from the bytes after the OID table', async () => {
-          // Arrange — position == commitCount is the boundary that used to slip
-          // through: the 20 bytes after OIDL are the first CDAT entry's root
-          // tree, which came back as a "parent".
+      describe('When walking from the commit that carries it', () => {
+        it('Then the walk refuses rather than fabricating a parent from the bytes after the OID table', async () => {
+          // Arrange — the 20 bytes after OIDL are the first CDAT entry's root tree.
           const ctx = await buildSeededContext();
           const tree = await emptyTree(ctx);
           const c0 = await makeCommit(ctx, tree, [], 1, 'c0');
           const c1 = await makeCommit(ctx, tree, [c0.id], 2, 'c1');
           await writeCommitGraph(ctx, [[c0, c1]]);
-          const gitDir = commonGitDir(ctx);
-          const graphPath = commitGraphPath(gitDir);
+          const graphPath = commitGraphPath(commonGitDir(ctx));
           const original = await ctx.fs.read(graphPath);
           await ctx.fs.write(graphPath, corruptFirstRealParent1Position(original, 2));
 
           // Act
-          const header = await commitHeader(ctx, c1.id);
-          const walked: ObjectId[] = [];
-          for await (const commit of walkCommits(ctx, { from: [c1.id] })) walked.push(commit.id);
+          const caught = await refusalOf(
+            (async () => {
+              for await (const _commit of walkCommits(ctx, { from: [c1.id] }));
+            })(),
+          );
 
-          // Assert — no fabricated parent; the walk falls back to the bodies
-          expect(header).toBeUndefined();
-          expect(isGraphKnownAbsent(ctx)).toBe(true);
-          expect(walked).toEqual([c1.id, c0.id]);
+          // Assert
+          expect(caught).toEqual({
+            code: 'INVALID_COMMIT_GRAPH_CHUNK',
+            reason: 'invalid parent position 2',
+          });
         });
       });
     });
 
     describe('Given a chain whose base-layer commit names a parent position in the tip layer', () => {
-      describe('When commitHeader is called for that base commit', () => {
-        it('Then the graph degrades to absent rather than following an upward cross-layer edge', async () => {
+      describe('When commitHeader is called for that base commit, then for a tip commit', () => {
+        it('Then the base commit refuses as git dies, and the tip commit is still served', async () => {
           // Arrange — position 2 is a real OIDL slot (c2 in the tip layer), so
           // only the child's own-layer bound (git's insert_parent_or_die) can
-          // catch it; the resolved-layer check alone would accept it. git 2.55.0
-          // exits 128 `invalid parent position 2` on the same shape.
-          const ctx = await buildSeededContext();
-          const { c0, c1 } = await writeBadCrossLayerChain(ctx);
-
-          // Act
-          const header = await commitHeader(ctx, c1.id);
-          const walked: ObjectId[] = [];
-          for await (const commit of walkCommits(ctx, { from: [c1.id] })) walked.push(commit.id);
-
-          // Assert — no fabricated cross-layer parent; the walk answers from objects
-          expect(header).toBeUndefined();
-          expect(isGraphKnownAbsent(ctx)).toBe(true);
-          expect(walked).toEqual([c1.id, c0.id]);
-        });
-      });
-    });
-
-    describe('Given a graph that degrades to absent mid-session', () => {
-      describe('When commitHeader is called again for an oid it served before the fault', () => {
-        it('Then it returns undefined — the header cache does not outlive the degrade verdict', async () => {
-          // Arrange — c2 (tip) resolves and is cached; c1 (base) then degrades
-          // the graph. A stale cache would still hand back c2's header.
+          // catch it; the resolved-layer check alone would accept it.
           const ctx = await buildSeededContext();
           const { c1, c2 } = await writeBadCrossLayerChain(ctx);
-          const beforeFault = await commitHeader(ctx, c2.id);
-          expect(beforeFault).toBeDefined();
 
           // Act
-          const faulted = await commitHeader(ctx, c1.id);
-          const afterFault = await commitHeader(ctx, c2.id);
+          const caught = await refusalOf(commitHeader(ctx, c1.id));
+          const tip = await commitHeader(ctx, c2.id);
 
           // Assert
-          expect(faulted).toBeUndefined();
-          expect(isGraphKnownAbsent(ctx)).toBe(true);
-          expect(afterFault).toBeUndefined();
+          expect(caught).toEqual({
+            code: 'INVALID_COMMIT_GRAPH_CHUNK',
+            reason: 'invalid parent position 2',
+          });
+          expect(tip?.rootTree).toBe(c2.data.tree);
         });
       });
     });
@@ -1068,6 +1384,49 @@ describe('read-commit-graph', () => {
           // Assert
           expect(header).toBeUndefined();
         });
+      });
+    });
+  });
+});
+
+describe('parseLayerOrUndefined', () => {
+  describe('Given bytes too short to be a commit-graph', () => {
+    describe('When parsed', () => {
+      it('Then the layer is not loadable', () => {
+        // Arrange
+        const sut = parseLayerOrUndefined;
+
+        // Act
+        const result = sut(new Uint8Array(3));
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a failure that is not a graph decode failure', () => {
+    describe('When parsed', () => {
+      it('Then it propagates unchanged instead of reading as an absent graph', () => {
+        // Arrange
+        const sut = parseLayerOrUndefined;
+        const hostile = {
+          get length(): number {
+            throw new Error('not a decode failure');
+          },
+        } as unknown as Uint8Array;
+
+        // Act
+        let caught: unknown;
+        try {
+          sut(hostile);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as Error).message).toBe('not a decode failure');
       });
     });
   });
@@ -1302,6 +1661,284 @@ describe('commitHeader / correctedCommitDatesEnabled — repo-settings class bou
           (c) => c.method === 'stat' && c.path === `${ctx.layout.gitDir}/config`,
         );
         expect(configStats).toHaveLength(0);
+      });
+    });
+  });
+
+  describe.each([
+    { name: 'graphCommitIds', sut: graphCommitIds },
+    { name: 'generationNumbersEnabled', sut: generationNumbersEnabled },
+  ])('$name', ({ sut }) => {
+    describe('Given core.commitGraph = false and core.maxTreeDepth = 2.5', () => {
+      describe('When it is called', () => {
+        it('Then it throws CONFIG_BAD_NUMERIC_VALUE — the graph being disabled does not skip the repo-settings class', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[core]\n\tcommitGraph = false\n\tmaxTreeDepth = 2.5\n',
+          );
+          invalidateConfigCache(ctx);
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(ctx);
+            expect.unreachable();
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toMatchObject({
+            code: 'CONFIG_BAD_NUMERIC_VALUE',
+            value: '2.5',
+          });
+        });
+      });
+    });
+  });
+
+  describe('commitHeader across object sources', () => {
+    const ALT_OBJECTS = '/repo/alt/objects';
+    const PRIMARY_OBJECTS = '/repo/.git/objects';
+
+    const contextWithAlternate = async (): Promise<Context> => {
+      const ctx = createMemoryContext({
+        files: {
+          '/repo/.git/objects/info/alternates': new TextEncoder().encode(`${ALT_OBJECTS}\n`),
+        },
+      });
+      await ctx.fs.mkdir(ALT_OBJECTS);
+      return ctx;
+    };
+
+    const relocate = async (ctx: Context, relativePath: string): Promise<void> => {
+      const bytes = await ctx.fs.read(`${PRIMARY_OBJECTS}/${relativePath}`);
+      await ctx.fs.write(`${ALT_OBJECTS}/${relativePath}`, bytes);
+      await ctx.fs.rm(`${PRIMARY_OBJECTS}/${relativePath}`);
+    };
+
+    const withLogger = (ctx: Context, warn: NonNullable<Logger['warn']>): Context => ({
+      ...ctx,
+      logger: { warn },
+    });
+
+    const chainHashes = async (ctx: Context): Promise<string[]> =>
+      (await ctx.fs.readUtf8(commitGraphChainPath(commonGitDir(ctx)))).trim().split('\n');
+
+    describe('Given a commit-graph that lives only in the alternate', () => {
+      describe('When commitHeader is called', () => {
+        it('Then the alternate graph serves the header', async () => {
+          // Arrange
+          const ctx = await contextWithAlternate();
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [[c0, c1, c2, c3, c4]]);
+          await relocate(ctx, 'info/commit-graph');
+
+          // Act
+          const header = await commitHeader(ctx, c4.id);
+
+          // Assert
+          expectHeaderMatchesCommit(header, c4);
+        });
+      });
+    });
+
+    describe('Given a primary graph covering c0..c2 and an alternate graph covering every commit', () => {
+      describe('When commitHeader is called for a commit only the alternate graph covers', () => {
+        it('Then the primary graph wins and the commit is absent from it', async () => {
+          // Arrange
+          const ctx = await contextWithAlternate();
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [[c0, c1, c2, c3, c4]]);
+          await relocate(ctx, 'info/commit-graph');
+          await writeCommitGraph(ctx, [[c0, c1, c2]]);
+
+          // Act
+          const covered = await commitHeader(ctx, c2.id);
+          const uncovered = await commitHeader(ctx, c4.id);
+
+          // Assert
+          expectHeaderMatchesCommit(covered, c2);
+          expect(uncovered).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a chain whose base layer file lives only in the alternate', () => {
+      describe('When commitHeader is called for commits of both layers', () => {
+        it('Then the chain is assembled across sources', async () => {
+          // Arrange
+          const ctx = await contextWithAlternate();
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [
+            [c0, c1, c2],
+            [c3, c4],
+          ]);
+          const [baseHash] = await chainHashes(ctx);
+          await relocate(ctx, `info/commit-graphs/graph-${baseHash}.graph`);
+
+          // Act
+          const base = await commitHeader(ctx, c0.id);
+          const tip = await commitHeader(ctx, c4.id);
+
+          // Assert
+          expectHeaderMatchesCommit(base, c0);
+          expectHeaderMatchesCommit(tip, c4);
+        });
+      });
+    });
+
+    describe('Given a chain whose second line names a layer built on a different base', () => {
+      describe('When commitHeader is called', () => {
+        it("Then the tip layer is refused and git's chain warnings are logged", async () => {
+          // Arrange
+          const base = await contextWithAlternate();
+          const warn = vi.fn<NonNullable<Logger['warn']>>();
+          const ctx = withLogger(base, warn);
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [
+            [c0, c1, c2],
+            [c3, c4],
+          ]);
+          const [, tipHash] = await chainHashes(ctx);
+          await writeCommitGraph(ctx, [[c0], [c1]]);
+          const [singleBase] = await chainHashes(ctx);
+          const chainPath = commitGraphChainPath(commonGitDir(ctx));
+          await ctx.fs.writeUtf8(chainPath, `${singleBase}\n${tipHash}\n`);
+
+          // Act
+          const tip = await commitHeader(ctx, c4.id);
+          const prefix = await commitHeader(ctx, c0.id);
+
+          // Assert
+          expect(tip).toBeUndefined();
+          expectHeaderMatchesCommit(prefix, c0);
+          expect(warn.mock.calls).toEqual([
+            [
+              'commitGraph: commit-graph chain does not match',
+              { chain: chainPath, layer: tipHash },
+            ],
+            [
+              'commitGraph: unable to find all commit-graph files',
+              { chain: chainPath, layer: tipHash },
+            ],
+          ]);
+        });
+      });
+    });
+
+    describe('Given a chain whose tip layer file is missing in every source', () => {
+      describe('When commitHeader is called', () => {
+        it('Then the loaded prefix is served and the missing layer is warned about', async () => {
+          // Arrange
+          const base = await contextWithAlternate();
+          const warn = vi.fn<NonNullable<Logger['warn']>>();
+          const ctx = withLogger(base, warn);
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [
+            [c0, c1, c2],
+            [c3, c4],
+          ]);
+          const [, tipHash] = await chainHashes(ctx);
+          await ctx.fs.rm(`${PRIMARY_OBJECTS}/info/commit-graphs/graph-${tipHash}.graph`);
+
+          // Act
+          const prefix = await commitHeader(ctx, c2.id);
+          const beyond = await commitHeader(ctx, c4.id);
+
+          // Assert
+          expectHeaderMatchesCommit(prefix, c2);
+          expect(beyond).toBeUndefined();
+          expect(warn).toHaveBeenCalledTimes(1);
+          expect(warn).toHaveBeenCalledWith('commitGraph: unable to find all commit-graph files', {
+            chain: commitGraphChainPath(commonGitDir(ctx)),
+            layer: tipHash,
+          });
+        });
+      });
+    });
+
+    describe('Given a primary chain whose first layer exists nowhere and an alternate single graph', () => {
+      describe('When commitHeader is called', () => {
+        it('Then the empty prefix moves on to the alternate graph', async () => {
+          // Arrange
+          const ctx = await contextWithAlternate();
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [[c0, c1, c2, c3, c4]]);
+          await relocate(ctx, 'info/commit-graph');
+          await ctx.fs.writeUtf8(commitGraphChainPath(commonGitDir(ctx)), `${'ab'.repeat(20)}\n`);
+
+          // Act
+          const header = await commitHeader(ctx, c3.id);
+
+          // Assert
+          expectHeaderMatchesCommit(header, c3);
+        });
+      });
+    });
+
+    describe('Given a corrupt single file next to a valid chain in the primary', () => {
+      describe('When commitHeader is called', () => {
+        it('Then the chain is served', async () => {
+          // Arrange
+          const ctx = await contextWithAlternate();
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [
+            [c0, c1, c2],
+            [c3, c4],
+          ]);
+          await ctx.fs.write(commitGraphPath(commonGitDir(ctx)), new Uint8Array([1, 2, 3]));
+
+          // Act
+          const header = await commitHeader(ctx, c4.id);
+
+          // Assert
+          expectHeaderMatchesCommit(header, c4);
+        });
+      });
+    });
+  });
+});
+
+describe('core.commitGraph', () => {
+  const graphUnder = async (value: string): Promise<{ ctx: Context; id: ObjectId }> => {
+    const ctx = await buildSeededContext();
+    const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+    await writeCommitGraph(ctx, [[c0, c1, c2, c3, c4]]);
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[core]\n\tcommitGraph = ${value}\n`);
+    return { ctx, id: c4.id };
+  };
+
+  describe('Given a commit-graph and core.commitGraph = false', () => {
+    describe('When a graph-held commit header is asked for', () => {
+      it('Then no graph answers, as git leaves the graph unread', async () => {
+        // Arrange
+        const { ctx, id } = await graphUnder('false');
+        const sut = commitHeader;
+
+        // Act
+        const result = await sut(ctx, id);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a commit-graph and core.commitGraph = 1', () => {
+    describe('When a graph-held commit header is asked for', () => {
+      it('Then the graph answers', async () => {
+        // Arrange
+        const { ctx, id } = await graphUnder('1');
+        const sut = commitHeader;
+
+        // Act
+        const result = await sut(ctx, id);
+
+        // Assert
+        expect(result).toBeDefined();
       });
     });
   });

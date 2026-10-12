@@ -14,6 +14,7 @@ import {
   __resetConfigCacheForTests,
   invalidateConfigCache,
 } from '../../../../src/application/primitives/config-read.js';
+import { lstatIfReachable } from '../../../../src/application/primitives/internal/fs-probes.js';
 import { looseObjectPath, objectsDir } from '../../../../src/application/primitives/path-layout.js';
 import { getRefStore, refExists } from '../../../../src/application/primitives/ref-store.js';
 import {
@@ -1474,12 +1475,12 @@ describe('branch', () => {
           caught = err;
         }
 
-        // Assert — the full payload, not just the code: pins the depth cap
-        // as the refusal, not some other error shape.
+        // Assert — the full payload, not just the code: pins the revisit of
+        // A after two tags as the refusal, not some other error shape.
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data).toEqual({
           code: 'REF_CHAIN_TOO_DEEP',
-          depth: 6,
+          depth: 2,
           chain: [],
         });
       }, 5_000);
@@ -1831,12 +1832,12 @@ describe('branch', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            openWithNoFollow: async (path, mode) => {
-              if (path !== racedPath) return ctx.fs.openWithNoFollow(path, mode);
+            lstatIfReachable: async (path) => {
+              if (path !== racedPath) return lstatIfReachable(ctx.fs, path);
               reads += 1;
-              if (reads === 1) throw fileNotFound(path);
+              if (reads === 1) return undefined;
               await ctx.fs.writeUtf8(racedPath, `${commitId}\n`);
-              return ctx.fs.openWithNoFollow(path, mode);
+              return ctx.fs.lstat(path);
             },
           },
         };
@@ -2063,6 +2064,27 @@ describe('branch create — an unborn HEAD', () => {
 
         // Assert
         expect((caught as TsgitError).data).toEqual({ code: 'BRANCH_NOT_FOUND', name: 'nope-xyz' });
+      });
+    });
+  });
+});
+
+describe('branch — the start ref a create reads', () => {
+  describe('Given HEAD on main and no start point', () => {
+    describe('When branch create decides on the remote table and on tracking', () => {
+      it('Then main is read once for both, after the two start-point scans', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        const mainPath = `${ctx.layout.gitDir}/refs/heads/main`;
+        const open = vi.spyOn(ctx.fs, 'openWithNoFollow');
+        const sut = branchCreate;
+
+        // Act
+        await sut(ctx, { name: 'side' });
+
+        // Assert
+        const reads = open.mock.calls.filter(([path]) => path === mainPath);
+        expect(reads).toHaveLength(3);
       });
     });
   });

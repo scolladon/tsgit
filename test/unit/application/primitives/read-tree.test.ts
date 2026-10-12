@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { readTree } from '../../../../src/application/primitives/read-tree.js';
-import { MAX_PEEL_DEPTH } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type {
@@ -12,7 +11,9 @@ import type {
   Tag,
   Tree,
 } from '../../../../src/domain/objects/index.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, writeForgedTagLoop } from './fixtures.js';
+
+const DEEP_TAG_CHAIN = 6;
 
 const AUTHOR: AuthorIdentity = {
   name: 'Alice',
@@ -89,57 +90,16 @@ describe('readTree', () => {
     });
   });
 
-  describe('Given a tag chain at exactly MAX_PEEL_DEPTH (at cap)', () => {
+  describe('Given a tag chain deeper than any cap', () => {
     describe('When readTree is called', () => {
-      it('Then succeeds', async () => {
-        // Arrange — kills the `depth > MAX_PEEL_DEPTH` EqualityOperator `>=`
-        // mutant: under `>=`, depth=5 would trip the guard; under `>`, it's the
-        // threshold that still succeeds.
+      it('Then it peels every tag to the tree, as git does', async () => {
+        // Arrange — six tags, each naming the previous one.
         const ctx = await buildSeededContext();
         const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
         const treeId = await writeObject(ctx, tree);
         let currentId: ObjectId = treeId;
         let currentType: 'tree' | 'tag' = 'tree';
-        // Build exactly MAX_PEEL_DEPTH tags (5), so peel walker hits depth == 5
-        // after the final hop and must still succeed.
-        for (let i = 0; i < MAX_PEEL_DEPTH; i += 1) {
-          const tag: Tag = {
-            type: 'tag',
-            id: '' as ObjectId,
-            data: {
-              object: currentId,
-              objectType: currentType,
-              tagName: `ok${i}`,
-              tagger: AUTHOR,
-              message: `t${i}`,
-              extraHeaders: [],
-            },
-          };
-          currentId = await writeObject(ctx, tag);
-          currentType = 'tag';
-        }
-
-        // Act
-        const result = await readTree(ctx, currentId);
-
-        // Assert
-        expect(result.type).toBe('tree');
-        expect(result.id).toBe(treeId);
-      });
-    });
-  });
-
-  describe('Given a tag chain exceeding MAX_PEEL_DEPTH', () => {
-    describe('When readTree is called', () => {
-      it('Then throws REF_CHAIN_TOO_DEEP', async () => {
-        // Arrange — create MAX_PEEL_DEPTH+1 tags pointing at each other. The peel
-        // walker depth counter is the only thing stopping runaway resolution.
-        const ctx = await buildSeededContext();
-        const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
-        const treeId = await writeObject(ctx, tree);
-        let currentId: ObjectId = treeId;
-        let currentType: 'tree' | 'tag' = 'tree';
-        for (let i = 0; i <= MAX_PEEL_DEPTH; i += 1) {
+        for (let i = 0; i < DEEP_TAG_CHAIN; i += 1) {
           const tag: Tag = {
             type: 'tag',
             id: '' as ObjectId,
@@ -156,13 +116,35 @@ describe('readTree', () => {
           currentType = 'tag';
         }
 
-        // Act + Assert
+        const sut = readTree;
+
+        // Act
+        const result = await sut(ctx, currentId);
+
+        // Assert
+        expect(result.id).toBe(treeId);
+      });
+    });
+  });
+
+  describe('Given a forged tag naming itself', () => {
+    describe('When readTree is called', () => {
+      it('Then it refuses the looping chain with REF_CHAIN_TOO_DEEP', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const loop = await writeForgedTagLoop(ctx);
+        const sut = readTree;
+
+        // Act
+        let caught: unknown;
         try {
-          await readTree(ctx, currentId);
-          expect.unreachable();
+          await sut(ctx, loop);
         } catch (error) {
-          expect((error as TsgitError).data.code).toBe('REF_CHAIN_TOO_DEEP');
+          caught = error;
         }
+
+        // Assert
+        expect((caught as TsgitError).data).toMatchObject({ code: 'REF_CHAIN_TOO_DEEP', depth: 1 });
       });
     });
   });

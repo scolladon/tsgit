@@ -21,11 +21,7 @@
  * guard is the one whole-changeset exception, matching git's own two-phase
  * split between index-build validation and the write phase.
  */
-import {
-  checkoutOverwriteDirty,
-  smudgeFilterFailed,
-  type WouldOverwriteClasses,
-} from '../../domain/commands/error.js';
+import { checkoutOverwriteDirty, type WouldOverwriteClasses } from '../../domain/commands/error.js';
 import { comparePaths } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
 import { type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
@@ -36,14 +32,23 @@ import {
   type FilePath,
   type ObjectId,
 } from '../../domain/objects/index.js';
-import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
 import type { Changeset, ChangesetEntry } from './compute-changeset.js';
+import { readConfig } from './config-read.js';
+import {
+  applySmudgeFilter,
+  type CheckoutMetadata,
+  smudgesInCore,
+} from './internal/apply-smudge-filter.js';
 import { boundedMapFor, limiterFor } from './internal/concurrency.js';
 import type { ConcurrencyLimiter } from './internal/concurrency-limiter.js';
+import { withFilterProcessPool } from './internal/filter-process-pool.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { pathIsOccupied } from './internal/path-occupied.js';
-import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
+import {
+  type AttributeProvider,
+  maybeBuildAttributeProvider,
+} from './internal/read-gitattributes.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
 import {
   createLeadingPathScanner,
@@ -54,15 +59,22 @@ import {
   writeWorkingTreeEntry,
   writeWorkingTreeEntryStream,
 } from './internal/write-working-tree-file.js';
+import { everySourceLoadable } from './object-store.js';
 import { readBlob } from './read-blob.js';
 import { resolveFilterDriver } from './resolve-filter-driver.js';
-import { runFilterDriver } from './run-filter-driver.js';
-import { streamBlob } from './stream-blob.js';
 
 export interface ApplyChangesetOpts {
   readonly changeset: Changeset;
   readonly force: boolean;
   readonly workdir: string;
+  /** The ref and commit the checkout moves to, told to a smudging process filter. */
+  readonly checkoutMetadata?: CheckoutMetadata;
+}
+
+/** How smudged writes run: their shared concurrency bound and checkout metadata. */
+interface Smudging {
+  readonly limiter: ConcurrencyLimiter;
+  readonly metadata?: CheckoutMetadata;
 }
 
 export interface ApplyChangesetResult {
@@ -215,7 +227,7 @@ const writeBlobToWorkingTree = async (
   id: IndexEntry['id'],
   mode: FileMode,
   scanner: LeadingPathScanner,
-  filterLimiter: ConcurrencyLimiter,
+  smudging: Smudging,
   provider?: AttributeProvider,
 ): Promise<void> => {
   if (mode === FILE_MODE.GITLINK) {
@@ -227,36 +239,29 @@ const writeBlobToWorkingTree = async (
     await writeWorkingTreeEntry(ctx, path, blob.content, mode, scanner);
     return;
   }
-  if (provider !== undefined && ctx.command !== undefined) {
-    const command: CommandRunner = ctx.command;
+  if (provider !== undefined) {
+    const command = ctx.command;
     const choice = await resolveFilterDriver(ctx, provider, path, {
       eagerSectionValidation: true,
     });
-    if (choice.kind === 'external' && choice.smudge !== undefined) {
+    if (smudgesInCore(choice)) {
       const blob = await readBlob(ctx, id);
-      const smudge = choice.smudge;
       // A smudge filter spawns a subprocess — CPU/process-bound, not
       // blocking-fd-bound — so it must not inherit the write wave's wider
-      // ioBound budget: `filterLimiter` is sized off cpuBound and
+      // ioBound budget: `smudging.limiter` is sized off cpuBound and
       // shared for the whole changeset apply, bounding how many subprocess
       // spawns run at once regardless of how many writes the ioBound pool
       // has in flight. The write itself, below, stays on the full pool.
-      const result = await filterLimiter.run(() =>
-        runFilterDriver(ctx, command, smudge, blob.content),
+      const { metadata } = smudging;
+      const target = { path, blob: id, bytes: blob.content, ...(metadata && { metadata }) };
+      const content = await smudging.limiter.run(() =>
+        applySmudgeFilter(ctx, command, target, choice),
       );
-      if (!result.ok) {
-        if (choice.required) {
-          throw smudgeFilterFailed(path, choice.name, result.exitCode);
-        }
-        await writeWorkingTreeEntry(ctx, path, blob.content, mode, scanner);
-        return;
-      }
-      await writeWorkingTreeEntry(ctx, path, result.bytes, mode, scanner);
+      await writeWorkingTreeEntry(ctx, path, content, mode, scanner);
       return;
     }
   }
-  const stream = await streamBlob(ctx, id);
-  await writeWorkingTreeEntryStream(ctx, path, stream, mode, scanner);
+  await writeWorkingTreeEntryStream(ctx, path, id, mode, scanner);
 };
 
 const applyDeleteEntry = async (
@@ -276,7 +281,7 @@ const applyWriteEntry = async (
   workdir: string,
   entry: ChangesetEntry,
   scanner: LeadingPathScanner,
-  filterLimiter: ConcurrencyLimiter,
+  smudging: Smudging,
   provider: AttributeProvider | undefined,
 ): Promise<IndexEntry | undefined> => {
   if (entry.id === undefined) return undefined;
@@ -287,7 +292,7 @@ const applyWriteEntry = async (
     entry.id as IndexEntry['id'],
     entry.mode,
     scanner,
-    filterLimiter,
+    smudging,
     provider,
   );
   return buildIndexEntry(ctx, absPath, entry.path, entry.id, entry.mode);
@@ -419,35 +424,59 @@ const groupByCaseFoldedPath = (
   return order.map((key) => groups.get(key) as ChangesetEntry[]);
 };
 
+const applyWriteGroup = async (
+  ctx: Context,
+  workdir: string,
+  group: ReadonlyArray<ChangesetEntry>,
+  lazyProvider: () => Promise<AttributeProvider | undefined>,
+  scanner: LeadingPathScanner,
+  smudging: Smudging,
+  total: number,
+  counter: ProgressCounter,
+): Promise<ReadonlyArray<IndexEntry>> => {
+  const written: IndexEntry[] = [];
+  for (const entry of group) {
+    const provider = await lazyProvider();
+    const indexEntry = await applyWriteEntry(ctx, workdir, entry, scanner, smudging, provider);
+    reportCompletion(ctx, total, counter, entry.path);
+    if (indexEntry !== undefined) written.push(indexEntry);
+  }
+  return written;
+};
+
+const byEntryPath = (a: ChangesetEntry, b: ChangesetEntry): number => comparePaths(a.path, b.path);
+
+/**
+ * Whether a long-running filter could serve this checkout. git checks out
+ * such entries one at a time, so its one process sees every path in index
+ * order — a concurrent wave would ask in completion order.
+ */
+const convertsThroughFilterProcess = async (ctx: Context): Promise<boolean> => {
+  if (ctx.command?.spawn === undefined) return false;
+  const drivers = (await readConfig(ctx)).filter?.values() ?? [];
+  return [...drivers].some((driver) => driver.process !== undefined && driver.process !== '');
+};
+
 const applyWriteWave = async (
   ctx: Context,
   workdir: string,
   writes: ReadonlyArray<ChangesetEntry>,
-  lazyProvider: () => Promise<AttributeProvider>,
+  lazyProvider: () => Promise<AttributeProvider | undefined>,
   scanner: LeadingPathScanner,
-  filterLimiter: ConcurrencyLimiter,
+  smudging: Smudging,
   total: number,
   counter: ProgressCounter,
 ): Promise<ReadonlyArray<IndexEntry>> => {
-  const groups = groupByCaseFoldedPath(writes);
-  const grouped = await drainPooled(ctx, groups, async (group) => {
-    const written: IndexEntry[] = [];
-    for (const entry of group) {
-      const provider = ctx.command !== undefined ? await lazyProvider() : undefined;
-      const indexEntry = await applyWriteEntry(
-        ctx,
-        workdir,
-        entry,
-        scanner,
-        filterLimiter,
-        provider,
-      );
-      reportCompletion(ctx, total, counter, entry.path);
-      if (indexEntry !== undefined) written.push(indexEntry);
-    }
-    return written;
-  });
-  return grouped.flat();
+  const applyGroup = (group: ReadonlyArray<ChangesetEntry>) =>
+    applyWriteGroup(ctx, workdir, group, lazyProvider, scanner, smudging, total, counter);
+  if ((await everySourceLoadable(ctx)) && !(await convertsThroughFilterProcess(ctx))) {
+    const grouped = await drainPooled(ctx, groupByCaseFoldedPath(writes), applyGroup);
+    return grouped.flat();
+  }
+  // git writes one entry at a time in index order, so its residue under a
+  // refused object read is an exact prefix; a concurrent wave would leave an
+  // arbitrary subset.
+  return applyGroup([...writes].sort(byEntryPath));
 };
 
 const applyAllEntries = async (
@@ -455,9 +484,9 @@ const applyAllEntries = async (
   deletes: ReadonlyArray<ChangesetEntry>,
   writes: ReadonlyArray<ChangesetEntry>,
   workdir: string,
-  lazyProvider: () => Promise<AttributeProvider>,
+  lazyProvider: () => Promise<AttributeProvider | undefined>,
   scanner: LeadingPathScanner,
-  filterLimiter: ConcurrencyLimiter,
+  smudging: Smudging,
 ): Promise<ApplyChangesetResult> => {
   const total = deletes.length + writes.length;
   const counter: ProgressCounter = { current: 0 };
@@ -469,7 +498,7 @@ const applyAllEntries = async (
     writes,
     lazyProvider,
     scanner,
-    filterLimiter,
+    smudging,
     total,
     counter,
   );
@@ -477,7 +506,45 @@ const applyAllEntries = async (
   return { writtenEntries, written: writes.length, deleted };
 };
 
-export const applyChangeset = async (
+export const applyChangeset = (
+  ctx: Context,
+  opts: ApplyChangesetOpts,
+): Promise<ApplyChangesetResult> =>
+  withFilterProcessPool(ctx, () => applyChangesetInScope(ctx, opts));
+
+/** Refuses a changeset that would overwrite local changes or untracked files. */
+const assertNoDirtyOverwrite = async (
+  ctx: Context,
+  workdir: string,
+  entries: ReadonlyArray<ChangesetEntry>,
+): Promise<void> => {
+  const dirty = await checkDirty(ctx, workdir, entries);
+  if (dirty.localChanges.length > 0 || dirty.untracked.length > 0) {
+    throw checkoutOverwriteDirty(dirty);
+  }
+};
+
+/**
+ * Builds the attribute provider lazily, once per invocation. A runner-less
+ * context skips it unless a driver is required: only a required driver
+ * changes what a context that cannot run filters writes.
+ */
+const createLazyProvider = (ctx: Context): (() => Promise<AttributeProvider | undefined>) => {
+  let providerPromise: Promise<AttributeProvider | undefined> | undefined;
+  return () => (providerPromise ??= maybeBuildAttributeProvider(ctx));
+};
+
+/**
+ * Sized off cpuBound, not ioBound: a smudge subprocess spawn is
+ * process/CPU-bound, not blocking-fd-bound, so it must not inherit the
+ * write wave's wider ioBound budget — see `writeBlobToWorkingTree`.
+ */
+const createSmudging = (ctx: Context, opts: ApplyChangesetOpts): Smudging => ({
+  limiter: limiterFor(ctx, 'cpuBound'),
+  ...(opts.checkoutMetadata && { metadata: opts.checkoutMetadata }),
+});
+
+const applyChangesetInScope = async (
   ctx: Context,
   opts: ApplyChangesetOpts,
 ): Promise<ApplyChangesetResult> => {
@@ -489,28 +556,14 @@ export const applyChangeset = async (
   // pays a dirty probe — or a pool slot — for entries that carry no I/O.
   const { deletes, writes } = splitWaves(changeset.entries);
 
-  if (!force) {
-    const dirty = await checkDirty(ctx, workdir, [...deletes, ...writes]);
-    if (dirty.localChanges.length > 0 || dirty.untracked.length > 0) {
-      throw checkoutOverwriteDirty(dirty);
-    }
-  }
+  if (!force) await assertNoDirtyOverwrite(ctx, workdir, [...deletes, ...writes]);
 
-  // Build attribute provider lazily once per invocation (mirror build-content-merger.ts:48).
-  // Skip entirely when no command runner is wired: filters cannot run, so the
-  // provider would be inert anyway (ADR-408).
-  let providerPromise: Promise<AttributeProvider> | undefined;
-  const lazyProvider = (): Promise<AttributeProvider> =>
-    (providerPromise ??= buildAttributeProvider(ctx));
-
+  const lazyProvider = createLazyProvider(ctx);
   // One scanner per changeset application, shared by BOTH the delete-skip
   // check and the write-side unlink: its per-directory memo means a deep
   // tree with many entries under the same symlinked directory costs one
   // `lstat` per distinct directory, not one per entry.
   const scanner = createLeadingPathScanner(ctx);
-  // Sized off cpuBound, not ioBound: a smudge subprocess spawn is
-  // process/CPU-bound, not blocking-fd-bound, so it must not inherit the
-  // write wave's wider ioBound budget — see `writeBlobToWorkingTree`.
-  const filterLimiter = limiterFor(ctx, 'cpuBound');
-  return applyAllEntries(ctx, deletes, writes, workdir, lazyProvider, scanner, filterLimiter);
+  const smudging = createSmudging(ctx, opts);
+  return applyAllEntries(ctx, deletes, writes, workdir, lazyProvider, scanner, smudging);
 };

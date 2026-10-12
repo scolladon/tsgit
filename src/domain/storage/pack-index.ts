@@ -325,3 +325,13 @@ function findUpperBound(index: PackIndex, lo: number, hi: number, targetBytes: U
   }
   return low;
 }
+
+/** The pack checksum this index records for its pack — the first half of its trailer. */
+export function recordedPackChecksum(index: PackIndex): Uint8Array {
+  return index._bytes.subarray(index.trailerOffset, index.trailerOffset + index.digestLength);
+}
+
+/** The CRC-32 this index records for the entry at index `position`. */
+export function recordedEntryCrc(index: PackIndex, position: number): number {
+  return index._view.getUint32(index.crc32TableOffset + 4 * position);
+}

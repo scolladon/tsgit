@@ -45,7 +45,7 @@ import {
   REASON_REV_INDEX_CORRUPT,
 } from '../../../../src/domain/storage/index.js';
 import { PACK_HEADER_SIZE } from '../../../../src/domain/storage/pack-entry.js';
-import type { Context } from '../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../src/ports/context.js';
 import type { DirEntry, FileHandle, FileStat } from '../../../../src/ports/file-system.js';
 import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
 import { buildSeededContext, instrumentedContext } from './fixtures.js';
@@ -154,6 +154,56 @@ describe('pack-registry', () => {
 
         // Assert
         expect(result).toEqual(new Set());
+      });
+    });
+  });
+
+  describe('Given a location whose fs holds a pack under another objects dir', () => {
+    describe('When createPackRegistry(ctx, location).lookup(id) is called', () => {
+      it('Then the entry is found and ctx.fs never touches an objects path', async () => {
+        // Arrange
+        const primary = await buildSeededContext();
+        const store = await buildSeededContext();
+        const objectsDir = `${store.layout.gitDir}/alternate/objects`;
+        const built = await buildSyntheticPack(store, [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('elsewhere') },
+        ]);
+        await store.fs.write(`${objectsDir}/pack/pack-alt.pack`, built.packBytes);
+        await store.fs.write(`${objectsDir}/pack/pack-alt.idx`, built.idxBytes);
+        const { ctx: watched, calls } = instrumentedContext(primary);
+        const sut = await createPackRegistry(watched, { objectsDir, fs: store.fs });
+
+        // Act
+        const result = await sut.lookup(built.ids[0] as ObjectId);
+
+        // Assert
+        expect(result?.pack.name).toBe('pack-alt');
+        expect(calls().filter((call) => call.path.includes('/objects/'))).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a location with a multi-pack-index', () => {
+    describe('When lookup is called', () => {
+      it('Then the midx is read through location.fs, not ctx.fs', async () => {
+        // Arrange
+        const primary = await buildSeededContext();
+        const store = await buildSeededContext();
+        const objectsDir = `${store.layout.gitDir}/alternate/objects`;
+        const midx = `${objectsDir}/pack/multi-pack-index`;
+        await store.fs.write(midx, buildMidx(healthyMidxSpec()));
+        const { ctx: watched, calls } = instrumentedContext(primary);
+        const { ctx: storeWatched, calls: storeCalls } = instrumentedContext(store);
+        const sut = await createPackRegistry(watched, { objectsDir, fs: storeWatched.fs });
+
+        // Act
+        await sut.lookup('a'.repeat(40) as ObjectId);
+
+        // Assert
+        expect(storeCalls().some((call) => call.method === 'read' && call.path === midx)).toBe(
+          true,
+        );
+        expect(calls().filter((call) => call.path.includes('/objects/'))).toEqual([]);
       });
     });
   });
@@ -1401,6 +1451,39 @@ describe('PackRegistry — lazy pack-index loading', () => {
     });
   });
 
+  describe('Given a pack whose trailer disagrees with the pack checksum its index records', () => {
+    const packWithFlippedTrailer = async (): Promise<Context> => {
+      const ctx = await buildSeededContext();
+      await writeSyntheticPack(ctx, 'trailer-vs-index', [
+        { kind: 'base', type: 'blob', content: new TextEncoder().encode('t') },
+      ]);
+      const packPath = `${ctx.layout.gitDir}/objects/pack/pack-trailer-vs-index.pack`;
+      const bytes = await ctx.fs.read(packPath);
+      bytes[bytes.length - 1] = bytes[bytes.length - 1]! ^ 0xff;
+      await ctx.fs.write(packPath, bytes);
+      return ctx;
+    };
+
+    describe('When health() is called', () => {
+      it('Then it reports the pack layer as not matching its index', async () => {
+        // Arrange
+        const sut = await createPackRegistry(await packWithFlippedTrailer());
+
+        // Act
+        const result = await sut.health();
+
+        // Assert
+        expect(result.unusable).toEqual([
+          {
+            name: 'pack-trailer-vs-index',
+            layer: 'pack',
+            data: { code: 'INVALID_PACK_HEADER', reason: 'pack does not match index' },
+          },
+        ]);
+      });
+    });
+  });
+
   describe('Given a healthy pack', () => {
     describe('When readObject reads its one packed object end to end', () => {
       it('Then the bytes round-trip unchanged through the lazily loaded index', async () => {
@@ -2408,13 +2491,16 @@ describe('PackRegistry.health — per-pack accessibility', () => {
           { kind: 'base', type: 'blob', content },
         ]);
         const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-stability.pack`;
+        const idxPath = packPath.replace(/\.pack$/, '.idx');
         const goodPackBytes = await ctx.fs.read(packPath);
+        const goodIdxBytes = await ctx.fs.read(idxPath);
         await restampPackHeader(ctx, packPath, { version: 99 });
         const sut = await createPackRegistry(ctx);
 
         // Act
         const before = await sut.health();
         await ctx.fs.write(packPath, goodPackBytes);
+        await ctx.fs.write(idxPath, goodIdxBytes);
         const repairedNoRefresh = await sut.health();
         sut.refresh();
         const repairedRefreshed = await sut.health();
@@ -2512,7 +2598,7 @@ describe('RegisteredPack.header — held handle', () => {
 
   describe('Given an fs whose openWithNoFollow always throws UNSUPPORTED_OPERATION (browser-like)', () => {
     describe('When header() is called', () => {
-      it('Then it attempts the handle once and still reads the header by path', async () => {
+      it('Then it attempts the handle once per read and still reads the header and trailer by path', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'header-browser-fallback', [
@@ -2539,7 +2625,8 @@ describe('RegisteredPack.header — held handle', () => {
 
         // Assert
         expect(header).toEqual({ version: 2, objectCount: 1 });
-        expect(openSpy).toHaveBeenCalledTimes(1);
+        // header bytes, pack size, trailer bytes
+        expect(openSpy).toHaveBeenCalledTimes(3);
       });
     });
   });
@@ -5287,7 +5374,7 @@ describe('PackRegistry — multi-pack-index degradation', () => {
         await writeMidxBytes(ctx, flipMidxSignature(buildMidx(healthyMidxSpec())));
 
         // Act + Assert
-        await expectMidxSignatureRejection(readObject(ctx, id));
+        await expectMidxSignatureRejection(readObject({ ...ctx, session: createSession() }, id));
       });
     });
   });
@@ -5419,7 +5506,10 @@ describe('PackRegistry — multi-pack-index degradation', () => {
         ]);
         await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
         const looseId = await writeObject(ctx, blob('loose-only'));
-        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const { ctx: instrumented, calls } = instrumentedContext({
+          ...ctx,
+          session: createSession(),
+        });
 
         // Act
         const result = await readObject(instrumented, looseId);
@@ -7828,6 +7918,116 @@ describe('PackRegistry.reprepare', () => {
           .slice(baseline)
           .filter((call) => call.method === 'read' && call.path.endsWith('.idx'));
         expect(idxReads).toHaveLength(0);
+      });
+    });
+  });
+});
+
+describe('PackRegistry.midxPacks — the packs the multi-pack-index covers', () => {
+  describe('Given packs and no multi-pack-index', () => {
+    describe('When midxPacks is called', () => {
+      it('Then it returns no pack', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSingleBlobPack(ctx, 'A', 'midx-packs-none');
+        const sut = await createPackRegistry(ctx);
+
+        // Act
+        const result = await sut.midxPacks();
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given three packs and a multi-pack-index naming two of them', () => {
+    describe('When midxPacks is called', () => {
+      it('Then it returns the two covered packs in pack-int-id order', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(ctx, 'A', 'midx-packs-a');
+        await writeSingleBlobPack(ctx, 'B', 'midx-packs-b');
+        const idC = await writeSingleBlobPack(ctx, 'C', 'midx-packs-c');
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx', 'pack-C.idx'],
+              entries: [
+                { id: idA, packIndex: 0, offset: PACK_HEADER_SIZE },
+                { id: idC, packIndex: 1, offset: PACK_HEADER_SIZE },
+              ],
+            }),
+          ),
+        );
+        const sut = await createPackRegistry(ctx);
+
+        // Act
+        const result = await sut.midxPacks();
+
+        // Assert
+        expect(result.map((pack) => pack.name)).toEqual(['pack-A', 'pack-C']);
+      });
+    });
+  });
+
+  describe('Given a two-layer chain whose base names a pack sorting after the tip layer pack', () => {
+    describe('When midxPacks is called', () => {
+      it('Then the base layer pack comes first, as its pack-int-id does', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(ctx, 'A', 'midx-packs-chain-a');
+        const idB = await writeSingleBlobPack(ctx, 'B', 'midx-packs-chain-b');
+        await writeMidxChain(ctx, [
+          {
+            digest: '1'.repeat(40),
+            spec: healthyMidxSpec({
+              packNames: ['pack-B.idx'],
+              entries: [{ id: idB, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          },
+          {
+            digest: '2'.repeat(40),
+            spec: healthyMidxSpec({
+              packNames: ['pack-A.idx'],
+              entries: [{ id: idA, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          },
+        ]);
+        const sut = await createPackRegistry(ctx);
+
+        // Act
+        const result = await sut.midxPacks();
+
+        // Assert
+        expect(result.map((pack) => pack.name)).toEqual(['pack-B', 'pack-A']);
+      });
+    });
+  });
+
+  describe('Given a multi-pack-index naming a pack no file carries', () => {
+    describe('When midxPacks is called', () => {
+      it('Then the unbound name is skipped', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(ctx, 'A', 'midx-packs-unbound');
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx', 'pack-Z.idx'],
+              entries: [{ id: idA, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
+        const sut = await createPackRegistry(ctx);
+
+        // Act
+        const result = await sut.midxPacks();
+
+        // Assert
+        expect(result.map((pack) => pack.name)).toEqual(['pack-A']);
       });
     });
   });

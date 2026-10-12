@@ -11,8 +11,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { buildPack } from '../../../../src/application/primitives/build-pack.js';
 import * as configReadModule from '../../../../src/application/primitives/config-read.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import * as blobSourceModule from '../../../../src/application/primitives/internal/blob-source.js';
 import { computeClosure } from '../../../../src/application/primitives/internal/closure-engine.js';
 import * as deltifyModule from '../../../../src/application/primitives/internal/deltify.js';
+import { getObjectStore } from '../../../../src/application/primitives/object-store.js';
 import * as readObjectModule from '../../../../src/application/primitives/read-object.js';
 import { readRawObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -28,9 +30,12 @@ import {
   parsePackEntryHeader,
   parsePackHeader,
 } from '../../../../src/domain/storage/index.js';
+import { createSession } from '../../../../src/ports/context.js';
 import { buildSeededContext, buildSharedSubtreeChain } from './fixtures.js';
+import { writeSyntheticPackIn } from './pack-fixture.js';
 
 const PACK_HEADER_BYTES = 12;
+const BIG_FILE_THRESHOLD = 100;
 
 /** A pure function of (seed, index) so two calls with the same seed always
  *  agree on their common prefix regardless of requested length. */
@@ -951,6 +956,176 @@ describe('buildPack', () => {
         // single byte of the pack it produces (equivalence argument: same
         // emission sequence, same nameHash, hence the same packer input).
         expect(result.sha).toBe('edc570c00dacfe58c9d65283ff299a03f3ab4737');
+      });
+    });
+  });
+
+  describe('Given a source that cannot load', () => {
+    describe.each([
+      ['an empty object list', 0],
+      ['one object', 1],
+    ])('When buildPack runs with %s', (_label, count) => {
+      it('Then it rejects with the load error before reading any object', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = count === 0 ? [] : [await writeBlob(ctx, pseudoRandomBytes(301, 16))];
+        const loadError = new Error('source cannot load');
+        const store = await getObjectStore(ctx);
+        vi.spyOn(store.primary.registry, 'assertLoadable').mockRejectedValue(loadError);
+        const readObjectSpy = vi.spyOn(readObjectModule, 'readObject');
+        const metadataSpy = vi.spyOn(readObjectModule, 'readObjectMetadataWithContent');
+        const rawSpy = vi.spyOn(readObjectModule, 'readRawObject');
+        const sut = buildPack;
+
+        // Act
+        const attempt = sut(ctx, { objects: ids.map((id) => ({ id })) });
+
+        // Assert
+        await expect(attempt).rejects.toBe(loadError);
+        expect(readObjectSpy).not.toHaveBeenCalled();
+        expect(metadataSpy).not.toHaveBeenCalled();
+        expect(rawSpy).not.toHaveBeenCalled();
+        vi.restoreAllMocks();
+      });
+    });
+  });
+
+  describe('Given a blob above bigFileThreshold held loose and packed non-delta', () => {
+    describe('When buildPack runs without delta', () => {
+      it('Then the content is read in the git stream order and the pack copy is served', async () => {
+        // Arrange
+        const content = pseudoRandomBytes(311, BIG_FILE_THRESHOLD + 1);
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          `[core]\n\tbigFileThreshold = ${BIG_FILE_THRESHOLD}\n`,
+        );
+        __resetConfigCacheForTests();
+        const id = await writeBlob(ctx, content);
+        await writeSyntheticPackIn(ctx, `${ctx.layout.gitDir}/objects`, 'p', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const streamSpy = vi.spyOn(blobSourceModule, 'readBlobContentInStreamOrder');
+        const rawSpy = vi.spyOn(readObjectModule, 'readRawObject');
+        const sut = buildPack;
+        // The pack landed after the write, so the session that wrote has not scanned it.
+        const reopened = { ...ctx, session: createSession() };
+
+        // Act
+        const result = await sut(reopened, { objects: [{ id }] });
+
+        // Assert
+        expect(streamSpy).toHaveBeenCalledWith(reopened, id);
+        expect(rawSpy).not.toHaveBeenCalled();
+        const span = entrySpan(result.entries, 0, result.bytes);
+        const header = parsePackEntryHeader(result.bytes, span.start, ctx.hashConfig);
+        const inflated = await ctx.compressor.inflate(
+          result.bytes.subarray(header.dataOffset, span.end),
+        );
+        expect(inflated).toEqual(content);
+        vi.restoreAllMocks();
+      });
+    });
+  });
+
+  describe('Given a blob at bigFileThreshold held loose and packed non-delta', () => {
+    describe('When buildPack runs without delta', () => {
+      it('Then the content is read the ordinary way', async () => {
+        // Arrange
+        const content = pseudoRandomBytes(312, BIG_FILE_THRESHOLD);
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          `[core]\n\tbigFileThreshold = ${BIG_FILE_THRESHOLD}\n`,
+        );
+        __resetConfigCacheForTests();
+        const id = await writeBlob(ctx, content);
+        await writeSyntheticPackIn(ctx, `${ctx.layout.gitDir}/objects`, 'p', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const streamSpy = vi.spyOn(blobSourceModule, 'readBlobContentInStreamOrder');
+        const sut = buildPack;
+        // The pack landed after the write, so the session that wrote has not scanned it.
+        const reopened = { ...ctx, session: createSession() };
+
+        // Act
+        await sut(reopened, { objects: [{ id }] });
+
+        // Assert
+        expect(streamSpy).not.toHaveBeenCalled();
+        vi.restoreAllMocks();
+      });
+    });
+  });
+
+  describe('Given a non-blob above bigFileThreshold packed non-delta', () => {
+    describe('When buildPack runs without delta', () => {
+      it('Then the content is read the ordinary way', async () => {
+        // Arrange
+        const content = pseudoRandomBytes(313, BIG_FILE_THRESHOLD + 1);
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          `[core]\n\tbigFileThreshold = ${BIG_FILE_THRESHOLD}\n`,
+        );
+        __resetConfigCacheForTests();
+        const [id] = await writeSyntheticPackIn(ctx, `${ctx.layout.gitDir}/objects`, 'p', [
+          { kind: 'base', type: 'commit', content },
+        ]);
+        const streamSpy = vi.spyOn(blobSourceModule, 'readBlobContentInStreamOrder');
+        const sut = buildPack;
+        const reopened = { ...ctx, session: createSession() };
+
+        // Act
+        await sut(reopened, { objects: [{ id: id as ObjectId }] });
+
+        // Assert
+        expect(streamSpy).not.toHaveBeenCalled();
+        vi.restoreAllMocks();
+      });
+    });
+  });
+});
+
+describe('buildPack core.bigFileThreshold read', () => {
+  describe('Given a malformed core.bigFileThreshold', () => {
+    const malformedCtx = async () => {
+      const ctx = await buildSeededContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbigFileThreshold = x\n');
+      __resetConfigCacheForTests();
+      return ctx;
+    };
+
+    describe('When packing an object', () => {
+      it('Then it refuses with the key', async () => {
+        // Arrange
+        const ctx = await malformedCtx();
+        const id = await writeTree(ctx, []);
+        const sut = buildPack;
+
+        // Act
+        const result = await sut(ctx, { objects: [{ id }] }).catch((err: TsgitError) => err.data);
+
+        // Assert
+        expect(result).toMatchObject({
+          code: 'CONFIG_BAD_NUMERIC_VALUE',
+          key: 'core.bigfilethreshold',
+          value: 'x',
+        });
+      });
+    });
+
+    describe('When packing nothing', () => {
+      it('Then it builds the empty pack without reading the threshold', async () => {
+        // Arrange
+        const ctx = await malformedCtx();
+        const sut = buildPack;
+
+        // Act
+        const result = await sut(ctx, { objects: [] });
+
+        // Assert
+        expect(result.objectCount).toBe(0);
       });
     });
   });

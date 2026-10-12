@@ -63,7 +63,9 @@ one place for all four sources.
 To snapshot a tree at an arbitrary revision, resolve it first:
 
 ```ts
-const tree = repo.snapshot.commit(await repo.revParse('v1.0'));
+const [v1] = await repo.revParse('v1.0');
+if (v1?.kind !== 'object') throw new Error('v1.0 names no object');
+const tree = repo.snapshot.commit(v1.id);
 ```
 
 ## Worked example — `status`

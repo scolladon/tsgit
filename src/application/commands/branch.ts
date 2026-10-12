@@ -5,7 +5,7 @@
  * `internal/branch-namespace.ts`.
  */
 
-import { revparseAmbiguous } from '../../domain/commands/error.js';
+import { commitParseFailed, revparseAmbiguous } from '../../domain/commands/error.js';
 import { TsgitError, unsupportedOperation } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import { branchExists, branchNotFound, branchNotFullyMerged } from '../../domain/index.js';
@@ -22,7 +22,9 @@ import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import { branchCheckedOut } from '../../domain/worktree/error.js';
 import type { Context } from '../../ports/context.js';
-import { peelChain } from '../primitives/internal/peel-chain.js';
+import { lookupTypedCommitReference } from '../primitives/internal/lookup-commit-reference.js';
+import { createObjectTypeTable } from '../primitives/internal/object-type-table.js';
+import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
 import { transactionLogging } from '../primitives/internal/ref-transaction-logging.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { readObject } from '../primitives/read-object.js';
@@ -36,17 +38,31 @@ import {
   refResolvesForReading,
   resolveRef,
   resolveRefForReading,
-  resolveRefOrMissing,
 } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
-import { branchMerged } from './internal/branch-merged.js';
+import { branchMerged, type MergeValve, openMergeValve } from './internal/branch-merged.js';
+import {
+  asUpstreamMissing,
+  type BranchTrack,
+  type BranchUpstream,
+  resolveTrackMode,
+  type StartPointRef,
+  setupTracking,
+  type TrackMode,
+  trackableStartRef,
+} from './internal/branch-tracking.js';
 import { worktreeHolding } from './internal/checked-out-branches.js';
+import { interpretBranchName } from './internal/prior-checkout.js';
+import { buildRemoteTable } from './internal/remote-config.js';
 import {
   assertOperationalRepository,
   branchRefFromHead,
   readHeadRaw,
 } from './internal/repo-state.js';
-import { resolveRevisionName, resolvingCandidates } from './internal/revision-name.js';
+import { resolveRevisionExpression } from './internal/revision-expression.js';
+import { dwimRefName, resolvingCandidates } from './internal/revision-name.js';
+
+export type { BranchTrack, BranchUpstream } from './internal/branch-tracking.js';
 
 export interface BranchInfo {
   readonly name: RefName;
@@ -62,10 +78,16 @@ export interface BranchCreateInput {
   readonly name: string;
   readonly startPoint?: string;
   readonly force?: boolean;
+  /** `--no-track`: set up no tracking, whatever `branch.autoSetupMerge` says. */
+  readonly noTrack?: boolean;
+  /** `--track[=direct|inherit]`: track the start point (refusing one that is not a branch), or inherit its upstream. */
+  readonly track?: BranchTrack;
 }
 export interface BranchCreateResult {
   readonly name: RefName;
   readonly id: ObjectId;
+  /** The upstream recorded in `branch.<name>.*`; absent when none was set up. */
+  readonly upstream?: BranchUpstream;
 }
 
 export interface BranchDeleteInput {
@@ -166,18 +188,66 @@ const assertNoWorktreeHolds = async (ctx: Context, name: RefName): Promise<void>
   if (holder !== undefined) throw branchCheckedOut(name, holder);
 };
 
+/** When `create_branch` builds the remote table, relative to writing the branch. */
+type RemoteTableRead = 'before-write' | 'after-write' | 'none';
+
 /**
- * HEAD as `create_branch` resolves it when no start point was given. git
- * hands it the CURRENT branch's own resolved ref name, so the default never
- * goes through the revision ladder — and never reports ambiguity against a
- * branch literally named `HEAD`. An unborn HEAD names no object at all, and
- * the refusal carries the label git had already substituted for the start
- * point (the current branch's short name), never `HEAD`.
+ * When git's `create_branch` builds the remote table — warning on each
+ * `/`-named remote, dying on an unusable refspec: `dwim_branch_start` vets a
+ * start ref outside `refs/heads/` as a remote-tracking branch before the
+ * branch is written, whatever the tracking mode; `setup_tracking` reads it
+ * for a local branch only after, and only when tracking is on (neither
+ * `--no-track` nor `branch.autoSetupMerge = false`). A bare object name or
+ * expression never reads it. An omitted start point names `HEAD`.
  */
-const resolveOmittedStartPoint = async (ctx: Context, label: string): Promise<ObjectId> => {
-  const id = await resolveRefOrMissing(ctx, HEAD_NAME);
-  if (id === undefined) throw branchNotFound(label as RefName);
-  return id;
+const remoteTableRead = (ref: RefName | undefined, mode: TrackMode): RemoteTableRead => {
+  if (ref === undefined) return 'none';
+  if (!ref.startsWith(HEADS_PREFIX)) return 'before-write';
+  if (mode === 'never') return 'none';
+  return 'after-write';
+};
+
+/** The start point's `dwim_ref` real ref, read once for both decisions it feeds:
+ *  when the remote table is built, and whether the new branch can track it. */
+const startPointRef = async (ctx: Context, name: string): Promise<StartPointRef> => ({
+  name,
+  ref: await dwimRefName(ctx, name),
+});
+
+interface BranchClaim {
+  readonly branchName: string;
+  readonly name: RefName;
+  readonly force: boolean;
+  /** git's `ref_exists`, answered once and kept: it both refuses an unforced
+   *  clobber and types the reflog message. */
+  readonly held: boolean;
+}
+
+/** The new branch's ref, refused when it exists unforced or a worktree holds it. */
+const claimBranch = async (ctx: Context, input: BranchCreateInput): Promise<BranchClaim> => {
+  const branchName = await interpretBranchName(ctx, input.name);
+  const name = validateRefName(`${HEADS_PREFIX}${branchName}`);
+  const force = input.force === true;
+  const held = await refResolvesForReading(ctx, name);
+  if (!force && held) throw branchExists(name);
+  if (force && held) await assertNoWorktreeHolds(ctx, name);
+  return { branchName, name, force, held };
+};
+
+/**
+ * An omitted start point is the label git substitutes for it — the current
+ * branch's short name, or `HEAD` when detached — run through the same ladder.
+ */
+const resolveStartCommit = async (
+  ctx: Context,
+  input: BranchCreateInput,
+  mode: TrackMode,
+): Promise<{ readonly startPoint: string; readonly target: ObjectId }> => {
+  const startPoint = input.startPoint ?? (await omittedStartPointLabel(ctx));
+  const start = await resolveBranchTarget(ctx, startPoint).catch((err: unknown) => {
+    throw asUpstreamMissing(err, startPoint, mode);
+  });
+  return { startPoint, target: await requireCommit(ctx, start) };
 };
 
 export const branchCreate = async (
@@ -185,22 +255,19 @@ export const branchCreate = async (
   input: BranchCreateInput,
 ): Promise<BranchCreateResult> => {
   await assertOperationalRepository(ctx);
-  const name = validateRefName(`${HEADS_PREFIX}${input.name}`);
-  const force = input.force === true;
-  // git's `ref_exists` answers this once and the answer is kept: it both
-  // refuses an unforced clobber and types the reflog message below.
-  const held = await refResolvesForReading(ctx, name);
-  if (!force && held) throw branchExists(name);
-  if (force && held) await assertNoWorktreeHolds(ctx, name);
-  const startPoint = input.startPoint ?? (await omittedStartPointLabel(ctx));
-  const start =
-    input.startPoint === undefined
-      ? await resolveOmittedStartPoint(ctx, startPoint)
-      : await resolveBranchTarget(ctx, input.startPoint);
-  const target = await requireCommit(ctx, start);
+  const { branchName, name, force, held } = await claimBranch(ctx, input);
+  const mode = await resolveTrackMode(ctx, input);
+  const { startPoint, target } = await resolveStartCommit(ctx, input, mode);
+  const start = await startPointRef(ctx, input.startPoint ?? HEAD_NAME);
+  const tableRead = remoteTableRead(start.ref, mode);
+  if (tableRead === 'before-write') await buildRemoteTable(ctx);
+  const startRef = mode === 'never' ? undefined : await trackableStartRef(ctx, start, mode);
   const reflogMessage = force && held ? branchResetTo(startPoint) : branchCreatedFrom(startPoint);
   await writeNewBranch(ctx, { name, target, force, reflogMessage });
-  return { name, id: target };
+  if (tableRead === 'after-write') await buildRemoteTable(ctx);
+  const upstream =
+    startRef === undefined ? undefined : await setupTracking(ctx, branchName, startRef, mode);
+  return { name, id: target, ...(upstream !== undefined && { upstream }) };
 };
 
 interface NewBranch {
@@ -235,11 +302,13 @@ export const branchDelete = async (
 ): Promise<BranchDeleteResult> => {
   await assertOperationalRepository(ctx);
   await assertRepoSettingsValid(ctx);
-  const name = validateRefName(`${HEADS_PREFIX}${input.name}`);
+  const name = validateRefName(`${HEADS_PREFIX}${await interpretBranchName(ctx, input.name)}`);
+  const valve = input.force === true ? undefined : await openMergeValve(ctx);
   await assertNoWorktreeHolds(ctx, name);
   const held = await getRefStore(ctx).resolveDirect(name);
   if (held.kind === 'missing') throw branchNotFound(name);
-  if (input.force !== true) await assertFullyMerged(ctx, name, held);
+  if (valve === undefined) await lookUpForcedTip(ctx, held);
+  else await assertFullyMerged(ctx, name, held, valve);
   // `branch -D` deletes the symref itself when `name` names one — git's
   // own `REF_NO_DEREF` on this delete.
   await updateRef(ctx, name, zeroOid(ctx.hashConfig), { delete: true, noDeref: true });
@@ -256,16 +325,30 @@ export const branchDelete = async (
  * standing on an annotated tag is measured at the commit the tag names. A tip
  * that names no commit at all never reaches the valve: git refuses on the
  * type instead of reporting the branch unmerged (measured, git 2.55.0).
+ *
+ * The lookup runs against the table HEAD's lookup opened, so a tip whose
+ * pointers HEAD already typed otherwise fails to parse and is refused —
+ * after git's `error:` lines — before any merge is measured.
  */
 const assertFullyMerged = async (
   ctx: Context,
   name: RefName,
   held: ResolveDirectResult,
+  valve: MergeValve,
 ): Promise<void> => {
   if (held.kind !== 'direct') return;
   const tipCommit = await requireCommit(ctx, held.id);
-  if (await branchMerged(ctx, name, tipCommit)) return;
+  const looked = await lookupTypedCommitReference(ctx, valve.table, held.id);
+  if (looked === undefined) throw commitParseFailed(tipCommit);
+  if (await branchMerged(ctx, name, tipCommit, valve)) return;
   throw branchNotFullyMerged(name);
+};
+
+/** git's `check_branch_commit` looks the tip up even when forced: the lines
+ *  that lookup logs still print, and only the decision on it is skipped. */
+const lookUpForcedTip = async (ctx: Context, held: ResolveDirectResult): Promise<void> => {
+  if (held.kind !== 'direct') return;
+  await lookupTypedCommitReference(ctx, createObjectTypeTable(), held.id);
 };
 
 export const branchRename = async (
@@ -273,8 +356,8 @@ export const branchRename = async (
   input: BranchRenameInput,
 ): Promise<BranchRenameResult> => {
   await assertOperationalRepository(ctx);
-  const from = validateRefName(`${HEADS_PREFIX}${input.from}`);
-  const to = validateRefName(`${HEADS_PREFIX}${input.to}`);
+  const from = validateRefName(`${HEADS_PREFIX}${await interpretBranchName(ctx, input.from)}`);
+  const to = validateRefName(`${HEADS_PREFIX}${await interpretBranchName(ctx, input.to)}`);
   const id = await resolveRef(ctx, from);
   const request: RenameRequest = { from, to, force: input.force === true };
   await assertRenameAllowed(ctx, request);
@@ -533,23 +616,24 @@ const appendRenameEntries = (
  * A branch's start point, through git's revision ladder. `create_branch` is
  * the one surface that refuses an ambiguous name rather than taking the first
  * candidate and warning — `dwim_ref` returning more than one match is its
- * `ambiguous object name` refusal. `dwim_branch_start` runs that count for
- * EVERY start point, a full-width object id included: git resolves the object
- * first and still refuses when two namespaces carry the same 40-hex string as
- * a ref name (measured, git 2.55.0).
+ * `ambiguous object name` refusal. `dwim_branch_start` resolves the start
+ * point first (`get_oid_mb`, which warns), and only a resolving one is
+ * counted (`dwim_ref`, which warns again) — for EVERY start point, a
+ * full-width object id included: git still refuses when two namespaces carry
+ * the same 40-hex string as a ref name (measured, git 2.55.0).
  */
 const resolveBranchTarget = async (ctx: Context, startPoint: string): Promise<ObjectId> => {
+  const id = await resolveRevisionExpression(ctx, startPoint);
+  if (id === undefined) throw branchNotFound(startPoint as RefName);
   const candidates = await resolvingCandidates(ctx, startPoint);
   if (candidates.length > 1) throw revparseAmbiguous(startPoint, candidates);
-  const id = await resolveRevisionName(ctx, startPoint);
-  if (id === undefined) throw branchNotFound(startPoint as RefName);
   return id;
 };
 
 /**
  * Peels `id` through any tag objects to the commit it names (git's
- * `lookup_commit_reference`), bounded by `MAX_PEEL_DEPTH` — the same shared
- * walker `readTree`/`peelToTree` use, so a hostile repository's self- or
+ * `lookup_commit_reference`), to any depth — the same shared walker
+ * `readTree`/`peelToTree` use, so a hostile repository's self- or
  * mutually-referential tag chain refuses with `REF_CHAIN_TOO_DEEP` instead of
  * looping forever. The refusal keeps `id` as resolved — an annotated tag's
  * own oid, never its target — because that is the oid git's `error: object
@@ -557,9 +641,7 @@ const resolveBranchTarget = async (ctx: Context, startPoint: string): Promise<Ob
  * `actual` reflects the fully peeled type.
  */
 const requireCommit = async (ctx: Context, id: ObjectId): Promise<ObjectId> => {
-  const { id: peeledId, result } = await peelChain(ctx, id, readObject, (object) =>
-    object.type === 'tag' ? object.data.object : undefined,
-  );
+  const { id: peeledId, result } = await peelChain(ctx, id, readObject, tagHop);
   if (result.type !== 'commit') throw unexpectedObjectType('commit', result.type, id);
   return peeledId;
 };

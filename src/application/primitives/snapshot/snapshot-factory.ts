@@ -1,6 +1,7 @@
 import { TsgitError } from '../../../domain/error.js';
 import { unexpectedObjectType } from '../../../domain/objects/error.js';
 import type { ObjectId, RefName } from '../../../domain/objects/index.js';
+import { isPseudoRef } from '../../../domain/refs/per-worktree-ref.js';
 import {
   CHERRY_PICK_HEAD,
   FETCH_HEAD,
@@ -80,15 +81,19 @@ const treeSnapshotFromRef = async (
  */
 const REF_DISAPPEARED_CODES = new Set(['FILE_NOT_FOUND', 'REF_NOT_FOUND']);
 
+/** A pseudoref (`MERGE_HEAD`, `FETCH_HEAD`) is a file whatever the backend; every
+ *  other marker lives in the ref backend, so only a pseudoref can answer absent here. */
+const pseudoRefAbsent = async (ctx: Context, name: RefName): Promise<boolean> =>
+  isPseudoRef(name) && !(await ctx.fs.exists(`${ctx.layout.gitDir}/${name}`));
+
 const refIfPresent = async (
   deps: SnapshotFactoryDeps,
   refFile: string,
 ): Promise<TreeSnapshot | null> => {
-  const path = `${deps.ctx.layout.gitDir}/${refFile}`;
-  // Fast-exit when the ref file is absent so the common no-compound-state case
-  // does not pay for a ref-store lookup.
-  // Stryker disable next-line ConditionalExpression: equivalent — the guard is true only when the ref file is absent, and resolveRef then resolves it as {kind:'missing'} → REF_NOT_FOUND, which the catch below maps to the same null; git never packs these pseudo-refs, so no other branch is reachable.
-  if (!(await deps.ctx.fs.exists(path))) return null;
+  // Fast-exit when the pseudoref file is absent so the common no-compound-state
+  // case does not pay for a ref-store lookup.
+  // Stryker disable next-line ConditionalExpression: equivalent — the guard is true only when the pseudoref file is absent, and resolveRef then resolves it as {kind:'missing'} → REF_NOT_FOUND, which the catch below maps to the same null; git never packs these pseudo-refs, so no other branch is reachable.
+  if (await pseudoRefAbsent(deps.ctx, refFile as RefName)) return null;
   try {
     return await treeSnapshotFromRef(deps, refFile as RefName);
   } catch (err) {

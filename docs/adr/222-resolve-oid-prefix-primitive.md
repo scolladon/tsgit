@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted (at `b4faeceb`)
+Accepted (at `b4faeceb`); candidate cap superseded by ADR-941
+
+> The capped candidate list (Consequences → Neutral) is superseded by ADR-941: every candidate is
+> listed, as git does. The rest of this decision stands.
 
 ## Context
 

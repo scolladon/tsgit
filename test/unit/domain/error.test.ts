@@ -1,24 +1,42 @@
 import { describe, expect, it } from 'vitest';
 import {
   ambiguousOidPrefix,
+  atomicPushUnsupported,
+  branchMarkUnresolved,
   cleanFilterFailed,
+  fetchRefspecConflict,
+  fetchRejected,
+  filterUnsupportedCapability,
+  formatPlaceholderUnsupported,
   grepLineTooLong,
   invalidPushDefault,
   invalidSequencerTodo,
   noPromisorRemote,
   pathNotInTree,
+  pullNoMergeCandidates,
   pushDefaultNothing,
   pushDetachedNoRefspec,
+  pushRefspecUnmatched,
   pushRemoteNotUpstream,
   pushUpstreamNameMismatch,
+  rebaseRevisionInvalid,
+  remoteRefNotFound,
   signedPushUnsupported,
+  signerFailed,
   signingFailed,
   smudgeFilterFailed,
+  textconvFailed,
+  timestampOutOfRange,
+  trackingAmbiguous,
+  trackingInheritRebaseMultiple,
+  upstreamMissing,
+  upstreamNotBranch,
   worktreeFileAbsent,
 } from '../../../src/domain/commands/error.js';
 import {
   basename,
   dirname,
+  invalidCommitName,
   invalidWalkInput,
   operationAborted,
   orderInvariantViolation,
@@ -50,6 +68,7 @@ import {
   type TsgitError,
   unsupportedOperation,
 } from '../../../src/domain/index.js';
+import type { AmbiguousCandidate } from '../../../src/domain/objects/ambiguous-candidate.js';
 import type { FilePath, ObjectId, RefName } from '../../../src/domain/objects/index.js';
 import { invalidFilterSpec, remoteFilterUnsupported } from '../../../src/domain/protocol/error.js';
 import type { WorkdirStat } from '../../../src/domain/snapshot/index.js';
@@ -333,6 +352,30 @@ describe('domain error — AdapterError', () => {
       });
     });
 
+    describe('Given BRANCH_MARK_UNRESOLVED', () => {
+      describe('When reading message', () => {
+        it('Then names the reason the mark names no ref', () => {
+          // Arrange & Act
+          const result = branchMarkUnresolved({ reason: 'detached-head' });
+
+          // Assert
+          expect(result.message).toContain('branch mark unresolved: detached-head');
+        });
+      });
+    });
+
+    describe('Given REBASE_REVISION_INVALID', () => {
+      describe('When reading message', () => {
+        it('Then names the reason and the revision', () => {
+          // Arrange & Act
+          const result = rebaseRevisionInvalid({ reason: 'invalid-upstream', revision: 'absent' });
+
+          // Assert
+          expect(result.message).toContain('rebase revision invalid: invalid-upstream absent');
+        });
+      });
+    });
+
     describe('Given COMPRESS_FAILED', () => {
       describe('When reading message', () => {
         it('Then contains exact sanitized prefix (not the decompression prefix)', () => {
@@ -397,6 +440,58 @@ describe('domain error — AdapterError', () => {
       });
     });
 
+    describe.each([
+      [{ code: 'REVISION_WALK_FAILED' }, 'REVISION_WALK_FAILED: revision walk setup failed'],
+      [
+        { code: 'REVISION_WALK_FAILED', commit: 'abc123' },
+        'REVISION_WALK_FAILED: Failed to traverse parents of commit abc123',
+      ],
+    ] as const)('Given REVISION_WALK_FAILED %o', (data, expected) => {
+      describe('When reading message', () => {
+        it("Then reads as git's walk death", () => {
+          // Arrange & Act
+          const result = new TsgitErrorClass(data as never);
+
+          // Assert
+          expect(result.message).toBe(expected);
+        });
+      });
+    });
+
+    describe('Given COMMIT_LOOKUP_FAILED', () => {
+      describe('When reading message', () => {
+        it("Then reads as git's graph parent death", () => {
+          // Arrange & Act
+          const result = new TsgitErrorClass({
+            code: 'COMMIT_LOOKUP_FAILED',
+            id: 'abc123' as never,
+          });
+
+          // Assert
+          expect(result.message).toBe('COMMIT_LOOKUP_FAILED: could not find commit abc123');
+        });
+      });
+    });
+
+    describe('Given TREE_ENTRY_TYPE_MISMATCH', () => {
+      describe('When reading message', () => {
+        it('Then reads as git names the entry, its tree and its mode', () => {
+          // Arrange & Act
+          const result = new TsgitErrorClass({
+            code: 'TREE_ENTRY_TYPE_MISMATCH',
+            tree: 'abc123' as never,
+            entry: 'b',
+            mode: 'blob',
+          });
+
+          // Assert
+          expect(result.message).toBe(
+            "TREE_ENTRY_TYPE_MISMATCH: entry 'b' in tree abc123 has blob mode, but is not a blob",
+          );
+        });
+      });
+    });
+
     describe('Given TREE_CYCLE_DETECTED', () => {
       describe('When reading message', () => {
         it('Then contains id', () => {
@@ -408,6 +503,30 @@ describe('domain error — AdapterError', () => {
 
           // Assert
           expect(result.message).toContain('tree cycle detected: abc123');
+        });
+      });
+    });
+
+    describe('Given BAD_TREE_OBJECT', () => {
+      describe('When reading message', () => {
+        it("Then reads as git's walk death on the tree", () => {
+          // Arrange & Act
+          const result = new TsgitErrorClass({ code: 'BAD_TREE_OBJECT', id: 'abc123' as never });
+
+          // Assert
+          expect(result.message).toBe('BAD_TREE_OBJECT: bad tree object abc123');
+        });
+      });
+    });
+
+    describe('Given TREE_UNREADABLE', () => {
+      describe('When reading message', () => {
+        it("Then reads as git's death reading the tree", () => {
+          // Arrange & Act
+          const result = new TsgitErrorClass({ code: 'TREE_UNREADABLE', id: 'abc123' as never });
+
+          // Assert
+          expect(result.message).toBe('TREE_UNREADABLE: unable to read tree (abc123)');
         });
       });
     });
@@ -615,6 +734,24 @@ describe('domain error — AdapterError', () => {
           expect(result.message).toBe(
             'INVALID_WALK_INPUT: invalid walk input: start commit is undefined',
           );
+        });
+      });
+    });
+
+    describe('Given INVALID_COMMIT_NAME', () => {
+      describe('When reading message', () => {
+        it('Then names the argument that names no commit', () => {
+          // Arrange
+          const sut = invalidCommitName;
+
+          // Act
+          const result = sut('HEAD^{tree}');
+
+          // Assert
+          expect({ message: result.message, data: result.data }).toEqual({
+            message: 'INVALID_COMMIT_NAME: not a valid commit name: HEAD^{tree}',
+            data: { code: 'INVALID_COMMIT_NAME', name: 'HEAD^{tree}' },
+          });
         });
       });
     });
@@ -1328,7 +1465,10 @@ describe('domain error — AdapterError', () => {
     describe('When reading .message', () => {
       it('Then reports the prefix and candidate count', () => {
         // Arrange
-        const candidates = ['1', '2'] as unknown as ReadonlyArray<ObjectId>;
+        const candidates: ReadonlyArray<AmbiguousCandidate> = [
+          { id: '1' as ObjectId, type: 'blob' },
+          { id: '2' as ObjectId, type: 'tree' },
+        ];
 
         // Act
         const result = ambiguousOidPrefix('abc', candidates);
@@ -1352,6 +1492,76 @@ describe('domain error — AdapterError', () => {
   });
 });
 
+describe('branch tracking refusals', () => {
+  describe.each([
+    {
+      label: 'upstreamNotBranch',
+      build: () => upstreamNotBranch('t'),
+      data: { code: 'UPSTREAM_NOT_BRANCH', startPoint: 't' },
+      message:
+        "UPSTREAM_NOT_BRANCH: cannot set up tracking information; starting point 't' is not a branch",
+    },
+    {
+      label: 'upstreamMissing',
+      build: () => upstreamMissing('absent'),
+      data: { code: 'UPSTREAM_MISSING', startPoint: 'absent' },
+      message: "UPSTREAM_MISSING: the requested upstream branch 'absent' does not exist",
+    },
+    {
+      label: 'trackingAmbiguous',
+      build: () => trackingAmbiguous('refs/remotes/o/m' as never, ['o', 'p']),
+      data: { code: 'TRACKING_AMBIGUOUS', ref: 'refs/remotes/o/m', remotes: ['o', 'p'] },
+      message: "TRACKING_AMBIGUOUS: not tracking: ambiguous information for ref 'refs/remotes/o/m'",
+    },
+    {
+      label: 'trackingInheritRebaseMultiple',
+      build: () => trackingInheritRebaseMultiple(['refs/heads/a', 'refs/heads/b'] as never),
+      data: { code: 'TRACKING_INHERIT_REBASE_MULTIPLE', merges: ['refs/heads/a', 'refs/heads/b'] },
+      message:
+        'TRACKING_INHERIT_REBASE_MULTIPLE: cannot inherit upstream tracking configuration of multiple refs when rebasing is requested',
+    },
+  ])('Given $label', ({ build, data, message }) => {
+    describe('When accessing .data and .message', () => {
+      it("Then they carry git's refusal", () => {
+        // Arrange & Act
+        const result = build();
+
+        // Assert
+        expect(result.data).toEqual(data);
+        expect(result.message).toBe(message);
+      });
+    });
+  });
+});
+
+describe('textconvFailed error', () => {
+  describe('Given textconvFailed for a driver that exited non-zero', () => {
+    describe('When accessing .data and .message', () => {
+      it('Then data carries the command and exit code and the message names both', () => {
+        // Arrange & Act
+        const result = textconvFailed('false', 1);
+
+        // Assert
+        expect(result.data).toEqual({ code: 'TEXTCONV_FAILED', command: 'false', exitCode: 1 });
+        expect(result.message).toBe("TEXTCONV_FAILED: textconv command 'false' failed (exit 1)");
+      });
+    });
+  });
+
+  describe('Given textconvFailed for a driver that could not run', () => {
+    describe('When accessing .data and .message', () => {
+      it('Then data omits exitCode and the message names no exit', () => {
+        // Arrange & Act
+        const result = textconvFailed('');
+
+        // Assert
+        expect(result.data).toEqual({ code: 'TEXTCONV_FAILED', command: '' });
+        expect(result.message).toBe("TEXTCONV_FAILED: textconv command '' failed");
+      });
+    });
+  });
+});
+
 describe('cleanFilterFailed error', () => {
   describe('Given cleanFilterFailed factory with path, filter name and exitCode', () => {
     describe('When accessing .data', () => {
@@ -1364,6 +1574,23 @@ describe('cleanFilterFailed error', () => {
         expect(result.data.code === 'CLEAN_FILTER_FAILED' && result.data.path).toBe('src/file.bin');
         expect(result.data.code === 'CLEAN_FILTER_FAILED' && result.data.filter).toBe('lfs');
         expect(result.data.code === 'CLEAN_FILTER_FAILED' && result.data.exitCode).toBe(1);
+      });
+    });
+  });
+
+  describe('Given cleanFilterFailed for a driver that ran no command', () => {
+    describe('When accessing .data and .message', () => {
+      it('Then data omits exitCode and the message names no exit', () => {
+        // Arrange & Act
+        const result = cleanFilterFailed('dir/file.dat' as never, 'd');
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'CLEAN_FILTER_FAILED',
+          path: 'dir/file.dat',
+          filter: 'd',
+        });
+        expect(result.message).toBe("CLEAN_FILTER_FAILED: clean filter 'd' failed for file.dat");
       });
     });
   });
@@ -1404,6 +1631,30 @@ describe('cleanFilterFailed error', () => {
         // Assert — the CLEAN_FILTER_FAILED case must return its own message, not fall through
         // to the SMUDGE_FILTER_FAILED case which starts with "smudge filter".
         expect(result.message).toMatch(/^CLEAN_FILTER_FAILED: clean filter /);
+      });
+    });
+  });
+});
+
+describe('filterUnsupportedCapability error', () => {
+  describe('Given the command and the capability it advertised', () => {
+    describe('When the error is built', () => {
+      it('Then its data and message name both, as git dies with them', () => {
+        // Arrange
+        const sut = filterUnsupportedCapability;
+
+        // Act
+        const result = sut('node filter.cjs', 'bogus');
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'FILTER_UNSUPPORTED_CAPABILITY',
+          command: 'node filter.cjs',
+          capability: 'bogus',
+        });
+        expect(result.message).toBe(
+          "FILTER_UNSUPPORTED_CAPABILITY: subprocess 'node filter.cjs' requested unsupported capability 'bogus'",
+        );
       });
     });
   });
@@ -1460,7 +1711,7 @@ describe('signingFailed error', () => {
     describe('When reading .message', () => {
       it('Then message contains the reason and the format', () => {
         // Arrange & Act
-        const result = signingFailed('signer-failed', 'openpgp');
+        const result = signerFailed('openpgp', '');
 
         // Assert
         expect(result.message).toContain('signer-failed');
@@ -1502,6 +1753,22 @@ describe('signingFailed error', () => {
 
         // Assert
         expect(result.message).toMatch(/^SIGNING_FAILED: gpg failed to sign the data \(/);
+      });
+    });
+  });
+});
+
+describe('atomicPushUnsupported error', () => {
+  describe('Given atomicPushUnsupported factory with a remote name', () => {
+    describe('When reading .message', () => {
+      it('Then message states the receiving end does not support --atomic push', () => {
+        // Arrange & Act
+        const result = atomicPushUnsupported('origin');
+
+        // Assert
+        expect(result.message).toBe(
+          'ATOMIC_PUSH_UNSUPPORTED: the receiving end does not support --atomic push',
+        );
       });
     });
   });
@@ -1618,6 +1885,212 @@ describe('grepLineTooLong error', () => {
         expect(result.message).toBe(
           'GREP_LINE_TOO_LONG: grep line too long to decode: 536870889 bytes exceeds the 536870888-byte limit',
         );
+      });
+    });
+  });
+});
+
+describe('formatPlaceholderUnsupported error', () => {
+  describe('Given a placeholder git does not support in this command', () => {
+    describe('When reading .message', () => {
+      it('Then message is git fatal line for it', () => {
+        // Arrange & Act
+        const result = formatPlaceholderUnsupported('%(total)');
+
+        // Assert
+        expect(result.message).toBe(
+          'FORMAT_PLACEHOLDER_UNSUPPORTED: %(total) is not supported by this command',
+        );
+      });
+    });
+  });
+
+  describe('Given an unparsable colour placeholder', () => {
+    describe('When reading .message', () => {
+      it('Then message is git pretty-format parse failure', () => {
+        // Arrange & Act
+        const result = formatPlaceholderUnsupported('%C');
+
+        // Assert
+        expect(result.message).toBe(
+          'FORMAT_PLACEHOLDER_UNSUPPORTED: unable to parse --pretty format',
+        );
+      });
+    });
+  });
+});
+
+describe('timestampOutOfRange error', () => {
+  describe.each([
+    [
+      'a zone that reaches before the epoch',
+      'before-epoch' as const,
+      75n,
+      -75,
+      'TIMESTAMP_OUT_OF_RANGE: Timestamp before Unix epoch: 75 -075',
+    ],
+    [
+      'a four-digit negative zone',
+      'before-epoch' as const,
+      0n,
+      -9999,
+      'TIMESTAMP_OUT_OF_RANGE: Timestamp before Unix epoch: 0 -9999',
+    ],
+    [
+      'a shifted instant beyond the calendar',
+      'too-large' as const,
+      9223372036854781207n,
+      130,
+      'TIMESTAMP_OUT_OF_RANGE: Timestamp too large for this system: 9223372036854781207',
+    ],
+  ])('Given %s', (_title, reason, timestamp, zone, expected) => {
+    describe('When reading .message', () => {
+      it('Then message is the line git dies with', () => {
+        // Arrange
+        const sut = timestampOutOfRange;
+
+        // Act
+        const result = sut(reason, timestamp, zone);
+
+        // Assert
+        expect(result.message).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('pushRefspecUnmatched error', () => {
+  describe('Given pushRefspecUnmatched factory with a url', () => {
+    describe('When reading .message', () => {
+      it("Then message is git's failed-to-push line naming the url", () => {
+        // Arrange
+        const sut = pushRefspecUnmatched;
+
+        // Act
+        const result = sut('https://example.com/r.git', [
+          { dst: 'nope', reason: 'remote-ref-missing' },
+        ]);
+
+        // Assert
+        expect(result.message).toBe(
+          "PUSH_REFSPEC_UNMATCHED: failed to push some refs to 'https://example.com/r.git'",
+        );
+      });
+    });
+  });
+});
+
+describe('remoteRefNotFound error', () => {
+  describe('Given a remote ref name', () => {
+    describe('When reading .message', () => {
+      it("Then message is git's couldn't-find-remote-ref line", () => {
+        // Arrange
+        const sut = remoteRefNotFound;
+
+        // Act
+        const result = sut('nope');
+
+        // Assert
+        expect(result.message).toBe("REMOTE_REF_NOT_FOUND: couldn't find remote ref nope");
+      });
+    });
+  });
+});
+
+describe('pullNoMergeCandidates error', () => {
+  describe.each([
+    {
+      reason: 'refspec-unmatched',
+      ref: undefined,
+      expected: 'There are no candidates for merging among the refs that you just fetched.',
+    },
+    {
+      reason: 'not-default-remote',
+      ref: undefined,
+      expected: "You asked to pull from the remote 'origin', but did not specify a branch.",
+    },
+    {
+      reason: 'merge-ref-not-fetched',
+      ref: 'refs/heads/nope',
+      expected:
+        "Your configuration specifies to merge with the ref 'refs/heads/nope' from the remote, but no such ref was fetched.",
+    },
+  ] as const)('Given the $reason reason', ({ reason, ref, expected }) => {
+    describe('When reading .message and .data', () => {
+      it("Then they carry git's diagnosis", () => {
+        // Arrange
+        const sut = pullNoMergeCandidates;
+
+        // Act
+        const result = sut(reason, 'origin', ref);
+
+        // Assert
+        expect(result.message).toBe(`PULL_NO_MERGE_CANDIDATES: ${expected}`);
+        expect(result.data).toEqual(
+          ref === undefined
+            ? { code: 'PULL_NO_MERGE_CANDIDATES', reason, remote: 'origin' }
+            : { code: 'PULL_NO_MERGE_CANDIDATES', reason, remote: 'origin', ref },
+        );
+      });
+    });
+  });
+});
+
+describe('fetchRefspecConflict error', () => {
+  describe.each([
+    {
+      reason: 'cannot-fetch-both',
+      expected: 'Cannot fetch both refs/heads/a and refs/heads/b to refs/remotes/o/x',
+    },
+    {
+      reason: 'tracks-both',
+      expected: 'refs/remotes/o/x tracks both refs/heads/a and refs/heads/b',
+    },
+  ] as const)('Given the $reason reason', ({ reason, expected }) => {
+    describe('When reading .message', () => {
+      it("Then it is git's ref_remove_duplicates line", () => {
+        // Arrange
+        const sut = fetchRefspecConflict;
+
+        // Act
+        const result = sut(reason, 'refs/remotes/o/x', ['refs/heads/a', 'refs/heads/b']);
+
+        // Assert
+        expect(result.message).toBe(`FETCH_REFSPEC_CONFLICT: ${expected}`);
+      });
+    });
+  });
+});
+
+describe('fetchRejected error', () => {
+  describe('Given two ref updates a fetch refused', () => {
+    describe('When reading .message and .data', () => {
+      it('Then they name the remote and carry each rejected update', () => {
+        // Arrange
+        const sut = fetchRejected;
+        const rejected = [
+          {
+            name: 'refs/remotes/origin/main' as RefName,
+            oldId: 'a'.repeat(40) as ObjectId,
+            newId: 'b'.repeat(40) as ObjectId,
+            rejection: 'non-fast-forward' as const,
+          },
+          {
+            name: 'refs/tags/v1' as RefName,
+            oldId: 'c'.repeat(40) as ObjectId,
+            newId: 'd'.repeat(40) as ObjectId,
+            rejection: 'would-clobber-existing-tag' as const,
+          },
+        ];
+
+        // Act
+        const result = sut('origin', rejected);
+
+        // Assert
+        expect(result.message).toBe(
+          'FETCH_REJECTED: fetch from origin rejected refs/remotes/origin/main (non-fast-forward), refs/tags/v1 (would-clobber-existing-tag)',
+        );
+        expect(result.data).toEqual({ code: 'FETCH_REJECTED', remote: 'origin', rejected });
       });
     });
   });

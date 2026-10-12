@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   adapterUnavailable,
+  ambiguousOption,
+  atomicPushUnsupported,
   authorUnconfigured,
+  badBranchMergeOptions,
   blockedHost,
   branchExists,
   branchNotFound,
@@ -13,6 +16,7 @@ import {
   cannotDescribe,
   checkoutOverwriteDirty,
   cherryPickMergeNoMainline,
+  commitParseFailed,
   configBadBooleanLiteral,
   configBadBooleanValue,
   configBadNumericValue,
@@ -20,12 +24,17 @@ import {
   configKeyInvalid,
   configMissingValue,
   configMultipleValues,
+  configNegativeLength,
   configScopeNotAvailable,
   configSectionNotFound,
   configSystemPathUnresolved,
+  configUnknownNegotiationAlgorithm,
+  configUnknownValue,
   configValueInvalid,
   emptyCommitMessage,
   emptyPathspec,
+  fastForwardMultipleBranches,
+  formatPlaceholderUnsupported,
   fsckCannotDemote,
   fsckUnknownMsgId,
   gitignoreFileTooLarge,
@@ -33,11 +42,14 @@ import {
   hookFailed,
   invalidOption,
   invalidPushDefault,
+  invalidRevisionRange,
+  invalidSymmetricRange,
   invalidUrl,
   MAX_BUNDLE_DETAIL_IN_ERROR,
   MAX_HOOK_STDERR_IN_ERROR,
   maxRefspecsExceeded,
   mergeHasConflicts,
+  needTwoCommitRanges,
   noAnnotatedNames,
   noExactMatch,
   noInitialCommit,
@@ -51,12 +63,19 @@ import {
   nothingToCommit,
   noUpstreamConfigured,
   objectFormatConflict,
+  octopusMergeFailed,
   operationInProgress,
   pathspecBeyondSymlink,
   pathspecNoMatch,
   pathspecOutsideRepo,
+  pullDivergentBranches,
+  pullEmptyHeadMultipleBranches,
+  pullRebaseMultipleBranches,
+  pullRebaseUnbornIndex,
   pushDefaultNothing,
   pushDetachedNoRefspec,
+  pushMultipleUpstreams,
+  pushRefspecUnmatched,
   pushRejected,
   pushRemoteNotUpstream,
   pushUpstreamNameMismatch,
@@ -70,6 +89,7 @@ import {
   revparseUnresolved,
   sanitize,
   signedPushUnsupported,
+  signerFailed,
   signingFailed,
   sparsePatternFileTooLarge,
   stashApplyWouldOverwrite,
@@ -77,12 +97,15 @@ import {
   tagExists,
   tagNotFound,
   targetDirectoryNotEmpty,
+  timestampOutOfRange,
   tooManyRedirects,
+  unknownOption,
+  unrelatedHistories,
   unsupportedScheme,
   workingTreeDirty,
   workingTreeFileTooLarge,
 } from '../../../../src/domain/commands/error.js';
-import { TsgitError } from '../../../../src/domain/error.js';
+import { sanitizeForDisplay, TsgitError } from '../../../../src/domain/error.js';
 import { type FilePath, ObjectId, type RefName } from '../../../../src/domain/objects/object-id.js';
 
 /** An `[fsck]` key half no check reports — spelled as git's own configured
@@ -460,6 +483,130 @@ describe('domain commands error — factory data', () => {
           local: OID1,
           remote: OID2,
         });
+      });
+    });
+  });
+
+  describe('Given the octopusMergeFailed error helper', () => {
+    describe('When called', () => {
+      it('Then data carries the head and the reason', () => {
+        // Arrange
+        const sut = octopusMergeFailed;
+
+        // Act
+        const result = sut('b2', 'conflict-before-last-head');
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'OCTOPUS_MERGE_FAILED',
+          head: 'b2',
+          reason: 'conflict-before-last-head',
+        });
+      });
+    });
+  });
+
+  describe('Given the pushMultipleUpstreams error helper', () => {
+    describe('When called', () => {
+      it('Then data carries the branch', () => {
+        // Arrange
+        const sut = pushMultipleUpstreams;
+
+        // Act
+        const result = sut('refs/heads/main' as RefName);
+
+        // Assert
+        expect(result.data).toEqual({ code: 'PUSH_MULTIPLE_UPSTREAMS', branch: 'refs/heads/main' });
+      });
+    });
+  });
+
+  describe('Given the fastForwardMultipleBranches error helper', () => {
+    describe('When called', () => {
+      it('Then data carries the code alone', () => {
+        // Arrange
+        const sut = fastForwardMultipleBranches;
+
+        // Act
+        const result = sut();
+
+        // Assert
+        expect(result.data).toEqual({ code: 'FAST_FORWARD_MULTIPLE_BRANCHES' });
+      });
+    });
+  });
+
+  describe('Given the pullEmptyHeadMultipleBranches error helper', () => {
+    describe('When called', () => {
+      it('Then data carries the code alone', () => {
+        // Arrange
+        const sut = pullEmptyHeadMultipleBranches;
+
+        // Act
+        const result = sut();
+
+        // Assert
+        expect(result.data).toEqual({ code: 'PULL_EMPTY_HEAD_MULTIPLE_BRANCHES' });
+      });
+    });
+  });
+
+  describe('Given the pullRebaseUnbornIndex error helper', () => {
+    describe('When called', () => {
+      it('Then data carries the code alone', () => {
+        // Arrange
+        const sut = pullRebaseUnbornIndex;
+
+        // Act
+        const result = sut();
+
+        // Assert
+        expect(result.data).toEqual({ code: 'PULL_REBASE_UNBORN_INDEX' });
+      });
+    });
+  });
+
+  describe('Given the pullRebaseMultipleBranches error helper', () => {
+    describe('When called', () => {
+      it('Then data carries the code alone', () => {
+        // Arrange
+        const sut = pullRebaseMultipleBranches;
+
+        // Act
+        const result = sut();
+
+        // Assert
+        expect(result.data).toEqual({ code: 'PULL_REBASE_MULTIPLE_BRANCHES' });
+      });
+    });
+  });
+
+  describe('Given the pullDivergentBranches error helper', () => {
+    describe('When called', () => {
+      it('Then data carries the code alone', () => {
+        // Arrange
+        const sut = pullDivergentBranches;
+
+        // Act
+        const result = sut();
+
+        // Assert
+        expect(result.data).toEqual({ code: 'PULL_DIVERGENT_BRANCHES' });
+      });
+    });
+  });
+
+  describe('Given the unrelatedHistories error helper', () => {
+    describe('When called', () => {
+      it('Then data carries the code alone', () => {
+        // Arrange
+        const sut = unrelatedHistories;
+
+        // Act
+        const result = sut();
+
+        // Assert
+        expect(result.data).toEqual({ code: 'UNRELATED_HISTORIES' });
       });
     });
   });
@@ -1132,6 +1279,101 @@ describe('domain commands error — config factory data', () => {
     });
   });
 
+  describe('Given the ambiguousOption helper', () => {
+    describe('When called with an abbreviation two options start', () => {
+      it('Then data carries code, option and both candidates', () => {
+        // Arrange
+        const sut = ambiguousOption;
+
+        // Act
+        const result = sut('--co', ['--commit', '--continue']);
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'AMBIGUOUS_OPTION',
+          option: '--co',
+          candidates: ['--commit', '--continue'],
+        });
+      });
+    });
+  });
+
+  describe('Given the unknownOption helper', () => {
+    describe('When called with an option git does not know', () => {
+      it('Then data carries code and option', () => {
+        // Arrange
+        const sut = unknownOption;
+
+        // Act
+        const result = sut('--bogus');
+
+        // Assert
+        expect(result.data).toEqual({ code: 'UNKNOWN_OPTION', option: '--bogus' });
+      });
+    });
+  });
+
+  describe('Given the badBranchMergeOptions helper', () => {
+    describe('When called with a branch and split_cmdline reason', () => {
+      it('Then data carries code, branch and reason', () => {
+        // Arrange
+        const sut = badBranchMergeOptions;
+
+        // Act
+        const result = sut('main', 'unclosed quote');
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'BAD_BRANCH_MERGE_OPTIONS',
+          branch: 'main',
+          reason: 'unclosed quote',
+        });
+      });
+    });
+  });
+
+  describe('Given the configUnknownValue helper', () => {
+    describe('When called with an unknown diff.algorithm entry', () => {
+      it('Then data carries code, key, value, source and line', () => {
+        // Arrange
+        const sut = configUnknownValue;
+
+        // Act
+        const result = sut('diff.algorithm', 'bogus', '/abs/.git/config', 4);
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'CONFIG_UNKNOWN_VALUE',
+          key: 'diff.algorithm',
+          value: 'bogus',
+          source: '/abs/.git/config',
+          line: 4,
+        });
+      });
+    });
+  });
+
+  describe('Given the configNegativeLength helper', () => {
+    describe('When called with a negative merge.log entry', () => {
+      it('Then data carries code, key, value, source and line', () => {
+        // Arrange
+        const sut = configNegativeLength;
+
+        // Act
+        const result = sut('merge.log', '-1', '/abs/.git/config', 11);
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'CONFIG_NEGATIVE_LENGTH',
+          key: 'merge.log',
+          value: '-1',
+          source: '/abs/.git/config',
+          line: 11,
+        });
+      });
+    });
+  });
+
   describe('Given the configBadNumericValue helper', () => {
     describe("When called with key='core.loosecompression', source='/abs/.git/config', value='', reason='invalid unit'", () => {
       it('Then data carries code, key, source, value, and reason individually', () => {
@@ -1267,6 +1509,34 @@ describe('domain commands error — config factory data', () => {
         expect(data.code).toBe('CONFIG_BAD_BOOLEAN_LITERAL');
         if (data.code !== 'CONFIG_BAD_BOOLEAN_LITERAL') return;
         expect(data.value).toBe('\\x01bad');
+      });
+    });
+  });
+
+  describe('Given the configUnknownNegotiationAlgorithm helper', () => {
+    describe("When called with value='bogus'", () => {
+      it('Then data carries code and value', () => {
+        // Arrange + Act
+        const result = configUnknownNegotiationAlgorithm('bogus');
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM',
+          value: 'bogus',
+        });
+      });
+    });
+
+    describe('When called with a value containing a control byte', () => {
+      it('Then data.value is sanitized for display', () => {
+        // Arrange + Act
+        const result = configUnknownNegotiationAlgorithm('\x01bad');
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM',
+          value: '\\x01bad',
+        });
       });
     });
   });
@@ -1429,6 +1699,35 @@ describe('domain commands error — extractDetail message formatting', () => {
       'TARGET_DIRECTORY_NOT_EMPTY: target directory is not empty: repo',
     ],
     [{ code: 'REMOTE_ADVERTISES_NO_REFS' }, 'REMOTE_ADVERTISES_NO_REFS: remote advertised no refs'],
+    [
+      { code: 'OCTOPUS_MERGE_FAILED', head: 'b1', reason: 'conflict-before-last-head' },
+      'OCTOPUS_MERGE_FAILED: Merge with strategy octopus failed: conflict-before-last-head at b1',
+    ],
+    [
+      { code: 'PUSH_MULTIPLE_UPSTREAMS', branch: 'refs/heads/main' as RefName },
+      'PUSH_MULTIPLE_UPSTREAMS: current branch refs/heads/main has multiple upstream branches, refusing to push',
+    ],
+    [
+      { code: 'FAST_FORWARD_MULTIPLE_BRANCHES' },
+      'FAST_FORWARD_MULTIPLE_BRANCHES: cannot fast-forward to multiple branches',
+    ],
+    [
+      { code: 'PULL_REBASE_MULTIPLE_BRANCHES' },
+      'PULL_REBASE_MULTIPLE_BRANCHES: cannot rebase onto multiple branches',
+    ],
+    [
+      { code: 'PULL_EMPTY_HEAD_MULTIPLE_BRANCHES' },
+      'PULL_EMPTY_HEAD_MULTIPLE_BRANCHES: cannot merge multiple branches into empty head',
+    ],
+    [
+      { code: 'PULL_REBASE_UNBORN_INDEX' },
+      'PULL_REBASE_UNBORN_INDEX: updating an unborn branch with changes added to the index',
+    ],
+    [
+      { code: 'PULL_DIVERGENT_BRANCHES' },
+      'PULL_DIVERGENT_BRANCHES: need to specify how to reconcile divergent branches',
+    ],
+    [{ code: 'UNRELATED_HISTORIES' }, 'UNRELATED_HISTORIES: refusing to merge unrelated histories'],
     [
       { code: 'NON_FAST_FORWARD', ref: 'refs/heads/main' as RefName, local: OID1, remote: OID2 },
       `NON_FAST_FORWARD: non-fast-forward update for refs/heads/main: local=${OID1} remote=${OID2}`,
@@ -1611,6 +1910,56 @@ describe('domain commands error — extractDetail message formatting', () => {
       "CONFIG_MISSING_VALUE: missing value for 'user.name' in file '/repo/.git/config' at line 2",
     ],
     [
+      {
+        code: 'CONFIG_NEGATIVE_LENGTH',
+        key: 'merge.log',
+        value: '-1',
+        source: '/repo/.git/config',
+        line: 11,
+      },
+      'CONFIG_NEGATIVE_LENGTH: merge.log: negative length -1',
+    ],
+    [
+      {
+        code: 'CONFIG_UNKNOWN_VALUE',
+        key: 'diff.algorithm',
+        value: 'bogus',
+        source: '/repo/.git/config',
+        line: 4,
+      },
+      "CONFIG_UNKNOWN_VALUE: unknown value for config 'diff.algorithm': bogus",
+    ],
+    [
+      { code: 'INCOMPATIBLE_OPTIONS', options: ['--squash', '--no-ff'] },
+      "INCOMPATIBLE_OPTIONS: options '--squash' and '--no-ff' cannot be used together",
+    ],
+    [
+      { code: 'UNKNOWN_MERGE_STRATEGY', strategy: 'x', available: ['octopus', 'ours'] },
+      "UNKNOWN_MERGE_STRATEGY: Could not find merge strategy 'x'. Available strategies are: octopus ours.",
+    ],
+    [{ code: 'UNKNOWN_OPTION', option: '--bogus' }, "UNKNOWN_OPTION: unknown option `bogus'"],
+    [
+      { code: 'AMBIGUOUS_OPTION', option: '--co', candidates: ['--commit', '--continue'] },
+      'AMBIGUOUS_OPTION: ambiguous option: co (could be --commit or --continue)',
+    ],
+    [{ code: 'UNKNOWN_OPTION', option: '-x' }, "UNKNOWN_OPTION: unknown switch `x'"],
+    [
+      { code: 'BAD_BRANCH_MERGE_OPTIONS', branch: 'main', reason: 'unclosed quote' },
+      'BAD_BRANCH_MERGE_OPTIONS: Bad branch.main.mergeoptions string: unclosed quote',
+    ],
+    [
+      { code: 'UNKNOWN_STRATEGY_OPTION', option: 'bogus' },
+      'UNKNOWN_STRATEGY_OPTION: unknown strategy option: -Xbogus',
+    ],
+    [
+      { code: 'MERGE_STRATEGY_FAILED', strategy: 'ort' },
+      'MERGE_STRATEGY_FAILED: Merge with strategy ort failed.',
+    ],
+    [
+      { code: 'NO_MERGE_STRATEGY_HANDLED', strategies: ['resolve', 'ort'] },
+      'NO_MERGE_STRATEGY_HANDLED: No merge strategy handled the merge.',
+    ],
+    [
       { code: 'MERGE_DRIVER_MISSING_COMMAND', name: 'x' },
       'MERGE_DRIVER_MISSING_COMMAND: custom merge driver x lacks command line.',
     ],
@@ -1666,6 +2015,23 @@ describe('domain commands error — extractDetail message formatting', () => {
       },
       "CONFIG_BAD_BOOLEAN_LITERAL: invalid value for 'push.gpgsign' in file /repo/.git/config",
     ],
+    [{ code: 'EMPTY_COMMIT_SET' }, 'EMPTY_COMMIT_SET: empty commit set passed'],
+    [
+      { code: 'CANNOT_PICK_NON_COMMIT', revision: 'HEAD:d/f', type: 'blob' },
+      "CANNOT_PICK_NON_COMMIT: HEAD:d/f: can't cherry-pick a blob",
+    ],
+    [
+      { code: 'CHECKOUT_NON_COMMIT', revision: 'HEAD^{tree}' },
+      "CHECKOUT_NON_COMMIT: Cannot switch branch to a non-commit 'HEAD^{tree}'",
+    ],
+    [
+      { code: 'CHECKOUT_START_POINT_NOT_COMMIT', revision: 'nope', branch: 'side' },
+      "CHECKOUT_START_POINT_NOT_COMMIT: 'nope' is not a commit and a branch 'side' cannot be created from it",
+    ],
+    [
+      { code: 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM', value: 'bogus' },
+      "CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM: unknown fetch negotiation algorithm 'bogus'",
+    ],
     [
       {
         code: 'FSCK_UNKNOWN_MSG_ID',
@@ -1713,6 +2079,22 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       { code: 'BUNDLE_EMPTY', reason: 'no-refs' },
       'BUNDLE_EMPTY: refusing to create empty bundle: no-refs',
+    ],
+    [
+      { code: 'INVALID_SYMMETRIC_RANGE', expression: 'main...t', nonCommits: [] },
+      'INVALID_SYMMETRIC_RANGE: invalid symmetric difference expression main...t',
+    ],
+    [
+      { code: 'INVALID_REVISION_RANGE', expression: 'main..t' },
+      'INVALID_REVISION_RANGE: invalid revision range main..t',
+    ],
+    [
+      { code: 'COMMIT_PARSE_FAILED', id: OID1 },
+      `COMMIT_PARSE_FAILED: could not parse commit ${OID1}`,
+    ],
+    [
+      { code: 'NEED_TWO_COMMIT_RANGES', expression: 'main..main' },
+      'NEED_TWO_COMMIT_RANGES: need two commit ranges: main..main is not one',
     ],
     [
       { code: 'BUNDLE_READ_FAILED', path: '/some/path.bundle' },
@@ -1785,9 +2167,99 @@ describe('domain commands error — extractDetail message formatting', () => {
     });
   });
 
+  describe('Given the invalidSymmetricRange error helper', () => {
+    describe('When called with an expression carrying a control character', () => {
+      it('Then data carries the sanitised expression and each non-commit side', () => {
+        // Arrange
+        const sut = invalidSymmetricRange;
+        const nonCommits = [{ id: OID1, type: 'tree' as const }];
+
+        // Act
+        const result = sut('main...t\u001b', nonCommits);
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'INVALID_SYMMETRIC_RANGE',
+          expression: sanitizeForDisplay('main...t\u001b'),
+          nonCommits,
+        });
+        expect(result.data).not.toEqual(expect.objectContaining({ expression: 'main...t\u001b' }));
+      });
+    });
+  });
+
+  describe('Given the invalidRevisionRange error helper', () => {
+    describe('When called with an expression holding a control byte', () => {
+      it('Then data carries the sanitised expression', () => {
+        // Arrange
+        const sut = invalidRevisionRange;
+
+        // Act
+        const result = sut('main..t\u001b');
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'INVALID_REVISION_RANGE',
+          expression: sanitizeForDisplay('main..t\u001b'),
+        });
+        expect(result.data).not.toEqual(expect.objectContaining({ expression: 'main..t\u001b' }));
+      });
+    });
+  });
+
+  describe('Given the commitParseFailed error helper', () => {
+    describe('When called with an id', () => {
+      it('Then data carries the id', () => {
+        // Arrange
+        const sut = commitParseFailed;
+
+        // Act
+        const result = sut(OID1);
+
+        // Assert
+        expect(result.data).toEqual({ code: 'COMMIT_PARSE_FAILED', id: OID1 });
+      });
+    });
+
+    describe('When called with what rev-parse had printed', () => {
+      it('Then data carries the printed entries', () => {
+        // Arrange
+        const sut = commitParseFailed;
+        const printed = [{ kind: 'object', id: OID1, negated: false }] as const;
+
+        // Act
+        const result = sut(OID1, printed);
+
+        // Assert
+        expect(result.data).toEqual({ code: 'COMMIT_PARSE_FAILED', id: OID1, printed });
+      });
+    });
+  });
+
+  describe('Given the needTwoCommitRanges error helper', () => {
+    describe('When called with an expression holding a control byte', () => {
+      it('Then data carries the sanitised expression', () => {
+        // Arrange
+        const sut = needTwoCommitRanges;
+
+        // Act
+        const result = sut('main..main\u001b');
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'NEED_TWO_COMMIT_RANGES',
+          expression: sanitizeForDisplay('main..main\u001b'),
+        });
+        expect(result.data).not.toEqual(
+          expect.objectContaining({ expression: 'main..main\u001b' }),
+        );
+      });
+    });
+  });
+
   describe('Given the bundleEmpty error helper', () => {
     describe('When called', () => {
-      it.each([['no-refs'], ['no-objects']] as const)('Then data carries reason=%s', (reason) => {
+      it.each([['no-refs']] as const)('Then data carries reason=%s', (reason) => {
         // Arrange + Act
         const result = bundleEmpty(reason);
 
@@ -1926,16 +2398,17 @@ describe('domain commands error — extractDetail message formatting', () => {
   });
 
   describe('Given the signingFailed error helper', () => {
-    describe('When called with reason "signer-failed" and a format', () => {
-      it('Then data carries code, reason and format; message names both', () => {
+    describe('When signerFailed is called with a format and the signer output', () => {
+      it('Then data carries code, reason, format and output; message names reason and format', () => {
         // Arrange & Act
-        const result = signingFailed('signer-failed', 'openpgp');
+        const result = signerFailed('openpgp', 'gpg: no default secret key\n');
         // Assert
         expect(result).toBeInstanceOf(TsgitError);
         expect(result.data).toEqual({
           code: 'SIGNING_FAILED',
           reason: 'signer-failed',
           format: 'openpgp',
+          output: 'gpg: no default secret key\n',
         });
         expect(result.message).toContain('signer-failed');
         expect(result.message).toContain('openpgp');
@@ -1963,6 +2436,37 @@ describe('domain commands error — extractDetail message formatting', () => {
           reason: 'unsupported-format',
           format: 'x509',
         });
+      });
+    });
+  });
+
+  describe('Given the pushRefspecUnmatched error helper', () => {
+    describe('When called with a url and the unmatched refspecs', () => {
+      it('Then data carries code, url and each unmatched destination', () => {
+        // Arrange
+        const sut = pushRefspecUnmatched;
+
+        // Act
+        const result = sut('https://example.com/r.git', [{ dst: 'nope', reason: 'ambiguous' }]);
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'PUSH_REFSPEC_UNMATCHED',
+          url: 'https://example.com/r.git',
+          unmatched: [{ dst: 'nope', reason: 'ambiguous' }],
+        });
+      });
+    });
+  });
+
+  describe('Given the atomicPushUnsupported error helper', () => {
+    describe('When called with a remote name', () => {
+      it('Then data carries code and remote', () => {
+        // Arrange & Act
+        const result = atomicPushUnsupported('origin');
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect(result.data).toEqual({ code: 'ATOMIC_PUSH_UNSUPPORTED', remote: 'origin' });
       });
     });
   });
@@ -2070,6 +2574,43 @@ describe('domain commands error — extractDetail message formatting', () => {
       });
     });
   });
+
+  describe('Given the formatPlaceholderUnsupported error helper', () => {
+    describe('When called with a placeholder git does not support in this command', () => {
+      it('Then data carries the code, the placeholder and the not-supported reason', () => {
+        // Arrange
+        const sut = formatPlaceholderUnsupported;
+
+        // Act
+        const result = sut('%(count)');
+
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect(result.data).toEqual({
+          code: 'FORMAT_PLACEHOLDER_UNSUPPORTED',
+          placeholder: '%(count)',
+          reason: 'not-supported',
+        });
+      });
+    });
+
+    describe('When called with an unparsable colour placeholder', () => {
+      it('Then data carries the unparsable reason', () => {
+        // Arrange
+        const sut = formatPlaceholderUnsupported;
+
+        // Act
+        const result = sut('%C');
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'FORMAT_PLACEHOLDER_UNSUPPORTED',
+          placeholder: '%C',
+          reason: 'unparsable',
+        });
+      });
+    });
+  });
 });
 
 describe('bundle header detail bound', () => {
@@ -2139,6 +2680,27 @@ describe('bundle header detail bound', () => {
           path: '/bad.bundle',
           reason: 'unknown-hash-algorithm',
           algorithm: 'sha\\x00256',
+        });
+      });
+    });
+  });
+
+  describe('Given the timestampOutOfRange error helper', () => {
+    describe('When called with a reason, the timestamp and the zone', () => {
+      it('Then data carries the code, the reason, the decimal timestamp and the zone', () => {
+        // Arrange
+        const sut = timestampOutOfRange;
+
+        // Act
+        const result = sut('too-large', 9223372036854781207n, 130);
+
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect(result.data).toEqual({
+          code: 'TIMESTAMP_OUT_OF_RANGE',
+          reason: 'too-large',
+          timestamp: '9223372036854781207',
+          zone: 130,
         });
       });
     });

@@ -33,6 +33,7 @@ import {
   git,
   runGit,
   runGitEnv,
+  runGitEnvWithoutGlobalConfig,
   tryRunGitWithExit,
 } from './interop-helpers.js';
 
@@ -1268,8 +1269,11 @@ describe.skipIf(!GIT_AVAILABLE)(
           arm(dir);
 
           // Act
-          const getName = tryRunGitWithExit(['-C', dir, 'config', 'user.name']);
-          const getRegexp = tryRunGitWithExit(['-C', dir, 'config', '--get-regexp', '^user\\.']);
+          const env = runGitEnvWithoutGlobalConfig();
+          const getName = tryRunGitWithExit(['-C', dir, 'config', 'user.name'], { env });
+          const getRegexp = tryRunGitWithExit(['-C', dir, 'config', '--get-regexp', '^user\\.'], {
+            env,
+          });
           const repo = await openRow(dir);
           try {
             const name = await repo.config.get({ key: 'user.name' });
@@ -1322,15 +1326,21 @@ describe.skipIf(!GIT_AVAILABLE)(
 
       describe('When config --global --list runs', () => {
         it('Then it stays reachable in git — non-repository scopes are untouched', async () => {
-          // Arrange — a real ~/.gitconfig this time (the suite's shared ISOLATED_HOME has
-          // none, and `--global --list` itself refuses when the target file is absent —
-          // an artefact of that isolation, not of the format gate under test here).
+          // Arrange — a real ~/.gitconfig this time, named as the global file (the
+          // suite's shared one holds only the fallback identity, and `--global --list`
+          // itself refuses when the target file is absent — an artefact of that
+          // isolation, not of the format gate under test here).
           const dir = await copyRow(`${slug}-global-list`);
           arm(dir);
           const home = await mkdtemp(path.join(os.tmpdir(), 'tsgit-format-global-home-'));
           rowDirs.push(home);
           writeFileSync(path.join(home, '.gitconfig'), '[user]\n\tname = Global User\n');
-          const env = { ...runGitEnv(), HOME: home, XDG_CONFIG_HOME: path.join(home, '.config') };
+          const env = {
+            ...runGitEnv(),
+            HOME: home,
+            XDG_CONFIG_HOME: path.join(home, '.config'),
+            GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'),
+          };
 
           // Act
           const g = tryRunGitWithExit(['-C', dir, 'config', '--global', '--list'], { env });

@@ -20,6 +20,7 @@ export * from './hooks/index.js';
 export * from './ignore/index.js';
 export * from './merge/index.js';
 export * from './objects/index.js';
+export * from './pretty/index.js';
 export * from './protocol/index.js';
 export * from './reflog/index.js';
 export * from './refs/index.js';

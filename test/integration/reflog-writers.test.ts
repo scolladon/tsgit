@@ -233,7 +233,7 @@ describe('integration — reflog writers', () => {
 
       // Assert
       const branchLog = await readReflog(ctx, MAIN);
-      expect(branchLog.at(-1)?.message).toBe("merge feature: Merge made by the 'tsgit' strategy.");
+      expect(branchLog.at(-1)?.message).toBe("merge feature: Merge made by the 'ort' strategy.");
     });
   });
 

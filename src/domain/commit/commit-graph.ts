@@ -17,6 +17,10 @@ const CHUNK_ID_GDA2 = 'GDA2';
 const CHUNK_ID_GDO2 = 'GDO2';
 const CHUNK_ID_EDGE = 'EDGE';
 const CHUNK_ID_BASE = 'BASE';
+const CHUNK_ID_BIDX = 'BIDX';
+const CHUNK_ID_BDAT = 'BDAT';
+const BIDX_ENTRY_SIZE = 4;
+const BDAT_HEADER_SIZE = 12;
 
 /** Bytes per GDO2 entry: a plain (non-flagged) 64-bit corrected-date offset. */
 const GDO2_ENTRY_SIZE = 8;
@@ -37,21 +41,39 @@ interface ChunkRange {
   readonly end: number;
 }
 
-export interface CommitData {
+/** A commit's graph entry short of its parents — git's `fill_commit_graph_info`. */
+export interface CommitMeta {
   readonly rootTree: ObjectId;
+  readonly generation: number;
+  readonly committerDate: number;
+}
+
+/** The parent positions a commit's graph entry records, in parent order. */
+export interface CommitParentPositions {
   readonly parent1Pos: number | undefined;
   readonly parent2Pos: number | undefined;
   readonly additionalParentPositions: readonly number[];
-  readonly generation: number;
-  readonly committerDate: number;
+}
+
+export interface CommitData extends CommitMeta, CommitParentPositions {}
+
+/** A layer's `BDAT` header, as written — the hash version unvalidated, as git reads it. */
+export interface CommitGraphBloomSettings {
+  readonly hashVersion: number;
+  readonly numHashes: number;
+  readonly bitsPerEntry: number;
 }
 
 /** A single parsed `commit-graph` file — either the standalone file or one chain layer. */
 export interface CommitGraphLayer {
   readonly hashVersion: 1 | 2;
+  /** Present only when both `BIDX` and `BDAT` are present and well-sized, as git requires. */
+  readonly bloomSettings: CommitGraphBloomSettings | undefined;
   readonly numBaseGraphs: number;
   readonly baseGraphHashes: readonly ObjectId[];
   readonly commitCount: number;
+  /** A GDA2 chunk whose size is not one entry per commit: git loads the layer without it. */
+  readonly generationDataMisfit: boolean;
   readonly _bytes: Uint8Array;
   readonly _view: DataView;
   readonly _hashLength: number;
@@ -62,6 +84,8 @@ export interface CommitGraphLayer {
   readonly _generationDataRange: ChunkRange | undefined;
   readonly _extraEdgeRange: ChunkRange | undefined;
   readonly _overflowGenerationRange: ChunkRange | undefined;
+  readonly _bloomIndexRange: ChunkRange | undefined;
+  readonly _bloomDataRange: ChunkRange | undefined;
 }
 
 export function parseCommitGraphLayer(bytes: Uint8Array): CommitGraphLayer {
@@ -103,21 +127,26 @@ export function parseCommitGraphLayer(bytes: Uint8Array): CommitGraphLayer {
   const cdat = requireChunk(chunkRanges, CHUNK_ID_CDAT);
   validateChunkSize(cdat, commitCount * commitDataEntrySize, CHUNK_ID_CDAT);
 
-  const generationDataRange = chunkRanges.get(CHUNK_ID_GDA2);
-  if (generationDataRange !== undefined) {
-    validateChunkSize(generationDataRange, commitCount * 4, CHUNK_ID_GDA2);
-  }
+  // git's `graph_read_generation_data` refuses a misfit GDA2 with an error yet loads the layer.
+  const generationData = chunkRanges.get(CHUNK_ID_GDA2);
+  const generationDataMisfit =
+    generationData !== undefined &&
+    Math.floor((generationData.end - generationData.start) / 4) !== commitCount;
+  const generationDataRange = generationDataMisfit ? undefined : generationData;
 
   const extraEdgeRange = chunkRanges.get(CHUNK_ID_EDGE);
   const overflowGenerationRange = chunkRanges.get(CHUNK_ID_GDO2);
 
-  const baseGraphHashes = readBaseGraphHashes(chunkRanges, numBaseGraphs, hashLength, bytes);
+  const baseGraphHashes = readBaseGraphHashes(chunkRanges, hashLength, bytes);
+  const bloom = readBloomChunks(chunkRanges, view, commitCount);
 
   return {
     hashVersion: hashVersion as 1 | 2,
+    bloomSettings: bloom?.settings,
     numBaseGraphs,
     baseGraphHashes,
     commitCount,
+    generationDataMisfit,
     _bytes: bytes,
     _view: view,
     _hashLength: hashLength,
@@ -128,6 +157,8 @@ export function parseCommitGraphLayer(bytes: Uint8Array): CommitGraphLayer {
     _generationDataRange: generationDataRange,
     _extraEdgeRange: extraEdgeRange,
     _overflowGenerationRange: overflowGenerationRange,
+    _bloomIndexRange: bloom?.index,
+    _bloomDataRange: bloom?.data,
   };
 }
 
@@ -188,30 +219,72 @@ function validateChunkSize(range: ChunkRange, expectedSize: number, id: string):
   }
 }
 
+/** git's `graph_read_bloom_index`/`_data`: a misfit chunk is ignored, and one without the other is too. */
+function readBloomChunks(
+  ranges: ReadonlyMap<string, ChunkRange>,
+  view: DataView,
+  commitCount: number,
+):
+  | {
+      readonly settings: CommitGraphBloomSettings;
+      readonly index: ChunkRange;
+      readonly data: ChunkRange;
+    }
+  | undefined {
+  const index = ranges.get(CHUNK_ID_BIDX);
+  const data = ranges.get(CHUNK_ID_BDAT);
+  if (index === undefined || data === undefined) return undefined;
+  if (Math.floor((index.end - index.start) / BIDX_ENTRY_SIZE) !== commitCount) return undefined;
+  if (data.end - data.start < BDAT_HEADER_SIZE) return undefined;
+  const settings = {
+    hashVersion: view.getUint32(data.start),
+    numHashes: view.getUint32(data.start + 4),
+    bitsPerEntry: view.getUint32(data.start + 8),
+  };
+  return { settings, index, data };
+}
+
+/**
+ * git's `load_bloom_filter_from_graph`: the filter stored at a layer-local
+ * position — possibly empty — or `undefined` when the layer stores none or
+ * its BIDX bounds fall past the data or decrease.
+ */
+export function storedBloomFilter(
+  layer: CommitGraphLayer,
+  localPos: number,
+): Uint8Array | undefined {
+  const index = layer._bloomIndexRange;
+  const data = layer._bloomDataRange;
+  if (index === undefined || data === undefined) return undefined;
+  const end = layer._view.getUint32(index.start + localPos * BIDX_ENTRY_SIZE);
+  const start =
+    localPos === 0 ? 0 : layer._view.getUint32(index.start + (localPos - 1) * BIDX_ENTRY_SIZE);
+  const dataSize = data.end - data.start - BDAT_HEADER_SIZE;
+  // A start past the data has its end past it too, or below it.
+  if (end > dataSize || end < start) return undefined;
+  const filters = data.start + BDAT_HEADER_SIZE;
+  return layer._bytes.subarray(filters + start, filters + end);
+}
+
+/** git's `pair_chunk` for BASE: every whole hash the chunk holds — the header's base count is never read. */
 function readBaseGraphHashes(
   ranges: ReadonlyMap<string, ChunkRange>,
-  numBaseGraphs: number,
   hashLength: number,
   bytes: Uint8Array,
 ): readonly ObjectId[] {
   const base = ranges.get(CHUNK_ID_BASE);
-  if (base === undefined) {
-    if (numBaseGraphs !== 0) {
-      throw invalidCommitGraphChunk(
-        `missing BASE chunk: header declares ${numBaseGraphs} base graphs`,
-      );
-    }
-    return [];
-  }
+  if (base === undefined) return [];
+  const count = Math.floor((base.end - base.start) / hashLength);
+  return Array.from({ length: count }, (_, index) => {
+    const offset = base.start + index * hashLength;
+    return ObjectId.fromRaw(bytes.subarray(offset, offset + hashLength));
+  });
+}
 
-  validateChunkSize(base, numBaseGraphs * hashLength, CHUNK_ID_BASE);
-
-  const hashes: ObjectId[] = [];
-  for (let i = 0; i < numBaseGraphs; i += 1) {
-    const offset = base.start + i * hashLength;
-    hashes.push(ObjectId.fromRaw(bytes.subarray(offset, offset + hashLength)));
-  }
-  return hashes;
+/** The oid at a layer-local position of the OIDL chunk. */
+export function oidAtPosition(layer: CommitGraphLayer, localPos: number): ObjectId {
+  const offset = layer._oidLookupOffset + localPos * layer._hashLength;
+  return ObjectId.fromRaw(layer._bytes.subarray(offset, offset + layer._hashLength));
 }
 
 /** Binary search for `oid` within the layer's fanout-backed OIDL chunk. */
@@ -263,35 +336,54 @@ export interface CommitDataOptions {
   readonly correctedCommitDates: boolean;
 }
 
+/**
+ * Reads root tree, generation, and committer date for a layer-local position,
+ * refusing as git dies when a GDA2 entry demands overflow data GDO2 lacks.
+ */
+export function commitMetaAt(
+  layer: CommitGraphLayer,
+  localPos: number,
+  options: CommitDataOptions,
+): CommitMeta {
+  const entryOffset = layer._commitDataOffset + localPos * layer._commitDataEntrySize;
+  const hashLength = layer._hashLength;
+  const rootTree = ObjectId.fromRaw(layer._bytes.subarray(entryOffset, entryOffset + hashLength));
+  const genWord = layer._view.getUint32(entryOffset + hashLength + 8);
+  const dateWord = layer._view.getUint32(entryOffset + hashLength + 12);
+  const committerDate = (genWord & 0x3) * 0x100000000 + dateWord;
+  const generationRange = options.correctedCommitDates ? layer._generationDataRange : undefined;
+  const generation = resolveGeneration(layer, generationRange, localPos, {
+    generationV1: genWord >>> 2,
+    committerDate,
+  });
+  return { rootTree, generation, committerDate };
+}
+
 /** Reads root tree, parent positions, generation, and committer date for a layer-local position. */
 export function commitDataAt(
   layer: CommitGraphLayer,
   localPos: number,
   options: CommitDataOptions,
 ): CommitData {
-  const entryOffset = layer._commitDataOffset + localPos * layer._commitDataEntrySize;
-  const view = layer._view;
-  const hashLength = layer._hashLength;
-
-  const rootTree = ObjectId.fromRaw(layer._bytes.subarray(entryOffset, entryOffset + hashLength));
-
-  const parent1Raw = view.getUint32(entryOffset + hashLength);
-  const parent2Raw = view.getUint32(entryOffset + hashLength + 4);
-  const genWord = view.getUint32(entryOffset + hashLength + 8);
-  const dateWord = view.getUint32(entryOffset + hashLength + 12);
-
-  const committerDate = (genWord & 0x3) * 0x100000000 + dateWord;
-  const generationV1 = genWord >>> 2;
-
-  const parent1Pos = parent1Raw === NO_PARENT ? undefined : parent1Raw;
-  const { parent2Pos, additionalParentPositions } = resolveSecondParent(layer, parent2Raw);
-  const generationRange = options.correctedCommitDates ? layer._generationDataRange : undefined;
-  const generation = resolveGeneration(layer, generationRange, localPos, {
-    generationV1,
-    committerDate,
-  });
-
+  const { rootTree, generation, committerDate } = commitMetaAt(layer, localPos, options);
+  const { parent1Pos, parent2Pos, additionalParentPositions } = commitParentPositionsAt(
+    layer,
+    localPos,
+  );
   return { rootTree, parent1Pos, parent2Pos, additionalParentPositions, generation, committerDate };
+}
+
+/** Reads the parent positions for a layer-local position, following EDGE for an octopus. */
+export function commitParentPositionsAt(
+  layer: CommitGraphLayer,
+  localPos: number,
+): CommitParentPositions {
+  const parentsOffset =
+    layer._commitDataOffset + localPos * layer._commitDataEntrySize + layer._hashLength;
+  const parent1Raw = layer._view.getUint32(parentsOffset);
+  const parent1Pos = parent1Raw === NO_PARENT ? undefined : parent1Raw;
+  const second = resolveSecondParent(layer, layer._view.getUint32(parentsOffset + 4));
+  return { parent1Pos, ...second };
 }
 
 function resolveSecondParent(
@@ -327,6 +419,38 @@ function readEdgeChain(layer: CommitGraphLayer, edgePos: number): number[] {
   throw invalidCommitGraphChunk('truncated EDGE chunk: octopus parent list never terminates');
 }
 
+export interface GraphParents {
+  readonly positions: ReadonlyArray<number>;
+  /** The octopus list ran past the EDGE chunk before its last entry. */
+  readonly edgesOutOfBounds: boolean;
+}
+
+const EDGE_ENTRY_SIZE = 4;
+
+/** git's `fill_commit_in_graph` parent read, stopping where git's extra-edges bound does. */
+export function graphParentsAt(layer: CommitGraphLayer, position: number): GraphParents {
+  const entry = layer._commitDataOffset + position * layer._commitDataEntrySize + layer._hashLength;
+  const first = layer._view.getUint32(entry);
+  if (first === NO_PARENT) return { positions: [], edgesOutOfBounds: false };
+  const second = layer._view.getUint32(entry + 4);
+  if (second === NO_PARENT) return { positions: [first], edgesOutOfBounds: false };
+  if ((second & OCTOPUS_FLAG) === 0) return { positions: [first, second], edgesOutOfBounds: false };
+  return readEdges(layer, first, second & EDGE_POS_MASK);
+}
+
+function readEdges(layer: CommitGraphLayer, first: number, start: number): GraphParents {
+  const positions = [first];
+  const range = layer._extraEdgeRange;
+  if (range === undefined) return { positions, edgesOutOfBounds: true };
+  for (let at = range.start + start * EDGE_ENTRY_SIZE; at + EDGE_ENTRY_SIZE <= range.end; ) {
+    const raw = layer._view.getUint32(at);
+    positions.push(raw & EDGE_POS_MASK);
+    if ((raw & EDGE_LAST_FLAG) !== 0) return { positions, edgesOutOfBounds: false };
+    at += EDGE_ENTRY_SIZE;
+  }
+  return { positions, edgesOutOfBounds: true };
+}
+
 /** `generationRange` is the layer's GDA2 chunk, or `undefined` when this read
  *  must serve the CDAT topological level — either because the layer stores no
  *  GDA2, or because its chain rules corrected commit dates out. */
@@ -352,11 +476,11 @@ function resolveGeneration(
 function readOverflowOffset(layer: CommitGraphLayer, index: number): number {
   const range = layer._overflowGenerationRange;
   if (range === undefined) {
-    throw invalidCommitGraphChunk('generation overflow flag set but missing GDO2 chunk');
+    throw invalidCommitGraphChunk('commit-graph requires overflow generation data but has none');
   }
   const offset = range.start + index * GDO2_ENTRY_SIZE;
   if (offset + GDO2_ENTRY_SIZE > range.end) {
-    throw invalidCommitGraphChunk(`GDO2 index ${index} out of range`);
+    throw invalidCommitGraphChunk('commit-graph overflow generation data is too small');
   }
   return readUint64BE(layer._view, offset);
 }

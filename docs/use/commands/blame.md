@@ -79,6 +79,7 @@ type BlameLine = CommittedBlameLine | UncommittedBlameLine;
   ([ADR-257](../../adr/257-blame-denormalized-per-line-records.md)).
 - **Merges:** a line is blamed to the parent it is unchanged from; only lines
   differing from **every** parent stay on the merge.
+- **Unparsable parents:** as git's `pass_blame` does, a parent that cannot be read (`Could not read <id>`) or is not a commit (`Object <id> not a commit`) is skipped with a `ctx.logger` warning carrying `{ id }`, and its lines stay with the child; any other failure refuses. Equally-dated suspects are processed in the order they were scheduled.
 - **Renames:** renames are followed by default — when the path is absent in a
   parent, the file is located under its previous name and `sourcePath` reflects it.
   Reuses the diff's content-similarity rename detection (git's default ≥50%), so a

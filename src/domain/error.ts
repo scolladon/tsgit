@@ -1,4 +1,4 @@
-import type { CommandError } from './commands/error.js';
+import type { CommandError, RejectedFetchUpdate } from './commands/error.js';
 import type { CommitGraphError } from './commit/error.js';
 import type { DiffError } from './diff/error.js';
 import type { IndexError } from './git-index/error.js';
@@ -33,6 +33,7 @@ export type AdapterError =
 /** Cross-cutting application-tier codes raised by primitives (not adapters). */
 export type ApplicationError =
   | { readonly code: 'INVALID_WALK_INPUT'; readonly reason: string }
+  | { readonly code: 'INVALID_COMMIT_NAME'; readonly name: string }
   | { readonly code: 'OPERATION_ABORTED' }
   | {
       readonly code: 'RESOURCE_LOCKED';
@@ -170,6 +171,10 @@ export const networkError = (reason: string): TsgitError =>
 export const invalidWalkInput = (reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_WALK_INPUT', reason });
 
+/** git's `Not a valid commit name <name>`: an argument a command looks up as a commit names none. */
+export const invalidCommitName = (name: string): TsgitError =>
+  new TsgitError({ code: 'INVALID_COMMIT_NAME', name });
+
 /** An artefact already occupying a content-addressed pack name holds different
  *  bytes — git's finalize step refuses this rather than overwriting. */
 export const packArtifactMismatch = (path: string): TsgitError =>
@@ -211,6 +216,70 @@ function renderBundleBadHeader(data: Extract<CommandError, { code: 'BUNDLE_BAD_H
       return `unrecognized bundle hash algorithm: ${data.algorithm}`;
   }
 }
+
+function formatPlaceholderDetail(
+  data: Extract<TsgitErrorData, { readonly code: 'FORMAT_PLACEHOLDER_UNSUPPORTED' }>,
+): string {
+  return data.reason === 'unparsable'
+    ? 'unable to parse --pretty format'
+    : `${data.placeholder} is not supported by this command`;
+}
+
+/** A filter driver's exit status, when one ran. */
+const exitSuffix = (exitCode: number | undefined): string =>
+  exitCode === undefined ? '' : ` (exit ${exitCode})`;
+
+// Only a negative zone can reach back before the epoch; git prints it with `%04d`, the sign counting toward the width.
+const NEGATIVE_ZONE_DIGITS = 3;
+
+const negativeZone = (zone: number): string =>
+  `-${String(-zone).padStart(NEGATIVE_ZONE_DIGITS, '0')}`;
+
+function timestampRangeDetail(
+  data: Extract<TsgitErrorData, { readonly code: 'TIMESTAMP_OUT_OF_RANGE' }>,
+): string {
+  return data.reason === 'before-epoch'
+    ? `Timestamp before Unix epoch: ${data.timestamp} ${negativeZone(data.zone)}`
+    : `Timestamp too large for this system: ${data.timestamp}`;
+}
+
+/** git's two walk deaths: while limiting (no commit) or while walking a commit's parents. */
+const fetchRefspecConflictMessage = ({
+  reason,
+  target,
+  sources: [first, second],
+}: Extract<CommandError, { code: 'FETCH_REFSPEC_CONFLICT' }>): string =>
+  reason === 'cannot-fetch-both'
+    ? `Cannot fetch both ${first} and ${second} to ${target}`
+    : `${target} tracks both ${first} and ${second}`;
+
+const rejectedUpdate = ({ name, rejection }: RejectedFetchUpdate): string =>
+  `${name} (${rejection})`;
+
+const pullNoMergeCandidatesMessage = (
+  reason: Extract<CommandError, { code: 'PULL_NO_MERGE_CANDIDATES' }>['reason'],
+  remote: string,
+  ref: string | undefined,
+): string => {
+  if (reason === 'refspec-unmatched') {
+    return 'There are no candidates for merging among the refs that you just fetched.';
+  }
+  if (reason === 'not-default-remote') {
+    return `You asked to pull from the remote '${remote}', but did not specify a branch.`;
+  }
+  return `Your configuration specifies to merge with the ref '${ref}' from the remote, but no such ref was fetched.`;
+};
+
+const revisionWalkDetail = (commit: string | undefined): string =>
+  commit === undefined
+    ? 'revision walk setup failed'
+    : `Failed to traverse parents of commit ${commit}`;
+
+/** parse-options names a long option without its dashes, a switch by its letter. */
+const unknownOptionDetail = (option: string): string =>
+  option.startsWith('--')
+    ? `unknown option \`${option.slice(2)}'`
+    : `unknown switch \`${option.slice(1)}'`;
 
 function extractDetail(data: TsgitErrorData): string {
   switch (data.code) {
@@ -277,6 +346,12 @@ function extractDetail(data: TsgitErrorData): string {
       return `unexpected object type: expected=${data.expected} actual=${data.actual} id=${data.id}`;
     case 'TREE_CYCLE_DETECTED':
       return `tree cycle detected: ${data.id}`;
+    case 'BAD_TREE_OBJECT':
+      return `bad tree object ${data.id}`;
+    case 'TREE_UNREADABLE':
+      return `unable to read tree (${data.id})`;
+    case 'TREE_ENTRY_TYPE_MISMATCH':
+      return `entry '${data.entry}' in tree ${data.tree} has ${data.mode} mode, but is not a ${data.mode}`;
     case 'TREE_DEPTH_EXCEEDED':
       return `tree depth exceeded: ${data.depth}`;
     case 'TREE_ENTRY_LIMIT_EXCEEDED':
@@ -299,6 +374,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `reftable stack locked: stack=${data.stack} ${data.reason}`;
     case 'INVALID_WALK_INPUT':
       return `invalid walk input: ${data.reason}`;
+    case 'INVALID_COMMIT_NAME':
+      return `not a valid commit name: ${data.name}`;
     case 'OPERATION_ABORTED':
       return 'operation aborted';
     case 'INVALID_PKT_LENGTH':
@@ -403,6 +480,22 @@ function extractDetail(data: TsgitErrorData): string {
       return `target directory is not empty: ${basename(data.path)}`;
     case 'REMOTE_ADVERTISES_NO_REFS':
       return 'remote advertised no refs';
+    case 'OCTOPUS_MERGE_FAILED':
+      return `Merge with strategy octopus failed: ${data.reason} at ${data.head}`;
+    case 'UNRELATED_HISTORIES':
+      return 'refusing to merge unrelated histories';
+    case 'PUSH_MULTIPLE_UPSTREAMS':
+      return `current branch ${data.branch} has multiple upstream branches, refusing to push`;
+    case 'FAST_FORWARD_MULTIPLE_BRANCHES':
+      return 'cannot fast-forward to multiple branches';
+    case 'PULL_REBASE_MULTIPLE_BRANCHES':
+      return 'cannot rebase onto multiple branches';
+    case 'PULL_EMPTY_HEAD_MULTIPLE_BRANCHES':
+      return 'cannot merge multiple branches into empty head';
+    case 'PULL_REBASE_UNBORN_INDEX':
+      return 'updating an unborn branch with changes added to the index';
+    case 'PULL_DIVERGENT_BRANCHES':
+      return 'need to specify how to reconcile divergent branches';
     case 'NON_FAST_FORWARD':
       return `non-fast-forward update for ${data.ref}: local=${data.local} remote=${data.remote}`;
     case 'PUSH_REJECTED':
@@ -415,6 +508,12 @@ function extractDetail(data: TsgitErrorData): string {
       return `revision expression "${data.expression}" is ambiguous (${data.candidates.length} candidates)`;
     case 'REVPARSE_UNRESOLVED':
       return `cannot resolve revision: ${data.expression}`;
+    case 'REVISION_WALK_FAILED':
+      return revisionWalkDetail(data.commit);
+    case 'COMMIT_LOOKUP_FAILED':
+      return `could not find commit ${data.id}`;
+    case 'COMMIT_PARSE_FAILED':
+      return `could not parse commit ${data.id}`;
     case 'PATH_NOT_IN_TREE':
       return `path '${data.path}' does not exist in '${data.rev}'`;
     case 'WORKTREE_FILE_ABSENT':
@@ -431,6 +530,10 @@ function extractDetail(data: TsgitErrorData): string {
       return `remote not configured: ${data.remote}`;
     case 'NO_UPSTREAM_CONFIGURED':
       return `no upstream configured for ${data.branch}`;
+    case 'BRANCH_MARK_UNRESOLVED':
+      return `branch mark unresolved: ${data.reason}`;
+    case 'REBASE_REVISION_INVALID':
+      return `rebase revision invalid: ${data.reason} ${data.revision}`;
     case 'REMOTE_EXISTS':
       return `remote already exists: ${data.remote}`;
     case 'REMOTE_NAME_INVALID':
@@ -464,9 +567,21 @@ function extractDetail(data: TsgitErrorData): string {
     case 'HOOK_FAILED':
       return `hook ${data.hook} failed with exit code ${data.exitCode}`;
     case 'CLEAN_FILTER_FAILED':
-      return `clean filter '${data.filter}' failed for ${basename(data.path)} (exit ${data.exitCode})`;
+      return `clean filter '${data.filter}' failed for ${basename(data.path)}${exitSuffix(data.exitCode)}`;
+    case 'FILTER_UNSUPPORTED_CAPABILITY':
+      return `subprocess '${data.command}' requested unsupported capability '${data.capability}'`;
     case 'SMUDGE_FILTER_FAILED':
-      return `smudge filter '${data.filter}' failed for ${basename(data.path)} (exit ${data.exitCode})`;
+      return `smudge filter '${data.filter}' failed for ${basename(data.path)}${exitSuffix(data.exitCode)}`;
+    case 'UPSTREAM_NOT_BRANCH':
+      return `cannot set up tracking information; starting point '${data.startPoint}' is not a branch`;
+    case 'UPSTREAM_MISSING':
+      return `the requested upstream branch '${data.startPoint}' does not exist`;
+    case 'TRACKING_AMBIGUOUS':
+      return `not tracking: ambiguous information for ref '${data.ref}'`;
+    case 'TRACKING_INHERIT_REBASE_MULTIPLE':
+      return 'cannot inherit upstream tracking configuration of multiple refs when rebasing is requested';
+    case 'TEXTCONV_FAILED':
+      return `textconv command '${data.command}' failed${exitSuffix(data.exitCode)}`;
     case 'INVALID_FILTER_SPEC':
       return `invalid object filter "${data.spec}": ${data.reason}`;
     case 'REMOTE_FILTER_UNSUPPORTED':
@@ -501,6 +616,26 @@ function extractDetail(data: TsgitErrorData): string {
         : `bad config line ${data.line} in file ${data.source}`;
     case 'CONFIG_MISSING_VALUE':
       return `missing value for '${data.key}' in file '${data.source}' at line ${data.line}`;
+    case 'CONFIG_NEGATIVE_LENGTH':
+      return `${data.key}: negative length ${data.value}`;
+    case 'CONFIG_UNKNOWN_VALUE':
+      return `unknown value for config '${data.key}': ${data.value}`;
+    case 'INCOMPATIBLE_OPTIONS':
+      return `options '${data.options[0]}' and '${data.options[1]}' cannot be used together`;
+    case 'UNKNOWN_MERGE_STRATEGY':
+      return `Could not find merge strategy '${data.strategy}'. Available strategies are: ${data.available.join(' ')}.`;
+    case 'UNKNOWN_OPTION':
+      return unknownOptionDetail(data.option);
+    case 'AMBIGUOUS_OPTION':
+      return `ambiguous option: ${data.option.slice(2)} (could be ${data.candidates[0]} or ${data.candidates[1]})`;
+    case 'BAD_BRANCH_MERGE_OPTIONS':
+      return `Bad branch.${data.branch}.mergeoptions string: ${data.reason}`;
+    case 'UNKNOWN_STRATEGY_OPTION':
+      return `unknown strategy option: -X${data.option}`;
+    case 'MERGE_STRATEGY_FAILED':
+      return `Merge with strategy ${data.strategy} failed.`;
+    case 'NO_MERGE_STRATEGY_HANDLED':
+      return 'No merge strategy handled the merge.';
     case 'MERGE_DRIVER_MISSING_COMMAND':
       return `custom merge driver ${data.name} lacks command line.`;
     case 'CONFIG_BAD_NUMERIC_VALUE':
@@ -513,6 +648,16 @@ function extractDetail(data: TsgitErrorData): string {
       return data.key === undefined
         ? `bad date config value '${data.value}'`
         : `bad date config value '${data.value}' for '${data.key}' in file ${data.source} at line ${data.line}`;
+    case 'EMPTY_COMMIT_SET':
+      return 'empty commit set passed';
+    case 'CANNOT_PICK_NON_COMMIT':
+      return `${data.revision}: can't cherry-pick a ${data.type}`;
+    case 'CHECKOUT_NON_COMMIT':
+      return `Cannot switch branch to a non-commit '${data.revision}'`;
+    case 'CHECKOUT_START_POINT_NOT_COMMIT':
+      return `'${data.revision}' is not a commit and a branch '${data.branch}' cannot be created from it`;
+    case 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM':
+      return `unknown fetch negotiation algorithm '${data.value}'`;
     case 'CONFIG_INVALID_ENUM_VALUE':
       return `invalid value for '${data.key}': '${data.value}' in file ${data.source} at line ${data.line}`;
     case 'FSCK_UNKNOWN_MSG_ID':
@@ -557,6 +702,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `cannot remove ${data.paths.length} file(s) with changes staged in the index (use --cached to keep the file, or -f to force removal)`;
     case 'RM_LOCAL_MODIFICATIONS':
       return `cannot remove ${data.paths.length} file(s) with local modifications (use --cached to keep the file, or -f to force removal)`;
+    case 'RM_RECURSIVE_WITHOUT_R':
+      return `not removing '${data.pattern}' recursively without -r`;
     case 'RM_STAGED_AND_LOCAL_CHANGES':
       return `cannot remove ${data.paths.length} file(s) with staged content different from both the file and HEAD (use -f to force removal)`;
     case 'NO_INITIAL_COMMIT':
@@ -606,6 +753,12 @@ function extractDetail(data: TsgitErrorData): string {
       return `no path in gitfile: ${data.path}`;
     case 'BUNDLE_EMPTY':
       return `refusing to create empty bundle: ${data.reason}`;
+    case 'INVALID_SYMMETRIC_RANGE':
+      return `invalid symmetric difference expression ${data.expression}`;
+    case 'INVALID_REVISION_RANGE':
+      return `invalid revision range ${data.expression}`;
+    case 'NEED_TWO_COMMIT_RANGES':
+      return `need two commit ranges: ${data.expression} is not one`;
     case 'BUNDLE_READ_FAILED':
       return `could not open '${data.path}'`;
     case 'BUNDLE_BAD_HEADER':
@@ -626,6 +779,20 @@ function extractDetail(data: TsgitErrorData): string {
       return `gpg failed to sign the data (${data.reason}${data.format !== undefined ? `, format=${data.format}` : ''})`;
     case 'SIGNED_PUSH_UNSUPPORTED':
       return 'the receiving end does not support --signed push';
+    case 'ATOMIC_PUSH_UNSUPPORTED':
+      return 'the receiving end does not support --atomic push';
+    case 'PUSH_REFSPEC_UNMATCHED':
+      return `failed to push some refs to '${data.url}'`;
+    case 'REMOTE_REF_NOT_FOUND':
+      return `couldn't find remote ref ${data.ref}`;
+    case 'FETCH_REFSPEC_CONFLICT':
+      return fetchRefspecConflictMessage(data);
+    case 'FETCH_INTO_CHECKED_OUT_BRANCH':
+      return `refusing to fetch into branch '${data.branch}' checked out at '${data.path}'`;
+    case 'FETCH_REJECTED':
+      return `fetch from ${data.remote} rejected ${data.rejected.map(rejectedUpdate).join(', ')}`;
+    case 'PULL_NO_MERGE_CANDIDATES':
+      return pullNoMergeCandidatesMessage(data.reason, data.remote, data.ref);
     case 'PUSH_DETACHED_NO_REFSPEC':
       return 'you are not currently on a branch';
     case 'PUSH_DEFAULT_NOTHING':
@@ -638,6 +805,10 @@ function extractDetail(data: TsgitErrorData): string {
       return `bad config variable 'push.default' in file '${data.source}' at line ${data.line}`;
     case 'GREP_LINE_TOO_LONG':
       return `grep line too long to decode: ${data.length} bytes exceeds the ${data.limit}-byte limit`;
+    case 'FORMAT_PLACEHOLDER_UNSUPPORTED':
+      return formatPlaceholderDetail(data);
+    case 'TIMESTAMP_OUT_OF_RANGE':
+      return timestampRangeDetail(data);
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

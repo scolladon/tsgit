@@ -22,6 +22,40 @@ repo.primitives.mergeBase(
 
 `commits[0]` is treated as `one`, the rest as the others. An empty `commits` array throws `INVALID_WALK_INPUT`.
 
+Each id is looked up as a commit first, as `git merge-base` looks up its
+arguments: an annotated tag peels to the commit it names, and every lookup
+shares one object table, so a type an earlier argument's parse assigned binds
+a later one. `{ octopus: true }` looks them up last first, as git does. The
+first id that names no commit — absent, another kind of object, or a commit
+or tag git cannot parse — throws `INVALID_COMMIT_NAME` naming it, after the
+`error:` lines git prints for it go to `ctx.logger.error`:
+
+```ts
+// git: error: object <tree> is a tree, not a commit
+//      fatal: Not a valid commit name <tree>
+try {
+  await repo.primitives.mergeBase([head, treeId]);
+} catch (error) {
+  if (error.data.code === 'INVALID_COMMIT_NAME') console.error(`fatal: Not a valid commit name ${error.data.name}`);
+}
+```
+
+The walk then parses each parent it reaches. One the store lacks, or one of
+another kind, throws `COMMIT_PARSE_FAILED` naming it, after git's `Could not
+read <id>` / `Object <id> not a commit` line goes to `ctx.logger.error` — git
+prints `error: could not parse commit <id>` and exits 255 (128 under
+`--octopus`).
+
+Each parse types its pointers into the call's one object table, the table
+the argument lookup filled. A commit read from its object types its tree a
+tree, then each parent a commit; a pointer an earlier read typed otherwise
+logs `object <x> is a <type>, not a <type>` and `bad tree pointer <x> in
+commit <id>` / `bad parent <x> in commit <id>`, then refuses
+`COMMIT_PARSE_FAILED` for that commit. A commit the commit-graph serves types
+only its parents (`fill_commit_in_graph`); a conflict there logs the same
+first line and refuses `COMMIT_LOOKUP_FAILED` naming the parent — git dies
+`could not find commit <x>`.
+
 ## Examples
 
 ```ts

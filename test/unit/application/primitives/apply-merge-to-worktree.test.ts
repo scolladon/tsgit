@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   applyMergeToWorktree,
+  conflictResultTree,
   writeMarkedConflict,
 } from '../../../../src/application/primitives/apply-merge-to-worktree.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
@@ -19,7 +20,7 @@ import type {
   TreeEntry,
 } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
-import type { Context } from '../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../src/ports/context.js';
 import { buildSeededContext } from './fixtures.js';
 
 const writeBlob = (ctx: Context, content: string): Promise<ObjectId> =>
@@ -63,6 +64,91 @@ const readWork = async (ctx: Context, path: string): Promise<string> =>
   new TextDecoder().decode(await ctx.fs.read(`${ctx.layout.workDir}/${path}`));
 
 describe('applyMergeToWorktree', () => {
+  /** A file whose merge histogram, myers and patience each settle differently. */
+  const algorithmSensitive = async (ctx: Context) => {
+    const blob = (lines: string) => writeBlob(ctx, `${lines.split(' ').join('\n')}\n`);
+    const tree = async (lines: string) =>
+      treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, await blob(lines))]);
+    await ctx.fs.write(`${ctx.layout.workDir}/f`, new TextEncoder().encode('b\na\na\nc\na\nb\n'));
+    return {
+      baseTree: await tree('b a c a b'),
+      oursTree: await tree('b a a c a b'),
+      theirsTree: await tree('a a a b c'),
+      currentIndex: index([indexEntry('f', await blob('b a a c a b'))]),
+    };
+  };
+
+  describe('Given each side renames the same file to a different path', () => {
+    describe('When the merge is applied', () => {
+      it('Then the source path, holding only its base stage, leaves the working tree', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blob = await writeBlob(ctx, 'one\ntwo\nthree\nfour\n');
+        const at = (name: string) =>
+          treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, name as FilePath, blob)]);
+        await ctx.fs.write(
+          `${ctx.layout.workDir}/a`,
+          new TextEncoder().encode('one\ntwo\nthree\nfour\n'),
+        );
+        const input = {
+          baseTree: await at('f'),
+          oursTree: await at('a'),
+          theirsTree: await at('b'),
+          currentIndex: index([indexEntry('a', blob)]),
+        };
+
+        // Act
+        const result = await applyMergeToWorktree(ctx, input);
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/f`)).toBe(false);
+        expect(await readWork(ctx, 'b')).toBe('one\ntwo\nthree\nfour\n');
+      });
+    });
+  });
+
+  describe('Given diff.algorithm names patience', () => {
+    describe('When a content merge is applied', () => {
+      it('Then the line diffs follow patience over ort’s histogram', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[diff]\n\talgorithm = patience\n');
+        const input = await algorithmSensitive(ctx);
+
+        // Act
+        await applyMergeToWorktree(ctx, input);
+
+        // Assert
+        const result = (await readWork(ctx, 'f')).split('\n').slice(0, 5);
+        expect(result).toEqual(['a', 'a', 'a', 'b', '<<<<<<< ours']);
+      });
+    });
+  });
+
+  describe('Given diff.algorithm names no algorithm', () => {
+    describe('When a merge is applied', () => {
+      it('Then it refuses naming the key and value', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[diff]\n\talgorithm = bogus\n');
+        const input = await algorithmSensitive(ctx);
+
+        // Act
+        const result = await applyMergeToWorktree(ctx, input).catch((e: unknown) => e);
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'CONFIG_UNKNOWN_VALUE',
+          key: 'diff.algorithm',
+          value: 'bogus',
+          source: `${ctx.layout.gitDir}/config`,
+          line: 2,
+        });
+      });
+    });
+  });
+
   describe('Given a stash that changes a clean tracked file', () => {
     describe('When the merge is applied', () => {
       it('Then it is clean and the working tree takes the stashed content', async () => {
@@ -114,6 +200,67 @@ describe('applyMergeToWorktree', () => {
         // Assert
         expect(result.kind).toBe('clean');
         expect(await readWork(ctx, 'f')).toBe('A\nb\nC\n');
+      });
+    });
+  });
+
+  describe('Given non-overlapping edits on both sides and an AUTO_MERGE state file', () => {
+    const cleanMerge = async (ctx: Context) => {
+      const b = await writeBlob(ctx, 'a\nb\nc\n');
+      const o = await writeBlob(ctx, 'A\nb\nc\n');
+      const t = await writeBlob(ctx, 'a\nb\nC\n');
+      const tree = (id: ObjectId) =>
+        treeWith(ctx, [treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, id)]);
+      await ctx.fs.write(`${ctx.layout.workDir}/f`, new TextEncoder().encode('A\nb\nc\n'));
+      return {
+        baseTree: await tree(b),
+        oursTree: await tree(o),
+        theirsTree: await tree(t),
+        currentIndex: index([indexEntry('f', o)]),
+      };
+    };
+
+    describe('When the clean merge is applied', () => {
+      it('Then AUTO_MERGE names the merged tree', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const input = await cleanMerge(ctx);
+        const sut = applyMergeToWorktree;
+
+        // Act
+        const result = await sut(ctx, input);
+
+        // Assert
+        if (result.kind !== 'clean') throw new Error('expected a clean merge');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe(
+          `${result.mergedTree}\n`,
+        );
+      });
+    });
+
+    describe('When AUTO_MERGE holds no object id', () => {
+      it('Then it refuses with INVALID_REF and leaves AUTO_MERGE as it was', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const input = await cleanMerge(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`, 'garbage\n');
+        const sut = applyMergeToWorktree;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, input);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_REF',
+          reason: 'AUTO_MERGE is broken',
+        });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe('garbage\n');
       });
     });
   });
@@ -204,6 +351,90 @@ describe('applyMergeToWorktree', () => {
         expect(onDisk).toContain('theirs');
         const stages = result.indexEntries.filter((e) => e.path === 'a').map((e) => e.flags.stage);
         expect(stages).toEqual([1, 2, 3]);
+      });
+    });
+  });
+
+  describe('Given a path that line-merges cleanly beside a conflicting one', () => {
+    describe('When the merge is applied', () => {
+      it('Then the merged blob is written and staged at stage 0', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const conflictBase = await writeBlob(ctx, 'base\n');
+        const conflictOurs = await writeBlob(ctx, 'ours\n');
+        const conflictTheirs = await writeBlob(ctx, 'theirs\n');
+        const mergeBase = await writeBlob(ctx, 'a\nb\nc\n');
+        const mergeOurs = await writeBlob(ctx, 'A\nb\nc\n');
+        const mergeTheirs = await writeBlob(ctx, 'a\nb\nC\n');
+        const merged = await writeBlob(ctx, 'A\nb\nC\n');
+        const tree = (conflict: ObjectId, clean: ObjectId) =>
+          treeWith(ctx, [
+            treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, conflict),
+            treeEntry(FILE_MODE.REGULAR, 'm' as FilePath, clean),
+          ]);
+        const oursTree = await tree(conflictOurs, mergeOurs);
+        await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('ours\n'));
+        await ctx.fs.write(`${ctx.layout.workDir}/m`, new TextEncoder().encode('A\nb\nc\n'));
+
+        // Act
+        const result = await applyMergeToWorktree(ctx, {
+          baseTree: await tree(conflictBase, mergeBase),
+          oursTree,
+          theirsTree: await tree(conflictTheirs, mergeTheirs),
+          currentIndex: index([indexEntry('a', conflictOurs), indexEntry('m', mergeOurs)]),
+        });
+
+        // Assert
+        if (result.kind !== 'conflict') throw new Error(`expected conflict, got ${result.kind}`);
+        expect(result.indexEntries.map((e) => [e.path, e.flags.stage, e.id])).toEqual([
+          ['a', 1, conflictBase],
+          ['a', 2, conflictOurs],
+          ['a', 3, conflictTheirs],
+          ['m', 0, merged],
+        ]);
+      });
+    });
+  });
+
+  describe('Given a content conflict beside a path that line-merges cleanly', () => {
+    describe('When the merge is applied', () => {
+      it("Then AUTO_MERGE names the result tree: the merged blob and the conflicted file's marked bytes", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobs = await Promise.all(
+          ['base\n', 'ours\n', 'theirs\n', 'a\nb\nc\n', 'A\nb\nc\n', 'a\nb\nC\n'].map((content) =>
+            writeBlob(ctx, content),
+          ),
+        );
+        const [aBase, aOurs, aTheirs, mBase, mOurs, mTheirs] = blobs as [
+          ObjectId,
+          ObjectId,
+          ObjectId,
+          ObjectId,
+          ObjectId,
+          ObjectId,
+        ];
+        const tree = (conflict: ObjectId, clean: ObjectId) =>
+          treeWith(ctx, [
+            treeEntry(FILE_MODE.REGULAR, 'a' as FilePath, conflict),
+            treeEntry(FILE_MODE.REGULAR, 'm' as FilePath, clean),
+          ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('ours\n'));
+        await ctx.fs.write(`${ctx.layout.workDir}/m`, new TextEncoder().encode('A\nb\nc\n'));
+        const sut = applyMergeToWorktree;
+
+        // Act
+        await sut(ctx, {
+          baseTree: await tree(aBase, mBase),
+          oursTree: await tree(aOurs, mOurs),
+          theirsTree: await tree(aTheirs, mTheirs),
+          currentIndex: index([indexEntry('a', aOurs), indexEntry('m', mOurs)]),
+        });
+
+        // Assert
+        const marked = await writeBlob(ctx, await readWork(ctx, 'a'));
+        const expected = await tree(marked, await writeBlob(ctx, 'A\nb\nC\n'));
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe(`${expected}\n`);
       });
     });
   });
@@ -1119,7 +1350,7 @@ describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', ()
 
   describe('Given a conflict merge where the clean side is resolved-known', () => {
     describe('When the merge is applied', () => {
-      it('Then the clean side routes through streamBlob + writeWorkingTreeFileStream', async () => {
+      it('Then the clean side routes through writeWorkingTreeFileStream', async () => {
         // Arrange — a conflicts (content), b is cleanly taken from theirs (resolved-known)
         const ctx = await buildSeededContext();
         const aBase = await writeBlob(ctx, 'a-base\n');
@@ -1142,7 +1373,6 @@ describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', ()
         ]);
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('a-ours\n'));
         await ctx.fs.write(`${ctx.layout.workDir}/b`, new TextEncoder().encode('b-original\n'));
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeFileStream');
 
         // Act
@@ -1155,11 +1385,9 @@ describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', ()
 
         // Assert — conflict path reached; b's clean side used streaming
         expect(result.kind).toBe('conflict');
-        expect(streamBlobSpy).toHaveBeenCalled();
         expect(writeStreamSpy).toHaveBeenCalled();
         expect(await readWork(ctx, 'b')).toBe('b-new\n');
 
-        streamBlobSpy.mockRestore();
         writeStreamSpy.mockRestore();
       });
     });
@@ -1167,7 +1395,7 @@ describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', ()
 
   describe('Given a conflict merge where the clean side is resolved-known (uncapped write)', () => {
     describe('When the merge is applied', () => {
-      it('Then streamBlob is invoked with no maxBytes arg and the full blob is written', async () => {
+      it('Then the full blob is written with no size cap', async () => {
         // Arrange — a conflicts; b is resolved-known (theirs changed it from bBase to bNew;
         // ours unchanged). The bNew content is large enough that a small cap would throw.
         const ctx = await buildSeededContext();
@@ -1202,7 +1430,6 @@ describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', ()
         ]);
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('a-ours\n'));
         await ctx.fs.write(`${ctx.layout.workDir}/b`, bBaseContent);
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
 
         // Act — must not throw (no maxBytes cap applied)
         await applyMergeToWorktree(ctx, {
@@ -1212,18 +1439,9 @@ describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', ()
           currentIndex: index([indexEntry('a', aOurs), indexEntry('b', bBaseId)]),
         });
 
-        // Assert — streamBlob called without a third options arg (no maxBytes)
-        const blobCalls = streamBlobSpy.mock.calls;
-        // At least one call for the resolved-known b side (bNewId)
-        expect(blobCalls.length).toBeGreaterThanOrEqual(1);
-        for (const call of blobCalls) {
-          const [, , thirdArg] = call;
-          expect(thirdArg).toBeUndefined();
-        }
+        // Assert
         const written = await ctx.fs.read(`${ctx.layout.workDir}/b`);
         expect(written).toEqual(bNewContent);
-
-        streamBlobSpy.mockRestore();
       });
     });
   });
@@ -1441,6 +1659,258 @@ describe('writeMarkedConflict (direct)', () => {
 
         // Assert — no file materialised
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/p`)).toBe(false);
+      });
+    });
+  });
+});
+
+describe('applyMergeToWorktree — a clean side the alternate refuses to serve', () => {
+  const ALT_OBJECTS = '/repo/alt/objects';
+  const FLIPPED_SIGNATURE_MIDX = Uint8Array.from([
+    0x00,
+    0x49,
+    0x44,
+    0x58,
+    1,
+    1,
+    1,
+    0,
+    ...new Array(8).fill(0),
+  ]);
+  const ABSENT_BLOB = 'b'.repeat(40) as ObjectId;
+
+  describe('Given an unreadable alternate and a conflict merge whose clean side is a small packed blob', () => {
+    describe('When applied', () => {
+      it("Then the path exists with size 0 and the call rejects with the alternate's error", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const reg = FILE_MODE.REGULAR;
+        const aBase = await writeBlob(ctx, 'a-base\n');
+        const aOurs = await writeBlob(ctx, 'a-ours\n');
+        const aTheirs = await writeBlob(ctx, 'a-theirs\n');
+        const bId = await writeBlob(ctx, 'b-original\n');
+        const base = await treeWith(ctx, [
+          treeEntry(reg, 'a' as FilePath, aBase),
+          treeEntry(reg, 'b' as FilePath, bId),
+        ]);
+        const ours = await treeWith(ctx, [
+          treeEntry(reg, 'a' as FilePath, aOurs),
+          treeEntry(reg, 'b' as FilePath, bId),
+        ]);
+        const theirs = await treeWith(ctx, [
+          treeEntry(reg, 'a' as FilePath, aTheirs),
+          treeEntry(reg, 'b' as FilePath, ABSENT_BLOB),
+        ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('a-ours\n'));
+        await ctx.fs.write(`${ctx.layout.workDir}/b`, new TextEncoder().encode('b-original\n'));
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/objects/info/alternates`, `${ALT_OBJECTS}\n`);
+        await ctx.fs.write(`${ALT_OBJECTS}/pack/multi-pack-index`, FLIPPED_SIGNATURE_MIDX);
+        const chmod = vi.spyOn(ctx.fs, 'chmod');
+
+        // Act
+        let failure: unknown;
+        try {
+          await applyMergeToWorktree(
+            { ...ctx, session: createSession() },
+            {
+              baseTree: base,
+              oursTree: ours,
+              theirsTree: theirs,
+              currentIndex: index([indexEntry('a', aOurs), indexEntry('b', bId)]),
+            },
+          );
+        } catch (error) {
+          failure = error;
+        }
+
+        // Assert
+        expect((failure as TsgitError).data).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX' });
+        expect((await ctx.fs.read(`${ctx.layout.workDir}/b`)).length).toBe(0);
+        expect(chmod).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
+describe('conflictResultTree', () => {
+  const treeOf = (ctx: Context, entries: ReadonlyArray<[FileMode, string, ObjectId]>) =>
+    treeWith(
+      ctx,
+      entries.map(([mode, path, id]) => treeEntry(mode, path as FilePath, id)),
+    );
+
+  const resultOf = (ctx: Context, conflict: MergeConflict) =>
+    conflictResultTree(ctx, [], [conflict], []);
+
+  describe('Given a conflict whose path survives on one side', () => {
+    describe('When only their side holds a blob', () => {
+      it('Then the path holds their blob', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const theirs = await writeBlob(ctx, 'theirs\n');
+        const conflict: MergeConflict = {
+          type: 'modify-delete',
+          path: 'f' as FilePath,
+          theirId: theirs,
+          theirMode: FILE_MODE.REGULAR,
+          ourMode: FILE_MODE.REGULAR,
+        };
+        const sut = resultOf;
+
+        // Act
+        const result = await sut(ctx, conflict);
+
+        // Assert
+        expect(result).toBe(await treeOf(ctx, [[FILE_MODE.REGULAR, 'f', theirs]]));
+      });
+    });
+
+    describe('When both sides hold a blob', () => {
+      it('Then the path holds our blob', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ours = await writeBlob(ctx, 'ours\n');
+        const theirs = await writeBlob(ctx, 'theirs\n');
+        const conflict: MergeConflict = {
+          type: 'modify-delete',
+          path: 'f' as FilePath,
+          ourId: ours,
+          theirId: theirs,
+          ourMode: FILE_MODE.REGULAR,
+          theirMode: FILE_MODE.REGULAR,
+        };
+        const sut = resultOf;
+
+        // Act
+        const result = await sut(ctx, conflict);
+
+        // Assert
+        expect(result).toBe(await treeOf(ctx, [[FILE_MODE.REGULAR, 'f', ours]]));
+      });
+    });
+  });
+
+  describe('Given a conflict of a type whose path no side survives', () => {
+    describe('When only their side holds a blob', () => {
+      it('Then the path is left out of the tree', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const theirs = await writeBlob(ctx, 'theirs\n');
+        const conflict: MergeConflict = {
+          type: 'content',
+          path: 'f' as FilePath,
+          theirId: theirs,
+          theirMode: FILE_MODE.REGULAR,
+          ourMode: FILE_MODE.REGULAR,
+        };
+        const sut = resultOf;
+
+        // Act
+        const result = await sut(ctx, conflict);
+
+        // Assert
+        expect(result).toBe(await treeOf(ctx, []));
+      });
+    });
+  });
+
+  describe('Given a distinct-types conflict recording a path per side', () => {
+    describe('When the result tree is built', () => {
+      it('Then each side holds its blob at its own path', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ours = await writeBlob(ctx, 'ours\n');
+        const theirs = await writeBlob(ctx, 'theirs\n');
+        const conflict: MergeConflict = {
+          type: 'distinct-types',
+          path: 'f' as FilePath,
+          ourPath: 'f' as FilePath,
+          ourId: ours,
+          ourMode: FILE_MODE.REGULAR,
+          theirPath: 'f~side' as FilePath,
+          theirId: theirs,
+          theirMode: FILE_MODE.EXECUTABLE,
+        };
+        const sut = resultOf;
+
+        // Act
+        const result = await sut(ctx, conflict);
+
+        // Assert
+        expect(result).toBe(
+          await treeOf(ctx, [
+            [FILE_MODE.REGULAR, 'f', ours],
+            [FILE_MODE.EXECUTABLE, 'f~side', theirs],
+          ]),
+        );
+      });
+    });
+
+    describe('When only our side is recorded', () => {
+      it('Then only our blob is in the tree', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ours = await writeBlob(ctx, 'ours\n');
+        const conflict: MergeConflict = {
+          type: 'distinct-types',
+          path: 'f' as FilePath,
+          ourPath: 'f' as FilePath,
+          ourId: ours,
+          ourMode: FILE_MODE.REGULAR,
+        };
+        const sut = resultOf;
+
+        // Act
+        const result = await sut(ctx, conflict);
+
+        // Assert
+        expect(result).toBe(await treeOf(ctx, [[FILE_MODE.REGULAR, 'f', ours]]));
+      });
+    });
+
+    describe('When only their side is recorded', () => {
+      it('Then only their blob is in the tree', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const theirs = await writeBlob(ctx, 'theirs\n');
+        const conflict: MergeConflict = {
+          type: 'distinct-types',
+          path: 'f' as FilePath,
+          theirPath: 'f~side' as FilePath,
+          theirId: theirs,
+          theirMode: FILE_MODE.REGULAR,
+        };
+        const sut = resultOf;
+
+        // Act
+        const result = await sut(ctx, conflict);
+
+        // Assert
+        expect(result).toBe(await treeOf(ctx, [[FILE_MODE.REGULAR, 'f~side', theirs]]));
+      });
+    });
+  });
+
+  describe('Given a content conflict whose sides differ in mode', () => {
+    describe('When no merged mode is recorded', () => {
+      it('Then the path takes our mode', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ours = await writeBlob(ctx, 'ours\n');
+        const conflict: MergeConflict = {
+          type: 'content',
+          path: 'f' as FilePath,
+          ourId: ours,
+          ourMode: FILE_MODE.REGULAR,
+          theirMode: FILE_MODE.EXECUTABLE,
+        };
+        const sut = resultOf;
+
+        // Act
+        const result = await sut(ctx, conflict);
+
+        // Assert
+        expect(result).toBe(await treeOf(ctx, [[FILE_MODE.REGULAR, 'f', ours]]));
       });
     });
   });

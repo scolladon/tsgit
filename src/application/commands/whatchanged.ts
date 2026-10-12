@@ -36,7 +36,7 @@ export interface WhatchangedEntry extends LogEntry {
 /** git's non-merge + `before` filter, in seconds (git's on-disk resolution). */
 const isSelected = (commit: Commit, beforeSeconds: number | undefined): boolean => {
   if (commit.data.parents.length >= 2) return false;
-  if (beforeSeconds !== undefined && commit.data.committer.timestamp >= beforeSeconds) {
+  if (beforeSeconds !== undefined && commit.data.committer.timestamp > beforeSeconds) {
     return false;
   }
   return true;
@@ -71,7 +71,7 @@ const toEntry = (commit: Commit, changes: TreeDiff): WhatchangedEntry => ({
  * Walk commits from `rev` (default HEAD), excluding merges (≥2 parents), and pair
  * each with its first-parent `TreeDiff` (recursive, rename-detecting like
  * `git show`). Honors `order`, `limit` (counts emitted entries), `excluding`
- * (commit-ish stops), and `before` (only `committer.timestamp < before`).
+ * (commit-ish stops), and `before` (only `committer.timestamp <= before`, git's `--before`).
  *
  * Selection (walking, filtering, `limit`) and diffing are two stages: the walk
  * drains into `selected` first, then the diffs run through `boundedMapFor`

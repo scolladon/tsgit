@@ -1,19 +1,102 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { init } from '../../../../../src/application/commands/init.js';
 import {
-  clearMergeState,
   readMergeHead,
+  readMergeHeads,
   readMergeMsg,
   readOrigHead,
-  writeMergeHead,
+  readsNoFastForward,
+  writeMergeHeads,
+  writeMergeMode,
   writeMergeMsg,
   writeOrigHead,
 } from '../../../../../src/application/commands/internal/merge-state.js';
 import type { ObjectId } from '../../../../../src/domain/objects/index.js';
 
+// Object verification is updateRef's concern; these suites pin the state layout with ids no store holds.
+vi.mock(
+  '../../../../../src/application/primitives/internal/ref-target.js',
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import('../../../../../src/application/primitives/internal/ref-target.js')
+    >()),
+    assertRefTargetValid: async () => undefined,
+  }),
+);
+
 describe('merge-state', () => {
-  describe('writeMergeHead', () => {
+  describe('readsNoFastForward', () => {
+    describe.each([
+      ['absent', undefined, false],
+      ['empty', '', false],
+      ['exactly no-ff', 'no-ff', true],
+      ['no-ff with a newline', 'no-ff\n', false],
+    ])('Given MERGE_MODE %s', (_label, content, expected) => {
+      describe('When readsNoFastForward is called', () => {
+        it("Then it answers by git's exact comparison", async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await init(ctx);
+          if (content !== undefined) {
+            await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_MODE`, content);
+          }
+          const sut = readsNoFastForward;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toBe(expected);
+        });
+      });
+    });
+  });
+
+  describe('writeMergeMode', () => {
+    describe.each([
+      ['never', 'no-ff'],
+      ['allow', ''],
+      ['only', ''],
+      [undefined, ''],
+    ] as const)('Given fastForward %s', (fastForward, expected) => {
+      describe('When writeMergeMode is called', () => {
+        it("Then MERGE_MODE holds git's bytes", async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await init(ctx);
+          const sut = writeMergeMode;
+
+          // Act
+          await sut(ctx, fastForward);
+
+          // Assert
+          const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MODE`);
+          expect(result).toBe(expected);
+        });
+      });
+    });
+  });
+
+  describe('writeMergeHeads', () => {
+    describe('Given several heads merged', () => {
+      describe('When writeMergeHeads is called', () => {
+        it('Then .git/MERGE_HEAD lists each id on its own line, in order', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await init(ctx);
+          const sut = writeMergeHeads;
+
+          // Act
+          await sut(ctx, ['b'.repeat(40) as ObjectId, 'a'.repeat(40) as ObjectId]);
+
+          // Assert
+          const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`);
+          expect(result).toBe(`${'b'.repeat(40)}\n${'a'.repeat(40)}\n`);
+        });
+      });
+    });
+
     describe('Given a target ObjectId', () => {
       describe('When writeMergeHead is called', () => {
         it('Then .git/MERGE_HEAD contains the id followed by a single newline', async () => {
@@ -23,7 +106,7 @@ describe('merge-state', () => {
           const targetId = 'a'.repeat(40) as ObjectId;
 
           // Act
-          await writeMergeHead(ctx, targetId);
+          await writeMergeHeads(ctx, [targetId]);
 
           // Assert — exact content (not just contains), kills mutants that drop the LF.
           const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`);
@@ -42,8 +125,8 @@ describe('merge-state', () => {
           const second = 'b'.repeat(40) as ObjectId;
 
           // Act
-          await writeMergeHead(ctx, first);
-          await writeMergeHead(ctx, second);
+          await writeMergeHeads(ctx, [first]);
+          await writeMergeHeads(ctx, [second]);
 
           // Assert
           const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`);
@@ -135,7 +218,7 @@ describe('merge-state', () => {
           const ctx = createMemoryContext();
           await init(ctx);
           const targetId = 'd'.repeat(40) as ObjectId;
-          await writeMergeHead(ctx, targetId);
+          await writeMergeHeads(ctx, [targetId]);
 
           // Act
           const result = await readMergeHead(ctx);
@@ -186,6 +269,26 @@ describe('merge-state', () => {
           const data = (caught as { data?: { code?: string; value?: string } })?.data;
           expect(data?.code).toBe('INVALID_OBJECT_ID');
           expect(data?.value).toBe('not-a-hex-oid');
+        });
+      });
+    });
+  });
+
+  describe('readMergeHeads', () => {
+    describe('Given a whitespace-only MERGE_HEAD', () => {
+      describe('When readMergeHeads is called', () => {
+        it('Then no head list is returned rather than an empty one', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await init(ctx);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, '   \n\n');
+          const sut = readMergeHeads;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
         });
       });
     });
@@ -245,26 +348,17 @@ describe('merge-state', () => {
 
     describe('Given a malformed (non-hex) ORIG_HEAD', () => {
       describe('When readOrigHead is called', () => {
-        it('Then throws INVALID_OBJECT_ID with the offending value', async () => {
-          // Arrange — a corrupt ORIG_HEAD must NOT silently route mergeAbort
-          // to an invalid commit. The factory rejection guards downstream
-          // consumers that resolve to a tree.
+        it('Then reads as absent, as git reads a broken ref', async () => {
+          // Arrange
           const ctx = createMemoryContext();
           await init(ctx);
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/ORIG_HEAD`, 'not-a-hex-oid\n');
 
           // Act
-          let caught: unknown;
-          try {
-            await readOrigHead(ctx);
-          } catch (err) {
-            caught = err;
-          }
+          const result = await readOrigHead(ctx);
 
           // Assert
-          const data = (caught as { data?: { code?: string; value?: string } })?.data;
-          expect(data?.code).toBe('INVALID_OBJECT_ID');
-          expect(data?.value).toBe('not-a-hex-oid');
+          expect(result).toBeUndefined();
         });
       });
     });
@@ -300,43 +394,6 @@ describe('merge-state', () => {
 
           // Assert
           expect(result).toBe('Merge branch feature\nbody');
-        });
-      });
-    });
-  });
-
-  describe('clearMergeState', () => {
-    describe('Given existing MERGE_HEAD and MERGE_MSG', () => {
-      describe('When clearMergeState is called', () => {
-        it('Then both files are removed (ORIG_HEAD is preserved as a recovery aid)', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          await init(ctx);
-          await writeMergeHead(ctx, 'a'.repeat(40) as ObjectId);
-          await writeMergeMsg(ctx, 'msg');
-          await writeOrigHead(ctx, 'b'.repeat(40) as ObjectId);
-
-          // Act
-          await clearMergeState(ctx);
-
-          // Assert — MERGE_HEAD and MERGE_MSG gone; ORIG_HEAD survives so the
-          // user can `reset --hard ORIG_HEAD` after the resolved commit.
-          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
-          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(false);
-          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(true);
-        });
-      });
-    });
-
-    describe('Given no merge-state files', () => {
-      describe('When clearMergeState is called', () => {
-        it('Then no error is thrown (idempotent)', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          await init(ctx);
-
-          // Act / Assert
-          await expect(clearMergeState(ctx)).resolves.toBeUndefined();
         });
       });
     });

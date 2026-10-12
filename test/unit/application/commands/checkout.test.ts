@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { add } from '../../../../src/application/commands/add.js';
@@ -6,8 +6,17 @@ import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import * as revParseMod from '../../../../src/application/commands/rev-parse.js';
+import { tagCreate } from '../../../../src/application/commands/tag.js';
+import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import * as materializeTreeMod from '../../../../src/application/primitives/materialize-tree.js';
+import * as objectStoreMod from '../../../../src/application/primitives/object-store.js';
+import { readIndex } from '../../../../src/application/primitives/read-index.js';
+import { readTree } from '../../../../src/application/primitives/read-tree.js';
+import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
+import { snapshotFiles } from './fixtures.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -15,6 +24,8 @@ const author: AuthorIdentity = {
   timestamp: 1_700_000_000,
   timezoneOffset: '+0000',
 };
+
+const REF_PREFIX = 'ref: refs/heads/';
 
 const seedWithBranches = async () => {
   const ctx = createMemoryContext();
@@ -73,6 +84,46 @@ describe('checkout', () => {
     });
   });
 
+  describe('Given a branch two commits deep and an annotated tag on its tip', () => {
+    const seedTwoDeep = async () => {
+      const { ctx, commitId } = await seedWithBranches();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'b');
+      await add(ctx, ['a.txt']);
+      const tip = await commit(ctx, { message: 'second', author });
+      const configPath = `${ctx.layout.gitDir}/config`;
+      const config = await ctx.fs.readUtf8(configPath);
+      await ctx.fs.writeUtf8(
+        configPath,
+        `${config}[user]\n  name = Ada\n  email = ada@example.com\n`,
+      );
+      await tagCreate(ctx, { name: 'v1', message: 'v1' });
+      return { ctx, first: commitId, tip: tip.id };
+    };
+
+    describe.each([
+      ['an ancestor of HEAD', 'HEAD~1', 'first'],
+      ['the parent of HEAD', 'HEAD^', 'first'],
+      ['the tag peeled to its commit', 'v1^{commit}', 'tip'],
+    ] as const)('When checkout %s', (_label, rev, expected) => {
+      it('Then HEAD detaches at the commit it names, logged as typed', async () => {
+        // Arrange
+        const seeded = await seedTwoDeep();
+        const headPath = `${seeded.ctx.layout.gitDir}/HEAD`;
+        const from = (await seeded.ctx.fs.readUtf8(headPath)).slice(REF_PREFIX.length).trim();
+        const sut = checkout;
+
+        // Act
+        const result = await sut(seeded.ctx, { rev });
+
+        // Assert
+        expect(result).toMatchObject({ detached: true, id: seeded[expected] });
+        expect(await seeded.ctx.fs.readUtf8(headPath)).toBe(`${seeded[expected]}\n`);
+        const log = await readReflog(seeded.ctx, 'HEAD' as RefName);
+        expect(log.at(-1)?.message).toBe(`checkout: moving from ${from} to ${rev}`);
+      });
+    });
+  });
+
   describe('Given a SHA-256 repository and a raw 64-hex oid', () => {
     describe('When checkout', () => {
       it('Then HEAD becomes detached at that oid, not treated as a branch name', async () => {
@@ -114,10 +165,9 @@ describe('checkout', () => {
     describe('When checkout', () => {
       it.each([
         {
-          label:
-            'a ref outside refs/heads/, the label is the rev basename (not a mangled prefix-strip)',
+          label: 'a ref outside refs/heads/, the label is the full object id HEAD names, as git',
           refPath: 'refs/remotes/origin/main',
-          expected: 'main',
+          expected: undefined,
         },
         {
           label:
@@ -126,10 +176,9 @@ describe('checkout', () => {
           expected: 'topic/sub',
         },
         {
-          label:
-            'a ref outside refs/heads/, the label is the basename after the last slash — a valid symbolic HEAD always begins refs/, so no-slash targets cannot exist',
+          label: 'another ref outside refs/heads/, the label is the full object id HEAD names',
           refPath: 'refs/x/main',
-          expected: 'main',
+          expected: undefined,
         },
       ])('Then $label', async ({ refPath, expected }) => {
         // Arrange — point HEAD at a loose ref of the given shape. The label
@@ -149,7 +198,7 @@ describe('checkout', () => {
         // Assert — the newest HEAD reflog entry records the move from the label.
         const headLog = await readReflog(ctx, 'HEAD' as RefName);
         expect(headLog[headLog.length - 1]?.message).toBe(
-          `checkout: moving from ${expected} to feature`,
+          `checkout: moving from ${expected ?? commitId} to feature`,
         );
       });
     });
@@ -157,9 +206,8 @@ describe('checkout', () => {
 
   describe('Given a detached prior HEAD', () => {
     describe('When checkout', () => {
-      it('Then the reflog label is the 7-char abbreviated oid (not the full oid)', async () => {
-        // Arrange — detach HEAD onto the commit oid, then check out a branch. The
-        // `from` label must be the commit abbreviated to 7 chars, not all 40.
+      it('Then the reflog label is the full object id, as git writes it', async () => {
+        // Arrange — detach HEAD onto the commit oid, then check out a branch.
         const { ctx, commitId } = await seedWithBranches();
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${commitId}\n`);
         const { readReflog } = await import(
@@ -169,10 +217,10 @@ describe('checkout', () => {
         // Act
         await checkout(ctx, { rev: 'feature' });
 
-        // Assert — the label is exactly the first 7 hex chars of the detached oid.
+        // Assert
         const headLog = await readReflog(ctx, 'HEAD' as RefName);
         expect(headLog[headLog.length - 1]?.message).toBe(
-          `checkout: moving from ${commitId.slice(0, 7)} to feature`,
+          `checkout: moving from ${commitId} to feature`,
         );
       });
     });
@@ -203,7 +251,7 @@ describe('checkout', () => {
 
   describe('Given a non-existent branch', () => {
     describe('When checkout', () => {
-      it('Then throws BRANCH_NOT_FOUND', async () => {
+      it('Then it refuses as an unmatched pathspec, as git does', async () => {
         // Arrange
         const { ctx } = await seedWithBranches();
 
@@ -217,7 +265,7 @@ describe('checkout', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('BRANCH_NOT_FOUND');
+        expect((caught as TsgitError).data.code).toBe('PATHSPEC_NO_MATCH');
       });
     });
   });
@@ -586,9 +634,9 @@ describe('checkout — mutation hardening', () => {
           caught = err;
         }
 
-        // Assert — resolved as a ref name → branch not found, not an oid path.
+        // Assert — resolved as a name nothing answers, not an oid path.
         expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('BRANCH_NOT_FOUND');
+        expect((caught as TsgitError).data.code).toBe('PATHSPEC_NO_MATCH');
       });
     });
   });
@@ -1532,6 +1580,349 @@ describe('checkout — post-checkout hook', () => {
 
         // Assert
         expect(result.branch).toBe('refs/heads/feature');
+      });
+    });
+  });
+});
+
+describe('Given an alternate that fails to load', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('When checkout switches from an attached HEAD', () => {
+    it('Then the every-source gate is not consulted', async () => {
+      // Arrange
+      const { ctx } = await seedWithBranches();
+      const gate = vi.spyOn(objectStoreMod, 'assertEverySourceLoadable');
+      const sut = checkout;
+
+      // Act
+      await sut(ctx, { rev: 'feature' });
+
+      // Assert
+      expect(gate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('When checkout switches from a detached HEAD', () => {
+    it('Then it rejects with the gate error and leaves HEAD and the worktree untouched', async () => {
+      // Arrange
+      const { ctx, commitId } = await seedWithBranches();
+      await checkout(ctx, { rev: commitId });
+      const before = await snapshotFiles(ctx);
+      const loadError = new Error('source cannot load');
+      vi.spyOn(objectStoreMod, 'assertEverySourceLoadable').mockRejectedValue(loadError);
+      const sut = checkout;
+
+      // Act
+      const attempt = sut(ctx, { rev: 'main' });
+
+      // Assert
+      await expect(attempt).rejects.toBe(loadError);
+      expect(await snapshotFiles(ctx)).toEqual(before);
+    });
+  });
+});
+
+/** `other` and the tags hold `a.txt = 'a'` (`vt` tags the tree); `main` has moved on to `'b'`. */
+const seedWithOlderBranch = async () => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  const config = `${ctx.layout.gitDir}/config`;
+  await ctx.fs.writeUtf8(
+    config,
+    `${await ctx.fs.readUtf8(config)}[user]\n  name = Ada\n  email = ada@example.com\n`,
+  );
+  __resetConfigCacheForTests();
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+  await add(ctx, ['a.txt']);
+  const older = await commit(ctx, { message: 'first', author });
+  await branchCreate(ctx, { name: 'other' });
+  await tagCreate(ctx, { name: 'v1' });
+  await tagCreate(ctx, { name: 'v2', message: 'annotated' });
+  const olderTree = (await readTree(ctx, older.id)).id;
+  const treeTag = await tagCreate(ctx, { name: 'vt', target: olderTree, message: 'tree' });
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'b');
+  await add(ctx, ['a.txt']);
+  const newer = await commit(ctx, { message: 'second', author });
+  return { ctx, older: older.id, newer: newer.id, olderTree, treeTag: treeTag.id };
+};
+
+describe('Given a path restore whose source is a revision', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe.each([
+    { label: 'a branch name', source: () => 'other' },
+    { label: 'a tag name', source: () => 'v1' },
+    { label: 'a revision expression', source: () => 'HEAD~1' },
+    { label: 'an abbreviated object id', source: (older: string) => older.slice(0, 10) },
+    { label: 'a tree id', source: (_older: string, tree: string) => tree },
+  ])('When the path is restored from $label', ({ source }) => {
+    it('Then the work tree and the index hold the source revision content', async () => {
+      // Arrange
+      const { ctx, older, olderTree } = await seedWithOlderBranch();
+      const sut = checkout;
+
+      // Act
+      await sut(ctx, { paths: ['a.txt'], source: source(older, olderTree) });
+
+      // Assert
+      expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('a');
+      const sourceEntry = (await readTree(ctx, olderTree)).entries[0]?.id;
+      expect((await readIndex(ctx)).entries[0]?.id).toBe(sourceEntry);
+    });
+  });
+
+  describe.each([
+    {
+      label: 'a branch name',
+      source: () => 'other',
+      expected: (older: string) => ({ ref: 'refs/heads/other', treeish: older }),
+    },
+    {
+      label: 'HEAD',
+      source: () => 'HEAD',
+      expected: (_older: string, newer: string) => ({ ref: 'refs/heads/main', treeish: newer }),
+    },
+    {
+      label: 'a tag name',
+      source: () => 'v1',
+      expected: (older: string) => ({ ref: 'refs/tags/v1', treeish: older }),
+    },
+    {
+      label: 'an annotated tag of a commit',
+      source: () => 'v2',
+      expected: (older: string) => ({ ref: 'refs/tags/v2', treeish: older }),
+    },
+    {
+      label: 'an annotated tag of a tree',
+      source: () => 'vt',
+      expected: (_older: string, _newer: string, _tree: string, treeTag: string) => ({
+        ref: 'refs/tags/vt',
+        treeish: treeTag,
+      }),
+    },
+    {
+      label: 'an object id',
+      source: (older: string) => older,
+      expected: (older: string) => ({ treeish: older }),
+    },
+    {
+      label: 'a revision expression',
+      source: () => 'other~0',
+      expected: (older: string) => ({ treeish: older }),
+    },
+    {
+      label: 'a tree id',
+      source: (_older: string, _newer: string, tree: string) => tree,
+      expected: (_older: string, _newer: string, tree: string) => ({ treeish: tree }),
+    },
+  ])('When the path is restored from $label', ({ source, expected }) => {
+    it('Then the smudge metadata names the ref and the treeish git sends', async () => {
+      // Arrange
+      const { ctx, older, newer, olderTree, treeTag } = await seedWithOlderBranch();
+      const materialize = vi.spyOn(materializeTreeMod, 'materializeTree');
+      const sut = checkout;
+
+      // Act
+      await sut(ctx, { paths: ['a.txt'], source: source(older, newer, olderTree) });
+
+      // Assert
+      expect(materialize.mock.calls[0]?.[1].checkoutMetadata).toEqual(
+        expected(older, newer, olderTree, treeTag),
+      );
+    });
+  });
+
+  describe('When the path is restored from the index', () => {
+    it('Then no smudge metadata is sent', async () => {
+      // Arrange
+      const { ctx } = await seedWithOlderBranch();
+      const materialize = vi.spyOn(materializeTreeMod, 'materializeTree');
+      const sut = checkout;
+
+      // Act
+      await sut(ctx, { paths: ['a.txt'] });
+
+      // Assert
+      expect(materialize.mock.calls[0]?.[1].checkoutMetadata).toBeUndefined();
+    });
+  });
+});
+
+describe('Given a path restore whose source names nothing', () => {
+  describe.each([
+    { label: 'an unknown name', source: 'missing-rev' },
+    { label: 'a revision expression past the root', source: 'HEAD~5' },
+  ])('When the path is restored from $label', ({ source }) => {
+    it('Then it refuses REVPARSE_UNRESOLVED naming the source as given', async () => {
+      // Arrange
+      const { ctx } = await seedWithOlderBranch();
+      const sut = checkout;
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut(ctx, { paths: ['a.txt'], source });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data).toEqual({
+        code: 'REVPARSE_UNRESOLVED',
+        expression: source,
+      });
+    });
+  });
+
+  describe('When the path is restored from a full object id absent from the store', () => {
+    it('Then it refuses OBJECT_NOT_FOUND naming that id', async () => {
+      // Arrange
+      const { ctx } = await seedWithOlderBranch();
+      const absent = '1234567890123456789012345678901234567890';
+      const sut = checkout;
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut(ctx, { paths: ['a.txt'], source: absent });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: absent });
+    });
+  });
+
+  describe('When resolving the source fails for another reason', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('Then that failure propagates unchanged', async () => {
+      // Arrange
+      const { ctx } = await seedWithOlderBranch();
+      const failure = new TsgitError({
+        code: 'REVPARSE_AMBIGUOUS',
+        expression: 'x',
+        candidates: [],
+      });
+      vi.spyOn(revParseMod, 'evaluateRevision').mockRejectedValue(failure);
+      const sut = checkout;
+
+      // Act
+      const attempt = sut(ctx, { paths: ['a.txt'], source: 'other' });
+
+      // Assert
+      await expect(attempt).rejects.toBe(failure);
+    });
+  });
+});
+
+describe('Given a path restore whose pathspec is spelled with `.` components', () => {
+  describe('When the pathspec matches nothing', () => {
+    it('Then PATHSPEC_NO_MATCH names the pathspec as spelled', async () => {
+      // Arrange
+      const { ctx } = await seedWithOlderBranch();
+      const sut = checkout;
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut(ctx, { paths: ['./nomatch'], source: 'HEAD' });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data).toEqual({
+        code: 'PATHSPEC_NO_MATCH',
+        pattern: './nomatch',
+      });
+    });
+  });
+
+  describe('When the pathspec names a directory with a trailing `/./`', () => {
+    it('Then the files beneath it are restored', async () => {
+      // Arrange
+      const { ctx } = await seedWithOlderBranch();
+      await ctx.fs.mkdir(`${ctx.layout.workDir}/d`);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/d/x`, 'x');
+      await add(ctx, ['d/x']);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/d/x`, 'zz');
+      const sut = checkout;
+
+      // Act
+      const result = await sut(ctx, { paths: ['d/./'] });
+
+      // Assert
+      expect(result.changedPaths).toBe(1);
+      expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/d/x`)).toBe('x');
+    });
+  });
+});
+
+describe('Given every tracked file modified', () => {
+  describe('When the whole tree is restored with the `.` pathspec', () => {
+    it('Then every file is restored from the index', async () => {
+      // Arrange
+      const { ctx } = await seedWithOlderBranch();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'zz');
+      const sut = checkout;
+
+      // Act
+      const result = await sut(ctx, { paths: ['.'] });
+
+      // Assert
+      expect(result.changedPaths).toBe(1);
+      expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('b');
+    });
+  });
+});
+
+describe('Given a tag whose name a branch symref to nothing also carries', () => {
+  describe.each([
+    { label: 'a dangling symref', content: 'ref: refs/heads/nowhere\n' },
+    { label: 'a broken ref', content: 'garbage\n' },
+  ])('When checkout names it while the branch is $label', ({ content }) => {
+    it('Then it detaches onto the tag, as no branch resolves', async () => {
+      // Arrange
+      const { ctx, commitId } = await seedWithBranches();
+      await tagCreate(ctx, { name: 'td' });
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/td`, content);
+      const sut = checkout;
+
+      // Act
+      const result = await sut(ctx, { rev: 'td' });
+
+      // Assert
+      expect(result).toMatchObject({ branch: undefined, id: commitId, detached: true });
+      expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe(`${commitId}\n`);
+    });
+  });
+});
+
+describe('checkout — the branch a switch reads', () => {
+  describe('Given an existing branch', () => {
+    describe('When checkout switches to it', () => {
+      it("Then the branch's own read also answers the object it names", async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithBranches();
+        const featurePath = `${ctx.layout.gitDir}/refs/heads/feature`;
+        const open = vi.spyOn(ctx.fs, 'openWithNoFollow');
+        const sut = checkout;
+
+        // Act
+        const result = await sut(ctx, { rev: 'feature' });
+
+        // Assert
+        expect(result.id).toBe(commitId);
+        expect(open.mock.calls.filter(([path]) => path === featurePath)).toHaveLength(3);
       });
     });
   });

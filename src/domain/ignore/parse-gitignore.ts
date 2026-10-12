@@ -98,7 +98,7 @@ export const parseGitignore = (text: string): IgnoreRuleset => {
       directoryOnly,
       anchored,
       lineNumber: i + 1,
-      compiled: compileGlob(cleanPattern, { anchored }),
+      compiled: compileGlob(cleanPattern, { anchored, pathname: true }),
     });
   }
   return out;

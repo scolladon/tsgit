@@ -23,9 +23,6 @@ import type { FileStat } from '../../ports/file-system.js';
 /** Max symbolic-ref dereferences resolveRef will follow. */
 export const MAX_SYMBOLIC_REF_DEPTH = 4;
 
-/** Max tag-peel hops resolveRef / readTree will follow when peeling. */
-export const MAX_PEEL_DEPTH = 5;
-
 /** Max seeds walkCommits.from can contain. */
 export const MAX_WALK_SEEDS = 1024;
 
@@ -136,7 +133,15 @@ export interface WalkCommitsOptions {
    * set once.
    */
   readonly until?: ReadonlyArray<ObjectId> | ReadonlySet<ObjectId>;
-  readonly order?: 'topo' | 'first-parent';
+  /**
+   * `'breadth-first'` (default) yields each commit after the commit that first
+   * reached it, parents in order — a queue. `'topo-order'` is git's
+   * `rev-list --topo-order`: every commit is read before the first is yielded,
+   * a commit comes after all its children and each line of history is yielded
+   * whole. `'first-parent'` follows only first parents. `'topo'` is the former
+   * name of `'breadth-first'`, kept for compatibility.
+   */
+  readonly order?: 'breadth-first' | 'topo' | 'topo-order' | 'first-parent';
   readonly ignoreMissing?: boolean;
   readonly verifyHash?: boolean;
   /**
@@ -156,7 +161,7 @@ export interface WalkCommitsOptions {
 
 /**
  * Options for `walkCommitsByDate` — the all-parents, commit-date-ordered history
- * walk (newest committer-date first, oid-ascending tie-break). Mirrors the
+ * walk (newest committer-date first, equal dates in enqueue order). Mirrors the
  * boundary/missing/hash knobs of {@link WalkCommitsOptions} but carries no
  * `order`: the date order is the primitive's identity.
  */
@@ -236,6 +241,13 @@ export interface WalkTreeOptions {
    * called for a blob or a gitlink entry. Absent, the walk is unchanged.
    */
   readonly skipTree?: (id: ObjectId) => boolean;
+  /**
+   * When true, a directory entry naming an object stored as anything but a
+   * tree refuses with `UNEXPECTED_OBJECT_TYPE` once the walk reads it to
+   * descend, as git's tree walk does. Default `false`: the entry is yielded
+   * and its descent skipped.
+   */
+  readonly strictSubtrees?: boolean;
 }
 
 export interface WalkWorkingTreeEntry {

@@ -207,15 +207,15 @@ describe('whatchanged', () => {
   });
 
   describe('Given a history, When whatchanged filters by before', () => {
-    it('Then commits at or after the threshold are excluded (boundary inclusive)', async () => {
+    it('Then only commits after the threshold are excluded, as git --before keeps the boundary', async () => {
       // Arrange — c2 sits exactly at the threshold second (2000)
       const { ctx, c3 } = await seedLinear();
 
       // Act
       const result = await whatchanged(ctx, { rev: c3, before: new Date(2000 * 1000) });
 
-      // Assert — c2 (== 2000) and c3 (> 2000) excluded; only root remains
-      expect(messages(result)).toEqual(['root']);
+      // Assert — c3 (> 2000) excluded; c2 (== 2000) and root remain
+      expect(messages(result)).toEqual(['mod a add b', 'root']);
     });
   });
 

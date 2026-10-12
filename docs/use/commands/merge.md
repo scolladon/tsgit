@@ -13,6 +13,12 @@ interface MergeRunInput {
   readonly rev: string;
   readonly message?: string;
   readonly fastForward?: 'only' | 'never' | 'allow'; // default 'allow'
+  readonly autostash?: boolean; // git's --autostash / --no-autostash; default merge.autostash
+  readonly log?: boolean | number; // git's --log[=<n>] / --no-log; default merge.log
+  readonly squash?: boolean; // git's --squash
+  readonly commit?: boolean; // git's --commit / --no-commit
+  readonly strategy?: string | ReadonlyArray<string>; // git's -s <strategy>, once or several times
+  readonly strategyOptions?: ReadonlyArray<string>; // git's -X <option>, in order
   readonly author?: AuthorIdentity;
   readonly committer?: AuthorIdentity;
 }
@@ -25,7 +31,9 @@ type MergeResult =
       conflicts: ReadonlyArray<MergeConflictDescriptor>;
       mergeHead: ObjectId;
       origHead: ObjectId;
-    };
+    }
+  | { kind: 'squashed'; origHead: ObjectId; conflicts?: ReadonlyArray<MergeConflictDescriptor> }
+  | { kind: 'stopped'; mergeHead: ObjectId; origHead: ObjectId };
 ```
 
 ## Options (`run`)
@@ -35,6 +43,12 @@ type MergeResult =
 | `target` | `string` | (required) | Ref name, oid, or `'HEAD'` of the branch to merge in. |
 | `message` | `string` | auto | Override the merge-commit message. |
 | `fastForward` | `'only' \| 'never' \| 'allow'` | `'allow'` | Fast-forward policy (see below). |
+| `autostash` | `boolean` | `merge.autostash` | Stash a dirty tree before the merge (`MERGE_AUTOSTASH`) and re-apply it when the merge concludes, or on the `commit` / `merge.abort` that ends a conflict stop; a `reset` or `checkout` that drops the merge state files it in the stash list (`autostash`) instead. |
+| `log` | `boolean \| number` | `merge.log` / `merge.summary` | Follow the message (the default title, or `message`) with git's shortlog of each head: `* <head>:` then the subjects of the commits it brings in over HEAD, newest first, merges skipped. `true` lists 20, a number at most that many (`(<n> commits)` and `...` past it), `false` / `0` none; a negative count defers to the config. `merge.branchdesc` adds a local branch's `branch.<name>.description` under its header. A negative `merge.log` refuses with `CONFIG_NEGATIVE_LENGTH`, a non-integer with `CONFIG_BAD_NUMERIC_VALUE`. |
+| `squash` | `boolean` | `false` | git's `--squash`: the merge (or the fast-forward) is checked out into the index and working tree and `SQUASH_MSG` lists every commit brought in, in git's `medium` format; no `MERGE_HEAD`, HEAD not moved, `{ kind: 'squashed', origHead }` returned and `post-merge` run with `1`. A later `commit` concludes it as a single-parent commit and removes `SQUASH_MSG`. Refuses with `INCOMPATIBLE_OPTIONS` (`['--squash', '--no-ff']`) under `fastForward: 'never'` or `merge.ff = false`. A squash whose merge conflicts keeps git's squash state — conflict stages and marked files, `SQUASH_MSG`, `MERGE_MSG` holding only the `# Conflicts:` block, `ORIG_HEAD`, no `MERGE_HEAD` — and returns `{ kind: 'squashed', origHead, conflicts }`. An autostash is re-applied after a squashed fast-forward only; any other squash, clean or conflicted, keeps it in `MERGE_AUTOSTASH` for the concluding `commit`, as git does. A `commit` with an empty message after resolving takes `SQUASH_MSG` then `MERGE_MSG`, comment lines stripped, as git's editor does. |
+| `commit` | `boolean` | `true` | git's `--commit` / `--no-commit`. `false` stops a merge that would commit: the merged tree is staged and checked out, `MERGE_HEAD`, `MERGE_MSG` and `MERGE_MODE` are kept, HEAD is not moved, no `post-merge` runs and an autostash stays in `MERGE_AUTOSTASH`; `{ kind: 'stopped', mergeHead, origHead }` is returned. A fast-forward still fast-forwards unless `fastForward: 'never'`. A later `commit` (an empty message takes `MERGE_MSG`) concludes it. `true` with `squash` refuses with `INCOMPATIBLE_OPTIONS` (`['--squash', '--commit']`). |
+| `strategy` | `string \| ReadonlyArray<string>` | `pull.twohead` (one head) / `pull.octopus` (several) — space-separated, each name refused as an unknown `-s` is — else `ort` / `octopus` | git's `-s`, once or several times. Several are tried in turn as git does: the first to merge cleanly commits (its name in the reflog note); else the last of those leaving the fewest conflicts (unmerged paths plus their index stages) prepares the resolution; else `NO_MERGE_STRATEGY_HANDLED`. Any `ours` in the list forbids the fast-forward; the trivial in-index merge runs only when every strategy is `resolve` or `octopus`. A valueless `pull.twohead` / `pull.octopus` refuses with `CONFIG_MISSING_VALUE`. Each: `ort`; `recursive` (run as `ort`, logged as `recursive`); `resolve` and `octopus`, which first try git's trivial in-index merge (logged `In-index merge`) when the merge would commit over one base, then `resolve` merges each path as `git-merge-one-file` does while `octopus` on one head fails; `ours`, which commits HEAD's tree with every head as a parent and never fast-forwards. `ort` / `recursive` / `resolve` on several heads, `resolve` with no common base (`allowUnrelatedHistories`) and `octopus` on one non-trivial head fail with `MERGE_STRATEGY_FAILED`. `subtree` refuses with `UNSUPPORTED_OPERATION`; any other name with `UNKNOWN_MERGE_STRATEGY`. Conflict markers of `resolve` carry tsgit's labels where git names its temporary files. |
+| `strategyOptions` | `ReadonlyArray<string>` | none | git's `-X`, applied in order, read only when a strategy runs (a fast-forward or up-to-date merge never reads them). `ort` / `recursive` honour `no-renames`, `find-renames[=<n>]` and `rename-threshold=<n>` over `merge.renames` / `diff.renames` — `<n>` in git's `-M` grammar (`77`, `77%`, `0.77`; `0` or empty is the 50% default). The other options git knows (`ours`, `theirs`, `subtree[=<path>]`, `patience`, `histogram`, `diff-algorithm=<a>`, `ignore-*`, `renormalize`, `no-renormalize`) refuse with `UNSUPPORTED_OPERATION`; anything else with `UNKNOWN_STRATEGY_OPTION`. `resolve` fails with `MERGE_STRATEGY_FAILED` when it has a file-level merge to make (git hands the options to `read-tree`, which refuses them); `octopus` and `ours` ignore them. |
 | `author` / `committer` | `AuthorIdentity` | from config | Identities for the merge commit. |
 
 ### `fastForward`
@@ -44,6 +58,38 @@ type MergeResult =
 | `'allow'` (default) | `--ff` | Fast-forward when possible, else a true merge. |
 | `'only'` | `--ff-only` | Refuse with `NON_FAST_FORWARD` when a true merge would be required. |
 | `'never'` | `--no-ff` | Always create a merge commit, even when a fast-forward is possible. |
+
+When the walk between HEAD and the merged commit reaches a parent that fails to parse (absent, or another kind of object), `run` logs git's two `error:` lines through `ctx.logger.error` and answers `up-to-date` in every mode: git's `reduce_heads` comes back empty, so `git merge` prints `Already up to date.` and exits 0. `ORIG_HEAD` is still written.
+
+### Signing
+
+`sign: true` signs the merge commit as `git merge -S` does, with `signKey` naming the key
+(`-S<keyid>`, else `user.signingKey`); `sign: false` is `--no-gpg-sign`, and leaving it unset
+follows `commit.gpgSign`. A signer refusal throws `SIGNING_FAILED` after the merge is
+materialised, leaving `MERGE_HEAD`, `MERGE_MODE` and `MERGE_MSG` (without its final newline) for
+a `commit` to finish, as git's merge dies there.
+
+### `branch.<branch>.mergeoptions`
+
+git's per-branch merge command line applies to every merge onto that branch (and to `pull`'s merge),
+read before the caller's options: a caller's option wins, while its `strategy`, `strategyOptions`
+and `message` add to the branch's (`-s` / `-X` in order, each `-m` a paragraph of its own). The value
+is split as git's `split_cmdline` does — single quotes literal, a backslash escaping the next
+character outside them. Note git's config parser strips double quotes first, so quote a word with
+single quotes (or `\"`). The options `merge` models apply (`--ff` / `--no-ff` / `--ff-only`,
+`--[no-]squash`, `--[no-]commit`, `-s`, `-X`, `-m`, `--[no-]log[=<n>]`,
+`--[no-]allow-unrelated-histories`, `--[no-]autostash`, `-S[<key>]` / `--[no-]gpg-sign`); options that shape only git's output
+(`-n`, `--stat`, `-v`, `-q`, `--progress`, …) are accepted, and so is `--no-verify`, since `merge`
+runs no `pre-merge-commit` or `commit-msg` hook; the others git knows refuse with
+`UNSUPPORTED_OPERATION`. A long option may be abbreviated to any prefix only it starts, as git's
+`parse_options` allows (`--squ` is `--squash`). Refusals, before any merge state is written:
+
+| Value | Code |
+|---|---|
+| unclosed quote / trailing `\` | `BAD_BRANCH_MERGE_OPTIONS` (`Bad branch.<b>.mergeoptions string: …`) |
+| an option git does not know | `UNKNOWN_OPTION` (`option` spelt with its dashes) |
+| an abbreviation more than one option starts | `AMBIGUOUS_OPTION` (`candidates`: the last two, as git names them) |
+| a missing or malformed value | `INVALID_OPTION` (`requires a value`, `takes no value`, …) |
 
 ## Working tree and index
 
@@ -66,7 +112,32 @@ When the merge cannot resolve cleanly, `run` returns `{ kind: 'conflict', confli
 
 Resolve the working-tree files, `repo.add` the resolved paths, then `repo.merge.continue({ message })` (equivalently `repo.commit({ message })`, which reads `MERGE_HEAD` for the second parent and clears the merge-state files atomically).
 
-Unsupported conflict types (`rename-rename`, `gitlink`) reject upfront with `UNSUPPORTED_OPERATION` before any disk write.
+Unsupported conflict types (`gitlink`) reject upfront with `UNSUPPORTED_OPERATION` before any disk write.
+
+### Renames
+
+As git's `ort` strategy does, the merge first pairs the paths each side deleted with the paths it added
+(exact matches, then content similarity at git's 50% default), and a file renamed on one side and
+edited on the other merges into the renamed path. Only paths the other side changed are rename
+sources, and the empty file never is. `merge.renames` (falling back to `diff.renames`, on by default)
+turns detection off, and `strategyOptions` (`no-renames`, `find-renames[=<n>]`,
+`rename-threshold=<n>`) override it and set the similarity threshold; `merge.renameLimit` (falling back to `diff.renameLimit`; a non-positive value
+means 7000) caps the similarity pass. A malformed value refuses the merge with
+`CONFIG_BAD_BOOLEAN_VALUE`, `CONFIG_BAD_NUMERIC_VALUE` or `CONFIG_MISSING_VALUE`. When a rename
+puts the sides at different paths, each conflict-marker label carries its side's path
+(`<<<<<<< HEAD:old`, `>>>>>>> side:new`), as git writes them. The same detection runs under
+`pull`, `cherry-pick`, `revert`, `rebase` and `stash apply`; the `resolve` and `octopus`
+strategies never detect renames.
+
+Rename conflicts stop the merge with git's index stages and files:
+
+- **rename/delete** — one side renamed, the other deleted the source: a `rename-delete` conflict at
+  the new path, stage 1 the base and the renaming side's stage, its file left in the tree.
+- **rename/rename (1 to 2)** — both sides renamed the source to different paths: a `rename-rename`
+  conflict on each of the three paths, stage 1 at the source, stage 2 and 3 at each side's target.
+- **rename/add** and **rename/rename (2 to 1)** — the renamed file meets another file at its
+  target: an `add-add` conflict between the two, the source deleted.
+- Both sides renaming the source to the **same path** merge it there, three-way.
 
 ### Content-conflict boundaries follow git's line-diff engine
 
@@ -246,6 +317,7 @@ switch (result.kind) {
 - `INVALID_INDEX_ENTRY` — a conflicting merge's outcome or conflict path fails git's own index-entry name rules (absolute path; `.`, `..`, or empty segment; `.git`/`.gitmodules` alias). Every path the write is about to touch is checked in one pass before any of them is written, so a hostile path anywhere in the batch refuses the whole conflict write, atomically.
 - `REF_NOT_FOUND` — `target` does not resolve.
 - `NO_OPERATION_IN_PROGRESS` — `merge.continue` / `merge.abort` called outside an in-progress merge.
+- `BAD_BRANCH_MERGE_OPTIONS` / `UNKNOWN_OPTION` / `AMBIGUOUS_OPTION` / `INVALID_OPTION` — `branch.<branch>.mergeoptions` does not split or parse as git's merge command line.
 
 ## See also
 

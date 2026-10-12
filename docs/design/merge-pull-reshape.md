@@ -41,7 +41,7 @@ change a single observable git behaviour:
   the merge-commit parents, `MERGE_HEAD` / `MERGE_MSG` / `ORIG_HEAD`, the
   conflicted-index stages, and every reflog message are produced by the same
   code paths, byte-for-byte. In particular `pull`'s reflog still reads
-  `pull: Fast-forward` / `pull: Merge made by the 'tsgit' strategy.` (ADR-197),
+  `pull: Fast-forward` / `pull: Merge made by the 'ort' strategy.` (ADR-197),
   because the reflog action is preserved — just routed through an internal
   channel instead of a public field.
 - **`fastForward` maps 1-to-1 onto the existing refusal semantics:**

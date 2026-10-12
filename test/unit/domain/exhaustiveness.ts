@@ -54,6 +54,9 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'OBJECT_HASH_MISMATCH':
     case 'UNEXPECTED_OBJECT_TYPE':
     case 'TREE_CYCLE_DETECTED':
+    case 'BAD_TREE_OBJECT':
+    case 'TREE_UNREADABLE':
+    case 'TREE_ENTRY_TYPE_MISMATCH':
     case 'TREE_DEPTH_EXCEEDED':
     case 'TREE_ENTRY_LIMIT_EXCEEDED':
     case 'DELTA_CHAIN_TOO_DEEP':
@@ -64,6 +67,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'REF_UPDATE_CONFLICT':
     case 'REFTABLE_LOCKED':
     case 'INVALID_WALK_INPUT':
+    case 'INVALID_COMMIT_NAME':
     case 'OPERATION_ABORTED':
     case 'INVALID_PKT_LENGTH':
     case 'PKT_LENGTH_RESERVED':
@@ -114,12 +118,23 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'UNSUPPORTED_SCHEME':
     case 'TARGET_DIRECTORY_NOT_EMPTY':
     case 'REMOTE_ADVERTISES_NO_REFS':
+    case 'OCTOPUS_MERGE_FAILED':
+    case 'UNRELATED_HISTORIES':
+    case 'FAST_FORWARD_MULTIPLE_BRANCHES':
+    case 'PULL_REBASE_MULTIPLE_BRANCHES':
+    case 'PULL_EMPTY_HEAD_MULTIPLE_BRANCHES':
+    case 'PULL_REBASE_UNBORN_INDEX':
+    case 'PULL_DIVERGENT_BRANCHES':
+    case 'PUSH_MULTIPLE_UPSTREAMS':
     case 'NON_FAST_FORWARD':
     case 'PUSH_REJECTED':
     case 'MERGE_HAS_CONFLICTS':
     case 'CHECKOUT_OVERWRITE_DIRTY':
     case 'REVPARSE_AMBIGUOUS':
     case 'REVPARSE_UNRESOLVED':
+    case 'REVISION_WALK_FAILED':
+    case 'COMMIT_LOOKUP_FAILED':
+    case 'COMMIT_PARSE_FAILED':
     case 'PATH_NOT_IN_TREE':
     case 'WORKTREE_FILE_ABSENT':
     case 'EMPTY_PATHSPEC':
@@ -128,6 +143,8 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'MAX_REFSPECS_EXCEEDED':
     case 'REMOTE_NOT_CONFIGURED':
     case 'NO_UPSTREAM_CONFIGURED':
+    case 'BRANCH_MARK_UNRESOLVED':
+    case 'REBASE_REVISION_INVALID':
     case 'REMOTE_EXISTS':
     case 'REMOTE_NAME_INVALID':
     case 'NO_PROMISOR_REMOTE':
@@ -147,7 +164,13 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'REFLOG_ENTRY_OUT_OF_RANGE':
     case 'HOOK_FAILED':
     case 'CLEAN_FILTER_FAILED':
+    case 'FILTER_UNSUPPORTED_CAPABILITY':
     case 'SMUDGE_FILTER_FAILED':
+    case 'TEXTCONV_FAILED':
+    case 'UPSTREAM_NOT_BRANCH':
+    case 'UPSTREAM_MISSING':
+    case 'TRACKING_AMBIGUOUS':
+    case 'TRACKING_INHERIT_REBASE_MULTIPLE':
     case 'INVALID_FILTER_SPEC':
     case 'REMOTE_FILTER_UNSUPPORTED':
     case 'UNEXPECTED_V2_SECTION':
@@ -162,6 +185,16 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'CONFIG_VALUE_INVALID':
     case 'CONFIG_PARSE_ERROR':
     case 'CONFIG_MISSING_VALUE':
+    case 'CONFIG_NEGATIVE_LENGTH':
+    case 'CONFIG_UNKNOWN_VALUE':
+    case 'INCOMPATIBLE_OPTIONS':
+    case 'UNKNOWN_MERGE_STRATEGY':
+    case 'UNKNOWN_OPTION':
+    case 'AMBIGUOUS_OPTION':
+    case 'BAD_BRANCH_MERGE_OPTIONS':
+    case 'UNKNOWN_STRATEGY_OPTION':
+    case 'MERGE_STRATEGY_FAILED':
+    case 'NO_MERGE_STRATEGY_HANDLED':
     case 'MERGE_DRIVER_MISSING_COMMAND':
     case 'CONFIG_BAD_NUMERIC_VALUE':
     case 'CONFIG_BAD_BOOLEAN_VALUE':
@@ -171,6 +204,11 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'FSCK_CANNOT_DEMOTE':
     case 'FSCK_SKIP_LIST_UNREADABLE':
     case 'FSCK_SKIP_LIST_INVALID_NAME':
+    case 'EMPTY_COMMIT_SET':
+    case 'CANNOT_PICK_NON_COMMIT':
+    case 'CHECKOUT_NON_COMMIT':
+    case 'CHECKOUT_START_POINT_NOT_COMMIT':
+    case 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM':
     case 'CONFIG_INVALID_ENUM_VALUE':
     case 'CONFIG_BAD_ZLIB_LEVEL':
     case 'CONFIG_INVALID_FILE':
@@ -189,6 +227,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'RM_STAGED_CHANGES':
     case 'RM_LOCAL_MODIFICATIONS':
     case 'RM_STAGED_AND_LOCAL_CHANGES':
+    case 'RM_RECURSIVE_WITHOUT_R':
     case 'NO_INITIAL_COMMIT':
     case 'STASH_NOT_FOUND':
     case 'STASH_APPLY_WOULD_OVERWRITE':
@@ -213,6 +252,9 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'GITFILE_INVALID_FORMAT':
     case 'GITFILE_NO_PATH':
     case 'BUNDLE_EMPTY':
+    case 'INVALID_SYMMETRIC_RANGE':
+    case 'INVALID_REVISION_RANGE':
+    case 'NEED_TWO_COMMIT_RANGES':
     case 'BUNDLE_READ_FAILED':
     case 'BUNDLE_BAD_HEADER':
     case 'BUNDLE_UNSUPPORTED_VERSION':
@@ -223,12 +265,21 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'NOTES_REF_OUTSIDE':
     case 'SIGNING_FAILED':
     case 'SIGNED_PUSH_UNSUPPORTED':
+    case 'ATOMIC_PUSH_UNSUPPORTED':
+    case 'PUSH_REFSPEC_UNMATCHED':
+    case 'REMOTE_REF_NOT_FOUND':
+    case 'FETCH_REFSPEC_CONFLICT':
+    case 'FETCH_REJECTED':
+    case 'FETCH_INTO_CHECKED_OUT_BRANCH':
+    case 'PULL_NO_MERGE_CANDIDATES':
     case 'PUSH_DETACHED_NO_REFSPEC':
     case 'PUSH_DEFAULT_NOTHING':
     case 'PUSH_REMOTE_NOT_UPSTREAM':
     case 'PUSH_UPSTREAM_NAME_MISMATCH':
     case 'INVALID_PUSH_DEFAULT':
     case 'GREP_LINE_TOO_LONG':
+    case 'FORMAT_PLACEHOLDER_UNSUPPORTED':
+    case 'TIMESTAMP_OUT_OF_RANGE':
       return;
     default: {
       const _exhaustive: never = data;

@@ -617,8 +617,10 @@ Resolution algorithm (faithful to §4):
 3. Three-dot args contribute their merge-base(s) to **haves** via `mergeBase`.
 4. If the resolved **ref set** is empty, refuse with the empty-bundle error
    (`BUNDLE_EMPTY { reason: 'no-refs' }`, §4.2) — even if step 5 finds objects.
-5. Compute the object closure and prerequisites (§8.3); if the closure is empty,
-   refuse (`BUNDLE_EMPTY { reason: 'no-objects' }`).
+5. Compute the object closure and prerequisites (§8.3); drop every ref line
+   whose object the walk left uninteresting (git's `write_bundle_refs`), and
+   refuse with `BUNDLE_EMPTY { reason: 'no-refs' }` if none survives. An empty
+   closure is packed as-is, as git does.
 
 An unknown `tip`/`exclude`/range endpoint propagates `revParse`'s
 `REVPARSE_UNRESOLVED` / `REVPARSE_AMBIGUOUS` (matches git's `fatal: ambiguous
@@ -680,7 +682,7 @@ path-bearing messages.
 
 | Code | Data | Raised by | git analogue |
 | --- | --- | --- | --- |
-| `BUNDLE_EMPTY` | `{ reason: 'no-refs' \| 'no-objects' }` | `create` | `fatal: Refusing to create empty bundle.` |
+| `BUNDLE_EMPTY` | `{ reason: 'no-refs' }` | `create` | `fatal: Refusing to create empty bundle.` |
 | `BUNDLE_READ_FAILED` | `{ path }` | `verify`, `listHeads` | `error: could not open '<path>'` (missing **or** unreadable) |
 | `BUNDLE_BAD_HEADER` | `{ path, reason }` | `verify`, `listHeads` | `error: '<path>' does not look like a v2 or v3 bundle file` |
 | `BUNDLE_UNSUPPORTED_VERSION` | `{ path, version: number }` | `verify`, `listHeads` | (v3 read — tsgit refuses where git 2.54.0 reads v3-sha1; §4.3, §11-D) |

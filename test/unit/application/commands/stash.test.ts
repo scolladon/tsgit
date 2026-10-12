@@ -4,6 +4,8 @@ import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import {
+  applyAutostash,
+  createAutostash,
   stashApply,
   stashDrop,
   stashList,
@@ -17,7 +19,6 @@ import * as writeFileMod from '../../../../src/application/primitives/internal/w
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { pushStashRef, readStashStack } from '../../../../src/application/primitives/stash-ref.js';
-import * as streamBlobMod from '../../../../src/application/primitives/stream-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
@@ -28,7 +29,7 @@ import type {
   CommandResult,
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
-import type { Context } from '../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../src/ports/context.js';
 import { refuseReadOnSymlink } from '../primitives/fixtures.js';
 import { asBareContext } from './fixtures.js';
 
@@ -711,23 +712,20 @@ describe('stash apply', () => {
 
   describe('Given an include-untracked stash with a regular file', () => {
     describe('When apply runs', () => {
-      it('Then routes through streamBlob + writeWorkingTreeFileStream and restored bytes match source', async () => {
+      it('Then routes through writeWorkingTreeFileStream and restored bytes match source', async () => {
         // Arrange
         const ctx = await setupRepo();
         await write(ctx, 'streamed.txt', 'streamed content\n');
         await stashPush(ctx, { includeUntracked: true });
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeFileStream');
 
         // Act
         await stashApply(ctx, {});
 
         // Assert
-        expect(streamBlobSpy).toHaveBeenCalled();
         expect(writeStreamSpy).toHaveBeenCalled();
         expect(await read(ctx, 'streamed.txt')).toBe('streamed content\n');
 
-        streamBlobSpy.mockRestore();
         writeStreamSpy.mockRestore();
       });
     });
@@ -735,24 +733,60 @@ describe('stash apply', () => {
 
   describe('Given an include-untracked stash with a large-ish blob (dropped size cap)', () => {
     describe('When apply runs', () => {
-      it('Then streamBlob is invoked with no maxBytes and restore succeeds', async () => {
+      it('Then restore succeeds with no size cap', async () => {
         // Arrange — large enough that any explicit cap would be visible; no OBJECT_TOO_LARGE expected
         const ctx = await setupRepo();
         const largeContent = 'x'.repeat(2048);
         await write(ctx, 'large.bin', largeContent);
         await stashPush(ctx, { includeUntracked: true });
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
 
         // Act — must not throw
         await stashApply(ctx, {});
 
         // Assert — called with exactly (ctx, id): no third options argument (no maxBytes)
-        expect(streamBlobSpy).toHaveBeenCalled();
-        const [, , thirdArg] = streamBlobSpy.mock.calls[0] ?? [];
-        expect(thirdArg).toBeUndefined();
         expect(await read(ctx, 'large.bin')).toBe(largeContent);
+      });
+    });
+  });
 
-        streamBlobSpy.mockRestore();
+  describe('Given an unreadable alternate and an untracked entry whose small packed blob is not in the primary store', () => {
+    describe('When apply runs', () => {
+      it("Then the path exists with size 0 and the call rejects with the alternate's error", async () => {
+        // Arrange
+        const alternateObjects = '/repo/alt/objects';
+        const ctx = createMemoryContext({
+          files: {
+            '/repo/.git/objects/info/alternates': new TextEncoder().encode(`${alternateObjects}\n`),
+          },
+        });
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'committed\n', 'initial commit');
+        const absentBlob = 'c'.repeat(40) as ObjectId;
+        const untrackedTree = await writeObject(ctx, {
+          type: 'tree',
+          id: '' as ObjectId,
+          entries: [treeEntry(FILE_MODE.REGULAR, 'packed.txt', absentBlob)],
+        });
+        await pushHostileUntrackedStash(ctx, untrackedTree);
+        const chmod = vi.spyOn(ctx.fs, 'chmod');
+        // A write through an alternate that cannot load is refused, so the fault is planted after the setup.
+        await ctx.fs.write(
+          `${alternateObjects}/pack/multi-pack-index`,
+          Uint8Array.from([0x00, 0x49, 0x44, 0x58, 1, 1, 1, 0, ...new Array(8).fill(0)]),
+        );
+
+        // Act
+        let failure: unknown;
+        try {
+          await stashApply({ ...ctx, session: createSession() }, {});
+        } catch (error) {
+          failure = error;
+        }
+
+        // Assert
+        expect((failure as TsgitError).data).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX' });
+        expect((await ctx.fs.read(`${ctx.layout.workDir}/packed.txt`)).length).toBe(0);
+        expect(chmod).not.toHaveBeenCalled();
       });
     });
   });
@@ -945,6 +979,38 @@ describe('stash on a bare repository', () => {
         const data = await codeAndOp(stashPop(ctx, {}));
         expect(data.code).toBe('WORK_TREE_REQUIRED');
         expect(data.operation).toBe('stash pop');
+      });
+    });
+  });
+});
+
+describe('autostash on a bare repository', () => {
+  describe('Given a bare repo', () => {
+    describe('When the autostash is created', () => {
+      it('Then it throws WORK_TREE_REQUIRED with operation=rebase', async () => {
+        // Arrange
+        const ctx = await makeBare();
+        const sut = createAutostash;
+
+        // Act
+        const data = await codeAndOp(sut(ctx));
+
+        // Assert
+        expect(data).toEqual({ code: 'WORK_TREE_REQUIRED', operation: 'rebase' });
+      });
+    });
+
+    describe('When the autostash is applied', () => {
+      it('Then it throws WORK_TREE_REQUIRED with operation=rebase', async () => {
+        // Arrange
+        const ctx = await makeBare();
+        const sut = applyAutostash;
+
+        // Act
+        const data = await codeAndOp(sut(ctx, '1'.repeat(40) as ObjectId));
+
+        // Assert
+        expect(data).toEqual({ code: 'WORK_TREE_REQUIRED', operation: 'rebase' });
       });
     });
   });

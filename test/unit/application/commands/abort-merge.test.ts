@@ -496,4 +496,31 @@ describe('mergeAbort', () => {
       });
     });
   });
+
+  describe('Given a conflicted merge with every branch-state file beside it', () => {
+    describe('When mergeAbort runs', () => {
+      it('Then it removes the whole branch state, as git reset --merge does', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { preMergeMain } = await setupConflictingMerge(ctx);
+        await mergeRun(ctx, { rev: 'feature', author });
+        const extra = ['MERGE_RR', 'AUTO_MERGE', 'SQUASH_MSG', 'CHERRY_PICK_HEAD', 'REVERT_HEAD'];
+        for (const name of extra) {
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${name}`, `${preMergeMain}\n`);
+        }
+        const sut = mergeAbort;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const names = [...extra, 'MERGE_HEAD', 'MERGE_MSG', 'MERGE_MODE'];
+        const present = await Promise.all(
+          names.map((name) => ctx.fs.exists(`${ctx.layout.gitDir}/${name}`)),
+        );
+        const result = names.filter((_, i) => present[i]);
+        expect(result).toEqual([]);
+      });
+    });
+  });
 });

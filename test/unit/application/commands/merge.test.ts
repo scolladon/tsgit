@@ -9,6 +9,7 @@ import { init } from '../../../../src/application/commands/init.js';
 import {
   asMergeDirtyError,
   buildConflictIndexEntries,
+  type MergeRunInput,
   materialiseConflictBytes,
   mergeRun,
   resolveMergeAuthor,
@@ -17,14 +18,18 @@ import {
   writeNestedTree,
   writeOutcomeToTree,
 } from '../../../../src/application/commands/merge.js';
+import { rm } from '../../../../src/application/commands/rm.js';
+import { tagCreate, tagDelete } from '../../../../src/application/commands/tag.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
-import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { readObject, readRawObject } from '../../../../src/application/primitives/read-object.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import * as streamBlobMod from '../../../../src/application/primitives/stream-blob.js';
+import { synthesizeTreeFromIndex } from '../../../../src/application/primitives/synthesize-tree-from-index.js';
+import { updateRef as seedRef } from '../../../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import * as writeTreeMod from '../../../../src/application/primitives/write-tree.js';
@@ -43,6 +48,7 @@ import type {
 } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
+import type { CommandRunner } from '../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../src/ports/context.js';
 import {
   buildSeededContext,
@@ -51,6 +57,7 @@ import {
   deepIndexPath,
   seedMaxTreeDepth,
 } from '../primitives/fixtures.js';
+import { failSourceLoad, snapshotFiles } from './fixtures.js';
 
 const writeBlob = async (
   ctx: Awaited<ReturnType<typeof buildSeededContext>>,
@@ -89,6 +96,99 @@ const chainHeadThroughS = async (ctx: Context, branch: string): Promise<void> =>
   await writeSymbolicRef(ctx, 'refs/heads/s' as RefName, branch as RefName);
   await writeSymbolicRef(ctx, 'HEAD' as RefName, 'refs/heads/s' as RefName);
 };
+
+describe('merge walk parse', () => {
+  const MISSING = `cd${'0'.repeat(38)}` as ObjectId;
+
+  describe.each([
+    ['default', {}],
+    ['ff-only', { fastForward: 'only' }],
+    ['no-ff', { fastForward: 'never' }],
+  ] as const)('Given a commit whose parent the store lacks, merged (%s)', (_mode, options) => {
+    describe('When merge walks HEAD against it', () => {
+      it("Then it logs both of git's lines and is up to date, as git's reduced heads leave none", async () => {
+        // Arrange
+        const logged: string[] = [];
+        const ctx: Context = {
+          ...createMemoryContext(),
+          logger: { error: (line: string) => logged.push(line) },
+        };
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        const head = await commit(ctx, { message: 'first', author });
+        const tree = (await readObject(ctx, head.id)) as { readonly data: { tree: ObjectId } };
+        const broken = await writeObject(ctx, {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: tree.data.tree,
+            parents: [MISSING],
+            author,
+            committer: author,
+            message: 'broken\n',
+            extraHeaders: [],
+          },
+        });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: broken, ...options });
+
+        // Assert
+        expect({ result, logged, origHead: await resolveRef(ctx, 'ORIG_HEAD' as RefName) }).toEqual(
+          {
+            result: { kind: 'up-to-date', id: head.id },
+            logged: [`Could not read ${MISSING}`, `could not parse commit ${MISSING}`],
+            origHead: head.id,
+          },
+        );
+      });
+    });
+  });
+
+  describe('Given a commit whose parent the store lacks, merged alongside another head', () => {
+    describe('When merge reduces the heads', () => {
+      it("Then it logs git's lines and is up to date, as git's reduce_heads leaves none", async () => {
+        // Arrange
+        const logged: string[] = [];
+        const ctx: Context = {
+          ...createMemoryContext(),
+          logger: { error: (line: string) => logged.push(line) },
+        };
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        const head = await commit(ctx, { message: 'first', author });
+        const tree = (await readObject(ctx, head.id)) as { readonly data: { tree: ObjectId } };
+        const data = { tree: tree.data.tree, author, committer: author, extraHeaders: [] };
+        const broken = await writeObject(ctx, {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: { ...data, parents: [MISSING], message: 'broken\n' },
+        });
+        const side = await writeObject(ctx, {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: { ...data, parents: [head.id], message: 'side\n' },
+        });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: [broken, side] });
+
+        // Assert
+        expect({ result, logged, origHead: await resolveRef(ctx, 'ORIG_HEAD' as RefName) }).toEqual(
+          {
+            result: { kind: 'up-to-date', id: head.id },
+            logged: [`Could not read ${MISSING}`, `could not parse commit ${MISSING}`],
+            origHead: head.id,
+          },
+        );
+      });
+    });
+  });
+});
 
 describe('merge', () => {
   describe('Given target equals HEAD', () => {
@@ -824,6 +924,127 @@ describe('merge', () => {
     });
   });
 
+  describe('Given an AUTO_MERGE that holds no object id', () => {
+    /** base → feature edits `feature.txt` (and `file.txt` when `conflicting`), main edits `file.txt`. */
+    const diverged = async (conflicting: boolean): Promise<Context> => {
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'shared\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/feature.txt`, 'one\n');
+      await add(ctx, ['file.txt', 'feature.txt']);
+      await commit(ctx, { message: 'base', author });
+      await branchCreate(ctx, { name: 'feature' });
+      await checkout(ctx, { rev: 'feature' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/feature.txt`, 'two\n');
+      if (conflicting) await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE\n');
+      await add(ctx, ['file.txt', 'feature.txt']);
+      await commit(ctx, { message: 'on-feature', author });
+      await checkout(ctx, { rev: 'main' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
+      await add(ctx, ['file.txt']);
+      await commit(ctx, { message: 'on-main', author });
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`, 'garbage\n');
+      return ctx;
+    };
+
+    const refusal = async (ctx: Context): Promise<unknown> => {
+      try {
+        await mergeRun(ctx, { rev: 'feature', author });
+      } catch (error) {
+        return error;
+      }
+      return undefined;
+    };
+
+    describe.each([
+      { label: 'conflicting', conflicting: true },
+      { label: 'clean', conflicting: false },
+    ])('When a $label ort merge runs', ({ conflicting }) => {
+      it('Then it refuses with INVALID_REF before the merge touches the working tree or MERGE_HEAD', async () => {
+        // Arrange
+        const ctx = await diverged(conflicting);
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+
+        // Act
+        const result = await refusal(ctx);
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'INVALID_REF',
+          reason: 'AUTO_MERGE is broken',
+        });
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(head);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/feature.txt`)).toBe('one\n');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe('garbage\n');
+      });
+    });
+  });
+
+  describe('Given a clean ort merge, When it stops before committing', () => {
+    it('Then AUTO_MERGE names the merged tree the index holds', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a\n');
+      await add(ctx, ['a.txt']);
+      await commit(ctx, { message: 'base', author });
+      await branchCreate(ctx, { name: 'feature' });
+      await checkout(ctx, { rev: 'feature' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b\n');
+      await add(ctx, ['b.txt']);
+      await commit(ctx, { message: 'on-feature', author });
+      await checkout(ctx, { rev: 'main' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c\n');
+      await add(ctx, ['c.txt']);
+      await commit(ctx, { message: 'on-main', author });
+      const sut = mergeRun;
+
+      // Act
+      await sut(ctx, { rev: 'feature', author, commit: false });
+
+      // Assert
+      const expected = await synthesizeTreeFromIndex(ctx, (await readIndex(ctx)).entries);
+      expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe(`${expected}\n`);
+    });
+  });
+
+  describe('Given conflicting modifications to the same file, When merge stops on them', () => {
+    it("Then AUTO_MERGE names a tree holding the conflicted file's marked bytes", async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'shared\n');
+      await add(ctx, ['file.txt']);
+      await commit(ctx, { message: 'base', author });
+      await branchCreate(ctx, { name: 'feature' });
+      await checkout(ctx, { rev: 'feature' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'FEATURE-CHANGE\n');
+      await add(ctx, ['file.txt']);
+      await commit(ctx, { message: 'on-feature', author });
+      await checkout(ctx, { rev: 'main' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN-CHANGE\n');
+      await add(ctx, ['file.txt']);
+      await commit(ctx, { message: 'on-main', author });
+      const sut = mergeRun;
+
+      // Act
+      await sut(ctx, { rev: 'feature', author });
+
+      // Assert
+      const tree = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/AUTO_MERGE`)).trim() as ObjectId;
+      const object = await readObject(ctx, tree);
+      if (object.type !== 'tree') throw new Error('AUTO_MERGE must name a tree');
+      const [entry] = object.entries;
+      if (entry === undefined) throw new Error('expected one entry');
+      const blob = await readObject(ctx, entry.id);
+      if (blob.type !== 'blob') throw new Error('expected a blob');
+      expect(new TextDecoder().decode(blob.content)).toBe(
+        await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`),
+      );
+    });
+  });
+
   describe('Given conflicting modifications to the same file', () => {
     describe('When merge runs', () => {
       it('Then returns kind=conflict with the conflicting path and HEAD does NOT advance', async () => {
@@ -1002,7 +1223,11 @@ describe('merge', () => {
         });
 
         // Act
-        const result = await mergeRun(ctx, { rev: 'unrelated', author });
+        const result = await mergeRun(ctx, {
+          rev: 'unrelated',
+          author,
+          allowUnrelatedHistories: true,
+        });
 
         // Assert — kind='conflict' with add-add for shared.txt.
         expect(result.kind).toBe('conflict');
@@ -1073,6 +1298,41 @@ describe('merge.4b conflict persistence', () => {
     const mainTip = await commit(ctx, { message: 'on-main', author });
     return { preMergeMain: mainTip.id, featureTip: featureTip.id };
   };
+
+  describe('Given a content conflict beside a path both sides edit in different hunks', () => {
+    describe('When merge runs', () => {
+      it('Then the line-merged path is staged at stage 0 with its merged blob', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const commitBoth = async (conflicting: string, merged: string, message: string) => {
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, conflicting);
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/merged.txt`, merged);
+          await add(ctx, ['file.txt', 'merged.txt']);
+          await commit(ctx, { message, author });
+        };
+        await init(ctx);
+        await commitBoth('base\n', 'a\nb\nc\n', 'base');
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        await commitBoth('FEATURE\n', 'a\nb\nC\n', 'on-feature');
+        await checkout(ctx, { rev: 'main' });
+        await commitBoth('MAIN\n', 'A\nb\nc\n', 'on-main');
+        const mergedId = await writeObject(ctx, {
+          type: 'blob',
+          content: new TextEncoder().encode('A\nb\nC\n'),
+          id: '' as ObjectId,
+        });
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', author });
+
+        // Assert
+        const result = (await readIndex(ctx)).entries.find((e) => e.path === 'merged.txt');
+        expect(result?.flags.stage).toBe(0);
+        expect(result?.id).toBe(mergedId);
+      });
+    });
+  });
 
   describe('Given a content conflict', () => {
     describe('When merge runs', () => {
@@ -1147,7 +1407,7 @@ describe('merge.4b conflict persistence', () => {
       });
     });
     describe('When merge runs with a message', () => {
-      it('Then .git/MERGE_MSG records the message', async () => {
+      it('Then .git/MERGE_MSG records the message, then the conflicted paths block', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await setupConflictingMerge(ctx);
@@ -1157,7 +1417,7 @@ describe('merge.4b conflict persistence', () => {
 
         // Assert
         const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`);
-        expect(result).toBe('Merge feature into main\n');
+        expect(result).toBe('Merge feature into main\n\n# Conflicts:\n#\tfile.txt\n');
       });
     });
   });
@@ -1274,9 +1534,30 @@ describe('merge.4b conflict persistence', () => {
   });
 
   describe('rejectUnsupportedConflicts (direct)', () => {
+    describe.each(['rename-rename', 'rename-delete'] as const)(
+      'Given a %s MergeConflict',
+      (type) => {
+        describe('When rejectUnsupportedConflicts is called', () => {
+          it('Then it is accepted, as git stops on it', async () => {
+            // Arrange
+            const { rejectUnsupportedConflicts } = await import(
+              '../../../../src/application/commands/merge.js'
+            );
+            const sut = rejectUnsupportedConflicts;
+
+            // Act
+            const result = (): void => sut([{ type, path: 'p' as never }]);
+
+            // Assert
+            expect(result).not.toThrow();
+          });
+        });
+      },
+    );
+
     describe('Given a %s MergeConflict', () => {
       describe('When rejectUnsupportedConflicts is called', () => {
-        it.each(['rename-rename', 'gitlink'] as const)(
+        it.each(['gitlink'] as const)(
           'Then throws UNSUPPORTED_OPERATION with operation=merge',
           async (conflictType) => {
             // Arrange
@@ -1621,31 +1902,128 @@ describe('merge — guard rails', () => {
     });
   });
 
-  describe('Given a detached HEAD', () => {
-    describe('When merge runs', () => {
-      it('Then throws UNSUPPORTED_OPERATION with the detached-HEAD reason', async () => {
-        // Arrange — point HEAD directly at a commit id (detached).
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
-        await add(ctx, ['a.txt']);
-        const c = await commit(ctx, { message: 'base', author });
-        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${c.id}\n`);
+  describe('Given a detached HEAD diverged from a branch', () => {
+    /** HEAD detached at `main`, which diverged from `side`. */
+    const seedDetached = async (): Promise<{
+      ctx: Context;
+      base: ObjectId;
+      ours: ObjectId;
+      theirs: ObjectId;
+    }> => {
+      const ctx = createMemoryContext();
+      await init(ctx, { initialBranch: 'main' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+      await add(ctx, ['a.txt']);
+      const base = await commit(ctx, { message: 'base', author });
+      await branchCreate(ctx, { name: 'side' });
+      await checkout(ctx, { rev: 'side' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/s.txt`, 's');
+      await add(ctx, ['s.txt']);
+      const theirs = await commit(ctx, { message: 'side', author });
+      await checkout(ctx, { rev: 'main' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/m.txt`, 'm');
+      await add(ctx, ['m.txt']);
+      const ours = await commit(ctx, { message: 'main', author });
+      await checkout(ctx, { rev: ours.id });
+      return { ctx, base: base.id, ours: ours.id, theirs: theirs.id };
+    };
+
+    describe('When merge is given the branch', () => {
+      it('Then HEAD stays detached at the two-parent merge commit', async () => {
+        // Arrange
+        const { ctx, ours, theirs } = await seedDetached();
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author, committer: author });
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'merge',
+          id: expect.any(String),
+          branch: undefined,
+          parents: [ours, theirs],
+        });
+        const head = await getRefStore(ctx).resolveDirect('HEAD' as RefName);
+        expect(head).toEqual({ kind: 'direct', id: (result as { id: ObjectId }).id });
+      });
+
+      it("Then the commit is titled into HEAD and HEAD logs git's merge note", async () => {
+        // Arrange
+        const { ctx } = await seedDetached();
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author, committer: author });
+
+        // Assert
+        const made = await readObject(ctx, (result as { id: ObjectId }).id);
+        expect(made.type === 'commit' && made.data.message).toBe("Merge branch 'side' into HEAD\n");
+        expect((await readReflog(ctx, 'HEAD' as RefName)).at(-1)?.message).toBe(
+          "merge side: Merge made by the 'ort' strategy.",
+        );
+      });
+    });
+
+    describe('When merge fast-forwards to the branch', () => {
+      it('Then HEAD moves detached and logs the fast-forward', async () => {
+        // Arrange
+        const { ctx, base, theirs } = await seedDetached();
+        await checkout(ctx, { rev: base });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side' });
+
+        // Assert
+        expect(result).toEqual({ kind: 'fast-forward', id: theirs, branch: undefined });
+        const head = await getRefStore(ctx).resolveDirect('HEAD' as RefName);
+        expect(head).toEqual({ kind: 'direct', id: theirs });
+        expect((await readReflog(ctx, 'HEAD' as RefName)).at(-1)?.message).toBe(
+          'merge side: Fast-forward',
+        );
+      });
+    });
+
+    describe('When merge is told fast-forward only', () => {
+      it('Then it refuses NON_FAST_FORWARD on HEAD', async () => {
+        // Arrange
+        const { ctx, ours, theirs } = await seedDetached();
+        const sut = mergeRun;
 
         // Act
         let caught: unknown;
         try {
-          await mergeRun(ctx, { rev: 'feature' });
+          await sut(ctx, { rev: 'side', fastForward: 'only' });
         } catch (err) {
           caught = err;
         }
 
-        // Assert — both string args of unsupportedOperation are load-bearing.
-        const data = (caught as { data?: { code?: string; operation?: string; reason?: string } })
-          ?.data;
-        expect(data?.code).toBe('UNSUPPORTED_OPERATION');
-        expect(data?.operation).toBe('merge');
-        expect(data?.reason).toBe('cannot merge with detached HEAD');
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'NON_FAST_FORWARD',
+          ref: 'HEAD',
+          local: ours,
+          remote: theirs,
+        });
+      });
+    });
+
+    describe('When merge.suppressDest names HEAD', () => {
+      it('Then the title drops the destination', async () => {
+        // Arrange
+        const { ctx } = await seedDetached();
+        const configPath = `${ctx.layout.gitDir}/config`;
+        const config = await ctx.fs.readUtf8(configPath);
+        await ctx.fs.writeUtf8(configPath, `${config}[merge]\n  suppressDest = HEAD\n`);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author, committer: author });
+
+        // Assert
+        const made = await readObject(ctx, (result as { id: ObjectId }).id);
+        expect(made.type === 'commit' && made.data.message).toBe("Merge branch 'side'\n");
       });
     });
   });
@@ -2012,6 +2390,61 @@ describe('merge — conflicting-write atomicity', () => {
   });
 });
 
+describe('merge — conflicting-write atomicity under strategy resolve', () => {
+  describe('Given theirs adds a hostile path and conflicts with ours on another', () => {
+    describe('When merge runs', () => {
+      it('Then throws INVALID_INDEX_ENTRY and neither the conflict nor the clean sibling is written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'base\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/clean.txt`, 'base-clean\n');
+        await add(ctx, ['file.txt', 'clean.txt']);
+        const base = await commit(ctx, { message: 'base', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'on-main', author });
+        const hostile = treeEntry(FILE_MODE.REGULAR, '.', await writeBlob(ctx, 'dot\n'));
+        const featureTree = await writeTreeMod.writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'clean.txt', await writeBlob(ctx, 'THEIRS-CLEAN\n')),
+          treeEntry(FILE_MODE.REGULAR, 'file.txt', await writeBlob(ctx, 'FEATURE\n')),
+          treeEntry(FILE_MODE.DIRECTORY, 'sub', await writeTreeMod.writeTree(ctx, [hostile])),
+        ]);
+        const { createCommit: createCommitPrim } = await import(
+          '../../../../src/application/primitives/create-commit.js'
+        );
+        const { updateRef } = await import('../../../../src/application/primitives/update-ref.js');
+        const feature = await createCommitPrim(ctx, {
+          tree: featureTree,
+          parents: [base.id],
+          author,
+          committer: author,
+          message: 'theirs',
+          extraHeaders: [],
+        });
+        await updateRef(ctx, 'refs/heads/feature' as RefName, feature, {
+          reflogMessage: 'branch: Created from seed',
+        });
+        const sut = mergeRun;
+
+        // Act
+        const caught = await sut(ctx, { rev: 'feature', strategy: 'resolve', author }).then(
+          () => undefined,
+          (err: unknown) => (err as TsgitError).data,
+        );
+
+        // Assert
+        expect(caught).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'.' segment rejected",
+        });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`)).toBe('MAIN\n');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/clean.txt`)).toBe('base-clean\n');
+      });
+    });
+  });
+});
+
 describe('merge commit — HEAD through a chain of symbolic refs', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -2044,7 +2477,7 @@ describe('merge commit — HEAD through a chain of symbolic refs', () => {
 
         // Assert
         const created = result.kind === 'merge' ? result.id : undefined;
-        const line = `${ours.id} ${created} tsgit <tsgit@localhost> ${FROZEN_SECONDS} +0000\tmerge feature: Merge made by the 'tsgit' strategy.`;
+        const line = `${ours.id} ${created} tsgit <tsgit@localhost> ${FROZEN_SECONDS} +0000\tmerge feature: Merge made by the 'ort' strategy.`;
         expect(await lastReflogLine(ctx, 'refs/heads/x')).toBe(line);
         expect(await lastReflogLine(ctx, 'refs/heads/s')).toBe(line);
         expect(await lastReflogLine(ctx, 'HEAD')).toBe(line);
@@ -2083,7 +2516,7 @@ describe('merge — internal reflog action', () => {
             'the default "merge <rev>" merge-commit prefix is recorded for a forced merge commit',
           mergeOptions: { rev: 'feature', fastForward: 'never', message: 'merge', author } as const,
           internalOptions: undefined,
-          expected: "merge feature: Merge made by the 'tsgit' strategy.",
+          expected: "merge feature: Merge made by the 'ort' strategy.",
         },
         {
           label: '"pull: Fast-forward" is recorded when reflogAction is "pull"',
@@ -2093,10 +2526,10 @@ describe('merge — internal reflog action', () => {
         },
         {
           label:
-            '"pull: Merge made by the \'tsgit\' strategy." is recorded for a forced merge with reflogAction "pull"',
+            '"pull: Merge made by the \'ort\' strategy." is recorded for a forced merge with reflogAction "pull"',
           mergeOptions: { rev: 'feature', fastForward: 'never', message: 'merge', author } as const,
           internalOptions: { reflogAction: 'pull' } as const,
-          expected: "pull: Merge made by the 'tsgit' strategy.",
+          expected: "pull: Merge made by the 'ort' strategy.",
         },
       ])('Then $label', async ({ mergeOptions, internalOptions, expected }) => {
         // Arrange
@@ -2651,7 +3084,7 @@ describe('writeOutcomeToTree (direct) — streaming', () => {
 
   describe('Given an unchanged outcome', () => {
     describe('When writeOutcomeToTree runs', () => {
-      it('Then routes through streamBlob + writeWorkingTreeFileStream (not buffered readBlob)', async () => {
+      it('Then routes through writeWorkingTreeFileStream (not buffered readBlob)', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await init(ctx);
@@ -2663,18 +3096,15 @@ describe('writeOutcomeToTree (direct) — streaming', () => {
           id,
           mode: FILE_MODE.REGULAR,
         };
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeFileStream');
 
         // Act
         await writeOutcomeToTree(ctx, outcome, undefined);
 
         // Assert
-        expect(streamBlobSpy).toHaveBeenCalledOnce();
         expect(writeStreamSpy).toHaveBeenCalledOnce();
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/u.txt`)).toBe('unchanged-stream');
 
-        streamBlobSpy.mockRestore();
         writeStreamSpy.mockRestore();
       });
     });
@@ -2682,7 +3112,7 @@ describe('writeOutcomeToTree (direct) — streaming', () => {
 
   describe('Given a resolved-known outcome', () => {
     describe('When writeOutcomeToTree runs', () => {
-      it('Then routes through streamBlob + writeWorkingTreeFileStream and written bytes match blob content', async () => {
+      it('Then routes through writeWorkingTreeFileStream and written bytes match blob content', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await init(ctx);
@@ -2694,18 +3124,15 @@ describe('writeOutcomeToTree (direct) — streaming', () => {
           id,
           mode: FILE_MODE.REGULAR,
         };
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeFileStream');
 
         // Act
         await writeOutcomeToTree(ctx, outcome, undefined);
 
         // Assert
-        expect(streamBlobSpy).toHaveBeenCalledOnce();
         expect(writeStreamSpy).toHaveBeenCalledOnce();
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/k.txt`)).toBe('known-stream');
 
-        streamBlobSpy.mockRestore();
         writeStreamSpy.mockRestore();
       });
     });
@@ -2713,7 +3140,7 @@ describe('writeOutcomeToTree (direct) — streaming', () => {
 
   describe('Given a resolved-known outcome with a large blob (uncapped write)', () => {
     describe('When writeOutcomeToTree runs', () => {
-      it('Then streamBlob is called with no maxBytes arg and the full content is written', async () => {
+      it('Then the full content is written with no size cap', async () => {
         // Arrange — a blob large enough to fail a small explicit cap but fine uncapped
         const ctx = createMemoryContext();
         await init(ctx);
@@ -2725,19 +3152,13 @@ describe('writeOutcomeToTree (direct) — streaming', () => {
           id,
           mode: FILE_MODE.REGULAR,
         };
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
 
         // Act — must not throw; uncapped streaming path
         await writeOutcomeToTree(ctx, outcome, undefined);
 
         // Assert — streamBlob called with exactly (ctx, id) — no third options arg
-        expect(streamBlobSpy).toHaveBeenCalledOnce();
-        const [, , thirdArg] = streamBlobSpy.mock.calls[0] ?? [];
-        expect(thirdArg).toBeUndefined();
         const written = await ctx.fs.read(`${ctx.layout.workDir}/large.bin`);
         expect(written).toEqual(bytes);
-
-        streamBlobSpy.mockRestore();
       });
     });
   });
@@ -2964,7 +3385,7 @@ describe('buildConflictIndexEntries (direct)', () => {
         ];
 
         // Act
-        const result = buildConflictIndexEntries(outcomes, [], undefined);
+        const result = buildConflictIndexEntries(outcomes, [], undefined, []);
 
         // Assert
         expect(result).toHaveLength(1);
@@ -2988,7 +3409,7 @@ describe('buildConflictIndexEntries (direct)', () => {
         ];
 
         // Act
-        const result = buildConflictIndexEntries(outcomes, [], undefined);
+        const result = buildConflictIndexEntries(outcomes, [], undefined, []);
 
         // Assert
         expect(result).toHaveLength(1);
@@ -3001,13 +3422,13 @@ describe('buildConflictIndexEntries (direct)', () => {
   describe('Given a resolved-deleted outcome', () => {
     describe('When buildConflictIndexEntries runs', () => {
       it('Then no stage-0 entry is produced', () => {
-        // Arrange — resolved-deleted/resolved-merged are excluded from stage-0.
+        // Arrange — resolved-deleted contributes no stage-0 entry.
         const outcomes: MergeOutcome[] = [
           { status: 'resolved-deleted', path: 'd.txt' as FilePath },
         ];
 
         // Act
-        const result = buildConflictIndexEntries(outcomes, [], undefined);
+        const result = buildConflictIndexEntries(outcomes, [], undefined, []);
 
         // Assert
         expect(result).toEqual([]);
@@ -3029,7 +3450,7 @@ describe('buildConflictIndexEntries (direct)', () => {
         ];
 
         // Act
-        const result = buildConflictIndexEntries(outcomes, [], undefined);
+        const result = buildConflictIndexEntries(outcomes, [], undefined, []);
 
         // Assert — every flag is literally false.
         expect(result[0]?.flags.assumeValid).toBe(false);
@@ -3073,7 +3494,7 @@ describe('buildConflictIndexEntries (direct)', () => {
         ];
 
         // Act
-        const result = buildConflictIndexEntries(outcomes, conflicts, undefined);
+        const result = buildConflictIndexEntries(outcomes, conflicts, undefined, []);
 
         // Assert — fully sorted by path, then by stage within `mmm.txt`.
         const order = result.map((e) => `${e.path}@${e.flags.stage}`);
@@ -3209,7 +3630,7 @@ describe('merge — sparse checkout', () => {
         ];
 
         // Act
-        const result = buildConflictIndexEntries(outcomes, [], excludesDrop);
+        const result = buildConflictIndexEntries(outcomes, [], excludesDrop, []);
 
         // Assert
         expect(result).toHaveLength(1);
@@ -3234,7 +3655,7 @@ describe('merge — sparse checkout', () => {
         ];
 
         // Act
-        const result = buildConflictIndexEntries(outcomes, [], excludesDrop);
+        const result = buildConflictIndexEntries(outcomes, [], excludesDrop, []);
 
         // Assert
         expect(result[0]?.flags.skipWorktree).toBe(true);
@@ -3256,7 +3677,7 @@ describe('merge — sparse checkout', () => {
         ];
 
         // Act
-        const result = buildConflictIndexEntries(outcomes, [], excludesDrop);
+        const result = buildConflictIndexEntries(outcomes, [], excludesDrop, []);
 
         // Assert
         expect(result[0]?.flags.skipWorktree).toBe(false);
@@ -3619,7 +4040,11 @@ describe('merge — add-add content merge (slice 4, end-to-end)', () => {
         });
 
         // Act
-        const result = await mergeRun(ctx, { rev: 'theirs', author });
+        const result = await mergeRun(ctx, {
+          rev: 'theirs',
+          author,
+          allowUnrelatedHistories: true,
+        });
 
         // Assert — conflict kind and worktree carries marker bytes
         expect(result.kind).toBe('conflict');
@@ -3692,7 +4117,11 @@ describe('merge — add-add content merge (slice 4, end-to-end)', () => {
         });
 
         // Act
-        const result = await mergeRun(ctx, { rev: 'theirs', author });
+        const result = await mergeRun(ctx, {
+          rev: 'theirs',
+          author,
+          allowUnrelatedHistories: true,
+        });
 
         // Assert — bare add-add: ours symlink remains
         expect(result.kind).toBe('conflict');
@@ -3755,7 +4184,11 @@ describe('merge — distinct-types conflict (slice 4, end-to-end)', () => {
         ]);
 
         // Act
-        const result = await mergeRun(ctx, { rev: 'theirs', author });
+        const result = await mergeRun(ctx, {
+          rev: 'theirs',
+          author,
+          allowUnrelatedHistories: true,
+        });
 
         // Assert — conflict reported
         expect(result.kind).toBe('conflict');
@@ -3822,7 +4255,11 @@ describe('merge — distinct-types conflict (slice 4, end-to-end)', () => {
         ]);
 
         // Act
-        const result = await mergeRun(ctx, { rev: 'theirs', author });
+        const result = await mergeRun(ctx, {
+          rev: 'theirs',
+          author,
+          allowUnrelatedHistories: true,
+        });
 
         // Assert — conflict reported
         expect(result.kind).toBe('conflict');
@@ -3885,7 +4322,7 @@ describe('merge — labels threading (slice 4)', () => {
         });
 
         // Act
-        await mergeRun(ctx, { rev: 'feature', author });
+        await mergeRun(ctx, { rev: 'feature', author, allowUnrelatedHistories: true });
 
         // Assert — conflict markers use HEAD and feature labels
         const onDisk = await ctx.fs.readUtf8(`${ctx.layout.workDir}/f.txt`);
@@ -4178,6 +4615,1740 @@ describe('writeConflictToTree (direct)', () => {
         expect(data?.reason).toBe("'..' segment rejected");
         expect(data?.offset).toBe(NO_PARSER_OFFSET);
         expect(writeCallCount).toBe(0);
+      });
+    });
+  });
+});
+
+describe('merge ORIG_HEAD', () => {
+  type Ctx = ReturnType<typeof createMemoryContext>;
+
+  const origHeadPath = (ctx: Ctx): string => `${ctx.layout.gitDir}/ORIG_HEAD`;
+
+  const commitFile = async (ctx: Ctx, name: string, message: string): Promise<ObjectId> => {
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, name);
+    await add(ctx, [name]);
+    return (await commit(ctx, { message, author })).id;
+  };
+
+  const seedBase = async (ctx: Ctx): Promise<ObjectId> => {
+    await init(ctx);
+    return commitFile(ctx, 'a.txt', 'base');
+  };
+
+  /** main = base, feature = base + b.txt; HEAD on main. */
+  const featureAhead = async (ctx: Ctx): Promise<{ main: ObjectId; feature: ObjectId }> => {
+    const main = await seedBase(ctx);
+    await branchCreate(ctx, { name: 'feature' });
+    await checkout(ctx, { rev: 'feature' });
+    const feature = await commitFile(ctx, 'b.txt', 'on-feature');
+    await checkout(ctx, { rev: 'main' });
+    return { main, feature };
+  };
+
+  /** feature = base, main = base + c.txt; HEAD on main. */
+  const mainAhead = async (ctx: Ctx): Promise<{ main: ObjectId }> => {
+    await seedBase(ctx);
+    await branchCreate(ctx, { name: 'feature' });
+    return { main: await commitFile(ctx, 'c.txt', 'on-main') };
+  };
+
+  /** Both branches add a different file; HEAD on main. */
+  const diverged = async (ctx: Ctx): Promise<{ main: ObjectId }> => {
+    await featureAhead(ctx);
+    return { main: await commitFile(ctx, 'c.txt', 'on-main') };
+  };
+
+  describe('Given the target is the current HEAD commit', () => {
+    describe('When merge reports up-to-date', () => {
+      it('Then ORIG_HEAD records HEAD', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const main = await seedBase(ctx);
+
+        // Act
+        await mergeRun(ctx, { rev: main });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(origHeadPath(ctx))).toBe(`${main}\n`);
+      });
+    });
+  });
+
+  describe('Given the target is an ancestor of HEAD', () => {
+    describe('When merge reports up-to-date', () => {
+      it('Then ORIG_HEAD records HEAD', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { main } = await mainAhead(ctx);
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature' });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(origHeadPath(ctx))).toBe(`${main}\n`);
+      });
+    });
+  });
+
+  describe('Given the target is ahead of HEAD', () => {
+    describe('When merge fast-forwards', () => {
+      it('Then ORIG_HEAD records the pre-merge HEAD', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { main } = await featureAhead(ctx);
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature' });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(origHeadPath(ctx))).toBe(`${main}\n`);
+      });
+    });
+
+    describe("When merge runs with fastForward 'never'", () => {
+      it('Then ORIG_HEAD records the pre-merge HEAD', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { main } = await featureAhead(ctx);
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', fastForward: 'never', author });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(origHeadPath(ctx))).toBe(`${main}\n`);
+      });
+    });
+
+    describe('When a clean true merge commits', () => {
+      it('Then ORIG_HEAD records the pre-merge HEAD and no reflog is written for it', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { main } = await diverged(ctx);
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', author });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(origHeadPath(ctx))).toBe(`${main}\n`);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/ORIG_HEAD`)).toBe(false);
+      });
+    });
+  });
+
+  describe("Given diverged histories and fastForward 'only'", () => {
+    describe('When merge refuses', () => {
+      it('Then ORIG_HEAD records HEAD', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { main } = await diverged(ctx);
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', fastForward: 'only' }).catch(() => undefined);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(origHeadPath(ctx))).toBe(`${main}\n`);
+      });
+    });
+  });
+
+  describe('Given an untracked file the merge would overwrite', () => {
+    describe('When merge refuses', () => {
+      it('Then ORIG_HEAD records HEAD', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { main } = await diverged(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'untracked');
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', author }).catch(() => undefined);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(origHeadPath(ctx))).toBe(`${main}\n`);
+      });
+    });
+  });
+
+  describe('Given a rev that does not resolve', () => {
+    describe('When merge refuses', () => {
+      it('Then ORIG_HEAD is not written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedBase(ctx);
+
+        // Act
+        await mergeRun(ctx, { rev: 'nope' }).catch(() => undefined);
+
+        // Assert
+        expect(await ctx.fs.exists(origHeadPath(ctx))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a merge already pending', () => {
+    describe('When merge refuses', () => {
+      it('Then ORIG_HEAD is not rewritten', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await diverged(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${'a'.repeat(40)}\n`);
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', author }).catch(() => undefined);
+
+        // Assert
+        expect(await ctx.fs.exists(origHeadPath(ctx))).toBe(false);
+      });
+    });
+  });
+});
+
+describe('Given an alternate that fails to load', () => {
+  type Ctx = ReturnType<typeof createMemoryContext>;
+
+  const seedDiverged = async (): Promise<{ ctx: Ctx; main: ObjectId }> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const commitFile = async (name: string, message: string): Promise<ObjectId> => {
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, name);
+      await add(ctx, [name]);
+      return (await commit(ctx, { message, author })).id;
+    };
+    await commitFile('a.txt', 'base');
+    await branchCreate(ctx, { name: 'feature' });
+    await checkout(ctx, { rev: 'feature' });
+    await commitFile('b.txt', 'on-feature');
+    await checkout(ctx, { rev: 'main' });
+    return { ctx, main: await commitFile('c.txt', 'on-main') };
+  };
+
+  describe('When mergeRun targets the current HEAD commit', () => {
+    it('Then it rejects with the alternate error before writing anything', async () => {
+      // Arrange
+      const { ctx, main } = await seedDiverged();
+      const before = await snapshotFiles(ctx);
+      const loadError = await failSourceLoad(ctx);
+      const sut = mergeRun;
+
+      // Act — git's get_merge_parent parses the named object before ORIG_HEAD is written
+      const attempt = sut(ctx, { rev: main, author, message: 'm' });
+
+      // Assert
+      await expect(attempt).rejects.toBe(loadError);
+      const result = await snapshotFiles(ctx);
+      expect(result).toEqual(before);
+      vi.restoreAllMocks();
+    });
+  });
+});
+
+describe('merge default message', () => {
+  const USER_CONFIG = '[user]\n  name = Grace\n  email = grace@example.com\n';
+
+  /** main and feature each add one file over a shared base; HEAD on `branch`. */
+  const divergedRepo = async (
+    config = '',
+    branch = 'main',
+  ): Promise<{ readonly ctx: Context; readonly feature: ObjectId }> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `${USER_CONFIG}${config}`);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    await commit(ctx, { message: 'base', author });
+    await branchCreate(ctx, { name: 'feature' });
+    await checkout(ctx, { rev: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+    await add(ctx, ['b.txt']);
+    const feature = (await commit(ctx, { message: 'on-feature', author })).id;
+    await checkout(ctx, { rev: 'main' });
+    if (branch !== 'main') {
+      await branchCreate(ctx, { name: branch });
+      await checkout(ctx, { rev: branch });
+    }
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
+    await add(ctx, ['c.txt']);
+    await commit(ctx, { message: 'on-main', author });
+    return { ctx, feature };
+  };
+
+  const mergedMessage = async (ctx: Context, rev: string): Promise<string> => {
+    const result = await mergeRun(ctx, { rev, author });
+    if (result.kind !== 'merge') throw new Error(`expected a merge, got ${result.kind}`);
+    const merged = await readObject(ctx, result.id);
+    if (merged.type !== 'commit') throw new Error('not a commit');
+    return merged.data.message;
+  };
+
+  describe('Given a local branch merged into main', () => {
+    describe('When merged without a message', () => {
+      it("Then the message is git's branch title with the destination suppressed", async () => {
+        // Arrange
+        const { ctx } = await divergedRepo();
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'feature');
+
+        // Assert
+        expect(result).toBe("Merge branch 'feature'\n");
+      });
+    });
+  });
+
+  describe('Given a local branch merged into a branch git does not suppress', () => {
+    describe('When merged without a message', () => {
+      it('Then the title names the destination', async () => {
+        // Arrange
+        const { ctx } = await divergedRepo('', 'topic');
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'feature');
+
+        // Assert
+        expect(result).toBe("Merge branch 'feature' into topic\n");
+      });
+    });
+  });
+
+  describe('Given the branch named by its full ref', () => {
+    describe('When merged without a message', () => {
+      it('Then the title quotes the name as given', async () => {
+        // Arrange
+        const { ctx } = await divergedRepo();
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'refs/heads/feature');
+
+        // Assert
+        expect(result).toBe("Merge branch 'refs/heads/feature'\n");
+      });
+    });
+  });
+
+  describe('Given a lightweight tag at the feature tip', () => {
+    describe('When merged without a message', () => {
+      it('Then the title names the tag', async () => {
+        // Arrange
+        const { ctx } = await divergedRepo();
+        await tagCreate(ctx, { name: 'lt', target: 'feature' });
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'lt');
+
+        // Assert
+        expect(result).toBe("Merge tag 'lt'\n");
+      });
+    });
+  });
+
+  describe('Given an annotated tag at the feature tip', () => {
+    describe('When merged without a message', () => {
+      it("Then the tag's message follows the title", async () => {
+        // Arrange
+        const { ctx } = await divergedRepo();
+        await tagCreate(ctx, { name: 'at', target: 'feature', message: 'tag body line' });
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'at');
+
+        // Assert
+        expect(result).toBe("Merge tag 'at'\n\ntag body line\n");
+      });
+    });
+  });
+
+  describe('Given signed annotated tags at the feature tip', () => {
+    const SIGNATURE = '-----BEGIN PGP SIGNATURE-----\n\nAAAA\n-----END PGP SIGNATURE-----\n';
+    const COMMENTED = '# -----BEGIN PGP SIGNATURE-----\n#\n# AAAA\n# -----END PGP SIGNATURE-----\n';
+    const TAGGER: AuthorIdentity = { ...author, name: 'T' };
+
+    const signedTag = async (ctx: Context, feature: ObjectId, tagger?: AuthorIdentity) => {
+      const tag = await writeObject(ctx, {
+        type: 'tag',
+        id: '' as ObjectId,
+        data: {
+          object: feature,
+          objectType: 'commit',
+          tagName: 'st',
+          message: 'signed body\n',
+          gpgSignature: SIGNATURE,
+          extraHeaders: [],
+          ...(tagger === undefined ? {} : { tagger }),
+        },
+      });
+      await seedRef(ctx, 'refs/tags/st' as RefName, tag, { reflogMessage: 'seed' });
+    };
+
+    /** A verifier that fails, reporting `report` on the stderr the runner captures. */
+    const reportingRunner = (report: string, commands: string[]): CommandRunner => ({
+      run: async (request) => {
+        commands.push(request.command);
+        return { exitCode: 1, stdout: new Uint8Array(0), stderr: new TextEncoder().encode(report) };
+      },
+    });
+
+    describe('When one with a tagger is merged and no verifier can run', () => {
+      it('Then the commented signature follows the message', async () => {
+        // Arrange
+        const { ctx, feature } = await divergedRepo();
+        await signedTag(ctx, feature, TAGGER);
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'st');
+
+        // Assert
+        expect(result).toBe(`Merge tag 'st'\n\nsigned body\n\n${COMMENTED}`);
+      });
+    });
+
+    describe('When one without a tagger is merged', () => {
+      it('Then the commented signature notes the failed verification', async () => {
+        // Arrange
+        const { ctx, feature } = await divergedRepo();
+        await signedTag(ctx, feature);
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'st');
+
+        // Assert
+        expect(result).toBe(
+          `Merge tag 'st'\n\nsigned body\n\n${COMMENTED}# gpg verification failed.\n`,
+        );
+      });
+    });
+
+    describe('When one with a tagger is merged under a configured gpg.program', () => {
+      it("Then that verifier's report is commented beneath the signature", async () => {
+        // Arrange
+        const { ctx: base, feature } = await divergedRepo('[gpg]\n  program = stub-gpg\n');
+        const commands: string[] = [];
+        const ctx: Context = { ...base, command: reportingRunner('gpg: stub\n', commands) };
+        await signedTag(ctx, feature, TAGGER);
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'st');
+
+        // Assert
+        expect(result).toBe(`Merge tag 'st'\n\nsigned body\n\n${COMMENTED}# gpg: stub\n`);
+        expect(commands).toEqual(['stub-gpg']);
+      });
+    });
+  });
+
+  describe('Given a signed annotated tag with a tagger under a configured gpg.program', () => {
+    const SIGNATURE = '-----BEGIN PGP SIGNATURE-----\n\nAAAA\n-----END PGP SIGNATURE-----\n';
+
+    describe('When it is merged', () => {
+      it('Then the verifier is fed the tag object without its signature', async () => {
+        // Arrange
+        const { ctx: base, feature } = await divergedRepo('[gpg]\n  program = stub-gpg\n');
+        const fed: string[] = [];
+        const ctx: Context = {
+          ...base,
+          command: {
+            run: async (request) => {
+              fed.push(new TextDecoder().decode(request.stdin));
+              return { exitCode: 1, stdout: new Uint8Array(0), stderr: new Uint8Array(0) };
+            },
+          },
+        };
+        const tag = await writeObject(ctx, {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: {
+            object: feature,
+            objectType: 'commit',
+            tagName: 'st',
+            message: 'signed body\n',
+            gpgSignature: SIGNATURE,
+            extraHeaders: [],
+            tagger: { ...author, name: 'T' },
+          },
+        });
+        await seedRef(ctx, 'refs/tags/st' as RefName, tag, { reflogMessage: 'seed' });
+        const sut = mergedMessage;
+
+        // Act
+        await sut(ctx, 'st');
+
+        // Assert
+        expect(fed).toEqual([
+          `object ${feature}\ntype commit\ntag st\ntagger T <ada@example.com> 1700000000 +0000\n\nsigned body\n`,
+        ]);
+      });
+    });
+  });
+
+  describe('Given signed and unsigned annotated tags on diverged commits', () => {
+    const SIGNATURE = '-----BEGIN PGP SIGNATURE-----\n\nAAAA\n-----END PGP SIGNATURE-----\n';
+
+    const annotatedTag = async (
+      ctx: Context,
+      name: string,
+      target: ObjectId,
+      signature?: string,
+    ): Promise<string> => {
+      const tag = await writeObject(ctx, {
+        type: 'tag',
+        id: '' as ObjectId,
+        data: {
+          object: target,
+          objectType: 'commit',
+          tagName: name,
+          message: `${name} body\r\nline\n`,
+          extraHeaders: [],
+          ...(signature === undefined ? {} : { gpgSignature: signature }),
+        },
+      });
+      await seedRef(ctx, `refs/tags/${name}` as RefName, tag, { reflogMessage: 'seed' });
+      return new TextDecoder().decode((await readRawObject(ctx, tag)).content);
+    };
+
+    /** `feature` tagged `st` (signed) and `ut` (unsigned); `other` off main's parent tagged `so` (signed). */
+    const taggedRepo = async () => {
+      const { ctx, feature } = await divergedRepo();
+      await branchCreate(ctx, { name: 'other', startPoint: 'main~1' });
+      await checkout(ctx, { rev: 'other' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/d.txt`, 'd');
+      await add(ctx, ['d.txt']);
+      const other = (await commit(ctx, { message: 'on-other', author })).id;
+      await checkout(ctx, { rev: 'main' });
+      const st = await annotatedTag(ctx, 'st', feature, SIGNATURE);
+      await annotatedTag(ctx, 'ut', feature);
+      const so = await annotatedTag(ctx, 'so', other, SIGNATURE);
+      return { ctx, st, so };
+    };
+
+    const mergeHeaders = async (ctx: Context, rev: string | ReadonlyArray<string>) => {
+      const result = await mergeRun(ctx, { rev, author });
+      if (result.kind !== 'merge') throw new Error(`expected a merge, got ${result.kind}`);
+      const merged = await readObject(ctx, result.id);
+      if (merged.type !== 'commit') throw new Error('not a commit');
+      return merged.data.extraHeaders;
+    };
+
+    describe('When the signed tag is merged', () => {
+      it('Then the merge commit carries the tag object as a mergetag header', async () => {
+        // Arrange
+        const { ctx, st } = await taggedRepo();
+        const sut = mergeHeaders;
+
+        // Act
+        const result = await sut(ctx, 'st');
+
+        // Assert
+        expect(result).toEqual([{ key: 'mergetag', value: st.slice(0, -1) }]);
+      });
+    });
+
+    describe('When the unsigned tag is merged', () => {
+      it('Then the merge commit carries no mergetag header', async () => {
+        // Arrange
+        const { ctx } = await taggedRepo();
+        const sut = mergeHeaders;
+
+        // Act
+        const result = await sut(ctx, 'ut');
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+
+    describe('When both signed tags are merged as an octopus', () => {
+      it('Then one mergetag header follows per tag parent, in parent order', async () => {
+        // Arrange
+        const { ctx, st, so } = await taggedRepo();
+        const sut = mergeHeaders;
+
+        // Act
+        const result = await sut(ctx, ['so', 'st']);
+
+        // Assert
+        expect(result).toEqual([
+          { key: 'mergetag', value: so.slice(0, -1) },
+          { key: 'mergetag', value: st.slice(0, -1) },
+        ]);
+      });
+    });
+
+    describe("When a signed tag naming HEAD's commit is merged alongside a branch", () => {
+      it("Then HEAD's parent carries that tag", async () => {
+        // Arrange
+        const { ctx } = await taggedRepo();
+        const head = await annotatedTag(
+          ctx,
+          'ht',
+          await resolveRef(ctx, 'HEAD' as RefName),
+          SIGNATURE,
+        );
+        const sut = mergeHeaders;
+
+        // Act
+        const result = await sut(ctx, ['ht', 'feature']);
+
+        // Assert
+        expect(result).toEqual([{ key: 'mergetag', value: head.slice(0, -1) }]);
+      });
+    });
+
+    describe.each([
+      [['st', 'feature'], 1],
+      [['feature', 'st'], 0],
+    ])('When %j name the same commit', (rev, count) => {
+      it(`Then the first name decides: ${count} mergetag header`, async () => {
+        // Arrange
+        const { ctx } = await taggedRepo();
+        const sut = mergeHeaders;
+
+        // Act
+        const result = await sut(ctx, rev);
+
+        // Assert
+        expect(result).toHaveLength(count);
+      });
+    });
+  });
+
+  describe('Given refs outside the labelled namespaces', () => {
+    describe('When an annotated tag is merged through one without a message', () => {
+      it('Then the title names a tag by that ref and its message follows', async () => {
+        // Arrange
+        const { ctx } = await divergedRepo();
+        const tag = await tagCreate(ctx, { name: 'at', target: 'feature', message: 'body' });
+        await seedRef(ctx, 'refs/custom/at' as RefName, tag.id, { reflogMessage: 'seed' });
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'refs/custom/at');
+
+        // Assert
+        expect(result).toBe("Merge tag 'refs/custom/at'\n\nbody\n");
+      });
+    });
+
+    describe('When a commit is merged through one without a message', () => {
+      it('Then the title names a commit by that ref', async () => {
+        // Arrange
+        const { ctx, feature } = await divergedRepo();
+        await seedRef(ctx, 'refs/custom/c' as RefName, feature, { reflogMessage: 'seed' });
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'refs/custom/c');
+
+        // Assert
+        expect(result).toBe("Merge commit 'refs/custom/c'\n");
+      });
+    });
+  });
+
+  describe('Given a remote-tracking branch at the feature tip', () => {
+    describe('When merged without a message', () => {
+      it('Then the title names the remote-tracking branch', async () => {
+        // Arrange
+        const { ctx, feature } = await divergedRepo();
+        await seedRef(ctx, 'refs/remotes/origin/feature' as RefName, feature, {
+          reflogMessage: 'seed',
+        });
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'origin/feature');
+
+        // Assert
+        expect(result).toBe("Merge remote-tracking branch 'origin/feature'\n");
+      });
+    });
+  });
+
+  describe('Given the feature commit named by a full and an abbreviated id', () => {
+    describe.each([
+      ['full', (id: string) => id],
+      ['abbreviated', (id: string) => id.slice(0, 7)],
+    ])('When merged by its %s id without a message', (_label, name) => {
+      it('Then the title names the commit as given', async () => {
+        // Arrange
+        const { ctx, feature } = await divergedRepo();
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, name(feature));
+
+        // Assert
+        expect(result).toBe(`Merge commit '${name(feature)}'\n`);
+      });
+    });
+  });
+
+  describe('Given merge.suppressDest patterns', () => {
+    describe.each([
+      ['a glob matching the destination', '[merge]\n  suppressDest = top*\n', 'topic', ''],
+      [
+        'a pattern list replacing the defaults',
+        '[merge]\n  suppressDest = x\n',
+        'main',
+        ' into main',
+      ],
+      ['an empty value clearing them', '[merge]\n  suppressDest =\n', 'main', ' into main'],
+      [
+        'an empty value clearing the patterns before it',
+        '[merge]\n  suppressDest = main\n  suppressDest =\n',
+        'main',
+        ' into main',
+      ],
+      [
+        'several patterns and no empty value',
+        '[merge]\n  suppressDest = main\n  suppressDest = x\n  suppressDest = y\n',
+        'main',
+        '',
+      ],
+      ['a glob that does not cross a slash', '[merge]\n  suppressDest = a*\n', 'a/b', ' into a/b'],
+    ])('When merging into a branch under %s', (_label, config, branch, into) => {
+      it('Then the destination is named only when no pattern matches', async () => {
+        // Arrange
+        const { ctx } = await divergedRepo(config, branch);
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, 'feature');
+
+        // Assert
+        expect(result).toBe(`Merge branch 'feature'${into}\n`);
+      });
+    });
+  });
+
+  describe('Given a valueless merge.suppressDest', () => {
+    describe('When merging', () => {
+      it('Then it refuses with the missing value before merging', async () => {
+        // Arrange
+        const { ctx } = await divergedRepo('[merge]\n  suppressDest\n');
+        const sut = mergeRun;
+
+        // Act
+        const error = await sut(ctx, { rev: 'feature', author }).catch((e: unknown) => e);
+
+        // Assert
+        expect((error as TsgitError).data).toMatchObject({
+          code: 'CONFIG_MISSING_VALUE',
+          key: 'merge.suppressdest',
+        });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a valueless merge.suppressDest and a caller message', () => {
+    describe('When merging', () => {
+      it('Then it refuses with the missing value although no title is formatted', async () => {
+        // Arrange
+        const { ctx } = await divergedRepo('[merge]\n  suppressDest\n');
+        const sut = mergeRun;
+
+        // Act
+        const error = await sut(ctx, { rev: 'feature', message: 'custom', author }).catch(
+          (e: unknown) => e,
+        );
+
+        // Assert
+        expect((error as TsgitError).data).toMatchObject({
+          code: 'CONFIG_MISSING_VALUE',
+          key: 'merge.suppressdest',
+        });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a merge that conflicts', () => {
+    describe('When merged without a message', () => {
+      it("Then MERGE_MSG carries git's title and the conflicted paths block", async () => {
+        // Arrange
+        const { ctx } = await divergedRepo();
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'theirs');
+        await add(ctx, ['z.txt']);
+        await commit(ctx, { message: 'z theirs', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/z.txt`, 'ours');
+        await add(ctx, ['z.txt']);
+        await commit(ctx, { message: 'z ours', author });
+        const sut = mergeRun;
+
+        // Act
+        await sut(ctx, { rev: 'feature', author });
+
+        // Assert
+        const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`);
+        expect(result).toBe("Merge branch 'feature'\n\n# Conflicts:\n#\tz.txt\n");
+      });
+    });
+  });
+});
+
+describe('merge — several heads (octopus)', () => {
+  const t: AuthorIdentity = {
+    name: 't',
+    email: 't@t',
+    timestamp: 1_700_000_000,
+    timezoneOffset: '+0000',
+  };
+
+  const commitFile = async (
+    ctx: Context,
+    name: string,
+    message: string,
+    content = `${message}\n`,
+  ): Promise<void> => {
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, content);
+    await add(ctx, [name]);
+    await commit(ctx, { message, author: t, committer: t });
+  };
+
+  const branchFromMain = async (ctx: Context, name: string): Promise<void> => {
+    await checkout(ctx, { rev: 'main' });
+    await branchCreate(ctx, { name });
+    await checkout(ctx, { rev: name });
+  };
+
+  /** Branches d1 and d2 each add a file on top of `main`, which stays put. */
+  const seedSubsumed = async (): Promise<Context> => {
+    const ctx = await seedOctopus();
+    for (const branch of ['d1', 'd2']) {
+      await branchFromMain(ctx, branch);
+      await commitFile(ctx, branch, branch);
+    }
+    await checkout(ctx, { rev: 'main' });
+    return ctx;
+  };
+
+  /** e1 and e2 edit the two ends of `f`; main adds `n`. */
+  const seedContentMerge = async (): Promise<Context> => {
+    const ctx = await seedOctopus();
+    await commitFile(ctx, 'f', 'f', '1\n2\n3\n4\n5\n');
+    await branchFromMain(ctx, 'e1');
+    await commitFile(ctx, 'f', 'e1', '1x\n2\n3\n4\n5\n');
+    await branchFromMain(ctx, 'e2');
+    await commitFile(ctx, 'f', 'e2', '1\n2\n3\n4\n5x\n');
+    await checkout(ctx, { rev: 'main' });
+    await commitFile(ctx, 'n', 'n');
+    return ctx;
+  };
+
+  /** git's `a` root, branches b1..b3 each adding a file, and `main` adding `m`. */
+  const seedOctopus = async (): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await init(ctx, { initialBranch: 'main' });
+    await commitFile(ctx, 'a', 'a');
+    for (const branch of ['b1', 'b2', 'b3']) {
+      await checkout(ctx, { rev: 'main' });
+      await branchCreate(ctx, { name: branch });
+      await checkout(ctx, { rev: branch });
+      await commitFile(ctx, branch, branch);
+    }
+    await checkout(ctx, { rev: 'main' });
+    await commitFile(ctx, 'm', 'm');
+    return ctx;
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given main diverged from three branches each adding a file', () => {
+    describe('When merge is given the three branches', () => {
+      it("Then it records git's four-parent octopus commit", async () => {
+        // Arrange
+        const ctx = await seedOctopus();
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: ['b1', 'b2', 'b3'], author: t, committer: t });
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'merge',
+          id: '3a190b784608ad6ceffc1b205eaa24f613617157',
+          branch: 'refs/heads/main',
+          parents: [
+            'a0565ce1b30ed961ef194231a4cc8b508d620fbb',
+            '099642b15be68830b2a3d06dbb08b13534567c1c',
+            '8719829563f48c78fd4165d900aa0a54fb6bdeff',
+            '98e88f839ec08b2e04df0771afde7428eb955d07',
+          ],
+        });
+      });
+
+      it("Then HEAD and main log git's octopus reflog note", async () => {
+        // Arrange
+        const ctx = await seedOctopus();
+        const sut = mergeRun;
+
+        // Act
+        await sut(ctx, { rev: ['b1', 'b2', 'b3'], author: t, committer: t });
+
+        // Assert
+        const expected = "merge b1 b2 b3: Merge made by the 'octopus' strategy.";
+        expect((await readReflog(ctx, 'HEAD' as RefName)).at(-1)?.message).toBe(expected);
+        expect((await readReflog(ctx, 'refs/heads/main' as RefName)).at(-1)?.message).toBe(
+          expected,
+        );
+      });
+    });
+  });
+
+  describe('Given a detached HEAD at main', () => {
+    describe('When merge is given two branches', () => {
+      it('Then HEAD stays detached at the octopus titled into HEAD', async () => {
+        // Arrange
+        const ctx = await seedOctopus();
+        await checkout(ctx, { rev: 'main', detach: true });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: ['b1', 'b2'], author: t, committer: t });
+
+        // Assert
+        const id = (result as { id: ObjectId }).id;
+        expect(result).toMatchObject({ kind: 'merge', branch: undefined });
+        expect(await getRefStore(ctx).resolveDirect('HEAD' as RefName)).toEqual({
+          kind: 'direct',
+          id,
+        });
+        const made = await readObject(ctx, id);
+        expect(made.type === 'commit' && made.data.message).toBe(
+          "Merge branches 'b1' and 'b2' into HEAD\n",
+        );
+        expect((await readReflog(ctx, 'HEAD' as RefName)).at(-1)?.message).toBe(
+          "merge b1 b2: Merge made by the 'octopus' strategy.",
+        );
+      });
+    });
+
+    describe('When merge is given two branches with fastForward only', () => {
+      it('Then it refuses NON_FAST_FORWARD on HEAD', async () => {
+        // Arrange
+        const ctx = await seedOctopus();
+        await checkout(ctx, { rev: 'main', detach: true });
+        const sut = mergeRun;
+
+        // Act
+        const caught = await sut(ctx, { rev: ['b1', 'b2'], fastForward: 'only' }).catch(
+          (error: unknown) => error,
+        );
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'NON_FAST_FORWARD',
+          ref: 'HEAD',
+          local: 'a0565ce1b30ed961ef194231a4cc8b508d620fbb',
+          remote: '099642b15be68830b2a3d06dbb08b13534567c1c',
+        });
+      });
+    });
+  });
+
+  describe('Given heads git reduces before merging', () => {
+    describe('When merge runs', () => {
+      it.each([
+        {
+          label: 'a repeated head is merged once',
+          seed: seedOctopus,
+          rev: ['b1', 'b1', 'b2'],
+          fastForward: undefined,
+          id: 'a9bbb2c7c121999bda8fc80625b414dfd9d57cd5',
+          parents: [
+            'a0565ce1b30ed961ef194231a4cc8b508d620fbb',
+            '099642b15be68830b2a3d06dbb08b13534567c1c',
+            '8719829563f48c78fd4165d900aa0a54fb6bdeff',
+          ],
+          reflog: "merge b1 b2: Merge made by the 'octopus' strategy.",
+        },
+        {
+          label: 'HEAD among the heads leaves a two-head ort merge',
+          seed: seedOctopus,
+          rev: ['b1', 'main'],
+          fastForward: undefined,
+          id: '77f25f73336092205293a7c932c699c11a2659d0',
+          parents: [
+            'a0565ce1b30ed961ef194231a4cc8b508d620fbb',
+            '099642b15be68830b2a3d06dbb08b13534567c1c',
+          ],
+          reflog: "merge b1: Merge made by the 'ort' strategy.",
+        },
+        {
+          label: 'a HEAD both heads reach is not recorded as a parent',
+          seed: seedSubsumed,
+          rev: ['d1', 'd2'],
+          fastForward: undefined,
+          id: 'b94f914ae6cd5880358f3f2738cdcefa9463f2d9',
+          parents: [
+            'a1e87a94c5228a21ea2146d19917e7fea800678a',
+            'be3c439e351b2e50144366ebf444b7785ffe04e9',
+          ],
+          reflog: "merge d1 d2: Merge made by the 'octopus' strategy.",
+        },
+        {
+          label: 'a HEAD both heads reach is kept as a parent under fastForward never',
+          seed: seedSubsumed,
+          rev: ['d1', 'd2'],
+          fastForward: 'never',
+          id: '14f1f5a41fef6107b95c6b9700017c669865bbe3',
+          parents: [
+            'a0565ce1b30ed961ef194231a4cc8b508d620fbb',
+            'a1e87a94c5228a21ea2146d19917e7fea800678a',
+            'be3c439e351b2e50144366ebf444b7785ffe04e9',
+          ],
+          reflog: "merge d1 d2: Merge made by the 'octopus' strategy.",
+        },
+        {
+          label: 'edits to both ends of one file merge cleanly',
+          seed: seedContentMerge,
+          rev: ['e1', 'e2'],
+          fastForward: undefined,
+          id: '6779c7fffcf1cf60685188bdd0082e7589318159',
+          parents: [
+            '09910812416cb55bf314e4bbfdf7987e4576e446',
+            '8e8dd0bb0b3b482044815c42aeda0e52d91b09a7',
+            'a0191d1120e251331bc42ec660adcf79da0cd74a',
+          ],
+          reflog: "merge e1 e2: Merge made by the 'octopus' strategy.",
+        },
+      ] as const)(
+        'Then $label, as git records it',
+        async ({ seed, rev, fastForward, id, parents, reflog }) => {
+          // Arrange
+          const ctx = await seed();
+          const sut = mergeRun;
+
+          // Act
+          const result = await sut(ctx, {
+            rev,
+            author: t,
+            committer: t,
+            ...(fastForward === undefined ? {} : { fastForward }),
+          });
+
+          // Assert
+          expect(result).toEqual({ kind: 'merge', id, branch: 'refs/heads/main', parents });
+          expect((await readReflog(ctx, 'HEAD' as RefName)).at(-1)?.message).toBe(reflog);
+        },
+      );
+    });
+  });
+
+  /** c1 rewrites `m` one way; main then rewrites it another. */
+  const seedConflicting = async (): Promise<Context> => {
+    const ctx = await seedOctopus();
+    await branchFromMain(ctx, 'c1');
+    await commitFile(ctx, 'm', 'c1');
+    await checkout(ctx, { rev: 'main' });
+    await commitFile(ctx, 'm', 'm2');
+    return ctx;
+  };
+
+  const MAIN_M2 = '22cb5f2099b7f48e95e0eb659e0686300bef355b';
+
+  describe.each([
+    ['c1', ['c1']],
+    ['b1 and c1', ['b1', 'c1']],
+  ])('Given merging %s conflicts', (_label, rev) => {
+    describe.each([
+      ['by default', {}, ''],
+      ['never fast-forwarding', { fastForward: 'never' as const }, 'no-ff'],
+    ])('When merge runs %s', (_mode, extra, expected) => {
+      it("Then MERGE_MODE records git's fast-forward mode", async () => {
+        // Arrange
+        const ctx = await seedConflicting();
+        const sut = mergeRun;
+
+        // Act
+        await sut(ctx, { rev, author: t, committer: t, ...extra });
+
+        // Assert
+        const result = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MODE`);
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given the last head conflicts with main', () => {
+    describe('When merge is given b1, b2 and c1', () => {
+      it('Then it stops with the conflict, MERGE_HEAD listing every head', async () => {
+        // Arrange
+        const ctx = await seedConflicting();
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: ['b1', 'b2', 'c1'], author: t, committer: t });
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'conflict',
+          conflicts: [{ path: 'm', type: 'content' }],
+          mergeHead: '099642b15be68830b2a3d06dbb08b13534567c1c',
+          origHead: MAIN_M2,
+        });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(
+          '099642b15be68830b2a3d06dbb08b13534567c1c\n' +
+            '8719829563f48c78fd4165d900aa0a54fb6bdeff\n' +
+            '5aca2a7136ad8e26f39781e1260fcafa44cc35cb\n',
+        );
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MSG`)).toBe(
+          "Merge branches 'b1', 'b2' and 'c1'\n\n# Conflicts:\n#\tm\n",
+        );
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(MAIN_M2);
+      });
+
+      it("Then the index holds git's merged entries and m's three stages", async () => {
+        // Arrange
+        const ctx = await seedConflicting();
+        const sut = mergeRun;
+
+        // Act
+        await sut(ctx, { rev: ['b1', 'b2', 'c1'], author: t, committer: t });
+
+        // Assert
+        const result = (await readIndex(ctx)).entries.map(
+          (e) => `${e.id} ${e.flags.stage}\t${e.path}`,
+        );
+        expect(result).toEqual([
+          '78981922613b2afb6025042ff6bd878ac1994e85 0\ta',
+          'c9c6af7f78bc47490dbf3e822cf2f3c24d4b9061 0\tb1',
+          'e6bfff5c1d0f0ecd501552b43a1e13d8008abc31 0\tb2',
+          '28ce6a8b26aa170e1de65536fe8abe1832bd3242 1\tm',
+          '08bb2331e777f431177c40df6841c0034f89fb58 2\tm',
+          'ae9304576a6ec3419b231b2b9c8e33a06f97f9fb 3\tm',
+        ]);
+      });
+
+      it('Then the working tree holds the merged files and m with conflict markers', async () => {
+        // Arrange
+        const ctx = await seedConflicting();
+        const sut = mergeRun;
+
+        // Act
+        await sut(ctx, { rev: ['b1', 'b2', 'c1'], author: t, committer: t });
+
+        // Assert
+        const read = (name: string) => ctx.fs.readUtf8(`${ctx.layout.workDir}/${name}`);
+        expect(await read('b1')).toBe('b1\n');
+        expect(await read('b2')).toBe('b2\n');
+        expect(await read('m')).toBe('<<<<<<< HEAD\nm2\n=======\nc1\n>>>>>>> c1\n');
+      });
+    });
+  });
+
+  describe('Given the first head conflicts with main', () => {
+    describe('When merge is given c1, b1 and b2', () => {
+      it('Then the octopus fails at c1 and nothing changes', async () => {
+        // Arrange
+        const ctx = await seedConflicting();
+        const sut = mergeRun;
+
+        // Act
+        const caught = await sut(ctx, { rev: ['c1', 'b1', 'b2'], author: t, committer: t }).catch(
+          (error: unknown) => error,
+        );
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'OCTOPUS_MERGE_FAILED',
+          head: 'c1',
+          reason: 'conflict-before-last-head',
+        });
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(MAIN_M2);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/b1`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a change staged on main', () => {
+    describe('When merge is given two heads', () => {
+      it("Then octopus refuses the index that differs from HEAD, as git's diff-index does", async () => {
+        // Arrange
+        const ctx = await seedOctopus();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/s`, 's\n');
+        await add(ctx, ['s']);
+        const sut = mergeRun;
+
+        // Act
+        const caught = await sut(ctx, { rev: ['b1', 'b2'], author: t, committer: t }).catch(
+          (error: unknown) => error,
+        );
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['s'],
+          untracked: [],
+        });
+      });
+    });
+  });
+
+  describe('Given heads main cannot fast-forward to', () => {
+    describe('When merge is given two heads with fastForward only', () => {
+      it('Then it refuses as a non-fast-forward', async () => {
+        // Arrange
+        const ctx = await seedOctopus();
+        const sut = mergeRun;
+
+        // Act
+        const caught = await sut(ctx, { rev: ['b1', 'b2'], fastForward: 'only' }).catch(
+          (error: unknown) => error,
+        );
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'NON_FAST_FORWARD',
+          ref: 'refs/heads/main',
+          local: 'a0565ce1b30ed961ef194231a4cc8b508d620fbb',
+          remote: '099642b15be68830b2a3d06dbb08b13534567c1c',
+        });
+      });
+    });
+  });
+
+  describe('Given heads that all name main itself', () => {
+    describe('When merge is given them', () => {
+      it('Then it is up to date', async () => {
+        // Arrange
+        const ctx = await seedOctopus();
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: ['main', 'main'] });
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'up-to-date',
+          id: 'a0565ce1b30ed961ef194231a4cc8b508d620fbb',
+        });
+      });
+    });
+  });
+
+  const removeAndCommit = async (ctx: Context, name: string, message: string): Promise<void> => {
+    await rm(ctx, [name]);
+    await commit(ctx, { message, author: t, committer: t });
+  };
+
+  describe('Given g1 deletes a file main kept', () => {
+    describe('When merge is given g1 and b1', () => {
+      it('Then it fast-forwards to g1, merges b1, and records the deletion as git does', async () => {
+        // Arrange
+        const ctx = await seedOctopus();
+        await branchFromMain(ctx, 'g1');
+        await removeAndCommit(ctx, 'a', 'g1');
+        await checkout(ctx, { rev: 'main' });
+        const info = vi.fn();
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(
+          { ...ctx, logger: { ...ctx.logger, info } },
+          { rev: ['g1', 'b1'], author: t, committer: t },
+        );
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'merge',
+          id: 'e9353cac3a95b8edfb25bd309c018a27f066e932',
+          branch: 'refs/heads/main',
+          parents: [
+            '5d8416e204352240d506f677caed3debbb30fe8f',
+            '099642b15be68830b2a3d06dbb08b13534567c1c',
+          ],
+        });
+        expect(info.mock.calls.map(([line]) => line)).toEqual([
+          'Fast-forwarding to: g1',
+          'Trying simple merge with b1',
+        ]);
+      });
+    });
+  });
+
+  describe('Given the last head deletes a file main modified', () => {
+    describe('When merge is given b1 and h1', () => {
+      it('Then m stays unmerged at stages 1 and 2 with our bytes in the working tree', async () => {
+        // Arrange
+        const ctx = await seedOctopus();
+        await branchFromMain(ctx, 'h1');
+        await removeAndCommit(ctx, 'm', 'h1');
+        await checkout(ctx, { rev: 'main' });
+        await commitFile(ctx, 'm', 'm3');
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: ['b1', 'h1'], author: t, committer: t });
+
+        // Assert
+        expect(result.kind === 'conflict' ? result.conflicts : []).toEqual([
+          { path: 'm', type: 'modify-delete' },
+        ]);
+        const index = (await readIndex(ctx)).entries.map(
+          (e) => `${e.id} ${e.flags.stage}\t${e.path}`,
+        );
+        expect(index.slice(2)).toEqual([
+          '28ce6a8b26aa170e1de65536fe8abe1832bd3242 1\tm',
+          'e5c9ce9248c688a566f3d03be31d0097edb96443 2\tm',
+        ]);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/m`)).toBe('m3\n');
+      });
+    });
+  });
+
+  describe('Given the last head modifies a file main deleted', () => {
+    describe('When merge is given b1 and k1', () => {
+      it('Then m stays unmerged at stages 1 and 3 and absent from the working tree', async () => {
+        // Arrange
+        const ctx = await seedOctopus();
+        await branchFromMain(ctx, 'k1');
+        await commitFile(ctx, 'm', 'k1', 'k\n');
+        await checkout(ctx, { rev: 'main' });
+        await removeAndCommit(ctx, 'm', 'rm');
+        const sut = mergeRun;
+
+        // Act
+        await sut(ctx, { rev: ['b1', 'k1'], author: t, committer: t });
+
+        // Assert
+        const index = (await readIndex(ctx)).entries.map(
+          (e) => `${e.id} ${e.flags.stage}\t${e.path}`,
+        );
+        expect(index.slice(2)).toEqual([
+          '28ce6a8b26aa170e1de65536fe8abe1832bd3242 1\tm',
+          'b68fde2a051d9af2fe3ff4c96c0898e5a3212e4d 3\tm',
+        ]);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/m`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an earlier head deletes a file and the last head conflicts', () => {
+    describe('When merge is given g1, b2 and c1', () => {
+      it('Then the deletion reaches the working tree and the index', async () => {
+        // Arrange
+        const ctx = await seedConflicting();
+        await branchFromMain(ctx, 'g1');
+        await removeAndCommit(ctx, 'a', 'g1');
+        await checkout(ctx, { rev: 'main' });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: ['g1', 'b2', 'c1'], author: t, committer: t });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/a`)).toBe(false);
+        const paths = (await readIndex(ctx)).entries.map((entry) => entry.path);
+        expect(paths).toEqual(['b2', 'm', 'm', 'm']);
+      });
+    });
+  });
+
+  describe('Given an octopus left a conflict on its last head', () => {
+    describe('When the conflict is resolved and committed', () => {
+      it("Then the commit records HEAD and every MERGE_HEAD line as git's commit does", async () => {
+        // Arrange
+        const ctx = await seedConflicting();
+        await mergeRun(ctx, { rev: ['b1', 'b2', 'c1'], author: t, committer: t });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/m`, 'r\n');
+        await add(ctx, ['m']);
+        const sut = commit;
+
+        // Act
+        const result = await sut(ctx, { message: 'Merge branches', author: t, committer: t });
+
+        // Assert
+        expect(result.id).toBe('f1e6d6a0c610f4cc8fe6829cbd74d266eb6214dd');
+      });
+    });
+  });
+});
+
+describe('merge — unrelated histories', () => {
+  const t: AuthorIdentity = {
+    name: 't',
+    email: 't@t',
+    timestamp: 1_700_000_000,
+    timezoneOffset: '+0000',
+  };
+
+  const commitFile = async (ctx: Context, name: string): Promise<void> => {
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, `${name}\n`);
+    await add(ctx, [name]);
+    await commit(ctx, { message: name, author: t, committer: t });
+  };
+
+  /** `main` holds `a`; `rel` adds `r` on top of it; `orphan` shares no history with either. */
+  const seedUnrelated = async (): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await init(ctx, { initialBranch: 'main' });
+    await commitFile(ctx, 'a');
+    await branchCreate(ctx, { name: 'rel' });
+    await checkout(ctx, { rev: 'rel' });
+    await commitFile(ctx, 'r');
+    await checkout(ctx, { rev: 'main' });
+    const blob = await writeBlob(ctx, 'o\n');
+    const tree = await writeTreeMod.writeTree(ctx, [
+      treeEntry(FILE_MODE.REGULAR, 'o' as never, blob),
+    ]);
+    const orphan = await writeObject(ctx, {
+      type: 'commit',
+      id: '' as ObjectId,
+      data: { tree, parents: [], author: t, committer: t, message: 'o\n', extraHeaders: [] },
+    });
+    await seedRef(ctx, 'refs/heads/orphan' as RefName, orphan, { reflogMessage: 'seed' });
+    return ctx;
+  };
+
+  const refusalOf = async (ctx: Context, input: MergeRunInput): Promise<unknown> => {
+    const caught = await mergeRun(ctx, input).catch((error: unknown) => error);
+    return (caught as TsgitError).data;
+  };
+
+  describe.each([
+    ['the orphan alone', ['orphan']],
+    ['rel and the orphan', ['rel', 'orphan']],
+  ])('Given %s', (_label, rev) => {
+    describe.each([
+      ['by default', {}],
+      ['fast-forward only', { fastForward: 'only' as const }],
+    ])('When merge runs %s', (_mode, extra) => {
+      it('Then it refuses with UNRELATED_HISTORIES after recording ORIG_HEAD', async () => {
+        // Arrange
+        const ctx = await seedUnrelated();
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        const sut = refusalOf;
+
+        // Act
+        const result = await sut(ctx, { rev, author: t, committer: t, ...extra });
+
+        // Assert
+        expect(result).toEqual({ code: 'UNRELATED_HISTORIES' });
+        expect(await resolveRef(ctx, 'ORIG_HEAD' as RefName)).toBe(head);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given the orphan and allowUnrelatedHistories', () => {
+    describe('When merge runs', () => {
+      it('Then it records a two-parent merge of both roots', async () => {
+        // Arrange
+        const ctx = await seedUnrelated();
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        const orphan = await resolveRef(ctx, 'refs/heads/orphan' as RefName);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, {
+          rev: 'orphan',
+          allowUnrelatedHistories: true,
+          author: t,
+          committer: t,
+        });
+
+        // Assert
+        expect(result).toMatchObject({ kind: 'merge', parents: [head, orphan] });
+      });
+    });
+  });
+
+  describe('Given rel and the orphan and allowUnrelatedHistories', () => {
+    describe('When merge runs', () => {
+      it("Then the octopus stops at the orphan and leaves git's conflicted merge state", async () => {
+        // Arrange
+        const ctx = await seedUnrelated();
+        const logged: string[] = [];
+        const logging = { ...ctx, logger: { error: (line: string) => logged.push(line) } };
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        const rel = await resolveRef(ctx, 'refs/heads/rel' as RefName);
+        const orphan = await resolveRef(ctx, 'refs/heads/orphan' as RefName);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(logging, {
+          rev: ['rel', 'orphan'],
+          allowUnrelatedHistories: true,
+          author: t,
+          committer: t,
+        });
+
+        // Assert
+        expect(result).toEqual({ kind: 'conflict', conflicts: [], mergeHead: rel, origHead: head });
+        expect(logged).toEqual(['Unable to find common commit with orphan']);
+        const gitDir = ctx.layout.gitDir;
+        expect(await ctx.fs.readUtf8(`${gitDir}/MERGE_HEAD`)).toBe(`${rel}\n${orphan}\n`);
+        expect(await ctx.fs.readUtf8(`${gitDir}/MERGE_MSG`)).toBe(
+          "Merge branches 'rel' and 'orphan'\n\n# Conflicts:\n",
+        );
+        const paths = (await readIndex(ctx)).entries.map((entry) => entry.path);
+        expect(paths).toEqual(['a', 'r']);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/r`)).toBe('r\n');
+      });
+    });
+  });
+
+  describe.each([
+    ['never fast-forwarding', { fastForward: 'never' as const }, ['head', 'rel', 'orphan']],
+    ['by default', {}, ['rel', 'orphan']],
+  ])('Given rel and the orphan merged %s and stopped', (_mode, extra, expected) => {
+    describe('When the merge is committed', () => {
+      it('Then HEAD stays a parent only under no-ff, and MERGE_MODE goes', async () => {
+        // Arrange
+        const ctx = await seedUnrelated();
+        const tips: Record<string, ObjectId> = {
+          head: await resolveRef(ctx, 'HEAD' as RefName),
+          rel: await resolveRef(ctx, 'refs/heads/rel' as RefName),
+          orphan: await resolveRef(ctx, 'refs/heads/orphan' as RefName),
+        };
+        const input = { rev: ['rel', 'orphan'], allowUnrelatedHistories: true, ...extra };
+        await mergeRun(ctx, { ...input, author: t, committer: t });
+        const sut = commit;
+
+        // Act
+        const result = await sut(ctx, { message: 'done', author: t, committer: t });
+
+        // Assert
+        const committed = await readObject(ctx, result.id);
+        const parents = committed.type === 'commit' ? committed.data.parents : [];
+        expect(parents).toEqual(expected.map((name) => tips[name]));
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_MODE`)).toBe(false);
+      });
+    });
+  });
+});
+
+describe('merge — throwaway tags', () => {
+  const TAGGER_CONFIG = '[user]\n  name = Grace\n  email = grace@example.com\n';
+
+  /** main at base; `feature` one commit ahead, tagged by an annotated `v1`. */
+  const seedTaggedAhead = async (): Promise<{
+    ctx: Context;
+    base: ObjectId;
+    ahead: ObjectId;
+    tag: ObjectId;
+  }> => {
+    const ctx = createMemoryContext();
+    await init(ctx, { initialBranch: 'main' });
+    const configPath = `${ctx.layout.gitDir}/config`;
+    await ctx.fs.writeUtf8(configPath, `${await ctx.fs.readUtf8(configPath)}${TAGGER_CONFIG}`);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+    await add(ctx, ['a.txt']);
+    const base = await commit(ctx, { message: 'base', author });
+    await branchCreate(ctx, { name: 'feature' });
+    await checkout(ctx, { rev: 'feature' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+    await add(ctx, ['b.txt']);
+    const ahead = await commit(ctx, { message: 'ahead', author });
+    const tag = await tagCreate(ctx, { name: 'v1', target: 'feature', message: 'v1' });
+    await checkout(ctx, { rev: 'main' });
+    return { ctx, base: base.id, ahead: ahead.id, tag: tag.id };
+  };
+
+  /** The tag object also reachable as `refs/tags/other`, with `refs/tags/v1` gone. */
+  const renameTag = async (ctx: Context, tag: ObjectId): Promise<void> => {
+    await seedRef(ctx, 'refs/tags/other' as RefName, tag, { reflogMessage: 'seed' });
+    await tagDelete(ctx, { name: 'v1' });
+  };
+
+  describe('Given an annotated tag its own name no longer points at', () => {
+    describe('When merge could fast-forward to it', () => {
+      it('Then it records a merge commit naming the tag instead', async () => {
+        // Arrange
+        const { ctx, base, ahead, tag } = await seedTaggedAhead();
+        await renameTag(ctx, tag);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'other', author, committer: author });
+
+        // Assert
+        expect(result).toMatchObject({ kind: 'merge', parents: [base, ahead] });
+        const made = await readObject(ctx, (result as { id: ObjectId }).id);
+        expect(made.type === 'commit' && made.data.message).toBe("Merge tag 'other'\n\nv1\n");
+      });
+    });
+
+    describe('When merge is told fast-forward only', () => {
+      it('Then it still fast-forwards', async () => {
+        // Arrange
+        const { ctx, ahead, tag } = await seedTaggedAhead();
+        await renameTag(ctx, tag);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'other', fastForward: 'only' });
+
+        // Assert
+        expect(result).toEqual({ kind: 'fast-forward', id: ahead, branch: 'refs/heads/main' });
+      });
+    });
+
+    describe('When merge is given it with another branch', () => {
+      it('Then the octopus keeps HEAD as its first parent', async () => {
+        // Arrange
+        const { ctx, base, ahead, tag } = await seedTaggedAhead();
+        await renameTag(ctx, tag);
+        await branchCreate(ctx, { name: 'other-side', startPoint: 'main' });
+        await checkout(ctx, { rev: 'other-side' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
+        await add(ctx, ['c.txt']);
+        const side = await commit(ctx, { message: 'side', author });
+        await checkout(ctx, { rev: 'main' });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: ['other', 'other-side'], author, committer: author });
+
+        // Assert
+        expect(result).toMatchObject({ kind: 'merge', parents: [base, ahead, side.id] });
+      });
+    });
+  });
+
+  describe('Given an annotated tag whose own name is a lightweight tag of the same commit', () => {
+    describe('When merge could fast-forward to it', () => {
+      it('Then it records a merge commit', async () => {
+        // Arrange
+        const { ctx, base, ahead } = await seedTaggedAhead();
+        const tagObject = await resolveRef(ctx, 'refs/tags/v1' as RefName);
+        await seedRef(ctx, 'refs/tags/other' as RefName, tagObject, { reflogMessage: 'seed' });
+        await tagCreate(ctx, { name: 'v1', target: 'feature', force: true });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'other', author, committer: author });
+
+        // Assert
+        expect(result).toMatchObject({ kind: 'merge', parents: [base, ahead] });
+      });
+    });
+  });
+
+  describe('Given an annotated tag its own name still points at', () => {
+    describe('When merge is given it under another name', () => {
+      it('Then it fast-forwards', async () => {
+        // Arrange
+        const { ctx, ahead, tag } = await seedTaggedAhead();
+        await seedRef(ctx, 'refs/tags/other' as RefName, tag, { reflogMessage: 'seed' });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'other', author, committer: author });
+
+        // Assert
+        expect(result).toEqual({ kind: 'fast-forward', id: ahead, branch: 'refs/heads/main' });
+      });
+    });
+  });
+
+  describe('Given an annotated tag whose name climbs out of refs/tags back to itself', () => {
+    describe('When merge could fast-forward to it', () => {
+      it('Then it records a merge commit, as no refname can carry that name', async () => {
+        // Arrange
+        const { ctx, base, ahead } = await seedTaggedAhead();
+        const tag = await writeObject(ctx, {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: {
+            object: ahead,
+            objectType: 'commit',
+            tagName: '../tags/other',
+            tagger: author,
+            message: 'climbs\n',
+            extraHeaders: [],
+          },
+        });
+        await seedRef(ctx, 'refs/tags/other' as RefName, tag, { reflogMessage: 'seed' });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'other', author, committer: author });
+
+        // Assert
+        expect(result).toMatchObject({ kind: 'merge', parents: [base, ahead] });
+      });
+    });
+  });
+
+  describe('Given a throwaway tag that conflicts with HEAD', () => {
+    describe('When merge stops on the conflict', () => {
+      it('Then MERGE_MODE records no-ff', async () => {
+        // Arrange
+        const { ctx, tag } = await seedTaggedAhead();
+        await renameTag(ctx, tag);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'main b');
+        await add(ctx, ['b.txt']);
+        await commit(ctx, { message: 'main b', author });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'other', author, committer: author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/MERGE_MODE`)).toBe('no-ff');
+      });
+    });
+  });
+});
+
+describe('merge — rename/rename to two paths', () => {
+  const LINES = '1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n';
+  const renameAndEdit = async (ctx: Context, to: string, seven: string): Promise<void> => {
+    await rm(ctx, ['f']);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${to}`, LINES.replace('7\n', `${seven}\n`));
+    await add(ctx, [to]);
+    await commit(ctx, { message: to, author });
+  };
+
+  describe('Given both sides rename one file apart and edit the same line', () => {
+    describe('When merge runs', () => {
+      it('Then the marked merge is staged at both destinations and written to both', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, LINES);
+        await add(ctx, ['f']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'side' });
+        await checkout(ctx, { rev: 'side' });
+        await renameAndEdit(ctx, 'b', 'SEVEN');
+        await checkout(ctx, { rev: 'main' });
+        await renameAndEdit(ctx, 'a', 'seven');
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        const marked = await ctx.fs.readUtf8(`${ctx.layout.workDir}/a`);
+        expect(marked).toContain('<<<<<<<< HEAD:a\nseven\n========\nSEVEN\n>>>>>>>> side:b\n');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/b`)).toBe(marked);
+        const index = await readIndex(ctx);
+        const staged = index.entries.filter((e) => e.path === 'a' || e.path === 'b');
+        expect(staged.map((e) => [e.path, e.flags.stage])).toEqual([
+          ['a', 2],
+          ['b', 3],
+        ]);
+        expect(staged[0]?.id).toBe(staged[1]?.id);
+        expect(new TextDecoder().decode((await readBlob(ctx, staged[0]!.id)).content)).toBe(marked);
       });
     });
   });

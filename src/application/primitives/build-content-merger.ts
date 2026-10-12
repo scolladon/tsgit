@@ -1,18 +1,51 @@
 import { configMissingValue, mergeDriverMissingCommand } from '../../domain/commands/error.js';
+import type { DiffAlgorithm } from '../../domain/diff/line-diff.js';
+import type { LineKey } from '../../domain/diff/whitespace.js';
 import {
+  type ConflictStyle,
+  type ContentMergeContext,
   type ContentMergeResult,
   type ContentMerger,
   DEFAULT_MERGE_LABELS,
   MAX_CONFLICT_OUTPUT_BYTES,
+  type MergeFavor,
   type MergeLabels,
   mergeContent,
 } from '../../domain/merge/index.js';
+import type { OrtVariant } from '../../domain/merge/strategy-options.js';
+import { mergeBinary } from '../../domain/merge/three-way-content.js';
 import type { Context } from '../../ports/context.js';
 import { findFirstValuelessInSection } from './config-read.js';
+import { readConflictStyle } from './internal/merge-rename-config.js';
 import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
 import { readBlob } from './read-blob.js';
 import { resolvePathMergeSpec } from './resolve-merge-driver.js';
 import { runMergeDriver } from './run-merge-driver.js';
+
+/** git's ort labels each side `<label>:<path>` once a rename puts the sides at different paths. */
+const labelsFor = (labels: MergeLabels, mergeCtx: ContentMergeContext): MergeLabels => {
+  const paths = mergeCtx.sidePaths;
+  if (paths === undefined) return labels;
+  return {
+    ours: `${labels.ours}:${paths.ours}`,
+    theirs: `${labels.theirs}:${paths.theirs}`,
+    base: `${labels.base}:${paths.base}`,
+  };
+};
+
+/** The `-X` settings that steer the built-in merge of every path. */
+export interface ContentMergeSettings {
+  readonly variant?: OrtVariant;
+  readonly lineKey?: LineKey;
+  readonly diffAlgorithm?: DiffAlgorithm;
+}
+
+/** merge-ort's `init_basic_merge_options`: ort diffs with histogram unless `-X` names another. */
+const ORT_DIFF_ALGORITHM: DiffAlgorithm = 'histogram';
+
+/** git's `ll_union_merge` overrides the variant; `-merge` and `text` keep it. */
+const favorFor = (driverKind: string, settings: ContentMergeSettings): MergeFavor =>
+  driverKind === 'union' ? 'union' : (settings.variant ?? 'none');
 
 /**
  * The single `ContentMerger` used by every 3-way consumer (`merge` directly,
@@ -42,6 +75,7 @@ import { runMergeDriver } from './run-merge-driver.js';
 export const buildContentMerger = (
   ctx: Context,
   labels: MergeLabels = DEFAULT_MERGE_LABELS,
+  settings: ContentMergeSettings = {},
 ): ContentMerger => {
   let providerPromise: Promise<AttributeProvider> | undefined;
   const provider = (): Promise<AttributeProvider> =>
@@ -53,6 +87,9 @@ export const buildContentMerger = (
     }).then((found) => {
       if (found !== undefined) throw configMissingValue(found.key, found.source, found.line);
     }));
+  let stylePromise: Promise<ConflictStyle | undefined> | undefined;
+  const conflictStyle = (): Promise<ConflictStyle | undefined> =>
+    (stylePromise ??= readConflictStyle(ctx));
   return async (mergeCtx): Promise<ContentMergeResult> => {
     await ensureNoValuelessMergeDriver();
     const [ours, theirs, base] = await Promise.all([
@@ -65,13 +102,16 @@ export const buildContentMerger = (
           readBlob(ctx, mergeCtx.baseId, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES })
         : Promise.resolve(undefined),
     ]);
-    const { driver, markerSize } = await resolvePathMergeSpec(ctx, await provider(), mergeCtx.path);
+    const spec = await resolvePathMergeSpec(ctx, await provider(), mergeCtx.path);
+    const { driver } = spec;
+    const markerSize = spec.markerSize + (mergeCtx.extraMarkerSize ?? 0);
     if (driver.kind === 'missing-command') {
       throw mergeDriverMissingCommand(driver.name);
     }
     if (driver.kind === 'binary') {
-      return { status: 'conflict', conflictType: 'binary', markedBytes: ours.content };
+      return mergeBinary(ours.content, theirs.content, settings.variant);
     }
+    const pathLabels = labelsFor(labels, mergeCtx);
     if (driver.kind === 'external' && ctx.command !== undefined) {
       return runMergeDriver(ctx, ctx.command, {
         command: driver.command,
@@ -80,13 +120,16 @@ export const buildContentMerger = (
         theirs: theirs.content,
         path: mergeCtx.path,
         markerSize,
-        labels,
+        labels: pathLabels,
       });
     }
     return mergeContent(base?.content, ours.content, theirs.content, {
-      favor: driver.kind === 'union' ? 'union' : 'none',
+      favor: favorFor(driver.kind, settings),
+      lineKey: settings.lineKey,
+      diffAlgorithm: settings.diffAlgorithm ?? ORT_DIFF_ALGORITHM,
       markerSize,
-      labels: { ours: labels.ours, theirs: labels.theirs },
+      labels: pathLabels,
+      conflictStyle: (await conflictStyle()) ?? 'merge',
     });
   };
 };

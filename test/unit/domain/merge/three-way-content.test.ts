@@ -1,5 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import type { LineKey } from '../../../../src/domain/diff/whitespace.js';
 import { mergeContent } from '../../../../src/domain/merge/three-way-content.js';
 
 const encoder = new TextEncoder();
@@ -995,6 +996,285 @@ describe('mergeContent', () => {
           );
         }
       });
+    });
+  });
+  describe.each([
+    ['ours', '1\nM2\nM2b\n3\n4\n5\n6\n7\n8\nS9\n'],
+    ['theirs', '1\nS2\n3\n4\n5\n6\n7\n8\nS9\n'],
+  ] as const)(
+    'Given an overlapping hunk and a one-sided hunk under favor %s',
+    (favor, expected) => {
+      describe('When mergeContent called', () => {
+        it('Then the overlap takes that side and the other hunk still merges', () => {
+          // Arrange
+          const sut = mergeContent;
+          const base = enc('1\n2\n3\n4\n5\n6\n7\n8\n9\n');
+          const ours = enc('1\nM2\nM2b\n3\n4\n5\n6\n7\n8\n9\n');
+          const theirs = enc('1\nS2\n3\n4\n5\n6\n7\n8\nS9\n');
+
+          // Act
+          const result = sut(base, ours, theirs, { favor });
+
+          // Assert
+          assertClean(result, expected);
+        });
+      });
+    },
+  );
+
+  describe.each([
+    ['ours', 'm\0\n'],
+    ['theirs', 's\0\n'],
+  ] as const)('Given binary sides under favor %s', (favor, expected) => {
+    describe('When mergeContent called', () => {
+      it('Then that side is taken cleanly', () => {
+        // Arrange
+        const sut = mergeContent;
+
+        // Act
+        const result = sut(enc('b\n'), enc('m\0\n'), enc('s\0\n'), { favor });
+
+        // Assert
+        assertClean(result, expected);
+      });
+    });
+  });
+
+  describe('whitespace-insensitive merge', () => {
+    const base = 'a b\nl2\nl3\nl4\nc d\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h\n';
+    const key = (mode: LineKey['mode'], ignoreCrAtEol = false): LineKey => ({
+      mode,
+      ignoreCrAtEol,
+    });
+    describe.each([
+      [
+        'space runs',
+        key('change'),
+        'AB\nl2\nl3\nl4\nc   d\nl6\nl7\nl8\ne f \nl10\nl11\nl12\ng  h\n',
+        'a  b\nl2\nl3\nl4\nCD\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng\th\n',
+        'AB\nl2\nl3\nl4\nCD\nl6\nl7\nl8\ne f \nl10\nl11\nl12\ng  h\n',
+      ],
+      [
+        'all spaces',
+        key('all'),
+        'AB\nl2\nl3\nl4\ncd\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h\t\n',
+        'ab\nl2\nl3\nl4\nCD\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ngh\n',
+        'AB\nl2\nl3\nl4\nCD\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h\t\n',
+      ],
+      [
+        'trailing spaces',
+        key('at-eol'),
+        'AB\nl2\nl3\nl4\nc d \nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h \n',
+        'a b \nl2\nl3\nl4\nCD\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h  \n',
+        'AB\nl2\nl3\nl4\nCD\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h \n',
+      ],
+      [
+        'carriage returns',
+        key('none', true),
+        'AB\nl2\nl3\nl4\nc d\r\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h\r\n',
+        'a b\r\nl2\nl3\nl4\nCD\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h\r\n',
+        'AB\nl2\nl3\nl4\nCD\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h\r\n',
+      ],
+    ])(
+      'Given whitespace-only edits under ignored %s',
+      (_label, lineKey, ours, theirs, expected) => {
+        describe('When mergeContent called', () => {
+          it('Then each line takes the side whose change is not whitespace-only', () => {
+            // Arrange
+            const sut = mergeContent;
+
+            // Act
+            const result = sut(enc(base), enc(ours), enc(theirs), { lineKey });
+
+            // Assert
+            assertClean(result, expected);
+          });
+        });
+      },
+    );
+
+    describe('Given a squeezed space against ignored space runs', () => {
+      describe('When mergeContent called', () => {
+        it('Then the line whose change is real on both sides conflicts', () => {
+          // Arrange
+          const sut = mergeContent;
+          const ours = 'AB\nl2\nl3\nl4\ncd\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ng h\t\n';
+          const theirs = 'ab\nl2\nl3\nl4\nCD\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ngh\n';
+
+          // Act
+          const result = sut(enc(base), enc(ours), enc(theirs), { lineKey: key('change') });
+
+          // Assert
+          expect(result.status === 'conflict' && decoder.decode(result.markedBytes)).toBe(
+            '<<<<<<< ours\nAB\nl2\nl3\nl4\ncd\n=======\nab\nl2\nl3\nl4\nCD\n>>>>>>> theirs\nl6\nl7\nl8\ne f\nl10\nl11\nl12\ngh\n',
+          );
+        });
+      });
+    });
+  });
+
+  describe('Given heavy random edits past the diff heuristic cost limit', () => {
+    const mulberry32 = (initial: number): (() => number) => {
+      let seed = initial;
+      return () => {
+        seed = (seed + 0x6d2b79f5) | 0;
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    };
+    const rand = mulberry32(7);
+    const pick = (): string => 'abcd'[Math.floor(rand() * 4)]!;
+    const baseLines = Array.from({ length: 3000 }, pick);
+    const resample = (rate: number): string =>
+      baseLines.map((line) => `${rand() < rate ? pick() : line}\n`).join('');
+    const base = enc(baseLines.map((line) => `${line}\n`).join(''));
+    const ours = enc(resample(0.5));
+    const theirs = enc(resample(0.3));
+
+    describe('When mergeContent runs the minimal search', () => {
+      it("Then its regions differ from the heuristic search's", () => {
+        // Arrange
+        const sut = mergeContent;
+        const heuristic = sut(base, ours, theirs);
+
+        // Act
+        const result = sut(base, ours, theirs, { diffAlgorithm: 'minimal' });
+
+        // Assert
+        expect(result).not.toEqual(heuristic);
+      });
+    });
+  });
+});
+
+describe('mergeContent conflict styles', () => {
+  const LABELS = { ours: 'O', base: 'B', theirs: 'T' };
+  const marked = (result: ReturnType<typeof mergeContent>): string =>
+    result.status === 'conflict' ? decoder.decode(result.markedBytes) : 'clean';
+
+  describe.each([
+    {
+      style: 'diff3' as const,
+      expected:
+        '<<<<<<< O\nA1\n||||||| B\na\n=======\nA2\n>>>>>>> T\n}\n<<<<<<< O\nC1\n||||||| B\nc\n=======\nC2\n>>>>>>> T\nd\ne\n',
+    },
+    {
+      style: 'zdiff3' as const,
+      expected:
+        '<<<<<<< O\nA1\n||||||| B\na\n=======\nA2\n>>>>>>> T\n}\n<<<<<<< O\nC1\n||||||| B\nc\n=======\nC2\n>>>>>>> T\nd\ne\n',
+    },
+  ])(
+    'Given two conflicts around a shared line, When merged in $style style',
+    ({ style, expected }) => {
+      it('Then each conflict shows its base section and none are coalesced, as git merge-file does', () => {
+        // Arrange
+        const sut = mergeContent;
+
+        // Act
+        const result = sut(
+          enc('a\n}\nc\nd\ne\n'),
+          enc('A1\n}\nC1\nd\ne\n'),
+          enc('A2\n}\nC2\nd\ne\n'),
+          {
+            labels: LABELS,
+            conflictStyle: style,
+          },
+        );
+
+        // Assert
+        expect(marked(result)).toBe(expected);
+      });
+    },
+  );
+
+  describe.each([
+    {
+      style: 'diff3' as const,
+      expected: 'x\n<<<<<<< O\ns1\ns2\nm\ns3\n|||||||\nb\n=======\ns1\ns2\nn\ns3\n>>>>>>> T\ny\n',
+    },
+    {
+      style: 'zdiff3' as const,
+      expected: 'x\ns1\ns2\n<<<<<<< O\nm\n|||||||\nb\n=======\nn\n>>>>>>> T\ns3\ny\n',
+    },
+  ])(
+    'Given sides sharing their edges and no base label, When merged in $style style',
+    ({ style, expected }) => {
+      it('Then diff3 keeps the edges conflicted and zdiff3 moves them out, as git merge-file does', () => {
+        // Arrange
+        const sut = mergeContent;
+
+        // Act
+        const result = sut(
+          enc('x\nb\ny\n'),
+          enc('x\ns1\ns2\nm\ns3\ny\n'),
+          enc('x\ns1\ns2\nn\ns3\ny\n'),
+          {
+            labels: { ours: 'O', base: '', theirs: 'T' },
+            conflictStyle: style,
+          },
+        );
+
+        // Assert
+        expect(marked(result)).toBe(expected);
+      });
+    },
+  );
+});
+
+describe('mergeContent conflict styles without labels', () => {
+  describe('Given no labels, When an overlapping change merges in diff3 style', () => {
+    it('Then the base marker carries no label and the sides keep the default ones', () => {
+      // Arrange
+      const sut = mergeContent;
+
+      // Act
+      const result = sut(enc('a\n'), enc('b\n'), enc('c\n'), { conflictStyle: 'diff3' });
+
+      // Assert
+      expect(result.status === 'conflict' && decoder.decode(result.markedBytes)).toBe(
+        '<<<<<<< ours\nb\n|||||||\na\n=======\nc\n>>>>>>> theirs\n',
+      );
+    });
+  });
+});
+
+describe('Given a 200k-line file where ours edits the first line and theirs the last', () => {
+  const LINE_COUNT = 200_000;
+  const body = (first: string, last: string): Uint8Array => {
+    const lines = Array.from({ length: LINE_COUNT }, (_, i) => `line ${i}`);
+    lines[0] = first;
+    lines[LINE_COUNT - 1] = last;
+    return enc(`${lines.join('\n')}\n`);
+  };
+  const base = body('line 0', `line ${LINE_COUNT - 1}`);
+  const ours = body('ours edit', `line ${LINE_COUNT - 1}`);
+  const theirs = body('line 0', 'theirs edit');
+  const merged = decoder.decode(body('ours edit', 'theirs edit'));
+
+  describe('When merged with conflict markers', () => {
+    it('Then the unchanged region carries through clean', () => {
+      // Arrange
+      const sut = mergeContent;
+
+      // Act
+      const result = sut(base, ours, theirs);
+
+      // Assert
+      assertClean(result, merged);
+    });
+  });
+
+  describe('When merged favouring ours', () => {
+    it('Then the unchanged region carries through clean', () => {
+      // Arrange
+      const sut = mergeContent;
+
+      // Act
+      const result = sut(base, ours, theirs, { favor: 'ours' });
+
+      // Assert
+      assertClean(result, merged);
     });
   });
 });

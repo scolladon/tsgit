@@ -1,13 +1,14 @@
-import { describe, expect, it, vi } from 'vitest';
-
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { applyChangeset } from '../../../../src/application/primitives/apply-changeset.js';
 import type {
   Changeset,
   ChangesetEntry,
 } from '../../../../src/application/primitives/compute-changeset.js';
+import * as blobSourceMod from '../../../../src/application/primitives/internal/blob-source.js';
+import * as concurrencyMod from '../../../../src/application/primitives/internal/concurrency.js';
 import * as readGitattributesMod from '../../../../src/application/primitives/internal/read-gitattributes.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
-import * as streamBlobMod from '../../../../src/application/primitives/stream-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
@@ -17,8 +18,9 @@ import type {
   CommandResult,
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
-import type { Context } from '../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../src/ports/context.js';
 import type { FileStat } from '../../../../src/ports/file-system.js';
+import { scriptedCommandRunner } from '../../../fixtures/scripted-command-runner.js';
 import { buildSeededContext } from './fixtures.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -99,6 +101,143 @@ const writeBlob = async (
   ctx: Awaited<ReturnType<typeof buildSeededContext>>,
   content: Uint8Array,
 ): Promise<ObjectId> => writeObject(ctx, { type: 'blob', content, id: '' as ObjectId });
+
+const ALTERNATE = '/repo/alt/objects';
+const FLIPPED_SIGNATURE_MIDX = Uint8Array.from([
+  0x00,
+  0x49,
+  0x44,
+  0x58,
+  1,
+  1,
+  1,
+  0,
+  ...new Array(8).fill(0),
+]);
+
+const contextWithAlternate = async (): Promise<Context> => {
+  const ctx = createMemoryContext({
+    files: { '/repo/.git/objects/info/alternates': enc(`${ALTERNATE}\n`) },
+  });
+  await ctx.fs.mkdir(ALTERNATE);
+  return ctx;
+};
+
+/** A write through an alternate that cannot load is refused, so the fault is planted after the writes. */
+const withCorruptAlternate = async (ctx: Context): Promise<Context> => {
+  await ctx.fs.write(`${ALTERNATE}/pack/multi-pack-index`, FLIPPED_SIGNATURE_MIDX);
+  return { ...ctx, session: createSession() };
+};
+
+const outcomeOf = async (attempt: Promise<unknown>): Promise<unknown> => {
+  try {
+    await attempt;
+  } catch (error) {
+    return (error as TsgitError).data;
+  }
+  return undefined;
+};
+
+describe('applyChangeset write wave and an object source', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given an alternate that cannot load and entries a, base, f in that order', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then a is written, base is left empty and f is never touched, every time', async () => {
+        // Arrange
+        const attempts = Array.from({ length: 20 }, (_, i) => i);
+        const seen = new Set<string>();
+
+        for (const _attempt of attempts) {
+          const seeded = await contextWithAlternate();
+          const a = await writeBlob(seeded, enc('aaa\n'));
+          const ctx = await withCorruptAlternate(seeded);
+          const missing = 'b'.repeat(40) as ObjectId;
+          const changeset = makeChangeset([
+            makeAdd('f', missing),
+            makeAdd('base', missing),
+            makeAdd('a', a),
+          ]);
+
+          // Act
+          const sut = applyChangeset;
+          const data = await outcomeOf(sut(ctx, { changeset, force: false, workdir: WORKDIR }));
+
+          // Assert
+          seen.add(
+            JSON.stringify([
+              (data as { code: string }).code,
+              await ctx.fs.exists(`${WORKDIR}/a`),
+              (await ctx.fs.exists(`${WORKDIR}/base`)) &&
+                (await ctx.fs.read(`${WORKDIR}/base`)).length,
+              await ctx.fs.exists(`${WORKDIR}/f`),
+            ]),
+          );
+        }
+        expect([...seen]).toEqual([JSON.stringify(['INVALID_MULTI_PACK_INDEX', true, 0, false])]);
+      });
+    });
+  });
+
+  describe('Given every source loads', () => {
+    describe('When applyChangeset writes several entries', () => {
+      it('Then the writes go through the ioBound pool', async () => {
+        // Arrange
+        const ctx = await contextWithAlternate();
+        const ids = [
+          await writeBlob(ctx, enc('one')),
+          await writeBlob(ctx, enc('two')),
+          await writeBlob(ctx, enc('three')),
+        ];
+        const runs: ReturnType<typeof vi.spyOn>[] = [];
+        const realLimiterFor = concurrencyMod.limiterFor;
+        vi.spyOn(concurrencyMod, 'limiterFor').mockImplementation((...args) => {
+          const limiter = realLimiterFor(...args);
+          runs.push(vi.spyOn(limiter, 'run'));
+          return limiter;
+        });
+        const changeset = makeChangeset(ids.map((id, i) => makeAdd(`f${i}`, id)));
+
+        // Act
+        const sut = applyChangeset;
+        await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        expect(runs.reduce((total, run) => total + run.mock.calls.length, 0)).toBe(ids.length);
+      });
+    });
+  });
+
+  describe('Given an alternate that cannot load', () => {
+    describe('When applyChangeset writes entries given out of path order', () => {
+      it('Then they are written in byte order of the path, one at a time', async () => {
+        // Arrange
+        const seeded = await contextWithAlternate();
+        const ids = [await writeBlob(seeded, enc('zz')), await writeBlob(seeded, enc('mm'))];
+        const ctx = await withCorruptAlternate(seeded);
+        const order: string[] = [];
+        const realWrite = ctx.fs.writeStream.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'writeStream').mockImplementation(async (path, chunks) => {
+          order.push(path);
+          await realWrite(path, chunks);
+        });
+        const changeset = makeChangeset([
+          makeAdd('z', ids[0] as ObjectId),
+          makeAdd('m', ids[1] as ObjectId),
+        ]);
+
+        // Act
+        const sut = applyChangeset;
+        await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        expect(order).toEqual([`${WORKDIR}/m`, `${WORKDIR}/z`]);
+      });
+    });
+  });
+});
 
 describe('applyChangeset', () => {
   describe('Given an add entry for a regular file', () => {
@@ -959,12 +1098,12 @@ describe('applyChangeset', () => {
 
   describe('Given a regular (100644) add entry', () => {
     describe('When applyChangeset runs', () => {
-      it('Then routes through streamBlob + writeWorkingTreeEntryStream and written file bytes match blob content', async () => {
+      it('Then routes through locateBlob + writeWorkingTreeEntryStream and written file bytes match blob content', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const content = new TextEncoder().encode('streamed content');
         const id = await writeBlob(ctx, content);
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const locateBlobSpy = vi.spyOn(blobSourceMod, 'locateBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
         // Act
         await applyChangeset(ctx, {
@@ -974,12 +1113,12 @@ describe('applyChangeset', () => {
         });
 
         // Assert
-        expect(streamBlobSpy).toHaveBeenCalledOnce();
+        expect(locateBlobSpy).toHaveBeenCalledOnce();
         expect(writeStreamSpy).toHaveBeenCalledOnce();
         const bytes = await ctx.fs.read(`${WORKDIR}/stream.txt`);
         expect(bytes).toEqual(content);
 
-        streamBlobSpy.mockRestore();
+        locateBlobSpy.mockRestore();
         writeStreamSpy.mockRestore();
       });
     });
@@ -991,7 +1130,7 @@ describe('applyChangeset', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, new TextEncoder().encode('#!/bin/sh\n'));
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const locateBlobSpy = vi.spyOn(blobSourceMod, 'locateBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
         const chmodSpy = vi.fn<(path: string, mode: number) => Promise<void>>(
           async () => undefined,
@@ -1005,11 +1144,11 @@ describe('applyChangeset', () => {
         });
 
         // Assert
-        expect(streamBlobSpy).toHaveBeenCalledOnce();
+        expect(locateBlobSpy).toHaveBeenCalledOnce();
         expect(writeStreamSpy).toHaveBeenCalledOnce();
         expect(chmodSpy).toHaveBeenCalledWith(`${WORKDIR}/exec.sh`, 0o755);
 
-        streamBlobSpy.mockRestore();
+        locateBlobSpy.mockRestore();
         writeStreamSpy.mockRestore();
       });
     });
@@ -1022,7 +1161,7 @@ describe('applyChangeset', () => {
         const ctx = await buildSeededContext();
         const target = '../target.txt';
         const id = await writeBlob(ctx, new TextEncoder().encode(target));
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const locateBlobSpy = vi.spyOn(blobSourceMod, 'locateBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
         // Act
         await applyChangeset(ctx, {
@@ -1032,11 +1171,11 @@ describe('applyChangeset', () => {
         });
 
         // Assert — buffered path, not stream path
-        expect(streamBlobSpy).not.toHaveBeenCalled();
+        expect(locateBlobSpy).not.toHaveBeenCalled();
         expect(writeStreamSpy).not.toHaveBeenCalled();
         expect(await ctx.fs.readlink(`${WORKDIR}/sym.link`)).toBe(target);
 
-        streamBlobSpy.mockRestore();
+        locateBlobSpy.mockRestore();
         writeStreamSpy.mockRestore();
       });
     });
@@ -1044,10 +1183,10 @@ describe('applyChangeset', () => {
 
   describe('Given a gitlink (160000) add entry', () => {
     describe('When applyChangeset runs', () => {
-      it('Then the gitlink arm is unchanged: creates directory, does not invoke streamBlob', async () => {
+      it('Then the gitlink arm is unchanged: creates directory, does not invoke locateBlob', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const locateBlobSpy = vi.spyOn(blobSourceMod, 'locateBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
         // Act
         await applyChangeset(ctx, {
@@ -1059,10 +1198,10 @@ describe('applyChangeset', () => {
         // Assert — gitlink arm: directory placeholder, no streaming
         const stat = await ctx.fs.lstat(`${WORKDIR}/sub`);
         expect(stat.isDirectory).toBe(true);
-        expect(streamBlobSpy).not.toHaveBeenCalled();
+        expect(locateBlobSpy).not.toHaveBeenCalled();
         expect(writeStreamSpy).not.toHaveBeenCalled();
 
-        streamBlobSpy.mockRestore();
+        locateBlobSpy.mockRestore();
         writeStreamSpy.mockRestore();
       });
     });
@@ -1119,7 +1258,7 @@ describe('applyChangeset', () => {
 
   describe('Given a regular file add with a clean-only filter (no smudge configured) and a runner', () => {
     describe('When applyChangeset runs with an identity smudge', () => {
-      it('Then the worktree file contains the verbatim blob bytes and streamBlob is used', async () => {
+      it('Then the worktree file contains the verbatim blob bytes and no command runs', async () => {
         // Arrange — clean-only filter: smudge is absent → identity
         const ctx = await buildSeededContext();
         const blobContent = enc('HELLO WORLD');
@@ -1131,8 +1270,6 @@ describe('applyChangeset', () => {
         );
         const runner = new FakeSmudgeRunner(0, lowercase);
         const enrichedCtx: Context = { ...ctx, command: runner };
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
-        const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
         // Act
         await applyChangeset(enrichedCtx, {
           changeset: makeChangeset([makeAdd('a.y', id)]),
@@ -1140,15 +1277,262 @@ describe('applyChangeset', () => {
           workdir: WORKDIR,
         });
 
-        // Assert — identity: verbatim blob bytes; streaming path taken; runner not invoked
+        // Assert
         const written = await ctx.fs.read(`${WORKDIR}/a.y`);
         expect(dec(written)).toBe('HELLO WORLD');
-        expect(streamBlobSpy).toHaveBeenCalledOnce();
-        expect(writeStreamSpy).toHaveBeenCalledOnce();
         expect(runner.calls).toHaveLength(0);
+      });
+    });
+  });
 
-        streamBlobSpy.mockRestore();
-        writeStreamSpy.mockRestore();
+  describe('Given a required filter driver that smudges nothing', () => {
+    describe.each([
+      { label: 'only a clean command', config: '\tclean = uppercase\n' },
+      {
+        label: 'an empty process and a smudge command',
+        config: '\tprocess =\n\tsmudge = lowercase\n',
+      },
+    ])('When applyChangeset checks out a file whose driver names $label', ({ config }) => {
+      it('Then it dies SMUDGE_FILTER_FAILED as convert_to_working_tree does', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('HELLO WORLD'));
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          `[filter "myf"]\n${config}\trequired = true\n`,
+        );
+        const enrichedCtx: Context = { ...ctx, command: new FakeSmudgeRunner(0, lowercase) };
+
+        // Act
+        const result = await applyChangeset(enrichedCtx, {
+          changeset: makeChangeset([makeAdd('a.y', id)]),
+          force: false,
+          workdir: WORKDIR,
+        }).catch((err: unknown) => err);
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'SMUDGE_FILTER_FAILED',
+          path: 'a.y',
+          filter: 'myf',
+        });
+      });
+    });
+  });
+
+  describe('Given a required filter driver configuring no command at all', () => {
+    describe('When applyChangeset checks out a file', () => {
+      it('Then the blob streams out untouched, as git never converts it in core', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('HELLO WORLD'));
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "myf"]\n\trequired = true\n',
+        );
+        const runner = new FakeSmudgeRunner(0, lowercase);
+
+        // Act
+        await applyChangeset(
+          { ...ctx, command: runner },
+          { changeset: makeChangeset([makeAdd('a.y', id)]), force: false, workdir: WORKDIR },
+        );
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/a.y`))).toBe('HELLO WORLD');
+        expect(runner.calls).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a filter driver with a process advertising smudge', () => {
+    describe('When applyChangeset checks out a file', () => {
+      it('Then the process smudges it, asked with the path and blob id', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('HELLO WORLD'));
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[filter "myf"]\n\tprocess = proc\n');
+        const pkt = (text: string): string =>
+          `${(text.length + 4).toString(16).padStart(4, '0')}${text}`;
+        const response = enc(
+          `${pkt('git-filter-server\n')}${pkt('version=2\n')}0000${pkt('capability=smudge\n')}0000` +
+            `${pkt('status=success\n')}0000${pkt('hello world')}00000000`,
+        );
+        const { runner, requests } = scriptedCommandRunner(response);
+
+        // Act
+        await applyChangeset(
+          { ...ctx, command: runner },
+          { changeset: makeChangeset([makeAdd('a.y', id)]), force: false, workdir: WORKDIR },
+        );
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/a.y`))).toBe('hello world');
+        expect(requests.map((r) => r.command)).toEqual(['proc']);
+        expect(dec(requests[0]?.stdin ?? new Uint8Array(0))).toContain(
+          `${pkt('command=smudge\n')}${pkt('pathname=a.y\n')}${pkt(`blob=${id}\n`)}0000`,
+        );
+      });
+    });
+  });
+
+  describe('Given a process driver and checkout metadata', () => {
+    describe('When applyChangeset smudges a file', () => {
+      it('Then the process is told the ref and commit the checkout moves to', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('HELLO'));
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[filter "myf"]\n\tprocess = proc\n');
+        const pkt = (text: string): string =>
+          `${(text.length + 4).toString(16).padStart(4, '0')}${text}`;
+        const response = enc(
+          `${pkt('git-filter-server\n')}${pkt('version=2\n')}0000${pkt('capability=smudge\n')}0000` +
+            `${pkt('status=success\n')}0000${pkt('hello')}00000000`,
+        );
+        const { runner, requests } = scriptedCommandRunner(response);
+        const treeish = 'c'.repeat(40) as ObjectId;
+        const sut = applyChangeset;
+
+        // Act
+        await sut(
+          { ...ctx, command: runner },
+          {
+            changeset: makeChangeset([makeAdd('a.y', id)]),
+            force: false,
+            workdir: WORKDIR,
+            checkoutMetadata: { ref: 'refs/heads/main', treeish },
+          },
+        );
+
+        // Assert
+        expect(dec(requests[0]?.stdin ?? new Uint8Array(0))).toContain(
+          `${pkt('pathname=a.y\n')}${pkt('ref=refs/heads/main\n')}${pkt(`treeish=${treeish}\n`)}`,
+        );
+      });
+    });
+  });
+
+  describe('Given a context that cannot run commands', () => {
+    describe('When applyChangeset checks out a file through a required smudge driver', () => {
+      it('Then it refuses as git does when the driver cannot start, writing nothing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('HELLO'));
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.t filter=d\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "d"]\n\tsmudge = x\n\trequired = true\n',
+        );
+        const sut = applyChangeset;
+
+        // Act
+        const result = await outcomeOf(
+          sut(ctx, {
+            changeset: makeChangeset([makeAdd('a.t', id)]),
+            force: false,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(result).toEqual({ code: 'SMUDGE_FILTER_FAILED', path: 'a.t', filter: 'd' });
+        expect(await ctx.fs.exists(`${WORKDIR}/a.t`)).toBe(false);
+      });
+    });
+
+    describe('When applyChangeset checks out a file through an optional smudge driver', () => {
+      it('Then the blob is written as stored', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('HELLO'));
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.t filter=d\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[filter "d"]\n\tsmudge = x\n');
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([makeAdd('a.t', id)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/a.t`))).toBe('HELLO');
+      });
+    });
+  });
+
+  describe('Given a process driver serving one of three files', () => {
+    describe('When applyChangeset writes them', () => {
+      it('Then it writes them one at a time in index order, as git does', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const filtered = await writeBlob(ctx, enc('HELLO'));
+        const plain = await writeBlob(ctx, enc('plain'));
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[filter "myf"]\n\tprocess = proc\n');
+        const pkt = (text: string): string =>
+          `${(text.length + 4).toString(16).padStart(4, '0')}${text}`;
+        const response = enc(
+          `${pkt('git-filter-server\n')}${pkt('version=2\n')}0000${pkt('capability=smudge\n')}0000` +
+            `${pkt('status=success\n')}0000${pkt('hello')}00000000`,
+        );
+        const { runner } = scriptedCommandRunner(response);
+        const sut = applyChangeset;
+
+        // Act
+        const result = await sut(
+          { ...ctx, command: runner, concurrency: { cpuBound: 4, ioBound: 4 } },
+          {
+            changeset: makeChangeset([
+              makeAdd('a.txt', plain),
+              makeAdd('b.txt', plain),
+              makeAdd('c.y', filtered),
+            ]),
+            force: false,
+            workdir: WORKDIR,
+          },
+        );
+
+        // Assert
+        expect(result.writtenEntries.map((entry) => entry.path)).toEqual(['a.txt', 'b.txt', 'c.y']);
+        expect(dec(await ctx.fs.read(`${WORKDIR}/c.y`))).toBe('hello');
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'no filter at all', config: '' },
+    { label: 'only an empty process', config: '[filter "myf"]\n\tprocess =\n' },
+  ])('Given a runner able to keep a process open and $label', ({ config }) => {
+    describe('When applyChangeset writes two files', () => {
+      it('Then both land with their stored bytes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const first = await writeBlob(ctx, enc('first'));
+        const second = await writeBlob(ctx, enc('second'));
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+        const { runner, requests } = scriptedCommandRunner(enc(''));
+        const sut = applyChangeset;
+
+        // Act
+        const result = await sut(
+          { ...ctx, command: runner },
+          {
+            changeset: makeChangeset([makeAdd('a.y', first), makeAdd('b.y', second)]),
+            force: false,
+            workdir: WORKDIR,
+          },
+        );
+
+        // Assert
+        expect(result.written).toBe(2);
+        expect(dec(await ctx.fs.read(`${WORKDIR}/b.y`))).toBe('second');
+        expect(requests).toEqual([]);
       });
     });
   });
@@ -1255,7 +1639,7 @@ describe('applyChangeset', () => {
 
   describe('Given a regular file add with a filter attribute but no ctx.command', () => {
     describe('When applyChangeset runs', () => {
-      it('Then the worktree file contains the verbatim blob bytes and streamBlob is used', async () => {
+      it('Then the worktree file contains the verbatim blob bytes and locateBlob is used', async () => {
         // Arrange — no command in ctx (ADR-408 inert fallback)
         const ctx = await buildSeededContext();
         const blobContent = enc('HELLO WORLD');
@@ -1265,7 +1649,7 @@ describe('applyChangeset', () => {
           `${ctx.layout.gitDir}/config`,
           '[filter "myf"]\n\tsmudge = lowercase\n',
         );
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const locateBlobSpy = vi.spyOn(blobSourceMod, 'locateBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
         // Act — ctx has no command
         await applyChangeset(ctx, {
@@ -1277,10 +1661,10 @@ describe('applyChangeset', () => {
         // Assert — identity (no runner): verbatim blob bytes; streaming path taken
         const written = await ctx.fs.read(`${WORKDIR}/a.y`);
         expect(dec(written)).toBe('HELLO WORLD');
-        expect(streamBlobSpy).toHaveBeenCalledOnce();
+        expect(locateBlobSpy).toHaveBeenCalledOnce();
         expect(writeStreamSpy).toHaveBeenCalledOnce();
 
-        streamBlobSpy.mockRestore();
+        locateBlobSpy.mockRestore();
         writeStreamSpy.mockRestore();
       });
     });
@@ -1473,15 +1857,15 @@ describe('applyChangeset', () => {
         }
         const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
         // The pool's genuine per-entry concurrency window spans reading the
-        // blob through writing it — `streamBlob`'s loose stream arm now
+        // blob through writing it — `locateBlob`'s loose stream arm now
         // pulls real (natively-scheduled) inflate output before it resolves,
         // so a window that starts only at the write call can land entirely
         // inside one entry's already-finished read and under-count.
         let inFlight = 0;
         let maxInFlight = 0;
-        const realStream = streamBlobMod.streamBlob;
+        const realStream = blobSourceMod.locateBlob;
         const streamSpy = vi
-          .spyOn(streamBlobMod, 'streamBlob')
+          .spyOn(blobSourceMod, 'locateBlob')
           .mockImplementation(async (...args) => {
             inFlight += 1;
             maxInFlight = Math.max(maxInFlight, inFlight);
@@ -1917,6 +2301,133 @@ describe('applyChangeset', () => {
 
         // Assert
         expect(maxActive).toBe(1);
+      });
+    });
+  });
+
+  describe('Given an unreadable alternate and a single small packed blob entry', () => {
+    describe('When applyChangeset', () => {
+      it('Then the file exists with size 0 and the call rejects with the alternate error', async () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          files: {
+            '/repo/.git/objects/info/alternates': new TextEncoder().encode('/repo/alt/objects\n'),
+          },
+        });
+        await ctx.fs.mkdir('/repo/alt/objects');
+        await ctx.fs.write(
+          '/repo/alt/objects/pack/multi-pack-index',
+          Uint8Array.from([0x00, 0x49, 0x44, 0x58, 1, 1, 1, 0, ...new Array(8).fill(0)]),
+        );
+        const id = 'b'.repeat(40) as ObjectId;
+        const path = `${WORKDIR}/small.txt`;
+
+        // Act
+        const attempt = applyChangeset(ctx, {
+          changeset: makeChangeset([makeAdd('small.txt', id, FILE_MODE.REGULAR)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        await expect(attempt).rejects.toMatchObject({ data: { code: 'INVALID_MULTI_PACK_INDEX' } });
+        expect((await ctx.fs.read(path)).length).toBe(0);
+      });
+    });
+  });
+});
+
+describe('applyChangeset write order under a long-running filter', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  interface WriteTrace {
+    readonly phases: ReadonlyArray<'start' | 'write'>;
+    readonly written: ReadonlyArray<string>;
+  }
+
+  // Phases rather than paths: a concurrent wave writes in completion order,
+  // but every entry has started before the first one writes.
+  const traceWritesUnder = async (config: string, spawns: boolean): Promise<WriteTrace> => {
+    const base = createMemoryContext({ files: { '/repo/.git/config': enc(config) } });
+    const ctx = spawns
+      ? { ...base, command: scriptedCommandRunner(new Uint8Array(0)).runner }
+      : base;
+    const ids = [await writeBlob(ctx, enc('zz')), await writeBlob(ctx, enc('mm'))];
+    const phases: Array<'start' | 'write'> = [];
+    const written: string[] = [];
+    const realStart = writeFileMod.writeWorkingTreeEntryStream;
+    vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream').mockImplementation((...args) => {
+      phases.push('start');
+      return realStart(...args);
+    });
+    const realWrite = ctx.fs.writeStream.bind(ctx.fs);
+    vi.spyOn(ctx.fs, 'writeStream').mockImplementation(async (path, chunks) => {
+      phases.push('write');
+      written.push(path);
+      await realWrite(path, chunks);
+    });
+    const changeset = makeChangeset([
+      makeAdd('z', ids[0] as ObjectId),
+      makeAdd('m', ids[1] as ObjectId),
+    ]);
+    const sut = applyChangeset;
+    await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+    return { phases, written };
+  };
+
+  const SERIAL: WriteTrace = {
+    phases: ['start', 'write', 'start', 'write'],
+    written: [`${WORKDIR}/m`, `${WORKDIR}/z`],
+  };
+  const CONCURRENT = {
+    phases: ['start', 'start', 'write', 'write'],
+    written: expect.arrayContaining([`${WORKDIR}/m`, `${WORKDIR}/z`]),
+  };
+
+  describe.each([
+    {
+      name: 'one driver with a process on a runner that can spawn',
+      config: '[filter "a"]\n\tprocess = proc\n',
+      spawns: true,
+      expected: SERIAL,
+    },
+    {
+      name: 'a driver without a process beside one with a process',
+      config: '[filter "a"]\n\tclean = cat\n[filter "b"]\n\tprocess = proc\n',
+      spawns: true,
+      expected: SERIAL,
+    },
+    {
+      name: 'a driver with a process on a runner that cannot spawn',
+      config: '[filter "a"]\n\tprocess = proc\n',
+      spawns: false,
+      expected: CONCURRENT,
+    },
+    {
+      name: 'only a driver without a process',
+      config: '[filter "a"]\n\tclean = cat\n',
+      spawns: true,
+      expected: CONCURRENT,
+    },
+    {
+      name: 'only a driver whose process is empty',
+      config: '[filter "a"]\n\tprocess =\n',
+      spawns: true,
+      expected: CONCURRENT,
+    },
+  ])('Given $name', ({ config, spawns, expected }) => {
+    describe('When applyChangeset writes entries given out of path order', () => {
+      it('Then the writes are ordered as git checks the entries out', async () => {
+        // Arrange
+        const sut = traceWritesUnder;
+
+        // Act
+        const result = await sut(config, spawns);
+
+        // Assert
+        expect(result).toEqual(expected);
       });
     });
   });

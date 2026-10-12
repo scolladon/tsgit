@@ -1,12 +1,32 @@
-import { diffLines, isBinary } from '../diff/line-diff.js';
+import {
+  type DiffAlgorithm,
+  diffPresplitLinesForMode,
+  isBinary,
+  type LineDiff,
+  type LineDiffOptions,
+  splitLines,
+} from '../diff/line-diff.js';
+import { type LineKey, lineKeyIsActive, linesEqualUnder } from '../diff/whitespace.js';
 import { bytesEqual, concatBytes } from '../objects/encoding.js';
-import { writeConflictMarkers } from './conflict-markers.js';
+import { writeBaseShowingConflictMarkers, writeConflictMarkers } from './conflict-markers.js';
 import type { ConflictMarkerOptions, ContentMergeResult, MergeFavor } from './merge-types.js';
-import { buildMergeSegments, changesFromHunks, type MergeSegment } from './region-merge.js';
+import {
+  buildBaseShowingSegments,
+  buildMergeSegments,
+  changesFromHunks,
+  type LineModel,
+  type MergeSegment,
+} from './region-merge.js';
 
 const LF = 0x0a;
 
-export type MergeContentOptions = ConflictMarkerOptions & { readonly favor?: MergeFavor };
+export type MergeContentOptions = ConflictMarkerOptions & {
+  readonly favor?: MergeFavor;
+  /** The whitespace the line diffs ignore (git's `-X ignore-*`); absent compares bytes. */
+  readonly lineKey?: LineKey | undefined;
+  /** xdiff's line-matching algorithm; absent is `myers`, xdiff's own default (ort asks for `histogram`). */
+  readonly diffAlgorithm?: DiffAlgorithm | undefined;
+};
 
 function endsWithLf(line: Uint8Array): boolean {
   // Stryker disable next-line EqualityOperator: equivalent — length >= 0 always holds; at length 0 line[-1] is undefined !== LF, so both forms short-circuit to false
@@ -35,16 +55,41 @@ function joinLinesEnsuringInteriorLf(lines: ReadonlyArray<Uint8Array>): Uint8Arr
   return out;
 }
 
-function renderUnion(segments: ReadonlyArray<MergeSegment>): ContentMergeResult {
+type ResolvingFavor = Exclude<MergeFavor, 'none'>;
+
+// A spread push passes every element as a call argument, which overflows the stack on a long region.
+function appendAll<T>(target: T[], source: ReadonlyArray<T>): void {
+  for (const item of source) target.push(item);
+}
+
+function resolvedLines(
+  segment: Exclude<MergeSegment, { kind: 'clean' }>,
+  favor: ResolvingFavor,
+): ReadonlyArray<Uint8Array> {
+  if (favor === 'ours') return segment.ours;
+  if (favor === 'theirs') return segment.theirs;
+  return [...segment.ours, ...segment.theirs];
+}
+
+/** xdiff's favoured fill: every overlapping region becomes the favoured side(s), so the merge is clean. */
+function renderFavoured(
+  segments: ReadonlyArray<MergeSegment>,
+  favor: ResolvingFavor,
+): ContentMergeResult {
   const lines: Uint8Array[] = [];
   for (const segment of segments) {
-    if (segment.kind === 'clean') {
-      lines.push(...segment.lines);
-    } else {
-      lines.push(...segment.ours, ...segment.theirs);
-    }
+    appendAll(lines, segment.kind === 'clean' ? segment.lines : resolvedLines(segment, favor));
   }
   return { status: 'clean', bytes: joinLinesEnsuringInteriorLf(lines) };
+}
+
+function conflictBytes(
+  segment: Exclude<MergeSegment, { kind: 'clean' }>,
+  options: ConflictMarkerOptions,
+): Uint8Array {
+  if (segment.base === undefined)
+    return writeConflictMarkers(segment.ours, segment.theirs, options);
+  return writeBaseShowingConflictMarkers(segment.ours, segment.base, segment.theirs, options);
 }
 
 function renderWithMarkers(
@@ -55,10 +100,10 @@ function renderWithMarkers(
   let conflicted = false;
   for (const segment of segments) {
     if (segment.kind === 'clean') {
-      parts.push(...segment.lines);
+      appendAll(parts, segment.lines);
     } else {
       conflicted = true;
-      parts.push(writeConflictMarkers(segment.ours, segment.theirs, options));
+      parts.push(conflictBytes(segment, options));
     }
   }
   const bytes = concatBytes(parts);
@@ -67,28 +112,69 @@ function renderWithMarkers(
     : { status: 'clean', bytes };
 }
 
+const activeKey = (key: LineKey | undefined): LineKey | undefined =>
+  // Stryker disable next-line ConditionalExpression: equivalent — an inactive key normalises every line to its own bytes (no CR rule, mode none, no terminator strip), so keyed hashing and equality match the key-less path
+  key !== undefined && lineKeyIsActive(key) ? key : undefined;
+
+function lineModel(
+  lineKey: LineKey | undefined,
+  search: DiffAlgorithm,
+  options: LineDiffOptions | undefined,
+): LineModel {
+  return {
+    linesEqual: lineKey === undefined ? bytesEqual : (a, b) => linesEqualUnder(a, b, lineKey),
+    diffSides: (ours, theirs) => diffPresplitLinesForMode(ours, theirs, search, options).hunks,
+  };
+}
+
+const diffAgainstBase = (
+  baseLines: ReadonlyArray<Uint8Array>,
+  side: Uint8Array,
+  search: DiffAlgorithm,
+  options: LineDiffOptions | undefined,
+): LineDiff => diffPresplitLinesForMode(baseLines, splitLines(side), search, options);
+
 function mergeFromDiffs(
   base: Uint8Array,
   ours: Uint8Array,
   theirs: Uint8Array,
   options: MergeContentOptions,
 ): ContentMergeResult {
-  const oursDiff = diffLines(base, ours);
-  const theirsDiff = diffLines(base, theirs);
-  const segments = buildMergeSegments(
-    oursDiff.oursLines,
-    changesFromHunks(oursDiff.hunks, oursDiff.theirsLines),
-    changesFromHunks(theirsDiff.hunks, theirsDiff.theirsLines),
-  );
-  return options.favor === 'union' ? renderUnion(segments) : renderWithMarkers(segments, options);
+  const lineKey = activeKey(options.lineKey);
+  const diffOptions = lineKey === undefined ? undefined : { lineKey };
+  const search = options.diffAlgorithm ?? 'myers';
+  const baseLines = splitLines(base);
+  const oursDiff = diffAgainstBase(baseLines, ours, search, diffOptions);
+  const theirsDiff = diffAgainstBase(baseLines, theirs, search, diffOptions);
+  const oursEdit = { lines: oursDiff.theirsLines, changes: changesFromHunks(oursDiff.hunks) };
+  const theirsEdit = { lines: theirsDiff.theirsLines, changes: changesFromHunks(theirsDiff.hunks) };
+  const model = lineModel(lineKey, search, diffOptions);
+  const style = options.conflictStyle ?? 'merge';
+  const segments =
+    style === 'merge'
+      ? buildMergeSegments(baseLines.length, oursEdit, theirsEdit, model)
+      : buildBaseShowingSegments(baseLines, oursEdit, theirsEdit, { style, model });
+  const favor = options.favor ?? 'none';
+  return favor === 'none' ? renderWithMarkers(segments, options) : renderFavoured(segments, favor);
+}
+
+/** git's `ll_binary_merge`: ours with a conflict, unless `-X ours` / `-X theirs` settles it. */
+export function mergeBinary(
+  ours: Uint8Array,
+  theirs: Uint8Array,
+  favor?: MergeFavor,
+): ContentMergeResult {
+  if (favor === 'ours') return { status: 'clean', bytes: ours };
+  if (favor === 'theirs') return { status: 'clean', bytes: theirs };
+  return { status: 'conflict', conflictType: 'binary', markedBytes: ours };
 }
 
 /**
  * Three-way line merge. Produces git-faithful per-region output: clean runs are
  * applied directly, and each overlapping region is rendered by `favor` —
  * `none` (default) wraps it in conflict markers, `union` concatenates both
- * sides with no markers (always clean). Binary content falls back to a single
- * whole-file region.
+ * sides with no markers (always clean), `ours` / `theirs` keep that side.
+ * Binary content falls back to a single whole-file region.
  */
 export function mergeContent(
   base: Uint8Array | undefined,
@@ -97,7 +183,7 @@ export function mergeContent(
   options: MergeContentOptions = {},
 ): ContentMergeResult {
   if (isBinary(ours) || isBinary(theirs) || (base !== undefined && isBinary(base))) {
-    return { status: 'conflict', conflictType: 'binary', markedBytes: ours };
+    return mergeBinary(ours, theirs, options.favor);
   }
 
   if (base === undefined) {

@@ -854,3 +854,32 @@ export const parseGitBoolean = (value: string | null): GitBooleanResult => {
   }
   return { ok: true, value: asInt.value !== 0 };
 };
+
+type GitBoolOrIntResult =
+  | { readonly ok: true; readonly value: number; readonly isBool: boolean }
+  | { readonly ok: false; readonly reason: 'invalid unit' | 'out of range' };
+
+/** git's `git_parse_maybe_bool_text`: a boolean word, `''` or a valueless key; else `undefined`. */
+const parseBooleanText = (value: string | null): boolean | undefined => {
+  if (value === null) return true;
+  if (value === '') return false;
+  const lowered = value.toLowerCase();
+  if (TRUE_WORDS.has(lowered)) return true;
+  return FALSE_WORDS.has(lowered) ? false : undefined;
+};
+
+/**
+ * git's `git_config_bool_or_int`: a boolean word (or `''` / a valueless key)
+ * reads as `1` / `0` with `isBool`; anything else is a C `int` under
+ * `git_config_int`'s grammar — `1` is the integer one, not `true`.
+ */
+export const parseGitBoolOrInt = (value: string | null): GitBoolOrIntResult => {
+  const asBool = parseBooleanText(value);
+  if (asBool !== undefined) return { ok: true, value: asBool ? 1 : 0, isBool: true };
+  const asInt = parseGitInt(value);
+  if (!asInt.ok) return asInt;
+  if (asInt.value < GIT_C_INT_MIN || asInt.value > GIT_C_INT_MAX) {
+    return { ok: false, reason: 'out of range' };
+  }
+  return { ok: true, value: asInt.value, isBool: false };
+};

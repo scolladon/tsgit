@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
-import { revParse } from '../../../../src/application/commands/rev-parse.js';
+import {
+  evaluateRevision,
+  resolveRevision,
+} from '../../../../src/application/commands/rev-parse.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { writeReflog } from '../../../../src/application/primitives/reflog-store.js';
 import * as resolveRefMod from '../../../../src/application/primitives/resolve-ref.js';
@@ -102,9 +105,9 @@ const writeIndexFile = async (
   await ctx.fs.write(`${ctx.layout.gitDir}/index`, framed);
 };
 
-describe('revParse', () => {
+describe('resolveRevision', () => {
   describe('Given a non-repo ctx', () => {
-    describe('When revParse(HEAD)', () => {
+    describe('When resolveRevision(HEAD)', () => {
       it('Then throws NOT_A_REPOSITORY', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -112,7 +115,7 @@ describe('revParse', () => {
         // Act
         let caught: unknown;
         try {
-          await revParse(ctx, 'HEAD');
+          await resolveRevision(ctx, 'HEAD');
         } catch (err) {
           caught = err;
         }
@@ -125,7 +128,7 @@ describe('revParse', () => {
   });
 
   describe('Given a malformed core.maxTreeDepth, even for an unresolvable argument', () => {
-    describe('When revParse is called', () => {
+    describe('When resolveRevision is called', () => {
       it('Then throws CONFIG_BAD_NUMERIC_VALUE — the class is checked right after the gate', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -135,7 +138,7 @@ describe('revParse', () => {
         // Act
         let caught: unknown;
         try {
-          await revParse(ctx, 'nope');
+          await resolveRevision(ctx, 'nope');
           expect.unreachable();
         } catch (err) {
           caught = err;
@@ -148,7 +151,7 @@ describe('revParse', () => {
   });
 
   describe('Given a repo with HEAD pointing to a commit ref', () => {
-    describe('When revParse(HEAD)', () => {
+    describe('When resolveRevision(HEAD)', () => {
       it('Then returns the commit oid', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -159,7 +162,7 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': commitId } });
 
         // Act
-        const result = await revParse(ctx, 'HEAD');
+        const result = await resolveRevision(ctx, 'HEAD');
 
         // Assert
         expect(result).toBe(commitId);
@@ -168,7 +171,7 @@ describe('revParse', () => {
   });
 
   describe('Given a 40-hex oid', () => {
-    describe('When revParse', () => {
+    describe('When resolveRevision', () => {
       it('Then returns it directly (no lookup)', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -176,7 +179,7 @@ describe('revParse', () => {
         const oid = '0123456789abcdef0123456789abcdef01234567';
 
         // Act
-        const result = await revParse(ctx, oid);
+        const result = await resolveRevision(ctx, oid);
 
         // Assert
         expect(result).toBe(oid);
@@ -185,7 +188,7 @@ describe('revParse', () => {
   });
 
   describe('Given a SHA-256 repository and a full 64-hex oid', () => {
-    describe('When revParse', () => {
+    describe('When resolveRevision', () => {
       it('Then returns it directly (no lookup)', async () => {
         // Arrange
         const ctx = createMemoryContext({ algorithm: 'sha256' });
@@ -193,7 +196,7 @@ describe('revParse', () => {
         const oid = 'a'.repeat(64);
 
         // Act
-        const result = await revParse(ctx, oid);
+        const result = await resolveRevision(ctx, oid);
 
         // Assert
         expect(result).toBe(oid);
@@ -202,7 +205,7 @@ describe('revParse', () => {
   });
 
   describe('Given a 40-hex oid that also names a branch ref', () => {
-    describe('When revParse', () => {
+    describe('When resolveRevision', () => {
       it('Then returns the literal oid, not the ref target', async () => {
         // Arrange — git resolves a full 40-hex as the object itself; a colliding
         // ref is only a warning. The oid fast path must return the literal oid and
@@ -213,7 +216,7 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { [`refs/heads/${oid}`]: other } });
 
         // Act
-        const result = await revParse(ctx, oid);
+        const result = await resolveRevision(ctx, oid);
 
         // Assert — the literal oid, not `other`.
         expect(result).toBe(oid);
@@ -222,7 +225,7 @@ describe('revParse', () => {
   });
 
   describe('Given an abbreviated oid matching a unique object', () => {
-    describe('When revParse', () => {
+    describe('When resolveRevision', () => {
       it('Then resolves it to the full object id', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -230,7 +233,7 @@ describe('revParse', () => {
         const oid = await writeBlob(ctx, 'abbrev-target');
 
         // Act
-        const result = await revParse(ctx, oid.slice(0, 7));
+        const result = await resolveRevision(ctx, oid.slice(0, 7));
 
         // Assert
         expect(result).toBe(oid);
@@ -238,32 +241,57 @@ describe('revParse', () => {
     });
   });
 
-  describe('Given an abbreviated oid matching two objects', () => {
-    describe('When revParse', () => {
-      it('Then throws AMBIGUOUS_OID_PREFIX', async () => {
-        // Arrange — two loose objects sharing prefix 'abcdef'
-        const ctx = createMemoryContext();
-        await seedRepo(ctx, {});
-        for (const tail of ['0'.repeat(34), '1'.repeat(34)]) {
-          await ctx.fs.write(`${ctx.layout.gitDir}/objects/ab/cdef${tail}`, new Uint8Array([1]));
-        }
+  describe('Given an abbreviated oid two blobs share', () => {
+    const SHARED = 'abcd';
+    /** Two blob contents whose ids share the abbreviation `abcd`. */
+    const SHARING_ABCD = ['x20507\n', 'x115828\n'];
+    const sharedRepo = async () => {
+      const logged: Array<readonly [string, string, unknown]> = [];
+      const base = createMemoryContext();
+      const ctx: Context = {
+        ...base,
+        logger: {
+          error: (message, context) => logged.push(['error', message, context]),
+          warn: (message, context) => logged.push(['warn', message, context]),
+        },
+      };
+      const { commitIds } = await seedRepo(ctx, { commits: [{ tree: TREE_OID }] });
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitIds[0]}\n`);
+      const ids: ObjectId[] = [];
+      for (const text of SHARING_ABCD) ids.push(await writeBlob(ctx, text));
+      const candidates = ids.sort().map((id) => ({ id, type: 'blob' }));
+      const report = [
+        ['error', `short object ID ${SHARED} is ambiguous`, { prefix: SHARED }],
+        ['warn', 'The candidates are:', { prefix: SHARED, candidates }],
+      ];
+      return { ctx, logged, report };
+    };
+
+    describe.each([
+      { arg: 'abcd', source: 'command-line', reads: 1 },
+      { arg: 'abcd', source: 'stdin', reads: 1 },
+      { arg: 'abcd^{}', source: 'command-line', reads: 1 },
+      { arg: 'abcd~1', source: 'command-line', reads: 2 },
+      { arg: 'abcd~1:f', source: 'command-line', reads: 2 },
+      { arg: 'abcd..main', source: 'command-line', reads: 1 },
+    ] as const)('When resolveRevision reads $arg from the $source', ({ arg, source, reads }) => {
+      it('Then it refuses, reporting the candidates once per read git makes aloud', async () => {
+        // Arrange
+        const { ctx, logged, report } = await sharedRepo();
+        const sut = resolveRevision;
 
         // Act
-        let caught: unknown;
-        try {
-          await revParse(ctx, 'abcdef');
-        } catch (err) {
-          caught = err;
-        }
+        const result = await sut(ctx, arg, source).catch((error: TsgitError) => error.data.code);
 
         // Assert
-        expect((caught as TsgitError).data.code).toBe('AMBIGUOUS_OID_PREFIX');
+        expect(result).toMatch(/^(AMBIGUOUS_OID_PREFIX|OBJECT_NOT_FOUND|REVPARSE_UNRESOLVED)$/);
+        expect(logged).toEqual(Array.from({ length: reads }, () => report).flat());
       });
     });
   });
 
   describe('Given a 41-char string of 40 hex plus a trailing extra char', () => {
-    describe('When revParse', () => {
+    describe('When resolveRevision', () => {
       it('Then the hex regex rejects it (anchored end)', async () => {
         // Arrange — kills Regex `$`-drop: without `$`, /^[0-9a-f]{40}/ would match
         // the leading 40 hex and route into ObjectId.from (INVALID_OBJECT_ID).
@@ -273,7 +301,7 @@ describe('revParse', () => {
         // Act
         let caught: unknown;
         try {
-          await revParse(ctx, `${'0'.repeat(40)}a`);
+          await resolveRevision(ctx, `${'0'.repeat(40)}a`);
         } catch (err) {
           caught = err;
         }
@@ -285,7 +313,7 @@ describe('revParse', () => {
   });
 
   describe('Given a 41-char string of a non-hex char plus 40 hex', () => {
-    describe('When revParse', () => {
+    describe('When resolveRevision', () => {
       it('Then the hex regex rejects it (anchored start)', async () => {
         // Arrange — kills Regex `^`-drop: without `^`, /[0-9a-f]{40}$/ would match
         // the trailing 40 hex and route into ObjectId.from (INVALID_OBJECT_ID).
@@ -295,7 +323,7 @@ describe('revParse', () => {
         // Act
         let caught: unknown;
         try {
-          await revParse(ctx, `g${'0'.repeat(40)}`);
+          await resolveRevision(ctx, `g${'0'.repeat(40)}`);
         } catch (err) {
           caught = err;
         }
@@ -307,7 +335,7 @@ describe('revParse', () => {
   });
 
   describe('Given a malformed expression', () => {
-    describe('When revParse', () => {
+    describe('When resolveRevision', () => {
       it('Then throws REVPARSE_UNRESOLVED', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -316,7 +344,7 @@ describe('revParse', () => {
         // Act
         let caught: unknown;
         try {
-          await revParse(ctx, 'HEAD~~');
+          await resolveRevision(ctx, 'HEAD^{garbage}');
         } catch (err) {
           caught = err;
         }
@@ -329,7 +357,7 @@ describe('revParse', () => {
   });
 
   describe('Given a base resolvable only via refs/tags/', () => {
-    describe('When revParse', () => {
+    describe('When resolveRevision', () => {
       it('Then the tags candidate resolves it', async () => {
         // Arrange — kills the ArrayDeclaration mutant: an empty candidate list
         // would never try `refs/tags/release`.
@@ -338,7 +366,7 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/tags/release': commit } });
 
         // Act
-        const result = await revParse(ctx, 'release');
+        const result = await resolveRevision(ctx, 'release');
 
         // Assert
         expect(result).toBe(commit);
@@ -347,7 +375,7 @@ describe('revParse', () => {
   });
 
   describe('Given a base resolvable only via refs/remotes/', () => {
-    describe('When revParse', () => {
+    describe('When resolveRevision', () => {
       it('Then the remotes candidate resolves it', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -355,7 +383,7 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/remotes/origin/main': commit } });
 
         // Act
-        const result = await revParse(ctx, 'origin/main');
+        const result = await resolveRevision(ctx, 'origin/main');
 
         // Assert
         expect(result).toBe(commit);
@@ -364,7 +392,7 @@ describe('revParse', () => {
   });
 
   describe('Given a fully-qualified ref name', () => {
-    describe('When revParse', () => {
+    describe('When resolveRevision', () => {
       it('Then the verbatim candidate resolves it', async () => {
         // Arrange — exercises the first (verbatim `base`) candidate slot.
         const ctx = createMemoryContext();
@@ -372,7 +400,7 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/feature': commit } });
 
         // Act
-        const result = await revParse(ctx, 'refs/heads/feature');
+        const result = await resolveRevision(ctx, 'refs/heads/feature');
 
         // Assert
         expect(result).toBe(commit);
@@ -381,7 +409,7 @@ describe('revParse', () => {
   });
 
   describe('Given an unresolvable base', () => {
-    describe('When revParse', () => {
+    describe('When resolveRevision', () => {
       it('Then throws OBJECT_NOT_FOUND with that base as id', async () => {
         // Arrange — every candidate fails; the final throw must carry the base.
         const ctx = createMemoryContext();
@@ -390,7 +418,7 @@ describe('revParse', () => {
         // Act
         let caught: unknown;
         try {
-          await revParse(ctx, 'no-such-thing');
+          await resolveRevision(ctx, 'no-such-thing');
         } catch (err) {
           caught = err;
         }
@@ -403,8 +431,31 @@ describe('revParse', () => {
     });
   });
 
+  describe.each(['a2', 'b1', 'abc'])(
+    'Given a branch named %s, too short to abbreviate an object id',
+    (name) => {
+      describe('When resolveRevision resolves that name', () => {
+        it('Then it resolves the branch as git does', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const {
+            commitIds: [tip],
+          } = await seedRepo(ctx, { commits: [{ tree: 'e'.repeat(40) }] });
+          await seedRepo(ctx, { refs: { [`refs/heads/${name}`]: tip as string } });
+          const sut = resolveRevision;
+
+          // Act
+          const bare = await sut(ctx, name);
+
+          // Assert
+          expect(bare).toBe(tip);
+        });
+      });
+    },
+  );
+
   describe('Given a base matching none of the six ref candidates', () => {
-    describe('When revParse sweeps the candidates', () => {
+    describe('When one read sweeps the candidates', () => {
       it('Then probes resolveDirect exactly 6 times and never invokes the throwing resolveRef', async () => {
         // Arrange — a RefStore double (the real store, spied) counts direct
         // probes; resolveRef is the sweep's OLD throw-per-miss path.
@@ -412,10 +463,11 @@ describe('revParse', () => {
         await seedRepo(ctx, {});
         const resolveDirectSpy = vi.spyOn(getRefStore(ctx), 'resolveDirect');
         const resolveRefSpy = vi.spyOn(resolveRefMod, 'resolveRef');
+        const sut = evaluateRevision;
 
         // Act
         try {
-          await revParse(ctx, 'totally-unknown-base');
+          await sut(ctx, 'totally-unknown-base');
           expect.unreachable();
         } catch {
           // OBJECT_NOT_FOUND — already asserted by the sibling case above.
@@ -429,7 +481,7 @@ describe('revParse', () => {
   });
 
   describe('Given a broken ref candidate ahead of a resolvable one', () => {
-    describe('When revParse sweeps refs/tags/ (broken) before refs/heads/ (valid)', () => {
+    describe('When resolveRevision sweeps refs/tags/ (broken) before refs/heads/ (valid)', () => {
       it('Then the broken candidate is swept past and refs/heads/x resolves', async () => {
         // Arrange — refCandidates tries refs/tags/<base> BEFORE
         // refs/heads/<base>; garbage loose-ref content makes resolveDirect
@@ -443,7 +495,7 @@ describe('revParse', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/x`, `${commit}\n`);
 
         // Act
-        const result = await revParse(ctx, 'x');
+        const result = await resolveRevision(ctx, 'x');
 
         // Assert
         expect(result).toBe(commit);
@@ -452,7 +504,7 @@ describe('revParse', () => {
   });
 
   describe('Given a symref-cycle ref candidate ahead of a resolvable one', () => {
-    describe('When revParse sweeps refs/tags/ (cyclic) before refs/heads/ (valid)', () => {
+    describe('When resolveRevision sweeps refs/tags/ (cyclic) before refs/heads/ (valid)', () => {
       it('Then the cyclic candidate is swept past and refs/heads/x resolves', async () => {
         // Arrange — refs/tags/x and refs/tags/loop point at each other,
         // so the sweep's own cycle-detection throws REF_CYCLE_DETECTED for
@@ -465,7 +517,7 @@ describe('revParse', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/x`, `${commit}\n`);
 
         // Act
-        const result = await revParse(ctx, 'x');
+        const result = await resolveRevision(ctx, 'x');
 
         // Assert
         expect(result).toBe(commit);
@@ -492,7 +544,7 @@ describe('revParse', () => {
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/${namespace}/${link(hops)}`, `${id}\n`);
     };
 
-    describe('When revParse sweeps a five-hop refs/tags/ candidate before a valid refs/heads/ one', () => {
+    describe('When resolveRevision sweeps a five-hop refs/tags/ candidate before a valid refs/heads/ one', () => {
       it('Then the deep candidate is swept past and refs/heads/y resolves', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -503,14 +555,14 @@ describe('revParse', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/y`, `${branchTip}\n`);
 
         // Act
-        const result = await revParse(ctx, 'y');
+        const result = await resolveRevision(ctx, 'y');
 
         // Assert
         expect(result).toBe(branchTip);
       });
     });
 
-    describe('When revParse resolves a four-hop chain', () => {
+    describe('When resolveRevision resolves a four-hop chain', () => {
       it('Then it resolves to the chain tip', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -519,14 +571,14 @@ describe('revParse', () => {
         await seedChain(ctx, 'heads', 'h', 4, tip);
 
         // Act
-        const result = await revParse(ctx, 'h');
+        const result = await resolveRevision(ctx, 'h');
 
         // Assert
         expect(result).toBe(tip);
       });
     });
 
-    describe('When revParse names the five-hop ref in full', () => {
+    describe('When resolveRevision names the five-hop ref in full', () => {
       it('Then no candidate resolves and it refuses OBJECT_NOT_FOUND naming the argument', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -537,7 +589,7 @@ describe('revParse', () => {
         // Act
         let caught: unknown;
         try {
-          await revParse(ctx, 'refs/heads/x');
+          await resolveRevision(ctx, 'refs/heads/x');
         } catch (err) {
           caught = err;
         }
@@ -552,7 +604,7 @@ describe('revParse', () => {
   });
 
   describe('Given HEAD with one parent op', () => {
-    describe('When revParse(HEAD^)', () => {
+    describe('When resolveRevision(HEAD^)', () => {
       it('Then returns the first parent', async () => {
         // Arrange — exercises the operations loop and getNthParent (n-1 indexing).
         const ctx = createMemoryContext();
@@ -561,7 +613,7 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': child } });
 
         // Act
-        const result = await revParse(ctx, 'HEAD^');
+        const result = await resolveRevision(ctx, 'HEAD^');
 
         // Assert
         expect(result).toBe(parent);
@@ -570,7 +622,7 @@ describe('revParse', () => {
   });
 
   describe('Given a merge commit with two parents', () => {
-    describe('When revParse(HEAD^2)', () => {
+    describe('When resolveRevision(HEAD^2)', () => {
       it('Then returns the second parent', async () => {
         // Arrange — kills the `n - 1` ArithmeticOperator mutant: `n + 1` would
         // index parents[3] (undefined) for ^2.
@@ -581,7 +633,7 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': merge } });
 
         // Act
-        const result = await revParse(ctx, 'HEAD^2');
+        const result = await resolveRevision(ctx, 'HEAD^2');
 
         // Assert
         expect(result).toBe(p2);
@@ -590,7 +642,7 @@ describe('revParse', () => {
   });
 
   describe('Given a merge commit', () => {
-    describe('When revParse(HEAD^1)', () => {
+    describe('When resolveRevision(HEAD^1)', () => {
       it('Then returns the first parent (not the second)', async () => {
         // Arrange — pins `n - 1` so `^1` selects parents[0].
         const ctx = createMemoryContext();
@@ -600,7 +652,7 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': merge } });
 
         // Act
-        const result = await revParse(ctx, 'HEAD^1');
+        const result = await resolveRevision(ctx, 'HEAD^1');
 
         // Assert
         expect(result).toBe(p1);
@@ -632,7 +684,7 @@ describe('revParse', () => {
       return { blobA, blobB, sub, root };
     };
 
-    describe('When revParse resolves the tree-ish path', () => {
+    describe('When resolveRevision resolves the tree-ish path', () => {
       it.each([
         {
           label: 'the blob at a top-level path (main:a.txt)',
@@ -654,13 +706,39 @@ describe('revParse', () => {
           expr: 'main:sub',
           field: 'sub' as const,
         },
+        {
+          label: 'the sub-tree a trailing slash closes (main:sub/)',
+          expr: 'main:sub/',
+          field: 'sub' as const,
+        },
+        {
+          label: 'the blob a worktree-relative path names (main:./a.txt)',
+          expr: 'main:./a.txt',
+          field: 'blobA' as const,
+        },
+        {
+          label: 'the blob a relative path names after a parent hop (main:./sub/../a.txt)',
+          expr: 'main:./sub/../a.txt',
+          field: 'blobA' as const,
+        },
+        {
+          label:
+            'the nested blob a relative path names through doubled slashes (main:.//sub//b.txt)',
+          expr: 'main:.//sub//b.txt',
+          field: 'blobB' as const,
+        },
+        {
+          label: 'the commit tree itself for the worktree root (main:./)',
+          expr: 'main:./',
+          field: 'root' as const,
+        },
       ])('Then it returns $label', async ({ expr, field }) => {
         // Arrange
         const ctx = createMemoryContext();
         const tree = await seedTree(ctx);
 
         // Act
-        const result = await revParse(ctx, expr);
+        const result = await resolveRevision(ctx, expr);
 
         // Assert
         expect(result).toBe(tree[field]);
@@ -676,7 +754,7 @@ describe('revParse', () => {
 
         // Act
         try {
-          await revParse(ctx, 'main:nope');
+          await resolveRevision(ctx, 'main:nope');
         } catch (err) {
           caught = err;
         }
@@ -689,6 +767,115 @@ describe('revParse', () => {
       });
     });
 
+    describe.each(['main:a.txt/', 'main:sub//', 'main:sub//b.txt'])(
+      'When the trailing or doubled slash in %s names no directory',
+      (expr) => {
+        it('Then throws PATH_NOT_IN_TREE', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedTree(ctx);
+          const sut = resolveRevision;
+
+          // Act
+          const result = await sut(ctx, expr).catch((error: TsgitError) => error.data);
+
+          // Assert
+          expect(result).toMatchObject({ code: 'PATH_NOT_IN_TREE' });
+        });
+      },
+    );
+
+    describe.each([
+      { expr: 'main:../a.txt', path: '../a.txt' },
+      { expr: 'main:./sub/../../a.txt', path: './sub/../../a.txt' },
+      { expr: ':0:../a.txt', path: '../a.txt' },
+    ])('When a relative path in $expr climbs out of the worktree', ({ expr, path }) => {
+      it('Then it refuses the path as outside the repository', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedTree(ctx);
+        const sut = resolveRevision;
+
+        // Act
+        const result = await sut(ctx, expr).catch((error: TsgitError) => error.data);
+
+        // Assert
+        expect(result).toEqual({ code: 'PATHSPEC_OUTSIDE_REPO', path });
+      });
+    });
+
+    describe.each([
+      { expr: 'main:./b.txt', field: 'blobB' as const },
+      { expr: 'main:../a.txt', field: 'blobA' as const },
+      { expr: 'main:./', field: 'sub' as const },
+    ])('When $expr is read from the sub directory', ({ expr, field }) => {
+      it('Then the relative path is taken from that directory, as git does', async () => {
+        // Arrange
+        const repo = createMemoryContext();
+        const ids = await seedTree(repo);
+        const ctx = { ...repo, cwd: `${repo.layout.workDir}/sub` } as Context;
+        const sut = resolveRevision;
+
+        // Act
+        const result = await sut(ctx, expr);
+
+        // Assert
+        expect(result).toBe(ids[field]);
+      });
+    });
+
+    describe('When a relative path is read from a directory outside the worktree', () => {
+      it('Then it refuses relative path syntax outside a working tree', async () => {
+        // Arrange
+        const repo = createMemoryContext();
+        await seedTree(repo);
+        const ctx = { ...repo, cwd: `${repo.layout.workDir}-elsewhere` } as Context;
+        const sut = resolveRevision;
+
+        // Act
+        const result = await sut(ctx, 'main:./a.txt').catch((error: TsgitError) => error.data);
+
+        // Assert
+        expect(result).toEqual({ code: 'WORK_TREE_REQUIRED', operation: 'relative path syntax' });
+      });
+    });
+
+    describe('When a relative path climbs out of the worktree from the sub directory', () => {
+      it('Then it refuses the path as given', async () => {
+        // Arrange
+        const repo = createMemoryContext();
+        await seedTree(repo);
+        const ctx = { ...repo, cwd: `${repo.layout.workDir}/sub` } as Context;
+        const sut = resolveRevision;
+
+        // Act
+        const result = await sut(ctx, 'main:../../a.txt').catch((error: TsgitError) => error.data);
+
+        // Assert
+        expect(result).toEqual({ code: 'PATHSPEC_OUTSIDE_REPO', path: '../../a.txt' });
+      });
+    });
+
+    describe.each(['main:./a.txt', ':0:./a.txt'])(
+      'When a bare repository reads the relative path in %s',
+      (expr) => {
+        it('Then it refuses relative path syntax outside a working tree', async () => {
+          // Arrange
+          const repo = createMemoryContext();
+          await seedTree(repo);
+          const { workDir: _workDir, ...bareLayout } = repo.layout;
+          const ctx = { ...repo, layout: { ...bareLayout, bare: true } } as Context;
+          const sut = resolveRevision;
+
+          // Act
+          const result = await sut(ctx, expr).catch((error: TsgitError) => error.data);
+
+          // Assert
+          expect(result).toEqual({ code: 'WORK_TREE_REQUIRED', operation: 'relative path syntax' });
+        });
+      },
+    );
+
     describe('When a component descends into a blob', () => {
       it('Then throws PATH_NOT_IN_TREE on the non-tree component', async () => {
         // Arrange — `a.txt` is a blob, so descending into `a.txt/x` cannot resolve.
@@ -698,7 +885,7 @@ describe('revParse', () => {
 
         // Act
         try {
-          await revParse(ctx, 'main:a.txt/x');
+          await resolveRevision(ctx, 'main:a.txt/x');
         } catch (err) {
           caught = err;
         }
@@ -725,7 +912,7 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': commit } });
 
         // Act
-        const result = await revParse(ctx, 'main:a/b');
+        const result = await resolveRevision(ctx, 'main:a/b');
 
         // Assert
         expect(result).toBe(literalId);
@@ -734,7 +921,7 @@ describe('revParse', () => {
   });
 
   describe('Given a non-commit object', () => {
-    describe('When revParse(<blob>^)', () => {
+    describe('When resolveRevision(<blob>^)', () => {
       it('Then throws OBJECT_NOT_FOUND on the blob id', async () => {
         // Arrange — kills the `obj.type !== 'commit'` guard in getNthParent.
         const ctx = createMemoryContext();
@@ -744,7 +931,7 @@ describe('revParse', () => {
         // Act
         let caught: unknown;
         try {
-          await revParse(ctx, `${blob}^`);
+          await resolveRevision(ctx, `${blob}^`);
         } catch (err) {
           caught = err;
         }
@@ -758,7 +945,7 @@ describe('revParse', () => {
   });
 
   describe('Given a root commit', () => {
-    describe('When revParse(HEAD^)', () => {
+    describe('When resolveRevision(HEAD^)', () => {
       it('Then throws OBJECT_NOT_FOUND (no first parent)', async () => {
         // Arrange — kills the `parent === undefined` guard in getNthParent.
         const ctx = createMemoryContext();
@@ -768,7 +955,7 @@ describe('revParse', () => {
         // Act
         let caught: unknown;
         try {
-          await revParse(ctx, 'HEAD^');
+          await resolveRevision(ctx, 'HEAD^');
         } catch (err) {
           caught = err;
         }
@@ -782,7 +969,7 @@ describe('revParse', () => {
   });
 
   describe('Given a shallow boundary at HEAD~1', () => {
-    describe('When revParse(HEAD~1)', () => {
+    describe('When resolveRevision(HEAD~1)', () => {
       it('Then resolves to the boundary itself — masking only hides ITS parents', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -793,14 +980,14 @@ describe('revParse', () => {
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${boundary}\n`);
 
         // Act
-        const result = await revParse(ctx, 'HEAD~1');
+        const result = await resolveRevision(ctx, 'HEAD~1');
 
         // Assert
         expect(result).toBe(boundary);
       });
     });
 
-    describe('When revParse(HEAD~2)', () => {
+    describe('When resolveRevision(HEAD~2)', () => {
       it('Then throws OBJECT_NOT_FOUND naming the boundary — its masked parent list is empty', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -813,7 +1000,7 @@ describe('revParse', () => {
         // Act
         let caught: unknown;
         try {
-          await revParse(ctx, 'HEAD~2');
+          await resolveRevision(ctx, 'HEAD~2');
         } catch (err) {
           caught = err;
         }
@@ -827,7 +1014,7 @@ describe('revParse', () => {
   });
 
   describe('Given a three-commit chain', () => {
-    describe('When revParse(HEAD~2)', () => {
+    describe('When resolveRevision(HEAD~2)', () => {
       it('Then walks first-parent twice to the grandparent', async () => {
         // Arrange — kills the ancestor loop `i < op.n` / `i += 1` mutants:
         // ~2 must land exactly on the grandparent, not the parent or root-fail.
@@ -838,7 +1025,7 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': head } });
 
         // Act
-        const result = await revParse(ctx, 'HEAD~2');
+        const result = await resolveRevision(ctx, 'HEAD~2');
 
         // Assert
         expect(result).toBe(gp);
@@ -847,7 +1034,7 @@ describe('revParse', () => {
   });
 
   describe('Given a two-commit chain', () => {
-    describe('When revParse(HEAD~1)', () => {
+    describe('When resolveRevision(HEAD~1)', () => {
       it('Then walks first-parent once to the parent', async () => {
         // Arrange — pins the ancestor loop lower bound: ~1 runs exactly one step.
         const ctx = createMemoryContext();
@@ -856,7 +1043,7 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': head } });
 
         // Act
-        const result = await revParse(ctx, 'HEAD~1');
+        const result = await resolveRevision(ctx, 'HEAD~1');
 
         // Assert
         expect(result).toBe(parent);
@@ -865,7 +1052,7 @@ describe('revParse', () => {
   });
 
   describe('Given HEAD~0', () => {
-    describe('When revParse', () => {
+    describe('When resolveRevision', () => {
       it('Then the ancestor loop runs zero times and returns HEAD itself', async () => {
         // Arrange — kills the ancestor loop upper-bound mutants (`i <= op.n` would
         // run one iteration for n=0 and fail on the root commit).
@@ -874,7 +1061,7 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': head } });
 
         // Act
-        const result = await revParse(ctx, 'HEAD~0');
+        const result = await resolveRevision(ctx, 'HEAD~0');
 
         // Assert
         expect(result).toBe(head);
@@ -883,7 +1070,7 @@ describe('revParse', () => {
   });
 
   describe('Given a commit', () => {
-    describe('When revParse(HEAD^{tree})', () => {
+    describe('When resolveRevision(HEAD^{tree})', () => {
       it('Then peels the commit to its tree', async () => {
         // Arrange — kills the `target === 'tree' && obj.type === 'commit'` branch.
         const ctx = createMemoryContext();
@@ -892,13 +1079,13 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': commit } });
 
         // Act
-        const result = await revParse(ctx, 'HEAD^{tree}');
+        const result = await resolveRevision(ctx, 'HEAD^{tree}');
 
         // Assert
         expect(result).toBe(tree);
       });
     });
-    describe('When revParse(HEAD^{commit})', () => {
+    describe('When resolveRevision(HEAD^{commit})', () => {
       it('Then the peel target matches immediately and returns the commit', async () => {
         // Arrange — kills the `obj.type === target` match in peel.
         const ctx = createMemoryContext();
@@ -906,7 +1093,7 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': commit } });
 
         // Act
-        const result = await revParse(ctx, 'HEAD^{commit}');
+        const result = await resolveRevision(ctx, 'HEAD^{commit}');
 
         // Assert
         expect(result).toBe(commit);
@@ -915,7 +1102,7 @@ describe('revParse', () => {
   });
 
   describe('Given a tag pointing at a commit', () => {
-    describe('When revParse(<tag>^{commit})', () => {
+    describe('When resolveRevision(<tag>^{commit})', () => {
       it('Then peels through the tag to the commit', async () => {
         // Arrange — kills the `obj.type === 'tag'` follow-through branch.
         const ctx = createMemoryContext();
@@ -924,7 +1111,7 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': commit, 'refs/tags/v1': tag } });
 
         // Act
-        const result = await revParse(ctx, 'v1^{commit}');
+        const result = await resolveRevision(ctx, 'v1^{commit}');
 
         // Assert
         expect(result).toBe(commit);
@@ -933,7 +1120,7 @@ describe('revParse', () => {
   });
 
   describe('Given nested tags peeling to a commit', () => {
-    describe('When revParse', () => {
+    describe('When resolveRevision', () => {
       it('Then the peel loop iterates within its five-step budget', async () => {
         // Arrange — three stacked tags + commit = four reads; kills the `i < 5`
         // loop-bound mutants that would either stop short or never iterate.
@@ -945,7 +1132,7 @@ describe('revParse', () => {
         await seedRepo(ctx, { refs: { 'refs/heads/main': commit, 'refs/tags/v1': t3 } });
 
         // Act
-        const result = await revParse(ctx, 'v1^{commit}');
+        const result = await resolveRevision(ctx, 'v1^{commit}');
 
         // Assert
         expect(result).toBe(commit);
@@ -954,12 +1141,9 @@ describe('revParse', () => {
   });
 
   describe('Given five stacked tags wrapping a commit', () => {
-    describe('When revParse(<tag>^{commit})', () => {
-      it('Then peel exhausts its five-step budget and rejects with OBJECT_NOT_FOUND', async () => {
-        // Arrange — peel reads exactly five tags (i=0..4) then exits at `i < 5`,
-        // throwing on the unreached commit. `i <= 5` would do a sixth read and
-        // succeed; `i -= 1` never hits the bound and also succeeds — both mutants
-        // turn this failure into the commit oid.
+    describe('When resolveRevision(<tag>^{commit})', () => {
+      it('Then it peels all five tags to the commit, as git does', async () => {
+        // Arrange
         const ctx = createMemoryContext();
         const commit = await writeCommit(ctx, TREE_OID as ObjectId, []);
         const t1 = await writeTag(ctx, commit, 'commit');
@@ -968,25 +1152,19 @@ describe('revParse', () => {
         const t4 = await writeTag(ctx, t3, 'tag');
         const t5 = await writeTag(ctx, t4, 'tag');
         await seedRepo(ctx, { refs: { 'refs/heads/main': commit, 'refs/tags/v1': t5 } });
+        const sut = resolveRevision;
 
         // Act
-        let caught: unknown;
-        try {
-          await revParse(ctx, 'v1^{commit}');
-        } catch (err) {
-          caught = err;
-        }
+        const result = await sut(ctx, 'v1^{commit}');
 
         // Assert
-        const data = (caught as TsgitError).data as { code: string; id: string };
-        expect(data.code).toBe('OBJECT_NOT_FOUND');
-        expect(data.id).toBe(commit);
+        expect(result).toBe(commit);
       });
     });
   });
 
   describe('Given a blob', () => {
-    describe('When revParse(<blob>^{commit})', () => {
+    describe('When resolveRevision(<blob>^{commit})', () => {
       it('Then peel rejects with OBJECT_NOT_FOUND', async () => {
         // Arrange — exercises the `throw objectNotFound(current)` fallthrough in peel.
         const ctx = createMemoryContext();
@@ -996,7 +1174,7 @@ describe('revParse', () => {
         // Act
         let caught: unknown;
         try {
-          await revParse(ctx, `${blob}^{commit}`);
+          await resolveRevision(ctx, `${blob}^{commit}`);
         } catch (err) {
           caught = err;
         }
@@ -1010,10 +1188,10 @@ describe('revParse', () => {
   });
 
   describe('Given a commit', () => {
-    describe('When revParse(HEAD^{blob})', () => {
-      it('Then peel cannot reach a blob and rejects with OBJECT_NOT_FOUND', async () => {
-        // Arrange — a commit is not a blob and `target !== 'tree'`, so peel hits
-        // the throw; pins the `target === 'tree'` guard's false branch.
+    describe('When resolveRevision(HEAD^{blob})', () => {
+      it('Then peel descends to the root tree, cannot reach a blob there, and rejects with OBJECT_NOT_FOUND', async () => {
+        // Arrange — a commit is not a blob and `target !== 'tree'`, so peel hops
+        // to the commit's tree as git does and misses there.
         const ctx = createMemoryContext();
         const commit = await writeCommit(ctx, TREE_OID as ObjectId, []);
         await seedRepo(ctx, { refs: { 'refs/heads/main': commit } });
@@ -1021,7 +1199,7 @@ describe('revParse', () => {
         // Act
         let caught: unknown;
         try {
-          await revParse(ctx, 'HEAD^{blob}');
+          await resolveRevision(ctx, 'HEAD^{blob}');
         } catch (err) {
           caught = err;
         }
@@ -1029,13 +1207,13 @@ describe('revParse', () => {
         // Assert
         const data = (caught as TsgitError).data as { code: string; id: string };
         expect(data.code).toBe('OBJECT_NOT_FOUND');
-        expect(data.id).toBe(commit);
+        expect(data.id).toBe(TREE_OID);
       });
     });
   });
 
   describe('Given an index entry at stage 0 for a path', () => {
-    describe('When revParse(:0:<path>)', () => {
+    describe('When resolveRevision(:0:<path>)', () => {
       it('Then returns that entry id', async () => {
         // Arrange — exercises resolveIndexStage's loop and happy-path return.
         const ctx = createMemoryContext();
@@ -1044,7 +1222,24 @@ describe('revParse', () => {
         await writeIndexFile(ctx, [{ path: 'a.txt', id: blob, stage: 0 }]);
 
         // Act
-        const result = await revParse(ctx, ':0:a.txt');
+        const result = await resolveRevision(ctx, ':0:a.txt');
+
+        // Assert
+        expect(result).toBe(blob);
+      });
+    });
+
+    describe.each([':0:./a.txt', ':0:./sub/../a.txt'])('When resolveRevision(%s)', (expr) => {
+      it('Then returns the entry its worktree-relative path names', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const blob = await writeBlob(ctx, 'content');
+        await writeIndexFile(ctx, [{ path: 'a.txt', id: blob, stage: 0 }]);
+        const sut = resolveRevision;
+
+        // Act
+        const result = await sut(ctx, expr);
 
         // Assert
         expect(result).toBe(blob);
@@ -1053,7 +1248,7 @@ describe('revParse', () => {
   });
 
   describe('Given an entry whose path matches but whose stage differs', () => {
-    describe('When revParse(:0:<path>)', () => {
+    describe('When resolveRevision(:0:<path>)', () => {
       it('Then the stage operand of the guard rejects it', async () => {
         // Arrange — kills the `entry.flags.stage === expr.stage` operand and the
         // `||` logical mutant: path matches, stage does not.
@@ -1065,7 +1260,7 @@ describe('revParse', () => {
         // Act
         let caught: unknown;
         try {
-          await revParse(ctx, ':0:a.txt');
+          await resolveRevision(ctx, ':0:a.txt');
         } catch (err) {
           caught = err;
         }
@@ -1079,7 +1274,7 @@ describe('revParse', () => {
   });
 
   describe('Given an entry whose stage matches but whose path differs', () => {
-    describe('When revParse(:0:<path>)', () => {
+    describe('When resolveRevision(:0:<path>)', () => {
       it('Then the path operand of the guard rejects it', async () => {
         // Arrange — kills the `entry.path === expr.path` operand: stage matches,
         // path does not.
@@ -1091,7 +1286,7 @@ describe('revParse', () => {
         // Act
         let caught: unknown;
         try {
-          await revParse(ctx, ':0:a.txt');
+          await resolveRevision(ctx, ':0:a.txt');
         } catch (err) {
           caught = err;
         }
@@ -1105,7 +1300,7 @@ describe('revParse', () => {
   });
 
   describe('Given two same-path entries at stages 2 and 3', () => {
-    describe('When revParse(:3:<path>)', () => {
+    describe('When resolveRevision(:3:<path>)', () => {
       it('Then returns exactly the stage-3 entry', async () => {
         // Arrange — both operands must hold simultaneously; the matching entry is
         // not the first in the index, exercising the loop past entry one.
@@ -1119,7 +1314,7 @@ describe('revParse', () => {
         ]);
 
         // Act
-        const result = await revParse(ctx, ':3:conflict.txt');
+        const result = await resolveRevision(ctx, ':3:conflict.txt');
 
         // Assert
         expect(result).toBe(theirs);
@@ -1128,7 +1323,7 @@ describe('revParse', () => {
   });
 
   describe('Given an empty index', () => {
-    describe('When revParse(:0:<path>)', () => {
+    describe('When resolveRevision(:0:<path>)', () => {
       it('Then throws OBJECT_NOT_FOUND for stage:path', async () => {
         // Arrange — no entries: the loop body never runs and the throw fires.
         const ctx = createMemoryContext();
@@ -1137,7 +1332,7 @@ describe('revParse', () => {
         // Act
         let caught: unknown;
         try {
-          await revParse(ctx, ':0:missing.txt');
+          await resolveRevision(ctx, ':0:missing.txt');
         } catch (err) {
           caught = err;
         }
@@ -1169,7 +1364,7 @@ describe('revParse', () => {
     });
 
     describe('Given a HEAD reflog with two moves', () => {
-      describe('When revParse(HEAD@{1})', () => {
+      describe('When resolveRevision(HEAD@{1})', () => {
         it('Then it returns the second-newest newId', async () => {
           // Arrange — oldest-first file; @{1} is the second-newest entry's newId.
           const ctx = createMemoryContext();
@@ -1182,7 +1377,7 @@ describe('revParse', () => {
           ]);
 
           // Act
-          const result = await revParse(ctx, 'HEAD@{1}');
+          const result = await resolveRevision(ctx, 'HEAD@{1}');
 
           // Assert
           expect(result).toBe(c1);
@@ -1191,7 +1386,7 @@ describe('revParse', () => {
     });
 
     describe('Given a HEAD reflog', () => {
-      describe('When revParse(HEAD@{0})', () => {
+      describe('When resolveRevision(HEAD@{0})', () => {
         it('Then it returns the newest entry newId', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -1204,7 +1399,7 @@ describe('revParse', () => {
           ]);
 
           // Act
-          const result = await revParse(ctx, 'HEAD@{0}');
+          const result = await resolveRevision(ctx, 'HEAD@{0}');
 
           // Assert
           expect(result).toBe(c2);
@@ -1213,7 +1408,7 @@ describe('revParse', () => {
     });
 
     describe('Given a branch reflog', () => {
-      describe('When revParse(main@{0})', () => {
+      describe('When resolveRevision(main@{0})', () => {
         it('Then the branch log resolves the newest tip', async () => {
           // Arrange — kills a mutant that hard-codes the base to HEAD; the
           // reflog file lives at refs/heads/main, so the short base `main`
@@ -1224,7 +1419,7 @@ describe('revParse', () => {
           await writeReflog(ctx, MAIN_REF, [reflogEntry(ZERO_OID, tip, 1_000)]);
 
           // Act
-          const result = await revParse(ctx, 'main@{0}');
+          const result = await resolveRevision(ctx, 'main@{0}');
 
           // Assert
           expect(result).toBe(tip);
@@ -1233,7 +1428,7 @@ describe('revParse', () => {
     });
 
     describe('Given a bare @{N} selector and HEAD on a branch', () => {
-      describe('When revParse(@{0})', () => {
+      describe('When resolveRevision(@{0})', () => {
         it('Then it resolves against that branch reflog', async () => {
           // Arrange — bare `@{N}` reads the checked-out branch's log, not HEAD's.
           const ctx = createMemoryContext();
@@ -1242,7 +1437,7 @@ describe('revParse', () => {
           await writeReflog(ctx, MAIN_REF, [reflogEntry(ZERO_OID, tip, 1_000)]);
 
           // Act
-          const result = await revParse(ctx, '@{0}');
+          const result = await resolveRevision(ctx, '@{0}');
 
           // Assert
           expect(result).toBe(tip);
@@ -1251,7 +1446,7 @@ describe('revParse', () => {
     });
 
     describe('Given a detached HEAD and a bare @{N} selector', () => {
-      describe('When revParse(@{0})', () => {
+      describe('When resolveRevision(@{0})', () => {
         it('Then it falls back to the HEAD reflog', async () => {
           // Arrange — detached HEAD has no branch target, so `@{N}` reads HEAD's log.
           const ctx = createMemoryContext();
@@ -1260,7 +1455,7 @@ describe('revParse', () => {
           await writeReflog(ctx, HEAD_REF, [reflogEntry(ZERO_OID, c1, 1_000)]);
 
           // Act
-          const result = await revParse(ctx, '@{0}');
+          const result = await resolveRevision(ctx, '@{0}');
 
           // Assert
           expect(result).toBe(c1);
@@ -1269,7 +1464,7 @@ describe('revParse', () => {
     });
 
     describe('Given HEAD@{1} chained with a parent op', () => {
-      describe('When revParse(HEAD@{1}^)', () => {
+      describe('When resolveRevision(HEAD@{1}^)', () => {
         it('Then the reflog id flows through the ~/^ ops', async () => {
           // Arrange — @{1} resolves to c2 (which has parent c1); `^` peels to c1.
           const ctx = createMemoryContext();
@@ -1284,7 +1479,7 @@ describe('revParse', () => {
           ]);
 
           // Act
-          const result = await revParse(ctx, 'HEAD@{1}^');
+          const result = await resolveRevision(ctx, 'HEAD@{1}^');
 
           // Assert
           expect(result).toBe(c1);
@@ -1293,7 +1488,7 @@ describe('revParse', () => {
     });
 
     describe('Given an index past the newest entry', () => {
-      describe('When revParse(HEAD@{5})', () => {
+      describe('When resolveRevision(HEAD@{5})', () => {
         it('Then throws REFLOG_ENTRY_OUT_OF_RANGE with requested and available', async () => {
           // Arrange — two entries, index 5 is out of range.
           const ctx = createMemoryContext();
@@ -1307,7 +1502,7 @@ describe('revParse', () => {
           // Act
           let caught: unknown;
           try {
-            await revParse(ctx, 'HEAD@{5}');
+            await resolveRevision(ctx, 'HEAD@{5}');
           } catch (err) {
             caught = err;
           }
@@ -1325,7 +1520,7 @@ describe('revParse', () => {
     });
 
     describe('Given a ref with an empty reflog file', () => {
-      describe('When revParse(HEAD@{0})', () => {
+      describe('When resolveRevision(HEAD@{0})', () => {
         it('Then throws REVPARSE_UNRESOLVED', async () => {
           // Arrange — the file exists but has no entries.
           const ctx = createMemoryContext();
@@ -1336,7 +1531,7 @@ describe('revParse', () => {
           // Act
           let caught: unknown;
           try {
-            await revParse(ctx, 'HEAD@{0}');
+            await resolveRevision(ctx, 'HEAD@{0}');
           } catch (err) {
             caught = err;
           }
@@ -1351,7 +1546,7 @@ describe('revParse', () => {
     });
 
     describe('Given a HEAD reflog with a malformed line mid-file', () => {
-      describe('When revParse(HEAD@{1})', () => {
+      describe('When resolveRevision(HEAD@{1})', () => {
         it('Then it resolves to the second-newest SURVIVING entry, skipping the malformed line', async () => {
           // Arrange — raw file: valid(0→c1), garbage, valid(c1→c2), valid(c2→c3).
           // Survivors newest-first: c3(@0), c2(@1), c1(@2).
@@ -1368,7 +1563,7 @@ describe('revParse', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/HEAD`, raw);
 
           // Act
-          const result = await revParse(ctx, 'HEAD@{1}');
+          const result = await resolveRevision(ctx, 'HEAD@{1}');
 
           // Assert
           expect(result).toBe(c2);
@@ -1377,7 +1572,7 @@ describe('revParse', () => {
     });
 
     describe('Given a reflog whose oldest entry is the ref-creation entry', () => {
-      describe('When revParse resolves a date before the log begins', () => {
+      describe('When resolveRevision resolves a date before the log begins', () => {
         it('Then it clamps to the oldest entry post-state, never the null oid', async () => {
           // Arrange — oldest entry old=null(creation), new=c1; git answers c1
           // for a before-log date, not the null pre-state (measured, 2.55.0).
@@ -1388,14 +1583,14 @@ describe('revParse', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/HEAD`, raw);
 
           // Act
-          const result = await revParse(ctx, 'HEAD@{2000.years.ago}');
+          const result = await resolveRevision(ctx, 'HEAD@{2000.years.ago}');
 
           // Assert
           expect(result).toBe(c1);
         });
       });
 
-      describe('When revParse resolves a date before a log whose oldest pre-state is real', () => {
+      describe('When resolveRevision resolves a date before a log whose oldest pre-state is real', () => {
         it('Then it clamps to the oldest entry pre-state', async () => {
           // Arrange — oldest surviving entry old=c1 (a truncated log): git
           // answers the pre-state when it is not the null oid.
@@ -1407,7 +1602,7 @@ describe('revParse', () => {
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/HEAD`, raw);
 
           // Act
-          const result = await revParse(ctx, 'HEAD@{2000.years.ago}');
+          const result = await resolveRevision(ctx, 'HEAD@{2000.years.ago}');
 
           // Assert
           expect(result).toBe(c1);
@@ -1416,7 +1611,7 @@ describe('revParse', () => {
     });
 
     describe('Given a base with no reflog file at all', () => {
-      describe('When revParse(missing@{0})', () => {
+      describe('When resolveRevision(missing@{0})', () => {
         it('Then throws REVPARSE_UNRESOLVED', async () => {
           // Arrange — the candidate ladder finds no reflog file for the base.
           const ctx = createMemoryContext();
@@ -1425,7 +1620,7 @@ describe('revParse', () => {
           // Act
           let caught: unknown;
           try {
-            await revParse(ctx, 'missing@{0}');
+            await resolveRevision(ctx, 'missing@{0}');
           } catch (err) {
             caught = err;
           }
@@ -1440,7 +1635,7 @@ describe('revParse', () => {
     });
 
     describe('Given a date after the newest entry', () => {
-      describe('When revParse(HEAD@{<date>})', () => {
+      describe('When resolveRevision(HEAD@{<date>})', () => {
         it('Then it returns the newest entry newId', async () => {
           // Arrange — a target newer than every entry resolves to the newest move.
           const ctx = createMemoryContext();
@@ -1454,7 +1649,7 @@ describe('revParse', () => {
 
           // Act — `now` is the reference for `2.days.ago`; both entries (ts 1000,
           // 2000, i.e. 1970) predate it, so the newest entry is selected.
-          const result = await revParse(ctx, 'HEAD@{2.days.ago}');
+          const result = await resolveRevision(ctx, 'HEAD@{2.days.ago}');
 
           // Assert
           expect(result).toBe(c2);
@@ -1463,7 +1658,7 @@ describe('revParse', () => {
     });
 
     describe('Given a date between two entries', () => {
-      describe('When revParse(HEAD@{<iso>})', () => {
+      describe('When resolveRevision(HEAD@{<iso>})', () => {
         it('Then it returns the newest entry at or before that date', async () => {
           // Arrange — entries at 2020-01-01 and 2024-01-01; a 2022 target picks the
           // 2020 entry (the newest whose timestamp is <= target).
@@ -1479,7 +1674,7 @@ describe('revParse', () => {
           ]);
 
           // Act
-          const result = await revParse(ctx, 'HEAD@{2022-01-01}');
+          const result = await resolveRevision(ctx, 'HEAD@{2022-01-01}');
 
           // Assert
           expect(result).toBe(c1);
@@ -1488,7 +1683,7 @@ describe('revParse', () => {
     });
 
     describe('Given a date before the oldest entry', () => {
-      describe('When revParse(HEAD@{<iso>})', () => {
+      describe('When resolveRevision(HEAD@{<iso>})', () => {
         it('Then it returns the oldest entry oldId', async () => {
           // Arrange — git: a target before the log starts yields the ref's value
           // before the first recorded move, i.e. the oldest entry's oldId.
@@ -1499,7 +1694,7 @@ describe('revParse', () => {
           await writeReflog(ctx, HEAD_REF, [reflogEntry(c1, c1, ts2024)]);
 
           // Act
-          const result = await revParse(ctx, 'HEAD@{2020-01-01}');
+          const result = await resolveRevision(ctx, 'HEAD@{2020-01-01}');
 
           // Assert
           expect(result).toBe(c1);
@@ -1508,7 +1703,7 @@ describe('revParse', () => {
     });
 
     describe('Given an unparseable date selector', () => {
-      describe('When revParse(HEAD@{<garbage>})', () => {
+      describe('When resolveRevision(HEAD@{<garbage>})', () => {
         it('Then throws REVPARSE_UNRESOLVED', async () => {
           // Arrange
           const ctx = createMemoryContext();
@@ -1519,7 +1714,7 @@ describe('revParse', () => {
           // Act
           let caught: unknown;
           try {
-            await revParse(ctx, 'HEAD@{not-a-date}');
+            await resolveRevision(ctx, 'HEAD@{not-a-date}');
           } catch (err) {
             caught = err;
           }
@@ -1531,7 +1726,7 @@ describe('revParse', () => {
     });
 
     describe('Given an invalid base with no reflog and no resolving ref', () => {
-      describe('When revParse(<invalid>@{0})', () => {
+      describe('When resolveRevision(<invalid>@{0})', () => {
         it('Then throws REVPARSE_UNRESOLVED with the base', async () => {
           // Arrange — a base containing `..` has no reflog and resolves as no ref;
           // canonicalizeRef must reject it rather than return an invalid RefName.
@@ -1541,7 +1736,7 @@ describe('revParse', () => {
           // Act
           let caught: unknown;
           try {
-            await revParse(ctx, '../../etc/passwd@{0}');
+            await resolveRevision(ctx, '../../etc/passwd@{0}');
           } catch (err) {
             caught = err;
           }
@@ -1557,7 +1752,7 @@ describe('revParse', () => {
     });
 
     describe('Given a date exactly equal to an entry timestamp', () => {
-      describe('When revParse(HEAD@{<date>})', () => {
+      describe('When resolveRevision(HEAD@{<date>})', () => {
         it('Then that entry newId is returned', async () => {
           // Arrange — pins the `<=` boundary: a target equal to an entry's
           // timestamp must select that entry, not skip past it. The entry timestamp
@@ -1575,7 +1770,7 @@ describe('revParse', () => {
           ]);
 
           // Act — target equals the older entry's exact timestamp.
-          const result = await revParse(ctx, 'HEAD@{2020-01-01}');
+          const result = await resolveRevision(ctx, 'HEAD@{2020-01-01}');
 
           // Assert — the equal-timestamp entry (c1) is selected, not the prior oldId.
           expect(result).toBe(c1);
@@ -1584,7 +1779,7 @@ describe('revParse', () => {
     });
 
     describe('Given a relative date selector', () => {
-      describe('When revParse(HEAD@{N.days.ago})', () => {
+      describe('When resolveRevision(HEAD@{N.days.ago})', () => {
         it('Then the cutoff is anchored to the current wall-clock seconds', async () => {
           // Arrange — `now` must be `Date.now()` in SECONDS. Two entries straddle
           // `now - 5.days`: one 10 days old (<= cutoff), one 1 day old (> cutoff).
@@ -1603,7 +1798,7 @@ describe('revParse', () => {
           ]);
 
           // Act
-          const result = await revParse(ctx, 'HEAD@{5.days.ago}');
+          const result = await resolveRevision(ctx, 'HEAD@{5.days.ago}');
 
           // Assert — the 10-day-old entry is the newest at or before `now - 5.days`.
           expect(result).toBe(tenDayCommit);
@@ -1611,15 +1806,12 @@ describe('revParse', () => {
       });
     });
 
-    describe('Given a base whose reflog lives on a later candidate than the resolving ref', () => {
-      describe('When revParse(<base>@{0})', () => {
-        it('Then the reflog-file candidate wins', async () => {
-          // Arrange — base `v1`: the candidate ladder is [v1, refs/v1,
-          // refs/tags/v1, refs/heads/v1, refs/remotes/v1, refs/remotes/v1/HEAD].
-          // A branch resolves at refs/heads/v1, but the only reflog FILE is at
-          // refs/tags/v1. canonicalizeRef's first loop
-          // (reflog-file search) must win over the second loop (ref resolution),
-          // otherwise the empty refs/heads/v1 log throws REVPARSE_UNRESOLVED.
+    describe('Given a base whose only reflog belongs to a candidate that does not resolve', () => {
+      describe('When resolveRevision(<base>@{0})', () => {
+        it('Then the orphan reflog is never read and the selector is unresolved', async () => {
+          // Arrange — a branch resolves at refs/heads/v1 without a reflog; the
+          // only reflog file is refs/tags/v1's, a ref that does not exist.
+          // git's dwim_log counts a candidate only once it resolves.
           const ctx = createMemoryContext();
           const branchTip = await writeCommit(ctx, TREE_OID as ObjectId, []);
           const taggedTip = await writeCommit(ctx, TREE_OID as ObjectId, [branchTip]);
@@ -1629,10 +1821,10 @@ describe('revParse', () => {
           ]);
 
           // Act
-          const result = await revParse(ctx, 'v1@{0}');
+          const refusal = await resolveRevision(ctx, 'v1@{0}').catch((err: TsgitError) => err.data);
 
-          // Assert — resolved through the refs/tags/v1 reflog, not the branch.
-          expect(result).toBe(taggedTip);
+          // Assert
+          expect(refusal).toEqual({ code: 'REVPARSE_UNRESOLVED', expression: 'v1@{0}' });
         });
       });
     });

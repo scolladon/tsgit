@@ -6,6 +6,7 @@ import {
   type DiffChange,
   diffIndexAgainstTree,
   type FlatTree,
+  type GroupedIndex,
   groupUnmergedEntries,
   type UnmergedEntryGroup,
 } from '../../domain/diff/index.js';
@@ -18,24 +19,24 @@ import {
   type WorkingTreeComparison,
   type WorkingTreeDelta,
 } from '../primitives/compare-working-tree-entry.js';
+import { readConfig } from '../primitives/config-read.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
+import { type CleanOrder, withCleanOrder } from '../primitives/internal/clean-order.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
+import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
   type AttributeProvider,
   maybeBuildAttributeProvider,
 } from '../primitives/internal/read-gitattributes.js';
+import { assertOperationalRepositorySettingsFirst } from '../primitives/internal/repo-state.js';
 import { readHeadTree } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { createGranularityTracker } from './internal/progress-tracker.js';
-import {
-  assertOperationalRepository,
-  branchRefFromHead,
-  readHeadRaw,
-  requireWorkTree,
-} from './internal/repo-state.js';
+import { branchRefFromHead, readHeadRaw, requireWorkTree } from './internal/repo-state.js';
+import { resolveRevisionName } from './internal/revision-name.js';
 
 export type ChangeKind = 'modified' | 'added' | 'deleted' | 'type-changed' | 'mode-changed';
 
@@ -122,52 +123,100 @@ interface GranularityTracker {
  * always pairs start with end. `total` is undefined — a design choice that avoids
  * revealing repository size to non-trusted progress sinks.
  */
-export const status = async (ctx: Context): Promise<StatusResult> => {
-  await assertOperationalRepository(ctx);
+export const status = (ctx: Context): Promise<StatusResult> =>
+  withFilterProcessPool(ctx, () => statusInScope(ctx));
+
+const HEAD_NAME = 'HEAD';
+
+const statusInScope = async (ctx: Context): Promise<StatusResult> => {
+  await assertOperationalRepositorySettingsFirst(ctx);
   const workDir = requireWorkTree(ctx, 'status');
   // Promisor-remote guard (see assertValidPromisorRemoteConfig) — loaded up front.
   await assertValidPromisorRemoteConfig(ctx);
   const head = await readHeadRaw(ctx);
-  const branch = branchRefFromHead(head);
-  const detached = head.kind === 'direct';
   // `readIndex` returns an empty index when the file is absent (fresh/unborn
   // repo); a thrown error means a corrupt index, which we let propagate rather
   // than fabricate an empty one — fabricating it would report every HEAD path as
   // a spurious staged deletion (git errors on a corrupt index too).
   const index = await readIndex(ctx);
-  // Partition the index into the stage-0 (tracked) entries and the unmerged
-  // (stage 1/2/3) groups. A conflicted path has no stage-0 entry, so it is
-  // reported only under the unmerged column.
+  const tracked = trackedEntriesOf(index);
+  ctx.progress.start(STATUS_SCAN_OP);
+  try {
+    const scanned = await scanStatusTree(ctx, index, tracked);
+    const report = await reportStatus(ctx, { index, tracked, scanned, workDir });
+    return { branch: branchRefFromHead(head), detached: head.kind === 'direct', ...report };
+  } finally {
+    ctx.progress.end(STATUS_SCAN_OP);
+  }
+};
+
+/** The index's tracked entries: stage 0 by path, the unmerged groups, and every tracked path. */
+interface TrackedEntries {
+  readonly grouped: GroupedIndex;
+  readonly stage0Map: ReadonlyMap<FilePath, IndexEntry>;
+  readonly trackedPaths: ReadonlySet<FilePath>;
+}
+
+/** Partition the index into the stage-0 (tracked) entries and the unmerged
+ *  (stage 1/2/3) groups. A conflicted path has no stage-0 entry, so it is
+ *  reported only under the unmerged column. */
+const trackedEntriesOf = (index: GitIndex): TrackedEntries => {
   const grouped = groupUnmergedEntries(index);
   const stage0Map = new Map<FilePath, IndexEntry>(
     grouped.staged.map((entry) => [entry.path, entry]),
   );
   const trackedPaths = new Set<FilePath>(grouped.unmerged.keys());
   for (const path of stage0Map.keys()) trackedPaths.add(path);
-  ctx.progress.start(STATUS_SCAN_OP);
-  try {
-    const tracker = createGranularityTracker(ctx.progress, STATUS_SCAN_OP, STATUS_SCAN_GRANULARITY);
-    // Build the attribute provider once per status invocation when a command
-    // runner is wired. When absent, the provider is undefined and every
-    // compareWorkingTreeDelta call takes the raw-bytes path.
-    const provider = await maybeBuildAttributeProvider(ctx);
-    const workingMap = await scanWorkingTree(
-      ctx,
-      grouped.staged,
-      tracker,
-      provider,
-      index.indexMtime,
-    );
-    const untracked = await scanUntracked(ctx, trackedPaths);
-    const headTree = await readHeadTree(ctx);
-    const stagedKindMap = collectStagedKinds(index, headTree, grouped.unmerged);
-    const changes = buildChanges(stagedKindMap, workingMap, headTree, stage0Map);
-    const unmerged = await buildUnmergedEntries(ctx, grouped.unmerged, workDir);
-    const clean = changes.length === 0 && untracked.length === 0 && unmerged.length === 0;
-    return { branch, detached, changes, untracked, unmerged, clean };
-  } finally {
-    ctx.progress.end(STATUS_SCAN_OP);
-  }
+  return { grouped, stage0Map, trackedPaths };
+};
+
+/** What the working tree holds: every tracked file's delta, and the untracked paths. */
+interface ScannedTree {
+  readonly workingMap: Map<FilePath, WorkingTreeDelta>;
+  readonly untracked: ReadonlyArray<FilePath>;
+}
+
+/** Build the attribute provider once per status invocation when a command
+ *  runner is wired. When absent, the provider is undefined and every
+ *  compareWorkingTreeDelta call takes the raw-bytes path. */
+const scanStatusTree = async (
+  ctx: Context,
+  index: GitIndex,
+  tracked: TrackedEntries,
+): Promise<ScannedTree> => {
+  const tracker = createGranularityTracker(ctx.progress, STATUS_SCAN_OP, STATUS_SCAN_GRANULARITY);
+  const provider = await maybeBuildAttributeProvider(ctx);
+  const { staged } = tracked.grouped;
+  const workingMap = await scanWorkingTree(ctx, staged, tracker, provider, index.indexMtime);
+  const untracked = await scanUntracked(ctx, tracked.trackedPaths);
+  return { workingMap, untracked };
+};
+
+/** git's status names HEAD through `get_oid`, warning on an ambiguous HEAD and
+ *  refusing a malformed core.warnAmbiguousRefs once HEAD resolves. */
+const reportStatus = async (
+  ctx: Context,
+  {
+    index,
+    tracked,
+    scanned,
+    workDir,
+  }: {
+    readonly index: GitIndex;
+    readonly tracked: TrackedEntries;
+    readonly scanned: ScannedTree;
+    readonly workDir: string;
+  },
+): Promise<Omit<StatusResult, 'branch' | 'detached'>> => {
+  await resolveRevisionName(ctx, HEAD_NAME);
+  const headTree = await readHeadTree(ctx);
+  const { unmerged: groups } = tracked.grouped;
+  const stagedKindMap = collectStagedKinds(index, headTree, groups);
+  const changes = buildChanges(stagedKindMap, scanned.workingMap, headTree, tracked.stage0Map);
+  const unmerged = await buildUnmergedEntries(ctx, groups, workDir);
+  const { untracked } = scanned;
+  const clean = changes.length === 0 && untracked.length === 0 && unmerged.length === 0;
+  return { changes, untracked, unmerged, clean };
 };
 
 /**
@@ -183,6 +232,18 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
  * `boundedMap`'s completion-order-independent result array is safe here
  * because every entry is keyed by its own unique path.
  */
+const scanEntry = async (
+  ctx: Context,
+  entry: IndexEntry,
+  provider: AttributeProvider | undefined,
+  indexMtime: GitIndex['indexMtime'],
+): Promise<readonly [FilePath, WorkingTreeDelta] | undefined> => {
+  const delta = entry.flags.skipWorktree
+    ? undefined
+    : await compareWorkingTreeDelta(ctx, entry, provider, indexMtime);
+  return delta === undefined ? undefined : [entry.path, delta];
+};
+
 const scanWorkingTree = async (
   ctx: Context,
   stage0: ReadonlyArray<IndexEntry>,
@@ -190,13 +251,43 @@ const scanWorkingTree = async (
   provider: AttributeProvider | undefined,
   indexMtime: GitIndex['indexMtime'],
 ): Promise<Map<FilePath, WorkingTreeDelta>> => {
-  const results = await boundedMapFor(ctx, 'ioBound', stage0, async (entry) => {
-    const delta = entry.flags.skipWorktree
-      ? undefined
-      : await compareWorkingTreeDelta(ctx, entry, provider, indexMtime);
-    tracker.tick();
-    return delta === undefined ? undefined : ([entry.path, delta] as const);
+  const scan = (order?: CleanOrder) =>
+    boundedMapFor(ctx, 'ioBound', stage0, async (entry) => {
+      try {
+        const scanned = await scanEntry(ctx, entry, provider, indexMtime);
+        tracker.tick();
+        return scanned;
+      } finally {
+        order?.release(entry.path);
+      }
+    });
+  // A clean driver hears the paths in index order, however the reads race;
+  // without attributes, or with no driver configured, no clean runs or
+  // refuses, and the scan needs no order.
+  const ordered = provider !== undefined && (await configuresFilterDriver(ctx));
+  const results = ordered ? await inIndexOrder(ctx, stage0, scan) : await scan();
+  return deltaMapOf(results);
+};
+
+/** Whether any `[filter "<driver>"]` section is configured: without one, a filter attribute
+ *  resolves to no driver, so no clean runs and none refuses. */
+const configuresFilterDriver = async (ctx: Context): Promise<boolean> =>
+  ((await readConfig(ctx)).filter?.size ?? 0) > 0;
+
+/** Runs `scan` with every stage-0 path enlisted, so a clean driver hears them in index order. */
+const inIndexOrder = <T>(
+  ctx: Context,
+  stage0: ReadonlyArray<IndexEntry>,
+  scan: (order: CleanOrder) => Promise<T>,
+): Promise<T> =>
+  withCleanOrder(ctx, (order) => {
+    for (const entry of stage0) order.enlist(entry.path);
+    return scan(order);
   });
+
+const deltaMapOf = (
+  results: ReadonlyArray<readonly [FilePath, WorkingTreeDelta] | undefined>,
+): Map<FilePath, WorkingTreeDelta> => {
   const map = new Map<FilePath, WorkingTreeDelta>();
   for (const result of results) {
     if (result !== undefined) map.set(...result);

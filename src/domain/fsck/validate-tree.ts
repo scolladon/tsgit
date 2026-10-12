@@ -1,14 +1,18 @@
 import { compareBytes, indexOf } from '../objects/encoding.js';
-import { entryNameKey, hasNonOctalByte, matchesDotgitAlias } from '../objects/tree-entry-bytes.js';
+import {
+  backslashSegmentStarts,
+  entryNameKey,
+  hasNonOctalByte,
+  matchesDotgitAlias,
+  matchesNtfsDotgitAlias,
+} from '../objects/tree-entry-bytes.js';
 import {
   MSG_BAD_FILEMODE,
   MSG_BAD_TREE,
   MSG_DUPLICATE_ENTRIES,
   MSG_FULL_PATHNAME,
-  MSG_GITATTRIBUTES_BLOB,
   MSG_GITATTRIBUTES_SYMLINK,
   MSG_GITIGNORE_SYMLINK,
-  MSG_GITMODULES_BLOB,
   MSG_GITMODULES_SYMLINK,
   MSG_HAS_DOT,
   MSG_HAS_DOTDOT,
@@ -27,7 +31,8 @@ export interface TreeFinding {
   readonly severity: FsckSeverity;
 }
 
-interface TreeEntry {
+/** One tree entry as git's `decode_tree_entry` reads it: spans into the raw body. */
+export interface RawTreeEntry {
   readonly mode: string;
   readonly nameStart: number;
   readonly nameEnd: number;
@@ -59,21 +64,30 @@ function isZeroSha(sha: Uint8Array): boolean {
  */
 function stripLeadingZeros(mode: string): string {
   let i = 0;
-  // Stryker disable next-line ConditionalExpression,EqualityOperator,ArithmeticOperator: equivalent — the boundary only changes output for an all-'0' mode, where correct strips to '0'; mutated (dropped/off-by-one bound) strips to '' instead. normMode's only readers are VALID_MODES.has(normMode) and checkSpecialFileName's mode==='120000'/'100644'/'100755' checks — no entry is '' or '0', so both '0' and '' evaluate identically everywhere — confirmed empirically across '0','00','000000','0000001'.
+  // Stryker disable next-line ConditionalExpression,EqualityOperator,ArithmeticOperator: equivalent — the boundary only changes output for an all-'0' mode, where correct strips to '0'; mutated (dropped/off-by-one bound) strips to '' instead. normMode's only readers are VALID_MODES.has(normMode) and checkSpecialFileName's mode==='120000' check — no entry is '' or '0', so both '0' and '' evaluate identically everywhere — confirmed empirically across '0','00','000000','0000001'.
   while (i < mode.length - 1 && mode[i] === '0') i++;
   return mode.slice(i);
 }
 
-/** Parse tree bytes tolerantly, returning entries and any badTree fault. */
-function parseTreeEntriesTolerant(
+/**
+ * Parse tree bytes tolerantly, returning the entries git decodes before its
+ * first fault and whether there was one. git's `decode_tree_entry` first
+ * refuses a remaining body whose last digest is not preceded by a NUL — the
+ * remaining body always ends where the whole one does, so a body not ending
+ * in a whole entry yields no entry at all.
+ */
+export function parseTreeEntriesTolerant(
   raw: Uint8Array,
   digestLength: 20 | 32,
 ): {
-  readonly entries: ReadonlyArray<TreeEntry>;
+  readonly entries: ReadonlyArray<RawTreeEntry>;
   readonly badTree: boolean;
 } {
-  const entries: TreeEntry[] = [];
+  const entries: RawTreeEntry[] = [];
   let offset = 0;
+  if (raw.length > 0 && raw[raw.length - digestLength - 1] !== 0) {
+    return { entries, badTree: true };
+  }
 
   while (offset < raw.length) {
     const spaceIdx = indexOf(raw, 0x20, offset);
@@ -105,7 +119,7 @@ function parseTreeEntriesTolerant(
  * Compare two tree entries using git's canonical sort order.
  * Directories sort as if their name ends with '/'.
  */
-function treeEntrySortKey(raw: Uint8Array, entry: TreeEntry): Uint8Array {
+function treeEntrySortKey(raw: Uint8Array, entry: RawTreeEntry): Uint8Array {
   const isDir = entry.mode === '40000' || entry.mode === '040000';
   const nameBytes = raw.subarray(entry.nameStart, entry.nameEnd);
   if (!isDir) return nameBytes;
@@ -130,7 +144,7 @@ function checkNameFaults(
   if (key === '..') {
     findings.push({ msgId: MSG_HAS_DOTDOT, severity: resolveSeverity(MSG_HAS_DOTDOT, strict) });
   }
-  if (matchesDotgitAlias(raw, nameStart, nameEnd, 'git')) {
+  if (namesDotgit(raw, nameStart, nameEnd)) {
     findings.push({ msgId: MSG_HAS_DOTGIT, severity: resolveSeverity(MSG_HAS_DOTGIT, strict) });
   }
   if (key.includes('/')) {
@@ -148,6 +162,58 @@ function checkNameFaults(
   return findings;
 }
 
+/** git's `has_dotgit`: the whole name under either fold, or any backslash
+ *  segment under the NTFS one. */
+function namesDotgit(raw: Uint8Array, nameStart: number, nameEnd: number): boolean {
+  if (matchesDotgitAlias(raw, nameStart, nameEnd, 'git')) return true;
+  return backslashSegmentStarts(raw, nameStart, nameEnd).some((segment) =>
+    matchesNtfsDotgitAlias(raw, segment, nameEnd, 'git'),
+  );
+}
+
+/** One `gitmodulesSymlink` per backslash segment git reads as `.gitmodules`. */
+function backslashGitmodulesSymlinks(
+  raw: Uint8Array,
+  nameStart: number,
+  nameEnd: number,
+  strict: boolean,
+): ReadonlyArray<TreeFinding> {
+  return backslashSegmentStarts(raw, nameStart, nameEnd)
+    .filter((segment) => matchesNtfsDotgitAlias(raw, segment, nameEnd, 'gitmodules'))
+    .map(() => ({
+      msgId: MSG_GITMODULES_SYMLINK,
+      severity: resolveSeverity(MSG_GITMODULES_SYMLINK, strict),
+    }));
+}
+
+/** The checks git's `fsck_tree` runs only on a symlink entry, in its order. */
+function symlinkOnlyFindings(
+  raw: Uint8Array,
+  nameStart: number,
+  nameEnd: number,
+  strict: boolean,
+): ReadonlyArray<TreeFinding> {
+  const findings: TreeFinding[] = [];
+  if (matchesDotgitAlias(raw, nameStart, nameEnd, 'gitignore')) {
+    findings.push({
+      msgId: MSG_GITIGNORE_SYMLINK,
+      severity: resolveSeverity(MSG_GITIGNORE_SYMLINK, strict),
+    });
+  }
+  if (matchesDotgitAlias(raw, nameStart, nameEnd, 'mailmap')) {
+    findings.push({
+      msgId: MSG_MAILMAP_SYMLINK,
+      severity: resolveSeverity(MSG_MAILMAP_SYMLINK, strict),
+    });
+  }
+  findings.push(...backslashGitmodulesSymlinks(raw, nameStart, nameEnd, strict));
+  return findings;
+}
+
+/**
+ * git's `fsck_tree` reports a special name only as a symlink: any other mode
+ * queues the entry for `fsck_blobs`, which judges the object itself.
+ */
 function checkSpecialFileName(
   raw: Uint8Array,
   nameStart: number,
@@ -155,56 +221,29 @@ function checkSpecialFileName(
   mode: string,
   strict: boolean,
 ): ReadonlyArray<TreeFinding> {
+  if (mode !== '120000') return [];
   const findings: TreeFinding[] = [];
-  const isSymlink = mode === '120000';
-  const isRegular = mode === '100644' || mode === '100755';
-
   if (matchesDotgitAlias(raw, nameStart, nameEnd, 'gitmodules')) {
-    if (isSymlink) {
-      findings.push({
-        msgId: MSG_GITMODULES_SYMLINK,
-        severity: resolveSeverity(MSG_GITMODULES_SYMLINK, strict),
-      });
-    } else if (!isRegular) {
-      findings.push({
-        msgId: MSG_GITMODULES_BLOB,
-        severity: resolveSeverity(MSG_GITMODULES_BLOB, strict),
-      });
-    }
+    findings.push({
+      msgId: MSG_GITMODULES_SYMLINK,
+      severity: resolveSeverity(MSG_GITMODULES_SYMLINK, strict),
+    });
   }
   if (matchesDotgitAlias(raw, nameStart, nameEnd, 'gitattributes')) {
-    if (isSymlink) {
-      findings.push({
-        msgId: MSG_GITATTRIBUTES_SYMLINK,
-        severity: resolveSeverity(MSG_GITATTRIBUTES_SYMLINK, strict),
-      });
-    } else if (!isRegular) {
-      findings.push({
-        msgId: MSG_GITATTRIBUTES_BLOB,
-        severity: resolveSeverity(MSG_GITATTRIBUTES_BLOB, strict),
-      });
-    }
-  }
-  if (isSymlink && matchesDotgitAlias(raw, nameStart, nameEnd, 'gitignore')) {
     findings.push({
-      msgId: MSG_GITIGNORE_SYMLINK,
-      severity: resolveSeverity(MSG_GITIGNORE_SYMLINK, strict),
+      msgId: MSG_GITATTRIBUTES_SYMLINK,
+      severity: resolveSeverity(MSG_GITATTRIBUTES_SYMLINK, strict),
     });
   }
-  if (isSymlink && matchesDotgitAlias(raw, nameStart, nameEnd, 'mailmap')) {
-    findings.push({
-      msgId: MSG_MAILMAP_SYMLINK,
-      severity: resolveSeverity(MSG_MAILMAP_SYMLINK, strict),
-    });
-  }
+  findings.push(...symlinkOnlyFindings(raw, nameStart, nameEnd, strict));
   return findings;
 }
 
 function checkEntryFaults(
   raw: Uint8Array,
-  entry: TreeEntry,
+  entry: RawTreeEntry,
   key: string,
-  prevEntry: TreeEntry | undefined,
+  prevEntry: RawTreeEntry | undefined,
   seenNames: Set<string>,
   strict: boolean,
 ): ReadonlyArray<TreeFinding> {
@@ -272,7 +311,7 @@ export function validateTree(
 
   const findings: TreeFinding[] = [];
   const seenNames = new Set<string>();
-  let prevEntry: TreeEntry | undefined;
+  let prevEntry: RawTreeEntry | undefined;
 
   for (const entry of entries) {
     const key = entryNameKey(raw, entry.nameStart, entry.nameEnd);

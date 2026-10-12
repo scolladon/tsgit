@@ -332,10 +332,7 @@ function slideToIndentHeuristic(
   }
 }
 
-// The histogram-diff re-diff fallback (xdiffi.c :940-958, gated on
-// XDF_HISTOGRAM_DIFF) is omitted: this engine only ever runs Myers, so that
-// branch's condition is always false here.
-function compactGroup(
+function placeGroup(
   side: CompactionSide,
   otherChanged: Uint8Array,
   lines: ReadonlyArray<Uint8Array>,
@@ -352,6 +349,34 @@ function compactGroup(
   slideToIndentHeuristic(side, otherChanged, lines, g, go, earliestEnd);
 }
 
+/** A group's `[start, end)` span on one side, 0-based. */
+export interface GroupSpan {
+  readonly start: number;
+  readonly end: number;
+}
+
+/**
+ * Re-diffs a slid group against the other side's group at the same position
+ * with the classic diff — xdiffi.c's histogram-only `xdl_fall_back_diff` call,
+ * since histogram's LCS can leave matching lines inside a group it slid.
+ */
+export type GroupFallback = (group: GroupSpan, otherGroup: GroupSpan) => void;
+
+function compactGroup(
+  side: CompactionSide,
+  otherChanged: Uint8Array,
+  lines: ReadonlyArray<Uint8Array>,
+  walkers: { readonly g: Group; readonly go: Group },
+  fallback: GroupFallback | undefined,
+): void {
+  const { g, go } = walkers;
+  const original: GroupSpan = { start: g.start, end: g.end };
+  placeGroup(side, otherChanged, lines, g, go);
+  if (fallback === undefined || go.end === go.start) return;
+  if (g.start === original.start && g.end === original.end) return;
+  fallback(g, go);
+}
+
 /**
  * git's `xdl_change_compact`: slides each maximal run of changed lines in
  * `changed` up or down to align with matching content, merging runs it bumps
@@ -364,6 +389,7 @@ export function compactChanges(
   otherChanged: Uint8Array,
   ids: Int32Array,
   lines: ReadonlyArray<Uint8Array>,
+  fallback?: GroupFallback,
 ): void {
   const side: CompactionSide = { changed, ids };
   const g: Group = { start: 0, end: 0 };
@@ -372,7 +398,7 @@ export function compactChanges(
   groupInit(otherChanged, go);
 
   while (true) {
-    if (g.end !== g.start) compactGroup(side, otherChanged, lines, g, go);
+    if (g.end !== g.start) compactGroup(side, otherChanged, lines, { g, go }, fallback);
     if (!groupNext(changed, g)) break;
     groupNext(otherChanged, go);
   }

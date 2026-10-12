@@ -8,27 +8,27 @@
  */
 import {
   invalidOption,
-  invalidSequencerTodo,
-  mergeHasConflicts,
-  noInitialCommit,
   noOperationInProgress,
   workingTreeDirty,
 } from '../../domain/commands/error.js';
 import { renderPatch, sortedRecordedPaths } from '../../domain/diff/index.js';
-import { TsgitError } from '../../domain/error.js';
-import type { IndexEntry } from '../../domain/git-index/index.js';
+import type { TsgitError } from '../../domain/error.js';
 import { type ConflictType, type MergeConflict, replayLabels } from '../../domain/merge/index.js';
-import type { CommitData } from '../../domain/objects/commit.js';
+import { amendedExtraHeaders } from '../../domain/objects/amend-headers.js';
+import type { CommitData, ExtraHeader } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
 import {
   buildCombinedMessage,
   type CombinedMessageEntry,
   type RebaseBackupHeader,
+  type RebaseLabelLine,
+  type RebaseResetLine,
   type RebaseTodoAction,
 } from '../../domain/rebase/index.js';
 import {
   REBASE_FAST_FORWARD,
+  REBASE_REFLOG_ACTION,
   rebaseAbortReturningTo,
   rebaseActionReflog,
   rebaseContinueReflog,
@@ -40,45 +40,69 @@ import {
   rebaseStartCheckout,
 } from '../../domain/reflog/reflog-messages.js';
 import type { Context } from '../../ports/context.js';
-import { applyMergeToWorktree } from '../primitives/apply-merge-to-worktree.js';
-import { createCommit } from '../primitives/create-commit.js';
+import { abbreviateObjectId } from '../primitives/abbreviate-object-id.js';
+import { createCommit, createCommitWithStoredHeaders } from '../primitives/create-commit.js';
 import { diffTrees } from '../primitives/diff-trees.js';
+import { removeAutoMerge } from '../primitives/internal/auto-merge-ref.js';
 import {
   assertNoPendingOperation,
-  assertOperationalRepository,
+  assertOperationalRepositorySettingsFirst,
   branchRefFromHead,
   readHeadRaw,
   requireWorkTree,
 } from '../primitives/internal/repo-state.js';
 import { materialisePatchFiles } from '../primitives/materialise-patch-files.js';
-import { mergeBase } from '../primitives/merge-base.js';
-import { computePatchId } from '../primitives/patch-id.js';
+import { mergeBasesOf } from '../primitives/merge-base.js';
+import { assertEverySourceLoadable } from '../primitives/object-store.js';
 import { readIndex } from '../primitives/read-index.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runHook, runInformationalHook } from '../primitives/run-hook.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { updateRef } from '../primitives/update-ref.js';
-import { REASON_SKIP_TARGET_PARENTLESS } from '../primitives/validators.js';
-import { walkCommits } from '../primitives/walk-commits.js';
+import { walkCommits, walkCommitsStoppingAt } from '../primitives/walk-commits.js';
+import { configuredAutostash } from './internal/autostash-config.js';
+import { removeBranchState, removeCommittedState } from './internal/branch-state.js';
 import { conflictMergeMsg } from './internal/cherry-pick-state.js';
-import { assertCleanWorkTree } from './internal/clean-work-tree.js';
+import {
+  assertCleanWorkTree,
+  stagedChangePaths,
+  unstagedChangePaths,
+} from './internal/clean-work-tree.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import { sanitizeMessage, stripComments } from './internal/commit-message.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
-import { readCommitData, treeOf } from './internal/history-rewrite.js';
-import { acquireIndexLock } from './internal/index-update.js';
-import { writeOrigHead } from './internal/merge-state.js';
+import { readCommitData, resolveHeadCommit, treeOf } from './internal/history-rewrite.js';
+import { clearMergeMsg, readMergeHead, writeOrigHead } from './internal/merge-state.js';
+import { isOriginallyEmpty } from './internal/original-empty.js';
+import { previousCheckoutArg } from './internal/prior-checkout.js';
+import { canFastForward } from './internal/rebase-fast-forward.js';
+import {
+  deleteRewrittenRefs,
+  fastForwardHead,
+  labelHead,
+  mergeTreesUnderLock,
+  recreateMerge,
+  resetToLabel,
+} from './internal/rebase-merges-steps.js';
+import { rebaseMergesTodo } from './internal/rebase-merges-todo.js';
+import { resolveRebaseReplay } from './internal/rebase-replay.js';
+import { resolveRebaseSides } from './internal/rebase-revisions.js';
 import {
   clearRebaseState,
+  dropFixupGroup,
   type RebaseState,
   type RebaseStop,
+  readAutostash,
   readRebaseState,
   readRewrittenList,
   serializeRewritten,
+  writeAutostash,
   writeRebaseStop,
 } from './internal/rebase-state.js';
 import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
+import { rejectUnmergedIndex } from './internal/unmerged-index.js';
+import { applyAutostash, createAutostash } from './stash.js';
 
 export type { ConflictType } from '../../domain/merge/index.js';
 
@@ -99,13 +123,33 @@ export interface RebaseInstruction {
   readonly message?: string;
 }
 
+/** What `pull` threads into the rebase it runs — not part of the public surface. */
+export interface RebaseInternalOptions {
+  /** git's `GIT_REFLOG_ACTION`: the action prefix of every reflog entry this run writes. */
+  readonly reflogAction: string;
+}
+
 export interface RebaseRunInput {
-  /** The fork-point side — a commit-ish (`git rebase <upstream>`). */
+  /** The fork-point side — any revision that peels to a commit (`git rebase <upstream>`). */
   readonly upstream: string;
-  /** `--onto <newbase>`: replay onto this base instead of `upstream`. */
+  /** `--onto <newbase>`: replay onto this base instead of `upstream`; `A...B` is their sole merge base. */
   readonly onto?: string;
   /** Present → interactive: the post-`$EDITOR` instruction list (`git rebase -i`). */
   readonly interactive?: ReadonlyArray<RebaseInstruction>;
+  /**
+   * `--rebase-merges[=<mode>]`: recreate the branch's merges instead of
+   * flattening them. `true` is git's default `no-rebase-cousins` (a side branch
+   * rooted outside the range keeps its base); `'rebase-cousins'` rebases it onto
+   * the new base too.
+   */
+  readonly rebaseMerges?: boolean | 'rebase-cousins' | 'no-rebase-cousins';
+  /**
+   * `--autostash` / `--no-autostash`; unset reads `rebase.autostash`. A dirty
+   * tree is stashed (`On <branch>: autostash`) and re-applied when the rebase
+   * ends or aborts; a conflicting re-apply keeps the conflict and stores the
+   * stash in `refs/stash`.
+   */
+  readonly autostash?: boolean;
 }
 
 export interface RebasedCommit {
@@ -148,17 +192,18 @@ interface PlannedPick {
   readonly subject: string;
 }
 
-const shortOid = (oid: ObjectId): string => oid.slice(0, 7);
+/** A resolved `merge -C` line. */
+interface PlannedMerge {
+  readonly action: 'merge';
+  readonly oid: ObjectId;
+  readonly labels: ReadonlyArray<string>;
+  readonly subject: string;
+}
 
-/** Resolve the (symbolic) HEAD branch to its commit, or refuse on an unborn branch. */
-const resolveHeadCommit = async (ctx: Context, branch: RefName): Promise<ObjectId> => {
-  try {
-    return await resolveRef(ctx, branch);
-  } catch (err) {
-    if (err instanceof TsgitError && err.data.code === 'REF_NOT_FOUND') throw noInitialCommit();
-    throw err;
-  }
-};
+/** Any resolved line of a non-interactive todo, `--rebase-merges` verbs included. */
+type PlannedLine = PlannedPick | PlannedMerge | RebaseLabelLine | RebaseResetLine;
+
+const shortOid = (oid: ObjectId): string => oid.slice(0, 7);
 
 /** Commits in `base..head`, oldest-first (the rebase work-list). `base`'s whole
  *  ancestor set is excluded so a shared root reached down a divergent branch
@@ -175,30 +220,9 @@ const commitsToReplay = async (
     for await (const c of walkCommits(ctx, { from: [base] })) excluded.add(c.id);
   }
   const ids: ObjectId[] = [];
-  for await (const c of walkCommits(ctx, { from: [head], until: excluded })) ids.push(c.id);
+  for await (const c of walkCommitsStoppingAt(ctx, { from: [head], until: excluded }))
+    ids.push(c.id);
   return ids.reverse();
-};
-
-/**
- * Drop commits whose change is already present upstream — git's default
- * cherry-pick-equivalent skip. Compared by patch-id against the commits the
- * upstream introduced since the fork (`base..upstream`); a match is removed
- * before the replay loop, so it is never attempted (ADR-231).
- */
-const dropCherryEquivalents = async (
-  ctx: Context,
-  toReplay: ReadonlyArray<ObjectId>,
-  base: ObjectId | undefined,
-  upstream: ObjectId,
-): Promise<ReadonlyArray<ObjectId>> => {
-  const upstreamCommits = await commitsToReplay(ctx, base, upstream);
-  const upstreamPatchIds = new Set<string>();
-  for (const oid of upstreamCommits) upstreamPatchIds.add(await computePatchId(ctx, oid));
-  const kept: ObjectId[] = [];
-  for (const oid of toReplay) {
-    if (!upstreamPatchIds.has(await computePatchId(ctx, oid))) kept.push(oid);
-  }
-  return kept;
 };
 
 const buildTodoEntries = async (
@@ -227,13 +251,18 @@ const detachHead = async (
   fromHead: ObjectId,
   onto: ObjectId,
   ontoName: string,
+  reflogAction: string,
 ): Promise<void> => {
   await getRefStore(ctx).applyRefUpdates([
     {
       kind: 'set',
       name: HEAD,
       id: onto,
-      reflog: { oldId: fromHead, newId: onto, message: rebaseStartCheckout(ontoName) },
+      reflog: {
+        oldId: fromHead,
+        newId: onto,
+        message: rebaseStartCheckout(ontoName, reflogAction),
+      },
     },
   ]);
   await hardResetWorktreeToCommit(ctx, onto);
@@ -251,34 +280,14 @@ const mergeUnderLock = async (
   source: ObjectId,
   cData: CommitData,
   ourId: ObjectId,
-): Promise<
-  | { readonly kind: 'clean'; readonly mergedTree: ObjectId; readonly oursTree: ObjectId }
-  | { readonly kind: 'conflict'; readonly conflicts: ReadonlyArray<MergeConflict> }
-> => {
+) => {
   const parentId = cData.parents[0];
-  const baseTree = parentId !== undefined ? await treeOf(ctx, parentId) : undefined;
-  const oursTree = await treeOf(ctx, ourId);
-  const lock = await acquireIndexLock(ctx);
-  try {
-    const currentIndex = await readIndex(ctx);
-    const res = await applyMergeToWorktree(ctx, {
-      baseTree,
-      oursTree,
-      theirsTree: cData.tree,
-      currentIndex,
-      labels: replayLabels(source, subjectLine(cData.message)),
-    });
-    if (res.kind === 'would-overwrite')
-      throw workingTreeDirty({ localChanges: res.localChanges, untracked: res.untracked });
-    if (res.kind === 'conflict') {
-      await lock.commit(res.indexEntries);
-      return { kind: 'conflict', conflicts: res.conflicts };
-    }
-    await lock.commit(res.result.newIndexEntries);
-    return { kind: 'clean', mergedTree: res.mergedTree, oursTree };
-  } finally {
-    await lock.release();
-  }
+  return mergeTreesUnderLock(ctx, {
+    baseTree: parentId !== undefined ? await treeOf(ctx, parentId) : undefined,
+    ours: ourId,
+    theirsTree: cData.tree,
+    labels: replayLabels(source, subjectLine(cData.message)),
+  });
 };
 
 /** Apply one commit onto the detached HEAD `ourId`; commit it (single-parent,
@@ -288,13 +297,35 @@ const replayOne = async (
   source: ObjectId,
   cData: CommitData,
   ourId: ObjectId,
+  reflogAction: string,
 ): Promise<ReplayOutcome> => {
+  if (cData.parents[0] === ourId) {
+    await fastForwardHead(ctx, source, reflogAction);
+    return { kind: 'committed', id: source };
+  }
   const outcome = await mergeUnderLock(ctx, source, cData, ourId);
   if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
-  if (outcome.mergedTree === outcome.oursTree) return { kind: 'empty' };
+  // git keeps a commit that started empty and drops only one the replay made empty.
+  if (outcome.mergedTree === outcome.oursTree && !(await isOriginallyEmpty(ctx, cData))) {
+    return { kind: 'empty' };
+  }
+  return {
+    kind: 'committed',
+    id: await commitPick(ctx, outcome.mergedTree, cData, ourId, reflogAction),
+  };
+};
+
+/** Commit a clean pick's tree onto `ourId` and advance HEAD with `rebase (pick)`. */
+const commitPick = async (
+  ctx: Context,
+  tree: ObjectId,
+  cData: CommitData,
+  ourId: ObjectId,
+  reflogAction: string,
+): Promise<ObjectId> => {
   const committer = await resolveCurrentIdentity(ctx);
   const id = await createCommit(ctx, {
-    tree: outcome.mergedTree,
+    tree,
     parents: [ourId],
     author: cData.author,
     committer,
@@ -303,9 +334,9 @@ const replayOne = async (
   });
   await updateRef(ctx, HEAD, id, {
     expected: ourId,
-    reflogMessage: rebasePickReflog(subjectLine(cData.message)),
+    reflogMessage: rebasePickReflog(subjectLine(cData.message), reflogAction),
   });
-  return { kind: 'committed', id };
+  return id;
 };
 
 /** Render the failed pick's `parent..commit` diff for `.git/rebase-merge/patch`. */
@@ -320,16 +351,21 @@ const renderCommitPatch = async (ctx: Context, cData: CommitData): Promise<strin
   return renderPatch(files, { contextLines: 3, pathPrefix: { old: 'a/', new: 'b/' } });
 };
 
-/** The shared context a replay loop needs to stop or finish. `branch` is
- *  `undefined` for a detached-HEAD rebase (head-name = `detached HEAD`). */
-interface ReplayContext {
+/** What finishing a rebase moves: the branch (none when detached) from its original tip. */
+interface FinishSides {
   readonly branch: RefName | undefined;
   readonly onto: ObjectId;
   readonly origHead: ObjectId;
+  readonly reflogAction: string;
+}
+
+/** The shared context a replay loop needs to stop or finish. `branch` is
+ *  `undefined` for a detached-HEAD rebase (head-name = `detached HEAD`). */
+interface ReplayContext extends FinishSides {
   /** Instructions completed before this loop (a stop's `done` prepends these). */
-  readonly doneBefore: ReadonlyArray<PlannedPick>;
+  readonly doneBefore: ReadonlyArray<PlannedLine>;
   /** Instructions to replay in this loop (the live `git-rebase-todo`). */
-  readonly todo: ReadonlyArray<PlannedPick>;
+  readonly todo: ReadonlyArray<PlannedLine>;
   /** Set on the initial (fresh-run) stop only — git writes the backup once. */
   readonly backupHeader?: RebaseBackupHeader;
 }
@@ -345,23 +381,25 @@ const persistStop = async (
   ctx: Context,
   rc: ReplayContext,
   index: number,
-  cData: CommitData,
-  conflicts: ReadonlyArray<MergeConflict>,
+  stopped: { readonly source: ObjectId; readonly cData: CommitData; readonly message: string },
   rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>,
 ): Promise<void> => {
+  const { source, cData, message } = stopped;
   const stop: RebaseStop = {
     headName: rc.branch ?? 'detached HEAD',
     onto: rc.onto,
     origHead: rc.origHead,
     done: [...rc.doneBefore, ...rc.todo.slice(0, index + 1)],
     remaining: rc.todo.slice(index + 1),
-    stoppedSha: rc.todo[index]!.oid,
+    stoppedSha: source,
     stoppedAuthor: cData.author,
-    message: conflictMergeMsg(cData.message, sortedRecordedPaths(conflicts)),
+    message,
     rewritten,
-    patch: await renderCommitPatch(ctx, cData),
+    // git's patch of a merge commit shows no diff.
+    patch: cData.parents.length > 1 ? '' : await renderCommitPatch(ctx, cData),
     // Stryker disable next-line ConditionalExpression: equivalent — on a continue/skip re-stop `rc.backupHeader` is `undefined`, so forcing this to `true` spreads `{ backupHeader: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
     ...(rc.backupHeader !== undefined ? { backupHeader: rc.backupHeader } : {}),
+    ...(cData.parents.length > 1 ? {} : { mergeMsg: message }),
   };
   await writeRebaseStop(ctx, stop);
 };
@@ -374,22 +412,24 @@ const persistStop = async (
  */
 const finishRebase = async (
   ctx: Context,
-  branch: RefName | undefined,
-  origHead: ObjectId,
+  { branch, origHead, onto, reflogAction }: FinishSides,
   newTip: ObjectId,
-  onto: ObjectId,
 ): Promise<void> => {
   if (branch === undefined) return;
   await updateRef(ctx, branch, newTip, {
     expected: origHead,
-    reflogMessage: rebaseFinishOnto(branch, onto),
+    reflogMessage: rebaseFinishOnto(branch, onto, reflogAction),
   });
   await getRefStore(ctx).applyRefUpdates([
     {
       kind: 'setSymbolic',
       name: HEAD,
       target: branch,
-      reflog: { oldId: newTip, newId: newTip, message: rebaseFinishReturningTo(branch) },
+      reflog: {
+        oldId: newTip,
+        newId: newTip,
+        message: rebaseFinishReturningTo(branch, reflogAction),
+      },
     },
   ]);
 };
@@ -419,6 +459,57 @@ const firePostRewrite = async (
   });
 };
 
+type LineOutcome =
+  | ReplayOutcome
+  | { readonly kind: 'moved'; readonly head: ObjectId }
+  | { readonly kind: 'kept' };
+
+/** Run one todo line on the detached HEAD `cur`. */
+const replayLine = async (
+  ctx: Context,
+  rc: ReplayContext,
+  line: PlannedLine,
+  cur: ObjectId,
+): Promise<LineOutcome> => {
+  if (line.action === 'label') {
+    await labelHead(ctx, line.label);
+    return { kind: 'moved', head: cur };
+  }
+  if (line.action === 'reset') {
+    return { kind: 'moved', head: await resetToLabel(ctx, line.label, rc.reflogAction) };
+  }
+  const cData = await readCommitData(ctx, line.oid);
+  if (line.action !== 'merge') return replayOne(ctx, line.oid, cData, cur, rc.reflogAction);
+  const step = { source: line.oid, original: cData, labels: line.labels, head: cur };
+  return recreateMerge(ctx, { ...step, reflogAction: rc.reflogAction });
+};
+
+/** Stop on a conflicted line; a merge records its rewrite to HEAD first, as git's does. */
+const stopOnConflict = async (
+  ctx: Context,
+  rc: ReplayContext,
+  at: { readonly index: number; readonly cur: ObjectId },
+  conflicts: ReadonlyArray<MergeConflict>,
+  rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>,
+): Promise<RebaseResult> => {
+  const line = rc.todo[at.index] as PlannedPick | PlannedMerge;
+  const cData = await readCommitData(ctx, line.oid);
+  const isMerge = line.action === 'merge';
+  const recorded = isMerge ? [...rewritten, [line.oid, at.cur] as const] : rewritten;
+  // git's merge stop keeps the original message; a pick's lists its conflicts.
+  const message = isMerge
+    ? cData.message
+    : conflictMergeMsg(cData.message, sortedRecordedPaths(conflicts));
+  const stopped = { source: line.oid, cData, message };
+  await persistStop(ctx, rc, at.index, stopped, recorded);
+  return {
+    kind: 'conflict',
+    commit: line.oid,
+    conflicts: conflicts.map((c) => ({ path: c.path, type: c.type })),
+    remaining: rc.todo.length - (at.index + 1),
+  };
+};
+
 /** Replay `rc.todo` from the detached HEAD `ourId`; stop on conflict, else finish. */
 const replayFrom = async (
   ctx: Context,
@@ -430,82 +521,178 @@ const replayFrom = async (
   const applied: RebasedCommit[] = [...seed.applied];
   const rewritten: Array<readonly [ObjectId, ObjectId]> = [...seed.rewritten];
   for (let i = 0; i < rc.todo.length; i += 1) {
-    const source = rc.todo[i]!.oid;
-    const cData = await readCommitData(ctx, source);
-    const outcome = await replayOne(ctx, source, cData, cur);
-    if (outcome.kind === 'committed') {
-      applied.push({ source, created: outcome.id });
-      rewritten.push([source, outcome.id]);
-      cur = outcome.id;
-      continue;
+    const line = rc.todo[i]!;
+    await removeAutoMerge(ctx);
+    const outcome = await replayLine(ctx, rc, line, cur);
+    if (outcome.kind === 'moved') cur = outcome.head;
+    // git's dropped empty pick takes its AUTO_MERGE with it.
+    else if (outcome.kind === 'empty') await removeAutoMerge(ctx);
+    else if (outcome.kind === 'conflict') {
+      return stopOnConflict(ctx, rc, { index: i, cur }, outcome.conflicts, rewritten);
+    } else if ('oid' in line) {
+      const created = outcome.kind === 'committed' ? outcome.id : cur;
+      if (outcome.kind === 'committed') applied.push({ source: line.oid, created });
+      rewritten.push([line.oid, created]);
+      cur = created;
     }
-    if (outcome.kind === 'empty') continue;
-    await persistStop(ctx, rc, i, cData, outcome.conflicts, rewritten);
-    return {
-      kind: 'conflict',
-      commit: source,
-      conflicts: outcome.conflicts.map((c) => ({ path: c.path, type: c.type })),
-      remaining: rc.todo.length - (i + 1),
-    };
   }
-  await finishRebase(ctx, rc.branch, rc.origHead, cur, rc.onto);
+  await finishRebase(ctx, rc, cur);
   await firePostRewrite(ctx, rewritten);
-  await clearRebaseState(ctx);
+  await deleteRewrittenRefs(ctx, [...rc.doneBefore, ...rc.todo]);
+  await endRebaseState(ctx);
   return { kind: 'rebased', commits: applied };
 };
 
-export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<RebaseResult> => {
-  await assertOperationalRepository(ctx);
+/**
+ * An interactive rebase always has todo work (the caller supplies it), so it is
+ * never the no-op "up to date" case — pre-rebase fires. No common ancestor
+ * (unrelated histories) leaves `base` undefined and the whole branch replays
+ * onto `onto` — faithful to `git rebase <unrelated>`.
+ */
+const startInteractive = async (
+  ctx: Context,
+  upstreamName: string,
+  instructions: ReadonlyArray<RebaseInstruction>,
+  sides: Omit<InteractivePlan, 'instructions' | 'base'>,
+): Promise<RebaseResult> => {
+  const [base] = await mergeBasesOf(ctx, [sides.upstream, sides.headCommit]);
+  await assertEverySourceLoadable(ctx);
+  await firePreRebase(ctx, upstreamName);
+  return rebaseRunInteractive(ctx, { ...sides, instructions, base });
+};
+
+/** git's `--autostash` / `rebase.autostash`: stash a dirty tree before the rebase. */
+const autostashIfWanted = async (
+  ctx: Context,
+  given: boolean | undefined,
+): Promise<ObjectId | undefined> => {
+  if (!(given ?? (await configuredAutostash(ctx, 'rebase')) ?? false)) return undefined;
+  const stash = await createAutostash(ctx);
+  if (stash !== undefined) {
+    ctx.logger?.info?.(`Created autostash: ${await abbreviateObjectId(ctx, stash)}`);
+  }
+  return stash;
+};
+
+/** End the rebase's state, then re-apply its autostash, as git's `apply_autostash` does. */
+const endRebaseState = async (ctx: Context): Promise<void> => {
+  const stash = await readAutostash(ctx);
+  await clearRebaseState(ctx);
+  if (stash !== undefined) await applyAutostash(ctx, stash);
+};
+
+const rebasingMerges = (mode: RebaseRunInput['rebaseMerges']): boolean =>
+  mode !== undefined && mode !== false;
+
+/** The todo: git's flattened picks, or its `--rebase-merges` script. */
+const planTodo = async (
+  ctx: Context,
+  mode: RebaseRunInput['rebaseMerges'],
+  range: { readonly upstream: ObjectId; readonly head: ObjectId },
+): Promise<ReadonlyArray<PlannedLine>> => {
+  if (!rebasingMerges(mode)) return buildTodoEntries(ctx, await resolveRebaseReplay(ctx, range));
+  const rebaseCousins = mode === 'rebase-cousins';
+  return (await rebaseMergesTodo(ctx, { ...range, rebaseCousins })) as ReadonlyArray<PlannedLine>;
+};
+
+export const rebaseRun = async (
+  ctx: Context,
+  input: RebaseRunInput,
+  { reflogAction }: RebaseInternalOptions = { reflogAction: REBASE_REFLOG_ACTION },
+): Promise<RebaseResult> => {
+  await assertOperationalRepositorySettingsFirst(ctx);
   requireWorkTree(ctx, 'rebase');
   await assertNoPendingOperation(ctx);
+  const sides = await resolveRunSides(ctx, input);
+  if (input.interactive !== undefined && rebasingMerges(input.rebaseMerges)) {
+    throw invalidOption('rebaseMerges', 'interactive instructions cannot carry merges');
+  }
+  const stash = await autostashIfWanted(ctx, input.autostash);
+  await assertCleanWorkTree(ctx, await treeOf(ctx, sides.headCommit));
+  if (input.interactive !== undefined) {
+    if (stash !== undefined) await writeAutostash(ctx, stash);
+    const { branch, headCommit, upstream, onto, ontoName } = sides;
+    const interactiveSides = { branch, headCommit, upstream, onto, ontoName };
+    return startInteractive(ctx, sides.upstreamName, input.interactive, interactiveSides);
+  }
+  return replayUnlessUpToDate(ctx, input.rebaseMerges, sides, { stash, reflogAction });
+};
+
+/** git fires pre-rebase only when the rebase will do work; an up-to-date rebase
+ *  (nothing to replay or fast-forward) returns before the hook, matching git. */
+const replayUnlessUpToDate = async (
+  ctx: Context,
+  mode: RebaseRunInput['rebaseMerges'],
+  sides: RunSides,
+  run: { readonly stash: ObjectId | undefined; readonly reflogAction: string },
+): Promise<RebaseResult> => {
+  const { onto, upstream, branchBase } = sides;
+  if (await canFastForward(ctx, { onto, upstream, head: sides.headCommit, branchBase })) {
+    return finishUpToDate(ctx, run.stash);
+  }
+  if (run.stash !== undefined) await writeAutostash(ctx, run.stash);
+  return startReplay(ctx, mode, sides, run.reflogAction);
+};
+
+/** Both sides of a non-interactive run, named and resolved. */
+interface RunSides {
+  readonly branch: RefName | undefined;
+  readonly headCommit: ObjectId;
+  readonly upstreamName: string;
+  readonly ontoName: string;
+  readonly upstream: ObjectId;
+  readonly onto: ObjectId;
+  readonly branchBase: ObjectId | undefined;
+}
+
+const resolveRunSides = async (ctx: Context, input: RebaseRunInput): Promise<RunSides> => {
   const head = await readHeadRaw(ctx);
   const headCommit = head.kind === 'symbolic' ? await resolveHeadCommit(ctx, head.target) : head.id;
   const branch = branchRefFromHead(head);
-  const upstream = await resolveCommitIsh(ctx, input.upstream);
-  const onto = input.onto !== undefined ? await resolveCommitIsh(ctx, input.onto) : upstream;
-  const ontoName = input.onto ?? input.upstream;
-  await assertCleanWorkTree(ctx, await treeOf(ctx, headCommit));
-  // No common ancestor (unrelated histories) → `base` is undefined and the whole
-  // branch replays onto `onto`, the root commit against the empty-tree base —
-  // faithful to `git rebase <unrelated>`.
-  const [base] = await mergeBase(ctx, [upstream, headCommit]);
-  if (input.interactive !== undefined) {
-    // An interactive rebase always has todo work (the caller supplies it), so it
-    // is never the no-op "up to date" case — pre-rebase fires.
-    await firePreRebase(ctx, input.upstream);
-    return rebaseRunInteractive(ctx, {
-      instructions: input.interactive,
-      branch,
-      headCommit,
-      upstream,
-      onto,
-      ontoName,
-      base,
-    });
-  }
-  // git fires pre-rebase only when the rebase will do work; an up-to-date rebase
-  // (nothing to replay or fast-forward) returns before the hook, matching git.
-  if (onto === base) return { kind: 'up-to-date' };
-  await firePreRebase(ctx, input.upstream);
-  const toReplay = await commitsToReplay(ctx, base, headCommit);
-  const kept = await dropCherryEquivalents(ctx, toReplay, base, upstream);
-  const todo = await buildTodoEntries(ctx, kept);
+  const upstreamName = previousCheckoutArg(input.upstream);
+  const ontoName = input.onto ?? upstreamName;
+  const sideNames = { upstreamName, ontoName, head: headCommit };
+  const { upstream, onto, branchBase } = await resolveRebaseSides(ctx, sideNames);
+  return { branch, headCommit, upstreamName, ontoName, upstream, onto, branchBase };
+};
+
+/** git's `finish_rebase`, which the merge backend's own pick loop never reaches. */
+const finishUpToDate = async (ctx: Context, stash: ObjectId | undefined): Promise<RebaseResult> => {
+  await removeAutoMerge(ctx);
+  if (stash !== undefined) await applyAutostash(ctx, stash);
+  return { kind: 'up-to-date' };
+};
+
+/** Fire pre-rebase, plan the todo, detach onto `onto` and replay it. */
+const startReplay = async (
+  ctx: Context,
+  mode: RebaseRunInput['rebaseMerges'],
+  sides: RunSides,
+  reflogAction: string,
+): Promise<RebaseResult> => {
+  const { headCommit, upstream, onto } = sides;
+  await assertEverySourceLoadable(ctx);
+  await firePreRebase(ctx, sides.upstreamName);
+  const todo = await planTodo(ctx, mode, { upstream, head: headCommit });
   await writeOrigHead(ctx, headCommit);
-  await detachHead(ctx, headCommit, onto, ontoName);
+  await detachHead(ctx, headCommit, onto, sides.ontoName, reflogAction);
   const rc: ReplayContext = {
-    branch,
+    branch: sides.branch,
     onto,
+    reflogAction,
     origHead: headCommit,
     doneBefore: [],
     todo,
-    backupHeader: {
-      shortUpstream: shortOid(upstream),
-      shortOrigHead: shortOid(headCommit),
-      shortOnto: shortOid(onto),
-    },
+    backupHeader: backupHeaderOf(upstream, headCommit, onto),
   };
   return replayFrom(ctx, rc, onto, { applied: [], rewritten: [] });
 };
+
+const backupHeaderOf = (upstream: ObjectId, origHead: ObjectId, onto: ObjectId) => ({
+  shortUpstream: shortOid(upstream),
+  shortOrigHead: shortOid(origHead),
+  shortOnto: shortOid(onto),
+});
 
 export interface RebaseAbortResult {
   readonly head: ObjectId;
@@ -516,78 +703,128 @@ export interface RebaseAbortResult {
 const branchOf = (headName: string): RefName | undefined =>
   headName === 'detached HEAD' ? undefined : (headName as RefName);
 
-const rejectUnmergedIndex = (entries: ReadonlyArray<IndexEntry>): void => {
-  const unmerged = new Set<FilePath>();
-  for (const entry of entries) {
-    if (entry.flags.stage !== 0) unmerged.add(entry.path);
-  }
-  if (unmerged.size > 0) throw mergeHasConflicts(unmerged.size, [...unmerged]);
-};
-
 /**
  * Resume the rebase after the conflicted commit was resolved: commit the resolved
  * index as the stopped commit (preserved author from `author-script`, current
- * committer, `rebase (continue)` reflog), then replay the remaining todo.
+ * committer, `rebase (continue)` reflog), then replay the remaining todo. An
+ * index matching HEAD (resolution committed by hand, or resolved to HEAD) makes
+ * no commit — HEAD stands in for the stopped commit, as in git.
  */
 export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
-  await assertOperationalRepository(ctx);
+  await assertOperationalRepositorySettingsFirst(ctx);
   requireWorkTree(ctx, 'rebase --continue');
   const state = await readRebaseState(ctx);
   if (state === undefined) throw noOperationInProgress('rebase');
+  await assertNothingUnstaged(ctx);
+  await assertEverySourceLoadable(ctx);
   if (isInteractiveState(state)) return rebaseContinueInteractive(ctx, state);
+  return continueStop(ctx, state);
+};
+
+/** Commit the resolved stop (unless it matches HEAD) and replay the rest of the todo. */
+const continueStop = async (ctx: Context, state: RebaseState): Promise<RebaseResult> => {
   const index = await readIndex(ctx);
   rejectUnmergedIndex(index.entries);
-  const stopped = state.done[state.done.length - 1]!;
+  const stopped = stoppedCommit(state);
   const currentHead = await resolveRef(ctx, HEAD);
   const tree = await synthesizeTreeFromIndex(ctx, index.entries);
-  const committer = await resolveCurrentIdentity(ctx);
-  // Stryker disable next-line BooleanLiteral: equivalent — the rebase `message` file carries the replayed commit's subject, so the stripped/sanitised message is always non-empty here and the empty-message guard never fires.
-  const message = sanitizeMessage(stripComments(state.message), { allowEmpty: false });
-  const resolutionId = await createCommit(ctx, {
-    tree,
-    parents: [currentHead],
-    author: state.author,
-    committer,
-    message,
-    extraHeaders: [],
-  });
-  await updateRef(ctx, HEAD, resolutionId, {
-    expected: currentHead,
-    reflogMessage: rebaseContinueReflog(subjectLine(message)),
-  });
-  const rewritten = [...(await readRewrittenList(ctx)), [stopped.oid, resolutionId] as const];
-  const rc: ReplayContext = {
-    branch: branchOf(state.headName),
-    onto: state.onto,
-    origHead: state.origHead,
-    doneBefore: state.done,
-    todo: state.remaining,
-  };
-  return replayFrom(ctx, rc, resolutionId, {
-    applied: [{ source: stopped.oid, created: resolutionId }],
-    rewritten,
+  const rc = replayContextOf(state);
+  const rewrittenBefore = await readRewrittenList(ctx);
+  const mergeHead = await readMergeHead(ctx);
+  const created = await commitResolution(ctx, state, tree, { head: currentHead, mergeHead });
+  const resumeAt = created ?? currentHead;
+  return replayFrom(ctx, rc, resumeAt, {
+    applied: created === undefined ? [] : [{ source: stopped, created }],
+    rewritten: [...rewrittenBefore, [stopped, resumeAt] as const],
   });
 };
 
+/** The resolution commit, or `undefined` when the index matches HEAD, a pending
+ *  merge included — HEAD then stands in for the stopped commit. */
+const commitResolution = async (
+  ctx: Context,
+  state: RebaseState,
+  tree: ObjectId,
+  parents: { readonly head: ObjectId; readonly mergeHead: ObjectId | undefined },
+): Promise<ObjectId | undefined> => {
+  if (await treeMatchesCommit(ctx, tree, parents.head)) {
+    if (parents.mergeHead !== undefined) await dropPendingMerge(ctx);
+    return undefined;
+  }
+  const resolutionId = await commitStoppedResolution(ctx, state, tree, parents);
+  await concludeStopCommit(ctx);
+  return resolutionId;
+};
+
+/** A merge resolved to HEAD's own tree commits nothing; its MERGE_HEAD and MERGE_MSG go, MERGE_MODE stays, as in git. */
+const dropPendingMerge = async (ctx: Context): Promise<void> => {
+  await ctx.fs.rm(`${ctx.layout.gitDir}/MERGE_HEAD`);
+  await clearMergeMsg(ctx);
+};
+
+/** git's `has_unstaged_changes` gate: a tracked file changed but not staged stops `--continue`. */
+const assertNothingUnstaged = async (ctx: Context): Promise<void> => {
+  const unstaged = await unstagedChangePaths(ctx);
+  if (unstaged.length > 0) throw workingTreeDirty({ localChanges: unstaged, untracked: [] });
+};
+
+const replayContextOf = (state: RebaseState): ReplayContext => ({
+  reflogAction: REBASE_REFLOG_ACTION,
+  branch: branchOf(state.headName),
+  onto: state.onto,
+  origHead: state.origHead,
+  doneBefore: state.done,
+  todo: state.remaining,
+});
+
+/** Commit the staged resolution as the stopped commit (its author, the current
+ *  committer, its comment-stripped message) on top of HEAD. */
+const commitStoppedResolution = async (
+  ctx: Context,
+  state: RebaseState,
+  tree: ObjectId,
+  { head, mergeHead }: { readonly head: ObjectId; readonly mergeHead: ObjectId | undefined },
+): Promise<ObjectId> => {
+  // Stryker disable next-line BooleanLiteral: equivalent — the rebase `message` file carries the replayed commit's subject, so the stripped/sanitised message is always non-empty here and the empty-message guard never fires.
+  const message = sanitizeMessage(stripComments(state.message), { allowEmpty: false });
+  const created = await commitAndAdvance(ctx, {
+    tree,
+    parent: head,
+    ...(mergeHead !== undefined ? { mergeParent: mergeHead } : {}),
+    expected: head,
+    author: state.author,
+    message,
+    reflog: rebaseContinueReflog(subjectLine(message)),
+  });
+  // A stopped `merge -C` commits as `git commit` does, which ends the merge.
+  if (mergeHead !== undefined) await removeCommittedState(ctx);
+  return created;
+};
+
+/** git's `is_clean`: a staged index equal to HEAD's tree leaves nothing to
+ *  commit — the caller committed the resolution, or resolved to HEAD. */
+const treeMatchesCommit = async (
+  ctx: Context,
+  tree: ObjectId,
+  commitId: ObjectId,
+): Promise<boolean> => (await readCommitData(ctx, commitId)).tree === tree;
+
 /** Drop the conflicted commit (hard-reset to the last good pick) and replay the rest. */
 export const rebaseSkip = async (ctx: Context): Promise<RebaseResult> => {
-  await assertOperationalRepository(ctx);
+  await assertOperationalRepositorySettingsFirst(ctx);
   requireWorkTree(ctx, 'rebase --skip');
   const state = await readRebaseState(ctx);
   if (state === undefined) throw noOperationInProgress('rebase');
+  await assertEverySourceLoadable(ctx);
   if (isInteractiveState(state)) return rebaseSkipInteractive(ctx, state);
   const currentHead = await resolveRef(ctx, HEAD);
   await hardResetWorktreeToCommit(ctx, currentHead);
-  const rc: ReplayContext = {
-    branch: branchOf(state.headName),
-    onto: state.onto,
-    origHead: state.origHead,
-    doneBefore: state.done,
-    todo: state.remaining,
-  };
-  return replayFrom(ctx, rc, currentHead, {
+  await removeBranchState(ctx, 'silent');
+  // git's continue records the skipped commit as rewritten to HEAD.
+  const skipped = [stoppedCommit(state), currentHead] as const;
+  return replayFrom(ctx, replayContextOf(state), currentHead, {
     applied: [],
-    rewritten: await readRewrittenList(ctx),
+    rewritten: [...(await readRewrittenList(ctx)), skipped],
   });
 };
 
@@ -597,30 +834,42 @@ export const rebaseSkip = async (ctx: Context): Promise<RebaseResult> => {
  * (the branch never moved during the replay, so it gets no entry), clear state.
  */
 export const rebaseAbort = async (ctx: Context): Promise<RebaseAbortResult> => {
-  await assertOperationalRepository(ctx);
+  await assertOperationalRepositorySettingsFirst(ctx);
   requireWorkTree(ctx, 'rebase --abort');
   const state = await readRebaseState(ctx);
   if (state === undefined) throw noOperationInProgress('rebase');
   const branch = branchOf(state.headName);
   const currentHead = await resolveRef(ctx, HEAD);
   await hardResetWorktreeToCommit(ctx, state.origHead);
-  // A branch rebase reattaches HEAD to the ref (`returning to <branch>`); a
-  // detached rebase moves HEAD back to the original oid (`returning to <oid>`).
+  await returnHeadFromRebase(ctx, { branch, origHead: state.origHead, currentHead });
+  await removeBranchState(ctx, 'silent');
+  await deleteRewrittenRefs(ctx, state.done);
+  await endRebaseState(ctx);
+  return { head: state.origHead, headName: state.headName };
+};
+
+/** A branch rebase reattaches HEAD to the ref (`returning to <branch>`); a
+ *  detached rebase moves HEAD back to the original oid (`returning to <oid>`). */
+const returnHeadFromRebase = async (
+  ctx: Context,
+  heads: {
+    readonly branch: RefName | undefined;
+    readonly origHead: ObjectId;
+    readonly currentHead: ObjectId;
+  },
+): Promise<void> => {
+  const { branch, origHead } = heads;
   const reflog = {
-    oldId: currentHead,
-    newId: state.origHead,
+    oldId: heads.currentHead,
+    newId: origHead,
     message:
-      branch !== undefined
-        ? rebaseAbortReturningTo(branch)
-        : rebaseAbortReturningTo(state.origHead),
+      branch !== undefined ? rebaseAbortReturningTo(branch) : rebaseAbortReturningTo(origHead),
   };
   await getRefStore(ctx).applyRefUpdates([
     branch !== undefined
       ? { kind: 'setSymbolic', name: HEAD, target: branch, reflog }
-      : { kind: 'set', name: HEAD, id: state.origHead, reflog },
+      : { kind: 'set', name: HEAD, id: origHead, reflog },
   ]);
-  await clearRebaseState(ctx);
-  return { head: state.origHead, headName: state.headName };
 };
 
 // ── interactive (`rebase -i`) ───────────────────────────────────────────────
@@ -757,21 +1006,25 @@ const commitAndAdvance = async (
   spec: {
     readonly tree: ObjectId;
     readonly parent: ObjectId | undefined;
+    /** The merged head of a recreated merge, its second parent. */
+    readonly mergeParent?: ObjectId;
     readonly expected: ObjectId;
     readonly author: CommitData['author'];
     readonly message: string;
     readonly reflog: string;
+    /** An amend's headers carried from the commit it replaces. */
+    readonly carried?: ReadonlyArray<ExtraHeader>;
   },
 ): Promise<ObjectId> => {
   const committer = await resolveCurrentIdentity(ctx);
-  const created = await createCommit(ctx, {
+  const commit = {
     tree: spec.tree,
-    parents: spec.parent === undefined ? [] : [spec.parent],
+    parents: [spec.parent, spec.mergeParent].filter((p) => p !== undefined),
     author: spec.author,
     committer,
     message: spec.message,
-    extraHeaders: [],
-  });
+  };
+  const created = await createCommitWithStoredHeaders(ctx, commit, spec.carried ?? []);
   await updateRef(ctx, HEAD, created, { expected: spec.expected, reflogMessage: spec.reflog });
   return created;
 };
@@ -872,16 +1125,25 @@ const stepReword = async (
     rebaseRewordReflog(subjectLine(cData.message)),
   );
   if (produced.kind === 'conflict') return { kind: 'conflict', conflicts: produced.conflicts };
-  const producedData = await readCommitData(ctx, produced.created);
-  const created = await commitAndAdvance(ctx, {
+  return { kind: 'advanced', created: await amendMessage(ctx, produced.created, message) };
+};
+
+/** git's second reword step: amend `produced` to carry `message` (`rebase (reword): <new>`). */
+const amendMessage = async (
+  ctx: Context,
+  produced: ObjectId,
+  message: string,
+): Promise<ObjectId> => {
+  const producedData = await readCommitData(ctx, produced);
+  return commitAndAdvance(ctx, {
     tree: producedData.tree,
     parent: producedData.parents[0],
-    expected: produced.created,
+    expected: produced,
     author: producedData.author,
     message,
     reflog: rebaseRewordReflog(subjectLine(message)),
+    carried: amendedExtraHeaders(producedData.extraHeaders),
   });
-  return { kind: 'advanced', created };
 };
 
 const stepInstruction = (
@@ -920,6 +1182,8 @@ interface StopFields {
   }>;
   readonly rewrittenPending?: ReadonlyArray<ObjectId>;
   readonly messageSquash?: string;
+  readonly messageFixup?: string;
+  readonly mergeMsg?: string;
 }
 
 /** Persist a byte-faithful interactive stop. `done` is `doneBefore` + the
@@ -943,16 +1207,30 @@ const persistInteractiveStop = async (
     patch: fields.patch,
     // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ backupHeader: undefined }`, which `writeRebaseStop`'s `if (field !== undefined)` skips exactly like the `{}` branch (byte-identical on-disk state).
     ...(ic.backupHeader !== undefined ? { backupHeader: ic.backupHeader } : {}),
-    // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ amend: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
-    ...(fields.amend !== undefined ? { amend: fields.amend } : {}),
-    // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ currentFixups: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
-    ...(fields.currentFixups !== undefined ? { currentFixups: fields.currentFixups } : {}),
-    // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ rewrittenPending: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
-    ...(fields.rewrittenPending !== undefined ? { rewrittenPending: fields.rewrittenPending } : {}),
-    // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ messageSquash: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
-    ...(fields.messageSquash !== undefined ? { messageSquash: fields.messageSquash } : {}),
+    ...optionalStopFields(fields),
   });
 };
+
+/** The stop fields only some stops carry, each present only when set. */
+const optionalStopFields = (fields: StopFields) => ({
+  // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ amend: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
+  ...(fields.amend !== undefined ? { amend: fields.amend } : {}),
+  // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ currentFixups: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
+  ...(fields.currentFixups !== undefined ? { currentFixups: fields.currentFixups } : {}),
+  // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ rewrittenPending: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
+  ...(fields.rewrittenPending !== undefined ? { rewrittenPending: fields.rewrittenPending } : {}),
+  // Stryker disable next-line ConditionalExpression: equivalent — when the field is `undefined`, forcing this to `true` spreads `{ messageSquash: undefined }`, which `writeRebaseStop` skips exactly like the `{}` branch.
+  ...(fields.messageSquash !== undefined ? { messageSquash: fields.messageSquash } : {}),
+  ...(fields.messageFixup !== undefined ? { messageFixup: fields.messageFixup } : {}),
+  ...(fields.mergeMsg !== undefined ? { mergeMsg: fields.mergeMsg } : {}),
+});
+
+/** git keeps the group base's message in `message-fixup` until a squash joins the group. */
+const fixupOnlyMessage = (
+  members: ReadonlyArray<{ readonly action: 'squash' | 'fixup' }>,
+  baseMessage: string,
+): { readonly messageFixup?: string } =>
+  members.every((member) => member.action === 'fixup') ? { messageFixup: baseMessage } : {};
 
 /** Whether the instruction at `index + 1` continues a squash/fixup group. */
 const meldContinues = (todo: ReadonlyArray<PlannedInstruction>, index: number): boolean => {
@@ -1011,16 +1289,7 @@ const meldGroupMember = async (
   const headData = await readCommitData(ctx, head);
   const outcome = await mergeUnderLock(ctx, inst.oid, cData, head);
   if (outcome.kind === 'conflict') return { kind: 'conflict', conflicts: outcome.conflicts };
-  group.members.push({ message: cData.message, skip: inst.action === 'fixup' });
-  group.fixups.push({ action: inst.action as 'squash' | 'fixup', oid: inst.oid });
-  group.pending.push(inst.oid);
-  // Stryker disable next-line ConditionalExpression: equivalent — forcing the `inst.message !== undefined` guard true makes a squash with no message assign `group.inline = undefined`, leaving the already-`undefined` field unchanged. (The whole-condition `→ true` and `&&` → `||` mutants are killed by the fixup-carrying-an-inline-message test.)
-  if (inst.action === 'squash' && inst.message !== undefined) group.inline = inst.message;
-  const template = buildCombinedMessage([{ message: group.baseMessage }, ...group.members]);
-  const message = isLast
-    ? // Stryker disable next-line BooleanLiteral: equivalent — an empty squash inline message is rejected upfront by `planInteractive`; otherwise the template fallback retains the base commit's non-empty message, so it is never empty here.
-      sanitizeMessage(group.inline ?? stripComments(template), { allowEmpty: false })
-    : template;
+  const message = joinMeldGroup(group, inst, cData, isLast);
   const created = await commitAndAdvance(ctx, {
     tree: outcome.mergedTree,
     parent: headData.parents[0],
@@ -1028,8 +1297,29 @@ const meldGroupMember = async (
     author: headData.author,
     message,
     reflog: rebaseActionReflog(inst.action, subjectLine(message)),
+    carried: amendedExtraHeaders(headData.extraHeaders),
   });
   return { kind: 'committed', created, message };
+};
+
+/** Add `inst` to the group and return the melded message: the template, or
+ *  — on the group's last member — the cleaned final message. */
+const joinMeldGroup = (
+  group: MeldGroup,
+  inst: PlannedInstruction,
+  cData: CommitData,
+  isLast: boolean,
+): string => {
+  group.members.push({ message: cData.message, skip: inst.action === 'fixup' });
+  group.fixups.push({ action: inst.action as 'squash' | 'fixup', oid: inst.oid });
+  group.pending.push(inst.oid);
+  // Stryker disable next-line ConditionalExpression: equivalent — forcing the `inst.message !== undefined` guard true makes a squash with no message assign `group.inline = undefined`, leaving the already-`undefined` field unchanged. (The whole-condition `→ true` and `&&` → `||` mutants are killed by the fixup-carrying-an-inline-message test.)
+  if (inst.action === 'squash' && inst.message !== undefined) group.inline = inst.message;
+  const template = buildCombinedMessage([{ message: group.baseMessage }, ...group.members]);
+  return isLast
+    ? // Stryker disable next-line BooleanLiteral: equivalent — an empty squash inline message is rejected upfront by `planInteractive`; otherwise the template fallback retains the base commit's non-empty message, so it is never empty here.
+      sanitizeMessage(group.inline ?? stripComments(template), { allowEmpty: false })
+    : template;
 };
 
 /** Replay `ic.todo` from `startHead`. Stops on the first conflict or `edit`;
@@ -1041,81 +1331,188 @@ const replayInteractive = async (
   startHead: ObjectId,
   seed: ReplaySeed,
 ): Promise<RebaseResult> => {
-  let head = startHead;
-  const applied: RebasedCommit[] = [...seed.applied];
-  const rewritten: Array<readonly [ObjectId, ObjectId]> = [...seed.rewritten];
-  const group: MeldGroup = {
-    baseMessage: (await readCommitData(ctx, startHead)).message,
-    members: [],
-    fixups: [],
-    pending: [startHead],
-    inline: undefined,
+  let replay: InteractiveReplay = {
+    head: startHead,
+    applied: [...seed.applied],
+    rewritten: [...seed.rewritten],
+    group: await meldGroupFrom(ctx, startHead),
   };
   for (let i = 0; i < ic.todo.length; i += 1) {
-    const inst = ic.todo[i]!;
-    if (inst.action === 'drop') continue;
-    const cData = await readCommitData(ctx, inst.oid);
-    const patch = await renderCommitPatch(ctx, cData);
-    if (inst.action === 'squash' || inst.action === 'fixup') {
-      const meld = await meldGroupMember(ctx, inst, cData, head, group, !meldContinues(ic.todo, i));
-      if (meld.kind === 'conflict') {
-        const template = buildCombinedMessage([
-          { message: group.baseMessage },
-          ...group.members,
-          { message: cData.message, skip: inst.action === 'fixup' },
-        ]);
-        await persistInteractiveStop(ctx, ic, i, {
-          stoppedSha: inst.oid,
-          author: cData.author,
-          message: conflictMergeMsg(template, sortedRecordedPaths(meld.conflicts)),
-          patch,
-          rewritten,
-          currentFixups: [...group.fixups, { action: inst.action, oid: inst.oid }],
-          rewrittenPending: [...group.pending],
-          messageSquash: template,
-        });
-        return conflictResult(inst.oid, meld.conflicts, ic.todo.length - (i + 1));
-      }
-      applied.push({ source: inst.oid, created: meld.created });
-      rewritten.push([inst.oid, meld.created]);
-      head = meld.created;
-      continue;
-    }
-    const step = await stepInstruction(ctx, inst, cData, head);
-    if (step.kind === 'conflict') {
-      await persistInteractiveStop(ctx, ic, i, {
-        stoppedSha: inst.oid,
-        author: cData.author,
-        message: conflictMergeMsg(cData.message, sortedRecordedPaths(step.conflicts)),
-        patch,
-        rewritten,
-      });
-      return conflictResult(inst.oid, step.conflicts, ic.todo.length - (i + 1));
-    }
-    if (step.kind === 'edit-stop') {
-      await persistInteractiveStop(ctx, ic, i, {
-        stoppedSha: step.created,
-        author: cData.author,
-        message: cData.message,
-        patch,
-        rewritten,
-        amend: step.created,
-      });
-      return { kind: 'stopped', commit: inst.oid, remaining: ic.todo.length - (i + 1) };
-    }
-    applied.push({ source: inst.oid, created: step.created });
-    rewritten.push([inst.oid, step.created]);
-    head = step.created;
-    group.baseMessage = (await readCommitData(ctx, step.created)).message;
-    group.members = [];
-    group.fixups = [];
-    group.pending = [step.created];
-    group.inline = undefined;
+    const outcome = await replayInstruction(ctx, ic, i, replay);
+    if ('stop' in outcome) return outcome.stop;
+    replay = outcome.next;
   }
-  await finishRebase(ctx, ic.branch, ic.origHead, head, ic.onto);
-  await firePostRewrite(ctx, rewritten);
-  await clearRebaseState(ctx);
-  return { kind: 'rebased', commits: applied };
+  await finishRebase(ctx, { ...ic, reflogAction: REBASE_REFLOG_ACTION }, replay.head);
+  await firePostRewrite(ctx, replay.rewritten);
+  await endRebaseState(ctx);
+  return { kind: 'rebased', commits: replay.applied };
+};
+
+/** Where an interactive replay stands: HEAD, what it applied and rewrote, the open meld group. */
+interface InteractiveReplay {
+  readonly head: ObjectId;
+  readonly applied: ReadonlyArray<RebasedCommit>;
+  readonly rewritten: ReadonlyArray<readonly [ObjectId, ObjectId]>;
+  readonly group: MeldGroup;
+}
+
+/** A replayed todo line either stops the rebase or hands on where the replay stands next. */
+type InteractiveLineOutcome =
+  | { readonly stop: RebaseResult }
+  | { readonly next: InteractiveReplay };
+
+/** One todo line under replay, with the commit it names and its rendered patch. */
+interface ReplayedLine {
+  readonly ic: InteractiveContext;
+  readonly index: number;
+  readonly inst: PlannedInstruction;
+  readonly cData: CommitData;
+  readonly patch: string;
+}
+
+/** A meld group opened on `base`, its message the group's `# 1st commit message`. */
+const meldGroupFrom = async (ctx: Context, base: ObjectId): Promise<MeldGroup> => ({
+  baseMessage: (await readCommitData(ctx, base)).message,
+  members: [],
+  fixups: [],
+  pending: [base],
+  inline: undefined,
+});
+
+/** Replay todo line `index`: the stop's result when it stops, else the replay's next state. */
+const replayInstruction = async (
+  ctx: Context,
+  ic: InteractiveContext,
+  index: number,
+  replay: InteractiveReplay,
+): Promise<InteractiveLineOutcome> => {
+  const inst = ic.todo[index]!;
+  await removeAutoMerge(ctx);
+  if (inst.action === 'drop') return { next: replay };
+  const cData = await readCommitData(ctx, inst.oid);
+  const line: ReplayedLine = { ic, index, inst, cData, patch: await renderCommitPatch(ctx, cData) };
+  if (inst.action === 'squash' || inst.action === 'fixup') return replayMeld(ctx, line, replay);
+  return replayStep(ctx, line, replay);
+};
+
+const remainingAfter = (line: ReplayedLine): number => line.ic.todo.length - (line.index + 1);
+
+/** The replay once `created` is recorded as the rewrite of `source`, HEAD advanced to it. */
+const recordCreated = (
+  replay: InteractiveReplay,
+  source: ObjectId,
+  created: ObjectId,
+): InteractiveReplay => ({
+  ...replay,
+  head: created,
+  applied: [...replay.applied, { source, created }],
+  rewritten: [...replay.rewritten, [source, created]],
+});
+
+/** A squash/fixup line: meld it into the open group, or stop on its conflict. */
+const replayMeld = async (
+  ctx: Context,
+  line: ReplayedLine,
+  replay: InteractiveReplay,
+): Promise<InteractiveLineOutcome> => {
+  const { ic, index, inst, cData } = line;
+  const isLast = !meldContinues(ic.todo, index);
+  const meld = await meldGroupMember(ctx, inst, cData, replay.head, replay.group, isLast);
+  if (meld.kind === 'conflict') {
+    await persistInteractiveStop(ctx, ic, index, meldStopFields(line, replay));
+    return { stop: conflictResult(inst.oid, meld.conflicts, remainingAfter(line)) };
+  }
+  return { next: recordCreated(replay, inst.oid, meld.created) };
+};
+
+/** The fields every interactive stop records: the stopped commit, its author, a message, the patch. */
+const stoppedLineFields = (line: ReplayedLine, message: string) => ({
+  stoppedSha: line.inst.oid,
+  author: line.cData.author,
+  message,
+  patch: line.patch,
+});
+
+/** The stop a conflicted meld persists: the group's template so far, with the member. */
+const meldStopFields = (line: ReplayedLine, replay: InteractiveReplay): StopFields => {
+  const { inst, cData } = line;
+  const { group } = replay;
+  const template = buildCombinedMessage([
+    { message: group.baseMessage },
+    ...group.members,
+    { message: cData.message, skip: inst.action === 'fixup' },
+  ]);
+  const currentFixups = [
+    ...group.fixups,
+    { action: inst.action as 'squash' | 'fixup', oid: inst.oid },
+  ];
+  return {
+    ...stoppedLineFields(line, template),
+    rewritten: replay.rewritten,
+    amend: replay.head,
+    currentFixups,
+    rewrittenPending: [...group.pending],
+    messageSquash: template,
+    ...fixupOnlyMessage(currentFixups, group.baseMessage),
+    mergeMsg: template,
+  };
+};
+
+/** Any other line: step it, stopping on a conflict or an `edit`; a commit it
+ *  produces opens a new meld group. */
+const replayStep = async (
+  ctx: Context,
+  line: ReplayedLine,
+  replay: InteractiveReplay,
+): Promise<InteractiveLineOutcome> => {
+  const { inst, cData } = line;
+  const step = await stepInstruction(ctx, inst, cData, replay.head);
+  if (step.kind === 'conflict') {
+    return { stop: await stopOnStepConflict(ctx, line, replay, step.conflicts) };
+  }
+  if (step.kind === 'edit-stop')
+    return { stop: await stopForEdit(ctx, line, replay, step.created) };
+  const next = recordCreated(replay, inst.oid, step.created);
+  await reopenMeldGroup(ctx, next.group, step.created);
+  return { next };
+};
+
+const stopOnStepConflict = async (
+  ctx: Context,
+  line: ReplayedLine,
+  replay: InteractiveReplay,
+  conflicts: ReadonlyArray<MergeConflict>,
+): Promise<RebaseResult> => {
+  const message = conflictMergeMsg(line.cData.message, sortedRecordedPaths(conflicts));
+  await persistInteractiveStop(ctx, line.ic, line.index, {
+    ...stoppedLineFields(line, message),
+    rewritten: replay.rewritten,
+    mergeMsg: message,
+  });
+  return conflictResult(line.inst.oid, conflicts, remainingAfter(line));
+};
+
+const stopForEdit = async (
+  ctx: Context,
+  line: ReplayedLine,
+  replay: InteractiveReplay,
+  created: ObjectId,
+): Promise<RebaseResult> => {
+  await persistInteractiveStop(ctx, line.ic, line.index, {
+    ...stoppedLineFields(line, line.cData.message),
+    rewritten: replay.rewritten,
+    amend: created,
+  });
+  return { kind: 'stopped', commit: line.inst.oid, remaining: remainingAfter(line) };
+};
+
+/** Reset `group` in place onto `base`: the next squash/fixup melds into it. */
+const reopenMeldGroup = async (ctx: Context, group: MeldGroup, base: ObjectId): Promise<void> => {
+  group.baseMessage = (await readCommitData(ctx, base)).message;
+  group.members = [];
+  group.fixups = [];
+  group.pending = [base];
+  group.inline = undefined;
 };
 
 const rebaseRunInteractive = async (ctx: Context, plan: InteractivePlan): Promise<RebaseResult> => {
@@ -1144,12 +1541,37 @@ const rebaseRunInteractive = async (ctx: Context, plan: InteractivePlan): Promis
   return replayInteractive(ctx, ic, foldedHead, seed);
 };
 
+/** The stopped line's commit: a rebase stops only on a commit-carrying line. */
+const stoppedCommit = (state: RebaseState): ObjectId =>
+  (state.done[state.done.length - 1] as { readonly oid: ObjectId }).oid;
+
+/** An interactive todo's lines: tsgit's interactive instructions carry commit verbs only. */
+const commitEntries = (lines: RebaseState['done']): ReadonlyArray<PlannedInstruction> =>
+  lines.filter((line): line is PlannedInstruction => COMMIT_ACTIONS.has(line.action));
+
+const COMMIT_ACTIONS: ReadonlySet<string> = new Set([
+  'pick',
+  'reword',
+  'edit',
+  'squash',
+  'fixup',
+  'drop',
+]);
+
 /** A rebase is interactive when any instruction carries a non-`pick` verb — a
  *  pure-pick stop resumes through the (identical) non-interactive path. An
  *  `amend` stop always carries a non-`pick` verb (`edit`/`squash`/`fixup`) in
  *  its todo, so the verb check subsumes an explicit `amend` test. */
 const isInteractiveState = (state: RebaseState): boolean =>
-  [...state.done, ...state.remaining].some((e) => e.action !== 'pick');
+  [...state.done, ...state.remaining].some((e) => INTERACTIVE_VERBS.has(e.action));
+
+const INTERACTIVE_VERBS: ReadonlySet<string> = new Set([
+  'reword',
+  'edit',
+  'squash',
+  'fixup',
+  'drop',
+]);
 
 /** Resume an interactive stop: commit the resolution (conflict) or amend/keep
  *  the edit'd commit, then replay the remaining todo. */
@@ -1161,87 +1583,115 @@ const rebaseContinueInteractive = async (
     branch: branchOf(state.headName),
     onto: state.onto,
     origHead: state.origHead,
-    doneBefore: state.done,
-    todo: state.remaining,
+    doneBefore: commitEntries(state.done),
+    todo: commitEntries(state.remaining),
   };
   const rewritten = [...(await readRewrittenList(ctx))];
   const index = await readIndex(ctx);
   rejectUnmergedIndex(index.entries);
   const tree = await synthesizeTreeFromIndex(ctx, index.entries);
   const currentHead = await resolveRef(ctx, HEAD);
-  const stoppedOid = state.done[state.done.length - 1]!.oid;
-  let resumeHead: ObjectId;
-  if (state.currentFixups !== undefined) {
-    // A squash/fixup meld conflicted: commit the resolution as the group commit
-    // (replacing the base — its parent), with the cleaned combined message.
-    const baseData = await readCommitData(ctx, currentHead);
-    // Stryker disable next-line BooleanLiteral: equivalent — `state.message` is the stopped commit's (non-empty) message persisted at the stop, so the cleaned result is never empty here and the empty-message guard never fires.
-    const message = sanitizeMessage(stripComments(state.message), { allowEmpty: false });
-    resumeHead = await commitAndAdvance(ctx, {
-      tree,
-      parent: baseData.parents[0],
-      expected: currentHead,
-      author: baseData.author,
-      message,
-      reflog: rebaseContinueReflog(subjectLine(message)),
-    });
-    rewritten.push([stoppedOid, resumeHead]);
-  } else if (state.amend !== undefined) {
-    const amendCommit = await readCommitData(ctx, state.amend);
-    if (tree === amendCommit.tree) {
-      resumeHead = currentHead; // edit left the tree unchanged — keep the commit
-    } else {
-      resumeHead = await commitAndAdvance(ctx, {
-        tree,
-        parent: amendCommit.parents[0],
-        expected: currentHead,
-        author: state.author,
-        message: amendCommit.message,
-        reflog: rebaseContinueReflog(subjectLine(amendCommit.message)),
-      });
-      rewritten.push([stoppedOid, resumeHead]);
-    }
-  } else {
-    // Stryker disable next-line BooleanLiteral: equivalent — `state.message` is the stopped commit's (non-empty) message persisted at the stop, so the cleaned result is never empty here and the empty-message guard never fires.
-    const message = sanitizeMessage(stripComments(state.message), { allowEmpty: false });
-    resumeHead = await commitAndAdvance(ctx, {
-      tree,
-      parent: currentHead,
-      expected: currentHead,
-      author: state.author,
-      message,
-      reflog: rebaseContinueReflog(subjectLine(message)),
-    });
-    rewritten.push([stoppedOid, resumeHead]);
-  }
+  const resumeHead = await resumeInteractiveStop(ctx, state, tree, currentHead);
+  // git's `commit_staged_changes` drops AUTO_MERGE once it commits the stop.
+  if (resumeHead !== currentHead) await concludeStopCommit(ctx);
+  rewritten.push([stoppedCommit(state), resumeHead]);
   return replayInteractive(ctx, ic, resumeHead, { applied: [], rewritten });
 };
 
-/** Dropping an edit'd commit moves HEAD to that commit's first parent. A
- *  parentless amend target (a masked shallow boundary edited in place) has no
- *  parent to return to — refuse rather than write an undefined ref target. */
-const skipTargetOf = async (ctx: Context, amend: ObjectId): Promise<ObjectId> => {
-  const parent = (await readCommitData(ctx, amend)).parents[0];
-  if (parent === undefined) throw invalidSequencerTodo(REASON_SKIP_TARGET_PARENTLESS);
-  return parent;
+/** The commit that concludes a stop takes its `AUTO_MERGE` and `MERGE_MSG` with it. */
+const concludeStopCommit = async (ctx: Context): Promise<void> => {
+  await removeAutoMerge(ctx);
+  await clearMergeMsg(ctx);
 };
 
-/** Skip the stopped instruction (drop the edit'd commit, or discard the
- *  conflicted pick) and replay the remaining todo. */
+/** git's `commit_staged_changes`: nothing staged against HEAD → keep HEAD (the
+ *  caller committed, or left the edit as is); an edit stop amends only while
+ *  HEAD is still the edit'd commit; a conflict stop commits the resolution. */
+const resumeInteractiveStop = async (
+  ctx: Context,
+  state: RebaseState,
+  tree: ObjectId,
+  currentHead: ObjectId,
+): Promise<ObjectId> => {
+  const clean = await treeMatchesCommit(ctx, tree, currentHead);
+  if (state.currentFixups !== undefined && !clean) {
+    return commitFixupResolution(ctx, state, tree, currentHead);
+  }
+  if (state.currentFixups !== undefined) await dropFixupGroup(ctx);
+  if (clean) return currentHead;
+  if (state.amend === undefined) {
+    return commitStoppedResolution(ctx, state, tree, { head: currentHead, mergeHead: undefined });
+  }
+  if (state.amend !== currentHead) throw await uncommittedOnTopOfEdit(ctx, currentHead);
+  return amendEditStop(ctx, state, tree, currentHead);
+};
+
+/** An edit stop still at the edit'd commit: the staged changes amend it in place. */
+const amendEditStop = async (
+  ctx: Context,
+  state: RebaseState,
+  tree: ObjectId,
+  editedHead: ObjectId,
+): Promise<ObjectId> => {
+  const amendCommit = await readCommitData(ctx, editedHead);
+  return commitAndAdvance(ctx, {
+    tree,
+    parent: amendCommit.parents[0],
+    expected: editedHead,
+    author: state.author,
+    message: amendCommit.message,
+    reflog: rebaseContinueReflog(subjectLine(amendCommit.message)),
+    carried: amendedExtraHeaders(amendCommit.extraHeaders),
+  });
+};
+
+/** Changes staged on top of a commit the caller made at an edit stop: git
+ *  refuses to fold them into either commit. */
+const uncommittedOnTopOfEdit = async (ctx: Context, head: ObjectId): Promise<TsgitError> => {
+  const headTree = (await readCommitData(ctx, head)).tree;
+  return workingTreeDirty({ localChanges: await stagedChangePaths(ctx, headTree), untracked: [] });
+};
+
+/** A squash/fixup meld conflicted: commit the resolution as the group commit
+ *  (replacing the base — its parent), with the cleaned combined message. */
+const commitFixupResolution = async (
+  ctx: Context,
+  state: RebaseState,
+  tree: ObjectId,
+  currentHead: ObjectId,
+): Promise<ObjectId> => {
+  const baseData = await readCommitData(ctx, currentHead);
+  // Stryker disable next-line BooleanLiteral: equivalent — `state.message` is the stopped commit's (non-empty) message persisted at the stop, so the cleaned result is never empty here and the empty-message guard never fires.
+  const message = sanitizeMessage(stripComments(state.message), { allowEmpty: false });
+  return commitAndAdvance(ctx, {
+    tree,
+    parent: baseData.parents[0],
+    expected: currentHead,
+    author: baseData.author,
+    message,
+    reflog: rebaseContinueReflog(subjectLine(message)),
+    carried: amendedExtraHeaders(baseData.extraHeaders),
+  });
+};
+
+/** A squash/fixup conflict stop also carries `amend` (the group commit), but
+ *  only an `edit` stop committed the stopped commit itself. */
+const isEditStop = (state: RebaseState): state is RebaseState & { readonly amend: ObjectId } =>
+  state.amend !== undefined && state.currentFixups === undefined;
+
+/** git's skip is `reset --hard HEAD` then continue: an edit stop's commit is
+ *  already made, so it stays and the remaining todo replays on top of it; a
+ *  conflict stop never committed, so HEAD already sits at the last good pick. */
 const rebaseSkipInteractive = async (ctx: Context, state: RebaseState): Promise<RebaseResult> => {
-  const currentHead = await resolveRef(ctx, HEAD);
-  const target = state.amend !== undefined ? await skipTargetOf(ctx, state.amend) : currentHead;
-  // An edit stop already committed the edit'd commit, so dropping it moves the
-  // detached HEAD back to its parent; a conflict stop never committed, so HEAD
-  // already sits at the last good pick — writing it back to itself is a no-op.
-  await getRefStore(ctx).applyRefUpdates([{ kind: 'set', name: HEAD, id: target }]);
+  const target = await resolveRef(ctx, HEAD);
   await hardResetWorktreeToCommit(ctx, target);
+  if (isEditStop(state)) return rebaseContinueInteractive(ctx, state);
   const ic: InteractiveContext = {
     branch: branchOf(state.headName),
     onto: state.onto,
     origHead: state.origHead,
-    doneBefore: state.done,
-    todo: state.remaining,
+    doneBefore: commitEntries(state.done),
+    todo: commitEntries(state.remaining),
   };
   return replayInteractive(ctx, ic, target, {
     applied: [],

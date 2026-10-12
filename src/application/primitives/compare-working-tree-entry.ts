@@ -26,13 +26,14 @@ import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
+import { applyCleanFilter } from './internal/apply-clean-filter.js';
 import { type IndexMtime, isEntryStatClean } from './internal/is-entry-stat-clean.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import type { AttributeProvider } from './internal/read-gitattributes.js';
+import { assertBigFileThresholdValid } from './internal/repo-settings-gate.js';
 import { requireWorkTree } from './internal/repo-state.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
-import { resolveFilterDriver } from './resolve-filter-driver.js';
-import { runFilterDriver } from './run-filter-driver.js';
+import { resolveFilterDriver, streamsThroughFilter } from './resolve-filter-driver.js';
 
 export type WorkingTreeComparison =
   | 'absent'
@@ -65,24 +66,20 @@ export const isWorkingTreeModified = (comparison: WorkingTreeComparison): boolea
 const LINK_ENCODER = new TextEncoder();
 
 /**
- * Apply the clean filter to worktree bytes before hashing for comparison.
- * On driver failure, fall back to the raw bytes — the same graceful arm
- * `add` takes for a driver that is not marked required.
+ * The worktree bytes as git hashes them: through the path's clean filter.
+ * Conversion context — git validates every `[filter "<d>"].required` when it
+ * actually clean-converts a path, and dies where `convert_to_git` does.
  * Symlinks are never filtered — callers guard this.
  */
 const cleanWorktreeBytes = async (
   ctx: Context,
-  runner: CommandRunner,
+  runner: CommandRunner | undefined,
   provider: AttributeProvider,
   path: FilePath,
   bytes: Uint8Array,
 ): Promise<Uint8Array> => {
-  // Conversion context: git validates every `[filter "<d>"].required` when
-  // it actually clean-converts a path — this call IS that conversion.
   const choice = await resolveFilterDriver(ctx, provider, path, { eagerSectionValidation: true });
-  if (choice.kind !== 'external' || choice.clean === undefined) return bytes;
-  const result = await runFilterDriver(ctx, runner, choice.clean, bytes);
-  return result.ok ? result.bytes : bytes;
+  return applyCleanFilter(ctx, runner, path, bytes, choice);
 };
 
 /**
@@ -124,6 +121,33 @@ const statOnlyVerdict = (
   return undefined;
 };
 
+/** The path's driver, as git's `index_fd` weighs it: an attribute-engaged
+ *  malformed driver refuses here, before any content read. */
+const streamsThroughDriver = async (
+  ctx: Context,
+  provider: AttributeProvider | undefined,
+  path: FilePath,
+): Promise<boolean> =>
+  provider !== undefined && streamsThroughFilter(await resolveFilterDriver(ctx, provider, path));
+
+/**
+ * git's `index_fd` reads `core.bigFileThreshold` before hashing a regular
+ * file it does not stream through a required filter. Only the
+ * stat-cache-armed comparison reaches a hash where git does; an unarmed one
+ * hashes files git's stat cache would have settled.
+ */
+const readThresholdBeforeHashing = async (
+  ctx: Context,
+  entry: IndexEntry,
+  stat: FileStat,
+  indexMtime: IndexMtime | undefined,
+  provider: AttributeProvider | undefined,
+): Promise<void> => {
+  if (indexMtime === undefined || stat.isSymbolicLink) return;
+  if (await streamsThroughDriver(ctx, provider, entry.path)) return;
+  await assertBigFileThresholdValid(ctx);
+};
+
 export const compareWorkingTreeDelta = async (
   ctx: Context,
   entry: IndexEntry,
@@ -136,25 +160,37 @@ export const compareWorkingTreeDelta = async (
   const worktreeMode = deriveWorkingMode(stat);
   const settled = statOnlyVerdict(entry, stat, worktreeMode, indexMtime);
   if (settled !== undefined) return settled;
+  await readThresholdBeforeHashing(ctx, entry, stat, indexMtime, provider);
+  const raw = await readWorkingBytes(ctx, absPath, stat);
+  // The file exists (lstat succeeded) but cannot be read — never report an
+  // unverifiable file as `unchanged`; git's failed `index_path` reads changed.
+  if (raw === undefined) return { status: 'modified', worktreeMode };
+  // Route regular-file bytes through the clean filter before hashing when a
+  // provider is available. Symlink targets are always hashed raw.
+  const content =
+    !stat.isSymbolicLink && provider !== undefined
+      ? await cleanWorktreeBytes(ctx, ctx.command, provider, entry.path, raw)
+      : raw;
+  const { id } = await serializeAndHash(ctx, { type: 'blob', id: '' as ObjectId, content });
+  // Content dominates: a changed blob is `modified` regardless of mode. Only a
+  // same-blob mode difference (exec bit) is `mode-changed`.
+  if (id !== entry.id) return { status: 'modified', worktreeMode };
+  return { status: worktreeMode === entry.mode ? 'unchanged' : 'mode-changed', worktreeMode };
+};
+
+/** The working bytes git would hash — a symlink's target, a file's content —
+ *  or `undefined` when the path cannot be read. */
+const readWorkingBytes = async (
+  ctx: Context,
+  absPath: string,
+  stat: FileStat,
+): Promise<Uint8Array | undefined> => {
   try {
-    const raw = stat.isSymbolicLink
+    return stat.isSymbolicLink
       ? LINK_ENCODER.encode(await ctx.fs.readlink(absPath))
       : await ctx.fs.read(absPath);
-    // Route regular-file bytes through the clean filter before hashing when a
-    // provider and runner are available. Symlink targets are always hashed raw.
-    const content =
-      !stat.isSymbolicLink && provider !== undefined && ctx.command !== undefined
-        ? await cleanWorktreeBytes(ctx, ctx.command, provider, entry.path, raw)
-        : raw;
-    const { id } = await serializeAndHash(ctx, { type: 'blob', id: '' as ObjectId, content });
-    // Content dominates: a changed blob is `modified` regardless of mode. Only a
-    // same-blob mode difference (exec bit) is `mode-changed`.
-    if (id !== entry.id) return { status: 'modified', worktreeMode };
-    return { status: worktreeMode === entry.mode ? 'unchanged' : 'mode-changed', worktreeMode };
   } catch {
-    // The file exists (lstat succeeded) but cannot be read/hashed — never report
-    // an unverifiable file as `unchanged`; treat it as modified (dirty).
-    return { status: 'modified', worktreeMode };
+    return undefined;
   }
 };
 

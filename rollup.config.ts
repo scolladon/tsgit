@@ -108,7 +108,10 @@ const treeshakeOptions = {
 // chunk boundaries, is what keeps a single command's shipped bytes small.
 // Platform adapters are NEVER merged with each other or with neutral code:
 // a node adapter module inside a shared chunk would drag `node:` externals
-// into browser consumers' module graphs.
+// into browser consumers' module graphs. The facade helpers under
+// `src/repository/` need an explicit home for the same reason: left
+// unassigned, rollup folds the ones the node adapter imports into
+// `adapter-node`, and every neutral entry then imports that chunk.
 const manualChunks = (/** @type {string} */ id) => {
   // Rollup ids carry backslash separators on Windows; normalise so every
   // branch below matches — a silent fall-through would revert the build to
@@ -124,6 +127,7 @@ const manualChunks = (/** @type {string} */ id) => {
   if (moduleId.includes('/src/operators/')) return 'operators';
   if (moduleId.includes('/src/transport/')) return 'transport';
   if (moduleId.includes('/src/ports/')) return 'ports';
+  if (moduleId.includes('/src/repository/')) return 'repository';
   return undefined;
 };
 

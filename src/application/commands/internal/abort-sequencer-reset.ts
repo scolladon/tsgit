@@ -1,9 +1,9 @@
 /**
- * The shared `cherry-pick` / `revert` `--abort` tail (ADR-232): hard-reset the
- * working tree + index + branch to the recovery `target`, record git's faithful
- * `reset: moving to <oid>` reflog, clear the op-specific `*_HEAD` marker, then
- * tear down `MERGE_MSG` and the sequencer. Extracted once the history-rewrite
- * `*-abort` family reached three members.
+ * The shared `cherry-pick` / `revert` `--skip` and `--abort` tails. git ends a
+ * stopped pick with `reset --merge <oid>`: ORIG_HEAD takes the HEAD it leaves,
+ * the working tree + index (+ branch, on abort) move to the target with git's
+ * `reset: moving to <oid>` reflog, and `remove_branch_state` clears the stop.
+ * An abort then tears the sequencer down.
  *
  * `rebase --abort` faithfully diverges — it reattaches a detached HEAD with a
  * `rebase (abort): returning to <name>` reflog and never moves the branch ref or
@@ -12,30 +12,35 @@
 import type { ObjectId, RefName } from '../../../domain/objects/index.js';
 import { resetMovingTo } from '../../../domain/reflog/reflog-messages.js';
 import type { Context } from '../../../ports/context.js';
+import { resolveRef } from '../../primitives/resolve-ref.js';
 import { updateRef } from '../../primitives/update-ref.js';
-import { clearMergeMsg } from './merge-state.js';
+import { removeBranchState } from './branch-state.js';
+import { writeOrigHead } from './merge-state.js';
 import { hardResetWorktreeToCommit } from './reset-worktree.js';
 import { clearSequencer } from './sequencer-state.js';
 
 export interface AbortSequencerResetOptions {
   readonly target: ObjectId;
-  /** Remove the op-specific marker (`clearCherryPickHead` / `clearRevertHead`). */
-  readonly clearHead: (ctx: Context) => Promise<void>;
 }
 
 const HEAD: RefName = 'HEAD' as RefName;
+
+/** `--skip`'s `reset --merge HEAD`: drop the stopped pick, HEAD stays put. */
+export const skipSequencerReset = async (ctx: Context, head: ObjectId): Promise<void> => {
+  await writeOrigHead(ctx, head);
+  await hardResetWorktreeToCommit(ctx, head);
+  await removeBranchState(ctx, 'silent');
+};
 
 export const abortSequencerReset = async (
   ctx: Context,
   options: AbortSequencerResetOptions,
 ): Promise<void> => {
+  await writeOrigHead(ctx, await resolveRef(ctx, HEAD));
   await hardResetWorktreeToCommit(ctx, options.target);
-  // Written through the literal `HEAD` — git's own sequencer rollback resets
-  // HEAD, not the branch name by value.
   await updateRef(ctx, HEAD, options.target, {
     reflogMessage: resetMovingTo(options.target),
   });
-  await options.clearHead(ctx);
-  await clearMergeMsg(ctx);
+  await removeBranchState(ctx, 'silent');
   await clearSequencer(ctx);
 };

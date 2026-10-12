@@ -19,9 +19,11 @@ Nested namespace: `repo.rebase.{run, continue, skip, abort}`.
 ```ts
 interface RebaseNamespace {
   run(input: {
-    upstream: string; // commit-ish: the fork-point side (`git rebase <upstream>`)
+    upstream: string; // revision peeling to a commit: the fork-point side (`git rebase <upstream>`; `-` is `@{-1}`)
     onto?: string; // --onto <newbase>: replay onto this base instead of `upstream`
     interactive?: ReadonlyArray<RebaseInstruction>; // present → `rebase -i`
+    rebaseMerges?: boolean | 'rebase-cousins' | 'no-rebase-cousins'; // --rebase-merges[=<mode>]
+    autostash?: boolean; // --autostash / --no-autostash; unset reads rebase.autostash
   }): Promise<RebaseResult>;
 
   continue(): Promise<RebaseResult>;
@@ -86,6 +88,44 @@ type RebaseResult =
 - **Refusals.** A dirty index/working tree (`WORKING_TREE_DIRTY`), an operation
   already in progress (`OPERATION_IN_PROGRESS`), an unborn branch
   (`NO_INITIAL_COMMIT`), no work tree (`WORK_TREE_REQUIRED`).
+
+## Autostash (`--autostash`)
+
+With `autostash: true` (or `rebase.autostash`), a dirty tree is stashed as git's
+`stash create "autostash"` does (`On <branch>: autostash`, logged `Created
+autostash: <abbrev>`) and the tree reset before the rebase. The stash oid is kept in
+`.git/rebase-merge/autostash` while the rebase is stopped. When the rebase finishes,
+aborts, or turns out up to date, the stash is re-applied (`Applied autostash.`); a
+conflicting re-apply leaves the conflicted tree, stores the stash in `refs/stash`
+with the reflog message `autostash` and logs git's warning.
+
+## Recreating merges (`--rebase-merges`)
+
+`rebaseMerges: true` (git's default `no-rebase-cousins`) or `'rebase-cousins'`
+runs git's `--rebase-merges` todo instead of flattening the branch:
+
+- **Todo.** git's script, byte for byte: `label onto`, one block per merged
+  branch tip and per `HEAD`, each opened by `reset <label>` (a blank line before
+  it), `pick` lines, `label branch-point` on a commit with several children,
+  `label <name>` on each merged tip (its `refs/heads/` name, else the name the
+  merge subject quotes, sanitized), and `merge -C <oid> <label> # <subject>`.
+  Commits already upstream, and originally empty ones, are left out. A block
+  rooted outside the range resets to that commit's abbreviation, unless
+  `'rebase-cousins'` resets it `onto`.
+- **Run.** A `label` names HEAD `refs/rewritten/<label>` (no reflog; the refs are
+  deleted when the rebase finishes or aborts, `refs-to-delete` lists them on a
+  stop). A `reset` moves HEAD (`rebase (reset): '<label>'`, no entry when HEAD
+  does not move). A `pick` or `merge` whose parents are unchanged fast-forwards
+  (`rebase: fast-forward`). Otherwise `merge -C` merges HEAD with the label and
+  commits with the original message and author (`rebase (merge): <subject>`); a
+  label HEAD already contains leaves the merge out.
+- **Merge conflict.** Stops with `MERGE_HEAD` (no line feed), `MERGE_MODE`
+  (`no-ff`), `MERGE_MSG` and `message` holding the original message, an empty
+  `patch`, and the merge recorded in `rewritten-list` against HEAD, as git does.
+  `continue` commits the two-parent merge (`rebase (continue): <subject>`);
+  `skip` drops it.
+- **Refusals.** `INVALID_OPTION` (`rebaseMerges`) alongside `interactive`;
+  `UNSUPPORTED_OPERATION` for an octopus merge.
 
 ## Interactive (`rebase -i`)
 

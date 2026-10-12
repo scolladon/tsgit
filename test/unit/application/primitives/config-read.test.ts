@@ -2,23 +2,27 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
   __resetConfigCacheForTests,
-  assertValidGcAutoConfig,
+  assertValidAbbrevConfig,
+  assertValidGcNumberConfig,
   assertValidPackIntConfig,
   type ConfigToken,
+  findFirstInvalidAutoSetupMerge,
   findFirstInvalidBoolean,
   findFirstInvalidBooleanInSection,
   findFirstInvalidCompression,
   findFirstInvalidDiffBinary,
-  findFirstInvalidGcAuto,
   findFirstInvalidLogAllRefUpdates,
-  findFirstInvalidPackedGitBound,
   findFirstInvalidPackInt,
   findFirstInvalidPushGpgSign,
+  findFirstPromisorConfigRefusal,
   findFirstValuelessEntry,
   findFirstValuelessInSection,
+  findInvalidGcNumber,
   findInvalidPushDefault,
+  findLastInvalidBigFileThreshold,
   findLastInvalidDeltaBaseCacheLimit,
   findLastInvalidMaxTreeDepth,
+  findLastInvalidPackedGitBound,
   type IniSection,
   invalidateConfigCache,
   memoizeGateVerdict,
@@ -27,7 +31,9 @@ import {
   parseGitInt,
   parseIniSections,
   readConfig,
+  readPromisorRemoteNames,
   tokenizeConfig,
+  walkRemoteTable,
 } from '../../../../src/application/primitives/config-read.js';
 import {
   __resetSectionsCacheForTests,
@@ -486,6 +492,27 @@ describe('primitives/config-read', () => {
         // Assert
         expect(result.branch?.get('main')?.remote).toBe('origin');
         expect(result.branch?.get('main')?.merge).toBe('refs/heads/main');
+      });
+    });
+  });
+
+  describe('Given a [branch "main"] merge key set twice, across two sections', () => {
+    describe('When readConfig', () => {
+      it('Then merges keeps every value in config order and merge the first, the upstream', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(
+          ctx,
+          '[branch "main"]\n  merge = refs/heads/a\n[branch "main"]\n  merge = refs/heads/b\n',
+        );
+        const sut = readConfig;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.branch?.get('main')?.merges).toEqual(['refs/heads/a', 'refs/heads/b']);
+        expect(result.branch?.get('main')?.merge).toBe('refs/heads/a');
       });
     });
   });
@@ -1418,7 +1445,7 @@ describe('primitives/config-read', () => {
 
   describe('Given two [branch "main"] sections', () => {
     describe('When readConfig', () => {
-      it('Then later values win', async () => {
+      it('Then the later remote wins and the first merge stays the upstream', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(
@@ -1431,7 +1458,7 @@ describe('primitives/config-read', () => {
 
         // Assert
         expect(result.branch?.get('main')?.remote).toBe('b');
-        expect(result.branch?.get('main')?.merge).toBe('refs/heads/y');
+        expect(result.branch?.get('main')?.merge).toBe('refs/heads/x');
       });
     });
   });
@@ -2157,6 +2184,27 @@ describe('primitives/config-read', () => {
 
         // Assert
         expect(result.core).toEqual({ sparseCheckoutCone: true });
+      });
+    });
+  });
+
+  describe('Given a config with a [core] ignoreCase value', () => {
+    describe('When readConfig', () => {
+      it.each([
+        { config: '[core]\n  ignorecase = true\n', expected: { ignoreCase: true } },
+        { config: '[core]\n  IgnoreCase = off\n', expected: { ignoreCase: false } },
+        { config: '[core]\n  ignorecase\n', expected: { ignoreCase: true } },
+        { config: '[core]\n  ignorecase = maybe\n', expected: undefined },
+      ])('Then $config parses to core $expected', async ({ config, expected }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, config);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core).toEqual(expected);
       });
     });
   });
@@ -6642,11 +6690,11 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
-  describe('findFirstInvalidPackedGitBound', () => {
+  describe('findLastInvalidPackedGitBound', () => {
     describe.each(['packedGitWindowSize', 'packedGitLimit'] as const)(
       'Given a malformed core.%s',
       (key) => {
-        describe('When findFirstInvalidPackedGitBound', () => {
+        describe('When findLastInvalidPackedGitBound', () => {
           it.each([
             { config: `[core]\n\t${key} = abc\n`, value: 'abc', reason: 'invalid unit' as const },
             { config: `[core]\n\t${key} = -1\n`, value: '-1', reason: 'invalid unit' as const },
@@ -6664,7 +6712,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
               await seed(ctx, config);
 
               // Act
-              const result = await findFirstInvalidPackedGitBound(ctx);
+              const result = await findLastInvalidPackedGitBound(ctx);
 
               // Assert
               expect(result?.key).toBe(`core.${key.toLowerCase()}`);
@@ -6674,14 +6722,14 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
           );
         });
 
-        describe('When findFirstInvalidPackedGitBound runs against a valueless entry (no "=")', () => {
+        describe('When findLastInvalidPackedGitBound runs against a valueless entry (no "=")', () => {
           it("Then returns value '', reason invalid unit, and the 1-based line", async () => {
             // Arrange
             const ctx = createMemoryContext();
             await seed(ctx, `[core]\n\t${key}\n`);
 
             // Act
-            const result = await findFirstInvalidPackedGitBound(ctx);
+            const result = await findLastInvalidPackedGitBound(ctx);
 
             // Assert
             expect(result?.value).toBe('');
@@ -6690,14 +6738,14 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
           });
         });
 
-        describe('When findFirstInvalidPackedGitBound runs against a valid value (e.g. 4m)', () => {
+        describe('When findLastInvalidPackedGitBound runs against a valid value (e.g. 4m)', () => {
           it('Then returns undefined', async () => {
             // Arrange
             const ctx = createMemoryContext();
             await seed(ctx, `[core]\n\t${key} = 4m\n`);
 
             // Act
-            const result = await findFirstInvalidPackedGitBound(ctx);
+            const result = await findLastInvalidPackedGitBound(ctx);
 
             // Assert
             expect(result).toBeUndefined();
@@ -6707,31 +6755,31 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     );
 
     describe('Given packedGitLimit malformed on line 2 and packedGitWindowSize malformed on line 3', () => {
-      describe('When findFirstInvalidPackedGitBound', () => {
-        it('Then returns the earlier (packedGitLimit) entry — first in file order', async () => {
+      describe('When findLastInvalidPackedGitBound', () => {
+        it('Then returns packedGitWindowSize — git reads it before packedGitLimit, whatever the file order', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx, '[core]\n\tpackedGitLimit = -1\n\tpackedGitWindowSize = -1\n');
 
           // Act
-          const result = await findFirstInvalidPackedGitBound(ctx);
+          const result = await findLastInvalidPackedGitBound(ctx);
 
           // Assert
-          expect(result?.key).toBe('core.packedgitlimit');
-          expect(result?.line).toBe(2);
+          expect(result?.key).toBe('core.packedgitwindowsize');
+          expect(result?.line).toBe(3);
         });
       });
     });
 
     describe('Given packedGitWindowSize malformed on line 2 and packedGitLimit malformed on line 3', () => {
-      describe('When findFirstInvalidPackedGitBound', () => {
+      describe('When findLastInvalidPackedGitBound', () => {
         it('Then returns the earlier (packedGitWindowSize) entry — first in file order', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx, '[core]\n\tpackedGitWindowSize = -1\n\tpackedGitLimit = -1\n');
 
           // Act
-          const result = await findFirstInvalidPackedGitBound(ctx);
+          const result = await findLastInvalidPackedGitBound(ctx);
 
           // Assert
           expect(result?.key).toBe('core.packedgitwindowsize');
@@ -6740,15 +6788,81 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       });
     });
 
+    describe.each(['packedGitWindowSize', 'packedGitLimit'] as const)(
+      'Given core.%s malformed and then valid',
+      (key) => {
+        describe('When findLastInvalidPackedGitBound', () => {
+          it('Then returns undefined — git reads only the last entry', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seed(ctx, `[core]\n\t${key} = x\n\t${key} = 1\n`);
+            const sut = findLastInvalidPackedGitBound;
+
+            // Act
+            const result = await sut(ctx);
+
+            // Assert
+            expect(result).toBeUndefined();
+          });
+        });
+      },
+    );
+
+    describe.each(['packedGitWindowSize', 'packedGitLimit'] as const)(
+      'Given core.%s valid and then malformed',
+      (key) => {
+        describe('When findLastInvalidPackedGitBound', () => {
+          it('Then returns the last entry on its own line', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seed(ctx, `[core]\n\t${key} = 1\n\t${key} = x\n`);
+            const sut = findLastInvalidPackedGitBound;
+
+            // Act
+            const result = await sut(ctx);
+
+            // Assert
+            expect(result).toEqual({
+              key: `core.${key.toLowerCase()}`,
+              source: `${ctx.layout.gitDir}/config`,
+              value: 'x',
+              reason: 'invalid unit',
+              line: 3,
+            });
+          });
+        });
+      },
+    );
+
+    describe('Given a valid packedGitWindowSize and packedGitLimit malformed and then valid around it', () => {
+      describe('When findLastInvalidPackedGitBound', () => {
+        it('Then returns undefined — each key is read on its own last entry', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(
+            ctx,
+            '[core]\n\tpackedGitLimit = x\n\tpackedGitWindowSize = 1\n\tpackedGitLimit = 1\n',
+          );
+          const sut = findLastInvalidPackedGitBound;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
     describe('Given a malformed packedGitWindowSize entry outside [core]', () => {
-      describe('When findFirstInvalidPackedGitBound', () => {
+      describe('When findLastInvalidPackedGitBound', () => {
         it('Then returns undefined — a [pack] key is not a [core] key', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx, '[pack]\n\tpackedGitWindowSize = -1\n');
 
           // Act
-          const result = await findFirstInvalidPackedGitBound(ctx);
+          const result = await findLastInvalidPackedGitBound(ctx);
 
           // Assert
           expect(result).toBeUndefined();
@@ -6757,7 +6871,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
 
     describe('Given a malformed packedGitWindowSize value that appears before any section header', () => {
-      describe('When findFirstInvalidPackedGitBound', () => {
+      describe('When findLastInvalidPackedGitBound', () => {
         it('Then returns undefined — inSection starts false and only a matching [core] header sets it', async () => {
           // Arrange — a pre-header bare key must NOT match. Mutant
           // (inSection=true) would wrongly check and return it.
@@ -6765,7 +6879,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
           await seed(ctx, '\tpackedGitWindowSize = -1\n[core]\n\tbare = true\n');
 
           // Act
-          const result = await findFirstInvalidPackedGitBound(ctx);
+          const result = await findLastInvalidPackedGitBound(ctx);
 
           // Assert
           expect(result).toBeUndefined();
@@ -6856,6 +6970,135 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
           // Assert
           expect(result?.key).toBe('diff.MyDriver.cachetextconv');
+        });
+      });
+    });
+  });
+
+  describe('readPromisorRemoteNames', () => {
+    describe.each([
+      { given: 'no remote config', config: '', expected: [] },
+      {
+        given: 'promisor and partialclonefilter remotes in config order',
+        config: '[remote "b"]\n\tpartialclonefilter = blob:none\n[remote "a"]\n\tPROMISOR = yes\n',
+        expected: ['b', 'a'],
+      },
+      {
+        given: 'a remote both promisor and filtered, repeated across headers',
+        config: '[remote "a"]\n\tpromisor\n[remote "a"]\n\tpartialclonefilter = blob:none\n',
+        expected: ['a'],
+      },
+      {
+        given: 'a promisor value false or outside the boolean grammar',
+        config: '[remote "a"]\n\tpromisor = false\n[remote "b"]\n\tpromisor = maybe\n',
+        expected: [],
+      },
+      {
+        given: 'a promisor then a false',
+        config: '[remote "a"]\n\tpromisor = true\n\tpromisor = false\n',
+        expected: ['a'],
+      },
+      {
+        given: 'an upper-cased subsectionless section',
+        config: '[REMOTE]\n\tpromisor = true\n',
+        expected: [''],
+      },
+      {
+        given: 'a promisor key under another section',
+        config: '[remote "a"]\n\turl = x\n[core]\n\tpromisor = true\n',
+        expected: [],
+      },
+      { given: 'an unrelated remote key', config: '[remote "a"]\n\turl = x\n', expected: [] },
+      {
+        given: 'an unrelated remote key holding a true boolean',
+        config: '[remote "a"]\n\turl = true\n',
+        expected: [],
+      },
+      {
+        given: 'extensions.partialClone naming the first of two promisor remotes',
+        config:
+          '[remote "a"]\n\tpromisor = true\n[remote "b"]\n\tpromisor = true\n[extensions]\n\tpartialClone = a\n',
+        expected: ['b', 'a'],
+      },
+      {
+        given: 'a /-leading remote name',
+        config: '[remote "/abs"]\n\tpromisor = true\n[remote "ok"]\n\tpromisor = true\n',
+        expected: ['ok'],
+      },
+      {
+        given: 'extensions.partialClone naming a configured remote and a new one',
+        config: '[remote "a"]\n\tpromisor = true\n[extensions]\n\tpartialClone = a\n',
+        expected: ['a'],
+      },
+      {
+        given: 'extensions.partialClone alone',
+        config: '[extensions]\n\tpartialClone = o\n',
+        expected: ['o'],
+      },
+      {
+        given: 'a /-leading extensions.partialClone',
+        config: '[extensions]\n\tpartialClone = /abs\n',
+        expected: [],
+      },
+    ])('Given $given, When readPromisorRemoteNames', ({ config, expected }) => {
+      it('Then it returns the registered promisor remote names', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, config);
+        const sut = readPromisorRemoteNames;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
+
+    describe('Given a /-leading remote registered by each of its entries and by extensions.partialClone', () => {
+      describe('When readPromisorRemoteNames', () => {
+        it('Then it warns once per registering entry, in config order, as git does', async () => {
+          // Arrange
+          const base = createMemoryContext();
+          await seed(
+            base,
+            '[remote "/x"]\n\tpromisor = true\n\tpartialclonefilter = blob:none\n\tpromisor = false\n' +
+              '[remote "ok"]\n\tpromisor = true\n[remote "/x"]\n\tpromisor\n[extensions]\n\tpartialClone = /z\n',
+          );
+          const warn = vi.fn();
+          const ctx: Context = { ...base, logger: { warn } };
+          const sut = readPromisorRemoteNames;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toEqual(['ok']);
+          expect(warn.mock.calls).toEqual(
+            ['/x', '/x', '/x', '/z'].map((remote) => [
+              "readPromisorRemoteNames: promisor remote name cannot begin with '/'",
+              { remote },
+            ]),
+          );
+        });
+      });
+    });
+
+    describe('Given only registrable promisor remotes', () => {
+      describe('When readPromisorRemoteNames', () => {
+        it('Then it warns nothing', async () => {
+          // Arrange
+          const base = createMemoryContext();
+          await seed(base, '[remote "a"]\n\tpromisor = true\n[extensions]\n\tpartialClone = b\n');
+          const warn = vi.fn();
+          const ctx: Context = { ...base, logger: { warn } };
+          const sut = readPromisorRemoteNames;
+
+          // Act
+          await sut(ctx);
+
+          // Assert
+          expect(warn).not.toHaveBeenCalled();
         });
       });
     });
@@ -7138,6 +7381,219 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         });
       });
     });
+  });
+
+  describe('findFirstInvalidAutoSetupMerge', () => {
+    describe('Given branch.autoSetupMerge holds a value that fails both its literals and the boolean grammar', () => {
+      describe('When findFirstInvalidAutoSetupMerge', () => {
+        it('Then it returns the entry', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[branch]\n\tautoSetupMerge = maybe\n');
+
+          // Act
+          const result = await findFirstInvalidAutoSetupMerge(ctx);
+
+          // Assert
+          expect(result?.key).toBe('branch.autosetupmerge');
+          expect(result?.value).toBe('maybe');
+          expect(result?.line).toBe(2);
+        });
+      });
+    });
+
+    describe('Given branch.autoSetupMerge holds one of its exact literals or a boolean', () => {
+      describe('When findFirstInvalidAutoSetupMerge', () => {
+        it.each(['always', 'inherit', 'simple', 'false', ''])(
+          'Then it returns undefined for "%s"',
+          async (value) => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seed(ctx, `[branch]\n\tautoSetupMerge = ${value}\n`);
+
+            // Act
+            const result = await findFirstInvalidAutoSetupMerge(ctx);
+
+            // Assert
+            expect(result).toBeUndefined();
+          },
+        );
+      });
+    });
+
+    describe('Given a literal spelled in another case', () => {
+      describe('When findFirstInvalidAutoSetupMerge', () => {
+        it('Then it returns the entry (the literals compare case-sensitively)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[branch]\n\tautoSetupMerge = Always\n');
+
+          // Act
+          const result = await findFirstInvalidAutoSetupMerge(ctx);
+
+          // Assert
+          expect(result?.value).toBe('Always');
+        });
+      });
+    });
+
+    describe('Given the malformed value sits under a [branch "<name>"] subsection', () => {
+      describe('When findFirstInvalidAutoSetupMerge', () => {
+        it('Then it returns undefined (a per-branch key is another variable)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[branch "x"]\n\tautoSetupMerge = maybe\n');
+
+          // Act
+          const result = await findFirstInvalidAutoSetupMerge(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+  });
+
+  describe('Given branch.autoSetupMerge holds a malformed value', () => {
+    describe('When assertOperationalRepository runs', () => {
+      it('Then it refuses with CONFIG_BAD_BOOLEAN_VALUE naming the key', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedHead(ctx);
+        await seed(ctx, '[branch]\n\tautoSetupMerge = maybe\n');
+
+        // Act
+        const result = await assertOperationalRepository(ctx).catch((err: unknown) => err);
+
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect((result as TsgitError).data).toMatchObject({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'branch.autosetupmerge',
+          value: 'maybe',
+        });
+      });
+    });
+  });
+
+  describe('Given branch.autoSetupRebase is set', () => {
+    describe.each([
+      {
+        label: 'valueless',
+        config: '[branch]\n\tautoSetupRebase\n',
+        data: { code: 'CONFIG_MISSING_VALUE', key: 'branch.autosetuprebase', line: 2 },
+      },
+      {
+        label: 'to a word outside its literals',
+        config: '[branch]\n\tautoSetupRebase = bogus\n',
+        data: {
+          code: 'CONFIG_INVALID_ENUM_VALUE',
+          key: 'branch.autosetuprebase',
+          value: 'bogus',
+          line: 2,
+        },
+      },
+      {
+        label: 'to a literal in another case',
+        config: '[user]\n\tname = a\n[branch]\n\tautoSetupRebase = Always\n',
+        data: {
+          code: 'CONFIG_INVALID_ENUM_VALUE',
+          key: 'branch.autosetuprebase',
+          value: 'Always',
+          line: 4,
+        },
+      },
+    ])('$label', ({ config, data }) => {
+      describe('When assertOperationalRepository runs', () => {
+        it('Then it refuses the way git_default_config dies', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedHead(ctx);
+          await seed(ctx, config);
+
+          // Act
+          const result = await assertOperationalRepository(ctx).catch((err: unknown) => err);
+
+          // Assert
+          expect((result as TsgitError).data).toMatchObject(data);
+        });
+      });
+    });
+
+    describe.each(['never', 'local', 'remote', 'always'])('to its literal %s', (value) => {
+      describe('When assertOperationalRepository runs', () => {
+        it('Then it passes', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedHead(ctx);
+          await seed(
+            ctx,
+            `[branch]\n\tautoSetupRebase = ${value}\n[branch "x"]\n\tautoSetupRebase = bogus\n`,
+          );
+
+          // Act
+          const result = await assertOperationalRepository(ctx).catch((err: unknown) => err);
+
+          // Assert
+          expect(result).not.toBeInstanceOf(TsgitError);
+        });
+      });
+    });
+  });
+
+  describe('Given core.disambiguate is set', () => {
+    describe.each([
+      {
+        label: 'valueless',
+        config: '[core]\n\tdisambiguate\n',
+        data: { code: 'CONFIG_MISSING_VALUE', key: 'core.disambiguate', line: 2 },
+      },
+      {
+        label: 'to a word naming no hint type',
+        config: '[user]\n\tname = a\n[core]\n\tdisambiguate = bogus\n',
+        data: {
+          code: 'CONFIG_INVALID_ENUM_VALUE',
+          key: 'core.disambiguate',
+          value: 'bogus',
+          line: 4,
+        },
+      },
+    ])('$label', ({ config, data }) => {
+      describe('When assertOperationalRepository runs', () => {
+        it('Then it refuses the way git_default_config dies', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedHead(ctx);
+          await seed(ctx, config);
+
+          // Act
+          const result = await assertOperationalRepository(ctx).catch((err: unknown) => err);
+
+          // Assert
+          expect((result as TsgitError).data).toMatchObject(data);
+        });
+      });
+    });
+
+    describe.each(['none', 'COMMIT', 'committish', 'tree', 'treeish', 'Blob'])(
+      'to the hint type %s',
+      (value) => {
+        describe('When assertOperationalRepository runs', () => {
+          it('Then it passes', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seedHead(ctx);
+            await seed(ctx, `[core]\n\tdisambiguate = ${value}\n`);
+
+            // Act
+            const result = await assertOperationalRepository(ctx).catch((err: unknown) => err);
+
+            // Assert
+            expect(result).not.toBeInstanceOf(TsgitError);
+          });
+        });
+      },
+    );
   });
 
   describe('findFirstInvalidDiffBinary', () => {
@@ -8092,6 +8548,111 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
+  describe('Given an unsigned-long key holding a minus sign on a zero value', () => {
+    const MINUS_ZERO_VALUES = ['-0', '-0k', '"\\t-0"'] as const;
+
+    describe.each(MINUS_ZERO_VALUES)(
+      'When findFirstInvalidPackInt reads pack.windowMemory = %s',
+      (value) => {
+        it('Then it is reported with reason invalid unit, as git refuses any minus sign', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, `[pack]\n  windowMemory = ${value}\n`);
+          const sut = findFirstInvalidPackInt;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result?.key).toBe('pack.windowmemory');
+          expect(result?.reason).toBe('invalid unit');
+        });
+      },
+    );
+
+    describe.each(MINUS_ZERO_VALUES)(
+      'When findLastInvalidDeltaBaseCacheLimit reads %s',
+      (value) => {
+        it('Then it is reported with reason invalid unit', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, `[core]\n  deltaBaseCacheLimit = ${value}\n`);
+          const sut = findLastInvalidDeltaBaseCacheLimit;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result?.reason).toBe('invalid unit');
+        });
+      },
+    );
+
+    describe.each(['packedGitWindowSize', 'packedGitLimit'])(
+      'When findLastInvalidPackedGitBound reads core.%s = -0',
+      (key) => {
+        it('Then it is reported with reason invalid unit', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, `[core]\n  ${key} = -0\n`);
+          const sut = findLastInvalidPackedGitBound;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result?.key).toBe(`core.${key.toLowerCase()}`);
+          expect(result?.reason).toBe('invalid unit');
+        });
+      },
+    );
+
+    describe.each([
+      ['-0', { key: 'core.bigfilethreshold', value: '-0', reason: 'invalid unit' }],
+      ['valueless', { key: 'core.bigfilethreshold', value: '', reason: 'invalid unit' }],
+      ['1m', undefined],
+      ['absent', undefined],
+    ] as const)('When findLastInvalidBigFileThreshold reads a %s entry', (label, expected) => {
+      it('Then it reports exactly the entry git refuses', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const line = {
+          '-0': '  bigFileThreshold = -0\n',
+          valueless: '  bigFileThreshold\n',
+          '1m': '  bigFileThreshold = 1m\n',
+          absent: '',
+        }[label];
+        await seed(ctx, `[core]\n${line}`);
+        const sut = findLastInvalidBigFileThreshold;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(
+          result === undefined
+            ? undefined
+            : { key: result.key, value: result.value, reason: result.reason },
+        ).toEqual(expected);
+      });
+    });
+
+    describe('When readConfig reads core.bigFileThreshold = -0', () => {
+      it('Then the threshold is absent, not zero', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bigFileThreshold = -0\n');
+        const sut = readConfig;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.core?.bigFileThreshold).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given [pack] windowMemory beyond the C int range but within its own unsigned long bound', () => {
     describe('When readConfig', () => {
       it('Then pack.windowMemory is 4294967296 — accepted where the same value is out of range for pack.depth', async () => {
@@ -8375,14 +8936,14 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       });
     });
 
-    describe('When findFirstInvalidGcAuto', () => {
+    describe('When findInvalidGcNumber', () => {
       it('Then it returns the entry with reason invalid unit', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[gc]\n  auto = abc\n');
 
         // Act
-        const result = await findFirstInvalidGcAuto(ctx);
+        const result = await findInvalidGcNumber(ctx, 'auto', 'int');
 
         // Assert
         expect(result?.key).toBe('gc.auto');
@@ -8391,7 +8952,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       });
     });
 
-    describe('When assertValidGcAutoConfig', () => {
+    describe('When assertValidGcNumberConfig', () => {
       it('Then it refuses with CONFIG_BAD_NUMERIC_VALUE carrying key/source/value/reason', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -8400,7 +8961,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         // Act
         let caught: unknown;
         try {
-          await assertValidGcAutoConfig(ctx);
+          await assertValidGcNumberConfig(ctx, 'auto', 'int');
         } catch (err) {
           caught = err;
         }
@@ -8420,14 +8981,14 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   });
 
   describe('Given [gc] auto beyond the C int range', () => {
-    describe('When findFirstInvalidGcAuto', () => {
+    describe('When findInvalidGcNumber', () => {
       it('Then it returns the entry with reason out of range', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[gc]\n  auto = 99999999999999999999\n');
 
         // Act
-        const result = await findFirstInvalidGcAuto(ctx);
+        const result = await findInvalidGcNumber(ctx, 'auto', 'int');
 
         // Assert
         expect(result?.reason).toBe('out of range');
@@ -8436,7 +8997,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   });
 
   describe('Given an orphan auto key before any section header', () => {
-    describe('When findFirstInvalidGcAuto', () => {
+    describe('When findInvalidGcNumber', () => {
       it('Then it is ignored — the orphan region is not inside [gc]', async () => {
         // Arrange — `inSection` must start `false`: an orphan entry (before
         // any header at all) is never inside `[gc]`, however it spells.
@@ -8444,7 +9005,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         await seed(ctx, 'auto = 99999999999999999999\n[core]\n  bare = true\n');
 
         // Act
-        const result = await findFirstInvalidGcAuto(ctx);
+        const result = await findInvalidGcNumber(ctx, 'auto', 'int');
 
         // Assert
         expect(result).toBeUndefined();
@@ -8453,7 +9014,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   });
 
   describe('Given a [gc] section with an unrelated key holding a non-numeric value', () => {
-    describe('When findFirstInvalidGcAuto', () => {
+    describe('When findInvalidGcNumber', () => {
       it('Then it is ignored — only the auto key is checked, not every entry in the section', async () => {
         // Arrange — without the key guard, `pruneExpire`'s own (non-integer)
         // value would be handed to `parseGitInt` and misreported as gc.auto.
@@ -8461,7 +9022,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         await seed(ctx, '[gc]\n  pruneExpire = 30.days.ago\n');
 
         // Act
-        const result = await findFirstInvalidGcAuto(ctx);
+        const result = await findInvalidGcNumber(ctx, 'auto', 'int');
 
         // Assert
         expect(result).toBeUndefined();
@@ -8470,14 +9031,14 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   });
 
   describe('Given [gc] auto just above the C int max (but within the 64-bit int grammar)', () => {
-    describe('When findFirstInvalidGcAuto', () => {
+    describe('When findInvalidGcNumber', () => {
       it('Then it is reported out of range — the C int ceiling, not the 64-bit one, gates auto', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[gc]\n  auto = 3000000000\n');
 
         // Act
-        const result = await findFirstInvalidGcAuto(ctx);
+        const result = await findInvalidGcNumber(ctx, 'auto', 'int');
 
         // Assert
         expect(result?.reason).toBe('out of range');
@@ -8486,14 +9047,14 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   });
 
   describe('Given [gc] auto exactly at the C int max', () => {
-    describe('When findFirstInvalidGcAuto', () => {
+    describe('When findInvalidGcNumber', () => {
       it('Then it is accepted — the ceiling is inclusive', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[gc]\n  auto = 2147483647\n');
 
         // Act
-        const result = await findFirstInvalidGcAuto(ctx);
+        const result = await findInvalidGcNumber(ctx, 'auto', 'int');
 
         // Assert
         expect(result).toBeUndefined();
@@ -8502,14 +9063,14 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   });
 
   describe('Given [gc] auto just below the C int min (but within the 64-bit int grammar)', () => {
-    describe('When findFirstInvalidGcAuto', () => {
+    describe('When findInvalidGcNumber', () => {
       it('Then it is reported out of range — the C int floor, not the 64-bit one, gates auto', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[gc]\n  auto = -3000000000\n');
 
         // Act
-        const result = await findFirstInvalidGcAuto(ctx);
+        const result = await findInvalidGcNumber(ctx, 'auto', 'int');
 
         // Assert
         expect(result?.reason).toBe('out of range');
@@ -8518,14 +9079,14 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   });
 
   describe('Given [gc] auto exactly at the C int min', () => {
-    describe('When findFirstInvalidGcAuto', () => {
+    describe('When findInvalidGcNumber', () => {
       it('Then it is accepted — the floor is inclusive', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[gc]\n  auto = -2147483648\n');
 
         // Act
-        const result = await findFirstInvalidGcAuto(ctx);
+        const result = await findInvalidGcNumber(ctx, 'auto', 'int');
 
         // Assert
         expect(result).toBeUndefined();
@@ -8534,7 +9095,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   });
 
   describe('Given [gc] auto is valueless', () => {
-    describe('When findFirstInvalidGcAuto', () => {
+    describe('When findInvalidGcNumber', () => {
       it("Then it is reported with value '' — a valueless entry has no token.value to report", async () => {
         // Arrange — a bare `auto` key (no `=`) parses to `token.value === null`;
         // the reported `value` falls back to `''`, never `null` or the literal token.
@@ -8542,7 +9103,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         await seed(ctx, '[gc]\n  auto\n');
 
         // Act
-        const result = await findFirstInvalidGcAuto(ctx);
+        const result = await findInvalidGcNumber(ctx, 'auto', 'int');
 
         // Assert
         expect(result?.value).toBe('');
@@ -8551,28 +9112,28 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   });
 
   describe('Given no [gc] section', () => {
-    describe('When findFirstInvalidGcAuto', () => {
+    describe('When findInvalidGcNumber', () => {
       it('Then it returns undefined', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[core]\n  bare = false\n');
 
         // Act
-        const result = await findFirstInvalidGcAuto(ctx);
+        const result = await findInvalidGcNumber(ctx, 'auto', 'int');
 
         // Assert
         expect(result).toBeUndefined();
       });
     });
 
-    describe('When assertValidGcAutoConfig', () => {
+    describe('When assertValidGcNumberConfig', () => {
       it('Then it resolves (no throw)', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[core]\n  bare = false\n');
 
         // Act + Assert
-        await assertValidGcAutoConfig(ctx);
+        await assertValidGcNumberConfig(ctx, 'auto', 'int');
       });
     });
 
@@ -8592,14 +9153,14 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   });
 
   describe('Given [gc] auto under a [GC] block in a different case', () => {
-    describe('When findFirstInvalidGcAuto', () => {
+    describe('When findInvalidGcNumber', () => {
       it('Then it reports the entry, because [GC] is [gc]', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[GC]\n  auto = abc\n');
 
         // Act
-        const result = await findFirstInvalidGcAuto(ctx);
+        const result = await findInvalidGcNumber(ctx, 'auto', 'int');
 
         // Assert
         expect(result?.key).toBe('gc.auto');
@@ -8635,6 +9196,38 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
         // Assert
         expect(result.gc?.pruneExpire).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given [gc] worktreePruneExpire = 1.week.ago', () => {
+    describe('When readConfig', () => {
+      it('Then gc.worktreePruneExpire carries the raw string', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  worktreePruneExpire = 1.week.ago\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc?.worktreePruneExpire).toBe('1.week.ago');
+      });
+    });
+  });
+
+  describe('Given [gc] worktreePruneExpire is valueless', () => {
+    describe('When readConfig', () => {
+      it('Then the valueless line is skipped and the earlier value stands', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  worktreePruneExpire = 1.week.ago\n  worktreePruneExpire\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc?.worktreePruneExpire).toBe('1.week.ago');
       });
     });
   });
@@ -9146,6 +9739,387 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         // Assert
         expect(read(result)).toBeUndefined();
       });
+    });
+  });
+
+  describe.each([
+    ['auto', 'auto'],
+    ['AUTO', 'auto'],
+    ['no', 'full'],
+    ['false', 'full'],
+    ['off', 'full'],
+    ['', 'full'],
+    ['4', 4],
+    ['12', 12],
+    ['39', 39],
+    ['40', 40],
+    ['64', 64],
+    ['1k', 1024],
+    ['2147483647', 2147483647],
+  ] as const)('Given core.abbrev = %j', (raw, expected) => {
+    describe('When readConfig', () => {
+      it(`Then abbrev is ${JSON.stringify(expected)}`, async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, `[core]\n\tabbrev = ${raw}\n`);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.abbrev).toBe(expected);
+      });
+    });
+  });
+
+  describe.each(['3', '0', '-1', 'true', 'abc'])('Given an unusable core.abbrev = %s', (raw) => {
+    describe('When readConfig', () => {
+      it('Then abbrev stays absent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, `[core]\n\tabbrev = ${raw}\n`);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.abbrev).toBeUndefined();
+      });
+    });
+  });
+
+  describe.each([
+    ['3', 'out of range'],
+    ['0', 'out of range'],
+    ['-1', 'out of range'],
+    ['2147483648', 'out of range'],
+    ['true', 'invalid unit'],
+    ['abc', 'invalid unit'],
+  ] as const)('Given core.abbrev = %s', (raw, reason) => {
+    describe('When assertValidAbbrevConfig', () => {
+      it('Then it refuses with CONFIG_BAD_NUMERIC_VALUE carrying key/value/reason', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, `[core]\n\tabbrev = ${raw}\n`);
+
+        // Act
+        let caught: unknown;
+        try {
+          await assertValidAbbrevConfig(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        if (data.code === 'CONFIG_BAD_NUMERIC_VALUE') {
+          expect(data.key).toBe('core.abbrev');
+          expect(data.value).toBe(raw);
+          expect(data.reason).toBe(reason);
+          expect(data.source).toMatch(/\/config$/);
+        }
+      });
+    });
+  });
+
+  describe('Given a valueless core.abbrev key', () => {
+    describe('When assertValidAbbrevConfig', () => {
+      it('Then it refuses with CONFIG_MISSING_VALUE carrying key and line', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n\tbare = false\n\tabbrev\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await assertValidAbbrevConfig(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data).toMatchObject({ code: 'CONFIG_MISSING_VALUE', key: 'core.abbrev', line: 3 });
+        expect((data as { source: string }).source).toMatch(/\/config$/);
+      });
+    });
+  });
+
+  describe.each(['auto', 'no', '4', '12'])('Given a usable core.abbrev = %s', (raw) => {
+    describe('When assertValidAbbrevConfig', () => {
+      it('Then it resolves', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, `[core]\n\tabbrev = ${raw}\n`);
+
+        // Act
+        const result = assertValidAbbrevConfig(ctx);
+
+        // Assert
+        await expect(result).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [mailmap] section with file and blob', () => {
+    describe('When readConfig', () => {
+      it('Then both strings populate their own fields', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[MailMap]\n\tfile = /etc/map\n\tBlob = HEAD:.mailmap\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.mailmap).toEqual({ file: '/etc/map', blob: 'HEAD:.mailmap' });
+      });
+    });
+  });
+
+  describe('Given a [mailmap] section with only a valueless key and an unknown key', () => {
+    describe('When readConfig', () => {
+      it('Then mailmap stays absent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[mailmap]\n\tfile\n\tother = x\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.mailmap).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [trailer] section with separators and two keyed token subsections', () => {
+    describe('When readConfig', () => {
+      it('Then separators and each token key are read, the subsection name staying verbatim', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(
+          ctx,
+          '[trailer]\n\tseparators = :=\n[trailer "Fix"]\n\tkey = Fixes-Bug\n[trailer "ack"]\n\tKey = Reviewed-by\n\tcommand = ignored\n',
+        );
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.trailer?.separators).toBe(':=');
+        expect([...(result.trailer?.keys ?? [])]).toEqual([
+          ['Fix', 'Fixes-Bug'],
+          ['ack', 'Reviewed-by'],
+        ]);
+      });
+    });
+  });
+
+  describe('Given a [trailer] section with only a valueless separators and an unknown key', () => {
+    describe('When readConfig', () => {
+      it('Then trailer stays absent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[trailer]\n\tseparators\n\tother = x\n[trailer "t"]\n\tkey\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.trailer).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an unrelated section with a subsection holding a key entry', () => {
+    describe('When readConfig', () => {
+      it('Then trailer stays absent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[other "Fix"]\n\tkey = Fixes-Bug\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.trailer).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an unrelated subsectionless section holding a separators entry', () => {
+    describe('When readConfig', () => {
+      it('Then trailer stays absent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[other]\n\tseparators = :=\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.trailer).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [gpg "ssh"] section with a valueless program', () => {
+    describe('When readConfig', () => {
+      it('Then gpg stays absent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gpg "ssh"]\n\tprogram\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gpg).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a remote with a valueless key other than partialclonefilter', () => {
+    describe('When findFirstPromisorConfigRefusal', () => {
+      it('Then it finds no refusal', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[remote "a"]\n\turl\n');
+        const sut = findFirstPromisorConfigRefusal;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [gpg "ssh"] section with program, allowedSignersFile and revocationFile', () => {
+    describe('When readConfig', () => {
+      it('Then all three populate gpg.ssh beside each other', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(
+          ctx,
+          '[gpg "ssh"]\n\tprogram = ssh-keygen\n\tAllowedSignersFile = /a/signers\n\trevocationFile = /a/revoked\n',
+        );
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gpg?.ssh).toEqual({
+          program: 'ssh-keygen',
+          allowedSignersFile: '/a/signers',
+          revocationFile: '/a/revoked',
+        });
+      });
+    });
+  });
+});
+
+describe('Given a remote whose name begins with /', () => {
+  const SLASH_CONFIG =
+    '[remote "/x"]\n\turl = u\n\tFetch = +refs/heads/*:refs/remotes/x/*\n\tvalueless\n' +
+    '[remote "y"]\n\turl = v\n[remote "/w"]\n';
+
+  describe('When readConfig', () => {
+    it('Then only the other remotes are registered, as git never registers it', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, SLASH_CONFIG);
+      const sut = readConfig;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect([...(result.remote?.keys() ?? [])]).toEqual(['y']);
+    });
+  });
+
+  describe('When walkRemoteTable', () => {
+    it('Then it warns once per entry of that remote, with its lower-cased key, in config order', async () => {
+      // Arrange
+      const base = createMemoryContext();
+      await seed(base, SLASH_CONFIG);
+      const warn = vi.fn();
+      const ctx: Context = { ...base, logger: { warn } };
+      const sut = walkRemoteTable;
+
+      // Act
+      await sut(ctx, () => undefined);
+
+      // Assert
+      expect(warn.mock.calls).toEqual(
+        ['url', 'fetch', 'valueless'].map((key) => [
+          "readRemoteConfig: config remote shorthand cannot begin with '/'",
+          { remote: '/x', key },
+        ]),
+      );
+    });
+
+    it('Then it checks every other named-remote entry, in config order, key lower-cased', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, `${SLASH_CONFIG}[remote]\n\tpushDefault = y\n[remote "z"]\n\tFetch\n`);
+      const checked: unknown[] = [];
+      const sut = walkRemoteTable;
+
+      // Act
+      await sut(ctx, (entry) => checked.push(entry));
+
+      // Assert
+      expect(checked).toEqual([
+        { remote: 'y', key: 'url', value: 'v' },
+        { remote: 'z', key: 'fetch', value: null },
+      ]);
+    });
+
+    it('Then a throwing check stops the walk before any later entry warns', async () => {
+      // Arrange
+      const base = createMemoryContext();
+      await seed(base, '[remote "y"]\n\turl = v\n[remote "/w"]\n\turl = u\n');
+      const warn = vi.fn();
+      const ctx: Context = { ...base, logger: { warn } };
+      const sut = walkRemoteTable;
+
+      // Act
+      const [outcome] = await Promise.allSettled([
+        sut(ctx, () => {
+          throw new Error('dies here');
+        }),
+      ]);
+
+      // Assert
+      expect((outcome as PromiseRejectedResult).reason.message).toBe('dies here');
+      expect(warn).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('Given only remotes whose names do not begin with /', () => {
+  describe('When walkRemoteTable', () => {
+    it('Then it warns nothing', async () => {
+      // Arrange
+      const base = createMemoryContext();
+      await seed(
+        base,
+        '[remote "y"]\n\turl = v\n[remote]\n\tpushDefault = y\n[core]\n\tbare = false\n',
+      );
+      const warn = vi.fn();
+      const ctx: Context = { ...base, logger: { warn } };
+      const sut = walkRemoteTable;
+
+      // Act
+      await sut(ctx, () => undefined);
+
+      // Assert
+      expect(warn).not.toHaveBeenCalled();
     });
   });
 });

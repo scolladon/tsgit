@@ -2,8 +2,9 @@
 
 `AsyncIterable<Commit>` walker over **all** parents of every reachable commit,
 yielding them in commit-date priority order — newest committer date first,
-oid-ascending on ties. The date-ordered companion to [`walkCommits`](walk-commits.md)
-(whose orders are a topological FIFO and first-parent); it underpins history
+and on equal dates in the order they were enqueued (seeds as given, parents in
+parent order), as git's commit priority queue does. The date-ordered companion to [`walkCommits`](walk-commits.md)
+(whose orders are breadth-first, topological and first-parent); it underpins history
 summaries such as `shortlog`. Composable with the
 [operator toolkit](README.md#composition-pattern).
 
@@ -26,7 +27,7 @@ interface WalkCommitsByDateOptions {
 - Walks every parent (not first-parent-only), newest committer-date first.
 - Each reachable commit is yielded exactly once; a diamond's shared base appears
   once.
-- `until` excludes a commit before it is read — neither yielded nor expanded.
+- `until` is settled first, as git's `limit_list` does: every ancestor of an excluded commit is left out, whichever path reaches it — not only the excluded commits themselves.
 - `shallow` boundaries are yielded but their parents are not walked. Omitted ⇒
   the repository's `.git/shallow` set is loaded automatically; supplied
   (including an explicit empty `Set`) ⇒ the caller's set governs which commits

@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted (at `1dbd41e`)
+Accepted (at `1dbd41e`); omission of a rebase mode superseded by ADR-946
+
+> Pull now has git's reconcile choices and refuses divergent branches when none is given (ADR-946).
+> The rest of this decision stands.
 
 ## Context
 

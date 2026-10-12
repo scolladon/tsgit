@@ -1,5 +1,10 @@
 // Value objects — companion object pattern (type + value share a name)
 
+export type {
+  AmbiguousCandidate,
+  CandidateDate,
+  CandidateReadFault,
+} from './ambiguous-candidate.js';
 export type { AuthorIdentity } from './author-identity.js';
 export { parseIdentity, serializeIdentity } from './author-identity.js';
 // Blob
@@ -42,7 +47,7 @@ export type { ObjectType } from './header.js';
 export { parseHeader, serializeHeader } from './header.js';
 export * from './object-id.js';
 // Oid pattern
-export { isOid, oidPattern } from './oid-pattern.js';
+export { isOid, leadingOid, oidPattern } from './oid-pattern.js';
 // Payload size
 export { payloadByteLength } from './size.js';
 

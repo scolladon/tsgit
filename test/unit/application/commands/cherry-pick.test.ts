@@ -12,7 +12,7 @@ import {
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { bindCherryPickNamespace } from '../../../../src/application/commands/internal/cherry-pick-namespace.js';
-import { writeMergeHead } from '../../../../src/application/commands/internal/merge-state.js';
+import { writeMergeHeads } from '../../../../src/application/commands/internal/merge-state.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
@@ -33,7 +33,7 @@ import type {
 } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { asBareContext } from './fixtures.js';
+import { asBareContext, failSourceLoad, snapshotFiles } from './fixtures.js';
 
 const COMMITTER: AuthorIdentity = {
   name: 'Picker',
@@ -496,6 +496,56 @@ describe('cherryPickRun — ranges and the sequencer', () => {
     });
   });
 
+  describe('Given a one-commit range whose pick conflicts', () => {
+    describe('When run', () => {
+      it('Then it still starts a sequence — only a lone plain commit-ish skips the sequencer', async () => {
+        // Arrange
+        const { ctx, base, c1 } = await seedRange();
+
+        // Act
+        const result = await cherryPickRun(ctx, { commits: [`${base}..${c1}`] });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        const todo = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/sequencer/todo`);
+        expect(todo).toBe(`pick ${c1} c1 change\n`);
+      });
+    });
+  });
+
+  describe('Given the same commit named twice', () => {
+    describe('When run', () => {
+      it('Then it picks the commit once', async () => {
+        // Arrange
+        const { ctx, feature } = await seedRange();
+
+        // Act
+        const result = await cherryPickRun(ctx, { commits: [feature, 'feature'] });
+
+        // Assert
+        expect(result.kind).toBe('picked');
+        if (result.kind === 'picked') expect(result.commits).toHaveLength(1);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a range that names no commit', () => {
+    describe('When run', () => {
+      it('Then it refuses with EMPTY_COMMIT_SET and starts no sequence', async () => {
+        // Arrange
+        const { ctx, c1 } = await seedRange();
+
+        // Act
+        const code = await codeOf(() => cherryPickRun(ctx, { commits: [`${c1}..${c1}`] }));
+
+        // Assert
+        expect(code).toBe('EMPTY_COMMIT_SET');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`)).toBe(false);
+      });
+    });
+  });
+
   describe('Given a default range (no -x, no --allow-empty) that stops on a conflict', () => {
     describe('When the sequencer dir is persisted', () => {
       it('Then no `opts` file is written (git omits it when every option is default)', async () => {
@@ -872,6 +922,29 @@ describe('cherryPickRun', () => {
     });
   });
 
+  describe('Given two clean picks named second-first', () => {
+    describe('When run', () => {
+      it('Then they are applied in argument order, not reversed', async () => {
+        // Arrange
+        const { ctx, feature } = await seedFeature();
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(work(ctx, 'feat2.txt'), 'feat2\n');
+        await add(ctx, ['feat2.txt']);
+        const second = await commit(ctx, { message: 'add feat2', author: FEAT_AUTHOR });
+        await checkout(ctx, { rev: 'main' });
+        const sut = cherryPickRun;
+
+        // Act
+        const result = await sut(ctx, { commits: [second.id, feature] });
+
+        // Assert
+        expect(result.kind).toBe('picked');
+        if (result.kind !== 'picked') return;
+        expect(result.commits.map((picked) => picked.source)).toEqual([second.id, feature]);
+      });
+    });
+  });
+
   describe('Given a parentless (root) commit to pick', () => {
     describe('When run', () => {
       it('Then applies it against an empty base', async () => {
@@ -1183,7 +1256,7 @@ describe('cherryPickRun', () => {
       it('Then refuses with OPERATION_IN_PROGRESS', async () => {
         // Arrange — a stray MERGE_HEAD
         const { ctx, base } = await seedFeature();
-        await writeMergeHead(ctx, base);
+        await writeMergeHeads(ctx, [base]);
 
         // Act
         const code = await codeOf(() => cherryPickRun(ctx, { commits: ['feature'] }));
@@ -1366,10 +1439,7 @@ describe('cherryPick — observable surfaces', () => {
   });
 
   describe('Given an unsupported revision form', () => {
-    describe.each([
-      ['main...feature', 'main...feature'],
-      ['feature^', 'feature^'],
-    ])('When run with %s', (_label, arg) => {
+    describe.each([['main...feature', 'main...feature']])('When run with %s', (_label, arg) => {
       it('Then INVALID_OPTION names the `commits` option and echoes the form', async () => {
         // Arrange
         const { ctx } = await seedFeature();
@@ -1711,6 +1781,80 @@ describe('cherryPickSkip — resumed conflict persists the sequencer', () => {
         expect(todoLines).toHaveLength(1);
         expect(todoLines[0]).toContain(feature);
         expect(todoLines[0]).not.toContain(c1);
+      });
+    });
+  });
+});
+
+describe('Given an alternate that fails to load', () => {
+  describe('When cherryPickRun', () => {
+    it('Then it rejects with the alternate error and leaves every file untouched', async () => {
+      // Arrange
+      const { ctx, feature } = await seedFeature();
+      const before = await snapshotFiles(ctx);
+      const loadError = await failSourceLoad(ctx);
+      const sut = cherryPickRun;
+
+      // Act
+      const attempt = sut(ctx, { commits: [feature] });
+
+      // Assert
+      await expect(attempt).rejects.toBe(loadError);
+      expect(await snapshotFiles(ctx)).toEqual(before);
+      vi.restoreAllMocks();
+    });
+  });
+  describe('When cherryPickContinue', () => {
+    it('Then it rejects with the alternate error and leaves every file untouched', async () => {
+      // Arrange
+      const { ctx } = await seedConflictPick();
+      const before = await snapshotFiles(ctx);
+      const loadError = await failSourceLoad(ctx);
+      const sut = cherryPickContinue;
+
+      // Act
+      const attempt = sut(ctx);
+
+      // Assert
+      await expect(attempt).rejects.toBe(loadError);
+      expect(await snapshotFiles(ctx)).toEqual(before);
+      vi.restoreAllMocks();
+    });
+  });
+  describe('When cherryPickSkip', () => {
+    it('Then it rejects with the alternate error and leaves every file untouched', async () => {
+      // Arrange
+      const { ctx } = await seedConflictPick();
+      const before = await snapshotFiles(ctx);
+      const loadError = await failSourceLoad(ctx);
+      const sut = cherryPickSkip;
+
+      // Act
+      const attempt = sut(ctx);
+
+      // Assert
+      await expect(attempt).rejects.toBe(loadError);
+      expect(await snapshotFiles(ctx)).toEqual(before);
+      vi.restoreAllMocks();
+    });
+  });
+});
+
+describe('cherryPick AUTO_MERGE lifecycle', () => {
+  describe('Given a conflicted pick resolved with `add`', () => {
+    describe('When continue commits the resolution', () => {
+      it('Then AUTO_MERGE is gone, as the commit git runs removes it', async () => {
+        // Arrange
+        const { ctx } = await seedConflictPick();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'l1\nBOTH\n');
+        await add(ctx, ['f.txt']);
+        const sut = cherryPickContinue;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe(false);
       });
     });
   });

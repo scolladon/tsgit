@@ -12,7 +12,7 @@
 import { operationAborted } from '../../../domain/error.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import type { PackRegistry } from '../pack-registry.js';
+import type { ObjectStore } from '../object-store.js';
 import { rescanOnFullMiss } from './pack-miss-rescan.js';
 
 export function checkAborted(ctx: Context): void {
@@ -29,11 +29,11 @@ export function checkAborted(ctx: Context): void {
  */
 export async function retryOnceAfterRescan<T>(
   ctx: Context,
-  registry: PackRegistry,
+  store: ObjectStore,
   missedId: ObjectId,
   attempt: () => Promise<T | undefined>,
 ): Promise<T | undefined> {
-  await rescanOnFullMiss(ctx, registry, missedId);
+  await rescanOnFullMiss(ctx, store, missedId);
   checkAborted(ctx);
   return attempt();
 }

@@ -1,22 +1,35 @@
 import { TsgitError } from '../../domain/error.js';
 import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
-import { sqQuote } from './internal/shell-quote.js';
+import { removeIgnoringMissing, stageTempFile } from './internal/stage-temp-file.js';
 import { getSpawnCwd } from './path-layout.js';
 
-const DEFAULT_OPENPGP_PROGRAM = 'gpg';
-const DEFAULT_SSH_PROGRAM = 'ssh-keygen';
-const SSH_SIGNING_BUFFER_PATH_SUFFIX = 'GIT_SIGNING_BUFFER';
+export const DEFAULT_OPENPGP_PROGRAM = 'gpg';
+export const DEFAULT_SSH_PROGRAM = 'ssh-keygen';
+/**
+ * The stem of git's `mks_tempfile_t(".git_signing_buffer_tmpXXXXXX")`, staged
+ * under the git dir rather than `$TMPDIR`.
+ */
+const SSH_SIGNING_BUFFER_STEM = '.git_signing_buffer_tmp';
 
 const EMPTY = new Uint8Array(0);
 const DECODER = new TextDecoder();
+
+/** The status line gpg writes once it has made a signature — git refuses to sign without it. */
+const SIG_CREATED = '[GNUPG:] SIG_CREATED ';
 
 const ARMOR_PATTERN =
   /-----BEGIN (?:PGP|SSH) SIGNATURE-----[\s\S]*-----END (?:PGP|SSH) SIGNATURE-----/;
 
 export type SignPayloadResult =
   | { readonly ok: true; readonly armor: string }
-  | { readonly ok: false; readonly reason: 'off-node' | 'unsupported-format' | 'signer-failed' };
+  | { readonly ok: false; readonly reason: 'off-node' | 'unsupported-format' }
+  | {
+      readonly ok: false;
+      readonly reason: 'signer-failed';
+      /** The signer's captured stderr — what git prints with its refusal. */
+      readonly output: string;
+    };
 
 export interface SignRequest {
   readonly format: 'openpgp' | 'ssh' | 'x509';
@@ -41,22 +54,30 @@ export interface ResolveSigningSelectorInput {
 export const resolveSigningSelector = (input: ResolveSigningSelectorInput): string =>
   input.keyOverride ?? input.signingKey ?? input.fallbackIdent;
 
+const CARRIAGE_RETURNS = /\r/g;
+
 const isWellFormedArmor = (text: string): boolean => ARMOR_PATTERN.test(text);
+
+/** git's `remove_cr_after`: every CR the signer wrote is dropped, not only those ending a line. */
+const signatureText = (bytes: Uint8Array): string =>
+  DECODER.decode(bytes).replace(CARRIAGE_RETURNS, '');
+
+/** git's `sign_buffer_gpg` test: a `SIG_CREATED` line opening the status or following a newline. */
+const reportsSignatureCreated = (status: string): boolean =>
+  status.startsWith(SIG_CREATED) || status.includes(`\n${SIG_CREATED}`);
+
+const signerRefusal = (stderr: Uint8Array | undefined): SignPayloadResult => ({
+  ok: false,
+  reason: 'signer-failed',
+  output: DECODER.decode(stderr ?? EMPTY),
+});
 
 const isFileNotFound = (error: unknown): boolean =>
   error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND';
 
-const removeIgnoringMissing = async (ctx: Context, path: string): Promise<void> => {
-  try {
-    await ctx.fs.rm(path);
-  } catch (error) {
-    if (!isFileNotFound(error)) throw error;
-  }
-};
-
 const readArmorIfPresent = async (ctx: Context, path: string): Promise<string | undefined> => {
   try {
-    return DECODER.decode(await ctx.fs.read(path));
+    return signatureText(await ctx.fs.read(path));
   } catch (error) {
     if (isFileNotFound(error)) return undefined;
     throw error;
@@ -71,16 +92,20 @@ const signWithOpenpgp = async (
 ): Promise<SignPayloadResult> => {
   const program = req.program ?? DEFAULT_OPENPGP_PROGRAM;
   const result = await runner.run({
-    command: `${sqQuote(program)} --status-fd=2 -bsau ${sqQuote(req.selector)}`,
+    command: program,
+    args: ['--status-fd=2', '-bsau', req.selector],
     cwd: getSpawnCwd(ctx.layout),
     env: { GIT_DIR: ctx.layout.gitDir },
     stdin: payload,
+    stderr: 'capture',
     ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
   });
-  const armor = DECODER.decode(result.stdout ?? EMPTY);
-  return result.exitCode === 0 && isWellFormedArmor(armor)
-    ? { ok: true, armor }
-    : { ok: false, reason: 'signer-failed' };
+  const armor = signatureText(result.stdout ?? EMPTY);
+  const signed =
+    result.exitCode === 0 &&
+    reportsSignatureCreated(DECODER.decode(result.stderr ?? EMPTY)) &&
+    isWellFormedArmor(armor);
+  return signed ? { ok: true, armor } : signerRefusal(result.stderr);
 };
 
 const signWithSsh = async (
@@ -90,23 +115,22 @@ const signWithSsh = async (
   req: SignRequest,
 ): Promise<SignPayloadResult> => {
   const program = req.program ?? DEFAULT_SSH_PROGRAM;
-  const tmp = `${ctx.layout.gitDir}/${SSH_SIGNING_BUFFER_PATH_SUFFIX}`;
+  const tmp = await stageTempFile(ctx, `${ctx.layout.gitDir}/${SSH_SIGNING_BUFFER_STEM}`, payload);
   const sigPath = `${tmp}.sig`;
-  await ctx.fs.write(tmp, payload);
   try {
     const result = await runner.run({
-      command: `${sqQuote(program)} -Y sign -n git -f ${sqQuote(req.selector)} ${sqQuote(tmp)}`,
+      command: program,
+      args: ['-Y', 'sign', '-n', 'git', '-f', req.selector, tmp],
       cwd: getSpawnCwd(ctx.layout),
       env: { GIT_DIR: ctx.layout.gitDir },
+      stderr: 'capture',
       ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
     });
-    if (result.exitCode !== 0) {
-      return { ok: false, reason: 'signer-failed' };
-    }
+    if (result.exitCode !== 0) return signerRefusal(result.stderr);
     const armor = await readArmorIfPresent(ctx, sigPath);
     return armor !== undefined && isWellFormedArmor(armor)
       ? { ok: true, armor }
-      : { ok: false, reason: 'signer-failed' };
+      : signerRefusal(result.stderr);
   } finally {
     await removeIgnoringMissing(ctx, tmp);
     await removeIgnoringMissing(ctx, sigPath);
@@ -115,12 +139,17 @@ const signWithSsh = async (
 
 /**
  * Pure(ish) signing primitive delegating to the system signer through
- * `ctx.command` — no new port. `gpg` runs stdin→stdout; `ssh-keygen` writes
- * the payload to a temp file and reads the armor back from `<file>.sig`.
+ * `ctx.command`, by argv with no shell between, as git does. `gpg` runs
+ * stdin→stdout; `ssh-keygen` reads the payload from an exclusively created
+ * temp file and writes the armor beside it, to `<file>.sig`. The temp file
+ * bears git's name but sits in the git dir, where git uses `$TMPDIR`.
  * Requesting `x509` and running with no `ctx.command` both refuse with a
- * typed reason before any spawn or temp-file write. Success requires exit 0
- * AND a well-formed armor block on the signer's output; anything else is a
- * typed `signer-failed` refusal — never a partial or silent result.
+ * typed reason before any spawn or temp-file write. Success requires exit 0,
+ * a well-formed armor block on the signer's output and — for gpg — a
+ * `SIG_CREATED` status line; anything else is a typed `signer-failed` refusal
+ * carrying the signer's stderr — never a partial or silent result. As in git,
+ * the signer's stderr is captured: hidden on success, returned on refusal,
+ * and every carriage return in the armor is dropped.
  */
 export const signPayload = async (
   ctx: Context,

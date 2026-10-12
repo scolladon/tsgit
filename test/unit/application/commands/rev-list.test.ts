@@ -8,7 +8,12 @@ import { init } from '../../../../src/application/commands/init.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { revList } from '../../../../src/application/commands/rev-list.js';
 import { tagCreate } from '../../../../src/application/commands/tag.js';
+import { worktreeAdd } from '../../../../src/application/commands/worktree.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { deriveWorktreeContext } from '../../../../src/application/primitives/internal/worktree-context.js';
+import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type {
   AuthorIdentity,
@@ -21,12 +26,14 @@ import type {
 } from '../../../../src/domain/objects/index.js';
 import { serializeObject } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
+import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../src/ports/context.js';
 import {
   type BitmapEntrySpec,
   type BitmapStreamSpec,
   buildBitmap,
 } from '../../domain/storage/arbitraries.js';
+import { writeCommitGraph } from '../primitives/fixtures.js';
 import {
   type EntrySpec,
   writeSyntheticBitmap,
@@ -276,20 +283,17 @@ describe('revList', () => {
         );
         __resetConfigCacheForTests();
         await tagCreate(ctx, { name: 'v-light', target: base });
-        const annotated = await tagCreate(ctx, {
-          name: 'v-annotated',
-          target: featureTip,
-          message: 'release',
-        });
+        await tagCreate(ctx, { name: 'v-annotated', target: featureTip, message: 'release' });
         const sut = revList;
 
         // Act
         const result = await sut(ctx, { all: true });
 
         // Assert
+        // Without objects git lists the commits alone, never the annotated tag.
         const ids = new Set(result.entries.map((e) => e.id));
-        expect(ids).toEqual(new Set([base, featureTip, annotated.id]));
-        expect(result.entries).toHaveLength(3);
+        expect(ids).toEqual(new Set([base, featureTip]));
+        expect(result.entries).toHaveLength(2);
       });
     });
   });
@@ -803,6 +807,1659 @@ describe('revList — useBitmapIndex', () => {
 
         // Assert — a real noWalk call would return only the merge commit itself.
         expect(result.entries.filter((e) => e.type === 'commit')).toHaveLength(4);
+      });
+    });
+  });
+});
+
+interface SkewedExclusion {
+  readonly ctx: Context;
+  readonly ancestor: ObjectId;
+  readonly tip: ObjectId;
+  readonly excluded: ObjectId;
+}
+
+/** A commit owning one distinct blob, dated `timestamp` seconds. */
+const writeDatedCommit = async (
+  ctx: Context,
+  name: string,
+  timestamp: number,
+  parents: ReadonlyArray<ObjectId>,
+): Promise<ObjectId> => {
+  const blob: Blob = { type: 'blob', id: '' as ObjectId, content: new TextEncoder().encode(name) };
+  const tree = await writeTree(ctx, [
+    treeEntry('100644' as FileMode, `${name}.txt`, await writeObject(ctx, blob)),
+  ]);
+  const signature: AuthorIdentity = { ...AUTHOR, timestamp };
+  const object: Commit = {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: {
+      tree,
+      parents,
+      author: signature,
+      committer: signature,
+      message: name,
+      extraHeaders: [],
+    },
+  };
+  return writeObject(ctx, object);
+};
+
+/**
+ * `tip` (newest) on `ancestor`, and an excluded line reaching `ancestor`
+ * through `depth` commits all dated BEFORE `ancestor` — clock skew that
+ * makes git's limited walk give up on the excluded side before it reaches
+ * `ancestor`.
+ */
+const seedSkewedExclusion = async (depth: number): Promise<SkewedExclusion> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  const ancestor = await writeDatedCommit(ctx, 'ancestor', 500, []);
+  const tip = await writeDatedCommit(ctx, 'tip', 1000, [ancestor]);
+  let line = ancestor;
+  for (let step = 1; step <= depth; step += 1) {
+    line = await writeDatedCommit(ctx, `skewed-${step}`, 300 - step, [line]);
+  }
+  const excluded = await writeDatedCommit(ctx, 'excluded', 400, [line]);
+  return { ctx, ancestor, tip, excluded };
+};
+
+describe('Given an excluded line six clock-skewed commits away from the shared ancestor', () => {
+  describe('When revList walks the tip excluding that line', () => {
+    it('Then the ancestor is listed, because the walk stops looking five commits after it went all-uninteresting', async () => {
+      // Arrange
+      const { ctx, ancestor, tip, excluded } = await seedSkewedExclusion(6);
+      const sut = revList;
+
+      // Act
+      const result = await sut(ctx, { wants: [tip], not: [excluded] });
+
+      // Assert
+      expect(new Set(result.entries.map((entry) => entry.id))).toEqual(new Set([tip, ancestor]));
+    });
+  });
+
+  describe('When revList walks the tip excluding that line with objects', () => {
+    it('Then the ancestor keeps its tree and blob too', async () => {
+      // Arrange
+      const { ctx, tip, excluded } = await seedSkewedExclusion(6);
+      const sut = revList;
+
+      // Act
+      const result = await sut(ctx, { wants: [tip], not: [excluded], objects: true });
+
+      // Assert
+      expect(result.count).toBe(6);
+    });
+  });
+});
+
+describe('Given an excluded line three clock-skewed commits away from the shared ancestor', () => {
+  describe('When revList walks the tip excluding that line', () => {
+    it('Then the ancestor is excluded, reached within the five-commit slack', async () => {
+      // Arrange
+      const { ctx, tip, excluded } = await seedSkewedExclusion(3);
+      const sut = revList;
+
+      // Act
+      const result = await sut(ctx, { wants: [tip], not: [excluded], objects: true });
+
+      // Assert
+      expect(result.entries.map((entry) => entry.id).filter((id) => id === tip)).toEqual([tip]);
+      expect(result.count).toBe(3);
+    });
+  });
+});
+
+interface SkewedMerge {
+  readonly ctx: Context;
+  readonly ids: Readonly<Record<'r' | 'a1' | 'a' | 'b' | 'm' | 't', ObjectId>>;
+}
+
+/** m (100) merges a (50, on a1 at 80) and b (90); t (95) is a second tip; all on r. */
+const seedSkewedMerge = async (): Promise<SkewedMerge> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  const r = await writeDatedCommit(ctx, 'r', 10, []);
+  const a1 = await writeDatedCommit(ctx, 'a1', 80, [r]);
+  const a = await writeDatedCommit(ctx, 'a', 50, [a1]);
+  const b = await writeDatedCommit(ctx, 'b', 90, [r]);
+  const m = await writeDatedCommit(ctx, 'm', 100, [a, b]);
+  const t = await writeDatedCommit(ctx, 't', 95, [r]);
+  return { ctx, ids: { r, a1, a, b, m, t } };
+};
+
+describe('Given a merge whose first parent is dated before its second', () => {
+  describe.each([
+    { wants: ['m'], firstParent: false, maxCount: 2, expected: ['m', 'b'] },
+    { wants: ['t', 'm'], firstParent: true, maxCount: 3, expected: ['m', 't', 'a'] },
+    { wants: ['t', 'm'], firstParent: false, maxCount: 4, expected: ['m', 't', 'b', 'a'] },
+  ] as const)(
+    'When revList walks $wants with firstParent $firstParent and maxCount $maxCount',
+    ({ wants, firstParent, maxCount, expected }) => {
+      it('Then it keeps the commits git shows first in commit-date order', async () => {
+        // Arrange
+        const { ctx, ids } = await seedSkewedMerge();
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, {
+          wants: wants.map((name) => ids[name]),
+          firstParent,
+          maxCount,
+        });
+
+        // Assert
+        expect(new Set(result.entries.map((entry) => entry.id))).toEqual(
+          new Set(expected.map((name) => ids[name])),
+        );
+      });
+    },
+  );
+});
+
+describe('revList all: broken refs', () => {
+  const writeLooseRef = (ctx: Context, name: string, content: string): Promise<void> =>
+    ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${name}`, content);
+
+  const caughtFrom = async (run: () => Promise<unknown>): Promise<unknown> => {
+    try {
+      await run();
+    } catch (error) {
+      return error;
+    }
+    return expect.unreachable();
+  };
+
+  describe('Given a loose branch whose content is neither an id nor a symref', () => {
+    describe('When revList is called with all: true', () => {
+      it('Then it refuses naming the broken ref as a bad object', async () => {
+        // Arrange
+        const { ctx } = await seedThree();
+        await writeLooseRef(ctx, 'refs/heads/broken', 'garbage\n');
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { all: true }));
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'OBJECT_NOT_FOUND',
+          id: 'refs/heads/broken',
+        });
+      });
+    });
+  });
+
+  describe('Given a loose branch naming an object the repository lacks', () => {
+    describe('When revList is called with all: true', () => {
+      it('Then it refuses naming the ref as a bad object, not the absent id', async () => {
+        // Arrange
+        const { ctx } = await seedThree();
+        await writeLooseRef(ctx, 'refs/heads/missing', `${'1'.repeat(40)}\n`);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { all: true }));
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'OBJECT_NOT_FOUND',
+          id: 'refs/heads/missing',
+        });
+      });
+    });
+  });
+
+  describe('Given two broken loose branches', () => {
+    describe('When revList is called with all: true', () => {
+      it('Then the refusal names the first in ref order', async () => {
+        // Arrange
+        const { ctx } = await seedThree();
+        await writeLooseRef(ctx, 'refs/heads/z-broken', 'garbage\n');
+        await writeLooseRef(ctx, 'refs/heads/a-broken', 'garbage\n');
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { all: true }));
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'OBJECT_NOT_FOUND',
+          id: 'refs/heads/a-broken',
+        });
+      });
+    });
+  });
+
+  describe('Given a symbolic branch whose target is broken', () => {
+    describe('When revList is called with all: true', () => {
+      it('Then the symbolic branch is skipped and the refusal names the broken target', async () => {
+        // Arrange
+        const { ctx } = await seedThree();
+        await writeLooseRef(ctx, 'refs/heads/zz', 'garbage\n');
+        await writeLooseRef(ctx, 'refs/heads/aa', 'ref: refs/heads/zz\n');
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { all: true }));
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'OBJECT_NOT_FOUND',
+          id: 'refs/heads/zz',
+        });
+      });
+    });
+  });
+
+  describe('Given a symbolic branch whose target does not exist', () => {
+    describe('When revList is called with all: true', () => {
+      it('Then the dangling symbolic branch is skipped', async () => {
+        // Arrange
+        const { ctx, commitIds } = await seedThree();
+        await writeLooseRef(ctx, 'refs/heads/sym', 'ref: refs/heads/nope\n');
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { all: true });
+
+        // Assert
+        expect(new Set(result.entries.map((entry) => entry.id))).toEqual(new Set(commitIds));
+      });
+    });
+  });
+
+  describe('Given a loose branch whose read faults', () => {
+    describe('When revList is called with all: true', () => {
+      it('Then the fault propagates unchanged', async () => {
+        // Arrange
+        const { ctx } = await seedThree();
+        await writeLooseRef(ctx, 'refs/heads/faulty', 'garbage\n');
+        const faultyPath = `${ctx.layout.gitDir}/refs/heads/faulty`;
+        const ioError = new Error('EIO: simulated read failure');
+        const faultyCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            openWithNoFollow: async (path, mode) => {
+              if (path === faultyPath) throw ioError;
+              return ctx.fs.openWithNoFollow(path, mode);
+            },
+          },
+        };
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(faultyCtx, { all: true }));
+
+        // Assert
+        expect(caught).toBe(ioError);
+      });
+    });
+  });
+});
+
+describe('revList: explicit wants naming an absent object', () => {
+  const ABSENT = '1'.repeat(40);
+
+  const readTreeOf = async (ctx: Context, id: ObjectId): Promise<ObjectId> => {
+    const object = await readObject(ctx, id);
+    if (object.type !== 'commit') throw new Error(`${id} is not a commit`);
+    return object.data.tree;
+  };
+
+  const caughtFrom = async (run: () => Promise<unknown>): Promise<unknown> => {
+    try {
+      await run();
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  };
+
+  describe.each([
+    ['a want', { wants: [ABSENT] }],
+    ['a negated want', { wants: ['HEAD', `^${ABSENT}`] }],
+    ['a not tip', { wants: ['HEAD'], not: [ABSENT] }],
+    ['an absent want before an unknown name', { wants: [ABSENT, 'nope'] }],
+    ['a parents shorthand', { wants: [`${ABSENT}^@`] }],
+    ['an exclude-parents shorthand', { wants: [`${ABSENT}^!`] }],
+    ['an exclude-parent shorthand', { wants: [`${ABSENT}^-`] }],
+    ['a negated parents shorthand', { wants: ['HEAD', `^${ABSENT}^@`] }],
+  ] as const)('Given %s spelling a full id the repository lacks', (_label, opts) => {
+    describe('When revList is called', () => {
+      it('Then it refuses naming the argument as typed as a bad object', async () => {
+        // Arrange
+        const { ctx } = await seedThree();
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, opts));
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: ABSENT });
+      });
+    });
+  });
+
+  describe.each(['^@', '^!', '^-'])('Given a tree followed by the %s shorthand', (mark) => {
+    describe('When revList is called', () => {
+      it('Then the whole argument is an unknown revision and nothing is logged', async () => {
+        // Arrange
+        const { ctx: base, commitIds } = await seedThree();
+        const logged: string[] = [];
+        const record = (message: string): void => {
+          logged.push(message);
+        };
+        const ctx = { ...base, logger: { error: record, warn: record, info: record } };
+        const tree = await readTreeOf(ctx, commitIds[0]!);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [`${tree}${mark}`] }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVPARSE_UNRESOLVED', expression: `${tree}${mark}` },
+          logged: [],
+        });
+      });
+    });
+  });
+
+  describe.each([
+    ['t^@', 't'],
+    ['t^!', 't'],
+    ['t^-', 't'],
+    ['t', ABSENT],
+  ])('Given a tag t whose target the repository lacks, wanted as %s', (want, id) => {
+    describe('When revList is called', () => {
+      it("Then it refuses with git's bad object name", async () => {
+        // Arrange
+        const { ctx } = await seedThree();
+        const tag = await writeObject(ctx, {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: {
+            object: ABSENT as ObjectId,
+            objectType: 'commit',
+            tagName: 't',
+            tagger: AUTHOR,
+            message: 't\n',
+            extraHeaders: [],
+          },
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/t`, `${tag}\n`);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [want] }));
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id });
+      });
+    });
+  });
+
+  describe.each([
+    ['a want', { wants: ['missing'] }, 'missing'],
+    ['a fully spelt want', { wants: ['refs/heads/missing'] }, 'refs/heads/missing'],
+    ['a not tip', { wants: ['HEAD'], not: ['missing'] }, 'missing'],
+  ] as const)('Given %s naming a branch whose object the repository lacks', (_label, opts, id) => {
+    describe('When revList is called', () => {
+      it('Then it refuses naming the branch as typed', async () => {
+        // Arrange
+        const { ctx } = await seedThree();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/missing`, `${ABSENT}\n`);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, opts));
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id });
+      });
+    });
+  });
+});
+
+describe('revList all: other worktrees', () => {
+  const caughtFrom = async (run: () => Promise<unknown>): Promise<unknown> => {
+    try {
+      await run();
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  };
+
+  const seedLinked = async (): Promise<
+    SeededRepo & { readonly linkedHead: string; readonly linkedCtx: Context }
+  > => {
+    const seeded = await seedThree();
+    const { id, path } = await worktreeAdd(seeded.ctx, { path: 'wt', detach: true });
+    return {
+      ...seeded,
+      linkedHead: `${seeded.ctx.layout.gitDir}/worktrees/${id}/HEAD`,
+      linkedCtx: deriveWorktreeContext(seeded.ctx, id, path),
+    };
+  };
+
+  describe('Given the main worktree HEAD names an absent object', () => {
+    describe('When revList is called with all: true from a linked worktree', () => {
+      it('Then it refuses naming the main worktree HEAD', async () => {
+        // Arrange
+        const { ctx, linkedCtx } = await seedLinked();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${'1'.repeat(40)}\n`);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(linkedCtx, { all: true }));
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'OBJECT_NOT_FOUND',
+          id: 'main-worktree/HEAD',
+        });
+      });
+    });
+  });
+
+  describe('Given a linked worktree whose detached HEAD only it reaches', () => {
+    describe('When revList is called with all: true', () => {
+      it('Then that HEAD is a tip too', async () => {
+        // Arrange
+        const { ctx, commitIds, linkedHead } = await seedLinked();
+        const only = await writeDatedCommit(ctx, 'linked', 1_700_000_100, [commitIds[2]!]);
+        await ctx.fs.writeUtf8(linkedHead, `${only}\n`);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { all: true });
+
+        // Assert
+        expect(result.entries.map(({ id }) => id)).toContain(only);
+      });
+    });
+  });
+
+  describe('Given a linked worktree whose HEAD names an absent object', () => {
+    describe('When revList is called with all: true', () => {
+      it('Then it refuses naming that worktree HEAD', async () => {
+        // Arrange
+        const { ctx, linkedHead } = await seedLinked();
+        await ctx.fs.writeUtf8(linkedHead, `${'1'.repeat(40)}\n`);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { all: true }));
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'OBJECT_NOT_FOUND',
+          id: 'worktrees/wt/HEAD',
+        });
+      });
+    });
+  });
+
+  describe.each([
+    ['unreadable', 'garbage\n'],
+    ['a dangling symref', 'ref: refs/heads/nope\n'],
+  ])('Given a linked worktree whose HEAD is %s', (_label, content) => {
+    describe('When revList is called with all: true', () => {
+      it('Then that HEAD is skipped', async () => {
+        // Arrange
+        const { ctx, commitIds, linkedHead } = await seedLinked();
+        await ctx.fs.writeUtf8(linkedHead, content);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { all: true });
+
+        // Assert
+        expect(result.entries.map(({ id }) => id)).toEqual([...commitIds].reverse());
+      });
+    });
+  });
+});
+
+describe('revList: object types assigned during one invocation', () => {
+  interface MistypedTag {
+    readonly ctx: Context;
+    readonly logged: string[];
+    readonly blob: ObjectId;
+    readonly tag: ObjectId;
+  }
+
+  /** `refs/tags/t` naming a tag that declares `type commit` for a blob. */
+  const seedMistypedTag = async (): Promise<MistypedTag> => {
+    const { ctx: base } = await seedThree();
+    const logged: string[] = [];
+    const ctx: Context = { ...base, logger: { error: (message: string) => logged.push(message) } };
+    const blob = await writeObject(ctx, {
+      type: 'blob',
+      id: '' as ObjectId,
+      content: new TextEncoder().encode('hi\n'),
+    });
+    const tag = await writeObject(ctx, {
+      type: 'tag',
+      id: '' as ObjectId,
+      data: {
+        object: blob,
+        objectType: 'commit',
+        tagName: 't',
+        tagger: AUTHOR,
+        message: 't\n',
+        extraHeaders: [],
+      },
+    });
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/t`, `${tag}\n`);
+    return { ctx, logged, blob, tag };
+  };
+
+  const caughtFrom = async (run: () => Promise<unknown>): Promise<unknown> => {
+    try {
+      await run();
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  };
+
+  describe.each([
+    ['the tag alone', { wants: ['t'] }],
+    ['every ref', { all: true }],
+  ] as const)('Given a tag declaring a commit for a blob, walked from %s', (_label, opts) => {
+    describe('When revList peels it', () => {
+      it('Then the blob already typed a commit is a bad object', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, opts));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: blob },
+          logged: [`object ${blob} is a commit, not a blob`],
+        });
+      });
+    });
+  });
+
+  describe('Given a tag declaring a commit for a blob wanted before it', () => {
+    describe('When revList parses the tag', () => {
+      it('Then the tag pointer is bad and the tag is a bad object', async () => {
+        // Arrange
+        const { ctx, logged, blob, tag } = await seedMistypedTag();
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [blob, 't'], objects: true }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: 't' },
+          logged: [
+            `object ${blob} is a blob, not a commit`,
+            `bad tag pointer to ${blob} in ${tag}`,
+          ],
+        });
+      });
+    });
+  });
+
+  describe('Given a tag declaring a commit for a blob wanted before the blob peeled', () => {
+    describe('When revList reads the peel', () => {
+      it('Then each read of the blob conflicts and the peel names no object', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: ['t', `${blob}^{}`] }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: blob },
+          logged: [
+            `object ${blob} is a commit, not a blob`,
+            `object ${blob} is a commit, not a blob`,
+          ],
+        });
+      });
+    });
+  });
+
+  describe('Given an earlier invocation typed the blob', () => {
+    describe('When revList walks the tag in a later one', () => {
+      it('Then the earlier typing does not carry over', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        await revList(ctx, { wants: [blob], objects: true });
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: ['t'] }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: blob },
+          logged: [`object ${blob} is a commit, not a blob`],
+        });
+      });
+    });
+  });
+
+  /** A commit naming `tree` and `parents` as stored, whatever they are. */
+  const writeCommitNaming = (
+    ctx: Context,
+    tree: ObjectId,
+    parents: ReadonlyArray<ObjectId>,
+  ): Promise<ObjectId> =>
+    writeObject(ctx, {
+      type: 'commit',
+      id: '' as ObjectId,
+      data: { tree, parents, author: AUTHOR, committer: AUTHOR, message: 'm\n', extraHeaders: [] },
+    });
+
+  const writeEmptyTree = (ctx: Context): Promise<ObjectId> =>
+    writeObject(ctx, { type: 'tree', id: '' as ObjectId, entries: [] });
+
+  describe.each([
+    ['its tree', 'tree', 'bad tree pointer'],
+    ['a parent', 'commit', 'bad parent'],
+  ] as const)('Given a blob wanted before a commit naming it as %s', (_label, kind, pointer) => {
+    describe('When revList parses the commit', () => {
+      it('Then the pointer is bad and the commit is a bad object', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const tree = kind === 'tree' ? blob : await writeEmptyTree(ctx);
+        const named = await writeCommitNaming(ctx, tree, kind === 'commit' ? [blob] : []);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [blob, named] }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: named },
+          logged: [
+            `object ${blob} is a blob, not a ${kind}`,
+            `${pointer} ${blob} in commit ${named}`,
+          ],
+        });
+      });
+    });
+  });
+
+  describe('Given a commit naming one tree as both its tree and its parent', () => {
+    describe('When revList parses it', () => {
+      it('Then the parent already typed a tree is bad and the commit is a bad object', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const tree = await writeEmptyTree(ctx);
+        const named = await writeCommitNaming(ctx, tree, [tree]);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [named] }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: named },
+          logged: [
+            `object ${tree} is a tree, not a commit`,
+            `bad parent ${tree} in commit ${named}`,
+          ],
+        });
+      });
+    });
+  });
+
+  describe.each([
+    ['its tree', 'tree', 'bad tree pointer'],
+    ['a parent', 'commit', 'bad parent'],
+  ] as const)(
+    'Given a blob wanted before a commit whose parent names it as %s',
+    (_label, kind, pointer) => {
+      describe('When the walk parses that parent', () => {
+        it('Then it fails to traverse the parents of the commit that reached it', async () => {
+          // Arrange
+          const { ctx, logged, blob } = await seedMistypedTag();
+          const empty = await writeEmptyTree(ctx);
+          const parent = await writeCommitNaming(
+            ctx,
+            kind === 'tree' ? blob : empty,
+            kind === 'commit' ? [blob] : [],
+          );
+          const child = await writeCommitNaming(ctx, empty, [parent]);
+          const sut = revList;
+
+          // Act
+          const caught = await caughtFrom(() => sut(ctx, { wants: [blob, child] }));
+
+          // Assert
+          expect({ data: (caught as TsgitError).data, logged }).toEqual({
+            data: { code: 'REVISION_WALK_FAILED', commit: child },
+            logged: [
+              `object ${blob} is a blob, not a ${kind}`,
+              `${pointer} ${blob} in commit ${parent}`,
+            ],
+          });
+        });
+      });
+    },
+  );
+
+  describe('Given a blob wanted, a newer excluded line and an included line whose parents name it', () => {
+    describe('When the limited walk parses both lines', () => {
+      it('Then the excluded line logs and goes on, the included one fails the walk setup', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const excludedParent = await writeCommitNaming(ctx, blob, []);
+        const newer = { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 };
+        const excluded = await writeObject(ctx, {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: empty,
+            parents: [excludedParent],
+            author: newer,
+            committer: newer,
+            message: 'm\n',
+            extraHeaders: [],
+          },
+        });
+        const includedParent = await writeCommitNaming(ctx, empty, [blob]);
+        const included = await writeCommitNaming(ctx, empty, [includedParent]);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() =>
+          sut(ctx, { wants: [blob, included], not: [excluded] }),
+        );
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED' },
+          logged: [
+            `object ${blob} is a blob, not a tree`,
+            `bad tree pointer ${blob} in commit ${excludedParent}`,
+            `object ${blob} is a blob, not a commit`,
+            `bad parent ${blob} in commit ${includedParent}`,
+          ],
+        });
+      });
+    });
+  });
+
+  describe('Given an included commit whose parent object is corrupt and an excluded line', () => {
+    describe('When the limited walk reads that parent', () => {
+      it('Then the read fault surfaces as it is, not as a walk setup failure', async () => {
+        // Arrange
+        const { ctx } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const corrupt = `ab${'0'.repeat(38)}` as ObjectId;
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/objects/ab/${'0'.repeat(38)}`,
+          new TextEncoder().encode('not zlib'),
+        );
+        const included = await writeCommitNaming(ctx, empty, [corrupt]);
+        const excluded = await writeCommitNaming(ctx, empty, []);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [included], not: [excluded] }));
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+      });
+    });
+  });
+
+  const MISSING = `cd${'0'.repeat(38)}` as ObjectId;
+  const OTHER_MISSING = `ce${'0'.repeat(38)}` as ObjectId;
+
+  describe.each([
+    ['listing commits', {}],
+    ['listing objects', { objects: true }],
+    ['counting one commit', { maxCount: 1 }],
+  ] as const)('Given an included commit whose parent object is missing, %s', (_label, opts) => {
+    describe('When the walk parses that parent', () => {
+      it('Then it cannot read it and fails to traverse the parents of that commit', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const child = await writeCommitNaming(ctx, empty, [MISSING]);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [child], ...opts }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED', commit: child },
+          logged: [`Could not read ${MISSING}`],
+        });
+      });
+    });
+  });
+
+  describe('Given an included commit whose two parent objects are missing', () => {
+    describe('When the walk parses its parents', () => {
+      it('Then it stops at the first parent it cannot read', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const child = await writeCommitNaming(ctx, empty, [MISSING, OTHER_MISSING]);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [child] }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED', commit: child },
+          logged: [`Could not read ${MISSING}`],
+        });
+      });
+    });
+  });
+
+  describe('Given an included commit whose parent object is missing and an excluded line', () => {
+    describe('When the limited walk parses that parent', () => {
+      it('Then it cannot read it and fails the walk setup', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const included = await writeCommitNaming(ctx, empty, [MISSING]);
+        const excluded = await writeCommitNaming(ctx, empty, []);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [included], not: [excluded] }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED' },
+          logged: [`Could not read ${MISSING}`],
+        });
+      });
+    });
+  });
+
+  describe('Given an excluded commit whose parent object is missing', () => {
+    describe('When the limited walk marks that parent', () => {
+      it('Then it skips it quietly and lists the included commit', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const excluded = await writeCommitNaming(ctx, empty, [MISSING]);
+        const included = await writeCommitNaming(ctx, empty, [excluded]);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [included], not: [excluded] });
+
+        // Assert
+        expect({ ids: result.entries.map(({ id }) => id), logged }).toEqual({
+          ids: [included],
+          logged: [],
+        });
+      });
+    });
+  });
+
+  describe('Given a merge whose second parent object is missing, walked first-parent', () => {
+    describe('When the walk follows the first parent only', () => {
+      it('Then it never reads the second parent and lists the line', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const first = await writeCommitNaming(ctx, empty, []);
+        const merge = await writeCommitNaming(ctx, empty, [first, MISSING]);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [merge], firstParent: true });
+
+        // Assert
+        expect({ ids: result.entries.map(({ id }) => id), logged }).toEqual({
+          ids: [merge, first],
+          logged: [],
+        });
+      });
+    });
+  });
+
+  describe('Given a blob and an annotated tag of it wanted without objects', () => {
+    describe('When revList lists them', () => {
+      it('Then nothing is listed, as git lists only commits then', async () => {
+        // Arrange
+        const { ctx, blob } = await seedMistypedTag();
+        const tag = await writeObject(ctx, {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: {
+            object: blob,
+            objectType: 'blob',
+            tagName: 'b',
+            tagger: AUTHOR,
+            message: 'b\n',
+            extraHeaders: [],
+          },
+        });
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [blob, tag] });
+
+        // Assert
+        expect(result).toEqual({ entries: [], count: 0 });
+      });
+    });
+  });
+
+  describe('Given a blob wanted before a commit with a tree', () => {
+    describe('When revList lists objects', () => {
+      it('Then it lists the commits, then the wanted blob, then the commit trees, as git does', async () => {
+        // Arrange
+        const { ctx, blob } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const parent = await writeCommitNaming(ctx, empty, []);
+        const child = await writeCommitNaming(ctx, empty, [parent]);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [blob, child], objects: true });
+
+        // Assert
+        expect(result.entries).toEqual([
+          { id: child, type: 'commit' },
+          { id: parent, type: 'commit' },
+          { id: blob, type: 'blob' },
+          { id: empty, type: 'tree', path: '' },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a shallow commit whose stored parent is a blob wanted before it', () => {
+    describe('When revList parses the commit', () => {
+      it('Then the cut parent is never typed and the commit is listed', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const tree = await writeEmptyTree(ctx);
+        const named = await writeCommitNaming(ctx, tree, [blob]);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${named}\n`);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [blob, named], objects: true });
+
+        // Assert
+        expect({ listed: new Set(result.entries), logged }).toEqual({
+          listed: new Set([
+            { id: named, type: 'commit' },
+            { id: blob, type: 'blob' },
+            { id: tree, type: 'tree', path: '' },
+          ]),
+          logged: [],
+        });
+      });
+    });
+  });
+
+  const TREE_MODE = '40000' as FileMode;
+  const BLOB_MODE = '100644' as FileMode;
+
+  const writeTreeOf = (
+    ctx: Context,
+    entries: ReadonlyArray<readonly [FileMode, string, ObjectId]>,
+  ): Promise<ObjectId> =>
+    writeObject(ctx, {
+      type: 'tree',
+      id: '' as ObjectId,
+      entries: entries.map(([mode, name, id]) => treeEntry(mode, name, id)),
+    });
+
+  describe.each([
+    ['at the root', false],
+    ['in a subtree', true],
+  ] as const)('Given a tree %s listing one tree as a tree and then as a blob', (_label, nested) => {
+    describe('When revList walks its objects', () => {
+      it('Then the blob-mode entry is not a blob and the walk refuses', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const holder = await writeTreeOf(ctx, [
+          [TREE_MODE, 'a', empty],
+          [BLOB_MODE, 'b', empty],
+        ]);
+        const root = nested ? await writeTreeOf(ctx, [[TREE_MODE, 'd', holder]]) : holder;
+        const named = await writeCommitNaming(ctx, root, []);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [named], objects: true }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'TREE_ENTRY_TYPE_MISMATCH', tree: holder, entry: 'b', mode: 'blob' },
+          logged: [`object ${empty} is a tree, not a blob`],
+        });
+      });
+    });
+  });
+
+  describe('Given a blob tip before a commit whose tree lists it with tree mode', () => {
+    describe('When revList walks its objects', () => {
+      it('Then the tree-mode entry is not a tree and the walk refuses', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const holder = await writeTreeOf(ctx, [[TREE_MODE, 'b', blob]]);
+        const named = await writeCommitNaming(ctx, holder, []);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [blob, named], objects: true }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'TREE_ENTRY_TYPE_MISMATCH', tree: holder, entry: 'b', mode: 'tree' },
+          logged: [`object ${blob} is a blob, not a tree`],
+        });
+      });
+    });
+  });
+
+  describe('Given the tag and the blob walked by two concurrent invocations', () => {
+    describe('When both run at once', () => {
+      it('Then only the tag invocation refuses, as two git processes do', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const sut = revList;
+
+        // Act
+        const [tagWalk, blobWalk] = await Promise.all([
+          caughtFrom(() => sut(ctx, { wants: ['t'] })),
+          sut(ctx, { wants: [blob], objects: true }),
+        ]);
+
+        // Assert
+        expect({ data: (tagWalk as TsgitError).data, blobWalk, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: blob },
+          blobWalk: { entries: [{ id: blob, type: 'blob' }], count: 1 },
+          logged: [`object ${blob} is a commit, not a blob`],
+        });
+      });
+    });
+  });
+
+  describe('Given an invocation with no tips started just before one walking the tag', () => {
+    describe('When the first settles while the second is in flight', () => {
+      it('Then the second still types its own lookups', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const sut = revList;
+
+        // Act
+        const [, tagWalk] = await Promise.all([
+          sut(ctx, { wants: [] }),
+          caughtFrom(() => sut(ctx, { wants: ['t', `${blob}^{}`] })),
+        ]);
+
+        // Assert
+        expect({ data: (tagWalk as TsgitError).data, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: blob },
+          logged: [
+            `object ${blob} is a commit, not a blob`,
+            `object ${blob} is a commit, not a blob`,
+          ],
+        });
+      });
+    });
+  });
+
+  describe('Given a commit whose parent is a blob nothing typed before', () => {
+    describe('When the walk parses that parent', () => {
+      it('Then the object is not a commit and the walk fails at the commit naming it', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const parent = await writeCommitNaming(ctx, empty, [blob]);
+        const child = await writeCommitNaming(ctx, empty, [parent]);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [child] }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED', commit: parent },
+          logged: [`Object ${blob} not a commit`],
+        });
+      });
+    });
+  });
+
+  describe('Given an excluded commit whose parent is a blob nothing typed before', () => {
+    describe('When the limited walk parses that parent gently', () => {
+      it('Then it logs the object is not a commit and lists the included commit', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const newer = { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 };
+        const excluded = await writeObject(ctx, {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: empty,
+            parents: [blob],
+            author: newer,
+            committer: newer,
+            message: 'm\n',
+            extraHeaders: [],
+          },
+        });
+        const included = await writeCommitNaming(ctx, empty, []);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [included], not: [excluded] });
+
+        // Assert
+        expect({ entries: result.entries, logged }).toEqual({
+          entries: [{ id: included, type: 'commit' }],
+          logged: [`Object ${blob} not a commit`],
+        });
+      });
+    });
+  });
+
+  describe('Given a commit whose tree is a blob nothing typed before', () => {
+    describe('When revList walks its objects', () => {
+      it('Then the object is not a tree and the walk dies on a bad tree object', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const named = await writeCommitNaming(ctx, blob, []);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [named], objects: true }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'BAD_TREE_OBJECT', id: blob },
+          logged: [`Object ${blob} not a tree`],
+        });
+      });
+    });
+  });
+
+  describe('Given a wanted tree whose tree-mode entry is a blob nothing typed before', () => {
+    describe('When revList walks its objects', () => {
+      it('Then the entry is not a tree and the walk dies on a bad tree object', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const holder = await writeTreeOf(ctx, [[TREE_MODE, 'sub', blob]]);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [holder], objects: true }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'BAD_TREE_OBJECT', id: blob },
+          logged: [`Object ${blob} not a tree`],
+        });
+      });
+    });
+  });
+
+  describe('Given an excluded parent whose tree lists a wanted blob with tree mode', () => {
+    describe('When revList marks the excluded tree', () => {
+      it('Then the entry is not a tree, stays unmarked and the blob is listed', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const excluded = await writeCommitNaming(
+          ctx,
+          await writeTreeOf(ctx, [[TREE_MODE, 'sub', blob]]),
+          [],
+        );
+        const included = await writeCommitNaming(ctx, empty, [excluded]);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [blob, included], not: [excluded], objects: true });
+
+        // Assert
+        expect({ entries: result.entries, logged }).toEqual({
+          entries: [
+            { id: included, type: 'commit' },
+            { id: blob, type: 'blob' },
+            { id: empty, type: 'tree', path: '' },
+          ],
+          logged: [`object ${blob} is a blob, not a tree`],
+        });
+      });
+    });
+  });
+
+  describe('Given an excluded parent whose tree lists a blob nothing typed with tree mode', () => {
+    describe('When revList marks the excluded tree', () => {
+      it('Then it logs the entry is not a tree and carries on', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const excluded = await writeCommitNaming(
+          ctx,
+          await writeTreeOf(ctx, [[TREE_MODE, 'sub', blob]]),
+          [],
+        );
+        const included = await writeCommitNaming(ctx, empty, [excluded]);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [included], not: [excluded], objects: true });
+
+        // Assert
+        expect({ entries: result.entries, logged }).toEqual({
+          entries: [
+            { id: included, type: 'commit' },
+            { id: empty, type: 'tree', path: '' },
+          ],
+          logged: [`Object ${blob} not a tree`],
+        });
+      });
+    });
+  });
+
+  describe('Given an excluded parent whose tree lists a wanted tree with blob mode', () => {
+    describe('When revList marks the excluded tree', () => {
+      it('Then the entry is not a blob, stays unmarked and the tree is listed', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const excluded = await writeCommitNaming(
+          ctx,
+          await writeTreeOf(ctx, [[BLOB_MODE, 'f', empty]]),
+          [],
+        );
+        const included = await writeCommitNaming(ctx, empty, [excluded]);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [empty, included], not: [excluded], objects: true });
+
+        // Assert
+        expect({ entries: result.entries, logged }).toEqual({
+          entries: [
+            { id: included, type: 'commit' },
+            { id: empty, type: 'tree', path: '' },
+          ],
+          logged: [`object ${empty} is a tree, not a blob`],
+        });
+      });
+    });
+  });
+
+  describe('Given a commit-graph line whose oldest commit an excluded tree lists with blob mode', () => {
+    describe('When the walk parses the commit naming it from the graph', () => {
+      it('Then the parent lookup fails and the walk dies on a commit it could not find', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const oldest = await writeCommitNaming(ctx, empty, []);
+        const middle = await writeCommitNaming(ctx, empty, [oldest]);
+        const newest = await writeCommitNaming(ctx, empty, [middle]);
+        const commits = await Promise.all(
+          [oldest, middle, newest].map(async (id) => (await readObject(ctx, id)) as Commit),
+        );
+        await writeCommitGraph(ctx, [commits]);
+        const excluded = await writeTreeOf(ctx, [[BLOB_MODE, 'f', oldest]]);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() =>
+          sut(ctx, { wants: [newest], not: [excluded], objects: true }),
+        );
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'COMMIT_LOOKUP_FAILED', id: oldest },
+          logged: [`object ${oldest} is a blob, not a commit`],
+        });
+      });
+    });
+  });
+
+  describe('Given a blob wanted and a commit naming it as its second parent, reached again after a gentle parse failed', () => {
+    const writeAt = (
+      ctx: Context,
+      parents: ReadonlyArray<ObjectId>,
+      tree: ObjectId,
+      at: number,
+    ) => {
+      const signature = { ...AUTHOR, timestamp: AUTHOR.timestamp + at };
+      return writeObject(ctx, {
+        type: 'commit',
+        id: '' as ObjectId,
+        data: {
+          tree,
+          parents,
+          author: signature,
+          committer: signature,
+          message: `m${at}\n`,
+          extraHeaders: [],
+        },
+      });
+    };
+
+    const seedFailingParse = async () => {
+      const seeded = await seedMistypedTag();
+      const { ctx, blob } = seeded;
+      const empty = await writeEmptyTree(ctx);
+      const base = await writeAt(ctx, [], empty, 0);
+      const failing = await writeAt(ctx, [base, blob], empty, 5);
+      return { ...seeded, empty, base, failing, writeAt };
+    };
+
+    describe('When a second excluded commit reaches it', () => {
+      it('Then the parse fails and logs again, and the shared base is listed', async () => {
+        // Arrange
+        const { ctx, logged, blob, empty, base, failing } = await seedFailingParse();
+        const first = await writeAt(ctx, [failing], empty, 9);
+        const second = await writeAt(ctx, [failing], empty, 8);
+        const included = await writeAt(ctx, [base], empty, 1);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [blob, included], not: [first, second] });
+
+        // Assert
+        const failure = [
+          `object ${blob} is a blob, not a commit`,
+          `bad parent ${blob} in commit ${failing}`,
+        ];
+        expect({ entries: result.entries, logged }).toEqual({
+          entries: [
+            { id: included, type: 'commit' },
+            { id: base, type: 'commit' },
+          ],
+          logged: [...failure, ...failure],
+        });
+      });
+    });
+
+    describe('When an included commit reaches it', () => {
+      it('Then the parse fails again and the walk setup fails', async () => {
+        // Arrange
+        const { ctx, logged, blob, empty, failing } = await seedFailingParse();
+        const excluded = await writeAt(ctx, [failing], empty, 9);
+        const included = await writeAt(ctx, [failing], empty, 7);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() =>
+          sut(ctx, { wants: [blob, included], not: [excluded] }),
+        );
+
+        // Assert
+        const failure = [
+          `object ${blob} is a blob, not a commit`,
+          `bad parent ${blob} in commit ${failing}`,
+        ];
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED' },
+          logged: [...failure, ...failure],
+        });
+      });
+    });
+  });
+
+  describe('Given a three-commit line whose oldest commit names a blob as its parent', () => {
+    const seedLine = async () => {
+      const seeded = await seedMistypedTag();
+      const empty = await writeEmptyTree(seeded.ctx);
+      const oldest = await writeCommitNaming(seeded.ctx, empty, [seeded.blob]);
+      const middle = await writeCommitNaming(seeded.ctx, empty, [oldest]);
+      const newest = await writeCommitNaming(seeded.ctx, empty, [middle]);
+      return { ...seeded, oldest, middle, newest };
+    };
+
+    describe('When revList lists at most three commits', () => {
+      it('Then it parses the third commit parents and fails at the object that is not a commit', async () => {
+        // Arrange
+        const { ctx, logged, blob, oldest, newest } = await seedLine();
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [newest], maxCount: 3 }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED', commit: oldest },
+          logged: [`Object ${blob} not a commit`],
+        });
+      });
+    });
+
+    describe('When revList lists at most two commits after the blob is wanted', () => {
+      it('Then it parses the second commit parents and fails on the bad parent', async () => {
+        // Arrange
+        const { ctx, logged, blob, oldest, middle, newest } = await seedLine();
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [blob, newest], maxCount: 2 }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED', commit: middle },
+          logged: [
+            `object ${blob} is a blob, not a commit`,
+            `bad parent ${blob} in commit ${oldest}`,
+          ],
+        });
+      });
+    });
+
+    describe('When revList lists at most two commits', () => {
+      it('Then it stops before parsing the oldest commit parents', async () => {
+        // Arrange
+        const { ctx, logged, middle, newest } = await seedLine();
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [newest], maxCount: 2 });
+
+        // Assert
+        expect({ entries: result.entries, logged }).toEqual({
+          entries: [
+            { id: newest, type: 'commit' },
+            { id: middle, type: 'commit' },
+          ],
+          logged: [],
+        });
+      });
+    });
+  });
+
+  describe('Given an excluded tree listing the oldest commit of a line with blob mode', () => {
+    describe('When revList lists commits only', () => {
+      it('Then the tree is never marked and every commit is listed', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const oldest = await writeCommitNaming(ctx, empty, []);
+        const middle = await writeCommitNaming(ctx, empty, [oldest]);
+        const newest = await writeCommitNaming(ctx, empty, [middle]);
+        const excluded = await writeTreeOf(ctx, [[BLOB_MODE, 'f', oldest]]);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [newest], not: [excluded] });
+
+        // Assert
+        expect({ entries: result.entries, logged }).toEqual({
+          entries: [
+            { id: newest, type: 'commit' },
+            { id: middle, type: 'commit' },
+            { id: oldest, type: 'commit' },
+          ],
+          logged: [],
+        });
+      });
+    });
+  });
+
+  describe('Given a blob wanted, then an excluded line and an included line of equal dates naming it', () => {
+    const seedLines = async () => {
+      const seeded = await seedMistypedTag();
+      const { ctx, blob } = seeded;
+      const empty = await writeEmptyTree(ctx);
+      const excludedParent = await writeCommitNaming(ctx, blob, []);
+      const excluded = await writeCommitNaming(ctx, empty, [excludedParent]);
+      const includedParent = await writeCommitNaming(ctx, empty, [blob]);
+      const included = await writeCommitNaming(ctx, empty, [includedParent]);
+      return { ...seeded, excludedParent, excluded, includedParent, included };
+    };
+
+    describe('When the excluded line is named first', () => {
+      it('Then the walk pops it first, logs its bad tree and fails on the included line', async () => {
+        // Arrange
+        const { ctx, logged, blob, excludedParent, excluded, includedParent, included } =
+          await seedLines();
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() =>
+          sut(ctx, { wants: [blob, `^${excluded}`, included] }),
+        );
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED' },
+          logged: [
+            `object ${blob} is a blob, not a tree`,
+            `bad tree pointer ${blob} in commit ${excludedParent}`,
+            `object ${blob} is a blob, not a commit`,
+            `bad parent ${blob} in commit ${includedParent}`,
+          ],
+        });
+      });
+    });
+
+    describe('When the included line is named first', () => {
+      it('Then the walk pops it first and fails before parsing the excluded line', async () => {
+        // Arrange
+        const { ctx, logged, blob, excluded, includedParent, included } = await seedLines();
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() =>
+          sut(ctx, { wants: [blob, included, `^${excluded}`] }),
+        );
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED' },
+          logged: [
+            `object ${blob} is a blob, not a commit`,
+            `bad parent ${blob} in commit ${includedParent}`,
+          ],
+        });
+      });
+    });
+  });
+
+  describe('Given a commit-graph line nothing else types', () => {
+    describe('When revList walks it from the graph', () => {
+      it('Then each graph parent types as a commit and the whole line is listed', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const oldest = await writeCommitNaming(ctx, empty, []);
+        const middle = await writeCommitNaming(ctx, empty, [oldest]);
+        const newest = await writeCommitNaming(ctx, empty, [middle]);
+        const commits = await Promise.all(
+          [oldest, middle, newest].map(async (id) => (await readObject(ctx, id)) as Commit),
+        );
+        await writeCommitGraph(ctx, [commits]);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [newest] });
+
+        // Assert
+        expect({ ids: result.entries.map(({ id }) => id), logged }).toEqual({
+          ids: [newest, middle, oldest],
+          logged: [],
+        });
+      });
+    });
+  });
+
+  describe.each([
+    ['commits', false],
+    ['objects', true],
+  ] as const)('Given a commit-graph line whose middle commit object is gone', (label, objects) => {
+    describe(`When revList lists its ${label}`, () => {
+      it('Then the middle commit is listed from the graph, its tree included', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const oldest = await writeCommitNaming(ctx, empty, []);
+        const middle = await writeCommitNaming(ctx, empty, [oldest]);
+        const newest = await writeCommitNaming(ctx, empty, [middle]);
+        const commits = await Promise.all(
+          [oldest, middle, newest].map(async (id) => (await readObject(ctx, id)) as Commit),
+        );
+        await writeCommitGraph(ctx, [commits]);
+        ctx.deltaCache.delete(middle);
+        await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(middle)}`);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [newest], objects });
+
+        // Assert
+        expect({ ids: result.entries.map(({ id }) => id), logged }).toEqual({
+          ids: objects ? [newest, middle, oldest, empty] : [newest, middle, oldest],
+          logged: [],
+        });
+      });
+    });
+  });
+});
+
+describe('revList all: ref order', () => {
+  describe('Given a branch tip and a detached HEAD commit sharing one date', () => {
+    describe('When revList is called with all: true', () => {
+      it('Then the branch tip precedes HEAD, as git iterates refs/ before HEAD', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const base = await writeDatedCommit(ctx, 'base', 500, []);
+        const onBranch = await writeDatedCommit(ctx, 'on-branch', 1000, [base]);
+        const onHead = await writeDatedCommit(ctx, 'on-head', 1000, [base]);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/b`, `${onBranch}\n`);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${onHead}\n`);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { all: true });
+
+        // Assert
+        expect(result.entries.map(({ id }) => id)).toEqual([onBranch, onHead, base]);
       });
     });
   });

@@ -523,14 +523,16 @@ function parseZlibHeader(reader: BitReader): void {
   const cmf = header[0] as number;
   const flg = header[1] as number;
 
+  // zlib's own order and words (`inflate.c` HEAD state): the checksum is
+  // judged before the method, so non-zlib bytes read as a bad header.
+  if ((cmf * FCHECK_MULTIPLIER + flg) % FCHECK_MOD !== 0) {
+    throw decompressFailed('incorrect header check');
+  }
   if ((cmf & CM_MASK) !== ZLIB_CM_DEFLATE) {
-    throw decompressFailed('unsupported compression method');
+    throw decompressFailed('unknown compression method');
   }
   if (cmf >> CINFO_SHIFT > WINDOW_MAX_CINFO) {
     throw decompressFailed('invalid window size');
-  }
-  if ((cmf * FCHECK_MULTIPLIER + flg) % FCHECK_MOD !== 0) {
-    throw decompressFailed('invalid zlib header checksum');
   }
   if (((flg >> FDICT_SHIFT) & 1) !== 0) {
     throw decompressFailed('preset dictionary not supported');

@@ -1,4 +1,5 @@
 import { TsgitError } from '../../../../domain/error.js';
+import { errorDataCode } from '../../../../domain/error-data-code.js';
 import type {
   FsckObjectType,
   FsckSeverityTable,
@@ -6,21 +7,31 @@ import type {
   ValidateObjectInput,
 } from '../../../../domain/fsck/index.js';
 import { retypeSeverity, validateObject } from '../../../../domain/fsck/index.js';
-import { bytesEqual, encode } from '../../../../domain/objects/encoding.js';
+import {
+  MSG_GITATTRIBUTES_BLOB,
+  MSG_GITATTRIBUTES_MISSING,
+  MSG_GITMODULES_BLOB,
+  MSG_GITMODULES_MISSING,
+} from '../../../../domain/fsck/msg-ids.js';
 import { classifyLooseBody } from '../../../../domain/objects/git-object.js';
 import type { HashConfig } from '../../../../domain/objects/hash-config.js';
-import type { ObjectId } from '../../../../domain/objects/index.js';
+import type { GitObject, ObjectContent, ObjectId } from '../../../../domain/objects/index.js';
 import { serializeHeader } from '../../../../domain/objects/index.js';
 import { MAX_INFLATE_OUTPUT_BYTES } from '../../../../ports/compressor.js';
 import type { Context } from '../../../../ports/context.js';
 import {
   inflateLooseBuffered,
   type LooseBufferedRead,
-  looseCompressedBytes,
 } from '../../../primitives/object-resolver.js';
-import { readRawObject } from '../../../primitives/read-object.js';
-import { EXIT_CONTENT_ERROR, EXIT_CORRUPT, EXIT_HASH_MISMATCH } from './exit-codes.js';
-import { hasPackCopy } from './object-cache.js';
+import { readObject } from '../../../primitives/read-object.js';
+import { EXIT_CONTENT_ERROR, EXIT_CORRUPT, EXIT_HASH_MISMATCH, EXIT_PACK } from './exit-codes.js';
+import { hasPackCopy, type PackedLocation, packedLocationOf } from './object-cache.js';
+import { type LooseCopy, looseCopiesOf } from './object-presence.js';
+import {
+  SPECIAL_BLOB_NAMES,
+  type SpecialBlobLedger,
+  type SpecialBlobName,
+} from './special-blobs.js';
 import type { FsckFinding } from './types.js';
 
 /** An object whose raw bytes a reader did decode, ready for the catalogue and
@@ -320,114 +331,7 @@ async function looseRawObjectBody(
   }
 }
 
-/**
- * A packed object's raw body, read as the pre-parse bytes it is stored as.
- *
- * Going through `readObject`'s domain parser would throw on exactly the faults
- * the catalogue exists to report (duplicate name, `.`, `..`, an embedded `/`),
- * collapsing every such packed tree into `badType`; and re-serializing a parsed
- * Tree re-sorts its entries, so hashing that re-sorted form against an unsorted
- * tree's id would report a false hash-mismatch. `raw.type`/`raw.content` are
- * the object's own bytes — no re-serialisation — so hashing them (via the
- * canonical header, built fresh rather than carried as a field) avoids both,
- * without ever concatenating header and body into one buffer.
- */
-async function packedRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjectResult> {
-  try {
-    // Stryker disable next-line ObjectLiteral: equivalent — readRawObject reads `options?.verifyHash ?? false`, so an empty options object resolves to the same false.
-    const raw = await readRawObject(ctx, id, { verifyHash: false });
-    return {
-      ok: true,
-      kind: raw.type,
-      rawBody: raw.content,
-      computeHash: async () => {
-        const hasher = ctx.hash.createHasher();
-        hasher.update(serializeHeader(raw.type, raw.content.length));
-        hasher.update(raw.content);
-        return hasher.digestHex();
-      },
-    };
-  } catch {
-    // Packed objects have no path-based reachability override mechanism
-    // (`ObjectStorage` gates it to 'loose' — this function's own caller
-    // never reads `reachabilityUnknown` for a packed result), so `false`
-    // here is inert bookkeeping, not a claim that packed reads never
-    // diverge from `readObject`'s own typing.
-    return { ok: false, msgId: 'badType', reachabilityUnknown: false };
-  }
-}
-
-/** Which store answered a `tryGetRawObjectBody` read — the one fact
- *  `validateOneObject` needs beyond the bytes themselves, since ONLY a loose
- *  read carries git's own hash-gates-catalogue rule (`resolvedRawObject`'s
- *  own doc comment). */
-type ObjectStorage = 'loose' | 'packed';
-
-interface ResolvedRawObject {
-  readonly storage: ObjectStorage;
-  readonly result: RawObjectResult;
-}
-
-/** Read an object's raw decompressed body for content validation, from
- *  whichever store holds it — tagged with which store that was. */
-async function tryGetRawObjectBody(
-  ctx: Context,
-  id: ObjectId,
-  bigFileThreshold: number,
-): Promise<ResolvedRawObject> {
-  const compressed = await looseCompressedBytes(ctx, id);
-  if (compressed !== undefined) {
-    return {
-      storage: 'loose',
-      result: await looseRawObjectBody(ctx, id, compressed, bigFileThreshold),
-    };
-  }
-  return { storage: 'packed', result: await packedRawObjectBody(ctx, id) };
-}
-
-const GITMODULES_NAME_BYTES = encode('.gitmodules');
-const GITATTRIBUTES_NAME_BYTES = encode('.gitattributes');
-
-/**
- * The special filename `nameBytes` matches, when it matches one of fsck's
- * two dedicated blob-content checks. Compares raw bytes — never the entry's
- * decoded `name` — so a byte sequence that merely decodes to one of these
- * literals is never mistaken for it.
- */
-function specialBlobName(nameBytes: Uint8Array): string | undefined {
-  if (bytesEqual(nameBytes, GITMODULES_NAME_BYTES)) return '.gitmodules';
-  if (bytesEqual(nameBytes, GITATTRIBUTES_NAME_BYTES)) return '.gitattributes';
-  return undefined;
-}
-
-/**
- * Scan all tree objects in the universe to record blob OIDs that appear
- * under a special filename (.gitmodules, .gitattributes) in any tree.
- *
- * Pinned real git 2.54.0: git checks .gitmodules/.gitattributes blob content
- * at any tree depth — not only the root tree. If the same blob OID appears
- * under multiple names, the last special name wins (precedence is
- * non-deterministic, but in practice each blob has one name).
- */
-export function buildBlobFilenameMap(
-  universe: ReadonlySet<ObjectId>,
-  objectCache: ReadonlyMap<ObjectId, import('./object-cache.js').CachedGitObject>,
-): ReadonlyMap<ObjectId, string> {
-  const map = new Map<ObjectId, string>();
-  for (const id of universe) {
-    const obj = objectCache.get(id);
-    if (obj == null || obj.type !== 'tree') continue;
-    for (const entry of obj.entries) {
-      const specialName = specialBlobName(entry.nameBytes);
-      if (specialName !== undefined) {
-        map.set(entry.id, specialName);
-      }
-    }
-  }
-  return map;
-}
-
-interface ContentValidationResult {
+export interface ContentValidationResult {
   readonly findings: ReadonlyArray<FsckFinding>;
   readonly exitBit: number;
 }
@@ -436,9 +340,9 @@ interface ContentValidationResult {
 const EMPTY_RESULT: ContentValidationResult = { findings: [], exitBit: 0 };
 
 /** Everything the catalogue pass needs beyond the object itself. */
-interface CatalogueOptions {
+export interface CatalogueOptions {
   readonly strict: boolean;
-  readonly blobFilenames: ReadonlyMap<ObjectId, string>;
+  readonly specialBlobs: SpecialBlobLedger;
   readonly severities: FsckSeverityTable;
   readonly skipped: ReadonlySet<string>;
   readonly bigFileThreshold: number;
@@ -500,6 +404,33 @@ function retypedFindings(
   return { findings, exitBit };
 }
 
+/** Every special filename a blob is queued under, marking its check done —
+ *  git's `fsck_blob`, which checks a blob's content only while it is queued. */
+function claimSpecialNames(
+  ledger: SpecialBlobLedger,
+  id: ObjectId,
+): ReadonlyArray<SpecialBlobName> {
+  const fileNames = ledger.queuedNames(id);
+  ledger.markDone(id);
+  return fileNames;
+}
+
+/** An object's catalogue findings, a blob's once per special filename it is
+ *  checked under, in git's order. */
+function catalogueFindings(
+  ctx: Context,
+  body: Pick<ReadableObject, 'kind' | 'rawBody'>,
+  { strict }: Pick<CatalogueOptions, 'strict'>,
+  fileNames: ReadonlyArray<SpecialBlobName>,
+): ReadonlyArray<ObjectFinding> {
+  const checked = fileNames.length === 0 ? [undefined] : fileNames;
+  return checked.flatMap((fileName) =>
+    validateObject(
+      buildValidateObjectInput(ctx.hashConfig, body.kind, body.rawBody, strict, fileName),
+    ),
+  );
+}
+
 /**
  * One object's catalogue findings. `fsck.skipList` reaches exactly here: git
  * still runs every check and drops the REPORT for a listed oid, so the finding
@@ -513,18 +444,13 @@ function catalogueResult(
   raw: ReadableObject,
   options: CatalogueOptions,
 ): ContentValidationResult {
+  // git's `fsck_tree` queues a tree's special blobs before any report, so a
+  // skip-listed tree still queues them.
+  if (raw.kind === 'tree') options.specialBlobs.noteTree(raw.rawBody);
   if (options.skipped.has(id)) return EMPTY_RESULT;
-  // For blobs, pass filename when the blob appears under a special name
-  // (.gitmodules / .gitattributes) so content checks fire (gitmodulesUrl, …).
-  const fileName = raw.kind === 'blob' ? options.blobFilenames.get(id) : undefined;
-  const input = buildValidateObjectInput(
-    ctx.hashConfig,
-    raw.kind,
-    raw.rawBody,
-    options.strict,
-    fileName,
-  );
-  return retypedFindings(id, raw.kind, validateObject(input), options.severities);
+  const fileNames = raw.kind === 'blob' ? claimSpecialNames(options.specialBlobs, id) : [];
+  const catalogued = catalogueFindings(ctx, raw, options, fileNames);
+  return retypedFindings(id, raw.kind, catalogued, options.severities);
 }
 
 /**
@@ -534,32 +460,23 @@ function catalogueResult(
  * git's own buffered-tier bytes instead (the truncated prefix or the
  * zero-padded claim — `looseVerdictResult`); for pack objects the object's
  * own header (rebuilt from its type + content) followed by its own body,
- * not a re-encoding. A hash that cannot be computed at all is the corrupt
- * object the catalogue checks may already have reported.
+ * not a re-encoding. Every arm hashes bytes already in memory, so the only
+ * way it can fail is the hasher itself — a fault git's own hashing never
+ * has, which must abort the run rather than pass the object as verified.
  */
 async function hashResult(id: ObjectId, raw: ReadableObject): Promise<ContentValidationResult> {
-  try {
-    const computedHash = await raw.computeHash();
-    if (computedHash === id) return EMPTY_RESULT;
-    return {
-      findings: [{ type: 'hash-mismatch', id, actual: computedHash as ObjectId }],
-      exitBit: EXIT_HASH_MISMATCH,
-    };
-  } catch {
-    return EMPTY_RESULT;
-  }
+  const computedHash = await raw.computeHash();
+  if (computedHash === id) return EMPTY_RESULT;
+  return {
+    findings: [{ type: 'hash-mismatch', id, actual: computedHash as ObjectId }],
+    exitBit: EXIT_HASH_MISMATCH,
+  };
 }
 
-/**
- * Whether a hash mismatch on THIS storage kind must suppress the catalogue.
- * git's `read_loose_object` returns on a hash-path disagreement before
- * `fsck_loose` ever calls `fsck_obj` — a loose mismatch is never catalogued.
- * A packed read carries no comparable path to disagree with: git walks every
- * packed object by offset and always runs its catalogue, mismatch or not.
- */
-function catalogueSuppressedByHash(storage: ObjectStorage, hash: ContentValidationResult): boolean {
-  return storage === 'loose' && hash.findings.length > 0;
-}
+/** git's `verify_pack` verdict on one damaged entry: its own error, bit 4. */
+const packEntryResult = (
+  finding: Extract<FsckFinding, { type: 'pack-entry-unpackable' | 'pack-entry-corrupt' }>,
+): ContentValidationResult => ({ findings: [finding], exitBit: EXIT_PACK });
 
 /** `validateOneObject`'s own outcome, extending the plain findings/exitBit
  *  shape with the one extra fact `runContentValidationPass` folds into
@@ -569,17 +486,20 @@ interface ValidateOneObjectOutcome extends ContentValidationResult {
   readonly reachabilityUnknown: boolean;
 }
 
-/** Validate one object's content and hash, accumulating findings and exit bit. */
-async function validateOneObject(
+/** A packed-only object is `verify_pack`'s, copy by copy — never this pass's. */
+const LEFT_TO_VERIFY_PACK: ValidateOneObjectOutcome = {
+  ...EMPTY_RESULT,
+  reachabilityUnknown: false,
+};
+
+/** Validate one loose object's content and hash, accumulating findings and exit bit. */
+async function validateLooseObject(
   ctx: Context,
   id: ObjectId,
+  compressed: Uint8Array,
   options: CatalogueOptions,
 ): Promise<ValidateOneObjectOutcome> {
-  const { storage, result: rawResult } = await tryGetRawObjectBody(
-    ctx,
-    id,
-    options.bigFileThreshold,
-  );
+  const rawResult = await looseRawObjectBody(ctx, id, compressed, options.bigFileThreshold);
   if (!rawResult.ok) {
     return {
       ...unreadableObjectResult(id, rawResult.msgId),
@@ -588,28 +508,106 @@ async function validateOneObject(
   }
   const hash = await hashResult(id, rawResult);
   // git's `read_loose_object` returns on EVERY loose hash-path disagreement
-  // before `parse_object_buffer` ever runs, not only the over-threshold
-  // over-run `bigBlobTruncateResult` refuses outright — pinned live against
-  // git 2.55.0 (scrubbed env) across an honest-body wrong-path blob, a
-  // zero-padded under-run, a truncated-prefix over-run, and the big-file
-  // streamed variant of each: real git's stdout never names any of them.
-  // BUT git's reachability graph (`check_object`/`has_object_pack`) never
-  // even consults this loose path when a PACK copy of the same id exists —
-  // it types the object from the pack instead, so only a loose mismatch
-  // with NO pack copy backing it is `true` here, letting fsck.ts's
-  // `withUnreadableOverrides` null this id in the reachability cache so a
-  // REFERRER reports `missing` instead of this id getting a spurious
-  // `dangling`/`unreachable` finding of its own.
-  if (catalogueSuppressedByHash(storage, hash)) {
-    const reachabilityUnknown = !(await hasPackCopy(ctx, id));
-    return { ...hash, reachabilityUnknown };
+  // before `parse_object_buffer` ever runs — pinned live against git 2.55.0.
+  // Its reachability graph (`check_object`/`has_object_pack`) never consults
+  // this loose path when a PACK copy of the same id exists, so only a loose
+  // mismatch with NO pack copy backing it nulls the id for reachability.
+  if (hash.findings.length > 0) {
+    return { ...hash, reachabilityUnknown: !(await hasPackCopy(ctx, id)) };
   }
-  const catalogue = catalogueResult(ctx, id, rawResult, options);
-  return {
-    findings: [...catalogue.findings, ...hash.findings],
-    exitBit: catalogue.exitBit | hash.exitBit,
-    reachabilityUnknown: false,
-  };
+  return { ...catalogueResult(ctx, id, rawResult, options), reachabilityUnknown: false };
+}
+
+/** Every loose copy, each read and reported on its own; the id stays
+ *  typeable for reachability while any one copy parses. */
+async function validateLooseCopies(
+  ctx: Context,
+  id: ObjectId,
+  copies: ReadonlyArray<LooseCopy>,
+  options: CatalogueOptions,
+): Promise<ValidateOneObjectOutcome> {
+  const findings: FsckFinding[] = [];
+  let exitBit = 0;
+  let reachabilityUnknown = true;
+  for (const { compressed, attribution } of copies) {
+    const own = await validateLooseObject(ctx, id, compressed, options);
+    findings.push(...own.findings.map((finding) => ({ ...finding, ...attribution })));
+    exitBit |= own.exitBit;
+    reachabilityUnknown &&= own.reachabilityUnknown;
+  }
+  return { findings, exitBit, reachabilityUnknown };
+}
+
+/** git's `fsck_source` reads every loose copy in every source; a packed-only
+ *  object is left to `verify_pack`, and one no store holds is the generic
+ *  refusal. */
+async function validateOneObject(
+  ctx: Context,
+  id: ObjectId,
+  options: CatalogueOptions,
+): Promise<ValidateOneObjectOutcome> {
+  const copies = await looseCopiesOf(ctx, id);
+  if (copies.length > 0) return validateLooseCopies(ctx, id, copies, options);
+  if ((await packedLocationOf(ctx, id)) !== undefined) return LEFT_TO_VERIFY_PACK;
+  return { ...unreadableObjectResult(id, 'badType'), reachabilityUnknown: false };
+}
+
+/** One pack entry as `verify_packfile` meets it: where it sits, and how to
+ *  unpack it from exactly there — never from whichever copy the store reads. */
+export interface PackedEntry {
+  readonly id: ObjectId;
+  readonly location: PackedLocation;
+  readonly unpack: () => Promise<ObjectContent>;
+}
+
+/** The entry's own bytes, or `undefined` when they no longer unpack. Hashes
+ *  the bytes as stored (canonical header + body), never a re-serialisation. */
+async function unpackedEntry(
+  ctx: Context,
+  entry: PackedEntry,
+): Promise<ReadableObject | undefined> {
+  try {
+    const raw = await entry.unpack();
+    return {
+      ok: true,
+      kind: raw.type,
+      rawBody: raw.content,
+      computeHash: async () => {
+        const hasher = ctx.hash.createHasher();
+        hasher.update(serializeHeader(raw.type, raw.content.length));
+        hasher.update(raw.content);
+        return hasher.digestHex();
+      },
+    };
+  } catch (err) {
+    if (errorDataCode(err) === undefined) throw err;
+    return undefined;
+  }
+}
+
+/**
+ * git's per-entry `verify_packfile` step: `cannot unpack`, else `packed … is
+ * corrupt`, else `fsck_obj_buffer` — which clears `SEEN`, so every copy runs
+ * the catalogue again. Its errors reach the exit code only through
+ * `verify_pack`'s own return: bit 4, never bit 1.
+ */
+export async function validatePackedEntry(
+  ctx: Context,
+  entry: PackedEntry,
+  options: CatalogueOptions,
+): Promise<ContentValidationResult> {
+  const { id, location } = entry;
+  const { pack, offset, attribution } = location;
+  const raw = await unpackedEntry(ctx, entry);
+  if (raw === undefined) {
+    return packEntryResult({ type: 'pack-entry-unpackable', pack, id, offset, ...attribution });
+  }
+  const hash = await hashResult(id, raw);
+  if (hash.findings.length > 0) {
+    return packEntryResult({ type: 'pack-entry-corrupt', pack, id, ...attribution });
+  }
+  const catalogue = catalogueResult(ctx, id, raw, options);
+  return { findings: catalogue.findings, exitBit: catalogue.exitBit === 0 ? 0 : EXIT_PACK };
 }
 
 /** `runContentValidationPass`'s own result, `ContentValidationResult` plus
@@ -628,22 +626,11 @@ export interface ContentValidationPassResult extends ContentValidationResult {
 export async function runContentValidationPass(
   ctx: Context,
   universe: ReadonlySet<ObjectId>,
-  strict: boolean,
-  blobFilenames: ReadonlyMap<ObjectId, string>,
-  severities: FsckSeverityTable,
-  skipped: ReadonlySet<string>,
-  bigFileThreshold: number,
+  options: CatalogueOptions,
 ): Promise<ContentValidationPassResult> {
   const findings: FsckFinding[] = [];
   let exitBit = 0;
   const typeUnknownIds = new Set<ObjectId>();
-  const options: CatalogueOptions = {
-    strict,
-    blobFilenames,
-    severities,
-    skipped,
-    bigFileThreshold,
-  };
 
   for (const id of universe) {
     const outcome = await validateOneObject(ctx, id, options);
@@ -653,4 +640,85 @@ export async function runContentValidationPass(
   }
 
   return { findings, exitBit, typeUnknownIds };
+}
+
+/** `fsck_blobs`' own msg-ids for a queued name that reads as no blob. */
+const DEFERRED_MISFIT_MSG_IDS: Readonly<
+  Record<SpecialBlobName, { readonly missing: string; readonly notBlob: string }>
+> = {
+  '.gitmodules': { missing: MSG_GITMODULES_MISSING, notBlob: MSG_GITMODULES_BLOB },
+  '.gitattributes': { missing: MSG_GITATTRIBUTES_MISSING, notBlob: MSG_GITATTRIBUTES_BLOB },
+};
+
+/** The finding `fsck_blobs` raises for a queued special blob that is not one:
+ *  `<name>Missing` when no copy reads, `<name>Blob` when it is not a blob. */
+function deferredMisfitResult(
+  id: ObjectId,
+  objectType: FsckObjectType,
+  msgId: string,
+  severities: FsckSeverityTable,
+): ContentValidationResult {
+  const severity = retypeSeverity(severities, msgId, 'error');
+  if (severity === 'ignore') return EMPTY_RESULT;
+  return {
+    findings: [{ type: 'bad-object', id, objectType, msgId, severity }],
+    exitBit: severity === 'error' ? EXIT_CONTENT_ERROR : 0,
+  };
+}
+
+/** The object behind a queued special blob, or `undefined` when no copy reads. */
+async function readQueuedObject(ctx: Context, id: ObjectId): Promise<GitObject | undefined> {
+  try {
+    return await readObject(ctx, id);
+  } catch (err) {
+    if (errorDataCode(err) === undefined) throw err;
+    return undefined;
+  }
+}
+
+/** One queued special blob, read through the store as `fsck_blobs` does. */
+async function deferredCheck(
+  ctx: Context,
+  id: ObjectId,
+  fileName: SpecialBlobName,
+  options: CatalogueOptions,
+  promised: ReadonlySet<ObjectId>,
+): Promise<ContentValidationResult> {
+  const misfit = DEFERRED_MISFIT_MSG_IDS[fileName];
+  const object = await readQueuedObject(ctx, id);
+  if (object === undefined) {
+    if (promised.has(id)) return EMPTY_RESULT;
+    return deferredMisfitResult(id, 'blob', misfit.missing, options.severities);
+  }
+  if (object.type !== 'blob') {
+    return deferredMisfitResult(id, object.type, misfit.notBlob, options.severities);
+  }
+  const fileNames = claimSpecialNames(options.specialBlobs, id);
+  const body = { kind: 'blob', rawBody: object.content } as const;
+  const catalogued = catalogueFindings(ctx, body, options, fileNames);
+  return retypedFindings(id, 'blob', catalogued, options.severities);
+}
+
+/**
+ * git's `fsck_finish`: every special blob a checked tree queued but no copy
+ * met in place is read once through the store and checked — outside any
+ * pack, so its errors carry bit 1, never bit 4. An absent blob a promisor
+ * pack promises (`promised`) is skipped, as git's `fsck_blobs` does.
+ */
+export async function runDeferredSpecialBlobChecks(
+  ctx: Context,
+  options: CatalogueOptions,
+  promised: ReadonlySet<ObjectId>,
+): Promise<ContentValidationResult> {
+  const findings: FsckFinding[] = [];
+  let exitBit = 0;
+  for (const fileName of SPECIAL_BLOB_NAMES) {
+    for (const id of options.specialBlobs.pendingUnder(fileName)) {
+      if (options.skipped.has(id)) continue;
+      const own = await deferredCheck(ctx, id, fileName, options, promised);
+      findings.push(...own.findings);
+      exitBit |= own.exitBit;
+    }
+  }
+  return { findings, exitBit };
 }

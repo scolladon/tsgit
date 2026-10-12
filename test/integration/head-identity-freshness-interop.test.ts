@@ -28,7 +28,7 @@ import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { revParse } from '../../src/application/commands/rev-parse.js';
 import type { Context } from '../../src/ports/context.js';
 import { instrumentedContext } from '../unit/application/primitives/fixtures.js';
-import { disableAutoMaintenance, GIT_AVAILABLE, git } from './interop-helpers.js';
+import { disableAutoMaintenance, GIT_AVAILABLE, git, revParseStdout } from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
 
@@ -72,9 +72,9 @@ describe.skipIf(!GIT_AVAILABLE)('HEAD identity freshness interop', () => {
           // 'refs/heads/main', so this cannot pass by accident on a
           // size-only staleness check; only a genuine lstat-identity
           // re-check (mtime/ctime/ino) catches the rewrite.
-          const first = await revParse(ctx, 'HEAD');
+          const first = revParseStdout(await revParse(ctx, 'HEAD'));
           git(dir, 'symbolic-ref', 'HEAD', 'refs/heads/side');
-          const second = await revParse(ctx, 'HEAD');
+          const second = revParseStdout(await revParse(ctx, 'HEAD'));
 
           // Assert
           expect(first).toBe(mainId);
@@ -105,9 +105,9 @@ describe.skipIf(!GIT_AVAILABLE)('HEAD identity freshness interop', () => {
         const headPath = headPathOf(ctx);
 
         // Act
-        const first = await revParse(ctx, 'HEAD');
+        const first = revParseStdout(await revParse(ctx, 'HEAD'));
         const before = calls().length;
-        const second = await revParse(ctx, 'HEAD');
+        const second = revParseStdout(await revParse(ctx, 'HEAD'));
         const duringSecondCall = calls()
           .slice(before)
           .filter((c) => c.path === headPath);

@@ -4,6 +4,8 @@ import {
   bundleEmpty,
   bundlePrerequisiteNotCommit,
   bundleUnsupportedSerializeVersion,
+  invalidRevisionRange,
+  invalidSymmetricRange,
 } from '../../domain/commands/error.js';
 import { foldSubject } from '../../domain/objects/commit-message.js';
 import type { Commit, GitObject, ObjectId, RefName } from '../../domain/objects/index.js';
@@ -12,13 +14,19 @@ import { buildPack } from '../primitives/build-pack.js';
 import { assertValidPackIntConfig } from '../primitives/config-read.js';
 import { enumerateBundleObjects } from '../primitives/enumerate-bundle-objects.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
+import type { ClosureTip } from '../primitives/internal/closure-engine.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
-import { peel } from '../primitives/internal/peel.js';
-import { mergeBase } from '../primitives/merge-base.js';
+import {
+  createObjectTypeTable,
+  type ObjectTypeTable,
+  parseTypedObjectOrAbsent,
+} from '../primitives/internal/object-type-table.js';
 import { readObject } from '../primitives/read-object.js';
-import { resolveRef } from '../primitives/resolve-ref.js';
+import { resolveRef, resolveRefForReading } from '../primitives/resolve-ref.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
-import { revParse } from './rev-parse.js';
+import { requireReference } from './internal/require-reference.js';
+import { symmetricBases } from './internal/symmetric-bases.js';
+import { readNamedObject, resolveRevision } from './rev-parse.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
@@ -54,9 +62,19 @@ export interface BundleCreateResult {
 
 interface Accumulator {
   readonly refs: BundleRef[];
-  readonly wants: ObjectId[];
-  readonly haves: ObjectId[];
+  /** Every tip in git's pending order — `handle_revision_arg`'s. */
+  readonly pending: ClosureTip[];
+  /** The bundle process's object-type table, shared by its arguments and its walk. */
+  readonly objectTypes: ObjectTypeTable;
 }
+
+const want = (acc: Accumulator, id: ObjectId): void => {
+  acc.pending.push({ id, excluded: false });
+};
+
+const exclude = (acc: Accumulator, id: ObjectId): void => {
+  acc.pending.push({ id, excluded: true });
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Ref-name lookup helpers
@@ -83,14 +101,41 @@ const findFullRef = (name: string, allRefs: ReadonlyArray<RefName>): RefName | u
 // Pseudo-ref expansion (--all / --branches / --tags)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const addRefToAccumulator = async (ctx: Context, ref: RefName, acc: Accumulator): Promise<void> => {
+/** git's `handle_one_ref`: the ref's object parsed into the table, dying `bad object <spelt>`. */
+const addRefToAccumulator = async (
+  ctx: Context,
+  ref: RefName,
+  spelt: string,
+  acc: Accumulator,
+): Promise<void> => {
   const oid = await resolveRef(ctx, ref);
+  await requireReference(ctx, acc.objectTypes, spelt, oid);
   acc.refs.push({ name: ref, oid });
-  acc.wants.push(oid);
+  want(acc, oid);
 };
 
 const refsWithPrefix = (prefix: string, allRefs: ReadonlyArray<RefName>): RefName[] =>
   allRefs.filter((r) => (r as string).startsWith(prefix)).sort() as RefName[];
+
+/** git's `for_each_ref_in(prefix)`: each ref under `prefix`, spelt with the prefix `trimmed` off. */
+const addRefsUnder = async (
+  ctx: Context,
+  prefix: string,
+  trimmed: string,
+  allRefs: ReadonlyArray<RefName>,
+  acc: Accumulator,
+): Promise<void> => {
+  for (const ref of refsWithPrefix(prefix, allRefs)) {
+    await addRefToAccumulator(ctx, ref, ref.slice(trimmed.length), acc);
+  }
+};
+
+/** git's `head_ref`: HEAD only once it resolves — an unborn HEAD adds nothing. */
+const addHead = async (ctx: Context, acc: Accumulator): Promise<void> => {
+  const head = 'HEAD' as RefName;
+  if ((await resolveRefForReading(ctx, head)) === undefined) return;
+  await addRefToAccumulator(ctx, head, head, acc);
+};
 
 const expandPseudoRefs = async (
   ctx: Context,
@@ -98,15 +143,11 @@ const expandPseudoRefs = async (
   allRefs: ReadonlyArray<RefName>,
   acc: Accumulator,
 ): Promise<void> => {
-  if (opts.branches === true) {
-    for (const r of refsWithPrefix('refs/heads/', allRefs)) await addRefToAccumulator(ctx, r, acc);
-  }
-  if (opts.tags === true) {
-    for (const r of refsWithPrefix('refs/tags/', allRefs)) await addRefToAccumulator(ctx, r, acc);
-  }
+  if (opts.branches === true) await addRefsUnder(ctx, 'refs/heads/', 'refs/heads/', allRefs, acc);
+  if (opts.tags === true) await addRefsUnder(ctx, 'refs/tags/', 'refs/tags/', allRefs, acc);
   if (opts.all === true) {
-    for (const r of refsWithPrefix('refs/', allRefs)) await addRefToAccumulator(ctx, r, acc);
-    await addRefToAccumulator(ctx, 'HEAD' as RefName, acc);
+    await addRefsUnder(ctx, 'refs/', '', allRefs, acc);
+    await addHead(ctx, acc);
   }
 };
 
@@ -120,15 +161,36 @@ const processTip = async (
   allRefs: ReadonlyArray<RefName>,
   acc: Accumulator,
 ): Promise<void> => {
-  const oid = await revParse(ctx, tip);
-  const fullRef = findFullRef(tip, allRefs);
-  if (fullRef !== undefined) acc.refs.push({ name: fullRef, oid });
-  acc.wants.push(oid);
+  await wantNamed(ctx, tip, await resolveRevision(ctx, tip), allRefs, acc);
 };
 
-const processExclude = async (ctx: Context, exclude: string, acc: Accumulator): Promise<void> => {
-  const oid = await revParse(ctx, exclude);
-  acc.haves.push(await peel(ctx, oid, 'commit'));
+/** A tip `name` resolved to `oid`: referenced, recorded under its full ref when it is one, wanted. */
+const wantNamed = async (
+  ctx: Context,
+  tip: string,
+  oid: ObjectId,
+  allRefs: ReadonlyArray<RefName>,
+  acc: Accumulator,
+): Promise<void> => {
+  await requireReference(ctx, acc.objectTypes, tip, oid);
+  wantSide(tip, oid, allRefs, acc);
+};
+
+const processExclude = async (ctx: Context, excluded: string, acc: Accumulator): Promise<void> => {
+  const oid = await resolveRevision(ctx, excluded);
+  await requireReference(ctx, acc.objectTypes, excluded, oid);
+  exclude(acc, oid);
+};
+
+/** git's `handle_dotdot_1`: both ends parsed into the table before a failed parse of either refuses the range. */
+const parseRangeEnds = async (
+  ctx: Context,
+  acc: Accumulator,
+  ends: readonly [ObjectId, ObjectId],
+): Promise<boolean> => {
+  const a = await parseTypedObjectOrAbsent(ctx, acc.objectTypes, ends[0]);
+  const b = await parseTypedObjectOrAbsent(ctx, acc.objectTypes, ends[1]);
+  return a !== undefined && b !== undefined;
 };
 
 const processRange = async (
@@ -138,12 +200,26 @@ const processRange = async (
   acc: Accumulator,
 ): Promise<void> => {
   const [aExpr, bExpr] = range;
-  const aOid = await revParse(ctx, aExpr);
-  acc.haves.push(await peel(ctx, aOid, 'commit'));
-  const bOid = await revParse(ctx, bExpr);
+  const aOid = await resolveRevision(ctx, aExpr);
+  const bOid = await resolveRevision(ctx, bExpr);
+  if (!(await parseRangeEnds(ctx, acc, [aOid, bOid]))) {
+    throw invalidRevisionRange(`${aExpr}..${bExpr}`);
+  }
+  exclude(acc, aOid);
   const bFullRef = findFullRef(bExpr, allRefs);
   if (bFullRef !== undefined) acc.refs.push({ name: bFullRef, oid: bOid });
-  acc.wants.push(bOid);
+  want(acc, bOid);
+};
+
+/** git's `get_oid_with_context` on an argument no range form took: the whole spelling, one tip. */
+const wantWholeName = async (
+  ctx: Context,
+  expression: string,
+  allRefs: ReadonlyArray<RefName>,
+  acc: Accumulator,
+): Promise<void> => {
+  const oid = await readNamedObject(ctx, acc.objectTypes, expression, expression);
+  await wantNamed(ctx, expression, oid, allRefs, acc);
 };
 
 const processSymmetricRange = async (
@@ -153,20 +229,29 @@ const processSymmetricRange = async (
   acc: Accumulator,
 ): Promise<void> => {
   const [aExpr, bExpr] = sym;
-  const aOid = await revParse(ctx, aExpr);
-  const aFullRef = findFullRef(aExpr, allRefs);
-  if (aFullRef !== undefined) acc.refs.push({ name: aFullRef, oid: aOid });
-  acc.wants.push(aOid);
-  const bOid = await revParse(ctx, bExpr);
-  const bFullRef = findFullRef(bExpr, allRefs);
-  if (bFullRef !== undefined) acc.refs.push({ name: bFullRef, oid: bOid });
-  acc.wants.push(bOid);
-  const bases = await mergeBase(
-    ctx,
-    [await peel(ctx, aOid, 'commit'), await peel(ctx, bOid, 'commit')],
-    { all: true },
-  );
-  acc.haves.push(...bases);
+  const aOid = await resolveRevision(ctx, aExpr);
+  const bOid = await resolveRevision(ctx, bExpr);
+  const expression = `${aExpr}...${bExpr}`;
+  if (!(await parseRangeEnds(ctx, acc, [aOid, bOid]))) throw invalidSymmetricRange(expression, []);
+  const bases = await symmetricBases(ctx, expression, [aOid, bOid]);
+  // A walk git could not finish leaves no range: the expression is one name.
+  if (bases === undefined) return wantWholeName(ctx, expression, allRefs, acc);
+  // git's `handle_dotdot_1` pends the merge bases before either side.
+  for (const base of bases) exclude(acc, base);
+  wantSide(aExpr, aOid, allRefs, acc);
+  wantSide(bExpr, bOid, allRefs, acc);
+};
+
+/** A spelt tip: recorded under its full ref when it is one, wanted. */
+const wantSide = (
+  spelt: string,
+  oid: ObjectId,
+  allRefs: ReadonlyArray<RefName>,
+  acc: Accumulator,
+): void => {
+  const fullRef = findFullRef(spelt, allRefs);
+  if (fullRef !== undefined) acc.refs.push({ name: fullRef, oid });
+  want(acc, oid);
 };
 
 const processRevArgs = async (
@@ -284,8 +369,11 @@ export const selectBundleVersion = (input: SelectBundleVersionInput): BundleVers
  *
  * Returns `bytes` (header ++ packfile) for the caller to write, alongside
  * the structured metadata so the caller can inspect the result without
- * re-parsing. Throws `BUNDLE_EMPTY` if the selection yields no ref lines
- * (`reason: 'no-refs'`) or an empty object closure (`reason: 'no-objects'`).
+ * re-parsing. Like git, a ref whose object the walk leaves uninteresting —
+ * excluded, reached through an excluded tag or tree, or an ancestor of an
+ * excluded commit — writes no ref line. Throws `BUNDLE_EMPTY`
+ * (`reason: 'no-refs'`) when no ref line remains; an empty pack is written
+ * as git writes it.
  */
 export const bundleCreate = async (
   ctx: Context,
@@ -300,27 +388,31 @@ export const bundleCreate = async (
     ...(opts.version !== undefined ? { requested: opts.version } : {}),
   });
   const allRefs = await enumerateRefs(ctx);
-  const acc: Accumulator = { refs: [], wants: [], haves: [] };
+  const acc: Accumulator = { refs: [], pending: [], objectTypes: createObjectTypeTable() };
   await expandPseudoRefs(ctx, opts, allRefs, acc);
   await processRevArgs(ctx, opts.revs ?? [], allRefs, acc);
-  const deduped = deduplicateRefs(acc.refs);
-  acc.refs.splice(0, acc.refs.length, ...deduped);
   if (acc.refs.length === 0) throw bundleEmpty('no-refs');
-  const closure = await enumerateBundleObjects(ctx, { wants: acc.wants, haves: acc.haves });
-  if (closure.objects.length === 0) throw bundleEmpty('no-objects');
+  const closure = await enumerateBundleObjects(ctx, {
+    wants: acc.pending.filter((tip) => !tip.excluded).map((tip) => tip.id),
+    haves: acc.pending.filter((tip) => tip.excluded).map((tip) => tip.id),
+    tips: acc.pending,
+    objectTypes: acc.objectTypes,
+  });
+  const refs = deduplicateRefs(acc.refs.filter((ref) => !closure.uninteresting.has(ref.oid)));
+  if (refs.length === 0) throw bundleEmpty('no-refs');
   const prerequisites = await makePrerequisites(ctx, closure.boundary);
   const pack = await buildPack(ctx, { objects: closure.objects, delta: true });
   const header = serializeBundleHeader({
     version,
     hashAlgorithm: ctx.hashConfig.algorithm,
     prerequisites,
-    refs: acc.refs,
+    refs,
   });
   const bytes = concat(header, pack.bytes);
   return {
     version,
     bytes,
-    refs: acc.refs,
+    refs,
     prerequisites,
     objectCount: pack.objectCount,
     packSha: pack.sha,

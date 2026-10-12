@@ -27,7 +27,7 @@ const NS_PER_SECOND = 1_000_000_000n;
  */
 const INDEX_CACHE_MAX_RAW_BYTES = 32 * 1024 * 1024;
 
-const indexMtimeFrom = (stat: FileStat): { seconds: number; nanoseconds: number } => ({
+export const indexMtimeFrom = (stat: FileStat): { seconds: number; nanoseconds: number } => ({
   seconds: Math.floor(stat.mtimeMs / 1000),
   nanoseconds: stat.mtimeNs === undefined ? 0 : Number(stat.mtimeNs % NS_PER_SECOND),
 });
@@ -173,8 +173,16 @@ export async function readIndex(ctx: Context): Promise<GitIndex> {
   if (!(await ctx.fs.exists(path))) {
     return { version: 2, entries: [], extensions: [], trailerSha: new Uint8Array(0) };
   }
+  return readIndexAt(ctx, await ctx.fs.stat(path));
+}
+
+/**
+ * {@link readIndex} for a caller already holding the index file's `stat` —
+ * the index-lock commit, which stats the index under the lock anyway.
+ */
+export async function readIndexAt(ctx: Context, stat: FileStat): Promise<GitIndex> {
+  const path = indexPath(ctx.layout.gitDir);
   // Pre-check against stat to reject oversized files before allocating.
-  const stat = await ctx.fs.stat(path);
   if (exceedsMaxIndexBytes(stat.size)) {
     throw invalidIndexHeader(REASON_INDEX_EXCEEDS_MAX);
   }

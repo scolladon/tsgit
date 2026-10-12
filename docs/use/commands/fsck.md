@@ -32,7 +32,8 @@ type FsckFinding =
       readonly id: ObjectId; readonly actual: ObjectId }
   | { readonly type: 'bad-ref';
       readonly ref: RefName; readonly msgId: string;
-      readonly severity: FsckSeverity; readonly target?: ObjectId }
+      readonly severity: FsckSeverity; readonly target?: ObjectId;
+      readonly path?: string; readonly reason?: 'PERMISSION_DENIED' }
   | { readonly type: 'root'; readonly id: ObjectId }
   | { readonly type: 'tagged';
       readonly id: ObjectId; readonly objectType: FsckObjectType;
@@ -57,7 +58,43 @@ type FsckFinding =
   | { readonly type: 'midx-entry-unresolved';
       readonly artefact: string; readonly id: ObjectId }
   | { readonly type: 'bitmap-checksum-mismatch';
-      readonly artefact: string };
+      readonly artefact: string }
+  | { readonly type: 'commit-graph-invalid';
+      readonly artefact: string } & CommitGraphVerdict   // verdict is `{ check: …, … }`
+  | { readonly type: 'invalid-reflog-entry';
+      readonly ref: RefName; readonly id: ObjectId }
+  | { readonly type: 'invalid-cache-tree-pointer';
+      readonly id: ObjectId; readonly index: string }
+  | { readonly type: 'invalid-resolve-undo-pointer';
+      readonly id: ObjectId; readonly index: string }
+  | { readonly type: 'no-default-references' }
+  | { readonly type: 'unknown-object-type'; readonly id: ObjectId }
+  | { readonly type: 'unexpected-object-type';
+      readonly id: ObjectId; readonly expectedType: 'commit' | 'tree' | 'tag' }
+  | { readonly type: 'type-conflict';
+      readonly id: ObjectId; readonly objectType: FsckObjectType;
+      readonly expectedType: FsckObjectType }
+  | { readonly type: 'unparseable-object';
+      readonly id: ObjectId; readonly pack?: string }
+  | { readonly type: 'bad-pointer';
+      readonly id: ObjectId; readonly link: 'tree' | 'parent' | 'tag';
+      readonly target: ObjectId }
+  | { readonly type: 'broken-links';
+      readonly id: ObjectId; readonly objectType: FsckObjectType }
+  | { readonly type: 'unresolved-link';
+      readonly fromId: ObjectId; readonly fromType: FsckObjectType;
+      readonly toType: FsckObjectType }
+  | { readonly type: 'pack-index-checksum-mismatch'; readonly pack: string }
+  | { readonly type: 'pack-checksum-mismatch'; readonly pack: string }
+  | { readonly type: 'pack-crc-mismatch';
+      readonly pack: string; readonly id: ObjectId; readonly offset: number }
+  | { readonly type: 'pack-entry-unpackable';
+      readonly pack: string; readonly id: ObjectId; readonly offset: number }
+  | { readonly type: 'pack-entry-corrupt';
+      readonly pack: string; readonly id: ObjectId };
+// Findings from an alternate's object store also carry `objectsDir?: string`
+// (`bad-object`, `hash-mismatch`, `unparseable-object` and every pack-*, midx-*,
+// bitmap-* and commit-graph-* variant); it is absent for the primary store.
 
 interface FsckOptions {
   readonly connectivityOnly?: boolean;
@@ -115,7 +152,7 @@ findings.filter(f => f.type === 'tagged')
 | `broken-link` | `fromId`, `fromType`, `toId`, `toType` (`FsckObjectType \| 'unknown'`) | Edge from a present object to an absent one. Exit bit 2. |
 | `bad-object` | `id`, `objectType` (`FsckObjectType \| 'unknown'`), `msgId`, `severity` | Object-content validation failure from the named msg-id catalogue, or corrupt/undecodable object. Exit bit 1 (ERROR-class or `--strict`-upgraded). `objectType` is `'unknown'` when the object is undecodable and its type cannot be determined. A loose object — blob, commit, tree or tag alike — whose body overruns its header's size claim past git's 32-byte header window is undecodable for this same reason (`msgId: 'unterminatedHeader'`) — git's buffered loose tier refuses it exactly as it refuses an unparseable header, reported the way `git fsck --full` reports `object corrupt or missing`. A **blob** past `core.bigFileThreshold` (default 512 MiB, strict `>`) takes git's streamed route (`check_stream_oid`) instead: an over-run there is undecodable the same way; a claim at or above the 2 GiB inflate ceiling is also `unterminatedHeader` — reachable under default config for a commit, tree or tag, and for a blob only when `core.bigFileThreshold` is configured above 2 GiB. |
 | `hash-mismatch` | `id`, `actual` | File content hashes to `actual`; file's path implies `id`. A loose object — blob, commit, tree or tag alike — whose body disagrees with its header's size claim, but still resolves, hashes the same bytes git's own buffered loose tier would serve — the claimed prefix when the body overran the claim but still fit the header window, or the real body zero-padded out to the claim when it under-ran — never the claim length or the real on-disk length on their own; `actual` is that hash, matching `git fsck --full`'s own "hash-path mismatch" line. A **blob** past `core.bigFileThreshold` under-runs unpadded instead: git's streamed route hashes the declared header plus the real bytes with no padding, never a claim-sized zero fill — `core.bigFileThreshold` gates blobs only, a commit/tree/tag under-run is always zero-padded regardless of size. tsgit's zero-padding is its own deterministic choice for bytes git's `xmallocz` leaves uninitialised — git's own reported hash for the same under-run claim is not reproducible run to run, so only the `hash-path mismatch, found at: <path>` line and the exit code are git-pinned, never a specific zero-padded value. Exit bit 1. |
-| `bad-ref` | `ref`, `msgId`, `severity`, `target?` | Refs-verify pass finding: malformed ref content (`badRefContent` — exit bit 8) or ref pointing at an absent/zero OID (`badRefOid` / *invalid sha1 pointer* — exit bit 2). `target` is present when the ref had a syntactically-valid OID target. |
+| `bad-ref` | `ref`, `msgId`, `severity`, `target?`, `path?`, `reason?` | Refs-verify pass finding: malformed ref content (`badRefContent` — exit bit 8) or ref pointing at an absent/zero OID (`badRefOid` / *invalid sha1 pointer* — exit bit 2). `target` is present when the ref had a syntactically-valid OID target. A ref file that could not be read (an unreadable linked-worktree `HEAD`) reports `msgId: 'cannotReadRef'` with `path` and `reason: 'PERMISSION_DENIED'` and sets exit bit 8. |
 | `root` | `id` | Root commit (no parents). Emitted when the caller filters for `type === 'root'`. Exit 0. |
 | `tagged` | `id`, `objectType`, `tagName`, `tag` | Tag target: `id` is the tagged object, `tag` is the tag object OID. Emitted when the caller filters for `type === 'tagged'`. Exit 0. |
 | `pack-inaccessible` | `pack`, `reason` | A pack failed the header gate — bad version, bad signature, truncated file, a header/index object-count disagreement, or a `.pack` that could not be opened. Full mode only (suppressed by `full: false` or `connectivityOnly: true`). Exit bit 4. |
@@ -128,6 +165,23 @@ findings.filter(f => f.type === 'tagged')
 | `midx-pack-unresolved` | `artefact`, `position`, `pack` | A `PNAM` entry — `position` is its chain-global index — names a pack that could not be resolved this scan, and whose `.pack` file is also gone. Reported in every mode. Exit bit 32. |
 | `midx-entry-unresolved` | `artefact`, `id` | An object the midx routes to a pack that cannot serve it — fires even when the pack itself resolved (its `.pack` is on disk but its `.idx` is not), independently of `midx-pack-unresolved`. Reported in every mode. Exit bit 32. |
 | `bitmap-checksum-mismatch` | `artefact` | A pack's `.bitmap`, or the in-use multi-pack-index's bitmap, is present and readable but its trailing digest disagrees with the bytes that precede it — the checksum is this artefact's entire obligation, so this is the only bitmap fault tsgit reports. `artefact` is `<base>.bitmap` for a pack, or `multi-pack-index-<hex>.bitmap` (composed from the in-use midx's own stored trailer bytes) for the midx. Absent, unreadable, or a structurally corrupt bitmap whose checksum still matches all produce no finding. Reported in every mode, and the midx arm is unconditional (not gated by `core.multiPackIndex`). Exit bit 128. |
+| `invalid-reflog-entry` | `ref`, `id` | A reflog side names an object the run never recorded (git's `invalid reflog entry`); one finding per side, so a line can yield two. |
+| `invalid-cache-tree-pointer` | `id`, `index` | A cache-tree entry names an object no store holds (git's `invalid sha1 pointer in cache-tree`); `index` is the index file naming it, one finding per worktree index. Exit bit 8. |
+| `invalid-resolve-undo-pointer` | `id`, `index` | A regular-file resolve-undo stage names an object no store holds (git's `invalid sha1 pointer in resolve-undo`). Exit bit 8. |
+| `no-default-references` | _none_ | No ref names an object git could parse (git's `No default references` notice); no `unreachable` object is reported after it. No exit bit. |
+| `unknown-object-type` | `id` | `connectivityOnly`: a reflog-reached object whose served copy hashes to another id and that no earlier link typed (git's `Unknown object type for`): reached, never walked. No exit bit. |
+| `unexpected-object-type` | `id`, `expectedType` | `connectivityOnly`: an object a link typed as `expectedType` whose served copy is another type (git's `Object <id> not a <type>`): reached, never walked. No exit bit. |
+| `type-conflict` | `id`, `objectType`, `expectedType` | A lookup asked for `expectedType` of an object an earlier lookup typed `objectType` (git's `object <id> is a <objectType>, not a <expectedType>`); the asking parse or walk gets no object. No exit bit. |
+| `unparseable-object` | `id`, `pack?` | An object whose own parse failed on a type conflict (git's `object could not be parsed` for a loose copy, `object corrupt or missing` for a pack entry): never checked, never recorded as present. Exit bit 1, plus bit 4 when `pack` names the pack. |
+| `bad-pointer` | `id`, `link`, `target` | A commit (`link: 'tree'` or `'parent'`) or tag (`'tag'`) whose link names `target` under a type conflict (git's `bad tree pointer`, `bad parent`, `bad tag pointer to`). No exit bit of its own. |
+| `broken-links` | `id`, `objectType` | An object whose check could not look up one of its links (git's `error in <type> <id>: broken links`). Exit bit 1. |
+| `unresolved-link` | `fromId`, `fromType`, `toType` | A link the reachability walk could not look up as `toType` (git's `broken link from <type> <id>`). Exit bit 2. |
+| `pack-index-checksum-mismatch` | `pack` | A pack's `.idx` trailing checksum disagrees with its bytes. Full mode. Exit bit 4. |
+| `pack-checksum-mismatch` | `pack` | A pack's trailing checksum disagrees with the bytes before it. Full mode. Exit bit 4. |
+| `pack-crc-mismatch` | `pack`, `id`, `offset` | A pack entry's raw bytes disagree with the CRC-32 its `.idx` records; `offset` is the entry's byte offset. Full mode. Exit bit 4. |
+| `pack-entry-unpackable` | `pack`, `id`, `offset` | A packed entry that cannot be unpacked (git's `cannot unpack`). Full mode. |
+| `pack-entry-corrupt` | `pack`, `id` | A packed entry whose content does not hash to its indexed id. Full mode. |
+| `commit-graph-invalid` | `artefact`, plus the verdict's `check` and its fields | `git commit-graph verify` over each object source's commit-graph file (or its chain) reported a disagreement while `core.commitGraph` is on. `check` names it: `checksum`, `load-failure`, `oid-order`, `fanout`, `graph-unparsable`, `extra-edges-out-of-bounds`, `invalid-parent-position`, `odb-unparsable`, `root-tree`, `parent`, `parents-too-long`, `parents-terminate-early`, `generation`, `commit-date`, `mixed-generations`, `chain-unopenable`, `layer-load-failure`, `chain-line-not-hash`, `chain-too-small`, `chain-no-base-chunk`, `chain-base-chunk-too-small`, `chain-mismatch`, `chain-layer-missing`, `chain-incomplete` or `chain-unloaded`. Exit bit 16. |
 
 `pack` is the pack's base name (`pack-<sha>`), already vetted at scan time against path
 separators, `..`, and control characters — but it is **not shell-safe** (spaces, quotes, `$`,
@@ -208,6 +262,7 @@ reconstructed from git's stderr text.
   | `8` | Malformed ref content (`badRefContent`, a `bad-ref` finding) **or** an index cache-tree entry whose tree OID fails to resolve (no finding — see "The cache-tree check is a whole-repository condition" below). Independent causes; either alone, or both together, reads as bit 8. |
   | `10` | Bits 2 and 8 combined (e.g. malformed ref content + ref→absent OID, or a broken cache-tree alongside an unrelated missing object). |
   | `14` | Bits 2, 4 and 8 combined. |
+  | `16` | `git commit-graph verify` reported a disagreement for some object source's commit-graph file or chain (bit 16, `commit-graph-invalid`). |
   | `32` | The in-use multi-pack-index or chain layer was discarded, its trailer checksum disagreed, or it routes to a pack or entry it cannot resolve (bit 32, the four `midx-*` findings). Set in **every** mode, including `connectivityOnly` and `full: false` — ungated like bit 64, unlike bit 4. |
   | `42` | Bits 2, 8 and 32 combined (e.g. a midx-named pack fully deleted: missing objects, invalid ref pointers, and the midx's own pack-resolution failure, with no unrelated pack-accessibility fault). |
   | `64` | A pack's reverse index is unusable, no other error — either its pack index could not be loaded at all (`pack-rev-index-unusable`), or a `.rev` file exists, is readable, and is itself wrong (`pack-rev-index-invalid` / `pack-rev-index-position-mismatch`); the two causes never double-report for the same pack. Set in **every** mode, including `connectivityOnly` and `full: false` — the one bit this table's other rows are gated against. |

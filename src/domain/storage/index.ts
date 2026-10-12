@@ -1,3 +1,5 @@
+// Alternates
+export { parseAlternatesFile, unquoteCStyle } from './alternates.js';
 // Pack bitmap
 export type { BitmapEntryHeader, PackBitmap } from './bitmap.js';
 export { bitmapEntryHeaders, parsePackBitmap } from './bitmap.js';
@@ -81,6 +83,8 @@ export {
   objectIdAt,
   offsetAtPackPosition,
   parsePackIndex,
+  recordedEntryCrc,
+  recordedPackChecksum,
 } from './pack-index.js';
 // Pack name hash
 export type { PathHasher } from './pack-name-hash.js';

@@ -4,6 +4,7 @@
  */
 import { TsgitError, type TsgitErrorData } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
+import { bytesEqual } from '../../domain/objects/encoding.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import { invalidPackHeader, invalidPackIndex } from '../../domain/storage/error.js';
 import {
@@ -15,6 +16,7 @@ import {
   type PackIndex,
   type PackRevIndex,
   parsePackIndex,
+  recordedPackChecksum,
 } from '../../domain/storage/index.js';
 import {
   PACK_HEADER_SIZE,
@@ -23,6 +25,7 @@ import {
 } from '../../domain/storage/pack-entry.js';
 import type { Context } from '../../ports/context.js';
 import type { DirEntry } from '../../ports/file-system.js';
+import type { ObjectSourceReader } from '../../ports/object-source-access.js';
 import {
   bindMidx,
   computeMidxHealth,
@@ -65,7 +68,8 @@ import {
 import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
 import { assertRepoSettingsValid } from './internal/repo-settings-gate.js';
 import { deltaBaseCacheBudgetFor } from './internal/resolve-delta-base-cache-limit.js';
-import { commonGitDir, packsDir } from './path-layout.js';
+import type { SourceLocation } from './internal/source-location.js';
+import { commonGitDir, packsDirIn } from './path-layout.js';
 import { exceedsMaxPackIdxBytes, REASON_PACK_IDX_EXCEEDS_MAX } from './validators.js';
 
 export type { MidxHealth, PackGeneration, PackOffsetTable };
@@ -335,6 +339,12 @@ export interface PackRegistry {
    */
   midxHealth(): Promise<MidxHealth>;
   /**
+   * The packs the in-use multi-pack-index covers, in git's pack-int-id order
+   * (base layer first) — empty without a usable one. git loads these only
+   * through the midx, never through its sorted pack-directory scan.
+   */
+  midxPacks(): Promise<ReadonlyArray<RegisteredPack>>;
+  /**
    * The in-use multi-pack-index's bitmap, or `undefined` when there is no
    * usable midx for the current generation — the state `fsck`'s bitmap pass
    * needs and nothing else needs. Memoised per **generation**, not per
@@ -403,14 +413,14 @@ export function classifyPackFiles(
   return { kept, promisor, cruft, normal };
 }
 
-async function readBoundedIdx(ctx: Context, idxPath: string): Promise<Uint8Array> {
+async function readBoundedIdx(fs: ObjectSourceReader, idxPath: string): Promise<Uint8Array> {
   // Pre-check stat; reject .idx files large enough to exhaust heap before
   // any allocation. Mirrors the readIndex pattern.
-  const stat = await ctx.fs.stat(idxPath);
+  const stat = await fs.stat(idxPath);
   if (exceedsMaxPackIdxBytes(stat.size)) {
     throw invalidPackIndex(REASON_PACK_IDX_EXCEEDS_MAX);
   }
-  const bytes = await ctx.fs.read(idxPath);
+  const bytes = await fs.read(idxPath);
   // Post-check defends against TOCTOU growth between stat and read.
   if (exceedsMaxPackIdxBytes(bytes.length)) {
     throw invalidPackIndex(REASON_PACK_IDX_EXCEEDS_MAX);
@@ -426,6 +436,7 @@ let nextPackInstanceToken = 0;
 
 function loadPack(
   ctx: Context,
+  location: SourceLocation,
   dir: string,
   entryName: string,
   fileNames: ReadonlySet<string>,
@@ -451,7 +462,7 @@ function loadPack(
   // resolveIndexes classification) pays the one bounded read.
   const indexMemo = createPromiseMemo(
     async (): Promise<PackIndex> =>
-      parsePackIndex(await readBoundedIdx(ctx, idxPath), ctx.hashConfig.digestLength),
+      parsePackIndex(await readBoundedIdx(location.fs, idxPath), ctx.hashConfig.digestLength),
   );
 
   // Depends on indexMemo for objectCount — safe even for an unindexable pack:
@@ -466,6 +477,7 @@ function loadPack(
       hasRevIndex,
       ctx.hashConfig.digestLength,
       index.objectCount,
+      location.fs,
     );
   });
 
@@ -474,7 +486,7 @@ function loadPack(
   // which already excludes any pack whose `.idx` never loaded.
   const bitmapMemo = createPromiseMemo(async (): Promise<ArtefactLoad<Uint8Array>> => {
     const index = await indexMemo.get();
-    return loadBitmapBytes(ctx, bitmapPath, hasBitmap, index.objectCount);
+    return loadBitmapBytes(ctx, bitmapPath, hasBitmap, index.objectCount, location.fs);
   });
 
   // Pack position -> index position, read straight out of the same `.rev`
@@ -507,7 +519,7 @@ function loadPack(
   // known-unsupported arm below (browser OPFS) clears it too so every later
   // `readSlice` falls back cleanly; `close()` tolerates a rejected memo and
   // closes nothing.
-  const handleMemo = createPromiseMemo(() => ctx.fs.openWithNoFollow(packPath, 'read'));
+  const handleMemo = createPromiseMemo(() => location.fs.openWithNoFollow(packPath, 'read'));
   // `refresh()` closes outgoing packs while sibling reads may still be
   // mid-slice on this instance: in-flight reads are tracked so `close()`
   // drains them first, and a read arriving after `close()` falls back to the
@@ -532,7 +544,7 @@ function loadPack(
   // browser-shaped UNSUPPORTED_OPERATION arm (no persistent handles) falls
   // back to the same path stat.
   const packSize = async (): Promise<number> => {
-    if (retired) return (await ctx.fs.stat(packPath)).size;
+    if (retired) return (await location.fs.stat(packPath)).size;
     const probe = sizeViaHandle();
     inFlight.add(probe);
     try {
@@ -541,7 +553,7 @@ function loadPack(
       if (!isUnsupportedOperation(err)) throw err;
       // Stryker disable next-line CallExpression: equivalent — `isUnsupportedOperation` only matches an error tagged `operation: 'openWithNoFollow'`, which can only come from `handleMemo`'s own factory rejecting; `createPromiseMemo`'s `get()` already clears its slot on ANY rejection before this catch ever runs, so this call finds the slot already empty.
       handleMemo.clear();
-      return (await ctx.fs.stat(packPath)).size;
+      return (await location.fs.stat(packPath)).size;
     } finally {
       // NOTE: this block's BlockStatement mutant (`{}`) is equivalent — inFlight's only
       // reader is close()'s `Promise.allSettled(inFlight)`, which settles identically
@@ -575,7 +587,7 @@ function loadPack(
   };
 
   const readSlice = async (offset: number, length: number): Promise<Uint8Array> => {
-    if (retired) return ctx.fs.readSlice(packPath, offset, length);
+    if (retired) return location.fs.readSlice(packPath, offset, length);
     const read = windowCache.read(windowCacheKey, offset, length, loadWindow);
     inFlight.add(read);
     try {
@@ -583,7 +595,7 @@ function loadPack(
     } catch (err) {
       if (!isUnsupportedOperation(err)) throw err;
       handleMemo.clear();
-      return ctx.fs.readSlice(packPath, offset, length);
+      return location.fs.readSlice(packPath, offset, length);
     } finally {
       // NOTE: this block's BlockStatement mutant (`{}`) is equivalent — inFlight's only
       // reader is close()'s `Promise.allSettled(inFlight)`, which settles identically
@@ -606,6 +618,16 @@ function loadPack(
   // opens the pack exactly once. The browser-shaped UNSUPPORTED_OPERATION
   // arm inside readSlice already falls back to a path read, so this needs
   // no fallback of its own.
+  // git's `open_packed_git_1` last check: the pack's own trailing checksum
+  // must be the one its `.idx` was written for.
+  const assertTrailerMatchesIndex = async (index: PackIndex): Promise<void> => {
+    const trailerStart = (await sizeMemo.get()) - index.digestLength;
+    const trailer = await readSlice(trailerStart, index.digestLength);
+    if (!bytesEqual(trailer, recordedPackChecksum(index))) {
+      throw invalidPackHeader(PACK_DOES_NOT_MATCH_INDEX);
+    }
+  };
+
   const headerMemo = createPromiseMemo(async (): Promise<PackHeader> => {
     const index = await indexMemo.get();
     const header = parsePackHeader(await readSlice(0, PACK_HEADER_SIZE));
@@ -614,6 +636,7 @@ function loadPack(
         `object count disagrees with index: pack ${header.objectCount}, index ${index.objectCount}`,
       );
     }
+    await assertTrailerMatchesIndex(index);
     return header;
   });
 
@@ -683,6 +706,7 @@ function loadPack(
  */
 function loadCandidatePack(
   ctx: Context,
+  location: SourceLocation,
   dir: string,
   entry: { readonly name: string },
   fileNames: ReadonlySet<string>,
@@ -696,7 +720,7 @@ function loadCandidatePack(
     });
     return undefined;
   }
-  return reusable?.get(name) ?? loadPack(ctx, dir, entry.name, fileNames, windowCache);
+  return reusable?.get(name) ?? loadPack(ctx, location, dir, entry.name, fileNames, windowCache);
 }
 
 const unusableEntry = (
@@ -727,10 +751,13 @@ const unusableEntry = (
  * `domain/error-data-code.ts` documents, and the reason every `ctx.fs`
  * absence probe shares `errorDataCode`.
  */
-async function listPackDir(ctx: Context): Promise<ReadonlyArray<DirEntry>> {
-  const dir = packsDir(commonGitDir(ctx));
+async function listPackDir(
+  ctx: Context,
+  location: SourceLocation,
+): Promise<ReadonlyArray<DirEntry>> {
+  const dir = packsDirIn(location.objectsDir);
   try {
-    return await ctx.fs.readdir(dir);
+    return await location.fs.readdir(dir);
   } catch (error) {
     const code = errorDataCode(error);
     if (code === undefined) throw error;
@@ -752,14 +779,16 @@ async function listPackDir(ctx: Context): Promise<ReadonlyArray<DirEntry>> {
 // listing every read already pays.
 function createStoreGate(
   ctx: Context,
+  location: SourceLocation,
   listing: () => Promise<ReadonlyArray<DirEntry>>,
 ): PromiseMemo<MidxLoadResult> {
   const loadStoreGate = async (): Promise<MidxLoadResult> => {
     const entries = await listing();
     const midxLoad = await loadMidxSet(
       ctx,
-      packsDir(commonGitDir(ctx)),
+      packsDirIn(location.objectsDir),
       new Set(entries.map((entry) => entry.name)),
+      location.fs,
     );
     for (const fault of midxLoad.faults) {
       ctx.logger?.warn?.('packRegistry: discarding unusable multi-pack-index', {
@@ -838,10 +867,21 @@ function recordUnclaimedResult(
  */
 const DELTA_BASE_CACHE_MAX_ENTRIES = 65_536;
 
-export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
+/** git's `packfile %s does not match index` refusal, without the path. */
+const PACK_DOES_NOT_MATCH_INDEX = 'pack does not match index';
+
+const primaryLocation = (ctx: Context): SourceLocation => ({
+  objectsDir: `${commonGitDir(ctx)}/objects`,
+  fs: ctx.fs,
+});
+
+export async function createPackRegistry(
+  ctx: Context,
+  location: SourceLocation = primaryLocation(ctx),
+): Promise<PackRegistry> {
   await assertRepoSettingsValid(ctx);
-  const packDirListing = createPromiseMemo(() => listPackDir(ctx));
-  const storeGate = createStoreGate(ctx, packDirListing.get);
+  const packDirListing = createPromiseMemo(() => listPackDir(ctx, location));
+  const storeGate = createStoreGate(ctx, location, packDirListing.get);
   // Both budgets read `core.*` config independently, but NEVER sequentially:
   // run concurrently, their two `readConfig` calls fall inside the same
   // coalescing window (`config-read.ts`'s per-session single-flight stat),
@@ -878,7 +918,7 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
   const scanPacks = async (): Promise<PackGeneration> => {
     const priorPacks = reuseFrom;
     reuseFrom = undefined;
-    const dir = packsDir(commonGitDir(ctx));
+    const dir = packsDirIn(location.objectsDir);
     // storeGate.get() directly, not currentGate(): scanPacks is reachable
     // only through currentGeneration(), which already refuses to start once
     // disposed, so the gate wrapper's own disposal check would be dead
@@ -911,7 +951,7 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
     const packs: RegisteredPack[] = [];
     for (const entry of entries) {
       if (!isCandidate(entry)) continue;
-      const pack = loadCandidatePack(ctx, dir, entry, fileNames, windowCache, priorPacks);
+      const pack = loadCandidatePack(ctx, location, dir, entry, fileNames, windowCache, priorPacks);
       if (pack !== undefined) packs.push(pack);
     }
     const midx =
@@ -929,6 +969,7 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
         `${dir}/${artefact}`,
         fileNames.has(artefact),
         head.objectCount,
+        location.fs,
       );
       return { artefact, midx: head, ...load };
     });
@@ -1163,6 +1204,11 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
       await currentGate();
     },
     midxHealth: midxHealthMemo.get,
+    async midxPacks(): Promise<ReadonlyArray<RegisteredPack>> {
+      const { midx } = await currentGeneration();
+      if (midx === undefined) return [];
+      return midx.packsByLayer.flat().filter((pack) => pack !== undefined);
+    },
     async midxBitmap(): Promise<MidxBitmapLoad | undefined> {
       const generation = await currentGeneration();
       return generation.midxBitmap.get();

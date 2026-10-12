@@ -28,6 +28,7 @@ import * as path from 'node:path';
 
 import { afterAll, describe, expect, it } from 'vitest';
 
+import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { branchDelete } from '../../src/application/commands/branch.js';
 import { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.node.js';
@@ -602,6 +603,84 @@ describe.skipIf(!GIT_AVAILABLE)('branch delete — worktree holders interop', ()
             name: 'refs/heads/topic',
           });
           expect(branchSurvives(dir, 'topic')).toBe(true);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe.each([
+    {
+      label: 'two namespaces carry, read with the ambiguity check off',
+      seed: (dir: string, root: string, tip: string): void => {
+        git(dir, 'update-ref', 'refs/tags/up', tip);
+        git(dir, 'update-ref', 'refs/heads/up', root);
+        git(dir, 'config', 'core.warnAmbiguousRefs', 'false');
+      },
+    },
+    {
+      label: 'a branch carries past a dangling tag symref',
+      seed: (dir: string, _root: string, tip: string): void => {
+        git(dir, 'update-ref', 'refs/heads/up', tip);
+        git(dir, 'symbolic-ref', 'refs/tags/up', 'refs/tags/nope');
+      },
+    },
+    {
+      label: 'a branch carries past a broken tag',
+      seed: async (dir: string, _root: string, tip: string): Promise<void> => {
+        git(dir, 'update-ref', 'refs/heads/up', tip);
+        await writeFile(path.join(dir, '.git', 'refs', 'tags', 'up'), 'garbage\n');
+      },
+    },
+    {
+      label: 'two namespaces carry under a malformed ambiguity setting',
+      seed: (dir: string, root: string, tip: string): void => {
+        git(dir, 'update-ref', 'refs/tags/up', tip);
+        git(dir, 'update-ref', 'refs/heads/up', root);
+        git(dir, 'config', 'core.warnAmbiguousRefs', 'maybe');
+      },
+    },
+  ])('Given a local upstream whose merge name $label', ({ seed }) => {
+    describe('When git branch -d and tsgit branchDelete both target the branch', () => {
+      it(
+        'Then tsgit decides, refuses and warns as git does',
+        async () => {
+          // Arrange
+          const prepare = async (dir: string): Promise<void> => {
+            const root = git(dir, 'rev-parse', 'HEAD').trim();
+            seedUnmergedBranch(dir, 'topic');
+            git(dir, 'config', 'branch.topic.remote', '.');
+            git(dir, 'config', 'branch.topic.merge', 'up');
+            await seed(dir, root, git(dir, 'rev-parse', 'topic').trim());
+          };
+          const peer = await caseRepo('local-upstream-peer');
+          await prepare(peer);
+          const dir = await caseRepo('local-upstream');
+          await prepare(dir);
+          const warnings: string[] = [];
+          const ctx = {
+            ...createNodeContext({ workDir: dir }),
+            logger: { warn: (message: string) => warnings.push(message) },
+          };
+          const sut = branchDelete;
+
+          // Act
+          const gitResult = quietDelete(peer, '-d', 'topic');
+          const failure = await sut(ctx, { name: 'topic' }).then(
+            () => undefined,
+            (error: unknown) => (error as TsgitError).data.code,
+          );
+
+          // Assert
+          // A two-line warning continues on an indented line; keep it whole.
+          const warned = gitResult.stderr
+            .replace(/\n {9}'/g, "\u0000         '")
+            .split('\n')
+            .filter((line) => line.startsWith('warning: '))
+            .map((line) => line.replaceAll('\u0000', '\n'));
+          expect(warnings.map((message) => `warning: ${message}`)).toEqual(warned);
+          expect(failure === undefined).toBe(gitResult.exitCode === 0);
+          expect(branchSurvives(dir, 'topic')).toBe(branchSurvives(peer, 'topic'));
         },
         ROW_TIMEOUT,
       );

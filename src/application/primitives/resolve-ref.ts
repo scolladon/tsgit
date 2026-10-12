@@ -1,12 +1,13 @@
 import { errorDataCode } from '../../domain/error-data-code.js';
-import type { GitObject, ObjectId, RefName } from '../../domain/objects/index.js';
+import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { refChainTooDeep, refCycleDetected, refNotFound } from '../../domain/refs/error.js';
-import { validateRefName } from '../../domain/refs/ref-validation.js';
+import { isSafeRefName, validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
+import { peelChain, tagHop } from './internal/peel-chain.js';
 import { readObject } from './read-object.js';
 import { getRefStore, type RefStore } from './ref-store.js';
-import { MAX_PEEL_DEPTH, MAX_SYMBOLIC_REF_DEPTH, type ResolveRefOptions } from './types.js';
-import { exceedsMaxPeelDepth, exceedsMaxSymbolicDepth } from './validators.js';
+import { MAX_SYMBOLIC_REF_DEPTH, type ResolveRefOptions } from './types.js';
+import { exceedsMaxSymbolicDepth } from './validators.js';
 
 /** {@link resolveDirectChain}'s result: the resolved id, or the ref name the
  *  chain ended on when no candidate exists — never a thrown `REF_NOT_FOUND`,
@@ -22,7 +23,7 @@ export type ChainOutcome =
  *  not resolve for reading": a chain ending on a name that formats invalid, a
  *  loose file whose content is neither an oid nor `ref: …`, a cycle, and a
  *  chain longer than the reading walk's cap — git returns NULL for all four. */
-const UNREADABLE_REF_CODES = new Set([
+export const UNREADABLE_REF_CODES: ReadonlySet<string> = new Set([
   'INVALID_REF',
   'INVALID_OBJECT_ID',
   'REF_CYCLE_DETECTED',
@@ -111,6 +112,63 @@ export async function resolveRefOrMissing(
   return finalizeOutcome(ctx, outcome, options);
 }
 
+/** One gitrevisions candidate as git's `expand_ref` sees it: resolved (with
+ *  the ref its symbolic chain ends at), absent, or unreadable through a symbolic hop (a dangling target, a
+ *  cycle, a chain past the cap) or on its own content (a broken ref). */
+export type RefCandidateOutcome =
+  | { readonly kind: 'found'; readonly id: ObjectId; readonly ref: RefName }
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'dangling-symref' }
+  | { readonly kind: 'broken' };
+
+const MISSING_CANDIDATE: RefCandidateOutcome = { kind: 'missing' };
+const DANGLING_CANDIDATE: RefCandidateOutcome = { kind: 'dangling-symref' };
+const BROKEN_CANDIDATE: RefCandidateOutcome = { kind: 'broken' };
+
+// Stryker disable next-line StringLiteral: equivalent — the `??` fallback is reached only when `errorDataCode` yields undefined, and no literal put there is a member of UNREADABLE_REF_CODES, so the probe answers false whatever the literal is.
+const isUnreadable = (err: unknown): boolean => UNREADABLE_REF_CODES.has(errorDataCode(err) ?? '');
+
+/** Why a candidate whose chain failed to read failed: its own content
+ *  unreadable, else a fault past its first hop — which is therefore symbolic.
+ *  A name git's `check_refname_format` refuses is never read, so it is absent. */
+const unreadableCandidate = async (
+  ctx: Context,
+  name: RefName | 'HEAD',
+): Promise<RefCandidateOutcome> => {
+  if (!isSafeRefName(name)) return MISSING_CANDIDATE;
+  try {
+    await getRefStore(ctx).resolveDirect(name as RefName);
+    return DANGLING_CANDIDATE;
+  } catch (err) {
+    if (isUnreadable(err)) return BROKEN_CANDIDATE;
+    throw err;
+  }
+};
+
+/**
+ * {@link resolveRefOrMissing} for a candidate sweep that must tell why a
+ * candidate is not this name: a chain ending missing past a symbolic hop is
+ * a dangling symref, an unreadable chain is dangling when the candidate
+ * itself is symbolic and broken otherwise. Peeling (`options.peel`) happens
+ * after, so its failures still reach the caller.
+ */
+export async function readRefCandidate(
+  ctx: Context,
+  name: RefName | 'HEAD',
+  options?: ResolveRefOptions,
+): Promise<RefCandidateOutcome> {
+  let outcome: ChainOutcome;
+  try {
+    outcome = await resolveChainOutcome(ctx, name, options);
+  } catch (err) {
+    if (!isUnreadable(err)) throw err;
+    return unreadableCandidate(ctx, name);
+  }
+  if (outcome.kind === 'missing')
+    return outcome.name === name ? MISSING_CANDIDATE : DANGLING_CANDIDATE;
+  return { kind: 'found', id: await finalizeOutcome(ctx, outcome, options), ref: outcome.name };
+}
+
 const resolveChainOutcome = (
   ctx: Context,
   name: RefName | 'HEAD',
@@ -127,7 +185,7 @@ const finalizeOutcome = (
 ): Promise<ObjectId> => {
   if (options?.peel !== true) return Promise.resolve(outcome.id);
   // Stryker disable next-line OptionalChaining: equivalent — the guard above returns unless `options?.peel === true`, which no undefined `options` can satisfy, so `options` is always defined here.
-  return peelChain(ctx, outcome.id, options?.maxPeelDepth ?? MAX_PEEL_DEPTH);
+  return peelTags(ctx, outcome.id, options?.maxPeelDepth ?? Number.POSITIVE_INFINITY);
 };
 
 /**
@@ -181,16 +239,6 @@ export async function resolveDirectChain(
   }
 }
 
-async function peelChain(ctx: Context, startId: ObjectId, maxDepth: number): Promise<ObjectId> {
-  let current: ObjectId = startId;
-  let depth = 0;
-  for (;;) {
-    const object: GitObject = await readObject(ctx, current);
-    if (object.type !== 'tag') return current;
-    depth += 1;
-    if (exceedsMaxPeelDepth(depth, maxDepth)) {
-      throw refChainTooDeep(depth, []);
-    }
-    current = object.data.object;
-  }
-}
+/** Peel tags to any depth, as git does, unless the caller caps it; a chain revisiting an object refuses. */
+const peelTags = async (ctx: Context, startId: ObjectId, maxDepth: number): Promise<ObjectId> =>
+  (await peelChain(ctx, startId, readObject, tagHop, maxDepth)).id;

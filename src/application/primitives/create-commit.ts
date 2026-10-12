@@ -1,5 +1,6 @@
 import {
   type Commit,
+  type ExtraHeader,
   type HashConfig,
   invalidCommit,
   type ObjectId,
@@ -35,7 +36,18 @@ function assertWellFormedParents(parents: ReadonlyArray<ObjectId>, config: HashC
   }
 }
 
-export async function createCommit(ctx: Context, input: CreateCommitInput): Promise<ObjectId> {
+function assertExtraHeaders(headers: ReadonlyArray<ExtraHeader>): void {
+  for (const header of headers) {
+    if (isInvalidExtraHeaderKey(header.key)) {
+      throw invalidCommit(REASON_EXTRA_HEADER_KEY_INVALID);
+    }
+    if (hasHeaderInjectionChars(header.value)) {
+      throw invalidCommit(REASON_EXTRA_HEADER_INJECTION);
+    }
+  }
+}
+
+function assertCommitInput(ctx: Context, input: CreateCommitInput): void {
   assertWellFormedParents(input.parents, ctx.hashConfig);
   if (messageContainsNul(input.message)) {
     throw invalidCommit(REASON_MESSAGE_CONTAINS_NUL);
@@ -49,21 +61,38 @@ export async function createCommit(ctx: Context, input: CreateCommitInput): Prom
   if (input.gpgSignature !== undefined && hasSignatureInjectionChars(input.gpgSignature)) {
     throw invalidCommit(REASON_GPG_SIGNATURE_INJECTION);
   }
-  if (input.extraHeaders !== undefined) {
-    for (const header of input.extraHeaders) {
-      if (isInvalidExtraHeaderKey(header.key)) {
-        throw invalidCommit(REASON_EXTRA_HEADER_KEY_INVALID);
-      }
-      if (hasHeaderInjectionChars(header.value)) {
-        throw invalidCommit(REASON_EXTRA_HEADER_INJECTION);
-      }
-    }
-  }
+  assertExtraHeaders(input.extraHeaders ?? []);
   // Validate author / committer by roundtripping through serializeIdentity
   // (which rejects control characters per Step 0(a)).
   serializeIdentity(input.author);
   serializeIdentity(input.committer);
+}
 
+export async function createCommit(ctx: Context, input: CreateCommitInput): Promise<ObjectId> {
+  assertCommitInput(ctx, input);
+  return writeCommit(ctx, input, input.extraHeaders ?? []);
+}
+
+/**
+ * git's `commit_tree_extended` with headers copied verbatim from objects
+ * already stored — a merge's `mergetag` headers (`append_merge_tag_headers`),
+ * an amend's carried headers (`read_commit_extra_headers`) — not caller
+ * input, so the header-value guard does not apply to them.
+ */
+export async function createCommitWithStoredHeaders(
+  ctx: Context,
+  input: CreateCommitInput,
+  storedHeaders: ReadonlyArray<ExtraHeader>,
+): Promise<ObjectId> {
+  assertCommitInput(ctx, input);
+  return writeCommit(ctx, input, [...(input.extraHeaders ?? []), ...storedHeaders]);
+}
+
+function writeCommit(
+  ctx: Context,
+  input: CreateCommitInput,
+  extraHeaders: ReadonlyArray<ExtraHeader>,
+): Promise<ObjectId> {
   const commit: Commit = {
     type: 'commit',
     id: '' as ObjectId,
@@ -75,7 +104,7 @@ export async function createCommit(ctx: Context, input: CreateCommitInput): Prom
       message: input.message,
       // Stryker disable next-line ConditionalExpression: equivalent — when gpgSignature is undefined, spreading `{ gpgSignature: undefined }` vs `{}` is invisible to serializeCommitContent (it skips undefined gpgsig), so the written object id is identical
       ...(input.gpgSignature !== undefined ? { gpgSignature: input.gpgSignature } : {}),
-      extraHeaders: input.extraHeaders ?? [],
+      extraHeaders,
     },
   };
   return writeObject(ctx, commit);

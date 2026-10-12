@@ -42,7 +42,7 @@ import {
   type ResolvedDescribePlan,
 } from './internal/describe-options.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
-import { type NameRevResult, nameRev } from './name-rev.js';
+import { type NameRevResult, nameRevPeeled } from './name-rev.js';
 import { status } from './status.js';
 
 export type { DescribeOptions };
@@ -69,7 +69,7 @@ export function describe(
   ctx: Context,
   rev: string | undefined,
   opts: DescribeOptions & { contains: true },
-): Promise<NameRevResult>;
+): Promise<NameRevResult | undefined>;
 export function describe(
   ctx: Context,
   rev?: string,
@@ -79,7 +79,7 @@ export async function describe(
   ctx: Context,
   rev?: string,
   opts: DescribeOptions = {},
-): Promise<DescribeResult | NameRevResult> {
+): Promise<DescribeResult | NameRevResult | undefined> {
   await assertOperationalRepository(ctx);
   if (opts.contains === true) return describeContains(ctx, rev, parseContainsOptions(opts));
   const plan = parseDescribeOptions(opts, rev !== undefined);
@@ -108,22 +108,24 @@ export async function describe(
 
 // `--contains`: git runs `name-rev --tags --no-undefined` (all refs under `all`,
 // `match`/`exclude` mapped to `refs/tags/<pat>`); `always` turns the refusal back
-// into an `undefined`-ref result (the caller renders the oid).
+// into an `undefined`-ref result (the caller renders the oid). An argument
+// name-rev skips is skipped here too.
 const describeContains = async (
   ctx: Context,
   rev: string | undefined,
   plan: ContainsPlan,
-): Promise<NameRevResult> => {
+): Promise<NameRevResult | undefined> => {
   const useTags = !plan.all;
   // Under `all`, git passes no `--refs`/`--exclude` (every ref is a source); under
   // default mode each pattern is scoped to `refs/tags/`.
   const scope = (patterns: ReadonlyArray<string>): ReadonlyArray<string> =>
     useTags ? patterns.map((pattern) => `${TAGS_PREFIX}${pattern}`) : [];
-  const result = await nameRev(ctx, rev, {
+  const result = await nameRevPeeled(ctx, rev, {
     tags: useTags,
     refs: scope(plan.include),
     exclude: scope(plan.exclude),
   });
+  if (result === undefined) return undefined;
   if (result.ref === undefined && !plan.always) throw cannotDescribe(result.oid);
   return result;
 };
@@ -361,6 +363,8 @@ const selectNearest = async (
   for await (const step of commitDateWalk(ctx, {
     from: [target],
     firstParent: plan.firstParent,
+    // git describe checks its stop conditions before parsing any parent.
+    parentReads: 'after-yield',
   })) {
     if (winner === undefined && frozen(candidates, plan.maxCandidates, totalNames)) {
       winner = pickNearest(candidates);

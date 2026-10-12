@@ -2,7 +2,7 @@
  * fetch command. Real pack-driven body.
  *
  * Tests cover:
- *  - REMOTE_NOT_CONFIGURED + REMOTE_ADVERTISES_NO_REFS guards.
+ *  - REMOTE_NOT_CONFIGURED guard; an empty remote fetches nothing.
  *  - Happy fetch (no shallow): pack written, refs/remotes/<remote>/* updated.
  *  - haves derivation (the request body carries `have <oid>` lines).
  *  - prune semantics (refs/remotes/<remote>/<branch> deletion).
@@ -12,17 +12,21 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
-import { fetch } from '../../../../src/application/commands/fetch.js';
+import { type FetchResult, fetch } from '../../../../src/application/commands/fetch.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import * as peelModule from '../../../../src/application/primitives/internal/peel-ref-to-commit.js';
 import {
   commonGitDir,
   looseObjectPath,
 } from '../../../../src/application/primitives/path-layout.js';
 import { getPackRegistry } from '../../../../src/application/primitives/read-object.js';
 import { getRefStore, type RefUpdate } from '../../../../src/application/primitives/ref-store.js';
+import { readReflog as reflogEntries } from '../../../../src/application/primitives/reflog-store.js';
 import { readShallow } from '../../../../src/application/primitives/shallow-file.js';
+import { updateRef as seedRef } from '../../../../src/application/primitives/update-ref.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/index.js';
-import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import { emptyTreeOid, type ObjectId, type RefName } from '../../../../src/domain/objects/index.js';
 import { encodePktStream } from '../../../../src/domain/protocol/pkt-line.js';
 import type {
   HttpRequest,
@@ -227,7 +231,8 @@ const fakeRemoteV2 = (
 const writeOriginConfig = async (ctx: ReturnType<typeof createMemoryContext>): Promise<void> => {
   await ctx.fs.writeUtf8(
     `${ctx.layout.gitDir}/config`,
-    '[remote "origin"]\n  url = https://example.com/r.git\n',
+    '[remote "origin"]\n  url = https://example.com/r.git\n' +
+      '  fetch = +refs/heads/*:refs/remotes/origin/*\n',
   );
 };
 
@@ -302,7 +307,7 @@ describe('fetch', () => {
 
     describe('Given an advertisement with zero refs', () => {
       describe('When fetch', () => {
-        it('Then throws REMOTE_ADVERTISES_NO_REFS', async () => {
+        it('Then it succeeds, updating nothing and writing an empty FETCH_HEAD', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seedRepo(ctx, {});
@@ -313,18 +318,14 @@ describe('fetch', () => {
             advertisedRefs: [],
             packBytes,
           });
+          const sut = fetch;
 
           // Act
-          let caught: unknown;
-          try {
-            await fetch({ ...ctx, transport }, { remote: 'origin' });
-          } catch (err) {
-            caught = err;
-          }
+          const result = await sut({ ...ctx, transport }, { remote: 'origin' });
 
           // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data.code).toBe('REMOTE_ADVERTISES_NO_REFS');
+          expect(result.updatedRefs).toEqual([]);
+          expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/FETCH_HEAD`)).toBe('');
         });
       });
     });
@@ -449,7 +450,7 @@ describe('fetch', () => {
           ).trim();
           expect(onDisk).toBe(blobId);
         });
-        it('Then the remote-tracking ref reflog records a "fetch <remote>: storing head" entry', async () => {
+        it('Then the remote-tracking ref reflog records a bare "fetch: storing head" entry', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seedRepo(ctx, {});
@@ -464,12 +465,12 @@ describe('fetch', () => {
           // Act
           await fetch({ ...ctx, transport });
 
-          // Assert — the reflog message must name the remote, not be empty.
+          // Assert — git's action is its argv, and no remote was named.
           const { readReflog } = await import(
             '../../../../src/application/primitives/reflog-store.js'
           );
           const entries = await readReflog(ctx, 'refs/remotes/origin/main' as RefName);
-          expect(entries.map((e) => e.message)).toEqual(['fetch origin: storing head']);
+          expect(entries.map((e) => e.message)).toEqual(['fetch: storing head']);
         });
       });
     });
@@ -631,7 +632,10 @@ describe('fetch', () => {
             const { packBytes, blobId } = await buildOneBlobPack(ctx, 'hello fetch\n');
             const { transport } = fakeRemote({
               url: remoteUrl,
-              advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+              advertisedRefs: [
+                { name: 'HEAD', id: blobId },
+                { name: 'refs/heads/main', id: blobId },
+              ],
               packBytes,
             });
 
@@ -662,7 +666,10 @@ describe('fetch', () => {
           const { packBytes, blobId } = await buildOneBlobPack(ctx, 'hello fetch\n');
           const { transport } = fakeRemote({
             url: 'https://example.com/origin.git',
-            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            advertisedRefs: [
+              { name: 'HEAD', id: blobId },
+              { name: 'refs/heads/main', id: blobId },
+            ],
             packBytes,
           });
 
@@ -691,7 +698,10 @@ describe('fetch', () => {
             const { packBytes, blobId } = await buildOneBlobPack(ctx, 'hello fetch\n');
             const { transport } = fakeRemote({
               url: 'https://example.com/r.git',
-              advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+              advertisedRefs: [
+                { name: 'HEAD', id: blobId },
+                { name: 'refs/heads/main', id: blobId },
+              ],
               packBytes,
             });
 
@@ -974,6 +984,41 @@ describe('fetch', () => {
       });
     });
 
+    describe('Given prune=true, a command-line refspec and stale refs in both namespaces', () => {
+      describe('When fetch', () => {
+        it('Then only the stale ref under the command-line destination is pruned', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {
+            refs: {
+              'refs/remotes/origin/feature-x': FAKE_OID('b'),
+              'refs/other/gone': FAKE_OID('c'),
+            },
+          });
+          await writeOriginConfig(ctx);
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'prune by cli\n');
+          const { transport } = fakeRemote({
+            url: 'https://example.com/r.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            packBytes,
+          });
+
+          // Act
+          const result = await fetch(
+            { ...ctx, transport },
+            { prune: true, refspecs: ['refs/heads/*:refs/other/*'] },
+          );
+
+          // Assert
+          expect(result.prunedRefs).toEqual(['refs/other/gone']);
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/other/gone`)).toBe(false);
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/feature-x`)).toBe(
+            true,
+          );
+        });
+      });
+    });
+
     describe('Given prune=false', () => {
       describe('When fetch', () => {
         it('Then stale remote-tracking refs are preserved', async () => {
@@ -1070,6 +1115,42 @@ describe('fetch', () => {
             (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/HEAD`)).trim(),
           ).toBe('ref: refs/remotes/origin/main');
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/main`)).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a tracking ref that is a symref onto another tracking ref', () => {
+      describe('When fetch maps the remote branch onto it', () => {
+        it('Then that branch is skipped and the symref target only takes its own branch', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, { refs: { 'refs/remotes/origin/main': FAKE_OID('a') } });
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/refs/remotes/origin/foo`,
+            'ref: refs/remotes/origin/main\n',
+          );
+          await writeOriginConfig(ctx);
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'symref target\n');
+          const { transport } = fakeRemote({
+            url: 'https://example.com/r.git',
+            advertisedRefs: [
+              { name: 'refs/heads/foo', id: FAKE_OID('f') },
+              { name: 'refs/heads/main', id: blobId },
+            ],
+            packBytes,
+          });
+          const sut = fetch;
+
+          // Act
+          const result = await sut({ ...ctx, transport }, {});
+
+          // Assert
+          expect(result.updatedRefs.map((update) => [update.name, update.newId])).toEqual([
+            ['refs/remotes/origin/main', blobId],
+          ]);
+          expect(
+            await getRefStore(ctx).resolveDirect('refs/remotes/origin/foo' as RefName),
+          ).toEqual({ kind: 'symbolic', target: 'refs/remotes/origin/main' });
         });
       });
     });
@@ -1383,7 +1464,7 @@ describe('fetch', () => {
 
     describe('Given a packed ref outside refs/remotes/<remote>/* and refs/tags/*', () => {
       describe('When fetch', () => {
-        it('Then its oid is NOT sent as a have', async () => {
+        it('Then its oid is sent as a have, as git seeds haves from every ref', async () => {
           // Arrange — kills the `entry.name.startsWith(refPrefix) || entry.name.startsWith(tagPrefix)`
           // → always-true mutant. With always-true, a packed `refs/internal/x`
           // would be treated as a remote-tracking tip and emitted as a have.
@@ -1408,7 +1489,7 @@ describe('fetch', () => {
           // Assert
           const postReq = requests.find((r) => r.method === 'POST');
           const decoded = new TextDecoder().decode(postReq?.body);
-          expect(decoded).not.toContain(`have ${internalOid}`);
+          expect(decoded).toContain(`have ${internalOid}`);
         });
       });
     });
@@ -1617,12 +1698,9 @@ describe('fetch', () => {
   describe('hostile server defenses', () => {
     describe('Given a server advertising refs/heads/../../config (path traversal)', () => {
       describe('When fetch', () => {
-        it('Then the malicious ref is silently dropped', async () => {
-          // Arrange — security review HIGH-1. Without validateRefName in
-          // `remoteTargetForRef`, the composed `refs/remotes/origin/../../config`
-          // would point at `.git/config` and `readExistingRef` would `readUtf8`
-          // it. validateRefName rejects `..`, so the ref is dropped entirely —
-          // no on-disk read, no updatedRefs entry.
+        it("Then the malicious ref is dropped with git's funny-ref error", async () => {
+          // Arrange — the mapped `refs/remotes/origin/../../config` would point
+          // at `.git/config`; git's name check drops it before any read.
           const ctx = createMemoryContext();
           await seedRepo(ctx, {});
           await writeOriginConfig(ctx);
@@ -1636,12 +1714,54 @@ describe('fetch', () => {
             packBytes,
           });
 
-          // Act
-          const result = await fetch({ ...ctx, transport });
+          const errors: unknown[][] = [];
+          const logger = { error: (...entry: unknown[]) => errors.push(entry) };
 
-          // Assert — only the safe ref made it through.
+          // Act
+          const result = await fetch({ ...ctx, transport, logger });
+
+          // Assert — only the safe ref made it through, its hostile name kept out of the text.
           expect(result.updatedRefs.map((r) => r.name)).toEqual(['refs/remotes/origin/main']);
+          expect(errors).toEqual([
+            ['Ignoring funny ref locally', { ref: 'refs/remotes/origin/../../config' }],
+          ]);
         });
+      });
+    });
+  });
+
+  describe('Given a server advertising a branch whose name carries a newline', () => {
+    describe('When fetch', () => {
+      it('Then the branch is ignored as a funny ref and FETCH_HEAD holds no line for it', async () => {
+        // Arrange — git's get_fetch_map drops the mapped name; nothing of it reaches FETCH_HEAD.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await writeOriginConfig(ctx);
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'safe\n');
+        const { transport } = fakeRemote({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [
+            { name: 'refs/heads/main', id: blobId },
+            { name: 'refs/heads/ev\nil', id: blobId },
+          ],
+          packBytes,
+        });
+        const errors: unknown[][] = [];
+        const logger = { error: (...entry: unknown[]) => errors.push(entry) };
+
+        // Act
+        await fetch({ ...ctx, transport, logger });
+
+        // Assert
+        const fetchHead = new TextDecoder().decode(
+          await ctx.fs.read(`${ctx.layout.gitDir}/FETCH_HEAD`),
+        );
+        expect(fetchHead).toBe(
+          `${blobId}\tnot-for-merge\tbranch 'main' of https://example.com/r\n`,
+        );
+        expect(errors).toEqual([
+          ['Ignoring funny ref locally', { ref: 'refs/remotes/origin/ev\nil' }],
+        ]);
       });
     });
   });
@@ -1761,7 +1881,7 @@ describe('fetch', () => {
 
     describe('Given a local refs/heads/main oid', () => {
       describe('When fetch derives haves', () => {
-        it('Then that oid is NOT sent as a have (kills the looseDirs scope mutant)', async () => {
+        it('Then that oid is sent as a have, as git seeds haves from every ref', async () => {
           // Arrange — kills the `'refs/tags'` → `""` StringLiteral mutant in
           // `looseDirs`. With `""`, `collectFromDir` would walk the entire
           // gitDir tree and surface `refs/heads/main` content (which IS an oid)
@@ -1786,7 +1906,7 @@ describe('fetch', () => {
           // Assert
           const postReq = requests.find((r) => r.method === 'POST');
           const decoded = new TextDecoder().decode(postReq?.body);
-          expect(decoded).not.toContain(`have ${localHeadOid}`);
+          expect(decoded).toContain(`have ${localHeadOid}`);
         });
       });
     });
@@ -2253,7 +2373,10 @@ describe('fetch — partial clone', () => {
         const { packBytes, blobId } = await buildOneBlobPack(ctx, 'partial fetch\n');
         const { transport, requests } = fakeRemote({
           url: 'https://example.com/r.git',
-          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          advertisedRefs: [
+            { name: 'HEAD', id: blobId },
+            { name: 'refs/heads/main', id: blobId },
+          ],
           advertisedCaps: ['side-band-64k', 'ofs-delta', 'filter'],
           packBytes,
         });
@@ -2279,7 +2402,10 @@ describe('fetch — partial clone', () => {
         const { packBytes, blobId } = await buildOneBlobPack(ctx, 'plain fetch\n');
         const { transport, requests } = fakeRemote({
           url: 'https://example.com/r.git',
-          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          advertisedRefs: [
+            { name: 'HEAD', id: blobId },
+            { name: 'refs/heads/main', id: blobId },
+          ],
           packBytes,
         });
 
@@ -2367,7 +2493,10 @@ describe('fetch — partial clone', () => {
         );
         const { packBytes, blobId } = await buildOneBlobPack(ctx, 'v2 partial fetch\n');
         const { transport, requests } = fakeRemoteV2({
-          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          advertisedRefs: [
+            { name: 'HEAD', id: blobId },
+            { name: 'refs/heads/main', id: blobId },
+          ],
           packBytes,
           filter: true,
         });
@@ -2520,7 +2649,10 @@ describe('fetch — everything local', () => {
         ]);
         const { transport, requests } = fakeRemote({
           url: 'https://example.com/r.git',
-          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          advertisedRefs: [
+            { name: 'HEAD', id: blobId },
+            { name: 'refs/heads/main', id: blobId },
+          ],
           advertisedCaps: ['side-band-64k', 'ofs-delta', 'filter'],
           packBytes,
         });
@@ -2566,10 +2698,10 @@ describe('fetch — everything local', () => {
 
   describe('Given every wanted oid is already local and a remote-tracking ref directory exists', () => {
     describe('When fetch', () => {
-      it('Then the have-derivation walk never reads that directory', async () => {
+      it('Then only the local-state listing reads that directory, never the have-derivation walk', async () => {
         // Arrange — the fast path must return before `deriveHaves` runs, so a
-        // `readdir` call on the (pre-seeded, genuinely existing) remote-tracking
-        // ref directory would prove the have-walk still ran.
+        // second `readdir` call on the (pre-seeded, genuinely existing)
+        // remote-tracking ref directory would prove the have-walk still ran.
         const ctx = createMemoryContext();
         await seedRepo(ctx, {
           head: 'refs/heads/main',
@@ -2585,23 +2717,23 @@ describe('fetch — everything local', () => {
           advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
           packBytes,
         });
-        const poisonPath = `${ctx.layout.gitDir}/refs/remotes/origin`;
-        const poisonedFs = {
+        const watchedPath = `${ctx.layout.gitDir}/refs/remotes/origin`;
+        const reads: string[] = [];
+        const watchedFs = {
           ...ctx.fs,
           readdir: (dir: string): ReturnType<typeof ctx.fs.readdir> => {
-            if (dir === poisonPath) {
-              throw new Error('poison: the everything-local fast path must skip the have-walk');
-            }
+            if (dir === watchedPath) reads.push(dir);
             return ctx.fs.readdir(dir);
           },
         };
 
         // Act
-        const result = await fetch({ ...ctx, fs: poisonedFs, transport });
+        const result = await fetch({ ...ctx, fs: watchedFs, transport });
 
         // Assert
         const update = result.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
         expect(update?.newId).toBe(blobId);
+        expect(reads).toEqual([watchedPath]);
       });
     });
   });
@@ -2681,6 +2813,1200 @@ describe('fetch — everything local', () => {
 
         // Assert
         expect(requests.some((r) => r.method === 'POST')).toBe(false);
+      });
+    });
+  });
+});
+
+describe('fetch — tracking refs mapped through the fetch refspecs', () => {
+  const URL = 'https://example.com/r.git';
+  const writeConfig = async (
+    ctx: ReturnType<typeof createMemoryContext>,
+    fetchLines: ReadonlyArray<string>,
+  ): Promise<void> => {
+    const lines = fetchLines.map((spec) => `  fetch = ${spec}\n`).join('');
+    await ctx.fs.writeUtf8(
+      `${ctx.layout.gitDir}/config`,
+      `[remote "origin"]\n  url = ${URL}\n${lines}`,
+    );
+    __resetConfigCacheForTests();
+  };
+  const advertising = async (ctx: ReturnType<typeof createMemoryContext>, names: string[]) => {
+    const { packBytes, blobId } = await buildOneBlobPack(ctx, 'mapped\n');
+    const { transport } = fakeRemote({
+      url: URL,
+      advertisedRefs: names.map((name) => ({ name, id: blobId })),
+      packBytes,
+    });
+    return { transport, blobId };
+  };
+
+  describe('Given a pattern refspec mapping only b* branches under refs/remotes/x/', () => {
+    describe('When fetch runs against main and b2', () => {
+      it('Then only refs/remotes/x/b2 is written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await writeConfig(ctx, ['+refs/heads/b*:refs/remotes/x/b*']);
+        const { transport } = await advertising(ctx, ['refs/heads/b2', 'refs/heads/main']);
+
+        // Act
+        const result = await fetch({ ...ctx, transport });
+
+        // Assert
+        expect(result.updatedRefs.map((ref) => ref.name)).toEqual(['refs/remotes/x/b2']);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/main`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a negative refspec beside the pattern', () => {
+    describe('When fetch runs against main and secret', () => {
+      it('Then the excluded branch gets no tracking ref', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await writeConfig(ctx, ['+refs/heads/*:refs/remotes/origin/*', '^refs/heads/secret']);
+        const { transport } = await advertising(ctx, ['refs/heads/main', 'refs/heads/secret']);
+
+        // Act
+        const result = await fetch({ ...ctx, transport });
+
+        // Assert
+        expect(result.updatedRefs.map((ref) => ref.name)).toEqual(['refs/remotes/origin/main']);
+      });
+    });
+  });
+
+  describe('Given a remote with no fetch refspec', () => {
+    describe('When fetch runs', () => {
+      it('Then no tracking ref is written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await writeConfig(ctx, []);
+        const { transport } = await advertising(ctx, ['HEAD', 'refs/heads/main']);
+
+        // Act
+        const result = await fetch({ ...ctx, transport });
+
+        // Assert
+        expect(result.updatedRefs).toEqual([]);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given prune and a mapped tracking ref the remote no longer advertises', () => {
+    describe('When fetch runs', () => {
+      it('Then only the mapped ref is pruned and an unmapped namespace is kept', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {
+          refs: { 'refs/remotes/x/b2': FAKE_OID('a'), 'refs/remotes/origin/zz': FAKE_OID('b') },
+        });
+        await writeConfig(ctx, ['+refs/heads/b*:refs/remotes/x/b*']);
+        const { transport } = await advertising(ctx, ['refs/heads/b3']);
+
+        // Act
+        const result = await fetch({ ...ctx, transport }, { prune: true });
+
+        // Assert
+        expect(result.prunedRefs).toEqual(['refs/remotes/x/b2']);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/zz`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given two refspecs mapping different remote namespaces onto one tracking ref', () => {
+    describe('When fetch prunes and only one of the sources is advertised', () => {
+      it('Then the tracking ref is kept, as one of its sources was fetched', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { refs: { 'refs/remotes/origin/x': FAKE_OID('a') } });
+        await writeConfig(ctx, [
+          '+refs/heads/*:refs/remotes/origin/*',
+          '+refs/other/*:refs/remotes/origin/*',
+        ]);
+        const { transport, blobId } = await advertising(ctx, ['refs/heads/x']);
+
+        // Act
+        const result = await fetch({ ...ctx, transport }, { prune: true });
+
+        // Assert
+        expect(result.prunedRefs).toEqual([]);
+        expect((await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/x`)).trim()).toBe(
+          blobId,
+        );
+      });
+    });
+  });
+
+  describe.each([
+    {
+      label: 'no command-line refspec and configured refspecs',
+      fetchLines: ['+refs/heads/*:refs/remotes/origin/*'],
+      options: {},
+      target: 'refs/remotes/origin/main',
+    },
+    {
+      label: 'a command-line refspec beside configured refspecs',
+      fetchLines: ['+refs/heads/*:refs/remotes/origin/*'],
+      options: { refspecs: ['main'] },
+      target: undefined,
+    },
+    {
+      label: 'no command-line refspec and no configured refspec',
+      fetchLines: [],
+      options: {},
+      target: undefined,
+    },
+  ])('Given the remote HEAD names a fetched branch, $label', ({ fetchLines, options, target }) => {
+    describe('When fetch runs', () => {
+      it(`Then refs/remotes/origin/HEAD ${target === undefined ? 'is not created' : 'is created'}`, async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { refs: { 'refs/remotes/origin/main': FAKE_OID('a') } });
+        await writeConfig(ctx, fetchLines);
+        const { transport } = await advertising(ctx, ['HEAD', 'refs/heads/main']);
+        const sut = fetch;
+
+        // Act
+        await sut({ ...ctx, transport }, options);
+
+        // Assert
+        const head = await getRefStore(ctx).resolveDirect('refs/remotes/origin/HEAD' as RefName);
+        expect(head.kind === 'symbolic' ? head.target : undefined).toBe(target);
+      });
+    });
+  });
+});
+
+describe('fetch — FETCH_HEAD and command-line refspecs', () => {
+  const URL = 'https://example.com/r.git/';
+  const TREE = 'e'.repeat(40);
+  const arrange = async (config: string, names: ReadonlyArray<string>) => {
+    const ctx = createMemoryContext();
+    const { commitIds } = await seedRepo(ctx, { commits: [{ tree: TREE }] });
+    const tip = commitIds[0] as ObjectId;
+    await ctx.fs.writeUtf8(
+      `${ctx.layout.gitDir}/config`,
+      `[remote "origin"]\n  url = ${URL}\n${config}`,
+    );
+    __resetConfigCacheForTests();
+    const { transport } = fakeRemote({
+      url: URL,
+      advertisedRefs: names.map((name) => ({ name, id: tip })),
+      packBytes: new Uint8Array(0),
+    });
+    return { ctx: { ...ctx, transport }, tip };
+  };
+  const fetchHead = (ctx: ReturnType<typeof createMemoryContext>) =>
+    ctx.fs.readUtf8(`${ctx.layout.gitDir}/FETCH_HEAD`);
+  const ORIGIN_FETCH = '  fetch = +refs/heads/*:refs/remotes/origin/*\n';
+  const MERGE_B2 = '[branch "main"]\n  remote = origin\n  merge = refs/heads/b2\n';
+
+  describe('Given a branch whose upstream is the fetched remote', () => {
+    describe('When fetch runs', () => {
+      it('Then FETCH_HEAD lists the upstream for merging first and the rest not for merging', async () => {
+        // Arrange
+        const { ctx, tip } = await arrange(`${ORIGIN_FETCH}${MERGE_B2}`, [
+          'refs/heads/b2',
+          'refs/heads/main',
+        ]);
+        const sut = fetch;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await fetchHead(ctx)).toBe(
+          `${tip}\t\tbranch 'b2' of https://example.com/r\n` +
+            `${tip}\tnot-for-merge\tbranch 'main' of https://example.com/r\n`,
+        );
+      });
+    });
+  });
+
+  describe('Given command-line refspecs', () => {
+    describe('When fetch runs', () => {
+      it('Then their refs are for merging and the configured refspecs update tracking refs', async () => {
+        // Arrange
+        const { ctx, tip } = await arrange(ORIGIN_FETCH, ['refs/heads/b2', 'refs/heads/main']);
+        const sut = fetch;
+
+        // Act
+        const result = await sut(ctx, { refspecs: ['main'] });
+
+        // Assert
+        expect(await fetchHead(ctx)).toBe(`${tip}\t\tbranch 'main' of https://example.com/r\n`);
+        expect(result.updatedRefs.map((ref) => ref.name)).toEqual(['refs/remotes/origin/main']);
+      });
+    });
+  });
+
+  describe.each([
+    { words: ['tag', 'v1'], tag: 'v1' },
+    { words: ['tag', 'tag'], tag: 'tag' },
+  ])("Given the command-line words 'tag' and the tag name $tag", ({ words, tag }) => {
+    describe('When fetch runs', () => {
+      it('Then the tag is fetched into its own name and listed for merging', async () => {
+        // Arrange
+        const ref = `refs/tags/${tag}`;
+        const { ctx, tip } = await arrange(ORIGIN_FETCH, ['refs/heads/main', ref]);
+        const sut = fetch;
+
+        // Act
+        const result = await sut(ctx, { refspecs: words });
+
+        // Assert
+        expect(await fetchHead(ctx)).toBe(`${tip}\t\ttag '${tag}' of https://example.com/r\n`);
+        expect(result.updatedRefs.map((update) => [update.source, update.name])).toEqual([
+          [ref, ref],
+        ]);
+      });
+    });
+  });
+
+  describe("Given the command-line word 'tag' with no tag name after it", () => {
+    describe('When fetch runs', () => {
+      it('Then it refuses as git does before touching FETCH_HEAD', async () => {
+        // Arrange
+        const { ctx } = await arrange(ORIGIN_FETCH, ['refs/heads/main']);
+        const sut = fetch;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, { refspecs: ['main', 'tag'] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_OPTION',
+          option: 'refspecs',
+          reason: 'you need to specify a tag name',
+        });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/FETCH_HEAD`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given command-line refspecs and an empty refmap', () => {
+    describe('When fetch runs', () => {
+      it('Then no tracking ref is updated', async () => {
+        // Arrange
+        const { ctx } = await arrange(ORIGIN_FETCH, ['refs/heads/main']);
+        const sut = fetch;
+
+        // Act
+        const result = await sut(ctx, { refspecs: ['main'], refmap: [''] });
+
+        // Assert
+        expect(result.updatedRefs).toEqual([]);
+      });
+    });
+  });
+
+  describe.each([
+    ['born', 'main', 'refs/heads/main'],
+    ['unborn', 'fresh', 'refs/heads/fresh'],
+  ])('Given HEAD on the %s branch a command-line refspec writes into', (_state, branch, ref) => {
+    describe('When fetch runs', () => {
+      it('Then it refuses before writing any ref or FETCH_HEAD line', async () => {
+        // Arrange
+        const { ctx } = await arrange(ORIGIN_FETCH, ['refs/heads/main']);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `ref: ${ref}\n`);
+        const before = await getRefStore(ctx).resolveDirect(ref as RefName);
+        const sut = fetch;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, { refspecs: [`main:${branch}`] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'FETCH_INTO_CHECKED_OUT_BRANCH',
+          branch: ref,
+          path: ctx.layout.workDir,
+        });
+        expect((caught as TsgitError).message).toContain(
+          `refusing to fetch into branch '${ref}' checked out at '${ctx.layout.workDir}'`,
+        );
+        expect(await getRefStore(ctx).resolveDirect(ref as RefName)).toEqual(before);
+        expect(await fetchHead(ctx)).toBe('');
+        const tracking = 'refs/remotes/origin/main' as RefName;
+        expect((await getRefStore(ctx).resolveDirect(tracking)).kind).toBe('missing');
+      });
+    });
+  });
+
+  describe('Given HEAD naming the remote-tracking ref the fetch writes', () => {
+    describe('When fetch runs', () => {
+      it('Then the ref is written, as only a branch is guarded', async () => {
+        // Arrange
+        const { ctx, tip } = await arrange(ORIGIN_FETCH, ['refs/heads/main']);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/remotes/origin/main\n');
+        const sut = fetch;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const tracking = 'refs/remotes/origin/main' as RefName;
+        expect(await getRefStore(ctx).resolveDirect(tracking)).toEqual({ kind: 'direct', id: tip });
+      });
+    });
+  });
+
+  describe.each([
+    {
+      label: 'refspecs and no remote',
+      opts: { refspecs: ['main:other'] },
+      expected: 'fetch origin main:other: storing head',
+    },
+    {
+      label: 'the remote and refspecs',
+      opts: { remote: 'origin', refspecs: ['main:other'] },
+      expected: 'fetch origin main:other: storing head',
+    },
+  ])('Given $label', ({ opts, expected }) => {
+    describe('When fetch stores the refspec destination', () => {
+      it('Then its reflog action spells the repository and refspecs as git argv would', async () => {
+        // Arrange
+        const { ctx } = await arrange(ORIGIN_FETCH, ['refs/heads/main']);
+        const sut = fetch;
+
+        // Act
+        await sut(ctx, opts);
+
+        // Assert
+        const entries = await reflogEntries(ctx, 'refs/heads/other' as RefName);
+        expect(entries.map((entry) => entry.message)).toEqual([expected]);
+      });
+    });
+  });
+
+  describe('Given HEAD on main and a command-line refspec writing another branch', () => {
+    describe('When fetch runs', () => {
+      it('Then the other branch is written', async () => {
+        // Arrange
+        const { ctx, tip } = await arrange(ORIGIN_FETCH, ['refs/heads/main']);
+        const sut = fetch;
+
+        // Act
+        await sut(ctx, { refspecs: ['main:other'] });
+
+        // Assert
+        const other = await getRefStore(ctx).resolveDirect('refs/heads/other' as RefName);
+        expect(other).toEqual({ kind: 'direct', id: tip });
+      });
+    });
+  });
+
+  describe('Given a command-line refspec git cannot parse', () => {
+    describe('When fetch runs', () => {
+      it('Then it refuses the refspec before touching FETCH_HEAD', async () => {
+        // Arrange
+        const { ctx } = await arrange(ORIGIN_FETCH, ['refs/heads/main']);
+        const sut = fetch;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, { refspecs: ['refs/heads/*'] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'REFSPEC_INVALID',
+          raw: 'refs/heads/*',
+          reason: 'not a valid refspec',
+        });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/FETCH_HEAD`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an invalid refmap', () => {
+    describe('When fetch runs', () => {
+      it('Then it refuses the refmap', async () => {
+        // Arrange
+        const { ctx } = await arrange(ORIGIN_FETCH, ['refs/heads/main']);
+        const sut = fetch;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, { refspecs: ['main'], refmap: ['a b'] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'REFSPEC_INVALID',
+          raw: 'a b',
+          reason: 'not a valid refspec',
+        });
+      });
+    });
+  });
+
+  describe('Given a stale FETCH_HEAD and a refspec naming a missing remote ref', () => {
+    describe('When fetch runs', () => {
+      it('Then FETCH_HEAD is left truncated', async () => {
+        // Arrange
+        const { ctx } = await arrange(ORIGIN_FETCH, ['refs/heads/main']);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/FETCH_HEAD`, 'stale\n');
+        const sut = fetch;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, { refspecs: ['nope'] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'REMOTE_REF_NOT_FOUND', ref: 'nope' });
+        expect(await fetchHead(ctx)).toBe('');
+      });
+    });
+  });
+
+  describe('Given a ref for merging that names no commit', () => {
+    describe('When fetch runs', () => {
+      it('Then FETCH_HEAD lists it not for merging', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          `[remote "origin"]\n  url = ${URL}\n`,
+        );
+        __resetConfigCacheForTests();
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'not a commit\n');
+        const { transport } = fakeRemote({
+          url: URL,
+          advertisedRefs: [{ name: 'HEAD', id: blobId }],
+          packBytes,
+        });
+        const sut = fetch;
+
+        // Act
+        await sut({ ...ctx, transport });
+
+        // Assert
+        expect(await fetchHead(ctx)).toBe(`${blobId}\tnot-for-merge\thttps://example.com/r\n`);
+      });
+    });
+  });
+
+  describe('Given a branch tracking the fetched remote without a merge setting', () => {
+    describe('When fetch runs by two exact configured refspecs', () => {
+      it('Then FETCH_HEAD lists the first refspec for merging and the second not', async () => {
+        // Arrange
+        const { ctx, tip } = await arrange(
+          '  fetch = +refs/heads/main:refs/remotes/origin/main\n' +
+            '  fetch = +refs/heads/b2:refs/remotes/origin/b2\n' +
+            '[branch "main"]\n  remote = origin\n',
+          ['refs/heads/main', 'refs/heads/b2'],
+        );
+        const sut = fetch;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await fetchHead(ctx)).toBe(
+          `${tip}\t\tbranch 'main' of https://example.com/r\n` +
+            `${tip}\tnot-for-merge\tbranch 'b2' of https://example.com/r\n`,
+        );
+      });
+    });
+  });
+});
+
+describe('fetch — wants, include-tag and tag backfill', () => {
+  const URL = 'https://example.com/r.git';
+  const UNMAPPED = FAKE_OID('d');
+  const twoBlobPack = async (ctx: ReturnType<typeof createMemoryContext>) => {
+    const built = await buildSyntheticPack(ctx, [
+      { kind: 'base', type: 'blob', content: ENCODER.encode('first\n') },
+      { kind: 'base', type: 'blob', content: ENCODER.encode('second\n') },
+    ]);
+    return {
+      packBytes: built.packBytes,
+      first: built.ids[0] as ObjectId,
+      second: built.ids[1] as ObjectId,
+    };
+  };
+  const configure = async (ctx: ReturnType<typeof createMemoryContext>, fetchSpec: string) => {
+    await seedRepo(ctx, {});
+    await ctx.fs.writeUtf8(
+      `${ctx.layout.gitDir}/config`,
+      `[remote "origin"]\n  url = ${URL}\n  fetch = ${fetchSpec}\n`,
+    );
+    __resetConfigCacheForTests();
+  };
+  const postBody = (requests: ReadonlyArray<HttpRequest>): string =>
+    DECODER.decode(requests.find((request) => request.method === 'POST')?.body);
+
+  describe('Given refspecs mapping only some advertised branches', () => {
+    describe('When fetch negotiates', () => {
+      it('Then only the mapped refs are wanted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await configure(ctx, '+refs/heads/b*:refs/remotes/x/b*');
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'mapped\n');
+        const { transport, requests } = fakeRemote({
+          url: URL,
+          advertisedRefs: [
+            { name: 'refs/heads/b2', id: blobId },
+            { name: 'refs/heads/main', id: UNMAPPED },
+          ],
+          packBytes,
+        });
+        const sut = fetch;
+
+        // Act
+        await sut({ ...ctx, transport });
+
+        // Assert
+        expect(postBody(requests)).toContain(`want ${blobId}`);
+        expect(postBody(requests)).not.toContain(`want ${UNMAPPED}`);
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'refspecs storing into refs', refspecs: undefined, expected: true },
+    { label: 'a command-line refspec storing nowhere', refspecs: ['main'], expected: false },
+  ])('Given a v1 server offering include-tag and $label', ({ refspecs, expected }) => {
+    describe('When fetch negotiates', () => {
+      it(`Then include-tag is ${expected ? '' : 'not '}requested`, async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await configure(ctx, '+refs/heads/*:refs/remotes/origin/*');
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'tip\n');
+        const { transport, requests } = fakeRemote({
+          url: URL,
+          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          advertisedCaps: ['side-band-64k', 'ofs-delta', 'include-tag'],
+          packBytes,
+        });
+        const sut = fetch;
+
+        // Act
+        await sut({ ...ctx, transport }, refspecs === undefined ? {} : { refspecs });
+
+        // Assert
+        expect(postBody(requests).includes('include-tag')).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a v2 server and refspecs storing into refs', () => {
+    describe('When fetch negotiates', () => {
+      it('Then the fetch command carries include-tag', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await configure(ctx, '+refs/heads/*:refs/remotes/origin/*');
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'v2 tip\n');
+        const { transport, requests } = fakeRemoteV2({
+          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          packBytes,
+        });
+        const sut = fetch;
+
+        // Act
+        await sut({ ...ctx, transport });
+
+        // Assert
+        const fetchRequest = requests
+          .map((request) => DECODER.decode(request.body))
+          .find((body) => body.includes('command=fetch'));
+        expect(fetchRequest).toContain('include-tag');
+      });
+    });
+  });
+
+  describe('Given a tag on an object that only arrives with the pack', () => {
+    describe('When fetch completes', () => {
+      it('Then the tag is backfilled and listed after the fetched refs', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await configure(ctx, '+refs/heads/*:refs/remotes/origin/*');
+        const { packBytes, first, second } = await twoBlobPack(ctx);
+        const { transport } = fakeRemote({
+          url: URL,
+          advertisedRefs: [
+            { name: 'refs/heads/main', id: first },
+            { name: 'refs/tags/t', id: second },
+          ],
+          packBytes,
+        });
+        const sut = fetch;
+
+        // Act
+        const result = await sut({ ...ctx, transport });
+
+        // Assert
+        expect(result.updatedRefs.map((ref) => ref.name)).toEqual([
+          'refs/remotes/origin/main',
+          'refs/tags/t',
+        ]);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/FETCH_HEAD`)).toBe(
+          `${first}\tnot-for-merge\tbranch 'main' of https://example.com/r\n` +
+            `${second}\tnot-for-merge\ttag 't' of https://example.com/r\n`,
+        );
+      });
+    });
+  });
+
+  describe('Given a command-line refspec storing into the ref the tracking refspec maps another ref to', () => {
+    describe('When fetch runs', () => {
+      it('Then git warns through the logger that the ref usually tracks the other', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await configure(ctx, '+refs/heads/*:refs/remotes/origin/*');
+        const { packBytes, first, second } = await twoBlobPack(ctx);
+        const { transport } = fakeRemote({
+          url: URL,
+          advertisedRefs: [
+            { name: 'refs/heads/a', id: first },
+            { name: 'refs/heads/b', id: second },
+          ],
+          packBytes,
+        });
+        const warnings: string[] = [];
+        const logger = { ...ctx.logger, warn: (message: string) => warnings.push(message) };
+        const sut = fetch;
+
+        // Act
+        await sut(
+          { ...ctx, transport, logger },
+          {
+            refspecs: ['refs/heads/a:refs/remotes/origin/b', 'b'],
+          },
+        );
+
+        // Assert
+        expect(warnings).toEqual([
+          'refs/remotes/origin/b usually tracks refs/heads/b, not refs/heads/a',
+        ]);
+      });
+    });
+  });
+
+  describe('Given a v1 server not offering include-tag and refspecs storing into refs', () => {
+    describe('When fetch negotiates', () => {
+      it('Then include-tag is not requested', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await configure(ctx, '+refs/heads/*:refs/remotes/origin/*');
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'tip\n');
+        const { transport, requests } = fakeRemote({
+          url: URL,
+          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          advertisedCaps: ['side-band-64k', 'ofs-delta'],
+          packBytes,
+        });
+        const sut = fetch;
+
+        // Act
+        await sut({ ...ctx, transport });
+
+        // Assert
+        expect(postBody(requests)).toContain(`want ${blobId}`);
+        expect(postBody(requests)).not.toContain('include-tag');
+      });
+    });
+  });
+});
+
+describe('fetch reflog actions', () => {
+  const IDENT = { name: 'Ada', email: 'ada@example.com', timestamp: 1, timezoneOffset: '+0000' };
+
+  const writeCommit = (
+    ctx: ReturnType<typeof createMemoryContext>,
+    parents: ReadonlyArray<ObjectId>,
+    message: string,
+  ): Promise<ObjectId> =>
+    writeObject(ctx, {
+      type: 'commit',
+      id: '' as ObjectId,
+      data: {
+        tree: emptyTreeOid(ctx.hashConfig),
+        parents,
+        author: IDENT,
+        committer: IDENT,
+        message,
+        extraHeaders: [],
+      },
+    });
+
+  const reflogOf = async (ctx: ReturnType<typeof createMemoryContext>, ref: string) =>
+    (await reflogEntries(ctx, ref as RefName)).map((entry) => entry.message);
+
+  /** origin maps `spec`; `local` is seeded, the remote advertises `remote`. */
+  const fetchWith = async (
+    spec: string,
+    local: Readonly<Record<string, ObjectId>>,
+    remote: ReadonlyArray<{ readonly name: string; readonly id: ObjectId }>,
+    ctx: ReturnType<typeof createMemoryContext>,
+    extraConfig = '',
+  ): Promise<FetchResult> => {
+    await ctx.fs.writeUtf8(
+      `${ctx.layout.gitDir}/config`,
+      `[core]\n  logAllRefUpdates = always\n[remote "origin"]\n  url = https://example.com/r.git\n  fetch = ${spec}\n${extraConfig}`,
+    );
+    for (const [name, id] of Object.entries(local)) {
+      await seedRef(ctx, name as RefName, id, { reflogMessage: 'seed' });
+    }
+    const { packBytes } = await buildOneBlobPack(ctx, 'unused\n');
+    const { transport } = fakeRemote({
+      url: 'https://example.com/r.git',
+      advertisedRefs: remote,
+      packBytes,
+    });
+    return fetch({ ...ctx, transport }, { remote: 'origin' });
+  };
+
+  describe.each([
+    ['a new tag', '+refs/tags/*:refs/tags/*', 'refs/tags/v1', 'refs/tags/v1', 'storing tag'],
+    [
+      'a new ref outside heads and tags',
+      '+refs/notes/*:refs/notes/*',
+      'refs/notes/n',
+      'refs/notes/n',
+      'storing ref',
+    ],
+    [
+      'a new branch',
+      '+refs/heads/*:refs/remotes/origin/*',
+      'refs/heads/b',
+      'refs/remotes/origin/b',
+      'storing head',
+    ],
+  ])('Given %s advertised', (_label, spec, remoteRef, localRef, action) => {
+    describe('When fetch stores it', () => {
+      it('Then the reflog names the kind of the remote ref', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const tip = await writeCommit(ctx, [], 'tip\n');
+        const sut = fetchWith;
+
+        // Act
+        await sut(spec, {}, [{ name: remoteRef, id: tip }], ctx);
+
+        // Assert
+        expect(await reflogOf(ctx, localRef)).toEqual([`fetch origin: ${action}`]);
+      });
+    });
+  });
+
+  describe('Given a remote-tracking ref behind the advertised commit', () => {
+    describe('When fetch advances it', () => {
+      it('Then the reflog records a fast-forward', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const base = await writeCommit(ctx, [], 'base\n');
+        const next = await writeCommit(ctx, [base], 'next\n');
+        const sut = fetchWith;
+
+        // Act
+        await sut(
+          '+refs/heads/*:refs/remotes/origin/*',
+          { 'refs/remotes/origin/main': base },
+          [{ name: 'refs/heads/main', id: next }],
+          ctx,
+        );
+
+        // Assert
+        expect(await reflogOf(ctx, 'refs/remotes/origin/main')).toEqual([
+          'seed',
+          'fetch origin: fast-forward',
+        ]);
+      });
+    });
+  });
+
+  describe('Given a remote-tracking ref the advertised commit does not descend from', () => {
+    describe('When a forcing refspec rewrites it', () => {
+      it('Then the reflog records a forced update', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const base = await writeCommit(ctx, [], 'base\n');
+        const other = await writeCommit(ctx, [], 'other\n');
+        const sut = fetchWith;
+
+        // Act
+        await sut(
+          '+refs/heads/*:refs/remotes/origin/*',
+          { 'refs/remotes/origin/main': base },
+          [{ name: 'refs/heads/main', id: other }],
+          ctx,
+        );
+
+        // Assert
+        expect(await reflogOf(ctx, 'refs/remotes/origin/main')).toEqual([
+          'seed',
+          'fetch origin: forced-update',
+        ]);
+      });
+    });
+  });
+
+  describe('Given an existing tag the remote moved', () => {
+    describe('When a forcing refspec rewrites it', () => {
+      it('Then the reflog records a tag update', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const base = await writeCommit(ctx, [], 'base\n');
+        const next = await writeCommit(ctx, [base], 'next\n');
+        const sut = fetchWith;
+
+        // Act
+        await sut(
+          '+refs/tags/*:refs/tags/*',
+          { 'refs/tags/v1': base },
+          [{ name: 'refs/tags/v1', id: next }],
+          ctx,
+        );
+
+        // Assert
+        expect(await reflogOf(ctx, 'refs/tags/v1')).toEqual(['seed', 'fetch origin: updating tag']);
+      });
+    });
+  });
+
+  describe('Given reading the stored commit fails for a reason other than absence', () => {
+    describe('When fetch judges the update', () => {
+      it('Then the failure propagates', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const base = await writeCommit(ctx, [], 'base\n');
+        const tip = await writeCommit(ctx, [base], 'tip\n');
+        const failure = new Error('object store unreadable');
+        vi.spyOn(peelModule, 'peelRefToCommit').mockRejectedValue(failure);
+        const sut = fetchWith;
+
+        // Act
+        const attempt = sut(
+          '+refs/heads/*:refs/remotes/origin/*',
+          { 'refs/remotes/origin/b': base },
+          [{ name: 'refs/heads/b', id: tip }],
+          ctx,
+        );
+
+        // Assert
+        await expect(attempt).rejects.toBe(failure);
+        vi.restoreAllMocks();
+      });
+    });
+  });
+
+  const tipOf = async (ctx: ReturnType<typeof createMemoryContext>, ref: string) => {
+    const value = await getRefStore(ctx).resolveDirect(ref as RefName);
+    return value.kind === 'direct' ? value.id : undefined;
+  };
+
+  describe('Given a refspec without the force flag and a tracking ref the advertised commit does not descend from', () => {
+    describe('When fetch runs', () => {
+      it('Then that update is rejected as non-fast-forward and the other refs still update', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const base = await writeCommit(ctx, [], 'base\n');
+        const other = await writeCommit(ctx, [], 'other\n');
+        const next = await writeCommit(ctx, [base], 'next\n');
+        const sut = fetchWith;
+
+        // Act
+        const result = await sut(
+          'refs/heads/*:refs/remotes/origin/*',
+          { 'refs/remotes/origin/main': base, 'refs/remotes/origin/side': base },
+          [
+            { name: 'refs/heads/main', id: other },
+            { name: 'refs/heads/side', id: next },
+          ],
+          ctx,
+        );
+
+        // Assert
+        expect(result.updatedRefs).toEqual([
+          {
+            name: 'refs/remotes/origin/main',
+            source: 'refs/heads/main',
+            oldId: base,
+            newId: other,
+            status: 'rejected',
+            rejection: 'non-fast-forward',
+          },
+          {
+            name: 'refs/remotes/origin/side',
+            source: 'refs/heads/side',
+            oldId: base,
+            newId: next,
+            status: 'ok',
+          },
+        ]);
+        expect(await tipOf(ctx, 'refs/remotes/origin/main')).toBe(base);
+        expect(await reflogOf(ctx, 'refs/remotes/origin/main')).toEqual(['seed']);
+        expect(await tipOf(ctx, 'refs/remotes/origin/side')).toBe(next);
+      });
+    });
+  });
+
+  describe('Given a refspec without the force flag and an existing tag the remote moved', () => {
+    describe('When fetch runs', () => {
+      it('Then the update is rejected as clobbering the tag, which keeps its object', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const base = await writeCommit(ctx, [], 'base\n');
+        const next = await writeCommit(ctx, [base], 'next\n');
+        const sut = fetchWith;
+
+        // Act
+        const result = await sut(
+          'refs/tags/*:refs/tags/*',
+          { 'refs/tags/v1': base },
+          [{ name: 'refs/tags/v1', id: next }],
+          ctx,
+        );
+
+        // Assert
+        expect(result.updatedRefs).toEqual([
+          {
+            name: 'refs/tags/v1',
+            source: 'refs/tags/v1',
+            oldId: base,
+            newId: next,
+            status: 'rejected',
+            rejection: 'would-clobber-existing-tag',
+          },
+        ]);
+        expect(await tipOf(ctx, 'refs/tags/v1')).toBe(base);
+      });
+    });
+  });
+
+  describe('Given a refspec without the force flag and a rejected update', () => {
+    describe('When fetch writes FETCH_HEAD', () => {
+      it('Then the rejected ref is still listed with the fetched object', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const base = await writeCommit(ctx, [], 'base\n');
+        const other = await writeCommit(ctx, [], 'other\n');
+        const sut = fetchWith;
+
+        // Act
+        await sut(
+          'refs/heads/main:refs/remotes/origin/main',
+          { 'refs/remotes/origin/main': base },
+          [{ name: 'refs/heads/main', id: other }],
+          ctx,
+        );
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/FETCH_HEAD`)).toBe(
+          `${other}\t\tbranch 'main' of https://example.com/r\n`,
+        );
+      });
+    });
+  });
+
+  describe('Given a refspec without the force flag and a ref that does not name a commit', () => {
+    describe('When fetch replaces it', () => {
+      it('Then the update is stored, as git stores what it cannot compare', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const base = await writeCommit(ctx, [], 'base\n');
+        const tree = emptyTreeOid(ctx.hashConfig);
+        await writeObject(ctx, { type: 'tree', id: '' as ObjectId, entries: [] });
+        const sut = fetchWith;
+
+        // Act
+        const result = await sut(
+          'refs/heads/*:refs/remotes/origin/*',
+          { 'refs/remotes/origin/main': tree },
+          [{ name: 'refs/heads/main', id: base }],
+          ctx,
+        );
+
+        // Assert
+        expect(result.updatedRefs).toEqual([
+          {
+            name: 'refs/remotes/origin/main',
+            source: 'refs/heads/main',
+            oldId: tree,
+            newId: base,
+            status: 'ok',
+          },
+        ]);
+        expect(await reflogOf(ctx, 'refs/remotes/origin/main')).toEqual([
+          'seed',
+          'fetch origin: storing head',
+        ]);
+      });
+    });
+  });
+
+  describe('Given a refspec without the force flag and a ref already at the advertised commit', () => {
+    describe('When fetch runs', () => {
+      it('Then the ref is listed as up to date', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const base = await writeCommit(ctx, [], 'base\n');
+        const sut = fetchWith;
+
+        // Act
+        const result = await sut(
+          'refs/heads/*:refs/remotes/origin/*',
+          { 'refs/remotes/origin/main': base },
+          [{ name: 'refs/heads/main', id: base }],
+          ctx,
+        );
+
+        // Assert
+        expect(result.updatedRefs).toEqual([
+          {
+            name: 'refs/remotes/origin/main',
+            source: 'refs/heads/main',
+            oldId: base,
+            newId: base,
+            status: 'ok',
+          },
+        ]);
+      });
+    });
+  });
+
+  const FORCED_UPDATES_WARNING =
+    "fetch normally indicates which branches had a forced update,\nbut that check has been disabled; to re-enable, use '--show-forced-updates'\nflag or run 'git config fetch.showForcedUpdates true'";
+
+  /** A non-forcing refspec over a tracking ref the advertised commit does not descend from. */
+  const fetchRewritten = async (extraConfig: string) => {
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, {});
+    const base = await writeCommit(ctx, [], 'base\n');
+    const other = await writeCommit(ctx, [], 'other\n');
+    const warnings: string[] = [];
+    const logged = { ...ctx, logger: { warn: (message: string) => warnings.push(message) } };
+    const result = await fetchWith(
+      'refs/heads/*:refs/remotes/origin/*',
+      { 'refs/remotes/origin/main': base },
+      [{ name: 'refs/heads/main', id: other }],
+      logged,
+      extraConfig,
+    );
+    return { ctx, base, other, warnings, result };
+  };
+
+  describe('Given fetch.showForcedUpdates is off', () => {
+    describe('When a refspec without the force flag maps a rewritten ref', () => {
+      it('Then the ref moves as a fast-forward and git warns the check is disabled', async () => {
+        // Arrange
+        const sut = fetchRewritten;
+
+        // Act
+        const { ctx, base, other, warnings, result } = await sut(
+          '[fetch]\n  showForcedUpdates = false\n',
+        );
+
+        // Assert
+        expect(result.updatedRefs).toEqual([
+          {
+            name: 'refs/remotes/origin/main',
+            source: 'refs/heads/main',
+            oldId: base,
+            newId: other,
+            status: 'ok',
+          },
+        ]);
+        expect(await reflogOf(ctx, 'refs/remotes/origin/main')).toEqual([
+          'seed',
+          'fetch origin: fast-forward',
+        ]);
+        expect(warnings).toEqual([FORCED_UPDATES_WARNING]);
+      });
+    });
+  });
+
+  describe('Given fetch.showForcedUpdates is off and its advice is disabled', () => {
+    describe('When fetch runs', () => {
+      it('Then git does not warn', async () => {
+        // Arrange
+        const sut = fetchRewritten;
+
+        // Act
+        const { warnings } = await sut(
+          '[fetch]\n  showForcedUpdates = false\n[advice]\n  fetchShowForcedUpdates = false\n',
+        );
+
+        // Assert
+        expect(warnings).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a valueless fetch.showForcedUpdates', () => {
+    describe('When a refspec without the force flag maps a rewritten ref', () => {
+      it('Then the check stays on and the update is rejected', async () => {
+        // Arrange
+        const sut = fetchRewritten;
+
+        // Act
+        const { result, warnings } = await sut('[fetch]\n  showForcedUpdates\n');
+
+        // Assert
+        expect(result.updatedRefs.map((update) => update.status)).toEqual(['rejected']);
+        expect(warnings).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a fetch.showForcedUpdates git cannot read as a boolean', () => {
+    describe('When fetch runs', () => {
+      it('Then it refuses with the bad value', async () => {
+        // Arrange
+        const sut = fetchRewritten;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut('[fetch]\n  showForcedUpdates = maybe\n');
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'fetch.showforcedupdates',
+          source: '/repo/.git/config',
+          value: 'maybe',
+        });
       });
     });
   });

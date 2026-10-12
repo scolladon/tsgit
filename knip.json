@@ -25,7 +25,7 @@
   "ignore": ["test/runtime-parity/**"],
   "ignoreExportsUsedInFile": true,
   "ignoreDependencies": ["@cloudflare/workers-types", "expect-type", "wrangler"],
-  "ignoreBinaries": ["gpg", "lychee", "mkfifo"],
+  "ignoreBinaries": ["chflags", "gpg", "lychee", "mkfifo", "ssh-keygen"],
   "vitest": {
     "config": ["vitest.config.ts"]
   }

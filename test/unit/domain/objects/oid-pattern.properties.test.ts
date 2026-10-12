@@ -8,7 +8,7 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
 import { bytesToHex } from '../../../../src/domain/objects/encoding.js';
-import { isOid } from '../../../../src/domain/objects/oid-pattern.js';
+import { isOid, leadingOid } from '../../../../src/domain/objects/oid-pattern.js';
 import { arbAsciiNoNulString, arbHashConfig, arbHexString, arbRawBytes } from './arbitraries.js';
 
 const NUM_RUNS = 100;
@@ -49,6 +49,45 @@ describe('isOid properties', () => {
         fc.assert(
           fc.property(arbAsciiNoNulString(), arbHashConfig(), (value, config) => {
             expect(() => isOid(value, config)).not.toThrow();
+          }),
+          { numRuns: NUM_RUNS },
+        );
+      });
+    });
+  });
+});
+
+describe('leadingOid properties', () => {
+  describe('Given an arbitrary oid and an arbitrary tail', () => {
+    describe('When the leading oid of their concatenation is read', () => {
+      it('Then it is the oid itself, whatever the tail', () => {
+        // Arrange + Act + Assert
+        fc.assert(
+          fc.property(
+            arbHashConfig(),
+            arbAsciiNoNulString(),
+            fc.boolean(),
+            (config, tail, upper) => {
+              const oid = 'a1'.repeat(config.hexLength / 2);
+              const written = upper ? oid.toUpperCase() : oid;
+              expect(leadingOid(`${written}${tail}`, config)).toBe(oid);
+            },
+          ),
+          { numRuns: NUM_RUNS },
+        );
+      });
+    });
+  });
+
+  describe('Given an arbitrary lower-case hex string and a hash config', () => {
+    describe('When the leading oid is read', () => {
+      it('Then it is defined exactly when the string reaches the width, and agrees with isOid on it', () => {
+        // Arrange + Act + Assert
+        fc.assert(
+          fc.property(arbHexString(), arbHashConfig(), (value, config) => {
+            const result = leadingOid(value, config);
+            expect(result !== undefined).toBe(value.length >= config.hexLength);
+            if (result !== undefined) expect(isOid(result, config)).toBe(true);
           }),
           { numRuns: NUM_RUNS },
         );

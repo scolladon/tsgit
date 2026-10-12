@@ -21,6 +21,14 @@ describe('MemoryFileSystem', () => {
         expected: 'refused' as const,
       },
       segmentRefusals: 'pinned' as const,
+      createBackdatedFile: async (path: string) => {
+        vi.setSystemTime(new Date('2001-01-01'));
+        try {
+          await fs.write(path, new Uint8Array([1]));
+        } finally {
+          vi.useRealTimers();
+        }
+      },
     };
   });
 
@@ -778,30 +786,6 @@ describe('MemoryFileSystem', () => {
           expect(stat.isSymbolicLink).toBe(true);
           expect(stat.isFile).toBe(false);
           expect(stat.isDirectory).toBe(false);
-        });
-      });
-    });
-
-    describe('Given a symlink to an existing file occupies the mkdir target', () => {
-      describe('When mkdir is called', () => {
-        it('Then throws NOT_A_DIRECTORY, the code this adapter keeps for a file where a directory is created', async () => {
-          // Arrange
-          const sut = new MemoryFileSystem({ rootDir: '/repo' });
-          await sut.write('/repo/mkdir-target.txt', new Uint8Array([1]));
-          await sut.symlink('/repo/mkdir-target.txt', '/repo/mkdir-file-link');
-
-          // Act
-          let caught: unknown;
-          try {
-            await sut.mkdir('/repo/mkdir-file-link');
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
-          expect((await sut.lstat('/repo/mkdir-file-link')).isSymbolicLink).toBe(true);
         });
       });
     });
@@ -2329,7 +2313,7 @@ describe('MemoryFileSystem', () => {
   describe('mkdir leaf guard', () => {
     describe('Given a relative path to an existing file', () => {
       describe('When mkdir is called', () => {
-        it('Then throws NOT_A_DIRECTORY carrying the path exactly as given', async () => {
+        it('Then throws FILE_EXISTS carrying the path exactly as given', async () => {
           // Arrange
           const sut = new MemoryFileSystem({ rootDir: '/repo' });
           await sut.write('/repo/blocker', new Uint8Array([1]));
@@ -2345,8 +2329,8 @@ describe('MemoryFileSystem', () => {
           // Assert — the leaf guard reports the caller's string, never the normalized key
           expect(caught).toBeInstanceOf(TsgitError);
           const data = (caught as TsgitError).data;
-          expect(data.code).toBe('NOT_A_DIRECTORY');
-          if (data.code === 'NOT_A_DIRECTORY') expect(data.path).toBe('blocker');
+          expect(data.code).toBe('FILE_EXISTS');
+          if (data.code === 'FILE_EXISTS') expect(data.path).toBe('blocker');
         });
       });
     });
@@ -2512,6 +2496,27 @@ describe('MemoryFileSystem config-path capabilities', () => {
         // Act + Assert
         expect(sut.homedir()).toBe('/u/x');
         expect(sut.xdgConfigHome()).toBe('/home/user/.config');
+      });
+    });
+  });
+});
+
+describe('MemoryFileSystem lstatIfReachable', () => {
+  describe('Given a path outside the root', () => {
+    describe('When lstatIfReachable probes it', () => {
+      it('Then it refuses PERMISSION_DENIED as lstat does, rather than reading a miss', async () => {
+        // Arrange
+        const sut = new MemoryFileSystem({ rootDir: '/repo' });
+
+        // Act
+        const result = await sut.lstatIfReachable('/elsewhere/x').catch((err: unknown) => err);
+
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect((result as TsgitError).data).toEqual({
+          code: 'PERMISSION_DENIED',
+          path: '/elsewhere/x',
+        });
       });
     });
   });

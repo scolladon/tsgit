@@ -11,7 +11,7 @@ export interface AttributeRule {
   readonly directoryOnly: boolean;
   /** 1-based source line number (tracks comment / blank gaps). */
   readonly lineNumber: number;
-  /** Compiled glob, matched against a path relative to the source's basedir. */
+  /** Compiled glob, matched against the path relative to the source's basedir when anchored, else the basename. */
   readonly compiled: GlobMatcher;
   /** Attribute assignments, last-token-wins within the line. */
   readonly attributes: ReadonlyMap<string, AttributeValue>;
@@ -122,7 +122,7 @@ const buildRule = (pattern: string, rest: string, lineNumber: number): Attribute
     anchored,
     directoryOnly,
     lineNumber,
-    compiled: compileGlob(body, { anchored }),
+    compiled: compileGlob(body, { anchored, pathname: true }),
     attributes: parseAttributeTokens(splitWhitespace(rest)),
   };
 };

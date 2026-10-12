@@ -12,8 +12,8 @@ ref, per the [structured-output rule](../../adr/249-describe-structured-data-onl
 ## Signature
 
 ```ts
-repo.nameRev(rev?: string, opts?: NameRevOptions): Promise<NameRevResult>;
-// rev defaults to 'HEAD'
+repo.nameRev(rev?: string, opts?: NameRevOptions): Promise<NameRevResult | undefined>;
+// rev defaults to 'HEAD'; undefined for an argument git skips (see Behaviour)
 
 interface NameRevOptions {
   readonly tags?: boolean;                            // restrict sources to refs/tags/*
@@ -59,7 +59,9 @@ interface NameRevResult {
   (`n ≥ 2`); `^0` (rendered by the caller when `tagDeref` and there are no steps)
   peels an annotated tag to its commit.
 - **Unnameable:** a commit reachable from no qualifying ref returns
-  `ref: undefined` (git prints `undefined`) — `name-rev` never throws.
+  `ref: undefined` (git prints `undefined`).
+- **Skipped arguments:** an argument git's `repo_get_oid` cannot read, or whose object cannot be loaded, resolves `undefined` instead of throwing, as git prints nothing for it and exits 0. A ref pointing at a missing object is skipped as a naming source rather than refusing every input.
+- **Tags, trees and blobs:** such an object is named only by a ref pointing straight at it (git's exact ref match), never by the commit a tag peels to.
 - **Traversal cost:** the walk prunes commits that can never improve a name.
   When the target carries a commit-graph generation, that generation test
   **replaces** the date test — a commit whose own generation is lower than the
@@ -77,7 +79,7 @@ interface NameRevResult {
 
 `git describe --contains` is exactly `name-rev` restricted to tags with a refusal
 on the unnameable case. `repo.describe(rev, { contains: true })` delegates here
-and returns a `NameRevResult`
+and returns a `NameRevResult` (`undefined` for an argument `name-rev` skips)
 ([ADR-284](../../adr/284-describe-contains-delegation.md)): default mode uses
 tags only (`match`/`exclude` scoped to `refs/tags/<glob>`); `all: true` uses every
 ref; an unnameable commit refuses with `CANNOT_DESCRIBE` unless `always: true`.

@@ -104,13 +104,30 @@ function foldsToHfsAlias(
   return matched === wantLength;
 }
 
-function isAllDotsAndSpaces(buf: Uint8Array, start: number, end: number): boolean {
+const ASCII_COLON = 0x3a;
+const ASCII_SLASH = 0x2f;
+const ASCII_BACKSLASH = 0x5c;
+const ASCII_ZERO = 0x30;
+const ASCII_ONE = 0x31;
+const ASCII_NINE = 0x39;
+
+/**
+ * git's `only_spaces_and_periods`: the rest of the name is dots and spaces,
+ * up to its end or an NTFS alternate-data-stream `:`. `.git` alone also stops
+ * at a directory separator, as git's `is_ntfs_dotgit` does.
+ */
+function isNtfsTail(buf: Uint8Array, start: number, end: number, alias: DotgitAliasName): boolean {
   for (let i = start; i < end; i++) {
     const byte = buf[i]!;
+    if (byte === ASCII_COLON) return true;
+    if (alias === 'git' && (byte === ASCII_SLASH || byte === ASCII_BACKSLASH)) return true;
     if (byte !== ASCII_DOT && byte !== ASCII_SPACE) return false;
   }
   return true;
 }
+
+const isDigitIn = (byte: number | undefined, low: number): boolean =>
+  byte !== undefined && byte >= low && byte <= ASCII_NINE;
 
 function matchesAsciiCaseInsensitive(buf: Uint8Array, start: number, literal: string): boolean {
   for (let i = 0; i < literal.length; i++) {
@@ -119,52 +136,95 @@ function matchesAsciiCaseInsensitive(buf: Uint8Array, start: number, literal: st
   return true;
 }
 
+/** git's per-alias prefix for the 8.3 fall-back short name NTFS derives from a hash. */
+const NTFS_FALLBACK_SHORT_NAME_PREFIX: Readonly<Record<Exclude<DotgitAliasName, 'git'>, string>> = {
+  gitmodules: 'gi7eba',
+  gitattributes: 'gi7d29',
+  gitignore: 'gi250a',
+  mailmap: 'maba30',
+};
+
+const NTFS_FALLBACK_SHORT_NAME_LENGTH = 8;
+
 /**
- * True when `buf[start, end)` is the NTFS form of `.<alias>` — git's
- * `is_ntfs_dotgit` / `is_ntfs_dot_generic`: a case-insensitive `.<alias>`
- * prefix, or the 8.3 short name, either followed by a run of trailing dots
- * and spaces (NTFS trims those on lookup). `git` itself is a bespoke case:
- * git only ever assigns `.git` the short name `git~1` (it guarantees `.git`
- * is a directory's first entry), never `~2`–`~4`; every other alias in this
- * family is long enough to need the general 6-char-prefix short name and
- * accepts `~1` through `~4`.
+ * git's fall-back NTFS short name: up to six leading characters of the
+ * alias's hash prefix, `~`, a digit 1-9, then digits filling eight
+ * characters, followed by the usual dot/space tail.
  */
-function foldsToNtfsAlias(
+function foldsToNtfsFallbackShortName(
+  buf: Uint8Array,
+  start: number,
+  end: number,
+  alias: Exclude<DotgitAliasName, 'git'>,
+): boolean {
+  const shortEnd = start + NTFS_FALLBACK_SHORT_NAME_LENGTH;
+  if (end < shortEnd) return false;
+  const head = buf.subarray(start, start + NTFS_SHORT_NAME_PREFIX_LENGTH + 1);
+  const tilde = head.indexOf(ASCII_TILDE);
+  if (tilde < 0) return false;
+  if (
+    !matchesAsciiCaseInsensitive(buf, start, NTFS_FALLBACK_SHORT_NAME_PREFIX[alias].slice(0, tilde))
+  ) {
+    return false;
+  }
+  if (!isDigitIn(buf[start + tilde + 1], ASCII_ONE)) return false;
+  for (let i = start + tilde + 2; i < shortEnd; i++)
+    if (!isDigitIn(buf[i], ASCII_ZERO)) return false;
+  return isNtfsTail(buf, shortEnd, end, alias);
+}
+
+/**
+ * The 8.3 short name NTFS gives `.<alias>`: `git~1` for `.git` (git
+ * guarantees `.git` is a directory's first entry), and for every other alias
+ * its first six characters with `~1`..`~4`, or the hash-derived fall-back.
+ */
+function foldsToNtfsShortName(
   buf: Uint8Array,
   start: number,
   end: number,
   alias: DotgitAliasName,
 ): boolean {
-  const length = end - start;
-  const dotPrefix = `.${alias}`;
-  if (
-    // Stryker disable next-line EqualityOperator: equivalent — this >= only differs from > when length===dotPrefix.length exactly; at that length, matchesAsciiCaseInsensitive matching the pure-ASCII dotPrefix implies foldsToHfsAlias already matched the same bytes and returned true first, so this branch's outcome is never observed.
-    length >= dotPrefix.length &&
-    matchesAsciiCaseInsensitive(buf, start, dotPrefix) &&
-    isAllDotsAndSpaces(buf, start + dotPrefix.length, end)
-  ) {
-    return true;
-  }
-
   if (alias === 'git') {
     const shortName = 'git~1';
     return (
-      length >= shortName.length &&
+      end - start >= shortName.length &&
       matchesAsciiCaseInsensitive(buf, start, shortName) &&
-      isAllDotsAndSpaces(buf, start + shortName.length, end)
+      isNtfsTail(buf, start + shortName.length, end, alias)
     );
   }
-
   const shortPrefix = alias.slice(0, NTFS_SHORT_NAME_PREFIX_LENGTH);
   const digitOffset = start + shortPrefix.length + 1;
-  return (
-    length >= shortPrefix.length + 2 &&
+  const regular =
+    end - start >= shortPrefix.length + 2 &&
     matchesAsciiCaseInsensitive(buf, start, shortPrefix) &&
     buf[start + shortPrefix.length] === ASCII_TILDE &&
     buf[digitOffset]! >= NTFS_SHORT_NAME_LOW_DIGIT &&
     buf[digitOffset]! <= NTFS_SHORT_NAME_HIGH_DIGIT &&
-    isAllDotsAndSpaces(buf, digitOffset + 1, end)
-  );
+    isNtfsTail(buf, digitOffset + 1, end, alias);
+  return regular || foldsToNtfsFallbackShortName(buf, start, end, alias);
+}
+
+/**
+ * True when `buf[start, end)` is the NTFS form of `.<alias>` — git's
+ * `is_ntfs_dotgit` / `is_ntfs_dot_generic`: a case-insensitive `.<alias>`
+ * or its 8.3 short name, followed by a run of dots and spaces (NTFS trims
+ * those on lookup) that may end at an alternate-data-stream `:`.
+ */
+export function matchesNtfsDotgitAlias(
+  buf: Uint8Array,
+  start: number,
+  end: number,
+  alias: DotgitAliasName,
+): boolean {
+  const dotPrefix = `.${alias}`;
+  if (
+    end - start >= dotPrefix.length &&
+    matchesAsciiCaseInsensitive(buf, start, dotPrefix) &&
+    isNtfsTail(buf, start + dotPrefix.length, end, alias)
+  ) {
+    return true;
+  }
+  return foldsToNtfsShortName(buf, start, end, alias);
 }
 
 /**
@@ -181,5 +241,29 @@ export function matchesDotgitAlias(
   end: number,
   alias: DotgitAliasName,
 ): boolean {
-  return foldsToHfsAlias(buf, start, end, alias) || foldsToNtfsAlias(buf, start, end, alias);
+  return foldsToHfsAlias(buf, start, end, alias) || matchesNtfsDotgitAlias(buf, start, end, alias);
+}
+
+/**
+ * The start of every segment that follows a backslash in `buf[start, end)`,
+ * each running to the name's end — git's `fsck_tree` re-checks those as NTFS
+ * paths, since Windows reads a backslash as a directory separator.
+ */
+export function backslashSegmentStarts(
+  buf: Uint8Array,
+  start: number,
+  end: number,
+): ReadonlyArray<number> {
+  const starts: number[] = [];
+  for (let i = start; i < end; i++) if (buf[i] === ASCII_BACKSLASH) starts.push(i + 1);
+  return starts;
+}
+
+/** Whether the name is `.gitmodules` to git's `fsck_tree`: the whole name under
+ *  either fold, or any backslash segment under the NTFS one. */
+export function namesGitmodules(buf: Uint8Array, start: number, end: number): boolean {
+  if (matchesDotgitAlias(buf, start, end, 'gitmodules')) return true;
+  return backslashSegmentStarts(buf, start, end).some((segment) =>
+    matchesNtfsDotgitAlias(buf, segment, end, 'gitmodules'),
+  );
 }

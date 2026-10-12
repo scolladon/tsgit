@@ -19,8 +19,27 @@ const oracleStar = (pattern: string, i: number): { regex: string; next: number }
   if (pattern[after] === '/') return { regex: '(.*/)?', next: after + 1 };
   return { regex: '.*', next: after };
 };
-const oracleToken = (pattern: string, i: number): { regex: string; next: number } => {
+/**
+ * git's WM_PATHNAME star: a run of two or more stars spans `/` only when it is
+ * a whole path component — preceded by the pattern start or `/` and followed
+ * by the end or `/`. Any other run is a single `*`.
+ */
+const oraclePathnameStar = (pattern: string, i: number): { regex: string; next: number } => {
+  let end = i;
+  while (pattern[end] === '*') end += 1;
+  const leftBounded = i === 0 || pattern[i - 1] === '/';
+  const rightBounded = end === pattern.length || pattern[end] === '/';
+  if (end - i === 1 || !leftBounded || !rightBounded) return { regex: '[^/]*', next: end };
+  if (pattern[end] === '/') return { regex: '(.*/)?', next: end + 1 };
+  return { regex: '.*', next: end };
+};
+const oracleToken = (
+  pattern: string,
+  i: number,
+  options: CompileGlobOptions,
+): { regex: string; next: number } => {
   const ch = pattern[i] as string;
+  if (ch === '*' && options.pathname === true) return oraclePathnameStar(pattern, i);
   if (ch === '*') return oracleStar(pattern, i);
   if (ch === '?') return { regex: '[^/]', next: i + 1 };
   return { regex: ORACLE_SPECIALS.test(ch) ? `\\${ch}` : ch, next: i + 1 };
@@ -29,7 +48,7 @@ const oracleRegex = (pattern: string, options: CompileGlobOptions): RegExp => {
   let body = '';
   let i = 0;
   while (i < pattern.length) {
-    const consumed = oracleToken(pattern, i);
+    const consumed = oracleToken(pattern, i, options);
     body += consumed.regex;
     i = consumed.next;
   }
@@ -320,6 +339,57 @@ describe('compileGlob', () => {
     });
   });
 
+  describe('Given pathname matching (gitignore, gitattributes, sparse rules)', () => {
+    const pathname: CompileGlobOptions = { anchored: true, pathname: true };
+
+    describe('When a `**` is not a whole path component', () => {
+      it.each([
+        ['d/a**b', 'd/a/c/b', false],
+        ['d/a**b', 'd/a/b', false],
+        ['d/a**b', 'd/axb', true],
+        ['d/**b', 'd/x/yb', false],
+        ['d/**b', 'd/yb', true],
+        ['d/a**/b', 'd/ax/y/b', false],
+        ['d/a**/b', 'd/ax/b', true],
+        ['**b', 'yb', true],
+        ['**b', 'x/yb', false],
+      ])('Then %s matches %s like a single `*` (%s)', (pattern, path, expected) => {
+        // Arrange
+        const sut = compileGlob(pattern, pathname);
+
+        // Act
+        const result = sut.test(path);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+
+    describe('When a star run is a whole path component', () => {
+      it.each([
+        ['**/x', 'x', true],
+        ['**/x', 'p/q/x', true],
+        ['x/**', 'x/a/b', true],
+        ['x/**', 'x', false],
+        ['a/**/b', 'a/b', true],
+        ['a/**/b', 'a/x/y/b', true],
+        ['**', 'a/b/c', true],
+        ['d/***/b', 'd/b', true],
+        ['d/***/b', 'd/x/y/b', true],
+        ['d/***', 'd/x/y', true],
+      ])('Then %s spans directories in %s (%s)', (pattern, path, expected) => {
+        // Arrange
+        const sut = compileGlob(pattern, pathname);
+
+        // Act
+        const result = sut.test(path);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
   describe('equivalence with the original regex compiler', () => {
     const arbPattern = fc.string({
       unit: fc.constantFrom('a', 'b', '/', '*', '?', '.'),
@@ -329,6 +399,7 @@ describe('compileGlob', () => {
     const arbOptions = fc.record({
       anchored: fc.boolean(),
       withDirSuffix: fc.boolean(),
+      pathname: fc.boolean(),
     });
 
     describe('Given any pattern and any line-terminator-free path', () => {

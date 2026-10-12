@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import {
   commitGraphChainPath,
@@ -6,7 +6,10 @@ import {
 } from '../../../../src/application/primitives/path-layout.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { MAX_WALK_QUEUE_SIZE } from '../../../../src/application/primitives/types.js';
-import { walkCommits } from '../../../../src/application/primitives/walk-commits.js';
+import {
+  walkCommits,
+  walkCommitsStoppingAt,
+} from '../../../../src/application/primitives/walk-commits.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type {
@@ -15,7 +18,7 @@ import type {
   ObjectId,
   Tree,
 } from '../../../../src/domain/objects/index.js';
-import type { Context } from '../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../src/ports/context.js';
 import { buildSeededContext, instrumentedContext, writeCommitGraph } from './fixtures.js';
 
 const AUTHOR: AuthorIdentity = {
@@ -67,6 +70,56 @@ async function buildDiamond(
   return { a, b, c, d };
 }
 
+type DatedCommit = (msg: string, ts: number, parents: ReadonlyArray<ObjectId>) => Promise<ObjectId>;
+
+async function datedCommitter(
+  ctx: Awaited<ReturnType<typeof buildSeededContext>>,
+): Promise<DatedCommit> {
+  const treeId = await writeObject(ctx, { type: 'tree', entries: [], id: '' as ObjectId });
+  return (msg, ts, parents) =>
+    createCommit(ctx, {
+      tree: treeId,
+      parents: [...parents],
+      author: { ...AUTHOR, timestamp: ts },
+      committer: { ...AUTHOR, timestamp: ts },
+      message: msg,
+    });
+}
+
+/**
+ * r <- a1 <- a2 and r <- b1 <- b2 (b2 committed before b1), m = merge(a2, b2),
+ * a1 <- c1, n = merge(m, c1): the date order interleaves the two lines.
+ */
+async function buildSkewedMerge(
+  ctx: Awaited<ReturnType<typeof buildSeededContext>>,
+): Promise<Readonly<Record<'r' | 'a1' | 'a2' | 'b1' | 'b2' | 'm' | 'c1' | 'n', ObjectId>>> {
+  const commit = await datedCommitter(ctx);
+  const r = await commit('r', 100, []);
+  const a1 = await commit('a1', 200, [r]);
+  const a2 = await commit('a2', 400, [a1]);
+  const b1 = await commit('b1', 300, [r]);
+  const b2 = await commit('b2', 150, [b1]);
+  const m = await commit('m', 500, [a2, b2]);
+  const c1 = await commit('c1', 450, [a1]);
+  const n = await commit('n', 600, [m, c1]);
+  return { r, a1, a2, b1, b2, m, c1, n };
+}
+
+/** i <- x, and e reaching x through six commits dated older than x. */
+async function buildOlderExcludedChain(
+  ctx: Awaited<ReturnType<typeof buildSeededContext>>,
+): Promise<{ readonly ids: ReadonlyArray<ObjectId>; readonly i: ObjectId; readonly e: ObjectId }> {
+  const commit = await datedCommitter(ctx);
+  const x = await commit('x', 500, []);
+  const i = await commit('i', 1000, [x]);
+  const chain: ObjectId[] = [x];
+  for (let step = 1; step <= 6; step += 1) {
+    chain.push(await commit(`k${step}`, 300 - step, [chain[chain.length - 1]!]));
+  }
+  const e = await commit('e', 400, [chain[chain.length - 1]!]);
+  return { ids: [...chain, i, e], i, e };
+}
+
 async function collect(iter: AsyncIterable<Commit>): Promise<Commit[]> {
   const out: Commit[] = [];
   for await (const c of iter) out.push(c);
@@ -97,6 +150,180 @@ describe('walkCommits', () => {
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('INVALID_WALK_INPUT');
         }
+      });
+    });
+  });
+
+  describe('Given empty from and a commit to exclude', () => {
+    describe('When walkCommits walks in topo-order', () => {
+      it('Then throws INVALID_WALK_INPUT with the empty-from reason', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const [rootId] = await linearChain(ctx, 1);
+        const sut = walkCommits;
+
+        // Act
+        let caught: unknown;
+        try {
+          for await (const _ of sut(ctx, { from: [], until: [rootId!], order: 'topo-order' })) {
+            void _;
+          }
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_WALK_INPUT',
+          reason: 'empty from',
+        });
+      });
+    });
+  });
+
+  describe('Given empty from and a commit to exclude', () => {
+    describe('When walkCommits is called', () => {
+      it('Then throws INVALID_WALK_INPUT before limiting', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const [rootId] = await linearChain(ctx, 1);
+
+        // Act
+        let caught: unknown;
+        try {
+          for await (const _ of walkCommits(ctx, { from: [], until: [rootId!] })) void _;
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toMatchObject({ data: { code: 'INVALID_WALK_INPUT' } });
+      });
+    });
+  });
+
+  describe('Given a diamond whose root the excluded side also reaches', () => {
+    describe('When walkCommits excludes one side of the diamond', () => {
+      it('Then the root is not yielded through the other side', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { b, c, d } = await buildDiamond(ctx);
+
+        // Act
+        const result = await collect(walkCommits(ctx, { from: [d], until: [b] }));
+
+        // Assert
+        expect(result.map((commit) => commit.id)).toEqual([d, c]);
+      });
+    });
+
+    describe('When walkCommits follows first parents excluding the second parent', () => {
+      it('Then the root shared with the excluded parent is not yielded', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { b, c, d } = await buildDiamond(ctx);
+
+        // Act
+        const result = await collect(
+          walkCommits(ctx, { from: [d], until: [c], order: 'first-parent' }),
+        );
+
+        // Assert
+        expect(result.map((commit) => commit.id)).toEqual([d, b]);
+      });
+    });
+
+    describe('When walkCommitsStoppingAt excludes one side of the diamond', () => {
+      it('Then only the excluded commit itself is skipped', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { a, b, c, d } = await buildDiamond(ctx);
+
+        // Act
+        const result = await collect(walkCommitsStoppingAt(ctx, { from: [d], until: [b] }));
+
+        // Assert
+        expect(result.map((commit) => commit.id)).toEqual([d, c, a]);
+      });
+    });
+  });
+
+  describe('Given a merge whose two lines interleave by commit date', () => {
+    describe('When walkCommits walks in topo-order', () => {
+      it('Then each line of history is yielded whole, as git rev-list --topo-order does', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { r, a1, a2, b1, b2, m, c1, n } = await buildSkewedMerge(ctx);
+        const sut = walkCommits;
+
+        // Act
+        const result = await collect(sut(ctx, { from: [n], order: 'topo-order' }));
+
+        // Assert
+        expect(result.map((commit) => commit.id)).toEqual([n, c1, m, b2, b1, a2, a1, r]);
+      });
+    });
+
+    describe('When walkCommits walks in topo-order from two tips', () => {
+      it('Then the newer tip starts the walk whatever order the tips are given in', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { r, a1, b1, b2, c1 } = await buildSkewedMerge(ctx);
+        const sut = walkCommits;
+
+        // Act
+        const result = await collect(sut(ctx, { from: [b2, c1], order: 'topo-order' }));
+
+        // Assert
+        expect(result.map((commit) => commit.id)).toEqual([c1, a1, b2, b1, r]);
+      });
+    });
+
+    describe('When walkCommits walks in topo-order excluding one side', () => {
+      it('Then the excluded side and its ancestors are left out', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { a1, a2, b1, b2, m, c1, n } = await buildSkewedMerge(ctx);
+        const sut = walkCommits;
+
+        // Act
+        const result = await collect(sut(ctx, { from: [n], until: [b1], order: 'topo-order' }));
+
+        // Assert
+        expect(result.map((commit) => commit.id)).toEqual([n, c1, m, b2, a2, a1]);
+      });
+    });
+  });
+
+  describe('Given an excluded line reaching a shown commit through six older commits', () => {
+    describe('When walkCommits walks in topo-order without a commit-graph', () => {
+      it('Then the limited walk gives up before reaching the shared commit, as git does', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { ids, i, e } = await buildOlderExcludedChain(ctx);
+        const sut = walkCommits;
+
+        // Act
+        const result = await collect(sut(ctx, { from: [i], until: [e], order: 'topo-order' }));
+
+        // Assert
+        expect(result.map((commit) => commit.id)).toEqual([i, ids[0]]);
+      });
+    });
+
+    describe('When walkCommits walks in topo-order over a commit-graph', () => {
+      it('Then the generation walk excludes the shared commit exactly, as git does', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { ids, i, e } = await buildOlderExcludedChain(ctx);
+        await writeCommitGraph(ctx, [await asCommits(ctx, ids)]);
+        const sut = walkCommits;
+
+        // Act
+        const result = await collect(sut(ctx, { from: [i], until: [e], order: 'topo-order' }));
+
+        // Assert
+        expect(result.map((commit) => commit.id)).toEqual([i]);
       });
     });
   });
@@ -272,6 +499,98 @@ describe('walkCommits', () => {
     });
   });
 
+  describe('Given a merge whose followed parent is missing', () => {
+    describe.each([{ order: 'topo' as const }, { order: 'first-parent' as const }])(
+      'When the first commit is pulled ($order)',
+      ({ order }) => {
+        it('Then it refuses before yielding the merge', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const treeId = await writeObject(ctx, { type: 'tree', entries: [], id: '' as ObjectId });
+          const present = await createCommit(ctx, {
+            tree: treeId,
+            parents: [],
+            author: AUTHOR,
+            committer: AUTHOR,
+            message: 'present',
+          });
+          const missingId = 'f'.repeat(40) as ObjectId;
+          const merge = await createCommit(ctx, {
+            tree: treeId,
+            parents: [missingId, present],
+            author: AUTHOR,
+            committer: AUTHOR,
+            message: 'merge',
+          });
+          const sut = walkCommits;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(ctx, { from: [merge], order })
+              [Symbol.asyncIterator]()
+              .next();
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: missingId });
+        });
+      },
+    );
+  });
+
+  describe('Given a commit-graph covering a parent whose object is gone', () => {
+    describe('When the first commit is pulled', () => {
+      it('Then the child yields, its parent parsed from the graph alone', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const [parent, child] = (await linearChain(ctx, 2)) as [ObjectId, ObjectId];
+        await writeCommitGraph(ctx, [await asCommits(ctx, [parent, child])]);
+        const { computeLooseObjectPath } = await import(
+          '../../../../src/domain/storage/loose-path.js'
+        );
+        // `asCommits` read the parent through the delta cache; drop it so the removal is a real miss.
+        ctx.deltaCache.delete(parent);
+        await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(parent)}`);
+        const sut = walkCommits;
+
+        // Act
+        const result = await sut(ctx, { from: [child], order: 'first-parent' })
+          [Symbol.asyncIterator]()
+          .next();
+
+        // Assert
+        expect(result.value?.id).toBe(child);
+      });
+    });
+  });
+
+  describe('Given a seed whose parent is another seed already yielded', () => {
+    describe('When the parent object is removed after it was yielded', () => {
+      it('Then the child still yields, the parent not being read a second time', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const [parent, child] = (await linearChain(ctx, 2)) as [ObjectId, ObjectId];
+        const { computeLooseObjectPath } = await import(
+          '../../../../src/domain/storage/loose-path.js'
+        );
+        const iterator = walkCommits(ctx, { from: [parent, child] })[Symbol.asyncIterator]();
+        const first = await iterator.next();
+        ctx.deltaCache.delete(parent);
+        await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(parent)}`);
+
+        // Act
+        const second = await iterator.next();
+
+        // Assert
+        expect(first.value?.id).toBe(parent);
+        expect(second.value?.id).toBe(child);
+      });
+    });
+  });
+
   describe('Given ignoreMissing=false and a missing parent', () => {
     describe('When walkCommits is called', () => {
       it('Then throws OBJECT_NOT_FOUND', async () => {
@@ -368,6 +687,25 @@ describe('walkCommits', () => {
         expect(indexOf(c)).toBeGreaterThan(indexOf(d));
       });
     });
+  });
+
+  describe('Given a diamond whose sides are walked breadth-first', () => {
+    describe.each(['breadth-first', 'topo'] as const)(
+      'When walkCommits runs with order=%s',
+      (order) => {
+        it('Then each commit follows the commit that first reached it, parents in order', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { a, b, c, d } = await buildDiamond(ctx);
+
+          // Act
+          const result = await collect(walkCommits(ctx, { from: [d], order }));
+
+          // Assert
+          expect(result.map((commit) => commit.id)).toEqual([d, b, c, a]);
+        });
+      },
+    );
   });
 
   describe('Given a diamond and order=first-parent', () => {
@@ -730,7 +1068,9 @@ describe('walkCommits', () => {
     describe('Given a header-driven enqueue near MAX_WALK_QUEUE_SIZE from an unrelated seed', () => {
       describe('When the graph-covered head enqueues its parents', () => {
         it('Then the distinct pending count stays under the bound and the abort is the next stop', async () => {
-          // Arrange — `filler`'s 65,500 distinct (never-read) parents bring the
+          // Arrange — `filler`'s 65,500 distinct missing parents (parsed past
+          // under `ignoreMissing`, as each followed parent is parsed before its
+          // child yields) bring the
           // pending frontier to 65,500; `head`'s 30 REAL, graph-covered parents
           // push it to 65,530 — under MAX_WALK_QUEUE_SIZE (65,536). The bound
           // counts DISTINCT pending ids: a parent already queued is never
@@ -774,9 +1114,10 @@ describe('walkCommits', () => {
           });
           const controller = new AbortController();
           const ctxWithSignal = { ...ctx, signal: controller.signal };
-          const iterator = walkCommits(ctxWithSignal, { from: [filler, head] })[
-            Symbol.asyncIterator
-          ]();
+          const iterator = walkCommits(ctxWithSignal, {
+            from: [filler, head],
+            ignoreMissing: true,
+          })[Symbol.asyncIterator]();
 
           // Act
           const first = await iterator.next();
@@ -1424,6 +1765,27 @@ describe('walkCommits', () => {
       });
     });
 
+    describe('Given a chain walked down to an excluded commit, with no commit-graph', () => {
+      describe('When walkCommits lists the included commits', () => {
+        it('Then each commit object is read once', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const ids = await linearChain(ctx, 5);
+          const reads = vi.spyOn(ctx.deltaCache, 'get');
+          const sut = walkCommits;
+
+          // Act
+          const result = await collect(sut(ctx, { from: [ids[4]!], until: [ids[1]!] }));
+
+          // Assert
+          const shown = [ids[4], ids[3], ids[2]];
+          expect(result.map((commit) => commit.id)).toEqual(shown);
+          const shownReads = reads.mock.calls.filter(([id]) => shown.includes(id as ObjectId));
+          expect(shownReads).toHaveLength(shown.length);
+        });
+      });
+    });
+
     describe('Given a commit-graph consulted across two separate walkCommits invocations', () => {
       describe('When both walks target the same Context', () => {
         it('Then the graph file is read only once', async () => {
@@ -1431,7 +1793,7 @@ describe('walkCommits', () => {
           const base = await buildSeededContext();
           const ids = await linearChain(base, 3);
           await writeCommitGraph(base, [await asCommits(base, ids)]);
-          const { ctx, calls } = instrumentedContext(base);
+          const { ctx, calls } = instrumentedContext({ ...base, session: createSession() });
 
           // Act
           await collect(walkCommits(ctx, { from: [ids.at(-1)!] }));

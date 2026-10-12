@@ -2,25 +2,31 @@ import { TsgitError } from '../../../../domain/error.js';
 import { errorDataCode } from '../../../../domain/error-data-code.js';
 import type { CacheTreeEntry, GitIndex } from '../../../../domain/git-index/index-entry.js';
 import { parseCacheTree } from '../../../../domain/git-index/index-parser.js';
+import { parseResolveUndo } from '../../../../domain/git-index/resolve-undo.js';
 import type { ObjectId, RefName } from '../../../../domain/objects/index.js';
-import { zeroOid } from '../../../../domain/objects/index.js';
+import { FILE_MODE, zeroOid } from '../../../../domain/objects/index.js';
 import type { ReflogEntry } from '../../../../domain/reflog/reflog-entry.js';
+import { isPerWorktreeRef } from '../../../../domain/refs/per-worktree-ref.js';
 import { resolveWorktreePath } from '../../../../domain/worktree/resolve-path.js';
 import type { Context } from '../../../../ports/context.js';
 import { deriveContext } from '../../../primitives/derive-context.js';
 import { enumerateRefs } from '../../../primitives/enumerate-refs.js';
 import { boundedMapFor } from '../../../primitives/internal/concurrency.js';
 import { deriveWorktreeContext } from '../../../primitives/internal/worktree-context.js';
-import { commonGitDir } from '../../../primitives/path-layout.js';
+import { commonGitDir, indexPath } from '../../../primitives/path-layout.js';
 import { readIndex } from '../../../primitives/read-index.js';
-import { listReflogs, readReflog, readReflogLenient } from '../../../primitives/reflog-store.js';
+import { listReflogs, readReflogLenient } from '../../../primitives/reflog-store.js';
 import { resolveRef } from '../../../primitives/resolve-ref.js';
 import { objectIsPresent } from './object-presence.js';
 import type { FsckOptions } from './types.js';
+import { hashesToItsId, type ParseCheck } from './verified-copies.js';
 
 const HEAD_REF = 'HEAD' as RefName;
 
 const CACHE_TREE_SIGNATURE = 'TREE';
+const RESOLVE_UNDO_SIGNATURE = 'REUC';
+const FILE_TYPE_MASK = 0o170000;
+const REGULAR_FILE_TYPE = 0o100000;
 
 /**
  * The only faults an index read or a cache-tree decode is allowed to be
@@ -64,10 +70,13 @@ function isToleratedIndexFault(err: unknown): boolean {
  * permission fault, an abort, or anything unforeseen rejects it for the same
  * reason: a check that never ran must not be reported as a check that passed.
  */
-function isContainedLookupFault(err: unknown): boolean {
+export function isContainedLookupFault(err: unknown): boolean {
   if (!(err instanceof TsgitError) || err.data.code !== 'INVALID_MULTI_PACK_INDEX') return false;
   return err.data.check === 'pack-int-id' || err.data.check === 'large-offset';
 }
+
+/** Whether an index pointer resolves: `undefined` when the run cannot say. */
+type Probe = (ctx: Context, id: ObjectId) => Promise<boolean | undefined>;
 
 /** `objectIsPresent`, with the refusal above answered `undefined` — "this
  *  run cannot say", as distinct from `false`'s "the object is absent". */
@@ -95,18 +104,21 @@ const GC_TOLERATED_REF_CODES: ReadonlySet<string> = new Set([
   'REF_CYCLE_DETECTED',
 ]);
 
-function isTolerableRefFault(err: unknown): boolean {
+export function isTolerableRefFault(err: unknown): boolean {
   const code = errorDataCode(err);
   return code !== undefined && GC_TOLERATED_REF_CODES.has(code);
 }
 
+/** Whether a ref tip roots fsck's walk: git's `snapshot_ref` keeps one it holds and can parse. */
+type TipGate = (id: ObjectId) => Promise<boolean>;
+
 /**
  * Add every resolvable ref's target to `roots`. Returns whether any ref
- * resolved to an oid ABSENT from the universe — git probes such a target
+ * resolved to an oid the gate refuses — git probes such a target
  * against the promisor machinery (`is_promisor_object`), so the caller's
  * promisor-config gate must fire for it even though it roots nothing.
  *
- * `universe` is optional: omitted, every resolved ref target is added
+ * `gate` is optional: omitted, every resolved ref target is added
  * unconditionally and the "absent target" verdict never fires — the shape
  * `collectRetentionRoots` needs (gc has no pre-built object universe to
  * bound against; unlike `collectRoots`, it never reports corruption).
@@ -118,26 +130,36 @@ function isTolerableRefFault(err: unknown): boolean {
 async function addRefRoots(
   ctx: Context,
   roots: Set<ObjectId>,
-  universe?: ReadonlySet<ObjectId>,
+  gate?: TipGate,
   strict?: boolean,
 ): Promise<boolean> {
   const refNames = await enumerateRefs(ctx);
   let sawAbsentTarget = false;
   for (const ref of refNames) {
-    try {
-      // Stryker disable next-line ObjectLiteral: equivalent — peel defaults to false in resolveRef; {} and { peel: false } produce identical behavior.
-      const id = await resolveRef(ctx, ref, { peel: false });
-      // Only add to roots if the OID is present in the universe.
-      // Absent OIDs are reported as bad-ref(badRefOid) by the refs-verify pass
-      // and must NOT be added to roots (would produce spurious 'missing' findings).
-      if (universe === undefined || universe.has(id)) roots.add(id);
-      else sawAbsentTarget = true;
-    } catch (err) {
-      if (strict === true && !isTolerableRefFault(err)) throw err;
-      // Unresolvable ref (unborn, dangling symref, malformed content) — tolerated
-    }
+    const id = await resolveTip(ctx, ref, strict);
+    if (id === undefined) continue;
+    // A tip the gate refuses is reported as bad-ref(badRefOid) by the
+    // refs-verify pass and must NOT root the walk (spurious 'missing' findings).
+    if (gate === undefined || (await gate(id))) roots.add(id);
+    else sawAbsentTarget = true;
   }
   return sawAbsentTarget;
+}
+
+/** The object `ref` names, or `undefined` for a ref that resolves to none. */
+async function resolveTip(
+  ctx: Context,
+  ref: RefName,
+  strict?: boolean,
+): Promise<ObjectId | undefined> {
+  try {
+    // Stryker disable next-line ObjectLiteral: equivalent — peel defaults to false in resolveRef; {} and { peel: false } produce identical behavior.
+    return await resolveRef(ctx, ref, { peel: false });
+  } catch (err) {
+    if (strict === true && !isTolerableRefFault(err)) throw err;
+    // Unresolvable ref (unborn, dangling symref, malformed content) — tolerated
+    return undefined;
+  }
 }
 
 /**
@@ -158,31 +180,66 @@ function addReflogEntryRoots(
 }
 
 /**
- * `strict` (gc-only) reads every reflog LINE-grained-leniently
- * (`readReflogLenient`) and never tolerates a fault: a malformed line is
- * already absorbed inside that read (never raised as an exception here), so
- * anything that DOES throw — the size cap, or a genuine I/O fault
- * (EACCES/EIO/EMFILE) — means the read never (fully) happened and must
- * abort the run rather than silently root nothing. `collectRoots`/fsck
- * (non-strict) keeps `readReflog`'s own strict all-or-nothing parse and
- * tolerates everything here, same as before — a malformed reflog is not
- * gc's problem to solve for a caller that never asked for retention.
+ * The open failures git's reflog and `gitdir` reads stop at without a word:
+ * `files_for_each_reflog_ent` returns -1 when it cannot open the log, which every
+ * caller discards, and `get_linked_worktree` skips a worktree whose `gitdir`
+ * `strbuf_read_file` fails. Each reads as "no such file". Anything else — the
+ * reflog size cap, an unclassified I/O fault — means the read never happened
+ * and is rethrown.
  */
-async function addReflogRoots(ctx: Context, roots: Set<ObjectId>, strict?: boolean): Promise<void> {
+const UNOPENABLE_FILE_CODES: ReadonlySet<string> = new Set([
+  'FILE_NOT_FOUND',
+  'PERMISSION_DENIED',
+  'NOT_A_DIRECTORY',
+]);
+
+export const isUnopenableFile = (err: unknown): boolean =>
+  // Stryker disable next-line StringLiteral: equivalent — the fallback only types the lookup; no UNOPENABLE_FILE_CODES member is '' or any other literal, so every fallback misses alike.
+  UNOPENABLE_FILE_CODES.has(errorDataCode(err) ?? '');
+
+/**
+ * `ref`'s reflog read LINE-grained-leniently (`readReflogLenient`: a
+ * malformed line is skipped, as git's `show_one_reflog_ent` skips it), and
+ * empty when the file cannot be opened at all, as git reads a log it cannot open.
+ */
+async function readReflogIfOpenable(
+  ctx: Context,
+  ref: RefName,
+): Promise<ReadonlyArray<ReflogEntry>> {
+  try {
+    return await readReflogLenient(ctx, ref);
+  } catch (err) {
+    if (!isUnopenableFile(err)) throw err;
+    return [];
+  }
+}
+
+/** Root every reflog's old/new oids for gc's retention walk. */
+async function addReflogRoots(ctx: Context, roots: Set<ObjectId>): Promise<void> {
   const reflogNames = await listReflogs(ctx);
   const zero = zeroOid(ctx.hashConfig);
   await boundedMapFor(ctx, 'ioBound', reflogNames, async (ref) => {
-    if (strict === true) {
-      addReflogEntryRoots(roots, await readReflogLenient(ctx, ref), zero);
-      return;
-    }
-    try {
-      addReflogEntryRoots(roots, await readReflog(ctx, ref), zero);
-    } catch {
-      // Unreadable reflog — tolerated
-    }
+    addReflogEntryRoots(roots, await readReflogIfOpenable(ctx, ref), zero);
   });
 }
+
+/** A cache-tree walk's unresolvable oids and every tree oid it went on to
+ *  parse, both in git's pre-order. */
+interface CacheTreeWalk {
+  readonly unresolved: ReadonlyArray<ObjectId>;
+  readonly parsed: ReadonlyArray<ObjectId>;
+}
+
+const NO_CACHE_TREE: CacheTreeWalk = { unresolved: [], parsed: [] };
+
+/** The cache-tree walk, plus the index entries git looks up as blobs and
+ *  the regular-file resolve-undo stages it parses. */
+interface IndexWalk extends CacheTreeWalk {
+  readonly blobs: ReadonlyArray<ObjectId>;
+  readonly resolveUndo: ReadonlyArray<ObjectId>;
+}
+
+const NO_INDEX: IndexWalk = { ...NO_CACHE_TREE, blobs: [], resolveUndo: [] };
 
 /**
  * Walk the cache-tree, adding every entry's resolvable tree oid to `roots`
@@ -215,33 +272,55 @@ async function walkCacheTree(
   ctx: Context,
   root: CacheTreeEntry,
   roots: Set<ObjectId>,
+  probe: Probe,
   universe?: ReadonlySet<ObjectId>,
-): Promise<boolean> {
+): Promise<CacheTreeWalk> {
   const stack: CacheTreeEntry[] = [root];
-  let unresolved = false;
+  const walk: CacheTreeVisit = { roots, probe, universe, parsed: [], unresolved: [] };
   while (stack.length > 0) {
     const entry = stack.pop() as CacheTreeEntry;
-    if (entry.id !== undefined) {
-      const present = await probePresence(ctx, entry.id);
-      if (present === false) {
-        unresolved = true;
-        continue;
-      }
-      // `universe` membership, not the probe, is what licenses the seed —
-      // the same guard `addRefRoots` applies. An oid the run's own mode kept
-      // out of `universe` cannot be followed by the reachability walk and
-      // would surface a spurious 'missing' finding; an oid inside it was
-      // already found by this run's own scan, which is proof enough to root
-      // it whatever the probe could or could not say about its route.
-      // Rooting an oid the probe refused invents nothing: `buildReachableSet`
-      // records no out-edge for an object whose cache entry is null, so no
-      // broken edge and no missing id can follow from it. `universe`
-      // omitted (gc's unbounded callers) roots every resolvable entry.
-      if (universe === undefined || universe.has(entry.id)) roots.add(entry.id);
-    }
-    for (const child of entry.children) stack.push(child);
+    if (!(await resolvesCacheTreeEntry(ctx, entry, walk))) continue;
+    // Reversed so the first child pops first: git's recursive pre-order.
+    stack.push(...[...entry.children].reverse());
   }
-  return unresolved;
+  return { unresolved: walk.unresolved, parsed: walk.parsed };
+}
+
+/** Where `walkCacheTree` records what it meets. */
+interface CacheTreeVisit {
+  readonly roots: Set<ObjectId>;
+  readonly probe: Probe;
+  readonly universe: ReadonlySet<ObjectId> | undefined;
+  readonly parsed: ObjectId[];
+  readonly unresolved: ObjectId[];
+}
+
+/**
+ * Probe one cache-tree entry; `false` when it names an absent object, whose
+ * children the walk then skips. `universe` membership, not the probe, is what
+ * licenses the seed — the same guard `addRefRoots` applies. An oid the run's
+ * own mode kept out of `universe` cannot be followed by the reachability walk
+ * and would surface a spurious 'missing' finding; an oid inside it was already
+ * found by this run's own scan, which is proof enough to root it whatever the
+ * probe could or could not say about its route. Rooting an oid the probe
+ * refused invents nothing: `buildReachableSet` records no out-edge for an
+ * object whose cache entry is null, so no broken edge and no missing id can
+ * follow from it. `universe` omitted (gc's unbounded callers) roots every
+ * resolvable entry.
+ */
+async function resolvesCacheTreeEntry(
+  ctx: Context,
+  entry: CacheTreeEntry,
+  walk: CacheTreeVisit,
+): Promise<boolean> {
+  if (entry.id === undefined) return true;
+  if ((await walk.probe(ctx, entry.id)) === false) {
+    walk.unresolved.push(entry.id);
+    return false;
+  }
+  if (walk.universe === undefined || walk.universe.has(entry.id)) walk.roots.add(entry.id);
+  walk.parsed.push(entry.id);
+  return true;
 }
 
 /** The index, or `undefined` when it is absent or its bytes do not form one. */
@@ -267,8 +346,20 @@ function cacheTreeOf(ctx: Context, index: GitIndex): CacheTreeEntry | undefined 
   }
 }
 
+/** Every regular-file stage id the index's `REUC` extension records — the
+ *  ones git's `fsck_resolve_undo` parses; a malformed extension git drops. */
+function resolveUndoIdsOf(ctx: Context, index: GitIndex): ReadonlyArray<ObjectId> {
+  const extension = index.extensions.find((ext) => ext.signature === RESOLVE_UNDO_SIGNATURE);
+  if (extension === undefined) return [];
+  const records = parseResolveUndo(extension.data, ctx.hashConfig.digestLength) ?? [];
+  return records.flatMap(({ stages }) =>
+    stages.filter(({ mode }) => (mode & FILE_TYPE_MASK) === REGULAR_FILE_TYPE).map(({ id }) => id),
+  );
+}
+
 /**
- * Add every stage-0 index entry's oid to `roots`, then walk the index's
+ * Add every index entry's oid to `roots` — every stage, never a gitlink, as
+ * git's `fsck_index` and `add_index_objects_to_pending` both do — then walk the index's
  * cache-tree (`TREE` extension) — if it has one — for further roots and for
  * the unresolvable-tree-oid verdict. Called only when `indexRoot !== false`
  * — that option means "the index does not participate in this fsck run" for
@@ -285,34 +376,231 @@ async function addIndexRoots(
   ctx: Context,
   roots: Set<ObjectId>,
   universe?: ReadonlySet<ObjectId>,
-): Promise<boolean> {
+  probe: Probe = probePresence,
+): Promise<IndexWalk> {
   const index = await readIndexIfIntact(ctx);
-  if (index === undefined) return false;
-  for (const entry of index.entries) {
-    if (entry.flags.stage !== 0) continue;
-    roots.add(entry.id);
-  }
+  if (index === undefined) return NO_INDEX;
+  const blobs = index.entries
+    .filter((entry) => entry.mode !== FILE_MODE.GITLINK)
+    .map((entry) => entry.id);
+  for (const id of blobs) roots.add(id);
+  const resolveUndo = resolveUndoIdsOf(ctx, index);
   const cacheTree = cacheTreeOf(ctx, index);
-  if (cacheTree === undefined) return false;
-  return walkCacheTree(ctx, cacheTree, roots, universe);
+  if (cacheTree === undefined) return { ...NO_CACHE_TREE, blobs, resolveUndo };
+  return {
+    ...(await walkCacheTree(ctx, cacheTree, roots, probe, universe)),
+    blobs,
+    resolveUndo,
+  };
 }
 
 export interface RootsCollection {
   readonly roots: ReadonlySet<ObjectId>;
   /**
-   * The repository-wide condition `fsck`'s missing-entry-point rule (bit 8)
-   * fires on: the index carries a cache-tree (`TREE` extension) AND at
-   * least one of its entries' tree oids fails to resolve. No index, or an
-   * index with no cache-tree extension, never sets this — vacuous absence
-   * is not a fault. Ref and reflog resolution have no bearing on this bit.
+   * Every cache-tree or resolve-undo oid that fails to resolve, index by
+   * index in git's worktree order — git's `invalid sha1 pointer in
+   * cache-tree` / `in resolve-undo`, each setting bit 8. No index, or one
+   * with neither extension, yields none — vacuous absence is not a fault.
+   * Ref and reflog resolution have no bearing on it.
    */
-  readonly missingEntryPoint: boolean;
+  readonly invalidIndexPointers: ReadonlyArray<InvalidIndexPointer>;
   /**
    * A ref resolved to an oid absent from the universe. git's fsck probes
    * that target through the promisor machinery, which is what makes the
    * promisor-config gate fire on a repo whose ONLY ref is broken.
    */
   readonly sawAbsentRefTarget: boolean;
+  /** Every oid git's `fsck_index` parses: each index's resolvable
+   *  cache-tree and resolve-undo entries, whichever store holds them. */
+  readonly parsedIndexIds: ReadonlyArray<ObjectId>;
+  /** Every index entry oid — git's `fsck_index` looks each one up as a blob. */
+  readonly indexBlobIds: ReadonlySet<ObjectId>;
+  /** Every reflog oid git's fsck never recorded as an object, in reflog order. */
+  readonly invalidReflogEntries: ReadonlyArray<InvalidReflogEntry>;
+  /** Every root only a reflog reaches whose served copy hashes to another id,
+   *  under `connectivityOnly`: git's walk can type it only through a link it
+   *  parses before popping it. */
+  readonly unparseableReflogRoots: ReadonlySet<ObjectId>;
+  /** Every ref tip git's `snapshot_refs` parsed, typing it and its links. */
+  readonly refTips: ReadonlySet<ObjectId>;
+}
+
+/** The roots added since `before` that git's walk cannot parse. */
+async function unparseableSince(
+  roots: ReadonlySet<ObjectId>,
+  before: ReadonlySet<ObjectId>,
+  parses: ParseCheck,
+): Promise<ReadonlySet<ObjectId>> {
+  const unparseable = new Set<ObjectId>();
+  for (const id of roots) {
+    if (!before.has(id) && !(await parses(id))) unparseable.add(id);
+  }
+  return unparseable;
+}
+
+/** An index pointer naming an object no store holds. */
+export interface InvalidIndexPointer {
+  readonly type: 'invalid-cache-tree-pointer' | 'invalid-resolve-undo-pointer';
+  readonly id: ObjectId;
+  /** The index file naming it — git's `worktree_git_path(wt, "index")`. */
+  readonly index: string;
+}
+
+/** A reflog side naming an object the run never recorded: git's `invalid reflog entry`. */
+export interface InvalidReflogEntry {
+  readonly ref: RefName;
+  readonly id: ObjectId;
+}
+
+/** One reflog's oids, old side then new: the recorded ones root the walk. */
+interface ReflogSplit {
+  readonly recorded: ReadonlyArray<ObjectId>;
+  readonly invalid: ReadonlyArray<InvalidReflogEntry>;
+}
+
+function splitReflogEntries(
+  ref: RefName,
+  entries: ReadonlyArray<ReflogEntry>,
+  isRecorded: (id: ObjectId) => boolean,
+  zero: ObjectId,
+): ReflogSplit {
+  const recorded: ObjectId[] = [];
+  const invalid: InvalidReflogEntry[] = [];
+  for (const id of entries.flatMap((entry) => [entry.oldId, entry.newId])) {
+    if (id === zero) continue;
+    if (isRecorded(id)) recorded.push(id);
+    else invalid.push({ ref, id });
+  }
+  return { recorded, invalid };
+}
+
+/**
+ * git's `fsck_handle_reflog_oid`: an oid the run recorded as an object is
+ * marked reachable; any other is an `invalid reflog entry` — never a root,
+ * so never reported missing. A line that does not parse is skipped, as
+ * git's reflog iterator skips it, and a log that cannot be opened is absent.
+ */
+async function addRecordedReflogRoots(
+  ctx: Context,
+  roots: Set<ObjectId>,
+  isRecorded: (id: ObjectId) => boolean,
+): Promise<ReadonlyArray<InvalidReflogEntry>> {
+  const zero = zeroOid(ctx.hashConfig);
+  const invalid: InvalidReflogEntry[] = [];
+  for (const worktree of await worktreeContexts(ctx)) {
+    const perReflog = await splitWorktreeReflogs(ctx, worktree, isRecorded, zero);
+    // Rooted once every read is back, in reflog order: the walk pops in push order.
+    for (const split of perReflog) {
+      for (const id of split.recorded) roots.add(id);
+      invalid.push(...split.invalid);
+    }
+  }
+  return invalid;
+}
+
+/** Every reflog of one worktree, read in bounded parallel and split by
+ *  whether the run recorded each oid. */
+async function splitWorktreeReflogs(
+  ctx: Context,
+  worktree: { readonly ref: RefName; readonly worktreeCtx: Context },
+  isRecorded: (id: ObjectId) => boolean,
+  zero: ObjectId,
+): Promise<ReadonlyArray<ReflogSplit>> {
+  const { worktreeCtx } = worktree;
+  const prefix = worktree.ref.slice(0, -HEAD_REF.length);
+  return boundedMapFor(ctx, 'ioBound', await listReflogs(worktreeCtx), async (ref) =>
+    splitReflogEntries(
+      worktreeRefName(prefix, ref),
+      await readReflogIfOpenable(worktreeCtx, ref),
+      isRecorded,
+      zero,
+    ),
+  );
+}
+
+/** `ref` as the current worktree names it: another worktree's own refs carry its prefix. */
+const worktreeRefName = (prefix: string, ref: RefName): RefName =>
+  (isPerWorktreeRef(ref) ? `${prefix}${ref}` : ref) as RefName;
+
+/** git's `parse_object` probe: `false` when no store holds `id` or the copy
+ *  it reads first hashes to another id, `undefined` when the route cannot say. */
+async function parseProbe(ctx: Context, id: ObjectId): Promise<boolean | undefined> {
+  const present = await probePresence(ctx, id);
+  if (present !== true) return present;
+  return hashesToItsId(ctx, id);
+}
+
+/** One index's resolve-undo stages: one git parses is rooted, any other a fault. */
+async function addResolveUndoRoots(
+  ctx: Context,
+  ids: ReadonlyArray<ObjectId>,
+  roots: Set<ObjectId>,
+  universe: ReadonlySet<ObjectId>,
+): Promise<IndexFsck> {
+  const invalid: InvalidIndexPointer[] = [];
+  const parsed: ObjectId[] = [];
+  for (const id of ids) {
+    if ((await parseProbe(ctx, id)) === false) {
+      invalid.push({
+        type: 'invalid-resolve-undo-pointer',
+        id,
+        index: indexPath(ctx.layout.gitDir),
+      });
+      continue;
+    }
+    if (universe.has(id)) roots.add(id);
+    parsed.push(id);
+  }
+  return { invalid, parsed, blobs: [] };
+}
+
+/** What git's `fsck_index` makes of the indexes it reads. */
+interface IndexFsck {
+  readonly invalid: ReadonlyArray<InvalidIndexPointer>;
+  readonly parsed: ReadonlyArray<ObjectId>;
+  readonly blobs: ReadonlyArray<ObjectId>;
+}
+
+const NO_INDEX_FSCK: IndexFsck = { invalid: [], parsed: [], blobs: [] };
+
+/** git's `fsck_index` over one worktree's index: entries, cache-tree, then resolve-undo. */
+async function fsckOneIndex(
+  ctx: Context,
+  roots: Set<ObjectId>,
+  universe: ReadonlySet<ObjectId>,
+): Promise<IndexFsck> {
+  const walk = await addIndexRoots(ctx, roots, universe, parseProbe);
+  const undo = await addResolveUndoRoots(ctx, walk.resolveUndo, roots, universe);
+  return {
+    invalid: [
+      ...walk.unresolved.map((id) => ({
+        type: 'invalid-cache-tree-pointer' as const,
+        id,
+        index: indexPath(ctx.layout.gitDir),
+      })),
+      ...undo.invalid,
+    ],
+    parsed: [...walk.parsed, ...undo.parsed],
+    blobs: walk.blobs,
+  };
+}
+
+/** git's index loop: every worktree's index, in `get_worktrees` order. */
+async function fsckEveryIndex(
+  ctx: Context,
+  roots: Set<ObjectId>,
+  universe: ReadonlySet<ObjectId>,
+): Promise<IndexFsck> {
+  let all = NO_INDEX_FSCK;
+  for (const { worktreeCtx } of await worktreeContexts(ctx)) {
+    const own = await fsckOneIndex(worktreeCtx, roots, universe);
+    all = {
+      invalid: [...all.invalid, ...own.invalid],
+      parsed: [...all.parsed, ...own.parsed],
+      blobs: [...all.blobs, ...own.blobs],
+    };
+  }
+  return all;
 }
 
 /**
@@ -330,24 +618,62 @@ export async function collectRoots(
   ctx: Context,
   opts: FsckOptions,
   universe: ReadonlySet<ObjectId>,
+  isRecorded: (id: ObjectId) => boolean,
+  parses: ParseCheck,
 ): Promise<RootsCollection> {
   const roots = new Set<ObjectId>();
-  const sawAbsentRefTarget = await addRefRoots(ctx, roots, universe);
-  if (opts.reflogRoots !== false) await addReflogRoots(ctx, roots);
-  const missingEntryPoint =
-    opts.indexRoot !== false ? await addIndexRoots(ctx, roots, universe) : false;
-  return { roots, missingEntryPoint, sawAbsentRefTarget };
+  const tips = await addTipRoots(ctx, roots, async (id) => universe.has(id) && (await parses(id)));
+  const invalidReflogEntries =
+    opts.reflogRoots !== false ? await addRecordedReflogRoots(ctx, roots, isRecorded) : [];
+  const unparseableReflogRoots =
+    opts.connectivityOnly === true
+      ? await unparseableSince(roots, tips.refTips, parses)
+      : new Set<ObjectId>();
+  const index =
+    opts.indexRoot !== false ? await fsckEveryIndex(ctx, roots, universe) : NO_INDEX_FSCK;
+  return {
+    roots,
+    ...tips,
+    invalidIndexPointers: index.invalid,
+    parsedIndexIds: index.parsed,
+    indexBlobIds: new Set(index.blobs),
+    invalidReflogEntries,
+    unparseableReflogRoots,
+  };
+}
+
+/** Root every ref tip and worktree HEAD `gate` admits: the tips git's
+ *  `snapshot_refs` parsed, and whether one named an absent object. */
+async function addTipRoots(
+  ctx: Context,
+  roots: Set<ObjectId>,
+  gate: TipGate,
+): Promise<Pick<RootsCollection, 'sawAbsentRefTarget' | 'refTips'>> {
+  const sawAbsentRef = await addRefRoots(ctx, roots, gate);
+  const sawAbsentHead = await addWorktreeHeadRoots(ctx, roots, gate);
+  return { sawAbsentRefTarget: sawAbsentRef || sawAbsentHead, refTips: new Set(roots) };
+}
+
+/** Root every other worktree's HEAD git's fsck snapshots; returns whether
+ *  one named an object the universe lacks (see `addRefRoots`). */
+async function addWorktreeHeadRoots(
+  ctx: Context,
+  roots: Set<ObjectId>,
+  gate: TipGate,
+): Promise<boolean> {
+  let sawAbsentTarget = false;
+  for (const { id } of await worktreeHeads(ctx)) {
+    if (await gate(id)) roots.add(id);
+    else sawAbsentTarget = true;
+  }
+  return sawAbsentTarget;
 }
 
 /** Strip a trailing `/.git` from `dir`; absent means `dir` itself — the same
  *  "gitdir file to working-tree path" rule `listWorktrees` uses. */
 const GIT_SUFFIX = '/.git';
-const stripGitSuffix = (dir: string): string =>
+export const stripGitSuffix = (dir: string): string =>
   dir.endsWith(GIT_SUFFIX) ? dir.slice(0, -GIT_SUFFIX.length) : dir;
-
-function isMissingGitdirFile(error: unknown): boolean {
-  return errorDataCode(error) === 'FILE_NOT_FOUND';
-}
 
 /**
  * Roots a NON-CURRENT worktree's own retention state: its HEAD, its own
@@ -364,7 +690,7 @@ function isMissingGitdirFile(error: unknown): boolean {
  * walk `addRefRoots`/`addReflogRoots` do for the CURRENT worktree — also
  * removes the redundant shared-commonDir re-walk a full walk would repeat
  * per worktree: only `adminDir`-rooted paths are ever touched here. Shared
- * by `addOneWorktreeRoots` (a linked worktree) and `addMainWorktreeRoots`
+ * by `addOtherWorktreeRoots` (each linked worktree) and `addMainWorktreeRoots`
  * (the main worktree, exactly as "non-current" as any other from a linked
  * worktree's perspective).
  */
@@ -376,37 +702,15 @@ async function addNonCurrentWorktreeRoots(ctx: Context, roots: Set<ObjectId>): P
     if (!isTolerableRefFault(err)) throw err;
     // Unborn/dangling/malformed HEAD — tolerated, same as addRefRoots.
   }
-  addReflogEntryRoots(roots, await readReflogLenient(ctx, HEAD_REF), zeroOid(ctx.hashConfig));
-  await addIndexRoots(ctx, roots);
+  addReflogEntryRoots(roots, await readReflogIfOpenable(ctx, HEAD_REF), zeroOid(ctx.hashConfig));
+  await addIndexRetentionRoots(ctx, roots);
 }
 
-/**
- * Roots one linked worktree's own retention state (`addNonCurrentWorktreeRoots`,
- * scoped to HEAD/logs/HEAD/index — see that function's own doc for what git
- * roots and what it prunes). A worktree whose `gitdir` pointer is gone
- * (prunable, `git worktree prune`'s job, not gc's) contributes nothing; any
- * OTHER fault reading it rethrows, the same strict policy
- * `addNonCurrentWorktreeRoots` already applies to everything it reads.
- */
-async function addOneWorktreeRoots(
-  ctx: Context,
-  roots: Set<ObjectId>,
-  id: string,
-  adminDir: string,
-): Promise<void> {
-  let gitdirPointer: string;
-  try {
-    gitdirPointer = resolveWorktreePath(
-      adminDir,
-      (await ctx.fs.readUtf8(`${adminDir}/gitdir`)).trim(),
-    );
-  } catch (err) {
-    if (isMissingGitdirFile(err)) return;
-    throw err;
-  }
-  const worktreePath = stripGitSuffix(gitdirPointer);
-  const worktreeCtx = deriveWorktreeContext(ctx, id, worktreePath);
-  await addNonCurrentWorktreeRoots(worktreeCtx, roots);
+/** One index's gc roots: its entries and cache-tree, then every regular-file
+ *  resolve-undo stage, as git's `add_resolve_undo_to_pending` adds them. */
+async function addIndexRetentionRoots(ctx: Context, roots: Set<ObjectId>): Promise<void> {
+  const { resolveUndo } = await addIndexRoots(ctx, roots);
+  for (const id of resolveUndo) roots.add(id);
 }
 
 /** Whether `ctx` IS the main worktree — its own `gitDir` doubles as the
@@ -442,11 +746,15 @@ function isMainWorktreeCtx(ctx: Context): boolean {
  */
 async function addMainWorktreeRoots(ctx: Context, roots: Set<ObjectId>): Promise<void> {
   if (isMainWorktreeCtx(ctx)) return;
+  await addNonCurrentWorktreeRoots(mainWorktreeContext(ctx), roots);
+}
+
+/** A Context rooted at the main worktree's own admin dir (`commonDir`). */
+function mainWorktreeContext(ctx: Context): Context {
   const { promisor: _promisor, hooks: _hooks, command: _command, ...rest } = ctx;
-  const mainCtx = deriveContext(rest, {
+  return deriveContext(rest, {
     layout: Object.freeze({ ...ctx.layout, gitDir: commonGitDir(ctx) }),
   });
-  await addNonCurrentWorktreeRoots(mainCtx, roots);
 }
 
 /**
@@ -458,7 +766,9 @@ async function addMainWorktreeRoots(ctx: Context, roots: Set<ObjectId>): Promise
  * would only be a wasted, redundant read. Pinned against git 2.55.0:
  * `git gc --prune=now` keeps an object reachable ONLY from a linked
  * worktree's own (possibly detached) HEAD — without this, gc would
- * cruft-then-destroy a subgraph another worktree is actively using.
+ * cruft-then-destroy a subgraph another worktree is actively using. A
+ * worktree whose `gitdir` is missing, unopenable or empty roots nothing, as
+ * git's `get_linked_worktree` skips it.
  */
 async function addOtherWorktreeRoots(ctx: Context, roots: Set<ObjectId>): Promise<void> {
   const root = `${commonGitDir(ctx)}/worktrees`;
@@ -467,14 +777,15 @@ async function addOtherWorktreeRoots(ctx: Context, roots: Set<ObjectId>): Promis
     if (!entry.isDirectory) continue;
     const adminDir = `${root}/${entry.name}`;
     if (adminDir === ctx.layout.gitDir) continue;
-    await addOneWorktreeRoots(ctx, roots, entry.name, adminDir);
+    const worktreeCtx = await linkedWorktreeContext(ctx, entry.name, adminDir);
+    if (worktreeCtx !== undefined) await addNonCurrentWorktreeRoots(worktreeCtx, roots);
   }
 }
 
 /**
  * Retention roots for `maintenance`'s `gc` task: every resolvable
- * ref (HEAD included), every reflog old/new oid, the index — stage-0
- * entries plus its cache-tree, when present — the MAIN worktree's own state
+ * ref (HEAD included), every reflog old/new oid, the index — every
+ * non-gitlink entry plus its cache-tree, when present — the MAIN worktree's own state
  * (`addMainWorktreeRoots`) and every OTHER worktree's own state
  * (`addOtherWorktreeRoots`), matching git rooting reachability across every
  * worktree regardless of which one gc is invoked from. Unlike `collectRoots`,
@@ -482,20 +793,124 @@ async function addOtherWorktreeRoots(ctx: Context, roots: Set<ObjectId>): Promis
  * loose/cruft candidate set the reachability walk will need, not consuming
  * a finished enumeration, so a universe would be the wrong cost shape here.
  *
- * Every collector runs in STRICT mode (see `isTolerableRefFault`): a ref or
- * reflog that genuinely isn't one roots nothing, exactly as `collectRoots`
- * tolerates, but a permission fault, an EMFILE/EIO, or any other real I/O
- * error rethrows and aborts the run rather than silently rooting nothing —
- * gc has no corruption report to raise from a miss the way fsck does, so a
- * swallowed fault here would destroy a subgraph the caller never learns it
- * lost.
+ * Every collector runs in STRICT mode (see `isTolerableRefFault`): a ref
+ * that genuinely isn't one roots nothing, exactly as `collectRoots`
+ * tolerates, and a reflog or worktree `gitdir` that cannot be opened is
+ * absent, as git's own reads treat it (`isUnopenableFile`) — so what only it
+ * named is pruned, as git prunes it. Any other fault rethrows and aborts the
+ * run rather than silently rooting nothing — gc has no corruption report to
+ * raise from a miss the way fsck does, so a swallowed fault here would
+ * destroy a subgraph the caller never learns it lost.
  */
 export async function collectRetentionRoots(ctx: Context): Promise<ReadonlySet<ObjectId>> {
   const roots = new Set<ObjectId>();
   await addRefRoots(ctx, roots, undefined, true);
-  await addReflogRoots(ctx, roots, true);
-  await addIndexRoots(ctx, roots);
+  await addReflogRoots(ctx, roots);
+  await addIndexRetentionRoots(ctx, roots);
   await addMainWorktreeRoots(ctx, roots);
   await addOtherWorktreeRoots(ctx, roots);
   return roots;
+}
+
+/** One worktree's HEAD as git's fsck snapshots it. */
+export interface WorktreeHead {
+  /** `HEAD` for the current worktree, else `main-worktree/HEAD` or `worktrees/<id>/HEAD`. */
+  readonly ref: RefName;
+  readonly id: ObjectId;
+}
+
+/** A HEAD file git could not read: its `cannot read ref file '<path>'` error. */
+export interface UnreadableHead {
+  readonly ref: RefName;
+  readonly path: string;
+}
+
+type HeadRead =
+  | { readonly kind: 'named'; readonly id: ObjectId }
+  | { readonly kind: 'none' }
+  | { readonly kind: 'unreadable'; readonly path: string };
+
+const NO_HEAD: HeadRead = { kind: 'none' };
+
+/** What `worktreeCtx`'s HEAD yields: the object it names, nothing, or a refusal to be read. */
+async function headOf(worktreeCtx: Context): Promise<HeadRead> {
+  try {
+    // Stryker disable next-line ObjectLiteral: equivalent — peel defaults to false in resolveRef; {} and { peel: false } produce identical behavior.
+    return { kind: 'named', id: await resolveRef(worktreeCtx, HEAD_REF, { peel: false }) };
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === 'PERMISSION_DENIED') {
+      return { kind: 'unreadable', path: err.data.path };
+    }
+    if (!isTolerableRefFault(err)) throw err;
+    return NO_HEAD;
+  }
+}
+
+/** A linked worktree's Context, or `undefined` when its `gitdir` file is
+ *  missing, unreadable or empty — git's `get_linked_worktree` skips it then. */
+async function linkedWorktreeContext(
+  ctx: Context,
+  id: string,
+  adminDir: string,
+): Promise<Context | undefined> {
+  if (adminDir === ctx.layout.gitDir) return ctx;
+  let raw: string;
+  try {
+    raw = await ctx.fs.readUtf8(`${adminDir}/gitdir`);
+  } catch (err) {
+    if (isUnopenableFile(err)) return undefined;
+    throw err;
+  }
+  // git skips only a zero-byte file; one holding just whitespace still lists the worktree.
+  if (raw === '') return undefined;
+  // Stryker disable next-line MethodExpression: equivalent — the trimmed pointer only sets the derived Context's workDir and fs confinement, while every reader of linkedWorktreeContext touches only commonDir-rooted admin files.
+  const pointer = resolveWorktreePath(adminDir, raw.trim());
+  return deriveWorktreeContext(ctx, id, stripGitSuffix(pointer));
+}
+
+/** git's `get_worktrees` order: the main worktree, then each admin entry as listed. */
+export async function worktreeContexts(
+  ctx: Context,
+): Promise<ReadonlyArray<{ readonly ref: RefName; readonly worktreeCtx: Context }>> {
+  const main = isMainWorktreeCtx(ctx) ? ctx : mainWorktreeContext(ctx);
+  const all = [{ ref: refFor(ctx, main, 'main-worktree/HEAD'), worktreeCtx: main }];
+  const root = `${commonGitDir(ctx)}/worktrees`;
+  if (!(await ctx.fs.exists(root))) return all;
+  for (const entry of await ctx.fs.readdir(root)) {
+    const worktreeCtx = await linkedWorktreeContext(ctx, entry.name, `${root}/${entry.name}`);
+    if (worktreeCtx === undefined) continue;
+    all.push({ ref: refFor(ctx, worktreeCtx, `worktrees/${entry.name}/HEAD`), worktreeCtx });
+  }
+  return all;
+}
+
+const refFor = (ctx: Context, worktreeCtx: Context, foreign: string): RefName =>
+  (worktreeCtx === ctx ? HEAD_REF : foreign) as RefName;
+
+/** Every worktree's HEAD, split into the ones that name an object and the ones git could not read. */
+export interface WorktreeHeadSnapshot {
+  readonly heads: ReadonlyArray<WorktreeHead>;
+  readonly unreadable: ReadonlyArray<UnreadableHead>;
+}
+
+/**
+ * Every worktree's HEAD that names an object — git's `snapshot_refs` worktree
+ * loop: the current one as `HEAD`, the others under their per-worktree
+ * prefix. A HEAD naming nothing (unborn, unresolvable) is skipped as git's
+ * `refs_resolve_ref_unsafe` returning NULL is; one whose file is refused to
+ * be read is skipped too, and listed apart because git reports it.
+ */
+export async function snapshotWorktreeHeads(ctx: Context): Promise<WorktreeHeadSnapshot> {
+  const heads: WorktreeHead[] = [];
+  const unreadable: UnreadableHead[] = [];
+  for (const { ref, worktreeCtx } of await worktreeContexts(ctx)) {
+    const read = await headOf(worktreeCtx);
+    if (read.kind === 'named') heads.push({ ref, id: read.id });
+    if (read.kind === 'unreadable') unreadable.push({ ref, path: read.path });
+  }
+  return { heads, unreadable };
+}
+
+export async function worktreeHeads(ctx: Context): Promise<ReadonlyArray<WorktreeHead>> {
+  return (await snapshotWorktreeHeads(ctx)).heads;
 }

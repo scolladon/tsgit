@@ -19,6 +19,8 @@ import { resetMovingTo } from '../../domain/reflog/reflog-messages.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { ORIG_HEAD } from '../../domain/refs/state-files.js';
 import {
+  PLACEHOLDER_HEAD_STUB,
+  REFTABLE_REFS_HEADS_STUB,
   WORKTREE_COMMONDIR,
   type WorktreeHead,
   worktreeGitdirPointer,
@@ -36,6 +38,7 @@ import { resolveWorktreePath, worktreePathBasename } from '../../domain/worktree
 import type { Context } from '../../ports/context.js';
 import { acquireIndexLock } from '../primitives/internal/index-lock.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
+import { writeRootRef } from '../primitives/internal/root-ref.js';
 import {
   deriveWorktreeContext,
   worktreeScopedFs,
@@ -47,6 +50,7 @@ import { readIndex } from '../primitives/read-index.js';
 import { readTree } from '../primitives/read-tree.js';
 import { getRefStore, type RefUpdate } from '../primitives/ref-store.js';
 import { branchCreate } from './branch.js';
+import { interpretBranchName, previousCheckoutArg } from './internal/prior-checkout.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import { resolveCommit } from './internal/resolve-rev.js';
 import { status } from './status.js';
@@ -130,7 +134,7 @@ const decideMode = async (
   }
   if (opts.detach === true) return { kind: 'detached' };
   if (opts.commitish !== undefined) {
-    const branchRef = `${HEADS_PREFIX}${opts.commitish}` as RefName;
+    const branchRef = `${HEADS_PREFIX}${await interpretBranchName(ctx, opts.commitish)}` as RefName;
     if ((await getRefStore(ctx).resolveDirect(branchRef)).kind === 'direct') {
       return { kind: 'checkout', branchRef };
     }
@@ -139,6 +143,10 @@ const decideMode = async (
   const name = worktreePathBasename(worktreePath);
   return { kind: 'create', branchRef: `${HEADS_PREFIX}${name}` as RefName, name };
 };
+
+/** git's `worktree add <path> -`: a lone `-` start point is `@{-1}`. */
+const spellPriorCheckout = (opts: WorktreeAddOptions): WorktreeAddOptions =>
+  opts.commitish === undefined ? opts : { ...opts, commitish: previousCheckoutArg(opts.commitish) };
 
 /** Refuse checking out a branch already used by another worktree. */
 const assertBranchFree = async (
@@ -166,6 +174,13 @@ const adminHeadUpdate = (head: WorktreeHead): RefUpdate =>
     ? { kind: 'setSymbolic', name: HEAD_REF, target: head.ref }
     : { kind: 'set', name: HEAD_REF, id: head.oid };
 
+/** A reftable admin dir carries git's ref-directory stubs, or git refuses it as a repository. */
+const writeRefDirectoryStubs = async (ctx: Context, admin: string): Promise<void> => {
+  if (ctx.layout.refStorage !== 'reftable') return;
+  await ctx.fs.writeUtf8(`${admin}/HEAD`, `${PLACEHOLDER_HEAD_STUB}\n`);
+  await ctx.fs.writeUtf8(`${admin}/refs/heads`, `${REFTABLE_REFS_HEADS_STUB}\n`);
+};
+
 /** Write the admin pointer files + the worktree `.git` gitfile. Returns the admin dir. */
 const writeAdmin = async (
   ctx: Context,
@@ -177,9 +192,10 @@ const writeAdmin = async (
   const admin = `${commonGitDir(ctx)}/worktrees/${id}`;
   await ctx.fs.writeUtf8(`${admin}/commondir`, `${WORKTREE_COMMONDIR}\n`);
   await ctx.fs.writeUtf8(`${admin}/gitdir`, `${worktreeGitdirPointer(worktreePath)}\n`);
+  await writeRefDirectoryStubs(ctx, admin);
   const child = deriveWorktreeContext(ctx, id, worktreePath);
   await getRefStore(child).applyRefUpdates([adminHeadUpdate(head)]);
-  await ctx.fs.writeUtf8(`${admin}/${ORIG_HEAD}`, `${oid}\n`);
+  await writeRootRef(child, ORIG_HEAD as RefName, oid);
   await worktreeScopedFs(ctx, worktreePath).writeUtf8(
     `${worktreePath}/.git`,
     `${worktreeGitfile(admin)}\n`,
@@ -231,9 +247,10 @@ const writeHeadReflog = async (child: Context, mode: AddMode, oid: ObjectId): Pr
  */
 export const worktreeAdd = async (
   ctx: Context,
-  opts: WorktreeAddOptions,
+  requested: WorktreeAddOptions,
 ): Promise<WorktreeAddResult> => {
   await gateWorktree(ctx);
+  const opts = spellPriorCheckout(requested);
   if (opts.path === '') throw worktreePathExists('');
   const worktreePath = resolveWorktreePath(ctx.cwd, opts.path) as FilePath;
   // Defence in depth: the admin id is the path basename, joined onto

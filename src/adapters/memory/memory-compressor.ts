@@ -1,6 +1,8 @@
 import { compressFailed, decompressFailed } from '../../domain/index.js';
 import type { Compressor, InflateStreamResult } from '../../ports/compressor.js';
+import { describeError } from '../describe-error.js';
 import { boundedInflateCap, inflateZlibHead, inflateZlibMember } from '../inflate.js';
+import { createNativeInflateStream } from '../native-inflate-stream.js';
 
 export class MemoryCompressor implements Compressor {
   constructor() {
@@ -62,7 +64,7 @@ export class MemoryCompressor implements Compressor {
     inflateZlibHead(data, 0, maxOutputBytes);
 
   createInflateStream = (): TransformStream<Uint8Array, Uint8Array> => {
-    return new DecompressionStream('deflate') as unknown as TransformStream<Uint8Array, Uint8Array>;
+    return createNativeInflateStream();
   };
 }
 
@@ -99,8 +101,4 @@ async function runTransform(
     offset += chunk.length;
   }
   return out;
-}
-
-function describeError(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

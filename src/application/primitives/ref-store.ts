@@ -38,6 +38,7 @@ import {
   serializeSymbolicRef,
 } from '../../domain/refs/index.js';
 import { packedRefsWithout } from '../../domain/refs/packed-refs.js';
+import { isPseudoRef } from '../../domain/refs/per-worktree-ref.js';
 import {
   firstRefNameConflict,
   type RefNameFacts,
@@ -47,10 +48,11 @@ import {
 import { type TakenNameIndex, takenNameIndex } from '../../domain/refs/taken-name-index.js';
 import { isRefsLinkText } from '../../domain/repository/head-ref.js';
 import type { Context } from '../../ports/context.js';
-import type { DirEntry, FileStat } from '../../ports/file-system.js';
+import type { DirEntry, FileStat, FileSystem } from '../../ports/file-system.js';
 import { atomicWriteFile, atomicWriteRef, withLockFile } from './atomic-write.js';
 import { boundedMapFor } from './internal/concurrency.js';
 import { removeEmptyDirectory, removeEmptyDirectoryTree } from './internal/empty-directories.js';
+import { lstatIfPresent, lstatIfReachable } from './internal/fs-probes.js';
 import { invalidateHeadSlot, readHeadFile } from './internal/head-file.js';
 import {
   isCheckedWhenAbsent,
@@ -76,8 +78,7 @@ import {
   recordRefUpdate,
 } from './record-ref-update.js';
 import { createReftableRefStore } from './reftable-ref-store.js';
-import { MAX_PEEL_DEPTH, MAX_REFLOG_BYTES } from './types.js';
-import { exceedsMaxPeelDepth } from './validators.js';
+import { MAX_REFLOG_BYTES } from './types.js';
 
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
@@ -123,8 +124,8 @@ export interface RefStore {
    * `branch` warn `ignoring broken ref` and omit it (exit 0), while
    * `rev-list --branches` and `bundle create --all` refuse outright with
    * `fatal: bad object`. Skip-or-refuse is therefore the CALLER's policy to
-   * pick, and each one already does: `rev-list`, `fsck` and `reflog expire`
-   * tolerate, `bundle create` propagates. Filtering here would impose
+   * pick, and each one already does: `fsck` and `reflog expire` tolerate,
+   * `rev-list --all` and `bundle create` propagate. Filtering here would impose
    * for-each-ref's answer on every caller — including the ones git makes
    * fatal — and would cost one file read per loose name to discover
    * something no caller had asked about.
@@ -388,10 +389,20 @@ type LooseLeaf =
   | { readonly kind: 'none' }
   | { readonly kind: 'blocked' };
 
+/** What an `lstat` found at a loose path — `absent` when it found nothing. */
+const leafKindOf = (stat: FileStat | undefined): LooseLeafKind => {
+  if (stat === undefined) return 'absent';
+  if (stat.isDirectory) return 'directory';
+  return stat.isSymbolicLink ? 'link' : 'file';
+};
+
 const NO_LEAF: LooseLeaf = { kind: 'none' };
 const BLOCKED_LEAF: LooseLeaf = { kind: 'blocked' };
 const SYMLINK_LEAF: LooseLeaf = { kind: 'symlink' };
 const MISSING: ResolveDirectResult = { kind: 'missing' };
+
+/** A no-follow probe of one path: its `lstat`, or `undefined` on the misses it folds. */
+type LeafProbe = (fs: FileSystem, path: string) => Promise<FileStat | undefined>;
 
 /** How the loose walk treats one directory entry: descend it, list it, or
  *  drop it. */
@@ -603,10 +614,16 @@ const byPackedRefName = (a: PackedRefEntry, b: PackedRefEntry): number =>
  *  implementation. `getRefStore`'s `Context`-keyed memo (below) is what
  *  keeps this a one-shot decision per Context. */
 export function createRefStore(ctx: Context): RefStore {
-  return ctx.layout.refStorage === 'reftable'
-    ? createReftableRefStore(ctx)
-    : createFilesRefStore(ctx);
+  if (ctx.layout.refStorage !== 'reftable') return createFilesRefStore(ctx);
+  return withPseudoRefFiles(createReftableRefStore(ctx), createFilesRefStore(ctx));
 }
+
+/** git's `refs_read_raw_ref`: a pseudoref (`MERGE_HEAD`, `FETCH_HEAD`) is read
+ *  from its file in the git dir, whatever backend holds every other ref. */
+const withPseudoRefFiles = (backend: RefStore, files: RefStore): RefStore => ({
+  ...backend,
+  resolveDirect: (name) => (isPseudoRef(name) ? files : backend).resolveDirect(name),
+});
 
 /** A packed snapshot's point lookup — git's `find_reference_location`. */
 interface PackedNameIndex {
@@ -702,15 +719,24 @@ function createFilesRefStore(ctx: Context): RefStore {
 
   const refDir = (name: RefName): string => perWorktreeRefDir(ctx, name);
 
-  async function loadPackedRefs(): Promise<LoadedPackedRefs> {
-    const path = packedRefsPath(commonGitDir(ctx));
-    let stat: FileStat;
+  /** `packed-refs`' followed `stat`, `undefined` when absent. The no-follow probe
+   *  answers a regular file — and an absence — itself, with no refusal; only a
+   *  symbolic link pays the following `stat`. */
+  async function statPackedRefs(path: string, probe: LeafProbe): Promise<FileStat | undefined> {
+    const leaf = await probe(ctx.fs, path);
+    if (leaf === undefined || !leaf.isSymbolicLink) return leaf;
     try {
-      stat = await ctx.fs.stat(path);
+      return await ctx.fs.stat(path);
     } catch (err) {
-      if (isFileNotFound(err)) return EMPTY_PACKED_REFS;
+      if (isFileNotFound(err)) return undefined;
       throw err;
     }
+  }
+
+  async function loadPackedRefs(probe: LeafProbe = lstatIfPresent): Promise<LoadedPackedRefs> {
+    const path = packedRefsPath(commonGitDir(ctx));
+    const stat = await statPackedRefs(path, probe);
+    if (stat === undefined) return EMPTY_PACKED_REFS;
     const key = packedCacheKey(stat);
     if (packedCache !== undefined && packedCache.mtimeKey === key) {
       return packedCache.loaded;
@@ -807,11 +833,12 @@ function createFilesRefStore(ctx: Context): RefStore {
   }
 
   /**
-   * `name`'s loose leaf. git `lstat`s before it reads; a no-follow open asks
-   * the same question within the calls a plain read already makes, so only a
-   * refused open pays more: `PERMISSION_DENIED` one `lstat`, to tell a link
-   * from an unreadable file, and any other refusal — an adapter without the
-   * open, a regular file in the path — the plain reader, which decides those.
+   * `name`'s loose leaf, once a probe found something at `path`. git `lstat`s
+   * before it reads; a no-follow open asks the same question within the calls
+   * a plain read already makes, so only a refused open pays more:
+   * `PERMISSION_DENIED` one `lstat`, to tell a link from an unreadable file,
+   * and any other refusal — an adapter without the open, a regular file in the
+   * path — the plain reader, which decides those.
    */
   async function readLooseLeaf(name: RefName, path: string): Promise<LooseLeaf> {
     try {
@@ -846,9 +873,73 @@ function createFilesRefStore(ctx: Context): RefStore {
     return entry === undefined ? MISSING : { kind: 'direct', id: entry.id };
   }
 
+  /**
+   * Whether nothing is reachable at `path` — answered by a refusal-free probe,
+   * so a missing ref, the common dwim miss, never builds an error. An adapter
+   * without `tryLstat` — the probe every cheaper one refines — leaves every
+   * case to the open, which decides it.
+   */
+  async function isLooseMiss(path: string): Promise<boolean> {
+    if (ctx.fs.tryLstat === undefined) return false;
+    return (await lstatIfReachable(ctx.fs, path)) === undefined;
+  }
+
+  /**
+   * Whether a loose miss below `dir` was git's `ENOTDIR` — a regular file in
+   * its directory chain — rather than a plain absence. `dir`'s `stat`
+   * re-resolves that chain; only an absent `dir` climbs on toward `root`,
+   * since a file system that reports a regular file in the path as absent
+   * (Windows) can only be answered by the ancestor the file stands at.
+   */
+  async function isBlockedAt(dir: string, root: string): Promise<boolean> {
+    try {
+      return !(await ctx.fs.stat(dir)).isDirectory;
+    } catch (err) {
+      const code = errorCodeOf(err);
+      if (code === 'NOT_A_DIRECTORY') return true;
+      if (code !== 'FILE_NOT_FOUND') throw err;
+    }
+    return dir !== root && isBlockedAt(dirname(dir), root);
+  }
+
+  /**
+   * `packed-refs`' entry for a name whose loose file missed. Under the same
+   * directory as `packed-refs`, a miss of `packed-refs` itself is told from
+   * nothing: a regular file in that directory's chain blocks the loose path
+   * too, and a blocked name is missing whatever `packed-refs` holds.
+   */
+  async function packedEntryAfterMiss(
+    name: RefName,
+    dir: string,
+  ): Promise<PackedRefEntry | undefined> {
+    const probe = dir === commonGitDir(ctx) ? lstatIfReachable : lstatIfPresent;
+    return (await loadPackedRefs(probe)).byName().get(name);
+  }
+
+  /**
+   * git's `files_read_raw_ref` after a failed `lstat`: only `ENOENT` reads
+   * `packed-refs`. Both causes agree whenever `packed-refs` has no answer, so
+   * the cause is asked only when it holds the name — or faults, which a
+   * blocked name never reaches.
+   */
+  async function resolveAfterLooseMiss(
+    name: RefName,
+    dir: string,
+    path: string,
+  ): Promise<ResolveDirectResult> {
+    const entry = await packedEntryAfterMiss(name, dir).catch(async (err: unknown) => {
+      if (await isBlockedAt(dirname(path), dir)) return undefined;
+      throw err;
+    });
+    if (entry === undefined || (await isBlockedAt(dirname(path), dir))) return MISSING;
+    return { kind: 'direct', id: entry.id };
+  }
+
   async function resolveDirect(name: RefName): Promise<ResolveDirectResult> {
     if (name === HEAD_NAME) return resolveHeadDirect();
-    const path = looseRefPath(refDir(name), name);
+    const dir = refDir(name);
+    const path = looseRefPath(dir, name);
+    if (await isLooseMiss(path)) return resolveAfterLooseMiss(name, dir, path);
     const leaf = await readLooseLeaf(name, path);
     if (leaf.kind === 'symlink') {
       return resolveSymlinkedRef(name, path, await ctx.fs.readlink(path));
@@ -1153,9 +1244,7 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  regular file. One `lstat`, the same call {@link leafKind} makes. */
   async function looseLeafKind(path: string): Promise<LooseLeafKind> {
     try {
-      const stat = await ctx.fs.lstat(path);
-      if (stat.isDirectory) return 'directory';
-      return stat.isSymbolicLink ? 'link' : 'file';
+      return leafKindOf(await lstatIfPresent(ctx.fs, path));
     } catch (err) {
       if (NOT_A_DIRECTORY_PATH_CODES.has(errorCodeOf(err))) return 'absent';
       throw err;
@@ -1922,13 +2011,11 @@ function createFilesRefStore(ctx: Context): RefStore {
    */
   async function peelToNonTag(id: ObjectId): Promise<ObjectId> {
     let current = id;
-    let depth = 0;
+    const seen = new Set<ObjectId>([id]);
     while ((await readObjectMetadata(ctx, current)).type === 'tag') {
-      depth += 1;
-      if (exceedsMaxPeelDepth(depth, MAX_PEEL_DEPTH)) {
-        throw refChainTooDeep(depth, []);
-      }
       current = await tagTargetOf(current);
+      if (seen.has(current)) throw refChainTooDeep(seen.size, []);
+      seen.add(current);
     }
     return current;
   }

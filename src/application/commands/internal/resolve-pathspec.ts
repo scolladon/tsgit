@@ -29,6 +29,8 @@ export interface ResolvedPathspec {
   readonly matcher: Pathspec;
   /** Non-negated literal patterns that the caller treats as must-match. */
   readonly literalMustMatch: ReadonlyArray<FilePath>;
+  /** How each must-match literal was first spelled by the caller — what git names on no match. */
+  readonly literalSpellings: ReadonlyMap<FilePath, string>;
   /** True iff any non-negated entry is a glob (relaxes whole-call no-match). */
   readonly hasGlob: boolean;
   /**
@@ -52,16 +54,65 @@ export interface ResolvedPathspec {
 // limited to `MAX_DOUBLE_STAR_PER_PATTERN` `**` tokens to bound the
 // cost of the compiled regex; both throw `INVALID_OPTION`.
 export const resolvePathspec = (patterns: ReadonlyArray<string>): ResolvedPathspec => {
-  for (const raw of patterns) {
-    const body = raw.startsWith('!') ? raw.slice(1) : raw;
-    validatePath(body);
-    enforcePatternBudget(raw);
-  }
-  const matcher = compilePathspec(patterns);
+  const collapsed = patterns.map(collapsePattern);
+  for (const raw of patterns) enforcePatternBudget(raw);
+  const matcher = compilePathspec(collapsed);
   const literalMustMatch = matcher.filter(isPositiveLiteral).map((e) => bodyOf(e));
+  const literalSpellings = spellLiterals(matcher, patterns);
   const hasGlob = matcher.some(isPositiveGlob);
-  const symlinkScanTargets = matcher.map((e) => bodyOf(e));
-  return { matcher, literalMustMatch, hasGlob, symlinkScanTargets };
+  const symlinkScanTargets = matcher.map((e) => bodyOf(e)).filter((body) => body !== WHOLE_TREE);
+  return { matcher, literalMustMatch, literalSpellings, hasGlob, symlinkScanTargets };
+};
+
+/** Each positive literal's first raw spelling, `matcher` and `patterns` being index-aligned. */
+const spellLiterals = (
+  matcher: Pathspec,
+  patterns: ReadonlyArray<string>,
+): ReadonlyMap<FilePath, string> => {
+  const spellings = new Map<FilePath, string>();
+  matcher.forEach((entry, index) => {
+    const literal = bodyOf(entry);
+    if (!isPositiveLiteral(entry) || spellings.has(literal)) return;
+    spellings.set(literal, patterns[index] as string);
+  });
+  return spellings;
+};
+
+/** The empty prefix a pattern of nothing but `.` components collapses to: the whole tree. */
+const WHOLE_TREE = '';
+/** Whether `literal` is the whole-tree pathspec (`.` collapsed). */
+export const namesWholeTree = (literal: FilePath): boolean => literal === WHOLE_TREE;
+
+/** How git spells the whole-tree pathspec back. */
+const WHOLE_TREE_SPELLING = '.';
+const NEGATION = '!';
+const CURRENT_DIRECTORY = '.';
+
+const SEPARATOR = '/';
+
+/** Whether `literal` names a directory only — git's trailing-slash pathspec. */
+export const namesDirectoryOnly = (literal: FilePath): boolean => literal.endsWith(SEPARATOR);
+
+/** A component `normalize_path_copy` drops: an empty one (a doubled `/`) or `.`. */
+const isElided = (component: string): boolean =>
+  component === '' || component === CURRENT_DIRECTORY;
+
+/**
+ * git's `prefix_path` normalisation (`./a` → `a`, `d//b` → `d/b`, `.` → the
+ * whole tree), which keeps a trailing `/` — `d/`, `d/.` and `d/./` all name
+ * the directory `d` only — then the body's validation. A pattern that was
+ * empty before the collapse, or absolute, is refused by the validator.
+ */
+const collapsePattern = (raw: string): string => {
+  const negation = raw.startsWith(NEGATION) ? NEGATION : '';
+  const body = raw.slice(negation.length);
+  if (body === '' || body.startsWith(SEPARATOR)) validatePath(body);
+  const components = body.split(SEPARATOR);
+  const kept = components.filter((component) => !isElided(component)).join(SEPARATOR);
+  if (kept === WHOLE_TREE) return negation;
+  validatePath(kept);
+  const directoryOnly = isElided(components[components.length - 1] as string);
+  return `${negation}${kept}${directoryOnly ? SEPARATOR : ''}`;
 };
 
 const enforcePatternBudget = (pattern: string): void => {
@@ -99,16 +150,27 @@ const countDoubleStars = (pattern: string): number => {
 export const enforceLiteralMustMatch = (
   literals: ReadonlyArray<FilePath>,
   matched: ReadonlyArray<FilePath>,
+  spellings: ReadonlyMap<FilePath, string> = NO_SPELLINGS,
 ): void => {
   // Stryker disable next-line ConditionalExpression: equivalent — the early return only skips an empty `for` loop; with zero literals the loop body never runs, so the observable result is identical.
   if (literals.length === 0) return;
   const matchedSet = new Set(matched);
   for (const lit of literals) {
+    if (namesWholeTree(lit)) {
+      if (matched.length > 0) continue;
+      throw pathspecNoMatch(spellings.get(lit) ?? WHOLE_TREE_SPELLING);
+    }
     if (matchedSet.has(lit)) continue;
-    if (matched.some((m) => m.startsWith(`${lit}/`))) continue;
-    throw pathspecNoMatch(lit);
+    if (matched.some((m) => m.startsWith(descendantPrefix(lit)))) continue;
+    throw pathspecNoMatch(spellings.get(lit) ?? lit);
   }
 };
+
+const NO_SPELLINGS: ReadonlyMap<FilePath, string> = new Map();
+
+/** What a path beneath `literal` starts with: a directory literal already ends in `/`. */
+const descendantPrefix = (literal: FilePath): string =>
+  namesDirectoryOnly(literal) ? literal : `${literal}${SEPARATOR}`;
 
 // Refuse a pathspec body — literal or glob — that names a file beyond a
 // symbolic link — git's `has_symlinked_leading_path` refusal, shape-based

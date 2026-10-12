@@ -45,7 +45,7 @@ a bound `this`.
 | [`reflog`](reflog.md) | Show, query, delete, or expire reflog entries. |
 | [`remote`](remote.md) | CRUD porcelain for `[remote "<name>"]` config + tracking refs. |
 | [`reset`](reset.md) | Move HEAD with `soft` / `mixed` / `hard` semantics. |
-| [`revParse`](rev-parse.md) | Resolve revision expressions to `ObjectId`. |
+| [`revParse`](rev-parse.md) | Resolve a revision argument to git's ordered revision list. |
 | [`revList`](rev-list.md) | Enumerate objects reachable from `wants` and not reachable from `not`; returns structured entries (no rendered line). |
 | [`revert`](revert.md) | Record new commits that undo earlier commits (inverse of cherry-pick). |
 | [`rm`](rm.md) | Remove files from the index (and optionally the working tree). |

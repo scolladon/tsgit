@@ -470,3 +470,38 @@ lightweight size + `*.map` check newly wired into the per-PR gate.
       map removal; per-PR size + `*.map` check passes); `npm run verify:tarball`
       green under the new cap at tag-push.
 - [ ] No `src/` diff; no interop test needed (build-artefact-only change).
+
+## Size-limit raise — alternates object lookup and its git-faithfulness batch
+
+Measured on a clean build (`rm -rf dist .wireit && npm run build`, `npx size-limit
+--json`), gzip bytes, against `main` at the same toolchain. Each failing row is raised
+to the measurement rounded up to the next 0.1 kB (≤100 B headroom, the slack the two
+previous raises left); passing rows are unchanged.
+
+| Row | main | measured | Δ | old limit | new limit | Attributable to |
+|---|--:|--:|--:|--:|--:|---|
+| Browser bundle (no-build) | 217 676 | 321 681 | +104 005 | 217.82 kB | 321.7 kB | every layer below — the bundle inlines all of them |
+| Full library | 270 101 | 377 939 | +107 838 | 335 kB | 378 kB | every layer below |
+| Chunks: domain | 80 279 | 119 137 | +38 858 | 80.41 kB | 119.2 kB | export-subst pretty expander (`domain/pretty`), merge renames / directory renames / merge command line (`domain/merge`), ERE automaton and bounded back-reference matcher (`domain/regex`), commit-graph split and Bloom (`domain/commit`), histogram / patience (`domain/diff`), new error members |
+| Chunks: primitives | 74 500 | 99 473 | +24 973 | 74.54 kB | 99.5 kB | alternates chain and object store, limit-list and closure walks, signature verification, ambiguous-name candidates, split commit-graph writer, merge-base, config reads |
+| Chunks: commands-internal | 44 995 | 79 384 | +34 389 | 46 kB | 79.4 kB | fetch ref map and branch tracking, octopus merge, rebase-merges steps, archive export-subst, fsck alternates roots and commit-graph verification |
+| Chunks: repository | 7 857 | 9 108 | +1 251 | 7.9 kB | 9.2 kB | facade wiring for the new command options |
+| Command (fetch) | 1 496 | 3 169 | +1 673 | 3 kB | 3.2 kB | fetch's refspec / ref-map rework |
+
+The per-call-overhead perf fixes that followed (ref-miss and root-ref probes, peeled-tree
+type read, unordered status scan, fsck offset sort) account for +176 B browser, +352 B full
+library, +130 B primitives and +113 B commands-internal of the measured column. The
+git-faithfulness fixes found while validating (gpg and ssh verifier output parsing, replace-ref
+names read by their leading oid, fsck roots / unreadable worktree `HEAD` / per-copy referents,
+branch-tracking valueless merges, rebase keeping commits that start empty and label reflogs, raw
+`--no-commit` merge message, squash ident reads, GBK euro sign) account for +84 B browser,
++129 B full library, +162 B primitives and +117 B commands-internal more. The second ref-lookup
+perf round (a loose miss tells absence from a file in its path only when `packed-refs` holds the
+name, one read of a branch or start point per command, one unlink per branch-state file, the
+rev-list typing walk's shallow set read once) accounts for +284 B browser, +330 B full library,
++228 B primitives and +26 B commands-internal more. The racily-clean smudge on index writes
+(git's `do_write_index` → `ce_smudge_racily_clean_entry`, ADR-949) accounts for +263 B browser,
++626 B full library, +289 B primitives and +13 B repository more.
+
+The npm tarball cap moved 1014 → 1370 KiB (1 038 052 → 1 402 019 B); its attribution
+lives in `tooling/verify-tarball.sh`'s cap block.
