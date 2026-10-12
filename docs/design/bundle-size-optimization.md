@@ -505,3 +505,16 @@ rev-list typing walk's shallow set read once) accounts for +284 B browser, +330 
 
 The npm tarball cap moved 1014 → 1370 KiB (1 038 052 → 1 402 019 B); its attribution
 lives in `tooling/verify-tarball.sh`'s cap block.
+
+## Size-limit raise — oid helpers and hash configs exported as values
+
+Measured on a clean build (`rm -rf dist .wireit && npm run build`, `npx size-limit --json`),
+gzip bytes, against `main` at the same toolchain. Each failing row is raised to the measurement
+rounded up to the next 0.1 kB (≤100 B headroom); every other row is unchanged.
+
+| Row | main | measured | Δ | old limit | new limit | Attributable to |
+|---|--:|--:|--:|--:|--:|---|
+| Browser bundle (no-build) | 321 681 | 321 737 | +56 | 321.7 kB | 321.8 kB | the five names below in the bundle's export list |
+| Full library | 377 939 | 378 017 | +78 | 378 kB | 378.1 kB | `emptyTreeOid`, `EMPTY_TREE_OID`, `zeroOid`, `SHA1_CONFIG` and `SHA256_CONFIG` named in the export list of each of the four entries (`index` +48 B, `index.node` +46 B, `index.default` +48 B, `index.browser` +53 B, per-file gzip) and in the domain chunk's (+12 B); the values already lived in that chunk, and the minified import lists of the command and primitive files shifted for −129 B net |
+
+The npm tarball cap is unchanged: the measured pack stayed under `tooling/verify-tarball.sh`'s cap.
