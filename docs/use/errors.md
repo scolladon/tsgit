@@ -107,6 +107,8 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `INVALID_REVISION_RANGE` | `expression` | An `A..B` range end names an absent object, or one whose parse fails against the types the command's earlier parses assigned. Raised by [`rangeDiff`](commands/range-diff.md) and [`bundle.create`](commands/bundle.md); reconstructs git's `fatal: Invalid revision range <expression>`, preceded by the `error:` lines logged for the failed parse. |
 | `TAG_EXISTS` | `name` | `tag.create(...)` without `force` against an existing tag. |
 | `TAG_NOT_FOUND` | `name` | `tag.delete(...)` against an unknown tag. |
+| `BRANCH_MARK_UNRESOLVED` | `reason` + `branch`, `upstream`, `remote` or `destination` per reason | `@{upstream}`, `@{u}` or `@{push}` names no ref. `reason` is `detached-head`, `no-such-branch`, `no-upstream`, `upstream-not-tracked`, `push-refspecs-exclude-branch`, `push-destination-untracked`, `push-default-nothing` or `simple-push-ambiguous`, each carrying git's own reason. |
+| `REVISION_WALK_FAILED` | `commit?` | A revision walk met a commit it could not parse: with `commit`, git's `Failed to traverse parents of commit <commit>`; without, the limiting step's `revision walk setup failed`. |
 
 ### Index, working tree, sparse, ignore
 
@@ -133,6 +135,9 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `WORKING_TREE_DIRTY` | `localChanges`, `untracked` | Operation requires a clean working tree (and no `force`), or a conflicting merge whose materialisation would overwrite a tracked-and-modified or untracked path. `localChanges` holds the tracked-dirty paths, `untracked` the untracked-clash paths. |
 | `WORKING_TREE_FILE_TOO_LARGE` | `path, bytes, limit` | File exceeds `MAX_WORKING_TREE_BLOB_BYTES` (256 MiB). |
 | `WORKTREE_FILE_ABSENT` | `path` | Working-tree blame (`worktree: true`) of a tracked path whose file is missing from disk. |
+| `CHECKOUT_NON_COMMIT` | `revision` | `checkout` switch mode where `rev` names a tree. |
+| `CHECKOUT_START_POINT_NOT_COMMIT` | `revision, branch` | `checkout({ createBranch })` whose start point names no revision, so `branch` cannot be created. |
+| `FILTER_UNSUPPORTED_CAPABILITY` | `command, capability` | A `filter.<driver>.process` child did not offer a capability tsgit needs. |
 
 ### Diff & merge
 
@@ -143,6 +148,11 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `INVALID_MERGE_TREE` | `reason` | Three-way merge encountered structurally invalid trees. |
 | `INVALID_TREE_FOR_DIFF` | `id` | Caller passed a non-tree id to a tree-diff path. |
 | `MERGE_HAS_CONFLICTS` | _legacy_ | Pre-1.x throw form; v1 returns `{ kind: 'conflict', … }` instead. |
+| `OCTOPUS_MERGE_FAILED` | `head, reason` | `merge` of several heads: git's octopus strategy could not merge `head` on its own (`reason: 'conflict-before-last-head'`). |
+| `UNRELATED_HISTORIES` | — | `merge` or `pull` of heads that share no commit, without `allowUnrelatedHistories`. |
+| `CONFIG_UNKNOWN_VALUE` | `key, value, source, line` | `merge.conflictStyle` or the diff-algorithm key holds a value git does not know; `source` and `line` locate it. |
+| `CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM` | `value` | `fetch.negotiationAlgorithm` names an unknown algorithm. |
+| `TREE_ENTRY_TYPE_MISMATCH` | `tree, entry, mode` | A closure walk expected `entry` in `tree` to be an object of type `mode` (`'tree'` or `'blob'`) and found another type. |
 
 ### Commits & identity
 
@@ -161,6 +171,12 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `NOTHING_TO_COMMIT` | — | `commit` called when the index matches HEAD's tree (no changes to commit). |
 | `OPERATION_IN_PROGRESS` | `operation` | Another long-running operation (merge / rebase / cherry-pick) is pending. |
 | `SIGNING_FAILED` | `reason` | `commit` / `tag` requested signing but the signing program failed or is unavailable (off-node, no `gpg`, bad key, or `gpg.format=x509` which is unsupported). Nothing is written. |
+| `CANNOT_PICK_NON_COMMIT` | `revision, type` | `cherryPick` argument (or a range side) peels to no commit; `type` is the named object's own type. |
+| `EMPTY_COMMIT_SET` | — | `cherryPick` arguments that resolve to no commit. |
+| `FORMAT_PLACEHOLDER_UNSUPPORTED` | `placeholder, reason` | An `archive` `export-subst` format holds a placeholder the command does not support (`'not-supported'`) or cannot parse (`'unparsable'`). |
+| `TIMESTAMP_OUT_OF_RANGE` | `reason, timestamp, zone` | A commit date being formatted falls outside git's range once shifted by its zone: `reason` is `'before-epoch'` or `'too-large'`. |
+| `REBASE_REVISION_INVALID` | `reason, revision` | `rebase` `upstream` or `onto` names no commit: `reason` is `invalid-upstream`, `invalid-onto` or `onto-merge-base-not-unique` (an `A...B` onto). |
+| `TRACKING_INHERIT_REBASE_MULTIPLE` | `merges` | `branch.create({ track: 'inherit' })` from a start point whose upstream rebase has several merge values. |
 
 ### Network, transport, partial clone
 
@@ -208,6 +224,8 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `UNSUPPORTED_OBJECT_FORMAT` | `format, local?` | `fetch`/`clone` discovered a peer whose declared hash algorithm (v1 advertisement token or v2 capability line) differs from this repository's own (`local` set), or the peer advertised a value outside the closed `sha1`/`sha256` set (`local` absent). |
 | `UNSUPPORTED_SCHEME` | `scheme` | URL scheme not in the allowed list. |
 | `V2_COMMAND_UNSUPPORTED` | `command` | The server's v2 capability advertisement doesn't support a command tsgit needs — e.g. its first line isn't exactly `version 2`, or it doesn't list the `fetch` command. |
+| `PUSH_MULTIPLE_UPSTREAMS` | `branch` | `push` needing a branch's one upstream (`push.default: upstream`, `@{push}`) when it has several `branch.<name>.merge` values. |
+| `FAST_FORWARD_MULTIPLE_BRANCHES` | — | `pull({ fastForward: 'only' })` against several fetched heads. |
 
 ### Hooks & lifecycle
 
