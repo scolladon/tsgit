@@ -323,9 +323,11 @@ done
 # tells absence from a file in its path only when packed-refs holds the name,
 # one read of a branch or start point per command, one unlink per branch-state
 # file, the rev-list typing walk's shallow set read once) adds 1 678 B more
-# (1 400 978 B, past 1368 KiB), hence 1369.
+# (1 400 978 B, past 1368 KiB), hence 1369. The racily-clean smudge on index writes
+# (git's `do_write_index`, ADR-949) adds 969 B more (1 402 019 B, past 1369 KiB),
+# hence 1370.
 # Per-row size-limit attribution: docs/design/bundle-size-optimization.md.
-SIZE_CAP=$((1369 * 1024))
+SIZE_CAP=$((1370 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

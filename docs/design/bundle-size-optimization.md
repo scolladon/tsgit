@@ -480,12 +480,12 @@ previous raises left); passing rows are unchanged.
 
 | Row | main | measured | Δ | old limit | new limit | Attributable to |
 |---|--:|--:|--:|--:|--:|---|
-| Browser bundle (no-build) | 217 676 | 321 403 | +103 727 | 217.82 kB | 321.5 kB | every layer below — the bundle inlines all of them |
-| Full library | 270 101 | 377 391 | +107 290 | 335 kB | 377.4 kB | every layer below |
+| Browser bundle (no-build) | 217 676 | 321 681 | +104 005 | 217.82 kB | 321.7 kB | every layer below — the bundle inlines all of them |
+| Full library | 270 101 | 377 939 | +107 838 | 335 kB | 378 kB | every layer below |
 | Chunks: domain | 80 279 | 119 137 | +38 858 | 80.41 kB | 119.2 kB | export-subst pretty expander (`domain/pretty`), merge renames / directory renames / merge command line (`domain/merge`), ERE automaton and bounded back-reference matcher (`domain/regex`), commit-graph split and Bloom (`domain/commit`), histogram / patience (`domain/diff`), new error members |
-| Chunks: primitives | 74 500 | 99 165 | +24 665 | 74.54 kB | 99.2 kB | alternates chain and object store, limit-list and closure walks, signature verification, ambiguous-name candidates, split commit-graph writer, merge-base, config reads |
+| Chunks: primitives | 74 500 | 99 473 | +24 973 | 74.54 kB | 99.5 kB | alternates chain and object store, limit-list and closure walks, signature verification, ambiguous-name candidates, split commit-graph writer, merge-base, config reads |
 | Chunks: commands-internal | 44 995 | 79 384 | +34 389 | 46 kB | 79.4 kB | fetch ref map and branch tracking, octopus merge, rebase-merges steps, archive export-subst, fsck alternates roots and commit-graph verification |
-| Chunks: repository | 7 857 | 9 092 | +1 235 | 7.9 kB | 9.1 kB | facade wiring for the new command options |
+| Chunks: repository | 7 857 | 9 108 | +1 251 | 7.9 kB | 9.2 kB | facade wiring for the new command options |
 | Command (fetch) | 1 496 | 3 169 | +1 673 | 3 kB | 3.2 kB | fetch's refspec / ref-map rework |
 
 The per-call-overhead perf fixes that followed (ref-miss and root-ref probes, peeled-tree
@@ -499,7 +499,9 @@ branch-tracking valueless merges, rebase keeping commits that start empty and la
 perf round (a loose miss tells absence from a file in its path only when `packed-refs` holds the
 name, one read of a branch or start point per command, one unlink per branch-state file, the
 rev-list typing walk's shallow set read once) accounts for +284 B browser, +330 B full library,
-+228 B primitives and +26 B commands-internal more.
++228 B primitives and +26 B commands-internal more. The racily-clean smudge on index writes
+(git's `do_write_index` → `ce_smudge_racily_clean_entry`, ADR-949) accounts for +263 B browser,
++626 B full library, +289 B primitives and +13 B repository more.
 
-The npm tarball cap moved 1014 → 1369 KiB (1 038 052 → 1 400 978 B); its attribution
+The npm tarball cap moved 1014 → 1370 KiB (1 038 052 → 1 402 019 B); its attribution
 lives in `tooling/verify-tarball.sh`'s cap block.
