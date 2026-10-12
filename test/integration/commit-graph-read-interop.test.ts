@@ -22,6 +22,7 @@ import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
   runGit,
+  runGitEnv,
   tryRunGitWithExit,
 } from './interop-helpers.js';
 
@@ -58,7 +59,7 @@ const linearHistory = (count: number): Linear => {
   for (let n = 1; n <= count; n += 1) {
     const date = `@${1_700_000_000 + n} +0000`;
     runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', `c${n}`], {
-      env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+      env: { ...runGitEnv(), GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
     });
   }
   const commits = runGit(['-C', dir, 'rev-list', '--reverse', 'HEAD']).trim().split('\n');

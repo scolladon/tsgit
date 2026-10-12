@@ -24,6 +24,7 @@ import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
   runGit,
+  runGitEnv,
   tryRunGitWithExit,
 } from './interop-helpers.js';
 
@@ -54,7 +55,7 @@ const twoCommitsWithGraph = (slug: string): History => {
   const dir = path.join(root, slug);
   runGit(['init', '-q', '-b', 'main', dir]);
   disableAutoMaintenance(dir);
-  const env = { ...process.env, ...DATE_ENV };
+  const env = { ...runGitEnv(), ...DATE_ENV };
   for (const message of ['c1', 'c2']) {
     runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', message], { env });
   }
@@ -284,7 +285,7 @@ const twoLayerChain = (slug: string): ChainHistory => {
   const dir = path.join(root, slug);
   runGit(['init', '-q', '-b', 'main', dir]);
   disableAutoMaintenance(dir);
-  const env = { ...process.env, ...DATE_ENV };
+  const env = { ...runGitEnv(), ...DATE_ENV };
   const commit = (message: string) =>
     runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', message], { env });
   for (const message of ['c1', 'c2', 'c3']) commit(message);
@@ -382,7 +383,7 @@ describe.skipIf(!GIT_AVAILABLE)('Given an octopus merge in a commit-graph', () =
         const dir = path.join(root, 'octopus-no-edge');
         runGit(['init', '-q', '-b', 'main', dir]);
         disableAutoMaintenance(dir);
-        const env = { ...process.env, ...DATE_ENV };
+        const env = { ...runGitEnv(), ...DATE_ENV };
         runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'base'], { env });
         for (const side of ['a', 'b', 'c']) {
           runGit(['-C', dir, 'checkout', '-q', '-b', side, 'main'], { env });
