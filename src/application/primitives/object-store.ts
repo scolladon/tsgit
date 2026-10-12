@@ -10,7 +10,7 @@ import {
   type SourceReports,
 } from './internal/alternate-chain.js';
 import { readBigFileThreshold } from './internal/big-file-threshold.js';
-import { gitPathSyntaxOf } from './internal/git-path-syntax.js';
+import { type GitPathSyntax, gitPathSyntaxOf } from './internal/git-path-syntax.js';
 import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
 import {
   assertRepoSettingsValid,
@@ -59,23 +59,27 @@ const readPrimaryList = async (ctx: Context, objectsDir: string): Promise<Primar
 
 const PARENT_SEGMENT = '..';
 
-const isContained = (path: string, objectsDir: string): boolean =>
-  path.startsWith(`${objectsDir}/`) && !path.split('/').includes(PARENT_SEGMENT);
+const isContained = (syntax: GitPathSyntax, path: string, objectsDir: string): boolean =>
+  path.startsWith(objectsDir) &&
+  syntax.isSeparator(path[objectsDir.length]) &&
+  !syntax.components(path).includes(PARENT_SEGMENT);
 
 const containedUtimeNow =
-  (fs: FileSystem, objectsDir: string) =>
+  (fs: FileSystem, objectsDir: string, syntax: GitPathSyntax) =>
   async (path: string): Promise<void> => {
-    if (!isContained(path, objectsDir)) throw permissionDenied(path);
+    if (!isContained(syntax, path, objectsDir)) throw permissionDenied(path);
     await fs.utimeNow?.(path);
   };
 
 /**
  * A fresh, read-only view of `fs` for one object store: a write-mode open is refused outright and
- * the freshen touch is confined lexically to `objectsDir`, so a source can never be written through.
+ * the freshen touch is confined lexically to `objectsDir`, read with the separators `syntax` knows,
+ * so a source can never be written through.
  */
 export const narrowObjectSourceAccess = (
   fs: FileSystem,
   objectsDir: string,
+  syntax: GitPathSyntax,
 ): ObjectSourceAccess => ({
   read: fs.read.bind(fs),
   readUtf8: fs.readUtf8.bind(fs),
@@ -89,7 +93,7 @@ export const narrowObjectSourceAccess = (
     if (mode === 'write') return Promise.reject(permissionDenied(path));
     return fs.openWithNoFollow(path, mode);
   },
-  ...(fs.utimeNow === undefined ? {} : { utimeNow: containedUtimeNow(fs, objectsDir) }),
+  ...(fs.utimeNow === undefined ? {} : { utimeNow: containedUtimeNow(fs, objectsDir, syntax) }),
 });
 
 export const narrowAlternatePathProbe = (fs: FileSystem): AlternatePathProbe => ({
@@ -99,7 +103,8 @@ export const narrowAlternatePathProbe = (fs: FileSystem): AlternatePathProbe => 
 });
 
 const accessFor = (ctx: Context, objectsDir: string): ObjectSourceAccess =>
-  ctx.objectSourceAccess?.(objectsDir) ?? narrowObjectSourceAccess(ctx.fs, objectsDir);
+  ctx.objectSourceAccess?.(objectsDir) ??
+  narrowObjectSourceAccess(ctx.fs, objectsDir, gitPathSyntaxOf(ctx));
 
 const chainIo = (ctx: Context): AlternateChainIo => ({
   probe: (path) => ctx.alternatePathProbe?.(path) ?? narrowAlternatePathProbe(ctx.fs),

@@ -103,6 +103,7 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     allowInsecureHttp: options.allowInsecureHttp ?? false,
   });
   const layout = buildLayout(workDir, gitDir, options.bare ?? false, safeHomedir());
+  const pathSyntax = gitPathSyntaxOf({ windowsPathSyntax: nativePolicy.windowsSyntax });
   const deltaCache = createLruCache<ObjectContent>(
     options.deltaCacheMaxBytes ?? DEFAULT_DELTA_CACHE_BYTES,
     options.deltaCacheMaxEntries ?? DEFAULT_DELTA_CACHE_ENTRIES,
@@ -134,10 +135,11 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     ),
     objectSourceAccess: createObjectSourceAccess(
       (objectsDir) => new NodeFileSystem([objectsDir], syncIoOptions(syncIo)),
+      pathSyntax,
     ),
     alternatePathProbe: createAlternatePathProbe(
       (root) => new NodeFileSystem(root, syncIoOptions(syncIo)),
-      gitPathSyntaxOf({ windowsPathSyntax: nativePolicy.windowsSyntax }),
+      pathSyntax,
     ),
     filenameProbe: nodeFilenameProbe,
     windowsPathSyntax: nativePolicy.windowsSyntax,

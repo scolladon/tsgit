@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createCommit } from '../../../../../src/application/primitives/create-commit.js';
+import { posixGitPathSyntax } from '../../../../../src/application/primitives/internal/git-path-syntax.js';
 import { loadCommitGraphBaseLayers } from '../../../../../src/application/primitives/internal/local-commit-graph-layers.js';
 import { narrowObjectSourceAccess } from '../../../../../src/application/primitives/object-store.js';
 import {
@@ -106,7 +107,7 @@ describe('loadCommitGraphBaseLayers', () => {
         };
         const base = await buildSeededContext();
         const objectSourceAccess = (objectsDir: string) => ({
-          ...narrowObjectSourceAccess(base.fs, objectsDir),
+          ...narrowObjectSourceAccess(base.fs, objectsDir, posixGitPathSyntax),
           read: (path: string) => Promise.resolve().then(() => fromView(path)),
           readUtf8: (path: string) =>
             Promise.resolve().then(() => new TextDecoder().decode(fromView(path))),

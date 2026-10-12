@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import * as configReadMod from '../../../../src/application/primitives/config-read.js';
+import {
+  posixGitPathSyntax,
+  windowsGitPathSyntax,
+} from '../../../../src/application/primitives/internal/git-path-syntax.js';
 import * as repoSettingsGateMod from '../../../../src/application/primitives/internal/repo-settings-gate.js';
 import {
   assertEverySourceLoadable,
@@ -24,6 +28,7 @@ import type { AlternatePathProbe } from '../../../../src/ports/object-source-acc
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const PRIMARY = '/repo/.git/objects';
 const LIST = `${PRIMARY}/info/alternates`;
+const WINDOWS_OBJECTS = 'C:\\alt\\objects';
 /** Generous: the overlap is decided by the first registry's release, not by this clock. */
 const OVERLAP_WAIT_MS = 5_000;
 
@@ -613,7 +618,7 @@ describe('narrowObjectSourceAccess', () => {
 
         // Act
         const sut = narrowObjectSourceAccess;
-        const result = sut(ctx.fs, PRIMARY);
+        const result = sut(ctx.fs, PRIMARY, posixGitPathSyntax);
 
         // Assert
         expect(Object.keys(result).sort()).toEqual(MEMBERS);
@@ -630,7 +635,7 @@ describe('narrowObjectSourceAccess', () => {
 
         // Act
         const sut = narrowObjectSourceAccess;
-        const result = sut(fs, PRIMARY);
+        const result = sut(fs, PRIMARY, posixGitPathSyntax);
 
         // Assert
         expect(Object.keys(result).sort()).toEqual(MEMBERS.filter((m) => m !== 'utimeNow'));
@@ -645,7 +650,7 @@ describe('narrowObjectSourceAccess', () => {
         const ctx = createMemoryContext();
         const inner = vi.spyOn(ctx.fs, 'openWithNoFollow');
         const sut = narrowObjectSourceAccess;
-        const result = sut(ctx.fs, PRIMARY);
+        const result = sut(ctx.fs, PRIMARY, posixGitPathSyntax);
 
         // Act
         const data = await denial(() => result.openWithNoFollow(`${PRIMARY}/x`, 'write'));
@@ -664,7 +669,7 @@ describe('narrowObjectSourceAccess', () => {
         const ctx = createMemoryContext();
         await ctx.fs.writeUtf8(`${PRIMARY}/x`, 'a');
         const sut = narrowObjectSourceAccess;
-        const result = sut(ctx.fs, PRIMARY);
+        const result = sut(ctx.fs, PRIMARY, posixGitPathSyntax);
 
         // Act
         const handle = await result.openWithNoFollow(`${PRIMARY}/x`, 'read');
@@ -683,7 +688,7 @@ describe('narrowObjectSourceAccess', () => {
         const ctx = createMemoryContext();
         const inner = vi.spyOn(ctx.fs, 'utimeNow');
         const sut = narrowObjectSourceAccess;
-        const result = sut(ctx.fs, PRIMARY);
+        const result = sut(ctx.fs, PRIMARY, posixGitPathSyntax);
 
         // Act
         const data = await denial(() => result.utimeNow?.(`${PRIMARY}/../x`) as Promise<void>);
@@ -702,7 +707,7 @@ describe('narrowObjectSourceAccess', () => {
         const ctx = createMemoryContext();
         const inner = vi.spyOn(ctx.fs, 'utimeNow');
         const sut = narrowObjectSourceAccess;
-        const result = sut(ctx.fs, PRIMARY);
+        const result = sut(ctx.fs, PRIMARY, posixGitPathSyntax);
 
         // Act
         const data = await denial(
@@ -724,13 +729,70 @@ describe('narrowObjectSourceAccess', () => {
         await ctx.fs.writeUtf8(`${PRIMARY}/x`, 'a');
         const inner = vi.spyOn(ctx.fs, 'utimeNow');
         const sut = narrowObjectSourceAccess;
-        const result = sut(ctx.fs, PRIMARY);
+        const result = sut(ctx.fs, PRIMARY, posixGitPathSyntax);
 
         // Act
         await result.utimeNow?.(`${PRIMARY}/x`);
 
         // Assert
         expect(inner).toHaveBeenCalledWith(`${PRIMARY}/x`);
+      });
+    });
+  });
+
+  describe('Given Windows path syntax and a utimeNow path inside the directory spelt with backslashes', () => {
+    describe('When utimeNow', () => {
+      it('Then the inner filesystem serves it', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const inner = vi.spyOn(ctx.fs, 'utimeNow').mockResolvedValue();
+        const sut = narrowObjectSourceAccess;
+        const result = sut(ctx.fs, WINDOWS_OBJECTS, windowsGitPathSyntax);
+
+        // Act
+        await result.utimeNow?.(`${WINDOWS_OBJECTS}\\obj`);
+
+        // Assert
+        expect(inner).toHaveBeenCalledWith(`${WINDOWS_OBJECTS}\\obj`);
+      });
+    });
+  });
+
+  describe('Given Windows path syntax and a utimeNow path climbing out with backslash dot-dots', () => {
+    describe('When utimeNow', () => {
+      it('Then PERMISSION_DENIED and the inner call untouched', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const inner = vi.spyOn(ctx.fs, 'utimeNow').mockResolvedValue();
+        const sut = narrowObjectSourceAccess;
+        const result = sut(ctx.fs, WINDOWS_OBJECTS, windowsGitPathSyntax);
+        const climbing = `${WINDOWS_OBJECTS}/..\\..\\x`;
+
+        // Act
+        const data = await denial(() => result.utimeNow?.(climbing) as Promise<void>);
+
+        // Assert
+        expect(data).toEqual({ code: 'PERMISSION_DENIED', path: climbing });
+        expect(inner).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given POSIX path syntax and a sibling whose name continues the directory with a backslash', () => {
+    describe('When utimeNow', () => {
+      it('Then PERMISSION_DENIED and the inner call untouched', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const inner = vi.spyOn(ctx.fs, 'utimeNow').mockResolvedValue();
+        const sut = narrowObjectSourceAccess;
+        const result = sut(ctx.fs, PRIMARY, posixGitPathSyntax);
+
+        // Act
+        const data = await denial(() => result.utimeNow?.(`${PRIMARY}\\x`) as Promise<void>);
+
+        // Assert
+        expect(data).toEqual({ code: 'PERMISSION_DENIED', path: `${PRIMARY}\\x` });
+        expect(inner).not.toHaveBeenCalled();
       });
     });
   });
@@ -888,7 +950,8 @@ describe('getObjectStore on a Windows filesystem', () => {
           ...base,
           windowsPathSyntax: true,
           alternatePathProbe: () => probe,
-          objectSourceAccess: () => narrowObjectSourceAccess(base.fs, PRIMARY),
+          objectSourceAccess: () =>
+            narrowObjectSourceAccess(base.fs, PRIMARY, windowsGitPathSyntax),
         };
 
         // Act

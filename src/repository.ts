@@ -651,12 +651,14 @@ export const openRepository = async (
   });
   // Narrowing is not containment: the raw fs comes from the runtime hook rooted at
   // exactly the alternate's objects dir, so `unsafeRawAdapters` still narrows.
+  const pathSyntax = gitPathSyntaxOf(fallback);
   const objectSourceAccess = createObjectSourceAccess(
     (objectsDir) => hostHooks.makeConfinedFs?.([objectsDir]) ?? detected.fs,
+    pathSyntax,
   );
   const alternatePathProbe = createAlternatePathProbe(
     (root) => hostHooks.makeConfinedFs?.([root]) ?? detected.fs,
-    gitPathSyntaxOf(fallback),
+    pathSyntax,
   );
   const config = opts.config !== undefined ? deepFreeze({ ...opts.config }) : undefined;
   const controller = new AbortController();

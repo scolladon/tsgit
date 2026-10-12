@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, realpath, rm, stat, utimes, writeFile } from 'node:fs/p
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryFileSystem } from '../../../src/adapters/memory/memory-file-system.js';
 import { nodeFilenameProbe } from '../../../src/adapters/node/node-filename-probe.js';
 import { nativePolicy } from '../../../src/adapters/node/path-policy.js';
@@ -316,7 +316,10 @@ describe('createObjectSourceAccess', () => {
         const sut = createObjectSourceAccess;
 
         // Act
-        const result = await sut(confine)(objectsDir).readUtf8(`${objectsDir}/info/packs`);
+        const result = await sut(
+          confine,
+          posixGitPathSyntax,
+        )(objectsDir).readUtf8(`${objectsDir}/info/packs`);
 
         // Assert
         expect(asked).toEqual([objectsDir]);
@@ -335,13 +338,30 @@ describe('createObjectSourceAccess', () => {
         const sut = createObjectSourceAccess;
 
         // Act
-        const accessFor = sut(confine);
+        const accessFor = sut(confine, posixGitPathSyntax);
         const first = accessFor(objectsDir);
         const result = accessFor(objectsDir);
 
         // Assert
         expect(result).toBe(first);
         expect(asked).toEqual([objectsDir]);
+      });
+    });
+  });
+  describe('Given Windows path syntax', () => {
+    describe('When a file inside the objects dir spelt with backslashes is freshened', () => {
+      it('Then the confined fs touches it', async () => {
+        // Arrange
+        const fs = storeFs();
+        const touched = vi.spyOn(fs, 'utimeNow').mockResolvedValue();
+        const sut = createObjectSourceAccess;
+        const access = sut(() => fs, windowsGitPathSyntax)('C:\\alt\\objects');
+
+        // Act
+        await access.utimeNow?.('C:\\alt\\objects\\obj');
+
+        // Assert
+        expect(touched).toHaveBeenCalledWith('C:\\alt\\objects\\obj');
       });
     });
   });

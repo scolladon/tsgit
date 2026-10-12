@@ -27,13 +27,16 @@ const memoisedPerKey = <T>(build: (key: string) => T): ((key: string) => T) => {
 /**
  * Builds the per-store access capability every entry point shares: each store is
  * reached through `confine`, which receives that store's objects dir as its only
- * root, then narrowed read-only. Memoised per objects dir — the store chain asks
- * for the same source on every lookup.
+ * root, then narrowed read-only under `pathSyntax`. Memoised per objects dir — the
+ * store chain asks for the same source on every lookup.
  */
 export const createObjectSourceAccess = (
   confine: (objectsDir: string) => FileSystem,
+  pathSyntax: GitPathSyntax,
 ): ObjectSourceAccessFor =>
-  memoisedPerKey((objectsDir) => narrowObjectSourceAccess(confine(objectsDir), objectsDir));
+  memoisedPerKey((objectsDir) =>
+    narrowObjectSourceAccess(confine(objectsDir), objectsDir, pathSyntax),
+  );
 
 /**
  * Builds the alternate path probe every entry point shares: a path is resolved through `confine`

@@ -15,6 +15,8 @@ export interface GitPathSyntax {
    * a trailing run leaves — git's "a component is still remaining" test sees it.
    */
   readonly components: (path: string) => string[];
+  /** git's `is_dir_sep`. */
+  readonly isSeparator: (char: string | undefined) => boolean;
 }
 
 const POSIX_SEPARATOR = '/';
@@ -44,6 +46,7 @@ export const posixGitPathSyntax: GitPathSyntax = {
       ? { root: POSIX_SEPARATOR, rest: path.slice(1) }
       : { root: '', rest: path },
   components: (path) => namesOf(path.split(POSIX_SEPARATOR)),
+  isSeparator: (char) => char === POSIX_SEPARATOR,
 };
 
 const isWindowsSeparator = (char: string | undefined): boolean => char === '/' || char === '\\';
@@ -88,6 +91,7 @@ export const windowsGitPathSyntax: GitPathSyntax = {
     };
   },
   components: (path) => namesOf(path.split(WINDOWS_SEPARATORS)),
+  isSeparator: isWindowsSeparator,
 };
 
 /** The syntax of the git build a host emulates: Windows when it says so, POSIX otherwise. */

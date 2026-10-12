@@ -62,6 +62,22 @@ describe('posixGitPathSyntax', () => {
         expect(result).toEqual(expected);
       });
     });
+    describe('When isSeparator', () => {
+      it.each([
+        { char: '/', expected: true },
+        { char: '\\', expected: false },
+        { char: undefined, expected: false },
+      ])('Then $char is a separator: $expected', ({ char, expected }) => {
+        // Arrange
+        const sut = posixGitPathSyntax;
+
+        // Act
+        const result = sut.isSeparator(char);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
   });
 });
 
@@ -137,6 +153,23 @@ describe('windowsGitPathSyntax', () => {
 
         // Assert
         expect(result).toEqual(expected);
+      });
+    });
+    describe('When isSeparator', () => {
+      it.each([
+        { char: '/', expected: true },
+        { char: '\\', expected: true },
+        { char: ':', expected: false },
+        { char: undefined, expected: false },
+      ])('Then $char is a separator: $expected', ({ char, expected }) => {
+        // Arrange
+        const sut = windowsGitPathSyntax;
+
+        // Act
+        const result = sut.isSeparator(char);
+
+        // Assert
+        expect(result).toBe(expected);
       });
     });
   });
