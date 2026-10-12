@@ -2062,4 +2062,34 @@ describe('openRepository — worktreeFs memoisation', () => {
       });
     });
   });
+
+  describe('Given a runtime fallback naming the crlf native line ending', () => {
+    describe('When the repository is opened', () => {
+      it('Then ctx.nativeEol is crlf', async () => {
+        // Arrange
+        const fallback: RuntimeFallback = { ...makeFallback(), nativeEol: 'crlf' };
+
+        // Act
+        const sut = await openRepository({ cwd: '/repo' }, fallback);
+
+        // Assert
+        expect(sut.ctx.nativeEol).toBe('crlf');
+      });
+    });
+  });
+
+  describe('Given a runtime fallback without a native line ending', () => {
+    describe('When the repository is opened', () => {
+      it('Then ctx has no nativeEol key', async () => {
+        // Arrange
+        const fallback = makeFallback();
+
+        // Act
+        const sut = await openRepository({ cwd: '/repo' }, fallback);
+
+        // Assert
+        expect('nativeEol' in sut.ctx).toBe(false);
+      });
+    });
+  });
 });

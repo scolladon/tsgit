@@ -356,6 +356,11 @@ export interface Context {
    * shares — as git for Windows does (the node adapter on Windows). Absent ⇒ POSIX paths.
    */
   readonly windowsPathSyntax?: boolean;
+  /**
+   * The host's native line ending (git's `EOL_NATIVE`), supplied by the platform adapter.
+   * Absent ⇒ `lf`.
+   */
+  readonly nativeEol?: 'lf' | 'crlf';
 }
 
 export interface CreateContextParts {
@@ -370,6 +375,7 @@ export interface CreateContextParts {
   readonly hashConfig: HashConfig;
   readonly deltaCache: LruCache<ObjectContent>;
   readonly concurrency?: ConcurrencyLimits;
+  readonly nativeEol?: 'lf' | 'crlf';
   readonly cacheBudgets?: CacheBudgets;
   readonly config?: RepositoryConfig;
   readonly logger?: Logger;

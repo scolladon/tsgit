@@ -290,6 +290,8 @@ export interface RuntimeFallback {
    * back to the safe floor in that case.
    */
   readonly concurrency?: ConcurrencyLimits;
+  /** The host's native line ending; absent on runtimes whose native ending is `lf`. */
+  readonly nativeEol?: Context['nativeEol'];
   /**
    * Optional explicit overrides for the derived object caches' budgets,
    * built by the entry point from its own option surface. Absent when the
@@ -513,6 +515,7 @@ interface OptionalCtxInputs {
   readonly env: EnvReader | undefined;
   readonly ssh: SshTransport | undefined;
   readonly concurrency: ConcurrencyLimits | undefined;
+  readonly nativeEol: Context['nativeEol'];
   readonly cacheBudgets: Context['cacheBudgets'];
   readonly windowsPathSyntax: boolean | undefined;
   readonly filenameProbe: FilenameProbe | undefined;
@@ -532,6 +535,7 @@ const buildOptionalCtxFields = (inputs: OptionalCtxInputs) => ({
   ...(inputs.env !== undefined ? { env: inputs.env } : {}),
   ...(inputs.ssh !== undefined ? { ssh: inputs.ssh } : {}),
   ...(inputs.concurrency !== undefined ? { concurrency: inputs.concurrency } : {}),
+  ...(inputs.nativeEol !== undefined ? { nativeEol: inputs.nativeEol } : {}),
   ...(inputs.cacheBudgets !== undefined ? { cacheBudgets: inputs.cacheBudgets } : {}),
   ...(inputs.windowsPathSyntax !== undefined
     ? { windowsPathSyntax: inputs.windowsPathSyntax }
@@ -735,6 +739,7 @@ export const openRepository = async (
       env: fallback.env,
       ssh: fallback.ssh,
       concurrency: fallback.concurrency,
+      nativeEol: fallback.nativeEol,
       cacheBudgets: fallback.cacheBudgets,
       windowsPathSyntax: hostHooks.windowsPathSyntax,
       filenameProbe: hostHooks.filenameProbe,
