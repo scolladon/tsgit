@@ -46,6 +46,20 @@ interface ArchiveEntry {
   and the gitlink as an empty directory; it never recurses into submodules.
 - **Pre-order traversal.** Directory entries appear before their contents,
   matching git's canonical on-disk tree-sort order.
+- **`export-ignore`.** Attributes are read from the `.gitattributes` files of
+  the archived tree itself. A path with `export-ignore` set is left out; a
+  directory with it set is left out with everything under it. A directory is
+  held back until a non-directory descendant passes its own check, so a
+  directory with nothing left to export is never emitted, and `dir/**` keeps
+  `dir` itself. A gitlink is matched as `path/`.
+- **`export-subst`.** A regular file with `export-subst` set has its
+  `$Format:<format>$` occurrences expanded against the archived commit, with
+  git's pretty-format placeholders; the file is read whole whatever its size.
+  A treeish that resolves to a bare tree has no commit to expand against and
+  the content is left as stored. A placeholder the command does not support, or
+  cannot parse, refuses `FORMAT_PLACEHOLDER_UNSUPPORTED` while the stream is
+  consumed. Other regular blobs above `core.bigFileThreshold` are read in
+  stream order, the rest whole.
 - **Empty tree → empty stream.** A treeish whose root tree has no entries
   produces no entries; `result.commit` / `result.commitTime` are still set when
   the treeish is commit-ish.
