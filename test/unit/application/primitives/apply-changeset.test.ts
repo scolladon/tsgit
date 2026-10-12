@@ -2342,16 +2342,30 @@ describe('applyChangeset write order under a long-running filter', () => {
     vi.restoreAllMocks();
   });
 
-  const writeOrderUnder = async (config: string, spawns: boolean): Promise<string[]> => {
+  interface WriteTrace {
+    readonly phases: ReadonlyArray<'start' | 'write'>;
+    readonly written: ReadonlyArray<string>;
+  }
+
+  // Phases rather than paths: a concurrent wave writes in completion order,
+  // but every entry has started before the first one writes.
+  const traceWritesUnder = async (config: string, spawns: boolean): Promise<WriteTrace> => {
     const base = createMemoryContext({ files: { '/repo/.git/config': enc(config) } });
     const ctx = spawns
       ? { ...base, command: scriptedCommandRunner(new Uint8Array(0)).runner }
       : base;
     const ids = [await writeBlob(ctx, enc('zz')), await writeBlob(ctx, enc('mm'))];
-    const order: string[] = [];
+    const phases: Array<'start' | 'write'> = [];
+    const written: string[] = [];
+    const realStart = writeFileMod.writeWorkingTreeEntryStream;
+    vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream').mockImplementation((...args) => {
+      phases.push('start');
+      return realStart(...args);
+    });
     const realWrite = ctx.fs.writeStream.bind(ctx.fs);
     vi.spyOn(ctx.fs, 'writeStream').mockImplementation(async (path, chunks) => {
-      order.push(path);
+      phases.push('write');
+      written.push(path);
       await realWrite(path, chunks);
     });
     const changeset = makeChangeset([
@@ -2360,11 +2374,17 @@ describe('applyChangeset write order under a long-running filter', () => {
     ]);
     const sut = applyChangeset;
     await sut(ctx, { changeset, force: false, workdir: WORKDIR });
-    return order;
+    return { phases, written };
   };
 
-  const SERIAL = [`${WORKDIR}/m`, `${WORKDIR}/z`];
-  const CONCURRENT = [`${WORKDIR}/z`, `${WORKDIR}/m`];
+  const SERIAL: WriteTrace = {
+    phases: ['start', 'write', 'start', 'write'],
+    written: [`${WORKDIR}/m`, `${WORKDIR}/z`],
+  };
+  const CONCURRENT = {
+    phases: ['start', 'start', 'write', 'write'],
+    written: expect.arrayContaining([`${WORKDIR}/m`, `${WORKDIR}/z`]),
+  };
 
   describe.each([
     {
@@ -2401,7 +2421,7 @@ describe('applyChangeset write order under a long-running filter', () => {
     describe('When applyChangeset writes entries given out of path order', () => {
       it('Then the writes are ordered as git checks the entries out', async () => {
         // Arrange
-        const sut = writeOrderUnder;
+        const sut = traceWritesUnder;
 
         // Act
         const result = await sut(config, spawns);
