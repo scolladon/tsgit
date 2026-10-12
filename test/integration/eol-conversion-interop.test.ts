@@ -644,4 +644,199 @@ describe.skipIf(!GIT_AVAILABLE)('eol conversion interop', () => {
       });
     });
   });
+
+  describe('Given tsgit and git renormalize the same committed CRLF files', () => {
+    const CRLF_TWO = bytesOf('a\r\nb\r\n');
+    const CRLF_THREE = bytesOf('a\r\nb\r\nz\r\n');
+
+    interface RenormalizeState {
+      readonly stage: string;
+      readonly tags: string;
+      readonly objects: ReadonlyArray<string>;
+      readonly worktree: Readonly<Record<string, string>>;
+    }
+
+    const committedTwin = (files: Scenario['files']): { gitDir: string; tsDir: string } => {
+      const twin = { gitDir: freshDir(), tsDir: freshDir() };
+      for (const dir of [twin.gitDir, twin.tsDir]) {
+        initEolRepo(dir, { infoAttributes: [] });
+        for (const [name, bytes] of Object.entries(files)) {
+          mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
+          writeFileSync(path.join(dir, name), bytes);
+        }
+        git(dir, 'add', '.');
+        git(dir, 'commit', '-q', '-m', 'raw');
+        writeInfoAttributes(dir, ['* text=auto']);
+      }
+      return twin;
+    };
+
+    const stateOf = (dir: string, names: ReadonlyArray<string>): RenormalizeState => ({
+      stage: lsStage(dir),
+      tags: git(dir, 'ls-files', '-t'),
+      objects: looseObjectIds(dir),
+      worktree: Object.fromEntries(
+        names.map((name) => [name, readFileSync(path.join(dir, name)).toString('latin1')]),
+      ),
+    });
+
+    const renormalizeOnBoth = async (
+      twin: { gitDir: string; tsDir: string },
+      pathspec: ReadonlyArray<string>,
+      names: ReadonlyArray<string>,
+    ) => {
+      const gitRun = tryRunGitWithExit(['-C', twin.gitDir, 'add', '--renormalize', ...pathspec]);
+      const result = await add(createNodeContext({ workDir: twin.tsDir }), pathspec, {
+        renormalize: true,
+      });
+      return {
+        gitExit: gitRun.exitCode,
+        git: stateOf(twin.gitDir, names),
+        tsgit: stateOf(twin.tsDir, names),
+        result,
+      };
+    };
+
+    describe('When text=auto is set after the commit and add --renormalize . runs', () => {
+      it('Then both stage the LF blob aNbNzN', async () => {
+        // Arrange
+        const twin = committedTwin({ f: CRLF_THREE });
+        const sut = renormalizeOnBoth;
+
+        // Act
+        const result = await sut(twin, ['.'], ['f']);
+
+        // Assert
+        expect(result.gitExit).toBe(0);
+        expect(result.tsgit).toEqual(result.git);
+        expect(enc(blobAt(twin.tsDir, 'f'))).toBe(enc(bytesOf('a\nb\nz\n')));
+        expect(result.result.modified).toEqual(['f']);
+      });
+    });
+
+    describe('When status is clean under the new text=auto and add --renormalize . then runs', () => {
+      it('Then git stages M and tsgit stages the same blob', async () => {
+        // Arrange
+        const twin = committedTwin({ f: CRLF_TWO });
+        const statusBefore = git(twin.gitDir, 'status', '--short');
+        const sut = renormalizeOnBoth;
+
+        // Act
+        const result = await sut(twin, ['.'], ['f']);
+
+        // Assert
+        // tsgit's own status reads the attributes only from the status-conversion part on;
+        // here the git side and the staged entry id of both tools are compared.
+        expect(statusBefore).toBe('');
+        expect(git(twin.gitDir, 'status', '--short')).toBe('M  f\n');
+        expect(result.tsgit.stage).toBe(result.git.stage);
+      });
+    });
+
+    describe('When add --renormalize . runs on a CRLF blob under text=auto', () => {
+      it('Then it exits 0 with the LF blob in both tools', async () => {
+        // Arrange
+        const twin = committedTwin({ f: CRLF_TWO });
+        const sut = renormalizeOnBoth;
+
+        // Act
+        const result = await sut(twin, ['.'], ['f']);
+
+        // Assert
+        expect(result.gitExit).toBe(0);
+        expect(enc(blobAt(twin.gitDir, 'f'))).toBe(enc(bytesOf('a\nb\n')));
+        expect(result.tsgit).toEqual(result.git);
+      });
+    });
+
+    describe('When the tree holds a sparse cone, a modified file and an untracked file', () => {
+      it('Then skip-worktree entries stay, m is renormalized, u is not staged, the worktree is untouched', async () => {
+        // Arrange
+        const files = { 'in/f': CRLF_TWO, 'out/f': CRLF_TWO, m: CRLF_TWO };
+        const twin = committedTwin(files);
+        for (const dir of [twin.gitDir, twin.tsDir]) {
+          git(dir, 'sparse-checkout', 'set', '--cone', 'in');
+          writeFileSync(path.join(dir, 'm'), CRLF_THREE);
+          writeFileSync(path.join(dir, 'u'), CRLF_TWO);
+        }
+        const sut = renormalizeOnBoth;
+
+        // Act
+        const result = await sut(twin, ['.'], ['in/f', 'm', 'u']);
+
+        // Assert
+        expect(result.gitExit).toBe(0);
+        expect(result.tsgit).toEqual(result.git);
+        expect(result.tsgit.tags).toContain('S out/f');
+        expect(enc(blobAt(twin.tsDir, 'm'))).toBe(enc(bytesOf('a\nb\nz\n')));
+        expect(result.tsgit.worktree).toEqual({
+          'in/f': 'a\r\nb\r\n',
+          m: 'a\r\nb\r\nz\r\n',
+          u: 'a\r\nb\r\n',
+        });
+      });
+    });
+
+    describe('When a tracked file named by the pathspec is gone from the worktree', () => {
+      it('Then both tools refuse and leave the index alone', async () => {
+        // Arrange
+        const twin = committedTwin({ f: CRLF_TWO, g: CRLF_TWO });
+        for (const dir of [twin.gitDir, twin.tsDir]) rmSync(path.join(dir, 'g'));
+        const stageBefore = lsStage(twin.tsDir);
+        const gitRun = tryRunGitWithExit(['-C', twin.gitDir, 'add', '--renormalize', '.']);
+        let code: string | undefined;
+
+        // Act
+        try {
+          await add(createNodeContext({ workDir: twin.tsDir }), ['.'], { renormalize: true });
+        } catch (error) {
+          code = error instanceof TsgitError ? error.data.code : undefined;
+        }
+
+        // Assert
+        expect(gitRun.exitCode).toBe(REFUSED_EXIT_CODE);
+        expect(code).toBe('PATHSPEC_NO_MATCH');
+        expect(lsStage(twin.gitDir)).toBe(stageBefore);
+        expect(lsStage(twin.tsDir)).toBe(stageBefore);
+      });
+    });
+
+    describe('When the pathspec is empty', () => {
+      it('Then git prints Nothing specified and exits 0 while tsgit keeps its EMPTY_PATHSPEC refusal', async () => {
+        // Arrange
+        const twin = committedTwin({ f: CRLF_TWO });
+        const gitRun = tryRunGitWithExit(['-C', twin.gitDir, 'add', '--renormalize']);
+        let code: string | undefined;
+
+        // Act
+        try {
+          await add(createNodeContext({ workDir: twin.tsDir }), [], { renormalize: true });
+        } catch (error) {
+          code = error instanceof TsgitError ? error.data.code : undefined;
+        }
+
+        // Assert
+        expect(gitRun.exitCode).toBe(0);
+        expect(gitRun.stderr).toContain('Nothing specified, nothing added.');
+        expect(code).toBe('EMPTY_PATHSPEC');
+      });
+    });
+
+    describe('When -A is combined with renormalize and an untracked file exists', () => {
+      it('Then neither tool stages the untracked file', async () => {
+        // Arrange
+        const twin = committedTwin({ f: CRLF_TWO });
+        for (const dir of [twin.gitDir, twin.tsDir]) writeFileSync(path.join(dir, 'u'), CRLF_TWO);
+        const gitRun = tryRunGitWithExit(['-C', twin.gitDir, 'add', '--renormalize', '-A']);
+
+        // Act
+        await add(createNodeContext({ workDir: twin.tsDir }), [], { all: true, renormalize: true });
+
+        // Assert
+        expect(gitRun.exitCode).toBe(0);
+        expect(lsStage(twin.tsDir)).toBe(lsStage(twin.gitDir));
+        expect(lsStage(twin.tsDir)).not.toContain('\tu');
+      });
+    });
+  });
 });

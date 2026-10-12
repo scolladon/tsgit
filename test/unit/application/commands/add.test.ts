@@ -10,7 +10,11 @@ import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { MAX_WORKING_TREE_BLOB_BYTES } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import { type GitIndex, STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
+import {
+  type GitIndex,
+  type IndexEntry,
+  STAGE0_FLAGS,
+} from '../../../../src/domain/git-index/index.js';
 import { permissionDenied, TsgitError } from '../../../../src/domain/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { type FilePath, ObjectId } from '../../../../src/domain/objects/object-id.js';
@@ -2833,6 +2837,410 @@ describe('Given a symlink whose target holds CRLF under text eol=crlf ident', ()
 
       // Assert
       expect(await stagedText(ctx, 'link')).toBe('t\r\nx');
+    });
+  });
+});
+
+const RENORMALIZE = { renormalize: true } as const;
+
+const seedCommittedCrlf = async (
+  workingTree: Readonly<Record<string, string>>,
+  attributes = '* text=auto\n',
+) => {
+  const ctx = await seedFreshRepo(workingTree);
+  await add(ctx, Object.keys(workingTree));
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, attributes);
+  return ctx;
+};
+
+type RenormalizeCtx = Awaited<ReturnType<typeof seedFreshRepo>>;
+
+const CRLF = 'a\r\nb\r\n';
+
+/** Replaces the index with entries that keep their CRLF blob whatever the worktree holds. */
+const indexCrlfEntries = async (
+  ctx: RenormalizeCtx,
+  specs: ReadonlyArray<{ path: string; override?: Partial<IndexEntry> }>,
+): Promise<ObjectId> => {
+  const id = await writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: enc(CRLF) });
+  const entries: IndexEntry[] = [];
+  for (const { path, override } of specs) {
+    const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${path}`);
+    entries.push({
+      ...indexEntryFromStat(stat, FILE_MODE.REGULAR, id, path as FilePath),
+      ...override,
+    });
+  }
+  const index: GitIndex = { version: 2, entries, extensions: [], trailerSha: new Uint8Array(0) };
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, await serializeIndexFixtureAsync(index, ctx));
+  return id;
+};
+
+const idsByPath = async (ctx: RenormalizeCtx) =>
+  Object.fromEntries((await readIndex(ctx)).entries.map((entry) => [entry.path, entry.id]));
+
+describe('add renormalize option', () => {
+  describe('Given a committed CRLF blob under text=auto and an untouched worktree', () => {
+    describe('When add renormalize "."', () => {
+      it('Then the entry blob is LF and modified lists it', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': 'a\r\nb\r\n' });
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        expect(await stagedText(ctx, 'f.txt')).toBe('a\nb\n');
+        expect(result).toEqual({
+          added: [],
+          modified: ['f.txt'],
+          removed: [],
+          eolNotices: [],
+        });
+      });
+    });
+  });
+
+  describe('Given a skip-worktree entry holding a CRLF blob', () => {
+    describe('When add renormalize "."', () => {
+      it('Then the entry is untouched', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        const id = await indexCrlfEntries(ctx, [
+          { path: 'f.txt', override: { flags: { ...STAGE0_FLAGS, skipWorktree: true } } },
+        ]);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        expect(await idsByPath(ctx)).toEqual({ 'f.txt': id });
+        expect(result.modified).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an unmerged stage-2 entry holding a CRLF blob', () => {
+    describe('When add renormalize "."', () => {
+      it('Then the entry is untouched', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        const id = await indexCrlfEntries(ctx, [
+          { path: 'f.txt', override: { flags: { ...STAGE0_FLAGS, stage: 2 } } },
+        ]);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        const [entry] = (await readIndex(ctx)).entries;
+        expect({ id: entry?.id, stage: entry?.flags.stage }).toEqual({ id, stage: 2 });
+        expect(result.modified).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a gitlink entry', () => {
+    describe('When add renormalize "."', () => {
+      it('Then the entry is untouched', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        const id = await indexCrlfEntries(ctx, [
+          { path: 'f.txt', override: { mode: FILE_MODE.GITLINK } },
+        ]);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        const [entry] = (await readIndex(ctx)).entries;
+        expect({ id: entry?.id, mode: entry?.mode }).toEqual({ id, mode: FILE_MODE.GITLINK });
+        expect(result.modified).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given two CRLF entries and a pathspec naming one', () => {
+    describe('When add renormalize "f.txt"', () => {
+      it('Then only the named entry is re-cleaned', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF, 'g.txt': CRLF });
+        const id = await indexCrlfEntries(ctx, [{ path: 'f.txt' }, { path: 'g.txt' }]);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['f.txt'], RENORMALIZE);
+
+        // Assert
+        expect(result.modified).toEqual(['f.txt']);
+        expect((await idsByPath(ctx))['g.txt']).toBe(id);
+        expect(await stagedText(ctx, 'f.txt')).toBe('a\nb\n');
+      });
+    });
+  });
+
+  describe('Given an untracked file next to a tracked one', () => {
+    describe('When add renormalize "."', () => {
+      it('Then the untracked file is not added', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/u.txt`, 'u\n');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        expect(result.added).toEqual([]);
+        expect(Object.keys(await idsByPath(ctx))).toEqual(['f.txt']);
+      });
+    });
+  });
+
+  describe('Given a tracked CRLF file', () => {
+    describe('When add renormalize "."', () => {
+      it('Then the worktree bytes are unchanged', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        const sut = add;
+
+        // Act
+        await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f.txt`)).toBe(CRLF);
+      });
+    });
+  });
+
+  describe('Given core.safecrlf true and a lossy committed file', () => {
+    describe('When add renormalize "."', () => {
+      it('Then it neither refuses nor reports a notice', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': 'x\r\ny\n' });
+        await configure(ctx, '[core]\n\tautocrlf = input\n\tsafecrlf = true\n');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        expect(result.eolNotices).toEqual([]);
+        expect(await stagedText(ctx, 'f.txt')).toBe('x\ny\n');
+      });
+    });
+  });
+
+  describe('Given a tracked file gone from the worktree', () => {
+    describe('When add renormalize "."', () => {
+      it('Then it refuses with PATHSPEC_NO_MATCH naming the file and keeps the index', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF, 'g.txt': CRLF });
+        const before = await idsByPath(ctx);
+        await ctx.fs.rm(`${ctx.layout.workDir}/g.txt`);
+        const sut = add;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, ['.'], RENORMALIZE);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'PATHSPEC_NO_MATCH',
+          pattern: 'g.txt',
+        });
+        expect(await idsByPath(ctx)).toEqual(before);
+      });
+    });
+  });
+
+  describe('Given a literal naming no path at all', () => {
+    describe('When add renormalize "nope"', () => {
+      it('Then it refuses with PATHSPEC_NO_MATCH', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        const sut = add;
+
+        // Act & Assert
+        await expectError(() => sut(ctx, ['nope'], RENORMALIZE), 'PATHSPEC_NO_MATCH');
+      });
+    });
+  });
+
+  describe('Given a literal naming an untracked file on disk', () => {
+    describe('When add renormalize "u.txt"', () => {
+      it('Then it succeeds and stages nothing', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/u.txt`, 'u\n');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['u.txt'], RENORMALIZE);
+
+        // Assert
+        expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
+      });
+    });
+  });
+
+  describe('Given no pathspec and no all', () => {
+    describe('When add renormalize', () => {
+      it('Then it throws EMPTY_PATHSPEC', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        const sut = add;
+
+        // Act & Assert
+        await expectError(() => sut(ctx, [], RENORMALIZE), 'EMPTY_PATHSPEC');
+      });
+    });
+  });
+
+  describe('Given all and renormalize', () => {
+    describe('When add runs with no pathspec', () => {
+      it('Then every tracked file is re-cleaned and untracked ones are not added', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/u.txt`, 'u\n');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, [], { all: true, renormalize: true });
+
+        // Assert
+        expect(result).toEqual({
+          added: [],
+          modified: ['f.txt'],
+          removed: [],
+          eolNotices: [],
+        });
+      });
+    });
+  });
+
+  describe('Given a tracked symlink whose target holds CRLF', () => {
+    describe('When add renormalize "."', () => {
+      it('Then the link target is re-hashed raw and nothing is modified', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo();
+        await ctx.fs.symlink('t\r\nx', `${ctx.layout.workDir}/link`);
+        await add(ctx, ['link']);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* text=auto\n');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        expect(result.modified).toEqual([]);
+        expect(await stagedText(ctx, 'link')).toBe('t\r\nx');
+      });
+    });
+  });
+
+  describe('Given an executable index entry over a non-executable worktree file', () => {
+    describe('When add renormalize "."', () => {
+      it('Then the entry mode follows the worktree and modified lists it', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF }, '');
+        await indexCrlfEntries(ctx, [{ path: 'f.txt', override: { mode: FILE_MODE.EXECUTABLE } }]);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        expect(result.modified).toEqual(['f.txt']);
+        expect((await readIndex(ctx)).entries[0]?.mode).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
+  describe('Given a tracked file over MAX_WORKING_TREE_BLOB_BYTES', () => {
+    describe('When add renormalize "."', () => {
+      it('Then it throws WORKING_TREE_FILE_TOO_LARGE', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'big.bin': 'x' });
+        const baseLstat = ctx.fs.lstat;
+        const hostileFs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop !== 'lstat') return Reflect.get(target, prop, receiver);
+            return async (path: string) => {
+              const real = await baseLstat(path);
+              return path.endsWith('/big.bin')
+                ? { ...real, size: MAX_WORKING_TREE_BLOB_BYTES + 1 }
+                : real;
+            };
+          },
+        });
+        const sut = add;
+
+        // Act
+        const err = await expectError(
+          () => sut({ ...ctx, fs: hostileFs }, ['.'], RENORMALIZE),
+          'WORKING_TREE_FILE_TOO_LARGE',
+        );
+
+        // Assert
+        expect(err.data).toEqual({
+          code: 'WORKING_TREE_FILE_TOO_LARGE',
+          path: 'big.bin',
+          size: MAX_WORKING_TREE_BLOB_BYTES + 1,
+          limit: MAX_WORKING_TREE_BLOB_BYTES,
+        });
+      });
+    });
+  });
+
+  describe('Given an index that cannot be read under the lock', () => {
+    describe('When add renormalize "."', () => {
+      it('Then the read failure propagates', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        const indexPath = `${ctx.layout.gitDir}/index`;
+        const hostileFs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop !== 'stat') return Reflect.get(target, prop, receiver);
+            return async (path: string) => {
+              const locked = await target.exists(`${indexPath}.lock`);
+              if (path === indexPath && locked) throw permissionDenied(path);
+              return target.stat(path);
+            };
+          },
+        });
+        const sut = add;
+
+        // Act & Assert
+        await expectError(
+          () => sut({ ...ctx, fs: hostileFs }, ['.'], RENORMALIZE),
+          'PERMISSION_DENIED',
+        );
+      });
+    });
+  });
+
+  describe('Given an LF blob under text=auto', () => {
+    describe('When add renormalize "."', () => {
+      it('Then nothing is modified', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': 'a\nb\n' });
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        expect(result.modified).toEqual([]);
+      });
     });
   });
 });

@@ -38,7 +38,7 @@ import {
 } from '../primitives/internal/clean-order.js';
 import { limiterFor } from '../primitives/internal/concurrency.js';
 import type { ConcurrencyLimiter } from '../primitives/internal/concurrency-limiter.js';
-import { convertToGit } from '../primitives/internal/convert-blob.js';
+import { type ConversionRoute, convertToGit } from '../primitives/internal/convert-blob.js';
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import { type IndexMtime, isEntryStatClean } from '../primitives/internal/is-entry-stat-clean.js';
@@ -102,6 +102,8 @@ const INDEX_MISSING_CODES = new Set([
 export interface AddOptions {
   readonly force?: boolean;
   readonly all?: boolean;
+  /** Re-clean every tracked path the pathspec names under the current attributes; never adds or removes. */
+  readonly renormalize?: boolean;
 }
 
 export interface AddResult {
@@ -141,6 +143,8 @@ const buildConversionScope = async (ctx: Context): Promise<ConversionScope> => (
   settings: await readEolSettings(ctx),
 });
 
+const WHOLE_TREE_PATHSPEC = '.';
+
 const addInScope = async (
   ctx: Context,
   paths: ReadonlyArray<string>,
@@ -158,9 +162,12 @@ const addInScope = async (
     if (paths.length !== 0) {
       throw invalidOption('all', 'pathspec must be empty when all=true');
     }
-    return addAll(ctx, undefined, scope);
+    return opts.renormalize === true
+      ? addRenormalized(ctx, [WHOLE_TREE_PATHSPEC], scope)
+      : addAll(ctx, undefined, scope);
   }
   if (paths.length === 0) throw emptyPathspec();
+  if (opts.renormalize === true) return addRenormalized(ctx, paths, scope);
   return dispatchPathspec(ctx, paths, scope);
 };
 
@@ -402,6 +409,106 @@ const addByPathspec = async (
   }
 };
 
+/**
+ * `add --renormalize`: every stage-0 tracked file or symlink the pathspec names
+ * is re-read and re-hashed in index order, with no stat-clean shortcut. Nothing
+ * is added, removed or written to the working tree, and the conversion never
+ * refuses. A tracked path gone from disk aborts the whole call, as git's
+ * "unable to stat" does.
+ */
+const addRenormalized = async (
+  ctx: Context,
+  paths: ReadonlyArray<string>,
+  scope: ConversionScope,
+): Promise<AddResult> => {
+  const { matcher, literalMustMatch, literalSpellings, symlinkScanTargets } =
+    resolvePathspec(paths);
+  await assertNoSymlinkedLeadingPath(ctx, symlinkScanTargets);
+  const lock = await acquireIndexLock(ctx);
+  const ensurePromisorConfigValid = createPromisorGuard(ctx);
+  try {
+    const { entries } = await readIndexOrEmpty(ctx);
+    const staging = { ctx, scope, ensurePromisorConfigValid };
+    const renormalized = await renormalizeEntries(staging, entries, matcher);
+    const onDisk = await literalsOnDisk(ctx, literalMustMatch);
+    const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
+    enforceLiteralMustMatch(mustMatch, [...renormalized.matched, ...onDisk], literalSpellings);
+    await lock.commit([...renormalized.entries]);
+    return { added: [], modified: renormalized.modified, removed: [], eolNotices: [] };
+  } finally {
+    await lock.release();
+  }
+};
+
+/** git accepts a pathspec naming an untracked file that exists: it just stages nothing. */
+const literalsOnDisk = async (
+  ctx: Context,
+  literals: ReadonlyArray<FilePath>,
+): Promise<ReadonlyArray<FilePath>> => {
+  const present: FilePath[] = [];
+  for (const literal of literals) {
+    if ((await lstatOrMissing(ctx, literal)) !== undefined) present.push(literal);
+  }
+  return present;
+};
+
+/** Whether `add --renormalize` re-cleans this entry: a merged, checked-out file or symlink in the pathspec. */
+const isRecleaned = (entry: IndexEntry, matcher: ResolvedPathspec['matcher']): boolean =>
+  entry.flags.stage === 0 &&
+  !entry.flags.skipWorktree &&
+  RECLEANED_MODES.has(entry.mode) &&
+  matchesPathspec(matcher, entry.path);
+
+const RECLEANED_MODES: ReadonlySet<FileMode> = new Set([
+  FILE_MODE.REGULAR,
+  FILE_MODE.EXECUTABLE,
+  FILE_MODE.SYMLINK,
+]);
+
+const renormalizeEntries = async (
+  staging: Omit<Staging, 'entries' | 'indexMtime'>,
+  entries: ReadonlyArray<IndexEntry>,
+  matcher: ResolvedPathspec['matcher'],
+): Promise<{
+  readonly entries: ReadonlyArray<IndexEntry>;
+  readonly matched: ReadonlyArray<FilePath>;
+  readonly modified: ReadonlyArray<FilePath>;
+}> => {
+  const next: IndexEntry[] = [];
+  const matched: FilePath[] = [];
+  const modified: FilePath[] = [];
+  for (const previous of entries) {
+    if (!isRecleaned(previous, matcher)) {
+      next.push(previous);
+      continue;
+    }
+    const entry = await renormalizeOne(staging, previous);
+    next.push(entry);
+    matched.push(previous.path);
+    if (entry.id !== previous.id || entry.mode !== previous.mode) modified.push(previous.path);
+  }
+  return { entries: next, matched, modified };
+};
+
+const renormalizeOne = async (
+  { ctx, scope, ensurePromisorConfigValid }: Omit<Staging, 'entries' | 'indexMtime'>,
+  previous: IndexEntry,
+): Promise<IndexEntry> => {
+  const { path } = previous;
+  await ensurePromisorConfigValid();
+  const fresh = await lstatOrMissing(ctx, path);
+  if (fresh === undefined) throw pathspecNoMatch(path);
+  if (fresh.size > MAX_WORKING_TREE_BLOB_BYTES) {
+    throw workingTreeFileTooLarge(path, fresh.size, MAX_WORKING_TREE_BLOB_BYTES);
+  }
+  const mode: FileMode = deriveWorkingMode(fresh);
+  validateIndexPath(path, NO_PARSER_OFFSET, mode);
+  const { id } = await writeCleanedBlob(ctx, path, fresh, scope, previous, 'renormalize');
+  return id === previous.id && mode === previous.mode
+    ? previous
+    : indexEntryFromStat(fresh, mode, id, path);
+};
+
 /** Read the index, then stage every walked entry `ignore` keeps. */
 const stageIgnoredWalk = async (
   ctx: Context,
@@ -607,16 +714,25 @@ interface ExistingIndexState {
 }
 
 const readExistingEntries = async (ctx: Context): Promise<ExistingIndexState> => {
+  const { entries, indexMtime } = await readIndexOrEmpty(ctx);
+  const out = new Map<FilePath, IndexEntry>();
+  for (const entry of entries) out.set(entry.path, entry);
+  return { entries: out, indexMtime };
+};
+
+const readIndexOrEmpty = async (
+  ctx: Context,
+): Promise<{
+  readonly entries: ReadonlyArray<IndexEntry>;
+  readonly indexMtime?: IndexMtime | undefined;
+}> => {
   try {
-    const index = await readIndex(ctx);
-    const out = new Map<FilePath, IndexEntry>();
-    for (const entry of index.entries) out.set(entry.path, entry);
-    return { entries: out, indexMtime: index.indexMtime };
+    return await readIndex(ctx);
   } catch (err) {
     // Missing-or-corrupt index = "no entries"; everything else propagates so
     // I/O failures and permission errors are not silently absorbed.
     if (err instanceof TsgitError && INDEX_MISSING_CODES.has(err.data.code)) {
-      return { entries: new Map(), indexMtime: undefined };
+      return { entries: [], indexMtime: undefined };
     }
     throw err;
   }
@@ -670,7 +786,7 @@ const stageFromStat = async (
   }
   const mode: FileMode = deriveWorkingMode(fresh);
   validateIndexPath(path, NO_PARSER_OFFSET, mode);
-  const { id, notice } = await writeCleanedBlob(ctx, path, fresh, scope, previous);
+  const { id, notice } = await writeCleanedBlob(ctx, path, fresh, scope, previous, 'write');
   const entry = indexEntryFromStat(fresh, mode, id, path);
   return notice === undefined ? { entry } : { entry, notice };
 };
@@ -740,6 +856,7 @@ const writeCleanedBlob = async (
   fresh: FileStat,
   { provider, settings }: ConversionScope,
   previous: IndexEntry | undefined,
+  route: ConversionRoute,
 ): Promise<{ readonly id: ObjectId; readonly notice?: EolNotice }> => {
   // Symlinks are never converted (git stores the link target verbatim).
   const conversion = fresh.isSymbolicLink
@@ -754,9 +871,9 @@ const writeCleanedBlob = async (
     path,
     bytes: raw,
     conversion,
-    route: 'write',
+    route,
     settings,
-    ...(previous !== undefined && { indexBlob: previous.id }),
+    ...(route === 'write' && previous !== undefined && { indexBlob: previous.id }),
   });
   const id = (await writeObject(ctx, {
     type: 'blob',
