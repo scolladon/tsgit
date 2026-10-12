@@ -45,8 +45,8 @@ import {
   asUpstreamMissing,
   type BranchTrack,
   type BranchUpstream,
-  type DwimmedStart,
   resolveTrackMode,
+  type StartPointRef,
   setupTracking,
   type TrackMode,
   trackableStartRef,
@@ -209,7 +209,7 @@ const remoteTableRead = (ref: RefName | undefined, mode: TrackMode): RemoteTable
 
 /** The start point's `dwim_ref` real ref, read once for both decisions it feeds:
  *  when the remote table is built, and whether the new branch can track it. */
-const dwimmedStart = async (ctx: Context, name: string): Promise<DwimmedStart> => ({
+const startPointRef = async (ctx: Context, name: string): Promise<StartPointRef> => ({
   name,
   ref: await dwimRefName(ctx, name),
 });
@@ -258,7 +258,7 @@ export const branchCreate = async (
   const { branchName, name, force, held } = await claimBranch(ctx, input);
   const mode = await resolveTrackMode(ctx, input);
   const { startPoint, target } = await resolveStartCommit(ctx, input, mode);
-  const start = await dwimmedStart(ctx, input.startPoint ?? HEAD_NAME);
+  const start = await startPointRef(ctx, input.startPoint ?? HEAD_NAME);
   const tableRead = remoteTableRead(start.ref, mode);
   if (tableRead === 'before-write') await buildRemoteTable(ctx);
   const startRef = mode === 'never' ? undefined : await trackableStartRef(ctx, start, mode);

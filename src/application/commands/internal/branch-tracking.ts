@@ -85,7 +85,7 @@ export const asUpstreamMissing = (err: unknown, startPoint: string, mode: TrackM
     : err;
 
 /** A start point as typed, and the real ref `dwim_ref` lands it on, if any. */
-export interface DwimmedStart {
+export interface StartPointRef {
   readonly name: string;
   readonly ref: RefName | undefined;
 }
@@ -97,7 +97,7 @@ export interface DwimmedStart {
  */
 export const trackableStartRef = async (
   ctx: Context,
-  { name, ref }: DwimmedStart,
+  { name, ref }: StartPointRef,
   mode: TrackMode,
 ): Promise<RefName | undefined> => {
   if (ref !== undefined && (await isTrackable(ctx, ref))) return ref;
