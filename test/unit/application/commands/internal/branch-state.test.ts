@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { removeBranchState } from '../../../../../src/application/commands/internal/branch-state.js';
+import { permissionDenied } from '../../../../../src/domain/error.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
 type Logged = readonly [level: string, message: string];
@@ -155,6 +156,76 @@ describe('removeBranchState', () => {
         // Assert
         const result = await ctx.fs.exists(`${ctx.layout.gitDir}/AUTO_MERGE`);
         expect(result).toBe(false);
+      });
+    });
+  });
+});
+
+describe('removeBranchState — the state files it unlinks', () => {
+  describe('Given a dangling symbolic link at SQUASH_MSG and at MERGE_MSG', () => {
+    describe('When the branch state is removed', () => {
+      it("Then both links are gone, as git's unlink removes the link itself", async () => {
+        // Arrange
+        const { ctx } = loggingContext();
+        await ctx.fs.symlink('nowhere', `${ctx.layout.gitDir}/SQUASH_MSG`);
+        await ctx.fs.symlink('nowhere', `${ctx.layout.gitDir}/MERGE_MSG`);
+        const sut = removeBranchState;
+
+        // Act
+        await sut(ctx, 'silent');
+
+        // Assert
+        const result = await Promise.all(
+          ['SQUASH_MSG', 'MERGE_MSG'].map((name) =>
+            ctx.fs.lexists?.(`${ctx.layout.gitDir}/${name}`),
+          ),
+        );
+        expect(result).toEqual([false, false]);
+      });
+    });
+  });
+
+  describe('Given no state file at all', () => {
+    describe('When the branch state is removed', () => {
+      it('Then each state file costs one removal and no presence probe', async () => {
+        // Arrange
+        const { ctx } = loggingContext();
+        const exists = vi.spyOn(ctx.fs, 'exists');
+        const rm = vi.spyOn(ctx.fs, 'rm');
+        const sut = removeBranchState;
+
+        // Act
+        await sut(ctx, 'silent');
+
+        // Assert
+        const stateFiles = ['SQUASH_MSG', 'MERGE_HEAD', 'MERGE_RR', 'MERGE_MSG', 'MERGE_MODE'].map(
+          (name) => `${ctx.layout.gitDir}/${name}`,
+        );
+        expect(
+          exists.mock.calls.map(([path]) => path).filter((p) => stateFiles.includes(p)),
+        ).toEqual([]);
+        expect(rm.mock.calls.map(([path]) => path).filter((p) => stateFiles.includes(p))).toEqual(
+          stateFiles,
+        );
+      });
+    });
+  });
+
+  describe('Given a removal that fails for a reason other than absence', () => {
+    describe('When the branch state is removed', () => {
+      it('Then the refusal propagates', async () => {
+        // Arrange
+        const { ctx } = loggingContext();
+        await plant(ctx, 'SQUASH_MSG');
+        const fault = permissionDenied(`${ctx.layout.gitDir}/SQUASH_MSG`);
+        vi.spyOn(ctx.fs, 'rm').mockRejectedValue(fault);
+        const sut = removeBranchState;
+
+        // Act
+        const result = await sut(ctx, 'silent').catch((error: unknown) => error);
+
+        // Assert
+        expect(result).toBe(fault);
       });
     });
   });

@@ -21,6 +21,7 @@ import {
 } from '../../../domain/refs/state-files.js';
 import type { Context } from '../../../ports/context.js';
 import { removeAutoMerge } from '../../primitives/internal/auto-merge-ref.js';
+import { removeIfPresent } from '../../primitives/internal/fs-probes.js';
 import { deleteRootRef, rootRefExists } from '../../primitives/internal/root-ref.js';
 import { saveMergeAutostash } from './merge-autostash.js';
 import { clearSequencer } from './sequencer-state.js';
@@ -38,10 +39,8 @@ const CANCELLED_OPERATIONS = [
 ] as const;
 
 /** Remove `<gitDir>/<name>` when it is there. */
-const removeStateFile = async (ctx: Context, name: string): Promise<void> => {
-  const path = `${ctx.layout.gitDir}/${name}`;
-  if (await ctx.fs.exists(path)) await ctx.fs.rm(path);
-};
+const removeStateFile = (ctx: Context, name: string): Promise<void> =>
+  removeIfPresent(ctx.fs, `${ctx.layout.gitDir}/${name}`);
 
 /** git's `remove_merge_branch_state`: the stopped merge's files; its autostash goes to the stash list. */
 export const removeMergeBranchState = async (ctx: Context): Promise<void> => {
