@@ -496,7 +496,7 @@ const overBranchOptions = (branch: MergeCommandLine, given: MergeRunInput): Merg
     ...definedFields(given),
     ...signingOf(given.sign === undefined && given.signKey === undefined ? branch : given),
     ...(strategy.length === 0 ? {} : { strategy }),
-    ...(strategyOptions.length === 0 ? {} : { strategyOptions }),
+    strategyOptions,
     ...joinedMessage(branch.message, given.message),
   };
 };
@@ -521,7 +521,7 @@ const joinedMessage = (
   branch: string | undefined,
   given: string | undefined,
 ): { readonly message?: string } => {
-  if (given === undefined) return branch === undefined ? {} : { message: branch };
+  if (given === undefined) return {};
   return { message: branch ? `${branch}\n\n${given}` : given };
 };
 
@@ -557,6 +557,7 @@ const underAutostash = async (
     if (leftToResolve(result)) ctx.logger?.info?.(STASH_POP_HINT);
     return result;
   } catch (error) {
+    // Stryker disable next-line StringLiteral: equivalent — the fallback is only looked up in DIES_INSIDE_STRATEGY, which holds neither '' nor any other non-code string.
     if (!DIES_INSIDE_STRATEGY.has(errorDataCode(error) ?? '')) await applyMergeAutostash(ctx);
     throw error;
   }
@@ -805,8 +806,8 @@ const tryTrivialMerge = async (
   theirId: ObjectId,
   bases: ReadonlyArray<ObjectId>,
 ): Promise<MergeEnding | undefined> => {
-  const { opts, ourId } = commit;
-  if (bases.length !== 1 || opts.squash === true || opts.commit === false) return undefined;
+  const { ourId } = commit;
+  if (bases.length !== 1) return undefined;
   const [base, ours, theirs] = await Promise.all(
     [bases[0]!, ourId, theirId].map(async (id) => flattenTree(ctx, await getTree(ctx, id))),
   );
