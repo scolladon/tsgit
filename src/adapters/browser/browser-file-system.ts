@@ -157,11 +157,6 @@ export class BrowserFileSystem implements FileSystem {
     return orAbsentFileNotFound(() => this.lstat(path));
   }
 
-  /** `tryLstat` blind to the miss's cause: a regular file in the path answers `undefined` too. */
-  async lstatIfReachable(path: string): Promise<FileStat | undefined> {
-    return orAbsentUnreachable(() => this.lstat(path));
-  }
-
   /** `tryReadUtf8`'s twin of `readUtf8`: `undefined` exactly where `readUtf8` refuses
    *  FILE_NOT_FOUND — on this adapter that includes a directory leaf, which `readUtf8`
    *  reports as absent rather than PERMISSION_DENIED (see `resolveFileHandle`). */
@@ -417,10 +412,6 @@ function isFileNotFound(err: unknown): boolean {
   return err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND';
 }
 
-function isNotADirectory(err: unknown): boolean {
-  return err instanceof TsgitError && err.data.code === 'NOT_A_DIRECTORY';
-}
-
 /** The joined parent-path cache key `walkToParent` resolves to — `undefined` when there is
  *  nothing to walk (a root-level leaf), so the trivial case is never cached. */
 function parentPathKey(segments: ReadonlyArray<string>): string | undefined {
@@ -434,16 +425,6 @@ async function orAbsentFileNotFound<T>(probe: () => Promise<T>): Promise<T | und
     return await probe();
   } catch (err) {
     if (isFileNotFound(err)) return undefined;
-    throw err;
-  }
-}
-
-/** {@link orAbsentFileNotFound} that also folds NOT_A_DIRECTORY — a miss of either cause. */
-async function orAbsentUnreachable<T>(probe: () => Promise<T>): Promise<T | undefined> {
-  try {
-    return await probe();
-  } catch (err) {
-    if (isFileNotFound(err) || isNotADirectory(err)) return undefined;
     throw err;
   }
 }
