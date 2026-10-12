@@ -1,5 +1,41 @@
 # Changelog
 
+## [5.0.0](https://github.com/scolladon/tsgit/compare/v4.0.0...v5.0.0) (2026-10-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* read objects through objects/info/alternates as git does ([#313](https://github.com/scolladon/tsgit/issues/313))
+* **diff:** pair renames, score similarity and diff lines like git, and read loose objects in git's tiers ([#305](https://github.com/scolladon/tsgit/issues/305))
+* serve cheap Node file calls synchronously and read cold packs the way git does ([#304](https://github.com/scolladon/tsgit/issues/304))
+* size the session caches, cut the per-command floor, and follow git on refs, reflogs and config ([#301](https://github.com/scolladon/tsgit/issues/301))
+
+### Features
+
+* export emptyTreeOid and the hash configs as runtime values from the node entry ([20d13e9](https://github.com/scolladon/tsgit/commit/20d13e9f44c6a1644c5892e553c0f72ba11a3a5e))
+* **history:** prune the object closure and route the history walks through the commit-graph ([be57e0c](https://github.com/scolladon/tsgit/commit/be57e0cce13699610ef06bf531dc64ac9e2ee385))
+* read objects through objects/info/alternates as git does ([#313](https://github.com/scolladon/tsgit/issues/313)) ([511d2f4](https://github.com/scolladon/tsgit/commit/511d2f4e07912a07c07d60a715450c9e78a9ec98))
+* serve cheap Node file calls synchronously and read cold packs the way git does ([#304](https://github.com/scolladon/tsgit/issues/304)) ([79fb9bd](https://github.com/scolladon/tsgit/commit/79fb9bd745bf44ee09f2b2fba7b2aed825185b4d))
+* size the session caches, cut the per-command floor, and follow git on refs, reflogs and config ([#301](https://github.com/scolladon/tsgit/issues/301)) ([8a56d98](https://github.com/scolladon/tsgit/commit/8a56d98a6d06695925f11964eb88379d3ca7e406))
+
+
+### Bug Fixes
+
+* **diff:** pair renames, score similarity and diff lines like git, and read loose objects in git's tiers ([#305](https://github.com/scolladon/tsgit/issues/305)) ([a6b1988](https://github.com/scolladon/tsgit/commit/a6b198849c8d5865db4a47a1e6c32630652d8a45))
+* **repository:** read a caller-supplied fs the POSIX way, not the host's ([20d13e9](https://github.com/scolladon/tsgit/commit/20d13e9f44c6a1644c5892e553c0f72ba11a3a5e))
+
+
+### Performance
+
+* **bench:** measure native modules, not the module runner or node's type stripper ([#312](https://github.com/scolladon/tsgit/issues/312)) ([208dd2e](https://github.com/scolladon/tsgit/commit/208dd2ee8368827ceda03108952d805900f42def))
+
+
+### Documentation
+
+* **backlog:** mark [#302](https://github.com/scolladon/tsgit/issues/302) and the racy-clean smudge shipped in [#313](https://github.com/scolladon/tsgit/issues/313) ([bf1ca8e](https://github.com/scolladon/tsgit/commit/bf1ca8e3099a7da4afc10afa64246fa5a338f6cf))
+* **backlog:** mark [#309](https://github.com/scolladon/tsgit/issues/309) as this PR ([20d13e9](https://github.com/scolladon/tsgit/commit/20d13e9f44c6a1644c5892e553c0f72ba11a3a5e))
+* retarget CLAUDE.md at craft and extract property-testing guidance ([5ac1a17](https://github.com/scolladon/tsgit/commit/5ac1a1707f67cd027629849921ec4f17abb4659f))
+
 ## [4.0.0](https://github.com/scolladon/tsgit/compare/v3.6.0...v4.0.0) (2026-09-10)
 
 
