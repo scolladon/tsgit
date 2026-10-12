@@ -6,6 +6,7 @@ import {
   parseGitattributes,
 } from '../../../domain/attributes/index.js';
 import { gitattributesFileTooLarge } from '../../../domain/commands/error.js';
+import { TsgitError } from '../../../domain/error.js';
 import { decode } from '../../../domain/objects/encoding.js';
 import { FILE_MODE, isDirectory } from '../../../domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../domain/objects/object-id.js';
@@ -13,6 +14,7 @@ import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../config-read.js';
 import { commonGitDir } from '../path-layout.js';
 import { readBlob } from '../read-blob.js';
+import { readIndex } from '../read-index.js';
 import { readDeclaredObjectHeader } from '../read-object.js';
 import { MAX_GITATTRIBUTES_BYTES } from '../types.js';
 import { joinPath } from './join-working-tree-path.js';
@@ -102,6 +104,13 @@ const createDirTreeIndex = (tree: ObjectId) => {
   };
 };
 
+/** Reads a `.gitattributes` blob under the same size guard whichever store named it. */
+const parseBlobAttributes = async (ctx: Context, id: ObjectId): Promise<ParsedAttributes> => {
+  await assertDeclaredSizeWithinCap(ctx, id);
+  const { content } = await readBlob(ctx, id);
+  return parseGitattributes(decode(content));
+};
+
 const treeDirReader = (tree: ObjectId): DirReader => {
   const dirTreeOf = createDirTreeIndex(tree);
   return async (ctx, dir) => {
@@ -110,10 +119,48 @@ const treeDirReader = (tree: ObjectId): DirReader => {
       ? findTreeEntry(ctx, tree, `${dir}/${GITATTRIBUTES_FILE}`)
       : findTreeEntry(ctx, dirTree, GITATTRIBUTES_FILE));
     if (entry === undefined || !isReadableMode(entry.mode)) return undefined;
-    await assertDeclaredSizeWithinCap(ctx, entry.id);
-    const { content } = await readBlob(ctx, entry.id);
-    return parseGitattributes(decode(content));
+    return parseBlobAttributes(ctx, entry.id);
   };
+};
+
+/** The blob id the index records for a path, when it records one. */
+export type IndexBlobLookup = (path: FilePath) => ObjectId | undefined;
+
+/** Which store a provider reads each directory's `.gitattributes` from, and in what order. */
+export type AttributeDirection =
+  | { readonly kind: 'worktree-first'; readonly index: IndexBlobLookup }
+  | { readonly kind: 'index-first'; readonly index: IndexBlobLookup }
+  | { readonly kind: 'index-only'; readonly index: IndexBlobLookup }
+  | { readonly kind: 'tree'; readonly tree: ObjectId };
+
+const indexDirReader =
+  (lookup: IndexBlobLookup): DirReader =>
+  async (ctx, dir) => {
+    const id = lookup(
+      (dir === '' ? GITATTRIBUTES_FILE : `${dir}/${GITATTRIBUTES_FILE}`) as FilePath,
+    );
+    return id === undefined ? undefined : parseBlobAttributes(ctx, id);
+  };
+
+/** The fallback is consulted only when the primary store holds no such file. */
+const firstOf =
+  (primary: DirReader, fallback: DirReader): DirReader =>
+  async (ctx, dir) =>
+    (await primary(ctx, dir)) ?? fallback(ctx, dir);
+
+const dirReaderFor = (direction: AttributeDirection | undefined): DirReader => {
+  switch (direction?.kind) {
+    case undefined:
+      return workTreeDirReader;
+    case 'worktree-first':
+      return firstOf(workTreeDirReader, indexDirReader(direction.index));
+    case 'index-first':
+      return firstOf(indexDirReader(direction.index), workTreeDirReader);
+    case 'index-only':
+      return indexDirReader(direction.index);
+    case 'tree':
+      return treeDirReader(direction.tree);
+  }
 };
 
 const readInfo = (ctx: Context): Promise<ParsedAttributes | undefined> =>
@@ -230,28 +277,40 @@ const buildAttributeProviderFrom = async (
 const rootSourceOf = (file: ParsedAttributes | undefined): ReadonlyArray<AttributeSource> =>
   file === undefined ? [] : [{ basedir: '', rules: file.rules }];
 
-export const buildAttributeProvider = (ctx: Context): Promise<AttributeProvider> =>
-  buildAttributeProviderFrom(ctx, workTreeDirReader);
-
-/** Same precedence as the work-tree provider, but each `.gitattributes` is read from `tree`. */
-export const buildTreeAttributeProvider = (
+export const buildAttributeProvider = (
   ctx: Context,
-  tree: ObjectId,
-): Promise<AttributeProvider> => buildAttributeProviderFrom(ctx, treeDirReader(tree));
+  direction?: AttributeDirection,
+): Promise<AttributeProvider> => buildAttributeProviderFrom(ctx, dirReaderFor(direction));
 
-const requiresAnyFilter = async (ctx: Context): Promise<boolean> => {
-  const drivers = (await readConfig(ctx)).filter?.values() ?? [];
-  return [...drivers].some((driver) => driver.required === true);
+/** The same three codes add treats as "no index yet", since it builds this provider before its own read. */
+const INDEX_MISSING_CODES = new Set([
+  'FILE_NOT_FOUND',
+  'INVALID_INDEX_HEADER',
+  'INVALID_INDEX_ENTRY',
+]);
+
+const isAttributesPath = (path: string): boolean =>
+  path === GITATTRIBUTES_FILE || path.endsWith(`/${GITATTRIBUTES_FILE}`);
+
+const readIndexAttributeBlobs = async (ctx: Context): Promise<ReadonlyMap<string, ObjectId>> => {
+  try {
+    const { entries } = await readIndex(ctx);
+    return new Map(
+      entries
+        .filter((entry) => entry.flags.stage === 0 && isAttributesPath(entry.path))
+        .map((entry) => [entry.path, entry.id]),
+    );
+  } catch (err) {
+    if (err instanceof TsgitError && INDEX_MISSING_CODES.has(err.data.code)) return new Map();
+    throw err;
+  }
 };
 
-/**
- * The provider clean/smudge drivers are resolved through. A runner-less
- * context skips it unless some driver is required: an optional driver it
- * cannot start leaves the bytes as stored, but git refuses a required one.
- */
-export const maybeBuildAttributeProvider = async (
-  ctx: Context,
-): Promise<AttributeProvider | undefined> =>
-  ctx.command !== undefined || (await requiresAnyFilter(ctx))
-    ? buildAttributeProvider(ctx)
-    : undefined;
+/** The check-in provider: work tree first, the index as git's fallback for files absent from disk. */
+export const maybeBuildAttributeProvider = async (ctx: Context): Promise<AttributeProvider> => {
+  const blobs = await readIndexAttributeBlobs(ctx);
+  return buildAttributeProvider(ctx, {
+    kind: 'worktree-first',
+    index: (path) => blobs.get(path),
+  });
+};

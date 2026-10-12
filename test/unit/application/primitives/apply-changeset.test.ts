@@ -1637,10 +1637,10 @@ describe('applyChangeset', () => {
     });
   });
 
-  describe('Given a regular file add with a filter attribute but no ctx.command', () => {
+  describe('Given a regular file add with a filter attribute, an optional driver and no ctx.command', () => {
     describe('When applyChangeset runs', () => {
-      it('Then the worktree file contains the verbatim blob bytes and locateBlob is used', async () => {
-        // Arrange — no command in ctx (ADR-408 inert fallback)
+      it('Then the worktree file contains the verbatim blob bytes, the attribute provider now being built without a runner', async () => {
+        // Arrange — no command in ctx
         const ctx = await buildSeededContext();
         const blobContent = enc('HELLO WORLD');
         const id = await writeBlob(ctx, blobContent);
@@ -1649,8 +1649,6 @@ describe('applyChangeset', () => {
           `${ctx.layout.gitDir}/config`,
           '[filter "myf"]\n\tsmudge = lowercase\n',
         );
-        const locateBlobSpy = vi.spyOn(blobSourceMod, 'locateBlob');
-        const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
         // Act — ctx has no command
         await applyChangeset(ctx, {
           changeset: makeChangeset([makeAdd('a.y', id)]),
@@ -1658,14 +1656,9 @@ describe('applyChangeset', () => {
           workdir: WORKDIR,
         });
 
-        // Assert — identity (no runner): verbatim blob bytes; streaming path taken
+        // Assert — an optional driver that cannot start leaves the stored bytes
         const written = await ctx.fs.read(`${WORKDIR}/a.y`);
         expect(dec(written)).toBe('HELLO WORLD');
-        expect(locateBlobSpy).toHaveBeenCalledOnce();
-        expect(writeStreamSpy).toHaveBeenCalledOnce();
-
-        locateBlobSpy.mockRestore();
-        writeStreamSpy.mockRestore();
       });
     });
   });

@@ -8,7 +8,7 @@ import type { Context } from '../../ports/context.js';
 import { readStrictBigFileThreshold } from '../primitives/internal/big-file-threshold.js';
 import { readBlobContentInStreamOrder } from '../primitives/internal/blob-source.js';
 import { peel } from '../primitives/internal/peel.js';
-import { buildTreeAttributeProvider } from '../primitives/internal/read-gitattributes.js';
+import { buildAttributeProvider } from '../primitives/internal/read-gitattributes.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readDeclaredObjectHeader, readObject } from '../primitives/read-object.js';
 import type { WalkTreeEntry } from '../primitives/types.js';
@@ -153,7 +153,7 @@ type AttributeCheck = (key: string, attribute: string) => Promise<boolean>;
 
 /** An archive attribute counts only when set — a string value or an unset is not. */
 const createAttributeCheck = async (ctx: Context, tree: ObjectId): Promise<AttributeCheck> => {
-  const provider = await buildTreeAttributeProvider(ctx, tree);
+  const provider = await buildAttributeProvider(ctx, { kind: 'tree', tree });
   return async (key, attribute) => {
     const { sources, macros } = await provider.sourcesForPath(key as FilePath);
     return resolveAttribute(sources, key, attribute, macros) === true;

@@ -171,7 +171,7 @@ describe('Given a tracked path ahead of a filtered one that needs no clean', () 
 
 describe('Given a filter driver configured in a repository with no command runner', () => {
   describe('When status scans the work tree', () => {
-    it('Then no clean order is opened, as no clean can run', async () => {
+    it('Then a clean order is opened, the attribute provider being built without a runner', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await init(ctx);
@@ -187,7 +187,7 @@ describe('Given a filter driver configured in a repository with no command runne
 
       // Assert
       const result = vi.mocked(withCleanOrder).mock.calls.length;
-      expect(result).toBe(0);
+      expect(result).toBe(1);
     });
   });
 });

@@ -2,8 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
+  type AttributeDirection,
+  type AttributeProvider,
   buildAttributeProvider,
-  buildTreeAttributeProvider,
   maybeBuildAttributeProvider,
 } from '../../../../../src/application/primitives/internal/read-gitattributes.js';
 import { MAX_GITATTRIBUTES_BYTES } from '../../../../../src/application/primitives/types.js';
@@ -11,6 +12,7 @@ import { writeObject } from '../../../../../src/application/primitives/write-obj
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
 import { resolveAttribute } from '../../../../../src/domain/attributes/index.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
+import { type IndexEntry, STAGE0_FLAGS } from '../../../../../src/domain/git-index/index-entry.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/object-id.js';
 import { treeEntry } from '../../../../../src/domain/objects/tree.js';
@@ -20,6 +22,7 @@ import {
   buildTreeChain,
   deepIndexPath,
   instrumentedContext,
+  serializeIndexFixtureAsync,
   writeLooseWithDeclaredSize,
   writeRawObjectBytes,
 } from '../fixtures.js';
@@ -568,18 +571,19 @@ describe('buildAttributeProvider', () => {
 });
 
 describe('maybeBuildAttributeProvider', () => {
-  describe('Given a context without a command runner (ctx.command is undefined)', () => {
-    describe('When maybeBuildAttributeProvider is called', () => {
-      it('Then resolves to undefined (no provider built without a runner)', async () => {
+  describe('Given a context without a command runner and no required filter', () => {
+    describe('When maybeBuildAttributeProvider runs', () => {
+      it('Then a provider resolving the index .gitattributes is returned', async () => {
         // Arrange
         const ctx = createMemoryContext();
+        const attrs = await putBlob(ctx, '*.txt eol=crlf\n');
+        await seedIndex(ctx, [indexEntry('.gitattributes', attrs)]);
 
         // Act
-        const result = await maybeBuildAttributeProvider(ctx);
+        const sut = await maybeBuildAttributeProvider(ctx);
 
-        // Assert — the conditional `ctx.command !== undefined` must be checked:
-        // when command is absent the right-hand branch must run, not always-build.
-        expect(result).toBeUndefined();
+        // Assert
+        expect(await eolOf(sut, 'f.txt')).toEqual({ set: 'crlf' });
       });
     });
   });
@@ -600,6 +604,62 @@ describe('maybeBuildAttributeProvider', () => {
       });
     });
   });
+
+  describe('Given an index with a nested stage-0 .gitattributes and a conflicted root one', () => {
+    describe('When the provider resolves paths', () => {
+      it('Then only the stage-0 nested file is read', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const root = await putBlob(ctx, '*.txt eol=lf\n');
+        const nested = await putBlob(ctx, '*.txt eol=crlf\n');
+        await seedIndex(ctx, [
+          indexEntry('.gitattributes', root, 2),
+          indexEntry('sub/.gitattributes', nested),
+          indexEntry('sub/not.gitattributes', root),
+        ]);
+
+        // Act
+        const sut = await maybeBuildAttributeProvider(ctx);
+
+        // Assert
+        expect(await eolOf(sut, 'f.txt')).toBe('unspecified');
+        expect(await eolOf(sut, 'sub/f.txt')).toEqual({ set: 'crlf' });
+      });
+    });
+  });
+
+  describe('Given a corrupt index header', () => {
+    describe('When maybeBuildAttributeProvider runs', () => {
+      it('Then it tolerates the index as empty, as add does', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.write(`${ctx.layout.gitDir}/index`, new Uint8Array(40));
+
+        // Act
+        const sut = await maybeBuildAttributeProvider(ctx);
+
+        // Assert
+        expect(await eolOf(sut, 'f.txt')).toBe('unspecified');
+      });
+    });
+  });
+
+  describe('Given an index read failing with another error', () => {
+    describe('When maybeBuildAttributeProvider runs', () => {
+      it('Then the error propagates', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const boom = new Error('disk on fire');
+        const ctx = { ...base, fs: { ...base.fs, exists: () => Promise.reject(boom) } } as Context;
+
+        // Act
+        const act = maybeBuildAttributeProvider(ctx);
+
+        // Assert
+        await expect(act).rejects.toBe(boom);
+      });
+    });
+  });
 });
 
 const putBlob = (ctx: Context, content: string): Promise<ObjectId> =>
@@ -617,6 +677,9 @@ const putTree = (
     ctx,
     entries.map(([mode, name, id]) => treeEntry(mode as never, name, id)),
   );
+
+const buildTreeAttributeProvider = (ctx: Context, tree: ObjectId) =>
+  buildAttributeProvider(ctx, { kind: 'tree', tree });
 
 const treeResolve = async (
   ctx: Context,
@@ -645,7 +708,7 @@ const putDeepTreeWithAttributes = async (ctx: Context, depth: number): Promise<O
   return child;
 };
 
-describe('buildTreeAttributeProvider', () => {
+describe('buildAttributeProvider with a tree direction', () => {
   describe('Given a tree with a root and a nested .gitattributes', () => {
     describe('When resolving paths', () => {
       it.each([
@@ -995,6 +1058,155 @@ describe('buildTreeAttributeProvider', () => {
           ...Array.from({ length: 100 }, (_unused, tenth) => deepIndexPath(999 - 10 * tenth)),
           '',
         ]);
+      });
+    });
+  });
+});
+
+const indexEntry = (path: string, id: ObjectId, stage: 0 | 1 | 2 | 3 = 0): IndexEntry => ({
+  ctimeSeconds: 0,
+  ctimeNanoseconds: 0,
+  mtimeSeconds: 0,
+  mtimeNanoseconds: 0,
+  dev: 0,
+  ino: 0,
+  mode: FILE_MODE.REGULAR,
+  uid: 0,
+  gid: 0,
+  fileSize: 0,
+  id,
+  flags: { ...STAGE0_FLAGS, stage },
+  path: path as FilePath,
+});
+
+const seedIndex = async (ctx: Context, entries: ReadonlyArray<IndexEntry>): Promise<void> => {
+  const bytes = await serializeIndexFixtureAsync(
+    { version: 2, entries: [...entries], extensions: [], trailerSha: new Uint8Array(0) },
+    ctx,
+  );
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, bytes);
+};
+
+const eolOf = async (provider: AttributeProvider | undefined, path: string): Promise<unknown> => {
+  const { sources, macros } = await (provider as AttributeProvider).sourcesForPath(
+    path as FilePath,
+  );
+  return resolveAttribute(sources, path, 'eol', macros);
+};
+
+const lookupOf =
+  (files: Readonly<Record<string, ObjectId>>) =>
+  (path: FilePath): ObjectId | undefined =>
+    files[path];
+
+describe('buildAttributeProvider with an index direction', () => {
+  describe('Given an index .gitattributes and no worktree file', () => {
+    describe('When a worktree-first provider resolves f.txt', () => {
+      it('Then eol is { set: crlf }', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const attrs = await putBlob(ctx, '*.txt eol=crlf\n');
+        const direction: AttributeDirection = {
+          kind: 'worktree-first',
+          index: lookupOf({ '.gitattributes': attrs }),
+        };
+
+        // Act
+        const sut = await buildAttributeProvider(ctx, direction);
+
+        // Assert
+        expect(await eolOf(sut, 'f.txt')).toEqual({ set: 'crlf' });
+      });
+    });
+  });
+
+  describe('Given index *.txt eol=crlf and worktree *.txt eol=lf', () => {
+    const arrange = async () => {
+      const ctx = createMemoryContext();
+      await seed(ctx, '/repo/.gitattributes', '*.txt eol=lf\n');
+      const attrs = await putBlob(ctx, '*.txt eol=crlf\n');
+      return { ctx, index: lookupOf({ '.gitattributes': attrs }) };
+    };
+
+    it.each([
+      { kind: 'worktree-first', expected: { set: 'lf' } },
+      { kind: 'index-first', expected: { set: 'crlf' } },
+      { kind: 'index-only', expected: { set: 'crlf' } },
+    ] as const)('Then $kind resolves eol to $expected', async ({ kind, expected }) => {
+      // Arrange
+      const { ctx, index } = await arrange();
+
+      // Act
+      const sut = await buildAttributeProvider(ctx, { kind, index });
+
+      // Assert
+      expect(await eolOf(sut, 'f.txt')).toEqual(expected);
+    });
+
+    it('Then index-first falls back to the worktree when the index lacks the file', async () => {
+      // Arrange
+      const { ctx } = await arrange();
+
+      // Act
+      const sut = await buildAttributeProvider(ctx, { kind: 'index-first', index: lookupOf({}) });
+
+      // Assert
+      expect(await eolOf(sut, 'f.txt')).toEqual({ set: 'lf' });
+    });
+
+    it('Then index-only ignores the worktree when the index lacks the file', async () => {
+      // Arrange
+      const { ctx } = await arrange();
+
+      // Act
+      const sut = await buildAttributeProvider(ctx, { kind: 'index-only', index: lookupOf({}) });
+
+      // Assert
+      expect(await eolOf(sut, 'f.txt')).toBe('unspecified');
+    });
+  });
+
+  describe('Given a nested index .gitattributes', () => {
+    describe('When an index-only provider resolves a path under it', () => {
+      it('Then the directory file is looked up as <dir>/.gitattributes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const attrs = await putBlob(ctx, '*.txt eol=crlf\n');
+        const index = lookupOf({ 'sub/.gitattributes': attrs });
+
+        // Act
+        const sut = await buildAttributeProvider(ctx, { kind: 'index-only', index });
+
+        // Assert
+        expect(await eolOf(sut, 'sub/f.txt')).toEqual({ set: 'crlf' });
+        expect(await eolOf(sut, 'f.txt')).toBe('unspecified');
+      });
+    });
+  });
+
+  describe('Given an index .gitattributes blob over the size cap', () => {
+    describe('When building the provider', () => {
+      it('Then the read refuses as the tree reader does', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const attrs = await putBlob(ctx, 'x'.repeat(MAX_GITATTRIBUTES_BYTES + 1));
+        const index = lookupOf({ '.gitattributes': attrs });
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await buildAttributeProvider(ctx, { kind: 'index-only', index });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'GITATTRIBUTES_FILE_TOO_LARGE',
+          path: '.gitattributes',
+          size: MAX_GITATTRIBUTES_BYTES + 1,
+          limit: MAX_GITATTRIBUTES_BYTES,
+        });
       });
     });
   });
