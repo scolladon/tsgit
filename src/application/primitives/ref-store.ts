@@ -876,44 +876,30 @@ function createFilesRefStore(ctx: Context): RefStore {
   /**
    * Whether nothing is reachable at `path` — answered by a refusal-free probe,
    * so a missing ref, the common dwim miss, never builds an error. An adapter
-   * without any no-follow probe leaves every case to the open, which decides it.
+   * without `tryLstat` — the probe every cheaper one refines — leaves every
+   * case to the open, which decides it.
    */
   async function isLooseMiss(path: string): Promise<boolean> {
-    if (ctx.fs.lstatIfReachable === undefined && ctx.fs.tryLstat === undefined) return false;
+    if (ctx.fs.tryLstat === undefined) return false;
     return (await lstatIfReachable(ctx.fs, path)) === undefined;
   }
 
   /**
-   * What one ancestor of a missed loose path says about the miss: a directory
-   * ends the climb unblocked, anything else standing there blocks it, and an
-   * absent one passes the question up.
-   */
-  async function ancestorKind(dir: string): Promise<'directory' | 'blocking' | 'absent'> {
-    try {
-      return (await ctx.fs.stat(dir)).isDirectory ? 'directory' : 'blocking';
-    } catch (err) {
-      const code = errorCodeOf(err);
-      if (code === 'FILE_NOT_FOUND') return 'absent';
-      if (code === 'NOT_A_DIRECTORY') return 'blocking';
-      throw err;
-    }
-  }
-
-  /**
-   * Whether a loose miss at `path` was git's `ENOTDIR` — a regular file in its
-   * directory chain — rather than a plain absence. The parent's `stat`
-   * re-resolves that chain; only an absent parent climbs on toward `root`,
+   * Whether a loose miss below `dir` was git's `ENOTDIR` — a regular file in
+   * its directory chain — rather than a plain absence. `dir`'s `stat`
+   * re-resolves that chain; only an absent `dir` climbs on toward `root`,
    * since a file system that reports a regular file in the path as absent
    * (Windows) can only be answered by the ancestor the file stands at.
    */
-  async function isBlockedMiss(path: string, root: string): Promise<boolean> {
-    return isBlockedAt(dirname(path), root);
-  }
-
   async function isBlockedAt(dir: string, root: string): Promise<boolean> {
-    const kind = await ancestorKind(dir);
-    if (kind !== 'absent' || dir === root) return kind === 'blocking';
-    return isBlockedAt(dirname(dir), root);
+    try {
+      return !(await ctx.fs.stat(dir)).isDirectory;
+    } catch (err) {
+      const code = errorCodeOf(err);
+      if (code === 'NOT_A_DIRECTORY') return true;
+      if (code !== 'FILE_NOT_FOUND') throw err;
+    }
+    return dir !== root && isBlockedAt(dirname(dir), root);
   }
 
   /**
@@ -942,10 +928,10 @@ function createFilesRefStore(ctx: Context): RefStore {
     path: string,
   ): Promise<ResolveDirectResult> {
     const entry = await packedEntryAfterMiss(name, dir).catch(async (err: unknown) => {
-      if (await isBlockedMiss(path, dir)) return undefined;
+      if (await isBlockedAt(dirname(path), dir)) return undefined;
       throw err;
     });
-    if (entry === undefined || (await isBlockedMiss(path, dir))) return MISSING;
+    if (entry === undefined || (await isBlockedAt(dirname(path), dir))) return MISSING;
     return { kind: 'direct', id: entry.id };
   }
 
