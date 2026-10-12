@@ -206,6 +206,8 @@ await repo.pull({ rebase: true });       // or 'merges'
 // commit:false: { kind: 'stopped', mergeHead, origHead } // MERGE_HEAD + MERGE_MSG kept
 ```
 
+`commit: false` writes `MERGE_MSG` raw, as `git merge --no-commit` does: no message cleanup, and an empty `message` is accepted.
+
 An exhaustive `switch (result.kind)` over `MergeResult` needs both arms. Merging several heads is supported (git's `reduce_heads`, octopus strategy), unrelated histories refuse `UNRELATED_HISTORIES` unless `allowUnrelatedHistories`, and a merge into a detached `HEAD` stays detached.
 
 **The merge core detects renames like `ort`** (ADR-947). A file renamed on one side and edited on the other merges into its new path, directory renames apply per `merge.directoryRenames`, and rename/delete, rename/rename and rename/add stop as conflicts. Content merges diff with histogram by default (`diff.algorithm` overrides it), conflict markers refine as git's do, and `merge.conflictStyle` `diff3`/`zdiff3` is honoured. Merges that used to conflict or clobber may now merge cleanly, and the reverse; merge commit ids can differ from earlier tsgit output. A merge that git refuses in the directory-rename split case no longer commits.
@@ -225,7 +227,11 @@ await repo.rebase({ upstream: 'HEAD~3' });
 
 **`rebaseMerges` and `autostash` are new options**, and the replay walks git's right-only, merge-free, graph-ordered range. A stop leaves git's marker files (`MERGE_MSG`, `message-fixup`, `amend`, `current-fixups`), and an `edit` stop followed by `skip` keeps the edited commit. `pull --rebase` rebases from git's fork point.
 
+**A commit that starts empty is kept.** `rebase`, plain and with `rebaseMerges`, replays a commit whose tree already equals its parent's, as git's default `--keep-empty` does. It used to be dropped.
+
 ## Other commands
+
+**`fsck` `bad-ref` findings gain optional `path` and `reason`.** An unreadable linked-worktree `HEAD` reports `msgId: 'cannotReadRef'` with `path` and `reason: 'PERMISSION_DENIED'`, and sets exit bit 8. It used to be missed.
 
 **`rm` refuses a directory without `recursive`.** A literal pathspec that reaches only paths under a directory refuses `RM_RECURSIVE_WITHOUT_R`; pass `recursive: true`.
 
