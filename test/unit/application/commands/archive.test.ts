@@ -128,6 +128,11 @@ const makeTree = (entries: ReadonlyArray<TreeEntry>) => ({
 });
 
 const COMMITTER_TIMESTAMP = 1_700_000_000;
+/**
+ * `getTimezoneOffset` for UTC+2, set on the runtime directly: a POSIX `TZ` string does not reach
+ * the clock on every host — Node on Windows keeps the system zone.
+ */
+const EET_TIMEZONE_OFFSET = -120;
 
 const makeCommit = (tree: ObjectId, parents: ReadonlyArray<ObjectId> = []) => ({
   type: 'commit' as const,
@@ -2192,16 +2197,9 @@ describe('archive export-subst resolved data', () => {
 
   describe('Given a human date placeholder and a local zone ahead of UTC', () => {
     describe('When the entries are iterated an hour after the commit', () => {
-      const previousZone = process.env.TZ;
-
-      afterEach(() => {
-        if (previousZone === undefined) delete process.env.TZ;
-        else process.env.TZ = previousZone;
-      });
-
       it('Then the local day decides, so the commit zone is shown', async () => {
         // Arrange
-        process.env.TZ = 'EET-2';
+        vi.spyOn(Date.prototype, 'getTimezoneOffset').mockReturnValue(EET_TIMEZONE_OFFSET);
         vi.useFakeTimers({ toFake: ['Date'] });
         vi.setSystemTime((COMMITTER_TIMESTAMP + 3600) * 1000);
         const { ctx } = await seedSubstCommit([
