@@ -452,3 +452,22 @@ describe('Given a dangling refs/tags/HEAD beside HEAD', () => {
     });
   });
 });
+
+describe('Given an expression whose name warns, names no object, and names a working-tree file', () => {
+  describe('When resolveRevision reads it', () => {
+    it('Then it refuses after the one read, without the misspelt-name re-read', async () => {
+      // Arrange
+      const warnings: string[] = [];
+      const ctx = await danglingRepo((message) => warnings.push(message));
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/dg~5`, '');
+      const sut = resolveRevision;
+
+      // Act
+      const result = await failureOf(() => sut(ctx, 'dg~5'));
+
+      // Assert
+      expect(result).toMatchObject({ code: 'OBJECT_NOT_FOUND' });
+      expect(warnings).toEqual([DANGLING]);
+    });
+  });
+});

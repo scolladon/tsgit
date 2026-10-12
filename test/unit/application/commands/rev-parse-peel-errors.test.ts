@@ -11,6 +11,7 @@ import type { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { CommitData, ObjectId } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
+import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { writeForgedTagLoop, writeRawObjectBytes } from '../primitives/fixtures.js';
 
@@ -491,6 +492,52 @@ describe('Given a commit whose tree object does not parse as a tree', () => {
 
       // Assert
       expect(result).toBe(tree);
+    });
+  });
+});
+
+describe('Given a tag naming an absent object', () => {
+  describe('When evaluateRevision peels it with ^{}', () => {
+    it('Then the report carries the tag name and the missing id', async () => {
+      // Arrange
+      const { ctx } = await peelRepo();
+      const entries: Array<readonly [string, unknown]> = [];
+      const logged = {
+        ...ctx,
+        logger: { error: (message: string, data?: unknown) => entries.push([message, data]) },
+      } as Context;
+      const sut = evaluateRevision;
+
+      // Act
+      await failureCode(() => sut(logged, 'bad^{}'));
+
+      // Assert
+      expect(entries).toEqual([
+        ["missing object referenced by 'bad'", { name: 'bad', id: ABSENT_OID }],
+      ]);
+    });
+  });
+});
+
+describe('Given a tag naming a corrupt loose object', () => {
+  describe('When evaluateRevision peels it with ^{}', () => {
+    it('Then the corruption refuses without a missing-object report', async () => {
+      // Arrange
+      const { ctx, errors } = await peelRepo();
+      const corrupt = '2'.repeat(40) as ObjectId;
+      await ctx.fs.write(
+        `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(corrupt)}`,
+        new TextEncoder().encode('not a zlib stream'),
+      );
+      const tag = await writeTag(ctx, corrupt, 'commit', 'cr');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/cr`, `${tag}\n`);
+      const sut = evaluateRevision;
+
+      // Act
+      const code = await failureCode(() => sut(ctx, 'cr^{}'));
+
+      // Assert
+      expect({ code, errors }).toEqual({ code: 'DECOMPRESS_FAILED', errors: [] });
     });
   });
 });

@@ -639,6 +639,40 @@ describe('Given a whole-name search that walks into a corrupt loose object', () 
   });
 });
 
+describe('Given a whole-name search that walks past a match the split would stop at', () => {
+  describe('When the walk reaches a corrupt loose object', () => {
+    it('Then the corruption refuses rather than falling back to the split', async () => {
+      // Arrange
+      const { ctx } = loggingContext();
+      const blob = await writeRawObjectBytes(ctx, 'blob', encoder.encode('y\n'));
+      const entry = encoder.encode('100644 y}\0');
+      const tree = await writeRawObjectBytes(
+        ctx,
+        'tree',
+        new Uint8Array([...entry, ...hexBytes(blob)]),
+      );
+      const corrupt = '2'.repeat(40) as ObjectId;
+      await ctx.fs.write(
+        `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(corrupt)}`,
+        GARBAGE,
+      );
+      const middle = await writeCommit(ctx, tree, [corrupt], 1, 'x\n');
+      const tip = await writeCommit(ctx, tree, [middle], 2, 'a\n');
+      await writeRef(ctx, 'refs/heads/main', tip);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+      const sut = evaluateRevision;
+
+      // Act
+      const split = await sut(ctx, 'HEAD^{/a}');
+      const code = await failureCode(() => sut(ctx, 'HEAD^{/a}:y}'));
+
+      // Assert
+      expect(split).toBe(tip);
+      expect(code).toBe('DECOMPRESS_FAILED');
+    });
+  });
+});
+
 describe('Given a ref naming a tag of an absent object', () => {
   describe('When a message search starts from every ref', () => {
     it('Then the report names the ref', async () => {
