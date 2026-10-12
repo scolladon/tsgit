@@ -57,9 +57,11 @@ git (`read-cache.c`, v2.55.0):
 
 ## Consequences
 
-- Cost matches git's: one index `lstat` per write; the index as read (cached per session) and an
-  O(N) path map only when some new entry is racy; an `lstat` per racy carried-over entry and a hash
-  only when its stat still matches.
+- Cost matches git's: one index `lstat` per write, whose result also validates the per-session
+  cache of the index as read; an O(N) scan of that index only when some new entry is racy; an
+  `lstat` per racy carried-over entry and a hash only when its stat still matches. Measured on the
+  medium bench fixture: `add` of one file +1 filesystem call, wall time within noise; `status`,
+  which writes no index, unchanged.
 - Divergence, recorded here: an entry this process re-hashed and found unchanged (a racy `add` of
   an unmodified file) keeps its stat and id, so it reads as carried over and is hashed a second time
   at write, where git skips it as up to date. The written index is identical; only the extra hash
