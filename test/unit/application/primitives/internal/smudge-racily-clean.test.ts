@@ -135,17 +135,14 @@ describe('smudgeRacilyClean', () => {
     });
   });
 
-  describe('Given a racy entry at a path the index as read does not hold', () => {
+  describe('Given a racy entry at a path the index as read does not hold, its own path dropped', () => {
     describe('When the index is written', () => {
       it('Then the new entry is kept as is', async () => {
         // Arrange
         const ctx = await trackedRepo();
         const [asRead] = await entriesAsRead(ctx);
         await write(ctx, 'g.txt', 'm1\n');
-        const entries = [
-          ...(await entriesAsRead(ctx)),
-          { ...(asRead as IndexEntry), id: OTHER_ID, path: 'g.txt' as FilePath },
-        ];
+        const entries = [{ ...(asRead as IndexEntry), id: OTHER_ID, path: 'g.txt' as FilePath }];
         const sut = smudgeRacilyClean;
 
         // Act

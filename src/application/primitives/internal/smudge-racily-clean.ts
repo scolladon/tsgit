@@ -3,9 +3,10 @@ import type { IndexEntry } from '../../../domain/git-index/index-entry.js';
 import { deriveWorkingMode, FILE_MODE } from '../../../domain/objects/file-mode.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
+import type { FileStat } from '../../../ports/file-system.js';
 import { compareWorkingTreeDelta } from '../compare-working-tree-entry.js';
 import { indexPath } from '../path-layout.js';
-import { indexMtimeFrom, readIndex } from '../read-index.js';
+import { indexMtimeFrom, readIndexAt } from '../read-index.js';
 import { lstatIfReachable } from './fs-probes.js';
 import { type IndexMtime, isRacy, matchesContentStat } from './is-entry-stat-clean.js';
 import { joinPath } from './join-working-tree-path.js';
@@ -34,9 +35,12 @@ const statDataKey = (entry: IndexEntry): string =>
   ].join();
 
 /** A corrupt index carries no stat data over; any other refusal propagates. */
-const entriesAsRead = async (ctx: Context): Promise<ReadonlyArray<IndexEntry>> => {
+const entriesAsRead = async (
+  ctx: Context,
+  indexStat: FileStat,
+): Promise<ReadonlyArray<IndexEntry>> => {
   try {
-    return (await readIndex(ctx)).entries;
+    return (await readIndexAt(ctx, indexStat)).entries;
   } catch (err) {
     if (errorDataCode(err)?.startsWith(CORRUPT_INDEX_CODE_PREFIX) === true) return [];
     throw err;
@@ -46,11 +50,18 @@ const entriesAsRead = async (ctx: Context): Promise<ReadonlyArray<IndexEntry>> =
 /** Stands in for git's `!ce_uptodate`: the entry is the index's own, unchanged since read. */
 const carriedOver = async (
   ctx: Context,
+  indexStat: FileStat,
   racy: ReadonlyArray<IndexEntry>,
 ): Promise<ReadonlyArray<IndexEntry>> => {
-  const asRead = new Map<FilePath, string>();
-  for (const entry of await entriesAsRead(ctx)) asRead.set(entry.path, statDataKey(entry));
-  return racy.filter((entry) => asRead.get(entry.path) === statDataKey(entry));
+  const racyByPath = new Map<FilePath, IndexEntry>(racy.map((entry) => [entry.path, entry]));
+  const unchanged: IndexEntry[] = [];
+  for (const entry of await entriesAsRead(ctx, indexStat)) {
+    const candidate = racyByPath.get(entry.path);
+    if (candidate !== undefined && statDataKey(candidate) === statDataKey(entry)) {
+      unchanged.push(candidate);
+    }
+  }
+  return unchanged;
 };
 
 /** The entries `keep` approves, each probed concurrently. */
@@ -85,7 +96,7 @@ const racilyClean = async (
   const indexMtime = indexMtimeFrom(stat);
   const racy = entries.filter((entry) => isRacyTimestamp(entry, indexMtime));
   if (racy.length === 0) return [];
-  const candidates = await carriedOver(ctx, racy);
+  const candidates = await carriedOver(ctx, stat, racy);
   return filterConcurrently(candidates, (entry) => statStillMatches(ctx, workDir, entry));
 };
 
