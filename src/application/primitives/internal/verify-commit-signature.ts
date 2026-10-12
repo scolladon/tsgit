@@ -165,13 +165,10 @@ interface StatusScan {
 }
 
 /** git resumes one character past the start of the signer it read, so an empty signer swallows the next line. */
-const readSigner = (text: string, keyEnd: number, resume: number): readonly [string, number] => {
-  if (text[keyEnd] !== ' ') return ['', resume];
-  return [
-    text.slice(keyEnd + 1, indexOrEnd(text, '\n', keyEnd + 1)),
-    indexOrEnd(text, '\n', keyEnd + 2),
-  ];
-};
+const readSigner = (text: string, keyEnd: number): readonly [string, number] => [
+  text.slice(keyEnd + 1, indexOrEnd(text, '\n', keyEnd + 1)),
+  indexOrEnd(text, '\n', keyEnd + 2),
+];
 
 /** git's key read: up to the next space, newlines included. */
 const signatureStep = (
@@ -182,7 +179,7 @@ const signatureStep = (
 ): StatusScan | undefined => {
   if (scan.signed) return undefined;
   const keyEnd = indexOrEnd(text, ' ', from);
-  const [signer, at] = withSigner ? readSigner(text, keyEnd, scan.at) : ['', scan.at];
+  const [signer, at] = withSigner ? readSigner(text, keyEnd) : ['', scan.at];
   const verdict = { ...scan.verdict, result, key: text.slice(from, keyEnd), signer };
   return { verdict, signed: true, at };
 };

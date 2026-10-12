@@ -1219,6 +1219,11 @@ describe('verifyCommitSignature', () => {
       },
     },
     {
+      label: 'an empty principal',
+      stdout: 'Good "git" signature for  with ED25519 key SHA256:x\n',
+      expected: { result: 'G', signer: '', trust: 'fully', key: 'SHA256:x' },
+    },
+    {
       label: 'trailing blanks',
       stdout: 'Good "git" signature for alice with ED25519 key SHA256:abc \t\r\n',
       expected: { result: 'G', signer: 'alice', key: 'SHA256:abc' },
@@ -1248,6 +1253,11 @@ describe('verifyCommitSignature', () => {
       label: 'a good line without a key',
       stdout: 'Good "git" signature with ED25519\n',
       expected: { result: 'B', trust: 'undefined', key: '' },
+    },
+    {
+      label: 'a good line whose key marker opens the line',
+      stdout: 'Good "git" signature with key SHA256:x\n',
+      expected: { result: 'G', trust: 'undefined', key: 'SHA256:x' },
     },
     {
       label: 'a refusal that exits cleanly',
@@ -1288,6 +1298,38 @@ describe('verifyCommitSignature', () => {
 
         // Assert
         expect(result).toMatchObject({ result: 'G', key: 'SHA256:abc', fingerprint: 'SHA256:abc' });
+      });
+    });
+  });
+
+  describe.each([
+    {
+      label: 'a key ending in a line break before the signer',
+      stdout: '[GNUPG:] GOODSIG K\n Jane\n',
+      expected: { result: 'G', key: 'K\n', signer: 'Jane' },
+    },
+    {
+      label: 'the gnupg prefix in the middle of a line',
+      stdout: 'foo [GNUPG:] GOODSIG K Jane\n',
+      expected: { result: 'N', key: '', signer: '' },
+    },
+    {
+      label: 'a status that opens with a line break',
+      stdout: '[GNUPG:] \n[GNUPG:] GOODSIG K Jane\n',
+      expected: { result: 'N', key: '', signer: '' },
+    },
+  ])('Given a status stream with $label', ({ stdout, expected }) => {
+    describe('When the signature is verified', () => {
+      it('Then the verdict is the one git reaches', async () => {
+        // Arrange
+        const ctx = gpgContext(stdout);
+        const sut = verifyCommitSignature;
+
+        // Act
+        const result = await sut(ctx, GPG_INPUT);
+
+        // Assert
+        expect(result).toMatchObject(expected);
       });
     });
   });
