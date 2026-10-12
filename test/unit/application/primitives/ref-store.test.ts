@@ -4074,6 +4074,28 @@ describe('ref-store — what a loose miss costs', () => {
   });
 });
 
+describe('ref-store — an adapter with tryLstat alone', () => {
+  describe('Given a name with no loose file, read through the browser-shaped probe set', () => {
+    describe('When resolveDirect reads it', () => {
+      it('Then the miss is answered by the probe, never by an open of the loose path', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const { lstatIfReachable: _cheap, ...fs } = base.fs;
+        const ctx: Context = { ...base, fs };
+        const open = vi.spyOn(fs, 'openWithNoFollow');
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('refs/tags/absent' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'missing' });
+        expect(open).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
 describe('ref-store — a loose miss under a Windows-shaped file system', () => {
   const PACKED_ID = 'c'.repeat(40) as ObjectId;
 

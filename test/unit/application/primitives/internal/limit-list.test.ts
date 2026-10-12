@@ -1277,6 +1277,23 @@ describe('limitList typing cost', () => {
         expect(result.shown.map(history.name)).toEqual(['c2', 'c1', 'c0']);
         expect(load).toHaveBeenCalledTimes(1);
       });
+
+      it("Then each commit's lone parent is parsed without settling a batch", async () => {
+        // Arrange
+        const history = await buildHistory(CHAIN);
+        const objectTypes = createObjectTypeTable();
+        const settle = vi.spyOn(Promise, 'allSettled');
+        const sut = limitList;
+
+        // Act
+        const result = await sut(history.ctx, optionsFor(history, ['c2'], [], { objectTypes }));
+
+        // Assert
+        const loneBatches = settle.mock.calls.filter(([batch]) => [...batch].length === 1);
+        settle.mockRestore();
+        expect(result.shown.map(history.name)).toEqual(['c2', 'c1', 'c0']);
+        expect(loneBatches).toEqual([]);
+      });
     });
   });
 });
