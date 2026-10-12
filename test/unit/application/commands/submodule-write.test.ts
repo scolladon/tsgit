@@ -380,6 +380,23 @@ describe('commands/submodule — init', () => {
     });
   });
 
+  describe('Given a submodule whose url and update mode are both already registered', () => {
+    describe('When init runs', () => {
+      it('Then the config is left as it was', async () => {
+        // Arrange
+        const config = `${ORIGIN}[submodule "libs/a"]\n\turl = custom://keep\n\tupdate = rebase\n`;
+        const ctx = await seed({ gitmodules: `${GITMODULES_ONE}\tupdate = merge\n`, config });
+        const sut = submoduleInit;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await readConfigText(ctx)).toBe(config);
+      });
+    });
+  });
+
   describe('Given only a url-less submodule row and no config file', () => {
     describe('When init runs', () => {
       it('Then no config file is written (the op batch is empty)', async () => {
