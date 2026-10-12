@@ -52,7 +52,7 @@ if [ -z "$CHANGED" ]; then
   exit 0
 fi
 
-if echo "$CHANGED" | grep -qE "$CODE_RE"; then
+if grep -qE "$CODE_RE" <<<"$CHANGED"; then
   echo "has-code-changes: code paths changed"
   emit true
 else
