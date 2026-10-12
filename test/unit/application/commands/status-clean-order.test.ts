@@ -75,3 +75,119 @@ describe('Given a runner-wired repository that configures a filter driver', () =
     });
   });
 });
+
+const LOG_DRIVER = '[core]\n\tbare = false\n[filter "log"]\n\tclean = log\n';
+const SETTLE_MS = 20;
+
+const dec = (bytes: Uint8Array | undefined): string =>
+  new TextDecoder().decode(bytes ?? new Uint8Array());
+
+interface Recorded {
+  readonly ctx: Context;
+  readonly cleaned: string[];
+}
+
+/** A repo committing `files`, then holding `edited` over them, whose `log` clean driver records what it hears. */
+const repoUnderLogDriver = async (
+  files: Readonly<Record<string, string>>,
+  edited: Readonly<Record<string, string>>,
+  attributes: string,
+): Promise<Recorded> => {
+  const base = createMemoryContext();
+  await init(base);
+  for (const [path, content] of Object.entries(files)) {
+    await base.fs.writeUtf8(`${base.layout.workDir}/${path}`, content);
+  }
+  await add(base, Object.keys(files));
+  await commit(base, { message: 'first', author: AUTHOR });
+  for (const [path, content] of Object.entries(edited)) {
+    await base.fs.writeUtf8(`${base.layout.workDir}/${path}`, content);
+  }
+  await base.fs.writeUtf8(`${base.layout.workDir}/.gitattributes`, attributes);
+  await base.fs.writeUtf8(`${base.layout.gitDir}/config`, LOG_DRIVER);
+  const cleaned: string[] = [];
+  const command = {
+    run: async (request: { readonly stdin?: Uint8Array }) => {
+      cleaned.push(dec(request.stdin));
+      return { exitCode: 0, stdout: request.stdin ?? new Uint8Array() };
+    },
+  };
+  return { ctx: { ...base, command }, cleaned };
+};
+
+/** Delays the stat of `slowPath`, so its read settles after every other path's. */
+const withSlowLstat = (ctx: Context, slowPath: string): Context => ({
+  ...ctx,
+  fs: new Proxy(ctx.fs, {
+    get(target, prop, receiver) {
+      if (prop !== 'lstat') return Reflect.get(target, prop, receiver);
+      return async (path: string) => {
+        if (path.endsWith(slowPath)) await new Promise((r) => setTimeout(r, SETTLE_MS));
+        return target.lstat(path);
+      };
+    },
+  }),
+});
+
+describe('Given tracked paths whose first reads slowest under a clean driver', () => {
+  describe('When status scans the work tree', () => {
+    it('Then the driver hears the paths in index order, not in read order', async () => {
+      // Arrange
+      const { ctx, cleaned } = await repoUnderLogDriver(
+        { 'a.txt': 'A', 'b.txt': 'B' },
+        { 'a.txt': 'X', 'b.txt': 'Y' },
+        '*.txt filter=log\n',
+      );
+      const sut = status;
+
+      // Act
+      await sut(withSlowLstat(ctx, '/a.txt'));
+
+      // Assert
+      expect(cleaned).toEqual(['X', 'Y']);
+    });
+  });
+});
+
+describe('Given a tracked path ahead of a filtered one that needs no clean', () => {
+  describe('When status scans the work tree', () => {
+    it('Then the filtered path is cleaned once the earlier path is done', async () => {
+      // Arrange
+      const { ctx, cleaned } = await repoUnderLogDriver(
+        { 'a.dat': 'A', 'b.txt': 'B' },
+        { 'a.dat': 'X', 'b.txt': 'Y' },
+        '*.txt filter=log\n',
+      );
+      const sut = status;
+
+      // Act
+      await sut(withSlowLstat(ctx, '/a.dat'));
+
+      // Assert
+      expect(cleaned).toEqual(['Y']);
+    });
+  });
+});
+
+describe('Given a filter driver configured in a repository with no command runner', () => {
+  describe('When status scans the work tree', () => {
+    it('Then no clean order is opened, as no clean can run', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, LOG_DRIVER);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+      await add(ctx, ['a.txt']);
+      await commit(ctx, { message: 'first', author: AUTHOR });
+      vi.mocked(withCleanOrder).mockClear();
+      const sut = status;
+
+      // Act
+      await sut(ctx);
+
+      // Assert
+      const result = vi.mocked(withCleanOrder).mock.calls.length;
+      expect(result).toBe(0);
+    });
+  });
+});
