@@ -574,6 +574,30 @@ describe.skipIf(!GIT_AVAILABLE)('eol conversion interop', () => {
       });
     });
 
+    describe('When core.safecrlf=true refuses b2 in the bulk add .', () => {
+      it('Then the refusal names b2 and the index and loose objects equal git with a1 only', async () => {
+        // Arrange
+        const scenario: Scenario = {
+          config: { autoCrlf: 'true', safeCrlf: 'true' },
+          files: Object.fromEntries(SAFECRLF_TRIO.map((f) => [f.name, f.bytes])),
+          pathspec: ['.'],
+        };
+        const sut = addOnBoth;
+
+        // Act
+        const result = await sut(twinRepos(scenario), scenario.pathspec);
+
+        // Assert
+        expect(result.git.exitCode).toBe(REFUSED_EXIT_CODE);
+        expect(result.git.refusal).toBe(
+          reconstructSafecrlfLine({ path: 'b2', loss: 'lf-to-crlf' }, 'fatal'),
+        );
+        expect(result.git.stage).toBe('');
+        expect(result.git.objects).toHaveLength(1);
+        expect(result.tsgit).toEqual(result.git);
+      });
+    });
+
     describe('When core.autocrlf or core.safecrlf is not a boolean', () => {
       const BAD_VALUES = [
         ['core.autocrlf', 'foo'],

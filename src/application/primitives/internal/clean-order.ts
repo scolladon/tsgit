@@ -12,33 +12,60 @@ export interface CleanOrder {
   enlist(path: FilePath): void;
   /** Marks `path` done, so the paths after it may clean; idempotent. */
   release(path: FilePath): void;
+  /** 'write' span: `path` failed — every later waiter and later admitWrite rejects with `error`. */
+  halt(path: FilePath, error: unknown): void;
 }
 
+/**
+ * What the order sequences: 'clean' gates the filter run only; 'write' gates
+ * conversion and the object write too, the turn held until `release`.
+ */
+export type OrderSpan = 'clean' | 'write';
+
 interface Sequence extends CleanOrder {
+  readonly span: OrderSpan;
   admit(path: FilePath): Promise<void>;
 }
 
 const ADMITTED: Promise<void> = Promise.resolve();
 
-const UNORDERED: CleanOrder = { enlist: () => undefined, release: () => undefined };
+const UNORDERED: CleanOrder = {
+  enlist: () => undefined,
+  release: () => undefined,
+  halt: () => undefined,
+};
 
 /** Keyed on the Context object itself, as the filter-process pool is. */
 const sequences = new WeakMap<Context, Sequence>();
+
+interface Waiter {
+  readonly resolve: () => void;
+  readonly reject: (error: unknown) => void;
+}
+
+/** The earliest halted path's ordinal and the error every path after it meets. */
+interface Halt {
+  readonly ordinal: number;
+  readonly error: unknown;
+}
 
 /** Every enlisted path's ordinal, which have been released, and who waits on which. */
 interface SequenceState {
   readonly ordinals: Map<FilePath, number>;
   readonly released: boolean[];
-  readonly waiters: Map<number, () => void>;
+  readonly waiters: Map<number, Waiter>;
   /** The lowest ordinal not yet released: the one path free to clean. */
   next: number;
+  halted?: Halt;
 }
 
-const createSequence = (): Sequence => {
+const createSequence = (span: OrderSpan): Sequence => {
   const state: SequenceState = { ordinals: new Map(), released: [], waiters: new Map(), next: 0 };
   return {
+    span,
     enlist: (path) => enlistIn(state, path),
     release: (path) => releaseIn(state, path),
+    halt: (path, error) => haltIn(state, path, error),
     admit: (path) => admitIn(state, path),
   };
 };
@@ -58,13 +85,27 @@ const releaseIn = (state: SequenceState, path: FilePath): void => {
 
 const advance = (state: SequenceState): void => {
   while (state.released[state.next] === true) state.next += 1;
-  state.waiters.get(state.next)?.();
+  state.waiters.get(state.next)?.resolve();
+};
+
+const haltIn = (state: SequenceState, path: FilePath, error: unknown): void => {
+  const ordinal = state.ordinals.get(path);
+  if (ordinal === undefined) return;
+  if (state.halted !== undefined && state.halted.ordinal <= ordinal) return;
+  state.halted = { ordinal, error };
+  for (const [waiting, waiter] of state.waiters) {
+    if (waiting > ordinal) waiter.reject(error);
+  }
 };
 
 const admitIn = (state: SequenceState, path: FilePath): Promise<void> => {
   const ordinal = state.ordinals.get(path);
-  if (ordinal === undefined || ordinal <= state.next) return ADMITTED;
-  return new Promise((resolve) => state.waiters.set(ordinal, resolve));
+  if (ordinal === undefined) return ADMITTED;
+  if (state.halted !== undefined && ordinal > state.halted.ordinal) {
+    return Promise.reject(state.halted.error);
+  }
+  if (ordinal <= state.next) return ADMITTED;
+  return new Promise((resolve, reject) => state.waiters.set(ordinal, { resolve, reject }));
 };
 
 /**
@@ -76,9 +117,10 @@ const admitIn = (state: SequenceState, path: FilePath): Promise<void> => {
 export const withCleanOrder = async <T>(
   ctx: Context,
   body: (order: CleanOrder) => Promise<T>,
+  span: OrderSpan = 'clean',
 ): Promise<T> => {
   if (sequences.has(ctx)) return body(UNORDERED);
-  const sequence = createSequence();
+  const sequence = createSequence(span);
   sequences.set(ctx, sequence);
   try {
     return await body(sequence);
@@ -87,11 +129,23 @@ export const withCleanOrder = async <T>(
   }
 };
 
-/** Resolves once `path` may clean: at once when no order is open or `path` is not in it. */
-export const admitClean = (ctx: Context, path: FilePath): Promise<void> =>
-  sequences.get(ctx)?.admit(path) ?? ADMITTED;
+/**
+ * Resolves once `path` may clean: at once when no order is open or `path` is
+ * not in it. A 'write' span admitted the path at `admitWrite` already.
+ */
+export const admitClean = (ctx: Context, path: FilePath): Promise<void> => {
+  const sequence = sequences.get(ctx);
+  return sequence === undefined || sequence.span === 'write' ? ADMITTED : sequence.admit(path);
+};
 
-/** Releases `path` in the order open on `ctx`, if any. */
+/** Resolves once `path` may convert and write: at once unless a 'write' span is open; rejects once it halted. */
+export const admitWrite = (ctx: Context, path: FilePath): Promise<void> => {
+  const sequence = sequences.get(ctx);
+  return sequence?.span === 'write' ? sequence.admit(path) : ADMITTED;
+};
+
+/** Releases `path` in the order open on `ctx`; a 'write' span keeps the turn until the blob is written. */
 export const releaseClean = (ctx: Context, path: FilePath): void => {
-  sequences.get(ctx)?.release(path);
+  const sequence = sequences.get(ctx);
+  if (sequence?.span === 'clean') sequence.release(path);
 };

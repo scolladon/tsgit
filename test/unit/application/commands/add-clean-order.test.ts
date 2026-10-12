@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
+import { TsgitError } from '../../../../src/domain/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { seedRepo } from './fixtures.js';
 
@@ -102,6 +103,92 @@ describe('Given a walked path ahead of a filtered one that needs no clean', () =
       // Assert
       expect(cleaned).toEqual(['B']);
       expect(result.added).toEqual(['.gitattributes', 'a.dat', 'b.txt']);
+    });
+  });
+});
+
+interface WriteLog {
+  readonly ctx: Context;
+  /** `start`/`end` events of each loose-object write, in the order they happened. */
+  readonly events: string[];
+}
+
+/** Records loose-object writes; the first one lingers `delayFirstMs` before it lands. */
+const withWriteLog = (ctx: Context, delayFirstMs: number): WriteLog => {
+  const events: string[] = [];
+  let writes = 0;
+  const wrapped: Context = {
+    ...ctx,
+    fs: new Proxy(ctx.fs, {
+      get(target, prop, receiver) {
+        if (prop !== 'writeExclusive') return Reflect.get(target, prop, receiver);
+        return async (path: string, data: Uint8Array) => {
+          if (!path.startsWith(`${ctx.layout.gitDir}/objects/`))
+            return target.writeExclusive(path, data);
+          const index = writes++;
+          events.push(`start ${index}`);
+          if (index === 0) await new Promise((r) => setTimeout(r, delayFirstMs));
+          await target.writeExclusive(path, data);
+          events.push(`end ${index}`);
+        };
+      },
+    }),
+  };
+  return { ctx: wrapped, events };
+};
+
+const seedTrio = async (safecrlf: string): Promise<Context> => {
+  const base = createMemoryContext();
+  await seedRepo(base, { workingTree: { a1: 'x\r\ny\r\n', b2: 'x\ny\n', c3: 'z\r\nw\r\n' } });
+  await base.fs.writeUtf8(
+    `${base.layout.gitDir}/config`,
+    `[core]\n\tautocrlf = true\n\tsafecrlf = ${safecrlf}\n`,
+  );
+  return withSlowLstat(base, '/a1');
+};
+
+describe('Given core.safecrlf true, core.autocrlf true, a1 CRLF (slow read), b2 LF, c3 CRLF', () => {
+  describe('When add all', () => {
+    it('Then the refusal is b2 and the loose-object write spy saw a1 only', async () => {
+      // Arrange
+      const { ctx, events } = withWriteLog(await seedTrio('true'), 0);
+      const sut = add;
+      let caught: unknown;
+
+      // Act
+      try {
+        await sut(ctx, [], { all: true });
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'EOL_ROUND_TRIP_UNSAFE',
+        path: 'b2',
+        loss: 'lf-to-crlf',
+        crlf: 0,
+        loneLf: 2,
+      });
+      expect(events).toEqual(['start 0', 'end 0']);
+    });
+  });
+});
+
+describe('Given core.safecrlf warn, core.autocrlf true, a deferred first write', () => {
+  describe('When add all', () => {
+    it('Then the next write starts while the first is pending and the notice is b2s', async () => {
+      // Arrange
+      const { ctx, events } = withWriteLog(await seedTrio('warn'), SETTLE_MS);
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, [], { all: true });
+
+      // Assert
+      expect(events.indexOf('start 1')).toBeLessThan(events.indexOf('end 0'));
+      expect(result.eolNotices).toEqual([{ path: 'b2', loss: 'lf-to-crlf', crlf: 0, loneLf: 2 }]);
     });
   });
 });

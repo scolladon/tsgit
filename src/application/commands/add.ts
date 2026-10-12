@@ -30,7 +30,12 @@ import { CHERRY_PICK, MERGE, REBASE, REVERT } from '../../domain/sequencer/opera
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
-import { type CleanOrder, withCleanOrder } from '../primitives/internal/clean-order.js';
+import {
+  admitWrite,
+  type CleanOrder,
+  type OrderSpan,
+  withCleanOrder,
+} from '../primitives/internal/clean-order.js';
 import { limiterFor } from '../primitives/internal/concurrency.js';
 import type { ConcurrencyLimiter } from '../primitives/internal/concurrency-limiter.js';
 import { convertToGit } from '../primitives/internal/convert-blob.js';
@@ -294,7 +299,9 @@ const stageWalkedEntries = async (
 ): Promise<WalkOutcome[]> => {
   const stage = (walkEntry: WalkWorkingTreeEntry): Promise<WalkOutcome | undefined> =>
     processWalkEntry(ctx, walkEntry, existing, seen, scope, indexMtime, ensurePromisorConfigValid);
-  return stagedOutcomes(await dispatchInCleanOrder(ctx, walk, stage));
+  // git converts and writes one path at a time, dying at the first loss, under safecrlf=true.
+  const span: OrderSpan = scope.settings.safeCrlf === true ? 'write' : 'clean';
+  return stagedOutcomes(await dispatchInCleanOrder(ctx, walk, stage, span));
 };
 
 /** One walked entry once staged: its outcome, or the failure staging it met. */
@@ -320,18 +327,23 @@ const dispatchInCleanOrder = (
   ctx: Context,
   walk: AsyncIterable<WalkWorkingTreeEntry>,
   stage: (walkEntry: WalkWorkingTreeEntry) => Promise<WalkOutcome | undefined>,
+  span: OrderSpan,
 ): Promise<ReadonlyArray<StagedEntry>> =>
-  withCleanOrder(ctx, async (order) => {
-    const dispatcher = { limiter: limiterFor(ctx, 'ioBound'), order, stage };
-    const pending: Promise<StagedEntry>[] = [];
-    try {
-      for await (const walkEntry of walk) pending.push(dispatchWalkEntry(dispatcher, walkEntry));
-    } catch (error) {
-      await Promise.all(pending);
-      throw error;
-    }
-    return Promise.all(pending);
-  });
+  withCleanOrder(
+    ctx,
+    async (order) => {
+      const dispatcher = { limiter: limiterFor(ctx, 'ioBound'), order, stage, span };
+      const pending: Promise<StagedEntry>[] = [];
+      try {
+        for await (const walkEntry of walk) pending.push(dispatchWalkEntry(dispatcher, walkEntry));
+      } catch (error) {
+        await Promise.all(pending);
+        throw error;
+      }
+      return Promise.all(pending);
+    },
+    span,
+  );
 
 /** Stage one walked entry under the limiter, releasing its clean turn whatever the outcome. */
 const dispatchWalkEntry = (
@@ -339,9 +351,11 @@ const dispatchWalkEntry = (
     limiter,
     order,
     stage,
+    span,
   }: {
     readonly limiter: ConcurrencyLimiter;
     readonly order: CleanOrder;
+    readonly span: OrderSpan;
     readonly stage: (walkEntry: WalkWorkingTreeEntry) => Promise<WalkOutcome | undefined>;
   },
   walkEntry: WalkWorkingTreeEntry,
@@ -351,7 +365,10 @@ const dispatchWalkEntry = (
     .run(() => stage(walkEntry))
     .then(
       (outcome): StagedEntry => ({ kind: 'staged', outcome }),
-      (error: unknown): StagedEntry => ({ kind: 'failed', error }),
+      (error: unknown): StagedEntry => {
+        if (span === 'write') order.halt(walkEntry.path, error);
+        return { kind: 'failed', error };
+      },
     )
     .finally(() => order.release(walkEntry.path));
 };
@@ -732,6 +749,7 @@ const writeCleanedBlob = async (
     await assertBigFileThresholdValid(ctx);
   }
   const raw = await readContent(ctx, path, fresh);
+  await admitWrite(ctx, path);
   const { bytes, notice } = await convertToGit(ctx, {
     path,
     bytes: raw,
