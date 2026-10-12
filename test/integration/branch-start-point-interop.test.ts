@@ -178,7 +178,7 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
     };
 
     describe('When git branch and tsgit branchCreate both omit the start point', () => {
-      it('Then both name the branch HEAD points at, never HEAD itself', async () => {
+      it('Then both name the branch HEAD points at, never HEAD itself, and neither writes a ref', async () => {
         // Arrange
         const { dir, ctx } = await unbornRepo('omitted');
 
@@ -190,11 +190,12 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
         expect(gitResult.exitCode).toBe(128);
         expect(gitResult.stderr).toBe("fatal: not a valid object name: 'main'\n");
         expect(err.data).toEqual({ code: 'BRANCH_NOT_FOUND', name: 'main' });
+        expect(git(dir, 'for-each-ref', 'refs/heads')).toBe('');
       });
     });
 
     describe('When git branch --force and tsgit branchCreate with force both omit the start point', () => {
-      it('Then both refuse identically, force reaching no further', async () => {
+      it('Then both refuse identically, force reaching no further, and neither writes a ref', async () => {
         // Arrange
         const { dir, ctx } = await unbornRepo('omitted-force');
 
@@ -208,11 +209,12 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
         expect(gitResult.exitCode).toBe(128);
         expect(gitResult.stderr).toBe("fatal: not a valid object name: 'main'\n");
         expect(err.data).toEqual({ code: 'BRANCH_NOT_FOUND', name: 'main' });
+        expect(git(dir, 'for-each-ref', 'refs/heads')).toBe('');
       });
     });
 
     describe('When git branch and tsgit branchCreate both pass a start point nothing resolves', () => {
-      it('Then both name that start point verbatim rather than the current branch', async () => {
+      it('Then both name that start point verbatim rather than the current branch, and neither writes a ref', async () => {
         // Arrange
         const { dir, ctx } = await unbornRepo('explicit');
 
@@ -226,6 +228,7 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
         expect(gitResult.exitCode).toBe(128);
         expect(gitResult.stderr).toBe("fatal: not a valid object name: 'nope-xyz'\n");
         expect(err.data).toEqual({ code: 'BRANCH_NOT_FOUND', name: 'nope-xyz' });
+        expect(git(dir, 'for-each-ref', 'refs/heads')).toBe('');
       });
     });
   });
