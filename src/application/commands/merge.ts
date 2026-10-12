@@ -398,10 +398,16 @@ const settleMessage = async (
     ));
   const into = shortBranchName(target.branch ?? HEAD);
   const formatted = await formatMergeMessage(ctx, heads, into, opts.message);
-  if (log.length === 0) return { ...opts, rev, autostash, message: formatted };
+  if (log.length === 0) {
+    return { ...opts, rev, autostash, message: withoutFinalNewline(formatted) };
+  }
   const shortlog = await mergeShortlog(ctx, heads, target.ourId, log);
-  return { ...opts, rev, autostash, message: `${completeLine(formatted)}${shortlog}` };
+  const message = withoutFinalNewline(`${completeLine(formatted)}${shortlog}`);
+  return { ...opts, rev, autostash, message };
 };
+
+/** git's `merge_msg`: `prepare_merge_message`'s output without its final newline, which the state file restores. */
+const withoutFinalNewline = (text: string): string => text.slice(0, -1);
 
 /** git's `strbuf_complete_line`: a non-empty text ends with a newline. */
 const completeLine = (text: string): string =>
@@ -1042,7 +1048,7 @@ const stopBeforeCommit = (
   tree: ObjectId,
   ourId: ObjectId,
   heads: ReadonlyArray<ObjectId>,
-  message: string = sanitizeMessage(opts.message, { allowEmpty: false }),
+  message: string = `${opts.message}\n`,
 ): Promise<MergeEnding> =>
   materialiseAndApply(ctx, tree, async () => {
     await writeMergeHeads(ctx, heads);

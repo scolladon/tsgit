@@ -226,4 +226,39 @@ describe('merge without committing', () => {
       });
     });
   });
+
+  describe.each([
+    ['no message', {}, "Merge branch 'feature'\n"],
+    ['-m x', { message: 'x' }, 'x\n'],
+    ['-m with surrounding spaces', { message: '  x  ' }, '  x  \n'],
+    ['-m with a leading newline', { message: '\nx' }, '\nx\n'],
+    ['-m with a comment line', { message: '# c' }, '# c\n'],
+    ['-m twice', { message: 'a\n\nb' }, 'a\n\nb\n'],
+    ['an empty -m', { message: '' }, '\n'],
+    ['-m ending in blank lines', { message: 'x\n\n' }, 'x\n\n\n'],
+    ['-m x with log', { message: 'x', log: true }, 'x\n\n* feature:\n  two\n  one\n'],
+    ['log', { log: true }, "Merge branch 'feature'\n\n* feature:\n  two\n  one\n"],
+    ['an empty -m with log', { message: '', log: true }, '\n* feature:\n  two\n  one\n'],
+    [
+      '-m ending in blank lines with log',
+      { message: 'x\n\n', log: true },
+      'x\n\n\n* feature:\n  two\n  one\n',
+    ],
+  ] as const)('Given a diverged branch and %s', (_label, given, expected) => {
+    describe('When merged with commit false', () => {
+      it('Then MERGE_MSG holds the message raw, as git writes it', async () => {
+        // Arrange
+        const { ctx } = await repo();
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'feature', commit: false, author, ...given });
+
+        // Assert
+        expect(result.kind).toBe('stopped');
+        expect(await stateFile(ctx, 'MERGE_MSG')).toBe(expected);
+        expect(await stateFile(ctx, 'MERGE_HEAD')).toBeDefined();
+      });
+    });
+  });
 });
