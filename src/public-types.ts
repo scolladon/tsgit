@@ -101,11 +101,22 @@ export type { diffTrees } from './application/primitives/diff-trees.js';
 // AuthorIdentity: ports/context.ts (port bag) vs domain/objects/author-identity.ts (commit/tag identity).
 // Pick the domain one — rides commit/tag data results (primary data payload).
 export type { AuthorIdentity } from './domain/objects/author-identity.js';
-// Branded-id value carve-out — the ONE non-export-type line.
+// Oid helpers and hash configs — values, so a consumer derives the empty-tree and null oids of
+// the repository's own `hashConfig` at runtime (`emptyTreeOid(repo.ctx.hashConfig)`) instead of
+// hard-coding the SHA-1 ids; the domain/objects wildcard above carries them as types only.
+export { SHA1_CONFIG, SHA256_CONFIG } from './domain/objects/hash-config.js';
+// Branded-id value carve-out, which the oid helpers above ride too (one line per source).
 // Pulls both the value constructors (ObjectId.from/.fromRaw, RefName.from, FilePath.from) and
 // the merged type. Sourced from object-id.ts directly (not the domain/objects barrel) to keep
 // this surgical. No conflict with the domain/objects wildcard — both trace to the same declaration.
-export { FilePath, ObjectId, RefName } from './domain/objects/object-id.js';
+export {
+  EMPTY_TREE_OID,
+  emptyTreeOid,
+  FilePath,
+  ObjectId,
+  RefName,
+  zeroOid,
+} from './domain/objects/object-id.js';
 // treeEntry: the only way a consumer can construct the branded TreeEntry —
 // export type * from the domain/objects wildcard above drops it like every other value.
 export { treeEntry } from './domain/objects/tree.js';

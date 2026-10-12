@@ -10,6 +10,7 @@ import type {
   SnapshotOptions as SnapshotOptionsBrowser,
   TreeDiff as TreeDiffBrowser,
 } from '../../src/index.browser.js';
+import * as browserEntry from '../../src/index.browser.js';
 import type {
   FilePath as FilePathDefault,
   MergeBaseOptions as MergeBaseOptionsDefault,
@@ -20,6 +21,7 @@ import type {
   SnapshotOptions as SnapshotOptionsDefault,
   TreeDiff as TreeDiffDefault,
 } from '../../src/index.default.js';
+import * as defaultEntry from '../../src/index.default.js';
 import type {
   FilePath as FilePathCore,
   MergeBaseOptions as MergeBaseOptionsCore,
@@ -30,6 +32,7 @@ import type {
   SnapshotOptions as SnapshotOptionsCore,
   TreeDiff as TreeDiffCore,
 } from '../../src/index.js';
+import * as coreEntry from '../../src/index.js';
 import type {
   AuthorIdentity,
   BranchNamespace,
@@ -52,11 +55,30 @@ import type {
   StatusResult,
   TreeDiff,
 } from '../../src/index.node.js';
+import * as nodeEntry from '../../src/index.node.js';
 import {
   FilePath as FilePathValue,
   ObjectId as ObjectIdValue,
   RefName as RefNameValue,
 } from '../../src/index.node.js';
+
+const SHA1_EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+const SHA256_EMPTY_TREE = '6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321';
+const SHA1_ZERO = '0'.repeat(40);
+const SHA256_ZERO = '0'.repeat(64);
+
+/** The oid helpers and hash configs every entry must bind at runtime, not as types only. */
+type OidExports = Pick<
+  typeof nodeEntry,
+  'EMPTY_TREE_OID' | 'emptyTreeOid' | 'SHA1_CONFIG' | 'SHA256_CONFIG' | 'zeroOid'
+>;
+
+const ENTRIES: ReadonlyArray<readonly [string, OidExports]> = [
+  ['index.node', nodeEntry],
+  ['index.default', defaultEntry],
+  ['index.browser', browserEntry],
+  ['index', coreEntry],
+];
 
 describe('public type surface', () => {
   describe('Given branded ids exported from index.node', () => {
@@ -301,6 +323,53 @@ describe('public type surface', () => {
 
         // Assert
         expect(result).toBe(path);
+      });
+    });
+  });
+
+  describe.each(ENTRIES)('Given the oid helpers exported from %s', (_entry, exported) => {
+    describe('When emptyTreeOid is called with each hash config', () => {
+      it('Then it returns the canonical empty tree id of that algorithm', () => {
+        // Arrange
+        const sut = exported.emptyTreeOid;
+
+        // Act
+        const sha1 = sut(exported.SHA1_CONFIG);
+        const sha256 = sut(exported.SHA256_CONFIG);
+
+        // Assert
+        expect(sha1).toBe(SHA1_EMPTY_TREE);
+        expect(sha256).toBe(SHA256_EMPTY_TREE);
+      });
+    });
+
+    describe('When zeroOid is called with each hash config', () => {
+      it("Then it returns the null oid at that algorithm's width", () => {
+        // Arrange
+        const sut = exported.zeroOid;
+
+        // Act
+        const sha1 = sut(exported.SHA1_CONFIG);
+        const sha256 = sut(exported.SHA256_CONFIG);
+
+        // Assert
+        expect(sha1).toBe(SHA1_ZERO);
+        expect(sha256).toBe(SHA256_ZERO);
+      });
+    });
+
+    describe('When EMPTY_TREE_OID and the hash configs are read', () => {
+      it('Then they are runtime values: the SHA-1 empty tree and each algorithm with its widths', () => {
+        // Arrange
+        const sut = exported;
+
+        // Act
+        const { EMPTY_TREE_OID, SHA1_CONFIG, SHA256_CONFIG } = sut;
+
+        // Assert
+        expect(EMPTY_TREE_OID).toBe(SHA1_EMPTY_TREE);
+        expect(SHA1_CONFIG).toEqual({ algorithm: 'sha1', digestLength: 20, hexLength: 40 });
+        expect(SHA256_CONFIG).toEqual({ algorithm: 'sha256', digestLength: 32, hexLength: 64 });
       });
     });
   });
