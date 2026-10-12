@@ -185,6 +185,43 @@ describe('removeBranchState — the state files it unlinks', () => {
     });
   });
 
+  describe('Given a symbolic link at SQUASH_MSG that loops onto itself', () => {
+    describe('When the branch state is removed', () => {
+      it("Then the link is gone and nothing refuses, as git's unlink never follows it", async () => {
+        // Arrange
+        const { ctx } = loggingContext();
+        await ctx.fs.symlink('SQUASH_MSG', `${ctx.layout.gitDir}/SQUASH_MSG`);
+        const sut = removeBranchState;
+
+        // Act
+        await sut(ctx, 'silent');
+
+        // Assert
+        const result = await ctx.fs.lexists?.(`${ctx.layout.gitDir}/SQUASH_MSG`);
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a symbolic link at MERGE_MSG whose target runs through a regular file', () => {
+    describe('When the branch state is removed', () => {
+      it("Then the link is gone and nothing refuses, as git's unlink never follows it", async () => {
+        // Arrange
+        const { ctx } = loggingContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/plain`, 'x\n');
+        await ctx.fs.symlink('plain/x', `${ctx.layout.gitDir}/MERGE_MSG`);
+        const sut = removeBranchState;
+
+        // Act
+        await sut(ctx, 'silent');
+
+        // Assert
+        const result = await ctx.fs.lexists?.(`${ctx.layout.gitDir}/MERGE_MSG`);
+        expect(result).toBe(false);
+      });
+    });
+  });
+
   describe('Given no state file at all', () => {
     describe('When the branch state is removed', () => {
       it('Then each state file costs one removal and no presence probe', async () => {
