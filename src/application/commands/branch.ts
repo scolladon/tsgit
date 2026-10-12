@@ -45,6 +45,7 @@ import {
   asUpstreamMissing,
   type BranchTrack,
   type BranchUpstream,
+  type DwimmedStart,
   resolveTrackMode,
   setupTracking,
   type TrackMode,
@@ -199,17 +200,19 @@ type RemoteTableRead = 'before-write' | 'after-write' | 'none';
  * `--no-track` nor `branch.autoSetupMerge = false`). A bare object name or
  * expression never reads it. An omitted start point names `HEAD`.
  */
-const remoteTableRead = async (
-  ctx: Context,
-  input: BranchCreateInput,
-  mode: TrackMode,
-): Promise<RemoteTableRead> => {
-  const ref = await dwimRefName(ctx, input.startPoint ?? HEAD_NAME);
+const remoteTableRead = (ref: RefName | undefined, mode: TrackMode): RemoteTableRead => {
   if (ref === undefined) return 'none';
   if (!ref.startsWith(HEADS_PREFIX)) return 'before-write';
   if (mode === 'never') return 'none';
   return 'after-write';
 };
+
+/** The start point's `dwim_ref` real ref, read once for both decisions it feeds:
+ *  when the remote table is built, and whether the new branch can track it. */
+const dwimmedStart = async (ctx: Context, name: string): Promise<DwimmedStart> => ({
+  name,
+  ref: await dwimRefName(ctx, name),
+});
 
 interface BranchClaim {
   readonly branchName: string;
@@ -255,12 +258,10 @@ export const branchCreate = async (
   const { branchName, name, force, held } = await claimBranch(ctx, input);
   const mode = await resolveTrackMode(ctx, input);
   const { startPoint, target } = await resolveStartCommit(ctx, input, mode);
-  const tableRead = await remoteTableRead(ctx, input, mode);
+  const start = await dwimmedStart(ctx, input.startPoint ?? HEAD_NAME);
+  const tableRead = remoteTableRead(start.ref, mode);
   if (tableRead === 'before-write') await buildRemoteTable(ctx);
-  const startRef =
-    mode === 'never'
-      ? undefined
-      : await trackableStartRef(ctx, input.startPoint ?? HEAD_NAME, mode);
+  const startRef = mode === 'never' ? undefined : await trackableStartRef(ctx, start, mode);
   const reflogMessage = force && held ? branchResetTo(startPoint) : branchCreatedFrom(startPoint);
   await writeNewBranch(ctx, { name, target, force, reflogMessage });
   if (tableRead === 'after-write') await buildRemoteTable(ctx);

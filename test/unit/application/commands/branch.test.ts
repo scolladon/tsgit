@@ -2068,3 +2068,24 @@ describe('branch create — an unborn HEAD', () => {
     });
   });
 });
+
+describe('branch — the start ref a create reads', () => {
+  describe('Given HEAD on main and no start point', () => {
+    describe('When branch create decides on the remote table and on tracking', () => {
+      it('Then main is read once for both, after the two start-point scans', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        const mainPath = `${ctx.layout.gitDir}/refs/heads/main`;
+        const open = vi.spyOn(ctx.fs, 'openWithNoFollow');
+        const sut = branchCreate;
+
+        // Act
+        await sut(ctx, { name: 'side' });
+
+        // Assert
+        const reads = open.mock.calls.filter(([path]) => path === mainPath);
+        expect(reads).toHaveLength(3);
+      });
+    });
+  });
+});

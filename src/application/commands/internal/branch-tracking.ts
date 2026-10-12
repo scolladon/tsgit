@@ -20,7 +20,6 @@ import { updateConfigOperations } from '../../primitives/update-config.js';
 import { mapsNamedSource } from './branch-merged.js';
 import { isExcludedByNegativeRefspec } from './negative-refspec.js';
 import { applyRefspec, parseRefspec } from './ref-spec.js';
-import { dwimRefName } from './revision-name.js';
 
 /** `--track[=direct|inherit]`: track the start point itself, or copy its own upstream. */
 export type BranchTrack = 'direct' | 'inherit';
@@ -85,6 +84,12 @@ export const asUpstreamMissing = (err: unknown, startPoint: string, mode: TrackM
     ? upstreamMissing(startPoint)
     : err;
 
+/** A start point as typed, and the real ref `dwim_ref` lands it on, if any. */
+export interface DwimmedStart {
+  readonly name: string;
+  readonly ref: RefName | undefined;
+}
+
 /**
  * git's `dwim_branch_start`: the ref a start point names, kept only when it is
  * a local branch or a ref some remote fetches into. `--track` refuses any
@@ -92,12 +97,11 @@ export const asUpstreamMissing = (err: unknown, startPoint: string, mode: TrackM
  */
 export const trackableStartRef = async (
   ctx: Context,
-  startPoint: string,
+  { name, ref }: DwimmedStart,
   mode: TrackMode,
 ): Promise<RefName | undefined> => {
-  const ref = await dwimRefName(ctx, startPoint);
   if (ref !== undefined && (await isTrackable(ctx, ref))) return ref;
-  if (mode === 'explicit') throw upstreamNotBranch(startPoint);
+  if (mode === 'explicit') throw upstreamNotBranch(name);
   return undefined;
 };
 
