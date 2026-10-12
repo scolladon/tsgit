@@ -6,6 +6,7 @@
  * regular on top of it. Shared by checkout's changeset application and the
  * three-way merge → working-tree application.
  */
+import type { ChunkTransform } from '../../../domain/eol/chunk-transform.js';
 import { TsgitError } from '../../../domain/error.js';
 import { objectNotFound, unexpectedObjectType } from '../../../domain/objects/error.js';
 import {
@@ -141,6 +142,14 @@ const chunksOf = async function* (source: BlobSource): AsyncIterable<Uint8Array>
   if (source.content.length > 0) yield source.content;
 };
 
+const transformedChunks = async function* (
+  chunks: AsyncIterable<Uint8Array>,
+  transform: ChunkTransform,
+): AsyncIterable<Uint8Array> {
+  for await (const chunk of chunks) yield* transform.push(chunk);
+  yield* transform.flush();
+};
+
 /**
  * What git leaves when a streamed checkout write is refused: the file exists
  * and is empty. If creating it fails too, that failure is the one reported,
@@ -185,6 +194,7 @@ const writeServedBlob = async (
   fullPath: string,
   located: Parameters<typeof serveLocatedBlob>[1],
   mode?: FileMode,
+  transform?: ChunkTransform,
 ): Promise<void> => {
   const source = await openServedBlob(ctx, fullPath, located, mode);
   try {
@@ -192,7 +202,11 @@ const writeServedBlob = async (
       if (source.kind === 'stream') await source.release();
       throw unexpectedObjectType('blob', source.type, located.id);
     }
-    await ctx.fs.writeStream(fullPath, chunksOf(source));
+    const chunks = chunksOf(source);
+    await ctx.fs.writeStream(
+      fullPath,
+      transform === undefined ? chunks : transformedChunks(chunks, transform),
+    );
     if (mode !== undefined) await ctx.fs.chmod(fullPath, permFor(mode));
   } catch (failure) {
     await rmIfExists(ctx, fullPath);
@@ -211,6 +225,7 @@ export const writeStreamedBlob = async (
   fullPath: string,
   id: ObjectId,
   mode?: FileMode,
+  transform?: ChunkTransform,
 ): Promise<void> => {
   await rmIfExists(ctx, fullPath);
   let located: Awaited<ReturnType<typeof locateBlob>>;
@@ -222,7 +237,7 @@ export const writeStreamedBlob = async (
     throw refusal;
   }
   if (located === undefined) throw objectNotFound(id);
-  await writeServedBlob(ctx, fullPath, located, mode);
+  await writeServedBlob(ctx, fullPath, located, mode, transform);
 };
 
 /**
@@ -234,9 +249,16 @@ export const writeWorkingTreeFileStream = async (
   path: FilePath,
   id: ObjectId,
   scanner?: LeadingPathScanner,
+  transform?: ChunkTransform,
 ): Promise<void> => {
   await resolveScanner(ctx, scanner).unlinkSymlinkedLeadingComponent(path);
-  await writeStreamedBlob(ctx, joinPath(requireWorkTree(ctx, 'writeWorkingTreeFile'), path), id);
+  await writeStreamedBlob(
+    ctx,
+    joinPath(requireWorkTree(ctx, 'writeWorkingTreeFile'), path),
+    id,
+    undefined,
+    transform,
+  );
 };
 
 /**
@@ -252,6 +274,7 @@ export const writeWorkingTreeEntryStream = async (
   id: ObjectId,
   mode: FileMode,
   scanner?: LeadingPathScanner,
+  transform?: ChunkTransform,
 ): Promise<void> => {
   await resolveScanner(ctx, scanner).unlinkSymlinkedLeadingComponent(path);
   await writeStreamedBlob(
@@ -259,6 +282,7 @@ export const writeWorkingTreeEntryStream = async (
     joinPath(requireWorkTree(ctx, 'writeWorkingTreeFile'), path),
     id,
     mode,
+    transform,
   );
 };
 
