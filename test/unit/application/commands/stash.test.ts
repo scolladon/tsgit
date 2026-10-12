@@ -4,6 +4,8 @@ import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import {
+  applyAutostash,
+  createAutostash,
   stashApply,
   stashDrop,
   stashList,
@@ -977,6 +979,38 @@ describe('stash on a bare repository', () => {
         const data = await codeAndOp(stashPop(ctx, {}));
         expect(data.code).toBe('WORK_TREE_REQUIRED');
         expect(data.operation).toBe('stash pop');
+      });
+    });
+  });
+});
+
+describe('autostash on a bare repository', () => {
+  describe('Given a bare repo', () => {
+    describe('When the autostash is created', () => {
+      it('Then it throws WORK_TREE_REQUIRED with operation=rebase', async () => {
+        // Arrange
+        const ctx = await makeBare();
+        const sut = createAutostash;
+
+        // Act
+        const data = await codeAndOp(sut(ctx));
+
+        // Assert
+        expect(data).toEqual({ code: 'WORK_TREE_REQUIRED', operation: 'rebase' });
+      });
+    });
+
+    describe('When the autostash is applied', () => {
+      it('Then it throws WORK_TREE_REQUIRED with operation=rebase', async () => {
+        // Arrange
+        const ctx = await makeBare();
+        const sut = applyAutostash;
+
+        // Act
+        const data = await codeAndOp(sut(ctx, '1'.repeat(40) as ObjectId));
+
+        // Assert
+        expect(data).toEqual({ code: 'WORK_TREE_REQUIRED', operation: 'rebase' });
       });
     });
   });
