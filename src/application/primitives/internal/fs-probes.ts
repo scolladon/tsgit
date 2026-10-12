@@ -25,6 +25,32 @@ export const lstatIfPresent = async (
   return fs.tryLstat(path);
 };
 
+async function lstatIfReachableFallback(
+  fs: FileSystem,
+  path: string,
+): Promise<FileStat | undefined> {
+  try {
+    return await lstatIfPresent(fs, path);
+  } catch (err) {
+    if (isAbsent(err)) return undefined;
+    throw err;
+  }
+}
+
+/**
+ * `lstat`, answered without a refusal wherever nothing is reachable at
+ * `path` — absent, or beneath a regular file — without telling which. Uses
+ * `fs.lstatIfReachable` when the adapter provides it; otherwise folds
+ * {@link lstatIfPresent}'s NOT_A_DIRECTORY too. Every other refusal still rejects.
+ */
+export const lstatIfReachable = async (
+  fs: FileSystem,
+  path: string,
+): Promise<FileStat | undefined> => {
+  if (fs.lstatIfReachable === undefined) return lstatIfReachableFallback(fs, path);
+  return fs.lstatIfReachable(path);
+};
+
 async function readUtf8Fallback(fs: FileSystem, path: string): Promise<string | undefined> {
   try {
     return await fs.readUtf8(path);

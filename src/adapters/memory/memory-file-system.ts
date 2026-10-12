@@ -1,3 +1,4 @@
+import { errorDataCode } from '../../domain/error-data-code.js';
 import {
   directoryNotEmpty,
   fileExists,
@@ -201,6 +202,16 @@ export class MemoryFileSystem implements FileSystem {
   tryLstat = async (path: string): Promise<FileStat | undefined> => {
     const normalized = this.walk(path, 'no-follow');
     return this.lstatEntry(normalized);
+  };
+
+  /** `tryLstat` blind to the miss's cause: a regular file in the path answers `undefined` too. */
+  lstatIfReachable = async (path: string): Promise<FileStat | undefined> => {
+    try {
+      return this.lstatEntry(this.walk(path, 'no-follow'));
+    } catch (err) {
+      if (errorDataCode(err) === 'NOT_A_DIRECTORY') return undefined;
+      throw err;
+    }
   };
 
   /** Shared no-follow resolution for `lstat`/`tryLstat`: `undefined` when nothing stands there. */

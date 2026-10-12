@@ -3,6 +3,7 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import {
   isAbsent,
   lstatIfPresent,
+  lstatIfReachable,
   readUtf8IfPresent,
   removeIfPresent,
 } from '../../../../../src/application/primitives/internal/fs-probes.js';
@@ -22,6 +23,12 @@ const withFsOverride = (fs: FileSystem, overrides: Partial<FileSystem>): FileSys
 /** Drops the two optional probes entirely — the shape an adapter that omits them has. */
 const withoutProbes = (fs: FileSystem): FileSystem => {
   const { tryLstat: _tryLstat, tryReadUtf8: _tryReadUtf8, ...rest } = fs;
+  return rest;
+};
+
+/** Drops the cause-blind probe only — the shape an adapter with `tryLstat` alone has. */
+const withoutReachProbe = (fs: FileSystem): FileSystem => {
+  const { lstatIfReachable: _lstatIfReachable, ...rest } = fs;
   return rest;
 };
 
@@ -105,6 +112,74 @@ describe('lstatIfPresent', () => {
 
         // Assert
         expect(result).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('lstatIfReachable', () => {
+  describe('Given a file system that provides lstatIfReachable', () => {
+    describe('When the path is present', () => {
+      it('Then it resolves through lstatIfReachable and neither lstat twin is called', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await base.fs.writeUtf8('/repo/present.txt', 'hi');
+        const expected = await base.fs.lstat('/repo/present.txt');
+        const fs = withFsOverride(base.fs, { lstat: unreachableTwin, tryLstat: unreachableTwin });
+        const sut = lstatIfReachable;
+
+        // Act
+        const result = await sut(fs, '/repo/present.txt');
+
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
+  });
+
+  describe.each([
+    { shape: 'with tryLstat only', strip: withoutReachProbe },
+    {
+      shape: 'without any lstat probe',
+      strip: (fs: FileSystem) => withoutProbes(withoutReachProbe(fs)),
+    },
+  ])('Given a file system $shape', ({ strip }) => {
+    describe.each([
+      { miss: 'no entry', path: '/repo/absent.txt' },
+      { miss: 'a regular file in the path', path: '/repo/file.txt/x' },
+    ])('When the path holds $miss', ({ path }) => {
+      it('Then it resolves undefined', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await base.fs.writeUtf8('/repo/file.txt', 'hi');
+        const fs = strip(base.fs);
+        const sut = lstatIfReachable;
+
+        // Act
+        const result = await sut(fs, path);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a file system with tryLstat only, whose probe refuses PERMISSION_DENIED', () => {
+    describe('When the path is probed', () => {
+      it('Then it rethrows the refusal', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const refusal = permissionDenied('/repo/x');
+        const fs = withFsOverride(withoutReachProbe(base.fs), {
+          tryLstat: async () => Promise.reject(refusal),
+        });
+        const sut = lstatIfReachable;
+
+        // Act
+        const result = await sut(fs, '/repo/x').catch((error: unknown) => error);
+
+        // Assert
+        expect(result).toBe(refusal);
       });
     });
   });

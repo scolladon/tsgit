@@ -201,6 +201,14 @@ async function tryLstat(fs: FileSystem, path: string): Promise<FileStat | undefi
   return fs.tryLstat(path);
 }
 
+/** Every adapter this suite runs against provides the optional cause-blind miss probe. */
+async function lstatIfReachable(fs: FileSystem, path: string): Promise<FileStat | undefined> {
+  if (fs.lstatIfReachable === undefined) {
+    throw new Error('the adapter under contract provides no lstatIfReachable');
+  }
+  return fs.lstatIfReachable(path);
+}
+
 /** Every adapter this suite runs against provides the optional non-throwing UTF-8 read probe. */
 async function tryReadUtf8(fs: FileSystem, path: string): Promise<string | undefined> {
   if (fs.tryReadUtf8 === undefined) {
@@ -1784,6 +1792,99 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
         // Assert
         expect(result).toEqual([true, true, true, true, false]);
+      });
+    });
+
+    describe('lstatIfReachable — the cause-blind miss probe', () => {
+      describe('Given a path with no entry', () => {
+        it('Then lstatIfReachable resolves undefined, where lstat refuses FILE_NOT_FOUND', async () => {
+          // Arrange
+          const path = `${env.rootDir}/reach-missing.bin`;
+
+          // Act
+          const result = await lstatIfReachable(env.fs, path);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+
+      for (const { label, segment } of fileSegments) {
+        describe(`Given ${label} occupying an intermediate path segment`, () => {
+          it('Then lstatIfReachable resolves undefined, where lstat refuses NOT_A_DIRECTORY', async (ctx) => {
+            ctx.skip(env.segmentRefusals !== 'pinned', SEGMENT_REFUSALS_UNPINNED);
+
+            // Arrange
+            await env.fs.write(`${env.rootDir}/refusal-file.bin`, new Uint8Array([1]));
+            await env.fs.symlink('refusal-file.bin', `${env.rootDir}/refusal-file-link`);
+
+            // Act
+            const result = await lstatIfReachable(env.fs, `${env.rootDir}/${segment}/x`);
+
+            // Assert
+            expect(result).toBeUndefined();
+          });
+        });
+      }
+
+      describe('Given a present regular file, a dangling symlink and a directory', () => {
+        it("Then lstatIfReachable equals lstat's no-follow view of each", async () => {
+          // Arrange
+          const file = `${env.rootDir}/reach-present.bin`;
+          const link = `${env.rootDir}/reach-dangling`;
+          const dir = `${env.rootDir}/reach-dir`;
+          await env.fs.write(file, new Uint8Array([1, 2, 3]));
+          await env.fs.symlink('reach-dangling-target', link);
+          await env.fs.mkdir(dir);
+
+          // Act
+          const result = await Promise.all(
+            [file, link, dir].map((p) => lstatIfReachable(env.fs, p)),
+          );
+
+          // Assert
+          expect(result).toEqual(await Promise.all([file, link, dir].map((p) => env.fs.lstat(p))));
+        });
+      });
+
+      describe('Given an ancestor directory whose search permission is revoked', () => {
+        it('Then lstatIfReachable refuses PERMISSION_DENIED wherever lstat does', async (ctx) => {
+          ctx.skip(process.platform === 'win32' || os.userInfo().uid === 0, POSIX_NON_ROOT_ONLY);
+
+          // Arrange
+          const dir = `${env.rootDir}/reach-locked`;
+          const leaf = `${dir}/leaf.txt`;
+          await env.fs.write(leaf, new Uint8Array([1]));
+          await env.fs.chmod(dir, 0o000);
+
+          try {
+            let twinCaught: unknown;
+            try {
+              await env.fs.lstat(leaf);
+            } catch (err) {
+              twinCaught = err;
+            }
+            // An adapter that never enforces permission bits (the memory adapter) has nothing to prove.
+            if (!isPermissionDeniedError(twinCaught)) {
+              ctx.skip();
+              return;
+            }
+
+            // Act
+            let caught: unknown;
+            try {
+              await lstatIfReachable(env.fs, leaf);
+              expect.fail('expected PERMISSION_DENIED');
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            assertPermissionDenied(caught);
+          } finally {
+            await env.fs.chmod(dir, 0o755);
+          }
+        });
       });
     });
 

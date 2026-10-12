@@ -454,6 +454,21 @@ async function tryLstatSync(
   return stat === undefined ? undefined : mapStat(stat);
 }
 
+/**
+ * One `lstat` whose miss, `ENOENT` or `ENOTDIR` alike, answers `undefined`: the
+ * plain absence never builds an error, and the regular file in the path —
+ * which `lstatSync` still throws for under `throwIfNoEntry: false` — is folded
+ * here instead of being told apart from it.
+ */
+function lstatIfReachableSync(ops: SyncFsOperations, real: string): fs.BigIntStats | undefined {
+  try {
+    return probeOnce(ops, 'lstat', real);
+  } catch (err) {
+    if (isErrnoException(err) && err.code === 'ENOTDIR') return undefined;
+    throw err;
+  }
+}
+
 /** The synchronous twin of `orAbsent` reduced to a boolean answer, for the plain presence probes. */
 async function runSyncPresence(
   budget: TurnBudget,
@@ -1307,6 +1322,18 @@ export class NodeFileSystem implements FileSystem {
     return sync === undefined
       ? orAbsent(async () => mapStat(await this.fsOps.lstat(real, { bigint: true })), path)
       : tryLstatSync(sync, real, this.pathPolicy.dirname(real), path);
+  };
+
+  /** `tryLstat` blind to the miss's cause: one `lstat`, never the parent `stat` that tells `ENOTDIR` apart. */
+  lstatIfReachable = async (path: string): Promise<FileStat | undefined> => {
+    const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
+    const real = this.resolveRead(path, all);
+    const sync = this.syncIo;
+    const stat =
+      sync === undefined
+        ? await runFs(() => orMissing(() => this.fsOps.lstat(real, { bigint: true })), path)
+        : await runSync(sync.budget, () => lstatIfReachableSync(sync.ops, real), path);
+    return stat === undefined ? undefined : mapStat(stat);
   };
 
   readdir = async (path: string): Promise<ReadonlyArray<DirEntry>> => {

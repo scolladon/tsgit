@@ -137,6 +137,15 @@ export interface FileSystem {
   readonly tryLstat?: (path: string) => Promise<FileStat | undefined>;
 
   /**
+   * {@link tryLstat} blind to WHY nothing is reachable: resolves `undefined` wherever `lstat`
+   * refuses FILE_NOT_FOUND or NOT_A_DIRECTORY, and rejects with every other refusal `lstat`
+   * raises. OPTIONAL: the cheapest miss probe, for a caller whose answer is the same whichever
+   * cause it was — telling them apart can cost a second call. A caller that finds it absent
+   * calls `tryLstat` (or `lstat`) and reads either refusal as the miss, which answers identically.
+   */
+  readonly lstatIfReachable?: (path: string) => Promise<FileStat | undefined>;
+
+  /**
    * Read entire file as a UTF-8 string, exactly as {@link readUtf8} does, except that it
    * resolves `undefined` exactly where `readUtf8` refuses FILE_NOT_FOUND — every other refusal
    * `readUtf8` raises still rejects, a directory included. OPTIONAL: a miss probe that spends no

@@ -74,6 +74,21 @@ const guardedTryLstat = (
   };
 };
 
+/** `lstatIfReachable`'s twin of {@link guardedTryLstat}. */
+const guardedLstatIfReachable = (
+  fs: FileSystem,
+  readGuard: (path: string) => void,
+): Pick<FileSystem, 'lstatIfReachable'> => {
+  const { lstatIfReachable } = fs;
+  if (lstatIfReachable === undefined) return {};
+  return {
+    lstatIfReachable: (p) => {
+      readGuard(p);
+      return lstatIfReachable.call(fs, p);
+    },
+  };
+};
+
 /** `tryReadUtf8`'s twin of {@link guardedTryLstat}. */
 const guardedTryReadUtf8 = (
   fs: FileSystem,
@@ -242,6 +257,7 @@ export const wrapFsValidator = (
     },
     ...guardedLexists(fs, readGuard),
     ...guardedTryLstat(fs, readGuard),
+    ...guardedLstatIfReachable(fs, readGuard),
     ...guardedTryReadUtf8(fs, readGuard),
     readdir: (p) => {
       readGuard(p);
