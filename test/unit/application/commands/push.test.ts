@@ -2208,6 +2208,7 @@ describe('push — delete refspec', () => {
     });
   });
 
+  // secretlint-disable @secretlint/secretlint-rule-basicauth
   describe.each([
     {
       label: 'a short delete matching no advertised ref',
@@ -2271,6 +2272,7 @@ describe('push — delete refspec', () => {
       });
     });
   });
+  // secretlint-enable @secretlint/secretlint-rule-basicauth
 
   describe('Given a destination the remote advertises ambiguously', () => {
     describe('When push reports it', () => {
