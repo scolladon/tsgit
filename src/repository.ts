@@ -579,13 +579,18 @@ const forgetSessionCaches = (ctx: Context): void => {
 };
 
 /** The runtime's host-reaching capabilities: each one bypasses `detected.fs`. */
-type HostHooks = Pick<RuntimeFallback, 'makeConfinedFs' | 'makeWorktreeFs' | 'filenameProbe'>;
+type HostHooks = Pick<
+  RuntimeFallback,
+  'makeConfinedFs' | 'makeWorktreeFs' | 'filenameProbe' | 'windowsPathSyntax'
+>;
 
 const NO_HOST_HOOKS: HostHooks = {};
 
 /**
  * The host hooks are the runtime's own reach, so they serve only the runtime's own fs: a caller
  * who supplied `opts.fs` bounded every read to it, and a hook would read the host behind its back.
+ * Its path syntax is the runtime fs's too: a caller's fs reads paths the POSIX way, as every
+ * sandboxed adapter does, whatever host the runtime runs on.
  */
 const hostHooksFor = (opts: OpenRepositoryOptions, fallback: RuntimeFallback): HostHooks =>
   opts.fs === undefined ? fallback : NO_HOST_HOOKS;
@@ -651,7 +656,7 @@ export const openRepository = async (
   });
   // Narrowing is not containment: the raw fs comes from the runtime hook rooted at
   // exactly the alternate's objects dir, so `unsafeRawAdapters` still narrows.
-  const pathSyntax = gitPathSyntaxOf(fallback);
+  const pathSyntax = gitPathSyntaxOf(hostHooks);
   const objectSourceAccess = createObjectSourceAccess(
     (objectsDir) => hostHooks.makeConfinedFs?.([objectsDir]) ?? detected.fs,
     pathSyntax,
@@ -731,7 +736,7 @@ export const openRepository = async (
       ssh: fallback.ssh,
       concurrency: fallback.concurrency,
       cacheBudgets: fallback.cacheBudgets,
-      windowsPathSyntax: fallback.windowsPathSyntax,
+      windowsPathSyntax: hostHooks.windowsPathSyntax,
       filenameProbe: hostHooks.filenameProbe,
     }),
     promisor,
