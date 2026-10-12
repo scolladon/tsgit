@@ -629,6 +629,23 @@ Surfaced while landing alternates (#302) and the 2026-10-06 triage of tsgit agai
 - [ ] **32.13** Commit-graph chain with a blank line mid-file — git 2.55 warns `invalid commit-graph chain: line '' not a hash`, errors `one or more commit-graph chain files could not be loaded` and ignores the chain; tsgit (`parseChainLayerHashes`) skips the blank line and loads every layer silently. A trailing newline is accepted by both. Pre-existing.
 - [ ] **32.14** Reftable footer magic is never checked — `readFooter` accepts a footer whose magic git rejects, so a corrupt table is read where git refuses it. Pre-existing; pin by planting a footer with a bad magic and comparing `git for-each-ref` with `refList`.
 - [ ] **32.15** `:/<regex>` message search without a literal prefilter — measured 6–25 µs per message against 0.1–3 µs for a native RegExp (`quick.*dog` 27–36× slower, `fix.{0,1000}bug` 2.2 s on the measured corpus) when a literal is present. A lazy DFA with a literal prefilter (~1–1.5 kB gz) closes it. **verify on main**: a linear-time automaton for back-reference-free patterns landed in the same PR; re-measure first.
+- [ ] **32.16** Push refusals and hook gaps — all pre-existing, pinned against git 2.55:
+  - an all-up-to-date push skips `pre-push` (git 2.55 runs it with empty stdin and prints `Everything up-to-date`; tsgit returns before the hook);
+  - the default `current`/`simple` push does not refuse an ambiguous destination (remote advertising `refs/heads/main` and `refs/heads/refs/heads/main`: git `dst refspec refs/heads/main matches more than one`, exit 1; tsgit pushes);
+  - `:.have` / `main:.have` (git `fatal: invalid refspec`, exit 128; tsgit accepts `main:.have`, rejected as `refs/heads/.have`, and answers `PUSH_REFSPEC_UNMATCHED` for `:.have`);
+  - an ambiguous source with a branch and a tag both named `dup` (`push ../r dup:x`: git `error: src refspec dup matches more than one`, exit 1; tsgit pushes `refs/heads/dup`).
+- [ ] **32.17** Rebase sequencer state and `--rebase-merges` octopus — pre-existing, pinned against git 2.55:
+  - skipping a squash-conflict or interactive conflict stop drops the skipped commit from `post-rewrite` stdin (`pick t1, squash t2 (conflict), pick t3` + skip: git `t1 g` / `t2 g` / `t3 tip`, tsgit `t1` / `t3`; `pick t1, pick t2 (conflict), drop t3` + skip: git `t1 x` / `t2 x`, tsgit `t1` only);
+  - `rebase-merge/current-fixups` ends with `\n` (git: none, 47 bytes for one entry);
+  - the first line of `rewritten-pending` holds the rebased group's base oid (git: the original oid);
+  - `rebaseMerges` over an octopus merge refuses `UNSUPPORTED_OPERATION` where git recreates it with `merge -C <sha> s1 s2`, a three-parent commit.
+- [ ] **32.18** `fsck` refs with a broken chain or an unreadable file — pre-existing, pinned against git 2.55:
+  - `a` = `ref: refs/heads/b` with `b` garbage, `abc`, empty or `ref: x..y`: git reports `badRefContent`/`badReferentName` on `b` plus an `invalid sha1 pointer 0000…` for `a` and `b` (exit 10); tsgit omits `a` and reports nothing for the `badReferentName` case (exit 0);
+  - an unreadable ordinary ref (`b` permission-denied): git prints `cannot read ref file` plus the pointer lines and exits 8; tsgit throws in `listRefs`.
+- [ ] **32.19** `rev-parse` and commit-ish resolution against corrupt input — pre-existing, pinned against git 2.55:
+  - `resolveCommitIsh` sweeps past a corrupt candidate (a tag ref to a tag object naming a malformed id, plus a valid same-name head): git `cherry-pick x` is `fatal: bad object x` and `rev-parse x^{commit}` exits 128; tsgit returns the head;
+  - an unreadable `objects/<xx>` during the abbreviation check is rethrown (`objects/ab` mode 000 plus branch `abcd`: git `rev-parse abcd` logs `error: unable to open .git/objects/ab: Permission denied` twice and prints the commit, exit 0; tsgit rethrows `PERMISSION_DENIED`).
+- [ ] **32.20** `submodule init` skips a submodule whose url is already configured — `.gitmodules` `update` is then never copied (git 2.55 writes `update = merge` into the config; tsgit leaves it unchanged). Pre-existing.
 
 ---
 
