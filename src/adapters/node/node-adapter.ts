@@ -88,6 +88,15 @@ export interface NodeAdapterOptions {
 const syncIoOptions = (syncIo: SyncIoPolicy | undefined): { readonly syncIo?: SyncIoPolicy } =>
   syncIo === undefined ? {} : { syncIo };
 
+/**
+ * Native line ending of the given platform. Extracted as a pure helper so
+ * both arms are unit-testable on any host (the inline `process.platform`
+ * branch is otherwise only ever exercised on its native arm).
+ * @internal
+ */
+export const nativeLineEndingFor = (platform: NodeJS.Platform): 'lf' | 'crlf' =>
+  platform === 'win32' ? 'crlf' : 'lf';
+
 export function createNodeContext(options: NodeAdapterOptions): Context {
   const workDir = nodePath.resolve(options.workDir);
   const gitDir =
@@ -116,6 +125,7 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     progress: noopProgress,
     layout,
     runtime: 'node' as const,
+    nativeEol: nativeLineEndingFor(process.platform),
     hashConfig: configFor(algorithm),
     deltaCache,
     cacheBudgets: buildCacheBudgets({

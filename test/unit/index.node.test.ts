@@ -12,6 +12,7 @@ import * as path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { nativeLineEndingFor } from '../../src/adapters/node/node-adapter.js';
 import { NodeSshTransport } from '../../src/adapters/node/node-ssh-transport.js';
 import { parsedObjectMemoFor } from '../../src/application/primitives/internal/object-caches.js';
 import { TsgitError } from '../../src/domain/index.js';
@@ -726,6 +727,22 @@ describe('Given a directory whose HEAD is a dangling symlink into refs/', () => 
         }
       } finally {
         await rm(tmp, { recursive: true, force: true });
+      }
+    });
+  });
+});
+
+describe('Node shim — native line ending', () => {
+  describe('Given a repository opened through the node entry', () => {
+    it('Then ctx.nativeEol equals nativeLineEndingFor(process.platform)', async () => {
+      // Arrange / Act
+      const sut = await openRepository({ cwd: tmpdir });
+
+      try {
+        // Assert
+        expect(sut.ctx.nativeEol).toBe(nativeLineEndingFor(process.platform));
+      } finally {
+        await sut.dispose();
       }
     });
   });
