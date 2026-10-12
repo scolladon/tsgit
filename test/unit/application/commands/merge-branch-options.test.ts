@@ -7,8 +7,9 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { type MergeRunInput, mergeRun } from '../../../../src/application/commands/merge.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
-import type { ObjectId } from '../../../../src/domain/objects/index.js';
+import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 const AUTHOR = { name: 'Ada', email: 'a@x', timestamp: 100, timezoneOffset: '+0000' };
@@ -124,6 +125,86 @@ describe('mergeRun with branch.<b>.mergeoptions', () => {
         // Assert
         expect(result).toEqual(expected);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/ORIG_HEAD`)).toBe(false);
+      });
+    });
+  });
+});
+
+/** main and side diverge: side adds `s` and rewrites `f`; main adds `m` and, when `conflict`, rewrites `f` too. */
+const diverged = async (config: string, conflict: boolean): Promise<Context> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await ctx.fs.appendUtf8(
+    `${ctx.layout.gitDir}/config`,
+    `\n[user]\n\tname = Ada\n\temail = a@x\n${config}`,
+  );
+  await commitFile(ctx, 'f', 'base\n');
+  await branchCreate(ctx, { name: 'side' });
+  await checkout(ctx, { rev: 'side' });
+  await commitFile(ctx, 's', 's\n');
+  await commitFile(ctx, 'f', 'side\n');
+  await checkout(ctx, { rev: 'main' });
+  await commitFile(ctx, 'm', 'm\n');
+  if (conflict) await commitFile(ctx, 'f', 'main\n');
+  return ctx;
+};
+
+const lastReflogNote = async (ctx: Context): Promise<string | undefined> =>
+  (await readReflog(ctx, 'HEAD' as RefName)).at(-1)?.message;
+
+describe('mergeRun with branch.<b>.mergeoptions over the caller’s options', () => {
+  describe.each([
+    [
+      'a strategy that cannot merge, then the caller’s ort',
+      mergeOptions('main', '-s octopus'),
+      { strategy: 'ort' },
+      "merge side: Merge made by the 'ort' strategy.",
+    ],
+    [
+      'ours, then the caller’s ort',
+      mergeOptions('main', '-s ours'),
+      { strategy: 'ort' },
+      "merge side: Merge made by the 'ours' strategy.",
+    ],
+    [
+      'ours alone',
+      mergeOptions('main', '-s ours'),
+      {},
+      "merge side: Merge made by the 'ours' strategy.",
+    ],
+  ] as const)('Given a branch strategy of %s', (_, config, given, note) => {
+    describe('When merged', () => {
+      it('Then the strategies run in order, the branch’s first', async () => {
+        // Arrange
+        const ctx = await diverged(config, false);
+        const sut = mergeRun;
+
+        // Act
+        await sut(ctx, { rev: 'side', author: AUTHOR, ...given });
+
+        // Assert
+        expect(await lastReflogNote(ctx)).toBe(note);
+      });
+    });
+  });
+
+  describe('Given a branch -Xours and a caller -X option', () => {
+    describe('When a conflicting merge runs', () => {
+      it('Then both options apply and the conflict resolves to our side', async () => {
+        // Arrange
+        const ctx = await diverged(mergeOptions('main', '-Xours'), true);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, {
+          rev: 'side',
+          author: AUTHOR,
+          strategyOptions: ['patience'],
+        });
+
+        // Assert
+        expect(result.kind).toBe('merge');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f`)).toBe('main\n');
       });
     });
   });

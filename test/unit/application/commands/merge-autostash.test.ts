@@ -81,6 +81,7 @@ describe('mergeRun with autostash', () => {
           expect.stringMatching(/^Created autostash: [0-9a-f]{7}$/),
         );
         expect(logger.info).toHaveBeenCalledWith('Applied autostash.');
+        expect(logger.info).not.toHaveBeenCalledWith(STASH_POP_HINT);
         expect(await ctx.fs.exists(mergeAutostashFile(ctx))).toBe(false);
         expect(await stashRef(ctx)).toBe('missing');
       });
@@ -119,6 +120,29 @@ describe('mergeRun with autostash', () => {
         code: 'CONFIG_BAD_BOOLEAN_VALUE',
         key: 'merge.autostash',
         value: 'maybe',
+      });
+    });
+  });
+
+  describe('Given an invalid merge.autostash and a merge that is already up to date', () => {
+    describe('When the single head is HEAD itself', () => {
+      it('Then it refuses the bad boolean', async () => {
+        // Arrange
+        const { ctx } = await seed('clean', '[merge]\n\tautostash = maybe\n');
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'main' }).then(
+          () => undefined,
+          (e: unknown) => (e as TsgitError).data,
+        );
+
+        // Assert
+        expect(result).toMatchObject({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'merge.autostash',
+          value: 'maybe',
+        });
       });
     });
   });
@@ -269,6 +293,27 @@ describe('mergeRun with autostash', () => {
         expect(await ctx.fs.exists(mergeAutostashFile(ctx))).toBe(true);
         expect(await readWork(ctx, 'u')).toBe('u\n');
         expect(await stashRef(ctx)).toBe('missing');
+      });
+    });
+
+    describe('When an up-to-date merge follows the refused one', () => {
+      it('Then the kept autostash is saved to the stash list, not applied', async () => {
+        // Arrange
+        const { ctx } = await seed('clean');
+        await mergeRun(ctx, { rev: 'side', autostash: true, strategyOptions: ['bogus'] }).catch(
+          () => undefined,
+        );
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'main' });
+
+        // Assert
+        expect(result.kind).toBe('up-to-date');
+        expect(await readWork(ctx, 'u')).toBe('u\n');
+        expect(await ctx.fs.exists(mergeAutostashFile(ctx))).toBe(false);
+        const entries = await readReflog(ctx, 'refs/stash' as RefName);
+        expect(entries.map((entry) => entry.message)).toEqual(['autostash']);
       });
     });
 

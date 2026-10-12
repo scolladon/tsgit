@@ -172,6 +172,22 @@ describe('merge log', () => {
     });
   });
 
+  describe('Given log: true and a message that starts with a newline', () => {
+    describe('When merged', () => {
+      it('Then the shortlog stays a paragraph apart from the message', async () => {
+        // Arrange
+        const ctx = await divergedRepo();
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, { rev: 'feature', message: '\nfoo', log: true });
+
+        // Assert
+        expect(result).toBe('foo\n\n* feature:\n  two\n  one\n');
+      });
+    });
+  });
+
   describe('Given merge.branchdesc and a two-line description of the merged branch', () => {
     describe('When merged with log: true', () => {
       it('Then each description line precedes the subjects', async () => {
@@ -205,6 +221,23 @@ describe('merge log', () => {
 
         // Assert
         expect(result).toBe("Merge tag 'v1'\n\ntag msg\n\n* tag 'v1':\n  two\n  one\n");
+      });
+    });
+  });
+
+  describe('Given an annotated tag on the merged branch and a caller message', () => {
+    describe('When the tag is merged without a log', () => {
+      it('Then the message is the caller message alone', async () => {
+        // Arrange
+        const ctx = await divergedRepo();
+        await tagCreate(ctx, { name: 'v1', target: 'feature', message: 'tag msg' });
+        const sut = mergedMessage;
+
+        // Act
+        const result = await sut(ctx, { rev: 'v1', message: 'custom' });
+
+        // Assert
+        expect(result).toBe('custom\n');
       });
     });
   });

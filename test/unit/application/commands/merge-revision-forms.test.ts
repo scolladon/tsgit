@@ -9,6 +9,7 @@ import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { tagCreate } from '../../../../src/application/commands/tag.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
+import type { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
@@ -101,6 +102,48 @@ describe('merge names each revision form as git does', () => {
         expect(result.kind).toBe('merge');
         if (result.kind !== 'merge') return;
         expect(await subjectOf(ctx, result.id)).toBe("Merge branch 'side'");
+      });
+    });
+  });
+
+  describe('Given a lone dash among several revisions', () => {
+    describe('When merge', () => {
+      it('Then the dash is no shorthand and names nothing to merge', async () => {
+        // Arrange
+        const { ctx } = await seed();
+        await checkout(ctx, { rev: 'side' });
+        await checkout(ctx, { rev: 'main' });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: ['-', 'side'], author }).then(
+          () => undefined,
+          (e: unknown) => (e as TsgitError).data,
+        );
+
+        // Assert
+        expect(result).toEqual({ code: 'REF_NOT_FOUND', name: '-' });
+      });
+    });
+  });
+
+  describe('Given the id of a tree', () => {
+    describe('When merge', () => {
+      it('Then it is not something we can merge', async () => {
+        // Arrange
+        const { ctx } = await seed();
+        const side = await resolveRef(ctx, 'refs/heads/side' as RefName);
+        const tree = (await readObject(ctx, side)) as { data: { tree: ObjectId } };
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: tree.data.tree, author }).then(
+          () => undefined,
+          (e: unknown) => (e as TsgitError).data,
+        );
+
+        // Assert
+        expect(result).toEqual({ code: 'REF_NOT_FOUND', name: tree.data.tree });
       });
     });
   });

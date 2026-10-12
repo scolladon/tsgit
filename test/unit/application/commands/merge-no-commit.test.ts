@@ -203,4 +203,27 @@ describe('merge without committing', () => {
       });
     });
   });
+
+  describe('Given HEAD diverged from a branch and strategy resolve', () => {
+    describe('When merged with commit false', () => {
+      it('Then no in-index merge commits: the merge is staged and HEAD stays', async () => {
+        // Arrange
+        const { ctx, two, main } = await repo();
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, {
+          rev: 'feature',
+          commit: false,
+          strategy: 'resolve',
+          author,
+        });
+
+        // Assert
+        expect(result).toEqual({ kind: 'stopped', mergeHead: two, origHead: main });
+        expect(await resolveRef(ctx, HEAD)).toBe(main);
+        expect((await mergeState(ctx)).head).toBe(`${two}\n`);
+      });
+    });
+  });
 });

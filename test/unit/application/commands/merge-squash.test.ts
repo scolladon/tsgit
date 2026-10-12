@@ -286,4 +286,27 @@ describe('merge squash', () => {
       });
     });
   });
+
+  describe('Given HEAD diverged from a branch and strategy resolve', () => {
+    describe('When merged with squash', () => {
+      it('Then no in-index merge commits: HEAD stays and only SQUASH_MSG is kept', async () => {
+        // Arrange
+        const { ctx, main } = await repo();
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, {
+          rev: 'feature',
+          squash: true,
+          strategy: 'resolve',
+          author,
+        });
+
+        // Assert
+        expect(result).toEqual({ kind: 'squashed', origHead: main });
+        expect(await resolveRef(ctx, HEAD)).toBe(main);
+        expect(await stateFiles(ctx)).toEqual(['SQUASH_MSG', 'ORIG_HEAD']);
+      });
+    });
+  });
 });

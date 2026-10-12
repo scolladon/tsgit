@@ -6,14 +6,22 @@ import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
+import { rm } from '../../../../src/application/commands/rm.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
+import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
-import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import {
+  type AuthorIdentity,
+  FILE_MODE,
+  type ObjectId,
+  type RefName,
+} from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 
 const author: AuthorIdentity = {
   name: 'a',
@@ -166,6 +174,29 @@ describe('merge strategy', () => {
     });
   });
 
+  describe('Given both sides edit one line and strategy ort', () => {
+    describe('When merged', () => {
+      it("Then the index stages each side's own blob for the conflicted path", async () => {
+        // Arrange
+        const { ctx } = await bothEdit(true);
+        const sut = mergeRun;
+
+        // Act
+        await sut(ctx, { rev: 'edits', strategy: 'ort', author });
+
+        // Assert
+        const stages = (await readIndex(ctx)).entries.filter((e) => e.path === 'a.txt');
+        const blobs = await Promise.all(stages.map((e) => readObject(ctx, e.id)));
+        expect(stages.map((e) => e.flags.stage)).toEqual([1, 2, 3]);
+        expect(blobs.map((b) => b.type === 'blob' && new TextDecoder().decode(b.content))).toEqual([
+          '1\n2\n3\n4\n5\n6\n',
+          '1\nY\n3\n4\n5\n6\n',
+          '1\nX\n3\n4\n5\n6\n',
+        ]);
+      });
+    });
+  });
+
   describe('Given both sides edit one file and strategy octopus on one head', () => {
     describe('When merged', () => {
       it('Then the strategy fails as git does and HEAD stays', async () => {
@@ -262,6 +293,93 @@ describe('merge strategy', () => {
 
         // Assert
         expect(result.kind).toBe('merge');
+      });
+    });
+  });
+
+  describe.each([
+    ['subtree', "Merge made by the 'subtree' strategy.", ['lib/x', 'r']],
+    ['ort', "Merge made by the 'ort' strategy.", ['lib/x', 'r', 'x']],
+  ] as const)(
+    'Given strategy %s and a history that is a subdirectory of ours',
+    (strategy, note, paths) => {
+      describe('When merged with allowUnrelatedHistories', () => {
+        it('Then only subtree shifts the other tree into the directory it matches', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await init(ctx);
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/lib/x`, '1\n');
+          await ctx.fs.writeUtf8(`${ctx.layout.workDir}/r`, 'r\n');
+          await add(ctx, ['lib/x', 'r']);
+          const main = await commit(ctx, { message: 'main', author });
+          const tree = await readObject(ctx, (await treeOf(ctx, main.id)) as ObjectId);
+          const lib = tree.type === 'tree' ? tree.entries.find((e) => e.name === 'lib') : undefined;
+          const root = {
+            tree: lib?.id as ObjectId,
+            parents: [],
+            author,
+            committer: author,
+            message: 'other\n',
+          };
+          const other = await createCommit(ctx, { ...root, extraHeaders: [] });
+          await updateRef(ctx, 'refs/heads/other' as RefName, other, { reflogMessage: 'root' });
+          const sut = mergeRun;
+
+          // Act
+          const result = await sut(ctx, {
+            rev: 'other',
+            strategy,
+            allowUnrelatedHistories: true,
+            author,
+          });
+
+          // Assert
+          expect(result.kind).toBe('merge');
+          expect(await lastNote(ctx)).toBe(`merge other: ${note}`);
+          expect((await readIndex(ctx)).entries.map((entry) => entry.path)).toEqual(paths);
+        });
+      });
+    },
+  );
+
+  describe.each([
+    [
+      'a staged edit and a path dropped from the index',
+      async (ctx: Context) => {
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'changed');
+        await add(ctx, ['c.txt']);
+        await rm(ctx, ['a.txt'], { cached: true });
+      },
+      ['a.txt', 'c.txt'],
+    ],
+    [
+      'a staged mode change',
+      async (ctx: Context) => {
+        const index = await readIndex(ctx);
+        const entries = index.entries.map((e) =>
+          e.path === 'a.txt' ? { ...e, mode: FILE_MODE.EXECUTABLE } : e,
+        );
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync({ ...index, entries }, ctx),
+        );
+      },
+      ['a.txt'],
+    ],
+  ])('Given %s', (_label, stage, localChanges) => {
+    describe.each(['resolve', 'ours'])('When merged with strategy %s', (strategy) => {
+      it('Then the index must match HEAD, listing the paths that differ in order', async () => {
+        // Arrange
+        const { ctx, main } = await repo();
+        await stage(ctx);
+        const sut = mergeRun;
+
+        // Act
+        const result = await errorData(sut(ctx, { rev: 'feature', strategy, author }));
+
+        // Assert
+        expect(result).toEqual({ code: 'WORKING_TREE_DIRTY', localChanges, untracked: [] });
+        expect(await resolveRef(ctx, HEAD)).toBe(main);
       });
     });
   });

@@ -2390,6 +2390,61 @@ describe('merge — conflicting-write atomicity', () => {
   });
 });
 
+describe('merge — conflicting-write atomicity under strategy resolve', () => {
+  describe('Given theirs adds a hostile path and conflicts with ours on another', () => {
+    describe('When merge runs', () => {
+      it('Then throws INVALID_INDEX_ENTRY and neither the conflict nor the clean sibling is written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'base\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/clean.txt`, 'base-clean\n');
+        await add(ctx, ['file.txt', 'clean.txt']);
+        const base = await commit(ctx, { message: 'base', author });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
+        await add(ctx, ['file.txt']);
+        await commit(ctx, { message: 'on-main', author });
+        const hostile = treeEntry(FILE_MODE.REGULAR, '.', await writeBlob(ctx, 'dot\n'));
+        const featureTree = await writeTreeMod.writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'clean.txt', await writeBlob(ctx, 'THEIRS-CLEAN\n')),
+          treeEntry(FILE_MODE.REGULAR, 'file.txt', await writeBlob(ctx, 'FEATURE\n')),
+          treeEntry(FILE_MODE.DIRECTORY, 'sub', await writeTreeMod.writeTree(ctx, [hostile])),
+        ]);
+        const { createCommit: createCommitPrim } = await import(
+          '../../../../src/application/primitives/create-commit.js'
+        );
+        const { updateRef } = await import('../../../../src/application/primitives/update-ref.js');
+        const feature = await createCommitPrim(ctx, {
+          tree: featureTree,
+          parents: [base.id],
+          author,
+          committer: author,
+          message: 'theirs',
+          extraHeaders: [],
+        });
+        await updateRef(ctx, 'refs/heads/feature' as RefName, feature, {
+          reflogMessage: 'branch: Created from seed',
+        });
+        const sut = mergeRun;
+
+        // Act
+        const caught = await sut(ctx, { rev: 'feature', strategy: 'resolve', author }).then(
+          () => undefined,
+          (err: unknown) => (err as TsgitError).data,
+        );
+
+        // Assert
+        expect(caught).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'.' segment rejected",
+        });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`)).toBe('MAIN\n');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/clean.txt`)).toBe('base-clean\n');
+      });
+    });
+  });
+});
+
 describe('merge commit — HEAD through a chain of symbolic refs', () => {
   afterEach(() => {
     vi.restoreAllMocks();
