@@ -437,6 +437,21 @@ describe('workingTreeStreamTransform', () => {
     });
   });
 
+  describe('Given text-crlf with ident over a blob ending in a partial keyword', () => {
+    describe('When streaming it', () => {
+      it('Then the flushed partial keyword still passes through the LF to CRLF step', () => {
+        // Arrange
+        const sut = workingTreeStreamTransform(conversion('text-crlf', true), BLOB, SETTINGS);
+
+        // Act
+        const result = streamed(sut as ChunkTransform, 'a\n$Id');
+
+        // Assert
+        expect(result).toBe('a\r\n$Id');
+      });
+    });
+  });
+
   describe('Given auto-input with ident over the divergence blob', () => {
     describe('When streaming it', () => {
       it('Then only the ident expansion applies', () => {
