@@ -14,6 +14,7 @@ repo.primitives.walkTree(
     pathHasher?: PathHasher;
     pathBytes?: boolean;
     skipTree?: (id: ObjectId) => boolean;
+    strictSubtrees?: boolean;
   },
 ): AsyncIterable<WalkTreeEntry>;
 
@@ -36,6 +37,7 @@ interface WalkTreeEntry {
 | `pathHasher` | none | Folds each entry's full path through the supplied hasher as the walk descends, yielding the result as `nameHash`. The fold runs over the entry's raw name **bytes**, never the decoded `path`, and accumulates per frame — no path is ever materialised to hash it. Supply `PACK_NAME_HASH_V1` for git's own pack name hash. |
 | `pathBytes` | `false` | Yields each entry's full path as `pathBytes`: every ancestor's raw name bytes and the entry's own, joined by `0x2f`, with no leading or trailing separator. A fresh array per entry, owned by the caller — keeping or mutating it cannot affect the walk. |
 | `skipTree` | none | Prune predicate: when it returns `true` for a directory entry's id, that entry is still yielded but its subtree is not entered. Evaluated once per directory entry, after the recursion check and before the entry is yielded — a consumer reacting to the yield cannot influence the verdict. Never called for a blob or gitlink entry. |
+| `strictSubtrees` | `false` | When `true`, a directory entry naming an object stored as anything but a tree refuses `UNEXPECTED_OBJECT_TYPE` once the walk reads it to descend, as git's tree walk does. Default: the entry is yielded and its descent skipped. |
 
 `path` is a **decoded** view and is lossy: a name that is not valid UTF-8 decodes
 through the replacement character, so two distinct entries can share one `path`.
