@@ -6,9 +6,9 @@ is no background scheduler, no threshold check inside `status`, and no
 write-path hook: a caller decides when maintenance happens, and only the
 tasks it names run.
 
-Ships two tasks. `commit-graph` writes `objects/info/commit-graph`
-byte-identical to `git commit-graph write --reachable` for the same commit
-set. `gc` consolidates every pack it owns, by class: **all** reachable
+Ships two tasks. `commit-graph` writes one split layer of the commit-graph
+chain, as `git commit-graph write --split --reachable` does, and nothing when
+every reachable commit is already in the graph. `gc` consolidates every pack it owns, by class: **all** reachable
 objects — loose, already packed, or living in a promisor pack — repack into
 one fresh normal pack; every promisor object *additionally* repacks whole
 into one fresh promisor pack (a reachable one duplicates into both — see
@@ -93,13 +93,22 @@ interface MaintenanceResult {
   `fatal: bad tree object <data.id>`. A refusal met before any task starts
   (an invalid option, a malformed repository setting) still throws.
 - **`commit-graph`** sources commits from every resolvable ref (the same
-  root set as `git commit-graph write --reachable`), writes
-  `objects/info/commit-graph`, and reports:
-  - `commitGraphWritten` — `true` only when the graph holds at least one
-    commit. A repository with no commits still runs the task (`tasksRun`
-    includes `'commit-graph'`) but reports `commitGraphWritten: false` —
-    "ran and found nothing" stays distinguishable from "declined."
-  - `commitsInGraph` — the number of commits the graph now holds.
+  root set as `git commit-graph write --reachable`) and writes one split
+  layer under `objects/info/commit-graphs/`: the reachable commits no existing
+  layer holds, folded with the tip layers git's default merge strategy
+  absorbs, then `commit-graph-chain` names the layers base first and every
+  `.graph` it no longer names is expired. It reports:
+  - `commitGraphWritten` — `true` only when a layer was written. A repository
+    with no commits, or one whose reachable commits are all in the graph
+    already, still runs the task (`tasksRun` includes `'commit-graph'`) but
+    reports `false` — "ran and found nothing" stays distinguishable from
+    "declined."
+  - `commitsInGraph` — the number of commits the whole chain now holds.
+
+  Nothing is written for a shallow repository or one with a registered graft,
+  and a `core.commitGraph` set to false skips the task silently. A `gc` that
+  ran then rewrites the reachable commit-graph as one file, dropping any
+  split chain, unless `gc.writeCommitGraph` or `core.commitGraph` is false.
 
   A reachable object that does not parse as a commit (a blob named as a
   parent, an absent parent) fails the task with `COMMIT_PARSE_FAILED`
