@@ -6,17 +6,23 @@ import {
   filenameProbeOver,
   nodeFilenameProbe,
 } from '../../../../src/adapters/node/node-filename-probe.js';
+import { nativePolicy } from '../../../../src/adapters/node/path-policy.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 
 const errnoError = (code: string): NodeJS.ErrnoException =>
   Object.assign(new Error(code), { code });
+
+/** Windows resolves `..` by name before the filesystem sees the path, as git for Windows' lstat does. */
+const HOPS_RESOLVE_BY_NAME = nativePolicy.windowsSyntax;
+/** The directory `dg:a/../../outside` climbs through: Windows forbids `:` in a name and never visits it. */
+const HOP_DIRECTORY = HOPS_RESOLVE_BY_NAME ? '' : 'dg:a';
 
 describe('nodeFilenameProbe', () => {
   let base = '';
 
   beforeEach(async () => {
     base = await realpath(await mkdtemp(nodePath.join(tmpdir(), 'tsgit-filename-probe-')));
-    await mkdir(nodePath.join(base, 'repo', 'dg:a'), { recursive: true });
+    await mkdir(nodePath.join(base, 'repo', HOP_DIRECTORY), { recursive: true });
     await writeFile(nodePath.join(base, 'outside'), '');
   });
 
@@ -41,7 +47,7 @@ describe('nodeFilenameProbe', () => {
 
   describe('Given a parent hop out of a directory that does not exist', () => {
     describe('When the probe checks it', () => {
-      it('Then it reports nothing there, as the system resolves the hop', async () => {
+      it('Then it finds the file past it only where the system resolves the hop by name', async () => {
         // Arrange
         const sut = nodeFilenameProbe;
 
@@ -49,14 +55,14 @@ describe('nodeFilenameProbe', () => {
         const result = await sut(`${base}/repo/dg:b/../../outside`);
 
         // Assert
-        expect(result).toBe(false);
+        expect(result).toBe(HOPS_RESOLVE_BY_NAME);
       });
     });
   });
 
   describe('Given a parent hop out of a symbolic link to a directory elsewhere', () => {
     describe('When the probe checks it', () => {
-      it('Then it resolves the hop from the link target', async () => {
+      it('Then it resolves the hop from the link target unless the system resolves it by name', async () => {
         // Arrange
         await mkdir(nodePath.join(base, 'deep', 'x'), { recursive: true });
         await writeFile(nodePath.join(base, 'deep', 'beside'), '');
@@ -67,7 +73,7 @@ describe('nodeFilenameProbe', () => {
         const result = await sut(`${base}/repo/link/../beside`);
 
         // Assert
-        expect(result).toBe(true);
+        expect(result).toBe(!HOPS_RESOLVE_BY_NAME);
       });
     });
   });
