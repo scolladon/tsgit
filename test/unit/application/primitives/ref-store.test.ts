@@ -3960,6 +3960,7 @@ describe('ref-store — what a loose miss costs', () => {
       it("Then it answers the packed id after one stat of the loose path's parent", async () => {
         // Arrange
         const ctx = await buildSeededContext();
+        await ctx.fs.mkdir('/repo/.git/refs/tags');
         await ctx.fs.writeUtf8('/repo/.git/packed-refs', `${PACKED_ID} refs/tags/packed\n`);
         const { calls } = probing(ctx);
         const sut = createRefStore(ctx);
@@ -4068,6 +4069,119 @@ describe('ref-store — what a loose miss costs', () => {
           code: 'NOT_A_DIRECTORY',
           path: '/repo/common/packed-refs',
         });
+      });
+    });
+  });
+});
+
+describe('ref-store — a loose miss under a Windows-shaped file system', () => {
+  const PACKED_ID = 'c'.repeat(40) as ObjectId;
+
+  /** Every refusal a regular file in the path raises reported as FILE_NOT_FOUND, as Windows reports it. */
+  const windowsShaped = (base: Context): Context => {
+    const fs = new Proxy(base.fs, {
+      get(target, prop, receiver) {
+        const member = Reflect.get(target, prop, receiver);
+        if (typeof member !== 'function') return member;
+        return async (...args: unknown[]) => {
+          try {
+            return await member.apply(target, args);
+          } catch (err) {
+            if (err instanceof TsgitError && err.data.code === 'NOT_A_DIRECTORY') {
+              throw fileNotFound(String(args[0]));
+            }
+            throw err;
+          }
+        };
+      },
+    });
+    return { ...base, fs };
+  };
+
+  describe.each([
+    { depth: 'directly', name: 'refs/remotes/q/z' },
+    { depth: 'two levels', name: 'refs/remotes/q/z/w' },
+  ])('Given a regular file $depth above a name packed-refs holds', ({ name }) => {
+    describe('When resolveDirect reads it', () => {
+      it('Then the name is missing, as git reports the file in the path at any depth', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await base.fs.writeUtf8('/repo/.git/refs/remotes/q', `${PACKED_ID}\n`);
+        await base.fs.writeUtf8('/repo/.git/packed-refs', `${PACKED_ID} ${name}\n`);
+        const sut = createRefStore(windowsShaped(base));
+
+        // Act
+        const result = await sut.resolveDirect(name as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'missing' });
+      });
+    });
+  });
+
+  describe('Given a regular file two levels above a name, and a directory at packed-refs', () => {
+    describe('When resolveDirect reads it', () => {
+      it("Then the name is missing and packed-refs' fault never surfaces", async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await base.fs.writeUtf8('/repo/.git/refs/remotes/q', `${PACKED_ID}\n`);
+        await base.fs.mkdir('/repo/.git/packed-refs');
+        const sut = createRefStore(windowsShaped(base));
+
+        // Act
+        const result = await sut.resolveDirect('refs/remotes/q/z/w' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'missing' });
+      });
+    });
+  });
+
+  describe('Given packed-refs holds a name under two missing directories', () => {
+    describe('When resolveDirect reads it', () => {
+      it('Then the climb stops at the first directory and the packed id answers', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await base.fs.mkdir('/repo/.git/refs/remotes');
+        await base.fs.writeUtf8('/repo/.git/packed-refs', `${PACKED_ID} refs/remotes/o/x/main\n`);
+        const stat = vi.spyOn(base.fs, 'stat');
+        const sut = createRefStore(windowsShaped(base));
+
+        // Act
+        const result = await sut.resolveDirect('refs/remotes/o/x/main' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id: PACKED_ID });
+        expect(stat.mock.calls.map(([path]) => path)).toEqual([
+          '/repo/.git/refs/remotes/o/x',
+          '/repo/.git/refs/remotes/o',
+          '/repo/.git/refs/remotes',
+        ]);
+      });
+    });
+  });
+
+  describe('Given a store whose every ancestor of a missed name reads as absent', () => {
+    describe('When resolveDirect reads a name packed-refs holds', () => {
+      it('Then the climb stops at the ref directory and the packed id answers', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await base.fs.writeUtf8('/repo/.git/packed-refs', `${PACKED_ID} refs/tags/t\n`);
+        const stat = vi.spyOn(base.fs, 'stat').mockImplementation(async (path) => {
+          throw fileNotFound(path);
+        });
+        const sut = createRefStore(base);
+
+        // Act
+        const result = await sut.resolveDirect('refs/tags/t' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id: PACKED_ID });
+        expect(stat.mock.calls.map(([path]) => path)).toEqual([
+          '/repo/.git/refs/tags',
+          '/repo/.git/refs',
+          '/repo/.git',
+        ]);
       });
     });
   });

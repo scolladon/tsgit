@@ -884,19 +884,36 @@ function createFilesRefStore(ctx: Context): RefStore {
   }
 
   /**
-   * Whether a loose miss at `path` was git's `ENOTDIR` — a regular file in its
-   * directory chain — rather than a plain absence: one `stat` of the parent,
-   * which re-resolves that same chain.
+   * What one ancestor of a missed loose path says about the miss: a directory
+   * ends the climb unblocked, anything else standing there blocks it, and an
+   * absent one passes the question up.
    */
-  async function isBlockedMiss(path: string): Promise<boolean> {
+  async function ancestorKind(dir: string): Promise<'directory' | 'blocking' | 'absent'> {
     try {
-      return !(await ctx.fs.stat(dirname(path))).isDirectory;
+      return (await ctx.fs.stat(dir)).isDirectory ? 'directory' : 'blocking';
     } catch (err) {
       const code = errorCodeOf(err);
-      if (code === 'FILE_NOT_FOUND') return false;
-      if (code === 'NOT_A_DIRECTORY') return true;
+      if (code === 'FILE_NOT_FOUND') return 'absent';
+      if (code === 'NOT_A_DIRECTORY') return 'blocking';
       throw err;
     }
+  }
+
+  /**
+   * Whether a loose miss at `path` was git's `ENOTDIR` — a regular file in its
+   * directory chain — rather than a plain absence. The parent's `stat`
+   * re-resolves that chain; only an absent parent climbs on toward `root`,
+   * since a file system that reports a regular file in the path as absent
+   * (Windows) can only be answered by the ancestor the file stands at.
+   */
+  async function isBlockedMiss(path: string, root: string): Promise<boolean> {
+    return isBlockedAt(dirname(path), root);
+  }
+
+  async function isBlockedAt(dir: string, root: string): Promise<boolean> {
+    const kind = await ancestorKind(dir);
+    if (kind !== 'absent' || dir === root) return kind === 'blocking';
+    return isBlockedAt(dirname(dir), root);
   }
 
   /**
@@ -925,10 +942,10 @@ function createFilesRefStore(ctx: Context): RefStore {
     path: string,
   ): Promise<ResolveDirectResult> {
     const entry = await packedEntryAfterMiss(name, dir).catch(async (err: unknown) => {
-      if (await isBlockedMiss(path)) return undefined;
+      if (await isBlockedMiss(path, dir)) return undefined;
       throw err;
     });
-    if (entry === undefined || (await isBlockedMiss(path))) return MISSING;
+    if (entry === undefined || (await isBlockedMiss(path, dir))) return MISSING;
     return { kind: 'direct', id: entry.id };
   }
 
