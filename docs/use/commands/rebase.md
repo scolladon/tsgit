@@ -19,7 +19,7 @@ Nested namespace: `repo.rebase.{run, continue, skip, abort}`.
 ```ts
 interface RebaseNamespace {
   run(input: {
-    upstream: string; // commit-ish: the fork-point side (`git rebase <upstream>`)
+    upstream: string; // revision peeling to a commit: the fork-point side (`git rebase <upstream>`; `-` is `@{-1}`)
     onto?: string; // --onto <newbase>: replay onto this base instead of `upstream`
     interactive?: ReadonlyArray<RebaseInstruction>; // present → `rebase -i`
     rebaseMerges?: boolean | 'rebase-cousins' | 'no-rebase-cousins'; // --rebase-merges[=<mode>]

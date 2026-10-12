@@ -55,6 +55,7 @@ interface WorktreeRemoveResult { readonly path: FilePath; readonly id: string; }
 
 ## Behaviour
 
+- **`-` start point.** A lone `commitish` of `-` is `@{-1}`, git's previous checkout; a `commitish` spelt `@{-<n>}` names the branch it left for the existing-branch lookup.
 - **`add` modes** — with no `commitish`/`branch`/`detach`, creates a branch named
   after the path basename at `HEAD`; `branch` (`-b`) creates that branch at the
   start point; a `commitish` that names an existing local branch checks it out;
