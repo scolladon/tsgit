@@ -23,16 +23,13 @@ const textArbitrary = fc
 
 const textWithLoneLf = textArbitrary.filter((bytes) => bytes.includes(LF));
 
-const toGit = async (bytes: Uint8Array, action: CrlfAction): Promise<Uint8Array> =>
-  (
-    await crlfToGit({
-      bytes,
-      action,
-      settings,
-      renormalize: false,
-      indexHasCrlf: () => Promise.resolve(false),
-    })
-  ).bytes;
+const addOptions = (bytes: Uint8Array, action: CrlfAction) => ({
+  bytes,
+  action,
+  settings,
+  renormalize: false,
+  indexHasCrlf: () => Promise.resolve(false),
+});
 
 const withoutCr = (bytes: Uint8Array): Uint8Array => bytes.filter((byte) => byte !== CR);
 
@@ -46,8 +43,10 @@ describe('crlf conversion properties', () => {
         // Arrange + Act + Assert
         await fc.assert(
           fc.asyncProperty(textArbitrary, async (bytes) => {
-            const sut = await toGit(crlfToWorkingTree(bytes, 'text-crlf', settings), 'text-input');
-            expect(sut).toEqual(withoutCr(bytes));
+            const sut = crlfToGit;
+            const checkedOut = crlfToWorkingTree(bytes, 'text-crlf', settings);
+            const added = await sut(addOptions(checkedOut, 'text-input'));
+            expect(added.bytes).toEqual(withoutCr(bytes));
           }),
           { numRuns: 200 },
         );
@@ -62,8 +61,9 @@ describe('crlf conversion properties', () => {
             textArbitrary,
             fc.constantFrom<CrlfAction>('text-input', 'text-crlf'),
             async (bytes, action) => {
-              const sut = await toGit(bytes, action);
-              expect(hasCrlf(sut)).toBe(false);
+              const sut = crlfToGit;
+              const added = await sut(addOptions(bytes, action));
+              expect(hasCrlf(added.bytes)).toBe(false);
             },
           ),
           { numRuns: 100 },
@@ -76,9 +76,10 @@ describe('crlf conversion properties', () => {
         // Arrange + Act + Assert
         await fc.assert(
           fc.asyncProperty(textArbitrary, async (bytes) => {
-            const added = await toGit(bytes, 'text-input');
+            const sut = crlfToGit;
+            const added = (await sut(addOptions(bytes, 'text-input'))).bytes;
             const checkedOut = crlfToWorkingTree(bytes, 'text-crlf', settings);
-            expect(await toGit(added, 'text-input')).toEqual(added);
+            expect((await sut(addOptions(added, 'text-input'))).bytes).toEqual(added);
             expect(crlfToWorkingTree(checkedOut, 'text-crlf', settings)).toEqual(checkedOut);
           }),
           { numRuns: 200 },

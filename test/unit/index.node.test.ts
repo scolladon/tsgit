@@ -734,16 +734,18 @@ describe('Given a directory whose HEAD is a dangling symlink into refs/', () => 
 
 describe('Node shim — native line ending', () => {
   describe('Given a repository opened through the node entry', () => {
-    it('Then ctx.nativeEol equals nativeLineEndingFor(process.platform)', async () => {
-      // Arrange / Act
-      const sut = await openRepository({ cwd: tmpdir });
+    describe('When reading ctx.nativeEol', () => {
+      it('Then ctx.nativeEol equals nativeLineEndingFor(process.platform)', async () => {
+        // Arrange / Act
+        const sut = await openRepository({ cwd: tmpdir });
 
-      try {
-        // Assert
-        expect(sut.ctx.nativeEol).toBe(nativeLineEndingFor(process.platform));
-      } finally {
-        await sut.dispose();
-      }
+        try {
+          // Assert
+          expect(sut.ctx.nativeEol).toBe(nativeLineEndingFor(process.platform));
+        } finally {
+          await sut.dispose();
+        }
+      });
     });
   });
 });

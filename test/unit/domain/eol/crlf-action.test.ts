@@ -26,21 +26,24 @@ const settings = (overrides: Partial<EolSettings> = {}): EolSettings => ({
 });
 
 describe('resolveCrlfAction', () => {
-  describe.each<[string, Partial<ConversionAttributes>, CrlfAction]>([
+  const CASES_1: ReadonlyArray<[string, Partial<ConversionAttributes>, CrlfAction]> = [
     ['text set', { text: true }, 'text-crlf'],
     ['text unset', { text: false }, 'binary'],
     ['text=input', { text: { set: 'input' } }, 'text-input'],
     ['text=auto', { text: { set: 'auto' } }, 'auto'],
     ['text=foo', { text: { set: 'foo' } }, 'binary'],
     ['text unspecified', { text: U }, 'binary'],
-  ])('Given autocrlf false and %s', (_name, overrides, expected) => {
+  ];
+
+  describe.each(CASES_1)('Given autocrlf false and %s', (_name, overrides, expected) => {
     describe('When resolving', () => {
       it(`Then the action is ${expected}`, () => {
         // Arrange
-        const sut = settings({ autoCrlf: false, nativeEol: 'crlf' });
+        const sut = resolveCrlfAction;
+        const eolSettings = settings({ autoCrlf: false, nativeEol: 'crlf' });
 
         // Act
-        const result = resolveCrlfAction(attrs(overrides), sut);
+        const result = sut(attrs(overrides), eolSettings);
 
         // Assert
         expect(result).toBe(expected);
@@ -48,7 +51,7 @@ describe('resolveCrlfAction', () => {
     });
   });
 
-  describe.each<[string, Partial<ConversionAttributes>, CrlfAction]>([
+  const CASES_2: ReadonlyArray<[string, Partial<ConversionAttributes>, CrlfAction]> = [
     ['crlf set', { crlf: true }, 'text-crlf'],
     ['crlf unset', { crlf: false }, 'binary'],
     ['crlf=input', { crlf: { set: 'input' } }, 'text-input'],
@@ -56,22 +59,28 @@ describe('resolveCrlfAction', () => {
     ['text=foo alone', { text: { set: 'foo' } }, 'binary'],
     ['text unset and crlf set', { text: false, crlf: true }, 'binary'],
     ['text set and crlf unset', { text: true, crlf: false }, 'text-crlf'],
-  ])('Given autocrlf false, nativeEol crlf and %s', (_name, overrides, expected) => {
-    describe('When resolving', () => {
-      it(`Then the action is ${expected}`, () => {
-        // Arrange
-        const sut = settings({ nativeEol: 'crlf' });
+  ];
 
-        // Act
-        const result = resolveCrlfAction(attrs(overrides), sut);
+  describe.each(CASES_2)(
+    'Given autocrlf false, nativeEol crlf and %s',
+    (_name, overrides, expected) => {
+      describe('When resolving', () => {
+        it(`Then the action is ${expected}`, () => {
+          // Arrange
+          const sut = resolveCrlfAction;
+          const eolSettings = settings({ nativeEol: 'crlf' });
 
-        // Assert
-        expect(result).toBe(expected);
+          // Act
+          const result = sut(attrs(overrides), eolSettings);
+
+          // Assert
+          expect(result).toBe(expected);
+        });
       });
-    });
-  });
+    },
+  );
 
-  describe.each<[string, Partial<ConversionAttributes>, CrlfAction]>([
+  const CASES_3: ReadonlyArray<[string, Partial<ConversionAttributes>, CrlfAction]> = [
     ['text=auto eol=lf', { text: { set: 'auto' }, eol: { set: 'lf' } }, 'auto-input'],
     ['text=auto eol=crlf', { text: { set: 'auto' }, eol: { set: 'crlf' } }, 'auto-crlf'],
     ['text eol=lf', { text: true, eol: { set: 'lf' } }, 'text-input'],
@@ -85,22 +94,30 @@ describe('resolveCrlfAction', () => {
     ['text=auto eol=bar', { text: { set: 'auto' }, eol: { set: 'bar' } }, 'auto'],
     ['eol set without value', { eol: true }, 'binary'],
     ['crlf eol=lf', { crlf: true, eol: { set: 'lf' } }, 'text-input'],
-  ])('Given nativeEol crlf, autocrlf false and %s', (_name, overrides, expected) => {
-    describe('When resolving', () => {
-      it(`Then the action is ${expected}`, () => {
-        // Arrange
-        const sut = settings({ nativeEol: 'crlf' });
+  ];
 
-        // Act
-        const result = resolveCrlfAction(attrs(overrides), sut);
+  describe.each(CASES_3)(
+    'Given nativeEol crlf, autocrlf false and %s',
+    (_name, overrides, expected) => {
+      describe('When resolving', () => {
+        it(`Then the action is ${expected}`, () => {
+          // Arrange
+          const sut = resolveCrlfAction;
+          const eolSettings = settings({ nativeEol: 'crlf' });
 
-        // Assert
-        expect(result).toBe(expected);
+          // Act
+          const result = sut(attrs(overrides), eolSettings);
+
+          // Assert
+          expect(result).toBe(expected);
+        });
       });
-    });
-  });
+    },
+  );
 
-  describe.each<[EolSettings['autoCrlf'], EolSettings['coreEol'], 'lf' | 'crlf', CrlfAction]>([
+  const CASES_4: ReadonlyArray<
+    [EolSettings['autoCrlf'], EolSettings['coreEol'], 'lf' | 'crlf', CrlfAction]
+  > = [
     [true, undefined, 'lf', 'text-crlf'],
     [true, 'lf', 'lf', 'text-crlf'],
     ['input', undefined, 'crlf', 'text-input'],
@@ -111,20 +128,23 @@ describe('resolveCrlfAction', () => {
     [false, 'native', 'crlf', 'text-crlf'],
     [false, undefined, 'lf', 'text-input'],
     [false, undefined, 'crlf', 'text-crlf'],
-  ])(
+  ];
+
+  describe.each(CASES_4)(
     'Given text set, autocrlf %j, core.eol %j, native %s',
     (autoCrlf, coreEol, nativeEol, expected) => {
       describe('When resolving', () => {
         it(`Then the action is ${expected}`, () => {
           // Arrange
-          const sut = settings({
+          const sut = resolveCrlfAction;
+          const eolSettings = settings({
             autoCrlf,
             nativeEol,
             ...(coreEol === undefined ? {} : { coreEol }),
           });
 
           // Act
-          const result = resolveCrlfAction(attrs({ text: true }), sut);
+          const result = sut(attrs({ text: true }), eolSettings);
 
           // Assert
           expect(result).toBe(expected);
@@ -133,18 +153,21 @@ describe('resolveCrlfAction', () => {
     },
   );
 
-  describe.each<[EolSettings['autoCrlf'], CrlfAction]>([
+  const CASES_5: ReadonlyArray<[EolSettings['autoCrlf'], CrlfAction]> = [
     [false, 'binary'],
     [true, 'auto-crlf'],
     ['input', 'auto-input'],
-  ])('Given no attribute and autocrlf %j', (autoCrlf, expected) => {
+  ];
+
+  describe.each(CASES_5)('Given no attribute and autocrlf %j', (autoCrlf, expected) => {
     describe('When resolving', () => {
       it(`Then the action is ${expected}`, () => {
         // Arrange
-        const sut = settings({ autoCrlf, coreEol: 'crlf', nativeEol: 'crlf' });
+        const sut = resolveCrlfAction;
+        const eolSettings = settings({ autoCrlf, coreEol: 'crlf', nativeEol: 'crlf' });
 
         // Act
-        const result = resolveCrlfAction(attrs(), sut);
+        const result = sut(attrs(), eolSettings);
 
         // Assert
         expect(result).toBe(expected);
@@ -154,7 +177,7 @@ describe('resolveCrlfAction', () => {
 });
 
 describe('outputLineEnding', () => {
-  describe.each<[CrlfAction, EolSettings, 'lf' | 'crlf' | undefined]>([
+  const CASES_6: ReadonlyArray<[CrlfAction, EolSettings, 'lf' | 'crlf' | undefined]> = [
     ['binary', settings({ coreEol: 'crlf' }), undefined],
     ['text-crlf', settings(), 'crlf'],
     ['auto-crlf', settings(), 'crlf'],
@@ -168,7 +191,9 @@ describe('outputLineEnding', () => {
     ['auto', settings({ coreEol: 'native', nativeEol: 'lf' }), 'lf'],
     ['auto', settings({ nativeEol: 'crlf' }), 'crlf'],
     ['auto', settings({ nativeEol: 'lf' }), 'lf'],
-  ])('Given action %s and settings %j', (action, sut, expected) => {
+  ];
+
+  describe.each(CASES_6)('Given action %s and settings %j', (action, sut, expected) => {
     describe('When asking for the output line ending', () => {
       it(`Then it is ${expected}`, () => {
         // Arrange + Act

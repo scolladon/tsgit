@@ -18,10 +18,11 @@ describe('gatherTextStats properties', () => {
               })
               .map((b) => Uint8Array.from(b)),
             (bytes) => {
-              const sut = gatherTextStats(bytes);
+              const sut = gatherTextStats;
+              const stats = sut(bytes);
               const discountedSub = bytes.length > 0 && bytes[bytes.length - 1] === SUB ? 1 : 0;
               const counted =
-                sut.printable + sut.nonPrintable + 2 * sut.crlf + sut.loneCr + sut.loneLf;
+                stats.printable + stats.nonPrintable + 2 * stats.crlf + stats.loneCr + stats.loneLf;
               expect(counted).toBe(bytes.length - discountedSub);
             },
           ),

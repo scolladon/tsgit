@@ -580,10 +580,11 @@ describe('maybeBuildAttributeProvider', () => {
         await seedIndex(ctx, [indexEntry('.gitattributes', attrs)]);
 
         // Act
-        const sut = await maybeBuildAttributeProvider(ctx);
+        const sut = maybeBuildAttributeProvider;
+        const provider = await sut(ctx);
 
         // Assert
-        expect(await eolOf(sut, 'f.txt')).toEqual({ set: 'crlf' });
+        expect(await eolOf(provider, 'f.txt')).toEqual({ set: 'crlf' });
       });
     });
   });
@@ -619,11 +620,12 @@ describe('maybeBuildAttributeProvider', () => {
         ]);
 
         // Act
-        const sut = await maybeBuildAttributeProvider(ctx);
+        const sut = maybeBuildAttributeProvider;
+        const provider = await sut(ctx);
 
         // Assert
-        expect(await eolOf(sut, 'f.txt')).toBe('unspecified');
-        expect(await eolOf(sut, 'sub/f.txt')).toEqual({ set: 'crlf' });
+        expect(await eolOf(provider, 'f.txt')).toBe('unspecified');
+        expect(await eolOf(provider, 'sub/f.txt')).toEqual({ set: 'crlf' });
       });
     });
   });
@@ -636,10 +638,11 @@ describe('maybeBuildAttributeProvider', () => {
         await ctx.fs.write(`${ctx.layout.gitDir}/index`, new Uint8Array(40));
 
         // Act
-        const sut = await maybeBuildAttributeProvider(ctx);
+        const sut = maybeBuildAttributeProvider;
+        const provider = await sut(ctx);
 
         // Assert
-        expect(await eolOf(sut, 'f.txt')).toBe('unspecified');
+        expect(await eolOf(provider, 'f.txt')).toBe('unspecified');
       });
     });
   });
@@ -1112,10 +1115,11 @@ describe('buildAttributeProvider with an index direction', () => {
         };
 
         // Act
-        const sut = await buildAttributeProvider(ctx, direction);
+        const sut = buildAttributeProvider;
+        const provider = await sut(ctx, direction);
 
         // Assert
-        expect(await eolOf(sut, 'f.txt')).toEqual({ set: 'crlf' });
+        expect(await eolOf(provider, 'f.txt')).toEqual({ set: 'crlf' });
       });
     });
   });
@@ -1128,41 +1132,50 @@ describe('buildAttributeProvider with an index direction', () => {
       return { ctx, index: lookupOf({ '.gitattributes': attrs }) };
     };
 
-    it.each([
-      { kind: 'worktree-first', expected: { set: 'lf' } },
-      { kind: 'index-first', expected: { set: 'crlf' } },
-      { kind: 'index-only', expected: { set: 'crlf' } },
-    ] as const)('Then $kind resolves eol to $expected', async ({ kind, expected }) => {
-      // Arrange
-      const { ctx, index } = await arrange();
+    describe('When a provider of each direction resolves f.txt', () => {
+      it.each([
+        { kind: 'worktree-first', expected: { set: 'lf' } },
+        { kind: 'index-first', expected: { set: 'crlf' } },
+        { kind: 'index-only', expected: { set: 'crlf' } },
+      ] as const)('Then $kind resolves eol to $expected', async ({ kind, expected }) => {
+        // Arrange
+        const { ctx, index } = await arrange();
 
-      // Act
-      const sut = await buildAttributeProvider(ctx, { kind, index });
+        // Act
+        const sut = buildAttributeProvider;
+        const provider = await sut(ctx, { kind, index });
 
-      // Assert
-      expect(await eolOf(sut, 'f.txt')).toEqual(expected);
+        // Assert
+        expect(await eolOf(provider, 'f.txt')).toEqual(expected);
+      });
     });
 
-    it('Then index-first falls back to the worktree when the index lacks the file', async () => {
-      // Arrange
-      const { ctx } = await arrange();
+    describe('When an index-first provider resolves a file the index lacks', () => {
+      it('Then index-first falls back to the worktree when the index lacks the file', async () => {
+        // Arrange
+        const { ctx } = await arrange();
 
-      // Act
-      const sut = await buildAttributeProvider(ctx, { kind: 'index-first', index: lookupOf({}) });
+        // Act
+        const sut = buildAttributeProvider;
+        const provider = await sut(ctx, { kind: 'index-first', index: lookupOf({}) });
 
-      // Assert
-      expect(await eolOf(sut, 'f.txt')).toEqual({ set: 'lf' });
+        // Assert
+        expect(await eolOf(provider, 'f.txt')).toEqual({ set: 'lf' });
+      });
     });
 
-    it('Then index-only ignores the worktree when the index lacks the file', async () => {
-      // Arrange
-      const { ctx } = await arrange();
+    describe('When an index-only provider resolves a file the index lacks', () => {
+      it('Then index-only ignores the worktree when the index lacks the file', async () => {
+        // Arrange
+        const { ctx } = await arrange();
 
-      // Act
-      const sut = await buildAttributeProvider(ctx, { kind: 'index-only', index: lookupOf({}) });
+        // Act
+        const sut = buildAttributeProvider;
+        const provider = await sut(ctx, { kind: 'index-only', index: lookupOf({}) });
 
-      // Assert
-      expect(await eolOf(sut, 'f.txt')).toBe('unspecified');
+        // Assert
+        expect(await eolOf(provider, 'f.txt')).toBe('unspecified');
+      });
     });
   });
 
@@ -1175,11 +1188,12 @@ describe('buildAttributeProvider with an index direction', () => {
         const index = lookupOf({ 'sub/.gitattributes': attrs });
 
         // Act
-        const sut = await buildAttributeProvider(ctx, { kind: 'index-only', index });
+        const sut = buildAttributeProvider;
+        const provider = await sut(ctx, { kind: 'index-only', index });
 
         // Assert
-        expect(await eolOf(sut, 'sub/f.txt')).toEqual({ set: 'crlf' });
-        expect(await eolOf(sut, 'f.txt')).toBe('unspecified');
+        expect(await eolOf(provider, 'sub/f.txt')).toEqual({ set: 'crlf' });
+        expect(await eolOf(provider, 'f.txt')).toBe('unspecified');
       });
     });
   });

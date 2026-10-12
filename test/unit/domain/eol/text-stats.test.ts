@@ -19,13 +19,14 @@ describe('gatherTextStats', () => {
     describe('When gathered', () => {
       it(`Then isBinaryText is ${binary}`, () => {
         // Arrange
+        const sut = isBinaryText;
         const bytes = ascii(text);
 
         // Act
-        const sut = gatherTextStats(bytes);
+        const stats = gatherTextStats(bytes);
 
         // Assert
-        expect(isBinaryText(sut)).toBe(binary);
+        expect(sut(stats)).toBe(binary);
       });
     });
   });
@@ -61,41 +62,47 @@ describe('isBinaryText', () => {
   const clean = { nul: 0, loneCr: 0, loneLf: 0, crlf: 0, printable: 0, nonPrintable: 0 };
 
   describe('Given only a lone CR', () => {
-    it('Then the text is binary', () => {
-      // Arrange
-      const sut = { ...clean, loneCr: 1 };
+    describe('When classified', () => {
+      it('Then the text is binary', () => {
+        // Arrange
+        const sut = { ...clean, loneCr: 1 };
 
-      // Act
-      const result = isBinaryText(sut);
+        // Act
+        const result = isBinaryText(sut);
 
-      // Assert
-      expect(result).toBe(true);
+        // Assert
+        expect(result).toBe(true);
+      });
     });
   });
 
   describe('Given only a NUL', () => {
-    it('Then the text is binary', () => {
-      // Arrange
-      const sut = { ...clean, nul: 1 };
+    describe('When classified', () => {
+      it('Then the text is binary', () => {
+        // Arrange
+        const sut = { ...clean, nul: 1 };
 
-      // Act
-      const result = isBinaryText(sut);
+        // Act
+        const result = isBinaryText(sut);
 
-      // Assert
-      expect(result).toBe(true);
+        // Assert
+        expect(result).toBe(true);
+      });
     });
   });
 
   describe('Given non-printable bytes exactly at printable >> 7', () => {
-    it('Then the text is not binary', () => {
-      // Arrange
-      const sut = { ...clean, printable: 128, nonPrintable: 1 };
+    describe('When classified', () => {
+      it('Then the text is not binary', () => {
+        // Arrange
+        const sut = { ...clean, printable: 128, nonPrintable: 1 };
 
-      // Act
-      const result = isBinaryText(sut);
+        // Act
+        const result = isBinaryText(sut);
 
-      // Assert
-      expect(result).toBe(false);
+        // Assert
+        expect(result).toBe(false);
+      });
     });
   });
 });

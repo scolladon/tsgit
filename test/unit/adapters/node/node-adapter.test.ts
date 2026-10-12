@@ -658,12 +658,14 @@ describe('nativeLineEndingFor', () => {
 
 describe('createNodeContext native line ending', () => {
   describe('Given a context built by createNodeContext', () => {
-    it('Then nativeEol equals nativeLineEndingFor(process.platform)', () => {
-      // Arrange / Act
-      const sut = createNodeContext({ workDir: '/tmp/tsgit-ctx-eol' });
+    describe('When reading nativeEol', () => {
+      it('Then nativeEol equals nativeLineEndingFor(process.platform)', () => {
+        // Arrange / Act
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-ctx-eol' });
 
-      // Assert
-      expect(sut.nativeEol).toBe(nativeLineEndingFor(process.platform));
+        // Assert
+        expect(sut.nativeEol).toBe(nativeLineEndingFor(process.platform));
+      });
     });
   });
 });

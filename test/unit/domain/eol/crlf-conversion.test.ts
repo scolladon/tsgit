@@ -54,14 +54,16 @@ const run = (
   });
 
 describe('crlfToGit blob bytes', () => {
-  describe.each<[CrlfAction, ReadonlyArray<FixtureName>]>([
+  const CASES_1: ReadonlyArray<[CrlfAction, ReadonlyArray<FixtureName>]> = [
     ['text-input', ['crlf', 'mixed', 'nul', 'loneCr']],
     ['text-crlf', ['crlf', 'mixed', 'nul', 'loneCr']],
     ['auto', ['crlf', 'mixed']],
     ['auto-input', ['crlf', 'mixed']],
     ['auto-crlf', ['crlf', 'mixed']],
     ['binary', []],
-  ])('Given the add fixtures and action %s', (action, converted) => {
+  ];
+
+  describe.each(CASES_1)('Given the add fixtures and action %s', (action, converted) => {
     describe.each(Object.keys(FIXTURES) as ReadonlyArray<FixtureName>)(
       'When fixture %s is added',
       (name) => {
@@ -81,13 +83,15 @@ describe('crlfToGit blob bytes', () => {
     );
   });
 
-  describe.each<[string, CrlfAction, string, string]>([
+  const CASES_2: ReadonlyArray<[string, CrlfAction, string, string]> = [
     ['trailing lone CR', 'text-input', 'a\r', 'a\r'],
     ['CRLF without final newline', 'text-input', 'a\r\nb', 'a\nb'],
     ['CRLF without final newline', 'auto-input', 'a\r\nb', 'a\nb'],
     ['trailing lone CR after CRLF', 'text-input', 'a\r\nb\r', 'a\nb\r'],
     ['lone CR dropped by nothing', 'text-input', 'a\r\r\nb', 'a\r\nb'],
-  ])('Given the %s edge under %s', (_name, action, source, expected) => {
+  ];
+
+  describe.each(CASES_2)('Given the %s edge under %s', (_name, action, source, expected) => {
     describe('When added', () => {
       it('Then the blob follows the pinned bytes', async () => {
         // Arrange
@@ -216,22 +220,25 @@ describe('crlfToGit index CRLF rule', () => {
 });
 
 describe('crlfToGit round trip loss', () => {
-  describe.each<[string, Uint8Array, CrlfAction, unknown]>([
+  const CASES_3: ReadonlyArray<[string, Uint8Array, CrlfAction, unknown]> = [
     ['MIXED', FIXTURES.mixed, 'auto-crlf', { loss: 'lf-to-crlf', crlf: 1, loneLf: 1 }],
     ['LF', FIXTURES.lf, 'auto-crlf', { loss: 'lf-to-crlf', crlf: 0, loneLf: 2 }],
     ['CRLF', FIXTURES.crlf, 'auto-input', { loss: 'crlf-to-lf', crlf: 2, loneLf: 0 }],
     ['CRLF', FIXTURES.crlf, 'text-input', { loss: 'crlf-to-lf', crlf: 2, loneLf: 0 }],
-  ])('Given %s under %s', (_name, input, action, expected) => {
+  ];
+
+  describe.each(CASES_3)('Given %s under %s', (_name, input, action, expected) => {
     describe('When added', () => {
       it('Then the loss carries the original stats counts', async () => {
         // Arrange
-        const sut = settings({ autoCrlf: action === 'auto-crlf' ? true : 'input' });
+        const sut = crlfToGit;
+        const eolSettings = settings({ autoCrlf: action === 'auto-crlf' ? true : 'input' });
 
         // Act
-        const result = await crlfToGit({
+        const result = await sut({
           bytes: input,
           action,
-          settings: sut,
+          settings: eolSettings,
           renormalize: false,
           indexHasCrlf: noIndexCrlf,
         });
@@ -242,22 +249,25 @@ describe('crlfToGit round trip loss', () => {
     });
   });
 
-  describe.each<[string, Uint8Array, CrlfAction]>([
+  const CASES_4: ReadonlyArray<[string, Uint8Array, CrlfAction]> = [
     ['LF', FIXTURES.lf, 'text-input'],
     ['CRLF', FIXTURES.crlf, 'text-crlf'],
     ['binary NUL under auto-crlf', FIXTURES.nul, 'auto-crlf'],
     ['CRLF under binary', FIXTURES.crlf, 'binary'],
-  ])('Given %s under %s', (_name, input, action) => {
+  ];
+
+  describe.each(CASES_4)('Given %s under %s', (_name, input, action) => {
     describe('When added with crlf output settings', () => {
       it('Then no loss is reported', async () => {
         // Arrange
-        const sut = settings({ autoCrlf: true });
+        const sut = crlfToGit;
+        const eolSettings = settings({ autoCrlf: true });
 
         // Act
-        const result = await crlfToGit({
+        const result = await sut({
           bytes: input,
           action,
-          settings: sut,
+          settings: eolSettings,
           renormalize: false,
           indexHasCrlf: noIndexCrlf,
         });
@@ -300,7 +310,9 @@ const checkoutBlobs = {
 type BlobName = keyof typeof checkoutBlobs;
 
 describe('crlfToWorkingTree', () => {
-  describe.each<[CrlfAction, ReadonlyArray<[BlobName, string]>, ReadonlyArray<BlobName>]>([
+  const CASES_5: ReadonlyArray<
+    [CrlfAction, ReadonlyArray<[BlobName, string]>, ReadonlyArray<BlobName>]
+  > = [
     [
       'text-crlf',
       [
@@ -322,39 +334,46 @@ describe('crlfToWorkingTree', () => {
       [['lf', 'a\r\nb\r\n']],
       ['crlf', 'mixed', 'nul', 'loneCr', 'nulLf', 'loneCrLf', 'trailCr'],
     ],
-  ])('Given crlf output settings and action %s', (action, converted, identity) => {
-    const crlfSettings = settings({ autoCrlf: true, coreEol: 'crlf', nativeEol: 'crlf' });
+  ];
 
-    describe.each(converted)('When blob %s is checked out', (name, expected) => {
-      it('Then every LF not preceded by CR becomes CRLF in a fresh exact-size array', () => {
-        // Arrange
-        const input = checkoutBlobs[name];
+  describe.each(CASES_5)(
+    'Given crlf output settings and action %s',
+    (action, converted, identity) => {
+      const crlfSettings = settings({ autoCrlf: true, coreEol: 'crlf', nativeEol: 'crlf' });
 
-        // Act
-        const result = crlfToWorkingTree(input, action, crlfSettings);
+      describe.each(converted)('When blob %s is checked out', (name, expected) => {
+        it('Then every LF not preceded by CR becomes CRLF in a fresh exact-size array', () => {
+          // Arrange
+          const input = checkoutBlobs[name];
 
-        // Assert
-        expect(result).toEqual(bytes(expected));
-        expect(result.byteOffset).toBe(0);
-        expect(result.buffer.byteLength).toBe(result.length);
+          // Act
+          const result = crlfToWorkingTree(input, action, crlfSettings);
+
+          // Assert
+          expect(result).toEqual(bytes(expected));
+          expect(result.byteOffset).toBe(0);
+          expect(result.buffer.byteLength).toBe(result.length);
+        });
       });
-    });
 
-    describe.each(identity)('When blob %s is checked out', (name) => {
-      it('Then the same reference is returned', () => {
-        // Arrange
-        const input = checkoutBlobs[name];
+      describe.each(identity)('When blob %s is checked out', (name) => {
+        it('Then the same reference is returned', () => {
+          // Arrange
+          const input = checkoutBlobs[name];
 
-        // Act
-        const result = crlfToWorkingTree(input, action, crlfSettings);
+          // Act
+          const result = crlfToWorkingTree(input, action, crlfSettings);
 
-        // Assert
-        expect(result).toBe(input);
+          // Assert
+          expect(result).toBe(input);
+        });
       });
-    });
-  });
+    },
+  );
 
-  describe.each<CrlfAction>(['binary', 'text-input', 'auto-input'])('Given action %s', (action) => {
+  const CASES_6: ReadonlyArray<CrlfAction> = ['binary', 'text-input', 'auto-input'];
+
+  describe.each(CASES_6)('Given action %s', (action) => {
     describe('When an LF blob is checked out', () => {
       it('Then the same reference is returned', () => {
         // Arrange

@@ -40,11 +40,12 @@ describe('readEolSettings', () => {
         const ctx = createMemoryContext();
 
         // Act
-        const sut = await readEolSettings(ctx);
+        const sut = readEolSettings;
+        const settings = await sut(ctx);
 
         // Assert
-        expect(sut).toEqual({ autoCrlf: false, safeCrlf: 'warn', nativeEol: 'lf' });
-        expect('coreEol' in sut).toBe(false);
+        expect(settings).toEqual({ autoCrlf: false, safeCrlf: 'warn', nativeEol: 'lf' });
+        expect('coreEol' in settings).toBe(false);
       });
     });
   });
@@ -58,10 +59,11 @@ describe('readEolSettings', () => {
         await writeConfig(ctx, '[core]\n\teol = native\n');
 
         // Act
-        const sut = await readEolSettings(ctx);
+        const sut = readEolSettings;
+        const settings = await sut(ctx);
 
         // Assert
-        expect(sut).toEqual({
+        expect(settings).toEqual({
           autoCrlf: false,
           coreEol: 'native',
           safeCrlf: 'warn',
@@ -79,11 +81,12 @@ describe('readEolSettings', () => {
         await writeConfig(ctx, '[core]\n\tautocrlf = input\n\tsafecrlf = false\n');
 
         // Act
-        const sut = await readEolSettings(ctx);
+        const sut = readEolSettings;
+        const settings = await sut(ctx);
 
         // Assert
-        expect(sut.autoCrlf).toBe('input');
-        expect(sut.safeCrlf).toBe(false);
+        expect(settings.autoCrlf).toBe('input');
+        expect(settings.safeCrlf).toBe(false);
       });
     });
   });

@@ -426,10 +426,11 @@ describe('workingTreeStreamTransform', () => {
     describe('When streaming it', () => {
       it('Then the streamed expander runs before the LF to CRLF expansion', () => {
         // Arrange
-        const sut = workingTreeStreamTransform(conversion('text-crlf', true), BLOB, SETTINGS);
+        const sut = workingTreeStreamTransform;
+        const transform = sut(conversion('text-crlf', true), BLOB, SETTINGS);
 
         // Act
-        const result = streamed(sut as ChunkTransform, DIVERGENCE_BLOB);
+        const result = streamed(transform as ChunkTransform, DIVERGENCE_BLOB);
 
         // Assert
         expect(result).toBe(`$$Id$\r\n$Id: ${BLOB} $\r\n$Id: a\tb $\r\n$Id: ${BLOB} $Id$\r\n`);
@@ -441,10 +442,11 @@ describe('workingTreeStreamTransform', () => {
     describe('When streaming it', () => {
       it('Then the flushed partial keyword still passes through the LF to CRLF step', () => {
         // Arrange
-        const sut = workingTreeStreamTransform(conversion('text-crlf', true), BLOB, SETTINGS);
+        const sut = workingTreeStreamTransform;
+        const transform = sut(conversion('text-crlf', true), BLOB, SETTINGS);
 
         // Act
-        const result = streamed(sut as ChunkTransform, 'a\n$Id');
+        const result = streamed(transform as ChunkTransform, 'a\n$Id');
 
         // Assert
         expect(result).toBe('a\r\n$Id');
@@ -456,10 +458,11 @@ describe('workingTreeStreamTransform', () => {
     describe('When streaming it', () => {
       it('Then only the ident expansion applies', () => {
         // Arrange
-        const sut = workingTreeStreamTransform(conversion('auto-input', true), BLOB, SETTINGS);
+        const sut = workingTreeStreamTransform;
+        const transform = sut(conversion('auto-input', true), BLOB, SETTINGS);
 
         // Act
-        const result = streamed(sut as ChunkTransform, DIVERGENCE_BLOB);
+        const result = streamed(transform as ChunkTransform, DIVERGENCE_BLOB);
 
         // Assert
         expect(result).toBe(`$$Id$\n$Id: ${BLOB} $\n$Id: a\tb $\n$Id: ${BLOB} $Id$\n`);
@@ -471,8 +474,8 @@ describe('workingTreeStreamTransform', () => {
     describe('When streaming a chunk split inside a CRLF', () => {
       it('Then only lone LFs gain a CR', () => {
         // Arrange
-        const sut = workingTreeStreamTransform(conversion('text-crlf'), BLOB, SETTINGS);
-        const transform = sut as ChunkTransform;
+        const sut = workingTreeStreamTransform;
+        const transform = sut(conversion('text-crlf'), BLOB, SETTINGS) as ChunkTransform;
 
         // Act
         const result = dec(
