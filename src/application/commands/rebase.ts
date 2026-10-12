@@ -299,7 +299,7 @@ const replayOne = async (
   ourId: ObjectId,
   reflogAction: string,
 ): Promise<ReplayOutcome> => {
-  if (cData.parents.length === 1 && cData.parents[0] === ourId) {
+  if (cData.parents[0] === ourId) {
     await fastForwardHead(ctx, source, reflogAction);
     return { kind: 'committed', id: source };
   }
