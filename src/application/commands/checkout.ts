@@ -95,17 +95,24 @@ const isSwitch = (opts: CheckoutOptions): opts is CheckoutSwitchOptions =>
 const isPaths = (opts: CheckoutOptions): opts is CheckoutPathsOptions =>
   'paths' in opts && opts.paths !== undefined;
 
+/** A branch a switch attaches to, and the object that one read found it naming. */
+interface HeldBranch {
+  readonly ref: RefName;
+  readonly id: ObjectId;
+}
+
 /**
  * git's own branch-argument parse reads `refs/heads/<arg>` before anything else:
  * a name a branch carries keeps the switch on that branch, and only that.
  * `undefined` for a name that does not format as a refname either — git's own
  * `check_refname_format` gate before the same read.
  */
-const branchRefFor = async (ctx: Context, rev: string): Promise<RefName | undefined> => {
-  const name = formattedBranchRef(rev);
-  if (name === undefined) return undefined;
+const branchFor = async (ctx: Context, rev: string): Promise<HeldBranch | undefined> => {
+  const ref = formattedBranchRef(rev);
+  if (ref === undefined) return undefined;
   // git's `refs_read_ref`: a dangling or broken branch is no branch to attach to.
-  return (await resolveRefForReading(ctx, name)) === undefined ? undefined : name;
+  const id = await resolveRefForReading(ctx, ref);
+  return id === undefined ? undefined : { ref, id };
 };
 
 const INVALID_REF_CODE = 'INVALID_REF';
@@ -146,11 +153,10 @@ const resolveSwitch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise
   const arg = previousCheckoutArg(opts.rev);
   const named = await resolveSwitchTarget(ctx, arg);
   const branchName = await interpretBranchName(ctx, arg);
-  const onBranch = await branchRefFor(ctx, branchName);
-  if (onBranch !== undefined)
-    return { arg, branchName, onBranch, object: await resolveRef(ctx, onBranch) };
+  const branch = await branchFor(ctx, branchName);
+  if (branch !== undefined) return { arg, branchName, onBranch: branch.ref, object: branch.id };
   if (named === undefined) throw unresolvedSwitch(opts);
-  return { arg, branchName, onBranch, object: named };
+  return { arg, branchName, onBranch: undefined, object: named };
 };
 
 /**

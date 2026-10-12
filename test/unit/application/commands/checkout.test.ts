@@ -1906,3 +1906,24 @@ describe('Given a tag whose name a branch symref to nothing also carries', () =>
     });
   });
 });
+
+describe('checkout — the branch a switch reads', () => {
+  describe('Given an existing branch', () => {
+    describe('When checkout switches to it', () => {
+      it("Then the branch's own read also answers the object it names", async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithBranches();
+        const featurePath = `${ctx.layout.gitDir}/refs/heads/feature`;
+        const open = vi.spyOn(ctx.fs, 'openWithNoFollow');
+        const sut = checkout;
+
+        // Act
+        const result = await sut(ctx, { rev: 'feature' });
+
+        // Assert
+        expect(result.id).toBe(commitId);
+        expect(open.mock.calls.filter(([path]) => path === featurePath)).toHaveLength(3);
+      });
+    });
+  });
+});
