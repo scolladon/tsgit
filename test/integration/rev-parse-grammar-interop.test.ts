@@ -672,9 +672,13 @@ describe.skipIf(!GIT_AVAILABLE)('integration — a search pattern nesting repeti
   });
 
   describe.skipIf(!GNU_REGEX)('where the C library reads \\1 as a back-reference', () => {
+    // Each message ends in the newline `commit-tree -m` appends. git compiles the pattern
+    // without REG_NEWLINE, so `$` matches only past that newline and `.` reads it.
     describe.each([
-      { argument: ':/^(a+)\\1$', resolves: true },
-      { argument: 'HEAD^{/^(xx)\\1+$}', resolves: true },
+      { argument: ':/^(a+)\\1$', resolves: false },
+      { argument: 'HEAD^{/^(xx)\\1+$}', resolves: false },
+      { argument: ':/^(a+)\\1.$', resolves: true },
+      { argument: 'HEAD^{/^(xx)\\1+.$}', resolves: true },
     ])('Given $argument over long runs of one character', ({ argument, resolves }) => {
       describe('When git rev-parse and revParse read it', () => {
         it('Then both resolve the same object', async () => {
