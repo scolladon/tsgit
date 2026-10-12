@@ -27,7 +27,7 @@ const NS_PER_SECOND = 1_000_000_000n;
  */
 const INDEX_CACHE_MAX_RAW_BYTES = 32 * 1024 * 1024;
 
-const indexMtimeFrom = (stat: FileStat): { seconds: number; nanoseconds: number } => ({
+export const indexMtimeFrom = (stat: FileStat): { seconds: number; nanoseconds: number } => ({
   seconds: Math.floor(stat.mtimeMs / 1000),
   nanoseconds: stat.mtimeNs === undefined ? 0 : Number(stat.mtimeNs % NS_PER_SECOND),
 });

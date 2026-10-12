@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import type { AddOptions } from '../../../../src/application/commands/add.js';
 import { add, addAll as addAllInternal } from '../../../../src/application/commands/add.js';
@@ -2642,6 +2642,36 @@ describe('Given a nested work tree', () => {
 
       // Assert
       expect(result.added).toEqual(['a.txt', 'd/b']);
+    });
+  });
+});
+
+describe('Given a same-size rewrite in the tick of the index write, then an index rewrite a second later', () => {
+  const tickMs = 1_700_000_000_100;
+  const nextSecondMs = tickMs + 1000;
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  describe('When the rewritten file is added', () => {
+    it('Then its new content is staged', async () => {
+      // Arrange
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(tickMs);
+      const ctx = await seedFreshRepo({ 'm.txt': 'm1\n', 'y.txt': 'y\n' });
+      await add(ctx, ['m.txt']);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/m.txt`, 'm2\n');
+      vi.setSystemTime(nextSecondMs);
+      await add(ctx, ['y.txt']);
+      const sut = add;
+
+      // Act
+      await sut(ctx, ['m.txt']);
+
+      // Assert
+      const staged = (await readIndex(ctx)).entries.find((entry) => entry.path === 'm.txt');
+      expect(dec((await readBlob(ctx, staged?.id as ObjectId)).content)).toBe('m2\n');
     });
   });
 });

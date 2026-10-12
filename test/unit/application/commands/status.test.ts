@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
@@ -1416,6 +1416,39 @@ describe('Given a context that can run filter drivers and a modified tracked fil
 
       // Assert
       expect(changeFor(result, 'a.txt')?.unstaged).toBe('modified');
+    });
+  });
+});
+
+describe('Given a same-size rewrite in the tick of the index write, then an index rewrite a second later', () => {
+  const tickMs = 1_700_000_000_100;
+  const nextSecondMs = tickMs + 1000;
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  describe('When status is computed', () => {
+    it('Then the rewritten file is reported modified in the working tree', async () => {
+      // Arrange
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(tickMs);
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/y.txt`, 'y\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/m.txt`, 'm1\n');
+      await add(ctx, ['y.txt', 'm.txt']);
+      await commit(ctx, { message: 'first', author });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/m.txt`, 'm2\n');
+      vi.setSystemTime(nextSecondMs);
+      await rm(ctx, ['y.txt']);
+      const sut = status;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(changeFor(result, 'm.txt')?.unstaged).toBe('modified');
     });
   });
 });
