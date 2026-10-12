@@ -1,6 +1,6 @@
 # `writeObject`
 
-Write any `GitObject` to storage as a loose object. Returns the resulting `ObjectId`. Idempotent — writing the same content twice yields the same id and is a no-op the second time.
+Write any `GitObject` to storage as a loose object. Returns the resulting `ObjectId`. Idempotent — writing the same content twice yields the same id. As git's `odb_freshen_object` does, when any object source (loose, packed, or an alternate) already holds the object, no bytes are written; that copy's modification time is set to now instead, so a later prune sees it as recent.
 
 ## Signature
 
