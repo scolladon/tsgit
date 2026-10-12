@@ -13,11 +13,18 @@ interface CheckoutSwitchOptions {
   readonly rev: string;
   readonly detach?: boolean;
   readonly force?: boolean;
+  readonly createBranch?: CheckoutCreateBranch;  // git's `checkout -b`
+}
+
+interface CheckoutCreateBranch {
+  readonly name: string;
+  readonly track?: BranchTrack;                  // `--track[=direct|inherit]`
+  readonly noTrack?: boolean;                    // `--no-track`
 }
 
 interface CheckoutPathsOptions {
   readonly paths: ReadonlyArray<string>;
-  readonly source?: 'index' | 'HEAD' | ObjectId;
+  readonly source?: 'index' | string;            // 'index', or a revision naming a commit or a tree
 }
 ```
 
@@ -27,12 +34,14 @@ interface CheckoutPathsOptions {
 |---|---|---|
 | **Switch** | `{ rev }` | Materialise `rev`'s tree onto the working tree, commit a new index, move HEAD. Atomic per-file. |
 | **Restore from index** (default) | `{ paths }` (no `source` or `source: 'index'`) | Restore staged content into the working tree. Index untouched. |
-| **Restore from HEAD or tree** | `{ paths, source: 'HEAD' \| <ObjectId> }` | Restore content from HEAD's tree (or an arbitrary tree). Index entries for the listed paths are also rewritten. |
+| **Restore from a revision** | `{ paths, source: <revision> }` | Restore content from the tree of a commit or tree-ish: a branch or tag name, `HEAD`, an object id or an expression such as `HEAD~1`. Index entries for the listed paths are also rewritten. |
+| **Create and switch** | `{ rev, createBranch }` | Create `createBranch.name` at `rev` (with `track` / `noTrack` as [`branch.create`](branch.md) takes them), then switch to it. Refuses `INVALID_OPTION` with `detach`, and `BRANCH_EXISTS` for a name already taken, before the work tree moves. |
 
 ## Behaviour
 
 - **The branch lookup runs first, whatever `detach` says.** Switch mode reads `rev` as `refs/heads/<rev>` before anything else, the way git's own branch-argument parse does. A name a branch carries attaches HEAD to that branch — or checks out the same commit detached when `detach: true`. A name no branch carries goes down git's revision ladder instead and **detaches** HEAD onto what it finds: a full object id first, then the tag and remote-tracking namespaces in gitrevisions order, then an unambiguous abbreviated id. So `detach` decides only whether a *branch* name attaches; it no longer decides how `rev` is resolved, and a tag or a remote-tracking name checks out detached without it.
 - **The reflog entry echoes the argument you passed.** `checkout: moving from <old> to <rev>` carries `rev` verbatim — the branch name, the tag, or the object id exactly as you spelled it — where it used to abbreviate an id to seven characters. git echoes the argument it was handed.
+- **A switch target must peel to a commit.** A tag peels to the commit it names; a tree refuses `CHECKOUT_NON_COMMIT`. A `rev` no revision answers matches nothing as a pathspec (`PATHSPEC_NO_MATCH`), or, under `createBranch`, refuses `CHECKOUT_START_POINT_NOT_COMMIT`.
 - **Dirty-tree guard.** Switch mode refuses to overwrite tracked modifications or to clobber untracked paths that would collide. Use `force: true` to override. The "is something already here?" probe does not follow symbolic links, so a **dangling** symlink at a target path counts as occupying it and refuses, rather than being silently replaced.
 - **Atomicity.** Per-file (matches canonical git). The index commit is atomic; working-tree writes are not all-or-nothing if power is cut mid-write.
 - **Sparse checkout.** Switch mode honours the active sparse pattern on the target branch.
@@ -51,6 +60,12 @@ await repo.checkout({ paths: ['src/foo.ts'] });
 // Restore a file from HEAD's tree
 await repo.checkout({ paths: ['src/foo.ts'], source: 'HEAD' });
 
+// Restore a file from another revision
+await repo.checkout({ paths: ['src/foo.ts'], source: 'HEAD~1' });
+
+// Create a branch at a start point and switch to it
+await repo.checkout({ rev: 'origin/main', createBranch: { name: 'topic' } });
+
 // Force-switch through a dirty tree
 await repo.checkout({ rev: 'main', force: true });
 ```
@@ -58,6 +73,10 @@ await repo.checkout({ rev: 'main', force: true });
 ## Throws
 
 - `CHECKOUT_OVERWRITE_DIRTY` — switch without `force` against a dirty working tree.
+- `CHECKOUT_NON_COMMIT` — switch mode where `rev` names a tree.
+- `CHECKOUT_START_POINT_NOT_COMMIT` — `createBranch` whose start point names no revision; `revision` and `branch` carry both.
+- `BRANCH_EXISTS` — `createBranch.name` is already a branch.
+- `INVALID_OPTION` — `createBranch` combined with `detach`.
 - `BRANCH_NOT_FOUND` — switch mode where `rev` names no branch and resolves to nothing on the revision ladder either; `name` carries `refs/heads/<rev>`, the branch git names in its own refusal.
 - `INVALID_REF` — `rev` cannot be spelled as a ref name and does not resolve as an object id.
 - `AMBIGUOUS_OID_PREFIX` — an abbreviated `rev` matches more than one object.
