@@ -319,9 +319,13 @@ done
 # fsck roots / unreadable worktree HEAD / per-copy referents, branch-tracking
 # valueless merges, rebase keep-empty and label reflogs, raw --no-commit merge
 # message, squash ident reads, GBK euro sign) add 999 B more (1 399 300 B,
-# past 1366 KiB), hence 1367.
+# past 1366 KiB), hence 1367. The second ref-lookup perf round (a loose miss
+# tells absence from a file in its path only when packed-refs holds the name,
+# one read of a branch or start point per command, one unlink per branch-state
+# file, the rev-list typing walk's shallow set read once) adds 1 678 B more
+# (1 400 978 B, past 1368 KiB), hence 1369.
 # Per-row size-limit attribution: docs/design/bundle-size-optimization.md.
-SIZE_CAP=$((1367 * 1024))
+SIZE_CAP=$((1369 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
