@@ -1304,13 +1304,61 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-subst interop', () => {
       });
     });
 
-    const utf16 = (text: string, order: 'utf16le' | 'ucs2be'): string =>
+    type Utf16Order = 'utf16le' | 'ucs2be';
+    const BIG_ENDIAN: Utf16Order = 'ucs2be';
+    const BYTE_ORDER_MARK = '\ufeff';
+
+    const utf16 = (text: string, order: Utf16Order): string =>
       order === 'utf16le'
         ? Buffer.from(text, 'utf16le').toString('latin1')
         : Buffer.from(text, 'utf16le').swap16().toString('latin1');
 
+    /**
+     * git hands `UTF-16` to the platform iconv, which picks the byte order: glibc writes the
+     * BOM and code units in host order, libiconv (macOS) big-endian.
+     */
+    const iconvUtf16Order: Utf16Order =
+      process.platform === 'linux' && os.endianness() === 'LE' ? 'utf16le' : BIG_ENDIAN;
+
+    /**
+     * Each file a UTF-16 commit's header-parsing expansion transcodes: a BOM and the buffer in
+     * `order`, then the rest as is.
+     */
+    const utf16Transcoded = (order: Utf16Order): Readonly<Record<string, string>> => ({
+      subject: `${utf16(`${BYTE_ORDER_MARK}[UTF-16|`, order)}]`,
+      header: `${utf16(`${BYTE_ORDER_MARK}pre-é only\n[UTF-16`, order)}]\n`,
+      cjk: `${utf16(`${BYTE_ORDER_MARK}pre-日本 only\n[UTF-16`, order)}]\n`,
+    });
+
+    const pickFiles = (
+      files: ReadonlyMap<string, string>,
+      names: ReadonlyArray<string>,
+    ): Readonly<Record<string, string | undefined>> =>
+      Object.fromEntries(names.map((name) => [name, files.get(name)]));
+
+    const omitFiles = (
+      files: ReadonlyMap<string, string>,
+      names: ReadonlyArray<string>,
+    ): ReadonlyMap<string, string> => new Map([...files].filter(([name]) => !names.includes(name)));
+
+    describe('When the encoding is UTF-16', () => {
+      it('Then git transcodes in its platform iconv byte order and tsgit big-endian, both behind a BOM', async () => {
+        // Arrange
+        const dir = await encodedRepo('enc-utf16', 'UTF-16', Buffer.from('subj\n'));
+        const transcoded = Object.keys(utf16Transcoded(BIG_ENDIAN));
+
+        // Act
+        const fromGit = gitFiles(dir, 'HEAD');
+        const fromTsgit = await tsgitFiles(dir, 'HEAD');
+
+        // Assert
+        expect(pickFiles(fromGit, transcoded)).toEqual(utf16Transcoded(iconvUtf16Order));
+        expect(pickFiles(fromTsgit, transcoded)).toEqual(utf16Transcoded(BIG_ENDIAN));
+        expect(omitFiles(fromTsgit, transcoded)).toEqual(omitFiles(fromGit, transcoded));
+      });
+    });
+
     describe.each([
-      ['UTF-16', 'enc-utf16', 'header', `\xfe\xff${utf16('pre-é only\n[UTF-16', 'ucs2be')}]\n`],
       ['UTF-16LE', 'enc-utf16le', 'header', `${utf16('pre-é only\n[UTF-16LE', 'utf16le')}]\n`],
       ['ISO-2022-JP', 'enc-iso2022jp', 'cjk', 'pre-\u001b$BF|K\\\u001b(B only\n[ISO-2022-JP]\n'],
     ])('When the encoding is %s', (encoding, slug, file, expected) => {

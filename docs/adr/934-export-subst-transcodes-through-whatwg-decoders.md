@@ -30,3 +30,9 @@ divergence, recorded here.
 ## Consequences
 
 - The encoder table is built once per label, only when such a commit is archived.
+- `UTF-16`, whose label names no byte order, is written big-endian behind a BOM: libiconv's
+  output (git on macOS) and the form git writes itself when built with `ICONV_OMITS_BOM`
+  (`utf8.c`, `reencode_string_len`). git otherwise defers to the platform iconv, and glibc's
+  writes the BOM and code units in host order (`iconvdata/utf-16.c`), little-endian on
+  x86_64 — so on glibc hosts tsgit's bytes differ from that host's git. The interop test pins
+  each side per platform.
