@@ -23,16 +23,16 @@ import { isSameKind } from '../../domain/diff/mode-kind.js';
 import type { IndexEntry } from '../../domain/git-index/index-entry.js';
 import { deriveWorkingMode, FILE_MODE, type FileMode } from '../../domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
-import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
-import { applyCleanFilter } from './internal/apply-clean-filter.js';
+import { convertToGit } from './internal/convert-blob.js';
 import { type IndexMtime, isEntryStatClean } from './internal/is-entry-stat-clean.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import type { AttributeProvider } from './internal/read-gitattributes.js';
 import { assertBigFileThresholdValid } from './internal/repo-settings-gate.js';
 import { requireWorkTree } from './internal/repo-state.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
+import { readEolSettings, resolveConversion } from './resolve-conversion.js';
 import { resolveFilterDriver, streamsThroughFilter } from './resolve-filter-driver.js';
 
 export type WorkingTreeComparison =
@@ -65,21 +65,37 @@ export const isWorkingTreeModified = (comparison: WorkingTreeComparison): boolea
 
 const LINK_ENCODER = new TextEncoder();
 
+/** No attribute sources: a caller without a provider still gets `core.autocrlf`. */
+const EMPTY_PROVIDER: AttributeProvider = {
+  sourcesForPath: async () => ({ sources: [], macros: new Map() }),
+};
+
 /**
- * The worktree bytes as git hashes them: through the path's clean filter.
+ * The worktree bytes as git hashes them (`ce_compare_data`): through the path's
+ * conversion, never writing an object and never raising a safecrlf refusal.
  * Conversion context — git validates every `[filter "<d>"].required` when it
  * actually clean-converts a path, and dies where `convert_to_git` does.
- * Symlinks are never filtered — callers guard this.
+ * Symlinks are never converted — callers guard this.
  */
-const cleanWorktreeBytes = async (
+const convertedWorktreeBytes = async (
   ctx: Context,
-  runner: CommandRunner | undefined,
   provider: AttributeProvider,
-  path: FilePath,
-  bytes: Uint8Array,
+  entry: IndexEntry,
+  raw: Uint8Array,
 ): Promise<Uint8Array> => {
-  const choice = await resolveFilterDriver(ctx, provider, path, { eagerSectionValidation: true });
-  return applyCleanFilter(ctx, runner, path, bytes, choice);
+  const settings = await readEolSettings(ctx);
+  const conversion = await resolveConversion(ctx, provider, entry.path, settings, {
+    eagerSectionValidation: true,
+  });
+  const converted = await convertToGit(ctx, {
+    path: entry.path,
+    bytes: raw,
+    conversion,
+    route: 'compare',
+    settings,
+    indexBlob: entry.id,
+  });
+  return converted.bytes;
 };
 
 /**
@@ -115,7 +131,9 @@ const statOnlyVerdict = (
   // carry the staged raw bytes, and git reports it modified without running
   // the clean filter (measured: a size-changing edit under a malformed
   // `[filter *].required` leaves `git status` at exit 0).
-  if (!stat.isSymbolicLink && entry.fileSize >>> 0 !== stat.size >>> 0) {
+  // A recorded size of 0 says the stat was never taken (read-tree, cacheinfo),
+  // so git's `ie_modified` does not trust the size and compares content.
+  if (!stat.isSymbolicLink && entry.fileSize !== 0 && entry.fileSize >>> 0 !== stat.size >>> 0) {
     return { status: 'modified', worktreeMode };
   }
   return undefined;
@@ -165,12 +183,10 @@ export const compareWorkingTreeDelta = async (
   // The file exists (lstat succeeded) but cannot be read — never report an
   // unverifiable file as `unchanged`; git's failed `index_path` reads changed.
   if (raw === undefined) return { status: 'modified', worktreeMode };
-  // Route regular-file bytes through the clean filter before hashing when a
-  // provider is available. Symlink targets are always hashed raw.
-  const content =
-    !stat.isSymbolicLink && provider !== undefined
-      ? await cleanWorktreeBytes(ctx, ctx.command, provider, entry.path, raw)
-      : raw;
+  // Symlink targets are always hashed raw.
+  const content = stat.isSymbolicLink
+    ? raw
+    : await convertedWorktreeBytes(ctx, provider ?? EMPTY_PROVIDER, entry, raw);
   const { id } = await serializeAndHash(ctx, { type: 'blob', id: '' as ObjectId, content });
   // Content dominates: a changed blob is `modified` regardless of mode. Only a
   // same-blob mode difference (exec bit) is `mode-changed`.

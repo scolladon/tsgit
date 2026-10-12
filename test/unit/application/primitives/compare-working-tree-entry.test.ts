@@ -1026,3 +1026,129 @@ describe('Given a malformed core.bigFileThreshold and a filter driver engaged on
     });
   });
 });
+
+describe('compareWorkingTreeDelta line-ending conversion', () => {
+  const CRLF_WORKTREE = 'a\r\nb\r\n';
+  const staged = async (
+    stagedText: string,
+    worktreeText: string,
+    settings: { readonly config?: string; readonly attributes?: string },
+  ) => {
+    const { ctx, entry } = await seedFile('f', stagedText);
+    await ctx.fs.writeUtf8(work(ctx, 'f'), worktreeText);
+    if (settings.attributes !== undefined) {
+      await ctx.fs.writeUtf8(work(ctx, '.gitattributes'), settings.attributes);
+    }
+    if (settings.config !== undefined) {
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, settings.config);
+    }
+    invalidateConfigCache(ctx);
+    return { ctx, entry, provider: await buildAttributeProvider(ctx) };
+  };
+
+  describe('Given an LF blob, core.autocrlf true and a CRLF worktree file', () => {
+    describe('When compared with the attribute provider', () => {
+      it('Then the entry is unchanged', async () => {
+        // Arrange
+        const { ctx, entry, provider } = await staged('a\nb\n', CRLF_WORKTREE, {
+          config: '[core]\n\tautocrlf = true\n',
+        });
+        const sut = compareWorkingTreeEntry;
+
+        // Act
+        const result = await sut(ctx, entry, provider);
+
+        // Assert
+        expect(result).toBe('unchanged');
+      });
+    });
+
+    describe('When compared without a provider', () => {
+      it('Then the entry is unchanged', async () => {
+        // Arrange
+        const { ctx, entry } = await staged('a\nb\n', CRLF_WORKTREE, {
+          config: '[core]\n\tautocrlf = true\n',
+        });
+        const sut = compareWorkingTreeEntry;
+
+        // Act
+        const result = await sut(ctx, entry);
+
+        // Assert
+        expect(result).toBe('unchanged');
+      });
+    });
+  });
+
+  describe('Given an LF blob, no autocrlf and a CRLF worktree file', () => {
+    describe('When compared', () => {
+      it('Then the entry is modified', async () => {
+        // Arrange
+        const { ctx, entry, provider } = await staged('a\nb\n', CRLF_WORKTREE, {});
+        const sut = compareWorkingTreeEntry;
+
+        // Act
+        const result = await sut(ctx, entry, provider);
+
+        // Assert
+        expect(result).toBe('modified');
+      });
+    });
+  });
+
+  describe("Given an index CRLF text blob, '* text=auto' and the same CRLF worktree file", () => {
+    describe('When compared', () => {
+      it('Then the entry is unchanged', async () => {
+        // Arrange
+        const { ctx, entry, provider } = await staged(CRLF_WORKTREE, CRLF_WORKTREE, {
+          attributes: '* text=auto\n',
+        });
+        const sut = compareWorkingTreeEntry;
+
+        // Act
+        const result = await sut(ctx, entry, provider);
+
+        // Assert
+        expect(result).toBe('unchanged');
+      });
+    });
+  });
+
+  describe('Given core.safecrlf true and a lossy worktree file', () => {
+    describe('When compared', () => {
+      it('Then it reports modified without refusing', async () => {
+        // Arrange
+        const { ctx, entry, provider } = await staged('a\nb\n', 'a\r\nb\nc\n', {
+          config: '[core]\n\tautocrlf = true\n\tsafecrlf = true\n',
+        });
+        const sut = compareWorkingTreeEntry;
+
+        // Act
+        const result = await sut(ctx, entry, provider);
+
+        // Assert
+        expect(result).toBe('modified');
+      });
+    });
+  });
+
+  describe('Given an armed entry recorded with size 0 and a converted worktree file', () => {
+    describe('When comparing the delta', () => {
+      it('Then the size 0 falls through to the content compare, as git does', async () => {
+        // Arrange
+        const { ctx, entry, provider } = await staged('a\nb\n', CRLF_WORKTREE, {
+          config: '[core]\n\tautocrlf = true\n',
+        });
+        const unsized: IndexEntry = { ...entry, fileSize: 0 };
+        const indexMtime = { seconds: entry.mtimeSeconds + 10, nanoseconds: 0 };
+        const sut = compareWorkingTreeDelta;
+
+        // Act
+        const result = await sut(ctx, unsized, provider, indexMtime);
+
+        // Assert
+        expect(result.status).toBe('unchanged');
+      });
+    });
+  });
+});

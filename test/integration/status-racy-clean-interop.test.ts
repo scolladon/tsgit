@@ -11,7 +11,8 @@
  *   unique:         status honours ie_match_stat (racy re-hash, CE_VALID, skip-worktree)
  *   interopSurface: status
  */
-import { writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
@@ -19,7 +20,7 @@ import { add } from '../../src/application/commands/add.js';
 import { init } from '../../src/application/commands/init.js';
 import { status } from '../../src/application/commands/status.js';
 import type { Context } from '../../src/ports/context.js';
-import { GIT_AVAILABLE, makePeerPair, type PeerPair, runGitAsync } from './interop-helpers.js';
+import { GIT_AVAILABLE, git, makePeerPair, type PeerPair, runGitAsync } from './interop-helpers.js';
 
 describe.skipIf(!GIT_AVAILABLE)('status racy-clean interop', () => {
   let pair: PeerPair;
@@ -119,6 +120,56 @@ describe.skipIf(!GIT_AVAILABLE)('status racy-clean interop', () => {
         expect(peerPorcelain).toBe('A  h.txt');
         const changed = result.changes.find((c) => c.path === 'h.txt');
         expect(changed?.unstaged).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an LF blob git checked out CRLF, its entry racily clean', () => {
+    const entrySize = (dir: string): string =>
+      /size: (\d+)/.exec(git(dir, 'ls-files', '--debug', 'f'))?.[1] ?? '';
+
+    // Equal index and file timestamps make the entry racily clean without a second-boundary race.
+    const makeRacy = async (dir: string, autoCrlf: boolean): Promise<void> => {
+      await writeFile(path.join(dir, 'f'), 'a\nb\n');
+      await runGitAsync(['-C', dir, 'add', 'f']);
+      await runGitAsync(['-C', dir, 'commit', '-q', '-m', 'one']);
+      await runGitAsync(['-C', dir, 'config', 'core.autocrlf', 'true']);
+      await rm(path.join(dir, 'f'));
+      await runGitAsync(['-C', dir, 'checkout', '--', 'f']);
+      if (!autoCrlf) await runGitAsync(['-C', dir, 'config', '--unset', 'core.autocrlf']);
+      execFileSync('touch', ['-r', path.join(dir, 'f'), path.join(dir, '.git', 'index')]);
+      await writeFile(path.join(dir, 'g'), 'g\n');
+    };
+
+    describe('When the index is rewritten under core.autocrlf=true', () => {
+      it('Then the entry keeps size 6 in git and in tsgit', async () => {
+        // Arrange
+        await makeRacy(pair.peer, true);
+        await makeRacy(pair.ours, true);
+
+        // Act
+        await runGitAsync(['-C', pair.peer, 'add', 'g']);
+        await add(ctx, ['g']);
+
+        // Assert
+        expect(entrySize(pair.peer)).toBe('6');
+        expect(entrySize(pair.ours)).toBe('6');
+      });
+    });
+
+    describe('When the index is rewritten without core.autocrlf', () => {
+      it('Then the entry is smudged to size 0 in git and in tsgit', async () => {
+        // Arrange
+        await makeRacy(pair.peer, false);
+        await makeRacy(pair.ours, false);
+
+        // Act
+        await runGitAsync(['-C', pair.peer, 'add', 'g']);
+        await add(ctx, ['g']);
+
+        // Assert
+        expect(entrySize(pair.peer)).toBe('0');
+        expect(entrySize(pair.ours)).toBe('0');
       });
     });
   });

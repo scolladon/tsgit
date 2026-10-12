@@ -73,6 +73,29 @@ describe('smudgeRacilyClean', () => {
     });
   });
 
+  describe('Given core.autocrlf true, a racily-clean entry for an LF blob and its CRLF checkout', () => {
+    describe('When smudging racily-clean entries', () => {
+      it('Then the entry is kept (size unchanged) because the comparison converts the worktree', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tautocrlf = true\n');
+        await write(ctx, TRACKED, 'a\r\nb\r\n');
+        await add(ctx, [TRACKED]);
+        await write(ctx, TRACKED, 'a\r\nb\r\n');
+        const entries = await entriesAsRead(ctx);
+        const sut = smudgeRacilyClean;
+
+        // Act
+        const result = await sut(ctx, entries);
+
+        // Assert
+        expect(entries[0]?.fileSize).toBe(6);
+        expect(result).toEqual(entries);
+      });
+    });
+  });
+
   describe('Given a racy carried-over entry whose content is unchanged', () => {
     describe('When the index is written', () => {
       it('Then the entry is kept as is', async () => {

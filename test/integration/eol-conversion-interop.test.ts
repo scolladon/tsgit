@@ -13,7 +13,7 @@
  *   unique:         canonical git converts line endings per core.autocrlf, core.eol and attribute exactly as the transcribed matrices record
  *   interopSurface: add, checkout
  */
-import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -715,20 +715,24 @@ describe.skipIf(!GIT_AVAILABLE)('eol conversion interop', () => {
     });
 
     describe('When status is clean under the new text=auto and add --renormalize . then runs', () => {
-      it('Then git stages M and tsgit stages the same blob', async () => {
+      it('Then both tools read clean before and git stages M while tsgit stages the same blob', async () => {
         // Arrange
         const twin = committedTwin({ f: CRLF_TWO });
         const statusBefore = git(twin.gitDir, 'status', '--short');
+        const tsgitBefore = await status(createNodeContext({ workDir: twin.tsDir }));
         const sut = renormalizeOnBoth;
 
         // Act
         const result = await sut(twin, ['.'], ['f']);
+        const tsgitAfter = await status(createNodeContext({ workDir: twin.tsDir }));
 
         // Assert
-        // tsgit's own status reads the attributes only from the status-conversion part on;
-        // here the git side and the staged entry id of both tools are compared.
         expect(statusBefore).toBe('');
+        expect(tsgitBefore.changes).toEqual([]);
         expect(git(twin.gitDir, 'status', '--short')).toBe('M  f\n');
+        expect(
+          tsgitAfter.changes.map(({ path: p, staged, unstaged }) => [p, staged, unstaged]),
+        ).toEqual([['f', 'modified', undefined]]);
         expect(result.tsgit.stage).toBe(result.git.stage);
       });
     });
@@ -836,6 +840,155 @@ describe.skipIf(!GIT_AVAILABLE)('eol conversion interop', () => {
         expect(gitRun.exitCode).toBe(0);
         expect(lsStage(twin.tsDir)).toBe(lsStage(twin.gitDir));
         expect(lsStage(twin.tsDir)).not.toContain('\tu');
+      });
+    });
+  });
+
+  describe('Given a worktree produced by git and compared by git and tsgit status', () => {
+    const FUTURE_SECONDS = 5;
+    const LF_TWO = bytesOf('a\nb\n');
+    const CRLF_TWO = bytesOf('a\r\nb\r\n');
+
+    const commitAll = (dir: string): void => {
+      git(dir, 'add', '.');
+      git(dir, 'commit', '-q', '-m', 'one');
+    };
+
+    const checkoutByGit = (dir: string, name: string): void => {
+      rmSync(path.join(dir, name));
+      git(dir, 'checkout', '--', name);
+    };
+
+    // Moves the mtime off the recorded stat so both tools must compare content, not the stat cache.
+    const unsettle = (dir: string, name: string): void => {
+      const when = Date.now() / 1000 + FUTURE_SECONDS;
+      utimesSync(path.join(dir, name), when, when);
+    };
+
+    const statusOfBoth = async (dir: string) => ({
+      git: git(dir, 'status', '--porcelain'),
+      tsgit: (await status(createNodeContext({ workDir: dir }))).changes.map(
+        ({ path: p, staged, unstaged }) => [p, staged, unstaged],
+      ),
+    });
+
+    describe('When an LF blob is checked out CRLF by git under core.autocrlf=true', () => {
+      it('Then both tools read clean', async () => {
+        // Arrange
+        const dir = freshDir();
+        initEolRepo(dir);
+        writeFileSync(path.join(dir, 'f'), LF_TWO);
+        commitAll(dir);
+        setEolConfig(dir, { autoCrlf: 'true' });
+        checkoutByGit(dir, 'f');
+        unsettle(dir, 'f');
+        const sut = statusOfBoth;
+
+        // Act
+        const result = await sut(dir);
+
+        // Assert
+        expect(readFileSync(path.join(dir, 'f'))).toEqual(Buffer.from(CRLF_TWO));
+        expect(result).toEqual({ git: '', tsgit: [] });
+      });
+    });
+
+    describe('When the same CRLF worktree is read without core.autocrlf', () => {
+      it('Then both tools report the file modified', async () => {
+        // Arrange
+        const dir = freshDir();
+        initEolRepo(dir);
+        writeFileSync(path.join(dir, 'f'), LF_TWO);
+        commitAll(dir);
+        setEolConfig(dir, { autoCrlf: 'true' });
+        checkoutByGit(dir, 'f');
+        git(dir, 'config', '--unset', 'core.autocrlf');
+        unsettle(dir, 'f');
+        const sut = statusOfBoth;
+
+        // Act
+        const result = await sut(dir);
+
+        // Assert
+        expect(result).toEqual({ git: ' M f\n', tsgit: [['f', undefined, 'modified']] });
+      });
+    });
+
+    describe('When an index CRLF blob meets a CRLF worktree under core.autocrlf=true', () => {
+      it('Then both tools read it the same way', async () => {
+        // Arrange
+        const dir = freshDir();
+        initEolRepo(dir);
+        writeFileSync(path.join(dir, 'f'), CRLF_TWO);
+        commitAll(dir);
+        setEolConfig(dir, { autoCrlf: 'true' });
+        unsettle(dir, 'f');
+        const sut = statusOfBoth;
+
+        // Act
+        const result = await sut(dir);
+
+        // Assert
+        expect(result).toEqual({ git: '', tsgit: [] });
+      });
+    });
+
+    describe('When an LF worktree sits under a text eol=crlf attribute', () => {
+      it('Then both tools read clean', async () => {
+        // Arrange
+        const dir = freshDir();
+        initEolRepo(dir, { infoAttributes: ['f text eol=crlf'] });
+        writeFileSync(path.join(dir, 'f'), LF_TWO);
+        commitAll(dir);
+        unsettle(dir, 'f');
+        const sut = statusOfBoth;
+
+        // Act
+        const result = await sut(dir);
+
+        // Assert
+        expect(result).toEqual({ git: '', tsgit: [] });
+      });
+    });
+
+    describe('When git expands $Id$ on checkout under the ident attribute', () => {
+      it('Then both tools read the expanded worktree clean', async () => {
+        // Arrange
+        const dir = freshDir();
+        initEolRepo(dir, { infoAttributes: ['a ident'] });
+        writeFileSync(path.join(dir, 'a'), IDENT_FIXTURES.a);
+        commitAll(dir);
+        checkoutByGit(dir, 'a');
+        unsettle(dir, 'a');
+        const sut = statusOfBoth;
+
+        // Act
+        const result = await sut(dir);
+
+        // Assert
+        expect(readFileSync(path.join(dir, 'a')).toString('latin1')).toMatch(
+          /\$Id: [0-9a-f]{40} \$/,
+        );
+        expect(result).toEqual({ git: '', tsgit: [] });
+      });
+    });
+
+    describe('When a raw foreign $Id: ...$ blob is read under the ident attribute', () => {
+      it('Then both tools report the file modified', async () => {
+        // Arrange
+        const dir = freshDir();
+        initEolRepo(dir, { infoAttributes: [] });
+        writeFileSync(path.join(dir, 'a'), IDENT_FIXTURES.b);
+        commitAll(dir);
+        writeInfoAttributes(dir, ['a ident']);
+        unsettle(dir, 'a');
+        const sut = statusOfBoth;
+
+        // Act
+        const result = await sut(dir);
+
+        // Assert
+        expect(result).toEqual({ git: ' M a\n', tsgit: [['a', undefined, 'modified']] });
       });
     });
   });
