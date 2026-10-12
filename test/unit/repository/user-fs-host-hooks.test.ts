@@ -22,17 +22,20 @@ const WORKTREE = '/repo-wt';
 const DRIVE_OBJECTS = 'C:\\host\\objects';
 /** A POSIX memory fs reads a drive path relative to its root, so this root stands in for drive C:. */
 const DRIVE_C = '/volume';
+/** A POSIX directory whose name holds a backslash: a name to a POSIX reader, a separator to a Windows one. */
+const BACKSLASH_OBJECTS = `${REPO}/alt\\objects`;
 
 /** git holds an alternate by its real path, every separator spelt `/` — git for Windows' form too. */
 const heldForm = (hostPath: string): string => hostPath.split(path.sep).join('/');
 
 /**
- * How the caller's POSIX memory fs refuses a host path: outside its root on POSIX; on Windows a
- * drive path reads relative to that root, where nothing resolves.
+ * How the caller's POSIX memory fs refuses a host path, read the POSIX way whatever the host:
+ * outside its root on POSIX; on Windows a drive path is one relative name under the objects dir,
+ * where nothing is.
  */
 const callerFsRefusalOf = (hostPath: string) =>
   nativePolicy.windowsSyntax
-    ? { reason: 'unresolvable', path: hostPath }
+    ? { reason: 'not-a-directory', path: `${REPO}/.git/objects/${hostPath}` }
     : { reason: 'unreachable', path: hostPath, code: 'PERMISSION_DENIED' };
 
 interface HostHooks {
@@ -68,6 +71,13 @@ const userFsListing = async (alternate: string): Promise<MemoryFileSystem> => {
   const fs = new MemoryFileSystem({ rootDir: REPO });
   await fs.writeUtf8(`${REPO}/.git/HEAD`, 'ref: refs/heads/main\n');
   await fs.writeUtf8(ALTERNATES_LIST, `${alternate}\n`);
+  return fs;
+};
+
+/** A caller fs listing an alternate it also holds, as a directory. */
+const userFsHolding = async (alternate: string): Promise<MemoryFileSystem> => {
+  const fs = await userFsListing(alternate);
+  await fs.mkdir(alternate);
   return fs;
 };
 
@@ -171,7 +181,7 @@ describe('openRepository host hooks', () => {
 
   describe('Given a Windows node runtime opened over a caller-supplied fs whose alternates name a drive path', () => {
     describe('When the object store resolves the alternate', () => {
-      it('Then the path reads as absolute, nothing resolves under the caller fs and no host fs is built', async () => {
+      it('Then the path reads as one POSIX name under the objects dir, nothing is there and no host fs is built', async () => {
         // Arrange
         const hooks = hostHooks();
         const fallback = { ...nodeFallback(hooks), windowsPathSyntax: true };
@@ -185,9 +195,59 @@ describe('openRepository host hooks', () => {
         const result = await sut(repo.ctx);
 
         // Assert
-        expect(result.unusable).toMatchObject([{ reason: 'unresolvable', path: DRIVE_OBJECTS }]);
+        expect(result.unusable).toMatchObject([
+          { reason: 'not-a-directory', path: `${REPO}/.git/objects/${DRIVE_OBJECTS}` },
+        ]);
         expect(result.sources).toEqual([{ objectsDir: `${REPO}/.git/objects`, local: true }]);
         expect(hooks.makeConfinedFs).not.toHaveBeenCalled();
+        await repo.dispose();
+      });
+    });
+  });
+
+  describe('Given a caller-supplied POSIX fs whose alternates name a directory with a backslash in its name', () => {
+    describe('When the object store resolves the alternate on a POSIX node runtime', () => {
+      it('Then the directory is linked as a source', async () => {
+        // Arrange
+        const fallback = { ...nodeFallback(hostHooks()), windowsPathSyntax: false };
+        const repo = await openRepository(
+          { cwd: REPO, fs: await userFsHolding(BACKSLASH_OBJECTS) },
+          fallback,
+        );
+        const sut = objectSources;
+
+        // Act
+        const result = await sut(repo.ctx);
+
+        // Assert
+        expect(result.unusable).toEqual([]);
+        expect(result.sources).toEqual([
+          { objectsDir: `${REPO}/.git/objects`, local: true },
+          { objectsDir: BACKSLASH_OBJECTS, local: false },
+        ]);
+        await repo.dispose();
+      });
+    });
+
+    describe('When the object store resolves the alternate on a Windows node runtime', () => {
+      it('Then the directory is linked the same way, the caller fs reading its paths the POSIX way', async () => {
+        // Arrange
+        const fallback = { ...nodeFallback(hostHooks()), windowsPathSyntax: true };
+        const repo = await openRepository(
+          { cwd: REPO, fs: await userFsHolding(BACKSLASH_OBJECTS) },
+          fallback,
+        );
+        const sut = objectSources;
+
+        // Act
+        const result = await sut(repo.ctx);
+
+        // Assert
+        expect(result.unusable).toEqual([]);
+        expect(result.sources).toEqual([
+          { objectsDir: `${REPO}/.git/objects`, local: true },
+          { objectsDir: BACKSLASH_OBJECTS, local: false },
+        ]);
         await repo.dispose();
       });
     });
