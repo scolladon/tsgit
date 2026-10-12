@@ -12,6 +12,8 @@
 
 import { invalidOption, workingTreeFileTooLarge } from '../../domain/commands/error.js';
 import { comparePaths } from '../../domain/diff/path-compare.js';
+import type { EolSettings } from '../../domain/eol/crlf-action.js';
+import type { EolNotice } from '../../domain/eol/crlf-conversion.js';
 import { operationAborted, TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
@@ -27,11 +29,11 @@ import { matchesPathspec } from '../../domain/pathspec/index.js';
 import { CHERRY_PICK, MERGE, REBASE, REVERT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
-import { applyCleanFilter } from '../primitives/internal/apply-clean-filter.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
 import { type CleanOrder, withCleanOrder } from '../primitives/internal/clean-order.js';
 import { limiterFor } from '../primitives/internal/concurrency.js';
 import type { ConcurrencyLimiter } from '../primitives/internal/concurrency-limiter.js';
+import { convertToGit } from '../primitives/internal/convert-blob.js';
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import { type IndexMtime, isEntryStatClean } from '../primitives/internal/is-entry-stat-clean.js';
@@ -42,7 +44,12 @@ import {
 } from '../primitives/internal/read-gitattributes.js';
 import { assertBigFileThresholdValid } from '../primitives/internal/repo-settings-gate.js';
 import { readIndex } from '../primitives/read-index.js';
-import { resolveFilterDriver, streamsThroughFilter } from '../primitives/resolve-filter-driver.js';
+import {
+  IDENTITY_CONVERSION,
+  readEolSettings,
+  resolveConversion,
+} from '../primitives/resolve-conversion.js';
+import { streamsThroughFilter } from '../primitives/resolve-filter-driver.js';
 import { MAX_WORKING_TREE_BLOB_BYTES, type WalkWorkingTreeEntry } from '../primitives/types.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { writeObject } from '../primitives/write-object.js';
@@ -96,6 +103,7 @@ export interface AddResult {
   readonly added: ReadonlyArray<FilePath>;
   readonly modified: ReadonlyArray<FilePath>;
   readonly removed: ReadonlyArray<FilePath>;
+  readonly eolNotices: ReadonlyArray<EolNotice>;
 }
 
 /**
@@ -117,6 +125,17 @@ export const add = (
   opts: AddOptions = {},
 ): Promise<AddResult> => withFilterProcessPool(ctx, () => addInScope(ctx, paths, opts));
 
+/** What converts a path on its way into the repository: its attributes and the eol settings. */
+interface ConversionScope {
+  readonly provider: AttributeProvider;
+  readonly settings: EolSettings;
+}
+
+const buildConversionScope = async (ctx: Context): Promise<ConversionScope> => ({
+  provider: await maybeBuildAttributeProvider(ctx),
+  settings: await readEolSettings(ctx),
+});
+
 const addInScope = async (
   ctx: Context,
   paths: ReadonlyArray<string>,
@@ -129,15 +148,15 @@ const addInScope = async (
   await assertNoPendingOperation(ctx, { except: [MERGE, CHERRY_PICK, REVERT, REBASE] });
   // Build the attribute provider ONCE per add invocation; a runner-less
   // context builds it only when a driver is required.
-  const provider = await maybeBuildAttributeProvider(ctx);
+  const scope = await buildConversionScope(ctx);
   if (opts.all === true) {
     if (paths.length !== 0) {
       throw invalidOption('all', 'pathspec must be empty when all=true');
     }
-    return addAll(ctx, undefined, provider);
+    return addAll(ctx, undefined, scope);
   }
   if (paths.length === 0) throw emptyPathspec();
-  return dispatchPathspec(ctx, paths, provider);
+  return dispatchPathspec(ctx, paths, scope);
 };
 
 // Branch on the resolved pathspec: pure literals that each name an
@@ -147,30 +166,30 @@ const addInScope = async (
 const dispatchPathspec = async (
   ctx: Context,
   paths: ReadonlyArray<string>,
-  provider: AttributeProvider | undefined,
+  scope: ConversionScope,
 ): Promise<AddResult> => {
   const resolved = resolvePathspec(paths);
   const { literalMustMatch } = resolved;
   await assertNoSymlinkedLeadingPath(ctx, resolved.symlinkScanTargets);
   if (!resolved.hasGlob && (await allLiteralsAreFiles(ctx, literalMustMatch))) {
-    return addLiteralOnly(ctx, literalMustMatch, provider);
+    return addLiteralOnly(ctx, literalMustMatch, scope);
   }
-  return addByPathspec(ctx, resolved, provider);
+  return addByPathspec(ctx, resolved, scope);
 };
 
 const addLiteralOnly = async (
   ctx: Context,
   validated: ReadonlyArray<FilePath>,
-  provider: AttributeProvider | undefined,
+  scope: ConversionScope,
 ): Promise<AddResult> => {
   const lock = await acquireIndexLock(ctx);
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
     const state = await readExistingEntries(ctx);
-    const staging = { ctx, provider, ...state, ensurePromisorConfigValid };
-    const { newEntries, added, modified } = await stageLiterals(staging, validated);
+    const staging = { ctx, scope, ...state, ensurePromisorConfigValid };
+    const { newEntries, added, modified, eolNotices } = await stageLiterals(staging, validated);
     await lock.commit(Array.from(newEntries.values()));
-    return { added, modified, removed: [] };
+    return { added, modified, removed: [], eolNotices };
   } finally {
     await lock.release();
   }
@@ -179,7 +198,7 @@ const addLiteralOnly = async (
 /** What every path is staged against: the index as read, and the add's attributes and guard. */
 interface Staging {
   readonly ctx: Context;
-  readonly provider: AttributeProvider | undefined;
+  readonly scope: ConversionScope;
   readonly entries: ReadonlyMap<FilePath, IndexEntry>;
   readonly indexMtime: IndexMtime | undefined;
   readonly ensurePromisorConfigValid: PromisorGuard;
@@ -193,21 +212,25 @@ const stageLiterals = async (
   readonly newEntries: ReadonlyMap<FilePath, IndexEntry>;
   readonly added: ReadonlyArray<FilePath>;
   readonly modified: ReadonlyArray<FilePath>;
+  readonly eolNotices: ReadonlyArray<EolNotice>;
 }> => {
-  const { ctx, provider, entries: existing, indexMtime } = staging;
+  const { ctx, scope, entries: existing, indexMtime } = staging;
   const newEntries = new Map<FilePath, IndexEntry>(existing);
   const added: FilePath[] = [];
   const modified: FilePath[] = [];
+  const eolNotices: EolNotice[] = [];
   for (const path of [...validated].sort(comparePaths)) {
     const previous = existing.get(path);
     const guard = staging.ensurePromisorConfigValid;
-    const result = await stageOne(ctx, path, provider, previous, indexMtime, guard);
+    const result = await stageOne(ctx, path, scope, previous, indexMtime, guard);
     if (result === 'missing') throw pathspecNoMatch(path);
-    newEntries.set(path, result);
+    const { entry, notice } = result;
+    newEntries.set(path, entry);
+    if (notice !== undefined) eolNotices.push(notice);
     if (previous === undefined) added.push(path);
-    else if (previous.id !== result.id || previous.mode !== result.mode) modified.push(path);
+    else if (previous.id !== entry.id || previous.mode !== entry.mode) modified.push(path);
   }
-  return { newEntries, added, modified };
+  return { newEntries, added, modified, eolNotices };
 };
 
 const allLiteralsAreFiles = async (
@@ -265,20 +288,12 @@ const stageWalkedEntries = async (
   walk: AsyncIterable<WalkWorkingTreeEntry>,
   existing: ReadonlyMap<FilePath, IndexEntry>,
   seen: Set<FilePath>,
-  provider: AttributeProvider | undefined,
+  scope: ConversionScope,
   indexMtime: IndexMtime | undefined,
   ensurePromisorConfigValid: PromisorGuard,
 ): Promise<WalkOutcome[]> => {
   const stage = (walkEntry: WalkWorkingTreeEntry): Promise<WalkOutcome | undefined> =>
-    processWalkEntry(
-      ctx,
-      walkEntry,
-      existing,
-      seen,
-      provider,
-      indexMtime,
-      ensurePromisorConfigValid,
-    );
+    processWalkEntry(ctx, walkEntry, existing, seen, scope, indexMtime, ensurePromisorConfigValid);
   return stagedOutcomes(await dispatchInCleanOrder(ctx, walk, stage));
 };
 
@@ -349,14 +364,14 @@ const dispatchWalkEntry = (
 const addByPathspec = async (
   ctx: Context,
   { matcher, literalMustMatch, literalSpellings }: ResolvedPathspec,
-  provider: AttributeProvider | undefined,
+  scope: ConversionScope,
 ): Promise<AddResult> => {
   const combinedIgnore = withPathspec(await buildRepoIgnorePredicate(ctx), matcher);
   const lock = await acquireIndexLock(ctx);
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
-    const staged = await stageIgnoredWalk(ctx, combinedIgnore, provider, ensurePromisorConfigValid);
-    const { newEntries, matched, added, modified } = tallyWalkOutcomes(
+    const staged = await stageIgnoredWalk(ctx, combinedIgnore, scope, ensurePromisorConfigValid);
+    const { newEntries, matched, added, modified, eolNotices } = tallyWalkOutcomes(
       staged.existing,
       staged.outcomes,
     );
@@ -364,7 +379,7 @@ const addByPathspec = async (
     const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
     enforceLiteralMustMatch(mustMatch, matched, literalSpellings);
     await lock.commit(Array.from(newEntries.values()));
-    return { added: [...added].sort(), modified: [...modified].sort(), removed: [] };
+    return { added: [...added].sort(), modified: [...modified].sort(), removed: [], eolNotices };
   } finally {
     await lock.release();
   }
@@ -374,7 +389,7 @@ const addByPathspec = async (
 const stageIgnoredWalk = async (
   ctx: Context,
   ignore: IgnorePredicate,
-  provider: AttributeProvider | undefined,
+  scope: ConversionScope,
   ensurePromisorConfigValid: PromisorGuard,
 ): Promise<{
   readonly existing: ReadonlyMap<FilePath, IndexEntry>;
@@ -386,7 +401,7 @@ const stageIgnoredWalk = async (
     walkWorkingTree(ctx, { ignore }),
     existing,
     new Set<FilePath>(),
-    provider,
+    scope,
     indexMtime,
     ensurePromisorConfigValid,
   );
@@ -402,6 +417,10 @@ const withPathspec =
     return !matchesPathspec(matcher, path);
   };
 
+/** The safecrlf notices of the walked outcomes, in walk order. */
+const noticesOf = (outcomes: ReadonlyArray<WalkOutcome>): EolNotice[] =>
+  outcomes.flatMap(({ notice }) => (notice === undefined ? [] : [notice]));
+
 /** The index once every walked outcome is staged, and which paths were matched, added, modified. */
 const tallyWalkOutcomes = (
   existing: ReadonlyMap<FilePath, IndexEntry>,
@@ -411,6 +430,7 @@ const tallyWalkOutcomes = (
   readonly matched: ReadonlyArray<FilePath>;
   readonly added: ReadonlyArray<FilePath>;
   readonly modified: ReadonlyArray<FilePath>;
+  readonly eolNotices: ReadonlyArray<EolNotice>;
 } => {
   const newEntries = new Map<FilePath, IndexEntry>(existing);
   const matched: FilePath[] = [];
@@ -422,7 +442,7 @@ const tallyWalkOutcomes = (
     if (outcome.kind === 'added') added.push(outcome.path);
     else if (outcome.kind === 'modified') modified.push(outcome.path);
   }
-  return { newEntries, matched, added, modified };
+  return { newEntries, matched, added, modified, eolNotices: noticesOf(outcomes) };
 };
 
 /**
@@ -432,8 +452,9 @@ const tallyWalkOutcomes = (
 export const addAll = async (
   ctx: Context,
   ignoreOverride?: IgnorePredicate,
-  provider?: AttributeProvider,
+  givenScope?: ConversionScope,
 ): Promise<AddResult> => {
+  const scope = givenScope ?? (await buildConversionScope(ctx));
   const ignore = ignoreOverride ?? (await buildRepoIgnorePredicate(ctx));
   const lock = await acquireIndexLock(ctx);
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
@@ -452,7 +473,7 @@ export const addAll = async (
       walkWorkingTree(ctx, { ignore }),
       existing,
       seen,
-      provider,
+      scope,
       indexMtime,
       ensurePromisorConfigValid,
     );
@@ -468,7 +489,7 @@ export const addAll = async (
     // Stryker disable next-line MethodExpression: equivalent — `removed` is built by iterating `existing`, a Map populated from the always-byte-sorted index (serializeIndex sorts on every write), so it is already in ascending path order; the sort is a defensive no-op.
     removed.sort();
     await lock.commit(Array.from(newEntries.values()));
-    return { added, modified, removed };
+    return { added, modified, removed, eolNotices: noticesOf(outcomes) };
   } finally {
     await lock.release();
   }
@@ -478,6 +499,7 @@ interface WalkOutcome {
   readonly kind: 'added' | 'modified' | 'unchanged';
   readonly path: FilePath;
   readonly entry: IndexEntry;
+  readonly notice?: EolNotice;
 }
 
 /**
@@ -529,7 +551,7 @@ const processWalkEntry = async (
   walkEntry: WalkWorkingTreeEntry,
   existing: ReadonlyMap<FilePath, IndexEntry>,
   seen: Set<FilePath>,
-  provider: AttributeProvider | undefined,
+  scope: ConversionScope,
   indexMtime: IndexMtime | undefined,
   ensurePromisorConfigValid: PromisorGuard,
 ): Promise<WalkOutcome | undefined> => {
@@ -544,21 +566,22 @@ const processWalkEntry = async (
   // this function used to pay just to re-derive the same three booleans.
   // stageFromStat's own re-lstat (still authoritative for the size cap) is
   // the only lstat left per file.
-  const entry = await stageFromStat(
+  const { entry, notice } = await stageFromStat(
     ctx,
     path,
     { isFile, isDirectory, isSymbolicLink },
-    provider,
+    scope,
     existing.get(path),
     indexMtime,
     ensurePromisorConfigValid,
   );
   const previous = existing.get(path);
-  if (previous === undefined) return { kind: 'added', path, entry };
+  const withNotice = notice === undefined ? {} : { notice };
+  if (previous === undefined) return { kind: 'added', path, entry, ...withNotice };
   if (previous.id !== entry.id || previous.mode !== entry.mode) {
-    return { kind: 'modified', path, entry };
+    return { kind: 'modified', path, entry, ...withNotice };
   }
-  return { kind: 'unchanged', path, entry };
+  return { kind: 'unchanged', path, entry, ...withNotice };
 };
 
 interface ExistingIndexState {
@@ -585,14 +608,14 @@ const readExistingEntries = async (ctx: Context): Promise<ExistingIndexState> =>
 const stageOne = async (
   ctx: Context,
   path: FilePath,
-  provider: AttributeProvider | undefined,
+  scope: ConversionScope,
   previous: IndexEntry | undefined,
   indexMtime: IndexMtime | undefined,
   ensurePromisorConfigValid: PromisorGuard,
-): Promise<IndexEntry | 'missing'> => {
+): Promise<StagedBlob | 'missing'> => {
   const stat = await lstatOrMissing(ctx, path);
   if (stat === undefined) return 'missing';
-  return stageFromStat(ctx, path, stat, provider, previous, indexMtime, ensurePromisorConfigValid);
+  return stageFromStat(ctx, path, stat, scope, previous, indexMtime, ensurePromisorConfigValid);
 };
 
 /**
@@ -602,20 +625,27 @@ const stageOne = async (
  */
 type EntryKind = Pick<FileStat, 'isFile' | 'isDirectory' | 'isSymbolicLink'>;
 
+/** The index entry a path staged to, with the safecrlf notice its conversion raised. */
+interface StagedBlob {
+  readonly entry: IndexEntry;
+  readonly notice?: EolNotice;
+}
+
 const stageFromStat = async (
   ctx: Context,
   path: FilePath,
   kind: EntryKind,
-  provider: AttributeProvider | undefined,
+  scope: ConversionScope,
   previous: IndexEntry | undefined,
   indexMtime: IndexMtime | undefined,
   ensurePromisorConfigValid: PromisorGuard,
-): Promise<IndexEntry> => {
+): Promise<StagedBlob> => {
   // Promisor-remote guard (see createPromisorGuard) — lazy-once per add()
   // invocation, first paid when the write path actually engages.
   await ensurePromisorConfigValid();
   const fresh = await freshStatOfSameKind(ctx, path, kind);
-  if (previous !== undefined && restagesAsIs(previous, fresh, indexMtime)) return previous;
+  if (previous !== undefined && restagesAsIs(previous, fresh, indexMtime))
+    return { entry: previous };
   // Authoritative size cap — uses the fresh stat so a grow-between-walk-and-
   // stage race cannot smuggle an oversize blob past the pre-filter.
   if (fresh.size > MAX_WORKING_TREE_BLOB_BYTES) {
@@ -623,8 +653,9 @@ const stageFromStat = async (
   }
   const mode: FileMode = deriveWorkingMode(fresh);
   validateIndexPath(path, NO_PARSER_OFFSET, mode);
-  const id = await writeCleanedBlob(ctx, path, fresh, provider);
-  return indexEntryFromStat(fresh, mode, id, path);
+  const { id, notice } = await writeCleanedBlob(ctx, path, fresh, scope, previous);
+  const entry = indexEntryFromStat(fresh, mode, id, path);
+  return notice === undefined ? { entry } : { entry, notice };
 };
 
 /**
@@ -690,43 +721,31 @@ const writeCleanedBlob = async (
   ctx: Context,
   path: FilePath,
   fresh: FileStat,
-  provider: AttributeProvider | undefined,
-): Promise<ObjectId> => {
-  const conversion = await cleanConversion(ctx, path, fresh.isSymbolicLink, provider);
-  if (!fresh.isSymbolicLink && !conversion.streams) await assertBigFileThresholdValid(ctx);
+  { provider, settings }: ConversionScope,
+  previous: IndexEntry | undefined,
+): Promise<{ readonly id: ObjectId; readonly notice?: EolNotice }> => {
+  // Symlinks are never converted (git stores the link target verbatim).
+  const conversion = fresh.isSymbolicLink
+    ? IDENTITY_CONVERSION
+    : await resolveConversion(ctx, provider, path, settings, { eagerSectionValidation: true });
+  if (!fresh.isSymbolicLink && !streamsThroughFilter(conversion.filter)) {
+    await assertBigFileThresholdValid(ctx);
+  }
   const raw = await readContent(ctx, path, fresh);
-  const bytes = await conversion.apply(raw);
-  return (await writeObject(ctx, {
+  const { bytes, notice } = await convertToGit(ctx, {
+    path,
+    bytes: raw,
+    conversion,
+    route: 'write',
+    settings,
+    ...(previous !== undefined && { indexBlob: previous.id }),
+  });
+  const id = (await writeObject(ctx, {
     type: 'blob',
     id: '' as ObjectId,
     content: bytes,
   })) as ObjectId;
-};
-
-/** How a path's bytes are cleaned before hashing, and whether git streams them. */
-interface CleanConversion {
-  readonly streams: boolean;
-  readonly apply: (bytes: Uint8Array) => Promise<Uint8Array>;
-}
-
-const UNCONVERTED: CleanConversion = { streams: false, apply: async (bytes) => bytes };
-
-/**
- * The clean conversion for `path`, when a provider is available.
- * Symlinks are never filtered (git stores the link target verbatim).
- */
-const cleanConversion = async (
-  ctx: Context,
-  path: FilePath,
-  isSymbolicLink: boolean,
-  provider: AttributeProvider | undefined,
-): Promise<CleanConversion> => {
-  if (provider === undefined || isSymbolicLink) return UNCONVERTED;
-  const choice = await resolveFilterDriver(ctx, provider, path, { eagerSectionValidation: true });
-  return {
-    streams: streamsThroughFilter(choice),
-    apply: (bytes) => applyCleanFilter(ctx, ctx.command, path, bytes, choice),
-  };
+  return notice === undefined ? { id } : { id, notice };
 };
 
 const readContent = async (

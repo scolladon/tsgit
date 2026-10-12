@@ -5,6 +5,7 @@ import { add, addAll as addAllInternal } from '../../../../src/application/comma
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import * as boolConfigGuard from '../../../../src/application/primitives/internal/boolean-config-guard.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
+import { serializeAndHash } from '../../../../src/application/primitives/internal/serialize-and-hash.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { MAX_WORKING_TREE_BLOB_BYTES } from '../../../../src/application/primitives/types.js';
@@ -294,7 +295,7 @@ describe('add', () => {
         const result = await add(ctx, ['li*/x.ts']);
 
         // Assert
-        expect(result).toEqual({ added: [], modified: [], removed: [] });
+        expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
       });
     });
   });
@@ -627,7 +628,7 @@ describe('add', () => {
         const result = await add(ctx, [], { all: true });
 
         // Assert
-        expect(result).toEqual({ added: [], modified: [], removed: [] });
+        expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
       });
     });
   });
@@ -2625,7 +2626,7 @@ describe('Given a work tree with nothing to add', () => {
       const result = await sut(ctx, ['.']);
 
       // Assert
-      expect(result).toEqual({ added: [], modified: [], removed: [] });
+      expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
     });
   });
 });
@@ -2672,6 +2673,166 @@ describe('Given a same-size rewrite in the tick of the index write, then an inde
       // Assert
       const staged = (await readIndex(ctx)).entries.find((entry) => entry.path === 'm.txt');
       expect(dec((await readBlob(ctx, staged?.id as ObjectId)).content)).toBe('m2\n');
+    });
+  });
+});
+
+const configure = (ctx: Awaited<ReturnType<typeof seedFreshRepo>>, text: string) =>
+  ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, text);
+
+const stagedText = async (ctx: Awaited<ReturnType<typeof seedFreshRepo>>, path: string) => {
+  const entry = (await readIndex(ctx)).entries.find((e) => e.path === path);
+  return dec((await readBlob(ctx, entry?.id as ObjectId)).content);
+};
+
+const blobExists = async (ctx: Awaited<ReturnType<typeof seedFreshRepo>>, content: string) => {
+  const { id } = await serializeAndHash(ctx, {
+    type: 'blob',
+    id: '' as ObjectId,
+    content: enc(content),
+  });
+  return ctx.fs.exists(`${ctx.layout.gitDir}/objects/${id.slice(0, 2)}/${id.slice(2)}`);
+};
+
+describe('Given core.autocrlf input and a CRLF file', () => {
+  describe.each([
+    { label: 'literal', paths: ['a.txt'], opts: {} },
+    { label: 'bulk', paths: [] as string[], opts: { all: true } },
+  ])('When add stages it ($label)', ({ paths, opts }) => {
+    it('Then the staged blob is LF', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ 'a.txt': 'x\r\ny\r\n' });
+      await configure(ctx, '[core]\n\tautocrlf = input\n');
+      const sut = add;
+
+      // Act
+      await sut(ctx, paths, opts);
+
+      // Assert
+      expect(await stagedText(ctx, 'a.txt')).toBe('x\ny\n');
+    });
+  });
+});
+
+describe('Given core.autocrlf true, a LF file b2 and a CRLF file a1', () => {
+  describe.each([
+    { label: 'literal', paths: ['a1', 'b2'], opts: {} },
+    { label: 'bulk', paths: [] as string[], opts: { all: true } },
+  ])('When add runs ($label)', ({ paths, opts }) => {
+    it('Then eolNotices holds the LF to CRLF notice of b2 only', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ a1: 'x\r\ny\r\n', b2: 'x\ny\n' });
+      await configure(ctx, '[core]\n\tautocrlf = true\n');
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, paths, opts);
+
+      // Assert
+      expect(result.eolNotices).toEqual([{ path: 'b2', loss: 'lf-to-crlf', crlf: 0, loneLf: 2 }]);
+    });
+  });
+});
+
+describe('Given core.autocrlf true and core.safecrlf false', () => {
+  describe('When add stages a LF file', () => {
+    it('Then eolNotices is empty', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ b2: 'x\ny\n' });
+      await configure(ctx, '[core]\n\tautocrlf = true\n\tsafecrlf = false\n');
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, ['b2']);
+
+      // Assert
+      expect(result.eolNotices).toEqual([]);
+    });
+  });
+});
+
+describe('Given core.autocrlf true and a mixed line ending file', () => {
+  describe('When add stages it', () => {
+    it('Then the notice reports the LF to CRLF loss', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ m: 'a\r\nb\n' });
+      await configure(ctx, '[core]\n\tautocrlf = true\n');
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, ['m']);
+
+      // Assert
+      expect(result.eolNotices).toEqual([{ path: 'm', loss: 'lf-to-crlf', crlf: 1, loneLf: 1 }]);
+    });
+  });
+});
+
+describe('Given core.safecrlf true', () => {
+  describe('When add a1 b2 c3 runs literally and b2 would not round-trip', () => {
+    it('Then it refuses b2, leaves the index alone, keeps a1 blob and never hashes c3', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ a1: 'one\n', b2: 'x\r\ny\n', c3: 'three\n' });
+      await configure(ctx, '[core]\n\tautocrlf = input\n\tsafecrlf = true\n');
+      const sut = add;
+      let caught: unknown;
+
+      // Act
+      try {
+        await sut(ctx, ['a1', 'b2', 'c3']);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      expect(data).toEqual({
+        code: 'EOL_ROUND_TRIP_UNSAFE',
+        path: 'b2',
+        loss: 'crlf-to-lf',
+        crlf: 1,
+        loneLf: 1,
+      });
+      expect((await readIndex(ctx)).entries).toEqual([]);
+      expect(await blobExists(ctx, 'one\n')).toBe(true);
+      expect(await blobExists(ctx, 'three\n')).toBe(false);
+    });
+  });
+});
+
+describe('Given a committed CRLF text blob and text=auto', () => {
+  describe('When add re-stages it with a new CRLF line', () => {
+    it('Then the blob keeps CRLF', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ 'f.txt': 'a\r\n' });
+      await add(ctx, ['f.txt']);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* text=auto\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'a\r\nbb\r\n');
+      const sut = add;
+
+      // Act
+      await sut(ctx, ['f.txt']);
+
+      // Assert
+      expect(await stagedText(ctx, 'f.txt')).toBe('a\r\nbb\r\n');
+    });
+  });
+});
+
+describe('Given a symlink whose target holds CRLF under text eol=crlf ident', () => {
+  describe('When add stages it', () => {
+    it('Then the blob is the raw target', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ '.gitattributes': '* text eol=crlf ident\n' });
+      await ctx.fs.symlink('t\r\nx', `${ctx.layout.workDir}/link`);
+      const sut = add;
+
+      // Act
+      await sut(ctx, ['link']);
+
+      // Assert
+      expect(await stagedText(ctx, 'link')).toBe('t\r\nx');
     });
   });
 });

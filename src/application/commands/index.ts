@@ -18,6 +18,7 @@ export type {
   TreeDiff,
   TypeChangeChange,
 } from '../../domain/diff/index.js';
+export type { EolNotice, RoundTripLoss } from '../../domain/eol/crlf-conversion.js';
 export { type MergeAbortResult, mergeAbort } from './abort-merge.js';
 export { type AddOptions, type AddResult, add } from './add.js';
 export {
