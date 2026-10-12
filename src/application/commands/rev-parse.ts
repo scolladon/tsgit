@@ -535,9 +535,9 @@ const dwimLog = async (ctx: Context, base: string): Promise<RefName | undefined>
 const validateBaseRef = (base: string): RefName => {
   try {
     return validateRefName(base);
-  } catch (err) {
-    if (errorDataCode(err) === 'INVALID_REF') throw revparseUnresolved(base);
-    throw err;
+  } catch {
+    // validateRefName refuses only with INVALID_REF.
+    throw revparseUnresolved(base);
   }
 };
 
