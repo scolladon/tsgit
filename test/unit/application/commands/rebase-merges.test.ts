@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
-import { branchCreate } from '../../../../src/application/commands/branch.js';
+import { branchCreate, branchDelete } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
@@ -174,6 +174,60 @@ describe('rebaseRun with rebaseMerges', () => {
     });
   });
 
+  describe.each([
+    [
+      true,
+      [
+        'rebase (finish): returning to refs/heads/topic',
+        "rebase (merge): Merge branch 'side' into topic",
+        'rebase: fast-forward',
+        "rebase (reset): '<abbrev>'",
+        'rebase (pick): s1',
+        'rebase (start): checkout main',
+      ],
+    ],
+    [
+      'no-rebase-cousins',
+      [
+        'rebase (finish): returning to refs/heads/topic',
+        "rebase (merge): Merge branch 'side' into topic",
+        'rebase: fast-forward',
+        "rebase (reset): '<abbrev>'",
+        'rebase (pick): s1',
+        'rebase (start): checkout main',
+      ],
+    ],
+    [
+      'rebase-cousins',
+      [
+        'rebase (finish): returning to refs/heads/topic',
+        "rebase (merge): Merge branch 'side' into topic",
+        'rebase (pick): c1',
+        "rebase (reset): 'onto'",
+        'rebase (pick): s1',
+        'rebase (start): checkout main',
+      ],
+    ],
+  ] as const)(
+    'Given a merged side branch rooted outside the range, When rebased with rebaseMerges %s',
+    (mode, reflog) => {
+      it('Then the cousin lands where git puts it', async () => {
+        // Arrange
+        const ctx = await cousinSeed();
+        const sut = rebaseRun;
+
+        // Act
+        await sut(ctx, { upstream: 'main', rebaseMerges: mode });
+
+        // Assert
+        const messages = (await headReflog(ctx, reflog.length)).map((message) =>
+          message.replace(/'[0-9a-f]{7}'/, "'<abbrev>'"),
+        );
+        expect(messages).toEqual(reflog);
+      });
+    },
+  );
+
   describe('Given a topic commit that starts empty, When rebased with rebaseMerges', () => {
     it('Then the replay keeps it as an empty commit over the rebased parent', async () => {
       // Arrange
@@ -227,6 +281,23 @@ describe('rebaseRun with rebaseMerges', () => {
           'refs/rewritten/onto\nrefs/rewritten/branch-point\nrefs/rewritten/side\n',
         );
         expect(await gitFile(ctx, 'rebase-merge/patch')).toBe('');
+      });
+    });
+
+    describe('When rebased with rebaseMerges and stopped on the merge', () => {
+      it("Then the message is the merge's own and its rewrite to HEAD is recorded", async () => {
+        // Arrange
+        const { ctx, merge } = await conflictingSeed();
+        const sut = rebaseRun;
+
+        // Act
+        await sut(ctx, { upstream: 'main', rebaseMerges: true });
+
+        // Assert
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        expect(await gitFile(ctx, 'rebase-merge/message')).toBe("Merge branch 'side' into topic\n");
+        const recorded = (await gitFile(ctx, 'rebase-merge/rewritten-list')).trimEnd().split('\n');
+        expect(recorded.at(-1)).toBe(`${merge} ${head}`);
       });
     });
 
@@ -290,6 +361,29 @@ describe('rebaseRun with rebaseMerges', () => {
     });
   });
 });
+
+/** main: base, m1, u1; side s1 off m1; topic c1 off base merges side — s1's block is a cousin. */
+const cousinSeed = async (): Promise<Context> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, '\n[user]\n\tname = Ada\n\temail = a@x\n');
+  await commitFile(ctx, 'base');
+  await branchCreate(ctx, { name: 'topic' });
+  await checkout(ctx, { rev: 'topic' });
+  await commitFile(ctx, 'c1');
+  await checkout(ctx, { rev: 'main' });
+  await commitFile(ctx, 'm1');
+  await branchCreate(ctx, { name: 'side' });
+  await checkout(ctx, { rev: 'side' });
+  await commitFile(ctx, 's1');
+  await checkout(ctx, { rev: 'topic' });
+  await mergeRun(ctx, { rev: 'side', fastForward: 'never', author: AUTHOR });
+  await branchDelete(ctx, { name: 'side', force: true });
+  await checkout(ctx, { rev: 'main' });
+  await commitFile(ctx, 'u1');
+  await checkout(ctx, { rev: 'topic' });
+  return ctx;
+};
 
 /** The merge resolved a `y` add/add conflict by hand, so replaying it conflicts again. */
 const conflictingSeed = async (): Promise<{ ctx: Context; merge: ObjectId }> => {

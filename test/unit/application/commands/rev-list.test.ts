@@ -2440,3 +2440,27 @@ describe('revList: object types assigned during one invocation', () => {
     });
   });
 });
+
+describe('revList all: ref order', () => {
+  describe('Given a branch tip and a detached HEAD commit sharing one date', () => {
+    describe('When revList is called with all: true', () => {
+      it('Then the branch tip precedes HEAD, as git iterates refs/ before HEAD', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const base = await writeDatedCommit(ctx, 'base', 500, []);
+        const onBranch = await writeDatedCommit(ctx, 'on-branch', 1000, [base]);
+        const onHead = await writeDatedCommit(ctx, 'on-head', 1000, [base]);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/b`, `${onBranch}\n`);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${onHead}\n`);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { all: true });
+
+        // Assert
+        expect(result.entries.map(({ id }) => id)).toEqual([onBranch, onHead, base]);
+      });
+    });
+  });
+});

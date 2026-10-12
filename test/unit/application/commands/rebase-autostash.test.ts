@@ -71,6 +71,23 @@ describe('rebaseRun with autostash', () => {
     });
   });
 
+  describe('Given a dirty tree, When rebased with autostash', () => {
+    it('Then it announces the created autostash by its abbreviated id', async () => {
+      // Arrange
+      const { ctx, logger } = await seed();
+      const sut = rebaseRun;
+
+      // Act
+      await sut(ctx, { upstream: 'main', autostash: true });
+
+      // Assert
+      expect(logger.info.mock.calls.map(([line]) => line)).toEqual([
+        expect.stringMatching(/^Created autostash: [0-9a-f]{7}$/),
+        'Applied autostash.',
+      ]);
+    });
+  });
+
   describe('Given rebase.autostash, When rebased without the option', () => {
     it('Then the config stashes the tree', async () => {
       // Arrange
