@@ -20,7 +20,7 @@ interface WhatchangedOptions {
   readonly order?: LogOrder;                    // walk order; default 'date'
   readonly limit?: number;                      // cap on emitted entries (git -n)
   readonly excluding?: ReadonlyArray<string>;   // negative range stops (git's A..B / ^X)
-  readonly before?: Date;                       // only commits with committer time < before
+  readonly before?: Date;                       // only commits with committer time <= before
 }
 
 interface WhatchangedEntry extends LogEntry {   // id, tree, parents, author, committer, message
@@ -36,7 +36,7 @@ interface WhatchangedEntry extends LogEntry {   // id, tree, parents, author, co
 | `order` | `'date' \| 'first-parent'` | `'date'` | `'date'` walks every reachable commit across all parents, newest committer-date first (git's default); `'first-parent'` follows only the first parent (`git log --first-parent`). |
 | `limit` | `number` | _none_ | Stop after this many **emitted** entries (git's `-n`). Excluded merges never consume a slot. |
 | `excluding` | `ReadonlyArray<string>` | `[]` | Commit-ish stops removed from the walk — git's `A..B` / `^X` negative ranges. |
-| `before` | `Date` | _none_ | Keep only commits whose `committer.timestamp` is strictly before this instant. |
+| `before` | `Date` | _none_ | Keep only commits whose `committer.timestamp` is at or before this instant. |
 
 ## Behaviour
 
