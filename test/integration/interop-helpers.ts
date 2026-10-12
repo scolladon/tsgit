@@ -37,8 +37,20 @@
  * and it fails soft to "no config". The path is never created — read/init/add/
  * commit (signing off) write nothing under `HOME` — so there is nothing to set
  * up and nothing to clean up.
+ *
+ * **Fallback identity (what the closed vectors used to supply).** With no
+ * global config, git derives an identity from the account: a full name from the
+ * passwd GECOS field, so a commit succeeds on a workstation and dies with
+ * `empty ident name` on a CI runner whose account has none. `GIT_CONFIG_GLOBAL`
+ * names a file holding one fixed `user.name`/`user.email`, read at the global
+ * scope so a repository's own `user.*` and a call's `GIT_AUTHOR_*` /
+ * `GIT_COMMITTER_*` still win, exactly as they would over a developer's
+ * `~/.gitconfig`. The file is content-addressed under `os.tmpdir()`, published
+ * whole by a hard link so a concurrent worker never reads it half-written.
  */
 import { execFile, execFileSync, spawnSync } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
+import { linkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -51,6 +63,37 @@ const execFileAsync = promisify(execFile);
 // that is never created, so git's global/XDG config lookups miss and fail soft.
 const ISOLATED_HOME = path.join(os.tmpdir(), 'tsgit-interop-nonexistent-home');
 
+/** git's own test-suite author, the identity a commit falls back to. */
+const FALLBACK_IDENTITY_CONFIG = '[user]\n\tname = A U Thor\n\temail = author@example.com\n';
+
+/** Hex digits of the content hash naming the identity file — enough to tell versions apart. */
+const IDENTITY_DIGEST_LENGTH = 12;
+
+const isAlreadyPublished = (failure: NodeJS.ErrnoException): boolean => failure.code === 'EEXIST';
+
+/** Create `target` holding `content` atomically; a concurrent creator's identical copy stands. */
+const publishWhole = (target: string, content: string): void => {
+  const staging = `${target}.${process.pid}-${randomUUID()}`;
+  writeFileSync(staging, content);
+  try {
+    linkSync(staging, target);
+  } catch (failure) {
+    if (!isAlreadyPublished(failure as NodeJS.ErrnoException)) throw failure;
+  } finally {
+    unlinkSync(staging);
+  }
+};
+
+const publishIdentityConfig = (): string => {
+  const digest = createHash('sha256').update(FALLBACK_IDENTITY_CONFIG).digest('hex');
+  const target = path.join(
+    os.tmpdir(),
+    `tsgit-interop-identity-${digest.slice(0, IDENTITY_DIGEST_LENGTH)}.gitconfig`,
+  );
+  publishWhole(target, FALLBACK_IDENTITY_CONFIG);
+  return target;
+};
+
 const buildSafeEnv = (): NodeJS.ProcessEnv => {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -61,6 +104,7 @@ const buildSafeEnv = (): NodeJS.ProcessEnv => {
   env.HOME = ISOLATED_HOME;
   env.GIT_CONFIG_NOSYSTEM = '1';
   env.XDG_CONFIG_HOME = path.join(ISOLATED_HOME, '.config');
+  env.GIT_CONFIG_GLOBAL = publishIdentityConfig();
   // Same guarantee `disableAutoMaintenance` gives one repo, given to every
   // repo any interop test spawns git against — including the ones that never
   // call it. A detached `gc --auto` / `maintenance run --auto` mutates
@@ -127,6 +171,16 @@ export const runGit = (
 
 /** Snapshot of the sanitised env, for tests that need to extend it. */
 export const runGitEnv = (): NodeJS.ProcessEnv => ({ ...SAFE_ENV });
+
+/**
+ * The sanitised env with no global config at all, fallback identity included:
+ * for a test probing that git finds no `user.*` key, which the pinned
+ * tsgit side never has.
+ */
+export const runGitEnvWithoutGlobalConfig = (): NodeJS.ProcessEnv => ({
+  ...SAFE_ENV,
+  GIT_CONFIG_GLOBAL: path.join(ISOLATED_HOME, '.gitconfig'),
+});
 
 /**
  * Async counterpart to `runGit` — spawns git without blocking the event

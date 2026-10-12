@@ -23,7 +23,19 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { GIT_AVAILABLE, runGitEnv, tryRunGit, tryRunGitWithExit } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  runGit,
+  runGitEnv,
+  tryRunGit,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
+
+const initScratchRepository = async (prefix: string): Promise<string> => {
+  const repo = await mkdtemp(path.join(os.tmpdir(), prefix));
+  runGit(['init', '-q', repo]);
+  return repo;
+};
 
 describe.skipIf(!GIT_AVAILABLE)('interop-env-hardening', () => {
   describe('Given the hardened interop spawn env', () => {
@@ -96,6 +108,7 @@ describe.skipIf(!GIT_AVAILABLE)('interop-env-hardening', () => {
         expect(gitKeys.sort()).toEqual([
           'GIT_CEILING_DIRECTORIES',
           'GIT_CONFIG_COUNT',
+          'GIT_CONFIG_GLOBAL',
           'GIT_CONFIG_KEY_0',
           'GIT_CONFIG_KEY_1',
           'GIT_CONFIG_KEY_2',
@@ -125,6 +138,58 @@ describe.skipIf(!GIT_AVAILABLE)('interop-env-hardening', () => {
           'gc.autoDetach': 'false',
           'maintenance.auto': 'false',
         });
+      });
+    });
+  });
+
+  describe('Given a repository naming no identity of its own', () => {
+    let repo: string;
+
+    beforeAll(async () => {
+      repo = await initScratchRepository('tsgit-interop-env-ident-');
+    });
+
+    afterAll(async () => {
+      await rm(repo, { recursive: true, force: true });
+    });
+
+    describe('When git resolves the committer', () => {
+      it('Then it is the fixed fallback identity, whatever the account running it', () => {
+        // Arrange
+        const sut = ['-C', repo, 'var', 'GIT_COMMITTER_IDENT'];
+
+        // Act
+        const result = tryRunGitWithExit(sut);
+
+        // Assert
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toMatch(/^A U Thor <author@example\.com> /);
+      });
+    });
+  });
+
+  describe('Given a repository configuring its own user.name', () => {
+    let repo: string;
+
+    beforeAll(async () => {
+      repo = await initScratchRepository('tsgit-interop-env-own-ident-');
+      runGit(['-C', repo, 'config', 'user.name', 'Repo Owner']);
+    });
+
+    afterAll(async () => {
+      await rm(repo, { recursive: true, force: true });
+    });
+
+    describe('When git resolves the author', () => {
+      it('Then the repository name wins over the fallback one', () => {
+        // Arrange
+        const sut = ['-C', repo, 'var', 'GIT_AUTHOR_IDENT'];
+
+        // Act
+        const result = tryRunGitWithExit(sut);
+
+        // Assert
+        expect(result.stdout).toMatch(/^Repo Owner <author@example\.com> /);
       });
     });
   });
