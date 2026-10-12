@@ -21,7 +21,7 @@ Details live in git history, ADRs (`docs/adr/`), and design docs (`docs/design/`
 ## Next up (decided 2026-10-01)
 
 1. ~~#302 alternates~~ (shipped in #313)
-2. ~~#309 `emptyTreeOid` / `EMPTY_TREE_OID` runtime export from the node entry~~ (this PR)
+2. ~~#309 `emptyTreeOid` / `EMPTY_TREE_OID` runtime export from the node entry~~ (shipped in #314)
 3. Release 5.0.0 — merge release-please PR #299
 4. EOL conversion subsystem (32.6) — ahead of 31.4
 5. 31.4 run 1 — (a)+(b)+(c)+(d-i)
