@@ -1,8 +1,10 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
   parseGitBoolean,
   parseIniSections,
+  readConfig,
   scanHeaderPrefix,
 } from '../../../../src/application/primitives/config-read.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -380,4 +382,43 @@ describe('config-read boolean grammar properties', () => {
       });
     },
   );
+});
+
+const arbAnyCasing = (literal: string): fc.Arbitrary<string> =>
+  fc
+    .array(fc.boolean(), { minLength: literal.length, maxLength: literal.length })
+    .map((flags) =>
+      [...literal].map((ch, i) => (flags[i] ? ch.toUpperCase() : ch.toLowerCase())).join(''),
+    );
+
+describe('readConfig core line-ending keys', () => {
+  const readCore = async (key: string, value: string) => {
+    const ctx = createMemoryContext();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[core]\n\t${key} = ${value}\n`);
+    return (await readConfig(ctx)).core;
+  };
+
+  describe.each([
+    { key: 'autocrlf', field: 'autoCrlf', literal: 'input' },
+    { key: 'safecrlf', field: 'safeCrlf', literal: 'warn' },
+    { key: 'eol', field: 'eol', literal: 'lf' },
+    { key: 'eol', field: 'eol', literal: 'crlf' },
+    { key: 'eol', field: 'eol', literal: 'native' },
+  ] as const)('Given $key spelled in any ASCII casing of "$literal"', ({ key, field, literal }) => {
+    describe('When readConfig', () => {
+      it('Then the field equals the lower-case literal', async () => {
+        // Arrange
+        const sut = readCore;
+
+        // Act + Assert
+        await fc.assert(
+          fc.asyncProperty(arbAnyCasing(literal), async (spelled) => {
+            const core = await sut(key, spelled);
+            expect(core?.[field]).toBe(literal);
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
 });
