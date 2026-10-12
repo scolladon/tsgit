@@ -803,7 +803,7 @@
       "output": []
     },
     "check:types": {
-      "command": "tsc --noEmit -p tsconfig.typecheck.json",
+      "command": "node --max-old-space-size=4096 node_modules/typescript/bin/tsc --noEmit -p tsconfig.typecheck.json",
       "files": [
         "src/**/*.ts",
         "test/**/*.ts",
