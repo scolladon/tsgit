@@ -7,13 +7,22 @@ Stage paths into `.git/index`. Two modes: literal paths (each validated and stag
 ```ts
 repo.add(
   paths: ReadonlyArray<string>,
-  opts?: { force?: boolean; all?: boolean },
+  opts?: { force?: boolean; all?: boolean; renormalize?: boolean },
 ): Promise<AddResult>;
 
 interface AddResult {
   readonly added: ReadonlyArray<FilePath>;
   readonly modified: ReadonlyArray<FilePath>;
   readonly removed: ReadonlyArray<FilePath>;
+  readonly eolNotices: ReadonlyArray<EolNotice>;
+}
+
+// core.safecrlf=warn notice: one per path whose line endings would not round-trip
+interface EolNotice {
+  readonly path: FilePath;
+  readonly loss: 'crlf-to-lf' | 'lf-to-crlf';
+  readonly crlf: number;   // CRLF sequences in the CRLF step's input
+  readonly loneLf: number; // LF bytes not preceded by CR in that input
 }
 ```
 
@@ -24,6 +33,7 @@ interface AddResult {
 | `paths` | `ReadonlyArray<string>` | (required) | Literal paths or pathspec globs. **MUST be empty when `all: true`.** |
 | `opts.all` | `boolean` | `false` | Bulk mode — walk the working tree and stage every change. |
 | `opts.force` | `boolean` | `false` | Stage ignored paths anyway. |
+| `opts.renormalize` | `boolean` | `false` | Re-clean every tracked path the pathspec names under the current attributes and config (`git add --renormalize`). See [Renormalize](#renormalize). |
 
 > Breaking a stale `.git/index.lock` is repository-environment policy, set once on `openRepository({ config: { breakStaleLockMs } })` — not a per-call option. It applies to every index-mutating command.
 
@@ -52,6 +62,8 @@ console.log(result.added.length, result.modified.length, result.removed.length);
 - `INVALID_INDEX_ENTRY` — a path this call would stage fails git's own index-entry name rules. Aborts the whole call; nothing is staged.
 - `INVALID_OPTION { option: 'all' }` — `all: true` with a non-empty pathspec.
 - `WORKING_TREE_FILE_TOO_LARGE` — a file exceeds `MAX_WORKING_TREE_BLOB_BYTES` (256 MiB).
+- `EOL_ROUND_TRIP_UNSAFE { path, loss, crlf, loneLf }` — `core.safecrlf=true` and a path's line endings would not survive the round trip. See [Line-ending conversion](#line-ending-conversion-coreautocrlf-coreeol-text-eol-ident).
+- `CONFIG_BAD_BOOLEAN_VALUE` — `core.autocrlf` or `core.safecrlf` holds a value git's boolean grammar refuses (`core.autocrlf` also accepts `input`, `core.safecrlf` also accepts `warn`). Checked before anything is staged, as on every command.
 - `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
 - `EMPTY_PATHSPEC` — `paths` is empty and `all` is not set.
 
@@ -78,6 +90,43 @@ shape-based, not containment-based: it fires identically whether the link
 points outside the repository or at a sibling directory inside it. It does
 not run in bulk mode, where `git add -A` stores the symlink itself rather
 than refusing.
+
+## Line-ending conversion (`core.autocrlf`, `core.eol`, `text`, `eol`, `ident`)
+
+Worktree bytes go through git's check-in conversion before they are hashed, so the stored blob is what `git add` stores. The step order is clean filter driver, then CRLF, then `ident`.
+
+- **Sources.** `core.autocrlf` (`true` / `false` / `input`), `core.eol`, and the `text`, `text=auto`, `eol=lf|crlf`, `crlf` and `ident` attributes. Attributes come from the worktree `.gitattributes` first, falling back to the index blob when the worktree has none, plus `.git/info/attributes` and `core.attributesFile`.
+- **Binary content.** `text=auto` and the `core.autocrlf` default skip content git's heuristic classes binary (NUL, lone CR). `text` and `eol=*` convert regardless. `-text` and `binary` never convert. An `eol` attribute alone implies `text`.
+- **CRLF already in the index.** Under the `auto` family only, a path whose index blob is text and already holds a CRLF is not normalised. The rule reads the path's stage 0 entry, else its stage 2 entry (an unmerged path). `renormalize` ignores it.
+- **`ident`.** `$Id: <hex> $` collapses to `$Id$` on the way in.
+- **Symlinks and gitlinks** are never converted.
+- **Unchanged paths** short-circuit on the index stat and never convert.
+- **Tracked first.** Whichever way paths are given, tracked paths are staged first in index order, then untracked ones (index order for literals, walk order for bulk mode), so notices and the first refusal land in git's order.
+
+### `core.safecrlf`
+
+The round-trip check runs only when a conversion writes an object — never on `renormalize`, `status`, `blame` or checkout.
+
+| Value | Result |
+|---|---|
+| `warn` (default, also unset) | The path is staged; an [`EolNotice`](#signature) is appended to `eolNotices`. |
+| `false` | Staged; `eolNotices` is `[]`. |
+| `true` | Throws `EOL_ROUND_TRIP_UNSAFE { path, loss, crlf, loneLf }` for the first offending path and stages nothing. |
+
+`loss: 'crlf-to-lf'` is git's `CRLF would be replaced by LF in <path>` (or the `warning: in the working copy of '<path>', CRLF will be replaced by LF the next time Git touches it`); `'lf-to-crlf'` is the swapped wording. When both losses apply (mixed endings) `crlf-to-lf` is checked first, as in git; one notice per path. `crlf` and `loneLf` are tsgit-only counts; git prints neither. The library emits no text: build git's line from `path` + `loss` if you want it, and nothing is written to the logger.
+
+Under `core.safecrlf=true`, bulk and pathspec adds convert and write one path at a time in order and stop at the first loss, so the blobs left behind in the object store match git's (the paths before the offender are written, later ones are never hashed). Under `warn` and `false` writes stay concurrent.
+
+```ts
+const { eolNotices } = await repo.add(['.'], { all: false });
+for (const n of eolNotices) {
+  console.warn(`${n.path}: ${n.loss}`); // caller renders; the library does not
+}
+```
+
+## Renormalize
+
+`repo.add(paths, { renormalize: true })` (with `all: true` and `[]` for the whole tree) re-cleans every tracked stage-0 regular file or symlink the pathspec names, under the current attributes and config, with no stat shortcut. It never adds untracked paths, never removes anything, never touches the worktree, skips `skip-worktree` entries, ignores the index-CRLF rule and never raises a `core.safecrlf` refusal or notice (`eolNotices` is `[]`). A tracked path missing from disk aborts the call with `PATHSPEC_NO_MATCH`.
 
 ## Clean filter drivers (`filter=<name>`)
 
@@ -115,7 +164,7 @@ the **cleaned** content, not the raw worktree bytes.
   neither `added` nor `modified`.
 
 **Status and diff after clean.** `status` and working-tree diffs re-apply the
-clean filter to the worktree file before comparing the result to the cleaned blob
+clean filter and the line-ending conversion to the worktree file before comparing the result to the cleaned blob
 OID in the index — so a file that was checked out via smudge and then left
 unmodified shows as unchanged.
 
@@ -130,4 +179,4 @@ section.
 - Primitives: [`walkWorkingTree`](../primitives/walk-working-tree.md), [`readIndex`](../primitives/read-index.md), [`writeObject`](../primitives/write-object.md)
 - Related commands: [`rm`](rm.md), [`checkout`](checkout.md) — share the pathspec syntax
 - Recipes: [stage with globs](../recipes.md#stage-with-globs), [bulk add --all](../recipes.md#bulk-add-all)
-- ADRs: [029](../../adr/029-add-all-ignore-stub.md), [030](../../adr/030-add-all-walk-strategy.md), [031](../../adr/031-add-all-symlink-gitlink-policy.md), [032](../../adr/032-add-all-large-file-guard.md), [037](../../adr/037-pathspec-auto-detect.md), [038](../../adr/038-pathspec-exclusion.md), [627](../../adr/627-boolean-config-values-are-refused-as-git-refuses-them.md), [625](../../adr/625-git-parity-containment-posture.md), [626](../../adr/626-pathspec-beyond-symlink-error-code.md)
+- ADRs: [029](../../adr/029-add-all-ignore-stub.md), [030](../../adr/030-add-all-walk-strategy.md), [031](../../adr/031-add-all-symlink-gitlink-policy.md), [032](../../adr/032-add-all-large-file-guard.md), [037](../../adr/037-pathspec-auto-detect.md), [038](../../adr/038-pathspec-exclusion.md), [627](../../adr/627-boolean-config-values-are-refused-as-git-refuses-them.md), [625](../../adr/625-git-parity-containment-posture.md), [626](../../adr/626-pathspec-beyond-symlink-error-code.md), [950](../../adr/950-conversion-extends-the-clean-smudge-pipeline.md), [952](../../adr/952-the-safecrlf-refusal-carries-path-loss-and-line-ending-counts.md), [953](../../adr/953-safecrlf-warnings-are-notices-on-the-command-result.md), [954](../../adr/954-safecrlf-true-serialises-conversion-and-object-writes-in-index-order.md), [956](../../adr/956-renormalize-covers-every-merge-ort-consumer-and-add-renormalize.md)

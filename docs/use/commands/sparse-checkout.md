@@ -49,6 +49,8 @@ The four mutating methods share `SparseCheckoutAppliedResult`; `list` returns th
 - **Non-cone mode**: `.gitignore`-style patterns, last-match wins.
 - **`core.sparseCheckout` / `core.sparseCheckoutCone`** are written to `.git/config`.
 - **Dirty out-of-cone files are retained**, not discarded, unless `force: true`.
+- **The dirty check converts first.** The narrowing pre-scan compares the on-disk file with its index blob through the check-in conversion (`core.autocrlf`, `core.eol`, `text`/`eol`/`ident`, clean filter), so a CRLF-checked-out file that converts back to its blob is not dirty and is removed without `force`.
+- **Materialised files are converted.** Files written back into the cone go through the checkout conversion (LF to CRLF, `ident`, smudge), reading attributes from the stage-0 index entries first, then the worktree.
 - **`checkout` honours the cone on branch switch.** `reset --hard` / `--mixed` and the conflicting-`merge` path also respect the cone.
 
 ## Examples
