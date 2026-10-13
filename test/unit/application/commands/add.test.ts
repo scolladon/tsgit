@@ -2867,6 +2867,38 @@ describe('Given core.safecrlf warn, an untracked LF file a and a tracked LF-modi
   });
 });
 
+describe('Given core.safecrlf true, a tracked LF-modified file b outside the pathspec and an untracked LF file sub/a inside it', () => {
+  describe('When add stages the directory', () => {
+    it('Then it refuses sub/a and never hashes b, which the walk does not yield', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ 'sub/a': 'x\ny\n', b: 'one\n' });
+      await add(ctx, ['b']);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b`, 'p\nq\nr\n');
+      await configure(ctx, '[core]\n\tautocrlf = true\n\tsafecrlf = true\n');
+      const sut = add;
+      let caught: unknown;
+
+      // Act
+      try {
+        await sut(ctx, ['sub']);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'EOL_ROUND_TRIP_UNSAFE',
+        path: 'sub/a',
+        loss: 'lf-to-crlf',
+        crlf: 0,
+        loneLf: 2,
+      });
+      expect(await blobExists(ctx, 'p\nq\nr\n')).toBe(false);
+    });
+  });
+});
+
 describe('Given a committed CRLF text blob and text=auto', () => {
   describe('When add re-stages it with a new CRLF line', () => {
     it('Then the blob keeps CRLF', async () => {
