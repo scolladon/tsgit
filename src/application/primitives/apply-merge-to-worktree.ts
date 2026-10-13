@@ -211,13 +211,12 @@ export const removeChangedOutcome = async (
   await removeWorkingTreeFile(ctx, outcome.path);
 };
 
-/** Validate then materialise one changed clean outcome that is not a deletion. */
+/** Materialise one changed clean outcome that is not a deletion; its path is gated upfront by `validateMergeWritePaths`. */
 const writeChangedOutcome = async (
   outcome: WrittenOutcome,
   writer: WorkingTreeWriter,
   scanner: LeadingPathScanner,
 ): Promise<void> => {
-  validateIndexPath(outcome.path, NO_PARSER_OFFSET, outcome.mode);
   if (outcome.status === 'resolved-merged') {
     await writer.writeBytes(outcome.path, outcome.bytes, outcome.mode, scanner);
     return;
