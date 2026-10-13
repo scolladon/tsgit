@@ -89,7 +89,6 @@ export interface ToWorkingTreeRequest {
 }
 
 const namesSmudgeOrProcess = ({ filter }: Conversion): boolean =>
-  // Stryker disable next-line ConditionalExpression: equivalent — a non-external filter carries no smudge or process field, so the kind test only narrows the type.
   filter.kind === 'external' && (filter.smudge !== undefined || filter.process !== undefined);
 
 const withoutBlob = (target: SmudgeTarget, normalizing: boolean): SmudgeTarget => {
@@ -114,7 +113,6 @@ export const convertToWorkingTree = async (
 
 const composeTransforms = (first: ChunkTransform, second: ChunkTransform): ChunkTransform => ({
   push: (chunk) => first.push(chunk).flatMap((piece) => second.push(piece)),
-  // Stryker disable next-line MethodExpression: equivalent — first's pending bytes at flush are an ident keyword prefix that never holds LF, so routing them through second changes nothing.
   flush: () => [...first.flush().flatMap((piece) => second.push(piece)), ...second.flush()],
 });
 
