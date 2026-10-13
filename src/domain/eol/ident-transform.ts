@@ -117,7 +117,7 @@ export const createIdentTransform = (oidHex: string): ChunkTransform => {
   const settle = (verdict: Verdict, at: number): void => {
     const inChunk = matchStart !== NOT_IN_CHUNK;
     if (verdict === 'expand') {
-      if (inChunk) run(runStart, matchStart);
+      run(runStart, matchStart);
       out.push(expansion);
       runStart = at + 1;
     } else if (!inChunk) {
@@ -163,7 +163,7 @@ export const createIdentTransform = (oidHex: string): ChunkTransform => {
       run(runStart, current.length);
       return;
     }
-    if (matchStart !== NOT_IN_CHUNK) run(runStart, matchStart);
+    run(runStart, matchStart);
     carryOver(current);
   };
 

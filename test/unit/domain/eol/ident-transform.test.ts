@@ -20,6 +20,8 @@ const run = (chunks: ReadonlyArray<string>): string => {
 
 const splitEveryByte = (value: string): ReadonlyArray<string> => [...value];
 
+const LINEAR_BUDGET_MS = 2_000;
+
 describe('createIdentTransform', () => {
   describe('Given the divergence blob', () => {
     describe('When pushed in one chunk', () => {
@@ -135,6 +137,23 @@ describe('createIdentTransform', () => {
     });
   });
 
+  describe('Given a flush that left the NUL literal state pending', () => {
+    describe('When more input follows', () => {
+      it('Then its first byte is not taken as the literal', () => {
+        // Arrange
+        const sut = createIdentTransform(OID);
+        sut.push(bytes('$Id\0'));
+        sut.flush();
+
+        // Act
+        const result = sut.push(bytes('$Id$'));
+
+        // Assert
+        expect(text(result)).toBe(`$Id: ${OID} $`);
+      });
+    });
+  });
+
   describe('Given a chunk without any dollar', () => {
     describe('When pushed', () => {
       it('Then the very same chunk is returned', () => {
@@ -225,6 +244,7 @@ describe('createIdentTransform', () => {
         const tail = 'x'.repeat(1 << 20);
         const chunkSize = 1 << 16;
         const input = bytes(`$Id: ${tail}`);
+        const started = performance.now();
 
         // Act
         const pushed: Uint8Array[] = [];
@@ -234,6 +254,7 @@ describe('createIdentTransform', () => {
         const flushed = sut.flush();
 
         // Assert
+        expect(performance.now() - started).toBeLessThan(LINEAR_BUDGET_MS);
         expect(pushed).toEqual([]);
         expect(new TextDecoder().decode(flushed[0])).toBe(`$Id: ${tail}`);
       });

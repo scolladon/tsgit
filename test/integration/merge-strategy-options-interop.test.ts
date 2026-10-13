@@ -327,6 +327,13 @@ const UNATTRIBUTED_RENORMALIZING: Scenario = {
   main: { f: 'a\r\nb\r\nC\r\n' },
 };
 
+/** Every side commits `* -text`; side renormalizes `f` and edits line 1, main edits line 3 in CRLF. */
+const COMMITTED_BINARY_RENORMALIZING: Scenario = {
+  base: { '.gitattributes': '* -text\n', f: 'a\r\nb\r\nc\r\n' },
+  side: { f: 'A\nb\nc\n' },
+  main: { f: 'a\r\nb\r\nC\r\n' },
+};
+
 const RENORMALIZED_BLOB = '24938456d42b76634c499d30bb6db8c59df815ec';
 
 describe.skipIf(!GIT_AVAILABLE)('merge strategy options interop', () => {
@@ -549,6 +556,27 @@ describe.skipIf(!GIT_AVAILABLE)('merge strategy options interop', () => {
 
         // Assert
         expect(result.theirs.state).toEqual(['MERGE_HEAD', 'MERGE_MSG']);
+        expect(result.ours).toEqual(result.theirs);
+      });
+    });
+  });
+
+  describe('Given committed attributes that contradict a dirty worktree .gitattributes', () => {
+    describe('When both tools merge the side with -X renormalize', () => {
+      it('Then the committed rules govern and both conflict with three stages', async () => {
+        // Arrange
+        const sut = mergeBoth;
+
+        // Act
+        const result = await sut(COMMITTED_BINARY_RENORMALIZING, ['renormalize'], undefined, {
+          '.gitattributes': '* text=auto\n',
+        });
+
+        // Assert
+        expect(result.theirs.state).toEqual(['MERGE_HEAD', 'MERGE_MSG']);
+        expect(result.theirs.index.split('\n').filter((line) => line.includes('\tf'))).toHaveLength(
+          3,
+        );
         expect(result.ours).toEqual(result.theirs);
       });
     });

@@ -972,6 +972,40 @@ describe('applyMergeToWorktree', () => {
     });
   });
 
+  describe('Given a conflict beside a path unchanged on both sides but locally modified', () => {
+    describe('When the merge is applied', () => {
+      it('Then the locally modified path and an untracked file keep their bytes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const reg = FILE_MODE.REGULAR;
+        const aBase = await writeBlob(ctx, 'a-base\n');
+        const aOurs = await writeBlob(ctx, 'a-ours\n');
+        const aTheirs = await writeBlob(ctx, 'a-theirs\n');
+        const eId = await writeBlob(ctx, 'e\n');
+        const treeOf = (a: ObjectId) =>
+          treeWith(ctx, [treeEntry(reg, 'a' as FilePath, a), treeEntry(reg, 'e' as FilePath, eId)]);
+        const enc = new TextEncoder();
+        await ctx.fs.write(`${ctx.layout.workDir}/a`, enc.encode('a-ours\n'));
+        await ctx.fs.write(`${ctx.layout.workDir}/e`, enc.encode('e-local\n'));
+        await ctx.fs.write(`${ctx.layout.workDir}/untracked`, enc.encode('mine\n'));
+
+        // Act
+        const result = await applyMergeToWorktree(ctx, {
+          baseTree: await treeOf(aBase),
+          oursTree: await treeOf(aOurs),
+          theirsTree: await treeOf(aTheirs),
+          currentIndex: index([indexEntry('a', aOurs), indexEntry('e', eId)]),
+        });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await readWork(ctx, 'a')).toContain('<<<<<<<');
+        expect(await readWork(ctx, 'e')).toBe('e-local\n');
+        expect(await readWork(ctx, 'untracked')).toBe('mine\n');
+      });
+    });
+  });
+
   describe('Given both sides add the same regular-file path (no base entry) with diverging content', () => {
     describe('When the merge is applied', () => {
       it('Then the worktree file contains per-region conflict markers (not ours bytes) and the index has stages 2/3 only', async () => {

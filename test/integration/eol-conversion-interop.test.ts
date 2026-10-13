@@ -2225,15 +2225,18 @@ describe.skipIf(!GIT_AVAILABLE)('eol conversion interop', () => {
     };
 
     describe('When .gitattributes survives only at its unmerged stages', () => {
-      const prepare = (dir: string): void => {
+      const prepare = (
+        dir: string,
+        rules = { base: '*.txt text\n', theirs: '*.txt eol=lf\n', ours: '*.txt eol=crlf\n' },
+      ): void => {
         runGit(['-c', 'init.defaultBranch=main', 'init', '-q', dir]);
         identify(dir);
         writeFileSync(path.join(dir, 'f.txt'), 'a\nb\n');
-        commitFile(dir, '.gitattributes', '*.txt text\n', 'base');
+        commitFile(dir, '.gitattributes', rules.base, 'base');
         git(dir, 'checkout', '-q', '-b', 'side');
-        commitFile(dir, '.gitattributes', '*.txt eol=lf\n', 'theirs');
+        commitFile(dir, '.gitattributes', rules.theirs, 'theirs');
         git(dir, 'checkout', '-q', 'main');
-        commitFile(dir, '.gitattributes', '*.txt eol=crlf\n', 'ours');
+        commitFile(dir, '.gitattributes', rules.ours, 'ours');
         tryRunGitWithExit(['-C', dir, 'merge', 'side']);
         rmSync(path.join(dir, '.gitattributes'));
       };
@@ -2259,8 +2262,13 @@ describe.skipIf(!GIT_AVAILABLE)('eol conversion interop', () => {
       it('Then add f.txt converts by the ours rules in both tools', async () => {
         // Arrange
         const [gitDir, tsDir] = twinDirs() as [string, string];
+        const onlyOursConverts = {
+          base: '*.txt -text\n',
+          theirs: '*.txt -text -diff\n',
+          ours: '*.txt text\n',
+        };
         for (const dir of [gitDir, tsDir]) {
-          prepare(dir);
+          prepare(dir, onlyOursConverts);
           writeFileSync(path.join(dir, 'f.txt'), 'a\r\nb\r\n');
         }
 
