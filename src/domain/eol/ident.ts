@@ -59,7 +59,6 @@ const closingDollar = (bytes: Uint8Array, afterColon: number): number | undefine
 };
 
 const collapseAt: MatchAt = (bytes, afterDollar) => {
-  if (bytes.length - afterDollar <= KEYWORD_COLON_LENGTH) return undefined;
   if (!startsWithName(bytes, afterDollar) || bytes[afterDollar + KEYWORD_NAME_LENGTH] !== COLON) {
     return undefined;
   }
@@ -81,7 +80,6 @@ const isForeign = (bytes: Uint8Array, afterDollar: number, closing: number): boo
 const expandAt =
   (expansion: Uint8Array): MatchAt =>
   (bytes, afterDollar) => {
-    if (bytes.length - afterDollar < KEYWORD_COLON_LENGTH) return undefined;
     if (!startsWithName(bytes, afterDollar)) return undefined;
     const terminator = bytes[afterDollar + KEYWORD_NAME_LENGTH];
     if (terminator === DOLLAR) {

@@ -58,8 +58,15 @@ const willConvertLfToCrlf = (
 ): boolean => {
   if (outputLineEnding(action, settings) !== 'crlf' || stats.loneLf === 0) return false;
   if (!isAuto(action)) return true;
-  return stats.loneCr === 0 && stats.crlf === 0 && !isBinaryText(stats);
+  return stats.crlf === 0 && !isBinaryText(stats);
 };
+
+const withLoneLfAsCrlf = (stats: TextStats): TextStats => ({
+  ...stats,
+  // Stryker disable next-line ArithmeticOperator: equivalent — stats.crlf is 0 whenever this runs and loneLf > 0, so +/- both give a nonzero crlf and only `=== 0` reads it
+  crlf: stats.crlf + stats.loneLf,
+  loneLf: 0,
+});
 
 const simulateRoundTrip = (
   stats: TextStats,
@@ -68,9 +75,7 @@ const simulateRoundTrip = (
   settings: EolSettings,
 ): LineEndingLoss | undefined => {
   const added = convert ? { ...stats, loneLf: stats.loneLf + stats.crlf, crlf: 0 } : stats;
-  const checkedOut = willConvertLfToCrlf(added, action, settings)
-    ? { ...added, crlf: added.crlf + added.loneLf, loneLf: 0 }
-    : added;
+  const checkedOut = willConvertLfToCrlf(added, action, settings) ? withLoneLfAsCrlf(added) : added;
   const counts = { crlf: stats.crlf, loneLf: stats.loneLf };
   if (stats.crlf > 0 && checkedOut.crlf === 0) return { loss: 'crlf-to-lf', ...counts };
   if (stats.loneLf > 0 && checkedOut.loneLf === 0) return { loss: 'lf-to-crlf', ...counts };
@@ -82,7 +87,7 @@ const keepsIndexCrlf = async (input: CrlfToGitInput): Promise<boolean> =>
 
 export const crlfToGit = async (input: CrlfToGitInput): Promise<CrlfToGitResult> => {
   const { bytes, action, settings } = input;
-  if (action === 'binary' || bytes.length === 0) return { bytes };
+  if (action === 'binary') return { bytes };
   const stats = gatherTextStats(bytes);
   if (isAuto(action) && isBinaryText(stats)) return { bytes };
   const convert = stats.crlf > 0 && !(await keepsIndexCrlf(input));
@@ -111,6 +116,6 @@ export const crlfToWorkingTree = (
   action: CrlfAction,
   settings: EolSettings,
 ): Uint8Array => {
-  if (bytes.length === 0 || outputLineEnding(action, settings) !== 'crlf') return bytes;
+  if (outputLineEnding(action, settings) !== 'crlf') return bytes;
   return willConvertLfToCrlf(gatherTextStats(bytes), action, settings) ? insertCr(bytes) : bytes;
 };
