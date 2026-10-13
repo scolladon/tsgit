@@ -8,7 +8,6 @@ import { unknownStrategyOption } from '../commands/error.js';
 import type { DiffAlgorithm } from '../diff/line-diff.js';
 import { parseRenameScore } from '../diff/rename-score.js';
 import { type LineKey, NONE_KEY, type WhitespaceMode } from '../diff/whitespace.js';
-import { unsupportedOperation } from '../error.js';
 
 /** The rename settings `-X` overrides; an absent field keeps the configured one. */
 export interface OrtRenameOptions {
@@ -29,6 +28,8 @@ export interface OrtStrategyOptions {
   readonly diffAlgorithm?: DiffAlgorithm;
   /** `-X subtree[=<path>]`: the prefix to shift the other side by; empty guesses it. */
   readonly subtreeShift?: string;
+  /** The last of `-X renormalize` / `-X no-renormalize`; absent defers to `merge.renormalize`. */
+  readonly renormalize?: boolean;
 }
 
 /** xdiff's `xdl_recmatch` tests the flags all → change → at-eol, so the strongest set one wins. */
@@ -86,7 +87,7 @@ const algorithmNamed = (option: string): DiffAlgorithm | undefined => {
   return diffAlgorithmValue(option.slice(DIFF_ALGORITHM_PREFIX.length));
 };
 
-/** The settings so far, plus whether a renormalization tsgit cannot run stands. */
+/** The settings so far, plus the last renormalize option named. */
 interface Parsed {
   readonly settings: OrtStrategyOptions;
   readonly renormalize?: boolean;
@@ -136,7 +137,6 @@ const applyOption = (parsed: Parsed, option: string): Parsed => {
 
 export const parseOrtStrategyOptions = (options: ReadonlyArray<string>): OrtStrategyOptions => {
   const parsed = options.reduce(applyOption, { settings: { renames: {} } });
-  // `-X renormalize` runs every merged blob through attribute conversion; tsgit has no eol conversion.
-  if (parsed.renormalize === true) throw unsupportedOperation('merge', `-X${RENORMALIZE}`);
-  return parsed.settings;
+  if (parsed.renormalize === undefined) return parsed.settings;
+  return { ...parsed.settings, renormalize: parsed.renormalize };
 };

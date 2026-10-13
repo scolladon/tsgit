@@ -111159,27 +111159,27 @@
 									},
 									{
 										"kind": "code",
-										"text": "`no-renormalize`"
-									},
-									{
-										"kind": "text",
-										"text": "; a standing\n"
-									},
-									{
-										"kind": "code",
 										"text": "`renormalize`"
 									},
 									{
 										"kind": "text",
-										"text": " and the other options git knows refuse with\n"
+										"text": " / "
 									},
 									{
 										"kind": "code",
-										"text": "`UNSUPPORTED_OPERATION`"
+										"text": "`no-renormalize`"
 									},
 									{
 										"kind": "text",
-										"text": ", any other with "
+										"text": " (the last one named wins over\n"
+									},
+									{
+										"kind": "code",
+										"text": "`merge.renormalize`"
+									},
+									{
+										"kind": "text",
+										"text": ": every merged blob is converted through the\nattributes the sides carry before it is compared), and any other option\nrefuses with "
 									},
 									{
 										"kind": "code",

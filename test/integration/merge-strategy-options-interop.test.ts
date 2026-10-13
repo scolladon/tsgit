@@ -299,6 +299,22 @@ const LINE_ENDINGS: Scenario = {
   main: { '.gitattributes': '* text=auto\n', f: 'a\r\nB\r\nc\r\n' },
 };
 
+/** Side renormalizes `f` under `text=auto` and edits line 1; main edits line 3 in CRLF. */
+const RENORMALIZING: Scenario = {
+  base: { f: 'a\r\nb\r\nc\r\n' },
+  side: { '.gitattributes': '* text=auto\n', f: 'A\nb\nc\n' },
+  main: { f: 'a\r\nb\r\nC\r\n' },
+};
+
+/** Side only renormalizes `f`; main deletes it. */
+const RENORMALIZED_THEN_DELETED: Scenario = {
+  base: { f: 'a\r\nb\r\nc\r\n', k: 'k\n' },
+  side: { '.gitattributes': '* text=auto\n', f: 'a\nb\nc\n' },
+  main: { f: DELETED },
+};
+
+const RENORMALIZED_BLOB = '24938456d42b76634c499d30bb6db8c59df815ec';
+
 describe.skipIf(!GIT_AVAILABLE)('merge strategy options interop', () => {
   beforeAll(() => {
     root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'tsgit-merge-x-')));
@@ -364,6 +380,14 @@ describe.skipIf(!GIT_AVAILABLE)('merge strategy options interop', () => {
       LINE_ENDINGS,
       ['renormalize', 'no-renormalize'],
     ],
+    ['nothing over a renormalizing history', RENORMALIZING, []],
+    ['renormalize over a renormalizing history', RENORMALIZING, ['renormalize']],
+    [
+      'renormalize over a renormalized-then-deleted file',
+      RENORMALIZED_THEN_DELETED,
+      ['renormalize'],
+    ],
+    ['nothing over a renormalized-then-deleted file', RENORMALIZED_THEN_DELETED, []],
     ['ignore-space-at-eol and ours over space runs', SPACE_RUNS, ['ignore-space-at-eol', 'ours']],
     ['nothing over symlinks both sides changed', SYMLINKS, []],
     ['ours over symlinks both sides changed', SYMLINKS, ['ours']],
@@ -450,4 +474,36 @@ describe.skipIf(!GIT_AVAILABLE)('merge strategy options interop', () => {
       });
     },
   );
+
+  describe('Given the renormalizing history', () => {
+    describe('When both tools merge the side', () => {
+      it('Then it conflicts without -X renormalize', async () => {
+        // Arrange
+        const sut = mergeBoth;
+
+        // Act
+        const result = await sut(RENORMALIZING, []);
+
+        // Assert
+        expect(result.theirs.state).toEqual(['MERGE_HEAD', 'MERGE_MSG']);
+        expect(result.ours.state).toEqual(result.theirs.state);
+      });
+    });
+
+    describe('When both tools merge the side with -X renormalize', () => {
+      it('Then f is the renormalized merge in the same blob', async () => {
+        // Arrange
+        const sut = mergeBoth;
+
+        // Act
+        const result = await sut(RENORMALIZING, ['renormalize']);
+
+        // Assert
+        expect(result.theirs.state).toEqual([]);
+        expect(result.theirs.files.f).toBe('A\nb\nC\n');
+        expect(result.theirs.index).toContain(RENORMALIZED_BLOB);
+        expect(result.ours.index).toContain(RENORMALIZED_BLOB);
+      });
+    });
+  });
 });

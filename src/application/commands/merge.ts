@@ -57,7 +57,12 @@ import {
   conflictResultTree,
   createMergeResultWriter,
 } from '../primitives/apply-merge-to-worktree.js';
-import { buildContentMerger } from '../primitives/build-content-merger.js';
+import {
+  buildBlobUnchanged,
+  buildContentMerger,
+  type ContentMergeSettings,
+  type RenormalizeSettings,
+} from '../primitives/build-content-merger.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createCommitWithStoredHeaders } from '../primitives/create-commit.js';
 import { detectMergeRenames } from '../primitives/detect-merge-renames.js';
@@ -65,9 +70,13 @@ import { changedPaths, findWouldOverwrite } from '../primitives/find-would-overw
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { writeAutoMerge } from '../primitives/internal/auto-merge-ref.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
-import { readUiDiffAlgorithm } from '../primitives/internal/merge-rename-config.js';
+import {
+  readMergeRenormalize,
+  readUiDiffAlgorithm,
+} from '../primitives/internal/merge-rename-config.js';
 import { mergedBlobEntries } from '../primitives/internal/merged-blob-entries.js';
 import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
+import { renormalizeAttributeLookup } from '../primitives/internal/renormalize-attributes.js';
 import { resolveMaxTreeDepth } from '../primitives/internal/resolve-max-tree-depth.js';
 import {
   createLeadingPathScanner,
@@ -223,9 +232,10 @@ export interface MergeRunInput {
    * `patience`, `histogram` and
    * `diff-algorithm=myers|default|minimal|patience|histogram` (the last
    * algorithm named wins; ort's own default is histogram), and
-   * `no-renormalize`; a standing
-   * `renormalize` and the other options git knows refuse with
-   * `UNSUPPORTED_OPERATION`, any other with `UNKNOWN_STRATEGY_OPTION`.
+   * `renormalize` / `no-renormalize` (the last one named wins over
+   * `merge.renormalize`: every merged blob is converted through the
+   * attributes the sides carry before it is compared), and any other option
+   * refuses with `UNKNOWN_STRATEGY_OPTION`.
    * `resolve` fails on any option, as git's `read-tree` refuses them;
    * `octopus` and `ours` ignore them.
    */
@@ -767,7 +777,14 @@ const ortSettings = async (
   const implied = strategy === SUBTREE_STRATEGY ? [SUBTREE_STRATEGY] : [];
   const xOptions = parseOrtStrategyOptions([...implied, ...(opts.strategyOptions ?? [])]);
   const configured = await readUiDiffAlgorithm(ctx);
-  return configured === undefined ? xOptions : { diffAlgorithm: configured, ...xOptions };
+  // git reads the config at startup, so an unparsable value refuses even when `-X` decides.
+  const configuredRenormalize = await readMergeRenormalize(ctx);
+  const renormalize = xOptions.renormalize ?? configuredRenormalize ?? false;
+  return {
+    ...(configured === undefined ? {} : { diffAlgorithm: configured }),
+    ...xOptions,
+    renormalize,
+  };
 };
 
 const ortAttempt = async (
@@ -1247,6 +1264,12 @@ interface MergeTreeInput {
   readonly strategy: OrtStrategyOptions;
 }
 
+/** The strategy's boolean `renormalize` becomes the content merger's resolved attribute settings. */
+const contentSettings = (
+  { renormalize: _requested, ...settings }: OrtStrategyOptions,
+  renormalize: RenormalizeSettings | undefined,
+): ContentMergeSettings => (renormalize === undefined ? settings : { ...settings, renormalize });
+
 const computeMergeTreeResult = async (
   ctx: Context,
   input: MergeTreeInput,
@@ -1255,8 +1278,11 @@ const computeMergeTreeResult = async (
   const { strategy } = input;
   const trees = await readMergeSides(ctx, input);
   const labels: MergeLabels = mergeLabels(revName, input.baseId);
-  const contentMerger = buildContentMerger(ctx, labels, strategy);
   const { base, ours, theirs } = trees;
+  const renormalize = strategy.renormalize
+    ? { attributes: renormalizeAttributeLookup(base, ours, theirs) }
+    : undefined;
+  const contentMerger = buildContentMerger(ctx, labels, contentSettings(strategy, renormalize));
   const detected = await detectMergeRenames(ctx, base, ours, theirs, strategy.renames);
   const renames = await mergeCollidingRenameSources(ctx, trees, detected, contentMerger);
   const merged = await mergeTrees(
@@ -1267,6 +1293,7 @@ const computeMergeTreeResult = async (
     labels,
     renames,
     strategy.variant,
+    renormalize && buildBlobUnchanged(ctx, renormalize),
   );
   return settleMergeTree(ctx, merged, ours);
 };
