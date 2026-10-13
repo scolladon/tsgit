@@ -269,6 +269,32 @@ describe.skipIf(!GIT_AVAILABLE)('stash porcelain interop', () => {
       });
     });
 
+    describe('Given a CRLF blob in the index, text=auto and a CRLF edit', () => {
+      describe('When stash push runs in each', () => {
+        it('Then the stashed blob keeps CRLF and the W trees match', async () => {
+          // Arrange
+          await writeBoth(pair, 'a.txt', 'a\r\nb\r\n');
+          git(pair.peer, 'add', 'a.txt');
+          git(pair.peer, 'commit', '-q', '-m', 'seed');
+          await repo.add(['a.txt']);
+          await repo.commit({ message: 'seed', author: AUTHOR });
+          await writeBoth(pair, '.gitattributes', '* text=auto\n');
+          await writeBoth(pair, 'a.txt', 'a\r\nb\r\nc\r\n');
+
+          // Act
+          git(pair.peer, 'stash');
+          await repo.stash.push();
+
+          // Assert
+          expect(stashedBlob(pair.peer, 'stash@{0}:a.txt')).toBe('aRNbRNcRN');
+          expect(stashedBlob(pair.ours, 'stash@{0}:a.txt')).toBe('aRNbRNcRN');
+          expect(git(pair.ours, 'rev-parse', 'stash@{0}^{tree}')).toBe(
+            git(pair.peer, 'rev-parse', 'stash@{0}^{tree}'),
+          );
+        });
+      });
+    });
+
     describe('Given core.autocrlf true and core.safecrlf true with an LF edit', () => {
       describe('When stash push runs in each', () => {
         it('Then both refuse, leave the same loose blobs, no stash ref and an untouched worktree', async () => {

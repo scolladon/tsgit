@@ -2805,6 +2805,68 @@ describe('Given core.safecrlf true', () => {
   });
 });
 
+/** Tracked `b` (committed as `one`), now LF-modified, and untracked LF `a`, under autocrlf true. */
+const seedTrackedAndUntracked = async (safecrlf: string) => {
+  const ctx = await seedFreshRepo({ a: 'x\ny\n', b: 'one\n' });
+  await add(ctx, ['b']);
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b`, 'p\nq\nr\n');
+  await configure(ctx, `[core]\n\tautocrlf = true\n\tsafecrlf = ${safecrlf}\n`);
+  return ctx;
+};
+
+const STAGE_ORDER_CASES = [
+  { label: 'literal', paths: ['a', 'b'], opts: {} },
+  { label: 'bulk', paths: [] as string[], opts: { all: true } },
+];
+
+describe('Given core.safecrlf true, an untracked LF file a and a tracked LF-modified file b', () => {
+  describe.each(STAGE_ORDER_CASES)('When add stages both ($label)', ({ paths, opts }) => {
+    it('Then it refuses b, the tracked path git stages first, and never writes a', async () => {
+      // Arrange
+      const ctx = await seedTrackedAndUntracked('true');
+      const sut = add;
+      let caught: unknown;
+
+      // Act
+      try {
+        await sut(ctx, paths, opts);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'EOL_ROUND_TRIP_UNSAFE',
+        path: 'b',
+        loss: 'lf-to-crlf',
+        crlf: 0,
+        loneLf: 3,
+      });
+      expect(await blobExists(ctx, 'x\ny\n')).toBe(false);
+    });
+  });
+});
+
+describe('Given core.safecrlf warn, an untracked LF file a and a tracked LF-modified file b', () => {
+  describe.each(STAGE_ORDER_CASES)('When add stages both ($label)', ({ paths, opts }) => {
+    it('Then the notices name b before a', async () => {
+      // Arrange
+      const ctx = await seedTrackedAndUntracked('warn');
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, paths, opts);
+
+      // Assert
+      expect(result.eolNotices).toEqual([
+        { path: 'b', loss: 'lf-to-crlf', crlf: 0, loneLf: 3 },
+        { path: 'a', loss: 'lf-to-crlf', crlf: 0, loneLf: 2 },
+      ]);
+    });
+  });
+});
+
 describe('Given a committed CRLF text blob and text=auto', () => {
   describe('When add re-stages it with a new CRLF line', () => {
     it('Then the blob keeps CRLF', async () => {
@@ -2837,6 +2899,24 @@ describe('Given a symlink whose target holds CRLF under text eol=crlf ident', ()
 
       // Assert
       expect(await stagedText(ctx, 'link')).toBe('t\r\nx');
+    });
+  });
+});
+
+describe('Given .gitattributes tracked in the index only and a CRLF work-tree file', () => {
+  describe('When add stages the file', () => {
+    it('Then the index attributes convert it to LF', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ '.gitattributes': '* text\n', 'f.txt': 'a\r\nb\r\n' });
+      await add(ctx, ['.gitattributes']);
+      await ctx.fs.rm(`${ctx.layout.workDir}/.gitattributes`);
+      const sut = add;
+
+      // Act
+      await sut(ctx, ['f.txt']);
+
+      // Assert
+      expect(await stagedText(ctx, 'f.txt')).toBe('a\nb\n');
     });
   });
 });
@@ -3127,13 +3207,15 @@ describe('add renormalize option', () => {
     });
   });
 
-  describe('Given a tracked symlink whose target holds CRLF', () => {
+  describe('Given a tracked symlink retargeted to a CRLF-holding target', () => {
     describe('When add renormalize "."', () => {
-      it('Then the link target is re-hashed raw and nothing is modified', async () => {
+      it('Then the new target is re-hashed raw and modified lists the link', async () => {
         // Arrange
         const ctx = await seedFreshRepo();
-        await ctx.fs.symlink('t\r\nx', `${ctx.layout.workDir}/link`);
+        await ctx.fs.symlink('old', `${ctx.layout.workDir}/link`);
         await add(ctx, ['link']);
+        await ctx.fs.rm(`${ctx.layout.workDir}/link`);
+        await ctx.fs.symlink('t\r\nx', `${ctx.layout.workDir}/link`);
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* text=auto\n');
         const sut = add;
 
@@ -3141,8 +3223,35 @@ describe('add renormalize option', () => {
         const result = await sut(ctx, ['.'], RENORMALIZE);
 
         // Assert
-        expect(result.modified).toEqual([]);
+        expect(result.modified).toEqual(['link']);
         expect(await stagedText(ctx, 'link')).toBe('t\r\nx');
+      });
+    });
+  });
+
+  describe('Given remote.origin.promisor holds a value git refuses', () => {
+    describe('When add renormalize "."', () => {
+      it('Then it throws CONFIG_BAD_BOOLEAN_VALUE naming remote.origin.promisor', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        await configure(ctx, '[remote "origin"]\n\tpromisor = maybe\n');
+        __resetConfigCacheForTests();
+        const sut = add;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, ['.'], RENORMALIZE);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string; value: string };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('remote.origin.promisor');
+        expect(data.value).toBe('maybe');
       });
     });
   });

@@ -15,10 +15,12 @@ import {
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { flattenTree } from '../../../../src/application/primitives/flatten-tree.js';
+import * as convertBlobMod from '../../../../src/application/primitives/internal/convert-blob.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { pushStashRef, readStashStack } from '../../../../src/application/primitives/stash-ref.js';
+import { MAX_WORKING_TREE_BLOB_BYTES } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
@@ -1547,6 +1549,74 @@ describe('stash push filter validation', () => {
         const written = await commitsWrittenSince(ctx, before);
         expect(written.map((c) => c.parents)).toEqual([[head]]);
         expect(await readStashStack(ctx)).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('stash push line-ending guards', () => {
+  describe('Given a tracked file the work tree reports above the size cap', () => {
+    describe('When stash push runs', () => {
+      it('Then it refuses WORKING_TREE_FILE_TOO_LARGE before any conversion runs', async () => {
+        // Arrange
+        const ctx = await setupLfRepo('[core]\n\tautocrlf = true\n');
+        await write(ctx, 'a.txt', 'a\nb\nc\nd\n');
+        const oversize = MAX_WORKING_TREE_BLOB_BYTES + 1;
+        const hostileFs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop !== 'lstat') return Reflect.get(target, prop, receiver);
+            return async (path: string) => {
+              const real = await target.lstat(path);
+              return path.endsWith('/a.txt') ? { ...real, size: oversize } : real;
+            };
+          },
+        });
+        const convert = vi.spyOn(convertBlobMod, 'convertToGit');
+        const sut = stashPush;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut({ ...ctx, fs: hostileFs }, {});
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        if (!(caught instanceof TsgitError)) throw new Error('expected a TsgitError');
+        expect(caught.data).toEqual({
+          code: 'WORKING_TREE_FILE_TOO_LARGE',
+          path: 'a.txt',
+          size: oversize,
+          limit: MAX_WORKING_TREE_BLOB_BYTES,
+        });
+        const writeRouteCalls = convert.mock.calls.filter(
+          ([, request]) => request.route === 'write',
+        );
+        expect(writeRouteCalls).toEqual([]);
+        convert.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a CRLF blob in the index, text=auto and a CRLF edit', () => {
+    describe('When stash push runs', () => {
+      it('Then the W-tree blob keeps CRLF', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'a\r\nb\r\n', 'initial commit');
+        await write(ctx, '.gitattributes', '* text=auto\n');
+        await write(ctx, 'a.txt', 'a\r\nb\r\nc\r\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const wTree = (await commitOf(ctx, result.stash)).tree;
+        expect(await treeContent(ctx, wTree, 'a.txt')).toBe('a\r\nb\r\nc\r\n');
       });
     });
   });

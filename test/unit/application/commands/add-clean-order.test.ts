@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
+import { serializeAndHash } from '../../../../src/application/primitives/internal/serialize-and-hash.js';
 import { TsgitError } from '../../../../src/domain/index.js';
+import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { seedRepo } from './fixtures.js';
 
@@ -112,6 +114,8 @@ interface WriteLog {
   readonly ctx: Context;
   /** `start`/`end` events of each loose-object write, in the order they happened. */
   readonly events: string[];
+  /** Path of every loose object written, in write order. */
+  readonly written: string[];
 }
 
 /**
@@ -121,6 +125,7 @@ interface WriteLog {
  */
 const withWriteLog = (ctx: Context, holdFirstMs: number): WriteLog => {
   const events: string[] = [];
+  const written: string[] = [];
   let writes = 0;
   let releaseFirst = (): void => {};
   const nextWriteStarted = new Promise<void>((resolve) => {
@@ -140,12 +145,13 @@ const withWriteLog = (ctx: Context, holdFirstMs: number): WriteLog => {
           if (index === 1) releaseFirst();
           if (index === 0 && holdFirstMs > 0) await Promise.race([nextWriteStarted, watchdog()]);
           await target.writeExclusive(path, data);
+          written.push(path);
           events.push(`end ${index}`);
         };
       },
     }),
   };
-  return { ctx: wrapped, events };
+  return { ctx: wrapped, events, written };
 };
 
 const seedTrio = async (safecrlf: string): Promise<Context> => {
@@ -162,7 +168,7 @@ describe('Given core.safecrlf true, core.autocrlf true, a1 CRLF (slow read), b2 
   describe('When add all', () => {
     it('Then the refusal is b2 and the loose-object write spy saw a1 only', async () => {
       // Arrange
-      const { ctx, events } = withWriteLog(await seedTrio('true'), 0);
+      const { ctx, events, written } = withWriteLog(await seedTrio('true'), 0);
       const sut = add;
       let caught: unknown;
 
@@ -183,13 +189,19 @@ describe('Given core.safecrlf true, core.autocrlf true, a1 CRLF (slow read), b2 
         loneLf: 2,
       });
       expect(events).toEqual(['start 0', 'end 0']);
+      const { id } = await serializeAndHash(ctx, {
+        type: 'blob',
+        id: '' as ObjectId,
+        content: new TextEncoder().encode('x\ny\n'),
+      });
+      expect(written).toEqual([`${ctx.layout.gitDir}/objects/${id.slice(0, 2)}/${id.slice(2)}`]);
     });
   });
 });
 
 describe('Given core.safecrlf warn, core.autocrlf true, a deferred first write', () => {
   describe('When add all', () => {
-    it('Then the next write starts while the first is pending and the notice is b2s', async () => {
+    it('Then the next write starts while the first is pending and the notice is b2', async () => {
       // Arrange
       const { ctx, events } = withWriteLog(await seedTrio('warn'), WATCHDOG_MS);
       const sut = add;

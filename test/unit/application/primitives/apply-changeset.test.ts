@@ -2500,6 +2500,94 @@ describe('applyChangeset dirty probe under line-ending conversion', () => {
     });
   });
 
+  describe('Given text for every path and a symlink whose target holds a CR', () => {
+    describe('When isWorkingTreeDirty compares it against the stored target', () => {
+      it('Then the link target is compared raw', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const target = 'a\r\nb';
+        const id = await writeBlob(ctx, enc(target));
+        await ctx.fs.write(`${WORKDIR}/.gitattributes`, enc('* text\n'));
+        await ctx.fs.symlink(target, `${WORKDIR}/link`);
+        const sut = isWorkingTreeDirty;
+
+        // Act
+        const result = await sut(ctx, `${WORKDIR}/link`, id);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an attribute anchored on the repo-relative path and a CRLF file of an LF blob', () => {
+    describe('When isWorkingTreeDirty compares the nested file', () => {
+      it('Then the anchored text attribute applies and the file is clean', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('a\nb\n'));
+        await ctx.fs.write(`${WORKDIR}/.gitattributes`, enc('/sub/f.txt text\n'));
+        await ctx.fs.write(`${WORKDIR}/sub/f.txt`, enc('a\r\nb\r\n'));
+        const sut = isWorkingTreeDirty;
+
+        // Act
+        const result = await sut(ctx, `${WORKDIR}/sub/f.txt`, id);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given text=auto and a CRLF file whose index blob already holds CRLF', () => {
+    describe('When isWorkingTreeDirty compares it against that blob', () => {
+      it('Then the file is clean', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('a\r\nb\r\n'));
+        await ctx.fs.write(`${WORKDIR}/.gitattributes`, enc('* text=auto\n'));
+        await ctx.fs.write(`${WORKDIR}/f.txt`, enc('a\r\nb\r\n'));
+        const sut = isWorkingTreeDirty;
+
+        // Act
+        const result = await sut(ctx, `${WORKDIR}/f.txt`, id);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a filter section whose required value git refuses', () => {
+    describe('When isWorkingTreeDirty compares a file', () => {
+      it('Then it refuses CONFIG_BAD_BOOLEAN_VALUE naming filter.x.required', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[filter "x"]\n\trequired = foo\n');
+        invalidateConfigCache(ctx);
+        const id = await writeBlob(ctx, enc('a\n'));
+        await ctx.fs.write(`${WORKDIR}/f.txt`, enc('a\n'));
+        const sut = isWorkingTreeDirty;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, `${WORKDIR}/f.txt`, id);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        if (!(caught instanceof TsgitError)) throw new Error('expected a TsgitError');
+        expect(caught.data).toMatchObject({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'filter.x.required',
+          value: 'foo',
+        });
+      });
+    });
+  });
+
   describe('Given core.autocrlf true and a CRLF file of an LF blob', () => {
     describe('When isWorkingTreeDirty is called with its three public arguments', () => {
       it('Then the file is clean', async () => {

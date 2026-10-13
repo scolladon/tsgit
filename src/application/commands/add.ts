@@ -215,6 +215,18 @@ interface Staging {
   readonly ensurePromisorConfigValid: PromisorGuard;
 }
 
+/** git stages the tracked paths first, then the untracked ones, each group in index order. */
+const trackedFirst = (
+  paths: ReadonlyArray<FilePath>,
+  existing: ReadonlyMap<FilePath, IndexEntry>,
+): FilePath[] => {
+  const sorted = [...paths].sort(comparePaths);
+  return [
+    ...sorted.filter((path) => existing.has(path)),
+    ...sorted.filter((path) => !existing.has(path)),
+  ];
+};
+
 /** git stages — and cleans — in index order, whatever order the paths came in. */
 const stageLiterals = async (
   staging: Staging,
@@ -230,7 +242,7 @@ const stageLiterals = async (
   const added: FilePath[] = [];
   const modified: FilePath[] = [];
   const eolNotices: EolNotice[] = [];
-  for (const path of [...validated].sort(comparePaths)) {
+  for (const path of trackedFirst(validated, existing)) {
     const previous = existing.get(path);
     const guard = staging.ensurePromisorConfigValid;
     const result = await stageOne(ctx, path, scope, previous, indexMtime, guard);
@@ -306,9 +318,30 @@ const stageWalkedEntries = async (
   const stage = (walkEntry: WalkWorkingTreeEntry): Promise<WalkOutcome | undefined> =>
     processWalkEntry(ctx, walkEntry, existing, seen, scope, indexMtime, ensurePromisorConfigValid);
   // git converts and writes one path at a time, dying at the first loss, under safecrlf=true.
-  const span: OrderSpan = scope.settings.safeCrlf === true ? 'write' : 'clean';
-  return stagedOutcomes(await dispatchInCleanOrder(ctx, walk, stage, span));
+  const refusing = scope.settings.safeCrlf === true;
+  const span: OrderSpan = refusing ? 'write' : 'clean';
+  const ordered = refusing ? walkedTrackedFirst(walk, existing) : walk;
+  return stagedOutcomes(await dispatchInCleanOrder(ctx, ordered, stage, span));
 };
+
+/**
+ * The walked entries as git's `add` converts them: tracked paths in index order,
+ * then the untracked ones in walk order. Buffered, so the first refusal is git's.
+ */
+async function* walkedTrackedFirst(
+  walk: AsyncIterable<WalkWorkingTreeEntry>,
+  existing: ReadonlyMap<FilePath, IndexEntry>,
+): AsyncGenerator<WalkWorkingTreeEntry> {
+  const walked = new Map<FilePath, WalkWorkingTreeEntry>();
+  for await (const walkEntry of walk) walked.set(walkEntry.path, walkEntry);
+  for (const path of existing.keys()) {
+    const walkEntry = walked.get(path);
+    if (walkEntry === undefined) continue;
+    walked.delete(path);
+    yield walkEntry;
+  }
+  yield* walked.values();
+}
 
 /** One walked entry once staged: its outcome, or the failure staging it met. */
 type StagedEntry =
@@ -540,9 +573,14 @@ const withPathspec =
     return !matchesPathspec(matcher, path);
   };
 
-/** The safecrlf notices of the walked outcomes, in walk order. */
-const noticesOf = (outcomes: ReadonlyArray<WalkOutcome>): EolNotice[] =>
-  outcomes.flatMap(({ notice }) => (notice === undefined ? [] : [notice]));
+/** The safecrlf notices of the walked outcomes: git warns for the tracked paths first, in index order. */
+const noticesOf = (outcomes: ReadonlyArray<WalkOutcome>): EolNotice[] => {
+  const tracked = outcomes.filter(({ kind }) => kind !== 'added').sort(byPath);
+  const untracked = outcomes.filter(({ kind }) => kind === 'added');
+  return [...tracked, ...untracked].flatMap(({ notice }) => (notice === undefined ? [] : [notice]));
+};
+
+const byPath = (a: WalkOutcome, b: WalkOutcome): number => comparePaths(a.path, b.path);
 
 /** The index once every walked outcome is staged, and which paths were matched, added, modified. */
 const tallyWalkOutcomes = (

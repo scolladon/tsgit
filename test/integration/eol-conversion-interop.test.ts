@@ -87,8 +87,10 @@ const rowConfig = (row: MatrixRow<unknown>) => ({
   ...(row.eol === 'unset' ? {} : { eol: row.eol }),
 });
 
-const countWarnings = (stderr: string): number =>
-  stderr.split('\n').filter((line) => line.startsWith(WARNING_PREFIX)).length;
+const warningLines = (stderr: string): ReadonlyArray<string> =>
+  stderr.split('\n').filter((line) => line.startsWith(WARNING_PREFIX));
+
+const countWarnings = (stderr: string): number => warningLines(stderr).length;
 
 const addColumn = (dir: string, attribute: string | undefined) => {
   writeInfoAttributes(dir, attributeLines(attribute));
@@ -119,7 +121,8 @@ const checkoutColumn = (dir: string, attribute: string | undefined): ReadonlyArr
 interface AddOutcome {
   readonly exitCode: number;
   readonly refusal: string | undefined;
-  readonly warnings: number;
+  /** git's `warning:` lines, or the ones rebuilt from tsgit's notices, in emission order. */
+  readonly warnings: ReadonlyArray<string>;
 }
 
 interface RepoSnapshot {
@@ -139,7 +142,7 @@ const addWithGit = (dir: string, pathspec: ReadonlyArray<string>): AddOutcome =>
   return {
     exitCode: result.exitCode,
     refusal: result.exitCode === 0 ? undefined : result.stderr.trim(),
-    warnings: countWarnings(result.stderr),
+    warnings: warningLines(result.stderr),
   };
 };
 
@@ -155,12 +158,16 @@ const tsgitAdd = async (
   try {
     const { eolNotices } = await add(createNodeContext({ workDir: dir }), pathspec);
     return {
-      outcome: { exitCode: 0, refusal: undefined, warnings: eolNotices.length },
+      outcome: {
+        exitCode: 0,
+        refusal: undefined,
+        warnings: eolNotices.map((notice) => reconstructSafecrlfLine(notice, 'warning')),
+      },
       notices: eolNotices,
     };
   } catch (error) {
     if (!(error instanceof TsgitError)) throw error;
-    const outcome = { exitCode: REFUSED_EXIT_CODE, refusal: refusalOf(error), warnings: 0 };
+    const outcome = { exitCode: REFUSED_EXIT_CODE, refusal: refusalOf(error), warnings: [] };
     return { outcome, notices: [] };
   }
 };
@@ -368,7 +375,7 @@ describe.skipIf(!GIT_AVAILABLE)('eol conversion interop', () => {
 
     describe('When the five matrix fixtures are added under each config row and attribute column', () => {
       it.each(ADD_MATRIX.map((row) => [rowTitle(row), row] as const))(
-        'Then %s yields the same blobs and as many notices as git has warnings',
+        'Then %s yields the same blobs and the same warnings as git',
         async (_title, row) => {
           // Arrange
           const scenario = { config: rowConfig(row), files: matrixFiles, pathspec: FIXTURE_NAMES };
@@ -524,6 +531,108 @@ describe.skipIf(!GIT_AVAILABLE)('eol conversion interop', () => {
       );
     });
 
+    describe('When an untracked LF file and a tracked LF-modified file are added together', () => {
+      const PATHSPECS = [
+        ['literal', ['a', 'b']],
+        ['directory', ['.']],
+      ] as const;
+      const WARNING_LINES = ['b', 'a'].map((name) =>
+        reconstructSafecrlfLine({ path: name, loss: 'lf-to-crlf' }, 'warning'),
+      );
+
+      const trackedAndUntracked = (safeCrlf: 'warn' | 'true'): Twin => {
+        const twin = twinRepos({
+          files: { a: bytesOf('x\ny\n'), b: bytesOf('one\n') },
+          pathspec: [],
+        });
+        for (const dir of [twin.gitDir, twin.tsDir]) {
+          git(dir, 'add', 'b');
+          setEolConfig(dir, { autoCrlf: 'true', safeCrlf });
+          writeFiles(dir, { b: bytesOf('p\nq\nr\n') });
+        }
+        return twin;
+      };
+
+      it.each(PATHSPECS)(
+        'Then core.safecrlf=true (%s) refuses the tracked path first and writes the same objects',
+        async (_label, pathspec) => {
+          // Arrange
+          const twin = trackedAndUntracked('true');
+          const sut = addOnBoth;
+
+          // Act
+          const result = await sut(twin, pathspec);
+
+          // Assert
+          expect(result.git.refusal).toBe(
+            reconstructSafecrlfLine({ path: 'b', loss: 'lf-to-crlf' }, 'fatal'),
+          );
+          expect(result.tsgit).toEqual(result.git);
+        },
+        SETUP_TIMEOUT,
+      );
+
+      it.each(PATHSPECS)(
+        'Then core.safecrlf=warn (%s) warns about the tracked path first',
+        async (_label, pathspec) => {
+          // Arrange
+          const twin = trackedAndUntracked('warn');
+          const sut = addOnBoth;
+
+          // Act
+          const result = await sut(twin, pathspec);
+
+          // Assert
+          expect(result.git.warnings).toEqual(WARNING_LINES);
+          expect(result.tsgit).toEqual(result.git);
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+
+    describe('When the attributes come from the index, the work tree or both', () => {
+      const CRLF_FILE = bytesOf('a\r\nb\r\n');
+      const LF_BLOB = enc(bytesOf('a\nb\n'));
+
+      it('Then a .gitattributes only in the index converts the file like git', async () => {
+        // Arrange
+        const twin = twinRepos({ files: { f: CRLF_FILE }, pathspec: ['f'] });
+        for (const dir of [twin.gitDir, twin.tsDir]) {
+          writeFileSync(path.join(dir, '.gitattributes'), '* text\n');
+          git(dir, 'add', '.gitattributes');
+          rmSync(path.join(dir, '.gitattributes'));
+        }
+        const sut = addOnBoth;
+
+        // Act
+        const result = await sut(twin, ['f']);
+
+        // Assert
+        expect(enc(blobAt(twin.gitDir, 'f'))).toBe(LF_BLOB);
+        expect(result.tsgit).toEqual(result.git);
+        expect(enc(blobAt(twin.tsDir, 'f'))).toBe(LF_BLOB);
+      });
+
+      it('Then a work-tree .gitattributes wins over a contradicting index one like git', async () => {
+        // Arrange
+        const twin = twinRepos({ files: { 'f.txt': CRLF_FILE }, pathspec: ['f.txt'] });
+        for (const dir of [twin.gitDir, twin.tsDir]) {
+          writeFileSync(path.join(dir, '.gitattributes'), '*.txt -text\n');
+          git(dir, 'add', '.gitattributes');
+          writeFileSync(path.join(dir, '.gitattributes'), '*.txt text\n');
+        }
+        const sut = addOnBoth;
+
+        // Act
+        const result = await sut(twin, ['f.txt']);
+
+        // Assert
+        expect(enc(blobAt(twin.gitDir, 'f.txt'))).toBe(LF_BLOB);
+        expect(result.tsgit).toEqual(result.git);
+        expect(enc(blobAt(twin.tsDir, 'f.txt'))).toBe(LF_BLOB);
+      });
+    });
+
     describe('When core.safecrlf varies over one file per direction', () => {
       const DIRECTIONS = [
         { name: 'lf', bytes: bytesOf('a\nb\n'), config: { autoCrlf: 'true' }, attributes: [] },
@@ -630,12 +739,18 @@ describe.skipIf(!GIT_AVAILABLE)('eol conversion interop', () => {
         const twin = twinRepos({ files: { f: bytesOf('x\n') }, pathspec: ['f'] });
         for (const dir of [twin.gitDir, twin.tsDir]) runGit(['-C', dir, 'config', key, value]);
         const tsContext = () => createNodeContext({ workDir: twin.tsDir });
-        const wasRefused = (run: () => Promise<unknown>): Promise<boolean> =>
+        const refusalOf = (run: () => Promise<unknown>): Promise<unknown> =>
           run().then(
-            () => false,
-            (error: unknown) => error instanceof TsgitError,
+            () => undefined,
+            (error: unknown) => {
+              if (!(error instanceof TsgitError)) throw error;
+              return {
+                code: error.data.code,
+                key: 'key' in error.data ? error.data.key : undefined,
+              };
+            },
           );
-        const sut = wasRefused;
+        const sut = refusalOf;
 
         // Act
         const refused = {
@@ -646,7 +761,8 @@ describe.skipIf(!GIT_AVAILABLE)('eol conversion interop', () => {
         // Assert
         expect(tryRunGitWithExit(['-C', twin.gitDir, 'add', 'f']).exitCode).toBe(REFUSED_EXIT_CODE);
         expect(tryRunGitWithExit(['-C', twin.gitDir, 'status']).exitCode).toBe(REFUSED_EXIT_CODE);
-        expect(refused).toEqual({ add: true, status: true });
+        const badValue = { code: 'CONFIG_BAD_BOOLEAN_VALUE', key };
+        expect(refused).toEqual({ add: badValue, status: badValue });
       });
 
       it('Then core.eol=foo is accepted by both tools', async () => {

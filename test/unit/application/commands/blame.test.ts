@@ -1269,6 +1269,27 @@ describe('Given core.autocrlf true, a committed LF file and its CRLF worktree co
   });
 });
 
+describe('Given text=auto, a committed CRLF file recorded at stage 0', () => {
+  describe('When blame runs on the working tree with one CRLF line added', () => {
+    it('Then the unchanged lines keep their commit and only the added line is uncommitted', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'a\r\nb\r\n');
+      await write(ctx, '.gitattributes', '* text=auto\n');
+      await write(ctx, 'f.txt', 'a\r\nb\r\nc\r\n');
+
+      // Act
+      const result = await blame(ctx, 'f.txt', { worktree: true });
+
+      // Assert
+      expect(result.lines.map((l) => l.committed)).toEqual([true, true, false]);
+      expect(
+        committedLines({ ...result, lines: result.lines.slice(0, 2) }).map((l) => l.commit),
+      ).toEqual([c1, c1]);
+    });
+  });
+});
+
 describe('Given text=auto, a committed CRLF file and an index recording it only at stage 2', () => {
   describe('When blame runs on the working tree with the same CRLF copy', () => {
     it('Then the stage-2 blob keeps the CRLF and every line is committed', async () => {

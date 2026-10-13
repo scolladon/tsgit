@@ -9,7 +9,11 @@
  *   kind:    equivalent-under-readback
  *   format:  git-index-tree-state
  */
-import { noInitialCommit, stashApplyWouldOverwrite } from '../../domain/commands/error.js';
+import {
+  noInitialCommit,
+  stashApplyWouldOverwrite,
+  workingTreeFileTooLarge,
+} from '../../domain/commands/error.js';
 import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import type { EolNotice } from '../../domain/eol/crlf-conversion.js';
 import { TsgitError } from '../../domain/error.js';
@@ -72,6 +76,7 @@ import {
   type StashStackEntry,
 } from '../primitives/stash-ref.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
+import { MAX_WORKING_TREE_BLOB_BYTES } from '../primitives/types.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { acquireIndexLock } from './internal/index-update.js';
@@ -164,6 +169,10 @@ const cleanedContent = async (
   request: HashRequest,
 ): Promise<{ readonly bytes: Uint8Array; readonly notice?: EolNotice }> => {
   const { path, stat, scope, indexBlob } = request;
+  // The cap binds the raw file: conversion must not run on bytes add would refuse.
+  if (stat.size > MAX_WORKING_TREE_BLOB_BYTES) {
+    throw workingTreeFileTooLarge(path, stat.size, MAX_WORKING_TREE_BLOB_BYTES);
+  }
   if (stat.isSymbolicLink) return { bytes: new TextEncoder().encode(await ctx.fs.readlink(abs)) };
   const conversion = await resolveConversion(ctx, scope.provider, path, scope.settings, {
     eagerSectionValidation: true,
