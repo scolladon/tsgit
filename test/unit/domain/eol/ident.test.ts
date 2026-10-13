@@ -155,3 +155,39 @@ describe('identToWorkingTree', () => {
     });
   });
 });
+
+describe('Given a 1 MiB LF-free blob of back-to-back $Id: keywords', () => {
+  const MIB = 1024 * 1024;
+  const LINEAR_BUDGET_MS = 2_000;
+  const blob = new TextEncoder().encode('$Id:x'.repeat(MIB / 5));
+
+  describe('When collapsed', () => {
+    it('Then every keyword collapses within a linear-time budget', () => {
+      // Arrange
+      const sut = identToGit;
+      const started = performance.now();
+
+      // Act
+      const result = sut(blob);
+
+      // Assert
+      expect(performance.now() - started).toBeLessThan(LINEAR_BUDGET_MS);
+      expect(result.length).toBeLessThan(blob.length);
+    });
+  });
+
+  describe('When expanded in core', () => {
+    it('Then every keyword expands within a linear-time budget', () => {
+      // Arrange
+      const sut = identToWorkingTree;
+      const started = performance.now();
+
+      // Act
+      const result = sut(blob, OID);
+
+      // Assert
+      expect(performance.now() - started).toBeLessThan(LINEAR_BUDGET_MS);
+      expect(result.length).toBeGreaterThan(blob.length);
+    });
+  });
+});

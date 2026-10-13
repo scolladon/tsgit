@@ -49,11 +49,13 @@ const rewrite = (bytes: Uint8Array, matchAt: MatchAt): Uint8Array => {
 const startsWithName = (bytes: Uint8Array, at: number): boolean =>
   bytes[at] === UPPER_I && bytes[at + 1] === LOWER_D;
 
+// Both scans stop at the closing `$`, as git bounds its own: an unbounded scan re-reads
+// the whole remainder for every keyword and turns an LF-free file quadratic.
 const closingDollar = (bytes: Uint8Array, afterColon: number): number | undefined => {
   const closing = bytes.indexOf(DOLLAR, afterColon);
   if (closing === -1) return undefined;
-  const lineBreak = bytes.indexOf(LF, afterColon);
-  return lineBreak !== -1 && lineBreak < closing ? undefined : closing;
+  const lineBreak = bytes.subarray(afterColon, closing).indexOf(LF);
+  return lineBreak !== -1 ? undefined : closing;
 };
 
 const collapseAt: MatchAt = (bytes, afterDollar) => {
@@ -73,10 +75,8 @@ const encoder = new TextEncoder();
 export const encodeExpandedKeyword = (oidHex: string): Uint8Array =>
   encoder.encode(`$Id: ${oidHex} $`);
 
-const isForeign = (bytes: Uint8Array, afterDollar: number, closing: number): boolean => {
-  const space = bytes.indexOf(SPACE, afterDollar + FOREIGN_SEARCH_START);
-  return space !== -1 && space < closing - 1;
-};
+const isForeign = (bytes: Uint8Array, afterDollar: number, closing: number): boolean =>
+  bytes.subarray(afterDollar + FOREIGN_SEARCH_START, closing - 1).indexOf(SPACE) !== -1;
 
 const expandAt =
   (expansion: Uint8Array): MatchAt =>
