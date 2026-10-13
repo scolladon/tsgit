@@ -19,20 +19,39 @@ interface Recorded {
   readonly cleaned: string[];
 }
 
-/** A repo whose `log` clean driver records the content of each file it hears, in call order. */
+interface Driver {
+  readonly config: string;
+  readonly exitCode: number;
+}
+
+const LOGGING: Driver = { config: LOG_DRIVER, exitCode: 0 };
+const REQUIRED_FAILING: Driver = {
+  config: '[filter "log"]\n\tclean = log\n\trequired = true\n',
+  exitCode: 1,
+};
+
+/**
+ * A repo whose `log` clean driver records the content of each file it hears, in call order.
+ * `tracked` paths are staged first, then rewritten with a `2` suffix so the next add cleans them again.
+ */
 const repoUnderLogDriver = async (
   workingTree: Readonly<Record<string, string>>,
   attributes: string,
+  { driver = LOGGING, tracked = [] }: { driver?: Driver; tracked?: ReadonlyArray<string> } = {},
 ): Promise<Recorded> => {
   const base = createMemoryContext();
   await seedRepo(base, { workingTree });
   await base.fs.writeUtf8(`${base.layout.workDir}/.gitattributes`, attributes);
-  await base.fs.writeUtf8(`${base.layout.gitDir}/config`, LOG_DRIVER);
+  if (tracked.length > 0) await add(base, tracked);
+  await base.fs.writeUtf8(`${base.layout.gitDir}/config`, driver.config);
+  for (const path of tracked) {
+    await base.fs.writeUtf8(`${base.layout.workDir}/${path}`, `${workingTree[path]}2`);
+  }
   const cleaned: string[] = [];
   const command = {
     run: async (request: { readonly stdin?: Uint8Array }) => {
       cleaned.push(dec(request.stdin));
-      return { exitCode: 0, stdout: request.stdin ?? new Uint8Array() };
+      return { exitCode: driver.exitCode, stdout: request.stdin ?? new Uint8Array() };
     },
   };
   return { ctx: { ...base, command }, cleaned };
@@ -67,6 +86,77 @@ describe('Given literal paths named out of index order under a clean driver', ()
 
       // Assert
       expect(cleaned).toEqual(['A', 'B']);
+    });
+  });
+});
+
+describe('Given a tracked modified b.txt and untracked a.txt and c.txt under a clean driver, safecrlf unset', () => {
+  describe('When add walks the work tree', () => {
+    it('Then the driver hears the tracked path first, then the untracked ones in walk order', async () => {
+      // Arrange
+      const { ctx, cleaned } = await repoUnderLogDriver(
+        { 'a.txt': 'A', 'b.txt': 'B', 'c.txt': 'C' },
+        '*.txt filter=log\n',
+        { tracked: ['b.txt'] },
+      );
+      const sut = add;
+
+      // Act
+      await sut(ctx, [], { all: true });
+
+      // Assert
+      expect(cleaned).toEqual(['B2', 'A', 'C']);
+    });
+  });
+});
+
+describe('Given a tracked modified b.txt and untracked a.txt and c.txt under a required failing clean driver', () => {
+  describe('When add walks the work tree', () => {
+    it('Then the refusal names the tracked b.txt, which git cleans first', async () => {
+      // Arrange
+      const { ctx } = await repoUnderLogDriver(
+        { 'a.txt': 'A', 'b.txt': 'B', 'c.txt': 'C' },
+        '*.txt filter=log\n',
+        { driver: REQUIRED_FAILING, tracked: ['b.txt'] },
+      );
+      const sut = add;
+      let caught: unknown;
+
+      // Act
+      try {
+        await sut(ctx, [], { all: true });
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data).toEqual({
+        code: 'CLEAN_FILTER_FAILED',
+        path: 'b.txt',
+        filter: 'log',
+        exitCode: 1,
+      });
+    });
+  });
+});
+
+describe('Given core.safecrlf true, a tracked modified b.txt and untracked a.txt and c.txt that convert safely', () => {
+  describe('When add walks the work tree', () => {
+    it('Then each path is cleaned once, the tracked one first', async () => {
+      // Arrange
+      const driver: Driver = { config: `${LOG_DRIVER}[core]\n\tsafecrlf = true\n`, exitCode: 0 };
+      const { ctx, cleaned } = await repoUnderLogDriver(
+        { 'a.txt': 'A', 'b.txt': 'B', 'c.txt': 'C' },
+        '*.txt filter=log\n',
+        { driver, tracked: ['b.txt'] },
+      );
+      const sut = add;
+
+      // Act
+      await sut(ctx, [], { all: true });
+
+      // Assert
+      expect(cleaned).toEqual(['B2', 'A', 'C']);
     });
   });
 });

@@ -315,7 +315,7 @@ const attributeBlobMap = (
 const readIndexAttributeBlobs = async (ctx: Context): Promise<ReadonlyMap<string, ObjectId>> => {
   try {
     const { entries } = await readIndex(ctx);
-    return attributeBlobMap(indexRuleEntries(entries));
+    return attributeBlobMap(indexRuleEntries(entries.filter((e) => isAttributesPath(e.path))));
   } catch (err) {
     if (err instanceof TsgitError && INDEX_MISSING_CODES.has(err.data.code)) return new Map();
     throw err;
@@ -342,7 +342,9 @@ export const maybeBuildAttributeProvider = (
   const blobs = lazily(() =>
     index === undefined
       ? readIndexAttributeBlobs(ctx)
-      : Promise.resolve(attributeBlobMap(indexRuleEntries(index.entries))),
+      : Promise.resolve(
+          attributeBlobMap(indexRuleEntries(index.entries.filter((e) => isAttributesPath(e.path)))),
+        ),
   );
   return buildAttributeProvider(ctx, {
     kind: 'worktree-first',

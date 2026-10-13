@@ -283,12 +283,11 @@ const convertWorkingBytes = async (
   const settings = await readEolSettings(ctx);
   const provider = await maybeBuildAttributeProvider(ctx);
   const conversion = await resolveConversion(ctx, provider, path, settings);
-  const indexBlob = indexRuleEntries(indexEntries).find((entry) => entry.path === path)?.id;
+  const indexBlob = indexRuleEntries(indexEntries.filter((entry) => entry.path === path))[0]?.id;
   const converted = await convertToGit(ctx, {
     path,
     bytes,
     conversion,
-    // Stryker disable next-line StringLiteral: equivalent — convert-blob compares the route only against 'write' and 'renormalize', so any other literal behaves as 'compare'.
     route: 'compare',
     settings,
     ...(indexBlob !== undefined && { indexBlob }),

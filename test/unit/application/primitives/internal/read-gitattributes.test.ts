@@ -827,6 +827,30 @@ describe('maybeBuildAttributeProvider', () => {
     });
   });
 
+  describe('Given the entries of an index already read with .gitattributes at stages 1, 2 and 3', () => {
+    describe('When the provider is built from them', () => {
+      it('Then the stage-2 .gitattributes applies, as git reads the unmerged path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const base = await putBlob(ctx, '*.txt eol=native\n');
+        const ours = await putBlob(ctx, '*.txt eol=crlf\n');
+        const theirs = await putBlob(ctx, '*.txt eol=lf\n');
+        const entries = [
+          indexEntry('.gitattributes', base, 1),
+          indexEntry('.gitattributes', ours, 2),
+          indexEntry('.gitattributes', theirs, 3),
+        ];
+        const sut = maybeBuildAttributeProvider;
+
+        // Act
+        const provider = await sut(ctx, { entries });
+
+        // Assert
+        expect(await eolOf(provider, 'f.txt')).toEqual({ set: 'crlf' });
+      });
+    });
+  });
+
   describe('Given a corrupt index header', () => {
     describe('When maybeBuildAttributeProvider runs', () => {
       it('Then it tolerates the index as empty, as add does', async () => {

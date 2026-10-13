@@ -1290,21 +1290,33 @@ describe('Given text=auto, a committed CRLF file recorded at stage 0', () => {
   });
 });
 
-describe('Given text=auto, a committed CRLF file and an index recording it only at stage 2', () => {
+describe('Given text=auto, a committed CRLF file and an index recording an LF base at stage 1 and the CRLF copy at stage 2', () => {
   describe('When blame runs on the working tree with the same CRLF copy', () => {
     it('Then the stage-2 blob keeps the CRLF and every line is committed', async () => {
       // Arrange
       const ctx = await seed();
       await commitFile(ctx, 'c1', 'f.txt', 'a\r\nb\r\n');
       const { entries } = await readIndex(ctx);
-      const unmerged = entries.map((entry) => ({
-        ...entry,
-        flags: { ...entry.flags, stage: 2 as const },
-      }));
+      const baseId = await writeObject(ctx, {
+        type: 'blob',
+        id: '' as ObjectId,
+        content: new TextEncoder().encode('a\nb\n'),
+      });
+      const atStage = (stage: 1 | 2, id?: ObjectId) =>
+        entries.map((entry) => ({
+          ...entry,
+          id: id ?? entry.id,
+          flags: { ...entry.flags, stage },
+        }));
       await ctx.fs.write(
         `${ctx.layout.gitDir}/index`,
         await serializeIndexFixtureAsync(
-          { version: 2, entries: unmerged, extensions: [], trailerSha: new Uint8Array(0) },
+          {
+            version: 2,
+            entries: [...atStage(1, baseId), ...atStage(2)],
+            extensions: [],
+            trailerSha: new Uint8Array(0),
+          },
           ctx,
         ),
       );

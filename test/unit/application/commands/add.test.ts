@@ -3389,10 +3389,13 @@ describe('add renormalize option', () => {
 const putBlobText = (ctx: RenormalizeCtx, text: string): Promise<ObjectId> =>
   writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: enc(text) });
 
-/** An unmerged f.txt recording `ours` at stage 2 and `theirs` at stage 3; the size never matches the worktree file, so the stat shortcut stays out. */
-const seedUnmergedBlobs = async (ctx: RenormalizeCtx, ours: string, theirs: string) => {
+/** An unmerged f.txt recording `base` at stage 1, `ours` at stage 2 and `theirs` at stage 3; the size never matches the worktree file, so the stat shortcut stays out. */
+const seedUnmergedBlobs = async (
+  ctx: RenormalizeCtx,
+  { base, ours, theirs }: { base: string; ours: string; theirs: string },
+) => {
   const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/f.txt`);
-  const entryAt = async (text: string, stage: 2 | 3): Promise<IndexEntry> => ({
+  const entryAt = async (text: string, stage: 1 | 2 | 3): Promise<IndexEntry> => ({
     ...indexEntryFromStat(
       stat,
       FILE_MODE.REGULAR,
@@ -3402,16 +3405,28 @@ const seedUnmergedBlobs = async (ctx: RenormalizeCtx, ours: string, theirs: stri
     fileSize: 0,
     flags: { ...STAGE0_FLAGS, stage },
   });
-  const entries = [await entryAt(ours, 2), await entryAt(theirs, 3)];
+  const entries = [await entryAt(base, 1), await entryAt(ours, 2), await entryAt(theirs, 3)];
   const index: GitIndex = { version: 2, entries, extensions: [], trailerSha: new Uint8Array(0) };
   await ctx.fs.write(`${ctx.layout.gitDir}/index`, await serializeIndexFixtureAsync(index, ctx));
 };
 
 describe('add on an unmerged path under text=auto', () => {
   describe.each([
-    { title: 'CRLF ours and LF theirs', ours: 'a\r\n', theirs: 'a\n', expected: 'x\r\ny\r\n' },
-    { title: 'LF ours and CRLF theirs', ours: 'a\n', theirs: 'a\r\n', expected: 'x\ny\n' },
-  ])('Given a CRLF worktree file with $title', ({ ours, theirs, expected }) => {
+    {
+      title: 'LF base, CRLF ours and LF theirs',
+      base: 'a\n',
+      ours: 'a\r\n',
+      theirs: 'a\n',
+      expected: 'x\r\ny\r\n',
+    },
+    {
+      title: 'CRLF base, LF ours and CRLF theirs',
+      base: 'a\r\n',
+      ours: 'a\n',
+      theirs: 'a\r\n',
+      expected: 'x\ny\n',
+    },
+  ])('Given a CRLF worktree file with $title', ({ base, ours, theirs, expected }) => {
     describe('When add stages f.txt', () => {
       it('Then the index-CRLF rule reads the stage-2 blob as git does', async () => {
         // Arrange
@@ -3419,7 +3434,7 @@ describe('add on an unmerged path under text=auto', () => {
           'f.txt': 'x\r\ny\r\n',
           '.gitattributes': '* text=auto\n',
         });
-        await seedUnmergedBlobs(ctx, ours, theirs);
+        await seedUnmergedBlobs(ctx, { base, ours, theirs });
         const sut = add;
 
         // Act
@@ -3427,6 +3442,55 @@ describe('add on an unmerged path under text=auto', () => {
 
         // Assert
         expect(await stagedText(ctx, 'f.txt')).toBe(expected);
+      });
+    });
+  });
+});
+
+/** Replaces the index with one unmerged stage-2 entry per name, each recording `text`. */
+const seedUnmergedPaths = async (
+  ctx: RenormalizeCtx,
+  names: ReadonlyArray<string>,
+  text: string,
+) => {
+  const id = await putBlobText(ctx, text);
+  const entries: IndexEntry[] = [];
+  for (const name of names) {
+    const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${name}`);
+    entries.push({
+      ...indexEntryFromStat(stat, FILE_MODE.REGULAR, id, name as FilePath),
+      fileSize: 0,
+      flags: { ...STAGE0_FLAGS, stage: 2 },
+    });
+  }
+  const index: GitIndex = { version: 2, entries, extensions: [], trailerSha: new Uint8Array(0) };
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, await serializeIndexFixtureAsync(index, ctx));
+};
+
+describe('add on many unmerged paths under text=auto', () => {
+  describe('Given 20 unmerged CRLF paths and a CRLF worktree', () => {
+    describe('When add stages them all', () => {
+      it('Then the index is read once, not once per unmerged path', async () => {
+        // Arrange
+        const names = Array.from({ length: 20 }, (_, i) => `f${i}.txt`);
+        const base = await seedFreshRepo({
+          ...Object.fromEntries(names.map((name) => [name, 'x\r\ny\r\n'])),
+          '.gitattributes': '* text=auto\n',
+        });
+        await seedUnmergedPaths(base, names, 'a\r\n');
+        const { ctx, calls } = instrumentedContext(base);
+        const sut = add;
+
+        // Act
+        await sut(ctx, names);
+
+        // Assert
+        const indexLoads = calls()
+          .filter((c) => c.path === `${ctx.layout.gitDir}/index`)
+          .map((c) => c.method)
+          .filter((method) => method === 'stat' || method === 'read');
+        expect(indexLoads).toEqual(['stat', 'read']);
+        expect(await stagedText(ctx, 'f7.txt')).toBe('x\r\ny\r\n');
       });
     });
   });

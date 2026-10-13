@@ -62,7 +62,6 @@ const noticeFor = (
 
 export const convertToGit = async (ctx: Context, request: ToGitRequest): Promise<ToGitResult> => {
   const { path, bytes, conversion, route, settings, indexBlob } = request;
-  // Stryker disable next-line ConditionalExpression: equivalent — an identity conversion runs the pipeline as no-ops that hand the same bytes back by reference, so skipping the early return changes nothing observable.
   if (isIdentityConversion(conversion)) return { bytes };
   const cleaned = await applyCleanFilter(ctx, ctx.command, path, bytes, conversion.filter);
   const crlf = await crlfToGit({
@@ -102,7 +101,6 @@ export const convertToWorkingTree = async (
   request: ToWorkingTreeRequest,
 ): Promise<Uint8Array> => {
   const { target, conversion, settings, normalizing = false } = request;
-  // Stryker disable next-line ConditionalExpression: equivalent — an identity conversion runs the pipeline as no-ops that hand the same bytes back by reference, so skipping the early return changes nothing observable.
   if (isIdentityConversion(conversion)) return target.bytes;
   const expanded = conversion.ident ? identToWorkingTree(target.bytes, target.blob) : target.bytes;
   const skipsCrlf = normalizing && !namesSmudgeOrProcess(conversion);
@@ -144,7 +142,6 @@ export const renormalizeBuffer = async (
   conversion: Conversion,
   settings: EolSettings,
 ): Promise<Uint8Array> => {
-  // Stryker disable next-line ConditionalExpression: equivalent — an identity conversion runs the pipeline as no-ops that hand the same bytes back by reference, so skipping the early return changes nothing observable.
   if (isIdentityConversion(conversion)) return bytes;
   const blob = conversion.ident ? await blobIdOf(ctx, bytes) : ('' as ObjectId);
   const workingTree = await convertToWorkingTree(ctx, {

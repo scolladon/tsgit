@@ -137,6 +137,17 @@ interface ConversionScope {
   readonly settings: EolSettings;
 }
 
+/**
+ * The scope once the index is read: the stage-2 entry of every unmerged path,
+ * which is where git reads the index-CRLF rule when no stage 0 exists. Built
+ * with the index so a bulk add of many unmerged paths reads it once.
+ */
+interface StagingScope extends ConversionScope {
+  readonly indexRules: ReadonlyMap<FilePath, IndexEntry>;
+}
+
+const NO_INDEX_RULES: ReadonlyMap<FilePath, IndexEntry> = new Map();
+
 const buildConversionScope = async (ctx: Context): Promise<ConversionScope> => ({
   provider: await maybeBuildAttributeProvider(ctx),
   settings: await readEolSettings(ctx),
@@ -196,8 +207,8 @@ const addLiteralOnly = async (
   const lock = await acquireIndexLock(ctx);
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
-    const state = await readExistingEntries(ctx);
-    const staging = { ctx, scope, ...state, ensurePromisorConfigValid };
+    const { indexRules, ...state } = await readExistingEntries(ctx);
+    const staging = { ctx, scope: { ...scope, indexRules }, ...state, ensurePromisorConfigValid };
     const { newEntries, added, modified, eolNotices } = await stageLiterals(staging, validated);
     await lock.commit(Array.from(newEntries.values()));
     return { added, modified, removed: [], eolNotices };
@@ -209,7 +220,7 @@ const addLiteralOnly = async (
 /** What every path is staged against: the index as read, and the add's attributes and guard. */
 interface Staging {
   readonly ctx: Context;
-  readonly scope: ConversionScope;
+  readonly scope: StagingScope;
   readonly entries: ReadonlyMap<FilePath, IndexEntry>;
   readonly indexMtime: IndexMtime | undefined;
   readonly ensurePromisorConfigValid: PromisorGuard;
@@ -311,22 +322,25 @@ const stageWalkedEntries = async (
   walk: AsyncIterable<WalkWorkingTreeEntry>,
   existing: ReadonlyMap<FilePath, IndexEntry>,
   seen: Set<FilePath>,
-  scope: ConversionScope,
+  scope: StagingScope,
   indexMtime: IndexMtime | undefined,
   ensurePromisorConfigValid: PromisorGuard,
 ): Promise<WalkOutcome[]> => {
   const stage = (walkEntry: WalkWorkingTreeEntry): Promise<WalkOutcome | undefined> =>
     processWalkEntry(ctx, walkEntry, existing, seen, scope, indexMtime, ensurePromisorConfigValid);
   // git converts and writes one path at a time, dying at the first loss, under safecrlf=true.
-  const refusing = scope.settings.safeCrlf === true;
-  const span: OrderSpan = refusing ? 'write' : 'clean';
-  const ordered = refusing ? walkedTrackedFirst(walk, existing) : walk;
+  const span: OrderSpan = scope.settings.safeCrlf === true ? 'write' : 'clean';
+  const ordered = walkedTrackedFirst(walk, existing);
   return stagedOutcomes(await dispatchInCleanOrder(ctx, ordered, stage, span));
 };
 
 /**
  * The walked entries as git's `add` converts them: tracked paths in index order,
- * then the untracked ones in walk order. Buffered, so the first refusal is git's.
+ * then the untracked ones in walk order, whatever safecrlf says — a clean driver
+ * hears them in that order and the first refusal is the tracked path's. Buffered
+ * as records (path, flags, lazy stat; about 1.4 KB per entry, +15 % CPU on a 20k
+ * steady-state add -A) because git's `fill_directory` also collects the whole
+ * walk before `add_files` runs.
  */
 async function* walkedTrackedFirst(
   walk: AsyncIterable<WalkWorkingTreeEntry>,
@@ -460,7 +474,11 @@ const addRenormalized = async (
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
     const { entries } = await readIndexOrEmpty(ctx);
-    const staging = { ctx, scope, ensurePromisorConfigValid };
+    const staging = {
+      ctx,
+      scope: { ...scope, indexRules: NO_INDEX_RULES },
+      ensurePromisorConfigValid,
+    };
     const renormalized = await renormalizeEntries(staging, entries, matcher);
     const onDisk = await literalsOnDisk(ctx, literalMustMatch);
     const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
@@ -551,13 +569,13 @@ const stageIgnoredWalk = async (
   readonly existing: ReadonlyMap<FilePath, IndexEntry>;
   readonly outcomes: ReadonlyArray<WalkOutcome>;
 }> => {
-  const { entries: existing, indexMtime } = await readExistingEntries(ctx);
+  const { entries: existing, indexMtime, indexRules } = await readExistingEntries(ctx);
   const outcomes = await stageWalkedEntries(
     ctx,
     walkWorkingTree(ctx, { ignore }),
     existing,
     new Set<FilePath>(),
-    scope,
+    { ...scope, indexRules },
     indexMtime,
     ensurePromisorConfigValid,
   );
@@ -575,10 +593,14 @@ const withPathspec =
 
 /** The safecrlf notices of the walked outcomes: git warns for the tracked paths first, in index order. */
 const noticesOf = (outcomes: ReadonlyArray<WalkOutcome>): EolNotice[] => {
-  const tracked = outcomes.filter(({ kind }) => kind !== 'added').sort(byPath);
-  const untracked = outcomes.filter(({ kind }) => kind === 'added');
-  return [...tracked, ...untracked].flatMap(({ notice }) => (notice === undefined ? [] : [notice]));
+  const noticed = outcomes.filter(hasNotice);
+  const tracked = noticed.filter(({ kind }) => kind !== 'added').sort(byPath);
+  const untracked = noticed.filter(({ kind }) => kind === 'added');
+  return [...tracked, ...untracked].map(({ notice }) => notice);
 };
+
+const hasNotice = (outcome: WalkOutcome): outcome is WalkOutcome & { readonly notice: EolNotice } =>
+  outcome.notice !== undefined;
 
 const byPath = (a: WalkOutcome, b: WalkOutcome): number => comparePaths(a.path, b.path);
 
@@ -620,7 +642,7 @@ export const addAll = async (
   const lock = await acquireIndexLock(ctx);
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
-    const { entries: existing, indexMtime } = await readExistingEntries(ctx);
+    const { entries: existing, indexMtime, indexRules } = await readExistingEntries(ctx);
     const newEntries = new Map<FilePath, IndexEntry>(existing);
     const seen = new Set<FilePath>();
     const added: FilePath[] = [];
@@ -634,7 +656,7 @@ export const addAll = async (
       walkWorkingTree(ctx, { ignore }),
       existing,
       seen,
-      scope,
+      { ...scope, indexRules },
       indexMtime,
       ensurePromisorConfigValid,
     );
@@ -712,7 +734,7 @@ const processWalkEntry = async (
   walkEntry: WalkWorkingTreeEntry,
   existing: ReadonlyMap<FilePath, IndexEntry>,
   seen: Set<FilePath>,
-  scope: ConversionScope,
+  scope: StagingScope,
   indexMtime: IndexMtime | undefined,
   ensurePromisorConfigValid: PromisorGuard,
 ): Promise<WalkOutcome | undefined> => {
@@ -748,13 +770,19 @@ const processWalkEntry = async (
 interface ExistingIndexState {
   readonly entries: ReadonlyMap<FilePath, IndexEntry>;
   readonly indexMtime: IndexMtime | undefined;
+  readonly indexRules: ReadonlyMap<FilePath, IndexEntry>;
 }
 
 const readExistingEntries = async (ctx: Context): Promise<ExistingIndexState> => {
   const { entries, indexMtime } = await readIndexOrEmpty(ctx);
   const out = new Map<FilePath, IndexEntry>();
-  for (const entry of entries) out.set(entry.path, entry);
-  return { entries: out, indexMtime };
+  const unmerged: IndexEntry[] = [];
+  for (const entry of entries) {
+    out.set(entry.path, entry);
+    if (entry.flags.stage !== 0) unmerged.push(entry);
+  }
+  const indexRules = new Map(indexRuleEntries(unmerged).map((entry) => [entry.path, entry]));
+  return { entries: out, indexMtime, indexRules };
 };
 
 const readIndexOrEmpty = async (
@@ -778,7 +806,7 @@ const readIndexOrEmpty = async (
 const stageOne = async (
   ctx: Context,
   path: FilePath,
-  scope: ConversionScope,
+  scope: StagingScope,
   previous: IndexEntry | undefined,
   indexMtime: IndexMtime | undefined,
   ensurePromisorConfigValid: PromisorGuard,
@@ -805,7 +833,7 @@ const stageFromStat = async (
   ctx: Context,
   path: FilePath,
   kind: EntryKind,
-  scope: ConversionScope,
+  scope: StagingScope,
   previous: IndexEntry | undefined,
   indexMtime: IndexMtime | undefined,
   ensurePromisorConfigValid: PromisorGuard,
@@ -891,7 +919,7 @@ const writeCleanedBlob = async (
   ctx: Context,
   path: FilePath,
   fresh: FileStat,
-  { provider, settings }: ConversionScope,
+  { provider, settings, indexRules }: StagingScope,
   previous: IndexEntry | undefined,
   route: ConversionRoute,
 ): Promise<{ readonly id: ObjectId; readonly notice?: EolNotice }> => {
@@ -904,7 +932,7 @@ const writeCleanedBlob = async (
   }
   const raw = await readContent(ctx, path, fresh);
   await admitWrite(ctx, path);
-  const indexBlob = await indexRuleBlob(ctx, previous);
+  const indexBlob = indexRuleBlob(indexRules, previous);
   const { bytes, notice } = await convertToGit(ctx, {
     path,
     bytes: raw,
@@ -924,17 +952,14 @@ const writeCleanedBlob = async (
 /**
  * git reads the index-CRLF rule from stage 0, else stage 2; a gitlink has no
  * blob to read. `previous` is the last stage recorded, so only an unmerged
- * path needs the index again.
+ * path consults the stage-2 entries read with the index.
  */
-const indexRuleBlob = async (
-  ctx: Context,
+const indexRuleBlob = (
+  indexRules: StagingScope['indexRules'],
   previous: IndexEntry | undefined,
-): Promise<ObjectId | undefined> => {
+): ObjectId | undefined => {
   if (previous === undefined) return undefined;
-  const ruled =
-    previous.flags.stage === 0
-      ? previous
-      : indexRuleEntries((await readIndex(ctx)).entries).find((e) => e.path === previous.path);
+  const ruled = previous.flags.stage === 0 ? previous : indexRules.get(previous.path);
   return ruled === undefined || ruled.mode === FILE_MODE.GITLINK ? undefined : ruled.id;
 };
 
