@@ -75,8 +75,6 @@ import {
   resolvePathspec,
 } from './internal/resolve-pathspec.js';
 
-export type { AttributeProvider } from '../primitives/internal/read-gitattributes.js';
-
 /** Runs the guard at most once, on first use, per {@link createPromisorGuard} call. */
 type PromisorGuard = () => Promise<void>;
 
