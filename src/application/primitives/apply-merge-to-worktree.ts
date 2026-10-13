@@ -188,10 +188,10 @@ export const writeMarkedConflict = async (
  *  'conflict' variant is excluded before this type is ever reached (its own
  *  path lives on `MergeConflict`, handled separately). */
 type ChangedOutcome = Exclude<MergeOutcome, { readonly status: 'conflict' }>;
-type DeletedOutcome = Extract<ChangedOutcome, { readonly status: 'resolved-deleted' }>;
+export type DeletedOutcome = Extract<ChangedOutcome, { readonly status: 'resolved-deleted' }>;
 type WrittenOutcome = Exclude<ChangedOutcome, { readonly status: 'resolved-deleted' }>;
 
-const isDeleted = (outcome: ChangedOutcome): outcome is DeletedOutcome =>
+export const isDeleted = (outcome: MergeOutcome): outcome is DeletedOutcome =>
   outcome.status === 'resolved-deleted';
 
 /**
@@ -203,7 +203,10 @@ const isDeleted = (outcome: ChangedOutcome): outcome is DeletedOutcome =>
  * `.gitmodules`-symlink rejection — is a write-time concern that does not
  * apply to a removal.
  */
-const removeChangedOutcome = async (ctx: Context, outcome: DeletedOutcome): Promise<void> => {
+export const removeChangedOutcome = async (
+  ctx: Context,
+  outcome: DeletedOutcome,
+): Promise<void> => {
   validateIndexPath(outcome.path, NO_PARSER_OFFSET, FILE_MODE.REGULAR);
   await removeWorkingTreeFile(ctx, outcome.path);
 };

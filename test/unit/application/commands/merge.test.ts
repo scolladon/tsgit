@@ -12,7 +12,6 @@ import {
   type MergeRunInput,
   materialiseConflictBytes,
   mergeRun,
-  removeOutcomeFromTree,
   resolveMergeAuthor,
   resolveMergeCommitter,
   writeConflictToTree,
@@ -21,7 +20,10 @@ import {
 } from '../../../../src/application/commands/merge.js';
 import { rm } from '../../../../src/application/commands/rm.js';
 import { tagCreate, tagDelete } from '../../../../src/application/commands/tag.js';
-import { createMergeResultWriter } from '../../../../src/application/primitives/apply-merge-to-worktree.js';
+import {
+  createMergeResultWriter,
+  removeChangedOutcome,
+} from '../../../../src/application/primitives/apply-merge-to-worktree.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
@@ -3122,7 +3124,7 @@ describe('writeOutcomeToTree (direct)', () => {
   // already passed validation when the index was parsed" does not hold for
   // it, and its removal must validate it like every other outcome.
   describe('Given a resolved-deleted outcome named ".."', () => {
-    describe('When removeOutcomeFromTree runs', () => {
+    describe('When removeChangedOutcome runs', () => {
       it('Then throws INVALID_INDEX_ENTRY and the working-tree file is not removed', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -3134,7 +3136,7 @@ describe('writeOutcomeToTree (direct)', () => {
         let caught: unknown;
         let removeCallCount: number;
         try {
-          await removeOutcomeFromTree(ctx, outcome);
+          await removeChangedOutcome(ctx, outcome);
         } catch (err) {
           caught = err;
         } finally {

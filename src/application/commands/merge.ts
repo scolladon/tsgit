@@ -56,6 +56,9 @@ import { abbreviateObjectId } from '../primitives/abbreviate-object-id.js';
 import {
   conflictResultTree,
   createMergeResultWriter,
+  type DeletedOutcome,
+  isDeleted,
+  removeChangedOutcome,
 } from '../primitives/apply-merge-to-worktree.js';
 import {
   buildBlobUnchanged,
@@ -85,7 +88,6 @@ import {
 import { validateMergeWritePaths } from '../primitives/internal/validate-merge-write-paths.js';
 import type { WorkingTreeWriter } from '../primitives/internal/write-converted-entry.js';
 import { writeDistinctTypesSides } from '../primitives/internal/write-distinct-types-sides.js';
-import { removeWorkingTreeFile } from '../primitives/internal/write-working-tree-file.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { mergeBasesOf, tryMergeBasesOf, tryReduceHeads } from '../primitives/merge-base.js';
 import { mergeCollidingRenameSources } from '../primitives/merge-colliding-rename-sources.js';
@@ -1733,9 +1735,7 @@ const writeConflictingWorkingTree = async (
   const scanner = createLeadingPathScanner(ctx);
   // Every deletion lands before the writer reads attributes, as git unlinks
   // before its first checkout: a deleted `.gitattributes` must not govern the writes.
-  await runBounded(ctx, touched.filter(isDeletion), (outcome) =>
-    removeOutcomeFromTree(ctx, outcome),
-  );
+  await runBounded(ctx, touched.filter(isDeleted), (outcome) => removeChangedOutcome(ctx, outcome));
   const writer = await createMergeResultWriter(ctx, outcomes, conflicts);
   // Bounded parallelism — independent path writes overlap, but the pool
   // caps in-flight at the ioBound policy so a 10k-path merge doesn't
@@ -1764,28 +1764,9 @@ const runBounded = async <T>(
   await boundedMapFor(ctx, 'ioBound', items, fn);
 };
 
-type DeletedOutcome = Extract<MergeOutcome, { readonly status: 'resolved-deleted' }>;
-
-const isDeletion = (outcome: MergeOutcome): outcome is DeletedOutcome =>
-  outcome.status === 'resolved-deleted';
-
 type WrittenOutcome = Exclude<MergeOutcome, DeletedOutcome>;
 
-const isWrite = (outcome: MergeOutcome): outcome is WrittenOutcome => !isDeletion(outcome);
-
-/**
- * Remove a `resolved-deleted` outcome's file.
- * A delete carries no mode of its own; REGULAR stands in because the only
- * mode-sensitive rule validation can trigger — the `.gitmodules`-symlink
- * rejection — is a write-time concern that does not apply to a removal.
- */
-export const removeOutcomeFromTree = async (
-  ctx: Context,
-  outcome: DeletedOutcome,
-): Promise<void> => {
-  validateIndexPath(outcome.path, NO_PARSER_OFFSET, FILE_MODE.REGULAR);
-  await removeWorkingTreeFile(ctx, outcome.path);
-};
+const isWrite = (outcome: MergeOutcome): outcome is WrittenOutcome => !isDeleted(outcome);
 
 /**
  * Write a single merge outcome to the working tree. Exported for direct unit
