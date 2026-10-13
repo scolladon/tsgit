@@ -711,7 +711,8 @@ describe('applyChangeset', () => {
   describe('Given an update whose target file is missing (FILE_NOT_FOUND on read) and force=false', () => {
     describe('When applyChangeset runs', () => {
       it('Then treats it as non-dirty and applies without throwing', async () => {
-        // Arrange — file exists() reports present but read() throws FILE_NOT_FOUND (race-gone file)
+        // Arrange — the no-follow presence probe reports the path occupied, but the
+        // read that follows finds it gone (race-gone file)
         const ctx = await buildSeededContext();
         const oldId = await writeBlob(ctx, new TextEncoder().encode('original'));
         const newId = await writeBlob(ctx, new TextEncoder().encode('updated'));
@@ -719,8 +720,8 @@ describe('applyChangeset', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            exists: async (p: string): Promise<boolean> =>
-              p === `${WORKDIR}/gone.txt` ? true : ctx.fs.exists(p),
+            lexists: async (p: string): Promise<boolean> =>
+              p === `${WORKDIR}/gone.txt` ? true : (ctx.fs.lexists ?? ctx.fs.exists)(p),
             read: async (p: string): Promise<Uint8Array> => {
               if (p === `${WORKDIR}/gone.txt`) {
                 throw new TsgitError({ code: 'FILE_NOT_FOUND', path: p });

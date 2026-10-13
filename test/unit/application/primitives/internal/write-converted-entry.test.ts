@@ -281,6 +281,19 @@ describe('createWorkingTreeWriter', () => {
       });
     });
 
+    describe('When writeBytes runs under core.autocrlf input', () => {
+      it('Then the streamed class without a transform writes the bytes as they are', async () => {
+        // Arrange
+        const { sut, worktree } = await setup({ config: '[core]\n\tautocrlf = input\n' });
+
+        // Act
+        await sut.writeBytes(PATH, enc('a\r\nb\n'), FILE_MODE.REGULAR);
+
+        // Assert
+        expect(await worktree()).toBe('a\r\nb\n');
+      });
+    });
+
     describe('When writeBytes runs with a symlink mode', () => {
       it('Then the bytes are the link target, unconverted', async () => {
         // Arrange
