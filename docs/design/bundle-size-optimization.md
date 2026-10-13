@@ -533,6 +533,7 @@ every other row is unchanged.
 | Chunks: domain | 119 036 | 120 589 | +1 553 | 119.2 kB | 122.6 kB | `src/domain/eol`: text statistics and the binary classifier, the CRLF action resolution, the two CRLF converters and the LF→CRLF stream transform, the `ident` collapse and both expanders; the `EOL_ROUND_TRIP_UNSAFE` member and its detail; the modify/delete `blobUnchanged` arm of the three-way tree merge |
 | Chunks: primitives | 99 470 | 101 863 | +2 393 | 99.5 kB | 103.9 kB | the per-path conversion resolver, the composed to-git / to-worktree steps and the streamed transform, the direction-taking attribute providers and index lookups, the working-tree writer, the converted dirty probe and comparison route, the renormalize attribute lookup and the content merger's normalisation |
 | Chunks: commands-internal | 79 389 | 79 988 | +599 | 79.4 kB | 82 kB | `add`'s conversion scope, notices, index-order writes under `core.safecrlf=true` and `--renormalize`; `stash push`'s conversion and git's object-write order; `merge`'s `-X renormalize` wiring; `blame` and `archive` conversion |
+| Command (add) | 2 402 | 3 208 | +806 | 3 kB | 3.5 kB | the review round's `add` fixes: tracked-before-untracked staging order on the literal and bulk paths  the index-rule blob chosen as stage 0 else 2  the gitlink skip; a per-command row takes 200 B of headroom  not the 2 kB the library rows took |
 
 The npm tarball cap moved 1370 → 1410 KiB (1 402 333 → 1 421 159 B); its attribution lives in
 `tooling/verify-tarball.sh`'s cap block.

@@ -74,7 +74,7 @@
   {
     "name": "Command (add)",
     "path": "dist/esm/commands/add.js",
-    "limit": "3 kB",
+    "limit": "3.5 kB",
     "gzip": true
   },
   {
