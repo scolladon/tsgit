@@ -35,24 +35,32 @@ import { detectMergeRenames } from './detect-merge-renames.js';
 import { changedPaths, findWouldOverwrite } from './find-would-overwrite.js';
 import { flattenTree } from './flatten-tree.js';
 import { writeAutoMerge } from './internal/auto-merge-ref.js';
+import { limiterFor } from './internal/concurrency.js';
+import { lazily } from './internal/lazily.js';
 import { readUiDiffAlgorithm } from './internal/merge-rename-config.js';
 import { mergedBlobEntries } from './internal/merged-blob-entries.js';
+import {
+  attributeBlobLookup,
+  buildAttributeProvider,
+  type IndexBlobLookup,
+  isAttributesPath,
+} from './internal/read-gitattributes.js';
 import {
   createLeadingPathScanner,
   type LeadingPathScanner,
 } from './internal/symlinked-leading-path.js';
 import { stage0Entry, zeroStat } from './internal/synthetic-index-entry.js';
 import { validateMergeWritePaths } from './internal/validate-merge-write-paths.js';
-import { writeDistinctTypesSides } from './internal/write-distinct-types-sides.js';
 import {
-  removeWorkingTreeFile,
-  writeWorkingTreeEntry,
-  writeWorkingTreeFile,
-  writeWorkingTreeFileStream,
-} from './internal/write-working-tree-file.js';
+  createWorkingTreeWriter,
+  type WorkingTreeWriter,
+} from './internal/write-converted-entry.js';
+import { writeDistinctTypesSides } from './internal/write-distinct-types-sides.js';
+import { removeWorkingTreeFile } from './internal/write-working-tree-file.js';
 import { type MaterializeTreeResult, materializeTree } from './materialize-tree.js';
 import { mergeCollidingRenameSources } from './merge-colliding-rename-sources.js';
 import { readBlob } from './read-blob.js';
+import { readEolSettings } from './resolve-conversion.js';
 import { synthesizeResultTree, synthesizeTreeFromIndex } from './synthesize-tree-from-index.js';
 import { writeObject } from './write-object.js';
 
@@ -154,6 +162,7 @@ const conflictBytes = async (
 export const writeMarkedConflict = async (
   ctx: Context,
   conflict: MergeConflict,
+  writer: WorkingTreeWriter,
   scanner?: LeadingPathScanner,
 ): Promise<void> => {
   // Materialise with the merged mode when the merge resolved one, else the
@@ -165,7 +174,7 @@ export const writeMarkedConflict = async (
   if (mode === undefined) return;
   const bytes = await conflictBytes(ctx, conflict);
   if (bytes === undefined) return;
-  await writeWorkingTreeEntry(ctx, conflict.path, bytes, mode, scanner);
+  await writer.writeBytes(conflict.path, bytes, mode, scanner);
 };
 
 /** A `MergeOutcome` known to change a path the merge actually writes — the
@@ -185,6 +194,7 @@ type ChangedOutcome = Exclude<MergeOutcome, { readonly status: 'conflict' }>;
 const writeChangedOutcome = async (
   ctx: Context,
   outcome: ChangedOutcome,
+  writer: WorkingTreeWriter,
   scanner: LeadingPathScanner,
 ): Promise<void> => {
   validateIndexPath(
@@ -197,11 +207,11 @@ const writeChangedOutcome = async (
     return;
   }
   if (outcome.status === 'resolved-merged') {
-    await writeWorkingTreeFile(ctx, outcome.path, outcome.bytes, scanner);
+    await writer.writeBytes(outcome.path, outcome.bytes, outcome.mode, scanner);
     return;
   }
   // Known and unchanged outcomes alike: an unchanged one is changed only once a rename moved it.
-  await writeWorkingTreeFileStream(ctx, outcome.path, outcome.id, scanner);
+  await writer.writeBlob(outcome.path, outcome.id, outcome.mode, scanner);
 };
 
 /**
@@ -218,15 +228,16 @@ const writeChangedOutcome = async (
 const writeValidatedConflict = async (
   ctx: Context,
   conflict: MergeConflict,
+  writer: WorkingTreeWriter,
   scanner: LeadingPathScanner,
 ): Promise<void> => {
   const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
   validateIndexPath(conflict.path, NO_PARSER_OFFSET, mode ?? FILE_MODE.REGULAR);
   if (conflict.type === 'distinct-types') {
-    await writeDistinctTypesSides(ctx, conflict, scanner);
+    await writeDistinctTypesSides(writer, conflict, scanner);
     return;
   }
-  await writeMarkedConflict(ctx, conflict, scanner);
+  await writeMarkedConflict(ctx, conflict, writer, scanner);
 };
 
 /**
@@ -243,13 +254,14 @@ const writeConflictWorktree = async (
   changed: ReadonlySet<FilePath>,
 ): Promise<void> => {
   const scanner = createLeadingPathScanner(ctx);
+  const writer = await createMergeResultWriter(ctx, outcomes, conflicts);
   for (const outcome of outcomes) {
     // Stryker disable next-line ConditionalExpression: equivalent — the `!changed.has` half only skips outcomes that equal `ours` (writing them reproduces working bytes); the `if(true)` skip-all variant is killed by the multi-path conflict test that asserts the clean side is written.
     if (outcome.status === 'conflict' || !changed.has(outcome.path)) continue;
-    await writeChangedOutcome(ctx, outcome, scanner);
+    await writeChangedOutcome(ctx, outcome, writer, scanner);
   }
   for (const conflict of conflicts) {
-    await writeValidatedConflict(ctx, conflict, scanner);
+    await writeValidatedConflict(ctx, conflict, writer, scanner);
   }
 };
 
@@ -317,6 +329,48 @@ const conflictLeaves = async (
   const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
   const id = await conflictBlobId(ctx, conflict);
   return mode === undefined || id === undefined ? [] : [stage0Entry(conflict.path, id, mode)];
+};
+
+/**
+ * The `.gitattributes` blobs of the merge RESULT: a content-conflicted one
+ * contributes its marker-bearing bytes, as git checks out the result tree.
+ */
+const resultAttributeLookup = async (
+  ctx: Context,
+  outcomes: ReadonlyArray<MergeOutcome>,
+  conflicts: ReadonlyArray<MergeConflict>,
+): Promise<IndexBlobLookup> => {
+  const attributeOutcomes = outcomes.filter(
+    (outcome) => outcome.status !== 'conflict' && isAttributesPath(outcome.path),
+  );
+  const attributeConflicts = conflicts.filter((conflict) => isAttributesPath(conflict.path));
+  const conflictEntries = await Promise.all(
+    attributeConflicts.map((conflict) => conflictLeaves(ctx, conflict)),
+  );
+  return attributeBlobLookup([
+    ...blobBackedEntries(attributeOutcomes),
+    ...(await mergedBlobEntries(ctx, attributeOutcomes)),
+    ...conflictEntries.flat(),
+  ]);
+};
+
+/**
+ * One writer per merge: converts and smudges each write as a checkout of the
+ * merge result would, so attributes come from the result's `.gitattributes`
+ * first, the working tree as fallback. Its smudge limiter is sized off cpuBound
+ * because a smudge spawn is process-bound, not I/O-bound.
+ */
+export const createMergeResultWriter = async (
+  ctx: Context,
+  outcomes: ReadonlyArray<MergeOutcome>,
+  conflicts: ReadonlyArray<MergeConflict>,
+): Promise<WorkingTreeWriter> => {
+  const index = await resultAttributeLookup(ctx, outcomes, conflicts);
+  return createWorkingTreeWriter(ctx, {
+    provider: lazily(() => buildAttributeProvider(ctx, { kind: 'index-first', index })),
+    settings: lazily(() => readEolSettings(ctx)),
+    limiter: limiterFor(ctx, 'cpuBound'),
+  });
 };
 
 /**

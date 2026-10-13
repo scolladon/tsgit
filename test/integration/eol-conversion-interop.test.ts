@@ -33,7 +33,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { add } from '../../src/application/commands/add.js';
 import { checkout } from '../../src/application/commands/checkout.js';
+import { cherryPickRun } from '../../src/application/commands/cherry-pick.js';
+import { mergeRun } from '../../src/application/commands/merge.js';
 import { reset } from '../../src/application/commands/reset.js';
+import { stashPop, stashPush } from '../../src/application/commands/stash.js';
 import { status } from '../../src/application/commands/status.js';
 import type { EolNotice } from '../../src/domain/eol/crlf-conversion.js';
 import { TsgitError } from '../../src/domain/index.js';
@@ -1401,6 +1404,176 @@ describe.skipIf(!GIT_AVAILABLE)('eol conversion interop', () => {
         // Assert
         expect(result.git).toBe('a\r\nb\r\n');
         expect(result.tsgit).toBe(result.git);
+      });
+    });
+  });
+
+  describe('Given tsgit and git write merge-family outcomes under core.autocrlf=true', () => {
+    const MERGE_CONFLICT_WORKTREE = '<<<<<<< HEAD\r\ny\r\n=======\r\nx\r\n>>>>>>> s\r\nb\r\n';
+    const CLEAN_MERGED_WORKTREE = 'x\r\nb\r\ny\r\n';
+    const CLEAN_MERGED_BLOB = 'x\nb\ny\n';
+
+    const commitAll = (dir: string, message: string): void => {
+      git(dir, 'add', '-A');
+      git(dir, 'commit', '-q', '-m', message);
+    };
+
+    const seedDiverged = (
+      dir: string,
+      files: { readonly base: string; readonly ours: string; readonly theirs: string },
+      attributes?: { readonly base: string; readonly ours: string; readonly theirs: string },
+    ): void => {
+      initEolRepo(dir, { autoCrlf: 'true' });
+      git(dir, 'config', 'user.name', 'Ada');
+      git(dir, 'config', 'user.email', 'ada@example.com');
+      git(dir, 'config', 'merge.conflictStyle', 'merge');
+      const save = (side: 'base' | 'ours' | 'theirs'): void => {
+        writeFileSync(path.join(dir, 'f'), files[side]);
+        if (attributes) writeFileSync(path.join(dir, '.gitattributes'), attributes[side]);
+        commitAll(dir, side);
+      };
+      save('base');
+      git(dir, 'checkout', '-q', '-b', 's');
+      save('theirs');
+      git(dir, 'checkout', '-q', 'main');
+      save('ours');
+    };
+
+    /** The marker labels name a commit or branch the tools abbreviate differently; the lines around them are what converts. */
+    const withoutMarkerLabels = (text: string): string =>
+      text.replace(/^(<<<<<<<|>>>>>>>) [^\r\n]*/gm, '$1');
+
+    const workTreeOf = (dir: string, name = 'f'): string =>
+      readFileSync(path.join(dir, name), 'latin1');
+
+    const onBoth = async (
+      seed: (dir: string) => void,
+      gitStep: (dir: string) => void,
+      tsgitStep: (ctx: ReturnType<typeof createNodeContext>) => Promise<unknown>,
+    ) => {
+      const twin = { gitDir: freshDir(), tsDir: freshDir() };
+      for (const dir of [twin.gitDir, twin.tsDir]) seed(dir);
+      gitStep(twin.gitDir);
+      await tsgitStep(createNodeContext({ workDir: twin.tsDir }));
+      return twin;
+    };
+
+    const gitMerge = (dir: string): void => {
+      tryRunGitWithExit(['-C', dir, 'merge', 's']);
+    };
+
+    describe('When a merge stops on a content conflict', () => {
+      it('Then the conflict worktree is CRLF in both tools', async () => {
+        // Arrange
+        const seed = (dir: string): void =>
+          seedDiverged(dir, { base: 'a\nb\n', ours: 'y\nb\n', theirs: 'x\nb\n' });
+
+        // Act
+        const twin = await onBoth(seed, gitMerge, (ctx) => mergeRun(ctx, { rev: 's' }));
+
+        // Assert
+        expect(workTreeOf(twin.gitDir)).toBe(MERGE_CONFLICT_WORKTREE);
+        expect(workTreeOf(twin.tsDir)).toBe(workTreeOf(twin.gitDir));
+      });
+    });
+
+    describe('When a merge completes cleanly', () => {
+      it('Then the worktree is CRLF and the blob LF in both tools', async () => {
+        // Arrange
+        const seed = (dir: string): void =>
+          seedDiverged(dir, {
+            base: 'a\nb\nc\n',
+            ours: 'x\nb\nc\n',
+            theirs: 'a\nb\ny\n',
+          });
+
+        // Act
+        const twin = await onBoth(seed, gitMerge, (ctx) => mergeRun(ctx, { rev: 's' }));
+
+        // Assert
+        expect(workTreeOf(twin.gitDir)).toBe(CLEAN_MERGED_WORKTREE);
+        expect(workTreeOf(twin.tsDir)).toBe(CLEAN_MERGED_WORKTREE);
+        expect(git(twin.gitDir, 'cat-file', 'blob', 'HEAD:f')).toBe(CLEAN_MERGED_BLOB);
+        expect(git(twin.tsDir, 'cat-file', 'blob', 'HEAD:f')).toBe(CLEAN_MERGED_BLOB);
+      });
+    });
+
+    describe('When .gitattributes is itself content-conflicted', () => {
+      const ATTRIBUTES = {
+        base: '* text\n',
+        ours: '* text eol=crlf\n',
+        theirs: '*.foo eol=lf\n',
+      } as const;
+      const CLEAN_FILES = {
+        base: 'a\nb\nc\nd\ne\nf\ng\n',
+        ours: 'a\nb\nc\nd\ne\nf\nG\n',
+        theirs: 'X\nb\nc\nd\ne\nf\ng\n',
+      };
+      const CONFLICT_FILES = { base: 'a\n', ours: 'y\n', theirs: 'x\n' };
+
+      it.each([
+        ['merge', 'a clean f', CLEAN_FILES],
+        ['merge', 'a conflicting f', CONFLICT_FILES],
+        ['cherry-pick', 'a clean f', CLEAN_FILES],
+        ['cherry-pick', 'a conflicting f', CONFLICT_FILES],
+      ] as const)(
+        'Then %s with %s converts through the marker-bearing result blob in both tools',
+        async (operation, _title, files) => {
+          // Arrange
+          const seed = (dir: string): void => seedDiverged(dir, files, ATTRIBUTES);
+          const gitStep = (dir: string): void => {
+            tryRunGitWithExit(['-C', dir, operation, 's']);
+          };
+          const tsgitStep = (ctx: ReturnType<typeof createNodeContext>) =>
+            operation === 'merge'
+              ? mergeRun(ctx, { rev: 's' })
+              : cherryPickRun(ctx, { commits: ['s'] });
+
+          // Act
+          const twin = await onBoth(seed, gitStep, tsgitStep);
+
+          // Assert
+          expect(workTreeOf(twin.gitDir)).toContain('\r\n');
+          expect(withoutMarkerLabels(workTreeOf(twin.tsDir))).toBe(
+            withoutMarkerLabels(workTreeOf(twin.gitDir)),
+          );
+        },
+      );
+    });
+
+    describe('When stash pop restores a tracked edit and an untracked file', () => {
+      const seedStash = (dir: string): void => {
+        initEolRepo(dir, { autoCrlf: 'true' });
+        git(dir, 'config', 'user.name', 'Ada');
+        git(dir, 'config', 'user.email', 'ada@example.com');
+        writeFileSync(path.join(dir, 'f'), 'a\nb\n');
+        commitAll(dir, 'base');
+        rmSync(path.join(dir, 'f'));
+        git(dir, 'checkout', '--', 'f');
+        writeFileSync(path.join(dir, 'f'), 'a\r\nb\r\nc\r\n');
+        writeFileSync(path.join(dir, 'u'), 'p\r\nq\r\n');
+      };
+
+      it('Then both files are CRLF and f is modified in both tools', async () => {
+        // Arrange
+        const gitStep = (dir: string): void => {
+          git(dir, 'stash', 'push', '-q', '--include-untracked');
+          git(dir, 'stash', 'pop', '-q');
+        };
+        const tsgitStep = async (ctx: ReturnType<typeof createNodeContext>) => {
+          await stashPush(ctx, { includeUntracked: true });
+          await stashPop(ctx, {});
+        };
+
+        // Act
+        const twin = await onBoth(seedStash, gitStep, tsgitStep);
+
+        // Assert
+        expect(workTreeOf(twin.gitDir)).toBe('a\r\nb\r\nc\r\n');
+        expect(workTreeOf(twin.tsDir)).toBe(workTreeOf(twin.gitDir));
+        expect(workTreeOf(twin.tsDir, 'u')).toBe(workTreeOf(twin.gitDir, 'u'));
+        expect(git(twin.gitDir, 'status', '--short', '--untracked-files=no')).toBe(' M f\n');
+        expect(git(twin.tsDir, 'status', '--short', '--untracked-files=no')).toBe(' M f\n');
       });
     });
   });

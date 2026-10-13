@@ -289,7 +289,7 @@ const INDEX_MISSING_CODES = new Set([
   'INVALID_INDEX_ENTRY',
 ]);
 
-const isAttributesPath = (path: string): boolean =>
+export const isAttributesPath = (path: string): boolean =>
   path === GITATTRIBUTES_FILE || path.endsWith(`/${GITATTRIBUTES_FILE}`);
 
 const readIndexAttributeBlobs = async (ctx: Context): Promise<ReadonlyMap<string, ObjectId>> => {

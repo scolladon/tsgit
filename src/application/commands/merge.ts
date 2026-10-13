@@ -53,7 +53,10 @@ import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
 import { abbreviateObjectId } from '../primitives/abbreviate-object-id.js';
-import { conflictResultTree } from '../primitives/apply-merge-to-worktree.js';
+import {
+  conflictResultTree,
+  createMergeResultWriter,
+} from '../primitives/apply-merge-to-worktree.js';
 import { buildContentMerger } from '../primitives/build-content-merger.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createCommitWithStoredHeaders } from '../primitives/create-commit.js';
@@ -71,13 +74,9 @@ import {
   type LeadingPathScanner,
 } from '../primitives/internal/symlinked-leading-path.js';
 import { validateMergeWritePaths } from '../primitives/internal/validate-merge-write-paths.js';
+import type { WorkingTreeWriter } from '../primitives/internal/write-converted-entry.js';
 import { writeDistinctTypesSides } from '../primitives/internal/write-distinct-types-sides.js';
-import {
-  removeWorkingTreeFile,
-  writeWorkingTreeEntry,
-  writeWorkingTreeFile,
-  writeWorkingTreeFileStream,
-} from '../primitives/internal/write-working-tree-file.js';
+import { removeWorkingTreeFile } from '../primitives/internal/write-working-tree-file.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { mergeBasesOf, tryMergeBasesOf, tryReduceHeads } from '../primitives/merge-base.js';
 import { mergeCollidingRenameSources } from '../primitives/merge-colliding-rename-sources.js';
@@ -1705,14 +1704,19 @@ const writeConflictingWorkingTree = async (
   // same symlinked directory costs one `lstat` per distinct directory, not
   // one per path.
   const scanner = createLeadingPathScanner(ctx);
+  const writer = await createMergeResultWriter(ctx, outcomes, conflicts);
   // Bounded parallelism — independent path writes overlap, but the pool
   // caps in-flight at the ioBound policy so a 10k-path merge doesn't
   // exhaust file descriptors.
-  await runBounded(ctx, touched, (outcome) => writeOutcomeToTree(ctx, outcome, matcher, scanner));
+  await runBounded(ctx, touched, (outcome) =>
+    writeOutcomeToTree(ctx, outcome, matcher, writer, scanner),
+  );
   // Conflicted paths are materialised even when sparse-excluded — a conflict
   // the user cannot see is unresolvable, so `writeConflictToTree` takes no
   // matcher.
-  await runBounded(ctx, conflicts, (conflict) => writeConflictToTree(ctx, conflict, scanner));
+  await runBounded(ctx, conflicts, (conflict) =>
+    writeConflictToTree(ctx, conflict, writer, scanner),
+  );
 };
 
 /**
@@ -1744,6 +1748,7 @@ export const writeOutcomeToTree = async (
   ctx: Context,
   outcome: MergeOutcome,
   matcher: SparseMatcher | undefined,
+  writer: WorkingTreeWriter,
   scanner?: LeadingPathScanner,
 ): Promise<void> => {
   // Every outcome path is sourced from a tree walk (the merge's `ours`/
@@ -1764,13 +1769,13 @@ export const writeOutcomeToTree = async (
   }
   if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
     if (isExcluded(matcher, outcome.path)) return;
-    await writeWorkingTreeFileStream(ctx, outcome.path, outcome.id, scanner);
+    await writer.writeBlob(outcome.path, outcome.id, outcome.mode, scanner);
     return;
   }
   if (outcome.status === 'resolved-merged') {
     // The merged bytes exist only in memory — this write is their sole
     // persistence, so the path is materialised regardless of the matcher.
-    await writeWorkingTreeFile(ctx, outcome.path, outcome.bytes, scanner);
+    await writer.writeBytes(outcome.path, outcome.bytes, outcome.mode, scanner);
     return;
   }
   if (outcome.status === 'resolved-deleted') {
@@ -1782,6 +1787,7 @@ export const writeOutcomeToTree = async (
 export const writeConflictToTree = async (
   ctx: Context,
   conflict: MergeConflict,
+  writer: WorkingTreeWriter,
   scanner?: LeadingPathScanner,
 ): Promise<void> => {
   // Materialise with the merged mode when the merge resolved one, else the
@@ -1799,13 +1805,13 @@ export const writeConflictToTree = async (
   const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
   validateIndexPath(conflict.path, NO_PARSER_OFFSET, mode ?? FILE_MODE.REGULAR);
   if (conflict.type === 'distinct-types') {
-    await writeDistinctTypesSides(ctx, conflict, scanner);
+    await writeDistinctTypesSides(writer, conflict, scanner);
     return;
   }
   if (mode === undefined) return;
   const bytes = await materialiseConflictBytes(ctx, conflict);
   if (bytes === undefined) return;
-  await writeWorkingTreeEntry(ctx, conflict.path, bytes, mode, scanner);
+  await writer.writeBytes(conflict.path, bytes, mode, scanner);
 };
 
 // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.

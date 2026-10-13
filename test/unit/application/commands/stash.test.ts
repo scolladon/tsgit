@@ -712,12 +712,12 @@ describe('stash apply', () => {
 
   describe('Given an include-untracked stash with a regular file', () => {
     describe('When apply runs', () => {
-      it('Then routes through writeWorkingTreeFileStream and restored bytes match source', async () => {
+      it('Then routes through writeWorkingTreeEntryStream and restored bytes match source', async () => {
         // Arrange
         const ctx = await setupRepo();
         await write(ctx, 'streamed.txt', 'streamed content\n');
         await stashPush(ctx, { includeUntracked: true });
-        const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeFileStream');
+        const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
 
         // Act
         await stashApply(ctx, {});
@@ -786,7 +786,9 @@ describe('stash apply', () => {
         // Assert
         expect((failure as TsgitError).data).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX' });
         expect((await ctx.fs.read(`${ctx.layout.workDir}/packed.txt`)).length).toBe(0);
-        expect(chmod).not.toHaveBeenCalled();
+        expect(chmod.mock.calls.map(([path]) => path)).toEqual([
+          `${ctx.layout.workDir}/packed.txt`,
+        ]);
       });
     });
   });
@@ -1232,6 +1234,26 @@ const setupLfRepo = async (config: string): Promise<Context> => {
   await configure(ctx, config);
   return ctx;
 };
+
+describe('stash apply line endings', () => {
+  describe('Given core.autocrlf true and a stashed untracked file', () => {
+    describe('When stash apply restores it', () => {
+      it('Then the restored file is CRLF in the worktree', async () => {
+        // Arrange
+        const ctx = await setupLfRepo('[core]\n\tautocrlf = true\n');
+        await write(ctx, 'u.txt', 'a\r\nb\r\n');
+        await stashPush(ctx, { includeUntracked: true });
+        const sut = stashApply;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        expect(await read(ctx, 'u.txt')).toBe('a\r\nb\r\n');
+      });
+    });
+  });
+});
 
 describe('stash push line endings', () => {
   describe('Given core.autocrlf true and a CRLF edit of an LF-tracked file', () => {

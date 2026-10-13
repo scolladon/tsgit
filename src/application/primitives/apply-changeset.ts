@@ -36,6 +36,7 @@ import { boundedMapFor, limiterFor } from './internal/concurrency.js';
 import { convertToGit } from './internal/convert-blob.js';
 import { withFilterProcessPool } from './internal/filter-process-pool.js';
 import { joinPath } from './internal/join-working-tree-path.js';
+import { lazily } from './internal/lazily.js';
 import { pathIsOccupied } from './internal/path-occupied.js';
 import {
   type AttributeDirection,
@@ -228,12 +229,6 @@ const validateChangesetEntry = (entry: ChangesetEntry): void => {
 
 const validateChangesetPaths = (changeset: Changeset): void => {
   for (const entry of changeset.entries) validateChangesetEntry(entry);
-};
-
-/** Memoises the first call, so a pooled fan-out builds the value once and only if asked. */
-const lazily = <T>(build: () => Promise<T>): (() => Promise<T>) => {
-  let pending: Promise<T> | undefined;
-  return () => (pending ??= build());
 };
 
 const checkDirty = async (

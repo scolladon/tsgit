@@ -30,12 +30,16 @@ import {
 import { createCommit } from '../primitives/create-commit.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { hashBlob } from '../primitives/hash-blob.js';
+import { limiterFor } from '../primitives/internal/concurrency.js';
 import { convertToGit } from '../primitives/internal/convert-blob.js';
 import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
+import { lazily } from '../primitives/internal/lazily.js';
 import { pathIsOccupied } from '../primitives/internal/path-occupied.js';
 import {
   type AttributeProvider,
+  attributeBlobLookup,
+  buildAttributeProvider,
   maybeBuildAttributeProvider,
 } from '../primitives/internal/read-gitattributes.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
@@ -49,9 +53,10 @@ import {
 import { createLeadingPathScanner } from '../primitives/internal/symlinked-leading-path.js';
 import { stage0Entry } from '../primitives/internal/synthetic-index-entry.js';
 import {
-  removeWorkingTreeFile,
-  writeWorkingTreeFileStream,
-} from '../primitives/internal/write-working-tree-file.js';
+  createWorkingTreeWriter,
+  type WorkingTreeWriter,
+} from '../primitives/internal/write-converted-entry.js';
+import { removeWorkingTreeFile } from '../primitives/internal/write-working-tree-file.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
@@ -558,6 +563,22 @@ const untrackedOverwrites = async (
   return clobbered;
 };
 
+/** git restores untracked files through a checkout of a temporary index holding exactly them. */
+const untrackedWriter = (
+  ctx: Context,
+  entries: ReadonlyMap<FilePath, { readonly id: ObjectId }>,
+): WorkingTreeWriter =>
+  createWorkingTreeWriter(ctx, {
+    provider: lazily(() =>
+      buildAttributeProvider(ctx, {
+        kind: 'index-first',
+        index: attributeBlobLookup([...entries].map(([path, { id }]) => ({ path, id }))),
+      }),
+    ),
+    settings: lazily(() => readEolSettings(ctx)),
+    limiter: limiterFor(ctx, 'cpuBound'),
+  });
+
 /** Check out the untracked tree into the working tree (clean-apply path only). */
 const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> => {
   const flat = await flattenTree(ctx, uTree);
@@ -572,8 +593,9 @@ const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> =>
   // untracked tree with many paths under the same symlinked directory costs
   // one `lstat` per distinct directory, not one per path.
   const scanner = createLeadingPathScanner(ctx);
+  const writer = untrackedWriter(ctx, flat.entries);
   for (const [path, entry] of flat.entries) {
-    await writeWorkingTreeFileStream(ctx, path, entry.id, scanner);
+    await writer.writeBlob(path, entry.id, entry.mode, scanner);
   }
 };
 
