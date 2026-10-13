@@ -114,7 +114,7 @@ describe('commands/internal/apply-sparse-checkout', () => {
           return ctx;
         };
         const sut = applySparseCheckout;
-        const spy = vi.spyOn(gitattributesMod, 'maybeBuildAttributeProvider');
+        const spy = vi.spyOn(gitattributesMod, 'buildCheckinAttributeProvider');
         await sut(await seedExcluded(1), { matcher: srcOnly });
         const single = spy.mock.calls.length;
         spy.mockClear();

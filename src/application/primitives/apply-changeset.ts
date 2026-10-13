@@ -42,7 +42,7 @@ import {
   type AttributeDirection,
   type AttributeProvider,
   buildAttributeProvider,
-  maybeBuildAttributeProvider,
+  buildCheckinAttributeProvider,
 } from './internal/read-gitattributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
@@ -83,7 +83,7 @@ interface DirtyProbe {
 }
 
 const buildDirtyProbe = async (ctx: Context): Promise<DirtyProbe> => ({
-  provider: await maybeBuildAttributeProvider(ctx),
+  provider: await buildCheckinAttributeProvider(ctx),
   settings: await readEolSettings(ctx),
 });
 
@@ -556,7 +556,7 @@ const createChangesetWriter = (
   createWorkingTreeWriter(ctx, {
     provider: lazily(() =>
       direction === undefined
-        ? maybeBuildAttributeProvider(ctx)
+        ? buildCheckinAttributeProvider(ctx)
         : buildAttributeProvider(ctx, direction),
     ),
     settings: lazily(() => readEolSettings(ctx)),

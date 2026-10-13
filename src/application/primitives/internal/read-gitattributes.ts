@@ -335,7 +335,7 @@ export const attributeBlobLookup = (
  * files absent from disk. The index is read on the first fallback lookup, or
  * not at all when the caller already holds it.
  */
-export const maybeBuildAttributeProvider = (
+export const buildCheckinAttributeProvider = (
   ctx: Context,
   index?: { readonly entries: ReadonlyArray<IndexEntry> },
 ): Promise<AttributeProvider> => {

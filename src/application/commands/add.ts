@@ -46,7 +46,7 @@ import { type IndexMtime, isEntryStatClean } from '../primitives/internal/is-ent
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
   type AttributeProvider,
-  maybeBuildAttributeProvider,
+  buildCheckinAttributeProvider,
 } from '../primitives/internal/read-gitattributes.js';
 import { assertBigFileThresholdValid } from '../primitives/internal/repo-settings-gate.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -149,7 +149,7 @@ interface StagingScope extends ConversionScope {
 const NO_INDEX_RULES: ReadonlyMap<FilePath, IndexEntry> = new Map();
 
 const buildConversionScope = async (ctx: Context): Promise<ConversionScope> => ({
-  provider: await maybeBuildAttributeProvider(ctx),
+  provider: await buildCheckinAttributeProvider(ctx),
   settings: await readEolSettings(ctx),
 });
 

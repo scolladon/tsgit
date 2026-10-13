@@ -6,7 +6,7 @@ import {
   type AttributeProvider,
   attributeBlobLookup,
   buildAttributeProvider,
-  maybeBuildAttributeProvider,
+  buildCheckinAttributeProvider,
 } from '../../../../../src/application/primitives/internal/read-gitattributes.js';
 import { MAX_GITATTRIBUTES_BYTES } from '../../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
@@ -601,9 +601,9 @@ describe('attributeBlobLookup', () => {
   });
 });
 
-describe('maybeBuildAttributeProvider', () => {
+describe('buildCheckinAttributeProvider', () => {
   describe('Given a context without a command runner and no required filter', () => {
-    describe('When maybeBuildAttributeProvider runs', () => {
+    describe('When buildCheckinAttributeProvider runs', () => {
       it('Then a provider resolving the index .gitattributes is returned', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -611,7 +611,7 @@ describe('maybeBuildAttributeProvider', () => {
         await seedIndex(ctx, [indexEntry('.gitattributes', attrs)]);
 
         // Act
-        const sut = maybeBuildAttributeProvider;
+        const sut = buildCheckinAttributeProvider;
         const provider = await sut(ctx);
 
         // Assert
@@ -621,7 +621,7 @@ describe('maybeBuildAttributeProvider', () => {
   });
 
   describe('Given a context with a command runner', () => {
-    describe('When maybeBuildAttributeProvider is called', () => {
+    describe('When buildCheckinAttributeProvider is called', () => {
       it('Then resolves to a defined AttributeProvider', async () => {
         // Arrange
         const ctx = createMemoryContext({
@@ -629,7 +629,7 @@ describe('maybeBuildAttributeProvider', () => {
         });
 
         // Act
-        const result = await maybeBuildAttributeProvider(ctx);
+        const result = await buildCheckinAttributeProvider(ctx);
 
         // Assert
         expect(result).toBeDefined();
@@ -651,7 +651,7 @@ describe('maybeBuildAttributeProvider', () => {
         ]);
 
         // Act
-        const sut = maybeBuildAttributeProvider;
+        const sut = buildCheckinAttributeProvider;
         const provider = await sut(ctx);
 
         // Assert
@@ -670,7 +670,7 @@ describe('maybeBuildAttributeProvider', () => {
         await seedIndex(ctx, [indexEntry('.gitattributes', attrs, 0, FILE_MODE.GITLINK)]);
 
         // Act
-        const sut = maybeBuildAttributeProvider;
+        const sut = buildCheckinAttributeProvider;
         const provider = await sut(ctx);
 
         // Assert
@@ -687,7 +687,7 @@ describe('maybeBuildAttributeProvider', () => {
         await seedIndex(ctx, [indexEntry('.gitattributes', '1'.repeat(40) as ObjectId)]);
 
         // Act
-        const sut = maybeBuildAttributeProvider;
+        const sut = buildCheckinAttributeProvider;
         const provider = await sut(ctx);
 
         // Assert
@@ -705,7 +705,7 @@ describe('maybeBuildAttributeProvider', () => {
         await seedIndex(ctx, [indexEntry('.gitattributes', tree)]);
 
         // Act
-        const sut = maybeBuildAttributeProvider;
+        const sut = buildCheckinAttributeProvider;
         const provider = await sut(ctx);
 
         // Assert
@@ -723,7 +723,7 @@ describe('maybeBuildAttributeProvider', () => {
         await seedIndex(ctx, [indexEntry('.gitattributes', attrs, 0, FILE_MODE.SYMLINK)]);
 
         // Act
-        const sut = maybeBuildAttributeProvider;
+        const sut = buildCheckinAttributeProvider;
         const provider = await sut(ctx);
 
         // Assert
@@ -743,7 +743,7 @@ describe('maybeBuildAttributeProvider', () => {
           new Uint8Array([1, 2, 3, 4]),
         );
         await seedIndex(ctx, [indexEntry('.gitattributes', id)]);
-        const sut = maybeBuildAttributeProvider;
+        const sut = buildCheckinAttributeProvider;
 
         // Act
         const failure = await sut(ctx).then(
@@ -766,7 +766,7 @@ describe('maybeBuildAttributeProvider', () => {
         await base.fs.writeUtf8(`${base.layout.workDir}/.gitattributes`, '*.txt eol=crlf\n');
         const { ctx, indexReads } = countingIndexReads(base);
 
-        const sut = maybeBuildAttributeProvider;
+        const sut = buildCheckinAttributeProvider;
 
         // Act
         const provider = await sut(ctx);
@@ -790,7 +790,7 @@ describe('maybeBuildAttributeProvider', () => {
         ]);
         const { ctx, indexReads } = countingIndexReads(base);
 
-        const sut = maybeBuildAttributeProvider;
+        const sut = buildCheckinAttributeProvider;
 
         // Act
         const provider = await sut(ctx);
@@ -815,7 +815,7 @@ describe('maybeBuildAttributeProvider', () => {
         const attrs = await putBlob(base, '*.txt eol=crlf\n');
         const { ctx, indexReads } = countingIndexReads(base);
 
-        const sut = maybeBuildAttributeProvider;
+        const sut = buildCheckinAttributeProvider;
 
         // Act
         const provider = await sut(ctx, { entries: [indexEntry('.gitattributes', attrs)] });
@@ -840,7 +840,7 @@ describe('maybeBuildAttributeProvider', () => {
           indexEntry('.gitattributes', ours, 2),
           indexEntry('.gitattributes', theirs, 3),
         ];
-        const sut = maybeBuildAttributeProvider;
+        const sut = buildCheckinAttributeProvider;
 
         // Act
         const provider = await sut(ctx, { entries });
@@ -852,14 +852,14 @@ describe('maybeBuildAttributeProvider', () => {
   });
 
   describe('Given a corrupt index header', () => {
-    describe('When maybeBuildAttributeProvider runs', () => {
+    describe('When buildCheckinAttributeProvider runs', () => {
       it('Then it tolerates the index as empty, as add does', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await ctx.fs.write(`${ctx.layout.gitDir}/index`, new Uint8Array(40));
 
         // Act
-        const sut = maybeBuildAttributeProvider;
+        const sut = buildCheckinAttributeProvider;
         const provider = await sut(ctx);
 
         // Assert
@@ -869,14 +869,14 @@ describe('maybeBuildAttributeProvider', () => {
   });
 
   describe('Given an index file that exists but vanishes before it is read', () => {
-    describe('When maybeBuildAttributeProvider runs', () => {
+    describe('When buildCheckinAttributeProvider runs', () => {
       it('Then it tolerates the missing index as empty', async () => {
         // Arrange
         const base = createMemoryContext();
         const ctx = withFailingIndexReads(base, fileNotFound(`${base.layout.gitDir}/index`));
 
         // Act
-        const sut = maybeBuildAttributeProvider;
+        const sut = buildCheckinAttributeProvider;
         const provider = await sut(ctx);
 
         // Assert
@@ -886,14 +886,14 @@ describe('maybeBuildAttributeProvider', () => {
   });
 
   describe('Given a valid index header followed by an entry with a rejected path', () => {
-    describe('When maybeBuildAttributeProvider runs', () => {
+    describe('When buildCheckinAttributeProvider runs', () => {
       it('Then it tolerates the garbage index as empty, as add does', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seedIndex(ctx, [indexEntry('../escape', '1'.repeat(40) as ObjectId)]);
 
         // Act
-        const sut = maybeBuildAttributeProvider;
+        const sut = buildCheckinAttributeProvider;
         const provider = await sut(ctx);
 
         // Assert
@@ -903,12 +903,12 @@ describe('maybeBuildAttributeProvider', () => {
   });
 
   describe('Given an index read failing with a permission error', () => {
-    describe('When maybeBuildAttributeProvider runs', () => {
+    describe('When buildCheckinAttributeProvider runs', () => {
       it('Then it rejects with that error code', async () => {
         // Arrange
         const base = createMemoryContext();
         const ctx = withFailingIndexReads(base, permissionDenied(`${base.layout.gitDir}/index`));
-        const sut = maybeBuildAttributeProvider;
+        const sut = buildCheckinAttributeProvider;
 
         // Act
         const failure = await sut(ctx).then(
@@ -923,7 +923,7 @@ describe('maybeBuildAttributeProvider', () => {
   });
 
   describe('Given an index read failing with another error', () => {
-    describe('When maybeBuildAttributeProvider runs', () => {
+    describe('When buildCheckinAttributeProvider runs', () => {
       it('Then the error propagates', async () => {
         // Arrange
         const base = createMemoryContext();
@@ -931,7 +931,7 @@ describe('maybeBuildAttributeProvider', () => {
         const ctx = { ...base, fs: { ...base.fs, exists: () => Promise.reject(boom) } } as Context;
 
         // Act
-        const act = maybeBuildAttributeProvider(ctx);
+        const act = buildCheckinAttributeProvider(ctx);
 
         // Assert
         await expect(act).rejects.toBe(boom);

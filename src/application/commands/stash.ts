@@ -44,7 +44,7 @@ import {
   type AttributeProvider,
   attributeBlobLookup,
   buildAttributeProvider,
-  maybeBuildAttributeProvider,
+  buildCheckinAttributeProvider,
 } from '../primitives/internal/read-gitattributes.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import {
@@ -158,7 +158,7 @@ interface HashedFile {
 }
 
 const buildConversionScope = async (ctx: Context): Promise<ConversionScope> => ({
-  provider: await maybeBuildAttributeProvider(ctx),
+  provider: await buildCheckinAttributeProvider(ctx),
   settings: await readEolSettings(ctx),
 });
 

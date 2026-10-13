@@ -185,7 +185,7 @@ describe('smudgeRacilyClean', () => {
         await write(ctx, TRACKED, 'm22\n');
         const entries = await entriesAsRead(ctx);
         const read = vi.spyOn(ctx.fs, 'read');
-        const build = vi.spyOn(gitattributes, 'maybeBuildAttributeProvider');
+        const build = vi.spyOn(gitattributes, 'buildCheckinAttributeProvider');
         const sut = smudgeRacilyClean;
 
         // Act

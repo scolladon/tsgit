@@ -32,7 +32,7 @@ import { diffTrees } from '../primitives/diff-trees.js';
 import { convertToGit } from '../primitives/internal/convert-blob.js';
 import { indexRuleEntries } from '../primitives/internal/index-rule-entries.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
-import { maybeBuildAttributeProvider } from '../primitives/internal/read-gitattributes.js';
+import { buildCheckinAttributeProvider } from '../primitives/internal/read-gitattributes.js';
 import {
   descendMatchingTreeChain,
   findTreeEntryChain,
@@ -281,7 +281,7 @@ const convertWorkingBytes = async (
   indexEntries: ReadonlyArray<IndexEntry>,
 ): Promise<Uint8Array> => {
   const settings = await readEolSettings(ctx);
-  const provider = await maybeBuildAttributeProvider(ctx);
+  const provider = await buildCheckinAttributeProvider(ctx);
   const conversion = await resolveConversion(ctx, provider, path, settings);
   const indexBlob = indexRuleEntries(indexEntries.filter((entry) => entry.path === path))[0]?.id;
   const converted = await convertToGit(ctx, {

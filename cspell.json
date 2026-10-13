@@ -187,6 +187,7 @@
     "chdir",
     "checkable",
     "checkcontainment",
+    "checkin",
     "chflags",
     "cherrypick",
     "chksum",

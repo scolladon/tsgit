@@ -27,7 +27,7 @@ import { withFilterProcessPool } from '../primitives/internal/filter-process-poo
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
   type AttributeProvider,
-  maybeBuildAttributeProvider,
+  buildCheckinAttributeProvider,
 } from '../primitives/internal/read-gitattributes.js';
 import { assertOperationalRepositorySettingsFirst } from '../primitives/internal/repo-state.js';
 import { readHeadTree } from '../primitives/read-head-tree.js';
@@ -184,7 +184,7 @@ const scanStatusTree = async (
   tracked: TrackedEntries,
 ): Promise<ScannedTree> => {
   const tracker = createGranularityTracker(ctx.progress, STATUS_SCAN_OP, STATUS_SCAN_GRANULARITY);
-  const provider = await maybeBuildAttributeProvider(ctx, index);
+  const provider = await buildCheckinAttributeProvider(ctx, index);
   const { staged } = tracked.grouped;
   const workingMap = await scanWorkingTree(ctx, staged, tracker, provider, index.indexMtime);
   const untracked = await scanUntracked(ctx, tracked.trackedPaths);
