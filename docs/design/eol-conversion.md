@@ -654,14 +654,13 @@ file). The in-core class is routed exactly like today's `smudgesInCore` branch: 
 export type AttributeDirection =
   | { readonly kind: 'worktree-first'; readonly index: IndexBlobLookup }       // worktree, else index blob
   | { readonly kind: 'index-first'; readonly index: IndexBlobLookup }      // result-index blob, else worktree
-  | { readonly kind: 'index-only'; readonly index: IndexBlobLookup }         // renormalize's merged attribute index
   | { readonly kind: 'tree'; readonly tree: ObjectId };                 // archive (existing tree reader)
 export type IndexBlobLookup = (path: FilePath) => ObjectId | undefined;
 export const buildAttributeProvider = (ctx: Context, direction?: AttributeDirection): Promise<AttributeProvider>;
 ```
 
 The `DirReader` for `worktree-first` tries the worktree file and falls back to the index blob for
-`<dir>/.gitattributes`; `index-first` the reverse; `index-only` reads only the lookup. Omitting the
+`<dir>/.gitattributes`; `index-first` the reverse — renormalize's direction: the merged attribute index first, the worktree as git's fallback. Omitting the
 direction keeps today's worktree-only reader for the existing non-conversion consumers
 (`build-content-merger` driver lookup, `diff-trees`, `materialise-patch-files`, similarity), which
 this design does not re-point. The checkout lookup is the **result** index: current stage-0
@@ -681,7 +680,7 @@ filter execution (the filter step itself still no-ops without a runner, ADR-408)
 
 | Route (tsgit site) | git | Direction | Attribute source | safecrlf | Streaming |
 |---|---|---|---|---|---|
-| `add` literal + bulk — `add.ts` `cleanConversion` / `stageFromStat` | `index_path` + write | to-git | check-in; index lookup = the locked prior index | armed (`write`); `true`: convert + object write strictly in index order, one path at a time, stop at the first loss (ADR-954) — literal `stageLiterals` is serial already, bulk gates through `clean-order.ts` (§D3.7); `warn` / `false`: concurrency unchanged | in core (as today) |
+| `add` literal + bulk — `add.ts` `cleanConversion` / `stageFromStat` | `index_path` + write | to-git | check-in; index lookup = the locked prior index | armed (`write`); `true`: convert + object write serially — tracked paths first in index order, then untracked in walk order (git's `add_files_to_cache` runs before `add_files`) — one path at a time, stop at the first loss (ADR-954) — literal `stageLiterals` is serial already, bulk gates through `clean-order.ts` (§D3.7); `warn` / `false`: concurrency unchanged | in core (as today) |
 | `add --renormalize` (new `AddOptions.renormalize`) — tracked stage-0 regular/symlink entries, skip-worktree skipped, no untracked | `renormalize_tracked_files` | to-git | check-in | never | in core |
 | `status`, `rm`, clean-work-tree, `findWouldOverwrite`, `isWorkingTreeDirty`, stash dirty probe — `compareWorkingTreeDelta` → `cleanWorktreeBytes` | `ce_compare_data` (`index_fd`, no write) | to-git | check-in; index lookup = the entry's own id | never (`compare`) | in core |
 | racy-clean smudge — `smudge-racily-clean.ts` via `compareWorkingTreeDelta` | `ce_smudge_racily_clean_entry` | to-git | check-in | never | in core |
@@ -729,7 +728,7 @@ StashPushResult ({ kind: 'saved' }).eolNotices: ReadonlyArray<EolNotice>
 
 `crlf` is the number of CRLF sequences and `loneLf` the number of LF bytes not preceded by CR in
 the CRLF step's input (`gatherTextStats`); git prints neither (tsgit-specific fields, ADR-952).
-Notices are listed in index order — bulk add collects them from `stagedOutcomes` (walk order), not
+Notices list the tracked paths first in index order, then the untracked in walk order — bulk add collects them from `stagedOutcomes`, not
 from completion order; `false` yields `[]`, `add --renormalize` yields `[]` by construction, and no
 route writes them to `ctx.logger` (ADR-953).
 
@@ -739,7 +738,7 @@ Reconstruction in the interop test: `loss === 'crlf-to-lf'` → `fatal: CRLF wou
 git's processing order.
 
 **Ordering under `core.safecrlf=true` (ADR-954).** git converts and writes one path at a time in
-index order and dies at the first loss, leaving the blobs written before it (§D1.6: `objects=1`,
+tracked-first order (tracked paths in index order, then untracked) and dies at the first loss, leaving the blobs written before it (§D1.6: `objects=1`,
 `a1` written, `c3` never hashed). tsgit today:
 
 - literal add — `addLiteralOnly` → `stageLiterals` awaits `stageOne` per path over
@@ -754,7 +753,7 @@ index order and dies at the first loss, leaving the blobs written before it (§D
   `runInOrder` brackets the driver with `admitClean(ctx, path)` / `releaseClean(ctx, path)`.
   Reads, CRLF, hashing and `writeObject` run concurrently.
 
-Change — bulk add only, only when `EolSettings.safeCrlf === true`:
+Change — bulk add: the tracked-first walk order on every bulk add; the serialised write span only when `EolSettings.safeCrlf === true`:
 
 ```ts
 // src/application/primitives/internal/clean-order.ts
@@ -869,7 +868,7 @@ taken. Two rulings deviate from the recommendation (DC-3a, DC-3c) and are folded
 | # | Choice | Alternatives (≤3) | Recommendation | Why | Ruling |
 |---|---|---|---|---|---|
 | DC-1 | Where conversion sits (user point 1) | (a) generalise the existing clean/smudge pipeline into `convertToGit` / `convertToWorkingTree` primitives over pure `src/domain/eol` steps, replacing the filter calls at every site; (b) a separate EOL primitive called next to the filter step at each site; (c) a port-level `FileSystem` decorator converting on read/write | (a) | git's order interleaves filter, CRLF and ident (§D1.10) and the stream/in-core class depends on all three (§D1.11) — one resolver and one composer keep that in one place. (b) duplicates ordering at ~12 sites. (c) cannot see attributes, the index blob or the blob id (ident, index-CRLF rule) and would convert `.git/` reads. | option (a) — ADR-950 |
-| DC-2 | Attribute-source API (user point 2; the behaviour itself is pinned, §D1.7) | (a) one `buildAttributeProvider(ctx, direction)` with `worktree-first` / `index-first` / `index-only` / `tree`; (b) four named factories; (c) keep the worktree-only provider for checkout writes (diverges: §D1.7 `switch` and `reset --hard` rows) | (a) | One factory and one `DirReader` composition; existing callers without a direction keep today's reader. (c) breaks the switch-introduces-`.gitattributes` case (§D1.7) and leaves smudge filters on the same worktree-only source. | option (a) — ADR-951 |
+| DC-2 | Attribute-source API (user point 2; the behaviour itself is pinned, §D1.7) | (a) one `buildAttributeProvider(ctx, direction)` with `worktree-first` / `index-first` / `index-only` / `tree`; (b) four named factories; (c) keep the worktree-only provider for checkout writes (diverges: §D1.7 `switch` and `reset --hard` rows) | (a) | One factory and one `DirReader` composition; existing callers without a direction keep today's reader. (c) breaks the switch-introduces-`.gitattributes` case (§D1.7) and leaves smudge filters on the same worktree-only source. | option (a) — ADR-951 Shipped: three kinds — `worktree-first` / `index-first` / `tree`; `index-only` was folded into `index-first` once the review pinned git's worktree fallback under renormalize. |
 | DC-3a | safecrlf refusal data (user point 3) | (a) `EOL_ROUND_TRIP_UNSAFE { path, loss: 'crlf-to-lf' \| 'lf-to-crlf' }`; (b) (a) plus counts of the line endings that would change (`crlf` / `loneLf` from the stats); (c) reuse a generic code (`UNSUPPORTED_OPERATION`) with a reason string | (a) | Exactly what git's message carries; both directions reconstruct git's text (§D3.7). (b) adds data git never exposes (YAGNI, cheap to add later). (c) is a rendered reason, against ADR-249. | option (b) — ADR-952 — deviates from recommendation |
 | DC-3b | safecrlf `warn` channel (git's default, so it fires on ordinary adds) | (a) structured notices on the command result (`AddResult.eolNotices` and the stash-push result); (b) `ctx.logger?.warn?.(message, { code, path, loss })` like the rename-limit warning; (c) both | (a) | Data on the result is ADR-249's shape and testable without a logger; (b) is the house precedent for informational text but makes the data optional and unordered; (c) duplicates. | option (a) — ADR-953 |
 | DC-3c | Objects written before a `safecrlf=true` refusal | (a) refuse with the first offending path in index order and accept that other paths' blobs written concurrently may differ from git's set (all unreachable); (b) run conversion + write in index order whenever `core.safecrlf=true`, reproducing git's exact object set (§D1.6 `objects=1`) | (a) | The refusal data, index and refs match git exactly; only unreachable loose objects can differ, and (b) serialises every add under `safecrlf=true`. | option (b) — ADR-954 — deviates from recommendation |

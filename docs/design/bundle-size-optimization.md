@@ -522,18 +522,19 @@ The npm tarball cap is unchanged: the measured pack stayed under `tooling/verify
 ## Size-limit raise — EOL conversion subsystem
 
 Measured on a clean build (`rm -rf dist .wireit && WIREIT_CACHE=none npm run build`,
-`npx size-limit --json`), gzip bytes, against `main` at the same toolchain. Each failing row
+`npx size-limit --json`), gzip bytes, against `main` at the same toolchain; the measured column is the
+branch's final tree (after the review and refactoring phases). Each failing row
 is raised to the measurement rounded up to the next 0.1 kB plus 2 kB of review-round headroom;
 every other row is unchanged.
 
 | Row | main | measured | Δ | old limit | new limit | Attributable to |
 |---|--:|--:|--:|--:|--:|---|
-| Browser bundle (no-build) | 321 737 | 327 230 | +5 493 | 321.8 kB | 329.3 kB | the whole subsystem below, bundled once |
-| Full library | 378 017 | 383 454 | +5 437 | 378.1 kB | 385.5 kB | the domain, primitives and commands-internal growth below plus the entries' re-exports (`EolNotice`, `RoundTripLoss`, `BlobUnchanged`) |
-| Chunks: domain | 119 036 | 120 589 | +1 553 | 119.2 kB | 122.6 kB | `src/domain/eol`: text statistics and the binary classifier, the CRLF action resolution, the two CRLF converters and the LF→CRLF stream transform, the `ident` collapse and both expanders; the `EOL_ROUND_TRIP_UNSAFE` member and its detail; the modify/delete `blobUnchanged` arm of the three-way tree merge |
-| Chunks: primitives | 99 470 | 101 863 | +2 393 | 99.5 kB | 103.9 kB | the per-path conversion resolver, the composed to-git / to-worktree steps and the streamed transform, the direction-taking attribute providers and index lookups, the working-tree writer, the converted dirty probe and comparison route, the renormalize attribute lookup and the content merger's normalisation |
-| Chunks: commands-internal | 79 389 | 79 988 | +599 | 79.4 kB | 82 kB | `add`'s conversion scope, notices, index-order writes under `core.safecrlf=true` and `--renormalize`; `stash push`'s conversion and git's object-write order; `merge`'s `-X renormalize` wiring; `blame` and `archive` conversion |
-| Command (add) | 2 402 | 3 208 | +806 | 3 kB | 3.5 kB | the review round's `add` fixes: tracked-before-untracked staging order on the literal and bulk paths  the index-rule blob chosen as stage 0 else 2  the gitlink skip; a per-command row takes 200 B of headroom  not the 2 kB the library rows took |
+| Browser bundle (no-build) | 321 737 | 328 090 | +6 353 | 321.8 kB | 329.3 kB | the whole subsystem below, bundled once |
+| Full library | 378 017 | 384 305 | +6 288 | 378.1 kB | 385.5 kB | the domain, primitives and commands-internal growth below plus the entries' re-exports (`EolNotice`, `RoundTripLoss`, `BlobUnchanged`) |
+| Chunks: domain | 119 036 | 120 782 | +1 746 | 119.2 kB | 122.6 kB | `src/domain/eol`: text statistics and the binary classifier, the CRLF action resolution, the two CRLF converters and the LF→CRLF stream transform, the `ident` collapse and both expanders; the `EOL_ROUND_TRIP_UNSAFE` member and its detail; the modify/delete `blobUnchanged` arm of the three-way tree merge |
+| Chunks: primitives | 99 470 | 102 179 | +2 709 | 99.5 kB | 103.9 kB | the per-path conversion resolver, the composed to-git / to-worktree steps and the streamed transform, the direction-taking attribute providers and index lookups, the working-tree writer, the converted dirty probe and comparison route, the renormalize attribute lookup and the content merger's normalisation |
+| Chunks: commands-internal | 79 389 | 80 022 | +633 | 79.4 kB | 82 kB | `add`'s conversion scope, notices, index-order writes under `core.safecrlf=true` and `--renormalize`; `stash push`'s conversion and git's object-write order; `merge`'s `-X renormalize` wiring; `blame` and `archive` conversion |
+| Command (add) | 2 402 | 3 243 | +841 | 3 kB | 3.5 kB | implementation +594 B (the conversion scope, the notices, the renormalize path and the write span under `core.safecrlf=true`); review fixes +247 B (tracked-before-untracked staging order on the literal and bulk paths, the index-rule blob chosen as stage 0 else 2 and its map built once per add, the gitlink skip); a per-command row takes 200 B of headroom, not the 2 kB the library rows took |
 
 The npm tarball cap moved 1370 → 1410 KiB (1 402 333 → 1 421 159 B); its attribution lives in
 `tooling/verify-tarball.sh`'s cap block.
