@@ -1221,3 +1221,147 @@ describe('stashPush — clean filter re-application', () => {
     });
   });
 });
+
+const configure = (ctx: Context, text: string) =>
+  ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, text);
+
+const setupLfRepo = async (config: string): Promise<Context> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await commitFile(ctx, 'a.txt', 'a\nb\nc\n', 'initial commit');
+  await configure(ctx, config);
+  return ctx;
+};
+
+describe('stash push line endings', () => {
+  describe('Given core.autocrlf true and a CRLF edit of an LF-tracked file', () => {
+    describe('When stash push runs', () => {
+      it('Then the W-tree blob is LF', async () => {
+        // Arrange
+        const ctx = await setupLfRepo('[core]\n\tautocrlf = true\n');
+        await write(ctx, 'a.txt', 'a\r\nb\r\nc\r\nd\r\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const wTree = (await commitOf(ctx, result.stash)).tree;
+        expect(await treeContent(ctx, wTree, 'a.txt')).toBe('a\nb\nc\nd\n');
+      });
+    });
+  });
+
+  describe('Given core.autocrlf true and an LF edit', () => {
+    describe('When stash push runs', () => {
+      it('Then the saved result carries the lf-to-crlf notice', async () => {
+        // Arrange
+        const ctx = await setupLfRepo('[core]\n\tautocrlf = true\n');
+        await write(ctx, 'a.txt', 'a\nb\nc\nd\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(result.eolNotices).toEqual([
+          { path: 'a.txt', loss: 'lf-to-crlf', crlf: 0, loneLf: 4 },
+        ]);
+      });
+    });
+  });
+
+  describe('Given core.autocrlf true and core.safecrlf false', () => {
+    describe('When stash push runs on an LF edit', () => {
+      it('Then eolNotices is empty', async () => {
+        // Arrange
+        const ctx = await setupLfRepo('[core]\n\tautocrlf = true\n\tsafecrlf = false\n');
+        await write(ctx, 'a.txt', 'a\nb\nc\nd\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(result.eolNotices).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given core.autocrlf true and core.safecrlf true', () => {
+    describe('When stash push runs on an LF edit', () => {
+      it('Then it refuses, saves no stash and leaves the worktree and index untouched', async () => {
+        // Arrange
+        const ctx = await setupLfRepo('[core]\n\tautocrlf = true\n\tsafecrlf = true\n');
+        await write(ctx, 'a.txt', 'a\nb\nc\nd\n');
+        const indexBefore = await readIndex(ctx);
+        const sut = stashPush;
+
+        // Act
+        const attempt = sut(ctx, {});
+
+        // Assert
+        const error = await attempt.then(
+          () => undefined,
+          (e: unknown) => e,
+        );
+        if (!(error instanceof TsgitError)) throw new Error('expected a TsgitError');
+        expect(error.data).toEqual({
+          code: 'EOL_ROUND_TRIP_UNSAFE',
+          path: 'a.txt',
+          loss: 'lf-to-crlf',
+          crlf: 0,
+          loneLf: 4,
+        });
+        expect(await readStashStack(ctx)).toEqual([]);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/stash`)).toBe(false);
+        expect(await read(ctx, 'a.txt')).toBe('a\nb\nc\nd\n');
+        expect(await readIndex(ctx)).toEqual(indexBefore);
+      });
+    });
+  });
+
+  describe('Given core.autocrlf true, an LF untracked file and an LF tracked edit', () => {
+    describe('When stash push -u runs', () => {
+      it('Then the untracked notice precedes the tracked one', async () => {
+        // Arrange
+        const ctx = await setupLfRepo('[core]\n\tautocrlf = true\n');
+        await write(ctx, 'a.txt', 'a\nb\nc\nd\n');
+        await write(ctx, 'zz.txt', 'u\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(result.eolNotices.map((n) => n.path)).toEqual(['zz.txt', 'a.txt']);
+      });
+    });
+  });
+
+  describe('Given core.autocrlf true and a CRLF untracked file', () => {
+    describe('When stash push -u runs', () => {
+      it('Then the untracked blob is LF and no notice is raised', async () => {
+        // Arrange
+        const ctx = await setupLfRepo('[core]\n\tautocrlf = true\n');
+        await write(ctx, 'a.txt', 'a\nb\nc\nd\n');
+        await write(ctx, 'u.txt', 'u1\r\nu2\r\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const w = await commitOf(ctx, result.stash);
+        const uTree = (await commitOf(ctx, w.parents[2] as ObjectId)).tree;
+        expect(await treeContent(ctx, uTree, 'u.txt')).toBe('u1\nu2\n');
+        expect(result.eolNotices.map((n) => n.path)).toEqual(['a.txt']);
+      });
+    });
+  });
+});

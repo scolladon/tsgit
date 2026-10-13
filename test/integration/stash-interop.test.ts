@@ -17,9 +17,17 @@
 import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { EolNotice } from '../../src/domain/eol/crlf-conversion.js';
 import type { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
+import {
+  type EolRepoOptions,
+  enc,
+  looseObjectIds,
+  reconstructSafecrlfLine,
+  setEolConfig,
+} from './eol-interop-fixtures.js';
 import {
   GIT_AVAILABLE,
   git,
@@ -27,7 +35,9 @@ import {
   makePeerPair,
   type PeerPair,
   runGit,
+  runGitBytes,
   tryRunGit,
+  tryRunGitWithExit,
 } from './interop-helpers.js';
 
 const AUTHOR = {
@@ -202,6 +212,136 @@ describe.skipIf(!GIT_AVAILABLE)('stash porcelain interop', () => {
         // The stash is kept on both — a failed pop never drops its entry.
         expect(tryRunGit(['-C', pair.peer, 'stash', 'list']).stdout).not.toBe('');
         expect((await repo.stash.list()).entries).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('line-ending conversion', () => {
+    const LF_SEED = 'a\nb\nc\n';
+
+    const seedLf = async (config: EolRepoOptions): Promise<void> => {
+      await writeBoth(pair, 'a.txt', LF_SEED);
+      git(pair.peer, 'add', 'a.txt');
+      git(pair.peer, 'commit', '-q', '-m', 'seed');
+      await repo.add(['a.txt']);
+      await repo.commit({ message: 'seed', author: AUTHOR });
+      setEolConfig(pair.peer, config);
+      setEolConfig(pair.ours, config);
+    };
+
+    const stashedBlob = (dir: string, spec: string): string =>
+      enc(runGitBytes(['-C', dir, 'cat-file', 'blob', spec]));
+
+    const looseBlobIds = (dir: string): ReadonlyArray<string> =>
+      looseObjectIds(dir).filter((id) => git(dir, 'cat-file', '-t', id).trim() === 'blob');
+
+    describe('Given core.autocrlf true and a CRLF worktree of an LF-tracked file', () => {
+      describe('When stash push runs in each', () => {
+        it('Then the stashed blob is LF and the W trees match', async () => {
+          // Arrange
+          await seedLf({ autoCrlf: 'true' });
+          await writeBoth(pair, 'a.txt', 'a\r\nb\r\nc\r\nd\r\n');
+
+          // Act
+          git(pair.peer, 'stash');
+          await repo.stash.push();
+
+          // Assert
+          expect(stashedBlob(pair.ours, 'stash@{0}:a.txt')).toBe('aNbNcNdN');
+          expect(stashedBlob(pair.peer, 'stash@{0}:a.txt')).toBe('aNbNcNdN');
+          expect(git(pair.ours, 'rev-parse', 'stash@{0}^{tree}')).toBe(
+            git(pair.peer, 'rev-parse', 'stash@{0}^{tree}'),
+          );
+        });
+      });
+    });
+
+    describe('Given core.autocrlf true and core.safecrlf true with an LF edit', () => {
+      describe('When stash push runs in each', () => {
+        it('Then both refuse, leave the same loose blobs, no stash ref and an untouched worktree', async () => {
+          // Arrange
+          await seedLf({ autoCrlf: 'true', safeCrlf: 'true' });
+          await writeBoth(pair, 'a.txt', 'a\nb\nc\nd\n');
+
+          // Act
+          const peerResult = tryRunGitWithExit(['-C', pair.peer, 'stash']);
+          const error = await repo.stash.push().then(
+            () => undefined,
+            (e: unknown) => e as TsgitError,
+          );
+
+          // Assert
+          expect(peerResult.exitCode).toBe(1);
+          expect(error?.data).toEqual({
+            code: 'EOL_ROUND_TRIP_UNSAFE',
+            path: 'a.txt',
+            loss: 'lf-to-crlf',
+            crlf: 0,
+            loneLf: 4,
+          });
+          expect(peerResult.stderr).toContain(
+            reconstructSafecrlfLine({ path: 'a.txt', loss: 'lf-to-crlf' }, 'fatal'),
+          );
+          expect(looseBlobIds(pair.ours)).toEqual(looseBlobIds(pair.peer));
+          for (const dir of [pair.peer, pair.ours]) {
+            expect(tryRunGit(['-C', dir, 'rev-parse', '--verify', '-q', 'refs/stash']).ok).toBe(
+              false,
+            );
+            expect(await readFile(path.join(dir, 'a.txt'), 'utf8')).toBe('a\nb\nc\nd\n');
+          }
+        });
+      });
+    });
+
+    describe('Given core.autocrlf true and the default core.safecrlf with an LF edit', () => {
+      describe('When stash push runs in each', () => {
+        it('Then both save with the one warning and the W trees match', async () => {
+          // Arrange
+          await seedLf({ autoCrlf: 'true' });
+          await writeBoth(pair, 'a.txt', 'a\nb\nc\nd\n');
+
+          // Act
+          const peerResult = tryRunGitWithExit(['-C', pair.peer, 'stash']);
+          const saved = await repo.stash.push();
+
+          // Assert
+          expect(peerResult.exitCode).toBe(0);
+          if (saved.kind !== 'saved') throw new Error('expected saved');
+          expect(saved.eolNotices).toHaveLength(1);
+          const notice = saved.eolNotices[0] as EolNotice;
+          expect(peerResult.stderr).toContain(reconstructSafecrlfLine(notice, 'warning'));
+          expect(git(pair.ours, 'rev-parse', 'stash@{0}^{tree}')).toBe(
+            git(pair.peer, 'rev-parse', 'stash@{0}^{tree}'),
+          );
+        });
+      });
+    });
+
+    describe('Given core.autocrlf true, an untracked file and a tracked LF edit', () => {
+      describe('When stash push -u runs in each', () => {
+        it('Then the untracked blob, the U tree and the warning order match', async () => {
+          // Arrange
+          await seedLf({ autoCrlf: 'true' });
+          await writeBoth(pair, 'a.txt', 'a\nb\nc\nd\n');
+          await writeBoth(pair, 'zz.txt', 'u\n');
+          await writeBoth(pair, 'crlf.txt', 'u1\r\nu2\r\n');
+
+          // Act
+          const peerResult = tryRunGitWithExit(['-C', pair.peer, 'stash', 'push', '-u']);
+          const saved = await repo.stash.push({ includeUntracked: true });
+
+          // Assert
+          if (saved.kind !== 'saved') throw new Error('expected saved');
+          const oursOrder = saved.eolNotices.map((n) => reconstructSafecrlfLine(n, 'warning'));
+          const peerOrder = peerResult.stderr
+            .split('\n')
+            .filter((line) => line.startsWith('warning: in the working copy'));
+          expect(oursOrder).toEqual(peerOrder);
+          expect(stashedBlob(pair.ours, 'stash@{0}^3:crlf.txt')).toBe('u1Nu2N');
+          expect(git(pair.ours, 'rev-parse', 'stash@{0}^3^{tree}')).toBe(
+            git(pair.peer, 'rev-parse', 'stash@{0}^3^{tree}'),
+          );
+        });
       });
     });
   });

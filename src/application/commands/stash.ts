@@ -10,6 +10,8 @@
  *   format:  git-index-tree-state
  */
 import { noInitialCommit, stashApplyWouldOverwrite } from '../../domain/commands/error.js';
+import type { EolSettings } from '../../domain/eol/crlf-action.js';
+import type { EolNotice } from '../../domain/eol/crlf-conversion.js';
 import { TsgitError } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
@@ -25,10 +27,14 @@ import { compareWorkingTreeEntry } from '../primitives/compare-working-tree-entr
 import { createCommit } from '../primitives/create-commit.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { hashBlob } from '../primitives/hash-blob.js';
+import { convertToGit } from '../primitives/internal/convert-blob.js';
 import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import { pathIsOccupied } from '../primitives/internal/path-occupied.js';
-import { maybeBuildAttributeProvider } from '../primitives/internal/read-gitattributes.js';
+import {
+  type AttributeProvider,
+  maybeBuildAttributeProvider,
+} from '../primitives/internal/read-gitattributes.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import {
   assertNoPendingOperation,
@@ -47,6 +53,7 @@ import { materializeTree } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { resolveReflogIdentity } from '../primitives/reflog-identity.js';
+import { readEolSettings, resolveConversion } from '../primitives/resolve-conversion.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import {
   dropStashEntry,
@@ -78,7 +85,12 @@ export interface StashPushInput {
 }
 
 export type StashPushResult =
-  | { readonly kind: 'saved'; readonly stash: ObjectId; readonly message: string }
+  | {
+      readonly kind: 'saved';
+      readonly stash: ObjectId;
+      readonly message: string;
+      readonly eolNotices: ReadonlyArray<EolNotice>;
+    }
   | { readonly kind: 'no-local-changes' };
 
 const REASON_NOT_A_STASH_COMMIT = 'ref does not point at a stash commit';
@@ -120,23 +132,65 @@ const resolveBase = async (ctx: Context, head: HeadState): Promise<BaseState> =>
   };
 };
 
+/** What converts a path on its way into the repository: its attributes and the eol settings. */
+interface ConversionScope {
+  readonly provider: AttributeProvider;
+  readonly settings: EolSettings;
+}
+
+interface HashedFile {
+  readonly id: ObjectId;
+  readonly mode: ReturnType<typeof deriveWorkingMode>;
+  readonly notice?: EolNotice;
+}
+
+const buildConversionScope = async (ctx: Context): Promise<ConversionScope> => ({
+  provider: await maybeBuildAttributeProvider(ctx),
+  settings: await readEolSettings(ctx),
+});
+
+/** The blob bytes git stores for a work-tree file: symlink targets verbatim, files cleaned. */
+const cleanedContent = async (
+  ctx: Context,
+  abs: string,
+  request: HashRequest,
+): Promise<{ readonly bytes: Uint8Array; readonly notice?: EolNotice }> => {
+  const { path, stat, scope, indexBlob } = request;
+  if (stat.isSymbolicLink) return { bytes: new TextEncoder().encode(await ctx.fs.readlink(abs)) };
+  const conversion = await resolveConversion(ctx, scope.provider, path, scope.settings);
+  return convertToGit(ctx, {
+    path,
+    bytes: await ctx.fs.read(abs),
+    conversion,
+    route: 'write',
+    settings: scope.settings,
+    ...(indexBlob !== undefined && { indexBlob }),
+  });
+};
+
+interface HashRequest {
+  readonly path: FilePath;
+  readonly stat: FileStat;
+  readonly scope: ConversionScope;
+  /** The stage-0 blob, for git's index-CRLF rule; absent for untracked files. */
+  readonly indexBlob?: ObjectId;
+}
+
 const hashFileAt = async (
   ctx: Context,
   workDir: string,
-  path: FilePath,
-  stat: FileStat,
-): Promise<{ readonly id: ObjectId; readonly mode: ReturnType<typeof deriveWorkingMode> }> => {
-  const abs = joinPath(workDir, path);
-  const content = stat.isSymbolicLink
-    ? new TextEncoder().encode(await ctx.fs.readlink(abs))
-    : await ctx.fs.read(abs);
-  const id = await hashBlob(ctx, content, { write: true });
-  return { id, mode: deriveWorkingMode(stat) };
+  request: HashRequest,
+): Promise<HashedFile> => {
+  const { bytes, notice } = await cleanedContent(ctx, joinPath(workDir, request.path), request);
+  const id = await hashBlob(ctx, bytes, { write: true });
+  const mode = deriveWorkingMode(request.stat);
+  return notice === undefined ? { id, mode } : { id, mode, notice };
 };
 
 interface WorkingTreeProjection {
   readonly entries: ReadonlyArray<IndexEntry>;
   readonly dirty: boolean;
+  readonly eolNotices: ReadonlyArray<EolNotice>;
 }
 
 /** Project the index's stage-0 entries onto their working-tree content (the W tree). */
@@ -146,8 +200,10 @@ const projectWorkingTree = async (
   index: GitIndex,
 ): Promise<WorkingTreeProjection> => {
   const entries: IndexEntry[] = [];
+  const eolNotices: EolNotice[] = [];
   let dirty = false;
-  const provider = await maybeBuildAttributeProvider(ctx);
+  const scope = await buildConversionScope(ctx);
+  const provider = scope.provider;
   for (const entry of index.entries) {
     // Stryker disable next-line ConditionalExpression: equivalent — a non-conflicted index (the only state stash push reaches) carries no stage!=0 entries, so this skip is never taken; the `if(true)` variant that drops every entry is killed by the W-tree-content tests.
     if (entry.flags.stage !== 0) continue;
@@ -167,15 +223,22 @@ const projectWorkingTree = async (
     }
     dirty = true;
     const stat = await ctx.fs.lstat(joinPath(workDir, entry.path));
-    const { id, mode } = await hashFileAt(ctx, workDir, entry.path, stat);
+    const { id, mode, notice } = await hashFileAt(ctx, workDir, {
+      path: entry.path,
+      stat,
+      scope,
+      indexBlob: entry.id,
+    });
+    if (notice !== undefined) eolNotices.push(notice);
     entries.push(stage0Entry(entry.path, id, mode));
   }
-  return { entries, dirty };
+  return { entries, dirty, eolNotices };
 };
 
 interface UntrackedProjection {
   readonly paths: ReadonlyArray<FilePath>;
   readonly entries: ReadonlyArray<IndexEntry>;
+  readonly eolNotices: ReadonlyArray<EolNotice>;
 }
 
 /** The index's tree, the work tree projected over it, and — when asked — the untracked files. */
@@ -190,10 +253,11 @@ const snapshotLocalChanges = async (
 }> => {
   const index = await readIndex(ctx);
   const iTree = await synthesizeTreeFromIndex(ctx, index.entries);
-  const working = await projectWorkingTree(ctx, workDir, index);
+  // git stages the untracked files before projecting the tracked ones, so its notices lead.
   const untracked = opts.includeUntracked
     ? await collectUntracked(ctx, workDir, index)
-    : { paths: [], entries: [] };
+    : { paths: [], entries: [], eolNotices: [] };
+  const working = await projectWorkingTree(ctx, workDir, index);
   return { iTree, working, untracked };
 };
 
@@ -207,13 +271,20 @@ const collectUntracked = async (
   const ignore = await buildRepoIgnorePredicate(ctx);
   const paths: FilePath[] = [];
   const entries: IndexEntry[] = [];
+  const eolNotices: EolNotice[] = [];
+  const scope = await buildConversionScope(ctx);
   for await (const { path, stat } of walkWorkingTree(ctx, { ignore })) {
     if (tracked.has(path)) continue;
-    const { id, mode } = await hashFileAt(ctx, workDir, path, await stat());
+    const { id, mode, notice } = await hashFileAt(ctx, workDir, {
+      path,
+      stat: await stat(),
+      scope,
+    });
+    if (notice !== undefined) eolNotices.push(notice);
     entries.push(stage0Entry(path, id, mode));
     paths.push(path);
   }
-  return { paths, entries };
+  return { paths, entries, eolNotices };
 };
 
 /**
@@ -269,7 +340,12 @@ const stashAndReset = async (
     const w = await createStashCommits(ctx, { base, iTree, working, untracked, opts });
     await record(w);
     await resetAfterPush(ctx, lock, { base, iTree, untracked, opts });
-    return { kind: 'saved', stash: w.stash, message: w.message };
+    return {
+      kind: 'saved',
+      stash: w.stash,
+      message: w.message,
+      eolNotices: [...untracked.eolNotices, ...working.eolNotices],
+    };
   } finally {
     await lock.release();
   }
