@@ -3,9 +3,11 @@ import {
   applyMergeToWorktree,
   conflictResultTree,
   createMergeResultWriter,
+  mergeTreesToTree,
   writeMarkedConflict,
 } from '../../../../src/application/primitives/apply-merge-to-worktree.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
+import { flattenTree } from '../../../../src/application/primitives/flatten-tree.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import * as streamBlobMod from '../../../../src/application/primitives/stream-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -2149,6 +2151,167 @@ describe('applyMergeToWorktree writes through the working-tree writer', () => {
 
         // Assert
         expect(await readWork(ctx, 'm')).toBe('x\r\nb\r\ny\r\n');
+      });
+    });
+  });
+
+  const NORMALIZING_ATTRIBUTES = '* text=auto\n';
+
+  /** Base `f` in CRLF; theirs adds `* text=auto` and renormalizes `f` (editing line 1 unless `edit` is false); ours edits line 3 or deletes `f`. */
+  const renormalizingTrees = async (
+    ctx: Context,
+    options: { readonly theirsEdits: boolean; readonly oursDeletes: boolean },
+  ) => {
+    const file = (name: string, blob: ObjectId) =>
+      treeEntry(FILE_MODE.REGULAR, name as FilePath, blob);
+    const base = await writeBlob(ctx, 'a\r\nb\r\nc\r\n');
+    const ours = await writeBlob(ctx, 'a\r\nb\r\nC\r\n');
+    const theirs = await writeBlob(ctx, options.theirsEdits ? 'A\nb\nc\n' : 'a\nb\nc\n');
+    const other = await writeBlob(ctx, 'g\n');
+    const attributes = await writeBlob(ctx, NORMALIZING_ATTRIBUTES);
+    const oursEntries = options.oursDeletes
+      ? [file('g', other)]
+      : [file('f', ours), file('g', other)];
+    await ctx.fs.write(`${ctx.layout.workDir}/g`, new TextEncoder().encode('g\n'));
+    if (!options.oursDeletes) {
+      await ctx.fs.write(`${ctx.layout.workDir}/f`, new TextEncoder().encode('a\r\nb\r\nC\r\n'));
+    }
+    return {
+      baseTree: await treeWith(ctx, [file('f', base), file('g', other)]),
+      oursTree: await treeWith(ctx, oursEntries),
+      theirsTree: await treeWith(ctx, [
+        file('.gitattributes', attributes),
+        file('f', theirs),
+        file('g', other),
+      ]),
+      currentIndex: index([
+        ...(options.oursDeletes ? [] : [indexEntry('f', ours)]),
+        indexEntry('g', other),
+      ]),
+    };
+  };
+
+  describe('Given merge.renormalize true and the cherry-pick history', () => {
+    describe('When applyMergeToWorktree runs', () => {
+      it('Then it is clean with f holding the normalized merge', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[merge]\n\trenormalize = true\n');
+        const input = await renormalizingTrees(ctx, { theirsEdits: true, oursDeletes: false });
+        const sut = applyMergeToWorktree;
+
+        // Act
+        const result = await sut(ctx, input);
+
+        // Assert
+        expect(result.kind).toBe('clean');
+        if (result.kind !== 'clean') return;
+        const merged = await flattenTree(ctx, result.mergedTree);
+        expect(merged.entries.get('f' as FilePath)?.id).toBe(await writeBlob(ctx, 'A\nb\nC\n'));
+      });
+    });
+  });
+
+  describe('Given no merge.renormalize and the cherry-pick history', () => {
+    describe('When applyMergeToWorktree runs', () => {
+      it('Then f conflicts', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const input = await renormalizingTrees(ctx, { theirsEdits: true, oursDeletes: false });
+        const sut = applyMergeToWorktree;
+
+        // Act
+        const result = await sut(ctx, input);
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+      });
+    });
+  });
+
+  describe('Given merge.renormalize = foo', () => {
+    describe('When applyMergeToWorktree runs', () => {
+      it('Then it refuses with CONFIG_BAD_BOOLEAN_VALUE', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[merge]\n\trenormalize = foo\n');
+        const input = await renormalizingTrees(ctx, { theirsEdits: true, oursDeletes: false });
+        const sut = applyMergeToWorktree;
+
+        // Act
+        const result = await sut(ctx, input).catch((e: unknown) => e);
+
+        // Assert
+        expect((result as TsgitError).data).toMatchObject({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'merge.renormalize',
+          value: 'foo',
+        });
+      });
+    });
+  });
+
+  describe('Given merge.renormalize true and the modify/delete history', () => {
+    describe('When applyMergeToWorktree runs', () => {
+      it('Then the delete merges cleanly', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[merge]\n\trenormalize = true\n');
+        const input = await renormalizingTrees(ctx, { theirsEdits: false, oursDeletes: true });
+        const sut = applyMergeToWorktree;
+
+        // Act
+        const result = await sut(ctx, input);
+
+        // Assert
+        expect(result.kind).toBe('clean');
+        if (result.kind !== 'clean') return;
+        const merged = await flattenTree(ctx, result.mergedTree);
+        expect(merged.entries.has('f' as FilePath)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given merge.renormalize true and the cherry-pick history', () => {
+    describe('When mergeTreesToTree runs', () => {
+      it('Then it is clean with f holding the normalized merge', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[merge]\n\trenormalize = true\n');
+        const { baseTree, oursTree, theirsTree } = await renormalizingTrees(ctx, {
+          theirsEdits: true,
+          oursDeletes: false,
+        });
+        const sut = mergeTreesToTree;
+
+        // Act
+        const result = await sut(ctx, { baseTree, oursTree, theirsTree });
+
+        // Assert
+        expect(result.kind).toBe('clean');
+        if (result.kind !== 'clean') return;
+        const merged = await flattenTree(ctx, result.mergedTree);
+        expect(merged.entries.get('f' as FilePath)?.id).toBe(await writeBlob(ctx, 'A\nb\nC\n'));
+      });
+    });
+  });
+
+  describe('Given no merge.renormalize and the cherry-pick history', () => {
+    describe('When mergeTreesToTree runs', () => {
+      it('Then it conflicts', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { baseTree, oursTree, theirsTree } = await renormalizingTrees(ctx, {
+          theirsEdits: true,
+          oursDeletes: false,
+        });
+        const sut = mergeTreesToTree;
+
+        // Act
+        const result = await sut(ctx, { baseTree, oursTree, theirsTree });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
       });
     });
   });

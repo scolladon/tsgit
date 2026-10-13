@@ -16,6 +16,7 @@
  *                nothing is written.
  */
 
+import type { FlatTree } from '../../domain/diff/flat-tree.js';
 import { conflictsToIndexEntries } from '../../domain/diff/index.js';
 import { unsupportedOperation } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
@@ -30,14 +31,19 @@ import {
 } from '../../domain/merge/index.js';
 import { FILE_MODE, type FilePath, type ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { buildContentMerger } from './build-content-merger.js';
+import {
+  buildBlobUnchanged,
+  buildContentMerger,
+  type ContentMergeSettings,
+  type RenormalizeSettings,
+} from './build-content-merger.js';
 import { detectMergeRenames } from './detect-merge-renames.js';
 import { changedPaths, findWouldOverwrite } from './find-would-overwrite.js';
 import { flattenTree } from './flatten-tree.js';
 import { writeAutoMerge } from './internal/auto-merge-ref.js';
 import { limiterFor } from './internal/concurrency.js';
 import { lazily } from './internal/lazily.js';
-import { readUiDiffAlgorithm } from './internal/merge-rename-config.js';
+import { readMergeRenormalize, readUiDiffAlgorithm } from './internal/merge-rename-config.js';
 import { mergedBlobEntries } from './internal/merged-blob-entries.js';
 import {
   attributeBlobLookup,
@@ -45,6 +51,7 @@ import {
   type IndexBlobLookup,
   isAttributesPath,
 } from './internal/read-gitattributes.js';
+import { renormalizeAttributeLookup } from './internal/renormalize-attributes.js';
 import {
   createLeadingPathScanner,
   type LeadingPathScanner,
@@ -415,6 +422,19 @@ const materialiseConflict = async (
   };
 };
 
+/** git's sequencer and stash read `merge.renormalize` through `merge_recursive_config`; there is no `-X` to override it. */
+const configuredRenormalize = async (
+  ctx: Context,
+  trees: {
+    readonly base: FlatTree | undefined;
+    readonly ours: FlatTree;
+    readonly theirs: FlatTree;
+  },
+): Promise<RenormalizeSettings | undefined> =>
+  (await readMergeRenormalize(ctx))
+    ? { attributes: renormalizeAttributeLookup(trees.base, trees.ours, trees.theirs) }
+    : undefined;
+
 export const applyMergeToWorktree = async (
   ctx: Context,
   input: ApplyMergeInput,
@@ -426,11 +446,24 @@ export const applyMergeToWorktree = async (
   ]);
   const detected = await detectMergeRenames(ctx, base, ours, theirs);
   const diffAlgorithm = await readUiDiffAlgorithm(ctx);
-  const settings = diffAlgorithm === undefined ? {} : { diffAlgorithm };
-  const contentMerger = buildContentMerger(ctx, input.labels, settings);
   const trees = { base, ours, theirs };
+  const renormalize = await configuredRenormalize(ctx, trees);
+  const settings: ContentMergeSettings = {
+    ...(diffAlgorithm === undefined ? {} : { diffAlgorithm }),
+    ...(renormalize === undefined ? {} : { renormalize }),
+  };
+  const contentMerger = buildContentMerger(ctx, input.labels, settings);
   const renames = await mergeCollidingRenameSources(ctx, trees, detected, contentMerger);
-  const merged = await mergeTrees(base, ours, theirs, contentMerger, input.labels, renames);
+  const merged = await mergeTrees(
+    base,
+    ours,
+    theirs,
+    contentMerger,
+    input.labels,
+    renames,
+    undefined,
+    renormalize && buildBlobUnchanged(ctx, renormalize),
+  );
   // Stryker disable next-line ConditionalExpression: equivalent — `rejectUnsupported` over an empty conflict list is a no-op, so the `if(true)` variant behaves identically on a clean merge; `if(false)` is killed by the gitlink-rejection test.
   if (!merged.cleanMerge) rejectUnsupported(merged.conflicts);
 
@@ -482,12 +515,16 @@ export const mergeTreesToTree = async (
     flattenTree(ctx, input.oursTree),
     flattenTree(ctx, input.theirsTree),
   ]);
+  const renormalize = await configuredRenormalize(ctx, { base, ours, theirs });
   const merged = await mergeTrees(
     base,
     ours,
     theirs,
-    buildContentMerger(ctx, input.labels),
+    buildContentMerger(ctx, input.labels, renormalize === undefined ? {} : { renormalize }),
     input.labels,
+    undefined,
+    undefined,
+    renormalize && buildBlobUnchanged(ctx, renormalize),
   );
   // Stryker disable next-line ConditionalExpression: equivalent — `if(true)` (always-conflict) is killed by the clean `--index` reinstatement test; `if(false)` only mishandles a *conflicting* index-side `--index` merge, which v1 intentionally leaves un-reinstated ("Index was not unstashed", ADR-211), so the caller's behaviour is unchanged.
   if (!merged.cleanMerge) return { kind: 'conflict', conflicts: merged.conflicts };

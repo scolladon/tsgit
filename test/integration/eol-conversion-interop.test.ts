@@ -36,8 +36,10 @@ import { blame } from '../../src/application/commands/blame.js';
 import { checkout } from '../../src/application/commands/checkout.js';
 import { cherryPickRun } from '../../src/application/commands/cherry-pick.js';
 import { mergeRun } from '../../src/application/commands/merge.js';
+import { rebaseRun } from '../../src/application/commands/rebase.js';
 import { reset } from '../../src/application/commands/reset.js';
-import { stashPop, stashPush } from '../../src/application/commands/stash.js';
+import { revertRun } from '../../src/application/commands/revert.js';
+import { stashApply, stashPop, stashPush } from '../../src/application/commands/stash.js';
 import { status } from '../../src/application/commands/status.js';
 import type { EolNotice } from '../../src/domain/eol/crlf-conversion.js';
 import { TsgitError } from '../../src/domain/index.js';
@@ -1575,6 +1577,325 @@ describe.skipIf(!GIT_AVAILABLE)('eol conversion interop', () => {
         expect(workTreeOf(twin.tsDir, 'u')).toBe(workTreeOf(twin.gitDir, 'u'));
         expect(git(twin.gitDir, 'status', '--short', '--untracked-files=no')).toBe(' M f\n');
         expect(git(twin.tsDir, 'status', '--short', '--untracked-files=no')).toBe(' M f\n');
+      });
+    });
+  });
+
+  describe('Given tsgit and git replay a CRLF edit across a renormalizing commit', () => {
+    type Ctx = ReturnType<typeof createNodeContext>;
+    type Files = Readonly<Record<string, string>>;
+    const BASE = 'a\r\nb\r\nc\r\n';
+    const OURS_EDIT = 'a\r\nb\r\nC\r\n';
+    const THEIRS_RENORMALIZED = 'A\nb\nc\n';
+    const MERGED = 'A\nb\nC\n';
+    const NORMALIZING = '* text=auto\n';
+    const MERGE_RENORMALIZE = ['config', 'merge.renormalize', 'true'] as const;
+
+    /** Stages the bytes verbatim: a plain `add` would convert them under the attributes already committed. */
+    const stageExact = (dir: string, name: string, content: string): void => {
+      mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
+      writeFileSync(path.join(dir, name), content);
+      const id = git(dir, 'hash-object', '-w', '--no-filters', name).trim();
+      git(dir, 'update-index', '--add', '--cacheinfo', `100644,${id},${name}`);
+    };
+
+    const commitExact = (dir: string, files: Files, message: string): void => {
+      for (const [name, content] of Object.entries(files)) stageExact(dir, name, content);
+      git(dir, 'commit', '-q', '-m', message);
+    };
+
+    const initRepo = (dir: string, settings: ReadonlyArray<ReadonlyArray<string>> = []): void => {
+      initEolRepo(dir, {});
+      git(dir, 'config', 'user.name', 'Ada');
+      git(dir, 'config', 'user.email', 'ada@example.com');
+      git(dir, 'config', 'merge.conflictStyle', 'merge');
+      for (const setting of settings) git(dir, ...setting);
+    };
+
+    /** `main` and `s` fork from `base`; the tools then replay one onto the other. */
+    const seedFork = (
+      dir: string,
+      sides: { readonly base: Files; readonly ours: Files; readonly theirs: Files },
+      settings: ReadonlyArray<ReadonlyArray<string>> = [],
+    ): void => {
+      initRepo(dir, settings);
+      commitExact(dir, sides.base, 'base');
+      git(dir, 'checkout', '-q', '-b', 's');
+      commitExact(dir, sides.theirs, 'theirs');
+      git(dir, 'checkout', '-q', 'main');
+      commitExact(dir, sides.ours, 'ours');
+    };
+
+    const FORK: { base: Files; ours: Files; theirs: Files } = {
+      base: { f: BASE },
+      ours: { f: OURS_EDIT },
+      theirs: { '.gitattributes': NORMALIZING, f: THEIRS_RENORMALIZED },
+    };
+
+    const onTwins = async (
+      seed: (dir: string) => void,
+      gitStep: (dir: string) => void,
+      tsgitStep: (ctx: Ctx) => Promise<unknown>,
+    ) => {
+      const twin = { gitDir: freshDir(), tsDir: freshDir() };
+      for (const dir of [twin.gitDir, twin.tsDir]) seed(dir);
+      gitStep(twin.gitDir);
+      await tsgitStep(createNodeContext({ workDir: twin.tsDir }));
+      return twin;
+    };
+
+    const gitTry =
+      (...args: ReadonlyArray<string>) =>
+      (dir: string): void => {
+        tryRunGitWithExit(['-C', dir, ...args]);
+      };
+
+    const stageLines = (dir: string, name: string): ReadonlyArray<string> =>
+      git(dir, 'ls-files', '--stage', '--', name).split('\n').filter(Boolean);
+
+    const blobOfF = (dir: string): string => git(dir, 'cat-file', 'blob', ':f');
+
+    const replays: ReadonlyArray<{
+      readonly title: string;
+      readonly gitStep: (dir: string) => void;
+      readonly tsgitStep: (ctx: Ctx) => Promise<unknown>;
+    }> = [
+      {
+        title: 'cherry-pick',
+        gitStep: gitTry('cherry-pick', 's'),
+        tsgitStep: (ctx) => cherryPickRun(ctx, { commits: ['s'] }),
+      },
+      {
+        title: 'rebase',
+        gitStep: gitTry('rebase', 's'),
+        tsgitStep: (ctx) => rebaseRun(ctx, { upstream: 's' }),
+      },
+    ];
+
+    describe.each(replays)(
+      'When $title replays the CRLF edit with merge.renormalize=true',
+      (replay) => {
+        it('Then f merges to the normalized bytes in both tools', async () => {
+          // Arrange
+          const seed = (dir: string): void => seedFork(dir, FORK, [MERGE_RENORMALIZE]);
+
+          // Act
+          const twin = await onTwins(seed, replay.gitStep, replay.tsgitStep);
+
+          // Assert
+          expect(blobOfF(twin.gitDir)).toBe(MERGED);
+          expect(blobOfF(twin.tsDir)).toBe(MERGED);
+        });
+      },
+    );
+
+    describe.each(replays)('When $title replays the CRLF edit without the config', (replay) => {
+      it('Then f conflicts with the same stages in both tools', async () => {
+        // Arrange
+        const seed = (dir: string): void => seedFork(dir, FORK);
+
+        // Act
+        const twin = await onTwins(seed, replay.gitStep, replay.tsgitStep);
+
+        // Assert
+        expect(stageLines(twin.gitDir, 'f')).toHaveLength(3);
+        expect(stageLines(twin.tsDir, 'f')).toEqual(stageLines(twin.gitDir, 'f'));
+      });
+    });
+
+    describe.each([
+      ['with merge.renormalize=true', [MERGE_RENORMALIZE], 'A\nb\nc\n'],
+      ['without the config', [], undefined],
+    ] as const)('When revert undoes the CRLF edit %s', (_title, settings, expected) => {
+      it('Then both tools agree on the outcome', async () => {
+        // Arrange
+        const seed = (dir: string): void => {
+          initRepo(dir, settings);
+          commitExact(dir, { f: BASE }, 'base');
+          commitExact(dir, { f: OURS_EDIT }, 'crlf edit');
+          commitExact(dir, { '.gitattributes': NORMALIZING, f: MERGED }, 'renormalize');
+        };
+
+        // Act
+        const twin = await onTwins(seed, gitTry('revert', '--no-edit', 'HEAD~1'), (ctx) =>
+          revertRun(ctx, { commits: ['HEAD~1'] }),
+        );
+
+        // Assert
+        if (expected === undefined) expect(stageLines(twin.gitDir, 'f')).toHaveLength(3);
+        else expect(blobOfF(twin.gitDir)).toBe(expected);
+        expect(stageLines(twin.tsDir, 'f')).toEqual(stageLines(twin.gitDir, 'f'));
+      });
+    });
+
+    describe.each([
+      ['with merge.renormalize=true', [MERGE_RENORMALIZE], true],
+      ['without the config', [], false],
+    ] as const)('When stash apply reinstates the CRLF edit %s', (_title, settings, merges) => {
+      it('Then both tools agree on the outcome', async () => {
+        // Arrange
+        const seed = (dir: string): void => {
+          initRepo(dir, settings);
+          commitExact(dir, { f: BASE }, 'base');
+          git(dir, 'branch', 'old');
+          commitExact(
+            dir,
+            { '.gitattributes': NORMALIZING, f: THEIRS_RENORMALIZED },
+            'renormalize',
+          );
+          git(dir, 'checkout', '-q', 'old');
+          writeFileSync(path.join(dir, 'f'), OURS_EDIT);
+        };
+        const gitStep = (dir: string): void => {
+          git(dir, 'stash', 'push', '-q');
+          git(dir, 'checkout', '-q', 'main');
+          tryRunGitWithExit(['-C', dir, 'stash', 'apply']);
+        };
+        const tsgitStep = async (ctx: Ctx): Promise<void> => {
+          await stashPush(ctx, {});
+          await checkout(ctx, { rev: 'main' });
+          await stashApply(ctx, {});
+        };
+
+        // Act
+        const twin = await onTwins(seed, gitStep, tsgitStep);
+
+        // Assert
+        if (merges) expect(workTreeOf(twin.gitDir)).toBe(MERGED);
+        else expect(stageLines(twin.gitDir, 'f')).toHaveLength(3);
+        expect(workTreeOf(twin.tsDir)).toBe(workTreeOf(twin.gitDir));
+        expect(stageLines(twin.tsDir, 'f')).toEqual(stageLines(twin.gitDir, 'f'));
+      });
+    });
+
+    const workTreeOf = (dir: string, name = 'f'): string =>
+      readFileSync(path.join(dir, name), 'latin1');
+
+    const mergeRenormalize = (ctx: Ctx) =>
+      mergeRun(ctx, { rev: 's', strategyOptions: ['renormalize'] });
+
+    describe('When merge -X renormalize runs without attributes under core.autocrlf=true', () => {
+      it('Then the blob is LF and the worktree CRLF in both tools', async () => {
+        // Arrange
+        const seed = (dir: string): void => {
+          seedFork(dir, {
+            base: { f: BASE },
+            ours: { f: OURS_EDIT },
+            theirs: { f: THEIRS_RENORMALIZED },
+          });
+          git(dir, 'config', 'core.autocrlf', 'true');
+        };
+
+        // Act
+        const twin = await onTwins(
+          seed,
+          gitTry('merge', '-X', 'renormalize', 's'),
+          mergeRenormalize,
+        );
+
+        // Assert
+        expect(blobOfF(twin.gitDir)).toBe(MERGED);
+        expect(blobOfF(twin.tsDir)).toBe(MERGED);
+        expect(workTreeOf(twin.gitDir)).toBe('A\r\nb\r\nC\r\n');
+        expect(workTreeOf(twin.tsDir)).toBe('A\r\nb\r\nC\r\n');
+      });
+    });
+
+    describe('When merge -X renormalize runs under core.safecrlf=true', () => {
+      it('Then neither tool warns or refuses and the blobs agree', async () => {
+        // Arrange
+        const seed = (dir: string): void =>
+          seedFork(dir, FORK, [['config', 'core.safecrlf', 'true']]);
+        let gitRun: ReturnType<typeof tryRunGitWithExit> | undefined;
+
+        // Act
+        const twin = await onTwins(
+          seed,
+          (dir) => {
+            gitRun = tryRunGitWithExit(['-C', dir, 'merge', '-X', 'renormalize', 's']);
+          },
+          mergeRenormalize,
+        );
+
+        // Assert
+        expect(gitRun?.exitCode).toBe(0);
+        expect(gitRun?.stderr).not.toContain(WARNING_PREFIX);
+        expect(blobOfF(twin.gitDir)).toBe(MERGED);
+        expect(blobOfF(twin.tsDir)).toBe(MERGED);
+      });
+    });
+
+    describe.each([
+      [
+        'base text=auto, ours and theirs -text',
+        { base: NORMALIZING, ours: '* -text #o\n', theirs: '* -text #t\n' },
+        1,
+      ],
+      ['no base, ours -text, theirs text=auto', { ours: '* -text\n', theirs: NORMALIZING }, 3],
+      ['no base, ours text=auto, theirs -text', { ours: NORMALIZING, theirs: '* -text\n' }, 1],
+      [
+        'base -text, ours text=auto, theirs edits line 5',
+        {
+          base: '* -text\n# 2\n# 3\n# 4\n# 5\n',
+          ours: '* text=auto\n# 2\n# 3\n# 4\n# 5\n',
+          theirs: '* -text\n# 2\n# 3\n# 4\n# five\n',
+        },
+        3,
+      ],
+    ] as const)(
+      'When merge -X renormalize meets conflicting .gitattributes: %s',
+      (_title, attributes, stages) => {
+        it('Then f is staged identically in both tools', async () => {
+          // Arrange
+          const withAttributes = (files: Files, content: string | undefined): Files =>
+            content === undefined ? files : { ...files, '.gitattributes': content };
+          const seed = (dir: string): void =>
+            seedFork(dir, {
+              base: withAttributes({ f: BASE }, 'base' in attributes ? attributes.base : undefined),
+              ours: withAttributes({ f: OURS_EDIT }, attributes.ours),
+              theirs: withAttributes({ f: THEIRS_RENORMALIZED }, attributes.theirs),
+            });
+
+          // Act
+          const twin = await onTwins(
+            seed,
+            gitTry('merge', '-X', 'renormalize', 's'),
+            mergeRenormalize,
+          );
+
+          // Assert
+          expect(stageLines(twin.gitDir, 'f')).toHaveLength(stages);
+          expect(stageLines(twin.tsDir, 'f')).toEqual(stageLines(twin.gitDir, 'f'));
+        });
+      },
+    );
+
+    describe.each([
+      ['a nested sub/.gitattributes', 'sub/', 3],
+      ['a root .gitattributes', '', 1],
+    ] as const)('When merge -X renormalize relies on %s', (_title, prefix, stages) => {
+      it('Then the nested file is not consulted and the root one is, in both tools', async () => {
+        // Arrange
+        const seed = (dir: string): void =>
+          seedFork(dir, {
+            base: { [`${prefix}f`]: BASE },
+            ours: { [`${prefix}f`]: OURS_EDIT },
+            theirs: {
+              [`${prefix}.gitattributes`]: NORMALIZING,
+              [`${prefix}f`]: THEIRS_RENORMALIZED,
+            },
+          });
+
+        // Act
+        const twin = await onTwins(
+          seed,
+          gitTry('merge', '-X', 'renormalize', 's'),
+          mergeRenormalize,
+        );
+
+        // Assert
+        expect(stageLines(twin.gitDir, `${prefix}f`)).toHaveLength(stages);
+        expect(stageLines(twin.tsDir, `${prefix}f`)).toEqual(stageLines(twin.gitDir, `${prefix}f`));
       });
     });
   });
