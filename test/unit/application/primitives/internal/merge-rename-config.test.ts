@@ -4,6 +4,7 @@ import {
   type MergeRenameConfig,
   readConflictStyle,
   readMergeRenameConfig,
+  readMergeRenormalize,
 } from '../../../../../src/application/primitives/internal/merge-rename-config.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
 import type { Context } from '../../../../../src/ports/context.js';
@@ -235,6 +236,65 @@ describe('readConflictStyle', () => {
           value: 'bogus',
           source: `${ctx.layout.gitDir}/config`,
           line: 2,
+        });
+      });
+    });
+  });
+});
+
+describe('readMergeRenormalize', () => {
+  describe('Given no merge.renormalize', () => {
+    describe('When it is read', () => {
+      it('Then no choice is made', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = readMergeRenormalize;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe.each([
+    ['true', '[merge]\n\trenormalize = true\n', true],
+    ['false', '[merge]\n\trenormalize = false\n', false],
+    ['valueless', '[merge]\n\trenormalize\n', true],
+    ['the last of two', '[merge]\n\trenormalize = true\n\trenormalize = no\n', false],
+  ])('Given merge.renormalize %s', (_label, config, expected) => {
+    describe('When it is read', () => {
+      it('Then it reads as the boolean', async () => {
+        // Arrange
+        const ctx = await withConfig(config);
+        const sut = readMergeRenormalize;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given merge.renormalize = foo', () => {
+    describe('When it is read', () => {
+      it('Then it is refused as a bad boolean value', async () => {
+        // Arrange
+        const ctx = await withConfig('[merge]\n\trenormalize = foo\n');
+        const sut = readMergeRenormalize;
+
+        // Act
+        const result = await refusalData(sut(ctx));
+
+        // Assert
+        expect(result).toMatchObject({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'merge.renormalize',
+          value: 'foo',
         });
       });
     });

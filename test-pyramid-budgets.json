@@ -173,7 +173,8 @@
         "createLeadingPathScanner",
         "createLfToCrlfTransform",
         "createIdentTransform",
-        "createWorkingTreeWriter"
+        "createWorkingTreeWriter",
+        "renormalizeAttributeLookup"
       ]
     },
     "integrationProof": {
