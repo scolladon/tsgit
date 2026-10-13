@@ -1297,6 +1297,28 @@ describe('stash push line endings', () => {
     });
   });
 
+  describe('Given core.autocrlf true, a CRLF edit of a.txt and an untouched LF b.txt', () => {
+    describe('When stash push runs', () => {
+      it('Then no notice is raised for the untouched b.txt', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'a\nb\nc\n', 'first');
+        await commitFile(ctx, 'b.txt', 'x\n', 'second');
+        await configure(ctx, '[core]\n\tautocrlf = true\n');
+        await write(ctx, 'a.txt', 'a\r\nb\r\nc\r\nd\r\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(result.eolNotices).toEqual([]);
+      });
+    });
+  });
+
   describe('Given core.autocrlf true and core.safecrlf false', () => {
     describe('When stash push runs on an LF edit', () => {
       it('Then eolNotices is empty', async () => {
@@ -1595,6 +1617,34 @@ describe('stash push line-ending guards', () => {
         );
         expect(writeRouteCalls).toEqual([]);
         convert.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a tracked file the work tree reports exactly at the size cap', () => {
+    describe('When stash push runs', () => {
+      it('Then it saves the stash, the cap refusing only strictly larger files', async () => {
+        // Arrange
+        const ctx = await setupLfRepo('[core]\n\tautocrlf = true\n');
+        await write(ctx, 'a.txt', 'a\nb\nc\nd\n');
+        const cappedFs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop !== 'lstat') return Reflect.get(target, prop, receiver);
+            return async (path: string) => {
+              const real = await target.lstat(path);
+              return path.endsWith('/a.txt')
+                ? { ...real, size: MAX_WORKING_TREE_BLOB_BYTES }
+                : real;
+            };
+          },
+        });
+        const sut = stashPush;
+
+        // Act
+        const result = await sut({ ...ctx, fs: cappedFs }, {});
+
+        // Assert
+        expect(result.kind).toBe('saved');
       });
     });
   });

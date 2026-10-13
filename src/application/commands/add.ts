@@ -481,6 +481,7 @@ const addRenormalized = async (
     };
     const renormalized = await renormalizeEntries(staging, entries, matcher);
     const onDisk = await literalsOnDisk(ctx, literalMustMatch);
+    // Stryker disable next-line MethodExpression: equivalent — the whole-tree literal is itself among the on-disk literals (the work tree exists), so enforceLiteralMustMatch accepts it unfiltered.
     const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
     enforceLiteralMustMatch(mustMatch, [...renormalized.matched, ...onDisk], literalSpellings);
     await lock.commit([...renormalized.entries]);
