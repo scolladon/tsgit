@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   buildLayout,
   createNodeContext,
+  nativeLineEndingFor,
   resolveHomeDir,
 } from '../../../../src/adapters/node/node-adapter.js';
 import { NodeCommandRunner } from '../../../../src/adapters/node/node-command-runner.js';
@@ -632,6 +633,38 @@ describe('buildLayout', () => {
         // Assert
         expect(result.homeDir).toBe('/home/me');
         expect(result.bare).toBe(true);
+      });
+    });
+  });
+});
+
+describe('nativeLineEndingFor', () => {
+  describe.each([
+    ['win32', 'crlf'],
+    ['linux', 'lf'],
+    ['darwin', 'lf'],
+  ] as const)('Given the %s platform', (platform, expected) => {
+    describe('When nativeLineEndingFor runs', () => {
+      it(`Then ${expected}`, () => {
+        // Arrange / Act
+        const result = nativeLineEndingFor(platform);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('createNodeContext native line ending', () => {
+  describe('Given a context built by createNodeContext', () => {
+    describe('When reading nativeEol', () => {
+      it('Then nativeEol equals nativeLineEndingFor(process.platform)', () => {
+        // Arrange / Act
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-ctx-eol' });
+
+        // Assert
+        expect(sut.nativeEol).toBe(nativeLineEndingFor(process.platform));
       });
     });
   });

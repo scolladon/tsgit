@@ -10,7 +10,7 @@ import { indexMtimeFrom, readIndexAt } from '../read-index.js';
 import { lstatIfReachable } from './fs-probes.js';
 import { type IndexMtime, isRacy, matchesContentStat } from './is-entry-stat-clean.js';
 import { joinPath } from './join-working-tree-path.js';
-import { maybeBuildAttributeProvider } from './read-gitattributes.js';
+import { buildCheckinAttributeProvider } from './read-gitattributes.js';
 
 const CORRUPT_INDEX_CODE_PREFIX = 'INVALID_INDEX_';
 
@@ -114,7 +114,7 @@ export const smudgeRacilyClean = async (
   if (workDir === undefined) return entries;
   const clean = await racilyClean(ctx, workDir, entries);
   if (clean.length === 0) return entries;
-  const provider = await maybeBuildAttributeProvider(ctx);
+  const provider = await buildCheckinAttributeProvider(ctx);
   const modified = await filterConcurrently(
     clean,
     async (entry) => (await compareWorkingTreeDelta(ctx, entry, provider)).status === 'modified',

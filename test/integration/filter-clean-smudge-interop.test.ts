@@ -42,6 +42,7 @@ import { readIndex } from '../../src/application/primitives/read-index.js';
 import { TsgitError } from '../../src/domain/index.js';
 import type { ObjectId } from '../../src/domain/objects/object-id.js';
 import type { Context } from '../../src/ports/context.js';
+import { blobAt, enc, FILTER_FIXTURE } from './eol-interop-fixtures.js';
 import {
   GIT_AVAILABLE,
   git,
@@ -1368,6 +1369,80 @@ describe.skipIf(!GIT_AVAILABLE)(
           runGit(['-C', gitTwin.repo, 'hash-object', '--stdin'], { input: 'A\n' }).trim(),
         );
         expect(staged(tsgitTwin.repo)).toEqual(staged(gitTwin.repo));
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
+  'Given a clean filter under text and ident',
+  () => {
+    let root = '';
+
+    beforeAll(async () => {
+      root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-filter-order-')));
+    });
+
+    afterAll(async () => {
+      await rm(root, { recursive: true, force: true });
+    });
+
+    const repoWithFilter = async (slug: string): Promise<string> => {
+      const repo = path.join(root, slug);
+      runGit(['init', '-q', '-b', 'main', repo]);
+      await writeFile(path.join(repo, '.gitattributes'), `${FILTER_FIXTURE.attributes}\n`);
+      await writeFile(path.join(repo, 'f'), FILTER_FIXTURE.worktree);
+      runGit(['-C', repo, 'config', 'filter.t.clean', FILTER_FIXTURE.clean]);
+      return repo;
+    };
+
+    describe('When git and tsgit add a file', () => {
+      it('Then both stage the clean output, converted to LF, with the ident collapsed', async () => {
+        // Arrange
+        const gitRepo = await repoWithFilter('git');
+        const tsgitRepo = await repoWithFilter('tsgit');
+        const sut = add;
+
+        // Act
+        runGit(['-C', gitRepo, 'add', 'f']);
+        await sut(createNodeContext({ workDir: tsgitRepo }), ['f']);
+
+        // Assert
+        const staged = (repo: string) => enc(blobAt(repo, 'f'));
+        expect(staged(gitRepo)).toBe('ZN$Id$NaRNbN');
+        expect(staged(tsgitRepo)).toBe(staged(gitRepo));
+      });
+    });
+
+    describe('When git and tsgit restore the committed file under core.autocrlf=true and a smudge driver', () => {
+      it('Then the smudge received the CRs and the expanded $Id: <oid> $, in both tools', async () => {
+        // Arrange
+        const committed = async (slug: string): Promise<string> => {
+          const repo = await repoWithFilter(slug);
+          runGit(['-C', repo, 'config', 'user.name', 'Ada']);
+          runGit(['-C', repo, 'config', 'user.email', 'ada@example.com']);
+          runGit(['-C', repo, 'config', 'commit.gpgsign', 'false']);
+          runGit(['-C', repo, 'add', 'f']);
+          runGit(['-C', repo, 'commit', '-q', '-m', 'one']);
+          runGit(['-C', repo, 'config', 'filter.t.smudge', FILTER_FIXTURE.smudge]);
+          runGit(['-C', repo, 'config', 'core.autocrlf', 'true']);
+          await rm(path.join(repo, 'f'));
+          return repo;
+        };
+        const gitRepo = await committed('git-checkout');
+        const tsgitRepo = await committed('tsgit-checkout');
+        const sut = checkout;
+
+        // Act
+        runGit(['-C', gitRepo, 'checkout', '--', 'f']);
+        await sut(createNodeContext({ workDir: tsgitRepo }), { paths: ['f'] });
+
+        // Assert
+        const worktree = async (repo: string) =>
+          enc(new Uint8Array(await readFile(path.join(repo, 'f'))));
+        const oid = git(gitRepo, 'rev-parse', ':f').trim();
+        expect(await worktree(gitRepo)).toBe(`ZRN#Id: ${oid} #RNarRNbRN`);
+        expect(await worktree(tsgitRepo)).toBe(await worktree(gitRepo));
       });
     });
   },

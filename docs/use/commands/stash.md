@@ -15,7 +15,12 @@ interface StashNamespace {
     includeUntracked?: boolean; // also stash untracked files (the U commit)
     keepIndex?: boolean; // leave the staged state intact after saving
   }): Promise<
-    | { kind: 'saved'; stash: ObjectId; message: string }
+    | {
+        kind: 'saved';
+        stash: ObjectId;
+        message: string;
+        eolNotices: ReadonlyArray<EolNotice>; // core.safecrlf=warn; see add.md
+      }
     | { kind: 'no-local-changes' }
   >;
 
@@ -91,6 +96,26 @@ The entry selector is a numeric stack `index` (default `0`, the newest); the
   every `apply`/`pop`, independent of `includeUntracked` and the untracked
   check above.
 
+- **Line-ending conversion on the object writes.** The index, untracked and
+  working-tree objects are hashed through the same check-in conversion as
+  [`add`](add.md#line-ending-conversion-coreautocrlf-coreeol-text-eol-ident)
+  (`core.autocrlf`, `core.eol`, `text`/`eol`/`ident` attributes, clean filter
+  drivers), so a CRLF worktree file under `core.autocrlf=true` is stashed as LF.
+  The raw-size cap (`WORKING_TREE_FILE_TOO_LARGE`, 256 MiB) applies to the file
+  as read, before conversion. Symlink targets are stored verbatim.
+- **`core.safecrlf`.** `warn` (default) collects one `EolNotice`
+  (`{ path, loss, crlf, loneLf }`) per path whose line endings would not round
+  trip, on `eolNotices` of the `saved` result: untracked files first, then the
+  tracked ones in index order. `false` yields `[]`. `true` refuses the push with
+  `EOL_ROUND_TRIP_UNSAFE`. Objects are written in git's order (index commit,
+  untracked, then working tree, one path at a time), so a refusal leaves the
+  same unreachable objects git leaves, and no `refs/stash` entry.
+- **Restore direction.** `apply`/`pop` write the merged result, conflict
+  markers and restored untracked files through the checkout conversion (LF to
+  CRLF, `ident` expansion, smudge filter), reading attributes from the result
+  index. `-X renormalize` is not a stash option; `merge.renormalize=true` makes
+  the apply's 3-way merge renormalise (see [`merge`](merge.md#renormalize)).
+
 ## Examples
 
 ```ts
@@ -126,6 +151,8 @@ await repo.stash.apply({ restoreIndex: true });
   conflicting tracked-merge outcome/conflict path fails the same rules (every
   path in that batch is checked before any of them is written, so a hostile
   path anywhere refuses the whole conflict write, atomically).
+- `EOL_ROUND_TRIP_UNSAFE { path, loss, crlf, loneLf }` — `push` with `core.safecrlf=true` and a file whose line endings would not round trip.
+- `CONFIG_BAD_BOOLEAN_VALUE` — a malformed `core.autocrlf` / `core.safecrlf` (checked by every verb), or `merge.renormalize` on `apply`/`pop`.
 - `INVALID_COMMIT` — `refs/stash` points at a commit that is not a stash entry.
 - `CONFIG_BAD_NUMERIC_VALUE` — a malformed `core.maxTreeDepth` /
   `core.deltaBaseCacheLimit` (the repo-settings class), checked by every verb
@@ -142,5 +169,5 @@ See [`../errors.md`](../errors.md) for the canonical `TsgitError.data.code` list
 - Primitives: [`readObject`](../primitives/read-object.md), [`writeObject`](../primitives/write-object.md)
 - Related commands: [`merge`](merge.md) · [`reset`](reset.md) · [`checkout`](checkout.md)
 - Recipes: [`../recipes.md`](../recipes.md)
-- ADRs: 210–216, 625, 627–628
+- ADRs: 210–216, 625, 627–628, 950, 952–954, 956
 - Roadmap: Phase 21.3

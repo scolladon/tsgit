@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { applySparseCheckout } from '../../../../../src/application/commands/internal/apply-sparse-checkout.js';
+import * as gitattributesMod from '../../../../../src/application/primitives/internal/read-gitattributes.js';
 import { readIndex } from '../../../../../src/application/primitives/read-index.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
@@ -93,6 +94,37 @@ describe('commands/internal/apply-sparse-checkout', () => {
         const byPath = await readBackIndex(ctx);
         expect(byPath.get('docs/b' as FilePath)?.flags.skipWorktree).toBe(true);
         expect(byPath.get('src/a' as FilePath)?.flags.skipWorktree).toBe(false);
+      });
+    });
+  });
+
+  describe('Given several excluded clean files', () => {
+    describe('When applySparseCheckout narrows', () => {
+      it('Then the attribute provider is built as often as for a single excluded file', async () => {
+        // Arrange
+        const seedExcluded = async (excluded: number): Promise<Context> => {
+          const ctx = createMemoryContext();
+          const id = await writeBlob(ctx, 'bbb');
+          const names = Array.from({ length: excluded }, (_, i) => `docs/${i}`);
+          await seedIndex(
+            ctx,
+            names.map((name) => makeEntry(name, id)),
+          );
+          for (const name of names) await seedWorkFile(ctx, name, 'bbb');
+          return ctx;
+        };
+        const sut = applySparseCheckout;
+        const spy = vi.spyOn(gitattributesMod, 'buildCheckinAttributeProvider');
+        await sut(await seedExcluded(1), { matcher: srcOnly });
+        const single = spy.mock.calls.length;
+        spy.mockClear();
+
+        // Act
+        await sut(await seedExcluded(4), { matcher: srcOnly });
+
+        // Assert
+        expect(spy.mock.calls.length).toBe(single);
+        spy.mockRestore();
       });
     });
   });
@@ -456,6 +488,32 @@ describe('commands/internal/apply-sparse-checkout', () => {
         // Assert — it threw a TsgitError, and the lock file was cleaned up by `finally`.
         expect(caught).toBeInstanceOf(TsgitError);
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
+      });
+    });
+  });
+
+  describe("Given index '*.txt eol=crlf' and work tree '*.txt eol=lf'", () => {
+    describe('When a path enters the cone', () => {
+      it('Then it is written CRLF', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const rules = await writeBlob(ctx, '*.txt eol=crlf\n');
+        const fileId = await writeBlob(ctx, 'a\nb\n');
+        const skipped: IndexEntry = {
+          ...makeEntry('src/a.txt', fileId),
+          flags: { ...STAGE0_FLAGS, skipWorktree: true },
+        };
+        await seedIndex(ctx, [makeEntry('.gitattributes', rules), skipped]);
+        await seedWorkFile(ctx, '.gitattributes', '*.txt eol=lf\n');
+        const matcher: SparseMatcher = (path) => path === '.gitattributes' || srcOnly(path);
+        const sut = applySparseCheckout;
+
+        // Act
+        await sut(ctx, { matcher });
+
+        // Assert
+        const written = await ctx.fs.read(`${ctx.layout.workDir}/src/a.txt`);
+        expect(decoder.decode(written)).toBe('a\r\nb\r\n');
       });
     });
   });

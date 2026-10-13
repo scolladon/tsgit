@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
   admitClean,
+  admitWrite,
   releaseClean,
   withCleanOrder,
 } from '../../../../../src/application/primitives/internal/clean-order.js';
@@ -159,6 +160,30 @@ describe('withCleanOrder', () => {
       });
     });
 
+    describe('When a nested scope halts a path', () => {
+      it('Then the outer order admits the later path as usual', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const admitted: FilePath[] = [];
+        const sut = withCleanOrder;
+
+        // Act
+        await sut(
+          ctx,
+          async (outer) => {
+            for (const path of [A, B]) outer.enlist(path);
+            await sut(ctx, async (inner) => inner.halt(A, new Error('nested')), 'write');
+            outer.release(A);
+            await trackWrite(ctx, B, admitted);
+          },
+          'write',
+        );
+
+        // Assert
+        expect(admitted).toEqual([B]);
+      });
+    });
+
     describe('When the scope closes', () => {
       it('Then later admissions on the context are no longer ordered', async () => {
         // Arrange
@@ -192,6 +217,304 @@ describe('withCleanOrder', () => {
 
         // Assert
         expect(admitted).toEqual([A]);
+      });
+    });
+  });
+});
+
+const trackWrite = (
+  ctx: ReturnType<typeof createMemoryContext>,
+  path: FilePath,
+  admitted: FilePath[],
+) =>
+  admitWrite(ctx, path).then(() => {
+    admitted.push(path);
+  });
+
+describe('withCleanOrder in a write span', () => {
+  describe('Given a write span with a, b, c enlisted', () => {
+    describe('When admitWrite(c) and admitWrite(b) are awaited', () => {
+      it('Then b is admitted before c, each only after the previous release', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const admitted: FilePath[] = [];
+        const sut = withCleanOrder;
+
+        // Act
+        await sut(
+          ctx,
+          async (order) => {
+            for (const path of [A, B, C]) order.enlist(path);
+            const third = trackWrite(ctx, C, admitted);
+            const second = trackWrite(ctx, B, admitted);
+            await drain();
+            expect(admitted).toEqual([]);
+            order.release(A);
+            await second;
+            await drain();
+            expect(admitted).toEqual([B]);
+            order.release(B);
+            await third;
+          },
+          'write',
+        );
+
+        // Assert
+        expect(admitted).toEqual([B, C]);
+      });
+    });
+
+    describe('When releaseClean(a) runs before a is written', () => {
+      it('Then b is still waiting', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const admitted: FilePath[] = [];
+        const sut = withCleanOrder;
+
+        // Act
+        await sut(
+          ctx,
+          async (order) => {
+            for (const path of [A, B]) order.enlist(path);
+            await trackWrite(ctx, A, admitted);
+            const second = trackWrite(ctx, B, admitted);
+            releaseClean(ctx, A);
+            await drain();
+            expect(admitted).toEqual([A]);
+            order.release(A);
+            await second;
+          },
+          'write',
+        );
+
+        // Assert
+        expect(admitted).toEqual([A, B]);
+      });
+    });
+
+    describe('When admitClean asks for the admitted path', () => {
+      it('Then it resolves at once', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const admitted: FilePath[] = [];
+        const sut = withCleanOrder;
+
+        // Act
+        await sut(
+          ctx,
+          async (order) => {
+            for (const path of [A, B]) order.enlist(path);
+            await trackWrite(ctx, A, admitted);
+            await track(ctx, A, admitted);
+          },
+          'write',
+        );
+
+        // Assert
+        expect(admitted).toEqual([A, A]);
+      });
+    });
+
+    describe('When b is halted with an error', () => {
+      it('Then the pending waiter and a later admitWrite for c reject with it, a is unaffected', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = withCleanOrder;
+        const failure = new Error('b refused');
+        const outcomes: unknown[] = [];
+
+        // Act
+        await sut(
+          ctx,
+          async (order) => {
+            for (const path of [A, B, C]) order.enlist(path);
+            await admitWrite(ctx, A);
+            const pending = admitWrite(ctx, C).catch((error: unknown) => outcomes.push(error));
+            order.release(A);
+            await admitWrite(ctx, B);
+            order.halt(B, failure);
+            await pending;
+            await admitWrite(ctx, C).catch((error: unknown) => outcomes.push(error));
+            await admitWrite(ctx, B);
+            await admitWrite(ctx, A);
+          },
+          'write',
+        );
+
+        // Assert
+        expect(outcomes).toHaveLength(2);
+        expect(outcomes[0]).toBe(failure);
+        expect(outcomes[1]).toBe(failure);
+      });
+    });
+
+    describe('When a path that was never enlisted is halted', () => {
+      it('Then every enlisted path is still admitted in order', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const admitted: FilePath[] = [];
+        const sut = withCleanOrder;
+
+        // Act
+        await sut(
+          ctx,
+          async (order) => {
+            order.enlist(A);
+            order.halt(C, new Error('unknown'));
+            await trackWrite(ctx, A, admitted);
+          },
+          'write',
+        );
+
+        // Assert
+        expect(admitted).toEqual([A]);
+      });
+    });
+
+    describe('When an earlier path halts after a later one did', () => {
+      it('Then the earlier halt error is the one later paths reject with', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = withCleanOrder;
+        const early = new Error('a refused');
+        const late = new Error('b refused');
+        const outcomes: unknown[] = [];
+
+        // Act
+        await sut(
+          ctx,
+          async (order) => {
+            for (const path of [A, B, C]) order.enlist(path);
+            order.halt(B, late);
+            order.halt(A, early);
+            order.halt(C, new Error('c refused'));
+            await admitWrite(ctx, C).catch((error: unknown) => outcomes.push(error));
+          },
+          'write',
+        );
+
+        // Assert
+        expect(outcomes).toEqual([early]);
+      });
+    });
+
+    describe('When the same path is halted twice', () => {
+      it('Then the first error is the one later paths reject with', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = withCleanOrder;
+        const first = new Error('b refused');
+        const outcomes: unknown[] = [];
+
+        // Act
+        await sut(
+          ctx,
+          async (order) => {
+            for (const path of [A, B, C]) order.enlist(path);
+            order.halt(B, first);
+            order.halt(B, new Error('b refused again'));
+            await admitWrite(ctx, C).catch((error: unknown) => outcomes.push(error));
+          },
+          'write',
+        );
+
+        // Assert
+        expect(outcomes).toEqual([first]);
+      });
+    });
+
+    describe('When a later path halts while an earlier path waits', () => {
+      it('Then the earlier waiter is not rejected and is admitted on release', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = withCleanOrder;
+        const admitted: FilePath[] = [];
+
+        // Act
+        await sut(
+          ctx,
+          async (order) => {
+            for (const path of [A, B, C]) order.enlist(path);
+            await admitWrite(ctx, A);
+            const earlier = trackWrite(ctx, B, admitted);
+            order.halt(C, new Error('c refused'));
+            order.release(A);
+            await earlier;
+          },
+          'write',
+        );
+
+        // Assert
+        expect(admitted).toEqual([B]);
+      });
+    });
+
+    describe('When a waiting path is itself halted', () => {
+      it('Then its own waiter is not rejected and is admitted on release', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = withCleanOrder;
+        const admitted: FilePath[] = [];
+
+        // Act
+        await sut(
+          ctx,
+          async (order) => {
+            for (const path of [A, B]) order.enlist(path);
+            await admitWrite(ctx, A);
+            const waiting = trackWrite(ctx, B, admitted);
+            order.halt(B, new Error('b refused'));
+            order.release(A);
+            await waiting;
+          },
+          'write',
+        );
+
+        // Assert
+        expect(admitted).toEqual([B]);
+      });
+    });
+
+    describe('When admitClean asks for a path behind a halted one', () => {
+      it('Then it resolves at once, the turn having been taken at admitWrite', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const admitted: FilePath[] = [];
+        const sut = withCleanOrder;
+
+        // Act
+        await sut(
+          ctx,
+          async (order) => {
+            for (const path of [A, B]) order.enlist(path);
+            order.halt(A, new Error('a refused'));
+            await track(ctx, B, admitted);
+          },
+          'write',
+        );
+
+        // Assert
+        expect(admitted).toEqual([B]);
+      });
+    });
+  });
+
+  describe('Given a clean span', () => {
+    describe('When admitWrite asks for a path behind an unreleased one', () => {
+      it('Then it resolves at once', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const admitted: FilePath[] = [];
+        const sut = withCleanOrder;
+
+        // Act
+        await sut(ctx, async (order) => {
+          for (const path of [A, B]) order.enlist(path);
+          await trackWrite(ctx, B, admitted);
+        });
+
+        // Assert
+        expect(admitted).toEqual([B]);
       });
     });
   });

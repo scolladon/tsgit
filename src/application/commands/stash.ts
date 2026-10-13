@@ -9,7 +9,13 @@
  *   kind:    equivalent-under-readback
  *   format:  git-index-tree-state
  */
-import { noInitialCommit, stashApplyWouldOverwrite } from '../../domain/commands/error.js';
+import {
+  noInitialCommit,
+  stashApplyWouldOverwrite,
+  workingTreeFileTooLarge,
+} from '../../domain/commands/error.js';
+import type { EolSettings } from '../../domain/eol/crlf-action.js';
+import type { EolNotice } from '../../domain/eol/crlf-conversion.js';
 import { TsgitError } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
@@ -21,14 +27,25 @@ import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
 import { applyMergeToWorktree, mergeTreesToTree } from '../primitives/apply-merge-to-worktree.js';
 import { buildIndexFromTree } from '../primitives/build-index-from-tree.js';
-import { compareWorkingTreeEntry } from '../primitives/compare-working-tree-entry.js';
+import {
+  compareWorkingTreeEntry,
+  type WorkingTreeComparison,
+} from '../primitives/compare-working-tree-entry.js';
 import { createCommit } from '../primitives/create-commit.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { hashBlob } from '../primitives/hash-blob.js';
+import { limiterFor } from '../primitives/internal/concurrency.js';
+import { convertToGit } from '../primitives/internal/convert-blob.js';
 import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
+import { lazily } from '../primitives/internal/lazily.js';
 import { pathIsOccupied } from '../primitives/internal/path-occupied.js';
-import { maybeBuildAttributeProvider } from '../primitives/internal/read-gitattributes.js';
+import {
+  type AttributeProvider,
+  attributeBlobLookup,
+  buildAttributeProvider,
+  buildCheckinAttributeProvider,
+} from '../primitives/internal/read-gitattributes.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import {
   assertNoPendingOperation,
@@ -40,13 +57,15 @@ import {
 import { createLeadingPathScanner } from '../primitives/internal/symlinked-leading-path.js';
 import { stage0Entry } from '../primitives/internal/synthetic-index-entry.js';
 import {
-  removeWorkingTreeFile,
-  writeWorkingTreeFileStream,
-} from '../primitives/internal/write-working-tree-file.js';
+  createWorkingTreeWriter,
+  type WorkingTreeWriter,
+} from '../primitives/internal/write-converted-entry.js';
+import { removeWorkingTreeFile } from '../primitives/internal/write-working-tree-file.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { resolveReflogIdentity } from '../primitives/reflog-identity.js';
+import { readEolSettings, resolveConversion } from '../primitives/resolve-conversion.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import {
   dropStashEntry,
@@ -57,6 +76,7 @@ import {
   type StashStackEntry,
 } from '../primitives/stash-ref.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
+import { MAX_WORKING_TREE_BLOB_BYTES } from '../primitives/types.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { acquireIndexLock } from './internal/index-update.js';
@@ -78,7 +98,12 @@ export interface StashPushInput {
 }
 
 export type StashPushResult =
-  | { readonly kind: 'saved'; readonly stash: ObjectId; readonly message: string }
+  | {
+      readonly kind: 'saved';
+      readonly stash: ObjectId;
+      readonly message: string;
+      readonly eolNotices: ReadonlyArray<EolNotice>;
+    }
   | { readonly kind: 'no-local-changes' };
 
 const REASON_NOT_A_STASH_COMMIT = 'ref does not point at a stash commit';
@@ -120,100 +145,189 @@ const resolveBase = async (ctx: Context, head: HeadState): Promise<BaseState> =>
   };
 };
 
+/** What converts a path on its way into the repository: its attributes and the eol settings. */
+interface ConversionScope {
+  readonly provider: AttributeProvider;
+  readonly settings: EolSettings;
+}
+
+interface HashedFile {
+  readonly id: ObjectId;
+  readonly mode: ReturnType<typeof deriveWorkingMode>;
+  readonly notice?: EolNotice;
+}
+
+const buildConversionScope = async (ctx: Context): Promise<ConversionScope> => ({
+  provider: await buildCheckinAttributeProvider(ctx),
+  settings: await readEolSettings(ctx),
+});
+
+/** The blob bytes git stores for a work-tree file: symlink targets verbatim, files cleaned. */
+const cleanedContent = async (
+  ctx: Context,
+  abs: string,
+  request: HashRequest,
+): Promise<{ readonly bytes: Uint8Array; readonly notice?: EolNotice }> => {
+  const { path, stat, scope, indexBlob } = request;
+  // The cap binds the raw file: conversion must not run on bytes add would refuse.
+  if (stat.size > MAX_WORKING_TREE_BLOB_BYTES) {
+    throw workingTreeFileTooLarge(path, stat.size, MAX_WORKING_TREE_BLOB_BYTES);
+  }
+  if (stat.isSymbolicLink) return { bytes: new TextEncoder().encode(await ctx.fs.readlink(abs)) };
+  const conversion = await resolveConversion(ctx, scope.provider, path, scope.settings, {
+    eagerSectionValidation: true,
+  });
+  return convertToGit(ctx, {
+    path,
+    bytes: await ctx.fs.read(abs),
+    conversion,
+    route: 'write',
+    settings: scope.settings,
+    ...(indexBlob !== undefined && { indexBlob }),
+  });
+};
+
+interface HashRequest {
+  readonly path: FilePath;
+  readonly stat: FileStat;
+  readonly scope: ConversionScope;
+  /** The stage-0 blob, for git's index-CRLF rule; absent for untracked files. */
+  readonly indexBlob?: ObjectId;
+}
+
 const hashFileAt = async (
   ctx: Context,
   workDir: string,
-  path: FilePath,
-  stat: FileStat,
-): Promise<{ readonly id: ObjectId; readonly mode: ReturnType<typeof deriveWorkingMode> }> => {
-  const abs = joinPath(workDir, path);
-  const content = stat.isSymbolicLink
-    ? new TextEncoder().encode(await ctx.fs.readlink(abs))
-    : await ctx.fs.read(abs);
-  const id = await hashBlob(ctx, content, { write: true });
-  return { id, mode: deriveWorkingMode(stat) };
+  request: HashRequest,
+): Promise<HashedFile> => {
+  const { bytes, notice } = await cleanedContent(ctx, joinPath(workDir, request.path), request);
+  const id = await hashBlob(ctx, bytes, { write: true });
+  const mode = deriveWorkingMode(request.stat);
+  return notice === undefined ? { id, mode } : { id, mode, notice };
 };
 
 interface WorkingTreeProjection {
   readonly entries: ReadonlyArray<IndexEntry>;
-  readonly dirty: boolean;
+  readonly eolNotices: ReadonlyArray<EolNotice>;
 }
 
-/** Project the index's stage-0 entries onto their working-tree content (the W tree). */
-const projectWorkingTree = async (
+interface TrackedEntry {
+  readonly entry: IndexEntry;
+  readonly state: WorkingTreeComparison;
+}
+
+/** Compare every stage-0 entry with its work-tree file, without hashing anything for the stash. */
+const classifyTracked = async (
   ctx: Context,
-  workDir: string,
   index: GitIndex,
-): Promise<WorkingTreeProjection> => {
-  const entries: IndexEntry[] = [];
-  let dirty = false;
-  const provider = await maybeBuildAttributeProvider(ctx);
+  provider: AttributeProvider,
+): Promise<ReadonlyArray<TrackedEntry>> => {
+  const tracked: TrackedEntry[] = [];
   for (const entry of index.entries) {
     // Stryker disable next-line ConditionalExpression: equivalent — a non-conflicted index (the only state stash push reaches) carries no stage!=0 entries, so this skip is never taken; the `if(true)` variant that drops every entry is killed by the W-tree-content tests.
     if (entry.flags.stage !== 0) continue;
     // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — a non-sparse index has no skip-worktree entries, so this verbatim-keep branch is never taken; the `if(true)` variant (keep stale id instead of re-hashing) is killed by the modified-content tests.
     if (entry.flags.skipWorktree) {
-      entries.push(entry);
+      tracked.push({ entry, state: 'unchanged' });
       continue;
     }
     const cmp = await compareWorkingTreeEntry(ctx, entry, provider);
-    if (cmp === 'absent') {
-      dirty = true;
-      continue;
-    }
-    if (cmp === 'unchanged') {
+    tracked.push({ entry, state: cmp });
+  }
+  return tracked;
+};
+
+/** Project the classified entries onto their working-tree content (the W tree). */
+const projectWorkingTree = async (
+  ctx: Context,
+  workDir: string,
+  tracked: ReadonlyArray<TrackedEntry>,
+  scope: ConversionScope,
+): Promise<WorkingTreeProjection> => {
+  const entries: IndexEntry[] = [];
+  const eolNotices: EolNotice[] = [];
+  for (const { entry, state } of tracked) {
+    if (state === 'absent') continue;
+    if (state === 'unchanged') {
       entries.push(entry);
       continue;
     }
-    dirty = true;
     const stat = await ctx.fs.lstat(joinPath(workDir, entry.path));
-    const { id, mode } = await hashFileAt(ctx, workDir, entry.path, stat);
+    const { id, mode, notice } = await hashFileAt(ctx, workDir, {
+      path: entry.path,
+      stat,
+      scope,
+      indexBlob: entry.id,
+    });
+    if (notice !== undefined) eolNotices.push(notice);
     entries.push(stage0Entry(entry.path, id, mode));
   }
-  return { entries, dirty };
+  return { entries, eolNotices };
 };
 
 interface UntrackedProjection {
   readonly paths: ReadonlyArray<FilePath>;
   readonly entries: ReadonlyArray<IndexEntry>;
+  readonly eolNotices: ReadonlyArray<EolNotice>;
 }
 
-/** The index's tree, the work tree projected over it, and — when asked — the untracked files. */
-const snapshotLocalChanges = async (
-  ctx: Context,
-  workDir: string,
-  opts: StashPushInput,
-): Promise<{
+interface UntrackedFile {
+  readonly path: FilePath;
+  readonly stat: FileStat;
+}
+
+/** What `stash push` found to save, before any object is written for it. */
+interface LocalChanges {
   readonly iTree: ObjectId;
-  readonly working: WorkingTreeProjection;
-  readonly untracked: UntrackedProjection;
-}> => {
+  readonly scope: ConversionScope;
+  readonly tracked: ReadonlyArray<TrackedEntry>;
+  readonly untrackedFiles: ReadonlyArray<UntrackedFile>;
+}
+
+const findLocalChanges = async (ctx: Context, opts: StashPushInput): Promise<LocalChanges> => {
   const index = await readIndex(ctx);
   const iTree = await synthesizeTreeFromIndex(ctx, index.entries);
-  const working = await projectWorkingTree(ctx, workDir, index);
-  const untracked = opts.includeUntracked
-    ? await collectUntracked(ctx, workDir, index)
-    : { paths: [], entries: [] };
-  return { iTree, working, untracked };
+  const scope = await buildConversionScope(ctx);
+  const tracked = await classifyTracked(ctx, index, scope.provider);
+  const untrackedFiles = opts.includeUntracked ? await listUntracked(ctx, index) : [];
+  return { iTree, scope, tracked, untrackedFiles };
 };
 
-/** Collect the untracked (non-ignored) working files as synthetic index entries. */
-const collectUntracked = async (
+const hasLocalChanges = (found: LocalChanges, base: BaseState): boolean =>
+  found.iTree !== base.bTree ||
+  found.tracked.some(({ state }) => state !== 'unchanged') ||
+  found.untrackedFiles.length > 0;
+
+const listUntracked = async (
   ctx: Context,
-  workDir: string,
   index: GitIndex,
-): Promise<UntrackedProjection> => {
+): Promise<ReadonlyArray<UntrackedFile>> => {
   const tracked = new Set(index.entries.map((e) => e.path));
   const ignore = await buildRepoIgnorePredicate(ctx);
-  const paths: FilePath[] = [];
-  const entries: IndexEntry[] = [];
+  const files: UntrackedFile[] = [];
   for await (const { path, stat } of walkWorkingTree(ctx, { ignore })) {
     if (tracked.has(path)) continue;
-    const { id, mode } = await hashFileAt(ctx, workDir, path, await stat());
+    files.push({ path, stat: await stat() });
+  }
+  return files;
+};
+
+const hashUntracked = async (
+  ctx: Context,
+  workDir: string,
+  files: ReadonlyArray<UntrackedFile>,
+  scope: ConversionScope,
+): Promise<UntrackedProjection> => {
+  const paths: FilePath[] = [];
+  const entries: IndexEntry[] = [];
+  const eolNotices: EolNotice[] = [];
+  for (const { path, stat } of files) {
+    const { id, mode, notice } = await hashFileAt(ctx, workDir, { path, stat, scope });
+    if (notice !== undefined) eolNotices.push(notice);
     entries.push(stage0Entry(path, id, mode));
     paths.push(path);
   }
-  return { paths, entries };
+  return { paths, entries, eolNotices };
 };
 
 /**
@@ -260,16 +374,19 @@ const stashAndReset = async (
 
   const lock = await acquireIndexLock(ctx);
   try {
-    const { iTree, working, untracked } = await snapshotLocalChanges(ctx, workDir, opts);
-    const stagedDirty = iTree !== base.bTree;
-    const hasUntracked = untracked.paths.length > 0;
-    if (!stagedDirty && !working.dirty && !hasUntracked) {
-      return { kind: 'no-local-changes' };
-    }
-    const w = await createStashCommits(ctx, { base, iTree, working, untracked, opts });
+    const found = await findLocalChanges(ctx, opts);
+    if (!hasLocalChanges(found, base)) return { kind: 'no-local-changes' };
+    const { iTree } = found;
+    const w = await createStashCommits(ctx, workDir, { base, found, opts });
+    const { untracked, working } = w;
     await record(w);
     await resetAfterPush(ctx, lock, { base, iTree, untracked, opts });
-    return { kind: 'saved', stash: w.stash, message: w.message };
+    return {
+      kind: 'saved',
+      stash: w.stash,
+      message: w.message,
+      eolNotices: [...untracked.eolNotices, ...working.eolNotices],
+    };
   } finally {
     await lock.release();
   }
@@ -277,27 +394,37 @@ const stashAndReset = async (
 
 interface CommitInputs {
   readonly base: BaseState;
-  readonly iTree: ObjectId;
-  readonly working: WorkingTreeProjection;
-  readonly untracked: UntrackedProjection;
+  readonly found: LocalChanges;
   readonly opts: StashPushInput;
 }
 
-/** Build the index/untracked/WIP commit trio and return the W commit + its message. */
-const createStashCommits = async (
+interface StashWrite {
+  readonly stash: ObjectId;
+  readonly message: string;
+  readonly working: WorkingTreeProjection;
+  readonly untracked: UntrackedProjection;
+}
+
+interface StashCommitWriter {
+  readonly index: (tree: ObjectId) => Promise<ObjectId>;
+  readonly untracked: (tree: ObjectId) => Promise<ObjectId>;
+  readonly stash: (tree: ObjectId, parents: ReadonlyArray<ObjectId>) => Promise<ObjectId>;
+  readonly stashMessage: string;
+}
+
+const stashCommitWriter = async (
   ctx: Context,
-  inputs: CommitInputs,
-): Promise<{ readonly stash: ObjectId; readonly message: string }> => {
-  const { base, iTree, working, untracked, opts } = inputs;
+  base: BaseState,
+  opts: StashPushInput,
+): Promise<StashCommitWriter> => {
   const identity = await resolveReflogIdentity(ctx);
   const branch = stashBranchLabel(base.branchRef);
   const abbrev = abbreviateOid(base.b);
-  const subject = base.subject;
-  const wipMsg =
+  const { subject } = base;
+  const stashMessage =
     opts.message !== undefined
       ? onMessage(branch, opts.message)
       : wipMessage(branch, abbrev, subject);
-
   const mkCommit = (
     tree: ObjectId,
     parents: ReadonlyArray<ObjectId>,
@@ -311,17 +438,35 @@ const createStashCommits = async (
       message,
       extraHeaders: [],
     });
+  return {
+    index: (tree) => mkCommit(tree, [base.b], indexMessage(branch, abbrev, subject)),
+    untracked: (tree) => mkCommit(tree, [], untrackedMessage(branch, abbrev, subject)),
+    stash: (tree, parents) => mkCommit(tree, parents, stashMessage),
+    stashMessage,
+  };
+};
 
-  const i = await mkCommit(iTree, [base.b], indexMessage(branch, abbrev, subject));
+/**
+ * Write the index, untracked and WIP commits in git's order, so a refusal while hashing
+ * leaves the same unreachable commits git leaves.
+ */
+const createStashCommits = async (
+  ctx: Context,
+  workDir: string,
+  inputs: CommitInputs,
+): Promise<StashWrite> => {
+  const { base, found, opts } = inputs;
+  const writer = await stashCommitWriter(ctx, base, opts);
+  const i = await writer.index(found.iTree);
+  const untracked = await hashUntracked(ctx, workDir, found.untrackedFiles, found.scope);
+  const u =
+    untracked.paths.length === 0
+      ? []
+      : [await writer.untracked(await synthesizeTreeFromIndex(ctx, untracked.entries))];
+  const working = await projectWorkingTree(ctx, workDir, found.tracked, found.scope);
   const wTree = await synthesizeTreeFromIndex(ctx, working.entries);
-  if (untracked.paths.length === 0) {
-    const stash = await mkCommit(wTree, [base.b, i], wipMsg);
-    return { stash, message: wipMsg };
-  }
-  const uTree = await synthesizeTreeFromIndex(ctx, untracked.entries);
-  const u = await mkCommit(uTree, [], untrackedMessage(branch, abbrev, subject));
-  const stash = await mkCommit(wTree, [base.b, i, u], wipMsg);
-  return { stash, message: wipMsg };
+  const stash = await writer.stash(wTree, [base.b, i, ...u]);
+  return { stash, message: writer.stashMessage, working, untracked };
 };
 
 export type { StashDropResult } from '../primitives/stash-ref.js';
@@ -427,6 +572,22 @@ const untrackedOverwrites = async (
   return clobbered;
 };
 
+/** git restores untracked files through a checkout of a temporary index holding exactly them. */
+const untrackedWriter = (
+  ctx: Context,
+  entries: ReadonlyMap<FilePath, { readonly id: ObjectId }>,
+): WorkingTreeWriter =>
+  createWorkingTreeWriter(ctx, {
+    provider: lazily(() =>
+      buildAttributeProvider(ctx, {
+        kind: 'index-first',
+        index: attributeBlobLookup([...entries].map(([path, { id }]) => ({ path, id }))),
+      }),
+    ),
+    settings: lazily(() => readEolSettings(ctx)),
+    limiter: limiterFor(ctx, 'cpuBound'),
+  });
+
 /** Check out the untracked tree into the working tree (clean-apply path only). */
 const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> => {
   const flat = await flattenTree(ctx, uTree);
@@ -441,8 +602,9 @@ const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> =>
   // untracked tree with many paths under the same symlinked directory costs
   // one `lstat` per distinct directory, not one per path.
   const scanner = createLeadingPathScanner(ctx);
+  const writer = untrackedWriter(ctx, flat.entries);
   for (const [path, entry] of flat.entries) {
-    await writeWorkingTreeFileStream(ctx, path, entry.id, scanner);
+    await writer.writeBlob(path, entry.id, entry.mode, scanner);
   }
 };
 

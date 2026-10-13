@@ -33,6 +33,7 @@ import {
   configValueInvalid,
   emptyCommitMessage,
   emptyPathspec,
+  eolRoundTripUnsafe,
   fastForwardMultipleBranches,
   formatPlaceholderUnsupported,
   fsckCannotDemote,
@@ -1436,6 +1437,30 @@ describe('domain commands error — config factory data', () => {
     });
   });
 
+  describe('Given the eolRoundTripUnsafe helper', () => {
+    describe.each([
+      ['lf-to-crlf', { path: 'b2' as FilePath, loss: 'lf-to-crlf' as const, crlf: 0, loneLf: 2 }],
+      [
+        'crlf-to-lf',
+        { path: 'a/c.txt' as FilePath, loss: 'crlf-to-lf' as const, crlf: 3, loneLf: 1 },
+      ],
+    ])('When built from a %s round trip', (_loss, roundTrip) => {
+      it('Then data carries each field', () => {
+        // Arrange + Act
+        const result = eolRoundTripUnsafe(roundTrip);
+
+        // Assert
+        const data = result.data;
+        expect(data.code).toBe('EOL_ROUND_TRIP_UNSAFE');
+        if (data.code !== 'EOL_ROUND_TRIP_UNSAFE') return;
+        expect(data.path).toBe(roundTrip.path);
+        expect(data.loss).toBe(roundTrip.loss);
+        expect(data.crlf).toBe(roundTrip.crlf);
+        expect(data.loneLf).toBe(roundTrip.loneLf);
+      });
+    });
+  });
+
   describe('Given the configBadBooleanValue helper', () => {
     describe("When called with key='core.bare', source='/abs/.git/config', value='maybe'", () => {
       it('Then data carries code, key, source, and value individually', () => {
@@ -1996,6 +2021,26 @@ describe('domain commands error — extractDetail message formatting', () => {
         line: 9,
       },
       "CONFIG_BAD_DATE_VALUE: bad date config value 'bogus' for 'gc.reflogexpire' in file /repo/.git/config at line 9",
+    ],
+    [
+      {
+        code: 'EOL_ROUND_TRIP_UNSAFE',
+        path: 'b2' as FilePath,
+        loss: 'lf-to-crlf',
+        crlf: 0,
+        loneLf: 2,
+      },
+      'EOL_ROUND_TRIP_UNSAFE: LF would be replaced by CRLF in b2',
+    ],
+    [
+      {
+        code: 'EOL_ROUND_TRIP_UNSAFE',
+        path: 'a/c.txt' as FilePath,
+        loss: 'crlf-to-lf',
+        crlf: 3,
+        loneLf: 1,
+      },
+      'EOL_ROUND_TRIP_UNSAFE: CRLF would be replaced by LF in a/c.txt',
     ],
     [
       {

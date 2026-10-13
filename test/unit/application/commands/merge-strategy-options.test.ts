@@ -84,6 +84,32 @@ const PATIENCE_MERGE = 'a\na\na\nb\n<<<<<<< HEAD\na\na\n=======\n>>>>>>> side\nc
 
 const SIMILAR = LINES.replace('1\n', 'one\n');
 
+/** Base `f` in CRLF; `side` adds `* text=auto` and renormalizes `f`, editing line 1 or not; main edits line 3 or deletes `f`. */
+const renormalizingHistory = async (
+  config: string,
+  mainChange: 'edit' | 'delete',
+): Promise<Context> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+  await write(ctx, 'f', 'a\r\nb\r\nc\r\n');
+  await commitAll(ctx, ['f'], 'base');
+  await branchCreate(ctx, { name: 'side' });
+  await checkout(ctx, { rev: 'side' });
+  await write(ctx, '.gitattributes', '* text=auto\n');
+  await write(ctx, 'f', mainChange === 'edit' ? 'A\nb\nc\n' : 'a\nb\nc\n');
+  await commitAll(ctx, ['.gitattributes', 'f'], 'side');
+  await checkout(ctx, { rev: 'main' });
+  if (mainChange === 'delete') {
+    await rm(ctx, ['f']);
+    await commit(ctx, { message: 'main', author });
+    return ctx;
+  }
+  await write(ctx, 'f', 'a\r\nb\r\nC\r\n');
+  await commitAll(ctx, ['f'], 'main');
+  return ctx;
+};
+
 const errorData = (run: Promise<unknown>): Promise<unknown> =>
   run.then(
     () => undefined,
@@ -170,24 +196,92 @@ describe('merge strategy options', () => {
     });
   });
 
-  describe('Given an option git knows that tsgit does not run yet', () => {
+  describe.each([
+    ['-X renormalize', '', ['renormalize'], 'merge'],
+    ['no option', '', [], 'conflict'],
+    ['merge.renormalize=true', '[merge]\n\trenormalize = true\n', [], 'merge'],
+    [
+      'merge.renormalize=true and -X no-renormalize',
+      '[merge]\n\trenormalize = true\n',
+      ['no-renormalize'],
+      'conflict',
+    ],
+    [
+      'merge.renormalize=false and -X renormalize',
+      '[merge]\n\trenormalize = false\n',
+      ['renormalize'],
+      'merge',
+    ],
+  ] as const)('Given %s', (_label, config, strategyOptions, expected) => {
     describe('When ort merges', () => {
-      it('Then it refuses as unsupported', async () => {
+      it(`Then the merge is a ${expected}`, async () => {
         // Arrange
-        const ctx = await renameVsEdit(LINES);
+        const ctx = await renormalizingHistory(config, 'edit');
         const sut = mergeRun;
 
         // Act
-        const result = await errorData(
-          sut(ctx, { rev: 'side', strategyOptions: ['renormalize'], author }),
-        );
+        const result = await sut(ctx, { rev: 'side', strategyOptions, author });
 
         // Assert
-        expect(result).toEqual({
-          code: 'UNSUPPORTED_OPERATION',
-          operation: 'merge',
-          reason: '-Xrenormalize',
+        expect(result.kind).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given the CRLF history and -X renormalize', () => {
+    describe('When ort merges', () => {
+      it('Then f holds the line-1 edit and the line-3 edit in LF', async () => {
+        // Arrange
+        const ctx = await renormalizingHistory('', 'edit');
+        const sut = mergeRun;
+
+        // Act
+        await sut(ctx, { rev: 'side', strategyOptions: ['renormalize'], author });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f`)).toBe('A\nb\nC\n');
+      });
+    });
+  });
+
+  describe.each([[[]], [['renormalize']]] as const)(
+    'Given merge.renormalize = foo and -X %j',
+    (strategyOptions) => {
+      describe('When ort merges', () => {
+        it('Then it refuses the unparsable boolean', async () => {
+          // Arrange
+          const ctx = await renormalizingHistory('[merge]\n\trenormalize = foo\n', 'edit');
+          const sut = mergeRun;
+
+          // Act
+          const result = (await errorData(sut(ctx, { rev: 'side', strategyOptions, author }))) as {
+            readonly code: string;
+            readonly key: string;
+            readonly value: string;
+          };
+
+          // Assert
+          expect(result.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+          expect(result.key).toBe('merge.renormalize');
+          expect(result.value).toBe('foo');
         });
+      });
+    },
+  );
+
+  describe('Given the history where side only renormalizes f and main deletes it', () => {
+    describe('When ort merges with -X renormalize', () => {
+      it('Then the merge is clean and f stays deleted', async () => {
+        // Arrange
+        const ctx = await renormalizingHistory('', 'delete');
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', strategyOptions: ['renormalize'], author });
+
+        // Assert
+        expect(result.kind).toBe('merge');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/f`)).toBe(false);
       });
     });
   });

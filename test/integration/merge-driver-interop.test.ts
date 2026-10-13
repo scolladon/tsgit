@@ -143,6 +143,45 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — custom merge drivers', () => 
     });
   });
 
+  describe('Given an external driver and a side that only renormalizes its line endings', () => {
+    describe('When merging with -X renormalize on both tools', () => {
+      it('Then the driver receives the normalized bytes of all three sides, as under git', async () => {
+        // Arrange — base and ours keep CRLF, theirs adds `text=auto` to the mapping and edits line 1 in LF.
+        configureDriverBoth('cat %O %A %B > driver-input.txt');
+        await writeBoth('.gitattributes', 'data.txt merge=custom\n');
+        await writeBoth('data.txt', 'a\r\nb\r\nc\r\n');
+        await commitBoth('base', ['.gitattributes', 'data.txt']);
+        await branchBoth('theirs');
+        await writeBoth('.gitattributes', 'data.txt text=auto merge=custom\n');
+        await writeBoth('data.txt', 'A\nb\nc\n');
+        await commitBoth('theirs', ['.gitattributes', 'data.txt']);
+        await checkoutBoth('main');
+        await writeBoth('data.txt', 'a\r\nb\r\nC\r\n');
+        await commitBoth('ours', ['data.txt']);
+        await repo.dispose();
+        repo = await openRepository({ cwd: pair.ours });
+
+        // Act
+        runGit(['-C', pair.peer, 'merge', '--no-ff', '-X', 'renormalize', '-m', 'm', 'theirs'], {
+          env: COMMIT_ENV,
+        });
+        await repo.merge.run({
+          rev: 'theirs',
+          message: 'm',
+          strategyOptions: ['renormalize'],
+          author: AUTHOR,
+          committer: AUTHOR,
+        });
+
+        // Assert
+        const received = await read(pair.peer, 'driver-input.txt');
+        expect(received).toBe('a\nb\nc\na\nb\nC\nA\nb\nc\n');
+        expect(await read(pair.ours, 'driver-input.txt')).toBe(received);
+        expect(stageOf(pair.ours)).toBe(stageOf(pair.peer));
+      });
+    });
+  });
+
   describe('Given an external driver that conflicts (exit ≠ 0)', () => {
     describe('When merging on both tools', () => {
       it('Then both leave the driver output + stage 1/2/3 index, matching git', async () => {

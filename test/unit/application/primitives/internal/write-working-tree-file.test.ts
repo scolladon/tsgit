@@ -10,6 +10,7 @@ import {
   writeWorkingTreeFile,
   writeWorkingTreeFileStream,
 } from '../../../../../src/application/primitives/internal/write-working-tree-file.js';
+import type { ChunkTransform } from '../../../../../src/domain/eol/chunk-transform.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/index.js';
@@ -847,6 +848,87 @@ describe('write-working-tree-file', () => {
           // Assert
           expect((failure as TsgitError).data.code).toBe('OPERATION_ABORTED');
           expect(await ctx.fs.exists(fullPath)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a transform', () => {
+      const upperWithTail: ChunkTransform = {
+        push: (chunk) => [encode(decode(chunk).toUpperCase())],
+        flush: () => [encode('!')],
+      };
+
+      describe('When writeStreamedBlob writes a loose blob', () => {
+        it('Then the file holds the transformed bytes, flush included', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const id = await writeRawObjectBytes(ctx, 'blob', encode('abc'));
+          const fullPath = `${ctx.layout.workDir}/t.txt`;
+          const sut = writeStreamedBlob;
+
+          // Act
+          await sut(ctx, fullPath, id, FILE_MODE.REGULAR, upperWithTail);
+
+          // Assert
+          expect(decode(await ctx.fs.read(fullPath))).toBe('ABC!');
+        });
+      });
+
+      describe('When writeWorkingTreeFileStream writes it', () => {
+        it('Then the transform reaches the writer', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const id = await writeRawObjectBytes(ctx, 'blob', encode('abc'));
+          const sut = writeWorkingTreeFileStream;
+
+          // Act
+          await sut(ctx, 'f.txt' as FilePath, id, undefined, upperWithTail);
+
+          // Assert
+          expect(decode(await ctx.fs.read(`${ctx.layout.workDir}/f.txt`))).toBe('ABC!');
+        });
+      });
+
+      describe('When writeWorkingTreeEntryStream writes it', () => {
+        it('Then the transform reaches the writer', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const id = await writeRawObjectBytes(ctx, 'blob', encode('abc'));
+          const sut = writeWorkingTreeEntryStream;
+
+          // Act
+          await sut(ctx, 'e.txt' as FilePath, id, FILE_MODE.REGULAR, undefined, upperWithTail);
+
+          // Assert
+          expect(decode(await ctx.fs.read(`${ctx.layout.workDir}/e.txt`))).toBe('ABC!');
+        });
+      });
+    });
+
+    describe('Given a corrupt loose blob and a transform', () => {
+      describe('When the blob is written', () => {
+        it('Then the empty file is left', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const id = await writeRawObjectBytes(ctx, 'blob', encode('honest'));
+          await ctx.fs.write(
+            `${ctx.layout.gitDir}/objects/${id.slice(0, 2)}/${id.slice(2)}`,
+            new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]),
+          );
+          const fullPath = `${ctx.layout.workDir}/c.txt`;
+          const transform: ChunkTransform = { push: (chunk) => [chunk], flush: () => [] };
+          let failure: unknown;
+
+          // Act
+          try {
+            await writeStreamedBlob(ctx, fullPath, id, FILE_MODE.REGULAR, transform);
+          } catch (error) {
+            failure = error;
+          }
+
+          // Assert
+          expect((failure as TsgitError).data).toMatchObject({ code: 'DECOMPRESS_FAILED' });
+          expect((await ctx.fs.read(fullPath)).length).toBe(0);
         });
       });
     });

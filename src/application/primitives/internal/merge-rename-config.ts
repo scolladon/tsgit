@@ -113,3 +113,13 @@ export const readConflictStyle = async (ctx: Context): Promise<ConflictStyle | u
   if (!CONFLICT_STYLES.has(value)) throw configUnknownValue(key, value, source, line);
   return value as ConflictStyle;
 };
+
+/** git's `git_config_bool` on `merge.renormalize`: valueless is true, an unparsable value dies. */
+export const readMergeRenormalize = async (ctx: Context): Promise<boolean | undefined> => {
+  const entry = await findLastEntry(ctx, 'merge', 'renormalize');
+  if (entry === undefined) return undefined;
+  if (entry.value === null) return true;
+  const parsed = parseGitBoolean(entry.value);
+  if (!parsed.ok) throw configBadBooleanValue(entry.key, entry.source, entry.value);
+  return parsed.value;
+};

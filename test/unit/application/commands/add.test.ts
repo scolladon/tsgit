@@ -5,11 +5,16 @@ import { add, addAll as addAllInternal } from '../../../../src/application/comma
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import * as boolConfigGuard from '../../../../src/application/primitives/internal/boolean-config-guard.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
+import { serializeAndHash } from '../../../../src/application/primitives/internal/serialize-and-hash.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { MAX_WORKING_TREE_BLOB_BYTES } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import { type GitIndex, STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
+import {
+  type GitIndex,
+  type IndexEntry,
+  STAGE0_FLAGS,
+} from '../../../../src/domain/git-index/index.js';
 import { permissionDenied, TsgitError } from '../../../../src/domain/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { type FilePath, ObjectId } from '../../../../src/domain/objects/object-id.js';
@@ -294,7 +299,7 @@ describe('add', () => {
         const result = await add(ctx, ['li*/x.ts']);
 
         // Assert
-        expect(result).toEqual({ added: [], modified: [], removed: [] });
+        expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
       });
     });
   });
@@ -627,7 +632,7 @@ describe('add', () => {
         const result = await add(ctx, [], { all: true });
 
         // Assert
-        expect(result).toEqual({ added: [], modified: [], removed: [] });
+        expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
       });
     });
   });
@@ -2625,7 +2630,7 @@ describe('Given a work tree with nothing to add', () => {
       const result = await sut(ctx, ['.']);
 
       // Assert
-      expect(result).toEqual({ added: [], modified: [], removed: [] });
+      expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
     });
   });
 });
@@ -2672,6 +2677,1064 @@ describe('Given a same-size rewrite in the tick of the index write, then an inde
       // Assert
       const staged = (await readIndex(ctx)).entries.find((entry) => entry.path === 'm.txt');
       expect(dec((await readBlob(ctx, staged?.id as ObjectId)).content)).toBe('m2\n');
+    });
+  });
+});
+
+const configure = (ctx: Awaited<ReturnType<typeof seedFreshRepo>>, text: string) =>
+  ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, text);
+
+const stagedText = async (ctx: Awaited<ReturnType<typeof seedFreshRepo>>, path: string) => {
+  const entry = (await readIndex(ctx)).entries.find((e) => e.path === path);
+  return dec((await readBlob(ctx, entry?.id as ObjectId)).content);
+};
+
+const blobExists = async (ctx: Awaited<ReturnType<typeof seedFreshRepo>>, content: string) => {
+  const { id } = await serializeAndHash(ctx, {
+    type: 'blob',
+    id: '' as ObjectId,
+    content: enc(content),
+  });
+  return ctx.fs.exists(`${ctx.layout.gitDir}/objects/${id.slice(0, 2)}/${id.slice(2)}`);
+};
+
+describe('Given core.autocrlf input and a CRLF file', () => {
+  describe.each([
+    { label: 'literal', paths: ['a.txt'], opts: {} },
+    { label: 'bulk', paths: [] as string[], opts: { all: true } },
+  ])('When add stages it ($label)', ({ paths, opts }) => {
+    it('Then the staged blob is LF', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ 'a.txt': 'x\r\ny\r\n' });
+      await configure(ctx, '[core]\n\tautocrlf = input\n');
+      const sut = add;
+
+      // Act
+      await sut(ctx, paths, opts);
+
+      // Assert
+      expect(await stagedText(ctx, 'a.txt')).toBe('x\ny\n');
+    });
+  });
+});
+
+describe('Given core.autocrlf true, a LF file b2 and a CRLF file a1', () => {
+  describe.each([
+    { label: 'literal', paths: ['a1', 'b2'], opts: {} },
+    { label: 'bulk', paths: [] as string[], opts: { all: true } },
+  ])('When add runs ($label)', ({ paths, opts }) => {
+    it('Then eolNotices holds the LF to CRLF notice of b2 only', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ a1: 'x\r\ny\r\n', b2: 'x\ny\n' });
+      await configure(ctx, '[core]\n\tautocrlf = true\n');
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, paths, opts);
+
+      // Assert
+      expect(result.eolNotices).toEqual([{ path: 'b2', loss: 'lf-to-crlf', crlf: 0, loneLf: 2 }]);
+    });
+  });
+});
+
+describe('Given core.autocrlf true and core.safecrlf false', () => {
+  describe('When add stages a LF file', () => {
+    it('Then eolNotices is empty', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ b2: 'x\ny\n' });
+      await configure(ctx, '[core]\n\tautocrlf = true\n\tsafecrlf = false\n');
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, ['b2']);
+
+      // Assert
+      expect(result.eolNotices).toEqual([]);
+    });
+  });
+});
+
+describe('Given core.autocrlf true and a mixed line ending file', () => {
+  describe('When add stages it', () => {
+    it('Then the notice reports the LF to CRLF loss', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ m: 'a\r\nb\n' });
+      await configure(ctx, '[core]\n\tautocrlf = true\n');
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, ['m']);
+
+      // Assert
+      expect(result.eolNotices).toEqual([{ path: 'm', loss: 'lf-to-crlf', crlf: 1, loneLf: 1 }]);
+    });
+  });
+});
+
+describe('Given core.safecrlf true', () => {
+  describe('When add a1 b2 c3 runs literally and b2 would not round-trip', () => {
+    it('Then it refuses b2, leaves the index alone, keeps a1 blob and never hashes c3', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ a1: 'one\n', b2: 'x\r\ny\n', c3: 'three\n' });
+      await configure(ctx, '[core]\n\tautocrlf = input\n\tsafecrlf = true\n');
+      const sut = add;
+      let caught: unknown;
+
+      // Act
+      try {
+        await sut(ctx, ['a1', 'b2', 'c3']);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      expect(data).toEqual({
+        code: 'EOL_ROUND_TRIP_UNSAFE',
+        path: 'b2',
+        loss: 'crlf-to-lf',
+        crlf: 1,
+        loneLf: 1,
+      });
+      expect((await readIndex(ctx)).entries).toEqual([]);
+      expect(await blobExists(ctx, 'one\n')).toBe(true);
+      expect(await blobExists(ctx, 'three\n')).toBe(false);
+    });
+  });
+});
+
+/** Tracked `b` (committed as `one`), now LF-modified, and untracked LF `a`, under autocrlf true. */
+const seedTrackedAndUntracked = async (safecrlf: string) => {
+  const ctx = await seedFreshRepo({ a: 'x\ny\n', b: 'one\n' });
+  await add(ctx, ['b']);
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b`, 'p\nq\nr\n');
+  await configure(ctx, `[core]\n\tautocrlf = true\n\tsafecrlf = ${safecrlf}\n`);
+  return ctx;
+};
+
+const STAGE_ORDER_CASES = [
+  { label: 'literal', paths: ['a', 'b'], opts: {} },
+  { label: 'bulk', paths: [] as string[], opts: { all: true } },
+];
+
+describe('Given core.safecrlf true, an untracked LF file a and a tracked LF-modified file b', () => {
+  describe.each(STAGE_ORDER_CASES)('When add stages both ($label)', ({ paths, opts }) => {
+    it('Then it refuses b, the tracked path git stages first, and never writes a', async () => {
+      // Arrange
+      const ctx = await seedTrackedAndUntracked('true');
+      const sut = add;
+      let caught: unknown;
+
+      // Act
+      try {
+        await sut(ctx, paths, opts);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'EOL_ROUND_TRIP_UNSAFE',
+        path: 'b',
+        loss: 'lf-to-crlf',
+        crlf: 0,
+        loneLf: 3,
+      });
+      expect(await blobExists(ctx, 'x\ny\n')).toBe(false);
+    });
+  });
+});
+
+describe('Given core.safecrlf warn, an untracked LF file a and a tracked LF-modified file b', () => {
+  describe.each(STAGE_ORDER_CASES)('When add stages both ($label)', ({ paths, opts }) => {
+    it('Then the notices name b before a', async () => {
+      // Arrange
+      const ctx = await seedTrackedAndUntracked('warn');
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, paths, opts);
+
+      // Assert
+      expect(result.eolNotices).toEqual([
+        { path: 'b', loss: 'lf-to-crlf', crlf: 0, loneLf: 3 },
+        { path: 'a', loss: 'lf-to-crlf', crlf: 0, loneLf: 2 },
+      ]);
+    });
+  });
+});
+
+describe('Given core.safecrlf warn and tracked \uFFFD.txt and 😀.txt, both LF-modified', () => {
+  describe('When add({ all: true }) stages them', () => {
+    it('Then the notices follow git byte order, the BMP path before the astral one', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ '\uFFFD.txt': 'one\n', '😀.txt': 'one\n' });
+      await add(ctx, ['.']);
+      await configure(ctx, '[core]\n\tautocrlf = true\n\tsafecrlf = warn\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/\uFFFD.txt`, 'x\ny\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/😀.txt`, 'x\ny\n');
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, [], { all: true });
+
+      // Assert
+      expect(result.eolNotices.map((notice) => notice.path)).toEqual(['\uFFFD.txt', '😀.txt']);
+    });
+  });
+});
+
+/** A git-written index lists paths in byte order, which tsgit's own writer (code-unit order) never produces for these two names. */
+const writeByteOrderedIndex = async (
+  ctx: Awaited<ReturnType<typeof seedFreshRepo>>,
+  firstPath: string,
+  secondPath: string,
+): Promise<void> => {
+  const single = async (path: string): Promise<Uint8Array> => {
+    const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${path}`);
+    const id = await writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: enc('one\n') });
+    const entry = indexEntryFromStat(stat, FILE_MODE.REGULAR, id, path as FilePath);
+    const index: GitIndex = {
+      version: 2,
+      entries: [entry],
+      extensions: [],
+      trailerSha: new Uint8Array(0),
+    };
+    return serializeIndexFixtureAsync(index, ctx);
+  };
+  const HEADER_BYTES = 12;
+  const TRAILER_BYTES = 20;
+  const [first, second] = [await single(firstPath), await single(secondPath)];
+  const recordOf = (file: Uint8Array) => file.slice(HEADER_BYTES, file.length - TRAILER_BYTES);
+  const body = new Uint8Array([
+    ...first.slice(0, HEADER_BYTES),
+    ...recordOf(first),
+    ...recordOf(second),
+  ]);
+  new DataView(body.buffer).setUint32(8, 2);
+  const hex = await ctx.hash.hashHex(body);
+  const trailer = Uint8Array.from(hex.match(/../g) ?? [], (byte) => Number.parseInt(byte, 16));
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, new Uint8Array([...body, ...trailer]));
+};
+
+describe('Given a git-written index listing \uFFFD.txt before 😀.txt, both modified', () => {
+  describe('When add(["*.txt"]) stages them', () => {
+    it('Then modified lists them sorted by code unit, not in index order', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ '\uFFFD.txt': 'one\n', '😀.txt': 'one\n' });
+      await writeByteOrderedIndex(ctx, '\uFFFD.txt', '😀.txt');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/\uFFFD.txt`, 'two\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/😀.txt`, 'two\n');
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, ['*.txt']);
+
+      // Assert
+      expect(result.modified).toEqual(['😀.txt', '\uFFFD.txt']);
+    });
+  });
+});
+
+describe('Given core.safecrlf true, a tracked LF-modified file b outside the pathspec and an untracked LF file sub/a inside it', () => {
+  describe('When add stages the directory', () => {
+    it('Then it refuses sub/a and never hashes b, which the walk does not yield', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ 'sub/a': 'x\ny\n', b: 'one\n' });
+      await add(ctx, ['b']);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b`, 'p\nq\nr\n');
+      await configure(ctx, '[core]\n\tautocrlf = true\n\tsafecrlf = true\n');
+      const sut = add;
+      let caught: unknown;
+
+      // Act
+      try {
+        await sut(ctx, ['sub']);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'EOL_ROUND_TRIP_UNSAFE',
+        path: 'sub/a',
+        loss: 'lf-to-crlf',
+        crlf: 0,
+        loneLf: 2,
+      });
+      expect(await blobExists(ctx, 'p\nq\nr\n')).toBe(false);
+    });
+  });
+});
+
+describe('Given a committed CRLF text blob and text=auto', () => {
+  describe('When add re-stages it with a new CRLF line', () => {
+    it('Then the blob keeps CRLF', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ 'f.txt': 'a\r\n' });
+      await add(ctx, ['f.txt']);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* text=auto\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'a\r\nbb\r\n');
+      const sut = add;
+
+      // Act
+      await sut(ctx, ['f.txt']);
+
+      // Assert
+      expect(await stagedText(ctx, 'f.txt')).toBe('a\r\nbb\r\n');
+    });
+  });
+});
+
+describe('Given a symlink whose target holds CRLF under text eol=crlf ident', () => {
+  describe('When add stages it', () => {
+    it('Then the blob is the raw target', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ '.gitattributes': '* text eol=crlf ident\n' });
+      await ctx.fs.symlink('t\r\nx', `${ctx.layout.workDir}/link`);
+      const sut = add;
+
+      // Act
+      await sut(ctx, ['link']);
+
+      // Assert
+      expect(await stagedText(ctx, 'link')).toBe('t\r\nx');
+    });
+  });
+});
+
+describe('Given .gitattributes tracked in the index only and a CRLF work-tree file', () => {
+  describe('When add stages the file', () => {
+    it('Then the index attributes convert it to LF', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ '.gitattributes': '* text\n', 'f.txt': 'a\r\nb\r\n' });
+      await add(ctx, ['.gitattributes']);
+      await ctx.fs.rm(`${ctx.layout.workDir}/.gitattributes`);
+      const sut = add;
+
+      // Act
+      await sut(ctx, ['f.txt']);
+
+      // Assert
+      expect(await stagedText(ctx, 'f.txt')).toBe('a\nb\n');
+    });
+  });
+});
+
+const RENORMALIZE = { renormalize: true } as const;
+
+const seedCommittedCrlf = async (
+  workingTree: Readonly<Record<string, string>>,
+  attributes = '* text=auto\n',
+) => {
+  const ctx = await seedFreshRepo(workingTree);
+  await add(ctx, Object.keys(workingTree));
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, attributes);
+  return ctx;
+};
+
+type RenormalizeCtx = Awaited<ReturnType<typeof seedFreshRepo>>;
+
+const CRLF = 'a\r\nb\r\n';
+
+/** Replaces the index with entries that keep their CRLF blob whatever the worktree holds. */
+const indexCrlfEntries = async (
+  ctx: RenormalizeCtx,
+  specs: ReadonlyArray<{ path: string; override?: Partial<IndexEntry> }>,
+): Promise<ObjectId> => {
+  const id = await writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: enc(CRLF) });
+  const entries: IndexEntry[] = [];
+  for (const { path, override } of specs) {
+    const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${path}`);
+    entries.push({
+      ...indexEntryFromStat(stat, FILE_MODE.REGULAR, id, path as FilePath),
+      ...override,
+    });
+  }
+  const index: GitIndex = { version: 2, entries, extensions: [], trailerSha: new Uint8Array(0) };
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, await serializeIndexFixtureAsync(index, ctx));
+  return id;
+};
+
+const idsByPath = async (ctx: RenormalizeCtx) =>
+  Object.fromEntries((await readIndex(ctx)).entries.map((entry) => [entry.path, entry.id]));
+
+describe('add renormalize option', () => {
+  describe('Given a committed CRLF blob under text=auto and an untouched worktree', () => {
+    describe('When add renormalize "."', () => {
+      it('Then the entry blob is LF and modified lists it', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': 'a\r\nb\r\n' });
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        expect(await stagedText(ctx, 'f.txt')).toBe('a\nb\n');
+        expect(result).toEqual({
+          added: [],
+          modified: ['f.txt'],
+          removed: [],
+          eolNotices: [],
+        });
+      });
+    });
+  });
+
+  describe('Given a skip-worktree entry holding a CRLF blob', () => {
+    describe('When add renormalize "."', () => {
+      it('Then the entry is untouched', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        const id = await indexCrlfEntries(ctx, [
+          { path: 'f.txt', override: { flags: { ...STAGE0_FLAGS, skipWorktree: true } } },
+        ]);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        expect(await idsByPath(ctx)).toEqual({ 'f.txt': id });
+        expect(result.modified).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an unmerged stage-2 entry holding a CRLF blob', () => {
+    describe('When add renormalize "."', () => {
+      it('Then the entry is untouched', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        const id = await indexCrlfEntries(ctx, [
+          { path: 'f.txt', override: { flags: { ...STAGE0_FLAGS, stage: 2 } } },
+        ]);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        const [entry] = (await readIndex(ctx)).entries;
+        expect({ id: entry?.id, stage: entry?.flags.stage }).toEqual({ id, stage: 2 });
+        expect(result.modified).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a gitlink entry', () => {
+    describe('When add renormalize "."', () => {
+      it('Then the entry is untouched', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        const id = await indexCrlfEntries(ctx, [
+          { path: 'f.txt', override: { mode: FILE_MODE.GITLINK } },
+        ]);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        const [entry] = (await readIndex(ctx)).entries;
+        expect({ id: entry?.id, mode: entry?.mode }).toEqual({ id, mode: FILE_MODE.GITLINK });
+        expect(result.modified).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given two CRLF entries and a pathspec naming one', () => {
+    describe('When add renormalize "f.txt"', () => {
+      it('Then only the named entry is re-cleaned', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF, 'g.txt': CRLF });
+        const id = await indexCrlfEntries(ctx, [{ path: 'f.txt' }, { path: 'g.txt' }]);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['f.txt'], RENORMALIZE);
+
+        // Assert
+        expect(result.modified).toEqual(['f.txt']);
+        expect((await idsByPath(ctx))['g.txt']).toBe(id);
+        expect(await stagedText(ctx, 'f.txt')).toBe('a\nb\n');
+      });
+    });
+  });
+
+  describe('Given an untracked file next to a tracked one', () => {
+    describe('When add renormalize "."', () => {
+      it('Then the untracked file is not added', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/u.txt`, 'u\n');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        expect(result.added).toEqual([]);
+        expect(Object.keys(await idsByPath(ctx))).toEqual(['f.txt']);
+      });
+    });
+  });
+
+  describe('Given a tracked CRLF file', () => {
+    describe('When add renormalize "."', () => {
+      it('Then the worktree bytes are unchanged', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        const sut = add;
+
+        // Act
+        await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f.txt`)).toBe(CRLF);
+      });
+    });
+  });
+
+  describe('Given core.safecrlf true and a lossy committed file', () => {
+    describe('When add renormalize "."', () => {
+      it('Then it neither refuses nor reports a notice', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': 'x\r\ny\n' });
+        await configure(ctx, '[core]\n\tautocrlf = input\n\tsafecrlf = true\n');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        expect(result.eolNotices).toEqual([]);
+        expect(await stagedText(ctx, 'f.txt')).toBe('x\ny\n');
+      });
+    });
+  });
+
+  describe('Given a tracked file gone from the worktree', () => {
+    describe('When add renormalize "."', () => {
+      it('Then it refuses with PATHSPEC_NO_MATCH naming the file and keeps the index', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF, 'g.txt': CRLF });
+        const before = await idsByPath(ctx);
+        await ctx.fs.rm(`${ctx.layout.workDir}/g.txt`);
+        const sut = add;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, ['.'], RENORMALIZE);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'PATHSPEC_NO_MATCH',
+          pattern: 'g.txt',
+        });
+        expect(await idsByPath(ctx)).toEqual(before);
+      });
+    });
+  });
+
+  describe('Given a literal naming no path at all', () => {
+    describe('When add renormalize "nope"', () => {
+      it('Then it refuses with PATHSPEC_NO_MATCH', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        const sut = add;
+
+        // Act & Assert
+        await expectError(() => sut(ctx, ['nope'], RENORMALIZE), 'PATHSPEC_NO_MATCH');
+      });
+    });
+  });
+
+  describe('Given a literal naming an untracked file on disk', () => {
+    describe('When add renormalize "u.txt"', () => {
+      it('Then it succeeds and stages nothing', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/u.txt`, 'u\n');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['u.txt'], RENORMALIZE);
+
+        // Assert
+        expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
+      });
+    });
+  });
+
+  describe('Given no pathspec and no all', () => {
+    describe('When add renormalize', () => {
+      it('Then it throws EMPTY_PATHSPEC', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        const sut = add;
+
+        // Act & Assert
+        await expectError(() => sut(ctx, [], RENORMALIZE), 'EMPTY_PATHSPEC');
+      });
+    });
+  });
+
+  describe('Given all and renormalize', () => {
+    describe('When add runs with no pathspec', () => {
+      it('Then every tracked file is re-cleaned and untracked ones are not added', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/u.txt`, 'u\n');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, [], { all: true, renormalize: true });
+
+        // Assert
+        expect(result).toEqual({
+          added: [],
+          modified: ['f.txt'],
+          removed: [],
+          eolNotices: [],
+        });
+      });
+    });
+  });
+
+  describe('Given a tracked symlink retargeted to a CRLF-holding target', () => {
+    describe('When add renormalize "."', () => {
+      it('Then the new target is re-hashed raw and modified lists the link', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo();
+        await ctx.fs.symlink('old', `${ctx.layout.workDir}/link`);
+        await add(ctx, ['link']);
+        await ctx.fs.rm(`${ctx.layout.workDir}/link`);
+        await ctx.fs.symlink('t\r\nx', `${ctx.layout.workDir}/link`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* text=auto\n');
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        expect(result.modified).toEqual(['link']);
+        expect(await stagedText(ctx, 'link')).toBe('t\r\nx');
+      });
+    });
+  });
+
+  describe('Given remote.origin.promisor holds a value git refuses', () => {
+    describe('When add renormalize "."', () => {
+      it('Then it throws CONFIG_BAD_BOOLEAN_VALUE naming remote.origin.promisor', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        await configure(ctx, '[remote "origin"]\n\tpromisor = maybe\n');
+        __resetConfigCacheForTests();
+        const sut = add;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, ['.'], RENORMALIZE);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as { code: string; key: string; value: string };
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('remote.origin.promisor');
+        expect(data.value).toBe('maybe');
+      });
+    });
+  });
+
+  describe('Given an executable index entry over a non-executable worktree file', () => {
+    describe('When add renormalize "."', () => {
+      it('Then the entry mode follows the worktree and modified lists it', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF }, '');
+        await indexCrlfEntries(ctx, [{ path: 'f.txt', override: { mode: FILE_MODE.EXECUTABLE } }]);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        expect(result.modified).toEqual(['f.txt']);
+        expect((await readIndex(ctx)).entries[0]?.mode).toBe(FILE_MODE.REGULAR);
+      });
+    });
+  });
+
+  describe('Given a tracked file over MAX_WORKING_TREE_BLOB_BYTES', () => {
+    describe('When add renormalize "."', () => {
+      it('Then it throws WORKING_TREE_FILE_TOO_LARGE', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'big.bin': 'x' });
+        const baseLstat = ctx.fs.lstat;
+        const hostileFs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop !== 'lstat') return Reflect.get(target, prop, receiver);
+            return async (path: string) => {
+              const real = await baseLstat(path);
+              return path.endsWith('/big.bin')
+                ? { ...real, size: MAX_WORKING_TREE_BLOB_BYTES + 1 }
+                : real;
+            };
+          },
+        });
+        const sut = add;
+
+        // Act
+        const err = await expectError(
+          () => sut({ ...ctx, fs: hostileFs }, ['.'], RENORMALIZE),
+          'WORKING_TREE_FILE_TOO_LARGE',
+        );
+
+        // Assert
+        expect(err.data).toEqual({
+          code: 'WORKING_TREE_FILE_TOO_LARGE',
+          path: 'big.bin',
+          size: MAX_WORKING_TREE_BLOB_BYTES + 1,
+          limit: MAX_WORKING_TREE_BLOB_BYTES,
+        });
+      });
+    });
+  });
+
+  describe('Given an index that cannot be read under the lock', () => {
+    describe('When add renormalize "."', () => {
+      it('Then the read failure propagates', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        const indexPath = `${ctx.layout.gitDir}/index`;
+        const hostileFs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop !== 'stat') return Reflect.get(target, prop, receiver);
+            return async (path: string) => {
+              const locked = await target.exists(`${indexPath}.lock`);
+              if (path === indexPath && locked) throw permissionDenied(path);
+              return target.stat(path);
+            };
+          },
+        });
+        const sut = add;
+
+        // Act & Assert
+        await expectError(
+          () => sut({ ...ctx, fs: hostileFs }, ['.'], RENORMALIZE),
+          'PERMISSION_DENIED',
+        );
+      });
+    });
+  });
+
+  describe('Given an LF blob under text=auto', () => {
+    describe('When add renormalize "."', () => {
+      it('Then nothing is modified', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': 'a\nb\n' });
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        expect(result.modified).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an empty index and nothing tracked', () => {
+    describe('When add renormalize "."', () => {
+      it('Then it succeeds and stages nothing, as git never refuses the whole tree', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({});
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        expect(result).toEqual({ added: [], modified: [], removed: [], eolNotices: [] });
+      });
+    });
+  });
+
+  describe('Given a tracked file gone from the worktree', () => {
+    describe('When add renormalize "." refuses', () => {
+      it('Then the index lock is released', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        await ctx.fs.rm(`${ctx.layout.workDir}/f.txt`);
+        const sut = add;
+        await sut(ctx, ['.'], RENORMALIZE).catch(() => undefined);
+
+        // Act
+        const lockHeld = await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`);
+
+        // Assert
+        expect(lockHeld).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a tracked file whose worktree stat is exactly at the size cap', () => {
+    describe('When add renormalize "."', () => {
+      it('Then it accepts the file, the cap refusing only strictly larger ones', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': CRLF });
+        const baseLstat = ctx.fs.lstat;
+        const cappedFs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop !== 'lstat') return Reflect.get(target, prop, receiver);
+            return async (path: string) => {
+              const real = await baseLstat(path);
+              return path.endsWith('/f.txt')
+                ? { ...real, size: MAX_WORKING_TREE_BLOB_BYTES }
+                : real;
+            };
+          },
+        });
+        const sut = add;
+
+        // Act
+        const result = await sut({ ...ctx, fs: cappedFs }, ['.'], RENORMALIZE);
+
+        // Assert
+        expect(result.modified).toEqual(['f.txt']);
+      });
+    });
+  });
+
+  describe('Given a tracked regular .gitmodules now a symlink', () => {
+    describe('When add renormalize "."', () => {
+      it('Then it refuses with INVALID_INDEX_ENTRY and keeps the index', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ '.gitmodules': CRLF });
+        const before = await idsByPath(ctx);
+        await ctx.fs.rm(`${ctx.layout.workDir}/.gitmodules`);
+        await ctx.fs.symlink('target', `${ctx.layout.workDir}/.gitmodules`);
+        const sut = add;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['.'], RENORMALIZE), 'INVALID_INDEX_ENTRY');
+
+        // Assert
+        expect(err.data).toMatchObject({ reason: "'.gitmodules' must not be a symlink" });
+        expect(await idsByPath(ctx)).toEqual(before);
+      });
+    });
+  });
+
+  describe('Given a tracked file whose content is already clean but whose index stat is stale', () => {
+    describe('When add renormalize "."', () => {
+      it('Then the entry takes the worktree file stat, as git replaces it', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': 'a\nb\n' });
+        const [indexed] = (await readIndex(ctx)).entries;
+        const stale = { ...(indexed as IndexEntry), mtimeSeconds: 1, fileSize: 1 };
+        const index: GitIndex = {
+          version: 2,
+          entries: [stale],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        };
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync(index, ctx),
+        );
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/f.txt`);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        const [entry] = (await readIndex(ctx)).entries;
+        expect({ mtime: entry?.mtimeSeconds, size: entry?.fileSize }).toEqual({
+          mtime: Math.floor(stat.mtimeMs / 1000),
+          size: stat.size,
+        });
+        expect(result.modified).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given tracked d/f.txt', () => {
+    describe('When add renormalize "d/"', () => {
+      it('Then the directory-only literal matches and re-cleans the file', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'd/f.txt': CRLF });
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['d/'], RENORMALIZE);
+
+        // Assert
+        expect(result.modified).toEqual(['d/f.txt']);
+      });
+    });
+  });
+});
+
+const putBlobText = (ctx: RenormalizeCtx, text: string): Promise<ObjectId> =>
+  writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: enc(text) });
+
+/** An unmerged f.txt recording `base` at stage 1, `ours` at stage 2 and `theirs` at stage 3; the size never matches the worktree file, so the stat shortcut stays out. */
+const seedUnmergedBlobs = async (
+  ctx: RenormalizeCtx,
+  { base, ours, theirs }: { base: string; ours: string; theirs: string },
+) => {
+  const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/f.txt`);
+  const entryAt = async (text: string, stage: 1 | 2 | 3): Promise<IndexEntry> => ({
+    ...indexEntryFromStat(
+      stat,
+      FILE_MODE.REGULAR,
+      await putBlobText(ctx, text),
+      'f.txt' as FilePath,
+    ),
+    fileSize: 0,
+    flags: { ...STAGE0_FLAGS, stage },
+  });
+  const entries = [await entryAt(base, 1), await entryAt(ours, 2), await entryAt(theirs, 3)];
+  const index: GitIndex = { version: 2, entries, extensions: [], trailerSha: new Uint8Array(0) };
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, await serializeIndexFixtureAsync(index, ctx));
+};
+
+describe('add on an unmerged path under text=auto', () => {
+  describe.each([
+    {
+      title: 'LF base, CRLF ours and LF theirs',
+      base: 'a\n',
+      ours: 'a\r\n',
+      theirs: 'a\n',
+      expected: 'x\r\ny\r\n',
+    },
+    {
+      title: 'CRLF base, LF ours and CRLF theirs',
+      base: 'a\r\n',
+      ours: 'a\n',
+      theirs: 'a\r\n',
+      expected: 'x\ny\n',
+    },
+  ])('Given a CRLF worktree file with $title', ({ base, ours, theirs, expected }) => {
+    describe('When add stages f.txt', () => {
+      it('Then the index-CRLF rule reads the stage-2 blob as git does', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({
+          'f.txt': 'x\r\ny\r\n',
+          '.gitattributes': '* text=auto\n',
+        });
+        await seedUnmergedBlobs(ctx, { base, ours, theirs });
+        const sut = add;
+
+        // Act
+        await sut(ctx, ['f.txt']);
+
+        // Assert
+        expect(await stagedText(ctx, 'f.txt')).toBe(expected);
+      });
+    });
+  });
+});
+
+/** Replaces the index with one unmerged stage-2 entry per name, each recording `text`. */
+const seedUnmergedPaths = async (
+  ctx: RenormalizeCtx,
+  names: ReadonlyArray<string>,
+  text: string,
+) => {
+  const id = await putBlobText(ctx, text);
+  const entries: IndexEntry[] = [];
+  for (const name of names) {
+    const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${name}`);
+    entries.push({
+      ...indexEntryFromStat(stat, FILE_MODE.REGULAR, id, name as FilePath),
+      fileSize: 0,
+      flags: { ...STAGE0_FLAGS, stage: 2 },
+    });
+  }
+  const index: GitIndex = { version: 2, entries, extensions: [], trailerSha: new Uint8Array(0) };
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, await serializeIndexFixtureAsync(index, ctx));
+};
+
+describe('add on many unmerged paths under text=auto', () => {
+  describe('Given 20 unmerged CRLF paths and a CRLF worktree', () => {
+    describe('When add stages them all', () => {
+      it('Then the index is read once, not once per unmerged path', async () => {
+        // Arrange
+        const names = Array.from({ length: 20 }, (_, i) => `f${i}.txt`);
+        const base = await seedFreshRepo({
+          ...Object.fromEntries(names.map((name) => [name, 'x\r\ny\r\n'])),
+          '.gitattributes': '* text=auto\n',
+        });
+        await seedUnmergedPaths(base, names, 'a\r\n');
+        const { ctx, calls } = instrumentedContext(base);
+        const sut = add;
+
+        // Act
+        await sut(ctx, names);
+
+        // Assert
+        const indexLoads = calls()
+          .filter((c) => c.path === `${ctx.layout.gitDir}/index`)
+          .map((c) => c.method)
+          .filter((method) => method === 'stat' || method === 'read');
+        expect(indexLoads).toEqual(['stat', 'read']);
+        expect(await stagedText(ctx, 'f7.txt')).toBe('x\r\ny\r\n');
+      });
+    });
+  });
+});
+
+describe('add on a path recorded as a gitlink that is now a CRLF file', () => {
+  describe('Given core.autocrlf true and a gitlink id that names a CRLF blob', () => {
+    describe('When add stages f.txt', () => {
+      it('Then the gitlink is no index blob, git reading none, and the CRLF is converted', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'f.txt': 'x\r\ny\r\n' });
+        await configure(ctx, '[core]\n\tautocrlf = true\n');
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/f.txt`);
+        const gitlink: IndexEntry = {
+          ...indexEntryFromStat(
+            stat,
+            FILE_MODE.GITLINK,
+            await putBlobText(ctx, 'a\r\n'),
+            'f.txt' as FilePath,
+          ),
+          fileSize: 0,
+        };
+        const index: GitIndex = {
+          version: 2,
+          entries: [gitlink],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        };
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync(index, ctx),
+        );
+        const sut = add;
+
+        // Act
+        await sut(ctx, ['f.txt']);
+
+        // Assert
+        expect(await stagedText(ctx, 'f.txt')).toBe('x\ny\n');
+      });
     });
   });
 });

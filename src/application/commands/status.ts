@@ -27,7 +27,7 @@ import { withFilterProcessPool } from '../primitives/internal/filter-process-poo
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
   type AttributeProvider,
-  maybeBuildAttributeProvider,
+  buildCheckinAttributeProvider,
 } from '../primitives/internal/read-gitattributes.js';
 import { assertOperationalRepositorySettingsFirst } from '../primitives/internal/repo-state.js';
 import { readHeadTree } from '../primitives/read-head-tree.js';
@@ -176,16 +176,15 @@ interface ScannedTree {
   readonly untracked: ReadonlyArray<FilePath>;
 }
 
-/** Build the attribute provider once per status invocation when a command
- *  runner is wired. When absent, the provider is undefined and every
- *  compareWorkingTreeDelta call takes the raw-bytes path. */
+/** Build the check-in attribute provider once per status invocation. It is always
+ *  present; a path whose attributes resolve to the identity conversion costs one lookup. */
 const scanStatusTree = async (
   ctx: Context,
   index: GitIndex,
   tracked: TrackedEntries,
 ): Promise<ScannedTree> => {
   const tracker = createGranularityTracker(ctx.progress, STATUS_SCAN_OP, STATUS_SCAN_GRANULARITY);
-  const provider = await maybeBuildAttributeProvider(ctx);
+  const provider = await buildCheckinAttributeProvider(ctx, index);
   const { staged } = tracked.grouped;
   const workingMap = await scanWorkingTree(ctx, staged, tracker, provider, index.indexMtime);
   const untracked = await scanUntracked(ctx, tracked.trackedPaths);

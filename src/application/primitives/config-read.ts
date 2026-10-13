@@ -47,6 +47,9 @@ export { parseGitBoolean, parseGitInt, tokenizeConfig };
 /** `push.default` mode; `tracking` is a deprecated alias canonicalized to `upstream` at parse time. */
 export type PushDefaultMode = 'nothing' | 'current' | 'upstream' | 'simple' | 'matching';
 
+const CORE_EOL_VALUES = ['lf', 'crlf', 'native'] as const;
+type CoreEol = (typeof CORE_EOL_VALUES)[number];
+
 /**
  * Subset of `.git/config` that v1 commands consume. Only fields actually used by
  * commands are typed — the parser ignores everything else (lenient, like git itself).
@@ -57,6 +60,12 @@ export interface ParsedConfig {
     readonly excludesFile?: string;
     readonly attributesFile?: string;
     readonly logAllRefUpdates?: boolean | 'always';
+    /** `core.autocrlf` — `input` is the third state beyond git's boolean grammar. */
+    readonly autoCrlf?: boolean | 'input';
+    /** `core.eol` — absent when unset, valueless, empty or unrecognised. */
+    readonly eol?: CoreEol;
+    /** `core.safecrlf` — `warn` is the third state beyond git's boolean grammar. */
+    readonly safeCrlf?: boolean | 'warn';
     readonly hooksPath?: string;
     /** `core.notesRef` — default notes ref when neither explicit arg nor `GIT_NOTES_REF` is set. */
     readonly notesRef?: string;
@@ -1456,6 +1465,9 @@ type MutableCore = {
   excludesFile?: string;
   attributesFile?: string;
   logAllRefUpdates?: boolean | 'always';
+  autoCrlf?: boolean | 'input';
+  eol?: CoreEol;
+  safeCrlf?: boolean | 'warn';
   hooksPath?: string;
   notesRef?: string;
   sparseCheckout?: boolean;
@@ -1616,7 +1628,12 @@ const CORE_BOOLEAN_FIELDS: Readonly<
   sparsecheckoutcone: 'sparseCheckoutCone',
 };
 
-const CORE_BOOLEAN_KEYS = new Set(['logallrefupdates', ...Object.keys(CORE_BOOLEAN_FIELDS)]);
+const CORE_BOOLEAN_KEYS = new Set([
+  'logallrefupdates',
+  'autocrlf',
+  'safecrlf',
+  ...Object.keys(CORE_BOOLEAN_FIELDS),
+]);
 
 /** Handles the `[core]` keys whose value is boolean-typed (or the `always` tri-state). */
 const applyCoreBooleanEntry = (
@@ -1628,12 +1645,29 @@ const applyCoreBooleanEntry = (
     const parsed = parseLogAllRefUpdates(value);
     return parsed === undefined ? undefined : { ...core, logAllRefUpdates: parsed };
   }
+  if (lowered === 'autocrlf') {
+    const parsed = parseBooleanOrLiteral(value, 'input');
+    return parsed === undefined ? undefined : { ...core, autoCrlf: parsed };
+  }
+  if (lowered === 'safecrlf') {
+    const parsed = parseBooleanOrLiteral(value, 'warn');
+    return parsed === undefined ? undefined : { ...core, safeCrlf: parsed };
+  }
   const field = CORE_BOOLEAN_FIELDS[lowered];
   // Stryker disable next-line ConditionalExpression: equivalent — callers gate on CORE_BOOLEAN_KEYS, which is derived from CORE_BOOLEAN_FIELDS plus the tri-state handled above, so no key without a field mapping can reach this line; the branch exists only to narrow the Record lookup's type.
   if (field === undefined) return undefined;
   const parsed = parseGitBoolean(value);
   if (!parsed.ok) return undefined;
   return { ...core, [field]: parsed.value };
+};
+
+/** git sets `core_eol` on every `core.eol` line: an unrecognised, empty or valueless one unsets an earlier value. */
+const applyCoreEol = (core: MutableCore, value: string | null): MutableCore => {
+  const lowered = value?.toLowerCase();
+  const eol = CORE_EOL_VALUES.find((candidate) => candidate === lowered);
+  if (eol !== undefined) return { ...core, eol };
+  const { eol: _unset, ...rest } = core;
+  return rest;
 };
 
 /**
@@ -1647,6 +1681,7 @@ const applyCoreEntry = (
   value: string | null,
 ): MutableCore | undefined => {
   if (CORE_BOOLEAN_KEYS.has(lowered)) return applyCoreBooleanEntry(core, lowered, value);
+  if (lowered === 'eol') return applyCoreEol(core, value);
   // String-typed and int-typed fields skip null (valueless key treated as absent).
   if (value === null) return undefined;
   if (lowered === 'excludesfile') return { ...core, excludesFile: value };
@@ -1693,6 +1728,17 @@ const mergeCore = (acc: { core?: MutableCore }, sec: IniSection): void => {
 // standard boolean parse; a refusal there leaves the field absent (`undefined`).
 const parseLogAllRefUpdates = (value: string | null): boolean | 'always' | undefined => {
   if (value !== null && value.toLowerCase() === 'always') return 'always';
+  const parsed = parseGitBoolean(value);
+  return parsed.ok ? parsed.value : undefined;
+};
+
+// Git's tri-state keys: one literal (matched case-insensitively) beyond the
+// boolean grammar; a refusal there leaves the field absent (`undefined`).
+const parseBooleanOrLiteral = <L extends string>(
+  value: string | null,
+  literal: L,
+): boolean | L | undefined => {
+  if (value !== null && value.toLowerCase() === literal) return literal;
   const parsed = parseGitBoolean(value);
   return parsed.ok ? parsed.value : undefined;
 };
@@ -2312,6 +2358,9 @@ const finalizeCoreIdentityFields = (core: MutableCore): ParsedConfig['core'] => 
   ...(core.excludesFile !== undefined ? { excludesFile: core.excludesFile } : {}),
   ...(core.attributesFile !== undefined ? { attributesFile: core.attributesFile } : {}),
   ...(core.logAllRefUpdates !== undefined ? { logAllRefUpdates: core.logAllRefUpdates } : {}),
+  ...(core.autoCrlf !== undefined ? { autoCrlf: core.autoCrlf } : {}),
+  ...(core.eol !== undefined ? { eol: core.eol } : {}),
+  ...(core.safeCrlf !== undefined ? { safeCrlf: core.safeCrlf } : {}),
   ...(core.hooksPath !== undefined ? { hooksPath: core.hooksPath } : {}),
   ...(core.notesRef !== undefined ? { notesRef: core.notesRef } : {}),
   ...(core.sparseCheckout !== undefined ? { sparseCheckout: core.sparseCheckout } : {}),
@@ -2711,6 +2760,28 @@ export const findFirstInvalidLogAllRefUpdates = async (
     keys: ['logallrefupdates'],
     accepts: (value) => parseLogAllRefUpdates(value) !== undefined,
     fixedKey: 'core.logallrefupdates',
+  });
+
+/** `core.autocrlf` accepts `input` beyond git's boolean grammar. */
+export const findFirstInvalidAutoCrlf = async (
+  ctx: Context,
+): Promise<InvalidBooleanEntry | undefined> =>
+  findFirstRejectedBoolean(ctx, {
+    section: 'core',
+    keys: ['autocrlf'],
+    accepts: (value) => parseBooleanOrLiteral(value, 'input') !== undefined,
+    fixedKey: 'core.autocrlf',
+  });
+
+/** `core.safecrlf` accepts `warn` beyond git's boolean grammar. */
+export const findFirstInvalidSafeCrlf = async (
+  ctx: Context,
+): Promise<InvalidBooleanEntry | undefined> =>
+  findFirstRejectedBoolean(ctx, {
+    section: 'core',
+    keys: ['safecrlf'],
+    accepts: (value) => parseBooleanOrLiteral(value, 'warn') !== undefined,
+    fixedKey: 'core.safecrlf',
   });
 
 /**

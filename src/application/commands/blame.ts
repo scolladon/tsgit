@@ -19,6 +19,7 @@ import { precedesByArrival, type QueueEntry } from '../../domain/commit/priority
 import type { TreeDiff } from '../../domain/diff/diff-change.js';
 import { diffPresplitLines, splitLines } from '../../domain/diff/line-diff.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
+import type { IndexEntry } from '../../domain/git-index/index-entry.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import { FILE_MODE } from '../../domain/objects/file-mode.js';
@@ -28,7 +29,10 @@ import { validateWorkingTreePath } from '../../domain/working-tree-path.js';
 import type { Context } from '../../ports/context.js';
 import { detectSimilarityRenames } from '../primitives/detect-similarity-renames.js';
 import { diffTrees } from '../primitives/diff-trees.js';
+import { convertToGit } from '../primitives/internal/convert-blob.js';
+import { indexRuleEntries } from '../primitives/internal/index-rule-entries.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
+import { buildCheckinAttributeProvider } from '../primitives/internal/read-gitattributes.js';
 import {
   descendMatchingTreeChain,
   findTreeEntryChain,
@@ -36,6 +40,7 @@ import {
 } from '../primitives/internal/resolve-tree-path.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readIndex } from '../primitives/read-index.js';
+import { readEolSettings, resolveConversion } from '../primitives/resolve-conversion.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
 import { readCommitData } from './internal/history-rewrite.js';
 import { assertOperationalRepository, requireWorkTree } from './internal/repo-state.js';
@@ -218,7 +223,8 @@ const seedWorkingTree = async (
   validateWorkingTreePath(path);
   const head = await resolveCommitIsh(sb.ctx, DEFAULT_REV);
   const data = await readCommitData(sb.ctx, head);
-  const workingBlob = await readWorkingFile(sb.ctx, workDir, path);
+  const index = await readIndex(sb.ctx);
+  const workingBlob = await readWorkingFile(sb.ctx, workDir, path, index.entries);
   const workingLines = splitLines(workingBlob);
   const window = resolveLineWindow(workingLines.length, range);
   if (window === undefined) return;
@@ -243,7 +249,6 @@ const seedWorkingTree = async (
     finalizeUncommitted(sb, path, workingLines, kept, { commit: head, path });
     return;
   }
-  const index = await readIndex(sb.ctx);
   if (index.entries.some((entry) => entry.path === path)) {
     finalizeUncommitted(sb, path, workingLines, whole, undefined);
     return;
@@ -251,18 +256,43 @@ const seedWorkingTree = async (
   throw pathNotInTree(DEFAULT_REV, path);
 };
 
-/** Read the working-tree file's bytes (symlink → its target); absent → refuse like git's `Cannot lstat`. */
+/**
+ * Read the working-tree file as git compares it (`fake_working_tree_commit`): a
+ * symlink is its target, a regular file is converted to its stored form against
+ * the stage-0 index entry. Absent → refuse like git's `Cannot lstat`.
+ */
 const readWorkingFile = async (
   ctx: Context,
   workDir: string,
   path: FilePath,
+  indexEntries: ReadonlyArray<IndexEntry>,
 ): Promise<Uint8Array> => {
   const absPath = joinPath(workDir, path);
   const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
   if (stat === undefined) throw worktreeFileAbsent(path);
-  return stat.isSymbolicLink
-    ? LINK_ENCODER.encode(await ctx.fs.readlink(absPath))
-    : ctx.fs.read(absPath);
+  if (stat.isSymbolicLink) return LINK_ENCODER.encode(await ctx.fs.readlink(absPath));
+  return convertWorkingBytes(ctx, path, await ctx.fs.read(absPath), indexEntries);
+};
+
+const convertWorkingBytes = async (
+  ctx: Context,
+  path: FilePath,
+  bytes: Uint8Array,
+  indexEntries: ReadonlyArray<IndexEntry>,
+): Promise<Uint8Array> => {
+  const settings = await readEolSettings(ctx);
+  const provider = await buildCheckinAttributeProvider(ctx);
+  const conversion = await resolveConversion(ctx, provider, path, settings);
+  const indexBlob = indexRuleEntries(indexEntries.filter((entry) => entry.path === path))[0]?.id;
+  const converted = await convertToGit(ctx, {
+    path,
+    bytes,
+    conversion,
+    route: 'compare',
+    settings,
+    ...(indexBlob !== undefined && { indexBlob }),
+  });
+  return converted.bytes;
 };
 
 /** Finalize lines to the zero-oid "Not Committed Yet" pseudo-commit (`committed: false`). */

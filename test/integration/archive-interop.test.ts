@@ -18,17 +18,18 @@
  */
 
 import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { inflateRawSync } from 'node:zlib';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../src/adapters/memory/memory-adapter.js';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import type { ArchiveEntry } from '../../src/application/commands/archive.js';
 import { archive } from '../../src/application/commands/archive.js';
 import { tarArchive } from '../../src/domain/archive/tar.js';
 import { zipArchive } from '../../src/domain/archive/zip.js';
+import { type EolRepoOptions, IDENT_DIVERGENCE_BLOB, initEolRepo } from './eol-interop-fixtures.js';
 import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
@@ -1261,6 +1262,231 @@ describe.skipIf(!GIT_AVAILABLE)('integration — archive reads its tree-ish like
           expect(warnings).toEqual(peerWarnings);
           expect(warnings.every((warning) => warning === DANGLING_TAG_WARNING)).toBe(true);
           expect(refused).toBe(peer.exitCode !== 0);
+        });
+      },
+    );
+  });
+});
+
+// =============================================================================
+// archive converts entries with the tree's attributes (tar and zip byte-equality)
+// =============================================================================
+
+interface ConversionScenario {
+  readonly label: string;
+  readonly options: EolRepoOptions;
+  readonly files: Readonly<Record<string, string | Uint8Array>>;
+  readonly worktreeGitattributes?: string;
+}
+
+const CONVERSION_SCENARIOS: ReadonlyArray<ConversionScenario> = [
+  {
+    label: "the tree's '*.txt eol=crlf' wins over a worktree '-text -ident'",
+    options: { gitattributes: '*.txt eol=crlf\n' },
+    files: { 'f.txt': 'a\nb\n' },
+    worktreeGitattributes: '*.txt -text -ident\n',
+  },
+  {
+    label: ".git/info/attributes '*.dat eol=crlf'",
+    options: { infoAttributes: ['*.dat eol=crlf'] },
+    files: { 'f.dat': 'a\nb\n' },
+  },
+  {
+    label: 'no attribute and core.autocrlf=true',
+    options: { autoCrlf: 'true' },
+    files: { 'f.txt': 'a\nb\n' },
+  },
+  {
+    label: "'* ident' on the divergence blob (in-core expander)",
+    options: { gitattributes: '* ident\n' },
+    files: { f: IDENT_DIVERGENCE_BLOB },
+  },
+  {
+    label: 'export-subst on an eol=crlf file',
+    options: { gitattributes: 'f export-subst eol=crlf\n' },
+    files: { f: 'id $Format:%H$\n' },
+  },
+];
+
+describe.skipIf(!GIT_AVAILABLE)('archive entry conversion byte-faithfulness', () => {
+  const commitDate = '2005-04-07T22:13:13 +0200';
+  const gitEnv = () => ({
+    ...runGitEnv(),
+    GIT_AUTHOR_NAME: 'Ada',
+    GIT_AUTHOR_EMAIL: 'ada@example.com',
+    GIT_AUTHOR_DATE: commitDate,
+    GIT_COMMITTER_NAME: 'Ada',
+    GIT_COMMITTER_EMAIL: 'ada@example.com',
+    GIT_COMMITTER_DATE: commitDate,
+    TZ: 'UTC',
+  });
+  let dir = '';
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const buildRepo = async (scenario: ConversionScenario): Promise<void> => {
+    dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-archive-conversion-'));
+    initEolRepo(dir, scenario.options);
+    for (const [name, content] of Object.entries(scenario.files)) {
+      writeFileSync(path.join(dir, name), content);
+    }
+    runGit(['-C', dir, 'add', '-A'], { env: gitEnv() });
+    runGit(['-C', dir, 'commit', '-q', '-m', 'seed'], { env: gitEnv() });
+    if (scenario.worktreeGitattributes !== undefined) {
+      writeFileSync(path.join(dir, '.gitattributes'), scenario.worktreeGitattributes);
+    }
+  };
+
+  describe.each(CONVERSION_SCENARIOS)('Given $label', (scenario) => {
+    describe('When archived to tar', () => {
+      it('Then the tar bytes equal git archive --format=tar', async () => {
+        // Arrange
+        await buildRepo(scenario);
+        const ctx = createNodeContext({ workDir: dir });
+        const result = await archive(ctx, { treeish: 'HEAD' });
+        const gitBytes = runGitBytes(['-C', dir, 'archive', '--format=tar', 'HEAD'], {
+          env: gitEnv(),
+        });
+
+        // Act
+        const ourBytes = await collectTarBytes(
+          tarArchive(result, {
+            umask: 0o0002,
+            uname: 'root',
+            gname: 'root',
+            ...(result.commitTime !== undefined ? { mtime: result.commitTime } : {}),
+          }),
+        );
+
+        // Assert
+        expect(ourBytes).toEqual(new Uint8Array(gitBytes));
+      });
+    });
+
+    describe('When archived to zip', () => {
+      it('Then the zip bytes equal git archive --format=zip', async () => {
+        // Arrange
+        await buildRepo(scenario);
+        const ctx = createNodeContext({ workDir: dir });
+        const result = await archive(ctx, { treeish: 'HEAD' });
+        const gitBytes = runGitBytes(['-C', dir, 'archive', '--format=zip', 'HEAD'], {
+          env: gitEnv(),
+        });
+
+        // Act
+        const ourBytes = await collectZipBytes(
+          zipArchive(
+            result,
+            { deflateRaw: ctx.compressor.deflateRaw },
+            {
+              tzOffsetMinutes: 0,
+              ...(result.commitTime !== undefined ? { mtime: result.commitTime } : {}),
+            },
+          ),
+        );
+
+        // Assert
+        expect(ourBytes).toEqual(new Uint8Array(gitBytes));
+      });
+    });
+  });
+});
+
+/**
+ * A long-running v2 filter that smudges by echoing and appends the header of
+ * each request (command, pathname and the checkout metadata) to argv[2].
+ */
+const METADATA_LOGGING_FILTER = `const fs = require('node:fs');
+const pkt = (text) => Buffer.concat([Buffer.from((Buffer.byteLength(text) + 4).toString(16).padStart(4, '0')), Buffer.from(text)]);
+const flush = Buffer.from('0000');
+const write = (...parts) => process.stdout.write(Buffer.concat(parts));
+let buffered = Buffer.alloc(0); let pending = []; let step = 0;
+const answers = [
+  () => write(pkt('git-filter-server\\n'), pkt('version=2\\n'), flush),
+  () => write(pkt('capability=smudge\\n'), flush),
+  (data) => fs.appendFileSync(process.argv[2], JSON.stringify(data.toString()) + '\\n'),
+  (data) => write(pkt('status=success\\n'), flush, ...(data.length ? [pkt(data.toString())] : []), flush, flush),
+];
+process.stdin.on('data', (chunk) => {
+  buffered = Buffer.concat([buffered, chunk]);
+  while (buffered.length >= 4) {
+    const length = parseInt(buffered.subarray(0, 4).toString(), 16);
+    if (length !== 0 && buffered.length < length) return;
+    if (length !== 0) pending.push(buffered.subarray(4, length));
+    buffered = buffered.subarray(length === 0 ? 4 : length);
+    if (length !== 0) continue;
+    const data = Buffer.concat(pending);
+    pending = [];
+    answers[step](data);
+    step = step === 3 ? 2 : step + 1;
+  }
+});
+`;
+
+describe.skipIf(!GIT_AVAILABLE)('archive through a process filter', () => {
+  let root = '';
+  let repo = '';
+  let log = '';
+
+  beforeAll(async () => {
+    root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-archive-metadata-')));
+    const script = path.join(root, 'filter.cjs');
+    await writeFile(script, METADATA_LOGGING_FILTER);
+    log = path.join(root, 'requests.log');
+    repo = path.join(root, 'repo');
+    runGit(['init', '-q', '-b', 'main', repo], { env: runGitEnv() });
+    await writeFile(path.join(repo, '.gitattributes'), '*.t filter=p\n');
+    await writeFile(path.join(repo, 'a.t'), 'hello\n');
+    runGit(['-C', repo, 'add', '.'], { env: runGitEnv() });
+    runGit(['-C', repo, '-c', 'user.name=A', '-c', 'user.email=a@a', 'commit', '-q', '-m', 'c'], {
+      env: runGitEnv(),
+    });
+    runGit(
+      ['-C', repo, '-c', 'user.name=A', '-c', 'user.email=a@a', 'tag', '-a', '-m', 't', 'v1'],
+      {
+        env: runGitEnv(),
+      },
+    );
+    runGit(
+      ['-C', repo, 'config', 'filter.p.process', `"${process.execPath}" "${script}" "${log}"`],
+      {
+        env: runGitEnv(),
+      },
+    );
+  }, 60_000);
+
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const requestsOf = async (run: () => Promise<void>): Promise<string> => {
+    await writeFile(log, '');
+    await run();
+    return readFile(log, 'utf8');
+  };
+
+  describe('Given a process filter on *.t', () => {
+    describe.each(['HEAD', 'main', 'v1', 'HEAD:', 'HEAD~0'])(
+      'When git and archive read %s',
+      (treeish) => {
+        it('Then the filter receives the same request headers from both', async () => {
+          // Arrange
+          const sut = archive;
+
+          // Act
+          const peer = await requestsOf(async () => {
+            runGit(['-C', repo, 'archive', '--format=tar', treeish], { env: runGitEnv() });
+          });
+          const actual = await requestsOf(async () => {
+            const result = await sut(createNodeContext({ workDir: repo }), { treeish });
+            for await (const entry of result.entries) void entry;
+          });
+
+          // Assert
+          expect(peer).toContain('treeish=');
+          expect(actual).toBe(peer);
         });
       },
     );

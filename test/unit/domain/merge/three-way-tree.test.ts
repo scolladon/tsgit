@@ -2,12 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import type { FlatTree, FlatTreeEntry } from '../../../../src/domain/diff/flat-tree.js';
 import { MAX_FLAT_TREE_ENTRIES } from '../../../../src/domain/diff/flat-tree.js';
 import { DEFAULT_MERGE_LABELS } from '../../../../src/domain/merge/merge-labels.js';
+import type { MergeRenames } from '../../../../src/domain/merge/merge-renames.js';
+import { NO_MERGE_RENAMES } from '../../../../src/domain/merge/merge-renames.js';
 import type {
   ContentMergeContext,
   ContentMergeResult,
 } from '../../../../src/domain/merge/merge-types.js';
 import { MAX_CONFLICT_OUTPUT_BYTES } from '../../../../src/domain/merge/merge-types.js';
-import type { ContentMerger } from '../../../../src/domain/merge/three-way-tree.js';
+import type { BlobUnchanged, ContentMerger } from '../../../../src/domain/merge/three-way-tree.js';
 import { mergeTrees } from '../../../../src/domain/merge/three-way-tree.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
@@ -2303,6 +2305,173 @@ describe('mergeTrees — rename/rename to two paths', () => {
           { ourMode: executable },
           { theirMode: executable },
         ]);
+      });
+    });
+  });
+});
+
+describe('mergeTrees — blobUnchanged callback', () => {
+  const F = 'f' as FilePath;
+  const base = tree([[F, entry(ID_A)]]);
+  const changed = tree([[F, entry(ID_B)]]);
+  const deleted = tree([]);
+  const run = (
+    ours: FlatTree,
+    theirs: FlatTree,
+    blobUnchanged?: BlobUnchanged,
+    renames: MergeRenames = NO_MERGE_RENAMES,
+    start: FlatTree = base,
+  ) =>
+    mergeTrees(
+      start,
+      ours,
+      theirs,
+      noopMerger,
+      DEFAULT_MERGE_LABELS,
+      renames,
+      undefined,
+      blobUnchanged,
+    );
+
+  describe('Given base f, ours deletes f, theirs changes f, and a callback answering true', () => {
+    describe('When mergeTrees is called', () => {
+      it('Then f resolves deleted and the merge is clean', async () => {
+        // Arrange
+        const blobUnchanged = vi.fn<BlobUnchanged>().mockResolvedValue(true);
+        const sut = run;
+
+        // Act
+        const result = await sut(deleted, changed, blobUnchanged);
+
+        // Assert
+        expect(result.outcomes).toEqual([{ status: 'resolved-deleted', path: F }]);
+        expect(result.cleanMerge).toBe(true);
+        expect(blobUnchanged).toHaveBeenCalledWith(F, entry(ID_A), entry(ID_B));
+      });
+    });
+  });
+
+  describe('Given the mirrored side: theirs deletes f, ours changes f, callback answering true', () => {
+    describe('When mergeTrees is called', () => {
+      it('Then f resolves deleted and the callback sees the ours entry', async () => {
+        // Arrange
+        const blobUnchanged = vi.fn<BlobUnchanged>().mockResolvedValue(true);
+        const sut = run;
+
+        // Act
+        const result = await sut(changed, deleted, blobUnchanged);
+
+        // Assert
+        expect(result.outcomes).toEqual([{ status: 'resolved-deleted', path: F }]);
+        expect(blobUnchanged).toHaveBeenCalledWith(F, entry(ID_A), entry(ID_B));
+      });
+    });
+  });
+
+  describe('Given a callback answering false', () => {
+    describe('When mergeTrees is called', () => {
+      it('Then f stays a modify-delete conflict', async () => {
+        // Arrange
+        const blobUnchanged = vi.fn<BlobUnchanged>().mockResolvedValue(false);
+        const sut = run;
+
+        // Act
+        const result = await sut(deleted, changed, blobUnchanged);
+
+        // Assert
+        expect(result.conflicts.map((c) => c.type)).toEqual(['modify-delete']);
+        expect(result.cleanMerge).toBe(false);
+      });
+    });
+  });
+
+  describe('Given the surviving side changed only the mode', () => {
+    describe('When mergeTrees is called', () => {
+      it('Then f stays conflicted without consulting the callback', async () => {
+        // Arrange
+        const blobUnchanged = vi.fn<BlobUnchanged>().mockResolvedValue(true);
+        const executable = tree([[F, entry(ID_A, FILE_MODE.EXECUTABLE)]]);
+        const sut = run;
+
+        // Act
+        const result = await sut(deleted, executable, blobUnchanged);
+
+        // Assert
+        expect(result.conflicts.map((c) => c.type)).toEqual(['modify-delete']);
+        expect(blobUnchanged).toHaveBeenCalledTimes(0);
+      });
+    });
+  });
+
+  describe('Given no callback', () => {
+    describe('When mergeTrees is called', () => {
+      it('Then f stays a modify-delete conflict', async () => {
+        // Arrange
+        const sut = run;
+
+        // Act
+        const result = await sut(deleted, changed);
+
+        // Assert
+        expect(result.conflicts.map((c) => c.type)).toEqual(['modify-delete']);
+      });
+    });
+  });
+
+  describe('Given a rename of f on the side that did not delete it', () => {
+    describe('When mergeTrees is called', () => {
+      it('Then rename-delete stays conflicted without consulting the callback', async () => {
+        // Arrange
+        const blobUnchanged = vi.fn<BlobUnchanged>().mockResolvedValue(true);
+        const NEW = 'new' as FilePath;
+        const renames = { ours: [], theirs: [{ oldPath: F, newPath: NEW }] };
+        const renamed = tree([[NEW, entry(ID_A)]]);
+        const sut = run;
+
+        // Act
+        const result = await sut(deleted, renamed, blobUnchanged, renames);
+
+        // Assert
+        expect(result.conflicts.map((c) => c.type)).toEqual(['rename-delete']);
+        expect(blobUnchanged).toHaveBeenCalledTimes(0);
+      });
+    });
+  });
+
+  describe('Given a directory-rename file location for f', () => {
+    describe('When mergeTrees is called', () => {
+      it('Then f stays conflicted and the callback is not consulted', async () => {
+        // Arrange
+        const blobUnchanged = vi.fn<BlobUnchanged>().mockResolvedValue(true);
+        const dirBase = tree([
+          ['dir/a', entry(ID_A)],
+          ['dir/b', entry(ID_B)],
+        ]);
+        const ours = tree([
+          ['dir/a', entry(ID_A)],
+          ['dir/b', entry(ID_B)],
+          ['dir/c', entry(ID_C)],
+        ]);
+        const theirs = tree([
+          ['newdir/a', entry(ID_A)],
+          ['newdir/b', entry(ID_B)],
+        ]);
+        const renames = {
+          ours: [],
+          theirs: [
+            { oldPath: 'dir/a' as FilePath, newPath: 'newdir/a' as FilePath },
+            { oldPath: 'dir/b' as FilePath, newPath: 'newdir/b' as FilePath },
+          ],
+          directoryRenames: 'conflict',
+        } as const;
+        const sut = run;
+
+        // Act
+        const result = await sut(ours, theirs, blobUnchanged, renames, dirBase);
+
+        // Assert
+        expect(result.conflicts.map((c) => c.type)).toEqual(['file-location']);
+        expect(blobUnchanged).toHaveBeenCalledTimes(0);
       });
     });
   });

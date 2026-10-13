@@ -15,10 +15,12 @@ import {
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { flattenTree } from '../../../../src/application/primitives/flatten-tree.js';
+import * as convertBlobMod from '../../../../src/application/primitives/internal/convert-blob.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { pushStashRef, readStashStack } from '../../../../src/application/primitives/stash-ref.js';
+import { MAX_WORKING_TREE_BLOB_BYTES } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
@@ -712,12 +714,12 @@ describe('stash apply', () => {
 
   describe('Given an include-untracked stash with a regular file', () => {
     describe('When apply runs', () => {
-      it('Then routes through writeWorkingTreeFileStream and restored bytes match source', async () => {
+      it('Then routes through writeWorkingTreeEntryStream and restored bytes match source', async () => {
         // Arrange
         const ctx = await setupRepo();
         await write(ctx, 'streamed.txt', 'streamed content\n');
         await stashPush(ctx, { includeUntracked: true });
-        const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeFileStream');
+        const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
 
         // Act
         await stashApply(ctx, {});
@@ -786,7 +788,9 @@ describe('stash apply', () => {
         // Assert
         expect((failure as TsgitError).data).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX' });
         expect((await ctx.fs.read(`${ctx.layout.workDir}/packed.txt`)).length).toBe(0);
-        expect(chmod).not.toHaveBeenCalled();
+        expect(chmod.mock.calls.map(([path]) => path)).toEqual([
+          `${ctx.layout.workDir}/packed.txt`,
+        ]);
       });
     });
   });
@@ -1217,6 +1221,452 @@ describe('stashPush — clean filter re-application', () => {
 
         // Assert — spuriously detected as modified (regression: raw path in use)
         expect(result.kind).toBe('saved');
+      });
+    });
+  });
+});
+
+const configure = (ctx: Context, text: string) =>
+  ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, text);
+
+const setupLfRepo = async (config: string): Promise<Context> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await commitFile(ctx, 'a.txt', 'a\nb\nc\n', 'initial commit');
+  await configure(ctx, config);
+  return ctx;
+};
+
+describe('stash apply line endings', () => {
+  describe('Given core.autocrlf true and a stashed untracked file', () => {
+    describe('When stash apply restores it', () => {
+      it('Then the restored file is CRLF in the worktree', async () => {
+        // Arrange
+        const ctx = await setupLfRepo('[core]\n\tautocrlf = true\n');
+        await write(ctx, 'u.txt', 'a\r\nb\r\n');
+        await stashPush(ctx, { includeUntracked: true });
+        const sut = stashApply;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        expect(await read(ctx, 'u.txt')).toBe('a\r\nb\r\n');
+      });
+    });
+  });
+});
+
+describe('stash push line endings', () => {
+  describe('Given core.autocrlf true and a CRLF edit of an LF-tracked file', () => {
+    describe('When stash push runs', () => {
+      it('Then the W-tree blob is LF', async () => {
+        // Arrange
+        const ctx = await setupLfRepo('[core]\n\tautocrlf = true\n');
+        await write(ctx, 'a.txt', 'a\r\nb\r\nc\r\nd\r\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const wTree = (await commitOf(ctx, result.stash)).tree;
+        expect(await treeContent(ctx, wTree, 'a.txt')).toBe('a\nb\nc\nd\n');
+      });
+    });
+  });
+
+  describe('Given core.autocrlf true and an LF edit', () => {
+    describe('When stash push runs', () => {
+      it('Then the saved result carries the lf-to-crlf notice', async () => {
+        // Arrange
+        const ctx = await setupLfRepo('[core]\n\tautocrlf = true\n');
+        await write(ctx, 'a.txt', 'a\nb\nc\nd\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(result.eolNotices).toEqual([
+          { path: 'a.txt', loss: 'lf-to-crlf', crlf: 0, loneLf: 4 },
+        ]);
+      });
+    });
+  });
+
+  describe('Given core.autocrlf true, a CRLF edit of a.txt and an untouched LF b.txt', () => {
+    describe('When stash push runs', () => {
+      it('Then no notice is raised for the untouched b.txt', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'a\nb\nc\n', 'first');
+        await commitFile(ctx, 'b.txt', 'x\n', 'second');
+        await configure(ctx, '[core]\n\tautocrlf = true\n');
+        await write(ctx, 'a.txt', 'a\r\nb\r\nc\r\nd\r\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(result.eolNotices).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given core.autocrlf true and core.safecrlf false', () => {
+    describe('When stash push runs on an LF edit', () => {
+      it('Then eolNotices is empty', async () => {
+        // Arrange
+        const ctx = await setupLfRepo('[core]\n\tautocrlf = true\n\tsafecrlf = false\n');
+        await write(ctx, 'a.txt', 'a\nb\nc\nd\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(result.eolNotices).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given core.autocrlf true and core.safecrlf true', () => {
+    describe('When stash push runs on an LF edit', () => {
+      it('Then it refuses, saves no stash and leaves the worktree and index untouched', async () => {
+        // Arrange
+        const ctx = await setupLfRepo('[core]\n\tautocrlf = true\n\tsafecrlf = true\n');
+        await write(ctx, 'a.txt', 'a\nb\nc\nd\n');
+        const indexBefore = await readIndex(ctx);
+        const sut = stashPush;
+
+        // Act
+        const attempt = sut(ctx, {});
+
+        // Assert
+        const error = await attempt.then(
+          () => undefined,
+          (e: unknown) => e,
+        );
+        if (!(error instanceof TsgitError)) throw new Error('expected a TsgitError');
+        expect(error.data).toEqual({
+          code: 'EOL_ROUND_TRIP_UNSAFE',
+          path: 'a.txt',
+          loss: 'lf-to-crlf',
+          crlf: 0,
+          loneLf: 4,
+        });
+        expect(await readStashStack(ctx)).toEqual([]);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/stash`)).toBe(false);
+        expect(await read(ctx, 'a.txt')).toBe('a\nb\nc\nd\n');
+        expect(await readIndex(ctx)).toEqual(indexBefore);
+      });
+    });
+  });
+
+  describe('Given core.autocrlf true, an LF untracked file and an LF tracked edit', () => {
+    describe('When stash push -u runs', () => {
+      it('Then the untracked notice precedes the tracked one', async () => {
+        // Arrange
+        const ctx = await setupLfRepo('[core]\n\tautocrlf = true\n');
+        await write(ctx, 'a.txt', 'a\nb\nc\nd\n');
+        await write(ctx, 'zz.txt', 'u\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        expect(result.eolNotices.map((n) => n.path)).toEqual(['zz.txt', 'a.txt']);
+      });
+    });
+  });
+
+  describe('Given core.autocrlf true and a CRLF untracked file', () => {
+    describe('When stash push -u runs', () => {
+      it('Then the untracked blob is LF and no notice is raised', async () => {
+        // Arrange
+        const ctx = await setupLfRepo('[core]\n\tautocrlf = true\n');
+        await write(ctx, 'a.txt', 'a\nb\nc\nd\n');
+        await write(ctx, 'u.txt', 'u1\r\nu2\r\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const w = await commitOf(ctx, result.stash);
+        const uTree = (await commitOf(ctx, w.parents[2] as ObjectId)).tree;
+        expect(await treeContent(ctx, uTree, 'u.txt')).toBe('u1\nu2\n');
+        expect(result.eolNotices.map((n) => n.path)).toEqual(['a.txt']);
+      });
+    });
+  });
+});
+
+const OBJECT_FAN_OUT = /^[0-9a-f]{2}$/;
+
+const looseObjectIds = async (ctx: Context): Promise<ReadonlyArray<ObjectId>> => {
+  const objects = `${ctx.layout.gitDir}/objects`;
+  const fanOuts = (await ctx.fs.readdir(objects)).filter((e) => OBJECT_FAN_OUT.test(e.name));
+  const perFanOut = await Promise.all(
+    fanOuts.map(async ({ name }) =>
+      (await ctx.fs.readdir(`${objects}/${name}`)).map((e) => `${name}${e.name}` as ObjectId),
+    ),
+  );
+  return perFanOut.flat();
+};
+
+interface WrittenCommit {
+  readonly tree: ObjectId;
+  readonly parents: ReadonlyArray<ObjectId>;
+  readonly message: string;
+}
+
+/** The commits written after `before`, as the parts git's stash pushes leave behind. */
+const commitsWrittenSince = async (
+  ctx: Context,
+  before: ReadonlyArray<ObjectId>,
+): Promise<ReadonlyArray<WrittenCommit>> => {
+  const fresh = (await looseObjectIds(ctx)).filter((id) => !before.includes(id));
+  const objects = await Promise.all(fresh.map((id) => readObject(ctx, id)));
+  return objects.flatMap((o) =>
+    o.type === 'commit'
+      ? [{ tree: o.data.tree, parents: o.data.parents, message: o.data.message }]
+      : [],
+  );
+};
+
+const attemptStashPush = (ctx: Context, input: Parameters<typeof stashPush>[1]) =>
+  stashPush(ctx, input).then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+
+describe('stash push object-write order', () => {
+  const SAFE_CRLF = '[core]\n\tautocrlf = true\n\tsafecrlf = true\n';
+
+  describe('Given core.safecrlf true and a lossy tracked edit', () => {
+    describe('When stash push refuses', () => {
+      it('Then exactly one commit was written and it is the index commit', async () => {
+        // Arrange
+        const ctx = await setupLfRepo(SAFE_CRLF);
+        const head = await headId(ctx);
+        const headTree = (await commitOf(ctx, head)).tree;
+        await write(ctx, 'a.txt', 'a\nb\nc\nd\n');
+        const before = await looseObjectIds(ctx);
+        const sut = attemptStashPush;
+
+        // Act
+        const error = await sut(ctx, {});
+
+        // Assert
+        expect(error).toBeInstanceOf(TsgitError);
+        const written = await commitsWrittenSince(ctx, before);
+        expect(written).toHaveLength(1);
+        expect(written[0]?.tree).toBe(headTree);
+        expect(written[0]?.parents).toEqual([head]);
+        expect(written[0]?.message).toMatch(/^index on main: [0-9a-f]+ initial commit/);
+      });
+    });
+  });
+
+  describe('Given core.safecrlf true, a lossy tracked edit and an untracked file', () => {
+    describe('When stash push -u refuses on the tracked file', () => {
+      it('Then the index commit and the untracked commit were written', async () => {
+        // Arrange
+        const ctx = await setupLfRepo(SAFE_CRLF);
+        const head = await headId(ctx);
+        await write(ctx, 'a.txt', 'a\nb\nc\nd\n');
+        await write(ctx, 'u.txt', 'u\r\n');
+        const before = await looseObjectIds(ctx);
+        const sut = attemptStashPush;
+
+        // Act
+        const error = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(error).toBeInstanceOf(TsgitError);
+        const written = await commitsWrittenSince(ctx, before);
+        expect(written.map((c) => c.parents)).toEqual(expect.arrayContaining([[head], []]));
+        expect(written).toHaveLength(2);
+        const untrackedCommit = written.find((c) => c.parents.length === 0);
+        expect(await treeContent(ctx, untrackedCommit?.tree as ObjectId, 'u.txt')).toBe('u\n');
+      });
+    });
+  });
+
+  describe('Given core.safecrlf true and a lossy untracked file with a clean tracked tree', () => {
+    describe('When stash push -u refuses on the untracked file', () => {
+      it('Then only the index commit was written', async () => {
+        // Arrange
+        const ctx = await setupLfRepo(SAFE_CRLF);
+        const head = await headId(ctx);
+        await write(ctx, 'u.txt', 'u\n');
+        const before = await looseObjectIds(ctx);
+        const sut = attemptStashPush;
+
+        // Act
+        const error = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(error).toBeInstanceOf(TsgitError);
+        const written = await commitsWrittenSince(ctx, before);
+        expect(written).toHaveLength(1);
+        expect(written[0]?.parents).toEqual([head]);
+      });
+    });
+  });
+
+  describe('Given a clean tree', () => {
+    describe('When stash push finds no local changes', () => {
+      it('Then no object was written', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        const before = await looseObjectIds(ctx);
+        const sut = attemptStashPush;
+
+        // Act
+        await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(await looseObjectIds(ctx)).toEqual(before);
+      });
+    });
+  });
+});
+
+describe('stash push filter validation', () => {
+  describe('Given [filter "u"] required = foo, no attributes and no tracked file to hash', () => {
+    describe('When stash push -u hashes an untracked file', () => {
+      it('Then it refuses after the index commit and writes no stash', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commit(ctx, { message: 'empty', author, allowEmpty: true });
+        await configure(ctx, '[filter "u"]\n\trequired = foo\n');
+        await write(ctx, 'n.txt', 'n\n');
+        const head = await headId(ctx);
+        const before = await looseObjectIds(ctx);
+        const sut = attemptStashPush;
+
+        // Act
+        const error = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        if (!(error instanceof TsgitError)) throw new Error('expected a TsgitError');
+        expect(error.data).toMatchObject({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'filter.u.required',
+          value: 'foo',
+        });
+        const written = await commitsWrittenSince(ctx, before);
+        expect(written.map((c) => c.parents)).toEqual([[head]]);
+        expect(await readStashStack(ctx)).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('stash push line-ending guards', () => {
+  describe('Given a tracked file the work tree reports above the size cap', () => {
+    describe('When stash push runs', () => {
+      it('Then it refuses WORKING_TREE_FILE_TOO_LARGE before any conversion runs', async () => {
+        // Arrange
+        const ctx = await setupLfRepo('[core]\n\tautocrlf = true\n');
+        await write(ctx, 'a.txt', 'a\nb\nc\nd\n');
+        const oversize = MAX_WORKING_TREE_BLOB_BYTES + 1;
+        const hostileFs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop !== 'lstat') return Reflect.get(target, prop, receiver);
+            return async (path: string) => {
+              const real = await target.lstat(path);
+              return path.endsWith('/a.txt') ? { ...real, size: oversize } : real;
+            };
+          },
+        });
+        const convert = vi.spyOn(convertBlobMod, 'convertToGit');
+        const sut = stashPush;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut({ ...ctx, fs: hostileFs }, {});
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        if (!(caught instanceof TsgitError)) throw new Error('expected a TsgitError');
+        expect(caught.data).toEqual({
+          code: 'WORKING_TREE_FILE_TOO_LARGE',
+          path: 'a.txt',
+          size: oversize,
+          limit: MAX_WORKING_TREE_BLOB_BYTES,
+        });
+        const writeRouteCalls = convert.mock.calls.filter(
+          ([, request]) => request.route === 'write',
+        );
+        expect(writeRouteCalls).toEqual([]);
+        convert.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a tracked file the work tree reports exactly at the size cap', () => {
+    describe('When stash push runs', () => {
+      it('Then it saves the stash, the cap refusing only strictly larger files', async () => {
+        // Arrange
+        const ctx = await setupLfRepo('[core]\n\tautocrlf = true\n');
+        await write(ctx, 'a.txt', 'a\nb\nc\nd\n');
+        const cappedFs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop !== 'lstat') return Reflect.get(target, prop, receiver);
+            return async (path: string) => {
+              const real = await target.lstat(path);
+              return path.endsWith('/a.txt')
+                ? { ...real, size: MAX_WORKING_TREE_BLOB_BYTES }
+                : real;
+            };
+          },
+        });
+        const sut = stashPush;
+
+        // Act
+        const result = await sut({ ...ctx, fs: cappedFs }, {});
+
+        // Assert
+        expect(result.kind).toBe('saved');
+      });
+    });
+  });
+
+  describe('Given a CRLF blob in the index, text=auto and a CRLF edit', () => {
+    describe('When stash push runs', () => {
+      it('Then the W-tree blob keeps CRLF', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commitFile(ctx, 'a.txt', 'a\r\nb\r\n', 'initial commit');
+        await write(ctx, '.gitattributes', '* text=auto\n');
+        await write(ctx, 'a.txt', 'a\r\nb\r\nc\r\n');
+        const sut = stashPush;
+
+        // Act
+        const result = await sut(ctx, {});
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const wTree = (await commitOf(ctx, result.stash)).tree;
+        expect(await treeContent(ctx, wTree, 'a.txt')).toBe('a\r\nb\r\nc\r\n');
       });
     });
   });

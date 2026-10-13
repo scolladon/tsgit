@@ -186,11 +186,13 @@ describe('parseOrtStrategyOptions', () => {
   });
 
   describe.each([
-    ['no-renormalize', ['no-renormalize']],
-    ['renormalize then no-renormalize', ['renormalize', 'no-renormalize']],
-  ])('Given %s', (_label, options) => {
+    [['renormalize'], true],
+    [['no-renormalize'], false],
+    [['no-renormalize', 'renormalize'], true],
+    [['renormalize', 'no-renormalize'], false],
+  ] as const)('Given the options %j', (options, expected) => {
     describe('When parsed', () => {
-      it('Then the merge keeps git’s default of no renormalization', () => {
+      it(`Then renormalize is ${expected}`, () => {
         // Arrange
         const sut = parseOrtStrategyOptions;
 
@@ -198,45 +200,22 @@ describe('parseOrtStrategyOptions', () => {
         const result = sut(options);
 
         // Assert
-        expect(result).toEqual({ renames: {} });
+        expect(result).toEqual({ renames: {}, renormalize: expected });
       });
     });
   });
 
-  describe('Given no-renormalize then renormalize', () => {
+  describe('Given neither renormalize option', () => {
     describe('When parsed', () => {
-      it('Then it refuses the renormalization that stands', () => {
+      it('Then renormalize is absent', () => {
         // Arrange
-        const options = ['no-renormalize', 'renormalize'];
+        const sut = parseOrtStrategyOptions;
 
         // Act
-        const result = failureOf(options);
+        const result = sut(['ours']);
 
         // Assert
-        expect(result).toEqual({
-          code: 'UNSUPPORTED_OPERATION',
-          operation: 'merge',
-          reason: '-Xrenormalize',
-        });
-      });
-    });
-  });
-
-  describe.each(['renormalize'])('Given the option %j', (option) => {
-    describe('When parsed', () => {
-      it('Then it refuses as not yet supported', () => {
-        // Arrange
-        const options = [option];
-
-        // Act
-        const result = failureOf(options);
-
-        // Assert
-        expect(result).toEqual({
-          code: 'UNSUPPORTED_OPERATION',
-          operation: 'merge',
-          reason: `-X${option}`,
-        });
+        expect('renormalize' in result).toBe(false);
       });
     });
   });

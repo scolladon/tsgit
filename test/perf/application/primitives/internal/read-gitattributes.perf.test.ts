@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
-import { buildTreeAttributeProvider } from '../../../../../src/application/primitives/internal/read-gitattributes.js';
+import { buildAttributeProvider } from '../../../../../src/application/primitives/internal/read-gitattributes.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
 import { FILE_MODE, type FileMode } from '../../../../../src/domain/objects/file-mode.js';
@@ -46,14 +46,14 @@ const putDeepTreeWithAttributes = async (ctx: Context): Promise<ObjectId> => {
   return child;
 };
 
-describe('buildTreeAttributeProvider (performance)', () => {
+describe('buildAttributeProvider with a tree direction (performance)', () => {
   describe('Given a tree a thousand directories deep with a .gitattributes in every tenth one', () => {
     describe('When each directory and the leaf are resolved in walk order', () => {
       it('Then the whole walk finishes inside a linear budget', async () => {
         // Arrange
         const ctx = createMemoryContext();
         const tree = await putDeepTreeWithAttributes(ctx);
-        const provider = await buildTreeAttributeProvider(ctx, tree);
+        const provider = await buildAttributeProvider(ctx, { kind: 'tree', tree });
         const sut = provider.sourcesForPath;
 
         // Act

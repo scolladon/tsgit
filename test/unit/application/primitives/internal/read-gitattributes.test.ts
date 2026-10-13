@@ -2,15 +2,22 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
+  type AttributeDirection,
+  type AttributeProvider,
+  attributeBlobLookup,
   buildAttributeProvider,
-  buildTreeAttributeProvider,
-  maybeBuildAttributeProvider,
+  buildCheckinAttributeProvider,
 } from '../../../../../src/application/primitives/internal/read-gitattributes.js';
 import { MAX_GITATTRIBUTES_BYTES } from '../../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
 import { resolveAttribute } from '../../../../../src/domain/attributes/index.js';
-import type { TsgitError } from '../../../../../src/domain/error.js';
+import {
+  fileNotFound,
+  permissionDenied,
+  type TsgitError,
+} from '../../../../../src/domain/error.js';
+import { type IndexEntry, STAGE0_FLAGS } from '../../../../../src/domain/git-index/index-entry.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/object-id.js';
 import { treeEntry } from '../../../../../src/domain/objects/tree.js';
@@ -20,6 +27,7 @@ import {
   buildTreeChain,
   deepIndexPath,
   instrumentedContext,
+  serializeIndexFixtureAsync,
   writeLooseWithDeclaredSize,
   writeRawObjectBytes,
 } from '../fixtures.js';
@@ -567,25 +575,53 @@ describe('buildAttributeProvider', () => {
   });
 });
 
-describe('maybeBuildAttributeProvider', () => {
-  describe('Given a context without a command runner (ctx.command is undefined)', () => {
-    describe('When maybeBuildAttributeProvider is called', () => {
-      it('Then resolves to undefined (no provider built without a runner)', async () => {
+describe('attributeBlobLookup', () => {
+  describe('Given a gitlink and a regular entry named .gitattributes', () => {
+    describe('When looking each path up', () => {
+      it('Then only the regular entry is found', () => {
         // Arrange
-        const ctx = createMemoryContext();
+        const id = '1'.repeat(40) as ObjectId;
+        const entries = [
+          { path: '.gitattributes', id, mode: FILE_MODE.GITLINK },
+          { path: 'sub/.gitattributes', id, mode: FILE_MODE.REGULAR },
+        ];
+        const sut = attributeBlobLookup;
 
         // Act
-        const result = await maybeBuildAttributeProvider(ctx);
+        const lookup = sut(entries);
+        const found = [
+          lookup('.gitattributes' as FilePath),
+          lookup('sub/.gitattributes' as FilePath),
+        ];
 
-        // Assert — the conditional `ctx.command !== undefined` must be checked:
-        // when command is absent the right-hand branch must run, not always-build.
-        expect(result).toBeUndefined();
+        // Assert
+        expect(found).toEqual([undefined, id]);
+      });
+    });
+  });
+});
+
+describe('buildCheckinAttributeProvider', () => {
+  describe('Given a context without a command runner and no required filter', () => {
+    describe('When buildCheckinAttributeProvider runs', () => {
+      it('Then a provider resolving the index .gitattributes is returned', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const attrs = await putBlob(ctx, '*.txt eol=crlf\n');
+        await seedIndex(ctx, [indexEntry('.gitattributes', attrs)]);
+
+        // Act
+        const sut = buildCheckinAttributeProvider;
+        const provider = await sut(ctx);
+
+        // Assert
+        expect(await eolOf(provider, 'f.txt')).toEqual({ set: 'crlf' });
       });
     });
   });
 
   describe('Given a context with a command runner', () => {
-    describe('When maybeBuildAttributeProvider is called', () => {
+    describe('When buildCheckinAttributeProvider is called', () => {
       it('Then resolves to a defined AttributeProvider', async () => {
         // Arrange
         const ctx = createMemoryContext({
@@ -593,14 +629,352 @@ describe('maybeBuildAttributeProvider', () => {
         });
 
         // Act
-        const result = await maybeBuildAttributeProvider(ctx);
+        const result = await buildCheckinAttributeProvider(ctx);
 
         // Assert
         expect(result).toBeDefined();
       });
     });
   });
+
+  describe('Given an index with a nested stage-0 .gitattributes and a root one at stage 2 only', () => {
+    describe('When the provider resolves paths', () => {
+      it('Then the stage-2 root file governs as git reads ours, and the nested stage-0 file too', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const root = await putBlob(ctx, '*.txt eol=lf\n');
+        const nested = await putBlob(ctx, '*.txt eol=crlf\n');
+        await seedIndex(ctx, [
+          indexEntry('.gitattributes', root, 2),
+          indexEntry('sub/.gitattributes', nested),
+          indexEntry('sub/not.gitattributes', root),
+        ]);
+
+        // Act
+        const sut = buildCheckinAttributeProvider;
+        const provider = await sut(ctx);
+
+        // Assert
+        expect(await eolOf(provider, 'f.txt')).toEqual({ set: 'lf' });
+        expect(await eolOf(provider, 'sub/f.txt')).toEqual({ set: 'crlf' });
+      });
+    });
+  });
+
+  describe('Given a .gitattributes index entry that is a gitlink', () => {
+    describe('When the provider resolves f.txt', () => {
+      it('Then no attributes apply, git reading no blob for it', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const attrs = await putBlob(ctx, '*.txt eol=crlf\n');
+        await seedIndex(ctx, [indexEntry('.gitattributes', attrs, 0, FILE_MODE.GITLINK)]);
+
+        // Act
+        const sut = buildCheckinAttributeProvider;
+        const provider = await sut(ctx);
+
+        // Assert
+        expect(await eolOf(provider, 'f.txt')).toBe('unspecified');
+      });
+    });
+  });
+
+  describe('Given a .gitattributes index entry whose object is missing', () => {
+    describe('When the provider resolves f.txt', () => {
+      it('Then no attributes apply', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedIndex(ctx, [indexEntry('.gitattributes', '1'.repeat(40) as ObjectId)]);
+
+        // Act
+        const sut = buildCheckinAttributeProvider;
+        const provider = await sut(ctx);
+
+        // Assert
+        expect(await eolOf(provider, 'f.txt')).toBe('unspecified');
+      });
+    });
+  });
+
+  describe('Given a .gitattributes index entry whose object is a tree', () => {
+    describe('When the provider resolves f.txt', () => {
+      it('Then no attributes apply', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const tree = await putTree(ctx, []);
+        await seedIndex(ctx, [indexEntry('.gitattributes', tree)]);
+
+        // Act
+        const sut = buildCheckinAttributeProvider;
+        const provider = await sut(ctx);
+
+        // Assert
+        expect(await eolOf(provider, 'f.txt')).toBe('unspecified');
+      });
+    });
+  });
+
+  describe('Given a .gitattributes index entry in symlink mode', () => {
+    describe('When the provider resolves f.txt', () => {
+      it('Then the blob content applies, as git check-attr --cached reads it', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const attrs = await putBlob(ctx, '*.txt eol=crlf\n');
+        await seedIndex(ctx, [indexEntry('.gitattributes', attrs, 0, FILE_MODE.SYMLINK)]);
+
+        // Act
+        const sut = buildCheckinAttributeProvider;
+        const provider = await sut(ctx);
+
+        // Assert
+        expect(await eolOf(provider, 'f.txt')).toEqual({ set: 'crlf' });
+      });
+    });
+  });
+
+  describe('Given a .gitattributes index entry whose object cannot be inflated', () => {
+    describe('When the provider resolves f.txt', () => {
+      it('Then the corruption surfaces with its own code', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const id = 'ab'.repeat(20) as ObjectId;
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/objects/ab/${'ab'.repeat(19)}`,
+          new Uint8Array([1, 2, 3, 4]),
+        );
+        await seedIndex(ctx, [indexEntry('.gitattributes', id)]);
+        const sut = buildCheckinAttributeProvider;
+
+        // Act
+        const failure = await sut(ctx).then(
+          () => undefined,
+          (err: TsgitError) => err,
+        );
+
+        // Assert
+        expect(failure?.data.code).toBe('DECOMPRESS_FAILED');
+      });
+    });
+  });
+
+  describe('Given a work-tree root .gitattributes and an index on disk', () => {
+    describe('When the provider is built and queried for a root path', () => {
+      it('Then the index is never read', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedIndex(base, []);
+        await base.fs.writeUtf8(`${base.layout.workDir}/.gitattributes`, '*.txt eol=crlf\n');
+        const { ctx, indexReads } = countingIndexReads(base);
+
+        const sut = buildCheckinAttributeProvider;
+
+        // Act
+        const provider = await sut(ctx);
+        await eolOf(provider, 'f.txt');
+
+        // Assert
+        expect(indexReads()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given no work-tree .gitattributes and an index recording nested ones', () => {
+    describe('When the provider is queried for paths in several directories', () => {
+      it('Then the index is read once across every lookup', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const attrs = await putBlob(base, '*.txt eol=crlf\n');
+        await seedIndex(base, [
+          indexEntry('a/.gitattributes', attrs),
+          indexEntry('b/.gitattributes', attrs),
+        ]);
+        const { ctx, indexReads } = countingIndexReads(base);
+
+        const sut = buildCheckinAttributeProvider;
+
+        // Act
+        const provider = await sut(ctx);
+        const resolved = [
+          await eolOf(provider, 'a/f.txt'),
+          await eolOf(provider, 'b/f.txt'),
+          await eolOf(provider, 'c/f.txt'),
+        ];
+
+        // Assert
+        expect(resolved).toEqual([{ set: 'crlf' }, { set: 'crlf' }, 'unspecified']);
+        expect(indexReads()).toBe(1);
+      });
+    });
+  });
+
+  describe('Given the entries of an index already read', () => {
+    describe('When the provider is built from them', () => {
+      it('Then the index file is not read again and their .gitattributes applies', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const attrs = await putBlob(base, '*.txt eol=crlf\n');
+        const { ctx, indexReads } = countingIndexReads(base);
+
+        const sut = buildCheckinAttributeProvider;
+
+        // Act
+        const provider = await sut(ctx, { entries: [indexEntry('.gitattributes', attrs)] });
+
+        // Assert
+        expect(await eolOf(provider, 'f.txt')).toEqual({ set: 'crlf' });
+        expect(indexReads()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given the entries of an index already read with .gitattributes at stages 1, 2 and 3', () => {
+    describe('When the provider is built from them', () => {
+      it('Then the stage-2 .gitattributes applies, as git reads the unmerged path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const base = await putBlob(ctx, '*.txt eol=native\n');
+        const ours = await putBlob(ctx, '*.txt eol=crlf\n');
+        const theirs = await putBlob(ctx, '*.txt eol=lf\n');
+        const entries = [
+          indexEntry('.gitattributes', base, 1),
+          indexEntry('.gitattributes', ours, 2),
+          indexEntry('.gitattributes', theirs, 3),
+        ];
+        const sut = buildCheckinAttributeProvider;
+
+        // Act
+        const provider = await sut(ctx, { entries });
+
+        // Assert
+        expect(await eolOf(provider, 'f.txt')).toEqual({ set: 'crlf' });
+      });
+    });
+  });
+
+  describe('Given a corrupt index header', () => {
+    describe('When buildCheckinAttributeProvider runs', () => {
+      it('Then it tolerates the index as empty, as add does', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.write(`${ctx.layout.gitDir}/index`, new Uint8Array(40));
+
+        // Act
+        const sut = buildCheckinAttributeProvider;
+        const provider = await sut(ctx);
+
+        // Assert
+        expect(await eolOf(provider, 'f.txt')).toBe('unspecified');
+      });
+    });
+  });
+
+  describe('Given an index file that exists but vanishes before it is read', () => {
+    describe('When buildCheckinAttributeProvider runs', () => {
+      it('Then it tolerates the missing index as empty', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const ctx = withFailingIndexReads(base, fileNotFound(`${base.layout.gitDir}/index`));
+
+        // Act
+        const sut = buildCheckinAttributeProvider;
+        const provider = await sut(ctx);
+
+        // Assert
+        expect(await eolOf(provider, 'f.txt')).toBe('unspecified');
+      });
+    });
+  });
+
+  describe('Given a valid index header followed by an entry with a rejected path', () => {
+    describe('When buildCheckinAttributeProvider runs', () => {
+      it('Then it tolerates the garbage index as empty, as add does', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedIndex(ctx, [indexEntry('../escape', '1'.repeat(40) as ObjectId)]);
+
+        // Act
+        const sut = buildCheckinAttributeProvider;
+        const provider = await sut(ctx);
+
+        // Assert
+        expect(await eolOf(provider, 'f.txt')).toBe('unspecified');
+      });
+    });
+  });
+
+  describe('Given an index read failing with a permission error', () => {
+    describe('When buildCheckinAttributeProvider runs', () => {
+      it('Then it rejects with that error code', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const ctx = withFailingIndexReads(base, permissionDenied(`${base.layout.gitDir}/index`));
+        const sut = buildCheckinAttributeProvider;
+
+        // Act
+        const failure = await sut(ctx).then(
+          () => undefined,
+          (err: TsgitError) => err,
+        );
+
+        // Assert
+        expect(failure?.data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+
+  describe('Given an index read failing with another error', () => {
+    describe('When buildCheckinAttributeProvider runs', () => {
+      it('Then the error propagates', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const boom = new Error('disk on fire');
+        const ctx = { ...base, fs: { ...base.fs, exists: () => Promise.reject(boom) } } as Context;
+
+        // Act
+        const act = buildCheckinAttributeProvider(ctx);
+
+        // Assert
+        await expect(act).rejects.toBe(boom);
+      });
+    });
+  });
 });
+
+const INDEX_READERS = new Set<string | symbol>(['stat', 'tryStat', 'read', 'readUtf8']);
+
+/** The index file reports as present, and every read of it fails with `error`; other files behave. */
+const withFailingIndexReads = (base: Context, error: TsgitError): Context => {
+  const isIndex = (path: unknown): boolean => String(path).endsWith('/index');
+  const fs = new Proxy(base.fs, {
+    get(target, prop, receiver) {
+      const original = Reflect.get(target, prop, receiver);
+      if (prop === 'exists') {
+        return (path: string) =>
+          isIndex(path) ? Promise.resolve(true) : original.call(target, path);
+      }
+      if (!INDEX_READERS.has(prop)) return original;
+      return (path: string, ...rest: unknown[]) =>
+        isIndex(path) ? Promise.reject(error) : original.call(target, path, ...rest);
+    },
+  });
+  return { ...base, fs } as Context;
+};
+
+/** Counts reads of the index file (not its stats), whatever the reader. */
+const countingIndexReads = (base: Context): { ctx: Context; indexReads: () => number } => {
+  let reads = 0;
+  const fs = new Proxy(base.fs, {
+    get(target, prop, receiver) {
+      const original = Reflect.get(target, prop, receiver);
+      if (prop !== 'read') return original;
+      return (path: string, ...rest: unknown[]) => {
+        if (String(path).endsWith('/index')) reads += 1;
+        return original.call(target, path, ...rest);
+      };
+    },
+  });
+  return { ctx: { ...base, fs } as Context, indexReads: () => reads };
+};
 
 const putBlob = (ctx: Context, content: string): Promise<ObjectId> =>
   writeObject(ctx, {
@@ -617,6 +991,9 @@ const putTree = (
     ctx,
     entries.map(([mode, name, id]) => treeEntry(mode as never, name, id)),
   );
+
+const buildTreeAttributeProvider = (ctx: Context, tree: ObjectId) =>
+  buildAttributeProvider(ctx, { kind: 'tree', tree });
 
 const treeResolve = async (
   ctx: Context,
@@ -645,7 +1022,7 @@ const putDeepTreeWithAttributes = async (ctx: Context, depth: number): Promise<O
   return child;
 };
 
-describe('buildTreeAttributeProvider', () => {
+describe('buildAttributeProvider with a tree direction', () => {
   describe('Given a tree with a root and a nested .gitattributes', () => {
     describe('When resolving paths', () => {
       it.each([
@@ -995,6 +1372,156 @@ describe('buildTreeAttributeProvider', () => {
           ...Array.from({ length: 100 }, (_unused, tenth) => deepIndexPath(999 - 10 * tenth)),
           '',
         ]);
+      });
+    });
+  });
+});
+
+const indexEntry = (
+  path: string,
+  id: ObjectId,
+  stage: 0 | 1 | 2 | 3 = 0,
+  mode: IndexEntry['mode'] = FILE_MODE.REGULAR,
+): IndexEntry => ({
+  ctimeSeconds: 0,
+  ctimeNanoseconds: 0,
+  mtimeSeconds: 0,
+  mtimeNanoseconds: 0,
+  dev: 0,
+  ino: 0,
+  mode,
+  uid: 0,
+  gid: 0,
+  fileSize: 0,
+  id,
+  flags: { ...STAGE0_FLAGS, stage },
+  path: path as FilePath,
+});
+
+const seedIndex = async (ctx: Context, entries: ReadonlyArray<IndexEntry>): Promise<void> => {
+  const bytes = await serializeIndexFixtureAsync(
+    { version: 2, entries: [...entries], extensions: [], trailerSha: new Uint8Array(0) },
+    ctx,
+  );
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, bytes);
+};
+
+const eolOf = async (provider: AttributeProvider | undefined, path: string): Promise<unknown> => {
+  const { sources, macros } = await (provider as AttributeProvider).sourcesForPath(
+    path as FilePath,
+  );
+  return resolveAttribute(sources, path, 'eol', macros);
+};
+
+const lookupOf =
+  (files: Readonly<Record<string, ObjectId>>) =>
+  (path: FilePath): ObjectId | undefined =>
+    files[path];
+
+describe('buildAttributeProvider with an index direction', () => {
+  describe('Given an index .gitattributes and no worktree file', () => {
+    describe('When a worktree-first provider resolves f.txt', () => {
+      it('Then eol is { set: crlf }', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const attrs = await putBlob(ctx, '*.txt eol=crlf\n');
+        const direction: AttributeDirection = {
+          kind: 'worktree-first',
+          index: lookupOf({ '.gitattributes': attrs }),
+        };
+
+        // Act
+        const sut = buildAttributeProvider;
+        const provider = await sut(ctx, direction);
+
+        // Assert
+        expect(await eolOf(provider, 'f.txt')).toEqual({ set: 'crlf' });
+      });
+    });
+  });
+
+  describe('Given index *.txt eol=crlf and worktree *.txt eol=lf', () => {
+    const arrange = async () => {
+      const ctx = createMemoryContext();
+      await seed(ctx, '/repo/.gitattributes', '*.txt eol=lf\n');
+      const attrs = await putBlob(ctx, '*.txt eol=crlf\n');
+      return { ctx, index: lookupOf({ '.gitattributes': attrs }) };
+    };
+
+    describe('When a provider of each direction resolves f.txt', () => {
+      it.each([
+        { kind: 'worktree-first', expected: { set: 'lf' } },
+        { kind: 'index-first', expected: { set: 'crlf' } },
+      ] as const)('Then $kind resolves eol to $expected', async ({ kind, expected }) => {
+        // Arrange
+        const { ctx, index } = await arrange();
+
+        // Act
+        const sut = buildAttributeProvider;
+        const provider = await sut(ctx, { kind, index });
+
+        // Assert
+        expect(await eolOf(provider, 'f.txt')).toEqual(expected);
+      });
+    });
+
+    describe('When an index-first provider resolves a file the index lacks', () => {
+      it('Then index-first falls back to the worktree when the index lacks the file', async () => {
+        // Arrange
+        const { ctx } = await arrange();
+
+        // Act
+        const sut = buildAttributeProvider;
+        const provider = await sut(ctx, { kind: 'index-first', index: lookupOf({}) });
+
+        // Assert
+        expect(await eolOf(provider, 'f.txt')).toEqual({ set: 'lf' });
+      });
+    });
+  });
+
+  describe('Given a nested index .gitattributes', () => {
+    describe('When an index-first provider resolves a path under it', () => {
+      it('Then the directory file is looked up as <dir>/.gitattributes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const attrs = await putBlob(ctx, '*.txt eol=crlf\n');
+        const index = lookupOf({ 'sub/.gitattributes': attrs });
+
+        // Act
+        const sut = buildAttributeProvider;
+        const provider = await sut(ctx, { kind: 'index-first', index });
+
+        // Assert
+        expect(await eolOf(provider, 'sub/f.txt')).toEqual({ set: 'crlf' });
+        expect(await eolOf(provider, 'f.txt')).toBe('unspecified');
+      });
+    });
+  });
+
+  describe('Given an index .gitattributes blob over the size cap', () => {
+    describe('When building the provider', () => {
+      it('Then the read refuses as the tree reader does', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const attrs = await putBlob(ctx, 'x'.repeat(MAX_GITATTRIBUTES_BYTES + 1));
+        const index = lookupOf({ '.gitattributes': attrs });
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await buildAttributeProvider(ctx, { kind: 'index-first', index });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'GITATTRIBUTES_FILE_TOO_LARGE',
+          path: '.gitattributes',
+          size: MAX_GITATTRIBUTES_BYTES + 1,
+          limit: MAX_GITATTRIBUTES_BYTES,
+        });
       });
     });
   });

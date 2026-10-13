@@ -7,6 +7,7 @@ import {
   invalidateConfigCache,
 } from '../../../../../src/application/primitives/config-read.js';
 import {
+  assertEagerConfigValid,
   assertOperationalRepository,
   assertRepository,
 } from '../../../../../src/application/primitives/internal/repo-state.js';
@@ -409,6 +410,89 @@ describe('primitives/internal/repo-state', () => {
             { method: 'lstat', path: headPath(ctx) },
           ]);
         });
+      });
+    });
+  });
+
+  describe('Given a bad core.autocrlf or core.safecrlf', () => {
+    describe('When assertEagerConfigValid', () => {
+      it.each([{ key: 'autocrlf' }, { key: 'safecrlf' }])(
+        'Then core.$key = foo is refused with CONFIG_BAD_BOOLEAN_VALUE',
+        async ({ key }) => {
+          // Arrange
+          const ctx = await seededCtx();
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[core]\n\t${key} = foo\n`);
+
+          // Act
+          const caught = await catchTsgitError(() => assertEagerConfigValid(ctx));
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = caught.data as { code: string; key: string; value: string };
+          expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+          expect(data.key).toBe(`core.${key}`);
+          expect(data.value).toBe('foo');
+        },
+      );
+    });
+  });
+
+  describe('Given core.autocrlf = foo on line 3 and core.ignorecase = maybe on line 2', () => {
+    describe('When assertEagerConfigValid', () => {
+      it('Then the lower line wins', async () => {
+        // Arrange
+        const ctx = await seededCtx();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[core]\n\tignorecase = maybe\n\tautocrlf = foo\n',
+        );
+
+        // Act
+        const caught = await catchTsgitError(() => assertEagerConfigValid(ctx));
+
+        // Assert
+        expect((caught.data as { key: string }).key).toBe('core.ignorecase');
+      });
+    });
+  });
+
+  describe('Given core.safecrlf = foo on line 2 and core.autocrlf = foo on line 3', () => {
+    describe('When assertEagerConfigValid', () => {
+      it('Then the lower line wins', async () => {
+        // Arrange
+        const ctx = await seededCtx();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[core]\n\tsafecrlf = foo\n\tautocrlf = foo\n',
+        );
+
+        // Act
+        const caught = await catchTsgitError(() => assertEagerConfigValid(ctx));
+
+        // Assert
+        expect((caught.data as { key: string }).key).toBe('core.safecrlf');
+      });
+    });
+  });
+
+  describe('Given values every grammar accepts or ignores', () => {
+    describe('When assertEagerConfigValid', () => {
+      it.each([
+        '[core]\n\teol = foo\n',
+        '[core]\n\tautocrlf = input\n',
+        '[core]\n\tautocrlf = INPUT\n\tsafecrlf = WARN\n',
+        '[core]\n\tautocrlf\n\tsafecrlf\n\teol\n',
+        '[core]\n\tautocrlf =\n\tsafecrlf =\n\teol =\n',
+      ])('Then %j does not throw', async (config) => {
+        // Arrange
+        const ctx = await seededCtx();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+
+        // Act
+        const result = await assertEagerConfigValid(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
       });
     });
   });

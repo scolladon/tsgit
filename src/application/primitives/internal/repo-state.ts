@@ -33,6 +33,7 @@ import {
 } from '../../../domain/sequencer/operation-labels.js';
 import type { Context, RepositoryFormatRefusal } from '../../../ports/context.js';
 import {
+  findFirstInvalidAutoCrlf,
   findFirstInvalidAutoSetupMerge,
   findFirstInvalidAutoSetupRebase,
   findFirstInvalidBoolean,
@@ -41,6 +42,7 @@ import {
   findFirstInvalidDiffBinary,
   findFirstInvalidDisambiguate,
   findFirstInvalidLogAllRefUpdates,
+  findFirstInvalidSafeCrlf,
   findFirstValuelessEntry,
   findFirstValuelessInSection,
   type InvalidBooleanEntry,
@@ -226,14 +228,17 @@ const throwEagerCandidate = (candidate: EagerCandidate): never => {
  * when every class is valid or absent.
  */
 export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
-  const [str, comp, boolCore, logAllRefUpdates, autoSetupMerge, disambiguate] = await Promise.all([
-    findFirstValuelessEntry(ctx, 'core', undefined, CORE_STRING_KEYS),
-    findFirstInvalidCompression(ctx),
-    findFirstInvalidBoolean(ctx, 'core', undefined, CORE_BOOLEAN_KEYS),
-    findFirstInvalidLogAllRefUpdates(ctx),
-    findFirstInvalidAutoSetupMerge(ctx),
-    findFirstInvalidDisambiguate(ctx),
-  ]);
+  const [str, comp, boolCore, logAllRefUpdates, autoCrlf, safeCrlf, autoSetupMerge, disambiguate] =
+    await Promise.all([
+      findFirstValuelessEntry(ctx, 'core', undefined, CORE_STRING_KEYS),
+      findFirstInvalidCompression(ctx),
+      findFirstInvalidBoolean(ctx, 'core', undefined, CORE_BOOLEAN_KEYS),
+      findFirstInvalidLogAllRefUpdates(ctx),
+      findFirstInvalidAutoCrlf(ctx),
+      findFirstInvalidSafeCrlf(ctx),
+      findFirstInvalidAutoSetupMerge(ctx),
+      findFirstInvalidDisambiguate(ctx),
+    ]);
   const branchCandidates = await autoSetupRebaseCandidates(ctx);
   const diffCandidates = await diffDriverCandidates(ctx);
   const candidates: ReadonlyArray<EagerCandidate | undefined> = [
@@ -243,6 +248,8 @@ export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
     logAllRefUpdates === undefined
       ? undefined
       : { kind: 'boolean', line: logAllRefUpdates.line, entry: logAllRefUpdates },
+    autoCrlf === undefined ? undefined : { kind: 'boolean', line: autoCrlf.line, entry: autoCrlf },
+    safeCrlf === undefined ? undefined : { kind: 'boolean', line: safeCrlf.line, entry: safeCrlf },
     autoSetupMerge === undefined
       ? undefined
       : { kind: 'boolean', line: autoSetupMerge.line, entry: autoSetupMerge },

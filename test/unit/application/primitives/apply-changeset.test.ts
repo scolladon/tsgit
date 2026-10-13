@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
-import { applyChangeset } from '../../../../src/application/primitives/apply-changeset.js';
+import {
+  applyChangeset,
+  isWorkingTreeDirty,
+} from '../../../../src/application/primitives/apply-changeset.js';
 import type {
   Changeset,
   ChangesetEntry,
 } from '../../../../src/application/primitives/compute-changeset.js';
+import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import * as blobSourceMod from '../../../../src/application/primitives/internal/blob-source.js';
 import * as concurrencyMod from '../../../../src/application/primitives/internal/concurrency.js';
 import * as readGitattributesMod from '../../../../src/application/primitives/internal/read-gitattributes.js';
@@ -707,7 +711,8 @@ describe('applyChangeset', () => {
   describe('Given an update whose target file is missing (FILE_NOT_FOUND on read) and force=false', () => {
     describe('When applyChangeset runs', () => {
       it('Then treats it as non-dirty and applies without throwing', async () => {
-        // Arrange — file exists() reports present but read() throws FILE_NOT_FOUND (race-gone file)
+        // Arrange — the no-follow presence probe reports the path occupied, but the
+        // read that follows finds it gone (race-gone file)
         const ctx = await buildSeededContext();
         const oldId = await writeBlob(ctx, new TextEncoder().encode('original'));
         const newId = await writeBlob(ctx, new TextEncoder().encode('updated'));
@@ -715,8 +720,8 @@ describe('applyChangeset', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            exists: async (p: string): Promise<boolean> =>
-              p === `${WORKDIR}/gone.txt` ? true : ctx.fs.exists(p),
+            lexists: async (p: string): Promise<boolean> =>
+              p === `${WORKDIR}/gone.txt` ? true : (ctx.fs.lexists ?? ctx.fs.exists)(p),
             read: async (p: string): Promise<Uint8Array> => {
               if (p === `${WORKDIR}/gone.txt`) {
                 throw new TsgitError({ code: 'FILE_NOT_FOUND', path: p });
@@ -1637,10 +1642,10 @@ describe('applyChangeset', () => {
     });
   });
 
-  describe('Given a regular file add with a filter attribute but no ctx.command', () => {
+  describe('Given a regular file add with a filter attribute, an optional driver and no ctx.command', () => {
     describe('When applyChangeset runs', () => {
-      it('Then the worktree file contains the verbatim blob bytes and locateBlob is used', async () => {
-        // Arrange — no command in ctx (ADR-408 inert fallback)
+      it('Then the worktree file contains the verbatim blob bytes, the attribute provider now being built without a runner', async () => {
+        // Arrange — no command in ctx
         const ctx = await buildSeededContext();
         const blobContent = enc('HELLO WORLD');
         const id = await writeBlob(ctx, blobContent);
@@ -1649,8 +1654,6 @@ describe('applyChangeset', () => {
           `${ctx.layout.gitDir}/config`,
           '[filter "myf"]\n\tsmudge = lowercase\n',
         );
-        const locateBlobSpy = vi.spyOn(blobSourceMod, 'locateBlob');
-        const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
         // Act — ctx has no command
         await applyChangeset(ctx, {
           changeset: makeChangeset([makeAdd('a.y', id)]),
@@ -1658,14 +1661,9 @@ describe('applyChangeset', () => {
           workdir: WORKDIR,
         });
 
-        // Assert — identity (no runner): verbatim blob bytes; streaming path taken
+        // Assert — an optional driver that cannot start leaves the stored bytes
         const written = await ctx.fs.read(`${WORKDIR}/a.y`);
         expect(dec(written)).toBe('HELLO WORLD');
-        expect(locateBlobSpy).toHaveBeenCalledOnce();
-        expect(writeStreamSpy).toHaveBeenCalledOnce();
-
-        locateBlobSpy.mockRestore();
-        writeStreamSpy.mockRestore();
       });
     });
   });
@@ -2428,6 +2426,182 @@ describe('applyChangeset write order under a long-running filter', () => {
 
         // Assert
         expect(result).toEqual(expected);
+      });
+    });
+  });
+});
+
+describe('applyChangeset dirty probe under line-ending conversion', () => {
+  const autocrlfContext = async (): Promise<Context> => {
+    const ctx = await buildSeededContext();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tautocrlf = true\n');
+    invalidateConfigCache(ctx);
+    return ctx;
+  };
+
+  describe('Given core.autocrlf true, an LF blob checked out as CRLF and a switch that rewrites the path', () => {
+    describe('When applyChangeset runs not forced', () => {
+      it('Then there is no would-overwrite refusal and the new blob lands as CRLF', async () => {
+        // Arrange
+        const ctx = await autocrlfContext();
+        const oldId = await writeBlob(ctx, enc('a\nb\n'));
+        const newId = await writeBlob(ctx, enc('c\nd\n'));
+        await ctx.fs.write(`${WORKDIR}/f.txt`, enc('a\r\nb\r\n'));
+        const changeset = makeChangeset([makeUpdate('f.txt', oldId, newId)]);
+
+        // Act
+        await applyChangeset(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f.txt`))).toBe('c\r\nd\r\n');
+      });
+    });
+  });
+
+  describe('Given core.autocrlf true and a CRLF file edited after checkout', () => {
+    describe('When applyChangeset runs not forced', () => {
+      it('Then the path is refused as a local change', async () => {
+        // Arrange
+        const ctx = await autocrlfContext();
+        const oldId = await writeBlob(ctx, enc('a\nb\n'));
+        const newId = await writeBlob(ctx, enc('c\nd\n'));
+        await ctx.fs.write(`${WORKDIR}/f.txt`, enc('a\r\nedited\r\n'));
+        const changeset = makeChangeset([makeUpdate('f.txt', oldId, newId)]);
+
+        // Act
+        const outcome = await outcomeOf(
+          applyChangeset(ctx, { changeset, force: false, workdir: WORKDIR }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: ['f.txt'],
+        });
+      });
+    });
+  });
+
+  describe('Given core.autocrlf true and a symlink whose target holds a CR', () => {
+    describe('When isWorkingTreeDirty compares it against the stored target', () => {
+      it('Then the link target is compared raw', async () => {
+        // Arrange
+        const ctx = await autocrlfContext();
+        const target = 'a\r\nb';
+        const id = await writeBlob(ctx, enc(target));
+        await ctx.fs.symlink(target, `${WORKDIR}/link`);
+
+        // Act
+        const result = await isWorkingTreeDirty(ctx, `${WORKDIR}/link`, id);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given text for every path and a symlink whose target holds a CR', () => {
+    describe('When isWorkingTreeDirty compares it against the stored target', () => {
+      it('Then the link target is compared raw', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const target = 'a\r\nb';
+        const id = await writeBlob(ctx, enc(target));
+        await ctx.fs.write(`${WORKDIR}/.gitattributes`, enc('* text\n'));
+        await ctx.fs.symlink(target, `${WORKDIR}/link`);
+        const sut = isWorkingTreeDirty;
+
+        // Act
+        const result = await sut(ctx, `${WORKDIR}/link`, id);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an attribute anchored on the repo-relative path and a CRLF file of an LF blob', () => {
+    describe('When isWorkingTreeDirty compares the nested file', () => {
+      it('Then the anchored text attribute applies and the file is clean', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('a\nb\n'));
+        await ctx.fs.write(`${WORKDIR}/.gitattributes`, enc('/sub/f.txt text\n'));
+        await ctx.fs.write(`${WORKDIR}/sub/f.txt`, enc('a\r\nb\r\n'));
+        const sut = isWorkingTreeDirty;
+
+        // Act
+        const result = await sut(ctx, `${WORKDIR}/sub/f.txt`, id);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given text=auto and a CRLF file whose index blob already holds CRLF', () => {
+    describe('When isWorkingTreeDirty compares it against that blob', () => {
+      it('Then the file is clean', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('a\r\nb\r\n'));
+        await ctx.fs.write(`${WORKDIR}/.gitattributes`, enc('* text=auto\n'));
+        await ctx.fs.write(`${WORKDIR}/f.txt`, enc('a\r\nb\r\n'));
+        const sut = isWorkingTreeDirty;
+
+        // Act
+        const result = await sut(ctx, `${WORKDIR}/f.txt`, id);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a filter section whose required value git refuses', () => {
+    describe('When isWorkingTreeDirty compares a file', () => {
+      it('Then it refuses CONFIG_BAD_BOOLEAN_VALUE naming filter.x.required', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[filter "x"]\n\trequired = foo\n');
+        invalidateConfigCache(ctx);
+        const id = await writeBlob(ctx, enc('a\n'));
+        await ctx.fs.write(`${WORKDIR}/f.txt`, enc('a\n'));
+        const sut = isWorkingTreeDirty;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, `${WORKDIR}/f.txt`, id);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        if (!(caught instanceof TsgitError)) throw new Error('expected a TsgitError');
+        expect(caught.data).toMatchObject({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'filter.x.required',
+          value: 'foo',
+        });
+      });
+    });
+  });
+
+  describe('Given core.autocrlf true and a CRLF file of an LF blob', () => {
+    describe('When isWorkingTreeDirty is called with its three public arguments', () => {
+      it('Then the file is clean', async () => {
+        // Arrange
+        const ctx = await autocrlfContext();
+        const id = await writeBlob(ctx, enc('a\nb\n'));
+        await ctx.fs.write(`${WORKDIR}/f.txt`, enc('a\r\nb\r\n'));
+
+        // Act
+        const result = await isWorkingTreeDirty(ctx, `${WORKDIR}/f.txt`, id);
+
+        // Assert
+        expect(result).toBe(false);
+        expect(isWorkingTreeDirty.length).toBe(3);
       });
     });
   });

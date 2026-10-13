@@ -49,18 +49,12 @@ const outcomeOf = (run: () => unknown): unknown => {
 };
 
 const expectKnownRefusal = (error: TsgitError, options: ReadonlyArray<string>): void => {
-  if (error.data.code === 'UNSUPPORTED_OPERATION') {
-    expect(options).toContain('renormalize');
-    expect(error.data).toEqual({
-      code: 'UNSUPPORTED_OPERATION',
-      operation: 'merge',
-      reason: '-Xrenormalize',
-    });
-    return;
-  }
   expect(error.data.code).toBe('UNKNOWN_STRATEGY_OPTION');
   expect(options).toContain((error.data as { readonly option: string }).option);
 };
+
+const lastRenormalizeOption = (options: ReadonlyArray<string>): string | undefined =>
+  options.filter((o) => o === 'renormalize' || o === 'no-renormalize').at(-1);
 
 describe('parseOrtStrategyOptions properties', () => {
   describe('Given an arbitrary list of -X values', () => {
@@ -83,6 +77,10 @@ describe('parseOrtStrategyOptions properties', () => {
               (result as ReturnType<typeof parseOrtStrategyOptions>).renames.threshold ?? 0;
             expect(threshold).toBeGreaterThanOrEqual(0);
             expect(threshold).toBeLessThanOrEqual(MAX_SCORE);
+            const last = lastRenormalizeOption(options);
+            expect((result as ReturnType<typeof parseOrtStrategyOptions>).renormalize).toBe(
+              last === undefined ? undefined : last === 'renormalize',
+            );
           }),
           { numRuns: NUM_RUNS },
         );

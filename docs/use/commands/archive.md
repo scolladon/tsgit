@@ -52,6 +52,7 @@ interface ArchiveEntry {
   held back until a non-directory descendant passes its own check, so a
   directory with nothing left to export is never emitted, and `dir/**` keeps
   `dir` itself. A gitlink is matched as `path/`.
+- **Line-ending conversion.** Each regular file is converted to its working-tree form before it is archived, as `git archive` does (`convert_to_working_tree`): `core.autocrlf` / `core.eol` plus the `text`, `eol`, `ident` attributes and any smudge filter driver (`filter=<name>`). Attributes are read in the tree direction: the archived tree's own `.gitattributes`, then `.git/info/attributes` and `core.attributesFile`, never the working tree or the index. The conversion runs in core on the whole blob and happens **before** `export-subst`, so substitution sees the converted bytes. The filter receives `{ ref?, treeish }` as checkout metadata: `ref` is the ref name `treeish` resolved to (absent for an oid or raw tree), `treeish` the commit (or bare tree) id archived. A path with no conversion keeps the streaming read. Symlinks and gitlinks are not converted.
 - **`export-subst`.** A regular file with `export-subst` set has its
   `$Format:<format>$` occurrences expanded against the archived commit, with
   git's pretty-format placeholders; the file is read whole whatever its size.

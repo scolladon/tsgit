@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { buildAttributeProvider } from '../../../../src/application/primitives/internal/read-gitattributes.js';
-import { resolveFilterDriver } from '../../../../src/application/primitives/resolve-filter-driver.js';
+import {
+  filterChoiceFromSources,
+  resolveFilterDriver,
+} from '../../../../src/application/primitives/resolve-filter-driver.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -329,6 +332,26 @@ describe('resolveFilterDriver', () => {
 
         // Assert
         expect(result).toEqual({ kind: 'identity' });
+      });
+    });
+  });
+});
+
+describe('filterChoiceFromSources', () => {
+  describe('Given a filter attribute reached through a macro expansion', () => {
+    describe('When choosing from the fetched sources', () => {
+      it('Then the macro-supplied driver is external', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[attr]mine filter=myf\n*.y mine\n', '[filter "myf"]\n\tclean = up\n');
+        const provider = await buildAttributeProvider(ctx);
+        const { sources, macros } = await provider.sourcesForPath('a.y' as FilePath);
+
+        // Act
+        const result = await filterChoiceFromSources(ctx, sources, macros, 'a.y' as FilePath);
+
+        // Assert
+        expect(result).toEqual({ kind: 'external', name: 'myf', clean: 'up', required: false });
       });
     });
   });

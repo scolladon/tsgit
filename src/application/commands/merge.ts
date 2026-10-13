@@ -53,8 +53,19 @@ import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
 import { abbreviateObjectId } from '../primitives/abbreviate-object-id.js';
-import { conflictResultTree } from '../primitives/apply-merge-to-worktree.js';
-import { buildContentMerger } from '../primitives/build-content-merger.js';
+import {
+  conflictResultTree,
+  createMergeResultWriter,
+  type DeletedOutcome,
+  isDeleted,
+  removeChangedOutcome,
+} from '../primitives/apply-merge-to-worktree.js';
+import {
+  buildBlobUnchanged,
+  buildContentMerger,
+  type ContentMergeSettings,
+  type RenormalizeSettings,
+} from '../primitives/build-content-merger.js';
 import { readConfig } from '../primitives/config-read.js';
 import { createCommitWithStoredHeaders } from '../primitives/create-commit.js';
 import { detectMergeRenames } from '../primitives/detect-merge-renames.js';
@@ -62,22 +73,21 @@ import { changedPaths, findWouldOverwrite } from '../primitives/find-would-overw
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { writeAutoMerge } from '../primitives/internal/auto-merge-ref.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
-import { readUiDiffAlgorithm } from '../primitives/internal/merge-rename-config.js';
+import {
+  readMergeRenormalize,
+  readUiDiffAlgorithm,
+} from '../primitives/internal/merge-rename-config.js';
 import { mergedBlobEntries } from '../primitives/internal/merged-blob-entries.js';
 import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
+import { renormalizeAttributeLookup } from '../primitives/internal/renormalize-attributes.js';
 import { resolveMaxTreeDepth } from '../primitives/internal/resolve-max-tree-depth.js';
 import {
   createLeadingPathScanner,
   type LeadingPathScanner,
 } from '../primitives/internal/symlinked-leading-path.js';
 import { validateMergeWritePaths } from '../primitives/internal/validate-merge-write-paths.js';
+import type { WorkingTreeWriter } from '../primitives/internal/write-converted-entry.js';
 import { writeDistinctTypesSides } from '../primitives/internal/write-distinct-types-sides.js';
-import {
-  removeWorkingTreeFile,
-  writeWorkingTreeEntry,
-  writeWorkingTreeFile,
-  writeWorkingTreeFileStream,
-} from '../primitives/internal/write-working-tree-file.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { mergeBasesOf, tryMergeBasesOf, tryReduceHeads } from '../primitives/merge-base.js';
 import { mergeCollidingRenameSources } from '../primitives/merge-colliding-rename-sources.js';
@@ -224,9 +234,10 @@ export interface MergeRunInput {
    * `patience`, `histogram` and
    * `diff-algorithm=myers|default|minimal|patience|histogram` (the last
    * algorithm named wins; ort's own default is histogram), and
-   * `no-renormalize`; a standing
-   * `renormalize` and the other options git knows refuse with
-   * `UNSUPPORTED_OPERATION`, any other with `UNKNOWN_STRATEGY_OPTION`.
+   * `renormalize` / `no-renormalize` (the last one named wins over
+   * `merge.renormalize`: every merged blob is converted through the
+   * attributes the sides carry before it is compared), and any other option
+   * refuses with `UNKNOWN_STRATEGY_OPTION`.
    * `resolve` fails on any option, as git's `read-tree` refuses them;
    * `octopus` and `ours` ignore them.
    */
@@ -768,7 +779,14 @@ const ortSettings = async (
   const implied = strategy === SUBTREE_STRATEGY ? [SUBTREE_STRATEGY] : [];
   const xOptions = parseOrtStrategyOptions([...implied, ...(opts.strategyOptions ?? [])]);
   const configured = await readUiDiffAlgorithm(ctx);
-  return configured === undefined ? xOptions : { diffAlgorithm: configured, ...xOptions };
+  // git reads the config at startup, so an unparsable value refuses even when `-X` decides.
+  const configuredRenormalize = await readMergeRenormalize(ctx);
+  const renormalize = xOptions.renormalize ?? configuredRenormalize ?? false;
+  return {
+    ...(configured === undefined ? {} : { diffAlgorithm: configured }),
+    ...xOptions,
+    renormalize,
+  };
 };
 
 const ortAttempt = async (
@@ -1248,6 +1266,12 @@ interface MergeTreeInput {
   readonly strategy: OrtStrategyOptions;
 }
 
+/** The strategy's boolean `renormalize` becomes the content merger's resolved attribute settings. */
+const contentSettings = (
+  { renormalize: _requested, ...settings }: OrtStrategyOptions,
+  renormalize: RenormalizeSettings | undefined,
+): ContentMergeSettings => (renormalize === undefined ? settings : { ...settings, renormalize });
+
 const computeMergeTreeResult = async (
   ctx: Context,
   input: MergeTreeInput,
@@ -1256,8 +1280,11 @@ const computeMergeTreeResult = async (
   const { strategy } = input;
   const trees = await readMergeSides(ctx, input);
   const labels: MergeLabels = mergeLabels(revName, input.baseId);
-  const contentMerger = buildContentMerger(ctx, labels, strategy);
   const { base, ours, theirs } = trees;
+  const renormalize = strategy.renormalize
+    ? { attributes: renormalizeAttributeLookup(base, ours, theirs) }
+    : undefined;
+  const contentMerger = buildContentMerger(ctx, labels, contentSettings(strategy, renormalize));
   const detected = await detectMergeRenames(ctx, base, ours, theirs, strategy.renames);
   const renames = await mergeCollidingRenameSources(ctx, trees, detected, contentMerger);
   const merged = await mergeTrees(
@@ -1268,6 +1295,7 @@ const computeMergeTreeResult = async (
     labels,
     renames,
     strategy.variant,
+    renormalize && buildBlobUnchanged(ctx, renormalize),
   );
   return settleMergeTree(ctx, merged, ours);
 };
@@ -1705,14 +1733,22 @@ const writeConflictingWorkingTree = async (
   // same symlinked directory costs one `lstat` per distinct directory, not
   // one per path.
   const scanner = createLeadingPathScanner(ctx);
+  // Every deletion lands before the writer reads attributes, as git unlinks
+  // before its first checkout: a deleted `.gitattributes` must not govern the writes.
+  await runBounded(ctx, touched.filter(isDeleted), (outcome) => removeChangedOutcome(ctx, outcome));
+  const writer = await createMergeResultWriter(ctx, outcomes, conflicts);
   // Bounded parallelism — independent path writes overlap, but the pool
   // caps in-flight at the ioBound policy so a 10k-path merge doesn't
   // exhaust file descriptors.
-  await runBounded(ctx, touched, (outcome) => writeOutcomeToTree(ctx, outcome, matcher, scanner));
+  await runBounded(ctx, touched.filter(isWrite), (outcome) =>
+    writeOutcomeToTree(outcome, matcher, writer, scanner),
+  );
   // Conflicted paths are materialised even when sparse-excluded — a conflict
   // the user cannot see is unresolvable, so `writeConflictToTree` takes no
   // matcher.
-  await runBounded(ctx, conflicts, (conflict) => writeConflictToTree(ctx, conflict, scanner));
+  await runBounded(ctx, conflicts, (conflict) =>
+    writeConflictToTree(ctx, conflict, writer, scanner),
+  );
 };
 
 /**
@@ -1728,6 +1764,10 @@ const runBounded = async <T>(
   await boundedMapFor(ctx, 'ioBound', items, fn);
 };
 
+type WrittenOutcome = Exclude<MergeOutcome, DeletedOutcome>;
+
+const isWrite = (outcome: MergeOutcome): outcome is WrittenOutcome => !isDeleted(outcome);
+
 /**
  * Write a single merge outcome to the working tree. Exported for direct unit
  * testing.
@@ -1737,51 +1777,35 @@ const runBounded = async <T>(
  *   excluded path is skipped — the working tree keeps only in-pattern files.
  * - `resolved-merged` carries its merged bytes in memory only; this write is
  *   their sole persistence, so the path is always materialised.
- * - `resolved-deleted` needs no guard — an excluded file is already absent and
- *   `removeWorkingTreeFile` is a no-op for it.
+ * - `resolved-deleted` is not handled here: the delete wave removes those
+ *   before any write, so callers never pass one.
  */
 export const writeOutcomeToTree = async (
-  ctx: Context,
-  outcome: MergeOutcome,
+  outcome: WrittenOutcome,
   matcher: SparseMatcher | undefined,
+  writer: WorkingTreeWriter,
   scanner?: LeadingPathScanner,
 ): Promise<void> => {
   // Every outcome path is sourced from a tree walk (the merge's `ours`/
   // `theirs` flatten), never from a parsed index, so it is validated here
-  // regardless of status — a `resolved-deleted` path has NOT already passed
-  // this check anywhere upstream. `resolved-deleted` carries no mode of its
-  // own (a delete writes nothing); REGULAR stands in because the only
-  // mode-sensitive rule this call can trigger — the `.gitmodules`-symlink
-  // rejection — is a write-time concern that does not apply to a removal.
-  // `conflict` is skipped because this function no-ops on it (the conflict
-  // itself is validated by the parallel conflicts batch instead).
-  if (outcome.status !== 'conflict') {
-    validateIndexPath(
-      outcome.path,
-      NO_PARSER_OFFSET,
-      outcome.status === 'resolved-deleted' ? FILE_MODE.REGULAR : outcome.mode,
-    );
-  }
-  if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
-    if (isExcluded(matcher, outcome.path)) return;
-    await writeWorkingTreeFileStream(ctx, outcome.path, outcome.id, scanner);
-    return;
-  }
+  // regardless of status. `conflict` is skipped because this function no-ops
+  // on it (the conflict itself is validated by the parallel conflicts batch).
+  if (outcome.status === 'conflict') return;
+  validateIndexPath(outcome.path, NO_PARSER_OFFSET, outcome.mode);
   if (outcome.status === 'resolved-merged') {
     // The merged bytes exist only in memory — this write is their sole
     // persistence, so the path is materialised regardless of the matcher.
-    await writeWorkingTreeFile(ctx, outcome.path, outcome.bytes, scanner);
+    await writer.writeBytes(outcome.path, outcome.bytes, outcome.mode, scanner);
     return;
   }
-  if (outcome.status === 'resolved-deleted') {
-    await removeWorkingTreeFile(ctx, outcome.path);
-  }
-  // 'conflict' outcomes are handled by the parallel conflicts batch.
+  if (isExcluded(matcher, outcome.path)) return;
+  await writer.writeBlob(outcome.path, outcome.id, outcome.mode, scanner);
 };
 
 export const writeConflictToTree = async (
   ctx: Context,
   conflict: MergeConflict,
+  writer: WorkingTreeWriter,
   scanner?: LeadingPathScanner,
 ): Promise<void> => {
   // Materialise with the merged mode when the merge resolved one, else the
@@ -1799,13 +1823,13 @@ export const writeConflictToTree = async (
   const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
   validateIndexPath(conflict.path, NO_PARSER_OFFSET, mode ?? FILE_MODE.REGULAR);
   if (conflict.type === 'distinct-types') {
-    await writeDistinctTypesSides(ctx, conflict, scanner);
+    await writeDistinctTypesSides(writer, conflict, scanner);
     return;
   }
   if (mode === undefined) return;
   const bytes = await materialiseConflictBytes(ctx, conflict);
   if (bytes === undefined) return;
-  await writeWorkingTreeEntry(ctx, conflict.path, bytes, mode, scanner);
+  await writer.writeBytes(conflict.path, bytes, mode, scanner);
 };
 
 // Stryker disable next-line ObjectLiteral: equivalent — the 256 MiB cap is unobservable without a 256 MiB fixture; cap mechanics covered by read-blob.test.ts.

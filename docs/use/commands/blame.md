@@ -73,6 +73,14 @@ type BlameLine = CommittedBlameLine | UncommittedBlameLine;
   work-tree presence, matching git's own bare-repo behaviour. A non-bare
   repository with no resolved work tree (e.g. opened at `cd .git`) still refuses
   `WORK_TREE_REQUIRED`, since that shape is not bare.
+- **Worktree contents are converted before being blamed.** In `worktree` mode a
+  regular file goes through the check-in conversion (`core.autocrlf`,
+  `core.eol`, `text`/`eol`/`ident` attributes, clean filter), as git's
+  `fake_working_tree_commit` does, so a CRLF file under `core.autocrlf=true`
+  blames to its committed LF lines instead of reading wholly modified.
+  Symlinks are blamed as their target. The index-CRLF rule (`text=auto` family)
+  reads the blamed path's stage 0 entry, else its stage 2 entry. The comparison
+  never raises a `core.safecrlf` refusal and yields no notice.
 - **Denormalized per line:** each `BlameLine` carries its blamed commit's
   author / committer / summary / boundary / previous inline; the renderer dedups
   per-commit headers (`--porcelain`) from the per-line fields
@@ -123,5 +131,5 @@ await repo.blame('src/index.ts', { worktree: true });                // bare `gi
 
 - Primitives: [`readObject`](../primitives/read-object.md), [`readBlob`](../primitives/read-blob.md), [`diffTrees`](../primitives/diff-trees.md)
 - Related commands: [`log`](log.md), [`show`](show.md), [`diff`](diff.md)
-- ADRs: [257](../../adr/257-blame-denormalized-per-line-records.md), [258](../../adr/258-blame-targets-committed-rev.md)
+- ADRs: [257](../../adr/257-blame-denormalized-per-line-records.md), [258](../../adr/258-blame-targets-committed-rev.md), [950](../../adr/950-conversion-extends-the-clean-smudge-pipeline.md)
 - Roadmap: Phase 23 — Inspection (v3)

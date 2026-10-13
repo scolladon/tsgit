@@ -9,6 +9,7 @@ import {
   abbreviateObjectIdFrom,
 } from '../../../../src/application/primitives/abbreviate-object-id.js';
 import { readBlobContentInStreamOrder } from '../../../../src/application/primitives/internal/blob-source.js';
+import * as convertBlobMod from '../../../../src/application/primitives/internal/convert-blob.js';
 import { loadRefDecorations } from '../../../../src/application/primitives/internal/ref-decorations.js';
 import { verifyCommitSignature } from '../../../../src/application/primitives/internal/verify-commit-signature.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
@@ -1678,6 +1679,166 @@ describe('archive export-subst routing', () => {
 
         // Assert
         expect(result.big).toBe(bigFormat);
+        expect(vi.mocked(readBlobContentInStreamOrder).mock.calls.length).toBe(1);
+      });
+    });
+  });
+});
+
+const collectEntries = async (entries: AsyncIterable<ArchiveEntry>): Promise<ArchiveEntry[]> => {
+  const collected: ArchiveEntry[] = [];
+  for await (const entry of entries) collected.push(entry);
+  return collected;
+};
+
+describe('archive entry conversion', () => {
+  afterEach(() => {
+    vi.mocked(readBlobContentInStreamOrder).mockClear();
+  });
+
+  describe("Given a tree with '*.txt eol=crlf' and an LF f.txt", () => {
+    describe('When archived', () => {
+      it('Then the entry content is CRLF', async () => {
+        // Arrange
+        const { ctx, tree } = await seedSubstCommit([
+          ['.gitattributes', '*.txt eol=crlf\n'],
+          ['f.txt', 'a\nb\n'],
+        ]);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, tree);
+
+        // Assert
+        expect(result['f.txt']).toBe('a\r\nb\r\n');
+      });
+    });
+  });
+
+  describe.each([
+    ['HEAD', { ref: 'refs/heads/main', commit: true }],
+    ['main', { ref: 'refs/heads/main', commit: true }],
+    ['tree', { ref: undefined, commit: false }],
+  ] as const)('Given a converted file archived from %s', (treeish, expected) => {
+    describe('When archive reads it', () => {
+      it('Then the smudge target carries the ref and the archived object', async () => {
+        // Arrange
+        const { ctx, tree, commitId } = await seedSubstCommit([
+          ['.gitattributes', '*.txt eol=crlf\n'],
+          ['f.txt', 'a\n'],
+        ]);
+        const spy = vi.spyOn(convertBlobMod, 'convertToWorkingTree');
+        const sut = archive;
+
+        // Act
+        const result = await sut(ctx, { treeish: treeish === 'tree' ? tree : treeish });
+        await collectEntries(result.entries);
+
+        // Assert
+        const archived = expected.commit ? commitId : tree;
+        expect(spy.mock.calls[0]?.[1].target.metadata).toEqual(
+          expected.ref === undefined
+            ? { treeish: archived }
+            : { ref: expected.ref, treeish: archived },
+        );
+        spy.mockRestore();
+      });
+    });
+  });
+
+  describe("Given a tree with '* ident' and the divergence blob", () => {
+    describe('When archived', () => {
+      it("Then the in-core expander's bytes are produced", async () => {
+        // Arrange
+        const blob = '$$Id$\n$Id:a b$\n$Id: a\tb $\n$Id$Id$\n';
+        const { ctx, tree } = await seedSubstCommit([
+          ['.gitattributes', '* ident\n'],
+          ['f', blob],
+        ]);
+        const sut = archive;
+
+        // Act
+        const result = await sut(ctx, { treeish: tree });
+        const entries = await collectEntries(result.entries);
+        const entry = entries.find((e) => e.path === 'f');
+        const blobId = entry?.oid;
+        const content = textDecoder.decode(entry?.content);
+
+        // Assert
+        expect(content).toBe(
+          `$$Id: ${blobId} $\n$Id:a b$\n$Id: ${blobId} $\n$Id: ${blobId} $Id$\n`,
+        );
+      });
+    });
+  });
+
+  describe('Given export-subst and eol=crlf on one file', () => {
+    describe('When archived from the commit', () => {
+      it('Then the line endings convert before the placeholder expands', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedSubstCommit([
+          ['.gitattributes', 'f export-subst eol=crlf\n'],
+          ['f', 'id $Format:%H$\n'],
+        ]);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result.f).toBe(`id ${commitId}\r\n`);
+      });
+    });
+  });
+
+  describe('Given core.autocrlf true and an unattributed LF file', () => {
+    describe('When archived', () => {
+      it('Then the entry content is CRLF', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8('/repo/.git/config', '[core]\n\tautocrlf = true\n');
+        const { tree } = await seedSubstCommit([['f', 'a\n']], ctx);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, tree);
+
+        // Assert
+        expect(result.f).toBe('a\r\n');
+      });
+    });
+  });
+
+  describe('Given a worktree .gitattributes asking eol=crlf that the tree lacks', () => {
+    describe('When archived', () => {
+      it('Then the tree wins and the content stays LF', async () => {
+        // Arrange
+        const { ctx, tree } = await seedSubstCommit([['f.txt', 'a\n']]);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.txt eol=crlf\n');
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, tree);
+
+        // Assert
+        expect(result['f.txt']).toBe('a\n');
+      });
+    });
+  });
+
+  describe('Given an unattributed file above core.bigFileThreshold with autocrlf unset', () => {
+    describe('When archived', () => {
+      it('Then it is still streamed, not converted in core', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8('/repo/.git/config', `[core]\n\tbigFileThreshold = ${THRESHOLD}\n`);
+        const { tree } = await seedSubstCommit([['big', 'y'.repeat(THRESHOLD + 1)]], ctx);
+        const sut = archivedText;
+
+        // Act
+        await sut(ctx, tree);
+
+        // Assert
         expect(vi.mocked(readBlobContentInStreamOrder).mock.calls.length).toBe(1);
       });
     });

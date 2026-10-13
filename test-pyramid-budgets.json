@@ -170,7 +170,11 @@
         "createLineDigestScanner",
         "createLineDigestFold",
         "trackedNodeContext",
-        "createLeadingPathScanner"
+        "createLeadingPathScanner",
+        "createLfToCrlfTransform",
+        "createIdentTransform",
+        "createWorkingTreeWriter",
+        "renormalizeAttributeLookup"
       ]
     },
     "integrationProof": {

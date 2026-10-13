@@ -166,6 +166,151 @@ describe('primitives/config-read', () => {
     });
   });
 
+  // Probed against git 2.55.0: valueless core.eol and core.eol= are silently unset (no refusal),
+  // valueless core.safecrlf is true (add refuses), core.safecrlf= is false.
+  describe('Given a config with a [core] autocrlf value', () => {
+    describe('When readConfig', () => {
+      it.each([
+        { raw: 'true', expected: true },
+        { raw: 'false', expected: false },
+        { raw: 'input', expected: 'input' },
+        { raw: 'INPUT', expected: 'input' },
+        { raw: 'Input', expected: 'input' },
+        { raw: '', expected: false },
+        { raw: 'yes', expected: true },
+        { raw: 'foo', expected: undefined },
+      ])('Then autoCrlf for "$raw" is $expected', async ({ raw, expected }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, `[core]\n  autocrlf = ${raw}\n`);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.autoCrlf).toBe(expected);
+      });
+
+      it('Then a valueless autocrlf is true', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  autocrlf\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.autoCrlf).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a config with a [core] safecrlf value', () => {
+    describe('When readConfig', () => {
+      it.each([
+        { raw: 'true', expected: true },
+        { raw: 'false', expected: false },
+        { raw: 'warn', expected: 'warn' },
+        { raw: 'WARN', expected: 'warn' },
+        { raw: 'Warn', expected: 'warn' },
+        { raw: '', expected: false },
+        { raw: 'foo', expected: undefined },
+      ])('Then safeCrlf for "$raw" is $expected', async ({ raw, expected }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, `[core]\n  safecrlf = ${raw}\n`);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.safeCrlf).toBe(expected);
+      });
+
+      it('Then a valueless safecrlf is true', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  safecrlf\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.safeCrlf).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a config with a [core] eol value', () => {
+    describe('When readConfig', () => {
+      it.each([
+        { raw: 'lf', expected: 'lf' },
+        { raw: 'crlf', expected: 'crlf' },
+        { raw: 'native', expected: 'native' },
+        { raw: 'CRLF', expected: 'crlf' },
+        { raw: 'Native', expected: 'native' },
+        { raw: 'LF', expected: 'lf' },
+        { raw: '', expected: undefined },
+        { raw: 'foo', expected: undefined },
+        { raw: 'true', expected: undefined },
+      ])('Then eol for "$raw" is $expected', async ({ raw, expected }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, `[core]\n  eol = ${raw}\n`);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.eol).toBe(expected);
+      });
+
+      it('Then a valueless eol is absent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  eol\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.eol).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a config with core.eol = crlf followed by a later core.eol line', () => {
+    describe('When readConfig', () => {
+      it.each([
+        { title: 'an unrecognised value', line: 'eol = foo' },
+        { title: 'an empty value', line: 'eol =' },
+        { title: 'a valueless key', line: 'eol' },
+      ])('Then $title resets eol to absent, as git sets EOL_UNSET', async ({ line }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, `[core]\n  eol = crlf\n  ${line}\n`);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect('eol' in (result.core ?? {})).toBe(false);
+      });
+
+      it('Then a later recognised value wins', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  eol = crlf\n  eol = lf\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.eol).toBe('lf');
+      });
+    });
+  });
+
   describe('Given a config without logallrefupdates', () => {
     describe('When readConfig', () => {
       it('Then core has no logAllRefUpdates key', async () => {
@@ -186,8 +331,8 @@ describe('primitives/config-read', () => {
   describe('Given a [core] key that must not promote core into existence, When readConfig', () => {
     it.each([
       {
-        config: '[core]\n  autocrlf = always\n',
-        label: 'an unrecognised key (autocrlf is a real git key tsgit ignores)',
+        config: '[core]\n  whitespace = always\n',
+        label: 'an unrecognised key (whitespace is a real git key tsgit ignores)',
       },
       {
         config: '[core]\n  bareX\n',
@@ -198,7 +343,7 @@ describe('primitives/config-read', () => {
         label: 'a string-typed key as a valueless entry (excludesfile skipped)',
       },
       {
-        config: '[core]\n  autocrlf = 512m\n',
+        config: '[core]\n  whitespace = 512m\n',
         label:
           'an unrecognised key whose value parses as a valid unsigned-size (bigFileThreshold key-dispatch guard)',
       },
@@ -2420,11 +2565,11 @@ describe('primitives/config-read', () => {
         // Arrange — `core.bigFileThreshold` shares the SAME unsigned-size
         // grammar as `deltaBaseCacheLimit`, so a dispatch that stopped
         // discriminating on the key name would alias one onto the other;
-        // `autocrlf` is a real git key tsgit still does not model (see the
+        // `whitespace` is a real git key tsgit still does not model (see the
         // "must not promote core into existence" suite above), planted here
         // to prove its value leaves no trace either.
         const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n\tautocrlf = true\n\tbigFileThreshold = 512m\n');
+        await seed(ctx, '[core]\n\twhitespace = true\n\tbigFileThreshold = 512m\n');
 
         // Act
         const result = await readConfig(ctx);

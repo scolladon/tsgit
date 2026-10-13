@@ -129,9 +129,16 @@ const snapshot = (dir: string) => ({
   state: STATE_FILES.filter((name) => existsSync(path.join(dir, '.git', name))),
 });
 
-const mergeBoth = async (scenario: Scenario, options: ReadonlyArray<string>, strategy?: string) => {
+const mergeBoth = async (
+  scenario: Scenario,
+  options: ReadonlyArray<string>,
+  strategy?: string,
+  untracked: Files = {},
+) => {
   const theirs = buildScenario(scenario);
   const ours = await copyOf(theirs);
+  writeAll(theirs, untracked);
+  writeAll(ours, untracked);
   const xArgs = options.flatMap((option) => ['-X', option]);
   const sArgs = strategy === undefined ? [] : ['-s', strategy];
   tryRunGitWithExit(['-C', theirs, 'merge', ...sArgs, ...xArgs, 'side'], { env: DATED_ENV });
@@ -299,6 +306,36 @@ const LINE_ENDINGS: Scenario = {
   main: { '.gitattributes': '* text=auto\n', f: 'a\r\nB\r\nc\r\n' },
 };
 
+/** Side renormalizes `f` under `text=auto` and edits line 1; main edits line 3 in CRLF. */
+const RENORMALIZING: Scenario = {
+  base: { f: 'a\r\nb\r\nc\r\n' },
+  side: { '.gitattributes': '* text=auto\n', f: 'A\nb\nc\n' },
+  main: { f: 'a\r\nb\r\nC\r\n' },
+};
+
+/** Side only renormalizes `f`; main deletes it. */
+const RENORMALIZED_THEN_DELETED: Scenario = {
+  base: { f: 'a\r\nb\r\nc\r\n', k: 'k\n' },
+  side: { '.gitattributes': '* text=auto\n', f: 'a\nb\nc\n' },
+  main: { f: DELETED },
+};
+
+/** Nothing commits attributes: side renormalizes `f` and edits line 1; main edits line 3 in CRLF. */
+const UNATTRIBUTED_RENORMALIZING: Scenario = {
+  base: { f: 'a\r\nb\r\nc\r\n' },
+  side: { f: 'A\nb\nc\n' },
+  main: { f: 'a\r\nb\r\nC\r\n' },
+};
+
+/** Every side commits `* -text`; side renormalizes `f` and edits line 1, main edits line 3 in CRLF. */
+const COMMITTED_BINARY_RENORMALIZING: Scenario = {
+  base: { '.gitattributes': '* -text\n', f: 'a\r\nb\r\nc\r\n' },
+  side: { f: 'A\nb\nc\n' },
+  main: { f: 'a\r\nb\r\nC\r\n' },
+};
+
+const RENORMALIZED_BLOB = '24938456d42b76634c499d30bb6db8c59df815ec';
+
 describe.skipIf(!GIT_AVAILABLE)('merge strategy options interop', () => {
   beforeAll(() => {
     root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'tsgit-merge-x-')));
@@ -364,6 +401,14 @@ describe.skipIf(!GIT_AVAILABLE)('merge strategy options interop', () => {
       LINE_ENDINGS,
       ['renormalize', 'no-renormalize'],
     ],
+    ['nothing over a renormalizing history', RENORMALIZING, []],
+    ['renormalize over a renormalizing history', RENORMALIZING, ['renormalize']],
+    [
+      'renormalize over a renormalized-then-deleted file',
+      RENORMALIZED_THEN_DELETED,
+      ['renormalize'],
+    ],
+    ['nothing over a renormalized-then-deleted file', RENORMALIZED_THEN_DELETED, []],
     ['ignore-space-at-eol and ours over space runs', SPACE_RUNS, ['ignore-space-at-eol', 'ours']],
     ['nothing over symlinks both sides changed', SYMLINKS, []],
     ['ours over symlinks both sides changed', SYMLINKS, ['ours']],
@@ -450,4 +495,90 @@ describe.skipIf(!GIT_AVAILABLE)('merge strategy options interop', () => {
       });
     },
   );
+
+  describe('Given the renormalizing history', () => {
+    describe('When both tools merge the side', () => {
+      it('Then it conflicts without -X renormalize', async () => {
+        // Arrange
+        const sut = mergeBoth;
+
+        // Act
+        const result = await sut(RENORMALIZING, []);
+
+        // Assert
+        expect(result.theirs.state).toEqual(['MERGE_HEAD', 'MERGE_MSG']);
+        expect(result.ours.state).toEqual(result.theirs.state);
+      });
+    });
+
+    describe('When both tools merge the side with -X renormalize', () => {
+      it('Then f is the renormalized merge in the same blob', async () => {
+        // Arrange
+        const sut = mergeBoth;
+
+        // Act
+        const result = await sut(RENORMALIZING, ['renormalize']);
+
+        // Assert
+        expect(result.theirs.state).toEqual([]);
+        expect(result.theirs.files.f).toBe('A\nb\nC\n');
+        expect(result.theirs.index).toContain(RENORMALIZED_BLOB);
+        expect(result.ours.index).toContain(RENORMALIZED_BLOB);
+      });
+    });
+  });
+
+  describe('Given no committed attributes and an untracked worktree .gitattributes', () => {
+    describe('When both tools merge the side with -X renormalize', () => {
+      it('Then the worktree file governs and the merge is clean in the same blob', async () => {
+        // Arrange
+        const sut = mergeBoth;
+
+        // Act
+        const result = await sut(UNATTRIBUTED_RENORMALIZING, ['renormalize'], undefined, {
+          '.gitattributes': '* text=auto\n',
+        });
+
+        // Assert
+        expect(result.theirs.state).toEqual([]);
+        expect(result.theirs.index).toContain(RENORMALIZED_BLOB);
+        expect(result.ours).toEqual(result.theirs);
+      });
+    });
+
+    describe('When both tools merge the side with -X renormalize but no worktree file exists', () => {
+      it('Then both conflict with three stages', async () => {
+        // Arrange
+        const sut = mergeBoth;
+
+        // Act
+        const result = await sut(UNATTRIBUTED_RENORMALIZING, ['renormalize']);
+
+        // Assert
+        expect(result.theirs.state).toEqual(['MERGE_HEAD', 'MERGE_MSG']);
+        expect(result.ours).toEqual(result.theirs);
+      });
+    });
+  });
+
+  describe('Given committed attributes that contradict a dirty worktree .gitattributes', () => {
+    describe('When both tools merge the side with -X renormalize', () => {
+      it('Then the committed rules govern and both conflict with three stages', async () => {
+        // Arrange
+        const sut = mergeBoth;
+
+        // Act
+        const result = await sut(COMMITTED_BINARY_RENORMALIZING, ['renormalize'], undefined, {
+          '.gitattributes': '* text=auto\n',
+        });
+
+        // Assert
+        expect(result.theirs.state).toEqual(['MERGE_HEAD', 'MERGE_MSG']);
+        expect(result.theirs.index.split('\n').filter((line) => line.includes('\tf'))).toHaveLength(
+          3,
+        );
+        expect(result.ours).toEqual(result.theirs);
+      });
+    });
+  });
 });

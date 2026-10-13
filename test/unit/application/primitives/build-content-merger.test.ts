@@ -2,9 +2,18 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { MemoryCommandRunner } from '../../../../src/adapters/memory/memory-command-runner.js';
-import { buildContentMerger } from '../../../../src/application/primitives/build-content-merger.js';
+import {
+  buildBlobUnchanged,
+  buildContentMerger,
+} from '../../../../src/application/primitives/build-content-merger.js';
+import type { IndexBlobLookup } from '../../../../src/application/primitives/internal/read-gitattributes.js';
+import * as readBlobMod from '../../../../src/application/primitives/read-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import type { ContentMergeContext, ContentMerger } from '../../../../src/domain/merge/index.js';
+import {
+  type ContentMergeContext,
+  type ContentMerger,
+  MAX_CONFLICT_OUTPUT_BYTES,
+} from '../../../../src/domain/merge/index.js';
 import { FILE_MODE, type FilePath, type ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
@@ -768,6 +777,342 @@ describe('buildContentMerger conflict style', () => {
 
       // Assert
       expect(result).toMatchObject({ code: 'CONFIG_MISSING_VALUE', key: 'merge.conflictstyle' });
+    });
+  });
+});
+
+describe('buildContentMerger renormalize', () => {
+  const TEXT_AUTO = '* text=auto\n';
+  const attributesLookup = async (ctx: Context, content: string): Promise<IndexBlobLookup> => {
+    const attributesId = await blob(ctx, content);
+    return (path) => (path === ('.gitattributes' as FilePath) ? attributesId : undefined);
+  };
+  const CRLF_BASE = 'a\r\nb\r\nc\r\n';
+  const CRLF_OURS = 'a\r\nb\r\nC\r\n';
+  const LF_THEIRS = 'A\nb\nc\n';
+  const none = new Uint8Array(0);
+
+  describe('Given a CRLF base, a CRLF edited ours and an LF-renormalized edited theirs under text=auto', () => {
+    describe('When the merger runs', () => {
+      it('Then the merge is clean with LF bytes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const attributes = await attributesLookup(ctx, TEXT_AUTO);
+        const sut = buildContentMerger(ctx, undefined, { renormalize: { attributes } });
+        const mergeCtx = await mergeCtxFor(ctx, {
+          base: CRLF_BASE,
+          ours: CRLF_OURS,
+          theirs: LF_THEIRS,
+        });
+
+        // Act
+        const result = await sut(mergeCtx, undefined, none, none);
+
+        // Assert
+        expect(result.status === 'clean' && dec(result.bytes)).toBe('A\nb\nC\n');
+      });
+    });
+  });
+
+  describe('Given no merged attributes and an untracked worktree .gitattributes of text=auto', () => {
+    describe('When the merger runs with renormalize', () => {
+      it('Then the worktree file governs and the merge is clean with LF bytes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, TEXT_AUTO);
+        const sut = buildContentMerger(ctx, undefined, {
+          renormalize: { attributes: () => undefined },
+        });
+        const mergeCtx = await mergeCtxFor(ctx, {
+          base: CRLF_BASE,
+          ours: CRLF_OURS,
+          theirs: LF_THEIRS,
+        });
+
+        // Act
+        const result = await sut(mergeCtx, undefined, none, none);
+
+        // Assert
+        expect(result.status === 'clean' && dec(result.bytes)).toBe('A\nb\nC\n');
+      });
+    });
+  });
+
+  describe('Given merged attributes of * -text and a worktree .gitattributes of text=auto', () => {
+    describe('When the merger runs with renormalize', () => {
+      it('Then the merged index governs and the sides are not normalized', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, TEXT_AUTO);
+        const attributes = await attributesLookup(ctx, '* -text\n');
+        const sut = buildContentMerger(ctx, undefined, { renormalize: { attributes } });
+        const mergeCtx = await mergeCtxFor(ctx, {
+          base: CRLF_BASE,
+          ours: CRLF_OURS,
+          theirs: LF_THEIRS,
+        });
+
+        // Act
+        const result = await sut(mergeCtx, undefined, none, none);
+
+        // Assert
+        expect(result.status).toBe('conflict');
+      });
+    });
+  });
+
+  describe('Given the same sides without renormalize', () => {
+    describe('When the merger runs', () => {
+      it('Then the line endings make it conflict', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = buildContentMerger(ctx);
+        const mergeCtx = await mergeCtxFor(ctx, {
+          base: CRLF_BASE,
+          ours: CRLF_OURS,
+          theirs: LF_THEIRS,
+        });
+
+        // Act
+        const result = await sut(mergeCtx, undefined, none, none);
+
+        // Assert
+        expect(result.status).toBe('conflict');
+      });
+    });
+  });
+
+  describe('Given no base and text=auto', () => {
+    describe('When the merger runs on identical CRLF and LF sides', () => {
+      it('Then the sides merge to the LF form', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const attributes = await attributesLookup(ctx, TEXT_AUTO);
+        const sut = buildContentMerger(ctx, undefined, { renormalize: { attributes } });
+        const mergeCtx = await mergeCtxFor(ctx, { ours: 'x\r\n', theirs: 'x\n' });
+
+        // Act
+        const result = await sut(mergeCtx, undefined, none, none);
+
+        // Assert
+        expect(result.status === 'clean' && dec(result.bytes)).toBe('x\n');
+      });
+    });
+  });
+
+  describe('Given an external driver from the work tree attributes', () => {
+    describe('When the merger runs', () => {
+      it('Then the driver received normalized bytes for all three sides', async () => {
+        // Arrange
+        const seen: string[] = [];
+        const ctx = createMemoryContext({
+          command: new MemoryCommandRunner(async (req) => {
+            const [o, a, b] = req.command.split(' ') as [string, string, string];
+            for (const file of [o, a, b]) seen.push(dec(await ctx.fs.read(file)));
+            return 0;
+          }),
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* merge=custom\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[merge "custom"]\n  driver = %O %A %B\n',
+        );
+        const attributes = await attributesLookup(ctx, TEXT_AUTO);
+        const sut = buildContentMerger(ctx, undefined, { renormalize: { attributes } });
+        const mergeCtx = await mergeCtxFor(ctx, {
+          base: CRLF_BASE,
+          ours: CRLF_OURS,
+          theirs: LF_THEIRS,
+        });
+
+        // Act
+        await sut(mergeCtx, undefined, none, none);
+
+        // Assert
+        expect(seen).toEqual(['a\nb\nc\n', 'a\nb\nC\n', 'A\nb\nc\n']);
+      });
+    });
+  });
+
+  describe('Given the binary driver and text=auto', () => {
+    describe('When the merger runs', () => {
+      it('Then the conflict carries the normalized ours bytes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '* -merge\n');
+        const attributes = await attributesLookup(ctx, TEXT_AUTO);
+        const sut = buildContentMerger(ctx, undefined, { renormalize: { attributes } });
+        const mergeCtx = await mergeCtxFor(ctx, {
+          base: CRLF_BASE,
+          ours: CRLF_OURS,
+          theirs: LF_THEIRS,
+        });
+
+        // Act
+        const result = await sut(mergeCtx, undefined, none, none);
+
+        // Assert
+        expect(result.status === 'conflict' && dec(result.markedBytes)).toBe('a\nb\nC\n');
+      });
+    });
+  });
+});
+
+describe('buildBlobUnchanged', () => {
+  const TEXT_AUTO = '* text=auto\n';
+  const PATH = 'f.txt' as FilePath;
+  const entry = (oid: ObjectId, mode: string = FILE_MODE.REGULAR) => ({
+    id: oid,
+    mode: mode as typeof FILE_MODE.REGULAR,
+  });
+  const setup = async () => {
+    const ctx = createMemoryContext();
+    const attributesId = await blob(ctx, TEXT_AUTO);
+    const attributes = (path: FilePath) =>
+      path === ('.gitattributes' as FilePath) ? attributesId : undefined;
+    return { ctx, sut: buildBlobUnchanged(ctx, { attributes }) };
+  };
+  const MISSING = 'f'.repeat(40) as ObjectId;
+  const OTHER_MISSING = 'e'.repeat(40) as ObjectId;
+
+  describe('Given two entries with the same id and mode', () => {
+    describe('When asked whether the side is unchanged', () => {
+      it('Then it is, without reading any blob', async () => {
+        // Arrange
+        const { sut } = await setup();
+
+        // Act
+        const result = await sut(PATH, entry(MISSING), entry(MISSING));
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given two entries whose modes differ', () => {
+    describe('When asked whether the side is unchanged', () => {
+      it('Then it is not, without reading any blob', async () => {
+        // Arrange
+        const { sut } = await setup();
+
+        // Act
+        const result = await sut(PATH, entry(MISSING), entry(MISSING, FILE_MODE.EXECUTABLE));
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a CRLF base and an LF-renormalized side under text=auto', () => {
+    describe('When asked whether the side is unchanged', () => {
+      it('Then it is', async () => {
+        // Arrange
+        const { ctx, sut } = await setup();
+        const base = await blob(ctx, 'a\r\nb\r\n');
+        const side = await blob(ctx, 'a\nb\n');
+
+        // Act
+        const result = await sut(PATH, entry(base), entry(side));
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a base and a side whose content really differs', () => {
+    describe('When asked whether the side is unchanged', () => {
+      it('Then it is not', async () => {
+        // Arrange
+        const { ctx, sut } = await setup();
+        const base = await blob(ctx, 'a\r\nb\r\n');
+        const side = await blob(ctx, 'A\nb\n');
+
+        // Act
+        const result = await sut(PATH, entry(base), entry(side));
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given two different ids that are not stored', () => {
+    describe('When asked whether the side is unchanged', () => {
+      it('Then the side counts as changed', async () => {
+        // Arrange
+        const { sut } = await setup();
+
+        // Act
+        const result = await sut(PATH, entry(MISSING), entry(OTHER_MISSING));
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a base that is stored as a tree rather than a blob', () => {
+    describe('When asked whether the side is unchanged', () => {
+      it('Then the side counts as changed', async () => {
+        // Arrange
+        const { ctx, sut } = await setup();
+        const tree = await writeObject(ctx, { type: 'tree', entries: [], id: '' as ObjectId });
+        const side = await blob(ctx, 'a\n');
+
+        // Act
+        const result = await sut(PATH, entry(tree), entry(side));
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a submodule commit id on each side', () => {
+    describe('When asked whether the side is unchanged', () => {
+      it('Then the side counts as changed, without reading any object', async () => {
+        // Arrange
+        const { sut } = await setup();
+        const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+
+        // Act
+        const result = await sut(
+          PATH,
+          entry(MISSING, FILE_MODE.GITLINK),
+          entry(OTHER_MISSING, FILE_MODE.GITLINK),
+        );
+
+        // Assert
+        expect(result).toBe(false);
+        expect(readSpy).not.toHaveBeenCalled();
+        readSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given two stored blobs that differ', () => {
+    describe('When asked whether the side is unchanged', () => {
+      it('Then both reads are capped at the conflict output limit', async () => {
+        // Arrange
+        const { ctx, sut } = await setup();
+        const base = await blob(ctx, 'a\n');
+        const side = await blob(ctx, 'b\n');
+        const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+
+        // Act
+        await sut(PATH, entry(base), entry(side));
+
+        // Assert
+        const compared = readSpy.mock.calls.filter(([, id]) => id === base || id === side);
+        expect(compared.map(([, , options]) => options)).toEqual([
+          { maxBytes: MAX_CONFLICT_OUTPUT_BYTES },
+          { maxBytes: MAX_CONFLICT_OUTPUT_BYTES },
+        ]);
+        readSpy.mockRestore();
+      });
     });
   });
 });

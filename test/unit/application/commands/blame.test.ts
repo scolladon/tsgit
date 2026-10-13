@@ -16,6 +16,7 @@ import { mv } from '../../../../src/application/commands/mv.js';
 import { rm } from '../../../../src/application/commands/rm.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { findTreeEntry } from '../../../../src/application/primitives/internal/resolve-tree-path.js';
+import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import * as lineDiffMod from '../../../../src/domain/diff/line-diff.js';
@@ -25,7 +26,7 @@ import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { AuthorIdentity, Blob, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { refuseReadOnSymlink } from '../primitives/fixtures.js';
+import { refuseReadOnSymlink, serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { asBareContext } from './fixtures.js';
 
 const ident = (name: string, timestamp: number): AuthorIdentity => ({
@@ -1242,6 +1243,126 @@ describe('Given a worktree blame on a clean tree', () => {
       // Assert
       expect(result).toEqual(await blame(ctx, 'f.txt'));
       expect(result.lines.every((l) => l.committed)).toBe(true);
+    });
+  });
+});
+
+describe('Given core.autocrlf true, a committed LF file and its CRLF worktree copy with a third line', () => {
+  describe('When blame runs on the working tree', () => {
+    it('Then lines 1–2 are attributed to the commit and line 3 is uncommitted', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'a\nb\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tautocrlf = true\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'a\r\nb\r\nc\r\n');
+
+      // Act
+      const result = await blame(ctx, 'f.txt', { worktree: true });
+
+      // Assert
+      expect(result.lines.map((l) => l.committed)).toEqual([true, true, false]);
+      expect(result.lines.map((l) => text(l.content))).toEqual(['a\n', 'b\n', 'c\n']);
+      expect(
+        committedLines({ ...result, lines: result.lines.slice(0, 2) }).map((l) => l.commit),
+      ).toEqual([c1, c1]);
+    });
+  });
+});
+
+describe('Given text=auto, a committed CRLF file recorded at stage 0', () => {
+  describe('When blame runs on the working tree with one CRLF line added', () => {
+    it('Then the unchanged lines keep their commit and only the added line is uncommitted', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'a\r\nb\r\n');
+      await write(ctx, '.gitattributes', '* text=auto\n');
+      await write(ctx, 'f.txt', 'a\r\nb\r\nc\r\n');
+
+      // Act
+      const result = await blame(ctx, 'f.txt', { worktree: true });
+
+      // Assert
+      expect(result.lines.map((l) => l.committed)).toEqual([true, true, false]);
+      expect(
+        committedLines({ ...result, lines: result.lines.slice(0, 2) }).map((l) => l.commit),
+      ).toEqual([c1, c1]);
+    });
+  });
+});
+
+describe('Given text=auto, a committed CRLF file and an index recording an LF base at stage 1 and the CRLF copy at stage 2', () => {
+  describe('When blame runs on the working tree with the same CRLF copy', () => {
+    it('Then the stage-2 blob keeps the CRLF and every line is committed', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\r\nb\r\n');
+      const { entries } = await readIndex(ctx);
+      const baseId = await writeObject(ctx, {
+        type: 'blob',
+        id: '' as ObjectId,
+        content: new TextEncoder().encode('a\nb\n'),
+      });
+      const atStage = (stage: 1 | 2, id?: ObjectId) =>
+        entries.map((entry) => ({
+          ...entry,
+          id: id ?? entry.id,
+          flags: { ...entry.flags, stage },
+        }));
+      await ctx.fs.write(
+        `${ctx.layout.gitDir}/index`,
+        await serializeIndexFixtureAsync(
+          {
+            version: 2,
+            entries: [...atStage(1, baseId), ...atStage(2)],
+            extensions: [],
+            trailerSha: new Uint8Array(0),
+          },
+          ctx,
+        ),
+      );
+      await write(ctx, '.gitattributes', '* text=auto\n');
+
+      // Act
+      const result = await blame(ctx, 'f.txt', { worktree: true });
+
+      // Assert
+      expect(result.lines.map((l) => l.committed)).toEqual([true, true]);
+    });
+  });
+});
+
+describe('Given text=auto, a committed LF file beside a committed CRLF file in the index', () => {
+  describe('When blame runs on the CRLF file with one CRLF line added', () => {
+    it('Then the index rule is read from the blamed path and the unchanged lines stay committed', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c0', 'a.txt', 'x\n');
+      await commitFile(ctx, 'c1', 'f.txt', 'a\r\nb\r\n');
+      await write(ctx, '.gitattributes', '* text=auto\n');
+      await write(ctx, 'f.txt', 'a\r\nb\r\nc\r\n');
+
+      // Act
+      const result = await blame(ctx, 'f.txt', { worktree: true });
+
+      // Assert
+      expect(result.lines.map((l) => l.committed)).toEqual([true, true, false]);
+    });
+  });
+});
+
+describe('Given no conversion, a committed LF file and its CRLF worktree copy', () => {
+  describe('When blame runs on the working tree', () => {
+    it('Then every line is uncommitted', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\nb\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'a\r\nb\r\nc\r\n');
+
+      // Act
+      const result = await blame(ctx, 'f.txt', { worktree: true });
+
+      // Assert
+      expect(result.lines.map((l) => l.committed)).toEqual([false, false, false]);
     });
   });
 });
