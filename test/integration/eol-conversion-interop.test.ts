@@ -66,9 +66,22 @@ import {
   setEolConfig,
   writeInfoAttributes,
 } from './eol-interop-fixtures.js';
-import { GIT_AVAILABLE, git, lsStage, runGit, tryRunGitWithExit } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  git,
+  lsStage,
+  runGit,
+  runGitEnv,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 120_000;
+const PINNED_DATE = '1700000000 +0000';
+const PINNED_COMMIT_ENV: NodeJS.ProcessEnv = {
+  ...runGitEnv(),
+  GIT_AUTHOR_DATE: PINNED_DATE,
+  GIT_COMMITTER_DATE: PINNED_DATE,
+};
 const bytesOf = (latin1: string): Uint8Array => new Uint8Array(Buffer.from(latin1, 'latin1'));
 const WARNING_PREFIX = 'warning:';
 const FIXTURE_NAMES = MATRIX_FIXTURES.map((fixture) => fixture.name);
@@ -802,7 +815,9 @@ describe.skipIf(!GIT_AVAILABLE)('eol conversion interop', () => {
           writeFileSync(path.join(dir, name), bytes);
         }
         git(dir, 'add', '.');
-        git(dir, 'commit', '-q', '-m', 'raw');
+        // Both twins must hold the SAME commit object: an unpinned date lets the clock
+        // tick between the two commits and the loose-object sets then differ by one id.
+        runGit(['-C', dir, 'commit', '-q', '-m', 'raw'], { env: PINNED_COMMIT_ENV });
         writeInfoAttributes(dir, ['* text=auto']);
       }
       return twin;
