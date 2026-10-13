@@ -235,6 +235,19 @@ describe.skipIf(!GIT_AVAILABLE)('stash porcelain interop', () => {
     const looseBlobIds = (dir: string): ReadonlyArray<string> =>
       looseObjectIds(dir).filter((id) => git(dir, 'cat-file', '-t', id).trim() === 'blob');
 
+    /** Commit ids embed timestamps, so a commit is compared by its tree and parent count. */
+    const looseShape = (dir: string): ReadonlyArray<string> =>
+      looseObjectIds(dir)
+        .map((id) => {
+          const type = git(dir, 'cat-file', '-t', id).trim();
+          if (type !== 'commit') return `${type} ${id}`;
+          const headers = git(dir, 'cat-file', '-p', id).split('\n');
+          const tree = headers.find((line) => line.startsWith('tree '));
+          const parents = headers.filter((line) => line.startsWith('parent ')).length;
+          return `commit ${tree} parents=${parents}`;
+        })
+        .sort();
+
     describe('Given core.autocrlf true and a CRLF worktree of an LF-tracked file', () => {
       describe('When stash push runs in each', () => {
         it('Then the stashed blob is LF and the W trees match', async () => {
@@ -289,6 +302,92 @@ describe.skipIf(!GIT_AVAILABLE)('stash porcelain interop', () => {
             );
             expect(await readFile(path.join(dir, 'a.txt'), 'utf8')).toBe('a\nb\nc\nd\n');
           }
+        });
+      });
+    });
+
+    describe.each([
+      {
+        title: 'a lossy tracked edit',
+        pushArgs: ['stash'],
+        input: {},
+        files: { 'a.txt': 'a\nb\nc\nd\n' },
+      },
+      {
+        title: 'a lossy tracked edit and an untracked file under -u',
+        pushArgs: ['stash', 'push', '-u'],
+        input: { includeUntracked: true },
+        files: { 'a.txt': 'a\nb\nc\nd\n', 'u.txt': 'u\r\n' },
+      },
+      {
+        title: 'a lossy untracked file with a clean tracked tree under -u',
+        pushArgs: ['stash', 'push', '-u'],
+        input: { includeUntracked: true },
+        files: { 'u.txt': 'u\n' },
+      },
+    ])('Given core.safecrlf true and $title', ({ pushArgs, input, files }) => {
+      describe('When stash push refuses in each', () => {
+        it('Then both leave the same loose objects by type, tree and parent count', async () => {
+          // Arrange
+          await seedLf({ autoCrlf: 'true', safeCrlf: 'true' });
+          for (const [name, content] of Object.entries(files)) {
+            await writeBoth(pair, name, content);
+          }
+          const peerBefore = looseShape(pair.peer);
+          const oursBefore = looseShape(pair.ours);
+
+          // Act
+          const peerResult = tryRunGitWithExit(['-C', pair.peer, ...pushArgs]);
+          const error = await repo.stash.push(input).then(
+            () => undefined,
+            (e: unknown) => e as TsgitError,
+          );
+
+          // Assert
+          expect(peerResult.exitCode).toBe(1);
+          expect(error?.data.code).toBe('EOL_ROUND_TRIP_UNSAFE');
+          const peerWritten = looseShape(pair.peer).filter((o) => !peerBefore.includes(o));
+          const oursWritten = looseShape(pair.ours).filter((o) => !oursBefore.includes(o));
+          expect(peerWritten.some((o) => o.startsWith('commit '))).toBe(true);
+          expect(oursWritten).toEqual(peerWritten);
+        });
+      });
+    });
+
+    describe('Given [filter "u"] required = foo and only an untracked file to hash', () => {
+      describe('When stash push -u runs in each', () => {
+        it('Then both refuse the malformed boolean after writing the same index commit', async () => {
+          // Arrange
+          git(pair.peer, 'commit', '-q', '--allow-empty', '-m', 'seed');
+          await repo.commit({ message: 'seed', author: AUTHOR, allowEmpty: true });
+          for (const dir of [pair.peer, pair.ours]) git(dir, 'config', 'filter.u.required', 'foo');
+          await writeBoth(pair, 'n.txt', 'n\n');
+          const peerBefore = looseShape(pair.peer);
+          const oursBefore = looseShape(pair.ours);
+
+          // Act
+          const peerResult = tryRunGitWithExit(['-C', pair.peer, 'stash', 'push', '-u']);
+          const error = await repo.stash.push({ includeUntracked: true }).then(
+            () => undefined,
+            (e: unknown) => e as TsgitError,
+          );
+
+          // Assert
+          expect(peerResult.exitCode).toBe(1);
+          expect(peerResult.stderr).toContain(
+            "bad boolean config value 'foo' for 'filter.u.required'",
+          );
+          expect(error?.data).toMatchObject({
+            code: 'CONFIG_BAD_BOOLEAN_VALUE',
+            key: 'filter.u.required',
+            value: 'foo',
+          });
+          const peerWritten = looseShape(pair.peer).filter((o) => !peerBefore.includes(o));
+          const oursWritten = looseShape(pair.ours).filter((o) => !oursBefore.includes(o));
+          expect(peerWritten).toEqual([
+            'commit tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904 parents=1',
+          ]);
+          expect(oursWritten).toEqual(peerWritten);
         });
       });
     });

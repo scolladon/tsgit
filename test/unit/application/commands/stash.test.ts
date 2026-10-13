@@ -1365,3 +1365,167 @@ describe('stash push line endings', () => {
     });
   });
 });
+
+const OBJECT_FAN_OUT = /^[0-9a-f]{2}$/;
+
+const looseObjectIds = async (ctx: Context): Promise<ReadonlyArray<ObjectId>> => {
+  const objects = `${ctx.layout.gitDir}/objects`;
+  const fanOuts = (await ctx.fs.readdir(objects)).filter((e) => OBJECT_FAN_OUT.test(e.name));
+  const perFanOut = await Promise.all(
+    fanOuts.map(async ({ name }) =>
+      (await ctx.fs.readdir(`${objects}/${name}`)).map((e) => `${name}${e.name}` as ObjectId),
+    ),
+  );
+  return perFanOut.flat();
+};
+
+interface WrittenCommit {
+  readonly tree: ObjectId;
+  readonly parents: ReadonlyArray<ObjectId>;
+  readonly message: string;
+}
+
+/** The commits written after `before`, as the parts git's stash pushes leave behind. */
+const commitsWrittenSince = async (
+  ctx: Context,
+  before: ReadonlyArray<ObjectId>,
+): Promise<ReadonlyArray<WrittenCommit>> => {
+  const fresh = (await looseObjectIds(ctx)).filter((id) => !before.includes(id));
+  const objects = await Promise.all(fresh.map((id) => readObject(ctx, id)));
+  return objects.flatMap((o) =>
+    o.type === 'commit'
+      ? [{ tree: o.data.tree, parents: o.data.parents, message: o.data.message }]
+      : [],
+  );
+};
+
+const attemptStashPush = (ctx: Context, input: Parameters<typeof stashPush>[1]) =>
+  stashPush(ctx, input).then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+
+describe('stash push object-write order', () => {
+  const SAFE_CRLF = '[core]\n\tautocrlf = true\n\tsafecrlf = true\n';
+
+  describe('Given core.safecrlf true and a lossy tracked edit', () => {
+    describe('When stash push refuses', () => {
+      it('Then exactly one commit was written and it is the index commit', async () => {
+        // Arrange
+        const ctx = await setupLfRepo(SAFE_CRLF);
+        const head = await headId(ctx);
+        const headTree = (await commitOf(ctx, head)).tree;
+        await write(ctx, 'a.txt', 'a\nb\nc\nd\n');
+        const before = await looseObjectIds(ctx);
+        const sut = attemptStashPush;
+
+        // Act
+        const error = await sut(ctx, {});
+
+        // Assert
+        expect(error).toBeInstanceOf(TsgitError);
+        const written = await commitsWrittenSince(ctx, before);
+        expect(written).toHaveLength(1);
+        expect(written[0]?.tree).toBe(headTree);
+        expect(written[0]?.parents).toEqual([head]);
+        expect(written[0]?.message).toMatch(/^index on main: [0-9a-f]+ initial commit/);
+      });
+    });
+  });
+
+  describe('Given core.safecrlf true, a lossy tracked edit and an untracked file', () => {
+    describe('When stash push -u refuses on the tracked file', () => {
+      it('Then the index commit and the untracked commit were written', async () => {
+        // Arrange
+        const ctx = await setupLfRepo(SAFE_CRLF);
+        const head = await headId(ctx);
+        await write(ctx, 'a.txt', 'a\nb\nc\nd\n');
+        await write(ctx, 'u.txt', 'u\r\n');
+        const before = await looseObjectIds(ctx);
+        const sut = attemptStashPush;
+
+        // Act
+        const error = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(error).toBeInstanceOf(TsgitError);
+        const written = await commitsWrittenSince(ctx, before);
+        expect(written.map((c) => c.parents)).toEqual(expect.arrayContaining([[head], []]));
+        expect(written).toHaveLength(2);
+        const untrackedCommit = written.find((c) => c.parents.length === 0);
+        expect(await treeContent(ctx, untrackedCommit?.tree as ObjectId, 'u.txt')).toBe('u\n');
+      });
+    });
+  });
+
+  describe('Given core.safecrlf true and a lossy untracked file with a clean tracked tree', () => {
+    describe('When stash push -u refuses on the untracked file', () => {
+      it('Then only the index commit was written', async () => {
+        // Arrange
+        const ctx = await setupLfRepo(SAFE_CRLF);
+        const head = await headId(ctx);
+        await write(ctx, 'u.txt', 'u\n');
+        const before = await looseObjectIds(ctx);
+        const sut = attemptStashPush;
+
+        // Act
+        const error = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(error).toBeInstanceOf(TsgitError);
+        const written = await commitsWrittenSince(ctx, before);
+        expect(written).toHaveLength(1);
+        expect(written[0]?.parents).toEqual([head]);
+      });
+    });
+  });
+
+  describe('Given a clean tree', () => {
+    describe('When stash push finds no local changes', () => {
+      it('Then no object was written', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        const before = await looseObjectIds(ctx);
+        const sut = attemptStashPush;
+
+        // Act
+        await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        expect(await looseObjectIds(ctx)).toEqual(before);
+      });
+    });
+  });
+});
+
+describe('stash push filter validation', () => {
+  describe('Given [filter "u"] required = foo, no attributes and no tracked file to hash', () => {
+    describe('When stash push -u hashes an untracked file', () => {
+      it('Then it refuses after the index commit and writes no stash', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await commit(ctx, { message: 'empty', author, allowEmpty: true });
+        await configure(ctx, '[filter "u"]\n\trequired = foo\n');
+        await write(ctx, 'n.txt', 'n\n');
+        const head = await headId(ctx);
+        const before = await looseObjectIds(ctx);
+        const sut = attemptStashPush;
+
+        // Act
+        const error = await sut(ctx, { includeUntracked: true });
+
+        // Assert
+        if (!(error instanceof TsgitError)) throw new Error('expected a TsgitError');
+        expect(error.data).toMatchObject({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'filter.u.required',
+          value: 'foo',
+        });
+        const written = await commitsWrittenSince(ctx, before);
+        expect(written.map((c) => c.parents)).toEqual([[head]]);
+        expect(await readStashStack(ctx)).toEqual([]);
+      });
+    });
+  });
+});
