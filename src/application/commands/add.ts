@@ -482,7 +482,7 @@ const addRenormalized = async (
     const onDisk = await literalsOnDisk(ctx, literalMustMatch);
     // Stryker disable next-line MethodExpression: equivalent — the whole-tree literal is itself among the on-disk literals (the work tree exists), so enforceLiteralMustMatch accepts it unfiltered.
     const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
-    enforceLiteralMustMatch(mustMatch, [...renormalized.matched, ...onDisk], literalSpellings);
+    enforceLiteralMustMatch(mustMatch, onDisk, literalSpellings);
     await lock.commit([...renormalized.entries]);
     return { added: [], modified: renormalized.modified, removed: [], eolNotices: [] };
   } finally {
@@ -490,7 +490,7 @@ const addRenormalized = async (
   }
 };
 
-/** git accepts a pathspec naming an untracked file that exists: it just stages nothing. */
+/** The literals naming something on disk: every tracked one the pass re-cleaned, and an untracked file git accepts and stages nothing for. */
 const literalsOnDisk = async (
   ctx: Context,
   literals: ReadonlyArray<FilePath>,
@@ -521,11 +521,9 @@ const renormalizeEntries = async (
   matcher: ResolvedPathspec['matcher'],
 ): Promise<{
   readonly entries: ReadonlyArray<IndexEntry>;
-  readonly matched: ReadonlyArray<FilePath>;
   readonly modified: ReadonlyArray<FilePath>;
 }> => {
   const next: IndexEntry[] = [];
-  const matched: FilePath[] = [];
   const modified: FilePath[] = [];
   for (const previous of entries) {
     if (!isRecleaned(previous, matcher)) {
@@ -534,10 +532,9 @@ const renormalizeEntries = async (
     }
     const entry = await renormalizeOne(staging, previous);
     next.push(entry);
-    matched.push(previous.path);
     if (entry.id !== previous.id || entry.mode !== previous.mode) modified.push(previous.path);
   }
-  return { entries: next, matched, modified };
+  return { entries: next, modified };
 };
 
 const renormalizeOne = async (
