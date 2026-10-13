@@ -3,6 +3,7 @@ import { invalidateConfigCache } from '../../../../../src/application/primitives
 import { createConcurrencyLimiter } from '../../../../../src/application/primitives/internal/concurrency-limiter.js';
 import * as convertBlobMod from '../../../../../src/application/primitives/internal/convert-blob.js';
 import { buildAttributeProvider } from '../../../../../src/application/primitives/internal/read-gitattributes.js';
+import * as serializeAndHashMod from '../../../../../src/application/primitives/internal/serialize-and-hash.js';
 import {
   createWorkingTreeWriter,
   type WorkingTreeWriter,
@@ -249,6 +250,81 @@ describe('createWorkingTreeWriter', () => {
 
         // Assert
         expect(await worktree()).toBe(`$$Id$\n$Id: ${id} $\n$Id: a\tb $\n$Id: ${id} $Id$\n`);
+      });
+    });
+
+    describe("When writeBytes ends on a held-back partial ident keyword under 'ident'", () => {
+      it.each(['a$Id', 'a$Id: abc'])('Then the tail of %j is flushed unchanged', async (text) => {
+        // Arrange
+        const { sut, worktree } = await setup({ attributes: '* ident\n' });
+
+        // Act
+        await sut.writeBytes(PATH, enc(text), FILE_MODE.REGULAR);
+
+        // Assert
+        expect(await worktree()).toBe(text);
+      });
+    });
+
+    describe("When writeBytes runs with a gitlink mode under 'ident'", () => {
+      it('Then the bytes reach the writer unconverted', async () => {
+        // Arrange
+        const { sut } = await setup({ attributes: '* ident\n' });
+        const bytes = enc('$Id$\n');
+        const spy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntry');
+
+        // Act
+        await sut.writeBytes(PATH, bytes, FILE_MODE.GITLINK);
+
+        // Assert
+        expect(spy.mock.calls[0]?.[2]).toBe(bytes);
+      });
+    });
+
+    describe("When writeBytes runs under '* eol=crlf'", () => {
+      it('Then no blob id is hashed', async () => {
+        // Arrange
+        const { sut } = await setup({ attributes: '* eol=crlf\n' });
+        const spy = vi.spyOn(serializeAndHashMod, 'serializeAndHash');
+
+        // Act
+        await sut.writeBytes(PATH, enc('a\nb\n'), FILE_MODE.REGULAR);
+
+        // Assert
+        expect(spy).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When writeBytes runs under an external filter', () => {
+      it('Then the smudge target carries the id of the bytes', async () => {
+        // Arrange
+        const { ctx, sut } = await setup({
+          attributes: '* filter=f\n',
+          config: '[filter "f"]\n\tsmudge = cat\n',
+        });
+        const bytes = enc('x\n');
+        const id = await writeObject(ctx, { type: 'blob', content: bytes, id: '' as ObjectId });
+        const spy = vi.spyOn(convertBlobMod, 'convertToWorkingTree');
+
+        // Act
+        await sut.writeBytes(PATH, bytes, FILE_MODE.REGULAR);
+
+        // Assert
+        expect(spy.mock.calls[0]?.[1].target.blob).toBe(id);
+      });
+    });
+
+    describe("When writeBytes runs under 'ident'", () => {
+      it('Then the blob id is hashed once', async () => {
+        // Arrange
+        const { sut } = await setup({ attributes: '* ident\n' });
+        const spy = vi.spyOn(serializeAndHashMod, 'serializeAndHash');
+
+        // Act
+        await sut.writeBytes(PATH, enc('$Id$\n'), FILE_MODE.REGULAR);
+
+        // Assert
+        expect(spy).toHaveBeenCalledTimes(1);
       });
     });
 

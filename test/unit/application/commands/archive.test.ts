@@ -9,6 +9,7 @@ import {
   abbreviateObjectIdFrom,
 } from '../../../../src/application/primitives/abbreviate-object-id.js';
 import { readBlobContentInStreamOrder } from '../../../../src/application/primitives/internal/blob-source.js';
+import * as convertBlobMod from '../../../../src/application/primitives/internal/convert-blob.js';
 import { loadRefDecorations } from '../../../../src/application/primitives/internal/ref-decorations.js';
 import { verifyCommitSignature } from '../../../../src/application/primitives/internal/verify-commit-signature.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
@@ -1710,6 +1711,37 @@ describe('archive entry conversion', () => {
 
         // Assert
         expect(result['f.txt']).toBe('a\r\nb\r\n');
+      });
+    });
+  });
+
+  describe.each([
+    ['HEAD', { ref: 'refs/heads/main', commit: true }],
+    ['main', { ref: 'refs/heads/main', commit: true }],
+    ['tree', { ref: undefined, commit: false }],
+  ] as const)('Given a converted file archived from %s', (treeish, expected) => {
+    describe('When archive reads it', () => {
+      it('Then the smudge target carries the ref and the archived object', async () => {
+        // Arrange
+        const { ctx, tree, commitId } = await seedSubstCommit([
+          ['.gitattributes', '*.txt eol=crlf\n'],
+          ['f.txt', 'a\n'],
+        ]);
+        const spy = vi.spyOn(convertBlobMod, 'convertToWorkingTree');
+        const sut = archive;
+
+        // Act
+        const result = await sut(ctx, { treeish: treeish === 'tree' ? tree : treeish });
+        await collectEntries(result.entries);
+
+        // Assert
+        const archived = expected.commit ? commitId : tree;
+        expect(spy.mock.calls[0]?.[1].target.metadata).toEqual(
+          expected.ref === undefined
+            ? { treeish: archived }
+            : { ref: expected.ref, treeish: archived },
+        );
+        spy.mockRestore();
       });
     });
   });

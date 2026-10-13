@@ -188,31 +188,33 @@ export const writeMarkedConflict = async (
  *  'conflict' variant is excluded before this type is ever reached (its own
  *  path lives on `MergeConflict`, handled separately). */
 type ChangedOutcome = Exclude<MergeOutcome, { readonly status: 'conflict' }>;
+type DeletedOutcome = Extract<ChangedOutcome, { readonly status: 'resolved-deleted' }>;
+type WrittenOutcome = Exclude<ChangedOutcome, { readonly status: 'resolved-deleted' }>;
+
+const isDeleted = (outcome: ChangedOutcome): outcome is DeletedOutcome =>
+  outcome.status === 'resolved-deleted';
 
 /**
- * Validate then materialise one changed clean outcome. Every outcome path is
- * sourced from a tree walk (the merge's `ours`/`theirs` flatten), never from
- * a parsed index, so `resolved-deleted` is validated here too — it has NOT
- * already passed this check anywhere upstream. `resolved-deleted` carries no
- * mode of its own (a delete writes nothing); REGULAR stands in because the
- * only mode-sensitive rule this call can trigger — the `.gitmodules`-symlink
- * rejection — is a write-time concern that does not apply to a removal.
+ * Validate then remove one deleted outcome. Every outcome path is sourced from
+ * a tree walk (the merge's `ours`/`theirs` flatten), never from a parsed
+ * index, so it is validated here too — it has NOT already passed this check
+ * anywhere upstream. A delete carries no mode of its own; REGULAR stands in
+ * because the only mode-sensitive rule this call can trigger — the
+ * `.gitmodules`-symlink rejection — is a write-time concern that does not
+ * apply to a removal.
  */
+const removeChangedOutcome = async (ctx: Context, outcome: DeletedOutcome): Promise<void> => {
+  validateIndexPath(outcome.path, NO_PARSER_OFFSET, FILE_MODE.REGULAR);
+  await removeWorkingTreeFile(ctx, outcome.path);
+};
+
+/** Validate then materialise one changed clean outcome that is not a deletion. */
 const writeChangedOutcome = async (
-  ctx: Context,
-  outcome: ChangedOutcome,
+  outcome: WrittenOutcome,
   writer: WorkingTreeWriter,
   scanner: LeadingPathScanner,
 ): Promise<void> => {
-  validateIndexPath(
-    outcome.path,
-    NO_PARSER_OFFSET,
-    outcome.status === 'resolved-deleted' ? FILE_MODE.REGULAR : outcome.mode,
-  );
-  if (outcome.status === 'resolved-deleted') {
-    await removeWorkingTreeFile(ctx, outcome.path);
-    return;
-  }
+  validateIndexPath(outcome.path, NO_PARSER_OFFSET, outcome.mode);
   if (outcome.status === 'resolved-merged') {
     await writer.writeBytes(outcome.path, outcome.bytes, outcome.mode, scanner);
     return;
@@ -261,11 +263,16 @@ const writeConflictWorktree = async (
   changed: ReadonlySet<FilePath>,
 ): Promise<void> => {
   const scanner = createLeadingPathScanner(ctx);
+  const touched = outcomes.filter(
+    (outcome): outcome is ChangedOutcome =>
+      outcome.status !== 'conflict' && changed.has(outcome.path),
+  );
+  // Every deletion lands before the writer reads attributes, as git unlinks
+  // before its first checkout: a deleted `.gitattributes` must not govern the writes.
+  for (const outcome of touched.filter(isDeleted)) await removeChangedOutcome(ctx, outcome);
   const writer = await createMergeResultWriter(ctx, outcomes, conflicts);
-  for (const outcome of outcomes) {
-    // Stryker disable next-line ConditionalExpression: equivalent — the `!changed.has` half only skips outcomes that equal `ours` (writing them reproduces working bytes); the `if(true)` skip-all variant is killed by the multi-path conflict test that asserts the clean side is written.
-    if (outcome.status === 'conflict' || !changed.has(outcome.path)) continue;
-    await writeChangedOutcome(ctx, outcome, writer, scanner);
+  for (const outcome of touched) {
+    if (!isDeleted(outcome)) await writeChangedOutcome(outcome, writer, scanner);
   }
   for (const conflict of conflicts) {
     await writeValidatedConflict(ctx, conflict, writer, scanner);

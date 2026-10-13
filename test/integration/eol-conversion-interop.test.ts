@@ -2017,6 +2017,118 @@ describe.skipIf(!GIT_AVAILABLE)('eol conversion interop', () => {
     });
   });
 
+  describe('Given tsgit and git merge across a changed .gitattributes with a conflicting path', () => {
+    type Ctx = ReturnType<typeof createNodeContext>;
+    type Files = Readonly<Record<string, string>>;
+
+    const seedHistory = (
+      dir: string,
+      sides: { readonly base: Files; readonly ours: Files; readonly theirs: Files },
+    ): void => {
+      initEolRepo(dir, {});
+      git(dir, 'config', 'user.name', 'Ada');
+      git(dir, 'config', 'user.email', 'ada@example.com');
+      git(dir, 'config', 'merge.conflictStyle', 'merge');
+      const save = (files: Files, removed: ReadonlyArray<string>, message: string): void => {
+        for (const name of removed) rmSync(path.join(dir, name));
+        for (const [name, content] of Object.entries(files)) {
+          writeFileSync(path.join(dir, name), content);
+        }
+        git(dir, 'add', '-A');
+        git(dir, 'commit', '-q', '-m', message);
+      };
+      const removedIn = (files: Files): ReadonlyArray<string> =>
+        Object.keys(sides.base).filter((name) => !(name in files));
+      save(sides.base, [], 'base');
+      git(dir, 'checkout', '-q', '-b', 's');
+      save(sides.theirs, removedIn(sides.theirs), 'theirs');
+      git(dir, 'checkout', '-q', 'main');
+      save(sides.ours, removedIn(sides.ours), 'ours');
+    };
+
+    const operations: ReadonlyArray<{
+      readonly title: string;
+      readonly gitStep: (dir: string) => void;
+      readonly tsgitStep: (ctx: Ctx) => Promise<unknown>;
+    }> = [
+      {
+        title: 'merge',
+        gitStep: (dir) => {
+          tryRunGitWithExit(['-C', dir, 'merge', 's']);
+        },
+        tsgitStep: (ctx) => mergeRun(ctx, { rev: 's' }),
+      },
+      {
+        title: 'cherry-pick',
+        gitStep: (dir) => {
+          tryRunGitWithExit(['-C', dir, 'cherry-pick', 's']);
+        },
+        tsgitStep: (ctx) => cherryPickRun(ctx, { commits: ['s'] }),
+      },
+    ];
+
+    const onTwins = async (
+      sides: { readonly base: Files; readonly ours: Files; readonly theirs: Files },
+      operation: (typeof operations)[number],
+    ) => {
+      const twin = { gitDir: freshDir(), tsDir: freshDir() };
+      for (const dir of [twin.gitDir, twin.tsDir]) seedHistory(dir, sides);
+      operation.gitStep(twin.gitDir);
+      await operation.tsgitStep(createNodeContext({ workDir: twin.tsDir }));
+      return twin;
+    };
+
+    const read = (dir: string, name: string): string =>
+      readFileSync(path.join(dir, name), 'latin1');
+
+    describe.each(operations)(
+      'When $title meets a side that deletes the .gitattributes',
+      (operation) => {
+        it('Then the siblings are written without the deleted attributes in both tools', async () => {
+          // Arrange
+          const text = 'a\nb\nc\n';
+          const sides = {
+            base: { '.gitattributes': '* eol=crlf\n', '-f': text, c: 'x\n', f: text },
+            ours: { '.gitattributes': '* eol=crlf\n', '-f': text, c: 'o\n', f: text },
+            theirs: { '-f': 'a\nb\nC\n', c: 't\n', f: 'a\nb\nC\n' },
+          };
+
+          // Act
+          const twin = await onTwins(sides, operation);
+
+          // Assert
+          expect(read(twin.gitDir, 'f')).not.toContain('\r');
+          expect(read(twin.tsDir, 'f')).toBe(read(twin.gitDir, 'f'));
+          expect(read(twin.tsDir, '-f')).toBe(read(twin.gitDir, '-f'));
+        });
+      },
+    );
+
+    describe.each(operations)('When $title meets a cleanly merged .gitattributes', (operation) => {
+      it('Then the merged attributes govern the sibling in both tools', async () => {
+        // Arrange
+        const comments = (first: string, last = '# l7'): string =>
+          [first, '# l2', '# l3', '# l4', '# l5', '# l6', last, ''].join('\n');
+        const sides = {
+          base: { '.gitattributes': comments('# l1'), c: 'x\n', 'f.txt': 'a\nb\n' },
+          ours: { '.gitattributes': comments('# ours'), c: 'o\n', 'f.txt': 'a\nb\n' },
+          theirs: {
+            '.gitattributes': comments('# l1', '*.txt eol=crlf'),
+            c: 't\n',
+            'f.txt': 'a\nB\n',
+          },
+        };
+
+        // Act
+        const twin = await onTwins(sides, operation);
+
+        // Assert
+        expect(read(twin.gitDir, 'f.txt')).toBe('a\r\nB\r\n');
+        expect(read(twin.tsDir, 'f.txt')).toBe(read(twin.gitDir, 'f.txt'));
+      });
+    });
+  });
+
   describe('Given a committed LF file and its CRLF worktree copy with a third line', () => {
     const ZERO_OID = '0'.repeat(40);
     const PORCELAIN_HEADER = /^([0-9a-f]{40}) \d+ \d+/;

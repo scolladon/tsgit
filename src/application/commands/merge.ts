@@ -1731,12 +1731,19 @@ const writeConflictingWorkingTree = async (
   // same symlinked directory costs one `lstat` per distinct directory, not
   // one per path.
   const scanner = createLeadingPathScanner(ctx);
+  // Every deletion lands before the writer reads attributes, as git unlinks
+  // before its first checkout: a deleted `.gitattributes` must not govern the writes.
+  await runBounded(ctx, touched.filter(isDeletion), (outcome) =>
+    removeOutcomeFromTree(ctx, outcome),
+  );
   const writer = await createMergeResultWriter(ctx, outcomes, conflicts);
   // Bounded parallelism — independent path writes overlap, but the pool
   // caps in-flight at the ioBound policy so a 10k-path merge doesn't
   // exhaust file descriptors.
-  await runBounded(ctx, touched, (outcome) =>
-    writeOutcomeToTree(ctx, outcome, matcher, writer, scanner),
+  await runBounded(
+    ctx,
+    touched.filter((outcome) => !isDeletion(outcome)),
+    (outcome) => writeOutcomeToTree(ctx, outcome, matcher, writer, scanner),
   );
   // Conflicted paths are materialised even when sparse-excluded — a conflict
   // the user cannot see is unresolvable, so `writeConflictToTree` takes no
@@ -1757,6 +1764,22 @@ const runBounded = async <T>(
   fn: (item: T) => Promise<void>,
 ): Promise<void> => {
   await boundedMapFor(ctx, 'ioBound', items, fn);
+};
+
+type DeletedOutcome = Extract<MergeOutcome, { readonly status: 'resolved-deleted' }>;
+
+const isDeletion = (outcome: MergeOutcome): outcome is DeletedOutcome =>
+  outcome.status === 'resolved-deleted';
+
+/**
+ * Remove a `resolved-deleted` outcome's file.
+ * A delete carries no mode of its own; REGULAR stands in because the only
+ * mode-sensitive rule validation can trigger — the `.gitmodules`-symlink
+ * rejection — is a write-time concern that does not apply to a removal.
+ */
+const removeOutcomeFromTree = async (ctx: Context, outcome: DeletedOutcome): Promise<void> => {
+  validateIndexPath(outcome.path, NO_PARSER_OFFSET, FILE_MODE.REGULAR);
+  await removeWorkingTreeFile(ctx, outcome.path);
 };
 
 /**
@@ -1780,35 +1803,22 @@ export const writeOutcomeToTree = async (
 ): Promise<void> => {
   // Every outcome path is sourced from a tree walk (the merge's `ours`/
   // `theirs` flatten), never from a parsed index, so it is validated here
-  // regardless of status — a `resolved-deleted` path has NOT already passed
-  // this check anywhere upstream. `resolved-deleted` carries no mode of its
-  // own (a delete writes nothing); REGULAR stands in because the only
-  // mode-sensitive rule this call can trigger — the `.gitmodules`-symlink
-  // rejection — is a write-time concern that does not apply to a removal.
-  // `conflict` is skipped because this function no-ops on it (the conflict
-  // itself is validated by the parallel conflicts batch instead).
-  if (outcome.status !== 'conflict') {
-    validateIndexPath(
-      outcome.path,
-      NO_PARSER_OFFSET,
-      outcome.status === 'resolved-deleted' ? FILE_MODE.REGULAR : outcome.mode,
-    );
-  }
-  if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
-    if (isExcluded(matcher, outcome.path)) return;
-    await writer.writeBlob(outcome.path, outcome.id, outcome.mode, scanner);
+  // regardless of status. `conflict` is skipped because this function no-ops
+  // on it (the conflict itself is validated by the parallel conflicts batch).
+  if (outcome.status === 'conflict') return;
+  if (outcome.status === 'resolved-deleted') {
+    await removeOutcomeFromTree(ctx, outcome);
     return;
   }
+  validateIndexPath(outcome.path, NO_PARSER_OFFSET, outcome.mode);
   if (outcome.status === 'resolved-merged') {
     // The merged bytes exist only in memory — this write is their sole
     // persistence, so the path is materialised regardless of the matcher.
     await writer.writeBytes(outcome.path, outcome.bytes, outcome.mode, scanner);
     return;
   }
-  if (outcome.status === 'resolved-deleted') {
-    await removeWorkingTreeFile(ctx, outcome.path);
-  }
-  // 'conflict' outcomes are handled by the parallel conflicts batch.
+  if (isExcluded(matcher, outcome.path)) return;
+  await writer.writeBlob(outcome.path, outcome.id, outcome.mode, scanner);
 };
 
 export const writeConflictToTree = async (

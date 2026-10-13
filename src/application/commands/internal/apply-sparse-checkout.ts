@@ -15,7 +15,7 @@ import type { SparseMatcher } from '../../../domain/sparse/index.js';
 import type { Context } from '../../../ports/context.js';
 import {
   applyChangesetWithAttributes,
-  isWorkingTreeDirty,
+  createWorkingTreeDirtyCheck,
 } from '../../primitives/apply-changeset.js';
 import type { Changeset, ChangesetEntry } from '../../primitives/compute-changeset.js';
 import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
@@ -75,6 +75,7 @@ const partition = async (
   const included: IndexEntry[] = [];
   const removable: ExcludedEntry[] = [];
   const retained: IndexEntry[] = [];
+  const isDirty = createWorkingTreeDirtyCheck(ctx);
   for (const entry of entries) {
     if (isIncluded(opts.matcher, entry.path)) {
       included.push(entry);
@@ -82,7 +83,7 @@ const partition = async (
     }
     const absPath = joinPath(workdir, entry.path);
     const present = await ctx.fs.exists(absPath);
-    const dirty = present ? await isWorkingTreeDirty(ctx, absPath, entry.id) : false;
+    const dirty = present ? await isDirty(absPath, entry.id) : false;
     if (dirty && opts.force !== true) retained.push(entry);
     else removable.push({ entry, present });
   }

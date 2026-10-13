@@ -17,9 +17,11 @@ import {
 import type { OrtVariant } from '../../domain/merge/strategy-options.js';
 import { mergeBinary } from '../../domain/merge/three-way-content.js';
 import { bytesEqual } from '../../domain/objects/encoding.js';
-import type { FilePath } from '../../domain/objects/object-id.js';
+import { FILE_MODE } from '../../domain/objects/file-mode.js';
+import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { findFirstValuelessInSection } from './config-read.js';
+import { undefinedWhenBlobAbsent } from './internal/absent-blob.js';
 import { renormalizeBuffer } from './internal/convert-blob.js';
 import { readConflictStyle } from './internal/merge-rename-config.js';
 import {
@@ -75,6 +77,10 @@ const buildNormalizer = (ctx: Context, { attributes }: RenormalizeSettings): Nor
   };
 };
 
+/** git counts a side it cannot read as a blob as changed, and caps the read like the content merge. */
+const readComparedBlob = (ctx: Context, id: ObjectId) =>
+  undefinedWhenBlobAbsent(() => readBlob(ctx, id, { maxBytes: MAX_CONFLICT_OUTPUT_BYTES }));
+
 /** ort's `blob_unchanged`: a side whose bytes differ from the base only by normalization is untouched. */
 export const buildBlobUnchanged = (
   ctx: Context,
@@ -84,10 +90,12 @@ export const buildBlobUnchanged = (
   return async (path, base, side) => {
     if (base.mode !== side.mode) return false;
     if (base.id === side.id) return true;
+    if (base.mode === FILE_MODE.GITLINK) return false;
     const [baseBlob, sideBlob] = await Promise.all([
-      readBlob(ctx, base.id),
-      readBlob(ctx, side.id),
+      readComparedBlob(ctx, base.id),
+      readComparedBlob(ctx, side.id),
     ]);
+    if (baseBlob === undefined || sideBlob === undefined) return false;
     const [normalizedBase, normalizedSide] = await Promise.all([
       normalize(path, baseBlob.content),
       normalize(path, sideBlob.content),

@@ -168,6 +168,18 @@ const isDirtyUnder = async (
 const repoRelativePath = (ctx: Context, absPath: string): FilePath =>
   absPath.slice(requireWorkTree(ctx, 'isWorkingTreeDirty').length + 1) as FilePath;
 
+export type WorkingTreeDirtyCheck = (absPath: string, expectedId: string) => Promise<boolean>;
+
+/**
+ * A dirty check over one lazily-built probe: the attribute provider and eol
+ * settings are read once, on the first call, however many paths are checked.
+ */
+export const createWorkingTreeDirtyCheck = (ctx: Context): WorkingTreeDirtyCheck => {
+  const probe = lazily(() => buildDirtyProbe(ctx));
+  return async (absPath, expectedId) =>
+    isDirtyUnder(ctx, await probe(), repoRelativePath(ctx, absPath), absPath, expectedId);
+};
+
 /**
  * `true` when a working-tree file exists at `absPath` but its content, taken
  * back through the path's check-in conversion, hashes differently from
@@ -178,14 +190,7 @@ export const isWorkingTreeDirty = async (
   ctx: Context,
   absPath: string,
   expectedId: string,
-): Promise<boolean> =>
-  isDirtyUnder(
-    ctx,
-    await buildDirtyProbe(ctx),
-    repoRelativePath(ctx, absPath),
-    absPath,
-    expectedId,
-  );
+): Promise<boolean> => createWorkingTreeDirtyCheck(ctx)(absPath, expectedId);
 
 const isUntrackedClash = async (ctx: Context, absPath: string): Promise<boolean> =>
   pathIsOccupied(ctx, absPath);

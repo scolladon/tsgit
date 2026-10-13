@@ -176,9 +176,8 @@ interface ScannedTree {
   readonly untracked: ReadonlyArray<FilePath>;
 }
 
-/** Build the attribute provider once per status invocation when a command
- *  runner is wired. When absent, the provider is undefined and every
- *  compareWorkingTreeDelta call takes the raw-bytes path. */
+/** Build the check-in attribute provider once per status invocation. It is always
+ *  present; a path whose attributes resolve to the identity conversion costs one lookup. */
 const scanStatusTree = async (
   ctx: Context,
   index: GitIndex,

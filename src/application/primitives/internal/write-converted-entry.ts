@@ -59,6 +59,12 @@ const concatChunks = (chunks: ReadonlyArray<Uint8Array>): Uint8Array => {
   return out;
 };
 
+/** Stands in where no consumer reads the id: only an ident expansion and a filter's `blob=` metadata do. */
+const NO_BLOB = '' as ObjectId;
+
+const consumesBlobId = ({ ident, filter }: Conversion): boolean =>
+  ident || filter.kind === 'external';
+
 const blobIdOf = async (ctx: Context, bytes: Uint8Array): Promise<ObjectId> =>
   (await serializeAndHash(ctx, { type: 'blob', id: '' as ObjectId, content: bytes })).id;
 
@@ -121,7 +127,7 @@ export const createWorkingTreeWriter = (
   const convertBytes = async (path: FilePath, bytes: Uint8Array): Promise<Uint8Array> => {
     const conversion = await conversionFor(path);
     if (isIdentityConversion(conversion)) return bytes;
-    const blob = await blobIdOf(ctx, bytes);
+    const blob = consumesBlobId(conversion) ? await blobIdOf(ctx, bytes) : NO_BLOB;
     if (convertsInCore(conversion)) return convertInCore(path, blob, bytes, conversion);
     const transform = workingTreeStreamTransform(conversion, blob, await scope.settings());
     if (transform === undefined) return bytes;

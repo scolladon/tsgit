@@ -888,6 +888,48 @@ describe('merge', () => {
     });
   });
 
+  describe('Given theirs deletes the .gitattributes that ours carries and a path conflicts', () => {
+    describe('When merge', () => {
+      it('Then the siblings are written without the deleted attributes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const work = (name: string) => `${ctx.layout.workDir}/${name}`;
+        await ctx.fs.writeUtf8(work('.gitattributes'), '* eol=crlf\n');
+        for (const name of ['-f', 'f']) await ctx.fs.writeUtf8(work(name), 'a\nb\nc\n');
+        await ctx.fs.writeUtf8(work('c'), 'x\n');
+        await add(ctx, ['.gitattributes', '-f', 'f', 'c']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'side' });
+        await checkout(ctx, { rev: 'side' });
+        await rm(ctx, ['.gitattributes']);
+        for (const name of ['-f', 'f']) await ctx.fs.writeUtf8(work(name), 'a\nb\nC\n');
+        await ctx.fs.writeUtf8(work('c'), 't\n');
+        await add(ctx, ['-f', 'f', 'c']);
+        await commit(ctx, { message: 'side', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(work('c'), 'o\n');
+        await add(ctx, ['c']);
+        await commit(ctx, { message: 'ours', author });
+
+        const realRm = ctx.fs.rm.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'rm').mockImplementation(async (path) => {
+          if (path.endsWith('.gitattributes'))
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          return realRm(path);
+        });
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 'side', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.readUtf8(work('f'))).toBe('a\nb\nC\n');
+        expect(await ctx.fs.readUtf8(work('-f'))).toBe('a\nb\nC\n');
+      });
+    });
+  });
+
   describe('Given a non-overlapping content change to the same file on each side', () => {
     describe('When merge', () => {
       it('Then merged content combines both edits', async () => {

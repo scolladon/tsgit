@@ -2155,6 +2155,97 @@ describe('applyMergeToWorktree writes through the working-tree writer', () => {
     });
   });
 
+  describe('Given a .gitattributes both sides edited on different lines and a path that conflicts', () => {
+    describe('When the merge is applied', () => {
+      it('Then the cleanly merged .gitattributes governs the sibling conversion', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const comments = (first: string, last = '# l7') =>
+          [first, '# l2', '# l3', '# l4', '# l5', '# l6', last, ''].join('\n');
+        const base = await blobTree(ctx, {
+          '.gitattributes': comments('# l1'),
+          c: 'x\n',
+          'f.txt': 'a\nb\n',
+        });
+        const ours = await blobTree(ctx, {
+          '.gitattributes': comments('# ours'),
+          c: 'o\n',
+          'f.txt': 'a\nb\n',
+        });
+        const theirs = await blobTree(ctx, {
+          '.gitattributes': comments('# l1', '*.txt eol=crlf'),
+          c: 't\n',
+          'f.txt': 'a\nB\n',
+        });
+        await ctx.fs.write(`${ctx.layout.workDir}/.gitattributes`, enc(comments('# ours')));
+        await ctx.fs.write(`${ctx.layout.workDir}/c`, enc('o\n'));
+        await ctx.fs.write(`${ctx.layout.workDir}/f.txt`, enc('a\nb\n'));
+        const sut = applyMergeToWorktree;
+
+        // Act
+        await sut(ctx, {
+          baseTree: base.tree,
+          oursTree: ours.tree,
+          theirsTree: theirs.tree,
+          currentIndex: index(
+            ['.gitattributes', 'c', 'f.txt'].map((name) =>
+              indexEntry(name, ours.ids[name] as ObjectId),
+            ),
+          ),
+          labels: LABELS,
+        });
+
+        // Assert
+        expect(await readWork(ctx, 'f.txt')).toBe('a\r\nB\r\n');
+      });
+    });
+  });
+
+  describe('Given theirs deletes the .gitattributes that ours still carries and a path conflicts', () => {
+    describe('When the merge is applied', () => {
+      it('Then the siblings are written without the deleted attributes, whatever their path order', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const text = 'a\nb\nc\n';
+        const base = await blobTree(ctx, {
+          '-f': text,
+          '.gitattributes': '* eol=crlf\n',
+          c: 'x\n',
+          f: text,
+        });
+        const ours = await blobTree(ctx, {
+          '-f': text,
+          '.gitattributes': '* eol=crlf\n',
+          c: 'o\n',
+          f: text,
+        });
+        const theirs = await blobTree(ctx, { '-f': 'a\nb\nC\n', c: 't\n', f: 'a\nb\nC\n' });
+        for (const name of ['-f', 'f'])
+          await ctx.fs.write(`${ctx.layout.workDir}/${name}`, enc('a\r\nb\r\nc\r\n'));
+        await ctx.fs.write(`${ctx.layout.workDir}/.gitattributes`, enc('* eol=crlf\n'));
+        await ctx.fs.write(`${ctx.layout.workDir}/c`, enc('o\n'));
+        const sut = applyMergeToWorktree;
+
+        // Act
+        await sut(ctx, {
+          baseTree: base.tree,
+          oursTree: ours.tree,
+          theirsTree: theirs.tree,
+          currentIndex: index(
+            ['-f', '.gitattributes', 'c', 'f'].map((name) =>
+              indexEntry(name, ours.ids[name] as ObjectId),
+            ),
+          ),
+          labels: LABELS,
+        });
+
+        // Assert
+        expect(await readWork(ctx, 'f')).toBe('a\nb\nC\n');
+        expect(await readWork(ctx, '-f')).toBe('a\nb\nC\n');
+      });
+    });
+  });
+
   const NORMALIZING_ATTRIBUTES = '* text=auto\n';
 
   /** Base `f` in CRLF; theirs adds `* text=auto` and renormalizes `f` (editing line 1 unless `edit` is false); ours edits line 3 or deletes `f`. */

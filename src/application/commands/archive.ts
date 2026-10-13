@@ -4,8 +4,9 @@ import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import { FILE_MODE } from '../../domain/objects/file-mode.js';
-import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
+import type { FileMode, FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import type { CheckoutMetadata } from '../primitives/internal/apply-smudge-filter.js';
 import { readStrictBigFileThreshold } from '../primitives/internal/big-file-threshold.js';
 import { readBlobContentInStreamOrder } from '../primitives/internal/blob-source.js';
 import { convertToWorkingTree } from '../primitives/internal/convert-blob.js';
@@ -50,21 +51,31 @@ export interface ArchiveOptions {
 export async function archive(ctx: Context, opts: ArchiveOptions): Promise<ArchiveResult> {
   await assertOperationalRepository(ctx);
   // git's `parse_treeish_arg`: a `dwim_ref` of the whole name, then one `get_oid` read.
-  await dwimRefNameWarning(ctx, opts.treeish);
+  const ref = await dwimRefNameWarning(ctx, opts.treeish);
   const oid = await evaluateRevision(ctx, opts.treeish);
   const classified = await classifyOid(ctx, oid);
   const { tree } = classified;
   if ('commit' in classified) {
     const { commit, commitTime } = classified;
-    const entries = buildEntryStream(ctx, tree, createSubstExpander(ctx, { commit, tree }));
+    const metadata = checkoutMetadataOf(ref, commit);
+    const entries = buildEntryStream(
+      ctx,
+      tree,
+      metadata,
+      createSubstExpander(ctx, { commit, tree }),
+    );
     return { tree, commit, commitTime, entries };
   }
-  return { tree, entries: buildEntryStream(ctx, tree) };
+  return { tree, entries: buildEntryStream(ctx, tree, checkoutMetadataOf(ref, tree)) };
 }
 
 // ---------------------------------------------------------------------------
 // internal helpers
 // ---------------------------------------------------------------------------
+
+/** git's `init_checkout_metadata` for an archive: the ref the name resolved to, and the commit (or bare tree) archived. */
+const checkoutMetadataOf = (ref: RefName | undefined, treeish: ObjectId): CheckoutMetadata =>
+  ref === undefined ? { treeish } : { ref, treeish };
 
 /** Classify result when the treeish resolves through a commit (direct or via tag). */
 interface CommitClassify {
@@ -143,9 +154,10 @@ async function readRegularContent(ctx: Context, id: ObjectId): Promise<Uint8Arra
 async function* buildEntryStream(
   ctx: Context,
   tree: ObjectId,
+  metadata: CheckoutMetadata,
   subst?: SubstExpander,
 ): AsyncIterable<ArchiveEntry> {
-  const plan = await createEntryPlanner(ctx, tree, subst);
+  const plan = await createEntryPlanner(ctx, tree, metadata, subst);
   for await (const entry of walkTree(ctx, tree, {
     maxEntries: Number.MAX_SAFE_INTEGER,
   })) {
@@ -162,10 +174,15 @@ interface TreeAttributes {
   readonly isSet: (key: string, attribute: string) => Promise<boolean>;
   readonly conversionOf: (path: FilePath) => Promise<Conversion>;
   readonly settings: EolSettings;
+  readonly metadata: CheckoutMetadata;
 }
 
 /** An archive attribute counts only when set — a string value or an unset is not. */
-const createTreeAttributes = async (ctx: Context, tree: ObjectId): Promise<TreeAttributes> => {
+const createTreeAttributes = async (
+  ctx: Context,
+  tree: ObjectId,
+  metadata: CheckoutMetadata,
+): Promise<TreeAttributes> => {
   const provider = await buildAttributeProvider(ctx, { kind: 'tree', tree });
   const settings = await readEolSettings(ctx);
   return {
@@ -175,6 +192,7 @@ const createTreeAttributes = async (ctx: Context, tree: ObjectId): Promise<TreeA
     },
     conversionOf: (path) => resolveConversion(ctx, provider, path, settings),
     settings,
+    metadata,
   };
 };
 
@@ -194,7 +212,12 @@ const readEntryContent = async (
   const substitutes = await attributes.isSet(entry.path, EXPORT_SUBST);
   if (isIdentityConversion(conversion) && !substitutes) return readRegularContent(ctx, entry.id);
   const bytes = await convertToWorkingTree(ctx, {
-    target: { path: entry.path, blob: entry.id, bytes: await readInCore(ctx, entry.id) },
+    target: {
+      path: entry.path,
+      blob: entry.id,
+      bytes: await readInCore(ctx, entry.id),
+      metadata: attributes.metadata,
+    },
     conversion,
     settings: attributes.settings,
   });
@@ -226,9 +249,10 @@ const attributeKey = (path: string, mode: FileMode): string =>
 const createEntryPlanner = async (
   ctx: Context,
   tree: ObjectId,
+  metadata: CheckoutMetadata,
   subst: SubstExpander | undefined,
 ): Promise<(entry: WalkTreeEntry) => Promise<ReadonlyArray<ArchiveEntry>>> => {
-  const attributes = await createTreeAttributes(ctx, tree);
+  const attributes = await createTreeAttributes(ctx, tree, metadata);
   const isExportIgnored = (key: string) => attributes.isSet(key, EXPORT_IGNORE);
   let queued: ArchiveEntry[] = [];
   let ignoredDirectory: string | undefined;

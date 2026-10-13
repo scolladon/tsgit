@@ -18,7 +18,7 @@
  */
 
 import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { inflateRawSync } from 'node:zlib';
@@ -1391,5 +1391,104 @@ describe.skipIf(!GIT_AVAILABLE)('archive entry conversion byte-faithfulness', ()
         expect(ourBytes).toEqual(new Uint8Array(gitBytes));
       });
     });
+  });
+});
+
+/**
+ * A long-running v2 filter that smudges by echoing and appends the header of
+ * each request (command, pathname and the checkout metadata) to argv[2].
+ */
+const METADATA_LOGGING_FILTER = `const fs = require('node:fs');
+const pkt = (text) => Buffer.concat([Buffer.from((Buffer.byteLength(text) + 4).toString(16).padStart(4, '0')), Buffer.from(text)]);
+const flush = Buffer.from('0000');
+const write = (...parts) => process.stdout.write(Buffer.concat(parts));
+let buffered = Buffer.alloc(0); let pending = []; let step = 0;
+const answers = [
+  () => write(pkt('git-filter-server\\n'), pkt('version=2\\n'), flush),
+  () => write(pkt('capability=smudge\\n'), flush),
+  (data) => fs.appendFileSync(process.argv[2], JSON.stringify(data.toString()) + '\\n'),
+  (data) => write(pkt('status=success\\n'), flush, ...(data.length ? [pkt(data.toString())] : []), flush, flush),
+];
+process.stdin.on('data', (chunk) => {
+  buffered = Buffer.concat([buffered, chunk]);
+  while (buffered.length >= 4) {
+    const length = parseInt(buffered.subarray(0, 4).toString(), 16);
+    if (length !== 0 && buffered.length < length) return;
+    if (length !== 0) pending.push(buffered.subarray(4, length));
+    buffered = buffered.subarray(length === 0 ? 4 : length);
+    if (length !== 0) continue;
+    const data = Buffer.concat(pending);
+    pending = [];
+    answers[step](data);
+    step = step === 3 ? 2 : step + 1;
+  }
+});
+`;
+
+describe.skipIf(!GIT_AVAILABLE)('archive through a process filter', () => {
+  let root = '';
+  let repo = '';
+  let log = '';
+
+  beforeAll(async () => {
+    root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-archive-metadata-')));
+    const script = path.join(root, 'filter.cjs');
+    await writeFile(script, METADATA_LOGGING_FILTER);
+    log = path.join(root, 'requests.log');
+    repo = path.join(root, 'repo');
+    runGit(['init', '-q', '-b', 'main', repo], { env: runGitEnv() });
+    await writeFile(path.join(repo, '.gitattributes'), '*.t filter=p\n');
+    await writeFile(path.join(repo, 'a.t'), 'hello\n');
+    runGit(['-C', repo, 'add', '.'], { env: runGitEnv() });
+    runGit(['-C', repo, '-c', 'user.name=A', '-c', 'user.email=a@a', 'commit', '-q', '-m', 'c'], {
+      env: runGitEnv(),
+    });
+    runGit(
+      ['-C', repo, '-c', 'user.name=A', '-c', 'user.email=a@a', 'tag', '-a', '-m', 't', 'v1'],
+      {
+        env: runGitEnv(),
+      },
+    );
+    runGit(
+      ['-C', repo, 'config', 'filter.p.process', `"${process.execPath}" "${script}" "${log}"`],
+      {
+        env: runGitEnv(),
+      },
+    );
+  }, 60_000);
+
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const requestsOf = async (run: () => Promise<void>): Promise<string> => {
+    await writeFile(log, '');
+    await run();
+    return readFile(log, 'utf8');
+  };
+
+  describe('Given a process filter on *.t', () => {
+    describe.each(['HEAD', 'main', 'v1', 'HEAD:', 'HEAD~0'])(
+      'When git and archive read %s',
+      (treeish) => {
+        it('Then the filter receives the same request headers from both', async () => {
+          // Arrange
+          const sut = archive;
+
+          // Act
+          const peer = await requestsOf(async () => {
+            runGit(['-C', repo, 'archive', '--format=tar', treeish], { env: runGitEnv() });
+          });
+          const actual = await requestsOf(async () => {
+            const result = await sut(createNodeContext({ workDir: repo }), { treeish });
+            for await (const entry of result.entries) void entry;
+          });
+
+          // Assert
+          expect(peer).toContain('treeish=');
+          expect(actual).toBe(peer);
+        });
+      },
+    );
   });
 });
