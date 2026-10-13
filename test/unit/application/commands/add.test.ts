@@ -3539,6 +3539,40 @@ describe('add renormalize option', () => {
     });
   });
 
+  describe('Given a tracked file whose content is already clean but whose index stat is stale', () => {
+    describe('When add renormalize "."', () => {
+      it('Then the entry takes the worktree file stat, as git replaces it', async () => {
+        // Arrange
+        const ctx = await seedCommittedCrlf({ 'f.txt': 'a\nb\n' });
+        const [indexed] = (await readIndex(ctx)).entries;
+        const stale = { ...(indexed as IndexEntry), mtimeSeconds: 1, fileSize: 1 };
+        const index: GitIndex = {
+          version: 2,
+          entries: [stale],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        };
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync(index, ctx),
+        );
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/f.txt`);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.'], RENORMALIZE);
+
+        // Assert
+        const [entry] = (await readIndex(ctx)).entries;
+        expect({ mtime: entry?.mtimeSeconds, size: entry?.fileSize }).toEqual({
+          mtime: Math.floor(stat.mtimeMs / 1000),
+          size: stat.size,
+        });
+        expect(result.modified).toEqual([]);
+      });
+    });
+  });
+
   describe('Given tracked d/f.txt', () => {
     describe('When add renormalize "d/"', () => {
       it('Then the directory-only literal matches and re-cleans the file', async () => {

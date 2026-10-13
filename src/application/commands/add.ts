@@ -554,9 +554,7 @@ const renormalizeOne = async (
   const mode: FileMode = deriveWorkingMode(fresh);
   validateIndexPath(path, NO_PARSER_OFFSET, mode);
   const { id } = await writeCleanedBlob(ctx, path, fresh, scope, previous, 'renormalize');
-  return id === previous.id && mode === previous.mode
-    ? previous
-    : indexEntryFromStat(fresh, mode, id, path);
+  return indexEntryFromStat(fresh, mode, id, path);
 };
 
 /** Read the index, then stage every walked entry `ignore` keeps. */
