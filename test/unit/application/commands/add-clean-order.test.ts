@@ -7,6 +7,7 @@ import { seedRepo } from './fixtures.js';
 
 const LOG_DRIVER = '[filter "log"]\n\tclean = log\n';
 const SETTLE_MS = 20;
+const WATCHDOG_MS = 2_000;
 
 const dec = (bytes: Uint8Array | undefined): string =>
   new TextDecoder().decode(bytes ?? new Uint8Array());
@@ -113,10 +114,19 @@ interface WriteLog {
   readonly events: string[];
 }
 
-/** Records loose-object writes; the first one lingers `delayFirstMs` before it lands. */
-const withWriteLog = (ctx: Context, delayFirstMs: number): WriteLog => {
+/**
+ * Records loose-object writes; the first one lingers until another write starts, or until
+ * `holdFirstMs` elapses — a watchdog, not a timing window, so a wrongly serialised add fails
+ * instead of racing the scheduler.
+ */
+const withWriteLog = (ctx: Context, holdFirstMs: number): WriteLog => {
   const events: string[] = [];
   let writes = 0;
+  let releaseFirst = (): void => {};
+  const nextWriteStarted = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const watchdog = (): Promise<void> => new Promise((r) => setTimeout(r, holdFirstMs));
   const wrapped: Context = {
     ...ctx,
     fs: new Proxy(ctx.fs, {
@@ -127,7 +137,8 @@ const withWriteLog = (ctx: Context, delayFirstMs: number): WriteLog => {
             return target.writeExclusive(path, data);
           const index = writes++;
           events.push(`start ${index}`);
-          if (index === 0) await new Promise((r) => setTimeout(r, delayFirstMs));
+          if (index === 1) releaseFirst();
+          if (index === 0 && holdFirstMs > 0) await Promise.race([nextWriteStarted, watchdog()]);
           await target.writeExclusive(path, data);
           events.push(`end ${index}`);
         };
@@ -180,7 +191,7 @@ describe('Given core.safecrlf warn, core.autocrlf true, a deferred first write',
   describe('When add all', () => {
     it('Then the next write starts while the first is pending and the notice is b2s', async () => {
       // Arrange
-      const { ctx, events } = withWriteLog(await seedTrio('warn'), SETTLE_MS);
+      const { ctx, events } = withWriteLog(await seedTrio('warn'), WATCHDOG_MS);
       const sut = add;
 
       // Act
