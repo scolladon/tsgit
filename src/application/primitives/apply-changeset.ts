@@ -182,8 +182,9 @@ export const createWorkingTreeDirtyCheck = (ctx: Context): WorkingTreeDirtyCheck
 /**
  * `true` when a working-tree file exists at `absPath` but its content, taken
  * back through the path's check-in conversion, hashes differently from
- * `expectedId`. An absent file is not dirty. Shared by
- * `applySparseCheckout`'s narrowing pre-scan.
+ * `expectedId`. An absent file is not dirty. The one-shot form of
+ * `createWorkingTreeDirtyCheck`, which `applySparseCheckout`'s narrowing
+ * pre-scan shares.
  */
 export const isWorkingTreeDirty = async (
   ctx: Context,

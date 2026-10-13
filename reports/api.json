@@ -162560,7 +162560,15 @@
 									},
 									{
 										"kind": "text",
-										"text": ". An absent file is not dirty. Shared by\n"
+										"text": ". An absent file is not dirty. The one-shot form of\n"
+									},
+									{
+										"kind": "code",
+										"text": "`createWorkingTreeDirtyCheck`"
+									},
+									{
+										"kind": "text",
+										"text": ", which "
 									},
 									{
 										"kind": "code",
@@ -162568,7 +162576,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "'s narrowing pre-scan."
+										"text": "'s narrowing\npre-scan shares."
 									}
 								]
 							},
