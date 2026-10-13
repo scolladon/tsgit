@@ -1413,5 +1413,37 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
         expect(staged(tsgitRepo)).toBe(staged(gitRepo));
       });
     });
+
+    describe('When git and tsgit restore the committed file under core.autocrlf=true and a smudge driver', () => {
+      it('Then the smudge received the CRs and the expanded $Id: <oid> $, in both tools', async () => {
+        // Arrange
+        const committed = async (slug: string): Promise<string> => {
+          const repo = await repoWithFilter(slug);
+          runGit(['-C', repo, 'config', 'user.name', 'Ada']);
+          runGit(['-C', repo, 'config', 'user.email', 'ada@example.com']);
+          runGit(['-C', repo, 'config', 'commit.gpgsign', 'false']);
+          runGit(['-C', repo, 'add', 'f']);
+          runGit(['-C', repo, 'commit', '-q', '-m', 'one']);
+          runGit(['-C', repo, 'config', 'filter.t.smudge', FILTER_FIXTURE.smudge]);
+          runGit(['-C', repo, 'config', 'core.autocrlf', 'true']);
+          await rm(path.join(repo, 'f'));
+          return repo;
+        };
+        const gitRepo = await committed('git-checkout');
+        const tsgitRepo = await committed('tsgit-checkout');
+        const sut = checkout;
+
+        // Act
+        runGit(['-C', gitRepo, 'checkout', '--', 'f']);
+        await sut(createNodeContext({ workDir: tsgitRepo }), { paths: ['f'] });
+
+        // Assert
+        const worktree = async (repo: string) =>
+          enc(new Uint8Array(await readFile(path.join(repo, 'f'))));
+        const oid = git(gitRepo, 'rev-parse', ':f').trim();
+        expect(await worktree(gitRepo)).toBe(`ZRN#Id: ${oid} #RNarRNbRN`);
+        expect(await worktree(tsgitRepo)).toBe(await worktree(gitRepo));
+      });
+    });
   },
 );

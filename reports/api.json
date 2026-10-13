@@ -162437,7 +162437,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " but its blob content\nhash differs from "
+										"text": " but its content, taken\nback through the path's check-in conversion, hashes differently from\n"
 									},
 									{
 										"kind": "code",

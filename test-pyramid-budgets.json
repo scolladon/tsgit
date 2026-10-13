@@ -172,7 +172,8 @@
         "trackedNodeContext",
         "createLeadingPathScanner",
         "createLfToCrlfTransform",
-        "createIdentTransform"
+        "createIdentTransform",
+        "createWorkingTreeWriter"
       ]
     },
     "integrationProof": {

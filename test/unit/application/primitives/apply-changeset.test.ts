@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
-import { applyChangeset } from '../../../../src/application/primitives/apply-changeset.js';
+import {
+  applyChangeset,
+  isWorkingTreeDirty,
+} from '../../../../src/application/primitives/apply-changeset.js';
 import type {
   Changeset,
   ChangesetEntry,
 } from '../../../../src/application/primitives/compute-changeset.js';
+import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import * as blobSourceMod from '../../../../src/application/primitives/internal/blob-source.js';
 import * as concurrencyMod from '../../../../src/application/primitives/internal/concurrency.js';
 import * as readGitattributesMod from '../../../../src/application/primitives/internal/read-gitattributes.js';
@@ -2421,6 +2425,94 @@ describe('applyChangeset write order under a long-running filter', () => {
 
         // Assert
         expect(result).toEqual(expected);
+      });
+    });
+  });
+});
+
+describe('applyChangeset dirty probe under line-ending conversion', () => {
+  const autocrlfContext = async (): Promise<Context> => {
+    const ctx = await buildSeededContext();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tautocrlf = true\n');
+    invalidateConfigCache(ctx);
+    return ctx;
+  };
+
+  describe('Given core.autocrlf true, an LF blob checked out as CRLF and a switch that rewrites the path', () => {
+    describe('When applyChangeset runs not forced', () => {
+      it('Then there is no would-overwrite refusal and the new blob lands as CRLF', async () => {
+        // Arrange
+        const ctx = await autocrlfContext();
+        const oldId = await writeBlob(ctx, enc('a\nb\n'));
+        const newId = await writeBlob(ctx, enc('c\nd\n'));
+        await ctx.fs.write(`${WORKDIR}/f.txt`, enc('a\r\nb\r\n'));
+        const changeset = makeChangeset([makeUpdate('f.txt', oldId, newId)]);
+
+        // Act
+        await applyChangeset(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f.txt`))).toBe('c\r\nd\r\n');
+      });
+    });
+  });
+
+  describe('Given core.autocrlf true and a CRLF file edited after checkout', () => {
+    describe('When applyChangeset runs not forced', () => {
+      it('Then the path is refused as a local change', async () => {
+        // Arrange
+        const ctx = await autocrlfContext();
+        const oldId = await writeBlob(ctx, enc('a\nb\n'));
+        const newId = await writeBlob(ctx, enc('c\nd\n'));
+        await ctx.fs.write(`${WORKDIR}/f.txt`, enc('a\r\nedited\r\n'));
+        const changeset = makeChangeset([makeUpdate('f.txt', oldId, newId)]);
+
+        // Act
+        const outcome = await outcomeOf(
+          applyChangeset(ctx, { changeset, force: false, workdir: WORKDIR }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({
+          code: 'CHECKOUT_OVERWRITE_DIRTY',
+          localChanges: ['f.txt'],
+        });
+      });
+    });
+  });
+
+  describe('Given core.autocrlf true and a symlink whose target holds a CR', () => {
+    describe('When isWorkingTreeDirty compares it against the stored target', () => {
+      it('Then the link target is compared raw', async () => {
+        // Arrange
+        const ctx = await autocrlfContext();
+        const target = 'a\r\nb';
+        const id = await writeBlob(ctx, enc(target));
+        await ctx.fs.symlink(target, `${WORKDIR}/link`);
+
+        // Act
+        const result = await isWorkingTreeDirty(ctx, `${WORKDIR}/link`, id);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given core.autocrlf true and a CRLF file of an LF blob', () => {
+    describe('When isWorkingTreeDirty is called with its three public arguments', () => {
+      it('Then the file is clean', async () => {
+        // Arrange
+        const ctx = await autocrlfContext();
+        const id = await writeBlob(ctx, enc('a\nb\n'));
+        await ctx.fs.write(`${WORKDIR}/f.txt`, enc('a\r\nb\r\n'));
+
+        // Act
+        const result = await isWorkingTreeDirty(ctx, `${WORKDIR}/f.txt`, id);
+
+        // Assert
+        expect(result).toBe(false);
+        expect(isWorkingTreeDirty.length).toBe(3);
       });
     });
   });

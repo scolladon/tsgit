@@ -23,25 +23,17 @@
  */
 import { checkoutOverwriteDirty, type WouldOverwriteClasses } from '../../domain/commands/error.js';
 import { comparePaths } from '../../domain/diff/index.js';
+import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import { TsgitError } from '../../domain/error.js';
 import { type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
-import {
-  FILE_MODE,
-  type FileMode,
-  type FilePath,
-  type ObjectId,
-} from '../../domain/objects/index.js';
+import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import type { Changeset, ChangesetEntry } from './compute-changeset.js';
 import { readConfig } from './config-read.js';
-import {
-  applySmudgeFilter,
-  type CheckoutMetadata,
-  smudgesInCore,
-} from './internal/apply-smudge-filter.js';
+import type { CheckoutMetadata } from './internal/apply-smudge-filter.js';
 import { boundedMapFor, limiterFor } from './internal/concurrency.js';
-import type { ConcurrencyLimiter } from './internal/concurrency-limiter.js';
+import { convertToGit } from './internal/convert-blob.js';
 import { withFilterProcessPool } from './internal/filter-process-pool.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { pathIsOccupied } from './internal/path-occupied.js';
@@ -49,19 +41,19 @@ import {
   type AttributeProvider,
   maybeBuildAttributeProvider,
 } from './internal/read-gitattributes.js';
+import { requireWorkTree } from './internal/repo-state.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
 import {
   createLeadingPathScanner,
   type LeadingPathScanner,
 } from './internal/symlinked-leading-path.js';
 import {
-  rmIfExists,
-  writeWorkingTreeEntry,
-  writeWorkingTreeEntryStream,
-} from './internal/write-working-tree-file.js';
+  createWorkingTreeWriter,
+  type WorkingTreeWriter,
+} from './internal/write-converted-entry.js';
+import { rmIfExists } from './internal/write-working-tree-file.js';
 import { everySourceLoadable } from './object-store.js';
-import { readBlob } from './read-blob.js';
-import { resolveFilterDriver } from './resolve-filter-driver.js';
+import { readEolSettings, resolveConversion } from './resolve-conversion.js';
 
 export interface ApplyChangesetOpts {
   readonly changeset: Changeset;
@@ -69,12 +61,6 @@ export interface ApplyChangesetOpts {
   readonly workdir: string;
   /** The ref and commit the checkout moves to, told to a smudging process filter. */
   readonly checkoutMetadata?: CheckoutMetadata;
-}
-
-/** How smudged writes run: their shared concurrency bound and checkout metadata. */
-interface Smudging {
-  readonly limiter: ConcurrencyLimiter;
-  readonly metadata?: CheckoutMetadata;
 }
 
 export interface ApplyChangesetResult {
@@ -87,22 +73,75 @@ const CHECKOUT_OP = 'checkout:materialize';
 
 const LINK_ENCODER = new TextEncoder();
 
-const blobMatches = async (ctx: Context, absPath: string, expectedId: string): Promise<boolean> => {
-  let bytes: Uint8Array;
+/** What the dirty probe compares through: the check-in attributes and the eol settings. */
+interface DirtyProbe {
+  readonly provider: AttributeProvider;
+  readonly settings: EolSettings;
+}
+
+const buildDirtyProbe = async (ctx: Context): Promise<DirtyProbe> => ({
+  provider: await maybeBuildAttributeProvider(ctx),
+  settings: await readEolSettings(ctx),
+});
+
+const readWorkingBytes = async (
+  ctx: Context,
+  absPath: string,
+): Promise<{ readonly bytes: Uint8Array; readonly isSymlink: boolean } | undefined> => {
   try {
     const stat = await ctx.fs.lstat(absPath);
-    bytes = stat.isSymbolicLink
-      ? LINK_ENCODER.encode(await ctx.fs.readlink(absPath))
-      : await ctx.fs.read(absPath);
+    if (stat.isSymbolicLink) {
+      return { bytes: LINK_ENCODER.encode(await ctx.fs.readlink(absPath)), isSymlink: true };
+    }
+    return { bytes: await ctx.fs.read(absPath), isSymlink: false };
   } catch (err) {
     // FILE_NOT_FOUND on a `delete`/`update` target means the file is already
     // gone — treat as non-dirty so the apply step proceeds as a no-op.
-    if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return true;
+    if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return undefined;
     // PERMISSION_DENIED and other read failures are NOT silently overwritten —
     // re-throw so the caller surfaces the underlying error instead of
     // clobbering an unreadable file.
     throw err;
   }
+};
+
+/**
+ * The bytes git would hash for the path (`verify_uptodate` runs before the
+ * checkout direction is set, so the check-in provider applies). Symlinks are
+ * never converted.
+ */
+const comparableBytes = async (
+  ctx: Context,
+  probe: DirtyProbe,
+  path: FilePath,
+  working: { readonly bytes: Uint8Array; readonly isSymlink: boolean },
+  expectedId: ObjectId,
+): Promise<Uint8Array> => {
+  if (working.isSymlink) return working.bytes;
+  const conversion = await resolveConversion(ctx, probe.provider, path, probe.settings, {
+    eagerSectionValidation: true,
+  });
+  const converted = await convertToGit(ctx, {
+    path,
+    bytes: working.bytes,
+    conversion,
+    route: 'compare',
+    settings: probe.settings,
+    indexBlob: expectedId,
+  });
+  return converted.bytes;
+};
+
+const blobMatches = async (
+  ctx: Context,
+  probe: DirtyProbe,
+  path: FilePath,
+  absPath: string,
+  expectedId: string,
+): Promise<boolean> => {
+  const working = await readWorkingBytes(ctx, absPath);
+  if (working === undefined) return true;
+  const bytes = await comparableBytes(ctx, probe, path, working, expectedId as ObjectId);
   // Compute the loose-object content hash via the shared serialise+hash core
   // (the `blob <size>\0` header git stored), so this matches `writeObject` /
   // `hashBlob` byte-for-byte. Uncapped: a read-only dirty check never throws on
@@ -111,19 +150,38 @@ const blobMatches = async (ctx: Context, absPath: string, expectedId: string): P
   return id === expectedId;
 };
 
+const isDirtyUnder = async (
+  ctx: Context,
+  probe: DirtyProbe,
+  path: FilePath,
+  absPath: string,
+  expectedId: string,
+): Promise<boolean> => {
+  if (!(await pathIsOccupied(ctx, absPath))) return false;
+  return !(await blobMatches(ctx, probe, path, absPath, expectedId));
+};
+
+const repoRelativePath = (ctx: Context, absPath: string): FilePath =>
+  absPath.slice(requireWorkTree(ctx, 'isWorkingTreeDirty').length + 1) as FilePath;
+
 /**
- * `true` when a working-tree file exists at `absPath` but its blob content
- * hash differs from `expectedId`. An absent file is not dirty. Shared by
+ * `true` when a working-tree file exists at `absPath` but its content, taken
+ * back through the path's check-in conversion, hashes differently from
+ * `expectedId`. An absent file is not dirty. Shared by
  * `applySparseCheckout`'s narrowing pre-scan.
  */
 export const isWorkingTreeDirty = async (
   ctx: Context,
   absPath: string,
   expectedId: string,
-): Promise<boolean> => {
-  if (!(await pathIsOccupied(ctx, absPath))) return false;
-  return !(await blobMatches(ctx, absPath, expectedId));
-};
+): Promise<boolean> =>
+  isDirtyUnder(
+    ctx,
+    await buildDirtyProbe(ctx),
+    repoRelativePath(ctx, absPath),
+    absPath,
+    expectedId,
+  );
 
 const isUntrackedClash = async (ctx: Context, absPath: string): Promise<boolean> =>
   pathIsOccupied(ctx, absPath);
@@ -135,13 +193,14 @@ interface DirtyClass {
 
 const evaluateDirtyPath = async (
   ctx: Context,
+  probe: () => Promise<DirtyProbe>,
   workdir: string,
   entry: ChangesetEntry,
 ): Promise<DirtyClass | undefined> => {
   const absPath = joinPath(workdir, entry.path);
   if (entry.kind === 'update' || entry.kind === 'delete') {
     if (entry.previousId === undefined) return undefined;
-    return (await isWorkingTreeDirty(ctx, absPath, entry.previousId))
+    return (await isDirtyUnder(ctx, await probe(), entry.path, absPath, entry.previousId))
       ? { class: 'local-changes', path: entry.path }
       : undefined;
   }
@@ -169,6 +228,12 @@ const validateChangesetPaths = (changeset: Changeset): void => {
   for (const entry of changeset.entries) validateChangesetEntry(entry);
 };
 
+/** Memoises the first call, so a pooled fan-out builds the value once and only if asked. */
+const lazily = <T>(build: () => Promise<T>): (() => Promise<T>) => {
+  let pending: Promise<T> | undefined;
+  return () => (pending ??= build());
+};
+
 const checkDirty = async (
   ctx: Context,
   workdir: string,
@@ -180,8 +245,9 @@ const checkDirty = async (
   // pre-split delete+write waves, never raw `changeset.entries` — a `noop`
   // entry needs no dirty probe at all, so skipping it here avoids both a
   // wasted pool slot and an oversized `boundedMap` allocation.
+  const probe = lazily(() => buildDirtyProbe(ctx));
   const offending = await boundedMapFor(ctx, 'ioBound', entries, (entry) =>
-    evaluateDirtyPath(ctx, workdir, entry),
+    evaluateDirtyPath(ctx, probe, workdir, entry),
   );
   const localChanges: FilePath[] = [];
   const untracked: FilePath[] = [];
@@ -221,49 +287,6 @@ const buildIndexEntry = async (
   };
 };
 
-const writeBlobToWorkingTree = async (
-  ctx: Context,
-  path: FilePath,
-  id: IndexEntry['id'],
-  mode: FileMode,
-  scanner: LeadingPathScanner,
-  smudging: Smudging,
-  provider?: AttributeProvider,
-): Promise<void> => {
-  if (mode === FILE_MODE.GITLINK) {
-    await writeWorkingTreeEntry(ctx, path, new Uint8Array(), mode, scanner);
-    return;
-  }
-  if (mode === FILE_MODE.SYMLINK) {
-    const blob = await readBlob(ctx, id);
-    await writeWorkingTreeEntry(ctx, path, blob.content, mode, scanner);
-    return;
-  }
-  if (provider !== undefined) {
-    const command = ctx.command;
-    const choice = await resolveFilterDriver(ctx, provider, path, {
-      eagerSectionValidation: true,
-    });
-    if (smudgesInCore(choice)) {
-      const blob = await readBlob(ctx, id);
-      // A smudge filter spawns a subprocess — CPU/process-bound, not
-      // blocking-fd-bound — so it must not inherit the write wave's wider
-      // ioBound budget: `smudging.limiter` is sized off cpuBound and
-      // shared for the whole changeset apply, bounding how many subprocess
-      // spawns run at once regardless of how many writes the ioBound pool
-      // has in flight. The write itself, below, stays on the full pool.
-      const { metadata } = smudging;
-      const target = { path, blob: id, bytes: blob.content, ...(metadata && { metadata }) };
-      const content = await smudging.limiter.run(() =>
-        applySmudgeFilter(ctx, command, target, choice),
-      );
-      await writeWorkingTreeEntry(ctx, path, content, mode, scanner);
-      return;
-    }
-  }
-  await writeWorkingTreeEntryStream(ctx, path, id, mode, scanner);
-};
-
 const applyDeleteEntry = async (
   ctx: Context,
   workdir: string,
@@ -281,20 +304,11 @@ const applyWriteEntry = async (
   workdir: string,
   entry: ChangesetEntry,
   scanner: LeadingPathScanner,
-  smudging: Smudging,
-  provider: AttributeProvider | undefined,
+  writer: WorkingTreeWriter,
 ): Promise<IndexEntry | undefined> => {
   if (entry.id === undefined) return undefined;
   const absPath = joinPath(workdir, entry.path);
-  await writeBlobToWorkingTree(
-    ctx,
-    entry.path,
-    entry.id as IndexEntry['id'],
-    entry.mode,
-    scanner,
-    smudging,
-    provider,
-  );
+  await writer.writeBlob(entry.path, entry.id as IndexEntry['id'], entry.mode, scanner);
   return buildIndexEntry(ctx, absPath, entry.path, entry.id, entry.mode);
 };
 
@@ -428,16 +442,14 @@ const applyWriteGroup = async (
   ctx: Context,
   workdir: string,
   group: ReadonlyArray<ChangesetEntry>,
-  lazyProvider: () => Promise<AttributeProvider | undefined>,
+  writer: WorkingTreeWriter,
   scanner: LeadingPathScanner,
-  smudging: Smudging,
   total: number,
   counter: ProgressCounter,
 ): Promise<ReadonlyArray<IndexEntry>> => {
   const written: IndexEntry[] = [];
   for (const entry of group) {
-    const provider = await lazyProvider();
-    const indexEntry = await applyWriteEntry(ctx, workdir, entry, scanner, smudging, provider);
+    const indexEntry = await applyWriteEntry(ctx, workdir, entry, scanner, writer);
     reportCompletion(ctx, total, counter, entry.path);
     if (indexEntry !== undefined) written.push(indexEntry);
   }
@@ -461,14 +473,13 @@ const applyWriteWave = async (
   ctx: Context,
   workdir: string,
   writes: ReadonlyArray<ChangesetEntry>,
-  lazyProvider: () => Promise<AttributeProvider | undefined>,
+  writer: WorkingTreeWriter,
   scanner: LeadingPathScanner,
-  smudging: Smudging,
   total: number,
   counter: ProgressCounter,
 ): Promise<ReadonlyArray<IndexEntry>> => {
   const applyGroup = (group: ReadonlyArray<ChangesetEntry>) =>
-    applyWriteGroup(ctx, workdir, group, lazyProvider, scanner, smudging, total, counter);
+    applyWriteGroup(ctx, workdir, group, writer, scanner, total, counter);
   if ((await everySourceLoadable(ctx)) && !(await convertsThroughFilterProcess(ctx))) {
     const grouped = await drainPooled(ctx, groupByCaseFoldedPath(writes), applyGroup);
     return grouped.flat();
@@ -484,9 +495,8 @@ const applyAllEntries = async (
   deletes: ReadonlyArray<ChangesetEntry>,
   writes: ReadonlyArray<ChangesetEntry>,
   workdir: string,
-  lazyProvider: () => Promise<AttributeProvider | undefined>,
+  writer: WorkingTreeWriter,
   scanner: LeadingPathScanner,
-  smudging: Smudging,
 ): Promise<ApplyChangesetResult> => {
   const total = deletes.length + writes.length;
   const counter: ProgressCounter = { current: 0 };
@@ -496,9 +506,8 @@ const applyAllEntries = async (
     ctx,
     workdir,
     writes,
-    lazyProvider,
+    writer,
     scanner,
-    smudging,
     total,
     counter,
   );
@@ -525,24 +534,17 @@ const assertNoDirtyOverwrite = async (
 };
 
 /**
- * Builds the attribute provider lazily, once per invocation. A runner-less
- * context skips it unless a driver is required: only a required driver
- * changes what a context that cannot run filters writes.
+ * One writer per apply. Its smudge limiter is sized off cpuBound, not
+ * ioBound: a smudge subprocess spawn is process/CPU-bound, so it must not
+ * inherit the write wave's wider ioBound budget.
  */
-const createLazyProvider = (ctx: Context): (() => Promise<AttributeProvider | undefined>) => {
-  let providerPromise: Promise<AttributeProvider | undefined> | undefined;
-  return () => (providerPromise ??= maybeBuildAttributeProvider(ctx));
-};
-
-/**
- * Sized off cpuBound, not ioBound: a smudge subprocess spawn is
- * process/CPU-bound, not blocking-fd-bound, so it must not inherit the
- * write wave's wider ioBound budget — see `writeBlobToWorkingTree`.
- */
-const createSmudging = (ctx: Context, opts: ApplyChangesetOpts): Smudging => ({
-  limiter: limiterFor(ctx, 'cpuBound'),
-  ...(opts.checkoutMetadata && { metadata: opts.checkoutMetadata }),
-});
+const createChangesetWriter = (ctx: Context, opts: ApplyChangesetOpts): WorkingTreeWriter =>
+  createWorkingTreeWriter(ctx, {
+    provider: lazily(() => maybeBuildAttributeProvider(ctx)),
+    settings: lazily(() => readEolSettings(ctx)),
+    limiter: limiterFor(ctx, 'cpuBound'),
+    ...(opts.checkoutMetadata && { metadata: opts.checkoutMetadata }),
+  });
 
 const applyChangesetInScope = async (
   ctx: Context,
@@ -558,12 +560,11 @@ const applyChangesetInScope = async (
 
   if (!force) await assertNoDirtyOverwrite(ctx, workdir, [...deletes, ...writes]);
 
-  const lazyProvider = createLazyProvider(ctx);
   // One scanner per changeset application, shared by BOTH the delete-skip
   // check and the write-side unlink: its per-directory memo means a deep
   // tree with many entries under the same symlinked directory costs one
   // `lstat` per distinct directory, not one per entry.
   const scanner = createLeadingPathScanner(ctx);
-  const smudging = createSmudging(ctx, opts);
-  return applyAllEntries(ctx, deletes, writes, workdir, lazyProvider, scanner, smudging);
+  const writer = createChangesetWriter(ctx, opts);
+  return applyAllEntries(ctx, deletes, writes, workdir, writer, scanner);
 };

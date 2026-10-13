@@ -13,7 +13,18 @@
  *   unique:         canonical git converts line endings per core.autocrlf, core.eol and attribute exactly as the transcribed matrices record
  *   interopSurface: add, checkout
  */
-import { mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -21,6 +32,7 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { add } from '../../src/application/commands/add.js';
+import { checkout } from '../../src/application/commands/checkout.js';
 import { status } from '../../src/application/commands/status.js';
 import type { EolNotice } from '../../src/domain/eol/crlf-conversion.js';
 import { TsgitError } from '../../src/domain/index.js';
@@ -35,6 +47,7 @@ import {
   expectedBytes,
   findRow,
   HEURISTIC_FIXTURES,
+  IDENT_DIVERGENCE_BLOB,
   IDENT_FIXTURES,
   initEolRepo,
   looseObjectIds,
@@ -990,6 +1003,223 @@ describe.skipIf(!GIT_AVAILABLE)('eol conversion interop', () => {
         // Assert
         expect(result).toEqual({ git: ' M a\n', tsgit: [['a', undefined, 'modified']] });
       });
+    });
+  });
+  describe('Given tsgit and git restore the same paths from the index', () => {
+    interface RestoreTwin {
+      readonly gitDir: string;
+      readonly tsDir: string;
+    }
+
+    const lengthOfObjectId = (object: 'sha1' | 'sha256'): number => (object === 'sha256' ? 64 : 40);
+
+    const commitTwin = (
+      files: Readonly<Record<string, Uint8Array>>,
+      config: EolRepoOptions,
+      objectFormat: 'sha1' | 'sha256' = 'sha1',
+    ): RestoreTwin => {
+      const twin = { gitDir: freshDir(), tsDir: freshDir() };
+      for (const dir of [twin.gitDir, twin.tsDir]) {
+        runGit([
+          '-c',
+          'init.defaultBranch=main',
+          'init',
+          '-q',
+          `--object-format=${objectFormat}`,
+          dir,
+        ]);
+        for (const [name, bytes] of Object.entries(files))
+          writeFileSync(path.join(dir, name), bytes);
+        git(dir, 'add', '.');
+        git(dir, 'commit', '-q', '-m', 'raw');
+        setEolConfig(dir, config);
+      }
+      return twin;
+    };
+
+    const prepareRestore = (
+      twin: RestoreTwin,
+      attributes: ReadonlyArray<string>,
+      names: ReadonlyArray<string>,
+    ): void => {
+      for (const dir of [twin.gitDir, twin.tsDir]) {
+        writeInfoAttributes(dir, attributes);
+        for (const name of names) rmSync(path.join(dir, name), { force: true });
+      }
+    };
+
+    const worktreeOf = (dir: string, names: ReadonlyArray<string>): ReadonlyArray<string> =>
+      names.map((name) => enc(new Uint8Array(readFileSync(path.join(dir, name)))));
+
+    const restoreOnBoth = async (
+      twin: RestoreTwin,
+      attributes: ReadonlyArray<string>,
+      names: ReadonlyArray<string>,
+      algorithm: 'sha1' | 'sha256' = 'sha1',
+    ) => {
+      prepareRestore(twin, attributes, names);
+      git(twin.gitDir, 'checkout', '--', ...names);
+      await checkout(createNodeContext({ workDir: twin.tsDir, algorithm }), { paths: names });
+      return { git: worktreeOf(twin.gitDir, names), tsgit: worktreeOf(twin.tsDir, names) };
+    };
+
+    const matrixFiles = Object.fromEntries(MATRIX_FIXTURES.map((f) => [f.name, f.bytes]));
+
+    describe('When the five matrix fixtures are restored under each config row and attribute column', () => {
+      it.each(CHECKOUT_MATRIX.map((row) => [rowTitle(row), row] as const))(
+        'Then %s yields the table cells and git bytes',
+        async (_title, row) => {
+          // Arrange
+          const twin = commitTwin(matrixFiles, rowConfig(row));
+          const expected = findRow(CHECKOUT_MATRIX, row.autoCrlf, row.eol).cells.map((codes) =>
+            MATRIX_FIXTURES.map((fixture, index) =>
+              enc(expectedBytes(codes[index] ?? '=', fixture.bytes)),
+            ),
+          );
+
+          // Act
+          const result = [];
+          for (const attribute of ATTRIBUTE_COLUMNS) {
+            result.push(await restoreOnBoth(twin, attributeLines(attribute), FIXTURE_NAMES));
+          }
+
+          // Assert
+          expect(result.map((column) => column.tsgit)).toEqual(expected);
+          expect(result.map((column) => column.tsgit)).toEqual(result.map((column) => column.git));
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+
+    describe('When the edge fixtures are restored under core.autocrlf=true', () => {
+      const EDGE_ATTRIBUTES = [
+        undefined,
+        'text',
+        'text=auto',
+        'eol=crlf',
+        'text=auto eol=crlf',
+        '-text eol=crlf',
+        'crlf',
+        '-crlf',
+        'text=foo',
+      ] as const;
+      const edgeNames = Object.keys(EDGE_FIXTURES);
+
+      it.each(EDGE_ATTRIBUTES.map((attribute) => [attribute ?? '[none]', attribute] as const))(
+        'Then attr=%s yields the bytes git writes',
+        async (_title, attribute) => {
+          // Arrange
+          const twin = commitTwin(EDGE_FIXTURES, { autoCrlf: 'true' });
+
+          // Act
+          const result = await restoreOnBoth(twin, attributeLines(attribute), edgeNames);
+
+          // Assert
+          expect(result.tsgit).toEqual(result.git);
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+
+    describe('When a symlink target holding a CR is restored under text eol=crlf', () => {
+      it('Then the link target is unchanged in both tools', async () => {
+        // Arrange
+        const target = 'a\r\nb\n';
+        const twin = { gitDir: freshDir(), tsDir: freshDir() };
+        for (const dir of [twin.gitDir, twin.tsDir]) {
+          initEolRepo(dir, { autoCrlf: 'true' });
+          symlinkSync(target, path.join(dir, 'link'));
+          git(dir, 'add', 'link');
+          git(dir, 'commit', '-q', '-m', 'link');
+        }
+        prepareRestore(twin, ['* text eol=crlf'], ['link']);
+
+        // Act
+        git(twin.gitDir, 'checkout', '--', 'link');
+        await checkout(createNodeContext({ workDir: twin.tsDir }), { paths: ['link'] });
+
+        // Assert
+        expect(readlinkSync(path.join(twin.tsDir, 'link'))).toBe(target);
+        expect(readlinkSync(path.join(twin.gitDir, 'link'))).toBe(target);
+      });
+    });
+
+    describe.each([
+      ['ident', 'ident'],
+      ['ident eol=crlf', 'ident eol=crlf'],
+      ['ident -text', 'ident -text'],
+      ['ident text=auto', 'ident text=auto'],
+    ])('When the ident divergence blob is restored under %s', (_title, attribute) => {
+      it.each(['sha1', 'sha256'] as const)(
+        'Then %s objects yield the git bytes',
+        async (format) => {
+          // Arrange
+          const twin = commitTwin({ f: IDENT_DIVERGENCE_BLOB }, {}, format);
+
+          // Act
+          const result = await restoreOnBoth(twin, attributeLines(attribute), ['f'], format);
+
+          // Assert
+          expect(result.tsgit).toEqual(result.git);
+          expect(result.tsgit.join('')).toContain(`$Id: `);
+          expect(result.tsgit.join('')).toMatch(
+            new RegExp(`\\$Id: [0-9a-f]{${lengthOfObjectId(format)}} \\$`),
+          );
+        },
+      );
+    });
+
+    describe('When the committed loose blob is corrupt', () => {
+      const corruptBlob = (dir: string): void => {
+        const id = git(dir, 'rev-parse', ':f').trim();
+        const loose = path.join(dir, '.git', 'objects', id.slice(0, 2), id.slice(2));
+        chmodSync(loose, 0o644);
+        writeFileSync(loose, 'garbage-not-zlib');
+      };
+
+      const residueOf = (dir: string) => {
+        const file = path.join(dir, 'f');
+        return {
+          exists: existsSync(file),
+          size: existsSync(file) ? statSync(file).size : undefined,
+        };
+      };
+
+      const refusalCodeOf = async (dir: string): Promise<string | undefined> => {
+        try {
+          await checkout(createNodeContext({ workDir: dir }), { paths: ['f'] });
+        } catch (error) {
+          return error instanceof TsgitError ? error.data.code : undefined;
+        }
+        return undefined;
+      };
+
+      it.each([
+        ['eol=crlf', true],
+        ['ident', true],
+        ['-text', true],
+        ['text=auto', false],
+      ] as const)(
+        'Then attr=%s leaves the empty file only when it streams',
+        async (attribute, leavesEmpty) => {
+          // Arrange
+          const twin = commitTwin({ f: bytesOf('a\nb\n') }, {});
+          for (const dir of [twin.gitDir, twin.tsDir]) corruptBlob(dir);
+          prepareRestore(twin, attributeLines(attribute), ['f']);
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', twin.gitDir, 'checkout', '--', 'f']);
+          const code = await refusalCodeOf(twin.tsDir);
+
+          // Assert
+          const expected = { exists: leavesEmpty, size: leavesEmpty ? 0 : undefined };
+          expect(gitResult.exitCode).toBe(REFUSED_EXIT_CODE);
+          expect(residueOf(twin.gitDir)).toEqual(expected);
+          expect(residueOf(twin.tsDir)).toEqual(expected);
+          expect(code).toBe('DECOMPRESS_FAILED');
+        },
+        SETUP_TIMEOUT,
+      );
     });
   });
 });
