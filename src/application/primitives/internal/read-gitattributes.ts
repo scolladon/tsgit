@@ -315,6 +315,7 @@ const attributeBlobMap = (
 const readIndexAttributeBlobs = async (ctx: Context): Promise<ReadonlyMap<string, ObjectId>> => {
   try {
     const { entries } = await readIndex(ctx);
+    // Stryker disable next-line MethodExpression: equivalent — attributeBlobMap re-applies isAttributesPath and indexRuleEntries picks per path, so the pre-filter only keeps the rule-entry map off non-attribute entries.
     return attributeBlobMap(indexRuleEntries(entries.filter((e) => isAttributesPath(e.path))));
   } catch (err) {
     if (err instanceof TsgitError && INDEX_MISSING_CODES.has(err.data.code)) return new Map();
@@ -343,6 +344,7 @@ export const buildCheckinAttributeProvider = (
     index === undefined
       ? readIndexAttributeBlobs(ctx)
       : Promise.resolve(
+          // Stryker disable next-line MethodExpression: equivalent — attributeBlobMap re-applies isAttributesPath and indexRuleEntries picks per path, so the pre-filter only keeps the rule-entry map off non-attribute entries.
           attributeBlobMap(indexRuleEntries(index.entries.filter((e) => isAttributesPath(e.path)))),
         ),
   );

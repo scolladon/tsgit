@@ -258,6 +258,7 @@ const checkoutDirection = (
     };
   }
   const kept = indexRuleEntries(
+    // Stryker disable next-line MethodExpression: equivalent — `kept` feeds only attributeBlobLookup, whose attributeBlobMap re-applies isAttributesPath; the pre-filter only keeps indexRuleEntries off non-attribute entries.
     opts.currentIndex.entries.filter((entry) => isAttributesPath(entry.path)),
   ).filter((entry) => !paths.has(entry.path));
   return { kind: 'worktree-first', index: attributeBlobLookup([...kept, ...plan.target]) };

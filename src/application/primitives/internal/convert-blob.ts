@@ -62,6 +62,7 @@ const noticeFor = (
 
 export const convertToGit = async (ctx: Context, request: ToGitRequest): Promise<ToGitResult> => {
   const { path, bytes, conversion, route, settings, indexBlob } = request;
+  // Stryker disable next-line ConditionalExpression: equivalent — an identity conversion has no filter, ident or crlf action, so the full path (identity clean, crlfToGit 'binary', no ident, no notice) returns the same bytes; the early return only skips the allocations.
   if (isIdentityConversion(conversion)) return { bytes };
   const cleaned = await applyCleanFilter(ctx, ctx.command, path, bytes, conversion.filter);
   const crlf = await crlfToGit({

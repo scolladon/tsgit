@@ -397,6 +397,106 @@ describe('withCleanOrder in a write span', () => {
         expect(outcomes).toEqual([early]);
       });
     });
+
+    describe('When the same path is halted twice', () => {
+      it('Then the first error is the one later paths reject with', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = withCleanOrder;
+        const first = new Error('b refused');
+        const outcomes: unknown[] = [];
+
+        // Act
+        await sut(
+          ctx,
+          async (order) => {
+            for (const path of [A, B, C]) order.enlist(path);
+            order.halt(B, first);
+            order.halt(B, new Error('b refused again'));
+            await admitWrite(ctx, C).catch((error: unknown) => outcomes.push(error));
+          },
+          'write',
+        );
+
+        // Assert
+        expect(outcomes).toEqual([first]);
+      });
+    });
+
+    describe('When a later path halts while an earlier path waits', () => {
+      it('Then the earlier waiter is not rejected and is admitted on release', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = withCleanOrder;
+        const admitted: FilePath[] = [];
+
+        // Act
+        await sut(
+          ctx,
+          async (order) => {
+            for (const path of [A, B, C]) order.enlist(path);
+            await admitWrite(ctx, A);
+            const earlier = trackWrite(ctx, B, admitted);
+            order.halt(C, new Error('c refused'));
+            order.release(A);
+            await earlier;
+          },
+          'write',
+        );
+
+        // Assert
+        expect(admitted).toEqual([B]);
+      });
+    });
+
+    describe('When a waiting path is itself halted', () => {
+      it('Then its own waiter is not rejected and is admitted on release', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const sut = withCleanOrder;
+        const admitted: FilePath[] = [];
+
+        // Act
+        await sut(
+          ctx,
+          async (order) => {
+            for (const path of [A, B]) order.enlist(path);
+            await admitWrite(ctx, A);
+            const waiting = trackWrite(ctx, B, admitted);
+            order.halt(B, new Error('b refused'));
+            order.release(A);
+            await waiting;
+          },
+          'write',
+        );
+
+        // Assert
+        expect(admitted).toEqual([B]);
+      });
+    });
+
+    describe('When admitClean asks for a path behind a halted one', () => {
+      it('Then it resolves at once, the turn having been taken at admitWrite', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const admitted: FilePath[] = [];
+        const sut = withCleanOrder;
+
+        // Act
+        await sut(
+          ctx,
+          async (order) => {
+            for (const path of [A, B]) order.enlist(path);
+            order.halt(A, new Error('a refused'));
+            await track(ctx, B, admitted);
+          },
+          'write',
+        );
+
+        // Assert
+        expect(admitted).toEqual([B]);
+      });
+    });
   });
 
   describe('Given a clean span', () => {

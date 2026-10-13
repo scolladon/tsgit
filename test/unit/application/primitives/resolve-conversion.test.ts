@@ -242,6 +242,41 @@ describe('resolveConversion', () => {
     });
   });
 
+  describe('Given * crlf=input with no text attribute', () => {
+    describe('When resolving the conversion', () => {
+      it('Then the legacy crlf attribute declares text-input', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const provider = providerFor('* crlf=input\n');
+
+        // Act
+        const result = await resolveConversion(ctx, provider, 'a.txt' as FilePath, SETTINGS);
+
+        // Assert
+        expect(result.crlf).toBe('text-input');
+      });
+    });
+  });
+
+  describe('Given * -crlf under core.autocrlf true', () => {
+    describe('When resolving the conversion', () => {
+      it('Then the legacy crlf attribute declares binary', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const provider = providerFor('* -crlf\n');
+
+        // Act
+        const result = await resolveConversion(ctx, provider, 'a.txt' as FilePath, {
+          ...SETTINGS,
+          autoCrlf: true,
+        });
+
+        // Assert
+        expect(result.crlf).toBe('binary');
+      });
+    });
+  });
+
   describe('Given * ident=false-ish values', () => {
     describe('When ident is unset or set to a string', () => {
       it.each([{ attrs: '* -ident\n' }, { attrs: '* ident=yes\n' }, { attrs: '* text\n' }])(

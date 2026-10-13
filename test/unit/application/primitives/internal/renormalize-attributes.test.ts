@@ -199,6 +199,25 @@ describe('renormalizeAttributeLookup', () => {
     });
   });
 
+  describe('Given a root .gitattributes and a nested one', () => {
+    describe('When the nested file is looked up', () => {
+      it('Then it does not resolve to the root file', () => {
+        // Arrange
+        const sut = renormalizeAttributeLookup(
+          undefined,
+          treeOf({ '.gitattributes': id('a'), 'sub/.gitattributes': id('n') }),
+          treeOf({}),
+        );
+
+        // Act
+        const result = sut(NESTED);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given no trees at all', () => {
     describe('When the root file is looked up', () => {
       it('Then no attributes govern', () => {

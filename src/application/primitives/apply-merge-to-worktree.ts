@@ -356,6 +356,7 @@ const resultAttributeLookup = async (
   outcomes: ReadonlyArray<MergeOutcome>,
   conflicts: ReadonlyArray<MergeConflict>,
 ): Promise<IndexBlobLookup> => {
+  // Stryker disable next-line MethodExpression: equivalent — attributeBlobLookup re-applies isAttributesPath and the blob-backed/merged entry builders skip conflicts, so the lookup is identical; the pre-filter only keeps the merged-blob writes off non-attribute paths.
   const attributeOutcomes = outcomes.filter(
     (outcome) => outcome.status !== 'conflict' && isAttributesPath(outcome.path),
   );

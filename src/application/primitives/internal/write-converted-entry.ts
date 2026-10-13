@@ -126,6 +126,7 @@ export const createWorkingTreeWriter = (
 
   const convertBytes = async (path: FilePath, bytes: Uint8Array): Promise<Uint8Array> => {
     const conversion = await conversionFor(path);
+    // Stryker disable next-line ConditionalExpression: equivalent — for an identity conversion consumesBlobId is false (no ident, filter not external), convertsInCore is false and workingTreeStreamTransform returns undefined, so the fall-through returns the same bytes.
     if (isIdentityConversion(conversion)) return bytes;
     const blob = consumesBlobId(conversion) ? await blobIdOf(ctx, bytes) : NO_BLOB;
     if (convertsInCore(conversion)) return convertInCore(path, blob, bytes, conversion);
