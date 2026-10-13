@@ -22,13 +22,14 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { inflateRawSync } from 'node:zlib';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../src/adapters/memory/memory-adapter.js';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import type { ArchiveEntry } from '../../src/application/commands/archive.js';
 import { archive } from '../../src/application/commands/archive.js';
 import { tarArchive } from '../../src/domain/archive/tar.js';
 import { zipArchive } from '../../src/domain/archive/zip.js';
+import { type EolRepoOptions, IDENT_DIVERGENCE_BLOB, initEolRepo } from './eol-interop-fixtures.js';
 import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
@@ -1264,5 +1265,131 @@ describe.skipIf(!GIT_AVAILABLE)('integration — archive reads its tree-ish like
         });
       },
     );
+  });
+});
+
+// =============================================================================
+// archive converts entries with the tree's attributes (tar and zip byte-equality)
+// =============================================================================
+
+interface ConversionScenario {
+  readonly label: string;
+  readonly options: EolRepoOptions;
+  readonly files: Readonly<Record<string, string | Uint8Array>>;
+  readonly worktreeGitattributes?: string;
+}
+
+const CONVERSION_SCENARIOS: ReadonlyArray<ConversionScenario> = [
+  {
+    label: "the tree's '*.txt eol=crlf' wins over a worktree '-text -ident'",
+    options: { gitattributes: '*.txt eol=crlf\n' },
+    files: { 'f.txt': 'a\nb\n' },
+    worktreeGitattributes: '*.txt -text -ident\n',
+  },
+  {
+    label: ".git/info/attributes '*.dat eol=crlf'",
+    options: { infoAttributes: ['*.dat eol=crlf'] },
+    files: { 'f.dat': 'a\nb\n' },
+  },
+  {
+    label: 'no attribute and core.autocrlf=true',
+    options: { autoCrlf: 'true' },
+    files: { 'f.txt': 'a\nb\n' },
+  },
+  {
+    label: "'* ident' on the divergence blob (in-core expander)",
+    options: { gitattributes: '* ident\n' },
+    files: { f: IDENT_DIVERGENCE_BLOB },
+  },
+  {
+    label: 'export-subst on an eol=crlf file',
+    options: { gitattributes: 'f export-subst eol=crlf\n' },
+    files: { f: 'id $Format:%H$\n' },
+  },
+];
+
+describe.skipIf(!GIT_AVAILABLE)('archive entry conversion byte-faithfulness', () => {
+  const commitDate = '2005-04-07T22:13:13 +0200';
+  const gitEnv = () => ({
+    ...runGitEnv(),
+    GIT_AUTHOR_NAME: 'Ada',
+    GIT_AUTHOR_EMAIL: 'ada@example.com',
+    GIT_AUTHOR_DATE: commitDate,
+    GIT_COMMITTER_NAME: 'Ada',
+    GIT_COMMITTER_EMAIL: 'ada@example.com',
+    GIT_COMMITTER_DATE: commitDate,
+    TZ: 'UTC',
+  });
+  let dir = '';
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const buildRepo = async (scenario: ConversionScenario): Promise<void> => {
+    dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-archive-conversion-'));
+    initEolRepo(dir, scenario.options);
+    for (const [name, content] of Object.entries(scenario.files)) {
+      writeFileSync(path.join(dir, name), content);
+    }
+    runGit(['-C', dir, 'add', '-A'], { env: gitEnv() });
+    runGit(['-C', dir, 'commit', '-q', '-m', 'seed'], { env: gitEnv() });
+    if (scenario.worktreeGitattributes !== undefined) {
+      writeFileSync(path.join(dir, '.gitattributes'), scenario.worktreeGitattributes);
+    }
+  };
+
+  describe.each(CONVERSION_SCENARIOS)('Given $label', (scenario) => {
+    describe('When archived to tar', () => {
+      it('Then the tar bytes equal git archive --format=tar', async () => {
+        // Arrange
+        await buildRepo(scenario);
+        const ctx = createNodeContext({ workDir: dir });
+        const result = await archive(ctx, { treeish: 'HEAD' });
+        const gitBytes = runGitBytes(['-C', dir, 'archive', '--format=tar', 'HEAD'], {
+          env: gitEnv(),
+        });
+
+        // Act
+        const ourBytes = await collectTarBytes(
+          tarArchive(result, {
+            umask: 0o0002,
+            uname: 'root',
+            gname: 'root',
+            ...(result.commitTime !== undefined ? { mtime: result.commitTime } : {}),
+          }),
+        );
+
+        // Assert
+        expect(ourBytes).toEqual(new Uint8Array(gitBytes));
+      });
+    });
+
+    describe('When archived to zip', () => {
+      it('Then the zip bytes equal git archive --format=zip', async () => {
+        // Arrange
+        await buildRepo(scenario);
+        const ctx = createNodeContext({ workDir: dir });
+        const result = await archive(ctx, { treeish: 'HEAD' });
+        const gitBytes = runGitBytes(['-C', dir, 'archive', '--format=zip', 'HEAD'], {
+          env: gitEnv(),
+        });
+
+        // Act
+        const ourBytes = await collectZipBytes(
+          zipArchive(
+            result,
+            { deflateRaw: ctx.compressor.deflateRaw },
+            {
+              tzOffsetMinutes: 0,
+              ...(result.commitTime !== undefined ? { mtime: result.commitTime } : {}),
+            },
+          ),
+        );
+
+        // Assert
+        expect(ourBytes).toEqual(new Uint8Array(gitBytes));
+      });
+    });
   });
 });

@@ -32,6 +32,7 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { add } from '../../src/application/commands/add.js';
+import { blame } from '../../src/application/commands/blame.js';
 import { checkout } from '../../src/application/commands/checkout.js';
 import { cherryPickRun } from '../../src/application/commands/cherry-pick.js';
 import { mergeRun } from '../../src/application/commands/merge.js';
@@ -1574,6 +1575,61 @@ describe.skipIf(!GIT_AVAILABLE)('eol conversion interop', () => {
         expect(workTreeOf(twin.tsDir, 'u')).toBe(workTreeOf(twin.gitDir, 'u'));
         expect(git(twin.gitDir, 'status', '--short', '--untracked-files=no')).toBe(' M f\n');
         expect(git(twin.tsDir, 'status', '--short', '--untracked-files=no')).toBe(' M f\n');
+      });
+    });
+  });
+
+  describe('Given a committed LF file and its CRLF worktree copy with a third line', () => {
+    const ZERO_OID = '0'.repeat(40);
+    const PORCELAIN_HEADER = /^([0-9a-f]{40}) \d+ \d+/;
+
+    const gitCommittedFlags = (dir: string): ReadonlyArray<boolean> =>
+      git(dir, 'blame', '--porcelain', 'f')
+        .split('\n')
+        .flatMap((line) => PORCELAIN_HEADER.exec(line)?.[1] ?? [])
+        .map((oid) => oid !== ZERO_OID);
+
+    const seed = (autoCrlf: 'true' | 'false'): string => {
+      const dir = freshDir();
+      initEolRepo(dir, { autoCrlf });
+      git(dir, 'config', 'user.name', 'Ada');
+      git(dir, 'config', 'user.email', 'ada@example.com');
+      writeFileSync(path.join(dir, 'f'), 'a\nb\n');
+      git(dir, 'add', 'f');
+      git(dir, 'commit', '-q', '-m', 'seed');
+      writeFileSync(path.join(dir, 'f'), 'a\r\nb\r\nc\r\n');
+      return dir;
+    };
+
+    describe('When blame runs on the working tree with core.autocrlf=true', () => {
+      it('Then lines 1-2 are attributed to the commit and line 3 is uncommitted, as in git', async () => {
+        // Arrange
+        const dir = seed('true');
+        const ctx = createNodeContext({ workDir: dir });
+        const sut = blame;
+
+        // Act
+        const result = await sut(ctx, 'f', { worktree: true });
+
+        // Assert
+        expect(result.lines.map((line) => line.committed)).toEqual([true, true, false]);
+        expect(result.lines.map((line) => line.committed)).toEqual(gitCommittedFlags(dir));
+      });
+    });
+
+    describe('When blame runs on the working tree with no conversion', () => {
+      it('Then all three lines are uncommitted, as in git', async () => {
+        // Arrange
+        const dir = seed('false');
+        const ctx = createNodeContext({ workDir: dir });
+        const sut = blame;
+
+        // Act
+        const result = await sut(ctx, 'f', { worktree: true });
+
+        // Assert
+        expect(result.lines.map((line) => line.committed)).toEqual([false, false, false]);
+        expect(result.lines.map((line) => line.committed)).toEqual(gitCommittedFlags(dir));
       });
     });
   });

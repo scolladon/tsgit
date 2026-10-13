@@ -1,5 +1,6 @@
 import type { ArchiveEntry, ArchiveResult } from '../../domain/archive/index.js';
 import { resolveAttribute } from '../../domain/attributes/index.js';
+import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import { FILE_MODE } from '../../domain/objects/file-mode.js';
@@ -7,10 +8,17 @@ import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js
 import type { Context } from '../../ports/context.js';
 import { readStrictBigFileThreshold } from '../primitives/internal/big-file-threshold.js';
 import { readBlobContentInStreamOrder } from '../primitives/internal/blob-source.js';
+import { convertToWorkingTree } from '../primitives/internal/convert-blob.js';
 import { peel } from '../primitives/internal/peel.js';
 import { buildAttributeProvider } from '../primitives/internal/read-gitattributes.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readDeclaredObjectHeader, readObject } from '../primitives/read-object.js';
+import {
+  type Conversion,
+  isIdentityConversion,
+  readEolSettings,
+  resolveConversion,
+} from '../primitives/resolve-conversion.js';
 import type { WalkTreeEntry } from '../primitives/types.js';
 import { walkTree } from '../primitives/walk-tree.js';
 import { createSubstExpander, type SubstExpander } from './internal/archive-subst.js';
@@ -149,32 +157,48 @@ async function* buildEntryStream(
 const EXPORT_IGNORE = 'export-ignore';
 const EXPORT_SUBST = 'export-subst';
 
-type AttributeCheck = (key: string, attribute: string) => Promise<boolean>;
+/** The archived tree's attributes: the set-test for archive keys and the per-path conversion. */
+interface TreeAttributes {
+  readonly isSet: (key: string, attribute: string) => Promise<boolean>;
+  readonly conversionOf: (path: FilePath) => Promise<Conversion>;
+  readonly settings: EolSettings;
+}
 
 /** An archive attribute counts only when set — a string value or an unset is not. */
-const createAttributeCheck = async (ctx: Context, tree: ObjectId): Promise<AttributeCheck> => {
+const createTreeAttributes = async (ctx: Context, tree: ObjectId): Promise<TreeAttributes> => {
   const provider = await buildAttributeProvider(ctx, { kind: 'tree', tree });
-  return async (key, attribute) => {
-    const { sources, macros } = await provider.sourcesForPath(key as FilePath);
-    return resolveAttribute(sources, key, attribute, macros) === true;
+  const settings = await readEolSettings(ctx);
+  return {
+    isSet: async (key, attribute) => {
+      const { sources, macros } = await provider.sourcesForPath(key as FilePath);
+      return resolveAttribute(sources, key, attribute, macros) === true;
+    },
+    conversionOf: (path) => resolveConversion(ctx, provider, path, settings),
+    settings,
   };
 };
 
 /**
  * git's `write_archive_entry`: only a regular file is converted, and a converted
  * file is read whole whatever its size — the attribute decides, not whether a
- * commit is there to expand against.
+ * commit is there to expand against. Conversion precedes `export-subst`.
  */
 const readEntryContent = async (
   ctx: Context,
   entry: WalkTreeEntry,
-  isSet: AttributeCheck,
+  attributes: TreeAttributes,
   subst: SubstExpander | undefined,
 ): Promise<Uint8Array> => {
   if (!isRegularFileMode(entry.mode)) return readInCore(ctx, entry.id);
-  if (!(await isSet(entry.path, EXPORT_SUBST))) return readRegularContent(ctx, entry.id);
-  const content = await readInCore(ctx, entry.id);
-  return subst === undefined ? content : subst.expandFile(content);
+  const conversion = await attributes.conversionOf(entry.path);
+  const substitutes = await attributes.isSet(entry.path, EXPORT_SUBST);
+  if (isIdentityConversion(conversion) && !substitutes) return readRegularContent(ctx, entry.id);
+  const bytes = await convertToWorkingTree(ctx, {
+    target: { path: entry.path, blob: entry.id, bytes: await readInCore(ctx, entry.id) },
+    conversion,
+    settings: attributes.settings,
+  });
+  return substitutes && subst !== undefined ? subst.expandFile(bytes) : bytes;
 };
 
 const isInside = (path: string, directory: string): boolean => path.startsWith(`${directory}/`);
@@ -204,8 +228,8 @@ const createEntryPlanner = async (
   tree: ObjectId,
   subst: SubstExpander | undefined,
 ): Promise<(entry: WalkTreeEntry) => Promise<ReadonlyArray<ArchiveEntry>>> => {
-  const isSet = await createAttributeCheck(ctx, tree);
-  const isExportIgnored = (key: string) => isSet(key, EXPORT_IGNORE);
+  const attributes = await createTreeAttributes(ctx, tree);
+  const isExportIgnored = (key: string) => attributes.isSet(key, EXPORT_IGNORE);
   let queued: ArchiveEntry[] = [];
   let ignoredDirectory: string | undefined;
   return async (entry) => {
@@ -220,7 +244,7 @@ const createEntryPlanner = async (
     const flushed = queued;
     queued = [];
     if (await isExportIgnored(attributeKey(path, mode))) return flushed;
-    return [...flushed, await archiveLeaf(ctx, entry, isSet, subst)];
+    return [...flushed, await archiveLeaf(ctx, entry, attributes, subst)];
   };
 };
 
@@ -228,11 +252,11 @@ const createEntryPlanner = async (
 const archiveLeaf = async (
   ctx: Context,
   entry: WalkTreeEntry,
-  isSet: AttributeCheck,
+  attributes: TreeAttributes,
   subst: SubstExpander | undefined,
 ): Promise<ArchiveEntry> => {
   const { path, id, mode } = entry;
   if (mode === FILE_MODE.GITLINK) return { path, mode, oid: id };
-  const content = await readEntryContent(ctx, entry, isSet, subst);
+  const content = await readEntryContent(ctx, entry, attributes, subst);
   return { path, mode, oid: id, content };
 };

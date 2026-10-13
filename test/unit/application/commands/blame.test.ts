@@ -1246,6 +1246,45 @@ describe('Given a worktree blame on a clean tree', () => {
   });
 });
 
+describe('Given core.autocrlf true, a committed LF file and its CRLF worktree copy with a third line', () => {
+  describe('When blame runs on the working tree', () => {
+    it('Then lines 1–2 are attributed to the commit and line 3 is uncommitted', async () => {
+      // Arrange
+      const ctx = await seed();
+      const c1 = await commitFile(ctx, 'c1', 'f.txt', 'a\nb\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tautocrlf = true\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'a\r\nb\r\nc\r\n');
+
+      // Act
+      const result = await blame(ctx, 'f.txt', { worktree: true });
+
+      // Assert
+      expect(result.lines.map((l) => l.committed)).toEqual([true, true, false]);
+      expect(result.lines.map((l) => text(l.content))).toEqual(['a\n', 'b\n', 'c\n']);
+      expect(
+        committedLines({ ...result, lines: result.lines.slice(0, 2) }).map((l) => l.commit),
+      ).toEqual([c1, c1]);
+    });
+  });
+});
+
+describe('Given no conversion, a committed LF file and its CRLF worktree copy', () => {
+  describe('When blame runs on the working tree', () => {
+    it('Then every line is uncommitted', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\nb\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f.txt`, 'a\r\nb\r\nc\r\n');
+
+      // Act
+      const result = await blame(ctx, 'f.txt', { worktree: true });
+
+      // Assert
+      expect(result.lines.map((l) => l.committed)).toEqual([false, false, false]);
+    });
+  });
+});
+
 describe('Given a bare repository (no work tree)', () => {
   describe('When blaming with the worktree option', () => {
     it('Then it blames HEAD instead of refusing', async () => {
