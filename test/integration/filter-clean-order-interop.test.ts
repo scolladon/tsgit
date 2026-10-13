@@ -151,39 +151,6 @@ describe.skipIf(!GIT_AVAILABLE)('Given a clean process driver over files of mixe
     });
   });
 
-  /** A repo whose `rec` clean driver appends each file's content to a log, `tee` being the recorder. */
-  const recordingTwin = async (slug: string) => {
-    const repo = path.join(root, slug);
-    const log = path.join(root, `${slug}.log`);
-    runGit(['init', '-q', '-b', 'main', repo]);
-    await writeFile(path.join(repo, '.gitattributes'), '*.txt filter=rec\n');
-    runGit(['-C', repo, 'config', 'filter.rec.clean', `tee -a "${log}"`]);
-    await writeFile(path.join(repo, 'b.txt'), 'B\n');
-    runGit(['-C', repo, 'add', 'b.txt']);
-    await writeFile(log, '');
-    await writeFile(path.join(repo, 'a.txt'), 'A\n');
-    await writeFile(path.join(repo, 'b.txt'), 'B2\n');
-    await writeFile(path.join(repo, 'c.txt'), 'C\n');
-    return { repo, heard: async () => readFile(log, 'utf8') };
-  };
-
-  describe('When git and tsgit add -A a modified tracked path among untracked ones', () => {
-    it('Then both clean the tracked path first, then the untracked ones in walk order', async () => {
-      // Arrange
-      const gitTwin = await recordingTwin('git-tracked-first');
-      const tsgitTwin = await recordingTwin('tsgit-tracked-first');
-      const sut = add;
-
-      // Act
-      runGit(['-C', gitTwin.repo, 'add', '-A']);
-      await sut(createNodeContext({ workDir: tsgitTwin.repo }), [], { all: true });
-
-      // Assert
-      expect(await gitTwin.heard()).toBe('B2\nA\nC\n');
-      expect(await tsgitTwin.heard()).toBe(await gitTwin.heard());
-    });
-  });
-
   describe('When git and tsgit report the status of same-size rewrites', () => {
     it('Then both send the clean requests in index order', async () => {
       // Arrange
@@ -201,3 +168,51 @@ describe.skipIf(!GIT_AVAILABLE)('Given a clean process driver over files of mixe
     });
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a single-shot clean command, a modified tracked b.txt and untracked a.txt and c.txt',
+  () => {
+    let root = '';
+
+    beforeAll(async () => {
+      root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-clean-order-')));
+    });
+
+    afterAll(async () => {
+      await rm(root, { recursive: true, force: true });
+    });
+
+    /** A repo whose `rec` clean driver appends each file's content to a log, `tee` being the recorder. */
+    const recordingTwin = async (slug: string) => {
+      const repo = path.join(root, slug);
+      const log = path.join(root, `${slug}.log`);
+      runGit(['init', '-q', '-b', 'main', repo]);
+      await writeFile(path.join(repo, '.gitattributes'), '*.txt filter=rec\n');
+      runGit(['-C', repo, 'config', 'filter.rec.clean', `tee -a "${log}"`]);
+      await writeFile(path.join(repo, 'b.txt'), 'B\n');
+      runGit(['-C', repo, 'add', 'b.txt']);
+      await writeFile(log, '');
+      await writeFile(path.join(repo, 'a.txt'), 'A\n');
+      await writeFile(path.join(repo, 'b.txt'), 'B2\n');
+      await writeFile(path.join(repo, 'c.txt'), 'C\n');
+      return { repo, heard: async () => readFile(log, 'utf8') };
+    };
+
+    describe('When both tools add everything', () => {
+      it('Then both clean the tracked path first, then the untracked ones in walk order', async () => {
+        // Arrange
+        const gitTwin = await recordingTwin('git-tracked-first');
+        const tsgitTwin = await recordingTwin('tsgit-tracked-first');
+        const sut = add;
+
+        // Act
+        runGit(['-C', gitTwin.repo, 'add', '-A']);
+        await sut(createNodeContext({ workDir: tsgitTwin.repo }), [], { all: true });
+
+        // Assert
+        expect(await gitTwin.heard()).toBe('B2\nA\nC\n');
+        expect(await tsgitTwin.heard()).toBe(await gitTwin.heard());
+      });
+    });
+  },
+);

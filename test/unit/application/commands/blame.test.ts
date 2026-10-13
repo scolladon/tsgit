@@ -1331,6 +1331,25 @@ describe('Given text=auto, a committed CRLF file and an index recording an LF ba
   });
 });
 
+describe('Given text=auto, a committed LF file beside a committed CRLF file in the index', () => {
+  describe('When blame runs on the CRLF file with one CRLF line added', () => {
+    it('Then the index rule is read from the blamed path and the unchanged lines stay committed', async () => {
+      // Arrange
+      const ctx = await seed();
+      await commitFile(ctx, 'c0', 'a.txt', 'x\n');
+      await commitFile(ctx, 'c1', 'f.txt', 'a\r\nb\r\n');
+      await write(ctx, '.gitattributes', '* text=auto\n');
+      await write(ctx, 'f.txt', 'a\r\nb\r\nc\r\n');
+
+      // Act
+      const result = await blame(ctx, 'f.txt', { worktree: true });
+
+      // Assert
+      expect(result.lines.map((l) => l.committed)).toEqual([true, true, false]);
+    });
+  });
+});
+
 describe('Given no conversion, a committed LF file and its CRLF worktree copy', () => {
   describe('When blame runs on the working tree', () => {
     it('Then every line is uncommitted', async () => {
