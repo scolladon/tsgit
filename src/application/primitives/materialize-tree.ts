@@ -48,6 +48,7 @@ import {
   computeChangeset,
 } from './compute-changeset.js';
 import type { CheckoutMetadata } from './internal/apply-smudge-filter.js';
+import { indexRuleEntries } from './internal/index-rule-entries.js';
 import { type AttributeDirection, attributeBlobLookup } from './internal/read-gitattributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
 import { walkTree } from './walk-tree.js';
@@ -252,8 +253,8 @@ const checkoutDirection = (
       index: attributeBlobLookup([...plan.target, ...plan.excluded]),
     };
   }
-  const kept = opts.currentIndex.entries.filter(
-    (entry) => entry.flags.stage === 0 && !paths.has(entry.path),
+  const kept = indexRuleEntries(opts.currentIndex.entries).filter(
+    (entry) => !paths.has(entry.path),
   );
   return { kind: 'worktree-first', index: attributeBlobLookup([...kept, ...plan.target]) };
 };

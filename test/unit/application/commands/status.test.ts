@@ -48,6 +48,41 @@ const seedClean = async () => {
 const changeFor = (result: StatusResult, path: string): ChangedPath | undefined =>
   result.changes.find((c) => c.path === path);
 
+const INDEX_STATS = new Set<string | symbol>(['stat', 'tryStat']);
+
+/** Counts the stat calls aimed at the index file: one per index read. */
+const countingIndexStats = (base: Context): { ctx: Context; indexStats: () => number } => {
+  let stats = 0;
+  const fs = new Proxy(base.fs, {
+    get(target, prop, receiver) {
+      const original = Reflect.get(target, prop, receiver);
+      if (!INDEX_STATS.has(prop)) return original;
+      return (path: string, ...rest: unknown[]) => {
+        if (String(path).endsWith('/index')) stats += 1;
+        return original.call(target, path, ...rest);
+      };
+    },
+  });
+  return { ctx: { ...base, fs } as Context, indexStats: () => stats };
+};
+
+describe('status index reads', () => {
+  describe('Given a clean repo with no work-tree .gitattributes', () => {
+    describe('When status', () => {
+      it('Then the index is statted once, the attribute provider reusing the one status holds', async () => {
+        // Arrange
+        const { ctx, indexStats } = countingIndexStats(await seedClean());
+
+        // Act
+        await status(ctx);
+
+        // Assert
+        expect(indexStats()).toBe(1);
+      });
+    });
+  });
+});
+
 describe('status', () => {
   describe('Given a clean repo', () => {
     describe('When status', () => {

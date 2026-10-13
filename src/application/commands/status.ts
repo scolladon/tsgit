@@ -185,7 +185,7 @@ const scanStatusTree = async (
   tracked: TrackedEntries,
 ): Promise<ScannedTree> => {
   const tracker = createGranularityTracker(ctx.progress, STATUS_SCAN_OP, STATUS_SCAN_GRANULARITY);
-  const provider = await maybeBuildAttributeProvider(ctx);
+  const provider = await maybeBuildAttributeProvider(ctx, index);
   const { staged } = tracked.grouped;
   const workingMap = await scanWorkingTree(ctx, staged, tracker, provider, index.indexMtime);
   const untracked = await scanUntracked(ctx, tracked.trackedPaths);

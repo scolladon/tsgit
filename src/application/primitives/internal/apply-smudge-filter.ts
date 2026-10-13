@@ -10,7 +10,8 @@ import { runFilterProcess } from './run-filter-process.js';
 /** The blob one smudge checks out. */
 export interface SmudgeTarget {
   readonly path: FilePath;
-  readonly blob: ObjectId;
+  /** Absent when git passes no metadata (`renormalize_buffer`'s `meta=NULL`). */
+  readonly blob?: ObjectId;
   readonly bytes: Uint8Array;
   /** What the checkout moves to, when it moves to a commit. */
   readonly metadata?: CheckoutMetadata;
@@ -52,7 +53,7 @@ const runSmudgeCommand = (
       path,
       bytes,
       ...metadata,
-      blob,
+      ...(blob !== undefined && { blob }),
     });
   }
   return runFilterDriver(ctx, runner, picked.command, bytes);

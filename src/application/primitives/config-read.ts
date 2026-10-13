@@ -1661,11 +1661,13 @@ const applyCoreBooleanEntry = (
   return { ...core, [field]: parsed.value };
 };
 
-/** An unrecognised or empty `core.eol` leaves the field absent, as git ignores it. */
-const applyCoreEol = (core: MutableCore, value: string): MutableCore | undefined => {
-  const lowered = value.toLowerCase();
+/** git sets `core_eol` on every `core.eol` line: an unrecognised, empty or valueless one unsets an earlier value. */
+const applyCoreEol = (core: MutableCore, value: string | null): MutableCore => {
+  const lowered = value?.toLowerCase();
   const eol = CORE_EOL_VALUES.find((candidate) => candidate === lowered);
-  return eol === undefined ? undefined : { ...core, eol };
+  if (eol !== undefined) return { ...core, eol };
+  const { eol: _unset, ...rest } = core;
+  return rest;
 };
 
 /**
@@ -1679,6 +1681,7 @@ const applyCoreEntry = (
   value: string | null,
 ): MutableCore | undefined => {
   if (CORE_BOOLEAN_KEYS.has(lowered)) return applyCoreBooleanEntry(core, lowered, value);
+  if (lowered === 'eol') return applyCoreEol(core, value);
   // String-typed and int-typed fields skip null (valueless key treated as absent).
   if (value === null) return undefined;
   if (lowered === 'excludesfile') return { ...core, excludesFile: value };
@@ -1686,7 +1689,6 @@ const applyCoreEntry = (
   if (lowered === 'hookspath') return { ...core, hooksPath: value };
   if (lowered === 'notesref') return { ...core, notesRef: value };
   if (lowered === 'sshcommand') return { ...core, sshCommand: value };
-  if (lowered === 'eol') return applyCoreEol(core, value);
   return applyCoreParsedEntry(core, lowered, value);
 };
 

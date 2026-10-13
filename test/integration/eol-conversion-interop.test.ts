@@ -14,6 +14,7 @@
  *   interopSurface: add, checkout
  */
 import {
+  appendFileSync,
   chmodSync,
   existsSync,
   mkdirSync,
@@ -1952,6 +1953,140 @@ describe.skipIf(!GIT_AVAILABLE)('eol conversion interop', () => {
         expect(result.lines.map((line) => line.committed)).toEqual([false, false, false]);
         expect(result.lines.map((line) => line.committed)).toEqual(gitCommittedFlags(dir));
       });
+    });
+  });
+
+  describe('Given unmerged and unusual index and config state', () => {
+    const identify = (dir: string): void => {
+      git(dir, 'config', 'user.name', 'Ada');
+      git(dir, 'config', 'user.email', 'ada@example.com');
+    };
+
+    const commitFile = (dir: string, name: string, bytes: string, message: string): void => {
+      writeFileSync(path.join(dir, name), bytes, 'latin1');
+      git(dir, 'add', '-A');
+      git(dir, 'commit', '-q', '-m', message);
+    };
+
+    const twinDirs = (): ReadonlyArray<string> => [freshDir(), freshDir()];
+
+    const conflictOn = (dir: string, name: string, ours: string, theirs: string): void => {
+      runGit(['-c', 'init.defaultBranch=main', 'init', '-q', dir]);
+      identify(dir);
+      commitFile(dir, name, 'base\n', 'base');
+      git(dir, 'checkout', '-q', '-b', 'side');
+      commitFile(dir, name, theirs, 'theirs');
+      git(dir, 'checkout', '-q', 'main');
+      commitFile(dir, name, ours, 'ours');
+      tryRunGitWithExit(['-C', dir, 'merge', 'side']);
+    };
+
+    describe('When .gitattributes survives only at its unmerged stages', () => {
+      const prepare = (dir: string): void => {
+        runGit(['-c', 'init.defaultBranch=main', 'init', '-q', dir]);
+        identify(dir);
+        writeFileSync(path.join(dir, 'f.txt'), 'a\nb\n');
+        commitFile(dir, '.gitattributes', '*.txt text\n', 'base');
+        git(dir, 'checkout', '-q', '-b', 'side');
+        commitFile(dir, '.gitattributes', '*.txt eol=lf\n', 'theirs');
+        git(dir, 'checkout', '-q', 'main');
+        commitFile(dir, '.gitattributes', '*.txt eol=crlf\n', 'ours');
+        tryRunGitWithExit(['-C', dir, 'merge', 'side']);
+        rmSync(path.join(dir, '.gitattributes'));
+      };
+
+      it('Then checkout -- f.txt reads ours for the rules in both tools', async () => {
+        // Arrange
+        const [gitDir, tsDir] = twinDirs() as [string, string];
+        for (const dir of [gitDir, tsDir]) {
+          prepare(dir);
+          rmSync(path.join(dir, 'f.txt'));
+        }
+
+        // Act
+        git(gitDir, 'checkout', '--', 'f.txt');
+        await checkout(createNodeContext({ workDir: tsDir }), { paths: ['f.txt'] });
+
+        // Assert
+        const written = readFileSync(path.join(gitDir, 'f.txt'), 'latin1');
+        expect(written).toBe('a\r\nb\r\n');
+        expect(readFileSync(path.join(tsDir, 'f.txt'), 'latin1')).toBe(written);
+      });
+
+      it('Then add f.txt converts by the ours rules in both tools', async () => {
+        // Arrange
+        const [gitDir, tsDir] = twinDirs() as [string, string];
+        for (const dir of [gitDir, tsDir]) {
+          prepare(dir);
+          writeFileSync(path.join(dir, 'f.txt'), 'a\r\nb\r\n');
+        }
+
+        // Act
+        git(gitDir, 'add', 'f.txt');
+        await add(createNodeContext({ workDir: tsDir }), ['f.txt']);
+
+        // Assert
+        expect(enc(blobAt(gitDir, 'f.txt'))).toBe(enc(bytesOf('a\nb\n')));
+        expect(enc(blobAt(tsDir, 'f.txt'))).toBe(enc(blobAt(gitDir, 'f.txt')));
+      });
+    });
+
+    describe('When a CRLF file is added over an unmerged path under * text=auto', () => {
+      it.each([
+        ['CRLF ours, LF theirs', 'x\r\ny\r\n', 'm\r\nm\r\n', 's\ns\n'],
+        ['LF ours, CRLF theirs', 'x\ny\n', 'm\nm\n', 's\r\ns\r\n'],
+      ])(
+        'Then %s stages the same blob in both tools',
+        async (_title, expected, ours, theirs) => {
+          // Arrange
+          const [gitDir, tsDir] = twinDirs() as [string, string];
+          for (const dir of [gitDir, tsDir]) {
+            conflictOn(dir, 'f', ours, theirs);
+            writeFileSync(path.join(dir, '.gitattributes'), '* text=auto\n');
+            writeFileSync(path.join(dir, 'f'), 'x\r\ny\r\n');
+          }
+
+          // Act
+          git(gitDir, 'add', 'f');
+          await add(createNodeContext({ workDir: tsDir }), ['f']);
+
+          // Assert
+          expect(enc(blobAt(gitDir, 'f'))).toBe(enc(bytesOf(expected)));
+          expect(enc(blobAt(tsDir, 'f'))).toBe(enc(blobAt(gitDir, 'f')));
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+
+    describe('When a later core.eol line is unrecognised, empty or valueless', () => {
+      it.each([
+        ['an unrecognised value', '\teol = foo\n'],
+        ['an empty value', '\teol =\n'],
+        ['a valueless key', '\teol\n'],
+      ])(
+        'Then %s unsets the earlier crlf for checkout in both tools',
+        async (_title, laterLine) => {
+          // Arrange
+          const [gitDir, tsDir] = twinDirs() as [string, string];
+          for (const dir of [gitDir, tsDir]) {
+            runGit(['-c', 'init.defaultBranch=main', 'init', '-q', dir]);
+            identify(dir);
+            commitFile(dir, 'f', 'a\nb\n', 'seed');
+            writeInfoAttributes(dir, ['* text']);
+            appendFileSync(path.join(dir, '.git', 'config'), `[core]\n\teol = crlf\n${laterLine}`);
+            rmSync(path.join(dir, 'f'));
+          }
+
+          // Act
+          git(gitDir, 'checkout', '--', 'f');
+          await checkout(createNodeContext({ workDir: tsDir }), { paths: ['f'] });
+
+          // Assert
+          expect(readFileSync(path.join(gitDir, 'f'), 'latin1')).toBe('a\nb\n');
+          expect(readFileSync(path.join(tsDir, 'f'), 'latin1')).toBe('a\nb\n');
+        },
+        SETUP_TIMEOUT,
+      );
     });
   });
 });

@@ -15,7 +15,9 @@ import type { ChunkTransform } from '../../../../../src/domain/eol/chunk-transfo
 import type { EolSettings } from '../../../../../src/domain/eol/crlf-action.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/object-id.js';
+import { encodePktStream, FLUSH_PKT } from '../../../../../src/domain/protocol/pkt-line.js';
 import type { CommandRunner } from '../../../../../src/ports/command-runner.js';
+import { scriptedCommandRunner } from '../../../../fixtures/scripted-command-runner.js';
 import { buildSeededContext, writeRawObjectBytes } from '../fixtures.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -274,6 +276,78 @@ describe('convertToGit index rule', () => {
 
         // Assert
         expect(result).toBe('a\nb\n');
+      });
+    });
+  });
+});
+
+describe('convertToGit index rule on an unreadable index object', () => {
+  const convertWithIndexBlob = async (
+    prepare: (ctx: Awaited<ReturnType<typeof buildSeededContext>>) => Promise<ObjectId>,
+  ): Promise<string> => {
+    const ctx = await buildSeededContext();
+    const indexBlob = await prepare(ctx);
+    const result = await convertToGit(ctx, {
+      path: PATH,
+      bytes: enc(CRLF_TEXT),
+      conversion: conversion('auto'),
+      route: 'write',
+      settings: SETTINGS,
+      indexBlob,
+    });
+    return dec(result.bytes);
+  };
+
+  describe('Given an index object that is missing', () => {
+    describe('When converting on route write', () => {
+      it('Then it counts as no CRLF in the index and the CRLF is converted', async () => {
+        // Arrange
+        const sut = convertWithIndexBlob;
+
+        // Act
+        const result = await sut(async () => '1'.repeat(40) as ObjectId);
+
+        // Assert
+        expect(result).toBe('a\nb\n');
+      });
+    });
+  });
+
+  describe('Given an index object that is a tree', () => {
+    describe('When converting on route write', () => {
+      it('Then it counts as no CRLF in the index and the CRLF is converted', async () => {
+        // Arrange
+        const sut = convertWithIndexBlob;
+
+        // Act
+        const result = await sut((ctx) => writeRawObjectBytes(ctx, 'tree', new Uint8Array(0)));
+
+        // Assert
+        expect(result).toBe('a\nb\n');
+      });
+    });
+  });
+
+  describe('Given an index object that cannot be inflated', () => {
+    describe('When converting on route write', () => {
+      it('Then the corruption surfaces with its own code', async () => {
+        // Arrange
+        const sut = convertWithIndexBlob;
+
+        // Act
+        const failure = await sut(async (ctx) => {
+          await ctx.fs.write(
+            `${ctx.layout.gitDir}/objects/ab/${'ab'.repeat(19)}`,
+            new Uint8Array([1, 2, 3, 4]),
+          );
+          return 'ab'.repeat(20) as ObjectId;
+        }).then(
+          () => undefined,
+          (err: TsgitError) => err,
+        );
+
+        // Assert
+        expect(failure?.data.code).toBe('DECOMPRESS_FAILED');
       });
     });
   });
@@ -547,6 +621,72 @@ describe('renormalizeBuffer', () => {
         // Assert
         expect(dec(smudgeInputs[0] as Uint8Array)).toBe(`$Id: ${hash} $\n`);
         expect(dec(result)).toBe('$Id$\n');
+      });
+    });
+  });
+});
+
+describe('renormalizeBuffer metadata and CRLF ordering', () => {
+  const processStream = (...lines: ReadonlyArray<string>): Uint8Array =>
+    encodePktStream(lines.map(enc));
+
+  describe.each([
+    { title: 'without ident', ident: false },
+    { title: 'with ident', ident: true },
+  ])('Given a process driver $title', ({ ident }) => {
+    describe('When renormalizing', () => {
+      it('Then the smudge request carries no blob line, git passing no meta', async () => {
+        // Arrange
+        const answer = concat(
+          processStream('git-filter-server\n', 'version=2\n'),
+          processStream('capability=clean\n', 'capability=smudge\n'),
+          processStream('status=success\n'),
+          processStream('a\n'),
+          FLUSH_PKT,
+        );
+        const { runner, requests } = scriptedCommandRunner(answer);
+        const ctx = createMemoryContext({ command: runner });
+        const given: Conversion = { filter: driver({ process: 'proc' }), crlf: 'binary', ident };
+        const sut = renormalizeBuffer;
+
+        // Act
+        await sut(ctx, PATH, enc('a\n'), given, SETTINGS);
+
+        // Assert
+        const sent = dec(requests[0]?.stdin ?? new Uint8Array(0));
+        expect(sent).toContain('command=smudge');
+        expect(sent).not.toContain('blob=');
+      });
+    });
+  });
+
+  describe('Given a clean-only driver and a text-crlf action', () => {
+    describe('When renormalizing LF bytes', () => {
+      it('Then the clean driver reads the bytes without CRLF applied before it', async () => {
+        // Arrange
+        const cleanInputs: Uint8Array[] = [];
+        const runner: CommandRunner = {
+          run: async ({ stdin }) => {
+            cleanInputs.push(stdin ?? new Uint8Array(0));
+            return { exitCode: 0, stdout: stdin ?? new Uint8Array(0) };
+          },
+          spawn: () => {
+            throw new Error('spawn is not scripted');
+          },
+        };
+        const ctx = createMemoryContext({ command: runner });
+        const given: Conversion = {
+          filter: driver({ clean: 'clean' }),
+          crlf: 'text-crlf',
+          ident: false,
+        };
+        const sut = renormalizeBuffer;
+
+        // Act
+        await sut(ctx, PATH, enc('a\n'), given, SETTINGS);
+
+        // Assert
+        expect(cleanInputs.map(dec)).toEqual(['a\n']);
       });
     });
   });

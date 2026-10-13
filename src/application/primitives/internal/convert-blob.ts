@@ -15,6 +15,7 @@ import type { FilePath, ObjectId } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 import { readBlob } from '../read-blob.js';
 import { type Conversion, convertsInCore, isIdentityConversion } from '../resolve-conversion.js';
+import { undefinedWhenBlobAbsent } from './absent-blob.js';
 import { applyCleanFilter } from './apply-clean-filter.js';
 import { applySmudgeFilter, type SmudgeTarget } from './apply-smudge-filter.js';
 import { serializeAndHash } from './serialize-and-hash.js';
@@ -28,7 +29,7 @@ export interface ToGitRequest {
   readonly conversion: Conversion;
   readonly route: ConversionRoute;
   readonly settings: EolSettings;
-  /** The stage-0 entry, for the index-CRLF rule. */
+  /** The stage-0 entry, else stage 2, for the index-CRLF rule. */
   readonly indexBlob?: ObjectId;
 }
 
@@ -40,7 +41,9 @@ export interface ToGitResult {
 /** git `has_crlf_in_index`: the stored blob is text and carries a CRLF. */
 const indexBlobHasCrlf = async (ctx: Context, id: ObjectId | undefined): Promise<boolean> => {
   if (id === undefined) return false;
-  const stats = gatherTextStats((await readBlob(ctx, id)).content);
+  const blob = await undefinedWhenBlobAbsent(() => readBlob(ctx, id));
+  if (blob === undefined) return false;
+  const stats = gatherTextStats(blob.content);
   return !isBinaryText(stats) && stats.crlf > 0;
 };
 
@@ -59,6 +62,7 @@ const noticeFor = (
 
 export const convertToGit = async (ctx: Context, request: ToGitRequest): Promise<ToGitResult> => {
   const { path, bytes, conversion, route, settings, indexBlob } = request;
+  // Stryker disable next-line ConditionalExpression: equivalent — an identity conversion runs the pipeline as no-ops that hand the same bytes back by reference, so skipping the early return changes nothing observable.
   if (isIdentityConversion(conversion)) return { bytes };
   const cleaned = await applyCleanFilter(ctx, ctx.command, path, bytes, conversion.filter);
   const crlf = await crlfToGit({
@@ -76,7 +80,8 @@ export const convertToGit = async (ctx: Context, request: ToGitRequest): Promise
 };
 
 export interface ToWorkingTreeRequest {
-  readonly target: SmudgeTarget;
+  /** The blob is the id an ident expansion writes; a normalizing smudge does not forward it. */
+  readonly target: SmudgeTarget & { readonly blob: ObjectId };
   readonly conversion: Conversion;
   readonly settings: EolSettings;
   /** git `renormalize_buffer`: CRLF is skipped unless a smudge or process driver is named. */
@@ -84,22 +89,32 @@ export interface ToWorkingTreeRequest {
 }
 
 const namesSmudgeOrProcess = ({ filter }: Conversion): boolean =>
+  // Stryker disable next-line ConditionalExpression: equivalent — a non-external filter carries no smudge or process field, so the kind test only narrows the type.
   filter.kind === 'external' && (filter.smudge !== undefined || filter.process !== undefined);
+
+const withoutBlob = (target: SmudgeTarget, normalizing: boolean): SmudgeTarget => {
+  if (!normalizing) return target;
+  const { blob: _unsent, ...metadataFree } = target;
+  return metadataFree;
+};
 
 export const convertToWorkingTree = async (
   ctx: Context,
   request: ToWorkingTreeRequest,
 ): Promise<Uint8Array> => {
   const { target, conversion, settings, normalizing = false } = request;
+  // Stryker disable next-line ConditionalExpression: equivalent — an identity conversion runs the pipeline as no-ops that hand the same bytes back by reference, so skipping the early return changes nothing observable.
   if (isIdentityConversion(conversion)) return target.bytes;
   const expanded = conversion.ident ? identToWorkingTree(target.bytes, target.blob) : target.bytes;
   const skipsCrlf = normalizing && !namesSmudgeOrProcess(conversion);
   const converted = skipsCrlf ? expanded : crlfToWorkingTree(expanded, conversion.crlf, settings);
-  return applySmudgeFilter(ctx, ctx.command, { ...target, bytes: converted }, conversion.filter);
+  const smudged = { ...withoutBlob(target, normalizing), bytes: converted };
+  return applySmudgeFilter(ctx, ctx.command, smudged, conversion.filter);
 };
 
 const composeTransforms = (first: ChunkTransform, second: ChunkTransform): ChunkTransform => ({
   push: (chunk) => first.push(chunk).flatMap((piece) => second.push(piece)),
+  // Stryker disable next-line MethodExpression: equivalent — first's pending bytes at flush are an ident keyword prefix that never holds LF, so routing them through second changes nothing.
   flush: () => [...first.flush().flatMap((piece) => second.push(piece)), ...second.flush()],
 });
 
@@ -131,6 +146,7 @@ export const renormalizeBuffer = async (
   conversion: Conversion,
   settings: EolSettings,
 ): Promise<Uint8Array> => {
+  // Stryker disable next-line ConditionalExpression: equivalent — an identity conversion runs the pipeline as no-ops that hand the same bytes back by reference, so skipping the early return changes nothing observable.
   if (isIdentityConversion(conversion)) return bytes;
   const blob = conversion.ident ? await blobIdOf(ctx, bytes) : ('' as ObjectId);
   const workingTree = await convertToWorkingTree(ctx, {

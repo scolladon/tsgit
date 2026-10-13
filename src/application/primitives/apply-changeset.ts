@@ -128,6 +128,7 @@ const comparableBytes = async (
     path,
     bytes: working.bytes,
     conversion,
+    // Stryker disable next-line StringLiteral: equivalent — convert-blob compares the route only against 'write' and 'renormalize', so any other literal behaves as 'compare'.
     route: 'compare',
     settings: probe.settings,
     indexBlob: expectedId,

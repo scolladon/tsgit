@@ -279,6 +279,38 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given a config with core.eol = crlf followed by a later core.eol line', () => {
+    describe('When readConfig', () => {
+      it.each([
+        { title: 'an unrecognised value', line: 'eol = foo' },
+        { title: 'an empty value', line: 'eol =' },
+        { title: 'a valueless key', line: 'eol' },
+      ])('Then $title resets eol to absent, as git sets EOL_UNSET', async ({ line }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, `[core]\n  eol = crlf\n  ${line}\n`);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect('eol' in (result.core ?? {})).toBe(false);
+      });
+
+      it('Then a later recognised value wins', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  eol = crlf\n  eol = lf\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.eol).toBe('lf');
+      });
+    });
+  });
+
   describe('Given a config without logallrefupdates', () => {
     describe('When readConfig', () => {
       it('Then core has no logAllRefUpdates key', async () => {

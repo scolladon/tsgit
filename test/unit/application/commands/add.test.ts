@@ -3244,3 +3244,88 @@ describe('add renormalize option', () => {
     });
   });
 });
+
+const putBlobText = (ctx: RenormalizeCtx, text: string): Promise<ObjectId> =>
+  writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: enc(text) });
+
+/** An unmerged f.txt recording `ours` at stage 2 and `theirs` at stage 3; the size never matches the worktree file, so the stat shortcut stays out. */
+const seedUnmergedBlobs = async (ctx: RenormalizeCtx, ours: string, theirs: string) => {
+  const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/f.txt`);
+  const entryAt = async (text: string, stage: 2 | 3): Promise<IndexEntry> => ({
+    ...indexEntryFromStat(
+      stat,
+      FILE_MODE.REGULAR,
+      await putBlobText(ctx, text),
+      'f.txt' as FilePath,
+    ),
+    fileSize: 0,
+    flags: { ...STAGE0_FLAGS, stage },
+  });
+  const entries = [await entryAt(ours, 2), await entryAt(theirs, 3)];
+  const index: GitIndex = { version: 2, entries, extensions: [], trailerSha: new Uint8Array(0) };
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, await serializeIndexFixtureAsync(index, ctx));
+};
+
+describe('add on an unmerged path under text=auto', () => {
+  describe.each([
+    { title: 'CRLF ours and LF theirs', ours: 'a\r\n', theirs: 'a\n', expected: 'x\r\ny\r\n' },
+    { title: 'LF ours and CRLF theirs', ours: 'a\n', theirs: 'a\r\n', expected: 'x\ny\n' },
+  ])('Given a CRLF worktree file with $title', ({ ours, theirs, expected }) => {
+    describe('When add stages f.txt', () => {
+      it('Then the index-CRLF rule reads the stage-2 blob as git does', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({
+          'f.txt': 'x\r\ny\r\n',
+          '.gitattributes': '* text=auto\n',
+        });
+        await seedUnmergedBlobs(ctx, ours, theirs);
+        const sut = add;
+
+        // Act
+        await sut(ctx, ['f.txt']);
+
+        // Assert
+        expect(await stagedText(ctx, 'f.txt')).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('add on a path recorded as a gitlink that is now a CRLF file', () => {
+  describe('Given core.autocrlf true and a gitlink id that names a CRLF blob', () => {
+    describe('When add stages f.txt', () => {
+      it('Then the gitlink is no index blob, git reading none, and the CRLF is converted', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'f.txt': 'x\r\ny\r\n' });
+        await configure(ctx, '[core]\n\tautocrlf = true\n');
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/f.txt`);
+        const gitlink: IndexEntry = {
+          ...indexEntryFromStat(
+            stat,
+            FILE_MODE.GITLINK,
+            await putBlobText(ctx, 'a\r\n'),
+            'f.txt' as FilePath,
+          ),
+          fileSize: 0,
+        };
+        const index: GitIndex = {
+          version: 2,
+          entries: [gitlink],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        };
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync(index, ctx),
+        );
+        const sut = add;
+
+        // Act
+        await sut(ctx, ['f.txt']);
+
+        // Assert
+        expect(await stagedText(ctx, 'f.txt')).toBe('x\ny\n');
+      });
+    });
+  });
+});

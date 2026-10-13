@@ -41,6 +41,7 @@ import type { ConcurrencyLimiter } from '../primitives/internal/concurrency-limi
 import { type ConversionRoute, convertToGit } from '../primitives/internal/convert-blob.js';
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
+import { indexRuleEntries } from '../primitives/internal/index-rule-entries.js';
 import { type IndexMtime, isEntryStatClean } from '../primitives/internal/is-entry-stat-clean.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
@@ -865,13 +866,14 @@ const writeCleanedBlob = async (
   }
   const raw = await readContent(ctx, path, fresh);
   await admitWrite(ctx, path);
+  const indexBlob = await indexRuleBlob(ctx, previous);
   const { bytes, notice } = await convertToGit(ctx, {
     path,
     bytes: raw,
     conversion,
     route,
     settings,
-    ...(route === 'write' && previous !== undefined && { indexBlob: previous.id }),
+    ...(indexBlob !== undefined && { indexBlob }),
   });
   const id = (await writeObject(ctx, {
     type: 'blob',
@@ -879,6 +881,23 @@ const writeCleanedBlob = async (
     content: bytes,
   })) as ObjectId;
   return notice === undefined ? { id } : { id, notice };
+};
+
+/**
+ * git reads the index-CRLF rule from stage 0, else stage 2; a gitlink has no
+ * blob to read. `previous` is the last stage recorded, so only an unmerged
+ * path needs the index again.
+ */
+const indexRuleBlob = async (
+  ctx: Context,
+  previous: IndexEntry | undefined,
+): Promise<ObjectId | undefined> => {
+  if (previous === undefined) return undefined;
+  const ruled =
+    previous.flags.stage === 0
+      ? previous
+      : indexRuleEntries((await readIndex(ctx)).entries).find((e) => e.path === previous.path);
+  return ruled === undefined || ruled.mode === FILE_MODE.GITLINK ? undefined : ruled.id;
 };
 
 const readContent = async (

@@ -854,6 +854,93 @@ describe('materializeTree', () => {
     });
   });
 
+  describe('Given the current index records .gitattributes eol=crlf only at the unmerged stage 2', () => {
+    describe('When restoring paths [f.txt] with no work-tree .gitattributes', () => {
+      it('Then f.txt is CRLF, git reading ours for an unmerged .gitattributes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const rules = await writeBlob(ctx, '*.txt eol=crlf\n');
+        const fileBlob = await writeBlob(ctx, 'a\nb\n');
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'f.txt' as FilePath, fileBlob),
+        ]);
+        const currentIndex: GitIndex = {
+          ...EMPTY_INDEX,
+          entries: [makeIndexEntry('.gitattributes', rules, 2)],
+        };
+        const sut = materializeTree;
+
+        // Act
+        await sut(ctx, {
+          targetTree: treeId,
+          currentIndex,
+          paths: new Set(['f.txt' as FilePath]),
+        });
+
+        // Assert
+        const bytes = await ctx.fs.read(`${ctx.layout.workDir}/f.txt`);
+        expect(new TextDecoder().decode(bytes)).toBe('a\r\nb\r\n');
+      });
+    });
+  });
+
+  describe('Given a target tree whose .gitattributes eol=crlf the sparse matcher excludes', () => {
+    describe('When materializeTree switches to it', () => {
+      it('Then the excluded rules still govern the included f.txt', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const rules = await writeBlob(ctx, '*.txt eol=crlf\n');
+        const fileBlob = await writeBlob(ctx, 'a\nb\n');
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, '.gitattributes' as FilePath, rules),
+          treeEntry(FILE_MODE.REGULAR, 'f.txt' as FilePath, fileBlob),
+        ]);
+        const sut = materializeTree;
+
+        // Act
+        await sut(ctx, {
+          targetTree: treeId,
+          currentIndex: EMPTY_INDEX,
+          sparse: (path) => path === 'f.txt',
+        });
+
+        // Assert
+        const bytes = await ctx.fs.read(`${ctx.layout.workDir}/f.txt`);
+        expect(new TextDecoder().decode(bytes)).toBe('a\r\nb\r\n');
+      });
+    });
+  });
+
+  describe('Given the current index records .gitattributes eol=crlf that the restored paths name but the target lacks', () => {
+    describe('When restoring paths [.gitattributes, f.txt]', () => {
+      it('Then the deleted rules no longer apply to f.txt', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const rules = await writeBlob(ctx, '*.txt eol=crlf\n');
+        const fileBlob = await writeBlob(ctx, 'a\nb\n');
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'f.txt' as FilePath, fileBlob),
+        ]);
+        const currentIndex: GitIndex = {
+          ...EMPTY_INDEX,
+          entries: [makeIndexEntry('.gitattributes', rules)],
+        };
+        const sut = materializeTree;
+
+        // Act
+        await sut(ctx, {
+          targetTree: treeId,
+          currentIndex,
+          paths: new Set(['.gitattributes' as FilePath, 'f.txt' as FilePath]),
+        });
+
+        // Assert
+        const bytes = await ctx.fs.read(`${ctx.layout.workDir}/f.txt`);
+        expect(new TextDecoder().decode(bytes)).toBe('a\nb\n');
+      });
+    });
+  });
+
   describe("Given a target tree that introduces '*.txt eol=crlf' over an empty index", () => {
     describe('When materializeTree switches to it', () => {
       it('Then the switch writes f.txt CRLF', async () => {

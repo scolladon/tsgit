@@ -91,6 +91,7 @@ const convertedWorktreeBytes = async (
     path: entry.path,
     bytes: raw,
     conversion,
+    // Stryker disable next-line StringLiteral: equivalent — convert-blob compares the route only against 'write' and 'renormalize', so any other literal behaves as 'compare'.
     route: 'compare',
     settings,
     indexBlob: entry.id,

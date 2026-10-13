@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import type { AttributeProvider } from '../../../../src/application/primitives/internal/read-gitattributes.js';
 import {
   type Conversion,
@@ -87,6 +88,65 @@ describe('readEolSettings', () => {
         // Assert
         expect(settings.autoCrlf).toBe('input');
         expect(settings.safeCrlf).toBe(false);
+      });
+    });
+  });
+});
+
+describe('readEolSettings memoisation', () => {
+  describe('Given an unchanged repository config', () => {
+    describe('When reading the eol settings twice', () => {
+      it('Then the same settings object comes back', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await writeConfig(ctx, '[core]\n\tautocrlf = true\n');
+        const sut = readEolSettings;
+
+        // Act
+        const first = await sut(ctx);
+        const second = await sut(ctx);
+
+        // Assert
+        expect(second).toBe(first);
+      });
+    });
+  });
+
+  describe('Given the config cache is invalidated between two reads', () => {
+    describe('When reading the eol settings', () => {
+      it('Then a fresh settings object reflects the new config', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await writeConfig(ctx, '[core]\n\tautocrlf = true\n');
+        const sut = readEolSettings;
+        const first = await sut(ctx);
+        await writeConfig(ctx, '[core]\n\tautocrlf = input\n');
+        invalidateConfigCache(ctx);
+
+        // Act
+        const second = await sut(ctx);
+
+        // Assert
+        expect(second).not.toBe(first);
+        expect(second.autoCrlf).toBe('input');
+      });
+    });
+  });
+
+  describe('Given two contexts of one session with different native line endings', () => {
+    describe('When each reads the eol settings', () => {
+      it('Then each sees its own nativeEol', async () => {
+        // Arrange
+        const lf = createMemoryContext();
+        const crlf: Context = { ...lf, nativeEol: 'crlf' };
+        const sut = readEolSettings;
+
+        // Act
+        const first = await sut(lf);
+        const second = await sut(crlf);
+
+        // Assert
+        expect([first.nativeEol, second.nativeEol]).toEqual(['lf', 'crlf']);
       });
     });
   });

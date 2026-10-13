@@ -7,6 +7,7 @@ import {
 } from '../../../domain/attributes/index.js';
 import { gitattributesFileTooLarge } from '../../../domain/commands/error.js';
 import { TsgitError } from '../../../domain/error.js';
+import type { IndexEntry } from '../../../domain/git-index/index-entry.js';
 import { decode } from '../../../domain/objects/encoding.js';
 import { FILE_MODE, isDirectory } from '../../../domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../domain/objects/object-id.js';
@@ -17,7 +18,10 @@ import { readBlob } from '../read-blob.js';
 import { readIndex } from '../read-index.js';
 import { readDeclaredObjectHeader } from '../read-object.js';
 import { MAX_GITATTRIBUTES_BYTES } from '../types.js';
+import { undefinedWhenBlobAbsent } from './absent-blob.js';
+import { indexRuleEntries } from './index-rule-entries.js';
 import { joinPath } from './join-working-tree-path.js';
+import { lazily } from './lazily.js';
 import { expandUserPath, loadCappedUtf8 } from './read-capped-file.js';
 import { findTreeEntry } from './resolve-tree-path.js';
 
@@ -124,7 +128,9 @@ const treeDirReader = (tree: ObjectId): DirReader => {
 };
 
 /** The blob id the index records for a path, when it records one. */
-export type IndexBlobLookup = (path: FilePath) => ObjectId | undefined;
+export type IndexBlobLookup = (
+  path: FilePath,
+) => ObjectId | undefined | Promise<ObjectId | undefined>;
 
 /** Which store a provider reads each directory's `.gitattributes` from, and in what order. */
 export type AttributeDirection =
@@ -136,10 +142,12 @@ export type AttributeDirection =
 const indexDirReader =
   (lookup: IndexBlobLookup): DirReader =>
   async (ctx, dir) => {
-    const id = lookup(
+    const id = await lookup(
       (dir === '' ? GITATTRIBUTES_FILE : `${dir}/${GITATTRIBUTES_FILE}`) as FilePath,
     );
-    return id === undefined ? undefined : parseBlobAttributes(ctx, id);
+    return id === undefined
+      ? undefined
+      : undefinedWhenBlobAbsent(() => parseBlobAttributes(ctx, id));
   };
 
 /** The fallback is consulted only when the primary store holds no such file. */
@@ -292,14 +300,25 @@ const INDEX_MISSING_CODES = new Set([
 export const isAttributesPath = (path: string): boolean =>
   path === GITATTRIBUTES_FILE || path.endsWith(`/${GITATTRIBUTES_FILE}`);
 
+type AttributeBlobEntry = {
+  readonly path: string;
+  readonly id: ObjectId;
+  readonly mode?: string;
+};
+
+const attributeBlobMap = (
+  entries: ReadonlyArray<AttributeBlobEntry>,
+): ReadonlyMap<string, ObjectId> =>
+  new Map(
+    entries
+      .filter((entry) => isAttributesPath(entry.path) && entry.mode !== FILE_MODE.GITLINK)
+      .map((entry) => [entry.path, entry.id]),
+  );
+
 const readIndexAttributeBlobs = async (ctx: Context): Promise<ReadonlyMap<string, ObjectId>> => {
   try {
     const { entries } = await readIndex(ctx);
-    return new Map(
-      entries
-        .filter((entry) => entry.flags.stage === 0 && isAttributesPath(entry.path))
-        .map((entry) => [entry.path, entry.id]),
-    );
+    return attributeBlobMap(indexRuleEntries(entries));
   } catch (err) {
     if (err instanceof TsgitError && INDEX_MISSING_CODES.has(err.data.code)) return new Map();
     throw err;
@@ -308,19 +327,28 @@ const readIndexAttributeBlobs = async (ctx: Context): Promise<ReadonlyMap<string
 
 /** A lookup over every `.gitattributes` the given entries record, root and nested. */
 export const attributeBlobLookup = (
-  entries: ReadonlyArray<{ readonly path: string; readonly id: ObjectId }>,
+  entries: ReadonlyArray<AttributeBlobEntry>,
 ): IndexBlobLookup => {
-  const blobs = new Map(
-    entries.filter((entry) => isAttributesPath(entry.path)).map((entry) => [entry.path, entry.id]),
-  );
+  const blobs = attributeBlobMap(entries);
   return (path) => blobs.get(path);
 };
 
-/** The check-in provider: work tree first, the index as git's fallback for files absent from disk. */
-export const maybeBuildAttributeProvider = async (ctx: Context): Promise<AttributeProvider> => {
-  const blobs = await readIndexAttributeBlobs(ctx);
+/**
+ * The check-in provider: work tree first, the index as git's fallback for
+ * files absent from disk. The index is read on the first fallback lookup, or
+ * not at all when the caller already holds it.
+ */
+export const maybeBuildAttributeProvider = (
+  ctx: Context,
+  index?: { readonly entries: ReadonlyArray<IndexEntry> },
+): Promise<AttributeProvider> => {
+  const blobs = lazily(() =>
+    index === undefined
+      ? readIndexAttributeBlobs(ctx)
+      : Promise.resolve(attributeBlobMap(indexRuleEntries(index.entries))),
+  );
   return buildAttributeProvider(ctx, {
     kind: 'worktree-first',
-    index: (path) => blobs.get(path),
+    index: async (path) => (await blobs()).get(path),
   });
 };
