@@ -11,7 +11,8 @@ const sameEntry = (a: FlatTreeEntry | undefined, b: FlatTreeEntry | undefined): 
 /**
  * The root `.gitattributes` a renormalizing merge reads: its merge result when
  * the tree merge settled it without a content merge, else the lowest stage
- * present (base, then ours, then theirs) — merge-ort's attribute index quirk.
+ * present (base, then ours) — merge-ort's attribute index quirk. A theirs-only
+ * file is always settled by the first arm (both other stages absent are equal).
  */
 const governingEntry = (
   base: FlatTreeEntry | undefined,
@@ -20,7 +21,7 @@ const governingEntry = (
 ): FlatTreeEntry | undefined => {
   if (sameEntry(ours, theirs) || sameEntry(base, theirs)) return ours;
   if (sameEntry(base, ours)) return theirs;
-  return base ?? ours ?? theirs;
+  return base ?? ours;
 };
 
 export const renormalizeAttributeLookup = (
