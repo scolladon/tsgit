@@ -120,6 +120,22 @@ describe('createIdentTransform', () => {
     });
   });
 
+  describe('Given nothing pending', () => {
+    describe('When flushed', () => {
+      it('Then no chunk is emitted', () => {
+        // Arrange
+        const sut = createIdentTransform(OID);
+        sut.push(bytes('plain\n'));
+
+        // Act
+        const flushed = sut.flush();
+
+        // Assert
+        expect(flushed).toEqual([]);
+      });
+    });
+  });
+
   describe('Given a flush that emitted pending bytes', () => {
     describe('When more input follows', () => {
       it('Then the transform starts clean', () => {

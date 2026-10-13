@@ -19,6 +19,7 @@ type Verdict = 'more' | 'literal' | 'expand' | 'nul';
 // git scans the keyword as a C string: the scan stops at the first NUL.
 const isForeignKeyword = (keyword: Uint8Array): boolean => {
   if (keyword[COLON_INDEX + 1] !== SPACE) return false;
+  // Stryker disable next-line ArithmeticOperator: equivalent — the keyword always ends in `$` (not whitespace) and reads past it are undefined, so a wider bound visits nothing new
   for (let at = VALUE_INDEX; at < keyword.length - 1; at++) {
     const byte = keyword[at] as number;
     if (byte === NUL) return false;

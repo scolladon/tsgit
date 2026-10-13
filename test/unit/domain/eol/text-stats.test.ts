@@ -37,6 +37,7 @@ describe('gatherTextStats', () => {
     ['\x7f', { nul: 0, loneCr: 0, loneLf: 0, crlf: 0, printable: 0, nonPrintable: 1 }],
     ['\x80', { nul: 0, loneCr: 0, loneLf: 0, crlf: 0, printable: 1, nonPrintable: 0 }],
     ['\0', { nul: 1, loneCr: 0, loneLf: 0, crlf: 0, printable: 0, nonPrintable: 1 }],
+    [' ', { nul: 0, loneCr: 0, loneLf: 0, crlf: 0, printable: 1, nonPrintable: 0 }],
     ['\x01', { nul: 0, loneCr: 0, loneLf: 0, crlf: 0, printable: 0, nonPrintable: 1 }],
     ['\x1a', { nul: 0, loneCr: 0, loneLf: 0, crlf: 0, printable: 0, nonPrintable: 0 }],
     ['\x1ax', { nul: 0, loneCr: 0, loneLf: 0, crlf: 0, printable: 1, nonPrintable: 1 }],

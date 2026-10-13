@@ -24,6 +24,23 @@ describe('createLfToCrlfTransform', () => {
     });
   });
 
+  describe('Given a chunk with no bare LF', () => {
+    describe('When pushed', () => {
+      it('Then the very same chunk is passed through', () => {
+        // Arrange
+        const sut = createLfToCrlfTransform();
+        const chunk = bytes('a\r\nb');
+
+        // Act
+        const result = sut.push(chunk);
+
+        // Assert
+        expect(result).toHaveLength(1);
+        expect(result[0]).toBe(chunk);
+      });
+    });
+  });
+
   describe('Given a first chunk that starts with LF', () => {
     describe('When pushed', () => {
       it('Then a CR is inserted before it', () => {

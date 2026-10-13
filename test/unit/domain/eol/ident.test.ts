@@ -39,6 +39,8 @@ describe('identToGit', () => {
     ['no dollar at all', 'plain\n'],
     ['an empty input', ''],
     ['a short tail after a dollar', 'a $Id:'],
+    ['a keyword whose first letter is wrong', '$Xd: abc$\n'],
+    ['a keyword whose second letter is wrong', '$Ix: abc$\n'],
   ])('Given %s', (_title, input) => {
     describe('When collapsed', () => {
       it('Then the very same bytes are returned', () => {
