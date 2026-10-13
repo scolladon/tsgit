@@ -459,4 +459,30 @@ describe('commands/internal/apply-sparse-checkout', () => {
       });
     });
   });
+
+  describe("Given index '*.txt eol=crlf' and work tree '*.txt eol=lf'", () => {
+    describe('When a path enters the cone', () => {
+      it('Then it is written CRLF', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const rules = await writeBlob(ctx, '*.txt eol=crlf\n');
+        const fileId = await writeBlob(ctx, 'a\nb\n');
+        const skipped: IndexEntry = {
+          ...makeEntry('src/a.txt', fileId),
+          flags: { ...STAGE0_FLAGS, skipWorktree: true },
+        };
+        await seedIndex(ctx, [makeEntry('.gitattributes', rules), skipped]);
+        await seedWorkFile(ctx, '.gitattributes', '*.txt eol=lf\n');
+        const matcher: SparseMatcher = (path) => path === '.gitattributes' || srcOnly(path);
+        const sut = applySparseCheckout;
+
+        // Act
+        await sut(ctx, { matcher });
+
+        // Assert
+        const written = await ctx.fs.read(`${ctx.layout.workDir}/src/a.txt`);
+        expect(decoder.decode(written)).toBe('a\r\nb\r\n');
+      });
+    });
+  });
 });

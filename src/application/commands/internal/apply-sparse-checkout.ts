@@ -13,9 +13,13 @@ import { type IndexEntry, STAGE0_FLAGS } from '../../../domain/git-index/index.j
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { SparseMatcher } from '../../../domain/sparse/index.js';
 import type { Context } from '../../../ports/context.js';
-import { applyChangeset, isWorkingTreeDirty } from '../../primitives/apply-changeset.js';
+import {
+  applyChangesetWithAttributes,
+  isWorkingTreeDirty,
+} from '../../primitives/apply-changeset.js';
 import type { Changeset, ChangesetEntry } from '../../primitives/compute-changeset.js';
 import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
+import { attributeBlobLookup } from '../../primitives/internal/read-gitattributes.js';
 import { requireWorkTree } from '../../primitives/internal/repo-state.js';
 import { readIndex } from '../../primitives/read-index.js';
 import { acquireIndexLock } from './index-update.js';
@@ -204,7 +208,11 @@ export const applySparseCheckout = async (
     const stage0 = index.entries.filter((entry) => entry.flags.stage === 0);
     const part = await partition(ctx, workdir, stage0, opts);
     const changeset = await buildChangeset(ctx, workdir, part);
-    const applied = await applyChangeset(ctx, { changeset, force: true, workdir });
+    const applied = await applyChangesetWithAttributes(
+      ctx,
+      { changeset, force: true, workdir },
+      { kind: 'index-first', index: attributeBlobLookup(stage0) },
+    );
     const newEntries = assembleEntries(part, applied.writtenEntries);
     await lock.commit(newEntries);
     return {

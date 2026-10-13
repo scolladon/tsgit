@@ -38,7 +38,9 @@ import { withFilterProcessPool } from './internal/filter-process-pool.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { pathIsOccupied } from './internal/path-occupied.js';
 import {
+  type AttributeDirection,
   type AttributeProvider,
+  buildAttributeProvider,
   maybeBuildAttributeProvider,
 } from './internal/read-gitattributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
@@ -519,7 +521,15 @@ export const applyChangeset = (
   ctx: Context,
   opts: ApplyChangesetOpts,
 ): Promise<ApplyChangesetResult> =>
-  withFilterProcessPool(ctx, () => applyChangesetInScope(ctx, opts));
+  withFilterProcessPool(ctx, () => applyChangesetInScope(ctx, opts, undefined));
+
+/** Checkout-direction apply: the writer reads attributes the way git's checkout does. */
+export const applyChangesetWithAttributes = (
+  ctx: Context,
+  opts: ApplyChangesetOpts,
+  direction: AttributeDirection,
+): Promise<ApplyChangesetResult> =>
+  withFilterProcessPool(ctx, () => applyChangesetInScope(ctx, opts, direction));
 
 /** Refuses a changeset that would overwrite local changes or untracked files. */
 const assertNoDirtyOverwrite = async (
@@ -538,9 +548,17 @@ const assertNoDirtyOverwrite = async (
  * ioBound: a smudge subprocess spawn is process/CPU-bound, so it must not
  * inherit the write wave's wider ioBound budget.
  */
-const createChangesetWriter = (ctx: Context, opts: ApplyChangesetOpts): WorkingTreeWriter =>
+const createChangesetWriter = (
+  ctx: Context,
+  opts: ApplyChangesetOpts,
+  direction: AttributeDirection | undefined,
+): WorkingTreeWriter =>
   createWorkingTreeWriter(ctx, {
-    provider: lazily(() => maybeBuildAttributeProvider(ctx)),
+    provider: lazily(() =>
+      direction === undefined
+        ? maybeBuildAttributeProvider(ctx)
+        : buildAttributeProvider(ctx, direction),
+    ),
     settings: lazily(() => readEolSettings(ctx)),
     limiter: limiterFor(ctx, 'cpuBound'),
     ...(opts.checkoutMetadata && { metadata: opts.checkoutMetadata }),
@@ -549,6 +567,7 @@ const createChangesetWriter = (ctx: Context, opts: ApplyChangesetOpts): WorkingT
 const applyChangesetInScope = async (
   ctx: Context,
   opts: ApplyChangesetOpts,
+  direction: AttributeDirection | undefined,
 ): Promise<ApplyChangesetResult> => {
   const { changeset, force, workdir } = opts;
 
@@ -565,6 +584,6 @@ const applyChangesetInScope = async (
   // tree with many entries under the same symlinked directory costs one
   // `lstat` per distinct directory, not one per entry.
   const scanner = createLeadingPathScanner(ctx);
-  const writer = createChangesetWriter(ctx, opts);
+  const writer = createChangesetWriter(ctx, opts, direction);
   return applyAllEntries(ctx, deletes, writes, workdir, writer, scanner);
 };

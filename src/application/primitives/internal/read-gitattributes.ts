@@ -306,6 +306,16 @@ const readIndexAttributeBlobs = async (ctx: Context): Promise<ReadonlyMap<string
   }
 };
 
+/** A lookup over every `.gitattributes` the given entries record, root and nested. */
+export const attributeBlobLookup = (
+  entries: ReadonlyArray<{ readonly path: string; readonly id: ObjectId }>,
+): IndexBlobLookup => {
+  const blobs = new Map(
+    entries.filter((entry) => isAttributesPath(entry.path)).map((entry) => [entry.path, entry.id]),
+  );
+  return (path) => blobs.get(path);
+};
+
 /** The check-in provider: work tree first, the index as git's fallback for files absent from disk. */
 export const maybeBuildAttributeProvider = async (ctx: Context): Promise<AttributeProvider> => {
   const blobs = await readIndexAttributeBlobs(ctx);

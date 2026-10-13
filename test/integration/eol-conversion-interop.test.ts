@@ -33,6 +33,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { add } from '../../src/application/commands/add.js';
 import { checkout } from '../../src/application/commands/checkout.js';
+import { reset } from '../../src/application/commands/reset.js';
 import { status } from '../../src/application/commands/status.js';
 import type { EolNotice } from '../../src/domain/eol/crlf-conversion.js';
 import { TsgitError } from '../../src/domain/index.js';
@@ -1220,6 +1221,187 @@ describe.skipIf(!GIT_AVAILABLE)('eol conversion interop', () => {
         },
         SETUP_TIMEOUT,
       );
+    });
+  });
+
+  describe('Given tsgit and git check out a tree under attribute files that disagree', () => {
+    const CRLF_RULES = '*.txt eol=crlf\n';
+    const LF_RULES = '*.txt eol=lf\n';
+    const LF_BODY = 'a\nb\n';
+
+    const commitAll = (dir: string, message: string): void => {
+      git(dir, 'add', '-A');
+      git(dir, 'commit', '-q', '-m', message);
+    };
+
+    const seedRepo = (dir: string, committedRules: string | undefined): void => {
+      runGit(['-c', 'init.defaultBranch=main', 'init', '-q', dir]);
+      writeFileSync(path.join(dir, 'f.txt'), LF_BODY);
+      if (committedRules !== undefined)
+        writeFileSync(path.join(dir, '.gitattributes'), committedRules);
+      commitAll(dir, 'base');
+    };
+
+    const bytesOfFile = (dir: string): string => readFileSync(path.join(dir, 'f.txt'), 'latin1');
+
+    const onBoth = async (
+      seed: (dir: string) => void,
+      gitStep: (dir: string) => void,
+      tsgitStep: (ctx: ReturnType<typeof createNodeContext>) => Promise<unknown>,
+    ) => {
+      const twin = { gitDir: freshDir(), tsDir: freshDir() };
+      for (const dir of [twin.gitDir, twin.tsDir]) seed(dir);
+      gitStep(twin.gitDir);
+      await tsgitStep(createNodeContext({ workDir: twin.tsDir }));
+      return { git: bytesOfFile(twin.gitDir), tsgit: bytesOfFile(twin.tsDir) };
+    };
+
+    const indexCrlfWorktreeLf = (dir: string): void => {
+      seedRepo(dir, CRLF_RULES);
+      writeFileSync(path.join(dir, '.gitattributes'), LF_RULES);
+      rmSync(path.join(dir, 'f.txt'));
+    };
+
+    describe('When a switch introduces *.txt eol=crlf and rewrites f.txt', () => {
+      it('Then f.txt is CRLF in both tools', async () => {
+        // Arrange
+        const seed = (dir: string): void => {
+          seedRepo(dir, undefined);
+          git(dir, 'checkout', '-q', '-b', 'other');
+          writeFileSync(path.join(dir, '.gitattributes'), CRLF_RULES);
+          writeFileSync(path.join(dir, 'f.txt'), `${LF_BODY}c\n`);
+          commitAll(dir, 'other');
+          git(dir, 'checkout', '-q', 'main');
+        };
+
+        // Act
+        const result = await onBoth(
+          seed,
+          (dir) => git(dir, 'checkout', '-q', 'other'),
+          (ctx) => checkout(ctx, { rev: 'other' }),
+        );
+
+        // Assert
+        expect(result.git).toBe('a\r\nb\r\nc\r\n');
+        expect(result.tsgit).toBe(result.git);
+      });
+    });
+
+    describe('When f.txt is restored with index eol=crlf and work tree eol=lf', () => {
+      it.each([
+        ['checkout -- f.txt', ['checkout', '--', 'f.txt'], { paths: ['f.txt'] }],
+        [
+          'checkout HEAD -- f.txt',
+          ['checkout', 'HEAD', '--', 'f.txt'],
+          { paths: ['f.txt'], source: 'HEAD' },
+        ],
+      ] as const)(
+        'Then %s lets the work tree win in both tools',
+        async (_title, gitArgs, opts) => {
+          // Arrange
+          const sut = checkout;
+
+          // Act
+          const result = await onBoth(
+            indexCrlfWorktreeLf,
+            (dir) => git(dir, ...gitArgs),
+            (ctx) => sut(ctx, opts),
+          );
+
+          // Assert
+          expect(result.git).toBe(LF_BODY);
+          expect(result.tsgit).toBe(result.git);
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+
+    describe('When f.txt is rewritten with index eol=crlf and work tree eol=lf', () => {
+      it('Then reset --hard lets the index win in both tools', async () => {
+        // Arrange
+        const sut = reset;
+
+        // Act
+        const result = await onBoth(
+          indexCrlfWorktreeLf,
+          (dir) => git(dir, 'reset', '-q', '--hard'),
+          (ctx) => sut(ctx, { mode: 'hard', rev: 'HEAD' }),
+        );
+
+        // Assert
+        expect(result.git).toBe('a\r\nb\r\n');
+        expect(result.tsgit).toBe(result.git);
+      });
+
+      it('Then a forced switch lets the index win in both tools', async () => {
+        // Arrange
+        const seed = (dir: string): void => {
+          seedRepo(dir, CRLF_RULES);
+          git(dir, 'checkout', '-q', '-b', 'other');
+          writeFileSync(path.join(dir, 'f.txt'), `${LF_BODY}c\n`);
+          commitAll(dir, 'other');
+          git(dir, 'checkout', '-q', 'main');
+          writeFileSync(path.join(dir, '.gitattributes'), LF_RULES);
+        };
+        const sut = checkout;
+
+        // Act
+        const result = await onBoth(
+          seed,
+          (dir) => git(dir, 'checkout', '-q', '-f', 'other'),
+          (ctx) => sut(ctx, { rev: 'other', force: true }),
+        );
+
+        // Assert
+        expect(result.git).toBe('a\r\nb\r\nc\r\n');
+        expect(result.tsgit).toBe(result.git);
+      });
+    });
+
+    describe('When the work tree .gitattributes is deleted and f.txt is restored', () => {
+      it('Then the index .gitattributes applies in both tools', async () => {
+        // Arrange
+        const seed = (dir: string): void => {
+          seedRepo(dir, CRLF_RULES);
+          rmSync(path.join(dir, '.gitattributes'));
+          rmSync(path.join(dir, 'f.txt'));
+        };
+        const sut = checkout;
+
+        // Act
+        const result = await onBoth(
+          seed,
+          (dir) => git(dir, 'checkout', '--', 'f.txt'),
+          (ctx) => sut(ctx, { paths: ['f.txt'] }),
+        );
+
+        // Assert
+        expect(result.git).toBe('a\r\nb\r\n');
+        expect(result.tsgit).toBe(result.git);
+      });
+    });
+
+    describe('When only an untracked work tree .gitattributes exists and reset --hard runs', () => {
+      it('Then the work tree file is the fallback in both tools', async () => {
+        // Arrange
+        const seed = (dir: string): void => {
+          seedRepo(dir, undefined);
+          writeFileSync(path.join(dir, '.gitattributes'), CRLF_RULES);
+          rmSync(path.join(dir, 'f.txt'));
+        };
+        const sut = reset;
+
+        // Act
+        const result = await onBoth(
+          seed,
+          (dir) => git(dir, 'reset', '-q', '--hard'),
+          (ctx) => sut(ctx, { mode: 'hard', rev: 'HEAD' }),
+        );
+
+        // Assert
+        expect(result.git).toBe('a\r\nb\r\n');
+        expect(result.tsgit).toBe(result.git);
+      });
     });
   });
 });

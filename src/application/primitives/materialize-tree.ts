@@ -40,7 +40,7 @@ import {
 } from '../../domain/objects/index.js';
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
-import { applyChangeset } from './apply-changeset.js';
+import { applyChangesetWithAttributes } from './apply-changeset.js';
 import {
   type Changeset,
   type ChangesetEntry,
@@ -48,6 +48,7 @@ import {
   computeChangeset,
 } from './compute-changeset.js';
 import type { CheckoutMetadata } from './internal/apply-smudge-filter.js';
+import { type AttributeDirection, attributeBlobLookup } from './internal/read-gitattributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
 import { walkTree } from './walk-tree.js';
 
@@ -235,6 +236,28 @@ const planMaterialize = (
   return { target: allTarget, indexForDiff: opts.currentIndex, excluded: [] };
 };
 
+/**
+ * Git reads `.gitattributes` for a checkout from the index it is producing:
+ * a path restore keeps the work tree first over the current index overlaid
+ * with the restored paths, every other checkout reads the result index first.
+ */
+const checkoutDirection = (
+  opts: MaterializeTreeOpts,
+  plan: MaterializePlan,
+): AttributeDirection => {
+  const { paths } = opts;
+  if (paths === undefined) {
+    return {
+      kind: 'index-first',
+      index: attributeBlobLookup([...plan.target, ...plan.excluded]),
+    };
+  }
+  const kept = opts.currentIndex.entries.filter(
+    (entry) => entry.flags.stage === 0 && !paths.has(entry.path),
+  );
+  return { kind: 'worktree-first', index: attributeBlobLookup([...kept, ...plan.target]) };
+};
+
 export const materializeTree = async (
   ctx: Context,
   opts: MaterializeTreeOpts,
@@ -246,12 +269,16 @@ export const materializeTree = async (
   const changeset =
     opts.forceRewriteAll === true ? upgradeNoopsToUpdates(rawChangeset) : rawChangeset;
 
-  const result = await applyChangeset(ctx, {
-    changeset,
-    force: opts.force ?? false,
-    workdir: requireWorkTree(ctx, 'materializeTree'),
-    ...(opts.checkoutMetadata && { checkoutMetadata: opts.checkoutMetadata }),
-  });
+  const result = await applyChangesetWithAttributes(
+    ctx,
+    {
+      changeset,
+      force: opts.force ?? false,
+      workdir: requireWorkTree(ctx, 'materializeTree'),
+      ...(opts.checkoutMetadata && { checkoutMetadata: opts.checkoutMetadata }),
+    },
+    checkoutDirection(opts, plan),
+  );
 
   const inScope = mergeNewIndexEntries(
     result.writtenEntries,
