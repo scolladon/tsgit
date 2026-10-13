@@ -138,18 +138,42 @@ function gitlinkConflict(
   });
 }
 
+/** The modify side counts as untouched (ort's `blob_unchanged`); the caller owns the byte comparison. */
+export type BlobUnchanged = (
+  path: FilePath,
+  base: FlatTreeEntry,
+  side: FlatTreeEntry,
+) => Promise<boolean>;
+
 function resolveOneSideAbsent(
   path: FilePath,
   base: FlatTreeEntry | undefined,
   present: FlatTreeEntry,
   which: 'our' | 'their',
-): MergeOutcome {
+  blobUnchanged: BlobUnchanged | undefined,
+): MergeOutcome | Promise<MergeOutcome> {
   if (base === undefined) {
     return { status: 'resolved-known', path, id: present.id, mode: present.mode };
   }
   if (entriesEqual(base, present)) {
     return { status: 'resolved-deleted', path };
   }
+  if (blobUnchanged !== undefined && base.mode === present.mode) {
+    return blobUnchanged(path, base, present).then((unchanged) =>
+      unchanged
+        ? { status: 'resolved-deleted', path }
+        : modifyDeleteOutcome(path, base, present, which),
+    );
+  }
+  return modifyDeleteOutcome(path, base, present, which);
+}
+
+function modifyDeleteOutcome(
+  path: FilePath,
+  base: FlatTreeEntry,
+  present: FlatTreeEntry,
+  which: 'our' | 'their',
+): MergeOutcome {
   return which === 'our'
     ? modifyDeleteConflict(path, base, present, undefined)
     : modifyDeleteConflict(path, base, undefined, present);
@@ -510,6 +534,7 @@ interface PathScope {
   readonly labels: MergeLabels;
   readonly reserved: Set<FilePath>;
   readonly variant: OrtVariant | undefined;
+  readonly blobUnchanged: BlobUnchanged | undefined;
 }
 
 function resolvePath(
@@ -524,10 +549,10 @@ function resolvePath(
     return { status: 'resolved-deleted', path };
   }
   if (our === undefined) {
-    return resolveOneSideAbsent(path, base, their!, 'their');
+    return resolveOneSideAbsent(path, base, their!, 'their', scope.blobUnchanged);
   }
   if (their === undefined) {
-    return resolveOneSideAbsent(path, base, our, 'our');
+    return resolveOneSideAbsent(path, base, our, 'our', scope.blobUnchanged);
   }
   if (base === undefined) {
     return resolveAddAdd(path, our, their, contentMerger, scope);
@@ -660,12 +685,18 @@ export async function mergeTrees(
   labels: MergeLabels = DEFAULT_MERGE_LABELS,
   renames: MergeRenames = NO_MERGE_RENAMES,
   variant?: OrtVariant,
+  blobUnchanged?: BlobUnchanged,
 ): Promise<TreeMergeResult> {
   enforcePerInputCap(base, 'base');
   enforcePerInputCap(ours, 'ours');
   enforcePerInputCap(theirs, 'theirs');
   const plan = planTreeMerge(base, ours, theirs, renames);
-  const scope: PathScope = { labels, reserved: new Set<FilePath>(plan.paths), variant };
+  const scope: PathScope = {
+    labels,
+    reserved: new Set<FilePath>(plan.paths),
+    variant,
+    blobUnchanged,
+  };
   const merger = withSidePaths(contentMerger, plan.sidePaths);
   const { forced, splitRenames } = plan.renamed;
   const forcedConflicts = await settleSplitRenames(forced, splitRenames, contentMerger);

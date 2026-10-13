@@ -40,5 +40,5 @@ export { MAX_CONFLICT_OUTPUT_BYTES } from './merge-types.js';
 export { type MergeContentOptions, mergeContent } from './three-way-content.js';
 
 // Three-way tree merge
-export type { ContentMerger } from './three-way-tree.js';
+export type { BlobUnchanged, ContentMerger } from './three-way-tree.js';
 export { mergeTrees } from './three-way-tree.js';
