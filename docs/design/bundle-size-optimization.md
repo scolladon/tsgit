@@ -518,3 +518,21 @@ rounded up to the next 0.1 kB (≤100 B headroom); every other row is unchanged.
 | Full library | 377 939 | 378 017 | +78 | 378 kB | 378.1 kB | `emptyTreeOid`, `EMPTY_TREE_OID`, `zeroOid`, `SHA1_CONFIG` and `SHA256_CONFIG` named in the export list of each of the four entries (`index` +48 B, `index.node` +46 B, `index.default` +48 B, `index.browser` +53 B, per-file gzip) and in the domain chunk's (+12 B); the values already lived in that chunk, and the minified import lists of the command and primitive files shifted for −129 B net |
 
 The npm tarball cap is unchanged: the measured pack stayed under `tooling/verify-tarball.sh`'s cap.
+
+## Size-limit raise — EOL conversion subsystem
+
+Measured on a clean build (`rm -rf dist .wireit && WIREIT_CACHE=none npm run build`,
+`npx size-limit --json`), gzip bytes, against `main` at the same toolchain. Each failing row
+is raised to the measurement rounded up to the next 0.1 kB plus 2 kB of review-round headroom;
+every other row is unchanged.
+
+| Row | main | measured | Δ | old limit | new limit | Attributable to |
+|---|--:|--:|--:|--:|--:|---|
+| Browser bundle (no-build) | 321 737 | 327 230 | +5 493 | 321.8 kB | 329.3 kB | the whole subsystem below, bundled once |
+| Full library | 378 017 | 383 454 | +5 437 | 378.1 kB | 385.5 kB | the domain, primitives and commands-internal growth below plus the entries' re-exports (`EolNotice`, `RoundTripLoss`, `BlobUnchanged`) |
+| Chunks: domain | 119 036 | 120 589 | +1 553 | 119.2 kB | 122.6 kB | `src/domain/eol`: text statistics and the binary classifier, the CRLF action resolution, the two CRLF converters and the LF→CRLF stream transform, the `ident` collapse and both expanders; the `EOL_ROUND_TRIP_UNSAFE` member and its detail; the modify/delete `blobUnchanged` arm of the three-way tree merge |
+| Chunks: primitives | 99 470 | 101 863 | +2 393 | 99.5 kB | 103.9 kB | the per-path conversion resolver, the composed to-git / to-worktree steps and the streamed transform, the direction-taking attribute providers and index lookups, the working-tree writer, the converted dirty probe and comparison route, the renormalize attribute lookup and the content merger's normalisation |
+| Chunks: commands-internal | 79 389 | 79 988 | +599 | 79.4 kB | 82 kB | `add`'s conversion scope, notices, index-order writes under `core.safecrlf=true` and `--renormalize`; `stash push`'s conversion and git's object-write order; `merge`'s `-X renormalize` wiring; `blame` and `archive` conversion |
+
+The npm tarball cap moved 1370 → 1410 KiB (1 402 333 → 1 421 159 B); its attribution lives in
+`tooling/verify-tarball.sh`'s cap block.
