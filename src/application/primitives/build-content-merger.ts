@@ -62,12 +62,12 @@ type Normalize = (path: FilePath, bytes: Uint8Array) => Promise<Uint8Array>;
 
 const keepBytes: Normalize = async (_path, bytes) => bytes;
 
-/** git's `renormalize_buffer` over one lazily built `index-only` attribute provider. */
+/** git's `renormalize_buffer` over one lazily built `index-first` attribute provider. */
 const buildNormalizer = (ctx: Context, { attributes }: RenormalizeSettings): Normalize => {
   let ready: Promise<{ provider: AttributeProvider; eol: EolSettings }> | undefined;
   const prepare = () =>
     (ready ??= Promise.all([
-      buildAttributeProvider(ctx, { kind: 'index-only', index: attributes }),
+      buildAttributeProvider(ctx, { kind: 'index-first', index: attributes }),
       readEolSettings(ctx),
     ]).then(([provider, eol]) => ({ provider, eol })));
   return async (path, bytes) => {

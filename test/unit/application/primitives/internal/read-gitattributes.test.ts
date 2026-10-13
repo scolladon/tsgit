@@ -1428,7 +1428,6 @@ describe('buildAttributeProvider with an index direction', () => {
       it.each([
         { kind: 'worktree-first', expected: { set: 'lf' } },
         { kind: 'index-first', expected: { set: 'crlf' } },
-        { kind: 'index-only', expected: { set: 'crlf' } },
       ] as const)('Then $kind resolves eol to $expected', async ({ kind, expected }) => {
         // Arrange
         const { ctx, index } = await arrange();
@@ -1455,24 +1454,10 @@ describe('buildAttributeProvider with an index direction', () => {
         expect(await eolOf(provider, 'f.txt')).toEqual({ set: 'lf' });
       });
     });
-
-    describe('When an index-only provider resolves a file the index lacks', () => {
-      it('Then index-only ignores the worktree when the index lacks the file', async () => {
-        // Arrange
-        const { ctx } = await arrange();
-
-        // Act
-        const sut = buildAttributeProvider;
-        const provider = await sut(ctx, { kind: 'index-only', index: lookupOf({}) });
-
-        // Assert
-        expect(await eolOf(provider, 'f.txt')).toBe('unspecified');
-      });
-    });
   });
 
   describe('Given a nested index .gitattributes', () => {
-    describe('When an index-only provider resolves a path under it', () => {
+    describe('When an index-first provider resolves a path under it', () => {
       it('Then the directory file is looked up as <dir>/.gitattributes', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -1481,7 +1466,7 @@ describe('buildAttributeProvider with an index direction', () => {
 
         // Act
         const sut = buildAttributeProvider;
-        const provider = await sut(ctx, { kind: 'index-only', index });
+        const provider = await sut(ctx, { kind: 'index-first', index });
 
         // Assert
         expect(await eolOf(provider, 'sub/f.txt')).toEqual({ set: 'crlf' });
@@ -1501,7 +1486,7 @@ describe('buildAttributeProvider with an index direction', () => {
         // Act
         let caught: TsgitError | undefined;
         try {
-          await buildAttributeProvider(ctx, { kind: 'index-only', index });
+          await buildAttributeProvider(ctx, { kind: 'index-first', index });
         } catch (err) {
           caught = err as TsgitError;
         }

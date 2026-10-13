@@ -814,6 +814,53 @@ describe('buildContentMerger renormalize', () => {
     });
   });
 
+  describe('Given no merged attributes and an untracked worktree .gitattributes of text=auto', () => {
+    describe('When the merger runs with renormalize', () => {
+      it('Then the worktree file governs and the merge is clean with LF bytes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, TEXT_AUTO);
+        const sut = buildContentMerger(ctx, undefined, {
+          renormalize: { attributes: () => undefined },
+        });
+        const mergeCtx = await mergeCtxFor(ctx, {
+          base: CRLF_BASE,
+          ours: CRLF_OURS,
+          theirs: LF_THEIRS,
+        });
+
+        // Act
+        const result = await sut(mergeCtx, undefined, none, none);
+
+        // Assert
+        expect(result.status === 'clean' && dec(result.bytes)).toBe('A\nb\nC\n');
+      });
+    });
+  });
+
+  describe('Given merged attributes of * -text and a worktree .gitattributes of text=auto', () => {
+    describe('When the merger runs with renormalize', () => {
+      it('Then the merged index governs and the sides are not normalized', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, TEXT_AUTO);
+        const attributes = await attributesLookup(ctx, '* -text\n');
+        const sut = buildContentMerger(ctx, undefined, { renormalize: { attributes } });
+        const mergeCtx = await mergeCtxFor(ctx, {
+          base: CRLF_BASE,
+          ours: CRLF_OURS,
+          theirs: LF_THEIRS,
+        });
+
+        // Act
+        const result = await sut(mergeCtx, undefined, none, none);
+
+        // Assert
+        expect(result.status).toBe('conflict');
+      });
+    });
+  });
+
   describe('Given the same sides without renormalize', () => {
     describe('When the merger runs', () => {
       it('Then the line endings make it conflict', async () => {

@@ -136,7 +136,6 @@ export type IndexBlobLookup = (
 export type AttributeDirection =
   | { readonly kind: 'worktree-first'; readonly index: IndexBlobLookup }
   | { readonly kind: 'index-first'; readonly index: IndexBlobLookup }
-  | { readonly kind: 'index-only'; readonly index: IndexBlobLookup }
   | { readonly kind: 'tree'; readonly tree: ObjectId };
 
 const indexDirReader =
@@ -164,8 +163,6 @@ const dirReaderFor = (direction: AttributeDirection | undefined): DirReader => {
       return firstOf(workTreeDirReader, indexDirReader(direction.index));
     case 'index-first':
       return firstOf(indexDirReader(direction.index), workTreeDirReader);
-    case 'index-only':
-      return indexDirReader(direction.index);
     case 'tree':
       return treeDirReader(direction.tree);
   }

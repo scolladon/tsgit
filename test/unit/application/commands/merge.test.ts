@@ -12,6 +12,7 @@ import {
   type MergeRunInput,
   materialiseConflictBytes,
   mergeRun,
+  removeOutcomeFromTree,
   resolveMergeAuthor,
   resolveMergeCommitter,
   writeConflictToTree,
@@ -3025,44 +3026,16 @@ describe('writeOutcomeToTree (direct)', () => {
         // Arrange
         const ctx = createMemoryContext();
         await init(ctx);
-        const outcome: MergeOutcome =
+        const outcome: Exclude<MergeOutcome, { readonly status: 'resolved-deleted' }> =
           status === 'resolved-merged'
             ? { status, path, bytes: new TextEncoder().encode(content), mode: FILE_MODE.REGULAR }
             : { status, path, id: await seedBlob(ctx, content), mode: FILE_MODE.REGULAR };
 
         // Act
-        await writeOutcomeToTree(
-          ctx,
-          outcome,
-          undefined,
-          await createMergeResultWriter(ctx, [], []),
-        );
+        await writeOutcomeToTree(outcome, undefined, await createMergeResultWriter(ctx, [], []));
 
         // Assert
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/${path}`)).toBe(content);
-      });
-    });
-  });
-
-  describe('Given a resolved-deleted outcome for an existing file', () => {
-    describe('When writeOutcomeToTree runs', () => {
-      it('Then the working-tree file is removed', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await init(ctx);
-        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/d.txt`, 'to-be-removed');
-        const outcome: MergeOutcome = { status: 'resolved-deleted', path: 'd.txt' as FilePath };
-
-        // Act
-        await writeOutcomeToTree(
-          ctx,
-          outcome,
-          undefined,
-          await createMergeResultWriter(ctx, [], []),
-        );
-
-        // Assert
-        expect(await ctx.fs.exists(`${ctx.layout.workDir}/d.txt`)).toBe(false);
       });
     });
   });
@@ -3088,12 +3061,7 @@ describe('writeOutcomeToTree (direct)', () => {
         let caught: unknown;
         let streamBlobCallCount: number;
         try {
-          await writeOutcomeToTree(
-            ctx,
-            outcome,
-            undefined,
-            await createMergeResultWriter(ctx, [], []),
-          );
+          await writeOutcomeToTree(outcome, undefined, await createMergeResultWriter(ctx, [], []));
         } catch (err) {
           caught = err;
         } finally {
@@ -3130,12 +3098,7 @@ describe('writeOutcomeToTree (direct)', () => {
         let caught: unknown;
         let streamBlobCallCount: number;
         try {
-          await writeOutcomeToTree(
-            ctx,
-            outcome,
-            undefined,
-            await createMergeResultWriter(ctx, [], []),
-          );
+          await writeOutcomeToTree(outcome, undefined, await createMergeResultWriter(ctx, [], []));
         } catch (err) {
           caught = err;
         } finally {
@@ -3157,26 +3120,21 @@ describe('writeOutcomeToTree (direct)', () => {
   // A `resolved-deleted` outcome's path is sourced from the merge's `ours`
   // tree flatten, never from a parsed index — so the premise "this path
   // already passed validation when the index was parsed" does not hold for
-  // it, and it must be validated here like every other outcome.
+  // it, and its removal must validate it like every other outcome.
   describe('Given a resolved-deleted outcome named ".."', () => {
-    describe('When writeOutcomeToTree runs', () => {
+    describe('When removeOutcomeFromTree runs', () => {
       it('Then throws INVALID_INDEX_ENTRY and the working-tree file is not removed', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await init(ctx);
-        const outcome: MergeOutcome = { status: 'resolved-deleted', path: '..' as FilePath };
+        const outcome = { status: 'resolved-deleted', path: '..' as FilePath } as const;
         const removeSpy = vi.spyOn(writeFileMod, 'removeWorkingTreeFile');
 
         // Act
         let caught: unknown;
         let removeCallCount: number;
         try {
-          await writeOutcomeToTree(
-            ctx,
-            outcome,
-            undefined,
-            await createMergeResultWriter(ctx, [], []),
-          );
+          await removeOutcomeFromTree(ctx, outcome);
         } catch (err) {
           caught = err;
         } finally {
@@ -3219,12 +3177,7 @@ describe('writeOutcomeToTree (direct) — streaming', () => {
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
 
         // Act
-        await writeOutcomeToTree(
-          ctx,
-          outcome,
-          undefined,
-          await createMergeResultWriter(ctx, [], []),
-        );
+        await writeOutcomeToTree(outcome, undefined, await createMergeResultWriter(ctx, [], []));
 
         // Assert
         expect(writeStreamSpy).toHaveBeenCalledOnce();
@@ -3252,12 +3205,7 @@ describe('writeOutcomeToTree (direct) — streaming', () => {
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
 
         // Act
-        await writeOutcomeToTree(
-          ctx,
-          outcome,
-          undefined,
-          await createMergeResultWriter(ctx, [], []),
-        );
+        await writeOutcomeToTree(outcome, undefined, await createMergeResultWriter(ctx, [], []));
 
         // Assert
         expect(writeStreamSpy).toHaveBeenCalledOnce();
@@ -3284,12 +3232,7 @@ describe('writeOutcomeToTree (direct) — streaming', () => {
         };
 
         // Act — must not throw; uncapped streaming path
-        await writeOutcomeToTree(
-          ctx,
-          outcome,
-          undefined,
-          await createMergeResultWriter(ctx, [], []),
-        );
+        await writeOutcomeToTree(outcome, undefined, await createMergeResultWriter(ctx, [], []));
 
         // Assert — streamBlob called with exactly (ctx, id) — no third options arg
         const written = await ctx.fs.read(`${ctx.layout.workDir}/large.bin`);
@@ -3314,12 +3257,7 @@ describe('writeOutcomeToTree (direct) — streaming', () => {
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
 
         // Act
-        await writeOutcomeToTree(
-          ctx,
-          outcome,
-          undefined,
-          await createMergeResultWriter(ctx, [], []),
-        );
+        await writeOutcomeToTree(outcome, undefined, await createMergeResultWriter(ctx, [], []));
 
         // Assert — streaming path must NOT be taken; mutation streaming it must die here
         expect(streamBlobSpy).not.toHaveBeenCalled();
@@ -3347,12 +3285,11 @@ describe('writeOutcomeToTree (direct) — streaming', () => {
           mode: FILE_MODE.REGULAR,
         };
         // SparseMatcher is (path: FilePath) => boolean; returning false means excluded
-        const excludesMatcher = (() => false) as Parameters<typeof writeOutcomeToTree>[2];
+        const excludesMatcher = (() => false) as Parameters<typeof writeOutcomeToTree>[1];
         const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
 
         // Act
         await writeOutcomeToTree(
-          ctx,
           outcome,
           excludesMatcher,
           await createMergeResultWriter(ctx, [], []),
@@ -3682,12 +3619,7 @@ describe('merge — sparse checkout', () => {
         };
 
         // Act
-        await writeOutcomeToTree(
-          ctx,
-          outcome,
-          excludesDrop,
-          await createMergeResultWriter(ctx, [], []),
-        );
+        await writeOutcomeToTree(outcome, excludesDrop, await createMergeResultWriter(ctx, [], []));
 
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/drop.txt`)).toBe(false);
@@ -3710,12 +3642,7 @@ describe('merge — sparse checkout', () => {
         };
 
         // Act
-        await writeOutcomeToTree(
-          ctx,
-          outcome,
-          excludesDrop,
-          await createMergeResultWriter(ctx, [], []),
-        );
+        await writeOutcomeToTree(outcome, excludesDrop, await createMergeResultWriter(ctx, [], []));
 
         // Assert
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/keep.txt`)).toBe('KEPT');
@@ -3739,12 +3666,7 @@ describe('merge — sparse checkout', () => {
         };
 
         // Act
-        await writeOutcomeToTree(
-          ctx,
-          outcome,
-          excludesDrop,
-          await createMergeResultWriter(ctx, [], []),
-        );
+        await writeOutcomeToTree(outcome, excludesDrop, await createMergeResultWriter(ctx, [], []));
 
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/drop.txt`)).toBe(false);
@@ -3768,12 +3690,7 @@ describe('merge — sparse checkout', () => {
         };
 
         // Act
-        await writeOutcomeToTree(
-          ctx,
-          outcome,
-          excludesDrop,
-          await createMergeResultWriter(ctx, [], []),
-        );
+        await writeOutcomeToTree(outcome, excludesDrop, await createMergeResultWriter(ctx, [], []));
 
         // Assert
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/drop.txt`)).toBe('MERGED');

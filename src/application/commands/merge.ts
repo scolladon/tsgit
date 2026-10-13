@@ -1740,10 +1740,8 @@ const writeConflictingWorkingTree = async (
   // Bounded parallelism — independent path writes overlap, but the pool
   // caps in-flight at the ioBound policy so a 10k-path merge doesn't
   // exhaust file descriptors.
-  await runBounded(
-    ctx,
-    touched.filter((outcome) => !isDeletion(outcome)),
-    (outcome) => writeOutcomeToTree(ctx, outcome, matcher, writer, scanner),
+  await runBounded(ctx, touched.filter(isWrite), (outcome) =>
+    writeOutcomeToTree(outcome, matcher, writer, scanner),
   );
   // Conflicted paths are materialised even when sparse-excluded — a conflict
   // the user cannot see is unresolvable, so `writeConflictToTree` takes no
@@ -1771,13 +1769,20 @@ type DeletedOutcome = Extract<MergeOutcome, { readonly status: 'resolved-deleted
 const isDeletion = (outcome: MergeOutcome): outcome is DeletedOutcome =>
   outcome.status === 'resolved-deleted';
 
+type WrittenOutcome = Exclude<MergeOutcome, DeletedOutcome>;
+
+const isWrite = (outcome: MergeOutcome): outcome is WrittenOutcome => !isDeletion(outcome);
+
 /**
  * Remove a `resolved-deleted` outcome's file.
  * A delete carries no mode of its own; REGULAR stands in because the only
  * mode-sensitive rule validation can trigger — the `.gitmodules`-symlink
  * rejection — is a write-time concern that does not apply to a removal.
  */
-const removeOutcomeFromTree = async (ctx: Context, outcome: DeletedOutcome): Promise<void> => {
+export const removeOutcomeFromTree = async (
+  ctx: Context,
+  outcome: DeletedOutcome,
+): Promise<void> => {
   validateIndexPath(outcome.path, NO_PARSER_OFFSET, FILE_MODE.REGULAR);
   await removeWorkingTreeFile(ctx, outcome.path);
 };
@@ -1791,12 +1796,11 @@ const removeOutcomeFromTree = async (ctx: Context, outcome: DeletedOutcome): Pro
  *   excluded path is skipped — the working tree keeps only in-pattern files.
  * - `resolved-merged` carries its merged bytes in memory only; this write is
  *   their sole persistence, so the path is always materialised.
- * - `resolved-deleted` needs no guard — an excluded file is already absent and
- *   `removeWorkingTreeFile` is a no-op for it.
+ * - `resolved-deleted` is not handled here: the delete wave removes those
+ *   before any write, so callers never pass one.
  */
 export const writeOutcomeToTree = async (
-  ctx: Context,
-  outcome: MergeOutcome,
+  outcome: WrittenOutcome,
   matcher: SparseMatcher | undefined,
   writer: WorkingTreeWriter,
   scanner?: LeadingPathScanner,
@@ -1806,10 +1810,6 @@ export const writeOutcomeToTree = async (
   // regardless of status. `conflict` is skipped because this function no-ops
   // on it (the conflict itself is validated by the parallel conflicts batch).
   if (outcome.status === 'conflict') return;
-  if (outcome.status === 'resolved-deleted') {
-    await removeOutcomeFromTree(ctx, outcome);
-    return;
-  }
   validateIndexPath(outcome.path, NO_PARSER_OFFSET, outcome.mode);
   if (outcome.status === 'resolved-merged') {
     // The merged bytes exist only in memory — this write is their sole
