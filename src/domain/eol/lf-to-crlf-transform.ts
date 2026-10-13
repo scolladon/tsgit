@@ -6,7 +6,8 @@ const LF = 0x0a;
 const expandChunk = (chunk: Uint8Array, previousWasCr: boolean): Uint8Array => {
   let insertions = 0;
   let before = previousWasCr;
-  for (const byte of chunk) {
+  for (let at = 0; at < chunk.length; at++) {
+    const byte = chunk[at] as number;
     if (byte === LF && !before) insertions++;
     before = byte === CR;
   }
@@ -14,7 +15,8 @@ const expandChunk = (chunk: Uint8Array, previousWasCr: boolean): Uint8Array => {
   const expanded = new Uint8Array(chunk.length + insertions);
   let length = 0;
   before = previousWasCr;
-  for (const byte of chunk) {
+  for (let at = 0; at < chunk.length; at++) {
+    const byte = chunk[at] as number;
     if (byte === LF && !before) expanded[length++] = CR;
     expanded[length++] = byte;
     before = byte === CR;

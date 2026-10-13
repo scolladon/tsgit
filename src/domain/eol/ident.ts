@@ -7,7 +7,7 @@ const LF = 0x0a;
 const KEYWORD_NAME_LENGTH = 2;
 const KEYWORD_COLON_LENGTH = 3;
 const FOREIGN_SEARCH_START = 4;
-const COLLAPSED_NAME = Uint8Array.of(UPPER_I, LOWER_D);
+const COLLAPSED_NAME = Uint8Array.of(UPPER_I, LOWER_D, DOLLAR);
 
 interface Match {
   readonly replacement: Uint8Array;
@@ -65,7 +65,7 @@ const collapseAt: MatchAt = (bytes, afterDollar) => {
   }
   const closing = closingDollar(bytes, afterDollar + KEYWORD_COLON_LENGTH);
   if (closing === undefined) return undefined;
-  return { replacement: COLLAPSED_NAME, resumeAt: closing };
+  return { replacement: COLLAPSED_NAME, resumeAt: closing + 1 };
 };
 
 export const identToGit = (bytes: Uint8Array): Uint8Array => rewrite(bytes, collapseAt);

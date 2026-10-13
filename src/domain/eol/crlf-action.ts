@@ -40,7 +40,7 @@ const actionFromValue = (value: AttributeValue): DeclaredAction => {
 };
 
 const eolValue = (eol: AttributeValue): LineEnding | undefined => {
-  if (typeof eol === 'boolean' || eol === 'unspecified') return undefined;
+  if (typeof eol !== 'object') return undefined;
   if (eol.set === 'lf' || eol.set === 'crlf') return eol.set;
   return undefined;
 };

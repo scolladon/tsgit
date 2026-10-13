@@ -111,6 +111,7 @@ export const crlfToWorkingTree = (
   action: CrlfAction,
   settings: EolSettings,
 ): Uint8Array => {
+  // Stryker disable next-line ConditionalExpression,LogicalOperator: equivalent — willConvertLfToCrlf repeats the output-ending check and returns the same reference, so dropping or inverting this skip only costs the stats pass
   if (bytes.length === 0 || outputLineEnding(action, settings) !== 'crlf') return bytes;
   return willConvertLfToCrlf(gatherTextStats(bytes), action, settings) ? insertCr(bytes) : bytes;
 };

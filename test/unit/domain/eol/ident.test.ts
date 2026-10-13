@@ -15,6 +15,7 @@ describe('identToGit', () => {
     ['text around a keyword', 'x $Id: a $ y', 'x $Id$ y'],
     ['two adjacent keywords', '$Id: a $$Id: b $', '$Id$$Id$'],
     ['a keyword after a lone dollar', '$$Id: a $', '$$Id$'],
+    ['a closing dollar that also opens a keyword', '$Id: x $Id: y $\n', '$Id$Id: y $\n'],
   ])('Given %s', (_title, input, expected) => {
     describe('When collapsed', () => {
       it('Then the value is dropped', () => {
