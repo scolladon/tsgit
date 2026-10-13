@@ -140,6 +140,35 @@ describe('Given a tracked modified b.txt and untracked a.txt and c.txt under a r
   });
 });
 
+describe('Given a tracked modified b.txt that cannot be read and untracked a.txt and c.txt under a clean driver, safecrlf unset', () => {
+  describe('When add walks the work tree', () => {
+    it('Then the driver hears no path, as git dies at the first failure', async () => {
+      // Arrange
+      const { ctx, cleaned } = await repoUnderLogDriver(
+        { 'a.txt': 'A', 'b.txt': 'B', 'c.txt': 'C' },
+        '*.txt filter=log\n',
+        { tracked: ['b.txt'] },
+      );
+      const unreadable = new Proxy(ctx.fs, {
+        get(target, prop, receiver) {
+          if (prop !== 'read') return Reflect.get(target, prop, receiver);
+          return async (path: string) => {
+            if (path.endsWith('/b.txt')) throw new Error('unreadable b.txt');
+            return target.read(path);
+          };
+        },
+      });
+      const sut = add;
+
+      // Act
+      await sut({ ...ctx, fs: unreadable }, [], { all: true }).catch(() => undefined);
+
+      // Assert
+      expect(cleaned).toEqual([]);
+    });
+  });
+});
+
 describe('Given core.safecrlf true, a tracked modified b.txt and untracked a.txt and c.txt that convert safely', () => {
   describe('When add walks the work tree', () => {
     it('Then each path is cleaned once, the tracked one first', async () => {

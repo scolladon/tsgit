@@ -385,7 +385,7 @@ const dispatchInCleanOrder = (
   withCleanOrder(
     ctx,
     async (order) => {
-      const dispatcher = { limiter: limiterFor(ctx, 'ioBound'), order, stage, span };
+      const dispatcher = { limiter: limiterFor(ctx, 'ioBound'), order, stage };
       const pending: Promise<StagedEntry>[] = [];
       try {
         for await (const walkEntry of walk) pending.push(dispatchWalkEntry(dispatcher, walkEntry));
@@ -404,11 +404,9 @@ const dispatchWalkEntry = (
     limiter,
     order,
     stage,
-    span,
   }: {
     readonly limiter: ConcurrencyLimiter;
     readonly order: CleanOrder;
-    readonly span: OrderSpan;
     readonly stage: (walkEntry: WalkWorkingTreeEntry) => Promise<WalkOutcome | undefined>;
   },
   walkEntry: WalkWorkingTreeEntry,
@@ -419,7 +417,8 @@ const dispatchWalkEntry = (
     .then(
       (outcome): StagedEntry => ({ kind: 'staged', outcome }),
       (error: unknown): StagedEntry => {
-        if (span === 'write') order.halt(walkEntry.path, error);
+        // git dies at the first path that fails to stage: no later path is cleaned.
+        order.halt(walkEntry.path, error);
         return { kind: 'failed', error };
       },
     )
