@@ -300,6 +300,55 @@ describe('stash carries index extensions', () => {
     });
   });
 
+  describe('Given a stash of a worktree-only edit and a later staged change', () => {
+    describe('When stash pop --index finds nothing staged by the stash', () => {
+      it('Then the index is not rebuilt and the cache-tree is invalid along the restored path only', async () => {
+        // Arrange
+        const ctx = await repoWithExtensions();
+        await write(ctx, 'x/y', 'edited\n');
+        await stashPush(ctx, {});
+        advance(1);
+        await write(ctx, 'a', 'later\n');
+        await add(ctx, ['a']);
+        advance(1);
+        await carryAllExtensions(ctx);
+
+        // Act
+        const sut = stashPop;
+        await sut(ctx, { restoreIndex: true });
+
+        // Assert
+        expect(await chains(ctx)).toEqual([false, true, true, false]);
+      });
+    });
+  });
+
+  describe('Given a stash of a staged change and an edit, and the same change staged again', () => {
+    describe('When stash pop --index finds the index already equal to the stash index', () => {
+      it('Then the index is not rebuilt and the cache-tree is invalid along the restored edit only', async () => {
+        // Arrange
+        const ctx = await repoWithExtensions();
+        await write(ctx, 'x/y', 'staged\n');
+        await add(ctx, ['x/y']);
+        await write(ctx, 'a', 'edited\n');
+        advance(1);
+        await stashPush(ctx, {});
+        advance(1);
+        await write(ctx, 'x/y', 'staged\n');
+        await add(ctx, ['x/y']);
+        advance(1);
+        await carryAllExtensions(ctx);
+
+        // Act
+        const sut = stashPop;
+        await sut(ctx, { restoreIndex: true });
+
+        // Assert
+        expect(await chains(ctx)).toEqual([false, true, true, true]);
+      });
+    });
+  });
+
   describe('Given a stash whose index added a new file', () => {
     describe('When stash apply merges cleanly without restoring the index', () => {
       it('Then the new file stays staged and the edit stays unstaged', async () => {
