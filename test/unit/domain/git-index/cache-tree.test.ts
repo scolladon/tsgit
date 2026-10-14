@@ -241,6 +241,31 @@ describe('Given sibling cache-tree names that do not survive a UTF-8 round trip'
     ]),
   ]);
 
+  describe('When a path below the BOM-named subtree is invalidated', () => {
+    it('Then the invalidated subtree keeps its exact name bytes', () => {
+      // Arrange
+      const sut = (data: Uint8Array): Uint8Array =>
+        serializeCacheTree(
+          invalidateCacheTree(parseCacheTree(data, 20), ['a/\uFEFFb/x' as FilePath]),
+          20,
+        );
+
+      // Act
+      const result = sut(original);
+
+      // Assert
+      const expected = node(new Uint8Array(0), '-1 1\n', '', [
+        node(encode('a'), '-1 4\n', '', [
+          carried[0] as Uint8Array,
+          node(BOM_B, '-1 0\n', ''),
+          carried[2] as Uint8Array,
+          node(encode('c'), '1 0\n', 'f'.repeat(40)),
+        ]),
+      ]);
+      expect(result).toEqual(expected);
+    });
+  });
+
   describe('When an unrelated sibling path is invalidated', () => {
     it('Then the untouched subtrees keep their exact name bytes', () => {
       // Arrange

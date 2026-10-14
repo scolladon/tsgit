@@ -7,7 +7,11 @@ import type {
 } from '../../../../src/domain/git-index/index-entry.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index-entry.js';
 import { parseIndex } from '../../../../src/domain/git-index/index-parser.js';
-import { compareEntryPath, serializeIndex } from '../../../../src/domain/git-index/index-writer.js';
+import {
+  compareEntryPath,
+  pathStringComparatorFor,
+  serializeIndex,
+} from '../../../../src/domain/git-index/index-writer.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import { bytesToHex, FILE_MODE, FilePath } from '../../../../src/domain/objects/index.js';
 import { arbIndexEntry } from './arbitraries.js';
@@ -107,6 +111,40 @@ describe('compareEntryPath UTF-8 byte order', () => {
 
         // Assert
         expect(result).toBeLessThan(0);
+      });
+    });
+  });
+});
+
+describe('pathStringComparatorFor', () => {
+  describe('Given paths holding a BMP character above U+E000 and an astral character', () => {
+    describe('When the picked comparator sorts them', () => {
+      it('Then they come out in UTF-8 byte order', () => {
+        // Arrange
+        const paths = ['\u{1F600}.txt', '\uFFFD.txt'];
+
+        // Act
+        const sut = pathStringComparatorFor;
+        const result = [...paths].sort(sut(paths));
+
+        // Assert
+        expect(result).toEqual(['\uFFFD.txt', '\u{1F600}.txt']);
+      });
+    });
+  });
+
+  describe('Given ASCII-only paths', () => {
+    describe('When the picked comparator sorts them', () => {
+      it('Then they come out in byte order', () => {
+        // Arrange
+        const paths = ['b', 'a/c', 'a'];
+
+        // Act
+        const sut = pathStringComparatorFor;
+        const result = [...paths].sort(sut(paths));
+
+        // Assert
+        expect(result).toEqual(['a', 'a/c', 'b']);
       });
     });
   });
