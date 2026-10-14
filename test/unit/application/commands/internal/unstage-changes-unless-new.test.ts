@@ -37,7 +37,7 @@ describe('unstageChangesUnlessNew', () => {
         const result = sut(merged, before);
 
         // Assert
-        expect(paths(result)).toEqual(['m', 'sub']);
+        expect(paths(result.entries)).toEqual(['m', 'sub']);
       });
     });
   });
@@ -54,7 +54,7 @@ describe('unstageChangesUnlessNew', () => {
         const result = sut(merged, before);
 
         // Assert
-        expect(paths(result)).toEqual(['d/x']);
+        expect(paths(result.entries)).toEqual(['d/x']);
       });
     });
   });
@@ -71,11 +71,41 @@ describe('unstageChangesUnlessNew', () => {
         const result = sut(merged, before);
 
         // Assert
-        expect(result.map((e) => [e.path, e.id, e.fileSize])).toEqual([
+        expect(result.entries.map((e) => [e.path, e.id, e.fileSize])).toEqual([
           ['c', '1', 0],
           ['d', '2', 0],
           ['u', '3', STATTED],
         ]);
+      });
+
+      it('Then the restaged paths are the changed and deleted ones, not the unchanged one', () => {
+        // Arrange
+        const before = [entry('c', '1'), entry('d', '2'), entry('u', '3')];
+        const merged = [entry('c', '9'), entry('u', '3')];
+
+        // Act
+        const sut = unstageChangesUnlessNew;
+        const result = sut(merged, before);
+
+        // Assert
+        expect(result.restagedPaths).toEqual(['c', 'd']);
+      });
+    });
+  });
+
+  describe('Given a path new to the merged index', () => {
+    describe('When the changes are unstaged', () => {
+      it('Then the new path stays staged and is reported as restaged', () => {
+        // Arrange
+        const before = [entry('u', '3')];
+        const merged = [entry('n', '4'), entry('u', '3')];
+
+        // Act
+        const sut = unstageChangesUnlessNew;
+        const result = sut(merged, before);
+
+        // Assert
+        expect(result.restagedPaths).toEqual(['n']);
       });
     });
   });
@@ -92,7 +122,7 @@ describe('unstageChangesUnlessNew', () => {
         const result = sut(merged, before);
 
         // Assert
-        expect(result.map((e) => [e.mode, e.fileSize])).toEqual([[FILE_MODE.REGULAR, 0]]);
+        expect(result.entries.map((e) => [e.mode, e.fileSize])).toEqual([[FILE_MODE.REGULAR, 0]]);
       });
     });
   });

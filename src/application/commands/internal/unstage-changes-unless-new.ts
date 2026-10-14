@@ -37,6 +37,12 @@ const occupiedBy = (kept: ReadonlyArray<IndexEntry>): ((path: FilePath) => boole
   return (path) => dirs.has(path) || ancestorDirs(path).some((dir) => files.has(dir));
 };
 
+/** The entries after the unstage, and the paths git re-adds (so invalidates in the cache-tree). */
+export interface UnstageOutcome {
+  readonly entries: IndexEntry[];
+  readonly restagedPaths: FilePath[];
+}
+
 /**
  * git's `unstage_changes_unless_new`: after a clean `stash apply` every path the
  * merge changed or deleted goes back to its pre-apply entry (zero stat, as
@@ -47,17 +53,21 @@ const occupiedBy = (kept: ReadonlyArray<IndexEntry>): ((path: FilePath) => boole
 export const unstageChangesUnlessNew = (
   merged: ReadonlyArray<IndexEntry>,
   before: ReadonlyArray<IndexEntry>,
-): IndexEntry[] => {
+): UnstageOutcome => {
   const previous = byPath(before);
   const current = byPath(merged);
   const added = [...current.values()].filter((e) => !previous.has(e.path));
   const collides = occupiedBy(added);
   const entries = [...added];
+  const restagedPaths = added.map((e) => e.path);
   for (const [path, old] of previous) {
     const now = current.get(path);
     if (now !== undefined && sameContent(now, old)) entries.push(now);
-    else if (!collides(path)) entries.push(zeroStat(old));
+    else if (!collides(path)) {
+      entries.push(zeroStat(old));
+      restagedPaths.push(path);
+    }
   }
   entries.sort(pathComparatorFor(entries));
-  return entries;
+  return { entries, restagedPaths };
 };

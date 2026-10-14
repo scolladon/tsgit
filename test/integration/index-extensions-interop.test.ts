@@ -47,8 +47,7 @@ import {
 
 type Format = 'sha1' | 'sha256';
 type Carry = 'update' | 'replace';
-/** `true-oids`: every valid node is git's oid for the directory, but may be one git itself invalidated. */
-type TreeCheck = 'bytes' | 'valid-nodes' | 'git-oids' | 'true-oids';
+type TreeCheck = 'bytes' | 'valid-nodes' | 'git-oids';
 
 const DIGEST_LENGTH: Record<Format, 20 | 32> = { sha1: 20, sha256: 32 };
 const FILES = ['a', 'b', 'd/c', 'd/e/f', 'x/y', 'm'] as const;
@@ -427,7 +426,7 @@ const REPLACE_ROWS: ReadonlyArray<Row> = [
   {
     title: 'stash pop --index',
     carry: 'replace',
-    tree: 'true-oids',
+    tree: 'valid-nodes',
     prepare: stashedDC,
     git: ok('stash', 'pop', '-q', '--index'),
     tsgit: (ctx) => stashPop(ctx, { restoreIndex: true }),
@@ -435,7 +434,7 @@ const REPLACE_ROWS: ReadonlyArray<Row> = [
   {
     title: 'stash apply',
     carry: 'replace',
-    tree: 'true-oids',
+    tree: 'valid-nodes',
     prepare: stashedDC,
     git: ok('stash', 'apply', '-q'),
     tsgit: (ctx) => stashApply(ctx, {}),
@@ -443,7 +442,7 @@ const REPLACE_ROWS: ReadonlyArray<Row> = [
   {
     title: 'stash apply (the stash also added a new file)',
     carry: 'replace',
-    tree: 'true-oids',
+    tree: 'valid-nodes',
     prepare: stashedDCWithNewFile,
     git: ok('stash', 'apply', '-q'),
     tsgit: (ctx) => stashApply(ctx, {}),

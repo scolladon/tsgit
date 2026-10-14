@@ -262,6 +262,44 @@ describe('stash carries index extensions', () => {
     });
   });
 
+  describe('Given a stash of a worktree-only edit and an index carrying extensions', () => {
+    describe('When stash apply merges cleanly', () => {
+      it('Then the cache-tree is invalid along the restored path only', async () => {
+        // Arrange
+        const ctx = await repoWithExtensions();
+        await write(ctx, 'x/y', 'edited\n');
+        await stashPush(ctx, {});
+        advance(1);
+        await carryAllExtensions(ctx);
+
+        // Act
+        const sut = stashApply;
+        await sut(ctx, {});
+
+        // Assert
+        expect(await chains(ctx)).toEqual([false, true, true, false]);
+      });
+    });
+
+    describe('When stash pop --index finds nothing staged', () => {
+      it('Then it behaves like apply and invalidates the cache-tree along the restored path', async () => {
+        // Arrange
+        const ctx = await repoWithExtensions();
+        await write(ctx, 'x/y', 'edited\n');
+        await stashPush(ctx, {});
+        advance(1);
+        await carryAllExtensions(ctx);
+
+        // Act
+        const sut = stashPop;
+        await sut(ctx, { restoreIndex: true });
+
+        // Assert
+        expect(await chains(ctx)).toEqual([false, true, true, false]);
+      });
+    });
+  });
+
   describe('Given a stash whose index added a new file', () => {
     describe('When stash apply merges cleanly without restoring the index', () => {
       it('Then the new file stays staged and the edit stays unstaged', async () => {

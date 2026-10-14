@@ -193,7 +193,7 @@ const carriedExtensions = async (
 ): Promise<ReadonlyArray<IndexExtension>> => {
   if (previous === undefined || previous.extensions.length === 0) return [];
   const diff = diffIndexEntries(previous.entries, entries);
-  const change = kind === 'update' ? withRestagedPaths(diff, options.restagedPaths ?? []) : diff;
+  const change = withRestagedPaths(diff, options.restagedPaths ?? []);
   return carryExtensions(previous.extensions, change, kind, await carrySettings(ctx));
 };
 

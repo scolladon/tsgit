@@ -177,10 +177,9 @@ describe('IndexLock.commit', () => {
     });
 
     describe('When committing identical entries as a replace restaging b', () => {
-      it('Then the TREE bytes are unchanged', async () => {
+      it('Then the root is invalidated and d, e, x are untouched', async () => {
         // Arrange
         const ctx = await restagedRepo();
-        const before = (await indexExtensionsOf(ctx)).get('TREE');
         const entries = (await readIndex(ctx)).entries;
         const sut = await acquireIndexLock(ctx);
 
@@ -188,7 +187,16 @@ describe('IndexLock.commit', () => {
         await sut.commit(entries, 'replace', { restagedPaths: ['b' as FilePath] });
 
         // Assert
-        expect((await indexExtensionsOf(ctx)).get('TREE')).toEqual(before);
+        const tree = parseCacheTree(
+          (await indexExtensionsOf(ctx)).get('TREE') as Uint8Array,
+          SHA1_DIGEST,
+        );
+        expect(summary(tree)).toEqual([
+          ['', -1],
+          ['d', 1],
+          ['e', 1],
+          ['x', 1],
+        ]);
       });
     });
   });

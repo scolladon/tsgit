@@ -689,6 +689,13 @@ const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> =>
   }
 };
 
+/** git skips `--index` when the stash staged nothing, or the index already equals what was staged. */
+const hasStagedChanges = (trees: {
+  readonly bTree: ObjectId;
+  readonly cTree: ObjectId;
+  readonly iTree: ObjectId;
+}): boolean => trees.iTree !== trees.bTree && trees.iTree !== trees.cTree;
+
 /** Reinstate the staged state (`--index`) when the index-side 3-way merge is clean. */
 const reinstateIndex = async (
   ctx: Context,
@@ -696,15 +703,14 @@ const reinstateIndex = async (
   args: {
     readonly bTree: ObjectId;
     readonly cTree: ObjectId;
-    readonly indexParent: ObjectId;
+    readonly iTree: ObjectId;
     readonly currentIndex: GitIndex;
   },
 ): Promise<void> => {
-  const iTree = await commitTreeOf(ctx, args.indexParent);
   const merged = await mergeTreesToTree(ctx, {
     baseTree: args.bTree,
     oursTree: args.cTree,
-    theirsTree: iTree,
+    theirsTree: args.iTree,
     labels: STASH_LABELS,
   });
   if (merged.kind !== 'clean') return;
@@ -800,14 +806,15 @@ const applyUnderLock = async (
       conflicts: result.conflicts.map((c) => ({ path: c.path, type: c.type })),
     };
   }
-  if (input.restoreIndex === true) {
-    const indexParent = parsed.indexParent;
-    await reinstateIndex(ctx, lock, { bTree, cTree, indexParent, currentIndex });
+  const iTree = await commitTreeOf(ctx, parsed.indexParent);
+  if (input.restoreIndex === true && hasStagedChanges({ bTree, cTree, iTree })) {
+    await reinstateIndex(ctx, lock, { bTree, cTree, iTree, currentIndex });
   } else {
-    await lock.commit(
-      unstageChangesUnlessNew(result.result.newIndexEntries, currentIndex.entries),
-      'replace',
+    const { entries, restagedPaths } = unstageChangesUnlessNew(
+      result.result.newIndexEntries,
+      currentIndex.entries,
     );
+    await lock.commit(entries, 'replace', { restagedPaths });
   }
   if (uTree !== undefined) await restoreUntracked(ctx, uTree);
   return { kind: 'applied', stash: w };
