@@ -87,10 +87,12 @@ const convertedWorktreeBytes = async (
   provider: AttributeProvider,
   entry: IndexEntry,
   raw: Uint8Array,
+  filterDriversConfigured: boolean | undefined,
 ): Promise<Uint8Array> => {
   const settings = await readEolSettings(ctx);
   const conversion = await resolveConversion(ctx, provider, entry.path, settings, {
     eagerSectionValidation: true,
+    ...(filterDriversConfigured !== undefined && { filterDriversConfigured }),
   });
   const converted = await convertToGit(ctx, {
     path: entry.path,
@@ -150,8 +152,11 @@ const streamsThroughDriver = async (
   ctx: Context,
   provider: AttributeProvider | undefined,
   path: FilePath,
+  filterDriversConfigured: boolean | undefined,
 ): Promise<boolean> =>
-  provider !== undefined && streamsThroughFilter(await resolveFilterDriver(ctx, provider, path));
+  filterDriversConfigured !== false &&
+  provider !== undefined &&
+  streamsThroughFilter(await resolveFilterDriver(ctx, provider, path));
 
 /**
  * git's `index_fd` reads `core.bigFileThreshold` before hashing a regular
@@ -165,9 +170,10 @@ const readThresholdBeforeHashing = async (
   stat: FileStat,
   indexMtime: IndexMtime | undefined,
   provider: AttributeProvider | undefined,
+  filterDriversConfigured: boolean | undefined,
 ): Promise<void> => {
   if (indexMtime === undefined || stat.isSymbolicLink) return;
-  if (await streamsThroughDriver(ctx, provider, entry.path)) return;
+  if (await streamsThroughDriver(ctx, provider, entry.path, filterDriversConfigured)) return;
   await assertBigFileThresholdValid(ctx);
 };
 
@@ -175,6 +181,8 @@ const readThresholdBeforeHashing = async (
 export interface ComparisonScope {
   readonly provider?: AttributeProvider;
   readonly indexMtime?: IndexMtime;
+  /** `false` when the caller knows no `[filter "<d>"]` section exists, so no driver is looked up. */
+  readonly filterDriversConfigured?: boolean;
 }
 
 /**
@@ -199,7 +207,14 @@ const compareContent = async (
   worktreeMode: FileMode,
   scope: ComparisonScope,
 ): Promise<WorkingTreeDelta> => {
-  await readThresholdBeforeHashing(ctx, entry, stat, scope.indexMtime, scope.provider);
+  await readThresholdBeforeHashing(
+    ctx,
+    entry,
+    stat,
+    scope.indexMtime,
+    scope.provider,
+    scope.filterDriversConfigured,
+  );
   const raw = await readWorkingBytes(ctx, absPath, stat);
   // The file exists (lstat succeeded) but cannot be read — never report an
   // unverifiable file as `unchanged`; git's failed `index_path` reads changed.
@@ -207,7 +222,13 @@ const compareContent = async (
   // Symlink targets are always hashed raw.
   const content = stat.isSymbolicLink
     ? raw
-    : await convertedWorktreeBytes(ctx, scope.provider ?? EMPTY_PROVIDER, entry, raw);
+    : await convertedWorktreeBytes(
+        ctx,
+        scope.provider ?? EMPTY_PROVIDER,
+        entry,
+        raw,
+        scope.filterDriversConfigured,
+      );
   const { id } = await serializeAndHash(ctx, { type: 'blob', id: '' as ObjectId, content });
   // Content dominates: a changed blob is `modified` regardless of mode. Only a
   // same-blob mode difference (exec bit) is `mode-changed`.

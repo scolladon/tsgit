@@ -62,14 +62,21 @@ export const resolveConversion = async (
   provider: AttributeProvider,
   path: FilePath,
   settings: EolSettings,
-  options: { readonly eagerSectionValidation?: boolean } = {},
+  options: {
+    readonly eagerSectionValidation?: boolean;
+    /** `false` is the caller's proof that no `[filter "<d>"]` section exists: nothing to validate or resolve. */
+    readonly filterDriversConfigured?: boolean;
+  } = {},
 ): Promise<Conversion> => {
-  if (options.eagerSectionValidation === true) await validateFilterSections(ctx);
+  const noDrivers = options.filterDriversConfigured === false;
+  if (options.eagerSectionValidation === true && !noDrivers) await validateFilterSections(ctx);
   const { sources, macros } = await provider.sourcesForPath(path);
   if (sources.length === 0 && settings.autoCrlf === false) return IDENTITY_CONVERSION;
   const attribute = (name: string) => resolveAttribute(sources, path, name, macros);
   return {
-    filter: await filterChoiceFromSources(ctx, sources, macros, path),
+    filter: noDrivers
+      ? IDENTITY_CONVERSION.filter
+      : await filterChoiceFromSources(ctx, sources, macros, path),
     crlf: resolveCrlfAction(
       { text: attribute('text'), crlf: attribute('crlf'), eol: attribute('eol') },
       settings,

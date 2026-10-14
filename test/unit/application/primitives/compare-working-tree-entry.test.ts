@@ -1028,6 +1028,76 @@ describe('Given a malformed core.bigFileThreshold and a filter driver engaged on
   });
 });
 
+describe('Given a caller that states whether a filter driver is configured', () => {
+  describe('When the scope says none is, on a racy file under a required driver and a malformed core.bigFileThreshold', () => {
+    it('Then it does not look the driver up and refuses on the threshold', async () => {
+      // Arrange
+      const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+      const runnerCtx: Context = { ...ctx, command: new FakeRunner((bytes) => bytes) };
+      await runnerCtx.fs.writeUtf8(work(runnerCtx, '.gitattributes'), 'a.txt filter=d\n');
+      await runnerCtx.fs.writeUtf8(
+        `${runnerCtx.layout.gitDir}/config`,
+        '[filter "d"]\n\tclean = cat\n\trequired = true\n[core]\n\tbigFileThreshold = x\n',
+      );
+      invalidateConfigCache(runnerCtx);
+      const provider = await buildAttributeProvider(runnerCtx);
+      const indexMtime = { seconds: entry.mtimeSeconds, nanoseconds: 0 };
+      const sut = compareAndRefresh;
+
+      // Act
+      const result = await sut(runnerCtx, entry, {
+        provider,
+        indexMtime,
+        filterDriversConfigured: false,
+      }).catch((err: { data: unknown }) => err.data);
+
+      // Assert
+      expect(result).toMatchObject({ code: 'CONFIG_BAD_NUMERIC_VALUE', value: 'x' });
+    });
+  });
+
+  describe('When the scope says none is, on a file with only a malformed unused [filter] section', () => {
+    it('Then the section is not validated and the file compares unchanged', async () => {
+      // Arrange
+      const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[filter "zed"]\n\trequired = maybe\n');
+      invalidateConfigCache(ctx);
+      const runnerCtx: Context = { ...ctx, command: new FakeRunner() };
+      const provider = await buildAttributeProvider(runnerCtx);
+      const sut = compareAndRefresh;
+
+      // Act
+      const result = await sut(runnerCtx, entry, { provider, filterDriversConfigured: false });
+
+      // Assert
+      expect(result.delta.status).toBe('unchanged');
+    });
+  });
+
+  describe('When the scope says one is, on the same malformed section', () => {
+    it('Then it still refuses the value', async () => {
+      // Arrange
+      const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[filter "zed"]\n\trequired = maybe\n');
+      invalidateConfigCache(ctx);
+      const runnerCtx: Context = { ...ctx, command: new FakeRunner() };
+      const provider = await buildAttributeProvider(runnerCtx);
+      const sut = compareAndRefresh;
+
+      // Act
+      const result = await sut(runnerCtx, entry, { provider, filterDriversConfigured: true }).catch(
+        (err: { data: unknown }) => err.data,
+      );
+
+      // Assert
+      expect(result).toMatchObject({
+        code: 'CONFIG_BAD_BOOLEAN_VALUE',
+        key: 'filter.zed.required',
+      });
+    });
+  });
+});
+
 describe('compareWorkingTreeDelta line-ending conversion', () => {
   const CRLF_WORKTREE = 'a\r\nb\r\n';
   const staged = async (

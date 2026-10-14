@@ -289,11 +289,13 @@ const scanEntry = async (
   entry: IndexEntry,
   provider: AttributeProvider | undefined,
   indexMtime: GitIndex['indexMtime'],
+  filterDriversConfigured: boolean,
 ): Promise<ScannedEntry | undefined> => {
   if (entry.flags.skipWorktree) return undefined;
   const { delta, refreshed } = await compareAndRefresh(ctx, entry, {
     ...(provider !== undefined && { provider }),
     ...(indexMtime !== undefined && { indexMtime }),
+    filterDriversConfigured,
   });
   return { path: entry.path, delta, refreshed };
 };
@@ -311,10 +313,11 @@ const scanWorkingTree = async (
   provider: AttributeProvider | undefined,
   indexMtime: GitIndex['indexMtime'],
 ): Promise<TrackedScan> => {
+  const filterDriversConfigured = await configuresFilterDriver(ctx);
   const scan = (order?: CleanOrder) =>
     boundedMapFor(ctx, 'ioBound', stage0, async (entry) => {
       try {
-        const scanned = await scanEntry(ctx, entry, provider, indexMtime);
+        const scanned = await scanEntry(ctx, entry, provider, indexMtime, filterDriversConfigured);
         tracker.tick();
         return scanned;
       } finally {
@@ -324,7 +327,7 @@ const scanWorkingTree = async (
   // A clean driver hears the paths in index order, however the reads race;
   // without attributes, or with no driver configured, no clean runs or
   // refuses, and the scan needs no order.
-  const ordered = provider !== undefined && (await configuresFilterDriver(ctx));
+  const ordered = provider !== undefined && filterDriversConfigured;
   const results = ordered ? await inIndexOrder(ctx, stage0, scan) : await scan();
   return trackedScanOf(results);
 };
