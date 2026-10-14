@@ -236,13 +236,16 @@ const compareContent = async (
   return { status: worktreeMode === entry.mode ? 'unchanged' : 'mode-changed', worktreeMode };
 };
 
-/** Entries git's refresh leaves alone: unmerged, assume-valid, sparse, placeholder, submodule. */
+/**
+ * Entries git's refresh leaves alone: unmerged, assume-valid, sparse, placeholder.
+ * A submodule never reaches here: its delta is never `unchanged`, since no worktree
+ * stat derives the gitlink mode and its directory cannot be hashed.
+ */
 const shouldRefresh = (entry: IndexEntry, stat: FileStat): boolean =>
   entry.flags.stage === 0 &&
   !entry.flags.assumeValid &&
   !entry.flags.skipWorktree &&
   !entry.flags.intentToAdd &&
-  entry.mode !== FILE_MODE.GITLINK &&
   !matchesContentStat(entry, stat);
 
 /**

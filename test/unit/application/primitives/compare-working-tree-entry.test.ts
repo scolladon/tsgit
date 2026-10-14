@@ -1357,7 +1357,7 @@ describe('compareAndRefresh', () => {
         expect(result.refreshed).toBeUndefined();
       });
 
-      it('Then refreshed is undefined for a gitlink entry', async () => {
+      it('Then a gitlink is modified and never refreshed', async () => {
         // Arrange
         const { ctx, entry, indexMtime } = await stagedThenRewritten('hello\n');
         await ctx.fs.mkdir(work(ctx, 'sub'));
@@ -1368,6 +1368,7 @@ describe('compareAndRefresh', () => {
         const result = await sut(ctx, gitlink, { indexMtime });
 
         // Assert
+        expect(result.delta.status).toBe('modified');
         expect(result.refreshed).toBeUndefined();
       });
 
