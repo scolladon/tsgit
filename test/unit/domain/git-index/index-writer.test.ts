@@ -775,7 +775,11 @@ function deduplicateByPath(entries: ReadonlyArray<IndexEntry>): ReadonlyArray<In
 }
 
 describe('Given inOrder', () => {
-  const ascending = (a: number, b: number): number => a - b;
+  // Throws past either end, so a scan that reads beyond the array fails loudly.
+  const ascending = (a: number | undefined, b: number | undefined): number => {
+    if (a === undefined || b === undefined) throw new Error('compared past the end');
+    return a - b;
+  };
 
   describe('When the items are already ordered', () => {
     it('Then the same reference comes back', () => {
@@ -783,10 +787,11 @@ describe('Given inOrder', () => {
       const items = [1, 2, 2, 3];
 
       // Act
-      const ordered = inOrder(items, ascending);
+      const sut = inOrder;
+      const result = sut(items, ascending);
 
       // Assert
-      expect(ordered).toBe(items);
+      expect(result).toBe(items);
     });
   });
 
@@ -796,10 +801,11 @@ describe('Given inOrder', () => {
       const items = [3, 1, 2];
 
       // Act
-      const ordered = inOrder(items, ascending);
+      const sut = inOrder;
+      const result = sut(items, ascending);
 
       // Assert
-      expect(ordered).toEqual([1, 2, 3]);
+      expect(result).toEqual([1, 2, 3]);
       expect(items).toEqual([3, 1, 2]);
     });
   });

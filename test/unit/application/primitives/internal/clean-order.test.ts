@@ -606,10 +606,11 @@ describe('Given settleInCleanTurn', () => {
       const limiter = createConcurrencyLimiter(1);
 
       // Act
-      const settled = await settleInCleanTurn(limiter, order, A, async () => 7);
+      const sut = settleInCleanTurn;
+      const result = await sut(limiter, order, A, async () => 7);
 
       // Assert
-      expect(settled).toEqual({ kind: 'done', value: 7 });
+      expect(result).toEqual({ kind: 'done', value: 7 });
       expect(log).toEqual(['release a']);
     });
   });
@@ -621,12 +622,13 @@ describe('Given settleInCleanTurn', () => {
       const limiter = createConcurrencyLimiter(1);
 
       // Act
-      const settled = await settleInCleanTurn(limiter, order, A, async () => {
+      const sut = settleInCleanTurn;
+      const result = await sut(limiter, order, A, async () => {
         throw 'boom';
       });
 
       // Assert
-      expect(settled).toEqual({ kind: 'failed', error: 'boom' });
+      expect(result).toEqual({ kind: 'failed', error: 'boom' });
       expect(log).toEqual(['halt a boom', 'release a']);
     });
   });
@@ -642,10 +644,11 @@ describe('Given firstFailureOrValues', () => {
       ];
 
       // Act
-      const values = firstFailureOrValues(settled);
+      const sut = firstFailureOrValues;
+      const result = sut(settled);
 
       // Assert
-      expect(values).toEqual([1, 2]);
+      expect(result).toEqual([1, 2]);
     });
   });
 
@@ -659,10 +662,16 @@ describe('Given firstFailureOrValues', () => {
       ];
 
       // Act
-      const act = () => firstFailureOrValues(settled);
+      const sut = firstFailureOrValues;
+      let result: unknown;
+      try {
+        sut(settled);
+      } catch (error) {
+        result = error;
+      }
 
       // Assert
-      expect(act).toThrow('first');
+      expect(result).toBe('first');
     });
   });
 });
