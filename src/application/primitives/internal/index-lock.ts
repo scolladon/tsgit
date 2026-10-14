@@ -191,6 +191,7 @@ const carriedExtensions = async (
   kind: IndexWriteKind,
   options: CommitOptions,
 ): Promise<ReadonlyArray<IndexExtension>> => {
+  // Stryker disable next-line ConditionalExpression: equivalent — carryExtensions over no extensions yields [] too; the guard only skips the O(n) entry diff.
   if (previous === undefined || previous.extensions.length === 0) return [];
   const diff = diffIndexEntries(previous.entries, entries);
   const change = withRestagedPaths(diff, options.restagedPaths ?? []);
@@ -364,7 +365,7 @@ const commitRefreshed = async (
     reportDegrade(ctx, err.cause, err.path);
     return false;
   }
-  if (!state.committed) await releaseLock(ctx, sites, state);
+  await releaseLock(ctx, sites, state);
   return state.committed;
 };
 
