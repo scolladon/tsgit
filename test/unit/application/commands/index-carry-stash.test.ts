@@ -3,6 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { rm } from '../../../../src/application/commands/rm.js';
 import { stashApply, stashPop, stashPush } from '../../../../src/application/commands/stash.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { updateConfigEntries } from '../../../../src/application/primitives/update-config.js';
@@ -185,6 +186,68 @@ describe('stash carries index extensions', () => {
 
         // Assert
         expect(await signatures(ctx)).toEqual(['TREE', 'UNTR']);
+      });
+    });
+  });
+
+  describe('Given a stash of a staged edit and a staged new file', () => {
+    describe('When stash apply merges cleanly without restoring the index', () => {
+      it('Then the edited path returns to its pre-apply entry with zero stat and the new file keeps its stat', async () => {
+        // Arrange
+        const ctx = await repoWithExtensions();
+        await write(ctx, 'a', 'edited\n');
+        await write(ctx, 'n', 'n\n');
+        await add(ctx, ['a', 'n']);
+        advance(1);
+        await stashPush(ctx, {});
+        advance(1);
+        const before = (await readIndex(ctx)).entries.find((e) => e.path === 'a');
+
+        // Act
+        const sut = stashApply;
+        await sut(ctx, {});
+
+        // Assert
+        const entries = (await readIndex(ctx)).entries;
+        const edited = entries.find((e) => e.path === 'a');
+        const added = entries.find((e) => e.path === 'n');
+        expect(edited).toEqual({
+          ...before,
+          ctimeSeconds: 0,
+          ctimeNanoseconds: 0,
+          mtimeSeconds: 0,
+          mtimeNanoseconds: 0,
+          dev: 0,
+          ino: 0,
+          uid: 0,
+          gid: 0,
+          fileSize: 0,
+        });
+        expect(added?.fileSize).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a stash that turns the file a into a directory holding a/x', () => {
+    describe('When stash apply merges cleanly without restoring the index', () => {
+      it('Then the index holds a/x and not a so write-tree stays possible', async () => {
+        // Arrange
+        const ctx = await repoWithExtensions();
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/a`);
+        await write(ctx, 'a/x', 'x\n');
+        await rm(ctx, ['a'], { cached: true });
+        await add(ctx, ['a/x']);
+        advance(1);
+        await stashPush(ctx, {});
+        advance(1);
+
+        // Act
+        const sut = stashApply;
+        await sut(ctx, {});
+
+        // Assert
+        const paths = (await readIndex(ctx)).entries.map((e) => e.path);
+        expect(paths).toEqual(['a/x', 'b', 'd/c', 'd/e/f', 'x/y']);
       });
     });
   });
