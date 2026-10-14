@@ -233,3 +233,25 @@ export const buildWhitespacePairsScratch = async (
   if (options.packed === true) await repackScratch(cwd);
   return scratch;
 };
+
+/**
+ * `modified` committed files rewritten in the working tree plus `untracked`
+ * new files — the dirty shape one `stash push --include-untracked` + `pop`
+ * round trip restores after every iteration.
+ */
+export const buildStashScratch = async (
+  modified: number,
+  untracked: number,
+): Promise<ScratchRepo> => {
+  const scratch = await newScratch();
+  const { cwd, repo } = scratch;
+  const trackedPath = (i: number): string => path.join(cwd, `tracked${i}.txt`);
+  for (let i = 0; i < modified; i += 1) await writeFile(trackedPath(i), `base ${i}\n`);
+  await repo.add([], { all: true });
+  await repo.commit({ message: 'seed', author: SCRATCH_AUTHOR, committer: SCRATCH_AUTHOR });
+  for (let i = 0; i < modified; i += 1) await writeFile(trackedPath(i), `changed ${i}\n`);
+  for (let i = 0; i < untracked; i += 1) {
+    await writeFile(path.join(cwd, `untracked${i}.txt`), `new ${i}\n`);
+  }
+  return scratch;
+};
