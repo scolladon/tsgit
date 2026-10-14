@@ -4,10 +4,14 @@ import {
   admitClean,
   admitWrite,
   configuresFilterDriver,
+  firstFailureOrValues,
   inIndexOrder,
   releaseClean,
+  type Settled,
+  settleInCleanTurn,
   withCleanOrder,
 } from '../../../../../src/application/primitives/internal/clean-order.js';
+import { createConcurrencyLimiter } from '../../../../../src/application/primitives/internal/concurrency-limiter.js';
 import { stage0Entry } from '../../../../../src/application/primitives/internal/synthetic-index-entry.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/object-id.js';
@@ -580,6 +584,85 @@ describe('configuresFilterDriver', () => {
 
       // Assert
       expect(result).toBe(false);
+    });
+  });
+});
+
+describe('Given settleInCleanTurn', () => {
+  const calls = () => {
+    const log: string[] = [];
+    const order = {
+      enlist: () => undefined,
+      release: (path: FilePath) => void log.push(`release ${path}`),
+      halt: (path: FilePath, error: unknown) => void log.push(`halt ${path} ${String(error)}`),
+    };
+    return { log, order };
+  };
+
+  describe('When the task succeeds', () => {
+    it('Then it settles done with the value and releases the path', async () => {
+      // Arrange
+      const { log, order } = calls();
+      const limiter = createConcurrencyLimiter(1);
+
+      // Act
+      const settled = await settleInCleanTurn(limiter, order, A, async () => 7);
+
+      // Assert
+      expect(settled).toEqual({ kind: 'done', value: 7 });
+      expect(log).toEqual(['release a']);
+    });
+  });
+
+  describe('When the task fails', () => {
+    it('Then it settles failed, halts the order and releases the path', async () => {
+      // Arrange
+      const { log, order } = calls();
+      const limiter = createConcurrencyLimiter(1);
+
+      // Act
+      const settled = await settleInCleanTurn(limiter, order, A, async () => {
+        throw 'boom';
+      });
+
+      // Assert
+      expect(settled).toEqual({ kind: 'failed', error: 'boom' });
+      expect(log).toEqual(['halt a boom', 'release a']);
+    });
+  });
+});
+
+describe('Given firstFailureOrValues', () => {
+  describe('When every task is done', () => {
+    it('Then the values come back in input order', () => {
+      // Arrange
+      const settled: Settled<number>[] = [
+        { kind: 'done', value: 1 },
+        { kind: 'done', value: 2 },
+      ];
+
+      // Act
+      const values = firstFailureOrValues(settled);
+
+      // Assert
+      expect(values).toEqual([1, 2]);
+    });
+  });
+
+  describe('When several tasks failed', () => {
+    it('Then the earliest failure in input order is thrown', () => {
+      // Arrange
+      const settled: Settled<number>[] = [
+        { kind: 'done', value: 1 },
+        { kind: 'failed', error: 'first' },
+        { kind: 'failed', error: 'second' },
+      ];
+
+      // Act
+      const act = () => firstFailureOrValues(settled);
+
+      // Assert
+      expect(act).toThrow('first');
     });
   });
 });

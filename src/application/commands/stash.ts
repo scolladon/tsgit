@@ -37,8 +37,10 @@ import { hashBlob } from '../primitives/hash-blob.js';
 import {
   type CleanOrder,
   configuresFilterDriver,
+  firstFailureOrValues,
   inIndexOrder,
   type OrderSpan,
+  settleInCleanTurn,
   withCleanOrder,
 } from '../primitives/internal/clean-order.js';
 import { boundedMapFor, limiterFor } from '../primitives/internal/concurrency.js';
@@ -263,11 +265,6 @@ const classifyTracked = async (
   return classified.filter((tracked) => tracked !== undefined);
 };
 
-/** One task once settled: its value, or the failure it met. */
-type Settled<R> =
-  | { readonly kind: 'done'; readonly value: R }
-  | { readonly kind: 'failed'; readonly error: unknown };
-
 /**
  * Runs `task` over `items` through the `ioBound` pool, a clean driver hearing the paths in
  * input order however the reads race. Every task settles, then the earliest failure in input
@@ -287,26 +284,12 @@ const inInputOrder = async <T, R>(
       const limiter = limiterFor(ctx, 'ioBound');
       for (const { path } of items) order.enlist(path);
       return Promise.all(
-        items.map(({ path, item }) =>
-          limiter
-            .run(() => task(item))
-            .then(
-              (value): Settled<R> => ({ kind: 'done', value }),
-              (error: unknown): Settled<R> => {
-                order.halt(path, error);
-                return { kind: 'failed', error };
-              },
-            )
-            .finally(() => order.release(path)),
-        ),
+        items.map(({ path, item }) => settleInCleanTurn(limiter, order, path, () => task(item))),
       );
     },
     span,
   );
-  return settled.map((outcome) => {
-    if (outcome.kind === 'failed') throw outcome.error;
-    return outcome.value;
-  });
+  return firstFailureOrValues(settled);
 };
 
 interface Hashed {

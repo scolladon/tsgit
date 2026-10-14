@@ -33,7 +33,10 @@ import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-
 import {
   admitWrite,
   type CleanOrder,
+  firstFailureOrValues,
   type OrderSpan,
+  type Settled,
+  settleInCleanTurn,
   withCleanOrder,
 } from '../primitives/internal/clean-order.js';
 import { limiterFor } from '../primitives/internal/concurrency.js';
@@ -385,20 +388,12 @@ async function* walkedTrackedFirst(
   yield* walked.values();
 }
 
-/** One walked entry once staged: its outcome, or the failure staging it met. */
-type StagedEntry =
-  | { readonly kind: 'staged'; readonly outcome: WalkOutcome | undefined }
-  | { readonly kind: 'failed'; readonly error: unknown };
-
 /** The staged outcomes, in walk order; the earliest-walked entry's failure refuses instead. */
-const stagedOutcomes = (staged: ReadonlyArray<StagedEntry>): WalkOutcome[] => {
-  const outcomes: WalkOutcome[] = [];
-  for (const entry of staged) {
-    if (entry.kind === 'failed') throw entry.error;
-    if (entry.outcome !== undefined) outcomes.push(entry.outcome);
-  }
-  return outcomes;
-};
+const stagedOutcomes = (staged: ReadonlyArray<StagedEntry>): WalkOutcome[] =>
+  firstFailureOrValues(staged).filter((outcome) => outcome !== undefined);
+
+/** One walked entry once staged: its outcome, or the failure staging it met. */
+type StagedEntry = Settled<WalkOutcome | undefined>;
 
 /**
  * A clean driver hears the paths in walk order, however the reads race. Every
@@ -440,17 +435,7 @@ const dispatchWalkEntry = (
   walkEntry: WalkWorkingTreeEntry,
 ): Promise<StagedEntry> => {
   order.enlist(walkEntry.path);
-  return limiter
-    .run(() => stage(walkEntry))
-    .then(
-      (outcome): StagedEntry => ({ kind: 'staged', outcome }),
-      (error: unknown): StagedEntry => {
-        // git dies at the first path that fails to stage: no later path is cleaned.
-        order.halt(walkEntry.path, error);
-        return { kind: 'failed', error };
-      },
-    )
-    .finally(() => order.release(walkEntry.path));
+  return settleInCleanTurn(limiter, order, walkEntry.path, () => stage(walkEntry));
 };
 
 // Walk-and-filter add: applies `.gitignore` (so build artefacts stay
