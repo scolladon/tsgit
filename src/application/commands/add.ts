@@ -357,7 +357,7 @@ const stageWalkedEntries = async (
   indexMtime: IndexMtime | undefined,
   ensurePromisorConfigValid: PromisorGuard,
 ): Promise<WalkOutcome[]> => {
-  const stage = (walkEntry: WalkWorkingTreeEntry): Promise<WalkOutcome | undefined> =>
+  const stage = (walkEntry: WalkWorkingTreeEntry): Promise<WalkOutcome> =>
     processWalkEntry(ctx, walkEntry, existing, seen, scope, indexMtime, ensurePromisorConfigValid);
   // git converts and writes one path at a time, dying at the first loss, under safecrlf=true.
   const span: OrderSpan = scope.settings.safeCrlf === true ? 'write' : 'clean';
@@ -390,10 +390,10 @@ async function* walkedTrackedFirst(
 
 /** The staged outcomes, in walk order; the earliest-walked entry's failure refuses instead. */
 const stagedOutcomes = (staged: ReadonlyArray<StagedEntry>): WalkOutcome[] =>
-  firstFailureOrValues(staged).filter((outcome) => outcome !== undefined);
+  firstFailureOrValues(staged);
 
 /** One walked entry once staged: its outcome, or the failure staging it met. */
-type StagedEntry = Settled<WalkOutcome | undefined>;
+type StagedEntry = Settled<WalkOutcome>;
 
 /**
  * A clean driver hears the paths in walk order, however the reads race. Every
@@ -402,7 +402,7 @@ type StagedEntry = Settled<WalkOutcome | undefined>;
 const dispatchInCleanOrder = (
   ctx: Context,
   walk: AsyncIterable<WalkWorkingTreeEntry>,
-  stage: (walkEntry: WalkWorkingTreeEntry) => Promise<WalkOutcome | undefined>,
+  stage: (walkEntry: WalkWorkingTreeEntry) => Promise<WalkOutcome>,
   span: OrderSpan,
 ): Promise<ReadonlyArray<StagedEntry>> =>
   withCleanOrder(
@@ -430,7 +430,7 @@ const dispatchWalkEntry = (
   }: {
     readonly limiter: ConcurrencyLimiter;
     readonly order: CleanOrder;
-    readonly stage: (walkEntry: WalkWorkingTreeEntry) => Promise<WalkOutcome | undefined>;
+    readonly stage: (walkEntry: WalkWorkingTreeEntry) => Promise<WalkOutcome>;
   },
   walkEntry: WalkWorkingTreeEntry,
 ): Promise<StagedEntry> => {
@@ -768,7 +768,7 @@ const processWalkEntry = async (
   scope: StagingScope,
   indexMtime: IndexMtime | undefined,
   ensurePromisorConfigValid: PromisorGuard,
-): Promise<WalkOutcome | undefined> => {
+): Promise<WalkOutcome> => {
   const { path, isFile, isDirectory, isSymbolicLink } = walkEntry;
   // Mark presence BEFORE any further filter so the post-walk
   // "missing from disk → removed" pass is exact. Ignore filtering
