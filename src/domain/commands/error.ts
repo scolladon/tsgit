@@ -300,6 +300,11 @@ export type CommandError =
       readonly reason: 'invalid unit' | 'out of range';
     }
   | {
+      readonly code: 'ENV_BAD_BOOLEAN_VALUE';
+      readonly variable: string;
+      readonly value: string;
+    }
+  | {
       readonly code: 'CONFIG_BAD_BOOLEAN_VALUE';
       readonly key: string;
       readonly source: string;
@@ -1133,6 +1138,17 @@ export const configBadNumericValue = (
     source,
     value: sanitizeForDisplay(value),
     reason,
+  });
+
+/**
+ * A boolean-typed environment variable is set but its value fails git's boolean grammar
+ * (git's `git_env_bool` die). `variable` is the variable name, `value` the raw string.
+ */
+export const envBadBooleanValue = (variable: string, value: string): TsgitError =>
+  new TsgitError({
+    code: 'ENV_BAD_BOOLEAN_VALUE',
+    variable,
+    value: sanitizeForDisplay(value),
   });
 
 /**

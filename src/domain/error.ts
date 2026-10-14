@@ -647,6 +647,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `custom merge driver ${data.name} lacks command line.`;
     case 'CONFIG_BAD_NUMERIC_VALUE':
       return `bad numeric config value '${data.value}' for '${data.key}' in file ${data.source}: ${data.reason}`;
+    case 'ENV_BAD_BOOLEAN_VALUE':
+      return `bad boolean environment value '${data.value}' for '${data.variable}'`;
     case 'CONFIG_BAD_BOOLEAN_VALUE':
       return `bad boolean config value '${data.value}' for '${data.key}' in file ${data.source}`;
     case 'CONFIG_BAD_BOOLEAN_LITERAL':
