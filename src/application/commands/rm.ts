@@ -20,7 +20,7 @@ import {
 } from '../../domain/commands/error.js';
 import type { FlatTreeEntry } from '../../domain/diff/flat-tree.js';
 import { TsgitError } from '../../domain/error.js';
-import type { IndexEntry } from '../../domain/git-index/index.js';
+import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import { emptyPathspec } from '../../domain/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesPathspec } from '../../domain/pathspec/index.js';
@@ -77,7 +77,10 @@ export const rm = async (
   try {
     const index = await readIndex(ctx).catch((err: unknown) => {
       if (err instanceof TsgitError && isIndexMissingCode(err.data.code)) {
-        return { entries: [] as ReadonlyArray<IndexEntry> };
+        return {
+          entries: [] as ReadonlyArray<IndexEntry>,
+          indexMtime: undefined as GitIndex['indexMtime'],
+        };
       }
       throw err;
     });
@@ -97,7 +100,7 @@ export const rm = async (
       opts.recursive === true ? 'recursive' : 'paths-only',
     );
     if (opts.force !== true) {
-      await enforceSafetyValve(ctx, removedEntries, opts.cached === true);
+      await enforceSafetyValve(ctx, removedEntries, opts.cached === true, index.indexMtime);
     }
     for (const path of removed) byPath.delete(path);
     if (!opts.cached) {
@@ -156,13 +159,14 @@ const classifyEntries = async (
   entries: ReadonlyArray<IndexEntry>,
   head: ReadonlyMap<FilePath, FlatTreeEntry>,
   cached: boolean,
+  indexMtime: GitIndex['indexMtime'],
 ): Promise<LocalModCategories> => {
   const provider = await buildCheckinAttributeProvider(ctx);
   const both: FilePath[] = [];
   const stagedOnly: FilePath[] = [];
   const localOnly: FilePath[] = [];
   for (const entry of entries) {
-    const worktree = await compareWorkingTreeEntry(ctx, entry, provider);
+    const worktree = await compareWorkingTreeEntry(ctx, entry, provider, indexMtime);
     if (worktree === 'absent') continue;
     const local = isWorkingTreeModified(worktree);
     const staged = isStaged(head, entry);
@@ -177,9 +181,16 @@ const enforceSafetyValve = async (
   ctx: Context,
   entries: ReadonlyArray<IndexEntry>,
   cached: boolean,
+  indexMtime: GitIndex['indexMtime'],
 ): Promise<void> => {
   const head = await headTreeEntries(ctx);
-  const { both, stagedOnly, localOnly } = await classifyEntries(ctx, entries, head, cached);
+  const { both, stagedOnly, localOnly } = await classifyEntries(
+    ctx,
+    entries,
+    head,
+    cached,
+    indexMtime,
+  );
   // Precedence: surface the strongest required override first (`both` needs `-f`).
   if (both.length > 0) throw rmStagedAndLocalChanges(both);
   if (stagedOnly.length > 0) throw rmStagedChanges(stagedOnly);

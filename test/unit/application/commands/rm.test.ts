@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
@@ -948,6 +948,49 @@ describe('rm safety valve — clean filter re-application', () => {
         // Assert — safety valve fires because raw path sees the smudged bytes as modified
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('RM_LOCAL_MODIFICATIONS');
+      });
+    });
+  });
+});
+
+describe('rm stat cache', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const SEED_MS = 1_700_000_000_000;
+
+  describe('Given a stat-clean, non-racy tracked file', () => {
+    describe('When rm classifies it', () => {
+      it('Then the file is never read', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(SEED_MS);
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { workingTree: { 'a.txt': 'v1\n' } });
+        vi.setSystemTime(SEED_MS + 2_000);
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'seed', author: AUTHOR });
+        const path = work(ctx, 'a.txt');
+        const originalRead = ctx.fs.read.bind(ctx.fs);
+        const reads: string[] = [];
+        const spiedCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: (p, ...rest) => {
+              reads.push(p);
+              return originalRead(p, ...rest);
+            },
+          },
+        };
+        const sut = rm;
+
+        // Act
+        await sut(spiedCtx, ['a.txt']);
+
+        // Assert
+        expect(reads).not.toContain(path);
       });
     });
   });

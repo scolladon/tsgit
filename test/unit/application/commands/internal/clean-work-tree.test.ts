@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../../src/application/commands/add.js';
 import { commit } from '../../../../../src/application/commands/commit.js';
@@ -340,6 +340,49 @@ describe('unstagedChangePaths', () => {
 
         // Assert
         expect(result).toEqual([cjk, bmp, emoji]);
+      });
+    });
+  });
+});
+
+describe('unstagedChangePaths stat cache', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const SEED_MS = 1_700_000_000_000;
+
+  describe('Given a stat-clean, non-racy tracked file', () => {
+    describe('When unstagedChangePaths classifies it', () => {
+      it('Then the file is never read', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(SEED_MS);
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'v1\n');
+        vi.setSystemTime(SEED_MS + 2_000);
+        await add(ctx, ['a.txt']);
+        const reads: string[] = [];
+        const originalRead = ctx.fs.read.bind(ctx.fs);
+        const spiedCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: (p, ...rest) => {
+              reads.push(p);
+              return originalRead(p, ...rest);
+            },
+          },
+        };
+        const sut = unstagedChangePaths;
+
+        // Act
+        const result = await sut(spiedCtx);
+
+        // Assert
+        expect(result).toEqual([]);
+        expect(reads).not.toContain(work(ctx, 'a.txt'));
       });
     });
   });

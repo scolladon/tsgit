@@ -1,9 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { add } from '../../../../src/application/commands/add.js';
+import { init } from '../../../../src/application/commands/init.js';
 import {
   changedPaths,
   findWouldOverwrite,
 } from '../../../../src/application/primitives/find-would-overwrite.js';
+import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
@@ -231,6 +234,50 @@ describe('changedPaths', () => {
 
         // Assert
         expect([...result]).toEqual(['newdir/a']);
+      });
+    });
+  });
+});
+
+describe('findWouldOverwrite stat cache', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const SEED_MS = 1_700_000_000_000;
+
+  describe('Given a stat-clean, non-racy tracked file', () => {
+    describe('When it is in the changed set', () => {
+      it('Then the file is never read', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(SEED_MS);
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await work(ctx, 'a.txt', 'v1\n');
+        vi.setSystemTime(SEED_MS + 2_000);
+        await add(ctx, ['a.txt']);
+        const currentIndex = await readIndex(ctx);
+        const reads: string[] = [];
+        const originalRead = ctx.fs.read.bind(ctx.fs);
+        const spiedCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: (p, ...rest) => {
+              reads.push(p);
+              return originalRead(p, ...rest);
+            },
+          },
+        };
+        const sut = findWouldOverwrite;
+
+        // Act
+        const result = await sut(spiedCtx, set('a.txt'), currentIndex);
+
+        // Assert
+        expect(result.localChanges).toEqual([]);
+        expect(reads).not.toContain(`${ctx.layout.workDir}/a.txt`);
       });
     });
   });
