@@ -1218,11 +1218,22 @@ export class NodeFileSystem implements FileSystem {
   writeExclusive = async (path: string, data: Uint8Array): Promise<void> => {
     const real = await this.resolveWrite(path);
     await this.assertExclusiveCreateLeaf(real, path);
-    await runFs(async () => {
+    await runFs(() => this.createExclusive(real, data), path);
+  };
+
+  // Creates the file first and the parent only when that reports it absent:
+  // a lock file's directory almost always exists, so the common case costs
+  // one open instead of an unconditional `mkdir` walk. A second `ENOENT`
+  // after `mkdir` is a real fault and propagates.
+  private async createExclusive(real: string, data: Uint8Array): Promise<void> {
+    try {
+      await this.fsOps.writeFile(real, data, { flag: WRITE_EXCLUSIVE_FLAGS });
+    } catch (err) {
+      if (!isErrnoException(err) || err.code !== 'ENOENT') throw err;
       await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
       await this.fsOps.writeFile(real, data, { flag: WRITE_EXCLUSIVE_FLAGS });
-    }, path);
-  };
+    }
+  }
 
   writeUtf8 = async (path: string, content: string): Promise<void> => {
     const real = await this.resolveWrite(path);
