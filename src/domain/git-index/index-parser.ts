@@ -268,7 +268,7 @@ function parseCacheTreeEntry(
   }
   const rawName = data.subarray(start, pathEnd);
   const path = decode(rawName);
-  const nameBytes = bytesEqual(encode(path), rawName) ? undefined : rawName.slice();
+  const nameBytes = roundTrips(path, rawName) ? undefined : rawName.slice();
 
   const spaceIndex = indexOf(data, CACHE_TREE_SPACE, pathEnd + 1);
   if (spaceIndex === -1) {
@@ -303,6 +303,16 @@ function parseCacheTreeEntry(
     subtreeCount,
     id,
   });
+}
+
+const ASCII_LIMIT = 0x80;
+
+/** ASCII always survives a decode/encode round trip, so only other names pay for the re-encode. */
+function roundTrips(path: string, rawName: Uint8Array): boolean {
+  for (const byte of rawName) {
+    if (byte >= ASCII_LIMIT) return bytesEqual(encode(path), rawName);
+  }
+  return true;
 }
 
 function readCacheTreeOid(

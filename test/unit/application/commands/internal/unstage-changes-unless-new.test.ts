@@ -29,7 +29,7 @@ describe('unstageChangesUnlessNew', () => {
     describe('When the deleted directory entry is restored', () => {
       it('Then it is dropped because the new file now occupies its directory', () => {
         // Arrange
-        const before = [entry('sub/y', 'a'), entry('m', 'b')];
+        const before = [entry('m', 'b'), entry('sub/y', 'a')];
         const merged = [entry('m', 'b'), entry('sub', 'c')];
 
         // Act
@@ -141,6 +141,24 @@ describe('unstageChangesUnlessNew', () => {
 
         // Assert
         expect(result.entries.map((e) => e.flags)).toEqual([STAGE0_FLAGS]);
+      });
+    });
+  });
+
+  describe('Given a new path sorting after, and a deleted path sorting after, the surviving ones', () => {
+    describe('When the changes are unstaged', () => {
+      it('Then every entry comes back once, in path order, with the new path reported first', () => {
+        // Arrange
+        const before = [entry('a', '1'), entry('b', '2'), entry('z', '3')];
+        const merged = [entry('a', '1'), entry('y', '4')];
+
+        // Act
+        const sut = unstageChangesUnlessNew;
+        const result = sut(merged, before);
+
+        // Assert
+        expect(paths(result.entries)).toEqual(['a', 'b', 'y', 'z']);
+        expect(result.restagedPaths).toEqual(['y', 'b', 'z']);
       });
     });
   });
