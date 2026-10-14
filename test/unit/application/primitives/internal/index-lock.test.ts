@@ -3,7 +3,10 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import { add } from '../../../../../src/application/commands/add.js';
 import { init } from '../../../../../src/application/commands/init.js';
 import { acquireIndexLock } from '../../../../../src/application/primitives/internal/index-lock.js';
-import { readIndex } from '../../../../../src/application/primitives/read-index.js';
+import {
+  invalidateIndexCache,
+  readIndex,
+} from '../../../../../src/application/primitives/read-index.js';
 import type {
   CacheTreeEntry,
   IndexEntry,
@@ -98,21 +101,6 @@ describe('IndexLock.commit', () => {
         expect([...written.keys()].sort()).toEqual(['TREE', 'UNTR']);
         const tree = parseCacheTree(written.get('TREE') as Uint8Array, SHA1_DIGEST);
         expect([tree.entryCount, tree.children[0]?.entryCount]).toEqual([-1, -1]);
-      });
-    });
-
-    describe('When committing without a kind', () => {
-      it('Then no extension is written', async () => {
-        // Arrange
-        const ctx = await seededRepo();
-        const entries = await withNestedIdChanged(ctx);
-        const sut = await acquireIndexLock(ctx);
-
-        // Act
-        await sut.commit(entries);
-
-        // Assert
-        expect((await indexExtensionsOf(ctx)).size).toBe(0);
       });
     });
   });
@@ -227,6 +215,114 @@ describe('IndexLock.commit', () => {
           ['', -1],
           ['d', -1],
         ]);
+      });
+    });
+  });
+});
+
+const withLaterMtime = (entry: IndexEntry): IndexEntry => ({
+  ...entry,
+  mtimeSeconds: entry.mtimeSeconds + 10,
+});
+
+describe('IndexLock.commitRefresh', () => {
+  describe('Given an index with TREE, REUC, UNTR and ZZZZ read into memory', () => {
+    describe('When refreshing one entry with a later mtime', () => {
+      it('Then it resolves true, copies the stat only and carries TREE, REUC and UNTR verbatim', async () => {
+        // Arrange
+        const ctx = await seededRepo();
+        const before = await indexExtensionsOf(ctx);
+        const read = await readIndex(ctx);
+        const original = read.entries.find((entry) => entry.path === NESTED_PATH) as IndexEntry;
+        const sut = await acquireIndexLock(ctx);
+
+        // Act
+        const result = await sut.commitRefresh(read, [withLaterMtime(original)]);
+
+        // Assert
+        expect(result).toBe(true);
+        invalidateIndexCache(ctx);
+        const written = (await readIndex(ctx)).entries.find((entry) => entry.path === NESTED_PATH);
+        expect(written).toEqual(withLaterMtime(original));
+        const extensions = await indexExtensionsOf(ctx);
+        expect([...extensions.keys()].sort()).toEqual(['REUC', 'TREE', 'UNTR']);
+        expect(extensions.get('TREE')).toEqual(before.get('TREE'));
+        expect(extensions.get('REUC')).toEqual(before.get('REUC'));
+        expect(extensions.get('UNTR')).toEqual(before.get('UNTR'));
+      });
+    });
+  });
+
+  describe('Given another commit rewrote the index after the read', () => {
+    describe('When refreshing an entry', () => {
+      it('Then it resolves false, keeps the other writer bytes and leaves no index.lock', async () => {
+        // Arrange
+        const ctx = await seededRepo();
+        const read = await readIndex(ctx);
+        const original = read.entries.find((entry) => entry.path === NESTED_PATH) as IndexEntry;
+        const sut = await acquireIndexLock(ctx);
+        await withIndexExtensions(ctx, [cacheTreeExtension(treeOf(OTHER_ID), SHA1_DIGEST)]);
+        const otherWriterBytes = await ctx.fs.read(`${ctx.layout.gitDir}/index`);
+
+        // Act
+        const result = await sut.commitRefresh(read, [withLaterMtime(original)]);
+
+        // Assert
+        expect(result).toBe(false);
+        expect(await ctx.fs.read(`${ctx.layout.gitDir}/index`)).toEqual(otherWriterBytes);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given the index file was deleted after the read', () => {
+    describe('When refreshing an entry', () => {
+      it('Then it resolves false and writes nothing', async () => {
+        // Arrange
+        const ctx = await seededRepo();
+        const read = await readIndex(ctx);
+        const original = read.entries.find((entry) => entry.path === NESTED_PATH) as IndexEntry;
+        const sut = await acquireIndexLock(ctx);
+        await ctx.fs.rm(`${ctx.layout.gitDir}/index`);
+
+        // Act
+        const result = await sut.commitRefresh(read, [withLaterMtime(original)]);
+
+        // Assert
+        expect(result).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index`)).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a SHA-256 repository carrying a width-32 TREE and REUC', () => {
+    describe('When refreshing one entry with a later mtime', () => {
+      it('Then it resolves true and carries TREE and REUC verbatim', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ algorithm: 'sha256' });
+        await init(ctx, { objectFormat: 'sha256' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a`, 'a\n');
+        await add(ctx, ['a' as FilePath]);
+        const wideId = 'c'.repeat(64) as ObjectId;
+        await withIndexExtensions(ctx, [
+          cacheTreeExtension(treeOf(wideId), SHA256_DIGEST),
+          resolveUndoExtension('r', wideId, SHA256_DIGEST),
+        ]);
+        const before = await indexExtensionsOf(ctx);
+        const read = await readIndex(ctx);
+        const original = read.entries[0] as IndexEntry;
+        const sut = await acquireIndexLock(ctx);
+
+        // Act
+        const result = await sut.commitRefresh(read, [withLaterMtime(original)]);
+
+        // Assert
+        expect(result).toBe(true);
+        const extensions = await indexExtensionsOf(ctx);
+        expect(extensions.get('TREE')).toEqual(before.get('TREE'));
+        expect(extensions.get('REUC')).toEqual(before.get('REUC'));
+        expect((await readIndex(ctx)).entries[0]).toEqual(withLaterMtime(original));
       });
     });
   });

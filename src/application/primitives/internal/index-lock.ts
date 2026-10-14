@@ -1,7 +1,9 @@
 import { TsgitError } from '../../../domain/error.js';
 import {
   type CarryKind,
+  type CarrySettings,
   carryExtensions,
+  NO_INDEX_CHANGE,
   withRestagedPaths,
 } from '../../../domain/git-index/carry-extensions.js';
 import { diffIndexEntries } from '../../../domain/git-index/diff-index-entries.js';
@@ -43,9 +45,17 @@ export interface IndexLock {
    */
   readonly commit: (
     entries: ReadonlyArray<IndexEntry>,
-    kind?: IndexWriteKind,
+    kind: IndexWriteKind,
     options?: CommitOptions,
   ) => Promise<void>;
+  /**
+   * Write back refreshed stat data only. Resolves `false` and releases the lock when
+   * the index changed on disk since `read` (or vanished); nothing is written then.
+   */
+  readonly commitRefresh: (
+    read: GitIndex,
+    refreshed: ReadonlyArray<IndexEntry>,
+  ) => Promise<boolean>;
 }
 
 const resourceLocked = (path: string, mtimeMs: number | undefined): TsgitError => {
@@ -136,17 +146,32 @@ const carriedExtensions = async (
   ctx: Context,
   previous: GitIndex | undefined,
   entries: ReadonlyArray<IndexEntry>,
-  kind: IndexWriteKind | undefined,
+  kind: IndexWriteKind,
   options: CommitOptions,
 ): Promise<ReadonlyArray<IndexExtension>> => {
-  if (kind === undefined || previous === undefined || previous.extensions.length === 0) return [];
+  if (previous === undefined || previous.extensions.length === 0) return [];
   const diff = diffIndexEntries(previous.entries, entries);
   const change = kind === 'update' ? withRestagedPaths(diff, options.restagedPaths ?? []) : diff;
-  return carryExtensions(previous.extensions, change, kind, {
-    untrackedCache: (await readConfig(ctx)).core?.untrackedCache,
-    digestLength: ctx.hashConfig.digestLength,
-  });
+  return carryExtensions(previous.extensions, change, kind, await carrySettings(ctx));
 };
+
+const carrySettings = async (ctx: Context): Promise<CarrySettings> => ({
+  untrackedCache: (await readConfig(ctx)).core?.untrackedCache,
+  digestLength: ctx.hashConfig.digestLength,
+});
+
+const withRefreshedStat = (
+  read: GitIndex,
+  refreshed: ReadonlyArray<IndexEntry>,
+): ReadonlyArray<IndexEntry> => {
+  const byPath = new Map(refreshed.map((entry) => [entry.path, entry]));
+  return read.entries.map((entry) =>
+    entry.flags.stage === 0 ? (byPath.get(entry.path) ?? entry) : entry,
+  );
+};
+
+const sameBytes = (left: Uint8Array, right: Uint8Array): boolean =>
+  left.length === right.length && left.every((byte, i) => byte === right[i]);
 
 const writeLocked = async (
   ctx: Context,
@@ -174,17 +199,18 @@ const writeLocked = async (
 const makeLock = (ctx: Context, lockPath: string, indexFile: string): IndexLock => {
   let committed = false;
   let released = false;
+  const release = async (): Promise<void> => {
+    if (committed || released) return;
+    released = true;
+    try {
+      await ctx.fs.rm(lockPath);
+    } catch (err) {
+      // Already gone — fine.
+      if (!(err instanceof TsgitError) || err.data.code !== 'FILE_NOT_FOUND') throw err;
+    }
+  };
   return {
-    release: async () => {
-      if (committed || released) return;
-      released = true;
-      try {
-        await ctx.fs.rm(lockPath);
-      } catch (err) {
-        // Already gone — fine.
-        if (!(err instanceof TsgitError) || err.data.code !== 'FILE_NOT_FOUND') throw err;
-      }
-    },
+    release,
     commit: async (entries, kind, options = {}) => {
       if (committed || released) return;
       const previous = await readPreviousIndex(ctx);
@@ -192,6 +218,30 @@ const makeLock = (ctx: Context, lockPath: string, indexFile: string): IndexLock 
       const extensions = await carriedExtensions(ctx, previous, smudged, kind, options);
       await writeLocked(ctx, lockPath, indexFile, smudged, extensions);
       committed = true;
+    },
+    commitRefresh: async (read, refreshed) => {
+      if (committed || released) return false;
+      const previous = await readPreviousIndex(ctx);
+      if (previous === undefined || !sameBytes(previous.trailerSha, read.trailerSha)) {
+        await release();
+        return false;
+      }
+      const entries = withRefreshedStat(read, refreshed);
+      const extensions = carryExtensions(
+        previous.extensions,
+        NO_INDEX_CHANGE,
+        'refresh',
+        await carrySettings(ctx),
+      );
+      await writeLocked(
+        ctx,
+        lockPath,
+        indexFile,
+        await smudgeRacilyClean(ctx, entries, previous),
+        extensions,
+      );
+      committed = true;
+      return true;
     },
   };
 };

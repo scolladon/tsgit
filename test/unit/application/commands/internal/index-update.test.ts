@@ -135,7 +135,7 @@ describe('internal/index-update', () => {
         const sut = await acquireIndexLock(ctx);
 
         // Act
-        await sut.commit([]);
+        await sut.commit([], 'update');
 
         // Assert
         expect(await ctx.fs.exists(lockPath(ctx))).toBe(false);
@@ -150,7 +150,7 @@ describe('internal/index-update', () => {
         // Arrange
         const ctx = createMemoryContext();
         const sut = await acquireIndexLock(ctx);
-        await sut.commit([]);
+        await sut.commit([], 'update');
 
         // Act + Assert — must not throw.
         await sut.release();
@@ -244,10 +244,10 @@ describe('internal/index-update', () => {
         // Arrange — kills the `if (committed || released) return;` guard mutants.
         const ctx = createMemoryContext();
         const lock = await acquireIndexLock(ctx);
-        await lock.commit([]);
+        await lock.commit([], 'update');
 
         // Act + Assert — second commit should not re-write the index or throw.
-        await expect(lock.commit([])).resolves.toBeUndefined();
+        await expect(lock.commit([], 'update')).resolves.toBeUndefined();
       });
     });
   });
@@ -395,7 +395,7 @@ describe('internal/index-update', () => {
         // logical mutant, and the `committed = true` assignment in commit().
         const ctx = createMemoryContext();
         const sut = await acquireIndexLock(ctx);
-        await sut.commit([]);
+        await sut.commit([], 'update');
         const rmSpy = vi.spyOn(ctx.fs, 'rm');
 
         // Act
@@ -411,11 +411,11 @@ describe('internal/index-update', () => {
         // and the `committed = true` assignment.
         const ctx = createMemoryContext();
         const sut = await acquireIndexLock(ctx);
-        await sut.commit([]);
+        await sut.commit([], 'update');
         const renameSpy = vi.spyOn(ctx.fs, 'rename');
 
         // Act
-        await sut.commit([]);
+        await sut.commit([], 'update');
 
         // Assert — the second commit short-circuits before rewriting the index.
         expect(renameSpy).not.toHaveBeenCalled();
@@ -433,7 +433,7 @@ describe('internal/index-update', () => {
         await sut.release();
 
         // Act
-        await sut.commit([]);
+        await sut.commit([], 'update');
 
         // Assert — release already dropped the lock; commit must not resurrect an index.
         expect(await ctx.fs.exists(indexPath(ctx))).toBe(false);
