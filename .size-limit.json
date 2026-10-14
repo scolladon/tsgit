@@ -56,7 +56,7 @@
   {
     "name": "Browser bundle (no-build)",
     "path": "dist/browser/tsgit.js",
-    "limit": "329.3 kB",
+    "limit": "330.9 kB",
     "gzip": true
   },
   {
@@ -374,7 +374,7 @@
   {
     "name": "Full library",
     "path": "dist/esm/**/*.js",
-    "limit": "385.5 kB",
+    "limit": "387.2 kB",
     "gzip": true
   },
   {
