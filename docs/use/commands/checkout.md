@@ -33,7 +33,7 @@ interface CheckoutPathsOptions {
 | Mode | Triggered by | Effect |
 |---|---|---|
 | **Switch** | `{ rev }` | Materialise `rev`'s tree onto the working tree, commit a new index, move HEAD. Atomic per-file. |
-| **Restore from index** (default) | `{ paths }` (no `source` or `source: 'index'`) | Restore staged content into the working tree. Index untouched. |
+| **Restore from index** (default) | `{ paths }` (no `source` or `source: 'index'`) | Restore staged content into the working tree. Takes `index.lock` and writes the index (restored entries' stat data refreshed), as git's `checkout_paths` does. |
 | **Restore from a revision** | `{ paths, source: <revision> }` | Restore content from the tree of a commit or tree-ish: a branch or tag name, `HEAD`, an object id or an expression such as `HEAD~1`. Index entries for the listed paths are also rewritten. |
 | **Create and switch** | `{ rev, createBranch }` | Create `createBranch.name` at `rev` (with `track` / `noTrack` as [`branch.create`](branch.md) takes them), then switch to it. Refuses `INVALID_OPTION` with `detach`, and `BRANCH_EXISTS` for a name already taken, before the work tree moves. |
 
@@ -46,6 +46,7 @@ interface CheckoutPathsOptions {
 - **Dirty-tree guard.** Switch mode refuses to overwrite tracked modifications or to clobber untracked paths that would collide. Use `force: true` to override. The "is something already here?" probe does not follow symbolic links, so a **dangling** symlink at a target path counts as occupying it and refuses, rather than being silently replaced.
 - **Atomicity.** Per-file (matches canonical git). The index commit is atomic; working-tree writes are not all-or-nothing if power is cut mid-write.
 - **Sparse checkout.** Switch mode honours the active sparse pattern on the target branch.
+- **Path restore takes the index lock.** Both path-restore sources lock the index first and refuse `RESOURCE_LOCKED` when it is held. Entries of other paths keep their conflict stages.
 - **Path restore via globs.** `paths` accepts the same pathspec syntax as [`add`](add.md).
 
 ## Examples

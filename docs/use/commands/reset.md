@@ -35,6 +35,7 @@ interface ResetResult {
 - **`soft` refuses in the middle of a merge.** While `MERGE_HEAD` stands or the index holds a conflict, a `soft` reset refuses `OPERATION_IN_PROGRESS` (git's `die_if_unmerged_cache`); `mixed` and `hard` run, which is how a merge is abandoned.
 - **Sparse-aware:** `mode: 'hard'` and `mode: 'mixed'` honour the active sparse pattern. Out-of-cone paths keep `skipWorktree: true`; their working-tree files are not materialised.
 - **Stat-cache donor strategy** (mixed): index entries whose `id + mode` match the prior index preserve their stat fields, so the next `status()` stays fast.
+- **Index extensions.** The index rewrite keeps git's extensions: `TREE` is invalidated along the changed paths, `mixed` keeps `REUC` (unless a conflicted path is resolved) and `hard` drops it, and `UNTR` is kept while the tracked set is unchanged; unknown extensions are dropped.
 - **Untracked files outside the target tree** are left alone in `hard` mode — only tracked paths are rewritten.
 
 ## Examples

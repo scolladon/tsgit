@@ -148,7 +148,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `INVALID_MERGE_INPUT` | `reason` | `merge` arguments invalid. |
 | `INVALID_MERGE_TREE` | `reason` | Three-way merge encountered structurally invalid trees. |
 | `INVALID_TREE_FOR_DIFF` | `id` | Caller passed a non-tree id to a tree-diff path. |
-| `MERGE_HAS_CONFLICTS` | _legacy_ | Pre-1.x throw form; v1 returns `{ kind: 'conflict', … }` instead. |
+| `MERGE_HAS_CONFLICTS` | `count, paths, truncated?` | `stash.apply` / `stash.pop` against an index holding conflict stages (nothing written, stash kept). `cherry-pick` / `revert` / `rebase` `continue` with unmerged entries. `merge` no longer throws it; v1 returns `{ kind: 'conflict', … }`. |
 | `OCTOPUS_MERGE_FAILED` | `head, reason` | `merge` of several heads: git's octopus strategy could not merge `head` on its own (`reason: 'conflict-before-last-head'`). |
 | `UNRELATED_HISTORIES` | — | `merge` or `pull` of heads that share no commit, without `allowUnrelatedHistories`. |
 | `CONFIG_UNKNOWN_VALUE` | `key, value, source, line` | `merge.conflictStyle` or the diff-algorithm key holds a value git does not know; `source` and `line` locate it. |

@@ -68,9 +68,19 @@ The entry selector is a numeric stack `index` (default `0`, the newest); the
   reflog entry *before* resetting the working tree, so a crash never loses data
   before it is saved.
 - **Apply leaves changes unstaged.** A clean `apply` materialises the merged
-  result onto the working tree but leaves the index at HEAD, so restored changes
-  appear as "not staged" — exactly like git. `restoreIndex` (`--index`)
-  reinstates the originally-staged state when the index-side merge is clean.
+  result onto the working tree and writes the index as git's
+  `unstage_changes_unless_new` does: a path the merge changed goes back to its
+  pre-apply entry, so restored changes appear as "not staged"; a path new in the
+  stash stays staged; a restored entry that clashes with a file or directory
+  already kept is dropped. `restoreIndex` (`--index`)
+  reinstates the originally-staged state when the index-side merge is clean;
+  when the stash staged nothing, or the index already equals what was staged,
+  it takes the same path.
+- **Conflict stages refuse.** `apply`/`pop` against an index that holds conflict
+  stages refuse with `MERGE_HAS_CONFLICTS`; nothing is written and the stash is kept.
+- **Push is pooled.** `push` fans its work-tree comparisons and hashing through
+  the `ioBound` pool and compares against the stat cache; a configured clean
+  driver still hears the paths in index order.
 - **Conflicts.** A conflicting `apply`/`pop` writes `<<<<<<<`/`>>>>>>>` markers
   to the working tree and stage-1/2/3 unmerged entries to the index (no
   `MERGE_HEAD` — stash apply is not a merge-in-progress), returns
@@ -153,6 +163,7 @@ await repo.stash.apply({ restoreIndex: true });
   path anywhere refuses the whole conflict write, atomically).
 - `EOL_ROUND_TRIP_UNSAFE { path, loss, crlf, loneLf }` — `push` with `core.safecrlf=true` and a file whose line endings would not round trip.
 - `CONFIG_BAD_BOOLEAN_VALUE` — a malformed `core.autocrlf` / `core.safecrlf` (checked by every verb), or `merge.renormalize` on `apply`/`pop`.
+- `MERGE_HAS_CONFLICTS` — `apply`/`pop` while the index holds conflict stages; nothing is written and the stash is kept.
 - `INVALID_COMMIT` — `refs/stash` points at a commit that is not a stash entry.
 - `CONFIG_BAD_NUMERIC_VALUE` — a malformed `core.maxTreeDepth` /
   `core.deltaBaseCacheLimit` (the repo-settings class), checked by every verb
