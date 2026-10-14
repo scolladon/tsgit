@@ -154,11 +154,53 @@ describe.skipIf(!GIT_AVAILABLE)('stash apply index interop', () => {
       });
     });
   });
+  describe('Given a stash whose staged paths diverge from the stash base and a newly staged edit', () => {
+    describe('When stash pop with the index flag runs in git and in tsgit on a twin', () => {
+      let pair: PeerPair;
+
+      beforeAll(async () => {
+        pair = await makePeerPair('stash-pop-index-base-arm');
+        initBothRepos(pair.peer, pair.ours);
+        for (const dir of [pair.peer, pair.ours]) {
+          await put(dir, 'a', '1\n');
+          await put(dir, 'b', '1\n');
+          git(dir, 'add', '.');
+          git(dir, 'commit', '-q', '-m', 'base');
+          await put(dir, 'b', '2\n');
+        }
+        git(pair.peer, 'stash', 'push', '-q');
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await stashPush(ctx, {});
+        for (const dir of [pair.peer, pair.ours]) {
+          await put(dir, 'a', '3\n');
+          git(dir, 'add', 'a');
+        }
+        git(pair.peer, 'stash', 'pop', '-q', '--index');
+        const sut = stashPop;
+        await sut(ctx, { restoreIndex: true });
+      }, ROW_TIMEOUT_MS);
+
+      afterAll(async () => {
+        await pair.dispose();
+      });
+
+      it('Then the staged entries agree with git', () => {
+        // Arrange + Assert
+        expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+      });
+
+      it('Then the same paths carry a zero stat as in git', () => {
+        // Arrange + Assert
+        expect(zeroStatPaths(pair.ours)).toEqual(zeroStatPaths(pair.peer));
+      });
+    });
+  });
   describe('Given a stash and an index holding conflict stages', () => {
     describe('When stash apply runs in git and in tsgit on a twin', () => {
       let pair: PeerPair;
       let before: string;
       let gitExit: number;
+      let gitStdout: string;
       let refusal: unknown;
 
       beforeAll(async () => {
@@ -182,7 +224,9 @@ describe.skipIf(!GIT_AVAILABLE)('stash apply index interop', () => {
           await rm(path.join(dir, '.git', 'MERGE_HEAD'));
         }
         before = lsStage(pair.peer);
-        gitExit = tryRunGitWithExit(['-C', pair.peer, 'stash', 'apply']).exitCode;
+        const gitRun = tryRunGitWithExit(['-C', pair.peer, 'stash', 'apply']);
+        gitExit = gitRun.exitCode;
+        gitStdout = gitRun.stdout;
         const ctx = createNodeContext({ workDir: pair.ours });
         const sut = stashApply;
         try {
@@ -199,6 +243,7 @@ describe.skipIf(!GIT_AVAILABLE)('stash apply index interop', () => {
       it('Then git exits non-zero and tsgit refuses naming the unmerged path', () => {
         // Arrange + Assert
         expect(gitExit).not.toBe(0);
+        expect(gitStdout).toContain('c: needs merge');
         expect(refusal).toMatchObject({ code: 'MERGE_HAS_CONFLICTS', count: 1, paths: ['c'] });
       });
 
