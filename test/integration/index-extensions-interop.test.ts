@@ -28,6 +28,7 @@ import { rm } from '../../src/application/commands/rm.js';
 import { sparseCheckoutSet } from '../../src/application/commands/sparse-checkout.js';
 import { stashApply, stashPush } from '../../src/application/commands/stash.js';
 import { readIndex } from '../../src/application/primitives/read-index.js';
+import type { TsgitError } from '../../src/domain/error.js';
 import type { CacheTreeEntry } from '../../src/domain/git-index/index-entry.js';
 import { parseCacheTree } from '../../src/domain/git-index/index-parser.js';
 import type { Context } from '../../src/ports/context.js';
@@ -299,10 +300,9 @@ const UPDATE_ROWS: ReadonlyArray<Row> = [
     tsgit: (ctx) => reset(ctx, { mode: 'mixed', rev: 'HEAD~1' }),
   },
   {
-    title: 'checkout -- x/y (git writes, tsgit does not)',
+    title: 'checkout -- x/y',
     carry: 'update',
     tree: 'valid-nodes',
-    divergence: 'tsgit-skips-write',
     git: ok('checkout', '--', 'x/y'),
     tsgit: (ctx) => checkout(ctx, { paths: ['x/y'] }),
   },
@@ -534,6 +534,47 @@ describe.skipIf(!GIT_AVAILABLE)('index extension carry interop', () => {
 
         // Assert
         expect(sut.stderr).toContain('ignoring ZZZZ extension');
+      });
+    });
+  });
+
+  describe('Given an index lock held on a twin pair', () => {
+    describe('When checkout -- x/y runs in git and in tsgit', () => {
+      let pair: PeerPair;
+      let peer: ReturnType<typeof tryRunGitWithExit>;
+      let failure: TsgitError | undefined;
+
+      beforeAll(async () => {
+        pair = await makePeerPair('index-ext-lock');
+        for (const dir of [pair.peer, pair.ours]) {
+          await buildBase(dir, 'sha1');
+          await writeFile(path.join(dir, '.git', 'index.lock'), '');
+        }
+        peer = tryRunGitWithExit(['-C', pair.peer, 'checkout', '--', 'x/y']);
+        failure = await checkout(contextFor(pair.ours, 'sha1'), { paths: ['x/y'] }).then(
+          () => undefined,
+          (err: unknown) => err as TsgitError,
+        );
+      }, ROW_TIMEOUT_MS);
+
+      afterAll(async () => {
+        await pair.dispose();
+      });
+
+      it('Then git refuses with exit 128 on the index lock', () => {
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(peer.stderr).toContain("index.lock': File exists.");
+      });
+
+      it('Then tsgit refuses with RESOURCE_LOCKED on the same lock path', () => {
+        // Assert
+        expect(failure?.data).toEqual({
+          code: 'RESOURCE_LOCKED',
+          resource: 'index',
+          path: path.join(pair.ours, '.git', 'index.lock'),
+          mtimeMs: expect.any(Number),
+        });
       });
     });
   });

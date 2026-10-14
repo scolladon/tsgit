@@ -340,17 +340,16 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
     return { branch: undefined, id: head, detached: false, changedPaths: 0 };
   }
 
-  // Two branches by source:
-  // - 'index' (default): no index commit, no lock needed. Read the index
-  //  ONCE and share the snapshot between the tree synthesis and the
-  //  subsequent diff — otherwise a concurrent writer between the two
-  //  reads could leave the target tree and the current-index base
-  //  pointing at different snapshots.
-  // - 'HEAD' | ObjectId: commits the index. Lock-first ordering applies,
-  //  same as.2/13.3 reset paths.
+  // Both branches take the index lock first and commit the index, as git's
+  // `checkout_paths` does (stat refreshed for restored entries, a held lock
+  // refuses). They differ in the target tree:
+  // - 'index' (default): the tree is synthesised from the index, read ONCE
+  //  so a concurrent writer cannot leave the target tree and the
+  //  current-index base pointing at different snapshots.
+  // - 'HEAD' | ObjectId: the source's own tree.
   const materializeResult =
     source === undefined
-      ? await materializePathRestoreLockless(ctx, pathSet)
+      ? await materializePathRestoreFromIndex(ctx, pathSet)
       : await materializePathRestoreLocked(ctx, source, pathSet);
 
   // HEAD unchanged. Resolve current HEAD for the result.
@@ -367,27 +366,33 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
   };
 };
 
-const materializePathRestoreLockless = async (
+const materializePathRestoreFromIndex = async (
   ctx: Context,
   pathSet: ReadonlySet<FilePath>,
 ): Promise<Awaited<ReturnType<typeof materializeTree>>> => {
-  // Read the index ONCE and pass the same snapshot to both synthesis
-  // and the diff. A concurrent `git add` between two reads would
-  // otherwise produce a mismatch between target-tree and current-index.
-  const currentIndex = await readIndex(ctx);
-  const targetTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
-  return materializeTree(ctx, {
-    targetTree,
-    currentIndex,
-    force: true,
-    // Path-restore is the explicit "give me this version" operation —
-    // canonical git always writes the source content even when the index
-    // already matches it. For `source: 'index'` the target tree is
-    // synthesised FROM the index, so without this flag every entry would
-    // be classified `noop` and nothing would be written.
-    forceRewriteAll: true,
-    paths: pathSet,
-  });
+  const lock = await acquireIndexLock(ctx);
+  try {
+    // Read the index ONCE and pass the same snapshot to both synthesis
+    // and the diff.
+    const currentIndex = await readIndex(ctx);
+    const targetTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
+    const result = await materializeTree(ctx, {
+      targetTree,
+      currentIndex,
+      force: true,
+      // Path-restore is the explicit "give me this version" operation —
+      // canonical git always writes the source content even when the index
+      // already matches it. For `source: 'index'` the target tree is
+      // synthesised FROM the index, so without this flag every entry would
+      // be classified `noop` and nothing would be written.
+      forceRewriteAll: true,
+      paths: pathSet,
+    });
+    await lock.commit(result.newIndexEntries, 'update');
+    return result;
+  } finally {
+    await lock.release();
+  }
 };
 
 const materializePathRestoreLocked = async (

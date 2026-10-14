@@ -498,29 +498,28 @@ describe('checkout', () => {
 
   describe('Given an index.lock already on disk', () => {
     describe('When path-restore from the default (index) source', () => {
-      it('Then succeeds without disturbing the pre-existing lock', async () => {
-        // Arrange — pre-existing lock with a recognisable sentinel. Path-restore
-        // from `source: 'index'` (the default) never commits, so we must NOT
-        // acquire the lock. Assertion is stronger than "no throw": we verify
-        // the lock file STILL exists with its original byte (proving we didn't
-        // even touch it via an acquire/release round-trip — a regression to
-        // always-acquire would briefly grab and then release the lock,
-        // potentially overwriting our sentinel via writeExclusive's behaviour).
+      it('Then refuses with RESOURCE_LOCKED and leaves the lock intact', async () => {
+        // Arrange
         const { ctx } = await seedWithBranches();
         const lockPath = `${ctx.layout.gitDir}/index.lock`;
         const sentinel = new Uint8Array([0x53, 0x45, 0x4e, 0x54]); // "SENT"
         await ctx.fs.writeExclusive(lockPath, sentinel);
 
         // Act
-        const result = await checkout(ctx, { paths: ['a.txt'] });
+        const sut = checkout;
+        let caught: unknown;
+        try {
+          await sut(ctx, { paths: ['a.txt'] });
+        } catch (err) {
+          caught = err;
+        }
 
-        // Assert — operation succeeds (1 path rewritten because path-restore now
-        // unconditionally writes the source content, matching canonical git);
-        // lock is intact (no acquire/release round-trip for the lockless branch).
-        expect(result.changedPaths).toBe(1);
-        expect(await ctx.fs.exists(lockPath)).toBe(true);
-        const lockBytes = await ctx.fs.read(lockPath);
-        expect(Array.from(lockBytes)).toEqual([0x53, 0x45, 0x4e, 0x54]);
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('RESOURCE_LOCKED');
+        expect(data).toMatchObject({ resource: 'index', path: lockPath });
+        expect(Array.from(await ctx.fs.read(lockPath))).toEqual([0x53, 0x45, 0x4e, 0x54]);
       });
     });
   });

@@ -6,6 +6,8 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { reset } from '../../../../src/application/commands/reset.js';
 import { submoduleAdd } from '../../../../src/application/commands/submodule.js';
+import { readIndex } from '../../../../src/application/primitives/read-index.js';
+import type { TsgitError } from '../../../../src/domain/error.js';
 import type { CacheTreeEntry } from '../../../../src/domain/git-index/index-entry.js';
 import { parseCacheTree } from '../../../../src/domain/git-index/index-parser.js';
 import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
@@ -216,6 +218,61 @@ describe('checkout carries index extensions', () => {
         // Assert
         expect(await treeBytes(ctx)).toEqual(before);
         expect(await signatures(ctx)).toContain('REUC');
+      });
+    });
+  });
+
+  describe('Given an edited tracked file and an index carrying an unknown extension', () => {
+    describe('When checkout restores it from the index', () => {
+      it('Then the index is rewritten without the unknown extension', async () => {
+        // Arrange
+        const ctx = await carryingRepo();
+        await write(ctx, 'x/y', 'edited\n');
+
+        // Act
+        const sut = checkout;
+        await sut(ctx, { paths: ['x/y'] });
+
+        // Assert
+        expect(await signatures(ctx)).not.toContain('ZZZZ');
+      });
+
+      it('Then the entry stat equals the restored file lstat', async () => {
+        // Arrange
+        const ctx = await carryingRepo();
+        await write(ctx, 'x/y', 'edited\n');
+        advance(1);
+
+        // Act
+        const sut = checkout;
+        await sut(ctx, { paths: ['x/y'] });
+
+        // Assert
+        const entry = (await readIndex(ctx)).entries.find((e) => e.path === 'x/y');
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/x/y`);
+        expect(entry?.mtimeSeconds).toBe(Math.floor(stat.mtimeMs / SECOND));
+      });
+    });
+  });
+
+  describe('Given an index lock held by another process', () => {
+    describe('When checkout restores a path from the index', () => {
+      it('Then it refuses with RESOURCE_LOCKED on the index lock path', async () => {
+        // Arrange
+        const ctx = await carryingRepo();
+        const lockPath = `${ctx.layout.gitDir}/index.lock`;
+        await ctx.fs.write(lockPath, new Uint8Array());
+
+        // Act
+        const sut = checkout;
+        const failure = await sut(ctx, { paths: ['x/y'] }).then(
+          () => undefined,
+          (err: unknown) => err as TsgitError,
+        );
+
+        // Assert
+        expect(failure?.data.code).toBe('RESOURCE_LOCKED');
+        expect(failure?.data).toMatchObject({ resource: 'index', path: lockPath });
       });
     });
   });
