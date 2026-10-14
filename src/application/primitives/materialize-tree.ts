@@ -26,12 +26,7 @@
  *  as clean would survive the reset, AND the donor stats would be stale
  *  relative to the actual disk state.
  */
-import {
-  compareEntryPath,
-  type GitIndex,
-  type IndexEntry,
-  skipWorktreeEntry,
-} from '../../domain/git-index/index.js';
+import { type GitIndex, type IndexEntry, skipWorktreeEntry } from '../../domain/git-index/index.js';
 import { pathComparatorFor } from '../../domain/git-index/index-writer.js';
 import {
   FILE_MODE,
@@ -185,7 +180,7 @@ const upgradeNoopsToUpdates = (changeset: Changeset): Changeset => {
 
 /** Path-sort the merged entry list (in-pattern + synthesised excluded). */
 const sortIndexEntries = (entries: ReadonlyArray<IndexEntry>): IndexEntry[] =>
-  [...entries].sort(compareEntryPath);
+  [...entries].sort(pathComparatorFor(entries));
 
 interface MaterializePlan {
   readonly target: ReadonlyArray<TargetEntry>;
