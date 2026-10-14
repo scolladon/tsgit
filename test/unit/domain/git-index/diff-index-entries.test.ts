@@ -1,0 +1,205 @@
+import { describe, expect, it } from 'vitest';
+import { diffIndexEntries } from '../../../../src/domain/git-index/diff-index-entries.js';
+import type { IndexEntry } from '../../../../src/domain/git-index/index-entry.js';
+import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index-entry.js';
+import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
+import { FILE_MODE } from '../../../../src/domain/objects/index.js';
+
+const oid = (c: string): ObjectId => c.repeat(40) as ObjectId;
+
+const entry = (
+  path: string,
+  options: { id?: string; mode?: FileMode; stage?: 0 | 1 | 2 | 3; fileSize?: number } = {},
+): IndexEntry => ({
+  ctimeSeconds: 0,
+  ctimeNanoseconds: 0,
+  mtimeSeconds: 0,
+  mtimeNanoseconds: 0,
+  dev: 0,
+  ino: 0,
+  mode: options.mode ?? FILE_MODE.REGULAR,
+  uid: 0,
+  gid: 0,
+  fileSize: options.fileSize ?? 0,
+  id: oid(options.id ?? 'a'),
+  flags: { ...STAGE0_FLAGS, stage: options.stage ?? 0 },
+  path: path as FilePath,
+});
+
+describe('diffIndexEntries', () => {
+  describe('Given an entry whose id changed', () => {
+    describe('When diffing', () => {
+      it('Then only that path is changed and the tracked set is stable', () => {
+        // Arrange
+        const before = [entry('a'), entry('d/c')];
+        const after = [entry('a'), entry('d/c', { id: 'b' })];
+
+        // Act
+        const sut = diffIndexEntries(before, after);
+
+        // Assert
+        expect(sut.changedPaths).toEqual(['d/c']);
+        expect(sut.trackedSetChanged).toBe(false);
+        expect(sut.resolvedUnmerged).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an entry whose mode changed', () => {
+    describe('When diffing', () => {
+      it('Then the path is changed', () => {
+        // Arrange
+        const before = [entry('a')];
+        const after = [entry('a', { mode: FILE_MODE.EXECUTABLE })];
+
+        // Act
+        const sut = diffIndexEntries(before, after);
+
+        // Assert
+        expect(sut.changedPaths).toEqual(['a']);
+        expect(sut.trackedSetChanged).toBe(false);
+      });
+    });
+  });
+
+  describe('Given after adds d/e/n and drops a', () => {
+    describe('When diffing', () => {
+      it('Then both paths are changed in order and the tracked set changed', () => {
+        // Arrange
+        const before = [entry('a'), entry('d/c')];
+        const after = [entry('d/c'), entry('d/e/n')];
+
+        // Act
+        const sut = diffIndexEntries(before, after);
+
+        // Assert
+        expect(sut.changedPaths).toEqual(['a', 'd/e/n']);
+        expect(sut.trackedSetChanged).toBe(true);
+      });
+    });
+  });
+
+  describe('Given only the tail of one list differs in path set', () => {
+    describe('When diffing', () => {
+      it('Then the tracked set changed', () => {
+        // Arrange
+        const before = [entry('a')];
+        const after = [entry('a'), entry('b')];
+
+        // Act
+        const sut = diffIndexEntries(before, after);
+
+        // Assert
+        expect(sut.trackedSetChanged).toBe(true);
+        expect(sut.changedPaths).toEqual(['b']);
+      });
+    });
+  });
+
+  describe('Given stages 1,2,3 before and stage 0 after for m', () => {
+    describe('When diffing', () => {
+      it('Then the unmerged path is resolved and changed once', () => {
+        // Arrange
+        const before = [
+          entry('m', { stage: 1, id: '1' }),
+          entry('m', { stage: 2, id: '2' }),
+          entry('m', { stage: 3, id: '3' }),
+        ];
+        const after = [entry('m', { id: '4' })];
+
+        // Act
+        const sut = diffIndexEntries(before, after);
+
+        // Assert
+        expect(sut.resolvedUnmerged).toBe(true);
+        expect(sut.changedPaths).toEqual(['m']);
+        expect(sut.trackedSetChanged).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an unmerged path that stays unmerged', () => {
+    describe('When diffing', () => {
+      it('Then it is not reported resolved', () => {
+        // Arrange
+        const before = [entry('m', { stage: 1 }), entry('m', { stage: 2 })];
+        const after = [entry('m', { stage: 2 }), entry('m', { stage: 3 })];
+
+        // Act
+        const sut = diffIndexEntries(before, after);
+
+        // Assert
+        expect(sut.resolvedUnmerged).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an unmerged path that is removed', () => {
+    describe('When diffing', () => {
+      it('Then it is not reported resolved', () => {
+        // Arrange
+        const before = [entry('m', { stage: 1 })];
+        const after = [entry('z')];
+
+        // Act
+        const sut = diffIndexEntries(before, after);
+
+        // Assert
+        expect(sut.resolvedUnmerged).toBe(false);
+        expect(sut.trackedSetChanged).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an unmerged path resolved after earlier unrelated paths', () => {
+    describe('When diffing', () => {
+      it('Then the resolution is still found', () => {
+        // Arrange
+        const before = [entry('a'), entry('m', { stage: 2 })];
+        const after = [entry('a'), entry('b'), entry('m')];
+
+        // Act
+        const sut = diffIndexEntries(before, after);
+
+        // Assert
+        expect(sut.resolvedUnmerged).toBe(true);
+      });
+    });
+  });
+
+  describe('Given unsorted UTF-16-ordered inputs with only a stat change', () => {
+    describe('When diffing', () => {
+      it('Then nothing changed', () => {
+        // Arrange
+        const before = [entry('\u{1F600}.txt'), entry('�.txt')];
+        const after = [entry('�.txt', { fileSize: 9 }), entry('\u{1F600}.txt', { fileSize: 9 })];
+
+        // Act
+        const sut = diffIndexEntries(before, after);
+
+        // Assert
+        expect(sut).toEqual({
+          changedPaths: [],
+          trackedSetChanged: false,
+          resolvedUnmerged: false,
+        });
+      });
+    });
+  });
+
+  describe('Given a sparse-checkout flag flip', () => {
+    describe('When diffing', () => {
+      it('Then nothing changed', () => {
+        // Arrange
+        const before = [entry('a')];
+        const flagged = { ...entry('a'), flags: { ...STAGE0_FLAGS, skipWorktree: true } };
+
+        // Act
+        const sut = diffIndexEntries(before, [flagged]);
+
+        // Assert
+        expect(sut.changedPaths).toEqual([]);
+      });
+    });
+  });
+});
