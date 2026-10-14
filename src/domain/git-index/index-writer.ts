@@ -96,6 +96,17 @@ export function pathComparatorFor(entries: ReadonlyArray<IndexEntry>): typeof co
     : compareUtf16Path;
 }
 
+/** `items` itself when already ordered (one O(n) pass), else a sorted copy: the input is never mutated. */
+export function inOrder<T>(
+  items: ReadonlyArray<T>,
+  compare: (a: T, b: T) => number,
+): ReadonlyArray<T> {
+  for (let i = 1; i < items.length; i++) {
+    if (compare(items[i - 1] as T, items[i] as T) > 0) return [...items].sort(compare);
+  }
+  return items;
+}
+
 export function serializeIndex(index: GitIndex, digestLength: 20 | 32): Uint8Array {
   const headerSize = entryHeaderSize(digestLength);
   const sortedEntries = [...index.entries].sort(pathComparatorFor(index.entries));

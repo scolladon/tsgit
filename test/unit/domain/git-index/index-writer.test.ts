@@ -9,6 +9,7 @@ import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index-entry.js';
 import { parseIndex } from '../../../../src/domain/git-index/index-parser.js';
 import {
   compareEntryPath,
+  inOrder,
   pathStringComparatorFor,
   serializeIndex,
 } from '../../../../src/domain/git-index/index-writer.js';
@@ -772,3 +773,34 @@ function deduplicateByPath(entries: ReadonlyArray<IndexEntry>): ReadonlyArray<In
     return true;
   });
 }
+
+describe('Given inOrder', () => {
+  const ascending = (a: number, b: number): number => a - b;
+
+  describe('When the items are already ordered', () => {
+    it('Then the same reference comes back', () => {
+      // Arrange
+      const items = [1, 2, 2, 3];
+
+      // Act
+      const ordered = inOrder(items, ascending);
+
+      // Assert
+      expect(ordered).toBe(items);
+    });
+  });
+
+  describe('When the items are out of order', () => {
+    it('Then a sorted copy comes back and the input is untouched', () => {
+      // Arrange
+      const items = [3, 1, 2];
+
+      // Act
+      const ordered = inOrder(items, ascending);
+
+      // Assert
+      expect(ordered).toEqual([1, 2, 3]);
+      expect(items).toEqual([3, 1, 2]);
+    });
+  });
+});

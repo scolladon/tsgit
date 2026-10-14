@@ -1,5 +1,5 @@
 import { type IndexEntry, STAGE0_FLAGS } from '../../../domain/git-index/index.js';
-import { comparePathStrings } from '../../../domain/git-index/index-writer.js';
+import { comparePathStrings, inOrder } from '../../../domain/git-index/index-writer.js';
 import type { FilePath } from '../../../domain/objects/index.js';
 
 const PATH_SEPARATOR = '/';
@@ -20,14 +20,12 @@ const zeroStat = (entry: IndexEntry): IndexEntry => ({
 
 const byPath = (a: IndexEntry, b: IndexEntry): number => comparePathStrings(a.path, b.path);
 
-const inByteOrder = (entries: ReadonlyArray<IndexEntry>): boolean =>
-  entries.every((entry, at) => at === 0 || byPath(entries[at - 1] as IndexEntry, entry) < 0);
-
 /** Stage-0 entries in byte order: an index an older writer left in UTF-16 order is re-sorted. */
-const stageZero = (entries: ReadonlyArray<IndexEntry>): IndexEntry[] => {
-  const run = entries.filter((e) => e.flags.stage === 0);
-  return inByteOrder(run) ? run : run.sort(byPath);
-};
+const stageZero = (entries: ReadonlyArray<IndexEntry>): ReadonlyArray<IndexEntry> =>
+  inOrder(
+    entries.filter((e) => e.flags.stage === 0),
+    byPath,
+  );
 
 const sameContent = (a: IndexEntry, b: IndexEntry): boolean => a.id === b.id && a.mode === b.mode;
 
