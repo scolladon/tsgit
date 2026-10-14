@@ -1005,7 +1005,7 @@ const materialiseAndApply = async <T extends MergeEnding>(
   const lock = await acquireIndexLock(ctx);
   try {
     const entries = await materialiseNonConflictTree(ctx, targetTree);
-    await lock.commit(entries);
+    await lock.commit(entries, 'replace');
     return await apply();
   } finally {
     await lock.release();
@@ -1669,7 +1669,7 @@ const underIndexLock = async (
 ): Promise<void> => {
   const lock = await acquireIndexLock(ctx);
   try {
-    await lock.commit(await write());
+    await lock.commit(await write(), 'replace');
   } finally {
     await lock.release();
   }

@@ -35,7 +35,7 @@ export const hardResetWorktreeToCommit = async (
       forceRewriteAll: true,
       ...(matcher !== undefined ? { sparse: matcher } : {}),
     });
-    await lock.commit(result.newIndexEntries);
+    await lock.commit(result.newIndexEntries, 'replace');
   } finally {
     await lock.release();
   }
