@@ -20,6 +20,7 @@ import type { FlatTree } from '../../domain/diff/flat-tree.js';
 import { conflictsToIndexEntries } from '../../domain/diff/index.js';
 import { unsupportedOperation } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
+import { pathComparatorFor } from '../../domain/git-index/index-writer.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import {
   type ConflictType,
@@ -289,13 +290,9 @@ const buildUnmergedIndex = (
 ): ReadonlyArray<IndexEntry> => {
   const stage0 = [...blobBackedEntries(outcomes), ...merged];
   const combined = [...stage0, ...conflictsToIndexEntries(conflicts, zeroStat)];
-  combined.sort((a, b) => {
-    if (a.path < b.path) return -1;
-    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — for any distinct-path pair V8 derives the order from the `a.path < b.path → -1` rule above (evaluated in whichever argument order yields `<`), so this `>` branch never changes the observable sort result.
-    if (a.path > b.path) return 1;
-    // Stryker disable next-line ArithmeticOperator: equivalent — the stage branch only compares equal-path entries, which always arrive stage-ascending (conflictsToIndexEntries sorts conflict stages and rejects duplicate paths; stage-0 entries all share stage 0), so the comparator is a no-op on an already-ordered run regardless of sign.
-    return a.flags.stage - b.flags.stage;
-  });
+  const byPath = pathComparatorFor(combined);
+  // Stryker disable next-line ArithmeticOperator: equivalent — the stage branch only compares equal-path entries, which always arrive stage-ascending (conflictsToIndexEntries sorts conflict stages and rejects duplicate paths; stage-0 entries all share stage 0), so the comparator is a no-op on an already-ordered run regardless of sign.
+  combined.sort((a, b) => byPath(a, b) || a.flags.stage - b.flags.stage);
   return combined;
 };
 

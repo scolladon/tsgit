@@ -73,6 +73,42 @@ const readWork = async (ctx: Context, path: string): Promise<string> =>
   new TextDecoder().decode(await ctx.fs.read(`${ctx.layout.workDir}/${path}`));
 
 describe('applyMergeToWorktree', () => {
+  describe('Given a conflict beside paths holding �.txt and 😀.txt', () => {
+    describe('When the merge is applied', () => {
+      it('Then the index entries are in git byte order with stages 1, 2, 3 kept', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const b = await writeBlob(ctx, 'base\n');
+        const o = await writeBlob(ctx, 'ours\n');
+        const t = await writeBlob(ctx, 'theirs\n');
+        const entry = (name: string, id: ObjectId) =>
+          treeEntry(FILE_MODE.REGULAR, name as FilePath, id);
+        const base = await treeWith(ctx, [entry('�.txt', b)]);
+        const ours = await treeWith(ctx, [entry('�.txt', o), entry('\u{1F600}.txt', b)]);
+        const theirs = await treeWith(ctx, [entry('�.txt', t), entry('\u{1F600}.txt', b)]);
+        await ctx.fs.write(`${ctx.layout.workDir}/�.txt`, new TextEncoder().encode('ours\n'));
+
+        // Act
+        const sut = await applyMergeToWorktree(ctx, {
+          baseTree: base,
+          oursTree: ours,
+          theirsTree: theirs,
+          currentIndex: index([indexEntry('�.txt', o), indexEntry('\u{1F600}.txt', b)]),
+        });
+
+        // Assert
+        expect(sut.kind).toBe('conflict');
+        if (sut.kind !== 'conflict') return;
+        expect(sut.indexEntries.map((e) => [e.path, e.flags.stage])).toEqual([
+          ['�.txt', 1],
+          ['�.txt', 2],
+          ['�.txt', 3],
+          ['\u{1F600}.txt', 0],
+        ]);
+      });
+    });
+  });
+
   /** A file whose merge histogram, myers and patience each settle differently. */
   const algorithmSensitive = async (ctx: Context) => {
     const blob = (lines: string) => writeBlob(ctx, `${lines.split(' ').join('\n')}\n`);

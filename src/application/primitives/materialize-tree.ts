@@ -32,6 +32,7 @@ import {
   type IndexEntry,
   skipWorktreeEntry,
 } from '../../domain/git-index/index.js';
+import { pathComparatorFor } from '../../domain/git-index/index-writer.js';
 import {
   FILE_MODE,
   type FileMode,
@@ -161,13 +162,7 @@ const mergeNewIndexEntries = (
     const picked = pickEntry(entry.path, writtenByPath, oldByPath);
     if (picked !== undefined) merged.push(picked);
   }
-  // `merged` paths are all distinct — out-of-scope (not in `scopedPaths`) and
-  // target (in `scopedPaths`) are disjoint, and target paths come from a tree
-  // walk of unique paths. So `a.path === b.path` never occurs and a single
-  // less-than test is a correct total-order comparator; the `> : 0` tail would
-  // be dead code.
-  // Stryker disable next-line EqualityOperator: equivalent — distinct paths mean `<` vs `<=` only differ on the impossible equal-path case.
-  merged.sort((a, b) => (a.path < b.path ? -1 : 1));
+  merged.sort(pathComparatorFor(merged));
   return merged;
 };
 

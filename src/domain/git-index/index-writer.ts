@@ -80,7 +80,7 @@ function compareUtf16Path(a: IndexEntry, b: IndexEntry): number {
  * or above U+D800, so the engine's native string comparison serves every
  * other index at a fraction of the cost of the code-unit loop.
  */
-function pathComparatorFor(entries: ReadonlyArray<IndexEntry>): typeof compareEntryPath {
+export function pathComparatorFor(entries: ReadonlyArray<IndexEntry>): typeof compareEntryPath {
   return entries.some((entry) => SURROGATE_OR_ABOVE.test(entry.path as string))
     ? compareEntryPath
     : compareUtf16Path;

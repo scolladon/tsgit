@@ -66,6 +66,29 @@ const writeNestedTree = async (
 };
 
 describe('materializeTree', () => {
+  describe('Given a tree holding �.txt and 😀.txt', () => {
+    describe('When materializeTree runs', () => {
+      it('Then the entries come back �.txt first', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'x');
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, '�.txt' as FilePath, blobId),
+          treeEntry(FILE_MODE.REGULAR, '\u{1F600}.txt' as FilePath, blobId),
+        ]);
+
+        // Act
+        const sut = await materializeTree(ctx, {
+          targetTree: treeId,
+          currentIndex: EMPTY_INDEX,
+        });
+
+        // Assert
+        expect(sut.newIndexEntries.map((e) => e.path)).toEqual(['�.txt', '\u{1F600}.txt']);
+      });
+    });
+  });
+
   describe('Given an empty index and a target tree with one blob', () => {
     describe('When materializeTree runs', () => {
       it('Then writes the blob to the workdir', async () => {

@@ -60,6 +60,29 @@ const makeIndexEntry = (
 const excludesDrop = (p: FilePath): boolean => !p.startsWith('drop');
 
 describe('buildIndexFromTree', () => {
+  describe('Given a tree holding �.txt and 😀.txt', () => {
+    describe('When buildIndexFromTree runs', () => {
+      it('Then the entries come back �.txt first', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'x');
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, '�.txt' as FilePath, blobId),
+          treeEntry(FILE_MODE.REGULAR, '\u{1F600}.txt' as FilePath, blobId),
+        ]);
+
+        // Act
+        const sut = await buildIndexFromTree(ctx, {
+          targetTree: treeId,
+          currentIndex: EMPTY_INDEX,
+        });
+
+        // Assert
+        expect(sut.map((e) => e.path)).toEqual(['�.txt', '\u{1F600}.txt']);
+      });
+    });
+  });
+
   describe('Given an empty tree', () => {
     describe('When buildIndexFromTree runs', () => {
       it('Then returns empty array', async () => {
