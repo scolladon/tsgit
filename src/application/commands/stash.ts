@@ -95,6 +95,7 @@ import {
   untrackedMessage,
   wipMessage,
 } from './internal/stash-message.js';
+import { rejectUnmergedIndex } from './internal/unmerged-index.js';
 import { unstageChangesUnlessNew } from './internal/unstage-changes-unless-new.js';
 
 export type { ConflictType } from '../../domain/merge/index.js';
@@ -796,6 +797,7 @@ const applyUnderLock = async (
   { workDir, w, input, parsed, bTree, uTree }: StashApplication,
 ): Promise<StashApplyResult> => {
   const currentIndex = await readIndex(ctx);
+  rejectUnmergedIndex(currentIndex.entries);
   const cTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
   if (uTree !== undefined) await refuseUntrackedOverwrites(ctx, workDir, uTree);
   const result = await mergeStash(ctx, { bTree, cTree, wTree: parsed.wTree, currentIndex });

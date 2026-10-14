@@ -154,4 +154,59 @@ describe.skipIf(!GIT_AVAILABLE)('stash apply index interop', () => {
       });
     });
   });
+  describe('Given a stash and an index holding conflict stages', () => {
+    describe('When stash apply runs in git and in tsgit on a twin', () => {
+      let pair: PeerPair;
+      let before: string;
+      let gitExit: number;
+      let refusal: unknown;
+
+      beforeAll(async () => {
+        pair = await makePeerPair('stash-apply-unmerged');
+        initBothRepos(pair.peer, pair.ours);
+        for (const dir of [pair.peer, pair.ours]) {
+          await put(dir, 'c', 'a\nb\nc\n');
+          await put(dir, 'o', 'o\n');
+          git(dir, 'add', '.');
+          git(dir, 'commit', '-q', '-m', 'base');
+          git(dir, 'branch', 'theirs');
+          await put(dir, 'c', 'a\nX\nc\n');
+          git(dir, 'commit', '-q', '-am', 'ours');
+          git(dir, 'checkout', '-q', 'theirs');
+          await put(dir, 'c', 'a\nY\nc\n');
+          git(dir, 'commit', '-q', '-am', 'theirs');
+          git(dir, 'checkout', '-q', 'main');
+          await put(dir, 'o', 'dirty\n');
+          git(dir, 'stash', 'push', '-q');
+          tryRunGitWithExit(['-C', dir, 'merge', '-q', 'theirs']);
+          await rm(path.join(dir, '.git', 'MERGE_HEAD'));
+        }
+        before = lsStage(pair.peer);
+        gitExit = tryRunGitWithExit(['-C', pair.peer, 'stash', 'apply']).exitCode;
+        const ctx = createNodeContext({ workDir: pair.ours });
+        const sut = stashApply;
+        try {
+          await sut(ctx, {});
+        } catch (caught) {
+          refusal = (caught as { readonly data?: unknown }).data;
+        }
+      }, ROW_TIMEOUT_MS);
+
+      afterAll(async () => {
+        await pair.dispose();
+      });
+
+      it('Then git exits non-zero and tsgit refuses naming the unmerged path', () => {
+        // Arrange + Assert
+        expect(gitExit).not.toBe(0);
+        expect(refusal).toMatchObject({ code: 'MERGE_HAS_CONFLICTS', count: 1, paths: ['c'] });
+      });
+
+      it('Then both indexes still equal the pre-apply listing', () => {
+        // Arrange + Assert
+        expect(lsStage(pair.peer)).toBe(before);
+        expect(lsStage(pair.ours)).toBe(before);
+      });
+    });
+  });
 });
