@@ -206,16 +206,19 @@ function buildCacheTreeEntry(
  * their encoded byte size) small. `entryCount` ranges over both valid
  * (`>= 0`, carries an oid) and invalidated (`< 0`, no oid) values.
  */
-export function arbCacheTreeEntry(depth = 3): fc.Arbitrary<CacheTreeEntry> {
+export function arbCacheTreeEntry(
+  depth = 3,
+  hexLength: 40 | 64 = 40,
+): fc.Arbitrary<CacheTreeEntry> {
   return fc
     .record({
       path: arbCacheTreePath(),
       entryCount: fc.integer({ min: -5, max: 20 }),
-      id: arbObjectId(),
+      id: arbObjectId(hexLength),
       children:
         depth <= 0
           ? fc.constant([] as ReadonlyArray<CacheTreeEntry>)
-          : fc.array(arbCacheTreeEntry(depth - 1), { maxLength: 3 }),
+          : fc.array(arbCacheTreeEntry(depth - 1, hexLength), { maxLength: 3 }),
     })
     .map(({ path, entryCount, id, children }) =>
       buildCacheTreeEntry(path, entryCount, id, children),
