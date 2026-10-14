@@ -93,6 +93,46 @@ describe('compareEntryPath', () => {
   });
 });
 
+describe('compareEntryPath UTF-8 byte order', () => {
+  describe('Given a BMP character above U+E000 and an astral character', () => {
+    describe('When compareEntryPath(U+FFFD.txt, U+1F600.txt)', () => {
+      it('Then it is negative', () => {
+        // Arrange
+        const bmp = makeEntry('\uFFFD.txt');
+        const astral = makeEntry('\u{1F600}.txt');
+
+        // Act
+        const sut = compareEntryPath(bmp, astral);
+
+        // Assert
+        expect(sut).toBeLessThan(0);
+      });
+    });
+  });
+});
+
+describe('serializeIndex byte order', () => {
+  describe('Given entries named U+FFFD.txt and U+1F600.txt', () => {
+    describe('When serializeIndex orders them', () => {
+      it('Then U+FFFD.txt is written first', () => {
+        // Arrange
+        const index: GitIndex = {
+          version: 2,
+          entries: [makeEntry('\u{1F600}.txt'), makeEntry('\uFFFD.txt')],
+          extensions: [],
+          trailerSha: CHECKSUM,
+        };
+
+        // Act
+        const sut = parseIndex(withChecksum(serializeIndex(index, 20)), 20);
+
+        // Assert
+        expect(sut.entries.map((e) => e.path)).toEqual(['\uFFFD.txt', '\u{1F600}.txt']);
+      });
+    });
+  });
+});
+
 describe('serializeIndex', () => {
   describe('Given 0 entries', () => {
     describe('When serializing', () => {

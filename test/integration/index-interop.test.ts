@@ -19,6 +19,7 @@ import { add } from '../../src/application/commands/add.js';
 import { readIndex } from '../../src/application/primitives/read-index.js';
 import {
   GIT_AVAILABLE,
+  git,
   initBothRepos,
   makePeerPair,
   type PeerPair,
@@ -57,6 +58,32 @@ describe.skipIf(!GIT_AVAILABLE)('index interop', () => {
         const peerListing = runGit(['-C', pair.peer, 'ls-files', '--stage']);
         const oursListing = runGit(['-C', pair.ours, 'ls-files', '--stage']);
         expect(oursListing).toBe(peerListing);
+      });
+    });
+  });
+
+  describe('Given a BMP character above U+E000 and an astral character in file names', () => {
+    describe('When tsgit stages them and git ls-files --stage reads the index', () => {
+      it('Then the BMP name is listed first, as canonical git lists it, and fsck passes', async () => {
+        // Arrange
+        const bmpName = '\uFFFD.txt';
+        const astralName = '\u{1F600}.txt';
+        for (const dir of [pair.peer, pair.ours]) {
+          await writeFile(path.join(dir, astralName), 'a');
+          await writeFile(path.join(dir, bmpName), 'b');
+        }
+        runGit(['-C', pair.peer, 'add', '--', astralName, bmpName]);
+        const sut = createNodeContext({ workDir: pair.ours });
+
+        // Act
+        await add(sut, [astralName, bmpName]);
+
+        // Assert
+        const oursListing = git(pair.ours, '-c', 'core.quotePath=false', 'ls-files', '--stage');
+        const peerListing = git(pair.peer, '-c', 'core.quotePath=false', 'ls-files', '--stage');
+        expect(oursListing).toBe(peerListing);
+        expect(oursListing.indexOf(bmpName)).toBeLessThan(oursListing.indexOf(astralName));
+        expect(() => git(pair.ours, 'fsck')).not.toThrow();
       });
     });
   });

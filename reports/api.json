@@ -156695,15 +156695,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Lexicographic comparator for index entries. Git stores entries\nbyte-sorted by path; this returns the standard "
-									},
-									{
-										"kind": "code",
-										"text": "`-1 / 0 / +1`"
-									},
-									{
-										"kind": "text",
-										"text": " triple so\n"
+										"text": "Byte-order comparator for index entries. Git stores entries sorted by the\nUTF-8 bytes of the path; comparing code units with a rank fix-up at the\nfirst difference yields that order without encoding. Returns a negative,\nzero or positive number so "
 									},
 									{
 										"kind": "code",
@@ -156711,7 +156703,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " produces ascending path order and leaves\nequal-path entries in their original (stable) order."
+										"text": " produces ascending path\norder and leaves equal-path entries in their original (stable) order."
 									}
 								]
 							},

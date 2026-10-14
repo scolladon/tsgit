@@ -33,23 +33,62 @@ function flagsOffset(digestLength: 20 | 32): number {
   return STAT_FIELDS_SIZE + digestLength;
 }
 
+const SURROGATE_START = 0xd800;
+const PRIVATE_USE_START = 0xe000;
+const SURROGATE_RANK_SHIFT = 0x2000;
+const PRIVATE_USE_RANK_SHIFT = 0x800;
+
 /**
- * Lexicographic comparator for index entries. Git stores entries
- * byte-sorted by path; this returns the standard `-1 / 0 / +1` triple so
- * `Array.prototype.sort` produces ascending path order and leaves
- * equal-path entries in their original (stable) order.
+ * Orders UTF-16 code units the way their UTF-8 bytes order: surrogates
+ * (astral code points, 4 UTF-8 bytes) sort after U+E000-U+FFFF.
+ */
+function utf8Rank(unit: number): number {
+  if (unit < SURROGATE_START) return unit;
+  return unit >= PRIVATE_USE_START ? unit - PRIVATE_USE_RANK_SHIFT : unit + SURROGATE_RANK_SHIFT;
+}
+
+/**
+ * Byte-order comparator for index entries. Git stores entries sorted by the
+ * UTF-8 bytes of the path; comparing code units with a rank fix-up at the
+ * first difference yields that order without encoding. Returns a negative,
+ * zero or positive number so `Array.prototype.sort` produces ascending path
+ * order and leaves equal-path entries in their original (stable) order.
  */
 export function compareEntryPath(a: IndexEntry, b: IndexEntry): number {
   const left = a.path as string;
   const right = b.path as string;
+  const shared = Math.min(left.length, right.length);
+  for (let i = 0; i < shared; i++) {
+    const l = left.charCodeAt(i);
+    const r = right.charCodeAt(i);
+    if (l !== r) return utf8Rank(l) - utf8Rank(r);
+  }
+  return left.length - right.length;
+}
+
+const SURROGATE_OR_ABOVE = /[\ud800-\uffff]/;
+
+function compareUtf16Path(a: IndexEntry, b: IndexEntry): number {
+  const left = a.path as string;
+  const right = b.path as string;
   if (left < right) return -1;
-  if (left > right) return 1;
-  return 0;
+  return left > right ? 1 : 0;
+}
+
+/**
+ * UTF-16 and UTF-8 byte order only disagree when a path holds a code unit at
+ * or above U+D800, so the engine's native string comparison serves every
+ * other index at a fraction of the cost of the code-unit loop.
+ */
+function pathComparatorFor(entries: ReadonlyArray<IndexEntry>): typeof compareEntryPath {
+  return entries.some((entry) => SURROGATE_OR_ABOVE.test(entry.path as string))
+    ? compareEntryPath
+    : compareUtf16Path;
 }
 
 export function serializeIndex(index: GitIndex, digestLength: 20 | 32): Uint8Array {
   const headerSize = entryHeaderSize(digestLength);
-  const sortedEntries = [...index.entries].sort(compareEntryPath);
+  const sortedEntries = [...index.entries].sort(pathComparatorFor(index.entries));
 
   const entryMetas = sortedEntries.map((entry) => {
     const pathBytes = encode(entry.path as string);
