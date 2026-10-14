@@ -1555,10 +1555,11 @@ describe('Given a stat-moved tracked file', () => {
       const rename = vi.spyOn(ctx.fs, 'rename');
 
       // Act
-      const sut = await describeCmd(ctx, undefined, { dirty: true, always: true });
+      const sut = describeCmd;
+      const result = await sut(ctx, undefined, { dirty: true, always: true });
 
       // Assert
-      expect(sut.dirty).toBe(false);
+      expect(result.dirty).toBe(false);
       expect(rename).toHaveBeenCalledWith(
         `${ctx.layout.gitDir}/index.lock`,
         `${ctx.layout.gitDir}/index`,

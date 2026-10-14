@@ -479,32 +479,32 @@ const describeRow = (row: Row, format: Format = 'sha1'): void => {
       });
 
       it('Then ZZZZ survives exactly where git keeps it', () => {
-        // Assert
+        // Arrange + Assert
         expectZzzz(outcome);
       });
 
       it('Then REUC follows the writer class', () => {
-        // Assert
+        // Arrange + Assert
         expectCarried(outcome, 'REUC', row.carry === 'update');
       });
 
       it('Then UNTR follows the tracked-set rule', () => {
-        // Assert
+        // Arrange + Assert
         expectCarried(outcome, 'UNTR', !outcome.trackedSetChanged);
       });
 
       it('Then the staged entries agree with git', () => {
-        // Assert
+        // Arrange + Assert
         expect(git(outcome.oursDir, 'ls-files', '-s')).toBe(git(outcome.peerDir, 'ls-files', '-s'));
       });
 
       it('Then TREE agrees with git', () => {
-        // Assert
+        // Arrange + Assert
         expectTree(row, outcome);
       });
 
       it('Then git fsck exits 0', () => {
-        // Assert
+        // Arrange + Assert
         expect(tryRunGitWithExit(['-C', outcome.oursDir, 'fsck']).exitCode).toBe(0);
       });
     });
@@ -526,19 +526,25 @@ describe.skipIf(!GIT_AVAILABLE)('index extension carry interop', () => {
       });
 
       it('Then it carries TREE, REUC, UNTR and ZZZZ', async () => {
+        // Arrange
+        const sut = extensionsOf;
+
         // Act
-        const sut = await extensionsOf(pair.ours, 'sha1');
+        const result = await sut(pair.ours, 'sha1');
 
         // Assert
-        expect([...sut.keys()].sort()).toEqual(['REUC', 'TREE', 'UNTR', 'ZZZZ']);
+        expect([...result.keys()].sort()).toEqual(['REUC', 'TREE', 'UNTR', 'ZZZZ']);
       });
 
       it('Then git warns it ignores the ZZZZ extension', () => {
+        // Arrange
+        const sut = tryRunGitWithExit;
+
         // Act
-        const sut = tryRunGitWithExit(['-C', pair.ours, 'ls-files']);
+        const result = sut(['-C', pair.ours, 'ls-files']);
 
         // Assert
-        expect(sut.stderr).toContain('ignoring ZZZZ extension');
+        expect(result.stderr).toContain('ignoring ZZZZ extension');
       });
     });
   });
@@ -567,13 +573,13 @@ describe.skipIf(!GIT_AVAILABLE)('index extension carry interop', () => {
       });
 
       it('Then git refuses with exit 128 on the index lock', () => {
-        // Assert
+        // Arrange + Assert
         expect(peer.exitCode).toBe(128);
         expect(peer.stderr).toContain("index.lock': File exists.");
       });
 
       it('Then tsgit refuses with RESOURCE_LOCKED on the same lock path', () => {
-        // Assert
+        // Arrange + Assert
         expect(failure?.data).toEqual({
           code: 'RESOURCE_LOCKED',
           resource: 'index',

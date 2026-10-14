@@ -51,16 +51,17 @@ describe('carryExtensions', () => {
         const previous = previousExtensions();
 
         // Act
-        const sut = carryExtensions(previous, NO_INDEX_CHANGE, 'refresh', settings);
+        const sut = carryExtensions;
+        const result = sut(previous, NO_INDEX_CHANGE, 'refresh', settings);
 
         // Assert
         const byName = (name: string) => previous.find((e) => e.signature === name);
-        expect(sut).toEqual([byName('TREE'), byName('REUC'), byName('UNTR')]);
-        expect(sut[0]).toBe(byName('TREE'));
-        expect(sut[1]).toBe(byName('REUC'));
-        expect(sut[2]).toBe(byName('UNTR'));
-        expect(signaturesOf(sut)).not.toContain('ZZZZ');
-        expect(signaturesOf(sut)).not.toContain('EOIE');
+        expect(result).toEqual([byName('TREE'), byName('REUC'), byName('UNTR')]);
+        expect(result[0]).toBe(byName('TREE'));
+        expect(result[1]).toBe(byName('REUC'));
+        expect(result[2]).toBe(byName('UNTR'));
+        expect(signaturesOf(result)).not.toContain('ZZZZ');
+        expect(signaturesOf(result)).not.toContain('EOIE');
       });
     });
   });
@@ -74,13 +75,14 @@ describe('carryExtensions', () => {
         const invalidated = invalidateCacheTree(cacheTree(40), change.changedPaths);
 
         // Act
-        const sut = carryExtensions(previous, change, 'update', settings);
+        const sut = carryExtensions;
+        const result = sut(previous, change, 'update', settings);
 
         // Assert
-        expect(signaturesOf(sut)).toEqual(['TREE', 'REUC', 'UNTR']);
-        expect(sut[0]?.data).toEqual(serializeCacheTree(invalidated, 20));
-        expect(sut[1]).toBe(previous[3]);
-        expect(sut[2]).toBe(previous[2]);
+        expect(signaturesOf(result)).toEqual(['TREE', 'REUC', 'UNTR']);
+        expect(result[0]?.data).toEqual(serializeCacheTree(invalidated, 20));
+        expect(result[1]).toBe(previous[3]);
+        expect(result[2]).toBe(previous[2]);
       });
 
       it('Then an empty changedPaths returns the previous TREE object', () => {
@@ -88,10 +90,11 @@ describe('carryExtensions', () => {
         const previous = previousExtensions();
 
         // Act
-        const sut = carryExtensions(previous, NO_INDEX_CHANGE, 'update', settings);
+        const sut = carryExtensions;
+        const result = sut(previous, NO_INDEX_CHANGE, 'update', settings);
 
         // Assert
-        expect(sut[0]).toBe(previous[4]);
+        expect(result[0]).toBe(previous[4]);
       });
 
       it('Then a resolved unmerged entry drops REUC', () => {
@@ -99,10 +102,11 @@ describe('carryExtensions', () => {
         const change: IndexChange = { ...NO_INDEX_CHANGE, resolvedUnmerged: true };
 
         // Act
-        const sut = carryExtensions(previousExtensions(), change, 'update', settings);
+        const sut = carryExtensions;
+        const result = sut(previousExtensions(), change, 'update', settings);
 
         // Assert
-        expect(signaturesOf(sut)).toEqual(['TREE', 'UNTR']);
+        expect(signaturesOf(result)).toEqual(['TREE', 'UNTR']);
       });
 
       it('Then a changed tracked set drops UNTR', () => {
@@ -110,10 +114,11 @@ describe('carryExtensions', () => {
         const change: IndexChange = { ...NO_INDEX_CHANGE, trackedSetChanged: true };
 
         // Act
-        const sut = carryExtensions(previousExtensions(), change, 'update', settings);
+        const sut = carryExtensions;
+        const result = sut(previousExtensions(), change, 'update', settings);
 
         // Assert
-        expect(signaturesOf(sut)).toEqual(['TREE', 'REUC']);
+        expect(signaturesOf(result)).toEqual(['TREE', 'REUC']);
       });
 
       it('Then a corrupt TREE payload is dropped and the others are kept', () => {
@@ -124,10 +129,11 @@ describe('carryExtensions', () => {
         );
 
         // Act
-        const sut = carryExtensions(previous, change, 'update', settings);
+        const sut = carryExtensions;
+        const result = sut(previous, change, 'update', settings);
 
         // Assert
-        expect(signaturesOf(sut)).toEqual(['REUC', 'UNTR']);
+        expect(signaturesOf(result)).toEqual(['REUC', 'UNTR']);
       });
     });
   });
@@ -140,11 +146,12 @@ describe('carryExtensions', () => {
         const invalidated = invalidateCacheTree(cacheTree(40), change.changedPaths);
 
         // Act
-        const sut = carryExtensions(previousExtensions(), change, 'replace', settings);
+        const sut = carryExtensions;
+        const result = sut(previousExtensions(), change, 'replace', settings);
 
         // Assert
-        expect(signaturesOf(sut)).toEqual(['TREE', 'UNTR']);
-        expect(sut[0]?.data).toEqual(serializeCacheTree(invalidated, 20));
+        expect(signaturesOf(result)).toEqual(['TREE', 'UNTR']);
+        expect(result[0]?.data).toEqual(serializeCacheTree(invalidated, 20));
       });
 
       it('Then UNTR is kept while the tracked set is unchanged', () => {
@@ -152,10 +159,11 @@ describe('carryExtensions', () => {
         const previous = previousExtensions();
 
         // Act
-        const sut = carryExtensions(previous, NO_INDEX_CHANGE, 'replace', settings);
+        const sut = carryExtensions;
+        const result = sut(previous, NO_INDEX_CHANGE, 'replace', settings);
 
         // Assert
-        expect(sut[1]).toBe(previous[2]);
+        expect(result[1]).toBe(previous[2]);
       });
 
       it('Then UNTR is dropped when the tracked set changed', () => {
@@ -163,10 +171,11 @@ describe('carryExtensions', () => {
         const change: IndexChange = { ...NO_INDEX_CHANGE, trackedSetChanged: true };
 
         // Act
-        const sut = carryExtensions(previousExtensions(), change, 'replace', settings);
+        const sut = carryExtensions;
+        const result = sut(previousExtensions(), change, 'replace', settings);
 
         // Assert
-        expect(signaturesOf(sut)).toEqual(['TREE']);
+        expect(signaturesOf(result)).toEqual(['TREE']);
       });
     });
   });
@@ -178,10 +187,11 @@ describe('carryExtensions', () => {
         const disabled = { untrackedCache: false, digestLength: 20 } as const;
 
         // Act
-        const sut = carryExtensions(previousExtensions(), NO_INDEX_CHANGE, kind, disabled);
+        const sut = carryExtensions;
+        const result = sut(previousExtensions(), NO_INDEX_CHANGE, kind, disabled);
 
         // Assert
-        expect(signaturesOf(sut)).not.toContain('UNTR');
+        expect(signaturesOf(result)).not.toContain('UNTR');
       });
     });
   });
@@ -193,10 +203,11 @@ describe('carryExtensions', () => {
         const enabled = { untrackedCache: true, digestLength: 20 } as const;
 
         // Act
-        const sut = carryExtensions(previousExtensions(), NO_INDEX_CHANGE, 'refresh', enabled);
+        const sut = carryExtensions;
+        const result = sut(previousExtensions(), NO_INDEX_CHANGE, 'refresh', enabled);
 
         // Assert
-        expect(signaturesOf(sut)).toContain('UNTR');
+        expect(signaturesOf(result)).toContain('UNTR');
       });
     });
   });
@@ -208,10 +219,11 @@ describe('carryExtensions', () => {
         const previous: ReadonlyArray<IndexExtension> = [];
 
         // Act
-        const sut = carryExtensions(previous, NO_INDEX_CHANGE, 'update', settings);
+        const sut = carryExtensions;
+        const result = sut(previous, NO_INDEX_CHANGE, 'update', settings);
 
         // Assert
-        expect(sut).toEqual([]);
+        expect(result).toEqual([]);
       });
     });
   });
@@ -225,10 +237,11 @@ describe('carryExtensions', () => {
         const invalidated = invalidateCacheTree(cacheTree(64), change.changedPaths);
 
         // Act
-        const sut = carryExtensions(previousExtensions(32), change, 'update', wide);
+        const sut = carryExtensions;
+        const result = sut(previousExtensions(32), change, 'update', wide);
 
         // Assert
-        expect(sut[0]?.data).toEqual(serializeCacheTree(invalidated, 32));
+        expect(result[0]?.data).toEqual(serializeCacheTree(invalidated, 32));
       });
     });
   });
@@ -244,10 +257,11 @@ describe('carryExtensions', () => {
         };
 
         // Act
-        const sut = withRestagedPaths(change, ['d/c' as FilePath, 'b' as FilePath]);
+        const sut = withRestagedPaths;
+        const result = sut(change, ['d/c' as FilePath, 'b' as FilePath]);
 
         // Assert
-        expect(sut).toEqual({
+        expect(result).toEqual({
           changedPaths: ['b', 'd/c'],
           trackedSetChanged: true,
           resolvedUnmerged: true,
@@ -259,10 +273,11 @@ describe('carryExtensions', () => {
         const change: IndexChange = { ...NO_INDEX_CHANGE, changedPaths: ['\u{1F600}' as FilePath] };
 
         // Act
-        const sut = withRestagedPaths(change, ['\uFF5E' as FilePath]);
+        const sut = withRestagedPaths;
+        const result = sut(change, ['\uFF5E' as FilePath]);
 
         // Assert
-        expect(sut.changedPaths).toEqual(['\uFF5E', '\u{1F600}']);
+        expect(result.changedPaths).toEqual(['\uFF5E', '\u{1F600}']);
       });
     });
 
@@ -272,10 +287,11 @@ describe('carryExtensions', () => {
         const change: IndexChange = { ...NO_INDEX_CHANGE, changedPaths: ['d/c' as FilePath] };
 
         // Act
-        const sut = withRestagedPaths(change, []);
+        const sut = withRestagedPaths;
+        const result = sut(change, []);
 
         // Assert
-        expect(sut).toBe(change);
+        expect(result).toBe(change);
       });
     });
   });
@@ -288,10 +304,11 @@ describe('carryExtensions', () => {
         const invalidated = invalidateCacheTree(cacheTree(40), ['b' as FilePath]);
 
         // Act
-        const sut = carryExtensions(previousExtensions(), change, 'update', settings);
+        const sut = carryExtensions;
+        const result = sut(previousExtensions(), change, 'update', settings);
 
         // Assert
-        expect(sut[0]?.data).toEqual(serializeCacheTree(invalidated, 20));
+        expect(result[0]?.data).toEqual(serializeCacheTree(invalidated, 20));
         expect(invalidated.entryCount).toBe(-1);
         expect(invalidated.children[0]?.entryCount).toBe(2);
       });

@@ -553,7 +553,7 @@ describe('inIndexOrder', () => {
 });
 
 describe('configuresFilterDriver', () => {
-  describe('Given a config with a filter section', () => {
+  describe('Given a config with a filter section, When it is queried', () => {
     it('Then it is true', async () => {
       // Arrange
       const ctx = createMemoryContext();
@@ -568,7 +568,7 @@ describe('configuresFilterDriver', () => {
     });
   });
 
-  describe('Given a config without a filter section', () => {
+  describe('Given a config without a filter section, When it is queried', () => {
     it('Then it is false', async () => {
       // Arrange
       const ctx = createMemoryContext();

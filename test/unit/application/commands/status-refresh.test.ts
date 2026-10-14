@@ -75,11 +75,12 @@ describe('status refresh write-back', () => {
         const renames = indexRenames(ctx);
 
         // Act
-        const sut = await status(ctx);
+        const sut = status;
+        const result = await sut(ctx);
 
         // Assert
         const after = await entryOf(ctx, 'b.txt');
-        expect(sut.clean).toBe(true);
+        expect(result.clean).toBe(true);
         expect(renames()).toBe(1);
         expect(after?.id).toBe(before?.id);
         expect(after?.mtimeSeconds).toBe(T / 1000 + 5);
@@ -150,10 +151,11 @@ describe('status nothing to persist', () => {
         const renames = indexRenames(ctx);
 
         // Act
-        const sut = await status(ctx);
+        const sut = status;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut.changes.map((c) => c.path)).toEqual(['b.txt']);
+        expect(result.changes.map((c) => c.path)).toEqual(['b.txt']);
         expect(renames()).toBe(0);
       });
     });
@@ -195,10 +197,11 @@ describe('status with a held index lock', () => {
         const renames = indexRenames(ctx);
 
         // Act
-        const sut = await status(logged);
+        const sut = status;
+        const result = await sut(logged);
 
         // Assert
-        expect(sut.clean).toBe(true);
+        expect(result.clean).toBe(true);
         expect(renames()).toBe(0);
         expect(await ctx.fs.readUtf8(lockPathOf(ctx))).toBe('held');
         expect(warn).toHaveBeenCalledTimes(1);
@@ -329,10 +332,11 @@ describe('status refresh option', () => {
         const exclusive = vi.spyOn(ctx.fs, 'writeExclusive');
 
         // Act
-        const sut = await status(ctx, { refresh: false });
+        const sut = status;
+        const result = await sut(ctx, { refresh: false });
 
         // Assert
-        expect(sut.clean).toBe(true);
+        expect(result.clean).toBe(true);
         expect(renames()).toBe(0);
         expect(exclusive).not.toHaveBeenCalled();
       });
@@ -428,10 +432,11 @@ describe('status GIT_OPTIONAL_LOCKS', () => {
         await rewriteB(ctx);
 
         // Act
-        const sut = await status(withEnv(ctx, { GIT_OPTIONAL_LOCKS: 'bogus' }), { refresh: false });
+        const sut = status;
+        const result = await sut(withEnv(ctx, { GIT_OPTIONAL_LOCKS: 'bogus' }), { refresh: false });
 
         // Assert
-        expect(sut.clean).toBe(true);
+        expect(result.clean).toBe(true);
       });
     });
   });

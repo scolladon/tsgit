@@ -53,10 +53,11 @@ describe('compareEntryPath properties', () => {
             const right = entryAt(b);
 
             // Act
-            const sut = compareEntryPath(left, right);
+            const sut = compareEntryPath;
+            const result = sut(left, right);
 
             // Assert
-            expect(Math.sign(sut)).toBe(Math.sign(compareBytes(encode(a), encode(b))));
+            expect(Math.sign(result)).toBe(Math.sign(compareBytes(encode(a), encode(b))));
           }),
           { numRuns: NUM_RUNS },
         );

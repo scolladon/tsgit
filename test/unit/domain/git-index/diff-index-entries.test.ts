@@ -35,12 +35,13 @@ describe('diffIndexEntries', () => {
         const after = [entry('a'), entry('d/c', { id: 'b' })];
 
         // Act
-        const sut = diffIndexEntries(before, after);
+        const sut = diffIndexEntries;
+        const result = sut(before, after);
 
         // Assert
-        expect(sut.changedPaths).toEqual(['d/c']);
-        expect(sut.trackedSetChanged).toBe(false);
-        expect(sut.resolvedUnmerged).toBe(false);
+        expect(result.changedPaths).toEqual(['d/c']);
+        expect(result.trackedSetChanged).toBe(false);
+        expect(result.resolvedUnmerged).toBe(false);
       });
     });
   });
@@ -53,11 +54,12 @@ describe('diffIndexEntries', () => {
         const after = [entry('a', { mode: FILE_MODE.EXECUTABLE })];
 
         // Act
-        const sut = diffIndexEntries(before, after);
+        const sut = diffIndexEntries;
+        const result = sut(before, after);
 
         // Assert
-        expect(sut.changedPaths).toEqual(['a']);
-        expect(sut.trackedSetChanged).toBe(false);
+        expect(result.changedPaths).toEqual(['a']);
+        expect(result.trackedSetChanged).toBe(false);
       });
     });
   });
@@ -70,11 +72,12 @@ describe('diffIndexEntries', () => {
         const after = [entry('d/c'), entry('d/e/n')];
 
         // Act
-        const sut = diffIndexEntries(before, after);
+        const sut = diffIndexEntries;
+        const result = sut(before, after);
 
         // Assert
-        expect(sut.changedPaths).toEqual(['a', 'd/e/n']);
-        expect(sut.trackedSetChanged).toBe(true);
+        expect(result.changedPaths).toEqual(['a', 'd/e/n']);
+        expect(result.trackedSetChanged).toBe(true);
       });
     });
   });
@@ -87,11 +90,12 @@ describe('diffIndexEntries', () => {
         const after = [entry('a'), entry('b')];
 
         // Act
-        const sut = diffIndexEntries(before, after);
+        const sut = diffIndexEntries;
+        const result = sut(before, after);
 
         // Assert
-        expect(sut.trackedSetChanged).toBe(true);
-        expect(sut.changedPaths).toEqual(['b']);
+        expect(result.trackedSetChanged).toBe(true);
+        expect(result.changedPaths).toEqual(['b']);
       });
     });
   });
@@ -108,12 +112,13 @@ describe('diffIndexEntries', () => {
         const after = [entry('m', { id: '4' })];
 
         // Act
-        const sut = diffIndexEntries(before, after);
+        const sut = diffIndexEntries;
+        const result = sut(before, after);
 
         // Assert
-        expect(sut.resolvedUnmerged).toBe(true);
-        expect(sut.changedPaths).toEqual(['m']);
-        expect(sut.trackedSetChanged).toBe(false);
+        expect(result.resolvedUnmerged).toBe(true);
+        expect(result.changedPaths).toEqual(['m']);
+        expect(result.trackedSetChanged).toBe(false);
       });
     });
   });
@@ -126,10 +131,11 @@ describe('diffIndexEntries', () => {
         const after = [entry('m', { stage: 2 }), entry('m', { stage: 3 })];
 
         // Act
-        const sut = diffIndexEntries(before, after);
+        const sut = diffIndexEntries;
+        const result = sut(before, after);
 
         // Assert
-        expect(sut.resolvedUnmerged).toBe(false);
+        expect(result.resolvedUnmerged).toBe(false);
       });
     });
   });
@@ -142,11 +148,12 @@ describe('diffIndexEntries', () => {
         const after = [entry('z')];
 
         // Act
-        const sut = diffIndexEntries(before, after);
+        const sut = diffIndexEntries;
+        const result = sut(before, after);
 
         // Assert
-        expect(sut.resolvedUnmerged).toBe(false);
-        expect(sut.trackedSetChanged).toBe(true);
+        expect(result.resolvedUnmerged).toBe(false);
+        expect(result.trackedSetChanged).toBe(true);
       });
     });
   });
@@ -159,10 +166,11 @@ describe('diffIndexEntries', () => {
         const after = [entry('a'), entry('b'), entry('m')];
 
         // Act
-        const sut = diffIndexEntries(before, after);
+        const sut = diffIndexEntries;
+        const result = sut(before, after);
 
         // Assert
-        expect(sut.resolvedUnmerged).toBe(true);
+        expect(result.resolvedUnmerged).toBe(true);
       });
     });
   });
@@ -175,10 +183,11 @@ describe('diffIndexEntries', () => {
         const after = [entry('�.txt', { fileSize: 9 }), entry('\u{1F600}.txt', { fileSize: 9 })];
 
         // Act
-        const sut = diffIndexEntries(before, after);
+        const sut = diffIndexEntries;
+        const result = sut(before, after);
 
         // Assert
-        expect(sut).toEqual({
+        expect(result).toEqual({
           changedPaths: [],
           trackedSetChanged: false,
           resolvedUnmerged: false,
@@ -195,10 +204,11 @@ describe('diffIndexEntries', () => {
         const flagged = { ...entry('a'), flags: { ...STAGE0_FLAGS, skipWorktree: true } };
 
         // Act
-        const sut = diffIndexEntries(before, [flagged]);
+        const sut = diffIndexEntries;
+        const result = sut(before, [flagged]);
 
         // Assert
-        expect(sut.changedPaths).toEqual([]);
+        expect(result.changedPaths).toEqual([]);
       });
     });
   });

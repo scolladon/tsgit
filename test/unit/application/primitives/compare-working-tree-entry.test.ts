@@ -1293,11 +1293,12 @@ describe('compareAndRefresh', () => {
         const { ctx, entry, indexMtime } = await stagedThenRewritten('HELLO\n');
 
         // Act
-        const sut = await compareAndRefresh(ctx, entry, { indexMtime });
+        const sut = compareAndRefresh;
+        const result = await sut(ctx, entry, { indexMtime });
 
         // Assert
-        expect(sut.delta.status).toBe('modified');
-        expect(sut.refreshed).toBeUndefined();
+        expect(result.delta.status).toBe('modified');
+        expect(result.refreshed).toBeUndefined();
       });
 
       it('Then refreshed is undefined for a changed mode', async () => {
@@ -1306,11 +1307,12 @@ describe('compareAndRefresh', () => {
         const executable: IndexEntry = { ...entry, mode: '100755' };
 
         // Act
-        const sut = await compareAndRefresh(ctx, executable, { indexMtime });
+        const sut = compareAndRefresh;
+        const result = await sut(ctx, executable, { indexMtime });
 
         // Assert
-        expect(sut.delta.status).toBe('mode-changed');
-        expect(sut.refreshed).toBeUndefined();
+        expect(result.delta.status).toBe('mode-changed');
+        expect(result.refreshed).toBeUndefined();
       });
 
       it('Then refreshed is undefined for an assume-valid entry', async () => {
@@ -1319,11 +1321,12 @@ describe('compareAndRefresh', () => {
         const assumeValid: IndexEntry = { ...entry, flags: { ...entry.flags, assumeValid: true } };
 
         // Act
-        const sut = await compareAndRefresh(ctx, assumeValid, { indexMtime });
+        const sut = compareAndRefresh;
+        const result = await sut(ctx, assumeValid, { indexMtime });
 
         // Assert
-        expect(sut.delta.status).toBe('unchanged');
-        expect(sut.refreshed).toBeUndefined();
+        expect(result.delta.status).toBe('unchanged');
+        expect(result.refreshed).toBeUndefined();
       });
 
       it('Then refreshed is undefined for an intent-to-add entry', async () => {
@@ -1332,11 +1335,12 @@ describe('compareAndRefresh', () => {
         const placeholder: IndexEntry = { ...entry, flags: { ...entry.flags, intentToAdd: true } };
 
         // Act
-        const sut = await compareAndRefresh(ctx, placeholder, { indexMtime });
+        const sut = compareAndRefresh;
+        const result = await sut(ctx, placeholder, { indexMtime });
 
         // Assert
-        expect(sut.delta.status).toBe('unchanged');
-        expect(sut.refreshed).toBeUndefined();
+        expect(result.delta.status).toBe('unchanged');
+        expect(result.refreshed).toBeUndefined();
       });
 
       it('Then refreshed is undefined for a skip-worktree entry', async () => {
@@ -1345,11 +1349,12 @@ describe('compareAndRefresh', () => {
         const skipped: IndexEntry = { ...entry, flags: { ...entry.flags, skipWorktree: true } };
 
         // Act
-        const sut = await compareAndRefresh(ctx, skipped, { indexMtime });
+        const sut = compareAndRefresh;
+        const result = await sut(ctx, skipped, { indexMtime });
 
         // Assert
-        expect(sut.delta.status).toBe('unchanged');
-        expect(sut.refreshed).toBeUndefined();
+        expect(result.delta.status).toBe('unchanged');
+        expect(result.refreshed).toBeUndefined();
       });
 
       it('Then refreshed is undefined for a gitlink entry', async () => {
@@ -1359,10 +1364,11 @@ describe('compareAndRefresh', () => {
         const gitlink: IndexEntry = { ...entry, path: 'sub' as IndexEntry['path'], mode: '160000' };
 
         // Act
-        const sut = await compareAndRefresh(ctx, gitlink, { indexMtime });
+        const sut = compareAndRefresh;
+        const result = await sut(ctx, gitlink, { indexMtime });
 
         // Assert
-        expect(sut.refreshed).toBeUndefined();
+        expect(result.refreshed).toBeUndefined();
       });
 
       it('Then refreshed is undefined for a conflicted (stage 2) entry', async () => {
@@ -1371,11 +1377,12 @@ describe('compareAndRefresh', () => {
         const conflicted: IndexEntry = { ...entry, flags: { ...entry.flags, stage: 2 } };
 
         // Act
-        const sut = await compareAndRefresh(ctx, conflicted, { indexMtime });
+        const sut = compareAndRefresh;
+        const result = await sut(ctx, conflicted, { indexMtime });
 
         // Assert
-        expect(sut.delta.status).toBe('unchanged');
-        expect(sut.refreshed).toBeUndefined();
+        expect(result.delta.status).toBe('unchanged');
+        expect(result.refreshed).toBeUndefined();
       });
     });
   });

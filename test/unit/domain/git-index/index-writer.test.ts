@@ -102,10 +102,11 @@ describe('compareEntryPath UTF-8 byte order', () => {
         const astral = makeEntry('\u{1F600}.txt');
 
         // Act
-        const sut = compareEntryPath(bmp, astral);
+        const sut = compareEntryPath;
+        const result = sut(bmp, astral);
 
         // Assert
-        expect(sut).toBeLessThan(0);
+        expect(result).toBeLessThan(0);
       });
     });
   });
@@ -124,10 +125,11 @@ describe('serializeIndex byte order', () => {
         };
 
         // Act
-        const sut = parseIndex(withChecksum(serializeIndex(index, 20)), 20);
+        const sut = parseIndex;
+        const result = sut(withChecksum(serializeIndex(index, 20)), 20);
 
         // Assert
-        expect(sut.entries.map((e) => e.path)).toEqual(['\uFFFD.txt', '\u{1F600}.txt']);
+        expect(result.entries.map((e) => e.path)).toEqual(['\uFFFD.txt', '\u{1F600}.txt']);
       });
     });
   });

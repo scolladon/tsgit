@@ -96,10 +96,11 @@ describe('Given a skip-worktree entry with a recorded id', () => {
       };
 
       // Act
-      const sut = withStatData(entry, nsStat);
+      const sut = withStatData;
+      const result = sut(entry, nsStat);
 
       // Assert
-      expect(sut).toEqual({
+      expect(result).toEqual({
         ctimeSeconds: 1_700_000_123,
         ctimeNanoseconds: 5,
         mtimeSeconds: 1_700_000_987,

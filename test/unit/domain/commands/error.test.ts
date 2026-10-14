@@ -1513,15 +1513,16 @@ describe('domain commands error — config factory data', () => {
     describe('When envBadBooleanValue is called', () => {
       it('Then data is { code, variable, value } and the message is git_env_bool text', () => {
         // Arrange + Act
-        const sut = envBadBooleanValue('GIT_OPTIONAL_LOCKS', 'bogus');
+        const sut = envBadBooleanValue;
+        const result = sut('GIT_OPTIONAL_LOCKS', 'bogus');
 
         // Assert
-        const data = sut.data;
+        const data = result.data;
         expect(data.code).toBe('ENV_BAD_BOOLEAN_VALUE');
         if (data.code !== 'ENV_BAD_BOOLEAN_VALUE') return;
         expect(data.variable).toBe('GIT_OPTIONAL_LOCKS');
         expect(data.value).toBe('bogus');
-        expect(sut.message).toBe(
+        expect(result.message).toBe(
           "ENV_BAD_BOOLEAN_VALUE: bad boolean environment value 'bogus' for 'GIT_OPTIONAL_LOCKS'",
         );
       });
@@ -1532,10 +1533,11 @@ describe('domain commands error — config factory data', () => {
     describe('When envBadBooleanValue is called', () => {
       it('Then value is sanitised for display', () => {
         // Arrange + Act
-        const sut = envBadBooleanValue('GIT_OPTIONAL_LOCKS', '\x01bad');
+        const sut = envBadBooleanValue;
+        const result = sut('GIT_OPTIONAL_LOCKS', '\x01bad');
 
         // Assert
-        const data = sut.data;
+        const data = result.data;
         expect(data.code).toBe('ENV_BAD_BOOLEAN_VALUE');
         if (data.code !== 'ENV_BAD_BOOLEAN_VALUE') return;
         expect(data.value).toBe('\\x01bad');

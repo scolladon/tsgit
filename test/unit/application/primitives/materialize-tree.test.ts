@@ -78,13 +78,14 @@ describe('materializeTree', () => {
         ]);
 
         // Act
-        const sut = await materializeTree(ctx, {
+        const sut = materializeTree;
+        const result = await sut(ctx, {
           targetTree: treeId,
           currentIndex: EMPTY_INDEX,
         });
 
         // Assert
-        expect(sut.newIndexEntries.map((e) => e.path)).toEqual(['�.txt', '\u{1F600}.txt']);
+        expect(result.newIndexEntries.map((e) => e.path)).toEqual(['�.txt', '\u{1F600}.txt']);
       });
     });
   });

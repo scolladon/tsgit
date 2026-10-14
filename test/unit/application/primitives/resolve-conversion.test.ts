@@ -329,13 +329,14 @@ describe('resolveConversion', () => {
         const provider = providerFor('a.txt filter=x\n');
 
         // Act
-        const sut = await resolveConversion(ctx, provider, 'a.txt' as FilePath, SETTINGS, {
+        const sut = resolveConversion;
+        const result = await sut(ctx, provider, 'a.txt' as FilePath, SETTINGS, {
           eagerSectionValidation: true,
           filterDriversConfigured: false,
         });
 
         // Assert
-        expect(sut.filter).toEqual({ kind: 'identity' });
+        expect(result.filter).toEqual({ kind: 'identity' });
       });
     });
   });

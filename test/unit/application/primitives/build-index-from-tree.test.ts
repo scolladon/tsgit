@@ -72,13 +72,14 @@ describe('buildIndexFromTree', () => {
         ]);
 
         // Act
-        const sut = await buildIndexFromTree(ctx, {
+        const sut = buildIndexFromTree;
+        const result = await sut(ctx, {
           targetTree: treeId,
           currentIndex: EMPTY_INDEX,
         });
 
         // Assert
-        expect(sut.map((e) => e.path)).toEqual(['�.txt', '\u{1F600}.txt']);
+        expect(result.map((e) => e.path)).toEqual(['�.txt', '\u{1F600}.txt']);
       });
     });
   });

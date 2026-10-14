@@ -18,65 +18,67 @@ const arbPair = fc
   );
 
 describe('diffIndexEntries properties', () => {
-  describe('Given any two lists', () => {
+  const sut = diffIndexEntries;
+
+  describe('Given any two lists, When they are diffed', () => {
     it('Then changedPaths is empty iff both agree on (path, stage, id, mode)', () => {
-      fc.assert(
-        fc.property(arbList, arbPair, (other, [before, after]) => {
-          for (const [a, b] of [
-            [before, after],
-            [before, other],
-          ] as const) {
-            const sut = diffIndexEntries(a, b);
-            expect(sut.changedPaths.length === 0).toBe(sameSet(keySet(a), keySet(b)));
-          }
-        }),
-        { numRuns: NUM_RUNS },
-      );
+      // Arrange
+      const property = fc.property(arbList, arbPair, (other, [before, after]) => {
+        for (const [a, b] of [
+          [before, after],
+          [before, other],
+        ] as const) {
+          const result = sut(a, b);
+          expect(result.changedPaths.length === 0).toBe(sameSet(keySet(a), keySet(b)));
+        }
+      });
+
+      // Act + Assert
+      fc.assert(property, { numRuns: NUM_RUNS });
     });
 
     it('Then trackedSetChanged is symmetric', () => {
-      fc.assert(
-        fc.property(arbList, arbList, (a, b) => {
-          expect(diffIndexEntries(a, b).trackedSetChanged).toBe(
-            diffIndexEntries(b, a).trackedSetChanged,
-          );
-        }),
-        { numRuns: NUM_RUNS },
-      );
+      // Arrange
+      const property = fc.property(arbList, arbList, (a, b) => {
+        expect(sut(a, b).trackedSetChanged).toBe(sut(b, a).trackedSetChanged);
+      });
+
+      // Act + Assert
+      fc.assert(property, { numRuns: NUM_RUNS });
     });
 
     it('Then the result is independent of input order', () => {
-      fc.assert(
-        fc.property(
-          fc
-            .tuple(arbList, arbList)
-            .chain(([a, b]) =>
-              fc.tuple(
-                fc.constant(a),
-                fc.constant(b),
-                fc.shuffledSubarray(a, { minLength: a.length }),
-                fc.shuffledSubarray(b, { minLength: b.length }),
-              ),
-            ),
-          ([a, b, shuffledA, shuffledB]) => {
-            expect(diffIndexEntries(shuffledA, shuffledB)).toEqual(diffIndexEntries(a, b));
-          },
-        ),
-        { numRuns: NUM_RUNS },
-      );
+      // Arrange
+      const arbShuffled = fc
+        .tuple(arbList, arbList)
+        .chain(([a, b]) =>
+          fc.tuple(
+            fc.constant(a),
+            fc.constant(b),
+            fc.shuffledSubarray(a, { minLength: a.length }),
+            fc.shuffledSubarray(b, { minLength: b.length }),
+          ),
+        );
+      const property = fc.property(arbShuffled, ([a, b, shuffledA, shuffledB]) => {
+        expect(sut(shuffledA, shuffledB)).toEqual(sut(a, b));
+      });
+
+      // Act + Assert
+      fc.assert(property, { numRuns: NUM_RUNS });
     });
 
     it('Then diffing a list against itself is empty', () => {
-      fc.assert(
-        fc.property(arbList, (x) => {
-          expect(diffIndexEntries(x, x)).toEqual({
-            changedPaths: [],
-            trackedSetChanged: false,
-            resolvedUnmerged: false,
-          });
-        }),
-        { numRuns: NUM_RUNS },
-      );
+      // Arrange
+      const property = fc.property(arbList, (x) => {
+        expect(sut(x, x)).toEqual({
+          changedPaths: [],
+          trackedSetChanged: false,
+          resolvedUnmerged: false,
+        });
+      });
+
+      // Act + Assert
+      fc.assert(property, { numRuns: NUM_RUNS });
     });
   });
 });

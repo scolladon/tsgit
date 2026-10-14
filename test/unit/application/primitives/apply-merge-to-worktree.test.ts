@@ -89,7 +89,8 @@ describe('applyMergeToWorktree', () => {
         await ctx.fs.write(`${ctx.layout.workDir}/�.txt`, new TextEncoder().encode('ours\n'));
 
         // Act
-        const sut = await applyMergeToWorktree(ctx, {
+        const sut = applyMergeToWorktree;
+        const result = await sut(ctx, {
           baseTree: base,
           oursTree: ours,
           theirsTree: theirs,
@@ -97,9 +98,9 @@ describe('applyMergeToWorktree', () => {
         });
 
         // Assert
-        expect(sut.kind).toBe('conflict');
-        if (sut.kind !== 'conflict') return;
-        expect(sut.indexEntries.map((e) => [e.path, e.flags.stage])).toEqual([
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') return;
+        expect(result.indexEntries.map((e) => [e.path, e.flags.stage])).toEqual([
           ['�.txt', 1],
           ['�.txt', 2],
           ['�.txt', 3],

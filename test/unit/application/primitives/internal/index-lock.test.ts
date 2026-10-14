@@ -366,12 +366,13 @@ describe('acquireOptionalIndexLock', () => {
         const lockPath = `${ctx.layout.gitDir}/${LOCK_NAME}`;
 
         // Act
-        const sut = await acquireOptionalIndexLock(ctx);
+        const sut = acquireOptionalIndexLock;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut).toBeDefined();
+        expect(result).toBeDefined();
         expect(await ctx.fs.exists(lockPath)).toBe(true);
-        await sut?.release();
+        await result?.release();
         expect(await ctx.fs.exists(lockPath)).toBe(false);
       });
     });
@@ -393,10 +394,11 @@ describe('acquireOptionalIndexLock', () => {
         } as unknown as Context;
 
         // Act
-        const sut = await acquireOptionalIndexLock(ctx);
+        const sut = acquireOptionalIndexLock;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
         expect(await base.fs.readUtf8(lockPath)).toBe('held');
         expect((await base.fs.lstat(lockPath)).mtimeMs).toBe(mtimeBefore);
         expect(warn).toHaveBeenCalledTimes(1);
@@ -412,10 +414,11 @@ describe('acquireOptionalIndexLock', () => {
         const { ctx, warn } = failingAt(await seededRepo(), 'writeExclusive', unsupported(reason));
 
         // Act
-        const sut = await acquireOptionalIndexLock(ctx);
+        const sut = acquireOptionalIndexLock;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
         expect(warn).toHaveBeenCalledWith(REFRESH_SKIPPED, {
           code: 'UNSUPPORTED_OPERATION',
           path: `${ctx.layout.gitDir}/${LOCK_NAME}`,
@@ -434,10 +437,11 @@ describe('acquireOptionalIndexLock', () => {
         const { ctx, warn } = failingAt(await seededRepo(), 'writeExclusive', denied);
 
         // Act
-        const sut = await acquireOptionalIndexLock(ctx);
+        const sut = acquireOptionalIndexLock;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
         expect(warn.mock.calls[0]?.[1]).toStrictEqual({
           code: 'PERMISSION_DENIED',
           path: lockPath,
@@ -454,10 +458,11 @@ describe('acquireOptionalIndexLock', () => {
         const { ctx, warn } = failingAt(await seededRepo(), 'writeExclusive', denied);
 
         // Act
-        const sut = await acquireOptionalIndexLock(ctx);
+        const sut = acquireOptionalIndexLock;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
         expect(warn.mock.calls[0]?.[1]).toStrictEqual({
           code: 'NoModificationAllowedError',
           path: `${ctx.layout.gitDir}/${LOCK_NAME}`,
@@ -473,10 +478,11 @@ describe('acquireOptionalIndexLock', () => {
         const { ctx, warn } = failingAt(await seededRepo(), 'writeExclusive', 'boom');
 
         // Act
-        const sut = await acquireOptionalIndexLock(ctx);
+        const sut = acquireOptionalIndexLock;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
         expect(warn.mock.calls[0]?.[1]).toStrictEqual({
           code: 'unknown',
           path: `${ctx.layout.gitDir}/${LOCK_NAME}`,
@@ -493,10 +499,11 @@ describe('acquireOptionalIndexLock', () => {
         const { logger: _logger, ...silent } = ctx;
 
         // Act
-        const sut = await acquireOptionalIndexLock(silent as Context);
+        const sut = acquireOptionalIndexLock;
+        const result = await sut(silent as Context);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
   });
