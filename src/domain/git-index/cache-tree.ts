@@ -8,7 +8,7 @@
  *   kind:    equivalent-under-readback
  *   format:  git-index-dirc
  */
-import { encode, hexToBytes } from '../objects/encoding.js';
+import { bytesEqual, encode, hexToBytes } from '../objects/encoding.js';
 import type { FilePath } from '../objects/object-id.js';
 import { invalidIndexEntry } from './error.js';
 import type { CacheTreeEntry } from './index-entry.js';
@@ -22,6 +22,8 @@ interface EncodedNode {
   readonly children: ReadonlyArray<EncodedNode>;
 }
 
+const nameBytesOf = (entry: CacheTreeEntry): Uint8Array => entry.nameBytes ?? encode(entry.path);
+
 function encodeOid(entry: CacheTreeEntry, digestLength: 20 | 32): Uint8Array {
   if (entry.entryCount < 0 || entry.id === undefined) return new Uint8Array(0);
   const oid = hexToBytes(entry.id);
@@ -33,7 +35,7 @@ function encodeOid(entry: CacheTreeEntry, digestLength: 20 | 32): Uint8Array {
 
 function measure(entry: CacheTreeEntry, digestLength: 20 | 32): EncodedNode {
   return {
-    path: encode(entry.path),
+    path: nameBytesOf(entry),
     header: encode(`${entry.entryCount} ${entry.subtreeCount}\n`),
     oid: encodeOid(entry, digestLength),
     children: entry.children.map((child) => measure(child, digestLength)),
@@ -72,6 +74,7 @@ function invalidated(
 ): CacheTreeEntry {
   return {
     path: entry.path,
+    ...(entry.nameBytes === undefined ? {} : { nameBytes: entry.nameBytes }),
     entryCount: -1,
     subtreeCount: entry.subtreeCount - (entry.children.length - children.length),
     children,
@@ -80,7 +83,8 @@ function invalidated(
 
 function invalidateAlong(entry: CacheTreeEntry, components: ReadonlyArray<string>): CacheTreeEntry {
   const [head, ...rest] = components;
-  const index = entry.children.findIndex((child) => child.path === head);
+  const name = encode(head as string);
+  const index = entry.children.findIndex((child) => bytesEqual(nameBytesOf(child), name));
   const child = entry.children[index];
   if (child === undefined) return invalidated(entry, entry.children);
   const next = rest.length === 0 ? undefined : invalidateAlong(child, rest);

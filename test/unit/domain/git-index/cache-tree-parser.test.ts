@@ -427,3 +427,68 @@ describe('parseCacheTree', () => {
     });
   });
 });
+
+describe('Given a cache-tree whose component names do not round-trip through UTF-8', () => {
+  const bomName = new Uint8Array([0xef, 0xbb, 0xbf, 0x62]);
+  const build = (name: Uint8Array): Uint8Array =>
+    concatBytes([
+      buildEntryBytes('', 1, 1, SHA_A),
+      name,
+      new Uint8Array([0]),
+      enc.encode('1 0\n'),
+      hexToBytes(SHA_B),
+    ]);
+
+  describe('When parseCacheTree reads a BOM-prefixed component', () => {
+    it('Then the child keeps its raw name bytes', () => {
+      // Arrange
+      const sut = parseCacheTree;
+
+      // Act
+      const result = sut(build(bomName), 20);
+
+      // Assert
+      expect(result.children[0]?.nameBytes).toEqual(bomName);
+    });
+  });
+
+  describe('When parseCacheTree reads a non-UTF-8 component', () => {
+    it('Then the child keeps its raw name bytes', () => {
+      // Arrange
+      const sut = parseCacheTree;
+
+      // Act
+      const result = sut(build(new Uint8Array([0xff])), 20);
+
+      // Assert
+      expect(result.children[0]?.nameBytes).toEqual(new Uint8Array([0xff]));
+    });
+  });
+
+  describe('When parseCacheTree reads a plain component', () => {
+    it('Then no name bytes are carried', () => {
+      // Arrange
+      const sut = parseCacheTree;
+
+      // Act
+      const result = sut(build(enc.encode('b')), 20);
+
+      // Assert
+      expect(result.children[0]).not.toHaveProperty('nameBytes');
+    });
+  });
+
+  describe('When the payload buffer is mutated after parsing', () => {
+    it('Then the kept name bytes are an independent copy', () => {
+      // Arrange
+      const data = build(bomName);
+      const sut = parseCacheTree(data, 20);
+
+      // Act
+      data.fill(0);
+
+      // Assert
+      expect(sut.children[0]?.nameBytes).toEqual(bomName);
+    });
+  });
+});

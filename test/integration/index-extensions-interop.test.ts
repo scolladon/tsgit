@@ -594,3 +594,57 @@ describe.skipIf(!GIT_AVAILABLE)('index extension carry interop', () => {
 
   describeRow(ADD_MODIFIED, 'sha256');
 });
+
+const BOM_DIRECTORY = '\uFEFFb';
+
+const buildBomSiblings = async (dir: string): Promise<void> => {
+  runGit(['init', '-q', '-b', 'main', dir]);
+  git(dir, 'config', 'user.name', 'Ada');
+  git(dir, 'config', 'user.email', 'ada@example.com');
+  for (const file of ['a/b/x', `a/${BOM_DIRECTORY}/x`, 'a/c']) {
+    await mkdir(path.dirname(path.join(dir, file)), { recursive: true });
+    await write(dir, file, `${file}\n`);
+  }
+  commitAll(dir, 'one');
+  await write(dir, 'a/c', 'edited\n');
+};
+
+describe.skipIf(!GIT_AVAILABLE)('index cache-tree names interop', () => {
+  describe('Given sibling directories b and a BOM-prefixed b committed by git', () => {
+    describe('When a/c is added in tsgit and in git on a twin', () => {
+      let pair: PeerPair;
+      let ours: ReadonlyMap<string, Uint8Array>;
+      let peer: ReadonlyMap<string, Uint8Array>;
+
+      beforeAll(async () => {
+        pair = await makePeerPair('index-ext-bom');
+        for (const dir of [pair.peer, pair.ours]) await buildBomSiblings(dir);
+        git(pair.peer, 'add', 'a/c');
+        await add(contextFor(pair.ours, 'sha1'), ['a/c']);
+        ours = await extensionsOf(pair.ours, 'sha1');
+        peer = await extensionsOf(pair.peer, 'sha1');
+      }, ROW_TIMEOUT_MS);
+
+      afterAll(async () => {
+        await pair.dispose();
+      });
+
+      it('Then TREE is byte-equal to git', () => {
+        // Arrange + Assert
+        expect(peer.has('TREE')).toBe(true);
+        expect(ours.get('TREE')).toEqual(peer.get('TREE'));
+      });
+
+      it('Then git write-tree and git fsck exit 0', () => {
+        // Arrange
+        const sut = (args: ReadonlyArray<string>) => tryRunGitWithExit(['-C', pair.ours, ...args]);
+
+        // Act
+        const result = [sut(['write-tree']), sut(['fsck'])];
+
+        // Assert
+        expect(result.map((outcome) => outcome.exitCode)).toEqual([0, 0]);
+      });
+    });
+  });
+});

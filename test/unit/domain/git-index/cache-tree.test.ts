@@ -6,6 +6,7 @@ import {
   serializeCacheTree,
 } from '../../../../src/domain/git-index/cache-tree.js';
 import type { CacheTreeEntry } from '../../../../src/domain/git-index/index-entry.js';
+import { parseCacheTree } from '../../../../src/domain/git-index/index-parser.js';
 import { concatBytes, encode, hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import type { FilePath, ObjectId } from '../../../../src/domain/objects/object-id.js';
 
@@ -210,6 +211,70 @@ describe('invalidateCacheTree', () => {
         // Assert
         expect(result).toBe(root);
       });
+    });
+  });
+});
+
+describe('Given sibling cache-tree names that do not survive a UTF-8 round trip', () => {
+  const node = (name: Uint8Array, header: string, id: string, children: Uint8Array[] = []) =>
+    concatBytes([
+      name,
+      NUL,
+      encode(header),
+      id === '' ? new Uint8Array(0) : hexToBytes(id),
+      ...children,
+    ]);
+  const BOM_B = new Uint8Array([0xef, 0xbb, 0xbf, 0x62]);
+  const LONE_FF = new Uint8Array([0xff]);
+  const ID_B = 'b'.repeat(40);
+  const ID_BOM = 'c'.repeat(40);
+  const ID_FF = 'd'.repeat(40);
+  const carried = [
+    node(encode('b'), '1 0\n', ID_B),
+    node(BOM_B, '1 0\n', ID_BOM),
+    node(LONE_FF, '1 0\n', ID_FF),
+  ];
+  const original = node(new Uint8Array(0), '4 1\n', 'a'.repeat(40), [
+    node(encode('a'), '4 4\n', 'e'.repeat(40), [
+      ...carried,
+      node(encode('c'), '1 0\n', 'f'.repeat(40)),
+    ]),
+  ]);
+
+  describe('When an unrelated sibling path is invalidated', () => {
+    it('Then the untouched subtrees keep their exact name bytes', () => {
+      // Arrange
+      const sut = (data: Uint8Array): Uint8Array =>
+        serializeCacheTree(invalidateCacheTree(parseCacheTree(data, 20), ['a/c' as FilePath]), 20);
+
+      // Act
+      const result = sut(original);
+
+      // Assert
+      const expected = node(new Uint8Array(0), '-1 1\n', '', [
+        node(encode('a'), '-1 3\n', '', carried),
+      ]);
+      expect(result).toEqual(expected);
+    });
+
+    it('Then a path component sharing the lossy decode of a sibling does not remove it', () => {
+      // Arrange
+      const sut = (data: Uint8Array): Uint8Array =>
+        serializeCacheTree(invalidateCacheTree(parseCacheTree(data, 20), ['a/﻿b' as FilePath]), 20);
+
+      // Act
+      const result = sut(original);
+
+      // Assert
+      const survivors = [
+        carried[0],
+        carried[2],
+        node(encode('c'), '1 0\n', 'f'.repeat(40)),
+      ] as Uint8Array[];
+      const expected = node(new Uint8Array(0), '-1 1\n', '', [
+        node(encode('a'), '-1 3\n', '', survivors),
+      ]);
+      expect(result).toEqual(expected);
     });
   });
 });
