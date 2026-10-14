@@ -1,6 +1,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
+  hasRacyTimestamp,
   type IndexMtime,
   isEntryStatClean,
 } from '../../../../../src/application/primitives/internal/is-entry-stat-clean.js';
@@ -204,6 +205,70 @@ describe('isEntryStatClean properties', () => {
             };
             expect(isEntryStatClean(entry, stat, racyIndexMtime)).toBe(false);
           }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+});
+
+describe('hasRacyTimestamp properties', () => {
+  describe('Given a list of entries and an index mtime', () => {
+    describe('When a non-gitlink entry with mtimeSeconds >= index seconds is appended', () => {
+      it('Then it is always true', () => {
+        // Arrange + Act + Assert
+        fc.assert(
+          fc.property(
+            fc.array(arbIndexEntry(false), { maxLength: 5 }),
+            arbIndexEntry(false),
+            arbIndexMtime(),
+            fc.integer({ min: 0, max: 1000 }),
+            fc.constantFrom(FILE_MODE.REGULAR, FILE_MODE.EXECUTABLE, FILE_MODE.SYMLINK),
+            (entries, base, indexMtime, offset, mode) => {
+              const racy = { ...base, mode, mtimeSeconds: indexMtime.seconds + offset };
+              expect(hasRacyTimestamp([...entries, racy], indexMtime)).toBe(true);
+            },
+          ),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given only gitlink entries, however recent', () => {
+    describe('When hasRacyTimestamp', () => {
+      it('Then it is false', () => {
+        // Arrange + Act + Assert
+        fc.assert(
+          fc.property(
+            fc.array(arbIndexEntry(false), { maxLength: 5 }),
+            arbIndexMtime(),
+            (entries, indexMtime) => {
+              const gitlinks = entries.map((entry) => ({ ...entry, mode: FILE_MODE.GITLINK }));
+              expect(hasRacyTimestamp(gitlinks, indexMtime)).toBe(false);
+            },
+          ),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given only entries strictly older than the index second', () => {
+    describe('When hasRacyTimestamp', () => {
+      it('Then it is false', () => {
+        // Arrange + Act + Assert
+        fc.assert(
+          fc.property(
+            arbIndexEntry(false),
+            fc.integer({ min: 2, max: 4_000_000_000 }),
+            fc.integer({ min: 1, max: 1000 }),
+            (entry, seconds, gap) => {
+              const older = { ...entry, mtimeSeconds: Math.max(0, seconds - gap) };
+              const indexMtime = { seconds, nanoseconds: entry.mtimeNanoseconds };
+              expect(hasRacyTimestamp([older], indexMtime)).toBe(false);
+            },
+          ),
           { numRuns: 100 },
         );
       });
