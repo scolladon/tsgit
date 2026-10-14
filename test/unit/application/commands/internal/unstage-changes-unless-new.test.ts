@@ -25,6 +25,24 @@ const entry = (path: string, id: string, stage: 0 | 1 | 2 | 3 = 0): IndexEntry =
 const paths = (entries: ReadonlyArray<IndexEntry>): string[] => entries.map((e) => e.path);
 
 describe('unstageChangesUnlessNew', () => {
+  describe('Given a before index an older writer left in UTF-16 order', () => {
+    describe('When the merged index holds the same entries in byte order', () => {
+      it('Then nothing is restored and nothing is reported as new', () => {
+        // Arrange
+        const before = [entry('\u{1F600}.txt', 'a'), entry('\uFFFD.txt', 'b')];
+        const merged = [entry('\uFFFD.txt', 'b'), entry('\u{1F600}.txt', 'a')];
+
+        // Act
+        const sut = unstageChangesUnlessNew;
+        const result = sut(merged, before);
+
+        // Assert
+        expect(result.entries).toEqual(merged);
+        expect(result.restagedPaths).toEqual([]);
+      });
+    });
+  });
+
   describe('Given a directory replaced by a file in the merged index', () => {
     describe('When the deleted directory entry is restored', () => {
       it('Then it is dropped because the new file now occupies its directory', () => {

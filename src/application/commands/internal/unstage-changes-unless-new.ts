@@ -18,8 +18,16 @@ const zeroStat = (entry: IndexEntry): IndexEntry => ({
   flags: STAGE0_FLAGS,
 });
 
-const stageZero = (entries: ReadonlyArray<IndexEntry>): IndexEntry[] =>
-  entries.filter((e) => e.flags.stage === 0);
+const byPath = (a: IndexEntry, b: IndexEntry): number => comparePathStrings(a.path, b.path);
+
+const inByteOrder = (entries: ReadonlyArray<IndexEntry>): boolean =>
+  entries.every((entry, at) => at === 0 || byPath(entries[at - 1] as IndexEntry, entry) < 0);
+
+/** Stage-0 entries in byte order: an index an older writer left in UTF-16 order is re-sorted. */
+const stageZero = (entries: ReadonlyArray<IndexEntry>): IndexEntry[] => {
+  const run = entries.filter((e) => e.flags.stage === 0);
+  return inByteOrder(run) ? run : run.sort(byPath);
+};
 
 const sameContent = (a: IndexEntry, b: IndexEntry): boolean => a.id === b.id && a.mode === b.mode;
 
