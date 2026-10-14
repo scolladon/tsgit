@@ -618,3 +618,116 @@ describe('acquireOptionalIndexLock', () => {
     });
   });
 });
+
+describe('acquireOptionalIndexLock failure shapes', () => {
+  describe('Given writeExclusive throws null', () => {
+    describe('When acquiring the optional lock', () => {
+      it('Then it resolves undefined and warns with the unknown code', async () => {
+        // Arrange
+        const { ctx, warn } = failingAt(await seededRepo(), 'writeExclusive', null);
+
+        // Act
+        const sut = acquireOptionalIndexLock;
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect(warn.mock.calls[0]?.[1]).toStrictEqual({
+          code: 'unknown',
+          path: `${ctx.layout.gitDir}/${LOCK_NAME}`,
+        });
+      });
+    });
+  });
+});
+
+describe('IndexLock.release', () => {
+  describe('Given rm reports the lock already gone', () => {
+    describe('When releasing', () => {
+      it('Then it resolves', async () => {
+        // Arrange
+        const gone = new TsgitError({ code: 'FILE_NOT_FOUND', path: LOCK_NAME });
+        const { ctx } = failingAt(await seededRepo(), 'rm', gone);
+        const sut = await acquireIndexLock(ctx);
+
+        // Act
+        const result = await sut.release();
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe.each([
+    ['a TsgitError with another code', unsupported('ENOSPC')],
+    ['a plain Error', new Error('boom')],
+  ])('Given rm fails with %s', (_label, failure) => {
+    describe('When releasing', () => {
+      it('Then that same error is rethrown', async () => {
+        // Arrange
+        const { ctx } = failingAt(await seededRepo(), 'rm', failure);
+        const sut = await acquireIndexLock(ctx);
+
+        // Act
+        const result = sut.release();
+
+        // Assert
+        await expect(result).rejects.toBe(failure);
+      });
+    });
+  });
+
+  describe.each([
+    [
+      'committed',
+      async (ctx: Context, sut: IndexLock) =>
+        sut.commit((await readIndex(ctx)).entries, 'update', {}),
+    ],
+    ['released', async (_ctx: Context, sut: IndexLock) => sut.release()],
+  ])('Given a lock already %s and index.lock now held by another writer', (_state, spend) => {
+    describe('When releasing', () => {
+      it('Then the other writer lock is left in place', async () => {
+        // Arrange
+        const ctx = await seededRepo();
+        const lockPath = `${ctx.layout.gitDir}/${LOCK_NAME}`;
+        const sut = await acquireIndexLock(ctx);
+        await spend(ctx, sut);
+        await ctx.fs.writeUtf8(lockPath, 'held');
+
+        // Act
+        await sut.release();
+
+        // Assert
+        expect(await ctx.fs.readUtf8(lockPath)).toBe('held');
+      });
+    });
+  });
+});
+
+describe('IndexLock.commit once spent', () => {
+  describe.each([
+    [
+      'committed',
+      (sut: IndexLock, entries: ReadonlyArray<IndexEntry>) => sut.commit(entries, 'update', {}),
+    ],
+    ['released', (sut: IndexLock) => sut.release()],
+  ])('Given a lock already %s', (_state, spend) => {
+    describe('When committing changed entries', () => {
+      it('Then the index bytes stay as they were', async () => {
+        // Arrange
+        const ctx = await seededRepo();
+        const entries = await readIndex(ctx).then((index) => index.entries);
+        const sut = await acquireIndexLock(ctx);
+        await spend(sut, entries);
+        const settled = await ctx.fs.read(`${ctx.layout.gitDir}/index`);
+
+        // Act
+        await sut.commit(await withNestedIdChanged(ctx), 'update', {});
+
+        // Assert
+        expect(await ctx.fs.read(`${ctx.layout.gitDir}/index`)).toEqual(settled);
+      });
+    });
+  });
+});

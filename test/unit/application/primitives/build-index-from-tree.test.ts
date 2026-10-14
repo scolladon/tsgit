@@ -14,7 +14,7 @@ import type {
   TreeEntry,
 } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, writeRawObjectBytes } from './fixtures.js';
 
 const EMPTY_INDEX: GitIndex = {
   version: 2,
@@ -80,6 +80,33 @@ describe('buildIndexFromTree', () => {
 
         // Assert
         expect(result.map((e) => e.path)).toEqual(['�.txt', '\u{1F600}.txt']);
+      });
+    });
+  });
+
+  describe('Given a non-canonical tree listing b before a', () => {
+    describe('When buildIndexFromTree runs', () => {
+      it('Then the entries come back byte-sorted, a first', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'x');
+        const idBytes = Uint8Array.from(blobId.match(/../g) as string[], (hex) =>
+          Number.parseInt(hex, 16),
+        );
+        const encoder = new TextEncoder();
+        const entryBytes = (name: string): number[] => [
+          ...encoder.encode(`100644 ${name}\0`),
+          ...idBytes,
+        ];
+        const content = Uint8Array.from([...entryBytes('b'), ...entryBytes('a')]);
+        const treeId = await writeRawObjectBytes(ctx, 'tree', content);
+
+        // Act
+        const sut = buildIndexFromTree;
+        const result = await sut(ctx, { targetTree: treeId, currentIndex: EMPTY_INDEX });
+
+        // Assert
+        expect(result.map((e) => e.path)).toEqual(['a', 'b']);
       });
     });
   });
