@@ -55,10 +55,13 @@ export interface IndexLock {
   /**
    * Write back refreshed stat data only. Resolves `false` and releases the lock when
    * the index changed on disk since `read` (or vanished); nothing is written then.
+   * `verified` names the paths the caller already found unchanged, which the racy
+   * smudge does not check again.
    */
   readonly commitRefresh: (
     read: GitIndex,
     refreshed: ReadonlyArray<IndexEntry>,
+    verified: ReadonlySet<FilePath>,
   ) => Promise<boolean>;
 }
 
@@ -275,6 +278,7 @@ const writeRefreshed = async (
   sites: RefreshSites,
   read: GitIndex,
   refreshed: ReadonlyArray<IndexEntry>,
+  verified: ReadonlySet<FilePath>,
 ): Promise<boolean> => {
   const previous = await atSite(sites.indexFile, () => readPreviousIndex(ctx));
   if (previous === undefined || !sameBytes(previous.trailerSha, read.trailerSha)) return false;
@@ -284,47 +288,81 @@ const writeRefreshed = async (
     'refresh',
     await carrySettings(ctx),
   );
-  const entries = await smudgeRacilyClean(ctx, withRefreshedStat(read, refreshed), previous);
+  const entries = await smudgeRacilyClean(
+    ctx,
+    withRefreshedStat(read, refreshed),
+    previous,
+    verified,
+  );
   await atSite(sites.lockPath, () => stageLock(ctx, sites.lockPath, entries, extensions));
   await atSite(sites.indexFile, () => publishLock(ctx, sites.lockPath, sites.indexFile));
   return true;
 };
 
+/** What the lock has become: committed to the index, or dropped. Either ends its use. */
+interface LockState {
+  committed: boolean;
+  released: boolean;
+}
+
+const isSpent = (state: LockState): boolean => state.committed || state.released;
+
+const releaseLock = async (ctx: Context, sites: RefreshSites, state: LockState): Promise<void> => {
+  if (isSpent(state)) return;
+  state.released = true;
+  try {
+    await ctx.fs.rm(sites.lockPath);
+  } catch (err) {
+    // Already gone — fine.
+    if (!(err instanceof TsgitError) || err.data.code !== 'FILE_NOT_FOUND') throw err;
+  }
+};
+
+const commitLocked = async (
+  ctx: Context,
+  sites: RefreshSites,
+  state: LockState,
+  entries: ReadonlyArray<IndexEntry>,
+  kind: IndexWriteKind,
+  options: CommitOptions,
+): Promise<void> => {
+  if (isSpent(state)) return;
+  const previous = await readPreviousIndex(ctx);
+  const smudged = await smudgeRacilyClean(ctx, entries, previous);
+  const extensions = await carriedExtensions(ctx, previous, smudged, kind, options);
+  await writeLocked(ctx, sites.lockPath, sites.indexFile, smudged, extensions);
+  state.committed = true;
+};
+
+const commitRefreshed = async (
+  ctx: Context,
+  sites: RefreshSites,
+  state: LockState,
+  read: GitIndex,
+  refreshed: ReadonlyArray<IndexEntry>,
+  verified: ReadonlySet<FilePath>,
+): Promise<boolean> => {
+  if (isSpent(state)) return false;
+  try {
+    state.committed = await writeRefreshed(ctx, sites, read, refreshed, verified);
+  } catch (err) {
+    if (!(err instanceof RefreshSiteFailure)) throw err;
+    await releaseLock(ctx, sites, state);
+    reportDegrade(ctx, err.cause, err.path);
+    return false;
+  }
+  if (!state.committed) await releaseLock(ctx, sites, state);
+  return state.committed;
+};
+
 const makeLock = (ctx: Context, lockPath: string, indexFile: string): IndexLock => {
-  let committed = false;
-  let released = false;
-  const release = async (): Promise<void> => {
-    if (committed || released) return;
-    released = true;
-    try {
-      await ctx.fs.rm(lockPath);
-    } catch (err) {
-      // Already gone — fine.
-      if (!(err instanceof TsgitError) || err.data.code !== 'FILE_NOT_FOUND') throw err;
-    }
-  };
+  const sites: RefreshSites = { lockPath, indexFile };
+  const state: LockState = { committed: false, released: false };
   return {
-    release,
-    commit: async (entries, kind, options = {}) => {
-      if (committed || released) return;
-      const previous = await readPreviousIndex(ctx);
-      const smudged = await smudgeRacilyClean(ctx, entries, previous);
-      const extensions = await carriedExtensions(ctx, previous, smudged, kind, options);
-      await writeLocked(ctx, lockPath, indexFile, smudged, extensions);
-      committed = true;
-    },
-    commitRefresh: async (read, refreshed) => {
-      if (committed || released) return false;
-      try {
-        committed = await writeRefreshed(ctx, { lockPath, indexFile }, read, refreshed);
-      } catch (err) {
-        if (!(err instanceof RefreshSiteFailure)) throw err;
-        await release();
-        reportDegrade(ctx, err.cause, err.path);
-        return false;
-      }
-      if (!committed) await release();
-      return committed;
-    },
+    release: () => releaseLock(ctx, sites, state),
+    commit: (entries, kind, options = {}) =>
+      commitLocked(ctx, sites, state, entries, kind, options),
+    commitRefresh: (read, refreshed, verified) =>
+      commitRefreshed(ctx, sites, state, read, refreshed, verified),
   };
 };

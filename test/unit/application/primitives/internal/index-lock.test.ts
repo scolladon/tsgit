@@ -33,6 +33,7 @@ const SHA256_DIGEST = 32;
 const OTHER_ID = 'b'.repeat(40) as ObjectId;
 const TREE_ID = 'c'.repeat(40) as ObjectId;
 const NESTED_PATH = 'd/c' as FilePath;
+const NOTHING_VERIFIED: ReadonlySet<FilePath> = new Set();
 
 const treeOf = (id: ObjectId): CacheTreeEntry => ({
   path: '',
@@ -242,7 +243,7 @@ describe('IndexLock.commitRefresh', () => {
         const sut = await acquireIndexLock(ctx);
 
         // Act
-        const result = await sut.commitRefresh(read, [withLaterMtime(original)]);
+        const result = await sut.commitRefresh(read, [withLaterMtime(original)], NOTHING_VERIFIED);
 
         // Assert
         expect(result).toBe(true);
@@ -254,6 +255,77 @@ describe('IndexLock.commitRefresh', () => {
         expect(extensions.get('TREE')).toEqual(before.get('TREE'));
         expect(extensions.get('REUC')).toEqual(before.get('REUC'));
         expect(extensions.get('UNTR')).toEqual(before.get('UNTR'));
+      });
+    });
+  });
+
+  describe('Given a lock already released', () => {
+    describe('When refreshing an entry', () => {
+      it('Then it resolves false and leaves the index bytes unchanged', async () => {
+        // Arrange
+        const ctx = await seededRepo();
+        const read = await readIndex(ctx);
+        const original = read.entries.find((entry) => entry.path === NESTED_PATH) as IndexEntry;
+        const sut = await acquireIndexLock(ctx);
+        const before = await ctx.fs.read(`${ctx.layout.gitDir}/index`);
+        await sut.release();
+
+        // Act
+        const result = await sut.commitRefresh(read, [withLaterMtime(original)], NOTHING_VERIFIED);
+
+        // Assert
+        expect(result).toBe(false);
+        expect(await ctx.fs.read(`${ctx.layout.gitDir}/index`)).toEqual(before);
+      });
+    });
+  });
+
+  describe('Given a lock whose refresh already committed', () => {
+    describe('When refreshing again', () => {
+      it('Then it resolves false and renames nothing more', async () => {
+        // Arrange
+        const ctx = await seededRepo();
+        const read = await readIndex(ctx);
+        const original = read.entries.find((entry) => entry.path === NESTED_PATH) as IndexEntry;
+        const sut = await acquireIndexLock(ctx);
+        await sut.commitRefresh(read, [withLaterMtime(original)], NOTHING_VERIFIED);
+        const committed = await ctx.fs.read(`${ctx.layout.gitDir}/index`);
+
+        // Act
+        const result = await sut.commitRefresh(
+          read,
+          [{ ...withLaterMtime(original), mtimeSeconds: original.mtimeSeconds + 99 }],
+          NOTHING_VERIFIED,
+        );
+
+        // Assert
+        expect(result).toBe(false);
+        expect(await ctx.fs.read(`${ctx.layout.gitDir}/index`)).toEqual(committed);
+      });
+    });
+  });
+
+  describe('Given a read index also holding the refreshed path at a conflict stage', () => {
+    describe('When refreshing the stage-0 entry', () => {
+      it('Then only the stage-0 entry takes the refreshed stat', async () => {
+        // Arrange
+        const ctx = await seededRepo();
+        const real = await readIndex(ctx);
+        const original = real.entries.find((entry) => entry.path === NESTED_PATH) as IndexEntry;
+        const conflicted: IndexEntry = { ...original, flags: { ...original.flags, stage: 1 } };
+        const read = { ...real, entries: [...real.entries, conflicted] };
+        const sut = await acquireIndexLock(ctx);
+
+        // Act
+        const result = await sut.commitRefresh(read, [withLaterMtime(original)], NOTHING_VERIFIED);
+
+        // Assert
+        expect(result).toBe(true);
+        invalidateIndexCache(ctx);
+        const written = (await readIndex(ctx)).entries.filter(
+          (entry) => entry.path === NESTED_PATH,
+        );
+        expect(written).toEqual([withLaterMtime(original), conflicted]);
       });
     });
   });
@@ -270,7 +342,7 @@ describe('IndexLock.commitRefresh', () => {
         const otherWriterBytes = await ctx.fs.read(`${ctx.layout.gitDir}/index`);
 
         // Act
-        const result = await sut.commitRefresh(read, [withLaterMtime(original)]);
+        const result = await sut.commitRefresh(read, [withLaterMtime(original)], NOTHING_VERIFIED);
 
         // Assert
         expect(result).toBe(false);
@@ -291,7 +363,7 @@ describe('IndexLock.commitRefresh', () => {
         await ctx.fs.rm(`${ctx.layout.gitDir}/index`);
 
         // Act
-        const result = await sut.commitRefresh(read, [withLaterMtime(original)]);
+        const result = await sut.commitRefresh(read, [withLaterMtime(original)], NOTHING_VERIFIED);
 
         // Assert
         expect(result).toBe(false);
@@ -320,7 +392,7 @@ describe('IndexLock.commitRefresh', () => {
         const sut = await acquireIndexLock(ctx);
 
         // Act
-        const result = await sut.commitRefresh(read, [withLaterMtime(original)]);
+        const result = await sut.commitRefresh(read, [withLaterMtime(original)], NOTHING_VERIFIED);
 
         // Assert
         expect(result).toBe(true);
@@ -523,7 +595,7 @@ describe('acquireOptionalIndexLock', () => {
         const sut = (await acquireOptionalIndexLock(ctx)) as IndexLock;
 
         // Act
-        const result = await sut.commitRefresh(read, [withLaterMtime(original)]);
+        const result = await sut.commitRefresh(read, [withLaterMtime(original)], NOTHING_VERIFIED);
 
         // Assert
         expect(result).toBe(false);

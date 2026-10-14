@@ -12,6 +12,7 @@ import { joinPath } from './join-working-tree-path.js';
 import { buildCheckinAttributeProvider } from './read-gitattributes.js';
 
 const CORRUPT_INDEX_CODE_PREFIX = 'INVALID_INDEX_';
+const NOTHING_VERIFIED: ReadonlySet<FilePath> = new Set();
 
 /** `is_racy_timestamp`: a gitlink is never racy. */
 const isRacyTimestamp = (entry: IndexEntry, indexMtime: IndexMtime): boolean =>
@@ -92,8 +93,11 @@ const racilyClean = async (
   entries: ReadonlyArray<IndexEntry>,
   previous: GitIndex,
   indexMtime: IndexMtime,
+  verified: ReadonlySet<FilePath>,
 ): Promise<ReadonlyArray<IndexEntry>> => {
-  const racy = entries.filter((entry) => isRacyTimestamp(entry, indexMtime));
+  const racy = entries.filter(
+    (entry) => isRacyTimestamp(entry, indexMtime) && !verified.has(entry.path),
+  );
   if (racy.length === 0) return [];
   return filterConcurrently(carriedOver(previous, racy), (entry) =>
     statStillMatches(ctx, workDir, entry),
@@ -104,16 +108,18 @@ const racilyClean = async (
  * git's `do_write_index` racy smudge (`ce_smudge_racily_clean_entry`): a
  * carried-over entry not older than the index as read, whose stat still
  * matches a working file of different content, is written with size 0 so
- * the next stat comparison cannot mistake it for clean.
+ * the next stat comparison cannot mistake it for clean. `verified` paths were
+ * already found unchanged by the caller (git's `CE_UPTODATE`) and are not re-checked.
  */
 export const smudgeRacilyClean = async (
   ctx: Context,
   entries: ReadonlyArray<IndexEntry>,
   previous: GitIndex | undefined,
+  verified: ReadonlySet<FilePath> = NOTHING_VERIFIED,
 ): Promise<ReadonlyArray<IndexEntry>> => {
   const workDir = ctx.layout.workDir;
   if (workDir === undefined || previous?.indexMtime === undefined) return entries;
-  const clean = await racilyClean(ctx, workDir, entries, previous, previous.indexMtime);
+  const clean = await racilyClean(ctx, workDir, entries, previous, previous.indexMtime, verified);
   if (clean.length === 0) return entries;
   const provider = await buildCheckinAttributeProvider(ctx);
   const modified = await filterConcurrently(

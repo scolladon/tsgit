@@ -174,13 +174,14 @@ const statusInScope = async (ctx: Context, opts: StatusOptions): Promise<StatusR
   const tracked = trackedEntriesOf(index);
   ctx.progress.start(STATUS_SCAN_OP);
   try {
-    const { workingMap, refreshed } = await scanTrackedTree(ctx, index, tracked);
+    const trackedScan = await scanTrackedTree(ctx, index, tracked);
+    const { workingMap } = trackedScan;
     const lock = refreshEnabled(ctx, opts) ? await acquireOptionalIndexLock(ctx) : undefined;
     try {
       const untracked = await scanUntracked(ctx, tracked.trackedPaths);
       const scanned = { workingMap, untracked };
       const report = await reportStatus(ctx, { index, tracked, scanned, workDir });
-      if (lock) await updateIndexIfAble(lock, index, refreshed);
+      if (lock) await updateIndexIfAble(lock, index, trackedScan);
       return { branch: branchRefFromHead(head), detached: head.kind === 'direct', ...report };
     } finally {
       await lock?.release();
@@ -220,6 +221,8 @@ interface ScannedTree {
 interface TrackedScan {
   readonly workingMap: Map<FilePath, WorkingTreeDelta>;
   readonly refreshed: ReadonlyArray<IndexEntry>;
+  /** Paths the scan found unchanged against the index, by stat or by content (git's `CE_UPTODATE`). */
+  readonly verified: ReadonlySet<FilePath>;
 }
 
 /** Write the refreshed stat data back, only when something is worth persisting:
@@ -227,11 +230,11 @@ interface TrackedScan {
 const updateIndexIfAble = async (
   lock: IndexLock,
   index: GitIndex,
-  refreshed: ReadonlyArray<IndexEntry>,
+  { refreshed, verified }: TrackedScan,
 ): Promise<void> => {
   const racy = index.indexMtime !== undefined && hasRacyTimestamp(index.entries, index.indexMtime);
   if (refreshed.length === 0 && !racy) return lock.release();
-  await lock.commitRefresh(index, refreshed);
+  await lock.commitRefresh(index, refreshed, verified);
 };
 
 /** Build the check-in attribute provider once per status invocation. It is always
@@ -338,12 +341,14 @@ const scanWorkingTree = async (
 const trackedScanOf = (results: ReadonlyArray<ScannedEntry | undefined>): TrackedScan => {
   const workingMap = new Map<FilePath, WorkingTreeDelta>();
   const refreshed: IndexEntry[] = [];
+  const verified = new Set<FilePath>();
   for (const result of results) {
     if (result === undefined) continue;
     workingMap.set(result.path, result.delta);
+    if (result.delta.status === 'unchanged') verified.add(result.path);
     if (result.refreshed !== undefined) refreshed.push(result.refreshed);
   }
-  return { workingMap, refreshed };
+  return { workingMap, refreshed, verified };
 };
 
 /**

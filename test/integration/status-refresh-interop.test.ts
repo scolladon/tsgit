@@ -12,7 +12,7 @@
  *   interopSurface: index
  */
 import { execFileSync } from 'node:child_process';
-import { cp, mkdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
@@ -324,6 +324,53 @@ describe.skipIf(!GIT_AVAILABLE)('status refresh interop', () => {
           gitPorcelainV2Lines(pair.ours).filter((l) => !l.startsWith('# ')),
         );
         expect(tryRunGit(['-C', pair.ours, 'fsck']).ok).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a racy entry behind a clean filter', () => {
+    const FUTURE_SECONDS = 3600;
+
+    const buildFilteredRepo = async (dir: string, log: string): Promise<void> => {
+      runGit(['init', '-q', '-b', 'main', dir]);
+      git(dir, 'config', 'user.name', 'Ada');
+      git(dir, 'config', 'user.email', 'ada@example.com');
+      git(dir, 'config', 'filter.log.clean', `sh -c 'echo run >> "${log}"; cat'`);
+      await writeFile(path.join(dir, '.gitattributes'), '*.txt filter=log\n');
+      await writeFile(path.join(dir, 'f.txt'), 'body\n');
+      const future = new Date(Date.now() + FUTURE_SECONDS * 1000);
+      await utimes(path.join(dir, 'f.txt'), future, future);
+      git(dir, 'add', '.');
+      git(dir, 'commit', '-q', '-m', 'one');
+      await writeFile(log, '');
+    };
+
+    const filterRuns = async (log: string): Promise<number> =>
+      (await readFile(log, 'utf-8')).split('\n').filter((line) => line !== '').length;
+
+    describe('When status runs', () => {
+      it('Then the clean filter runs as often as under git', async () => {
+        // Arrange
+        const peerLog = path.join(pair.peer, '..', `${path.basename(pair.peer)}-filter.log`);
+        const oursLog = path.join(pair.ours, '..', `${path.basename(pair.ours)}-filter.log`);
+        const peerDir = path.join(pair.peer, 'filtered');
+        const oursDir = path.join(pair.ours, 'filtered');
+        await mkdir(peerDir);
+        await mkdir(oursDir);
+        await buildFilteredRepo(peerDir, peerLog);
+        await buildFilteredRepo(oursDir, oursLog);
+        const sut = createNodeContext({ workDir: oursDir });
+
+        // Act
+        git(peerDir, 'status');
+        await status(sut);
+
+        // Assert
+        const gitRuns = await filterRuns(peerLog);
+        expect(gitRuns).toBe(1);
+        expect(await filterRuns(oursLog)).toBe(gitRuns);
+        await rm(peerLog, { force: true });
+        await rm(oursLog, { force: true });
       });
     });
   });

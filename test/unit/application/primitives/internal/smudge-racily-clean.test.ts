@@ -76,6 +76,24 @@ describe('smudgeRacilyClean', () => {
     });
   });
 
+  describe('Given a racy carried-over entry whose path the caller already verified', () => {
+    describe('When the index is written', () => {
+      it('Then the entry is not re-checked and keeps its size', async () => {
+        // Arrange
+        const ctx = await trackedRepo();
+        await write(ctx, TRACKED, SAME_SIZE_REWRITE);
+        const entries = await entriesAsRead(ctx);
+        const sut = smudgeRacilyClean;
+
+        // Act
+        const result = await sut(ctx, entries, await readPreviousIndex(ctx), new Set([TRACKED]));
+
+        // Assert
+        expect(result).toEqual(entries);
+      });
+    });
+  });
+
   describe('Given core.autocrlf true, a racily-clean entry for an LF blob and its CRLF checkout', () => {
     describe('When smudging racily-clean entries', () => {
       it('Then the entry is kept (size unchanged) because the comparison converts the worktree', async () => {
