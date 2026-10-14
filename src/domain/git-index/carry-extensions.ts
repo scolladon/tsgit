@@ -74,8 +74,6 @@ export const carryExtensions = (
   kind: CarryKind,
   settings: CarrySettings,
 ): ReadonlyArray<IndexExtension> => {
-  // Stryker disable next-line ConditionalExpression: equivalent — with no previous extensions every findExtension is undefined, each carry* returns undefined and the filter yields [] anyway; the guard only skips that work
-  if (previous.length === 0) return [];
   return [
     carryTree(findExtension(previous, TREE_SIGNATURE), change, kind, settings.digestLength),
     carryUnmerged(findExtension(previous, REUC_SIGNATURE), change, kind),

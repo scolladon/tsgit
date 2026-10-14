@@ -125,7 +125,6 @@ function rebuildChildren(
 ): ReadonlyArray<CacheTreeEntry> {
   const children: CacheTreeEntry[] = [];
   for (const child of entry.children) {
-    // Stryker disable next-line ConditionalExpression: equivalent — with no groups left, groups.get(key) is undefined and groups.delete(key) a no-op for any key, so computing the key changes nothing; the guard only skips that work
     const key = groups.size === 0 ? undefined : keyOfChild(child);
     const group = key === undefined ? undefined : groups.get(key);
     if (key !== undefined) groups.delete(key);
