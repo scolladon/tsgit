@@ -303,11 +303,10 @@ const reportStatus = async (
  * Working-tree pass: compare every stage-0 entry to its working file. A
  * skip-worktree entry is intentionally absent from disk (sparse), so it is not
  * compared — its staged column is still surfaced via `stage0Map`. Every entry
- * ticks the progress tracker. The optional provider enables clean-filter
+ * ticks the progress tracker. The provider enables clean-filter
  * re-application so smudged-then-unmodified files report unchanged. The
  * optional `indexMtime` (the `.git/index` file's own mtime) arms the
- * stat-cache short-circuit in `compareWorkingTreeDelta` — `status` is the
- * only consumer that supplies it today. The comparisons fan out through the
+ * stat-cache short-circuit in `compareWorkingTreeDelta`. The comparisons fan out through the
  * `ioBound` bucket: each `lstat`+optional-hash is independent per path, and
  * `boundedMap`'s completion-order-independent result array is safe here
  * because every entry is keyed by its own unique path.
@@ -315,13 +314,13 @@ const reportStatus = async (
 const scanEntry = async (
   ctx: Context,
   entry: IndexEntry,
-  provider: AttributeProvider | undefined,
+  provider: AttributeProvider,
   indexMtime: GitIndex['indexMtime'],
   filterDriversConfigured: boolean,
 ): Promise<ScannedEntry | undefined> => {
   if (entry.flags.skipWorktree) return undefined;
   const { delta, refreshed } = await compareAndRefresh(ctx, entry, {
-    ...(provider !== undefined && { provider }),
+    provider,
     ...(indexMtime !== undefined && { indexMtime }),
     filterDriversConfigured,
   });
@@ -338,7 +337,7 @@ const scanWorkingTree = async (
   ctx: Context,
   stage0: ReadonlyArray<IndexEntry>,
   tracker: GranularityTracker,
-  provider: AttributeProvider | undefined,
+  provider: AttributeProvider,
   indexMtime: GitIndex['indexMtime'],
 ): Promise<TrackedScan> => {
   const filterDriversConfigured = await configuresFilterDriver(ctx);
@@ -353,10 +352,8 @@ const scanWorkingTree = async (
       }
     });
   // A clean driver hears the paths in index order, however the reads race;
-  // without attributes, or with no driver configured, no clean runs or
-  // refuses, and the scan needs no order.
-  const ordered = provider !== undefined && filterDriversConfigured;
-  const results = ordered ? await inIndexOrder(ctx, stage0, scan) : await scan();
+  // with no driver configured no clean runs or refuses, and the scan needs no order.
+  const results = filterDriversConfigured ? await inIndexOrder(ctx, stage0, scan) : await scan();
   return trackedScanOf(results);
 };
 
