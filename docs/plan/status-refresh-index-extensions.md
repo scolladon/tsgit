@@ -739,3 +739,26 @@
 
 ### Commit
 `test(bench): status settled and stat-invalid rows, stash round trip`
+
+## Fold addendum (session, after Part 24)
+
+Part 24's interop pinned three writers whose *write-or-not* decision differs from git 2.55. Each is confirmed against git and the current tsgit by `test/integration/index-extensions-interop.test.ts` rows (`divergence:` field), impact `edge` (visible through index extensions and stat data only). Each fold is one atomic commit, TDD, run before Part 25. Each fold deletes its row's `divergence:` field so the row asserts git's outcome, and drops the `WriteDivergence` variant once nothing uses it.
+
+### Fold A — `add` skips the write when nothing changed
+- git `builtin/add.c` finishes with `write_locked_index(…, COMMIT_LOCK | SKIP_IF_UNCHANGED)`: no `add_index_entry` and no removal leaves `cache_changed` 0, so the index is not rewritten (row `add b (stat unchanged …)`: `ZZZZ` survives in git).
+- tsgit: `src/application/commands/add.ts` commits unconditionally at its four sites (`addLiteralOnly`, `addByPathspec`, `addRenormalized`, `addAll`; grep `lock.commit(`). Skip the commit (release the lock) iff no path was re-staged, added or removed: `restagedPaths` empty AND the new entry set equals the existing one by path (no addition, no removal). Name it (e.g. `changesIndex`) rather than inlining.
+- Unit RED: memory repo, settled file `b`, `add(['b'])` twice → the second leaves the index file bytes (and a seeded `ZZZZ` via `withIndexExtensions`) unchanged and `rename` is not called. Keep the existing add suites green.
+- Interop: flip the row to plain (no `divergence`).
+- Commit: `fix(add): leave the index unwritten when nothing was staged`.
+
+### Fold B — `checkout -- <paths>` from the index writes the index
+- git `checkout_paths` always takes the index lock and writes (`write_locked_index(…, COMMIT_LOCK)`), refreshing the stat of each checked-out entry; the row `checkout -- x/y` shows `ZZZZ` dropped and `TREE`/`REUC`/`UNTR` kept (update class).
+- tsgit: `src/application/commands/checkout.ts` `materializePathRestoreLockless` (source `index`) never takes the lock. Make it lock-first like `materializePathRestoreLocked` (acquire → `readIndex` → `materializeTree` → `lock.commit(result.newIndexEntries, 'update')` → `finally release`), keeping the single index read. Update the explanatory comment block above it (it states "no index commit, no lock needed").
+- Unit RED: checkout of an index path → the entry's stat in the index equals the rewritten file's `lstat`, and a seeded `REUC` survives; a pre-existing `index.lock` now refuses with `RESOURCE_LOCKED` as git does (`fatal: Unable to create '…/index.lock': File exists`) — pin that exit with git 2.55 in the interop file.
+- Commit: `fix(checkout): write the index after restoring paths from it`.
+
+### Fold C — a clean `stash apply` writes the index
+- git `do_apply_stash` without `--index` ends with `unstage_changes_unless_new(&c_tree)`, which rewrites the index (row `stash apply`: `REUC` dropped). Pin first, in the interop file, what git's index holds after a clean apply when the stash ALSO added a new file (`git add n` before `git stash`): git keeps `n` staged (`ls-files -s`); assert tsgit's `ls-files -s` equals git's for both the plain and the new-file case. If tsgit's index content already differs (new file not staged), that is part of this fold.
+- tsgit: `src/application/commands/stash.ts` `applyUnderLock` commits only on conflict or `restoreIndex`. On the clean, non-`restoreIndex` path commit `'replace'` with the index git would write (current index entries, plus the stash's newly-added paths staged, if the pin shows git stages them).
+- Unit RED: clean apply over an index seeded with `REUC` → `REUC` gone, index rewritten.
+- Commit: `fix(stash): write the index after a clean apply`.
