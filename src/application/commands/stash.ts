@@ -35,6 +35,7 @@ import { createCommit } from '../primitives/create-commit.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { hashBlob } from '../primitives/hash-blob.js';
 import {
+  admitWrite,
   type CleanOrder,
   configuresFilterDriver,
   firstFailureOrValues,
@@ -211,6 +212,7 @@ const hashFileAt = async (
   workDir: string,
   request: HashRequest,
 ): Promise<HashedFile> => {
+  await admitWrite(ctx, request.path);
   const { bytes, notice } = await cleanedContent(ctx, joinPath(workDir, request.path), request);
   const id = await hashBlob(ctx, bytes, { write: true });
   const mode = deriveWorkingMode(request.stat);

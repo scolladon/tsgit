@@ -226,6 +226,33 @@ describe('stash push refusal order under the pool', () => {
     });
   });
 
+  describe('Given core.safecrlf true, a lossy first untracked file read slow and a safe second', () => {
+    describe('When stashPush includes untracked', () => {
+      it('Then the refusal names the first file and the second is never written', async () => {
+        // Arrange
+        const base = await committedRepo(['a.txt'], 'a\nb\n', SAFE_CRLF);
+        await write(base, 'u0.txt', 'first\n');
+        await write(base, 'u1.txt', 'second\r\n');
+        const ctx = withSlowRead(base, '/u0.txt');
+        const sut = stashPush;
+
+        // Act
+        const error = await sut(ctx, { includeUntracked: true }).then(
+          () => undefined,
+          (e: unknown) => e,
+        );
+
+        // Assert
+        expect(error).toBeInstanceOf(TsgitError);
+        expect((error as TsgitError).data).toMatchObject({
+          code: 'EOL_ROUND_TRIP_UNSAFE',
+          path: 'u0.txt',
+        });
+        expect((await looseObjectIds(base)).has(await blobId(base, 'second\n'))).toBe(false);
+      });
+    });
+  });
+
   describe('Given core.autocrlf true and two LF untracked files, the first read slow', () => {
     describe('When stashPush includes untracked', () => {
       it('Then the eol notices follow the input order', async () => {
