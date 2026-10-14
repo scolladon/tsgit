@@ -45,7 +45,7 @@ type Format = 'sha1' | 'sha256';
 type Carry = 'update' | 'replace';
 type TreeCheck = 'bytes' | 'valid-nodes' | 'git-oids';
 /** Where tsgit's decision to rewrite the index differs from git's: git writes and tsgit skips it, or the reverse. */
-type WriteDivergence = 'tsgit-skips-write' | 'tsgit-extra-write';
+type WriteDivergence = 'tsgit-skips-write';
 
 const DIGEST_LENGTH: Record<Format, 20 | 32> = { sha1: 20, sha256: 32 };
 const FILES = ['a', 'b', 'd/c', 'd/e/f', 'x/y', 'm'] as const;
@@ -247,10 +247,9 @@ const ADD_ROWS: ReadonlyArray<Row> = [
     tsgit: (ctx) => add(ctx, ['b']),
   },
   {
-    title: 'add b (stat unchanged; git does not write, tsgit does)',
+    title: 'add b (stat unchanged; git does not write)',
     carry: 'update',
     tree: 'bytes',
-    divergence: 'tsgit-extra-write',
     git: ok('add', 'b'),
     tsgit: (ctx) => add(ctx, ['b']),
   },
@@ -425,7 +424,6 @@ const play = async (pair: PeerPair, row: Row, format: Format): Promise<Outcome> 
 const expectZzzz = (row: Row, outcome: Outcome): void => {
   const expected = {
     'tsgit-skips-write': outcome.before.has('ZZZZ'),
-    'tsgit-extra-write': false,
     undefined: outcome.peer.has('ZZZZ'),
   }[row.divergence ?? 'undefined'];
   expect(outcome.ours.has('ZZZZ')).toBe(expected);

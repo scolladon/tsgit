@@ -224,6 +224,46 @@ describe('add carries index extensions', () => {
     });
   });
 
+  describe('Given every staged path has an unchanged stat', () => {
+    describe.each([
+      ['a literal file', ['b'], undefined],
+      ['a glob', ['*'], undefined],
+      ['all', undefined, { all: true }],
+    ] as const)('When add stages %s', (_name, paths, options) => {
+      it('Then the index is left unwritten and keeps its unknown extension', async () => {
+        // Arrange
+        const ctx = await carryingRepo();
+        const before = await ctx.fs.read(`${ctx.layout.gitDir}/index`);
+
+        // Act
+        const sut = add;
+        await sut(ctx, paths ?? [], options);
+
+        // Assert
+        expect(await ctx.fs.read(`${ctx.layout.gitDir}/index`)).toEqual(before);
+        expect(await signatures(ctx)).toContain('ZZZZ');
+      });
+    });
+  });
+
+  describe('Given a tracked file deleted from the working tree', () => {
+    describe('When add --all stages the removal', () => {
+      it('Then the index is rewritten without the file', async () => {
+        // Arrange
+        const ctx = await carryingRepo();
+        await ctx.fs.rm(`${ctx.layout.workDir}/b`);
+
+        // Act
+        const sut = add;
+        const result = await sut(ctx, [], { all: true });
+
+        // Assert
+        expect(result.removed).toEqual(['b']);
+        expect(await signatures(ctx)).not.toContain('ZZZZ');
+      });
+    });
+  });
+
   describe('Given no content change', () => {
     describe('When add renormalizes', () => {
       it('Then every directory is invalid and REUC is kept', async () => {

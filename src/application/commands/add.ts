@@ -41,6 +41,7 @@ import type { ConcurrencyLimiter } from '../primitives/internal/concurrency-limi
 import { type ConversionRoute, convertToGit } from '../primitives/internal/convert-blob.js';
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
+import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { indexRuleEntries } from '../primitives/internal/index-rule-entries.js';
 import { type IndexMtime, isEntryStatClean } from '../primitives/internal/is-entry-stat-clean.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
@@ -213,7 +214,7 @@ const addLiteralOnly = async (
       staging,
       validated,
     );
-    await lock.commit(Array.from(newEntries.values()), 'update', { restagedPaths });
+    await commitIfChanged(lock, state.entries.size, Array.from(newEntries.values()), restagedPaths);
     return { added, modified, removed: [], eolNotices };
   } finally {
     await lock.release();
@@ -271,6 +272,23 @@ const stageLiterals = async (
     else if (previous.id !== entry.id || previous.mode !== entry.mode) modified.push(path);
   }
   return { newEntries, added, modified, eolNotices, restagedPaths };
+};
+
+/** git's SKIP_IF_UNCHANGED: a re-staged, added or removed path is a change; additions are always re-staged, so a size drift is a removal. */
+const changesIndex = (
+  existingCount: number,
+  entries: ReadonlyArray<IndexEntry>,
+  restagedPaths: ReadonlyArray<FilePath>,
+): boolean => restagedPaths.length > 0 || entries.length !== existingCount;
+
+const commitIfChanged = async (
+  lock: IndexLock,
+  existingCount: number,
+  entries: ReadonlyArray<IndexEntry>,
+  restagedPaths: ReadonlyArray<FilePath>,
+): Promise<void> => {
+  if (!changesIndex(existingCount, entries, restagedPaths)) return;
+  await lock.commit(entries, 'update', { restagedPaths });
 };
 
 /** `ie_match_stat` clean paths keep their entry object; every other path was rebuilt, which git's add_index_entry reports to the cache-tree. */
@@ -457,7 +475,12 @@ const addByPathspec = async (
     // git add never refuses the whole tree, even when it holds nothing to add.
     const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
     enforceLiteralMustMatch(mustMatch, matched, literalSpellings);
-    await lock.commit(Array.from(newEntries.values()), 'update', { restagedPaths });
+    await commitIfChanged(
+      lock,
+      staged.existing.size,
+      Array.from(newEntries.values()),
+      restagedPaths,
+    );
     return { added: [...added].sort(), modified: [...modified].sort(), removed: [], eolNotices };
   } finally {
     await lock.release();
@@ -493,9 +516,7 @@ const addRenormalized = async (
     // Stryker disable next-line MethodExpression: equivalent — the whole-tree literal is itself among the on-disk literals (the work tree exists), so enforceLiteralMustMatch accepts it unfiltered.
     const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
     enforceLiteralMustMatch(mustMatch, onDisk, literalSpellings);
-    await lock.commit([...renormalized.entries], 'update', {
-      restagedPaths: renormalized.restagedPaths,
-    });
+    await commitIfChanged(lock, entries.length, renormalized.entries, renormalized.restagedPaths);
     return { added: [], modified: renormalized.modified, removed: [], eolNotices: [] };
   } finally {
     await lock.release();
@@ -691,9 +712,12 @@ export const addAll = async (
     modified.sort();
     // Stryker disable next-line MethodExpression: equivalent — `removed` is built by iterating `existing`, a Map populated from the always-byte-sorted index (serializeIndex sorts on every write), so it is already in ascending path order; the sort is a defensive no-op.
     removed.sort();
-    await lock.commit(Array.from(newEntries.values()), 'update', {
-      restagedPaths: restagedPathsOf(outcomes, existing),
-    });
+    await commitIfChanged(
+      lock,
+      existing.size,
+      Array.from(newEntries.values()),
+      restagedPathsOf(outcomes, existing),
+    );
     return { added, modified, removed, eolNotices: noticesOf(outcomes) };
   } finally {
     await lock.release();
