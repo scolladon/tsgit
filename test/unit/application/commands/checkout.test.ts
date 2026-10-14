@@ -1736,6 +1736,23 @@ describe('Given a path restore whose source is a revision', () => {
     });
   });
 
+  describe('When the path restored from the index fails to materialize', () => {
+    it('Then the index lock is released', async () => {
+      // Arrange
+      const { ctx } = await seedWithOlderBranch();
+      const failure = new Error('materialize failed');
+      vi.spyOn(materializeTreeMod, 'materializeTree').mockRejectedValueOnce(failure);
+      const sut = checkout;
+
+      // Act
+      const error = await sut(ctx, { paths: ['a.txt'] }).catch((e: unknown) => e);
+
+      // Assert
+      expect(error).toBe(failure);
+      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/index.lock`)).toBe(false);
+    });
+  });
+
   describe('When the path is restored from the index', () => {
     it('Then no smudge metadata is sent', async () => {
       // Arrange
