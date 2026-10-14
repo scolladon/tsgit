@@ -112,6 +112,54 @@ describe('status racy write-back', () => {
   });
 });
 
+describe('status racy write-back of an entry the scan found unchanged', () => {
+  describe('Given an entry whose mtime is in the same second as the index and unchanged content', () => {
+    describe('When status runs later', () => {
+      it('Then the file content is read once, the write-back not re-checking it', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        at(0);
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        at(3);
+        const reads = vi.spyOn(ctx.fs, 'read');
+        const sut = status;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const result = reads.mock.calls.filter(([path]) => String(path).endsWith('/a.txt')).length;
+        expect(result).toBe(1);
+      });
+    });
+  });
+});
+
+describe('status scan of a stat-clean entry', () => {
+  describe('Given a settled repo where nothing moved', () => {
+    describe('When status runs at a later second', () => {
+      it('Then no file content is read, the stat settling every entry', async () => {
+        // Arrange
+        const ctx = await seedSettled();
+        at(9);
+        const reads = vi.spyOn(ctx.fs, 'read');
+        const sut = status;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const result = reads.mock.calls.filter(([path]) =>
+          /\/[ab]\.txt$/.test(String(path)),
+        ).length;
+        expect(result).toBe(0);
+      });
+    });
+  });
+});
+
 describe('status racy write-back of a changed entry', () => {
   describe('Given b rewritten with the same size in the second it was staged and a stat-moved a', () => {
     describe('When status runs at T+5s and again at T+9s', () => {
