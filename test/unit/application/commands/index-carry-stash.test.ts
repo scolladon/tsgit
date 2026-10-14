@@ -84,9 +84,19 @@ const repoWithExtensions = async (): Promise<Context> => {
   return ctx;
 };
 
-const signatures = async (ctx: Context): Promise<ReadonlyArray<string>> => [
-  ...(await indexExtensionsOf(ctx)).keys(),
-];
+const SEEDED_BYTES: ReadonlyMap<string, Uint8Array> = new Map([
+  ['REUC', resolveUndoExtension('m', BLOB_ID, SHA1_DIGEST).data],
+  ['UNTR', UNTR_EXTENSION.data],
+]);
+
+/** The carried signatures; a kept REUC or UNTR must still hold the seeded bytes. */
+const carriedSignatures = async (ctx: Context): Promise<ReadonlyArray<string>> => {
+  const extensions = await indexExtensionsOf(ctx);
+  for (const [signature, bytes] of SEEDED_BYTES) {
+    if (extensions.has(signature)) expect(extensions.get(signature)).toEqual(bytes);
+  }
+  return [...extensions.keys()];
+};
 
 const chains = async (ctx: Context): Promise<ReadonlyArray<boolean | undefined>> => {
   const extensions = await indexExtensionsOf(ctx);
@@ -121,7 +131,7 @@ describe('stash carries index extensions', () => {
         await sut(ctx, {});
 
         // Assert
-        expect(await signatures(ctx)).toEqual(['TREE', 'UNTR']);
+        expect(await carriedSignatures(ctx)).toEqual(['TREE', 'UNTR']);
         expect(await chains(ctx)).toEqual(ALL_VALID);
       });
     });
@@ -139,7 +149,7 @@ describe('stash carries index extensions', () => {
         await sut(ctx, { includeUntracked: true });
 
         // Assert
-        expect(await signatures(ctx)).toEqual(['TREE', 'UNTR']);
+        expect(await carriedSignatures(ctx)).toEqual(['TREE', 'UNTR']);
         expect(await chains(ctx)).toEqual(ALL_VALID);
       });
     });
@@ -165,7 +175,7 @@ describe('stash carries index extensions', () => {
         await sut(ctx, {});
 
         // Assert
-        expect(await signatures(ctx)).toEqual(['TREE', 'UNTR']);
+        expect(await carriedSignatures(ctx)).toEqual(['TREE', 'UNTR']);
       });
     });
   });
@@ -185,7 +195,7 @@ describe('stash carries index extensions', () => {
         await sut(ctx, {});
 
         // Assert
-        expect(await signatures(ctx)).toEqual(['TREE', 'UNTR']);
+        expect(await carriedSignatures(ctx)).toEqual(['TREE', 'UNTR']);
       });
     });
   });
@@ -293,7 +303,7 @@ describe('stash carries index extensions', () => {
         await sut(ctx, { restoreIndex: true });
 
         // Assert
-        expect(await signatures(ctx)).toEqual(['TREE', 'UNTR']);
+        expect(await carriedSignatures(ctx)).toEqual(['TREE', 'UNTR']);
         expect(await chains(ctx)).toEqual([false, true, true, false]);
       });
     });

@@ -114,9 +114,19 @@ const validity = async (ctx: Context): Promise<ReadonlyMap<string, boolean>> => 
   return out;
 };
 
-const signatures = async (ctx: Context): Promise<ReadonlyArray<string>> => [
-  ...(await indexExtensionsOf(ctx)).keys(),
-];
+const SEEDED_BYTES: ReadonlyMap<string, Uint8Array> = new Map([
+  ['REUC', resolveUndoExtension('m', BLOB_ID, SHA1_DIGEST).data],
+  ['UNTR', UNTR_EXTENSION.data],
+]);
+
+/** The carried signatures; a kept REUC or UNTR must still hold the seeded bytes. */
+const carriedSignatures = async (ctx: Context): Promise<ReadonlyArray<string>> => {
+  const extensions = await indexExtensionsOf(ctx);
+  for (const [signature, bytes] of SEEDED_BYTES) {
+    if (extensions.has(signature)) expect(extensions.get(signature)).toEqual(bytes);
+  }
+  return [...extensions.keys()];
+};
 
 const treeBytes = async (ctx: Context): Promise<Uint8Array | undefined> =>
   (await indexExtensionsOf(ctx)).get('TREE');
@@ -139,7 +149,7 @@ describe('reset carries index extensions', () => {
 
         // Assert
         expect(await treeBytes(ctx)).toEqual(before);
-        expect(await signatures(ctx)).toEqual(['TREE', 'REUC', 'UNTR']);
+        expect(await carriedSignatures(ctx)).toEqual(['TREE', 'REUC', 'UNTR']);
       });
     });
   });
@@ -162,7 +172,7 @@ describe('reset carries index extensions', () => {
           true,
           true,
         ]);
-        expect(await signatures(ctx)).toContain('REUC');
+        expect(await carriedSignatures(ctx)).toContain('REUC');
       });
     });
   });
@@ -178,7 +188,7 @@ describe('reset carries index extensions', () => {
         await sut(ctx, { mode: 'hard', rev: 'HEAD~1' });
 
         // Assert
-        expect(await signatures(ctx)).toEqual(['TREE', 'UNTR']);
+        expect(await carriedSignatures(ctx)).toEqual(['TREE', 'UNTR']);
       });
     });
   });
@@ -198,7 +208,7 @@ describe('checkout carries index extensions', () => {
         // Assert
         const valid = await validity(ctx);
         expect([valid.get(''), valid.get('d'), valid.get('x')]).toEqual([false, true, false]);
-        expect(await signatures(ctx)).toEqual(['TREE']);
+        expect(await carriedSignatures(ctx)).toEqual(['TREE']);
       });
     });
   });
@@ -217,7 +227,7 @@ describe('checkout carries index extensions', () => {
 
         // Assert
         expect(await treeBytes(ctx)).toEqual(before);
-        expect(await signatures(ctx)).toContain('REUC');
+        expect(await carriedSignatures(ctx)).toContain('REUC');
       });
     });
   });
@@ -234,7 +244,7 @@ describe('checkout carries index extensions', () => {
         await sut(ctx, { paths: ['x/y'] });
 
         // Assert
-        expect(await signatures(ctx)).not.toContain('ZZZZ');
+        expect(await carriedSignatures(ctx)).not.toContain('ZZZZ');
       });
 
       it('Then the entry stat equals the restored file lstat', async () => {
@@ -290,7 +300,7 @@ describe('checkout carries index extensions', () => {
         // Assert
         const valid = await validity(ctx);
         expect([valid.get(''), valid.get('d'), valid.get('x')]).toEqual([false, true, false]);
-        expect(await signatures(ctx)).toContain('REUC');
+        expect(await carriedSignatures(ctx)).toContain('REUC');
       });
     });
   });
@@ -319,7 +329,7 @@ describe('submodule add carries index extensions', () => {
         await sut(ctx, { url: SUB_URL, path: 'libs/sub' });
 
         // Assert
-        expect(await signatures(ctx)).toEqual(['TREE', 'REUC']);
+        expect(await carriedSignatures(ctx)).toEqual(['TREE', 'REUC']);
       });
     });
   });

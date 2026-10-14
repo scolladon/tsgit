@@ -118,9 +118,19 @@ const validity = async (ctx: Context): Promise<ReadonlyMap<string, boolean>> => 
   return out;
 };
 
-const signatures = async (ctx: Context): Promise<ReadonlyArray<string>> => [
-  ...(await indexExtensionsOf(ctx)).keys(),
-];
+const SEEDED_BYTES: ReadonlyMap<string, Uint8Array> = new Map([
+  ['REUC', resolveUndoExtension('m', BLOB_ID, SHA1_DIGEST).data],
+  ['UNTR', UNTR_EXTENSION.data],
+]);
+
+/** The carried signatures; a kept REUC or UNTR must still hold the seeded bytes. */
+const carriedSignatures = async (ctx: Context): Promise<ReadonlyArray<string>> => {
+  const extensions = await indexExtensionsOf(ctx);
+  for (const [signature, bytes] of SEEDED_BYTES) {
+    if (extensions.has(signature)) expect(extensions.get(signature)).toEqual(bytes);
+  }
+  return [...extensions.keys()];
+};
 
 const chains = async (ctx: Context): Promise<ReadonlyArray<boolean | undefined>> => {
   const valid = await validity(ctx);
@@ -146,7 +156,7 @@ describe('merge carries index extensions', () => {
         await sut(ctx, { rev: 'other' });
 
         // Assert
-        expect(await signatures(ctx)).toEqual(['TREE']);
+        expect(await carriedSignatures(ctx)).toEqual(['TREE']);
         expect(await chains(ctx)).toEqual([false, true, true, false]);
       });
     });
@@ -166,7 +176,7 @@ describe('merge carries index extensions', () => {
         await sut(ctx, { rev: 'other', author: AUTHOR });
 
         // Assert
-        expect(await signatures(ctx)).toEqual(['TREE']);
+        expect(await carriedSignatures(ctx)).toEqual(['TREE']);
         expect(await chains(ctx)).toEqual([false, true, true, false]);
       });
     });
@@ -187,7 +197,7 @@ describe('merge carries index extensions', () => {
 
         // Assert
         expect(result.kind).toBe('conflict');
-        expect(await signatures(ctx)).toEqual(['TREE', 'UNTR']);
+        expect(await carriedSignatures(ctx)).toEqual(['TREE', 'UNTR']);
         expect(await chains(ctx)).toEqual([false, true, true, false]);
       });
     });
@@ -208,7 +218,7 @@ describe('merge carries index extensions', () => {
         await sut(ctx);
 
         // Assert
-        expect(await signatures(ctx)).toEqual(['TREE', 'UNTR']);
+        expect(await carriedSignatures(ctx)).toEqual(['TREE', 'UNTR']);
       });
     });
   });
@@ -264,7 +274,7 @@ describe('pull carries index extensions', () => {
         await sut({ ...ctx, transport }, { remote: 'origin', ref: 'main:main' });
 
         // Assert
-        expect(await signatures(ctx)).toEqual(['TREE']);
+        expect(await carriedSignatures(ctx)).toEqual(['TREE']);
         expect(await chains(ctx)).toEqual([false, true, true, false]);
       });
     });

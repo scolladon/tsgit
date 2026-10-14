@@ -217,7 +217,10 @@ describe('stash push refusal order under the pool', () => {
 
         // Assert
         expect(error).toBeInstanceOf(TsgitError);
-        expect((error as TsgitError).data).toMatchObject({ path: 'u0.txt' });
+        expect((error as TsgitError).data).toMatchObject({
+          code: 'EOL_ROUND_TRIP_UNSAFE',
+          path: 'u0.txt',
+        });
         expect((await looseObjectIds(base)).has(await blobId(base, 'second\n'))).toBe(false);
       });
     });
