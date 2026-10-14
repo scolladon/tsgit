@@ -6,12 +6,17 @@
  * basename is not a registry op).
  */
 import * as fs from 'node:fs';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 import * as git from 'isomorphic-git';
 import { openRepository } from '../../src/index.node.js';
 import { setupDirtyWorkingTree, setupSmallRepo } from './fixtures.js';
 import { benchScenario } from './support/bench-dsl.js';
 import { removeSync } from './support/fixture-scratch.js';
+
+// The dirty files' mtimes must leave the index's second, or the refresh write
+// is skipped as racily clean and every measured call keeps paying for it.
+const SETTLE_DELAY_MS = 1_100;
 
 benchScenario(
   'Given a 50-commit working tree with 25 modified files',
@@ -20,6 +25,8 @@ benchScenario(
     const fixture = await setupSmallRepo({ commits: 50 });
     await setupDirtyWorkingTree(fixture, 25);
     const repo = await openRepository({ cwd: fixture.cwd });
+    await sleep(SETTLE_DELAY_MS);
+    await repo.status();
 
     const sut = async (): Promise<void> => {
       await repo.status();

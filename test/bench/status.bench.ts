@@ -25,6 +25,8 @@ import { MULTI_TIERS, tieredScenario } from './support/tiered-bench.js';
 // skipped as racily clean.
 const SETTLE_DELAY_MS = 1_100;
 
+type StatusMatrixOptions = Pick<Parameters<typeof git.statusMatrix>[0], 'refresh'>;
+
 const indexInode = (cwd: string): number => statSync(path.join(cwd, '.git', 'index')).ino;
 
 const assertIndexUntouched = async (
@@ -42,6 +44,7 @@ const buildTierScenario = async (
   scenario: string,
   prepare: (repo: Repository) => Promise<void>,
   measured: (repo: Repository) => Promise<unknown>,
+  baselineOptions: StatusMatrixOptions = {},
 ): Promise<BenchComparison> => {
   const scratch = await copyFixtureToScratch(fixture.cwd);
   const repo = await openRepository({ cwd: scratch.cwd });
@@ -56,7 +59,7 @@ const buildTierScenario = async (
       await measured(repo);
     },
     baseline: async (): Promise<void> => {
-      await git.statusMatrix({ fs, dir: scratch.cwd });
+      await git.statusMatrix({ fs, dir: scratch.cwd, ...baselineOptions });
     },
   };
 };
@@ -85,5 +88,6 @@ await tieredScenario(
       'stat-invalid',
       async () => {},
       (repo) => repo.status({ refresh: false }),
+      { refresh: false },
     ),
 );
