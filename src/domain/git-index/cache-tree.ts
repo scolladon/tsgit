@@ -9,6 +9,7 @@
  *   format:  git-index-dirc
  */
 import { encode, hexToBytes } from '../objects/encoding.js';
+import type { FilePath } from '../objects/object-id.js';
 import { invalidIndexEntry } from './error.js';
 import type { CacheTreeEntry } from './index-entry.js';
 
@@ -63,4 +64,36 @@ export function serializeCacheTree(root: CacheTreeEntry, digestLength: 20 | 32):
   const out = new Uint8Array(sizeOf(node));
   write(node, out, 0);
   return out;
+}
+
+function invalidated(
+  entry: CacheTreeEntry,
+  children: ReadonlyArray<CacheTreeEntry>,
+): CacheTreeEntry {
+  return {
+    path: entry.path,
+    entryCount: -1,
+    subtreeCount: entry.subtreeCount - (entry.children.length - children.length),
+    children,
+  };
+}
+
+function invalidateAlong(entry: CacheTreeEntry, components: ReadonlyArray<string>): CacheTreeEntry {
+  const [head, ...rest] = components;
+  const index = entry.children.findIndex((child) => child.path === head);
+  const child = entry.children[index];
+  if (child === undefined) return invalidated(entry, entry.children);
+  const next = rest.length === 0 ? undefined : invalidateAlong(child, rest);
+  const children =
+    next === undefined
+      ? entry.children.filter((_, i) => i !== index)
+      : entry.children.map((c, i) => (i === index ? next : c));
+  return invalidated(entry, children);
+}
+
+export function invalidateCacheTree(
+  root: CacheTreeEntry,
+  paths: ReadonlyArray<FilePath>,
+): CacheTreeEntry {
+  return paths.reduce((tree, path) => invalidateAlong(tree, path.split('/')), root);
 }

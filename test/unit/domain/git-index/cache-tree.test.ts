@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import type { TsgitError } from '../../../../src/domain/error.js';
-import { serializeCacheTree } from '../../../../src/domain/git-index/cache-tree.js';
+import {
+  invalidateCacheTree,
+  serializeCacheTree,
+} from '../../../../src/domain/git-index/cache-tree.js';
 import type { CacheTreeEntry } from '../../../../src/domain/git-index/index-entry.js';
 import { concatBytes, encode, hexToBytes } from '../../../../src/domain/objects/encoding.js';
-import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
+import type { FilePath, ObjectId } from '../../../../src/domain/objects/object-id.js';
 
 const NUL = new Uint8Array([0]);
 
@@ -89,6 +92,123 @@ describe('serializeCacheTree', () => {
           offset: 0,
           reason: 'cache-tree oid width does not match the digest length',
         });
+      });
+    });
+  });
+});
+
+const fp = (...paths: string[]): FilePath[] => paths as FilePath[];
+
+function baseTree(): CacheTreeEntry {
+  const e: CacheTreeEntry = {
+    path: 'e',
+    entryCount: 1,
+    subtreeCount: 0,
+    id: oid(40, 'e'),
+    children: [],
+  };
+  const d: CacheTreeEntry = {
+    path: 'd',
+    entryCount: 2,
+    subtreeCount: 1,
+    id: oid(40, 'd'),
+    children: [e],
+  };
+  const x: CacheTreeEntry = {
+    path: 'x',
+    entryCount: 1,
+    subtreeCount: 0,
+    id: oid(40, '1'),
+    children: [],
+  };
+  return { path: '', entryCount: 5, subtreeCount: 2, id: oid(40, 'a'), children: [d, x] };
+}
+
+describe('invalidateCacheTree', () => {
+  describe('Given the base tree', () => {
+    describe('When invalidateCacheTree(["d/c"])', () => {
+      it('Then root and d are -1 without id, e and x are the same objects', () => {
+        // Arrange
+        const root = baseTree();
+        const sut = invalidateCacheTree;
+
+        // Act
+        const result = sut(root, fp('d/c'));
+
+        // Assert
+        expect(result.entryCount).toBe(-1);
+        expect(result).not.toHaveProperty('id');
+        expect(result.children[0]?.entryCount).toBe(-1);
+        expect(result.children[0]).not.toHaveProperty('id');
+        expect(result.children[0]?.children[0]).toBe(root.children[0]?.children[0]);
+        expect(result.children[1]).toBe(root.children[1]);
+      });
+    });
+
+    describe('When invalidateCacheTree(["d/e/n"])', () => {
+      it('Then root, d and e are -1 and x is the same object', () => {
+        // Arrange
+        const root = baseTree();
+        const sut = invalidateCacheTree;
+
+        // Act
+        const result = sut(root, fp('d/e/n'));
+
+        // Assert
+        expect(result.entryCount).toBe(-1);
+        expect(result.children[0]?.entryCount).toBe(-1);
+        expect(result.children[0]?.children[0]?.entryCount).toBe(-1);
+        expect(result.children[0]?.children[0]).not.toHaveProperty('id');
+        expect(result.children[1]).toBe(root.children[1]);
+      });
+    });
+
+    describe('When invalidateCacheTree(["x"]) where x is a subtree name', () => {
+      it('Then x is removed and root subtreeCount is 1', () => {
+        // Arrange
+        const root = baseTree();
+        const sut = invalidateCacheTree;
+
+        // Act
+        const result = sut(root, fp('x'));
+
+        // Assert
+        expect(result.children.map((c) => c.path)).toEqual(['d']);
+        expect(result.subtreeCount).toBe(1);
+        expect(result.entryCount).toBe(-1);
+        expect(result.children[0]).toBe(root.children[0]);
+      });
+    });
+
+    describe('When invalidateCacheTree(["b", "d/b2", "q/r"])', () => {
+      it('Then only the root and d chains are invalidated and no node is created', () => {
+        // Arrange
+        const root = baseTree();
+        const sut = invalidateCacheTree;
+
+        // Act
+        const result = sut(root, fp('b', 'd/b2', 'q/r'));
+
+        // Assert
+        expect(result.children.map((c) => c.path)).toEqual(['d', 'x']);
+        expect(result.entryCount).toBe(-1);
+        expect(result.children[0]?.entryCount).toBe(-1);
+        expect(result.children[0]?.children[0]).toBe(root.children[0]?.children[0]);
+        expect(result.children[1]).toBe(root.children[1]);
+      });
+    });
+
+    describe('When invalidateCacheTree([])', () => {
+      it('Then the root itself is returned', () => {
+        // Arrange
+        const root = baseTree();
+        const sut = invalidateCacheTree;
+
+        // Act
+        const result = sut(root, []);
+
+        // Assert
+        expect(result).toBe(root);
       });
     });
   });
