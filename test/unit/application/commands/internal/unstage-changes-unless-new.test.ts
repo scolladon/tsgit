@@ -126,4 +126,39 @@ describe('unstageChangesUnlessNew', () => {
       });
     });
   });
+
+  describe('Given a changed path whose previous entry was assume-valid and skip-worktree', () => {
+    describe('When the changes are unstaged', () => {
+      it('Then the restored entry carries the plain stage-0 flags', () => {
+        // Arrange
+        const flagged = { ...STAGE0_FLAGS, assumeValid: true, skipWorktree: true };
+        const before = [{ ...entry('x', '1'), flags: flagged }];
+        const merged = [entry('x', '9')];
+
+        // Act
+        const sut = unstageChangesUnlessNew;
+        const result = sut(merged, before);
+
+        // Assert
+        expect(result.entries.map((e) => e.flags)).toEqual([STAGE0_FLAGS]);
+      });
+    });
+  });
+
+  describe('Given a before index holding conflict stages for a path', () => {
+    describe('When the changes are unstaged', () => {
+      it('Then no entry is restored for the conflicted path', () => {
+        // Arrange
+        const before = [entry('c', '1', 1), entry('c', '2', 2), entry('c', '3', 3)];
+        const merged: IndexEntry[] = [];
+
+        // Act
+        const sut = unstageChangesUnlessNew;
+        const result = sut(merged, before);
+
+        // Assert
+        expect(result).toEqual({ entries: [], restagedPaths: [] });
+      });
+    });
+  });
 });

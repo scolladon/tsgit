@@ -14,7 +14,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
-import { stashApply, stashPush } from '../../src/application/commands/stash.js';
+import { stashApply, stashPop, stashPush } from '../../src/application/commands/stash.js';
 import {
   GIT_AVAILABLE,
   git,
@@ -114,4 +114,44 @@ describe.skipIf(!GIT_AVAILABLE)('stash apply index interop', () => {
       });
     });
   }
+
+  describe('Given a keep-index stash whose staged state the index still holds', () => {
+    describe('When stash pop with the index flag runs in git and in tsgit on a twin', () => {
+      let pair: PeerPair;
+
+      beforeAll(async () => {
+        pair = await makePeerPair('stash-pop-keep-index');
+        initBothRepos(pair.peer, pair.ours);
+        for (const dir of [pair.peer, pair.ours]) {
+          await put(dir, 'a', '1\n');
+          await put(dir, 'b', '1\n');
+          git(dir, 'add', '.');
+          git(dir, 'commit', '-q', '-m', 'base');
+          await put(dir, 'a', '2\n');
+          git(dir, 'add', 'a');
+          await put(dir, 'b', '2\n');
+        }
+        git(pair.peer, 'stash', 'push', '-q', '--keep-index');
+        git(pair.peer, 'stash', 'pop', '-q', '--index');
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await stashPush(ctx, { keepIndex: true });
+        const sut = stashPop;
+        await sut(ctx, { restoreIndex: true });
+      }, ROW_TIMEOUT_MS);
+
+      afterAll(async () => {
+        await pair.dispose();
+      });
+
+      it('Then the staged entries agree with git', () => {
+        // Arrange + Assert
+        expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+      });
+
+      it('Then the same paths carry a zero stat as in git', () => {
+        // Arrange + Assert
+        expect(zeroStatPaths(pair.ours)).toEqual(zeroStatPaths(pair.peer));
+      });
+    });
+  });
 });
