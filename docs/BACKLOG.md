@@ -24,7 +24,7 @@ Details live in git history, ADRs (`docs/adr/`), and design docs (`docs/design/`
 2. ~~#309 `emptyTreeOid` / `EMPTY_TREE_OID` runtime export from the node entry~~ (shipped in #314)
 3. Release 5.0.0 — merge release-please PR #299
 4. ~~EOL conversion subsystem (32.6) — ahead of 31.4~~ (shipped in #316)
-5. 31.4 run 1 — (a)+(b)+(c)+(d-i)
+5. ~~31.4 run 1 — (a)+(b)+(d-i)~~ (shipped in #317; (c) shipped in #313)
 6. 31.10 / 31.11
 7. #311 + 31.8 paired (follow git 2.56; pin CI git in the same PR)
 8. 31.5 → 31.6 (investigate #310 first)
