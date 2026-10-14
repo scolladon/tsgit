@@ -552,7 +552,8 @@ const renormalizeEntries = async (
     }
     const entry = await renormalizeOne(staging, previous);
     next.push(entry);
-    if (wasRestaged(previous, entry)) restagedPaths.push(previous.path);
+    // renormalizeOne rebuilds every re-cleaned entry, so each one is restaged.
+    restagedPaths.push(previous.path);
     if (entry.id !== previous.id || entry.mode !== previous.mode) modified.push(previous.path);
   }
   return { entries: next, modified, restagedPaths };
