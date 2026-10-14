@@ -24,7 +24,7 @@ export const materializeWorktreeFromHead = async (ctx: Context): Promise<Materia
   try {
     const currentIndex = await readIndex(ctx);
     const result = await materializeTree(ctx, { targetTree: target.id, currentIndex });
-    await lock.commit(result.newIndexEntries);
+    await lock.commit(result.newIndexEntries, 'replace');
     return result;
   } finally {
     await lock.release();

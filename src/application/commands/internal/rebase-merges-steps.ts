@@ -151,10 +151,10 @@ const mergeIntoLockedIndex = async (
   if (res.kind === 'would-overwrite')
     throw workingTreeDirty({ localChanges: res.localChanges, untracked: res.untracked });
   if (res.kind === 'conflict') {
-    await lock.commit(res.indexEntries);
+    await lock.commit(res.indexEntries, 'replace');
     return { kind: 'conflict', conflicts: res.conflicts };
   }
-  await lock.commit(res.result.newIndexEntries);
+  await lock.commit(res.result.newIndexEntries, 'replace');
   return { kind: 'clean', mergedTree: res.mergedTree, oursTree };
 };
 
