@@ -4,6 +4,7 @@ import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { stashApply, stashPop, stashPush } from '../../../../src/application/commands/stash.js';
+import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { updateConfigEntries } from '../../../../src/application/primitives/update-config.js';
 import type { CacheTreeEntry } from '../../../../src/domain/git-index/index-entry.js';
 import { parseCacheTree } from '../../../../src/domain/git-index/index-parser.js';
@@ -164,6 +165,50 @@ describe('stash carries index extensions', () => {
 
         // Assert
         expect(await signatures(ctx)).toEqual(['TREE', 'UNTR']);
+      });
+    });
+  });
+
+  describe('Given a clean stash of a worktree-only edit and an index carrying extensions', () => {
+    describe('When stash apply merges cleanly', () => {
+      it('Then REUC and the unknown extension are dropped', async () => {
+        // Arrange
+        const ctx = await repoWithExtensions();
+        await write(ctx, 'x/y', 'edited\n');
+        await stashPush(ctx, {});
+        advance(1);
+        await carryAllExtensions(ctx);
+
+        // Act
+        const sut = stashApply;
+        await sut(ctx, {});
+
+        // Assert
+        expect(await signatures(ctx)).toEqual(['TREE', 'UNTR']);
+      });
+    });
+  });
+
+  describe('Given a stash whose index added a new file', () => {
+    describe('When stash apply merges cleanly without restoring the index', () => {
+      it('Then the new file stays staged and the edit stays unstaged', async () => {
+        // Arrange
+        const ctx = await repoWithExtensions();
+        await write(ctx, 'x/y', 'edited\n');
+        await write(ctx, 'n', 'n\n');
+        await add(ctx, ['n']);
+        advance(1);
+        await stashPush(ctx, {});
+        advance(1);
+
+        // Act
+        const sut = stashApply;
+        await sut(ctx, {});
+
+        // Assert
+        const paths = (await readIndex(ctx)).entries.map((e) => e.path);
+        expect(paths).toContain('n');
+        expect(paths).toHaveLength(Object.keys(FILES).length + 1);
       });
     });
   });

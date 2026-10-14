@@ -14,7 +14,7 @@
  *   interopSurface: index
  */
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm as removeFile, utimes, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
@@ -45,8 +45,6 @@ import {
 type Format = 'sha1' | 'sha256';
 type Carry = 'update' | 'replace';
 type TreeCheck = 'bytes' | 'valid-nodes' | 'git-oids';
-/** Where tsgit's decision to rewrite the index differs from git's: git writes and tsgit skips it, or the reverse. */
-type WriteDivergence = 'tsgit-skips-write';
 
 const DIGEST_LENGTH: Record<Format, 20 | 32> = { sha1: 20, sha256: 32 };
 const FILES = ['a', 'b', 'd/c', 'd/e/f', 'x/y', 'm'] as const;
@@ -181,7 +179,6 @@ interface Row {
   readonly title: string;
   readonly carry: Carry;
   readonly tree: TreeCheck;
-  readonly divergence?: WriteDivergence;
   readonly prepare?: (dir: string) => Promise<void>;
   readonly git: (dir: string) => void;
   readonly tsgit: (ctx: Context) => Promise<unknown>;
@@ -211,6 +208,14 @@ const stashedDC = async (dir: string): Promise<void> => {
   const stash = git(dir, 'stash', 'create').trim();
   git(dir, 'stash', 'store', '-m', 'wip', stash);
   await write(dir, 'd/c', 'd/c body\n');
+};
+
+const stashedDCWithNewFile = async (dir: string): Promise<void> => {
+  await write(dir, 'n', 'new\n');
+  git(dir, 'add', 'n');
+  await stashedDC(dir);
+  git(dir, 'rm', '-q', '--cached', 'n');
+  await removeFile(path.join(dir, 'n'));
 };
 
 const ADD_MODIFIED: Row = {
@@ -381,11 +386,18 @@ const REPLACE_ROWS: ReadonlyArray<Row> = [
     tsgit: (ctx) => stashPush(ctx, {}),
   },
   {
-    title: 'stash apply (git writes the index, tsgit does not)',
+    title: 'stash apply',
     carry: 'replace',
     tree: 'git-oids',
-    divergence: 'tsgit-skips-write',
     prepare: stashedDC,
+    git: ok('stash', 'apply', '-q'),
+    tsgit: (ctx) => stashApply(ctx, {}),
+  },
+  {
+    title: 'stash apply (the stash also added a new file)',
+    carry: 'replace',
+    tree: 'git-oids',
+    prepare: stashedDCWithNewFile,
     git: ok('stash', 'apply', '-q'),
     tsgit: (ctx) => stashApply(ctx, {}),
   },
@@ -421,12 +433,8 @@ const play = async (pair: PeerPair, row: Row, format: Format): Promise<Outcome> 
   };
 };
 
-const expectZzzz = (row: Row, outcome: Outcome): void => {
-  const expected = {
-    'tsgit-skips-write': outcome.before.has('ZZZZ'),
-    undefined: outcome.peer.has('ZZZZ'),
-  }[row.divergence ?? 'undefined'];
-  expect(outcome.ours.has('ZZZZ')).toBe(expected);
+const expectZzzz = (outcome: Outcome): void => {
+  expect(outcome.ours.has('ZZZZ')).toBe(outcome.peer.has('ZZZZ'));
 };
 
 const expectCarried = (outcome: Outcome, signature: string, carried: boolean): void => {
@@ -472,25 +480,22 @@ const describeRow = (row: Row, format: Format = 'sha1'): void => {
 
       it('Then ZZZZ survives exactly where git keeps it', () => {
         // Assert
-        expectZzzz(row, outcome);
+        expectZzzz(outcome);
       });
 
       it('Then REUC follows the writer class', () => {
         // Assert
-        expectCarried(
-          outcome,
-          'REUC',
-          row.carry === 'update' || row.divergence === 'tsgit-skips-write',
-        );
+        expectCarried(outcome, 'REUC', row.carry === 'update');
       });
 
       it('Then UNTR follows the tracked-set rule', () => {
         // Assert
-        expectCarried(
-          outcome,
-          'UNTR',
-          !outcome.trackedSetChanged || row.divergence === 'tsgit-skips-write',
-        );
+        expectCarried(outcome, 'UNTR', !outcome.trackedSetChanged);
+      });
+
+      it('Then the staged entries agree with git', () => {
+        // Assert
+        expect(git(outcome.oursDir, 'ls-files', '-s')).toBe(git(outcome.peerDir, 'ls-files', '-s'));
       });
 
       it('Then TREE agrees with git', () => {

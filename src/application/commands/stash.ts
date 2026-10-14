@@ -18,6 +18,7 @@ import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import type { EolNotice } from '../../domain/eol/crlf-conversion.js';
 import { TsgitError } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
+import { pathComparatorFor } from '../../domain/git-index/index-writer.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import { abbreviateOid, type ConflictType, STASH_LABELS } from '../../domain/merge/index.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
@@ -802,9 +803,26 @@ const applyUnderLock = async (
   if (input.restoreIndex === true) {
     const indexParent = parsed.indexParent;
     await reinstateIndex(ctx, lock, { bTree, cTree, indexParent, currentIndex });
+  } else {
+    await keepNewPathsStaged(ctx, lock, result.mergedTree, currentIndex);
   }
   if (uTree !== undefined) await restoreUntracked(ctx, uTree);
   return { kind: 'applied', stash: w };
+};
+
+/** git's `unstage_changes_unless_new`: rewrite the index, keeping only the stash's newly added paths staged. */
+const keepNewPathsStaged = async (
+  ctx: Context,
+  lock: IndexLock,
+  mergedTree: ObjectId,
+  currentIndex: GitIndex,
+): Promise<void> => {
+  const known = new Set(currentIndex.entries.map((entry) => entry.path));
+  const merged = await buildIndexFromTree(ctx, { targetTree: mergedTree, currentIndex });
+  const added = merged.filter((entry) => !known.has(entry.path));
+  const entries = [...currentIndex.entries, ...added];
+  entries.sort(pathComparatorFor(entries));
+  await lock.commit(entries, 'replace');
 };
 
 const refuseUntrackedOverwrites = async (
