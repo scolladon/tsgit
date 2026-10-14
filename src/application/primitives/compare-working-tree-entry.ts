@@ -26,7 +26,12 @@ import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
 import { convertToGit } from './internal/convert-blob.js';
-import { type IndexMtime, isEntryStatClean } from './internal/is-entry-stat-clean.js';
+import { withStatData } from './internal/index-entry-from-stat.js';
+import {
+  type IndexMtime,
+  isEntryStatClean,
+  matchesContentStat,
+} from './internal/is-entry-stat-clean.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import type { AttributeProvider } from './internal/read-gitattributes.js';
 import { assertBigFileThresholdValid } from './internal/repo-settings-gate.js';
@@ -166,19 +171,35 @@ const readThresholdBeforeHashing = async (
   await assertBigFileThresholdValid(ctx);
 };
 
-export const compareWorkingTreeDelta = async (
+/** What the comparison may consult beyond the entry itself. */
+export interface ComparisonScope {
+  readonly provider?: AttributeProvider;
+  readonly indexMtime?: IndexMtime;
+}
+
+/**
+ * A comparison verdict plus, when the file is content-identical yet its stat
+ * data drifted, the entry carrying the fresh stat data (git's refresh).
+ */
+export interface RefreshedComparison {
+  readonly delta: WorkingTreeDelta;
+  readonly refreshed?: IndexEntry;
+}
+
+const scopeOf = (provider?: AttributeProvider, indexMtime?: IndexMtime): ComparisonScope => ({
+  ...(provider !== undefined && { provider }),
+  ...(indexMtime !== undefined && { indexMtime }),
+});
+
+const compareContent = async (
   ctx: Context,
   entry: IndexEntry,
-  provider?: AttributeProvider,
-  indexMtime?: IndexMtime,
+  absPath: string,
+  stat: FileStat,
+  worktreeMode: FileMode,
+  scope: ComparisonScope,
 ): Promise<WorkingTreeDelta> => {
-  const absPath = joinPath(requireWorkTree(ctx, 'compareWorkingTreeEntry'), entry.path);
-  const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
-  if (stat === undefined) return { status: 'absent' };
-  const worktreeMode = deriveWorkingMode(stat);
-  const settled = statOnlyVerdict(entry, stat, worktreeMode, indexMtime);
-  if (settled !== undefined) return settled;
-  await readThresholdBeforeHashing(ctx, entry, stat, indexMtime, provider);
+  await readThresholdBeforeHashing(ctx, entry, stat, scope.indexMtime, scope.provider);
   const raw = await readWorkingBytes(ctx, absPath, stat);
   // The file exists (lstat succeeded) but cannot be read — never report an
   // unverifiable file as `unchanged`; git's failed `index_path` reads changed.
@@ -186,13 +207,49 @@ export const compareWorkingTreeDelta = async (
   // Symlink targets are always hashed raw.
   const content = stat.isSymbolicLink
     ? raw
-    : await convertedWorktreeBytes(ctx, provider ?? EMPTY_PROVIDER, entry, raw);
+    : await convertedWorktreeBytes(ctx, scope.provider ?? EMPTY_PROVIDER, entry, raw);
   const { id } = await serializeAndHash(ctx, { type: 'blob', id: '' as ObjectId, content });
   // Content dominates: a changed blob is `modified` regardless of mode. Only a
   // same-blob mode difference (exec bit) is `mode-changed`.
   if (id !== entry.id) return { status: 'modified', worktreeMode };
   return { status: worktreeMode === entry.mode ? 'unchanged' : 'mode-changed', worktreeMode };
 };
+
+/** Entries git's refresh leaves alone: unmerged, assume-valid, sparse, placeholder, submodule. */
+const shouldRefresh = (entry: IndexEntry, stat: FileStat): boolean =>
+  entry.flags.stage === 0 &&
+  !entry.flags.assumeValid &&
+  !entry.flags.skipWorktree &&
+  !entry.flags.intentToAdd &&
+  entry.mode !== FILE_MODE.GITLINK &&
+  !matchesContentStat(entry, stat);
+
+/**
+ * The comparison plus its refresh verdict, from the single `lstat` the
+ * comparison already took — no second stat, no extra read.
+ */
+export const compareAndRefresh = async (
+  ctx: Context,
+  entry: IndexEntry,
+  scope: ComparisonScope = {},
+): Promise<RefreshedComparison> => {
+  const absPath = joinPath(requireWorkTree(ctx, 'compareWorkingTreeEntry'), entry.path);
+  const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
+  if (stat === undefined) return { delta: { status: 'absent' } };
+  const worktreeMode = deriveWorkingMode(stat);
+  const settled = statOnlyVerdict(entry, stat, worktreeMode, scope.indexMtime);
+  const delta = settled ?? (await compareContent(ctx, entry, absPath, stat, worktreeMode, scope));
+  if (delta.status !== 'unchanged' || !shouldRefresh(entry, stat)) return { delta };
+  return { delta, refreshed: withStatData(entry, stat) };
+};
+
+export const compareWorkingTreeDelta = async (
+  ctx: Context,
+  entry: IndexEntry,
+  provider?: AttributeProvider,
+  indexMtime?: IndexMtime,
+): Promise<WorkingTreeDelta> =>
+  (await compareAndRefresh(ctx, entry, scopeOf(provider, indexMtime))).delta;
 
 /** The working bytes git would hash — a symlink's target, a file's content —
  *  or `undefined` when the path cannot be read. */
@@ -219,4 +276,6 @@ export const compareWorkingTreeEntry = async (
   ctx: Context,
   entry: IndexEntry,
   provider?: AttributeProvider,
-): Promise<WorkingTreeComparison> => (await compareWorkingTreeDelta(ctx, entry, provider)).status;
+  indexMtime?: IndexMtime,
+): Promise<WorkingTreeComparison> =>
+  (await compareWorkingTreeDelta(ctx, entry, provider, indexMtime)).status;

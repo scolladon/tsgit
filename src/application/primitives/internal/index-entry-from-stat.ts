@@ -12,6 +12,23 @@ const nanosecondsOf = (ns: bigint | undefined): number =>
   ns === undefined ? 0 : Number(ns % NS_PER_SECOND);
 
 /**
+ * The entry with its stat-cache fields (ctime/mtime/dev/ino/uid/gid/size)
+ * replaced by those of `stat`; identity (id, mode, flags, path) is kept.
+ */
+export const withStatData = (entry: IndexEntry, stat: FileStat): IndexEntry => ({
+  ...entry,
+  ctimeSeconds: Math.floor(stat.ctimeMs / 1000),
+  ctimeNanoseconds: nanosecondsOf(stat.ctimeNs),
+  mtimeSeconds: Math.floor(stat.mtimeMs / 1000),
+  mtimeNanoseconds: nanosecondsOf(stat.mtimeNs),
+  dev: stat.dev,
+  ino: stat.ino,
+  uid: stat.uid,
+  gid: stat.gid,
+  fileSize: stat.size,
+});
+
+/**
  * Build a freshly-staged, stage-0 `IndexEntry` from an `lstat` result plus the
  * staged `mode`/`id`/`path`. The stat-cache fields (ctime/mtime/dev/ino/uid/gid/
  * size) are copied so the next `status` can take the fast `isStatClean` path.
@@ -23,18 +40,22 @@ export const indexEntryFromStat = (
   mode: FileMode,
   id: ObjectId,
   path: FilePath,
-): IndexEntry => ({
-  ctimeSeconds: Math.floor(stat.ctimeMs / 1000),
-  ctimeNanoseconds: nanosecondsOf(stat.ctimeNs),
-  mtimeSeconds: Math.floor(stat.mtimeMs / 1000),
-  mtimeNanoseconds: nanosecondsOf(stat.mtimeNs),
-  dev: stat.dev,
-  ino: stat.ino,
-  mode,
-  uid: stat.uid,
-  gid: stat.gid,
-  fileSize: stat.size,
-  id,
-  flags: STAGE0_FLAGS,
-  path,
-});
+): IndexEntry =>
+  withStatData(
+    {
+      ctimeSeconds: 0,
+      ctimeNanoseconds: 0,
+      mtimeSeconds: 0,
+      mtimeNanoseconds: 0,
+      dev: 0,
+      ino: 0,
+      mode,
+      uid: 0,
+      gid: 0,
+      fileSize: 0,
+      id,
+      flags: STAGE0_FLAGS,
+      path,
+    },
+    stat,
+  );

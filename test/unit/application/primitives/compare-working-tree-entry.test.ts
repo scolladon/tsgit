@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { init } from '../../../../src/application/commands/init.js';
 import {
+  compareAndRefresh,
   compareWorkingTreeDelta,
   compareWorkingTreeEntry,
   isWorkingTreeModified,
@@ -1148,6 +1149,185 @@ describe('compareWorkingTreeDelta line-ending conversion', () => {
 
         // Assert
         expect(result.status).toBe('unchanged');
+      });
+    });
+  });
+});
+
+describe('compareAndRefresh', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const SEED_MS = 1_700_000_000_000;
+
+  /** Staged at SEED_MS, then rewritten with the given bytes ten seconds later. */
+  const stagedThenRewritten = async (
+    rewrite: string,
+  ): Promise<{
+    ctx: Context;
+    entry: IndexEntry;
+    indexMtime: { seconds: number; nanoseconds: number };
+  }> => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(SEED_MS);
+    const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+    vi.setSystemTime(SEED_MS + 10_000);
+    await ctx.fs.writeUtf8(work(ctx, 'a.txt'), rewrite);
+    const indexMtime = { seconds: entry.mtimeSeconds + 5, nanoseconds: 0 };
+    return { ctx, entry, indexMtime };
+  };
+
+  describe('Given a committed file rewritten with the same bytes after the clock moved', () => {
+    describe('When comparing with the index mtime', () => {
+      it('Then the delta is unchanged and refreshed carries the new mtime and the old id', async () => {
+        // Arrange
+        const { ctx, entry, indexMtime } = await stagedThenRewritten('hello\n');
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, entry, { indexMtime });
+
+        // Assert
+        expect(result.delta.status).toBe('unchanged');
+        expect(result.refreshed?.mtimeSeconds).toBe(Math.floor((SEED_MS + 10_000) / 1000));
+        expect(result.refreshed?.id).toBe(entry.id);
+      });
+    });
+  });
+
+  describe('Given nothing moved since staging', () => {
+    describe('When comparing with the index mtime', () => {
+      it('Then refreshed is undefined', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(SEED_MS);
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        const indexMtime = { seconds: entry.mtimeSeconds + 5, nanoseconds: 0 };
+        const sut = compareAndRefresh;
+
+        // Act
+        const result = await sut(ctx, entry, { indexMtime });
+
+        // Assert
+        expect(result.delta.status).toBe('unchanged');
+        expect(result.refreshed).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an entry whose stat moved but which must not be refreshed', () => {
+    describe('When comparing with the index mtime', () => {
+      it('Then refreshed is undefined for changed content', async () => {
+        // Arrange
+        const { ctx, entry, indexMtime } = await stagedThenRewritten('HELLO\n');
+
+        // Act
+        const sut = await compareAndRefresh(ctx, entry, { indexMtime });
+
+        // Assert
+        expect(sut.delta.status).toBe('modified');
+        expect(sut.refreshed).toBeUndefined();
+      });
+
+      it('Then refreshed is undefined for a changed mode', async () => {
+        // Arrange
+        const { ctx, entry, indexMtime } = await stagedThenRewritten('hello\n');
+        const executable: IndexEntry = { ...entry, mode: '100755' };
+
+        // Act
+        const sut = await compareAndRefresh(ctx, executable, { indexMtime });
+
+        // Assert
+        expect(sut.delta.status).toBe('mode-changed');
+        expect(sut.refreshed).toBeUndefined();
+      });
+
+      it('Then refreshed is undefined for an assume-valid entry', async () => {
+        // Arrange
+        const { ctx, entry, indexMtime } = await stagedThenRewritten('hello\n');
+        const assumeValid: IndexEntry = { ...entry, flags: { ...entry.flags, assumeValid: true } };
+
+        // Act
+        const sut = await compareAndRefresh(ctx, assumeValid, { indexMtime });
+
+        // Assert
+        expect(sut.delta.status).toBe('unchanged');
+        expect(sut.refreshed).toBeUndefined();
+      });
+
+      it('Then refreshed is undefined for an intent-to-add entry', async () => {
+        // Arrange
+        const { ctx, entry, indexMtime } = await stagedThenRewritten('hello\n');
+        const placeholder: IndexEntry = { ...entry, flags: { ...entry.flags, intentToAdd: true } };
+
+        // Act
+        const sut = await compareAndRefresh(ctx, placeholder, { indexMtime });
+
+        // Assert
+        expect(sut.delta.status).toBe('unchanged');
+        expect(sut.refreshed).toBeUndefined();
+      });
+
+      it('Then refreshed is undefined for a skip-worktree entry', async () => {
+        // Arrange
+        const { ctx, entry, indexMtime } = await stagedThenRewritten('hello\n');
+        const skipped: IndexEntry = { ...entry, flags: { ...entry.flags, skipWorktree: true } };
+
+        // Act
+        const sut = await compareAndRefresh(ctx, skipped, { indexMtime });
+
+        // Assert
+        expect(sut.delta.status).toBe('unchanged');
+        expect(sut.refreshed).toBeUndefined();
+      });
+
+      it('Then refreshed is undefined for a gitlink entry', async () => {
+        // Arrange
+        const { ctx, entry, indexMtime } = await stagedThenRewritten('hello\n');
+        await ctx.fs.mkdir(work(ctx, 'sub'));
+        const gitlink: IndexEntry = { ...entry, path: 'sub' as IndexEntry['path'], mode: '160000' };
+
+        // Act
+        const sut = await compareAndRefresh(ctx, gitlink, { indexMtime });
+
+        // Assert
+        expect(sut.refreshed).toBeUndefined();
+      });
+
+      it('Then refreshed is undefined for a conflicted (stage 2) entry', async () => {
+        // Arrange
+        const { ctx, entry, indexMtime } = await stagedThenRewritten('hello\n');
+        const conflicted: IndexEntry = { ...entry, flags: { ...entry.flags, stage: 2 } };
+
+        // Act
+        const sut = await compareAndRefresh(ctx, conflicted, { indexMtime });
+
+        // Assert
+        expect(sut.delta.status).toBe('unchanged');
+        expect(sut.refreshed).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a stat-clean, non-racy entry and an index mtime', () => {
+    describe('When compareWorkingTreeEntry receives the index mtime', () => {
+      it('Then it does not read the file', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(SEED_MS);
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        const indexMtime = { seconds: entry.mtimeSeconds + 5, nanoseconds: 0 };
+        const read = vi.fn(ctx.fs.read.bind(ctx.fs));
+        const spiedCtx: Context = { ...ctx, fs: { ...ctx.fs, read } };
+        const sut = compareWorkingTreeEntry;
+
+        // Act
+        const result = await sut(spiedCtx, entry, undefined, indexMtime);
+
+        // Assert
+        expect(result).toBe('unchanged');
+        expect(read).not.toHaveBeenCalled();
       });
     });
   });
