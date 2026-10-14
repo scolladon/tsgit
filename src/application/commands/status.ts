@@ -15,7 +15,7 @@ import { deriveWorkingMode, type FileMode, type RefName } from '../../domain/obj
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import {
-  compareWorkingTreeDelta,
+  compareAndRefresh,
   type WorkingTreeComparison,
   type WorkingTreeDelta,
 } from '../primitives/compare-working-tree-entry.js';
@@ -24,6 +24,8 @@ import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-
 import { type CleanOrder, withCleanOrder } from '../primitives/internal/clean-order.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
+import { acquireOptionalIndexLock, type IndexLock } from '../primitives/internal/index-lock.js';
+import { hasRacyTimestamp } from '../primitives/internal/is-entry-stat-clean.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
   type AttributeProvider,
@@ -142,9 +144,17 @@ const statusInScope = async (ctx: Context): Promise<StatusResult> => {
   const tracked = trackedEntriesOf(index);
   ctx.progress.start(STATUS_SCAN_OP);
   try {
-    const scanned = await scanStatusTree(ctx, index, tracked);
-    const report = await reportStatus(ctx, { index, tracked, scanned, workDir });
-    return { branch: branchRefFromHead(head), detached: head.kind === 'direct', ...report };
+    const { workingMap, refreshed } = await scanTrackedTree(ctx, index, tracked);
+    const lock = await acquireOptionalIndexLock(ctx);
+    try {
+      const untracked = await scanUntracked(ctx, tracked.trackedPaths);
+      const scanned = { workingMap, untracked };
+      const report = await reportStatus(ctx, { index, tracked, scanned, workDir });
+      if (lock) await updateIndexIfAble(lock, index, refreshed);
+      return { branch: branchRefFromHead(head), detached: head.kind === 'direct', ...report };
+    } finally {
+      await lock?.release();
+    }
   } finally {
     ctx.progress.end(STATUS_SCAN_OP);
   }
@@ -176,19 +186,35 @@ interface ScannedTree {
   readonly untracked: ReadonlyArray<FilePath>;
 }
 
+/** The tracked pass: every tracked file's delta plus the entries whose stat data drifted. */
+interface TrackedScan {
+  readonly workingMap: Map<FilePath, WorkingTreeDelta>;
+  readonly refreshed: ReadonlyArray<IndexEntry>;
+}
+
+/** Write the refreshed stat data back, only when something is worth persisting:
+ *  a drifted entry, or an entry racy against the index file's own mtime. */
+const updateIndexIfAble = async (
+  lock: IndexLock,
+  index: GitIndex,
+  refreshed: ReadonlyArray<IndexEntry>,
+): Promise<void> => {
+  const racy = index.indexMtime !== undefined && hasRacyTimestamp(index.entries, index.indexMtime);
+  if (refreshed.length === 0 && !racy) return lock.release();
+  await lock.commitRefresh(index, refreshed);
+};
+
 /** Build the check-in attribute provider once per status invocation. It is always
  *  present; a path whose attributes resolve to the identity conversion costs one lookup. */
-const scanStatusTree = async (
+const scanTrackedTree = async (
   ctx: Context,
   index: GitIndex,
   tracked: TrackedEntries,
-): Promise<ScannedTree> => {
+): Promise<TrackedScan> => {
   const tracker = createGranularityTracker(ctx.progress, STATUS_SCAN_OP, STATUS_SCAN_GRANULARITY);
   const provider = await buildCheckinAttributeProvider(ctx, index);
   const { staged } = tracked.grouped;
-  const workingMap = await scanWorkingTree(ctx, staged, tracker, provider, index.indexMtime);
-  const untracked = await scanUntracked(ctx, tracked.trackedPaths);
-  return { workingMap, untracked };
+  return scanWorkingTree(ctx, staged, tracker, provider, index.indexMtime);
 };
 
 /** git's status names HEAD through `get_oid`, warning on an ambiguous HEAD and
@@ -236,12 +262,20 @@ const scanEntry = async (
   entry: IndexEntry,
   provider: AttributeProvider | undefined,
   indexMtime: GitIndex['indexMtime'],
-): Promise<readonly [FilePath, WorkingTreeDelta] | undefined> => {
-  const delta = entry.flags.skipWorktree
-    ? undefined
-    : await compareWorkingTreeDelta(ctx, entry, provider, indexMtime);
-  return delta === undefined ? undefined : [entry.path, delta];
+): Promise<ScannedEntry | undefined> => {
+  if (entry.flags.skipWorktree) return undefined;
+  const { delta, refreshed } = await compareAndRefresh(ctx, entry, {
+    ...(provider !== undefined && { provider }),
+    ...(indexMtime !== undefined && { indexMtime }),
+  });
+  return { path: entry.path, delta, refreshed };
 };
+
+interface ScannedEntry {
+  readonly path: FilePath;
+  readonly delta: WorkingTreeDelta;
+  readonly refreshed: IndexEntry | undefined;
+}
 
 const scanWorkingTree = async (
   ctx: Context,
@@ -249,7 +283,7 @@ const scanWorkingTree = async (
   tracker: GranularityTracker,
   provider: AttributeProvider | undefined,
   indexMtime: GitIndex['indexMtime'],
-): Promise<Map<FilePath, WorkingTreeDelta>> => {
+): Promise<TrackedScan> => {
   const scan = (order?: CleanOrder) =>
     boundedMapFor(ctx, 'ioBound', stage0, async (entry) => {
       try {
@@ -265,7 +299,7 @@ const scanWorkingTree = async (
   // refuses, and the scan needs no order.
   const ordered = provider !== undefined && (await configuresFilterDriver(ctx));
   const results = ordered ? await inIndexOrder(ctx, stage0, scan) : await scan();
-  return deltaMapOf(results);
+  return trackedScanOf(results);
 };
 
 /** Whether any `[filter "<driver>"]` section is configured: without one, a filter attribute
@@ -284,14 +318,15 @@ const inIndexOrder = <T>(
     return scan(order);
   });
 
-const deltaMapOf = (
-  results: ReadonlyArray<readonly [FilePath, WorkingTreeDelta] | undefined>,
-): Map<FilePath, WorkingTreeDelta> => {
-  const map = new Map<FilePath, WorkingTreeDelta>();
+const trackedScanOf = (results: ReadonlyArray<ScannedEntry | undefined>): TrackedScan => {
+  const workingMap = new Map<FilePath, WorkingTreeDelta>();
+  const refreshed: IndexEntry[] = [];
   for (const result of results) {
-    if (result !== undefined) map.set(...result);
+    if (result === undefined) continue;
+    workingMap.set(result.path, result.delta);
+    if (result.refreshed !== undefined) refreshed.push(result.refreshed);
   }
-  return map;
+  return { workingMap, refreshed };
 };
 
 /**

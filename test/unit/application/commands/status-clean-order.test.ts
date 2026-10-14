@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
@@ -78,6 +78,12 @@ describe('Given a runner-wired repository that configures a filter driver', () =
 
 const LOG_DRIVER = '[core]\n\tbare = false\n[filter "log"]\n\tclean = log\n';
 const SETTLE_MS = 20;
+const SETTLED_EPOCH_MS = 1_800_000_000_000;
+const SECOND_MS = 1000;
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 const dec = (bytes: Uint8Array | undefined): string =>
   new TextDecoder().decode(bytes ?? new Uint8Array());
@@ -93,13 +99,19 @@ const repoUnderLogDriver = async (
   edited: Readonly<Record<string, string>>,
   attributes: string,
 ): Promise<Recorded> => {
+  // The files predate the index by two seconds and the edits follow it, so no entry
+  // is racy and the scan has nothing to write back: the driver hears the scan alone.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(SETTLED_EPOCH_MS);
   const base = createMemoryContext();
   await init(base);
   for (const [path, content] of Object.entries(files)) {
     await base.fs.writeUtf8(`${base.layout.workDir}/${path}`, content);
   }
+  vi.setSystemTime(SETTLED_EPOCH_MS + 2 * SECOND_MS);
   await add(base, Object.keys(files));
   await commit(base, { message: 'first', author: AUTHOR });
+  vi.setSystemTime(SETTLED_EPOCH_MS + 5 * SECOND_MS);
   for (const [path, content] of Object.entries(edited)) {
     await base.fs.writeUtf8(`${base.layout.workDir}/${path}`, content);
   }
