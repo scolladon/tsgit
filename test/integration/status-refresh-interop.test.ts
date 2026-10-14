@@ -381,6 +381,8 @@ describe.skipIf(!GIT_AVAILABLE)('status refresh interop', () => {
         const oursLog = path.join(pair.ours, '..', `${path.basename(pair.ours)}-filter.log`);
         const peerDir = path.join(pair.peer, 'filtered');
         const oursDir = path.join(pair.ours, 'filtered');
+        onTestFinished(() => rm(peerLog, { force: true }));
+        onTestFinished(() => rm(oursLog, { force: true }));
         await mkdir(peerDir);
         await mkdir(oursDir);
         await buildFilteredRepo(peerDir, peerLog);
@@ -396,8 +398,6 @@ describe.skipIf(!GIT_AVAILABLE)('status refresh interop', () => {
         const gitRuns = await filterRuns(peerLog);
         expect(gitRuns).toBe(1);
         expect(await filterRuns(oursLog)).toBe(gitRuns);
-        await rm(peerLog, { force: true });
-        await rm(oursLog, { force: true });
       });
     });
   });

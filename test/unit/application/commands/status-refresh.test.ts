@@ -112,6 +112,33 @@ describe('status racy write-back', () => {
   });
 });
 
+describe('status racy write-back of a changed entry', () => {
+  describe('Given b rewritten with the same size in the second it was staged and a stat-moved a', () => {
+    describe('When status runs at T+5s and again at T+9s', () => {
+      it('Then the entry is smudged and the second status still reports b modified', async () => {
+        // Arrange
+        const ctx = await seedSettled();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b2');
+        await add(ctx, ['b.txt']);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'x2');
+        at(5);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await status(ctx);
+        const smudged = await entryOf(ctx, 'b.txt');
+        at(9);
+
+        // Act
+        const sut = status;
+        const result = await sut(ctx);
+
+        // Assert
+        expect(smudged?.fileSize).toBe(0);
+        expect(result.changes.map((c) => c.path)).toEqual(['b.txt']);
+      });
+    });
+  });
+});
+
 const lockPathOf = (ctx: Context): string => `${ctx.layout.gitDir}/index.lock`;
 const indexPathOf = (ctx: Context): string => `${ctx.layout.gitDir}/index`;
 
