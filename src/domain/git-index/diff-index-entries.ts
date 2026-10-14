@@ -1,6 +1,6 @@
 import type { FilePath } from '../objects/index.js';
 import type { IndexEntry } from './index-entry.js';
-import { pathComparatorFor } from './index-writer.js';
+import { compareEntryPath, pathComparatorFor } from './index-writer.js';
 
 export interface IndexChange {
   readonly changedPaths: ReadonlyArray<FilePath>;
@@ -10,11 +10,34 @@ export interface IndexChange {
 
 type PathComparator = (a: IndexEntry, b: IndexEntry) => number;
 
+const byPathThenStage = (comparePath: PathComparator) => (a: IndexEntry, b: IndexEntry) =>
+  comparePath(a, b) || a.flags.stage - b.flags.stage;
+
+const isSorted = (
+  entries: ReadonlyArray<IndexEntry>,
+  compare: (a: IndexEntry, b: IndexEntry) => number,
+): boolean => {
+  for (let i = 1; i < entries.length; i++) {
+    if (compare(entries[i - 1] as IndexEntry, entries[i] as IndexEntry) > 0) return false;
+  }
+  return true;
+};
+
 const sortedCopy = (
   entries: ReadonlyArray<IndexEntry>,
   comparePath: PathComparator,
-): ReadonlyArray<IndexEntry> =>
-  [...entries].sort((a, b) => comparePath(a, b) || a.flags.stage - b.flags.stage);
+): ReadonlyArray<IndexEntry> => {
+  const compare = byPathThenStage(comparePath);
+  return isSorted(entries, compare) ? entries : [...entries].sort(compare);
+};
+
+const comparatorForBoth = (
+  before: ReadonlyArray<IndexEntry>,
+  after: ReadonlyArray<IndexEntry>,
+): PathComparator => {
+  const first = pathComparatorFor(before);
+  return first === compareEntryPath ? first : pathComparatorFor(after);
+};
 
 const differs = (a: IndexEntry, b: IndexEntry): boolean => a.id !== b.id || a.mode !== b.mode;
 
@@ -102,7 +125,7 @@ export const diffIndexEntries = (
   before: ReadonlyArray<IndexEntry>,
   after: ReadonlyArray<IndexEntry>,
 ): IndexChange => {
-  const comparePath = pathComparatorFor([...before, ...after]);
+  const comparePath = comparatorForBoth(before, after);
   const sortedBefore = sortedCopy(before, comparePath);
   const sortedAfter = sortedCopy(after, comparePath);
   return {

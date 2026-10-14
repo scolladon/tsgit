@@ -73,6 +73,31 @@ function coversPath(node: CacheTreeEntry, components: ReadonlyArray<string>): bo
   return node.entryCount >= 0 || coversPath(child, rest);
 }
 
+function invalidatedOnce(
+  entry: CacheTreeEntry,
+  children: ReadonlyArray<CacheTreeEntry>,
+): CacheTreeEntry {
+  return {
+    path: entry.path,
+    entryCount: -1,
+    subtreeCount: entry.subtreeCount - (entry.children.length - children.length),
+    children,
+  };
+}
+
+function oracleAlong(entry: CacheTreeEntry, components: ReadonlyArray<string>): CacheTreeEntry {
+  const [head, ...rest] = components;
+  const index = entry.children.findIndex((child) => child.path === head);
+  const child = entry.children[index];
+  if (child === undefined) return invalidatedOnce(entry, entry.children);
+  const next = rest.length === 0 ? undefined : oracleAlong(child, rest);
+  const children =
+    next === undefined
+      ? entry.children.filter((_, i) => i !== index)
+      : entry.children.map((c, i) => (i === index ? next : c));
+  return invalidatedOnce(entry, children);
+}
+
 describe('invalidateCacheTree properties', () => {
   describe('Given an arbitrary tree and paths built from its component names', () => {
     describe('When invalidateCacheTree', () => {
@@ -100,6 +125,18 @@ describe('invalidateCacheTree properties', () => {
             for (const child of tree.children) {
               if (!entered.has(child.path)) expect(result.children).toContain(child);
             }
+          }),
+          { numRuns: NUM_RUNS },
+        );
+      });
+
+      it('Then the single pass equals folding the per-path invalidation', () => {
+        // Arrange + Act + Assert
+        fc.assert(
+          fc.property(arbTreeWithPaths(40), ({ tree, paths }) => {
+            const sut = invalidateCacheTree;
+            const expected = paths.reduce((acc, path) => oracleAlong(acc, path.split('/')), tree);
+            expect(sut(tree, paths)).toEqual(expected);
           }),
           { numRuns: NUM_RUNS },
         );

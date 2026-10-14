@@ -8,7 +8,7 @@
  *   kind:    equivalent-under-readback
  *   format:  git-index-dirc
  */
-import { bytesEqual, encode, hexToBytes } from '../objects/encoding.js';
+import { encode, hexToBytes } from '../objects/encoding.js';
 import type { FilePath } from '../objects/object-id.js';
 import { invalidIndexEntry } from './error.js';
 import type { CacheTreeEntry } from './index-entry.js';
@@ -68,10 +68,69 @@ export function serializeCacheTree(root: CacheTreeEntry, digestLength: 20 | 32):
   return out;
 }
 
-function invalidated(
+/**
+ * Children are matched by their byte name, never by the decoded `path`: two
+ * siblings may decode to the same string (BOM-prefixed or non-UTF-8 names).
+ * ASCII components are their own key, so the common case allocates nothing.
+ */
+const NON_ASCII = /[\u0080-\uffff]/;
+
+const keyOfBytes = (bytes: Uint8Array): string => {
+  let key = '';
+  for (const byte of bytes) key += String.fromCharCode(byte);
+  return key;
+};
+
+const keyOfComponent = (component: string): string =>
+  NON_ASCII.test(component) ? keyOfBytes(encode(component)) : component;
+
+const keyOfChild = (child: CacheTreeEntry): string =>
+  child.nameBytes === undefined ? keyOfComponent(child.path) : keyOfBytes(child.nameBytes);
+
+type Pending = ReadonlyArray<string>;
+
+function groupByComponent(pending: ReadonlyArray<Pending>, depth: number): Map<string, Pending[]> {
+  const groups = new Map<string, Pending[]>();
+  for (const item of pending) {
+    const key = keyOfComponent(item[depth] as string);
+    const group = groups.get(key);
+    if (group === undefined) groups.set(key, [item]);
+    else group.push(item);
+  }
+  return groups;
+}
+
+function reachesLeaf(group: ReadonlyArray<Pending>, depth: number): boolean {
+  return group.some((item) => item.length === depth + 1);
+}
+
+function deeper(group: ReadonlyArray<Pending>, depth: number): ReadonlyArray<Pending> {
+  return group.filter((item) => item.length > depth + 1);
+}
+
+function rebuildChildren(
   entry: CacheTreeEntry,
-  children: ReadonlyArray<CacheTreeEntry>,
+  groups: Map<string, Pending[]>,
+  depth: number,
+): ReadonlyArray<CacheTreeEntry> {
+  const children: CacheTreeEntry[] = [];
+  for (const child of entry.children) {
+    const key = groups.size === 0 ? undefined : keyOfChild(child);
+    const group = key === undefined ? undefined : groups.get(key);
+    if (key !== undefined) groups.delete(key);
+    if (group === undefined) children.push(child);
+    else if (!reachesLeaf(group, depth))
+      children.push(invalidateNode(child, deeper(group, depth), depth + 1));
+  }
+  return children;
+}
+
+function invalidateNode(
+  entry: CacheTreeEntry,
+  pending: ReadonlyArray<Pending>,
+  depth: number,
 ): CacheTreeEntry {
+  const children = rebuildChildren(entry, groupByComponent(pending, depth), depth);
   return {
     path: entry.path,
     ...(entry.nameBytes === undefined ? {} : { nameBytes: entry.nameBytes }),
@@ -81,23 +140,14 @@ function invalidated(
   };
 }
 
-function invalidateAlong(entry: CacheTreeEntry, components: ReadonlyArray<string>): CacheTreeEntry {
-  const [head, ...rest] = components;
-  const name = encode(head as string);
-  const index = entry.children.findIndex((child) => bytesEqual(nameBytesOf(child), name));
-  const child = entry.children[index];
-  if (child === undefined) return invalidated(entry, entry.children);
-  const next = rest.length === 0 ? undefined : invalidateAlong(child, rest);
-  const children =
-    next === undefined
-      ? entry.children.filter((_, i) => i !== index)
-      : entry.children.map((c, i) => (i === index ? next : c));
-  return invalidated(entry, children);
-}
-
 export function invalidateCacheTree(
   root: CacheTreeEntry,
   paths: ReadonlyArray<FilePath>,
 ): CacheTreeEntry {
-  return paths.reduce((tree, path) => invalidateAlong(tree, path.split('/')), root);
+  if (paths.length === 0) return root;
+  return invalidateNode(
+    root,
+    paths.map((path) => path.split('/')),
+    0,
+  );
 }

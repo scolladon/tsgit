@@ -55,8 +55,10 @@ function utf8Rank(unit: number): number {
  * order and leaves equal-path entries in their original (stable) order.
  */
 export function compareEntryPath(a: IndexEntry, b: IndexEntry): number {
-  const left = a.path as string;
-  const right = b.path as string;
+  return comparePathStrings(a.path as string, b.path as string);
+}
+
+export function comparePathStrings(left: string, right: string): number {
   const shared = Math.min(left.length, right.length);
   for (let i = 0; i < shared; i++) {
     const l = left.charCodeAt(i);
@@ -80,6 +82,18 @@ function compareUtf16Path(a: IndexEntry, b: IndexEntry): number {
  * or above U+D800, so the engine's native string comparison serves every
  * other index at a fraction of the cost of the code-unit loop.
  */
+function compareUtf16Strings(left: string, right: string): number {
+  if (left < right) return -1;
+  return left > right ? 1 : 0;
+}
+
+/** Same pick-once rule as `pathComparatorFor`, for bare path strings. */
+export function pathStringComparatorFor(paths: ReadonlyArray<string>): typeof comparePathStrings {
+  return paths.some((path) => SURROGATE_OR_ABOVE.test(path))
+    ? comparePathStrings
+    : compareUtf16Strings;
+}
+
 export function pathComparatorFor(entries: ReadonlyArray<IndexEntry>): typeof compareEntryPath {
   return entries.some((entry) => SURROGATE_OR_ABOVE.test(entry.path as string))
     ? compareEntryPath

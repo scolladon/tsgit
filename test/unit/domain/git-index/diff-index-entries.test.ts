@@ -196,6 +196,42 @@ describe('diffIndexEntries', () => {
     });
   });
 
+  describe('Given only the after list holds a supplementary-plane path, in unsorted input order', () => {
+    describe('When diffing', () => {
+      it('Then the UTF-8 order is used and nothing changed', () => {
+        // Arrange
+        const before = [entry('\uFF5E.txt'), entry('a')];
+        const after = [entry('\u{1F600}.txt'), entry('\uFF5E.txt'), entry('a')];
+
+        // Act
+        const sut = diffIndexEntries;
+        const result = sut(before, after);
+
+        // Assert
+        expect(result.changedPaths).toEqual(['\u{1F600}.txt']);
+        expect(result.trackedSetChanged).toBe(true);
+      });
+    });
+  });
+
+  describe('Given unsorted ASCII inputs', () => {
+    describe('When diffing', () => {
+      it('Then the caller lists are left untouched and the change is found', () => {
+        // Arrange
+        const before = [entry('b'), entry('a')];
+        const after = [entry('b', { id: 'c' }), entry('a')];
+
+        // Act
+        const sut = diffIndexEntries;
+        const result = sut(before, after);
+
+        // Assert
+        expect(result.changedPaths).toEqual(['b']);
+        expect(before.map((e) => e.path)).toEqual(['b', 'a']);
+      });
+    });
+  });
+
   describe('Given a sparse-checkout flag flip', () => {
     describe('When diffing', () => {
       it('Then nothing changed', () => {

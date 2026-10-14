@@ -1,10 +1,10 @@
 import { errorDataCode } from '../error-data-code.js';
-import { compareBytes, encode } from '../objects/encoding.js';
 import type { FilePath } from '../objects/index.js';
 import { invalidateCacheTree, serializeCacheTree } from './cache-tree.js';
 import type { IndexChange } from './diff-index-entries.js';
 import type { IndexExtension } from './index-entry.js';
 import { parseCacheTree } from './index-parser.js';
+import { pathStringComparatorFor } from './index-writer.js';
 
 export type CarryKind = 'refresh' | 'update' | 'replace';
 
@@ -83,13 +83,12 @@ export const carryExtensions = (
   ].filter((extension) => extension !== undefined);
 };
 
-const byUtf8Bytes = (a: FilePath, b: FilePath): number => compareBytes(encode(a), encode(b));
-
 export const withRestagedPaths = (
   change: IndexChange,
   restagedPaths: ReadonlyArray<FilePath>,
 ): IndexChange => {
   if (restagedPaths.length === 0) return change;
-  const union = [...new Set([...change.changedPaths, ...restagedPaths])].sort(byUtf8Bytes);
+  const union = [...new Set([...change.changedPaths, ...restagedPaths])];
+  union.sort(pathStringComparatorFor(union));
   return { ...change, changedPaths: union };
 };
