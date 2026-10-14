@@ -1,6 +1,6 @@
 import { errorDataCode } from '../error-data-code.js';
 import type { FilePath } from '../objects/index.js';
-import { invalidateCacheTree, serializeCacheTree } from './cache-tree.js';
+import { invalidateCacheTree, namesEachSubtreeOnce, serializeCacheTree } from './cache-tree.js';
 import type { IndexChange } from './diff-index-entries.js';
 import type { IndexExtension } from './index-entry.js';
 import { parseCacheTree } from './index-parser.js';
@@ -38,10 +38,9 @@ const carryTree = (
 ): IndexExtension | undefined => {
   if (tree === undefined || kind === 'refresh' || change.changedPaths.length === 0) return tree;
   try {
-    const invalidated = invalidateCacheTree(
-      parseCacheTree(tree.data, digestLength),
-      change.changedPaths,
-    );
+    const root = parseCacheTree(tree.data, digestLength);
+    if (!namesEachSubtreeOnce(root)) return undefined;
+    const invalidated = invalidateCacheTree(root, change.changedPaths);
     return { signature: TREE_SIGNATURE, data: serializeCacheTree(invalidated, digestLength) };
   } catch (err) {
     if (errorDataCode(err) === INVALID_INDEX_ENTRY_CODE) return undefined;

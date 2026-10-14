@@ -218,7 +218,10 @@ export function arbCacheTreeEntry(
       children:
         depth <= 0
           ? fc.constant([] as ReadonlyArray<CacheTreeEntry>)
-          : fc.array(arbCacheTreeEntry(depth - 1, hexLength), { maxLength: 3 }),
+          : fc.uniqueArray(arbCacheTreeEntry(depth - 1, hexLength), {
+              maxLength: 3,
+              selector: (child) => child.path,
+            }),
     })
     .map(({ path, entryCount, id, children }) =>
       buildCacheTreeEntry(path, entryCount, id, children),

@@ -87,6 +87,20 @@ const keyOfComponent = (component: string): string =>
 const keyOfChild = (child: CacheTreeEntry): string =>
   child.nameBytes === undefined ? keyOfComponent(child.path) : keyOfBytes(child.nameBytes);
 
+/**
+ * git never writes two subtrees of one node under the same name; a payload that does
+ * would let invalidation miss the twin and keep it valid over a changed path.
+ */
+export function namesEachSubtreeOnce(entry: CacheTreeEntry): boolean {
+  const seen = new Set<string>();
+  for (const child of entry.children) {
+    const key = keyOfChild(child);
+    if (seen.has(key)) return false;
+    seen.add(key);
+  }
+  return entry.children.every(namesEachSubtreeOnce);
+}
+
 type Pending = ReadonlyArray<string>;
 
 function groupByComponent(pending: ReadonlyArray<Pending>, depth: number): Map<string, Pending[]> {

@@ -121,6 +121,27 @@ describe('carryExtensions', () => {
         expect(signaturesOf(result)).toEqual(['TREE', 'REUC']);
       });
 
+      it('Then a TREE naming the same subtree twice is dropped and the others are kept', () => {
+        // Arrange
+        const change: IndexChange = { ...NO_INDEX_CHANGE, changedPaths: ['d/c' as FilePath] };
+        const twin = cacheTree(40).children[0] as CacheTreeEntry;
+        const duplicated: CacheTreeEntry = {
+          ...cacheTree(40),
+          subtreeCount: 2,
+          children: [twin, twin],
+        };
+        const previous = previousExtensions().map((e) =>
+          e.signature === 'TREE' ? extension('TREE', serializeCacheTree(duplicated, 20)) : e,
+        );
+
+        // Act
+        const sut = carryExtensions;
+        const result = sut(previous, change, 'update', settings);
+
+        // Assert
+        expect(signaturesOf(result)).toEqual(['REUC', 'UNTR']);
+      });
+
       it('Then a corrupt TREE payload is dropped and the others are kept', () => {
         // Arrange
         const change: IndexChange = { ...NO_INDEX_CHANGE, changedPaths: ['d/c' as FilePath] };

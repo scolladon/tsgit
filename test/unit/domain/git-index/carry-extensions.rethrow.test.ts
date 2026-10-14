@@ -6,6 +6,7 @@ vi.mock('../../../../src/domain/git-index/cache-tree.js', () => ({
   invalidateCacheTree: () => {
     throw new RangeError('out of memory');
   },
+  namesEachSubtreeOnce: () => true,
   serializeCacheTree: () => new Uint8Array(0),
 }));
 vi.mock('../../../../src/domain/git-index/index-parser.js', () => ({
