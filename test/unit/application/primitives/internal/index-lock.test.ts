@@ -1,12 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../../src/application/commands/add.js';
 import { init } from '../../../../../src/application/commands/init.js';
-import { acquireIndexLock } from '../../../../../src/application/primitives/internal/index-lock.js';
+import {
+  acquireIndexLock,
+  acquireOptionalIndexLock,
+  type IndexLock,
+} from '../../../../../src/application/primitives/internal/index-lock.js';
 import {
   invalidateIndexCache,
   readIndex,
 } from '../../../../../src/application/primitives/read-index.js';
+import { TsgitError } from '../../../../../src/domain/error.js';
 import type {
   CacheTreeEntry,
   IndexEntry,
@@ -323,6 +328,205 @@ describe('IndexLock.commitRefresh', () => {
         expect(extensions.get('TREE')).toEqual(before.get('TREE'));
         expect(extensions.get('REUC')).toEqual(before.get('REUC'));
         expect((await readIndex(ctx)).entries[0]).toEqual(withLaterMtime(original));
+      });
+    });
+  });
+});
+
+const LOCK_NAME = 'index.lock';
+
+/** A context whose fs method `method` throws `failure`, with a recording logger. */
+const failingAt = (
+  base: Context,
+  method: string,
+  failure: unknown,
+): { ctx: Context; warn: ReturnType<typeof vi.fn> } => {
+  const warn = vi.fn();
+  const fs = new Proxy(base.fs, {
+    get(target, prop, receiver) {
+      if (prop === method) {
+        return () => Promise.reject(failure);
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  return { ctx: { ...base, fs, logger: { warn } } as unknown as Context, warn };
+};
+
+const unsupported = (reason: string): TsgitError =>
+  new TsgitError({ code: 'UNSUPPORTED_OPERATION', operation: 'filesystem', reason });
+const REFRESH_SKIPPED = 'status: index refresh skipped';
+
+describe('acquireOptionalIndexLock', () => {
+  describe('Given no index.lock', () => {
+    describe('When acquiring the optional lock', () => {
+      it('Then it returns a lock whose release removes index.lock', async () => {
+        // Arrange
+        const ctx = await seededRepo();
+        const lockPath = `${ctx.layout.gitDir}/${LOCK_NAME}`;
+
+        // Act
+        const sut = await acquireOptionalIndexLock(ctx);
+
+        // Assert
+        expect(sut).toBeDefined();
+        expect(await ctx.fs.exists(lockPath)).toBe(true);
+        await sut?.release();
+        expect(await ctx.fs.exists(lockPath)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an index.lock older than breakStaleLockMs', () => {
+    describe('When acquiring the optional lock', () => {
+      it('Then it resolves undefined, leaves the lock untouched and warns with FILE_EXISTS', async () => {
+        // Arrange
+        const base = await seededRepo();
+        const lockPath = `${base.layout.gitDir}/${LOCK_NAME}`;
+        await base.fs.writeUtf8(lockPath, 'held');
+        const mtimeBefore = (await base.fs.lstat(lockPath)).mtimeMs;
+        const warn = vi.fn();
+        const ctx = {
+          ...base,
+          config: { breakStaleLockMs: 0 },
+          logger: { warn },
+        } as unknown as Context;
+
+        // Act
+        const sut = await acquireOptionalIndexLock(ctx);
+
+        // Assert
+        expect(sut).toBeUndefined();
+        expect(await base.fs.readUtf8(lockPath)).toBe('held');
+        expect((await base.fs.lstat(lockPath)).mtimeMs).toBe(mtimeBefore);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(REFRESH_SKIPPED, { code: 'FILE_EXISTS', path: lockPath });
+      });
+    });
+  });
+
+  describe('Given writeExclusive fails with an unmapped errno', () => {
+    describe.each(['ENOSPC', 'EIO'])('When the reason is %s', (reason) => {
+      it('Then it resolves undefined and warns with the code and the reason', async () => {
+        // Arrange
+        const { ctx, warn } = failingAt(await seededRepo(), 'writeExclusive', unsupported(reason));
+
+        // Act
+        const sut = await acquireOptionalIndexLock(ctx);
+
+        // Assert
+        expect(sut).toBeUndefined();
+        expect(warn).toHaveBeenCalledWith(REFRESH_SKIPPED, {
+          code: 'UNSUPPORTED_OPERATION',
+          path: `${ctx.layout.gitDir}/${LOCK_NAME}`,
+          reason,
+        });
+      });
+    });
+  });
+
+  describe('Given writeExclusive fails with PERMISSION_DENIED', () => {
+    describe('When acquiring the optional lock', () => {
+      it('Then the warning carries no reason key', async () => {
+        // Arrange
+        const lockPath = `${(await seededRepo()).layout.gitDir}/${LOCK_NAME}`;
+        const denied = new TsgitError({ code: 'PERMISSION_DENIED', path: lockPath });
+        const { ctx, warn } = failingAt(await seededRepo(), 'writeExclusive', denied);
+
+        // Act
+        const sut = await acquireOptionalIndexLock(ctx);
+
+        // Assert
+        expect(sut).toBeUndefined();
+        expect(warn.mock.calls[0]?.[1]).toStrictEqual({
+          code: 'PERMISSION_DENIED',
+          path: lockPath,
+        });
+      });
+    });
+  });
+
+  describe('Given writeExclusive fails with a browser DOMException', () => {
+    describe('When acquiring the optional lock', () => {
+      it('Then the code is the exception name', async () => {
+        // Arrange
+        const denied = new DOMException('denied', 'NoModificationAllowedError');
+        const { ctx, warn } = failingAt(await seededRepo(), 'writeExclusive', denied);
+
+        // Act
+        const sut = await acquireOptionalIndexLock(ctx);
+
+        // Assert
+        expect(sut).toBeUndefined();
+        expect(warn.mock.calls[0]?.[1]).toStrictEqual({
+          code: 'NoModificationAllowedError',
+          path: `${ctx.layout.gitDir}/${LOCK_NAME}`,
+        });
+      });
+    });
+  });
+
+  describe('Given writeExclusive throws a bare string', () => {
+    describe('When acquiring the optional lock', () => {
+      it('Then the code is unknown', async () => {
+        // Arrange
+        const { ctx, warn } = failingAt(await seededRepo(), 'writeExclusive', 'boom');
+
+        // Act
+        const sut = await acquireOptionalIndexLock(ctx);
+
+        // Assert
+        expect(sut).toBeUndefined();
+        expect(warn.mock.calls[0]?.[1]).toStrictEqual({
+          code: 'unknown',
+          path: `${ctx.layout.gitDir}/${LOCK_NAME}`,
+        });
+      });
+    });
+  });
+
+  describe('Given writeExclusive fails and no logger is configured', () => {
+    describe('When acquiring the optional lock', () => {
+      it('Then it resolves undefined without throwing', async () => {
+        // Arrange
+        const { ctx } = failingAt(await seededRepo(), 'writeExclusive', 'boom');
+        const { logger: _logger, ...silent } = ctx;
+
+        // Act
+        const sut = await acquireOptionalIndexLock(silent as Context);
+
+        // Assert
+        expect(sut).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a lock whose commitRefresh hits a failing filesystem', () => {
+    describe.each([
+      ['write', LOCK_NAME],
+      ['rename', 'index'],
+      ['readSlice', 'index'],
+    ])('When %s throws ENOSPC', (method, target) => {
+      it('Then it resolves false, leaves no index.lock and warns with the targeted path', async () => {
+        // Arrange
+        const base = await seededRepo();
+        const read = await readIndex(base);
+        const original = read.entries.find((entry) => entry.path === NESTED_PATH) as IndexEntry;
+        const { ctx, warn } = failingAt(base, method, unsupported('ENOSPC'));
+        const sut = (await acquireOptionalIndexLock(ctx)) as IndexLock;
+
+        // Act
+        const result = await sut.commitRefresh(read, [withLaterMtime(original)]);
+
+        // Assert
+        expect(result).toBe(false);
+        expect(await base.fs.exists(`${base.layout.gitDir}/${LOCK_NAME}`)).toBe(false);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(REFRESH_SKIPPED, {
+          code: 'UNSUPPORTED_OPERATION',
+          path: `${base.layout.gitDir}/${target}`,
+          reason: 'ENOSPC',
+        });
       });
     });
   });

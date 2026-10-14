@@ -1,4 +1,5 @@
 import { TsgitError } from '../../../domain/error.js';
+import { errorDataCode } from '../../../domain/error-data-code.js';
 import {
   type CarryKind,
   type CarrySettings,
@@ -15,6 +16,9 @@ import { readConfig } from '../config-read.js';
 import { indexPath, lockSuffix } from '../path-layout.js';
 import { invalidateIndexCache } from '../read-index.js';
 import { readPreviousIndex, smudgeRacilyClean } from './smudge-racily-clean.js';
+
+const UNKNOWN_FAILURE_CODE = 'unknown';
+const REFRESH_SKIPPED = 'status: index refresh skipped';
 
 interface AcquireOptions {
   /** Injectable clock — defaults to `Date.now`. Tests override to simulate stale/skewed locks. */
@@ -101,6 +105,41 @@ export const acquireIndexLock = async (
   return makeLock(ctx, lockPath, indexFile);
 };
 
+/**
+ * Acquire `${gitDir}/index.lock` for an opportunistic write. One exclusive write, no
+ * stale-lock breaking: any failure resolves `undefined` so the caller carries on
+ * without writing.
+ */
+export const acquireOptionalIndexLock = async (ctx: Context): Promise<IndexLock | undefined> => {
+  const indexFile = indexPath(ctx.layout.gitDir);
+  const lockPath = `${indexFile}${lockSuffix}`;
+  try {
+    await ctx.fs.writeExclusive(lockPath, new Uint8Array());
+  } catch (err) {
+    reportDegrade(ctx, err, lockPath);
+    return undefined;
+  }
+  return makeLock(ctx, lockPath, indexFile);
+};
+
+const stringField = (value: unknown, key: string): string | undefined => {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const field = (value as Record<string, unknown>)[key];
+  return typeof field === 'string' ? field : undefined;
+};
+
+const degradeCode = (err: unknown): string =>
+  errorDataCode(err) ?? stringField(err, 'name') ?? UNKNOWN_FAILURE_CODE;
+
+const reportDegrade = (ctx: Context, err: unknown, path: string): void => {
+  const reason = stringField((err as { data?: unknown } | null)?.data, 'reason');
+  ctx.logger?.warn?.(REFRESH_SKIPPED, {
+    code: degradeCode(err),
+    path,
+    ...(reason === undefined ? {} : { reason }),
+  });
+};
+
 const readLockMtime = async (ctx: Context, lockPath: string): Promise<number | undefined> => {
   try {
     const stat = await ctx.fs.lstat(lockPath);
@@ -173,10 +212,9 @@ const withRefreshedStat = (
 const sameBytes = (left: Uint8Array, right: Uint8Array): boolean =>
   left.length === right.length && left.every((byte, i) => byte === right[i]);
 
-const writeLocked = async (
+const stageLock = async (
   ctx: Context,
   lockPath: string,
-  indexFile: string,
   entries: ReadonlyArray<IndexEntry>,
   extensions: ReadonlyArray<IndexExtension>,
 ): Promise<void> => {
@@ -189,11 +227,67 @@ const writeLocked = async (
   bytes.set(body, 0);
   bytes.set(checksum, body.length);
   await ctx.fs.write(lockPath, bytes);
+};
+
+const publishLock = async (ctx: Context, lockPath: string, indexFile: string): Promise<void> => {
   await ctx.fs.rename(lockPath, indexFile);
   // Drop the cached readIndex entry unconditionally — a same-tick write
   // can have a stat identical to what was cached, and the cache must
   // never serve a stale read of our own commit.
   invalidateIndexCache(ctx);
+};
+
+const writeLocked = async (
+  ctx: Context,
+  lockPath: string,
+  indexFile: string,
+  entries: ReadonlyArray<IndexEntry>,
+  extensions: ReadonlyArray<IndexExtension>,
+): Promise<void> => {
+  await stageLock(ctx, lockPath, entries, extensions);
+  await publishLock(ctx, lockPath, indexFile);
+};
+
+/** A refresh-write failure, tagged with the path the failing operation targeted. */
+class RefreshSiteFailure {
+  constructor(
+    readonly path: string,
+    readonly cause: unknown,
+  ) {}
+}
+
+const atSite = async <T>(path: string, operation: () => Promise<T>): Promise<T> => {
+  try {
+    return await operation();
+  } catch (err) {
+    throw new RefreshSiteFailure(path, err);
+  }
+};
+
+interface RefreshSites {
+  readonly lockPath: string;
+  readonly indexFile: string;
+}
+
+/** Resolves `false` when the index moved on disk since `read`; the caller releases the lock. */
+const writeRefreshed = async (
+  ctx: Context,
+  sites: RefreshSites,
+  read: GitIndex,
+  refreshed: ReadonlyArray<IndexEntry>,
+): Promise<boolean> => {
+  const previous = await atSite(sites.indexFile, () => readPreviousIndex(ctx));
+  if (previous === undefined || !sameBytes(previous.trailerSha, read.trailerSha)) return false;
+  const extensions = carryExtensions(
+    previous.extensions,
+    NO_INDEX_CHANGE,
+    'refresh',
+    await carrySettings(ctx),
+  );
+  const entries = await smudgeRacilyClean(ctx, withRefreshedStat(read, refreshed), previous);
+  await atSite(sites.lockPath, () => stageLock(ctx, sites.lockPath, entries, extensions));
+  await atSite(sites.indexFile, () => publishLock(ctx, sites.lockPath, sites.indexFile));
+  return true;
 };
 
 const makeLock = (ctx: Context, lockPath: string, indexFile: string): IndexLock => {
@@ -221,27 +315,16 @@ const makeLock = (ctx: Context, lockPath: string, indexFile: string): IndexLock 
     },
     commitRefresh: async (read, refreshed) => {
       if (committed || released) return false;
-      const previous = await readPreviousIndex(ctx);
-      if (previous === undefined || !sameBytes(previous.trailerSha, read.trailerSha)) {
+      try {
+        committed = await writeRefreshed(ctx, { lockPath, indexFile }, read, refreshed);
+      } catch (err) {
+        if (!(err instanceof RefreshSiteFailure)) throw err;
         await release();
+        reportDegrade(ctx, err.cause, err.path);
         return false;
       }
-      const entries = withRefreshedStat(read, refreshed);
-      const extensions = carryExtensions(
-        previous.extensions,
-        NO_INDEX_CHANGE,
-        'refresh',
-        await carrySettings(ctx),
-      );
-      await writeLocked(
-        ctx,
-        lockPath,
-        indexFile,
-        await smudgeRacilyClean(ctx, entries, previous),
-        extensions,
-      );
-      committed = true;
-      return true;
+      if (!committed) await release();
+      return committed;
     },
   };
 };
