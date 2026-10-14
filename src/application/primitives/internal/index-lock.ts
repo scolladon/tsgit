@@ -10,6 +10,7 @@ import {
 import { diffIndexEntries } from '../../../domain/git-index/diff-index-entries.js';
 import { type IndexEntry, serializeIndex } from '../../../domain/git-index/index.js';
 import type { GitIndex, IndexExtension } from '../../../domain/git-index/index-entry.js';
+import { bytesEqual } from '../../../domain/objects/encoding.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../config-read.js';
@@ -213,9 +214,6 @@ const withRefreshedStat = (
   );
 };
 
-const sameBytes = (left: Uint8Array, right: Uint8Array): boolean =>
-  left.length === right.length && left.every((byte, i) => byte === right[i]);
-
 const stageLock = async (
   ctx: Context,
   lockPath: string,
@@ -305,7 +303,7 @@ const writeRefreshed = async (
   verified: IsVerified,
 ): Promise<boolean> => {
   const previous = await atSite(sites.indexFile, () => readPreviousIndex(ctx));
-  if (previous === undefined || !sameBytes(previous.trailerSha, read.trailerSha)) return false;
+  if (previous === undefined || !bytesEqual(previous.trailerSha, read.trailerSha)) return false;
   const extensions = await carriedOnRefresh(ctx, previous);
   const entries = await stagedRefresh(ctx, { read, refreshed, previous, verified });
   await atSite(sites.lockPath, () => stageLock(ctx, sites.lockPath, entries, extensions));
