@@ -1,12 +1,11 @@
 import { errorDataCode } from '../../../domain/error-data-code.js';
-import type { IndexEntry } from '../../../domain/git-index/index-entry.js';
+import type { GitIndex, IndexEntry } from '../../../domain/git-index/index-entry.js';
 import { deriveWorkingMode, FILE_MODE } from '../../../domain/objects/file-mode.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
-import type { FileStat } from '../../../ports/file-system.js';
 import { compareWorkingTreeDelta } from '../compare-working-tree-entry.js';
 import { indexPath } from '../path-layout.js';
-import { indexMtimeFrom, readIndexAt } from '../read-index.js';
+import { readIndexAt } from '../read-index.js';
 import { lstatIfReachable } from './fs-probes.js';
 import { type IndexMtime, isRacy, matchesContentStat } from './is-entry-stat-clean.js';
 import { joinPath } from './join-working-tree-path.js';
@@ -34,28 +33,29 @@ const statDataKey = (entry: IndexEntry): string =>
     entry.gid,
   ].join();
 
-/** A corrupt index carries no stat data over; any other refusal propagates. */
-const entriesAsRead = async (
-  ctx: Context,
-  indexStat: FileStat,
-): Promise<ReadonlyArray<IndexEntry>> => {
+/**
+ * The index on disk as the lock's commit finds it. A missing or corrupt index
+ * carries no stat data or extensions over; any other refusal propagates.
+ */
+export const readPreviousIndex = async (ctx: Context): Promise<GitIndex | undefined> => {
+  const stat = await lstatIfReachable(ctx.fs, indexPath(ctx.layout.gitDir));
+  if (stat === undefined) return undefined;
   try {
-    return (await readIndexAt(ctx, indexStat)).entries;
+    return await readIndexAt(ctx, stat);
   } catch (err) {
-    if (errorDataCode(err)?.startsWith(CORRUPT_INDEX_CODE_PREFIX) === true) return [];
+    if (errorDataCode(err)?.startsWith(CORRUPT_INDEX_CODE_PREFIX) === true) return undefined;
     throw err;
   }
 };
 
 /** Stands in for git's `!ce_uptodate`: the entry is the index's own, unchanged since read. */
-const carriedOver = async (
-  ctx: Context,
-  indexStat: FileStat,
+const carriedOver = (
+  previous: GitIndex,
   racy: ReadonlyArray<IndexEntry>,
-): Promise<ReadonlyArray<IndexEntry>> => {
+): ReadonlyArray<IndexEntry> => {
   const racyByPath = new Map<FilePath, IndexEntry>(racy.map((entry) => [entry.path, entry]));
   const unchanged: IndexEntry[] = [];
-  for (const entry of await entriesAsRead(ctx, indexStat)) {
+  for (const entry of previous.entries) {
     const candidate = racyByPath.get(entry.path);
     if (candidate !== undefined && statDataKey(candidate) === statDataKey(entry)) {
       unchanged.push(candidate);
@@ -90,14 +90,14 @@ const racilyClean = async (
   ctx: Context,
   workDir: string,
   entries: ReadonlyArray<IndexEntry>,
+  previous: GitIndex,
+  indexMtime: IndexMtime,
 ): Promise<ReadonlyArray<IndexEntry>> => {
-  const stat = await lstatIfReachable(ctx.fs, indexPath(ctx.layout.gitDir));
-  if (stat === undefined) return [];
-  const indexMtime = indexMtimeFrom(stat);
   const racy = entries.filter((entry) => isRacyTimestamp(entry, indexMtime));
   if (racy.length === 0) return [];
-  const candidates = await carriedOver(ctx, stat, racy);
-  return filterConcurrently(candidates, (entry) => statStillMatches(ctx, workDir, entry));
+  return filterConcurrently(carriedOver(previous, racy), (entry) =>
+    statStillMatches(ctx, workDir, entry),
+  );
 };
 
 /**
@@ -109,10 +109,11 @@ const racilyClean = async (
 export const smudgeRacilyClean = async (
   ctx: Context,
   entries: ReadonlyArray<IndexEntry>,
+  previous: GitIndex | undefined,
 ): Promise<ReadonlyArray<IndexEntry>> => {
   const workDir = ctx.layout.workDir;
-  if (workDir === undefined) return entries;
-  const clean = await racilyClean(ctx, workDir, entries);
+  if (workDir === undefined || previous?.indexMtime === undefined) return entries;
+  const clean = await racilyClean(ctx, workDir, entries, previous, previous.indexMtime);
   if (clean.length === 0) return entries;
   const provider = await buildCheckinAttributeProvider(ctx);
   const modified = await filterConcurrently(

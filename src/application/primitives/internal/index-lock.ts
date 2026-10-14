@@ -1,13 +1,36 @@
 import { TsgitError } from '../../../domain/error.js';
+import {
+  type CarryKind,
+  carryExtensions,
+  withRestagedPaths,
+} from '../../../domain/git-index/carry-extensions.js';
+import { diffIndexEntries } from '../../../domain/git-index/diff-index-entries.js';
 import { type IndexEntry, serializeIndex } from '../../../domain/git-index/index.js';
+import type { GitIndex, IndexExtension } from '../../../domain/git-index/index-entry.js';
+import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
+import { readConfig } from '../config-read.js';
 import { indexPath, lockSuffix } from '../path-layout.js';
 import { invalidateIndexCache } from '../read-index.js';
-import { smudgeRacilyClean } from './smudge-racily-clean.js';
+import { readPreviousIndex, smudgeRacilyClean } from './smudge-racily-clean.js';
 
 interface AcquireOptions {
   /** Injectable clock — defaults to `Date.now`. Tests override to simulate stale/skewed locks. */
   readonly now?: () => number;
+}
+
+/**
+ * Why the index is written, which decides what the extensions it carries survive.
+ * `'update'`: entries replaced in place (add, rm, mv, mixed reset, checkout of paths,
+ * sparse-checkout, submodule add). `'replace'`: the index rebuilt from a tree or a
+ * merge (checkout of a branch, reset --hard, the merge family, stash, pull, clone,
+ * worktree add).
+ */
+export type IndexWriteKind = Exclude<CarryKind, 'refresh'>;
+
+export interface CommitOptions {
+  /** Paths the writer re-staged whatever their object name; honoured for `'update'` only. */
+  readonly restagedPaths?: ReadonlyArray<FilePath>;
 }
 
 export interface IndexLock {
@@ -18,7 +41,11 @@ export interface IndexLock {
    * supported), and renames over `${gitDir}/index`. After commit, `release`
    * becomes a no-op.
    */
-  readonly commit: (entries: ReadonlyArray<IndexEntry>) => Promise<void>;
+  readonly commit: (
+    entries: ReadonlyArray<IndexEntry>,
+    kind?: IndexWriteKind,
+    options?: CommitOptions,
+  ) => Promise<void>;
 }
 
 const resourceLocked = (path: string, mtimeMs: number | undefined): TsgitError => {
@@ -105,6 +132,45 @@ const maybeBreakStaleLock = async (
   }
 };
 
+const carriedExtensions = async (
+  ctx: Context,
+  previous: GitIndex | undefined,
+  entries: ReadonlyArray<IndexEntry>,
+  kind: IndexWriteKind | undefined,
+  options: CommitOptions,
+): Promise<ReadonlyArray<IndexExtension>> => {
+  if (kind === undefined || previous === undefined || previous.extensions.length === 0) return [];
+  const diff = diffIndexEntries(previous.entries, entries);
+  const change = kind === 'update' ? withRestagedPaths(diff, options.restagedPaths ?? []) : diff;
+  return carryExtensions(previous.extensions, change, kind, {
+    untrackedCache: (await readConfig(ctx)).core?.untrackedCache,
+    digestLength: ctx.hashConfig.digestLength,
+  });
+};
+
+const writeLocked = async (
+  ctx: Context,
+  lockPath: string,
+  indexFile: string,
+  entries: ReadonlyArray<IndexEntry>,
+  extensions: ReadonlyArray<IndexExtension>,
+): Promise<void> => {
+  const body = serializeIndex(
+    { version: 2, entries: [...entries], extensions, trailerSha: new Uint8Array(0) },
+    ctx.hashConfig.digestLength,
+  );
+  const checksum = await ctx.hash.hash(body);
+  const bytes = new Uint8Array(body.length + checksum.length);
+  bytes.set(body, 0);
+  bytes.set(checksum, body.length);
+  await ctx.fs.write(lockPath, bytes);
+  await ctx.fs.rename(lockPath, indexFile);
+  // Drop the cached readIndex entry unconditionally — a same-tick write
+  // can have a stat identical to what was cached, and the cache must
+  // never serve a stale read of our own commit.
+  invalidateIndexCache(ctx);
+};
+
 const makeLock = (ctx: Context, lockPath: string, indexFile: string): IndexLock => {
   let committed = false;
   let released = false;
@@ -119,28 +185,13 @@ const makeLock = (ctx: Context, lockPath: string, indexFile: string): IndexLock 
         if (!(err instanceof TsgitError) || err.data.code !== 'FILE_NOT_FOUND') throw err;
       }
     },
-    commit: async (entries) => {
+    commit: async (entries, kind, options = {}) => {
       if (committed || released) return;
-      const body = serializeIndex(
-        {
-          version: 2,
-          entries: [...(await smudgeRacilyClean(ctx, entries))],
-          extensions: [],
-          trailerSha: new Uint8Array(0),
-        },
-        ctx.hashConfig.digestLength,
-      );
-      const checksum = await ctx.hash.hash(body);
-      const bytes = new Uint8Array(body.length + checksum.length);
-      bytes.set(body, 0);
-      bytes.set(checksum, body.length);
-      await ctx.fs.write(lockPath, bytes);
-      await ctx.fs.rename(lockPath, indexFile);
+      const previous = await readPreviousIndex(ctx);
+      const smudged = await smudgeRacilyClean(ctx, entries, previous);
+      const extensions = await carriedExtensions(ctx, previous, smudged, kind, options);
+      await writeLocked(ctx, lockPath, indexFile, smudged, extensions);
       committed = true;
-      // Drop the cached readIndex entry unconditionally — a same-tick write
-      // can have a stat identical to what was cached, and the cache must
-      // never serve a stale read of our own commit.
-      invalidateIndexCache(ctx);
     },
   };
 };

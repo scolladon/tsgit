@@ -4,7 +4,10 @@ import { add } from '../../../../../src/application/commands/add.js';
 import { init } from '../../../../../src/application/commands/init.js';
 import { acquireIndexLock } from '../../../../../src/application/primitives/internal/index-lock.js';
 import * as gitattributes from '../../../../../src/application/primitives/internal/read-gitattributes.js';
-import { smudgeRacilyClean } from '../../../../../src/application/primitives/internal/smudge-racily-clean.js';
+import {
+  readPreviousIndex,
+  smudgeRacilyClean,
+} from '../../../../../src/application/primitives/internal/smudge-racily-clean.js';
 import {
   invalidateIndexCache,
   readIndex,
@@ -65,7 +68,7 @@ describe('smudgeRacilyClean', () => {
         const sut = smudgeRacilyClean;
 
         // Act
-        const result = await sut(ctx, entries);
+        const result = await sut(ctx, entries, await readPreviousIndex(ctx));
 
         // Assert
         expect(result).toEqual([{ ...entries[0], fileSize: 0 }]);
@@ -87,7 +90,7 @@ describe('smudgeRacilyClean', () => {
         const sut = smudgeRacilyClean;
 
         // Act
-        const result = await sut(ctx, entries);
+        const result = await sut(ctx, entries, await readPreviousIndex(ctx));
 
         // Assert
         expect(entries[0]?.fileSize).toBe(6);
@@ -105,7 +108,7 @@ describe('smudgeRacilyClean', () => {
         const sut = smudgeRacilyClean;
 
         // Act
-        const result = await sut(ctx, entries);
+        const result = await sut(ctx, entries, await readPreviousIndex(ctx));
 
         // Assert
         expect(result).toEqual(entries);
@@ -123,13 +126,13 @@ describe('smudgeRacilyClean', () => {
         vi.setSystemTime(NEXT_SECOND_MS);
         await add(ctx, [TRACKED]);
         const entries = await entriesAsRead(ctx);
-        invalidateIndexCache(ctx);
+        const previous = await readPreviousIndex(ctx);
         const probe = vi.spyOn(ctx.fs, 'lstatIfReachable');
         const read = vi.spyOn(ctx.fs, 'read');
         const sut = smudgeRacilyClean;
 
         // Act
-        const result = await sut(ctx, entries);
+        const result = await sut(ctx, entries, previous);
 
         // Assert
         expect(result).toEqual(entries);
@@ -150,7 +153,7 @@ describe('smudgeRacilyClean', () => {
         const sut = smudgeRacilyClean;
 
         // Act
-        const result = await sut(ctx, entries);
+        const result = await sut(ctx, entries, await readPreviousIndex(ctx));
 
         // Assert
         expect(result).toEqual(entries);
@@ -169,7 +172,7 @@ describe('smudgeRacilyClean', () => {
         const sut = smudgeRacilyClean;
 
         // Act
-        const result = await sut(ctx, entries);
+        const result = await sut(ctx, entries, await readPreviousIndex(ctx));
 
         // Assert
         expect(result).toEqual(entries);
@@ -189,7 +192,7 @@ describe('smudgeRacilyClean', () => {
         const sut = smudgeRacilyClean;
 
         // Act
-        const result = await sut(ctx, entries);
+        const result = await sut(ctx, entries, await readPreviousIndex(ctx));
 
         // Assert
         expect(result).toEqual(entries);
@@ -209,7 +212,7 @@ describe('smudgeRacilyClean', () => {
         const sut = smudgeRacilyClean;
 
         // Act
-        const result = await sut(ctx, entries);
+        const result = await sut(ctx, entries, await readPreviousIndex(ctx));
 
         // Assert
         expect(result).toEqual(entries);
@@ -225,12 +228,12 @@ describe('smudgeRacilyClean', () => {
         const [asRead] = await entriesAsRead(ctx);
         const executable = { ...(asRead as IndexEntry), mode: FILE_MODE.EXECUTABLE };
         const lock = await acquireIndexLock(ctx);
-        await lock.commit([executable]);
+        await lock.commit([executable], 'update');
         await write(ctx, TRACKED, SAME_SIZE_REWRITE);
         const sut = smudgeRacilyClean;
 
         // Act
-        const result = await sut(ctx, [executable]);
+        const result = await sut(ctx, [executable], await readPreviousIndex(ctx));
 
         // Assert
         expect(result).toEqual([executable]);
@@ -260,13 +263,13 @@ describe('smudgeRacilyClean', () => {
           path: 'sub' as FilePath,
         };
         const lock = await acquireIndexLock(ctx);
-        await lock.commit([gitlink]);
+        await lock.commit([gitlink], 'update');
         const entries = await entriesAsRead(ctx);
         const probe = vi.spyOn(ctx.fs, 'lstatIfReachable');
         const sut = smudgeRacilyClean;
 
         // Act
-        const result = await sut(ctx, entries);
+        const result = await sut(ctx, entries, await readPreviousIndex(ctx));
 
         // Assert
         expect(result).toEqual(entries);
@@ -287,7 +290,7 @@ describe('smudgeRacilyClean', () => {
         const sut = smudgeRacilyClean;
 
         // Act
-        const result = await sut(ctx, entries);
+        const result = await sut(ctx, entries, await readPreviousIndex(ctx));
 
         // Assert
         expect(result).toEqual(entries);
@@ -306,7 +309,7 @@ describe('smudgeRacilyClean', () => {
         const sut = smudgeRacilyClean;
 
         // Act
-        const result = await sut(asBareContext(ctx), entries);
+        const result = await sut(asBareContext(ctx), entries, await readPreviousIndex(ctx));
 
         // Assert
         expect(result).toEqual(entries);
@@ -328,7 +331,7 @@ describe('smudgeRacilyClean', () => {
         const sut = smudgeRacilyClean;
 
         // Act
-        const result = await sut(ctx, entries);
+        const result = await sut(ctx, entries, await readPreviousIndex(ctx));
 
         // Assert
         expect(result).toEqual(entries);
@@ -341,16 +344,15 @@ describe('smudgeRacilyClean', () => {
       it('Then the refusal propagates', async () => {
         // Arrange
         const ctx = await trackedRepo();
-        const entries = await entriesAsRead(ctx);
         invalidateIndexCache(ctx);
         const indexFile = `${ctx.layout.gitDir}/index`;
         vi.spyOn(ctx.fs, 'read').mockRejectedValue(permissionDenied(indexFile));
-        const sut = smudgeRacilyClean;
+        const sut = readPreviousIndex;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, entries);
+          await sut(ctx);
         } catch (err) {
           caught = err;
         }
