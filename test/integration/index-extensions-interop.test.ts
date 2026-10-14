@@ -23,10 +23,13 @@ import { checkout } from '../../src/application/commands/checkout.js';
 import { cherryPickRun } from '../../src/application/commands/cherry-pick.js';
 import { mergeRun } from '../../src/application/commands/merge.js';
 import { mv } from '../../src/application/commands/mv.js';
+import { rebaseRun } from '../../src/application/commands/rebase.js';
 import { reset } from '../../src/application/commands/reset.js';
+import { revertRun } from '../../src/application/commands/revert.js';
 import { rm } from '../../src/application/commands/rm.js';
 import { sparseCheckoutSet } from '../../src/application/commands/sparse-checkout.js';
-import { stashApply, stashPush } from '../../src/application/commands/stash.js';
+import { stashApply, stashPop, stashPush } from '../../src/application/commands/stash.js';
+import { status } from '../../src/application/commands/status.js';
 import { readIndex } from '../../src/application/primitives/read-index.js';
 import type { TsgitError } from '../../src/domain/error.js';
 import type { CacheTreeEntry } from '../../src/domain/git-index/index-entry.js';
@@ -44,7 +47,8 @@ import {
 
 type Format = 'sha1' | 'sha256';
 type Carry = 'update' | 'replace';
-type TreeCheck = 'bytes' | 'valid-nodes' | 'git-oids';
+/** `true-oids`: every valid node is git's oid for the directory, but may be one git itself invalidated. */
+type TreeCheck = 'bytes' | 'valid-nodes' | 'git-oids' | 'true-oids';
 
 const DIGEST_LENGTH: Record<Format, 20 | 32> = { sha1: 20, sha256: 32 };
 const FILES = ['a', 'b', 'd/c', 'd/e/f', 'x/y', 'm'] as const;
@@ -179,6 +183,8 @@ interface Row {
   readonly title: string;
   readonly carry: Carry;
   readonly tree: TreeCheck;
+  /** git is expected to leave unmerged entries behind. */
+  readonly conflicted?: boolean;
   readonly prepare?: (dir: string) => Promise<void>;
   readonly git: (dir: string) => void;
   readonly tsgit: (ctx: Context) => Promise<unknown>;
@@ -267,6 +273,15 @@ const ADD_ROWS: ReadonlyArray<Row> = [
     tsgit: (ctx) => add(ctx, ['.'], { renormalize: true }),
   },
 ];
+
+const STATUS_REFRESH: Row = {
+  title: 'touch b; status (refresh-only write)',
+  carry: 'update',
+  tree: 'bytes',
+  prepare: (dir) => touchForward(dir, 'b'),
+  git: ok('status'),
+  tsgit: (ctx) => status(ctx),
+};
 
 const UPDATE_ROWS: ReadonlyArray<Row> = [
   {
@@ -367,6 +382,7 @@ const REPLACE_ROWS: ReadonlyArray<Row> = [
     title: 'merge clash (conflicted)',
     carry: 'replace',
     tree: 'git-oids',
+    conflicted: true,
     git: lenient('merge', '--no-edit', 'clash'),
     tsgit: (ctx) => mergeRun(ctx, { rev: 'clash' }),
   },
@@ -378,6 +394,21 @@ const REPLACE_ROWS: ReadonlyArray<Row> = [
     tsgit: (ctx) => cherryPickRun(ctx, { commits: ['clean'] }),
   },
   {
+    title: 'revert HEAD~2 (conflicted)',
+    carry: 'replace',
+    tree: 'git-oids',
+    conflicted: true,
+    git: lenient('revert', '--no-edit', 'HEAD~2'),
+    tsgit: (ctx) => revertRun(ctx, { commits: ['HEAD~2'] }),
+  },
+  {
+    title: 'rebase --onto clean HEAD~1 (clean)',
+    carry: 'replace',
+    tree: 'git-oids',
+    git: ok('rebase', '-q', '--onto', 'clean', 'HEAD~1'),
+    tsgit: (ctx) => rebaseRun(ctx, { upstream: 'HEAD~1', onto: 'clean' }),
+  },
+  {
     title: 'stash push',
     carry: 'replace',
     tree: 'git-oids',
@@ -386,9 +417,25 @@ const REPLACE_ROWS: ReadonlyArray<Row> = [
     tsgit: (ctx) => stashPush(ctx, {}),
   },
   {
-    title: 'stash apply',
+    title: 'stash push -u',
     carry: 'replace',
     tree: 'git-oids',
+    prepare: dirtyDC,
+    git: ok('stash', 'push', '-q', '-u'),
+    tsgit: (ctx) => stashPush(ctx, { includeUntracked: true }),
+  },
+  {
+    title: 'stash pop --index',
+    carry: 'replace',
+    tree: 'true-oids',
+    prepare: stashedDC,
+    git: ok('stash', 'pop', '-q', '--index'),
+    tsgit: (ctx) => stashPop(ctx, { restoreIndex: true }),
+  },
+  {
+    title: 'stash apply',
+    carry: 'replace',
+    tree: 'true-oids',
     prepare: stashedDC,
     git: ok('stash', 'apply', '-q'),
     tsgit: (ctx) => stashApply(ctx, {}),
@@ -396,7 +443,7 @@ const REPLACE_ROWS: ReadonlyArray<Row> = [
   {
     title: 'stash apply (the stash also added a new file)',
     carry: 'replace',
-    tree: 'git-oids',
+    tree: 'true-oids',
     prepare: stashedDCWithNewFile,
     git: ok('stash', 'apply', '-q'),
     tsgit: (ctx) => stashApply(ctx, {}),
@@ -458,8 +505,12 @@ const expectTree = (row: Row, outcome: Outcome): void => {
     );
     return;
   }
+  const peerNodes = new Map(treeNodes(outcome.peer, outcome.format));
+  if (peerNodes.size > 0) expect(outcome.ours.has('TREE')).toBe(true);
   for (const [directory, oid] of treeNodes(outcome.ours, outcome.format)) {
     expect([directory, oid]).toEqual([directory, gitOid(outcome.oursDir, directory)]);
+    if (row.tree === 'git-oids')
+      expect([directory, oid]).toEqual([directory, peerNodes.get(directory)]);
   }
 };
 
@@ -483,15 +534,24 @@ const describeRow = (row: Row, format: Format = 'sha1'): void => {
         expectZzzz(outcome);
       });
 
-      it('Then REUC follows the writer class', () => {
+      it('Then REUC follows the writer class and matches what git wrote', () => {
         // Arrange + Assert
         expectCarried(outcome, 'REUC', row.carry === 'update');
+        expect(outcome.ours.get('REUC')).toEqual(outcome.peer.get('REUC'));
       });
 
       it('Then UNTR follows the tracked-set rule', () => {
         // Arrange + Assert
+        // tsgit drops UNTR where git updates it: it keeps no untracked cache.
         expectCarried(outcome, 'UNTR', !outcome.trackedSetChanged);
       });
+
+      if (row.conflicted === true) {
+        it('Then git left unmerged entries behind', () => {
+          // Arrange + Assert
+          expect(git(outcome.peerDir, 'ls-files', '-u')).not.toBe('');
+        });
+      }
 
       it('Then the staged entries agree with git', () => {
         // Arrange + Assert
@@ -511,7 +571,37 @@ const describeRow = (row: Row, format: Format = 'sha1'): void => {
   });
 };
 
+const touchedWithoutUntrackedCache = async (dir: string): Promise<void> => {
+  git(dir, 'config', 'core.untrackedCache', 'false');
+  await touchForward(dir, 'b');
+};
+
 describe.skipIf(!GIT_AVAILABLE)('index extension carry interop', () => {
+  describe('Given core.untrackedCache=false on both twins', () => {
+    describe('When status refreshes the index in tsgit and in git', () => {
+      let pair: PeerPair;
+      let outcome: Outcome;
+
+      beforeAll(async () => {
+        pair = await makePeerPair('index-ext-untr-off');
+        outcome = await play(
+          pair,
+          { ...STATUS_REFRESH, prepare: touchedWithoutUntrackedCache },
+          'sha1',
+        );
+      }, ROW_TIMEOUT_MS);
+
+      afterAll(async () => {
+        await pair.dispose();
+      });
+
+      it('Then neither index keeps UNTR', () => {
+        // Arrange + Assert
+        expect([outcome.ours.has('UNTR'), outcome.peer.has('UNTR')]).toEqual([false, false]);
+      });
+    });
+  });
+
   describe('Given the base index built by git', () => {
     describe('When canonical git reads it', () => {
       let pair: PeerPair;
@@ -527,10 +617,10 @@ describe.skipIf(!GIT_AVAILABLE)('index extension carry interop', () => {
 
       it('Then it carries TREE, REUC, UNTR and ZZZZ', async () => {
         // Arrange
-        const sut = extensionsOf;
+        const probe = extensionsOf;
 
         // Act
-        const result = await sut(pair.ours, 'sha1');
+        const result = await probe(pair.ours, 'sha1');
 
         // Assert
         expect([...result.keys()].sort()).toEqual(['REUC', 'TREE', 'UNTR', 'ZZZZ']);
@@ -538,10 +628,10 @@ describe.skipIf(!GIT_AVAILABLE)('index extension carry interop', () => {
 
       it('Then git warns it ignores the ZZZZ extension', () => {
         // Arrange
-        const sut = tryRunGitWithExit;
+        const probe = tryRunGitWithExit;
 
         // Act
-        const result = sut(['-C', pair.ours, 'ls-files']);
+        const result = probe(['-C', pair.ours, 'ls-files']);
 
         // Assert
         expect(result.stderr).toContain('ignoring ZZZZ extension');
@@ -590,9 +680,11 @@ describe.skipIf(!GIT_AVAILABLE)('index extension carry interop', () => {
     });
   });
 
-  for (const row of [...ADD_ROWS, ...UPDATE_ROWS, ...REPLACE_ROWS]) describeRow(row);
+  for (const row of [...ADD_ROWS, STATUS_REFRESH, ...UPDATE_ROWS, ...REPLACE_ROWS])
+    describeRow(row);
 
   describeRow(ADD_MODIFIED, 'sha256');
+  describeRow(STATUS_REFRESH, 'sha256');
 });
 
 const BOM_DIRECTORY = '\uFEFFb';
@@ -637,10 +729,11 @@ describe.skipIf(!GIT_AVAILABLE)('index cache-tree names interop', () => {
 
       it('Then git write-tree and git fsck exit 0', () => {
         // Arrange
-        const sut = (args: ReadonlyArray<string>) => tryRunGitWithExit(['-C', pair.ours, ...args]);
+        const probe = (args: ReadonlyArray<string>) =>
+          tryRunGitWithExit(['-C', pair.ours, ...args]);
 
         // Act
-        const result = [sut(['write-tree']), sut(['fsck'])];
+        const result = [probe(['write-tree']), probe(['fsck'])];
 
         // Assert
         expect(result.map((outcome) => outcome.exitCode)).toEqual([0, 0]);
