@@ -119,7 +119,7 @@ export const mv = async (
     for (const item of planned) {
       await renameInWorkingTree(ctx, item.source, item.target);
     }
-    await lock.commit(Array.from(byPath.values()));
+    await lock.commit(Array.from(byPath.values()), 'update');
     return { moved, skipped };
   } finally {
     await lock.release();

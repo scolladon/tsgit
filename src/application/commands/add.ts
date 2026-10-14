@@ -209,8 +209,11 @@ const addLiteralOnly = async (
   try {
     const { indexRules, ...state } = await readExistingEntries(ctx);
     const staging = { ctx, scope: { ...scope, indexRules }, ...state, ensurePromisorConfigValid };
-    const { newEntries, added, modified, eolNotices } = await stageLiterals(staging, validated);
-    await lock.commit(Array.from(newEntries.values()));
+    const { newEntries, added, modified, eolNotices, restagedPaths } = await stageLiterals(
+      staging,
+      validated,
+    );
+    await lock.commit(Array.from(newEntries.values()), 'update', { restagedPaths });
     return { added, modified, removed: [], eolNotices };
   } finally {
     await lock.release();
@@ -247,12 +250,14 @@ const stageLiterals = async (
   readonly added: ReadonlyArray<FilePath>;
   readonly modified: ReadonlyArray<FilePath>;
   readonly eolNotices: ReadonlyArray<EolNotice>;
+  readonly restagedPaths: ReadonlyArray<FilePath>;
 }> => {
   const { ctx, scope, entries: existing, indexMtime } = staging;
   const newEntries = new Map<FilePath, IndexEntry>(existing);
   const added: FilePath[] = [];
   const modified: FilePath[] = [];
   const eolNotices: EolNotice[] = [];
+  const restagedPaths: FilePath[] = [];
   for (const path of trackedFirst(validated, existing)) {
     const previous = existing.get(path);
     const guard = staging.ensurePromisorConfigValid;
@@ -260,12 +265,17 @@ const stageLiterals = async (
     if (result === 'missing') throw pathspecNoMatch(path);
     const { entry, notice } = result;
     newEntries.set(path, entry);
+    if (wasRestaged(previous, entry)) restagedPaths.push(path);
     if (notice !== undefined) eolNotices.push(notice);
     if (previous === undefined) added.push(path);
     else if (previous.id !== entry.id || previous.mode !== entry.mode) modified.push(path);
   }
-  return { newEntries, added, modified, eolNotices };
+  return { newEntries, added, modified, eolNotices, restagedPaths };
 };
+
+/** `ie_match_stat` clean paths keep their entry object; every other path was rebuilt, which git's add_index_entry reports to the cache-tree. */
+const wasRestaged = (previous: IndexEntry | undefined, entry: IndexEntry): boolean =>
+  entry !== previous;
 
 const allLiteralsAreFiles = async (
   ctx: Context,
@@ -440,14 +450,14 @@ const addByPathspec = async (
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
     const staged = await stageIgnoredWalk(ctx, combinedIgnore, scope, ensurePromisorConfigValid);
-    const { newEntries, matched, added, modified, eolNotices } = tallyWalkOutcomes(
+    const { newEntries, matched, added, modified, eolNotices, restagedPaths } = tallyWalkOutcomes(
       staged.existing,
       staged.outcomes,
     );
     // git add never refuses the whole tree, even when it holds nothing to add.
     const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
     enforceLiteralMustMatch(mustMatch, matched, literalSpellings);
-    await lock.commit(Array.from(newEntries.values()));
+    await lock.commit(Array.from(newEntries.values()), 'update', { restagedPaths });
     return { added: [...added].sort(), modified: [...modified].sort(), removed: [], eolNotices };
   } finally {
     await lock.release();
@@ -483,7 +493,9 @@ const addRenormalized = async (
     // Stryker disable next-line MethodExpression: equivalent — the whole-tree literal is itself among the on-disk literals (the work tree exists), so enforceLiteralMustMatch accepts it unfiltered.
     const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
     enforceLiteralMustMatch(mustMatch, onDisk, literalSpellings);
-    await lock.commit([...renormalized.entries]);
+    await lock.commit([...renormalized.entries], 'update', {
+      restagedPaths: renormalized.restagedPaths,
+    });
     return { added: [], modified: renormalized.modified, removed: [], eolNotices: [] };
   } finally {
     await lock.release();
@@ -522,9 +534,11 @@ const renormalizeEntries = async (
 ): Promise<{
   readonly entries: ReadonlyArray<IndexEntry>;
   readonly modified: ReadonlyArray<FilePath>;
+  readonly restagedPaths: ReadonlyArray<FilePath>;
 }> => {
   const next: IndexEntry[] = [];
   const modified: FilePath[] = [];
+  const restagedPaths: FilePath[] = [];
   for (const previous of entries) {
     if (!isRecleaned(previous, matcher)) {
       next.push(previous);
@@ -532,9 +546,10 @@ const renormalizeEntries = async (
     }
     const entry = await renormalizeOne(staging, previous);
     next.push(entry);
+    if (wasRestaged(previous, entry)) restagedPaths.push(previous.path);
     if (entry.id !== previous.id || entry.mode !== previous.mode) modified.push(previous.path);
   }
-  return { entries: next, modified };
+  return { entries: next, modified, restagedPaths };
 };
 
 const renormalizeOne = async (
@@ -599,6 +614,14 @@ const hasNotice = (outcome: WalkOutcome): outcome is WalkOutcome & { readonly no
 
 const byPath = (a: WalkOutcome, b: WalkOutcome): number => comparePaths(a.path, b.path);
 
+const restagedPathsOf = (
+  outcomes: ReadonlyArray<WalkOutcome>,
+  existing: ReadonlyMap<FilePath, IndexEntry>,
+): FilePath[] =>
+  outcomes
+    .filter(({ path, entry }) => wasRestaged(existing.get(path), entry))
+    .map(({ path }) => path);
+
 /** The index once every walked outcome is staged, and which paths were matched, added, modified. */
 const tallyWalkOutcomes = (
   existing: ReadonlyMap<FilePath, IndexEntry>,
@@ -609,6 +632,7 @@ const tallyWalkOutcomes = (
   readonly added: ReadonlyArray<FilePath>;
   readonly modified: ReadonlyArray<FilePath>;
   readonly eolNotices: ReadonlyArray<EolNotice>;
+  readonly restagedPaths: ReadonlyArray<FilePath>;
 } => {
   const newEntries = new Map<FilePath, IndexEntry>(existing);
   const matched: FilePath[] = [];
@@ -620,7 +644,8 @@ const tallyWalkOutcomes = (
     if (outcome.kind === 'added') added.push(outcome.path);
     else if (outcome.kind === 'modified') modified.push(outcome.path);
   }
-  return { newEntries, matched, added, modified, eolNotices: noticesOf(outcomes) };
+  const restagedPaths = restagedPathsOf(outcomes, existing);
+  return { newEntries, matched, added, modified, eolNotices: noticesOf(outcomes), restagedPaths };
 };
 
 /**
@@ -666,7 +691,9 @@ export const addAll = async (
     modified.sort();
     // Stryker disable next-line MethodExpression: equivalent — `removed` is built by iterating `existing`, a Map populated from the always-byte-sorted index (serializeIndex sorts on every write), so it is already in ascending path order; the sort is a defensive no-op.
     removed.sort();
-    await lock.commit(Array.from(newEntries.values()));
+    await lock.commit(Array.from(newEntries.values()), 'update', {
+      restagedPaths: restagedPathsOf(outcomes, existing),
+    });
     return { added, modified, removed, eolNotices: noticesOf(outcomes) };
   } finally {
     await lock.release();

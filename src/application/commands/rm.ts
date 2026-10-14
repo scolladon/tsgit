@@ -109,7 +109,7 @@ export const rm = async (
         });
       }
     }
-    await lock.commit(Array.from(byPath.values()));
+    await lock.commit(Array.from(byPath.values()), 'update');
     return { removed };
   } finally {
     await lock.release();
