@@ -198,7 +198,7 @@ describe('diffIndexEntries', () => {
 
   describe('Given only the after list holds a supplementary-plane path, in unsorted input order', () => {
     describe('When diffing', () => {
-      it('Then the UTF-8 order is used and nothing changed', () => {
+      it('Then only the added path is changed and the tracked set changed', () => {
         // Arrange
         const before = [entry('\uFF5E.txt'), entry('a')];
         const after = [entry('\u{1F600}.txt'), entry('\uFF5E.txt'), entry('a')];

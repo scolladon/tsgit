@@ -285,7 +285,10 @@ describe('Given sibling cache-tree names that do not survive a UTF-8 round trip'
     it('Then a path component sharing the lossy decode of a sibling does not remove it', () => {
       // Arrange
       const sut = (data: Uint8Array): Uint8Array =>
-        serializeCacheTree(invalidateCacheTree(parseCacheTree(data, 20), ['a/﻿b' as FilePath]), 20);
+        serializeCacheTree(
+          invalidateCacheTree(parseCacheTree(data, 20), ['a/\uFEFFb' as FilePath]),
+          20,
+        );
 
       // Act
       const result = sut(original);
