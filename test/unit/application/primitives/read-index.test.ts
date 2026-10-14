@@ -720,7 +720,7 @@ describe('readIndex', () => {
           'a.txt' as FilePath,
         );
         const lock = await acquireIndexLock(ctx);
-        await lock.commit([entry]);
+        await lock.commit([entry], 'update');
 
         // Act
         const after = await readIndex(ctx);

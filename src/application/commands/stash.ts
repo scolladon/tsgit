@@ -517,7 +517,7 @@ const resetAfterPush = async (
     force: true,
     forceRewriteAll: true,
   });
-  await lock.commit(result.newIndexEntries);
+  await lock.commit(result.newIndexEntries, 'replace');
   // Stryker disable next-line ConditionalExpression: equivalent — when `includeUntracked` is falsy `untracked.paths` is always empty, so the `if(true)` variant iterates an empty list (no-op); the `if(false)` variant is killed by the `-u` removal test.
   if (opts.includeUntracked === true) {
     for (const path of untracked.paths) await removeWorkingTreeFile(ctx, path);
@@ -631,7 +631,7 @@ const reinstateIndex = async (
     targetTree: merged.mergedTree,
     currentIndex: args.currentIndex,
   });
-  await lock.commit(entries);
+  await lock.commit(entries, 'replace');
 };
 
 /** Apply `stash@{index}` (default newest) onto the working tree via a 3-way merge. */
@@ -713,7 +713,7 @@ const applyUnderLock = async (
   if (uTree !== undefined) await refuseUntrackedOverwrites(ctx, workDir, uTree);
   const result = await mergeStash(ctx, { bTree, cTree, wTree: parsed.wTree, currentIndex });
   if (result.kind === 'conflict') {
-    await lock.commit(result.indexEntries);
+    await lock.commit(result.indexEntries, 'replace');
     return {
       kind: 'conflict',
       conflicts: result.conflicts.map((c) => ({ path: c.path, type: c.type })),

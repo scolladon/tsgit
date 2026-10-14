@@ -209,7 +209,7 @@ const materializeWorktree = async (child: Context, treeId: ObjectId): Promise<vo
   try {
     const currentIndex = await readIndex(child);
     const result = await materializeTree(child, { targetTree: treeId, currentIndex });
-    await lock.commit(result.newIndexEntries);
+    await lock.commit(result.newIndexEntries, 'replace');
   } finally {
     await lock.release();
   }
