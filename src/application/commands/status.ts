@@ -160,6 +160,33 @@ const refreshEnabled = (ctx: Context, opts: StatusOptions): boolean => {
 
 const HEAD_NAME = 'HEAD';
 
+type StatusReport = Omit<StatusResult, 'branch' | 'detached'>;
+
+/** What the report and the opportunistic refresh share, the lock held when refresh is enabled. */
+interface LockedScan {
+  readonly index: GitIndex;
+  readonly tracked: TrackedEntries;
+  readonly trackedScan: TrackedScan;
+  readonly workDir: string;
+  readonly lock: IndexLock | undefined;
+}
+
+/** Scans untracked, reports, then refreshes the index when able; the lock is released whatever happens. */
+const reportUnderLock = async (
+  ctx: Context,
+  { index, tracked, trackedScan, workDir, lock }: LockedScan,
+): Promise<StatusReport> => {
+  try {
+    const untracked = await scanUntracked(ctx, tracked.trackedPaths);
+    const scanned = { workingMap: trackedScan.workingMap, untracked };
+    const report = await reportStatus(ctx, { index, tracked, scanned, workDir });
+    if (lock) await updateIndexIfAble(lock, index, trackedScan);
+    return report;
+  } finally {
+    await lock?.release();
+  }
+};
+
 const statusInScope = async (ctx: Context, opts: StatusOptions): Promise<StatusResult> => {
   await assertOperationalRepositorySettingsFirst(ctx);
   const workDir = requireWorkTree(ctx, 'status');
@@ -175,17 +202,9 @@ const statusInScope = async (ctx: Context, opts: StatusOptions): Promise<StatusR
   ctx.progress.start(STATUS_SCAN_OP);
   try {
     const trackedScan = await scanTrackedTree(ctx, index, tracked);
-    const { workingMap } = trackedScan;
     const lock = refreshEnabled(ctx, opts) ? await acquireOptionalIndexLock(ctx) : undefined;
-    try {
-      const untracked = await scanUntracked(ctx, tracked.trackedPaths);
-      const scanned = { workingMap, untracked };
-      const report = await reportStatus(ctx, { index, tracked, scanned, workDir });
-      if (lock) await updateIndexIfAble(lock, index, trackedScan);
-      return { branch: branchRefFromHead(head), detached: head.kind === 'direct', ...report };
-    } finally {
-      await lock?.release();
-    }
+    const report = await reportUnderLock(ctx, { index, tracked, trackedScan, workDir, lock });
+    return { branch: branchRefFromHead(head), detached: head.kind === 'direct', ...report };
   } finally {
     ctx.progress.end(STATUS_SCAN_OP);
   }
@@ -268,7 +287,7 @@ const reportStatus = async (
     readonly scanned: ScannedTree;
     readonly workDir: string;
   },
-): Promise<Omit<StatusResult, 'branch' | 'detached'>> => {
+): Promise<StatusReport> => {
   await resolveRevisionName(ctx, HEAD_NAME);
   const headTree = await readHeadTree(ctx);
   const { unmerged: groups } = tracked.grouped;

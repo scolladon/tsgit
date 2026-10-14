@@ -272,6 +272,29 @@ interface RefreshSites {
   readonly indexFile: string;
 }
 
+const carriedOnRefresh = async (
+  ctx: Context,
+  previous: GitIndex,
+): Promise<ReadonlyArray<IndexExtension>> =>
+  carryExtensions(previous.extensions, NO_INDEX_CHANGE, 'refresh', await carrySettings(ctx));
+
+/** The index as read with the refreshed stats, racily-clean entries smudged against `previous`. */
+const stagedRefresh = (
+  ctx: Context,
+  {
+    read,
+    refreshed,
+    previous,
+    verified,
+  }: {
+    readonly read: GitIndex;
+    readonly refreshed: ReadonlyArray<IndexEntry>;
+    readonly previous: GitIndex;
+    readonly verified: IsVerified;
+  },
+): Promise<ReadonlyArray<IndexEntry>> =>
+  smudgeRacilyClean(ctx, withRefreshedStat(read, refreshed), previous, verified);
+
 /** Resolves `false` when the index moved on disk since `read`; the caller releases the lock. */
 const writeRefreshed = async (
   ctx: Context,
@@ -282,18 +305,8 @@ const writeRefreshed = async (
 ): Promise<boolean> => {
   const previous = await atSite(sites.indexFile, () => readPreviousIndex(ctx));
   if (previous === undefined || !sameBytes(previous.trailerSha, read.trailerSha)) return false;
-  const extensions = carryExtensions(
-    previous.extensions,
-    NO_INDEX_CHANGE,
-    'refresh',
-    await carrySettings(ctx),
-  );
-  const entries = await smudgeRacilyClean(
-    ctx,
-    withRefreshedStat(read, refreshed),
-    previous,
-    verified,
-  );
+  const extensions = await carriedOnRefresh(ctx, previous);
+  const entries = await stagedRefresh(ctx, { read, refreshed, previous, verified });
   await atSite(sites.lockPath, () => stageLock(ctx, sites.lockPath, entries, extensions));
   await atSite(sites.indexFile, () => publishLock(ctx, sites.lockPath, sites.indexFile));
   return true;

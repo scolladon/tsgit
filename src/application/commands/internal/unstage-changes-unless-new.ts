@@ -52,6 +52,22 @@ interface PathJoin {
   readonly undone: Set<IndexEntry>;
 }
 
+/** Undoes every previous entry ordered before `now`, from `from`; returns where the join resumes. */
+const undoBefore = (
+  previous: ReadonlyArray<IndexEntry>,
+  from: number,
+  now: IndexEntry,
+  undo: (entry: IndexEntry) => void,
+): number => {
+  let at = from;
+  for (let prev = previous[at]; prev !== undefined; prev = previous[at]) {
+    if (comparePathStrings(prev.path, now.path) >= 0) break;
+    undo(prev);
+    at++;
+  }
+  return at;
+};
+
 /** Merge-join of two path-ordered stage-0 runs, so no lookup table and no re-sort is needed. */
 const joinByPath = (
   current: ReadonlyArray<IndexEntry>,
@@ -66,11 +82,8 @@ const joinByPath = (
   };
   let old = 0;
   for (const now of current) {
-    let prev = previous[old];
-    while (prev !== undefined && comparePathStrings(prev.path, now.path) < 0) {
-      undo(prev);
-      prev = previous[++old];
-    }
+    old = undoBefore(previous, old, now, undo);
+    const prev = previous[old];
     if (prev === undefined || prev.path !== now.path) {
       added.push(now);
       ordered.push(now);
