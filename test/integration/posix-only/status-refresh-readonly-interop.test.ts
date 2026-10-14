@@ -54,10 +54,11 @@ describe.skipIf(!GIT_AVAILABLE || IS_ROOT)('status refresh read-only interop', (
         const before = (await stat(path.join(gitDir, 'index'))).ino;
         await chmod(gitDir, 0o555);
         const warn = vi.fn();
-        const sut = { ...ctx, logger: { warn } } as Context;
+        const logged = { ...ctx, logger: { warn } } as Context;
+        const sut = status;
 
         // Act
-        const result = await status(sut);
+        const result = await sut(logged);
 
         // Assert
         expect(result.clean).toBe(true);

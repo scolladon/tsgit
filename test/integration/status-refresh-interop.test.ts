@@ -14,7 +14,7 @@
 import { execFileSync } from 'node:child_process';
 import { cp, mkdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { status } from '../../src/application/commands/status.js';
 import type { Context } from '../../src/ports/context.js';
@@ -31,6 +31,7 @@ import {
 const TRACKED = ['a', 'b', 'c'] as const;
 const PAST_SECONDS = 10;
 const TOUCH_SECONDS = 5;
+const HALF_SECOND = 0.5;
 const OPTIONAL_LOCKS = 'GIT_OPTIONAL_LOCKS';
 
 const secondsAgo = (seconds: number): Date => new Date(Date.now() - seconds * 1000);
@@ -112,13 +113,15 @@ describe.skipIf(!GIT_AVAILABLE)('status refresh interop', () => {
       it('Then the index is rewritten with the copy lstat data and git status then leaves it alone', async () => {
         // Arrange
         const copy = path.join(pair.ours, '..', `${path.basename(pair.ours)}-copy`);
+        onTestFinished(() => rm(copy, { recursive: true, force: true }));
         await cp(pair.peer, copy, { recursive: true });
         await pastAllTracked(copy);
         const before = await indexIno(copy);
-        const sut = createNodeContext({ workDir: copy });
+        const copyCtx = createNodeContext({ workDir: copy });
+        const sut = status;
 
         // Act
-        await status(sut);
+        await sut(copyCtx);
         const afterTsgit = await indexIno(copy);
         const debug = git(copy, 'ls-files', '--debug', 'a');
         const lstat = await stat(path.join(copy, 'a'), { bigint: true });
@@ -130,7 +133,6 @@ describe.skipIf(!GIT_AVAILABLE)('status refresh interop', () => {
         expect(debug).toContain(`ino: ${lstat.ino}`);
         expect(debug).toContain(`mtime: ${lstat.mtimeMs / 1000n}:`);
         expect(afterGit).toBe(afterTsgit);
-        await rm(copy, { recursive: true, force: true });
       });
     });
   });
@@ -186,6 +188,29 @@ describe.skipIf(!GIT_AVAILABLE)('status refresh interop', () => {
         for (const dir of [pair.peer, pair.ours]) {
           git(dir, 'update-index', '--refresh');
           execFileSync('touch', ['-r', path.join(dir, 'a'), path.join(dir, '.git', 'index')]);
+        }
+        const peerBefore = await indexIno(pair.peer);
+        const oursBefore = await indexIno(pair.ours);
+
+        // Act
+        git(pair.peer, 'status');
+        await status(ctx);
+
+        // Assert
+        expect(await indexIno(pair.peer)).not.toBe(peerBefore);
+        expect(await indexIno(pair.ours)).not.toBe(oursBefore);
+      });
+    });
+
+    describe('When an entry mtime shares the index second but precedes it in nanoseconds', () => {
+      it('Then both tools rewrite the index', async () => {
+        // Arrange — git compares whole seconds, so the sub-second order does not clear it.
+        const entrySecond = Math.floor(Date.now() / 1000) - PAST_SECONDS;
+        for (const dir of [pair.peer, pair.ours]) {
+          await utimes(path.join(dir, 'a'), entrySecond, entrySecond);
+          git(dir, 'update-index', '--refresh');
+          const indexTime = entrySecond + HALF_SECOND;
+          await utimes(path.join(dir, '.git', 'index'), indexTime, indexTime);
         }
         const peerBefore = await indexIno(pair.peer);
         const oursBefore = await indexIno(pair.ours);
@@ -285,11 +310,12 @@ describe.skipIf(!GIT_AVAILABLE)('status refresh interop', () => {
         const lock = path.join(pair.ours, '.git', 'index.lock');
         await writeFile(lock, '');
         const warn = vi.fn();
-        const sut = { ...ctx, logger: { warn } } as Context;
+        const logged = { ...ctx, logger: { warn } } as Context;
         const before = await indexIno(pair.ours);
+        const sut = status;
 
         // Act
-        const result = await status(sut);
+        const result = await sut(logged);
 
         // Assert
         expect(await indexIno(pair.ours)).toBe(before);
@@ -359,11 +385,12 @@ describe.skipIf(!GIT_AVAILABLE)('status refresh interop', () => {
         await mkdir(oursDir);
         await buildFilteredRepo(peerDir, peerLog);
         await buildFilteredRepo(oursDir, oursLog);
-        const sut = createNodeContext({ workDir: oursDir });
+        const filteredCtx = createNodeContext({ workDir: oursDir });
+        const sut = status;
 
         // Act
         git(peerDir, 'status');
-        await status(sut);
+        await sut(filteredCtx);
 
         // Assert
         const gitRuns = await filterRuns(peerLog);
@@ -385,10 +412,11 @@ describe.skipIf(!GIT_AVAILABLE)('status refresh interop', () => {
         await settle(dir);
         await touchB(dir);
         const before = await indexIno(dir);
-        const sut = createNodeContext({ workDir: dir, algorithm: 'sha256' });
+        const sha256Ctx = createNodeContext({ workDir: dir, algorithm: 'sha256' });
+        const sut = status;
 
         // Act
-        await status(sut);
+        await sut(sha256Ctx);
 
         // Assert
         expect(await indexIno(dir)).not.toBe(before);
