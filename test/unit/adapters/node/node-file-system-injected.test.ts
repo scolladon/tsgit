@@ -6078,10 +6078,11 @@ describe('NodeFileSystem.writeExclusive — create-first, mkdir only on ENOENT (
         // Arrange
         const writeFile = vi.fn().mockResolvedValue(undefined);
         const mkdir = vi.fn().mockResolvedValue(undefined);
-        const sut = build({ writeFile, mkdir });
+        const adapter = build({ writeFile, mkdir });
+        const sut = adapter.writeExclusive.bind(adapter);
 
         // Act
-        await sut.writeExclusive('/root/.git/index.lock', new Uint8Array());
+        await sut('/root/.git/index.lock', new Uint8Array());
 
         // Assert
         expect(writeFile).toHaveBeenCalledTimes(1);
@@ -6109,10 +6110,11 @@ describe('NodeFileSystem.writeExclusive — create-first, mkdir only on ENOENT (
           calls.push('mkdir');
           return Promise.resolve(undefined);
         });
-        const sut = build({ writeFile, mkdir });
+        const adapter = build({ writeFile, mkdir });
+        const sut = adapter.writeExclusive.bind(adapter);
 
         // Act
-        await sut.writeExclusive('/root/.git/index.lock', new Uint8Array());
+        await sut('/root/.git/index.lock', new Uint8Array());
 
         // Assert
         expect(calls).toEqual(['writeFile', 'mkdir', 'writeFile']);
@@ -6127,12 +6129,13 @@ describe('NodeFileSystem.writeExclusive — create-first, mkdir only on ENOENT (
         // Arrange
         const writeFile = vi.fn().mockRejectedValue(eacces());
         const mkdir = vi.fn().mockResolvedValue(undefined);
-        const sut = build({ writeFile, mkdir });
+        const adapter = build({ writeFile, mkdir });
+        const sut = adapter.writeExclusive.bind(adapter);
 
         // Act
         let caught: unknown;
         try {
-          await sut.writeExclusive('/root/.git/index.lock', new Uint8Array());
+          await sut('/root/.git/index.lock', new Uint8Array());
         } catch (err) {
           caught = err;
         }
@@ -6151,12 +6154,13 @@ describe('NodeFileSystem.writeExclusive — create-first, mkdir only on ENOENT (
         // Arrange
         const writeFile = vi.fn().mockRejectedValue(enoent());
         const mkdir = vi.fn().mockResolvedValue(undefined);
-        const sut = build({ writeFile, mkdir });
+        const adapter = build({ writeFile, mkdir });
+        const sut = adapter.writeExclusive.bind(adapter);
 
         // Act
         let caught: unknown;
         try {
-          await sut.writeExclusive('/root/.git/index.lock', new Uint8Array());
+          await sut('/root/.git/index.lock', new Uint8Array());
         } catch (err) {
           caught = err;
         }

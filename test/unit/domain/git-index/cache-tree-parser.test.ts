@@ -482,13 +482,14 @@ describe('Given a cache-tree whose component names do not round-trip through UTF
     it('Then the kept name bytes are an independent copy', () => {
       // Arrange
       const data = build(bomName);
-      const sut = parseCacheTree(data, 20);
+      const sut = parseCacheTree;
+      const result = sut(data, 20);
 
       // Act
       data.fill(0);
 
       // Assert
-      expect(sut.children[0]?.nameBytes).toEqual(bomName);
+      expect(result.children[0]?.nameBytes).toEqual(bomName);
     });
   });
 });
