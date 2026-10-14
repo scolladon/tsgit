@@ -70,22 +70,13 @@ export function comparePathStrings(left: string, right: string): number {
 
 const SURROGATE_OR_ABOVE = /[\ud800-\uffff]/;
 
-function compareUtf16Path(a: IndexEntry, b: IndexEntry): number {
-  const left = a.path as string;
-  const right = b.path as string;
-  if (left < right) return -1;
-  return left > right ? 1 : 0;
-}
-
-/**
- * UTF-16 and UTF-8 byte order only disagree when a path holds a code unit at
- * or above U+D800, so the engine's native string comparison serves every
- * other index at a fraction of the cost of the code-unit loop.
- */
 function compareUtf16Strings(left: string, right: string): number {
   if (left < right) return -1;
   return left > right ? 1 : 0;
 }
+
+const compareUtf16Path = (a: IndexEntry, b: IndexEntry): number =>
+  compareUtf16Strings(a.path as string, b.path as string);
 
 /** Same pick-once rule as `pathComparatorFor`, for bare path strings. */
 export function pathStringComparatorFor(paths: ReadonlyArray<string>): typeof comparePathStrings {
@@ -94,6 +85,11 @@ export function pathStringComparatorFor(paths: ReadonlyArray<string>): typeof co
     : compareUtf16Strings;
 }
 
+/**
+ * UTF-16 and UTF-8 byte order only disagree when a path holds a code unit at
+ * or above U+D800, so the engine's native string comparison serves every
+ * other index at a fraction of the cost of the code-unit loop.
+ */
 export function pathComparatorFor(entries: ReadonlyArray<IndexEntry>): typeof compareEntryPath {
   return entries.some((entry) => SURROGATE_OR_ABOVE.test(entry.path as string))
     ? compareEntryPath
