@@ -310,6 +310,7 @@ const ASCII_LIMIT = 0x80;
 /** ASCII always survives a decode/encode round trip, so only other names pay for the re-encode. */
 function roundTrips(path: string, rawName: Uint8Array): boolean {
   for (const byte of rawName) {
+    // Stryker disable next-line ConditionalExpression: equivalent — an all-ASCII name decodes and re-encodes to itself, so forcing the re-encode returns true as well; the guard only skips that work
     if (byte >= ASCII_LIMIT) return bytesEqual(encode(path), rawName);
   }
   return true;

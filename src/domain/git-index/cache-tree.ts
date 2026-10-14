@@ -118,10 +118,6 @@ function reachesLeaf(group: ReadonlyArray<Pending>, depth: number): boolean {
   return group.some((item) => item.length === depth + 1);
 }
 
-function deeper(group: ReadonlyArray<Pending>, depth: number): ReadonlyArray<Pending> {
-  return group.filter((item) => item.length > depth + 1);
-}
-
 function rebuildChildren(
   entry: CacheTreeEntry,
   groups: Map<string, Pending[]>,
@@ -129,12 +125,12 @@ function rebuildChildren(
 ): ReadonlyArray<CacheTreeEntry> {
   const children: CacheTreeEntry[] = [];
   for (const child of entry.children) {
+    // Stryker disable next-line ConditionalExpression: equivalent — with no groups left, groups.get(key) is undefined and groups.delete(key) a no-op for any key, so computing the key changes nothing; the guard only skips that work
     const key = groups.size === 0 ? undefined : keyOfChild(child);
     const group = key === undefined ? undefined : groups.get(key);
     if (key !== undefined) groups.delete(key);
     if (group === undefined) children.push(child);
-    else if (!reachesLeaf(group, depth))
-      children.push(invalidateNode(child, deeper(group, depth), depth + 1));
+    else if (!reachesLeaf(group, depth)) children.push(invalidateNode(child, group, depth + 1));
   }
   return children;
 }
