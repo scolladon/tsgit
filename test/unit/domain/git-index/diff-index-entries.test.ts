@@ -249,3 +249,64 @@ describe('diffIndexEntries', () => {
     });
   });
 });
+
+describe('diffIndexEntries stage and path ordering', () => {
+  describe('Given the same unmerged path listed in descending stage order before and ascending after', () => {
+    describe('When diffing', () => {
+      it('Then each stage is paired with its twin and nothing is changed', () => {
+        // Arrange
+        const before = [
+          entry('m', { stage: 3, id: '3' }),
+          entry('m', { stage: 2, id: '2' }),
+          entry('m', { stage: 1, id: '1' }),
+        ];
+        const after = [
+          entry('m', { stage: 1, id: '1' }),
+          entry('m', { stage: 2, id: '2' }),
+          entry('m', { stage: 3, id: '3' }),
+        ];
+
+        // Act
+        const sut = diffIndexEntries;
+        const result = sut(before, after);
+
+        // Assert
+        expect(result.changedPaths).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a before list with code units at or above U+D800 and a plain after list', () => {
+    describe('When diffing', () => {
+      it('Then changed paths follow UTF-8 byte order', () => {
+        // Arrange
+        const before = [entry('￿'), entry('\u{1F600}')];
+        const after = [entry('a')];
+
+        // Act
+        const sut = diffIndexEntries;
+        const result = sut(before, after);
+
+        // Assert
+        expect(result.changedPaths).toEqual(['a', '￿', '\u{1F600}']);
+      });
+    });
+  });
+
+  describe('Given a plain before list and an after list with code units at or above U+D800', () => {
+    describe('When diffing', () => {
+      it('Then changed paths follow UTF-8 byte order', () => {
+        // Arrange
+        const before = [entry('a')];
+        const after = [entry('￿'), entry('\u{1F600}')];
+
+        // Act
+        const sut = diffIndexEntries;
+        const result = sut(before, after);
+
+        // Assert
+        expect(result.changedPaths).toEqual(['a', '￿', '\u{1F600}']);
+      });
+    });
+  });
+});

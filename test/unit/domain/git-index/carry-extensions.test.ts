@@ -67,6 +67,30 @@ describe('carryExtensions', () => {
   });
 
   describe('Given TREE, REUC, UNTR, ZZZZ and EOIE', () => {
+    describe("When carried on a 'refresh' whose change reports every kind of difference", () => {
+      it('Then TREE, REUC and UNTR come back as the same objects', () => {
+        // Arrange
+        const previous = previousExtensions();
+        const change: IndexChange = {
+          changedPaths: ['d/c' as FilePath],
+          trackedSetChanged: true,
+          resolvedUnmerged: true,
+        };
+
+        // Act
+        const sut = carryExtensions;
+        const result = sut(previous, change, 'refresh', settings);
+
+        // Assert
+        expect(result).toHaveLength(3);
+        expect(result[0]).toBe(previous[4]);
+        expect(result[1]).toBe(previous[3]);
+        expect(result[2]).toBe(previous[2]);
+      });
+    });
+  });
+
+  describe('Given TREE, REUC, UNTR, ZZZZ and EOIE', () => {
     describe("When carried on an 'update'", () => {
       it('Then TREE is the serialised invalidated tree and REUC and UNTR are kept', () => {
         // Arrange

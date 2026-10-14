@@ -6063,6 +6063,9 @@ describe('NodeFileSystem — utimeNow (DI)', () => {
 });
 
 describe('NodeFileSystem.writeExclusive — create-first, mkdir only on ENOENT (DI)', () => {
+  const WRITE_EXCLUSIVE_FLAGS =
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW;
+
   const build = (overrides: Parameters<typeof fakeFsOps>[0]) =>
     new NodeFileSystem('/root', {
       pathPolicy: posixPolicy,
@@ -6119,6 +6122,9 @@ describe('NodeFileSystem.writeExclusive — create-first, mkdir only on ENOENT (
         // Assert
         expect(calls).toEqual(['writeFile', 'mkdir', 'writeFile']);
         expect(mkdir).toHaveBeenCalledWith('/root/.git', { recursive: true });
+        expect(writeFile).toHaveBeenLastCalledWith('/root/.git/index.lock', new Uint8Array(), {
+          flag: WRITE_EXCLUSIVE_FLAGS,
+        });
       });
     });
   });

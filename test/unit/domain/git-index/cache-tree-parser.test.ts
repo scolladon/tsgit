@@ -465,6 +465,19 @@ describe('Given a cache-tree whose component names do not round-trip through UTF
     });
   });
 
+  describe('When parseCacheTree reads a component whose only non-ASCII byte is 0x80', () => {
+    it('Then the child keeps its raw name bytes', () => {
+      // Arrange
+      const sut = parseCacheTree;
+
+      // Act
+      const result = sut(build(new Uint8Array([0x61, 0x80])), 20);
+
+      // Assert
+      expect(result.children[0]?.nameBytes).toEqual(new Uint8Array([0x61, 0x80]));
+    });
+  });
+
   describe('When parseCacheTree reads a plain component', () => {
     it('Then no name bytes are carried', () => {
       // Arrange

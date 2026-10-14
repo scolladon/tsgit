@@ -10,6 +10,7 @@ import { parseIndex } from '../../../../src/domain/git-index/index-parser.js';
 import {
   compareEntryPath,
   inOrder,
+  pathComparatorFor,
   pathStringComparatorFor,
   serializeIndex,
 } from '../../../../src/domain/git-index/index-writer.js';
@@ -807,6 +808,42 @@ describe('Given inOrder', () => {
       // Assert
       expect(result).toEqual([1, 2, 3]);
       expect(items).toEqual([3, 1, 2]);
+    });
+  });
+});
+
+describe('mixed plain and high code-unit paths', () => {
+  const mixed = ['a', '\u{1F600}', '\uFFFD'];
+  const utf8Order = ['a', '\uFFFD', '\u{1F600}'];
+
+  describe('Given paths where only some hold a code unit at or above U+D800', () => {
+    describe('When the string comparator sorts them', () => {
+      it('Then they come out in UTF-8 byte order', () => {
+        // Arrange
+        const sut = pathStringComparatorFor;
+
+        // Act
+        const result = [...mixed].sort(sut(mixed));
+
+        // Assert
+        expect(result).toEqual(utf8Order);
+      });
+    });
+  });
+
+  describe('Given entries where only some hold a code unit at or above U+D800', () => {
+    describe('When the entry comparator sorts them', () => {
+      it('Then they come out in UTF-8 byte order', () => {
+        // Arrange
+        const entries = mixed.map((path) => makeEntry(path));
+        const sut = pathComparatorFor;
+
+        // Act
+        const result = [...entries].sort(sut(entries)).map((entry) => entry.path);
+
+        // Assert
+        expect(result).toEqual(utf8Order);
+      });
     });
   });
 });

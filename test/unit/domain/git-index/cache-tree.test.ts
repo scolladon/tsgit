@@ -306,3 +306,73 @@ describe('Given sibling cache-tree names that do not survive a UTF-8 round trip'
     });
   });
 });
+
+describe('Given an invalidated entry that still carries an id', () => {
+  describe('When serializeCacheTree writes it', () => {
+    it('Then no oid follows the header, as git writes none for an invalid entry', () => {
+      // Arrange
+      const root: CacheTreeEntry = {
+        path: '',
+        entryCount: -1,
+        subtreeCount: 0,
+        id: oid(40, 'a'),
+        children: [],
+      };
+      const sut = serializeCacheTree;
+
+      // Act
+      const result = sut(root, 20);
+
+      // Assert
+      expect(result).toEqual(concatBytes([NUL, encode('-1 0\n')]));
+    });
+  });
+});
+
+describe('Given a subtree whose raw name bytes are plain ASCII', () => {
+  const asciiNamed = (): CacheTreeEntry => ({
+    path: '',
+    entryCount: 1,
+    subtreeCount: 1,
+    id: oid(40, 'a'),
+    children: [
+      {
+        path: 'd',
+        nameBytes: encode('d'),
+        entryCount: 1,
+        subtreeCount: 0,
+        id: oid(40, 'b'),
+        children: [],
+      },
+    ],
+  });
+
+  describe('When a path below it is invalidated', () => {
+    it('Then that subtree is matched by its name and invalidated', () => {
+      // Arrange
+      const sut = invalidateCacheTree;
+
+      // Act
+      const result = sut(asciiNamed(), fp('d/f'));
+
+      // Assert
+      expect(result.children[0]?.entryCount).toBe(-1);
+    });
+  });
+});
+
+describe('Given a tree without raw name bytes', () => {
+  describe('When a path is invalidated', () => {
+    it('Then the rebuilt nodes carry no nameBytes key', () => {
+      // Arrange
+      const sut = invalidateCacheTree;
+
+      // Act
+      const result = sut(baseTree(), fp('d/c'));
+
+      // Assert
+      expect(result).not.toHaveProperty('nameBytes');
+      expect(result.children[0]).not.toHaveProperty('nameBytes');
+    });
+  });
+});
