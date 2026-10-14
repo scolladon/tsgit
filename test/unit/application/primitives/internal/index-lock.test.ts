@@ -33,7 +33,7 @@ const SHA256_DIGEST = 32;
 const OTHER_ID = 'b'.repeat(40) as ObjectId;
 const TREE_ID = 'c'.repeat(40) as ObjectId;
 const NESTED_PATH = 'd/c' as FilePath;
-const NOTHING_VERIFIED: ReadonlySet<FilePath> = new Set();
+const NOTHING_VERIFIED = () => false;
 
 const treeOf = (id: ObjectId): CacheTreeEntry => ({
   path: '',

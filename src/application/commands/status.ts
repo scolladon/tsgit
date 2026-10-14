@@ -221,8 +221,6 @@ interface ScannedTree {
 interface TrackedScan {
   readonly workingMap: Map<FilePath, WorkingTreeDelta>;
   readonly refreshed: ReadonlyArray<IndexEntry>;
-  /** Paths the scan found unchanged against the index, by stat or by content (git's `CE_UPTODATE`). */
-  readonly verified: ReadonlySet<FilePath>;
 }
 
 /** Write the refreshed stat data back, only when something is worth persisting:
@@ -230,11 +228,16 @@ interface TrackedScan {
 const updateIndexIfAble = async (
   lock: IndexLock,
   index: GitIndex,
-  { refreshed, verified }: TrackedScan,
+  { workingMap, refreshed }: TrackedScan,
 ): Promise<void> => {
   const racy = index.indexMtime !== undefined && hasRacyTimestamp(index.entries, index.indexMtime);
   if (refreshed.length === 0 && !racy) return lock.release();
-  await lock.commitRefresh(index, refreshed, verified);
+  // A path the scan found unchanged, by stat or by content, is git's `CE_UPTODATE`.
+  await lock.commitRefresh(
+    index,
+    refreshed,
+    (path) => workingMap.get(path)?.status === 'unchanged',
+  );
 };
 
 /** Build the check-in attribute provider once per status invocation. It is always
@@ -341,14 +344,12 @@ const scanWorkingTree = async (
 const trackedScanOf = (results: ReadonlyArray<ScannedEntry | undefined>): TrackedScan => {
   const workingMap = new Map<FilePath, WorkingTreeDelta>();
   const refreshed: IndexEntry[] = [];
-  const verified = new Set<FilePath>();
   for (const result of results) {
     if (result === undefined) continue;
     workingMap.set(result.path, result.delta);
-    if (result.delta.status === 'unchanged') verified.add(result.path);
     if (result.refreshed !== undefined) refreshed.push(result.refreshed);
   }
-  return { workingMap, refreshed, verified };
+  return { workingMap, refreshed };
 };
 
 /**

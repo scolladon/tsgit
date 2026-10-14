@@ -15,7 +15,7 @@ import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../config-read.js';
 import { indexPath, lockSuffix } from '../path-layout.js';
 import { invalidateIndexCache } from '../read-index.js';
-import { readPreviousIndex, smudgeRacilyClean } from './smudge-racily-clean.js';
+import { type IsVerified, readPreviousIndex, smudgeRacilyClean } from './smudge-racily-clean.js';
 
 const UNKNOWN_FAILURE_CODE = 'unknown';
 const REFRESH_SKIPPED = 'status: index refresh skipped';
@@ -61,7 +61,7 @@ export interface IndexLock {
   readonly commitRefresh: (
     read: GitIndex,
     refreshed: ReadonlyArray<IndexEntry>,
-    verified: ReadonlySet<FilePath>,
+    verified: IsVerified,
   ) => Promise<boolean>;
 }
 
@@ -278,7 +278,7 @@ const writeRefreshed = async (
   sites: RefreshSites,
   read: GitIndex,
   refreshed: ReadonlyArray<IndexEntry>,
-  verified: ReadonlySet<FilePath>,
+  verified: IsVerified,
 ): Promise<boolean> => {
   const previous = await atSite(sites.indexFile, () => readPreviousIndex(ctx));
   if (previous === undefined || !sameBytes(previous.trailerSha, read.trailerSha)) return false;
@@ -340,7 +340,7 @@ const commitRefreshed = async (
   state: LockState,
   read: GitIndex,
   refreshed: ReadonlyArray<IndexEntry>,
-  verified: ReadonlySet<FilePath>,
+  verified: IsVerified,
 ): Promise<boolean> => {
   if (isSpent(state)) return false;
   try {

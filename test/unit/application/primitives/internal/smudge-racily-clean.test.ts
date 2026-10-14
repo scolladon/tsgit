@@ -86,7 +86,12 @@ describe('smudgeRacilyClean', () => {
         const sut = smudgeRacilyClean;
 
         // Act
-        const result = await sut(ctx, entries, await readPreviousIndex(ctx), new Set([TRACKED]));
+        const result = await sut(
+          ctx,
+          entries,
+          await readPreviousIndex(ctx),
+          (path) => path === TRACKED,
+        );
 
         // Assert
         expect(result).toEqual(entries);

@@ -12,7 +12,10 @@ import { joinPath } from './join-working-tree-path.js';
 import { buildCheckinAttributeProvider } from './read-gitattributes.js';
 
 const CORRUPT_INDEX_CODE_PREFIX = 'INVALID_INDEX_';
-const NOTHING_VERIFIED: ReadonlySet<FilePath> = new Set();
+/** Whether the caller already found `path` unchanged (git's `CE_UPTODATE`). */
+export type IsVerified = (path: FilePath) => boolean;
+
+const NOTHING_VERIFIED: IsVerified = () => false;
 
 /** `is_racy_timestamp`: a gitlink is never racy. */
 const isRacyTimestamp = (entry: IndexEntry, indexMtime: IndexMtime): boolean =>
@@ -93,10 +96,10 @@ const racilyClean = async (
   entries: ReadonlyArray<IndexEntry>,
   previous: GitIndex,
   indexMtime: IndexMtime,
-  verified: ReadonlySet<FilePath>,
+  verified: IsVerified,
 ): Promise<ReadonlyArray<IndexEntry>> => {
   const racy = entries.filter(
-    (entry) => isRacyTimestamp(entry, indexMtime) && !verified.has(entry.path),
+    (entry) => isRacyTimestamp(entry, indexMtime) && !verified(entry.path),
   );
   if (racy.length === 0) return [];
   return filterConcurrently(carriedOver(previous, racy), (entry) =>
@@ -115,7 +118,7 @@ export const smudgeRacilyClean = async (
   ctx: Context,
   entries: ReadonlyArray<IndexEntry>,
   previous: GitIndex | undefined,
-  verified: ReadonlySet<FilePath> = NOTHING_VERIFIED,
+  verified: IsVerified = NOTHING_VERIFIED,
 ): Promise<ReadonlyArray<IndexEntry>> => {
   const workDir = ctx.layout.workDir;
   if (workDir === undefined || previous?.indexMtime === undefined) return entries;
