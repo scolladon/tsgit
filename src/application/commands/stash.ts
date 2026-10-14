@@ -738,13 +738,17 @@ export const stashApply = async (
  */
 export const applyAutostash = async (ctx: Context, w: ObjectId): Promise<void> => {
   const workDir = requireWorkTree(ctx, 'rebase');
-  const result = await applyStashCommit(ctx, workDir, w, {});
-  if (result.kind === 'applied') {
+  const result = await applyStashCommit(ctx, workDir, w, {}).catch((err: unknown) => {
+    if (!(err instanceof TsgitError)) throw err;
+    return err;
+  });
+  if (!(result instanceof TsgitError) && result.kind === 'applied') {
     ctx.logger?.info?.('Applied autostash.');
     return;
   }
   await pushStashRef(ctx, w, AUTOSTASH);
-  ctx.logger?.warn?.(AUTOSTASH_CONFLICT);
+  const refusal = result instanceof TsgitError ? { code: result.data.code } : undefined;
+  ctx.logger?.warn?.(AUTOSTASH_CONFLICT, refusal);
 };
 
 /** git's `apply_autostash_ref(MERGE_AUTOSTASH)`: re-apply a merge's autostash, if any. */

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
@@ -7,13 +7,16 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
 import {
+  applyAutostash,
+  createAutostash,
   stashApply,
+  stashDrop,
   stashList,
   stashPop,
   stashPush,
 } from '../../../../src/application/commands/stash.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
-import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
+import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 const AUTHOR: AuthorIdentity = {
@@ -26,6 +29,9 @@ const DIRTY_O = 'dirty\n';
 
 const write = (ctx: Context, path: string, content: string): Promise<void> =>
   ctx.fs.writeUtf8(`${ctx.layout.workDir}/${path}`, content);
+
+const read = (ctx: Context, path: string): Promise<string> =>
+  ctx.fs.readUtf8(`${ctx.layout.workDir}/${path}`);
 
 const commitFile = async (ctx: Context, path: string, content: string): Promise<void> => {
   await write(ctx, path, content);
@@ -108,6 +114,66 @@ describe('Given a stash and an index holding conflict stages', () => {
       // Assert
       expect(data).toMatchObject({ code: 'MERGE_HAS_CONFLICTS', count: 1, paths: ['c'] });
       expect((await stashList(ctx)).entries).toHaveLength(1);
+    });
+  });
+});
+
+const AUTOSTASH_WARNING = 'Your local changes are stashed, however applying them';
+
+const withWarnSpy = (
+  ctx: Context,
+): { readonly ctx: Context; readonly warn: ReturnType<typeof vi.fn> } => {
+  const warn = vi.fn();
+  return { ctx: { ...ctx, logger: { warn } }, warn };
+};
+
+describe('Given an autostash whose apply is refused', () => {
+  describe('When the index holds conflict stages', () => {
+    it('Then the autostash is stored in refs/stash and the refusal is warned', async () => {
+      // Arrange
+      const base = await conflictedRepoWithStash();
+      const autostash = (await stashList(base)).entries[0]?.stash;
+      await stashDrop(base, {});
+      const { ctx, warn } = withWarnSpy(base);
+
+      // Act
+      const sut = applyAutostash;
+      await sut(ctx, autostash as ObjectId);
+
+      // Assert
+      const list = await stashList(ctx);
+      expect(list.entries).toHaveLength(1);
+      expect(list.entries[0]?.stash).toBe(autostash);
+      expect(list.entries[0]?.message).toBe('autostash');
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.[0]).toContain(AUTOSTASH_WARNING);
+      expect(warn.mock.calls[0]?.[1]).toEqual({ code: 'MERGE_HAS_CONFLICTS' });
+    });
+  });
+
+  describe('When the apply would overwrite a dirty working file', () => {
+    it('Then the autostash is stored in refs/stash and the refusal is warned', async () => {
+      // Arrange
+      const base = createMemoryContext();
+      await init(base);
+      await commitFile(base, 'o', 'o\n');
+      await write(base, 'o', 'stashed\n');
+      const autostash = await createAutostash(base);
+      await write(base, 'o', 'local edit\n');
+      const { ctx, warn } = withWarnSpy(base);
+
+      // Act
+      const sut = applyAutostash;
+      await sut(ctx, autostash as ObjectId);
+
+      // Assert
+      const list = await stashList(ctx);
+      expect(list.entries).toHaveLength(1);
+      expect(list.entries[0]?.stash).toBe(autostash);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.[0]).toContain(AUTOSTASH_WARNING);
+      expect(warn.mock.calls[0]?.[1]).toEqual({ code: 'STASH_APPLY_WOULD_OVERWRITE' });
+      expect(await read(ctx, 'o')).toBe('local edit\n');
     });
   });
 });

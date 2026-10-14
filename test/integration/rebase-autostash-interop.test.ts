@@ -15,6 +15,7 @@
  *   interopSurface: rebaseMerge, reflog
  */
 import {
+  chmodSync,
   existsSync,
   mkdtempSync,
   readFileSync,
@@ -150,6 +151,29 @@ describe.skipIf(!GIT_AVAILABLE)('rebase --autostash interop', () => {
 
       // Assert
       expect(state(dirs.ours)).toEqual(state(dirs.theirs));
+    });
+  });
+
+  describe('Given a dirty tree whose re-apply is refused by a file a hook rewrote', () => {
+    describe('When both tools rebase with autostash', () => {
+      it('Then both keep the autostash in refs/stash and the rewritten file', async () => {
+        // Arrange
+        const dirs = setUp('autostash-refused', 'u1');
+        for (const dir of [dirs.ours, dirs.theirs]) {
+          const hook = path.join(dir, '.git', 'hooks', 'post-rewrite');
+          writeFileSync(hook, '#!/bin/sh\necho hook > f\n');
+          chmodSync(hook, 0o755);
+        }
+        const sut = rebaseBoth;
+
+        // Act
+        await sut(dirs);
+
+        // Assert
+        expect(state(dirs.ours)).toEqual(state(dirs.theirs));
+        expect(state(dirs.ours).stash).not.toBe('');
+        expect(state(dirs.ours).f).toBe('hook\n');
+      });
     });
   });
 });
