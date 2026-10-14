@@ -133,6 +133,38 @@ describe('pathStringComparatorFor', () => {
     });
   });
 
+  describe('Given two equal ASCII paths', () => {
+    describe('When the picked comparator compares them', () => {
+      it('Then it reports them equal', () => {
+        // Arrange
+        const paths = ['a/c', 'a/c'];
+
+        // Act
+        const sut = pathStringComparatorFor;
+        const result = sut(paths)('a/c', 'a/c');
+
+        // Assert
+        expect(result).toBe(0);
+      });
+    });
+  });
+
+  describe('Given two ASCII paths in descending order', () => {
+    describe('When the picked comparator compares them', () => {
+      it('Then the later path compares greater', () => {
+        // Arrange
+        const paths = ['b', 'a'];
+
+        // Act
+        const sut = pathStringComparatorFor;
+        const result = sut(paths)('b', 'a');
+
+        // Assert
+        expect(result).toBeGreaterThan(0);
+      });
+    });
+  });
+
   describe('Given ASCII-only paths', () => {
     describe('When the picked comparator sorts them', () => {
       it('Then they come out in byte order', () => {
