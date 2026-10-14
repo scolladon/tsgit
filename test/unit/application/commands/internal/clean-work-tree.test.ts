@@ -76,6 +76,37 @@ const writeFramedIndex = async (
   await ctx.fs.write(`${ctx.layout.gitDir}/index`, framed);
 };
 
+const INDEX_HEADER_BYTES = 12;
+const INDEX_COUNT_OFFSET = 8;
+
+/** Writes `entries` in the order given: serializeIndex re-sorts, so each entry is serialized alone and spliced. */
+const writeFramedIndexInGivenOrder = async (
+  ctx: Context,
+  entries: ReadonlyArray<IndexEntry>,
+): Promise<void> => {
+  const bodies = entries.map((entry) =>
+    serializeIndex(
+      { version: 2, entries: [entry], extensions: [], trailerSha: new Uint8Array(0) },
+      ctx.hashConfig.digestLength,
+    ),
+  );
+  const records = bodies.map((body) => body.subarray(INDEX_HEADER_BYTES));
+  const header = bodies[0]?.slice(0, INDEX_HEADER_BYTES) ?? new Uint8Array(INDEX_HEADER_BYTES);
+  new DataView(header.buffer).setUint32(INDEX_COUNT_OFFSET, entries.length);
+  const body = new Uint8Array(header.length + records.reduce((n, r) => n + r.length, 0));
+  body.set(header);
+  let at = header.length;
+  for (const record of records) {
+    body.set(record, at);
+    at += record.length;
+  }
+  const trailer = hexToBytes(await ctx.hash.hashHex(body));
+  const framed = new Uint8Array(body.length + trailer.length);
+  framed.set(body);
+  framed.set(trailer, body.length);
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, framed);
+};
+
 describe('assertCleanWorkTree', () => {
   describe('Given a clean working tree and index matching HEAD', () => {
     describe('When asserted', () => {
@@ -328,7 +359,7 @@ describe('unstagedChangePaths', () => {
         const bmp = 'f-\u{F8FF}.txt';
         const ctx = createMemoryContext();
         await init(ctx);
-        await writeFramedIndex(ctx, [
+        await writeFramedIndexInGivenOrder(ctx, [
           stageEntry(cjk, 'a'.repeat(40) as ObjectId, 0),
           stageEntry(emoji, 'b'.repeat(40) as ObjectId, 0),
           stageEntry(bmp, 'c'.repeat(40) as ObjectId, 0),
