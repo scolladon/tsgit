@@ -44,6 +44,28 @@ const seedClean = async () => {
   return ctx;
 };
 
+const SETTLED_EPOCH_MS = 1_800_000_000_000;
+const SECOND_MS = 1000;
+
+/** `seedClean`, with the file written two seconds before the index: no entry is racy, so
+ *  a status run has nothing to write back and the rows below count the scan's own reads. */
+const seedSettledClean = async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(SETTLED_EPOCH_MS);
+  const ctx = createMemoryContext();
+  await init(ctx);
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+  vi.setSystemTime(SETTLED_EPOCH_MS + 2 * SECOND_MS);
+  await add(ctx, ['a.txt']);
+  await commit(ctx, { message: 'first', author });
+  vi.setSystemTime(SETTLED_EPOCH_MS + 4 * SECOND_MS);
+  return ctx;
+};
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 /** The single `changes` record for a path, or undefined if the path is clean. */
 const changeFor = (result: StatusResult, path: string): ChangedPath | undefined =>
   result.changes.find((c) => c.path === path);
@@ -71,7 +93,7 @@ describe('status index reads', () => {
     describe('When status', () => {
       it('Then the index is statted once, the attribute provider reusing the one status holds', async () => {
         // Arrange
-        const { ctx, indexStats } = countingIndexStats(await seedClean());
+        const { ctx, indexStats } = countingIndexStats(await seedSettledClean());
 
         // Act
         await status(ctx);
@@ -1254,7 +1276,7 @@ describe('status — unmerged column', () => {
       describe('When status runs', () => {
         it('Then the tracked path costs exactly one lstat and the untracked path costs none', async () => {
           // Arrange
-          const ctx = await seedClean();
+          const ctx = await seedSettledClean();
           await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'new');
           const { ctx: tracked, countFor } = trackLstat(ctx);
 

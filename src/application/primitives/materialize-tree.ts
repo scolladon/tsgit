@@ -26,12 +26,8 @@
  *  as clean would survive the reset, AND the donor stats would be stale
  *  relative to the actual disk state.
  */
-import {
-  compareEntryPath,
-  type GitIndex,
-  type IndexEntry,
-  skipWorktreeEntry,
-} from '../../domain/git-index/index.js';
+import { type GitIndex, type IndexEntry, skipWorktreeEntry } from '../../domain/git-index/index.js';
+import { pathComparatorFor } from '../../domain/git-index/index-writer.js';
 import {
   FILE_MODE,
   type FileMode,
@@ -129,17 +125,12 @@ const writtenEntriesByPath = (
   return out;
 };
 
+/** Every stage of every out-of-scope path survives, so another path's conflict is kept. */
 const preserveOutOfScope = (
-  oldByPath: ReadonlyMap<FilePath, IndexEntry>,
+  currentIndex: GitIndex,
   scopedPaths: ReadonlySet<FilePath> | undefined,
-): IndexEntry[] => {
-  if (scopedPaths === undefined) return [];
-  const out: IndexEntry[] = [];
-  for (const [path, entry] of oldByPath) {
-    if (!scopedPaths.has(path)) out.push(entry);
-  }
-  return out;
-};
+): IndexEntry[] =>
+  scopedPaths === undefined ? [] : currentIndex.entries.filter((e) => !scopedPaths.has(e.path));
 
 const pickEntry = (
   path: FilePath,
@@ -156,18 +147,12 @@ const mergeNewIndexEntries = (
   const writtenByPath = writtenEntriesByPath(writtenEntries);
   const oldByPath = indexEntriesByPath(currentIndex);
 
-  const merged: IndexEntry[] = preserveOutOfScope(oldByPath, scopedPaths);
+  const merged: IndexEntry[] = preserveOutOfScope(currentIndex, scopedPaths);
   for (const entry of target) {
     const picked = pickEntry(entry.path, writtenByPath, oldByPath);
     if (picked !== undefined) merged.push(picked);
   }
-  // `merged` paths are all distinct — out-of-scope (not in `scopedPaths`) and
-  // target (in `scopedPaths`) are disjoint, and target paths come from a tree
-  // walk of unique paths. So `a.path === b.path` never occurs and a single
-  // less-than test is a correct total-order comparator; the `> : 0` tail would
-  // be dead code.
-  // Stryker disable next-line EqualityOperator: equivalent — distinct paths mean `<` vs `<=` only differ on the impossible equal-path case.
-  merged.sort((a, b) => (a.path < b.path ? -1 : 1));
+  merged.sort(pathComparatorFor(merged));
   return merged;
 };
 
@@ -190,7 +175,7 @@ const upgradeNoopsToUpdates = (changeset: Changeset): Changeset => {
 
 /** Path-sort the merged entry list (in-pattern + synthesised excluded). */
 const sortIndexEntries = (entries: ReadonlyArray<IndexEntry>): IndexEntry[] =>
-  [...entries].sort(compareEntryPath);
+  [...entries].sort(pathComparatorFor(entries));
 
 interface MaterializePlan {
   readonly target: ReadonlyArray<TargetEntry>;

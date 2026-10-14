@@ -48,7 +48,7 @@ const checkoutFromEmptyTree = async (ctx: Context, tree: ObjectId): Promise<void
     }).catch((err: unknown) => {
       throw asMergeDirtyError(err);
     });
-    await lock.commit(result.newIndexEntries);
+    await lock.commit(result.newIndexEntries, 'replace');
   } finally {
     await lock.release();
   }

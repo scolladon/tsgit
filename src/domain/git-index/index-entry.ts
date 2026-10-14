@@ -51,6 +51,11 @@ export interface IndexExtension {
  */
 export interface CacheTreeEntry {
   readonly path: string;
+  /**
+   * The raw component bytes, present only when `path` does not re-encode to
+   * them (a BOM-prefixed or non-UTF-8 name). Writers emit these verbatim.
+   */
+  readonly nameBytes?: Uint8Array;
   readonly entryCount: number;
   readonly subtreeCount: number;
   readonly id?: ObjectId;

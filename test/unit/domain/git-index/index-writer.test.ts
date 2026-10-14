@@ -7,7 +7,13 @@ import type {
 } from '../../../../src/domain/git-index/index-entry.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index-entry.js';
 import { parseIndex } from '../../../../src/domain/git-index/index-parser.js';
-import { compareEntryPath, serializeIndex } from '../../../../src/domain/git-index/index-writer.js';
+import {
+  compareEntryPath,
+  inOrder,
+  pathComparatorFor,
+  pathStringComparatorFor,
+  serializeIndex,
+} from '../../../../src/domain/git-index/index-writer.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import { bytesToHex, FILE_MODE, FilePath } from '../../../../src/domain/objects/index.js';
 import { arbIndexEntry } from './arbitraries.js';
@@ -88,6 +94,114 @@ describe('compareEntryPath', () => {
 
         // Assert
         expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('compareEntryPath UTF-8 byte order', () => {
+  describe('Given a BMP character above U+E000 and an astral character', () => {
+    describe('When compareEntryPath(U+FFFD.txt, U+1F600.txt)', () => {
+      it('Then it is negative', () => {
+        // Arrange
+        const bmp = makeEntry('\uFFFD.txt');
+        const astral = makeEntry('\u{1F600}.txt');
+
+        // Act
+        const sut = compareEntryPath;
+        const result = sut(bmp, astral);
+
+        // Assert
+        expect(result).toBeLessThan(0);
+      });
+    });
+  });
+});
+
+describe('pathStringComparatorFor', () => {
+  describe('Given paths holding a BMP character above U+E000 and an astral character', () => {
+    describe('When the picked comparator sorts them', () => {
+      it('Then they come out in UTF-8 byte order', () => {
+        // Arrange
+        const paths = ['\u{1F600}.txt', '\uFFFD.txt'];
+
+        // Act
+        const sut = pathStringComparatorFor;
+        const result = [...paths].sort(sut(paths));
+
+        // Assert
+        expect(result).toEqual(['\uFFFD.txt', '\u{1F600}.txt']);
+      });
+    });
+  });
+
+  describe('Given two equal ASCII paths', () => {
+    describe('When the picked comparator compares them', () => {
+      it('Then it reports them equal', () => {
+        // Arrange
+        const paths = ['a/c', 'a/c'];
+
+        // Act
+        const sut = pathStringComparatorFor;
+        const result = sut(paths)('a/c', 'a/c');
+
+        // Assert
+        expect(result).toBe(0);
+      });
+    });
+  });
+
+  describe('Given two ASCII paths in descending order', () => {
+    describe('When the picked comparator compares them', () => {
+      it('Then the later path compares greater', () => {
+        // Arrange
+        const paths = ['b', 'a'];
+
+        // Act
+        const sut = pathStringComparatorFor;
+        const result = sut(paths)('b', 'a');
+
+        // Assert
+        expect(result).toBeGreaterThan(0);
+      });
+    });
+  });
+
+  describe('Given ASCII-only paths', () => {
+    describe('When the picked comparator sorts them', () => {
+      it('Then they come out in byte order', () => {
+        // Arrange
+        const paths = ['b', 'a/c', 'a'];
+
+        // Act
+        const sut = pathStringComparatorFor;
+        const result = [...paths].sort(sut(paths));
+
+        // Assert
+        expect(result).toEqual(['a', 'a/c', 'b']);
+      });
+    });
+  });
+});
+
+describe('serializeIndex byte order', () => {
+  describe('Given entries named U+FFFD.txt and U+1F600.txt', () => {
+    describe('When serializeIndex orders them', () => {
+      it('Then U+FFFD.txt is written first', () => {
+        // Arrange
+        const index: GitIndex = {
+          version: 2,
+          entries: [makeEntry('\u{1F600}.txt'), makeEntry('\uFFFD.txt')],
+          extensions: [],
+          trailerSha: CHECKSUM,
+        };
+
+        // Act
+        const sut = parseIndex;
+        const result = sut(withChecksum(serializeIndex(index, 20)), 20);
+
+        // Assert
+        expect(result.entries.map((e) => e.path)).toEqual(['\uFFFD.txt', '\u{1F600}.txt']);
       });
     });
   });
@@ -660,3 +774,76 @@ function deduplicateByPath(entries: ReadonlyArray<IndexEntry>): ReadonlyArray<In
     return true;
   });
 }
+
+describe('Given inOrder', () => {
+  // Throws past either end, so a scan that reads beyond the array fails loudly.
+  const ascending = (a: number | undefined, b: number | undefined): number => {
+    if (a === undefined || b === undefined) throw new Error('compared past the end');
+    return a - b;
+  };
+
+  describe('When the items are already ordered', () => {
+    it('Then the same reference comes back', () => {
+      // Arrange
+      const items = [1, 2, 2, 3];
+
+      // Act
+      const sut = inOrder;
+      const result = sut(items, ascending);
+
+      // Assert
+      expect(result).toBe(items);
+    });
+  });
+
+  describe('When the items are out of order', () => {
+    it('Then a sorted copy comes back and the input is untouched', () => {
+      // Arrange
+      const items = [3, 1, 2];
+
+      // Act
+      const sut = inOrder;
+      const result = sut(items, ascending);
+
+      // Assert
+      expect(result).toEqual([1, 2, 3]);
+      expect(items).toEqual([3, 1, 2]);
+    });
+  });
+});
+
+describe('mixed plain and high code-unit paths', () => {
+  const mixed = ['a', '\u{1F600}', '\uFFFD'];
+  const utf8Order = ['a', '\uFFFD', '\u{1F600}'];
+
+  describe('Given paths where only some hold a code unit at or above U+D800', () => {
+    describe('When the string comparator sorts them', () => {
+      it('Then they come out in UTF-8 byte order', () => {
+        // Arrange
+        const sut = pathStringComparatorFor;
+
+        // Act
+        const result = [...mixed].sort(sut(mixed));
+
+        // Assert
+        expect(result).toEqual(utf8Order);
+      });
+    });
+  });
+
+  describe('Given entries where only some hold a code unit at or above U+D800', () => {
+    describe('When the entry comparator sorts them', () => {
+      it('Then they come out in UTF-8 byte order', () => {
+        // Arrange
+        const entries = mixed.map((path) => makeEntry(path));
+        const sut = pathComparatorFor;
+
+        // Act
+        const result = [...entries].sort(sut(entries)).map((entry) => entry.path);
+
+        // Assert
+        expect(result).toEqual(utf8Order);
+      });
+    });
+  });
+});

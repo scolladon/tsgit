@@ -105,10 +105,10 @@ const seedSuper = async (
     `[submodule "lib"]\n\tpath = lib\n\turl = ${SUB_URL}\n${updateLine}`,
   );
   const lock = await acquireIndexLock(base);
-  await lock.commit([
-    entry('README', blob, FILE_MODE.REGULAR),
-    entry('lib', pinned, FILE_MODE.GITLINK),
-  ]);
+  await lock.commit(
+    [entry('README', blob, FILE_MODE.REGULAR), entry('lib', pinned, FILE_MODE.GITLINK)],
+    'update',
+  );
   if (opts.register === true) {
     await updateConfigOperations(base, [
       { kind: 'set', section: 'submodule', subsection: 'lib', key: 'url', value: SUB_URL },
@@ -237,11 +237,14 @@ describe('Given a superproject pinning a registered submodule', () => {
       // Arrange — an unrelated gitlink (bogus oid) sorts before "lib" in the index
       const { ctx, pinned } = await seedSuper({ register: true });
       const lock = await acquireIndexLock(ctx);
-      await lock.commit([
-        entry('README', pinned, FILE_MODE.REGULAR),
-        entry('a-decoy', BOGUS_OID, FILE_MODE.GITLINK),
-        entry('lib', pinned, FILE_MODE.GITLINK),
-      ]);
+      await lock.commit(
+        [
+          entry('README', pinned, FILE_MODE.REGULAR),
+          entry('a-decoy', BOGUS_OID, FILE_MODE.GITLINK),
+          entry('lib', pinned, FILE_MODE.GITLINK),
+        ],
+        'update',
+      );
 
       // Act
       const result = await submoduleUpdate(ctx, { paths: ['lib'] });
@@ -353,10 +356,10 @@ const seedDivergent = async (update: string): Promise<{ ctx: Context; m2: Object
     `[submodule "lib"]\n\tpath = lib\n\turl = ${SUB_URL}\n\tupdate = ${update}\n`,
   );
   const lock = await acquireIndexLock(base);
-  await lock.commit([
-    entry('README', blob, FILE_MODE.REGULAR),
-    entry('lib', remote.m2, FILE_MODE.GITLINK),
-  ]);
+  await lock.commit(
+    [entry('README', blob, FILE_MODE.REGULAR), entry('lib', remote.m2, FILE_MODE.GITLINK)],
+    'update',
+  );
   await updateConfigOperations(base, [
     { kind: 'set', section: 'submodule', subsection: 'lib', key: 'url', value: SUB_URL },
   ]);
@@ -481,10 +484,10 @@ const seedSuperWithConfigText = async (configText: string): Promise<Context> => 
     `[submodule "lib"]\n\tpath = lib\n\turl = ${SUB_URL}\n`,
   );
   const lock = await acquireIndexLock(base);
-  await lock.commit([
-    entry('README', blob, FILE_MODE.REGULAR),
-    entry('lib', pinned, FILE_MODE.GITLINK),
-  ]);
+  await lock.commit(
+    [entry('README', blob, FILE_MODE.REGULAR), entry('lib', pinned, FILE_MODE.GITLINK)],
+    'update',
+  );
   await base.fs.writeUtf8(`${base.layout.gitDir}/config`, configText);
   return withTransport(base, remote.transport);
 };
@@ -611,10 +614,10 @@ const seedSuperWithModes = async (opts: {
     `[submodule "lib"]\n\tpath = lib\n\turl = ${SUB_URL}\n${gmUpdate}`,
   );
   const lock = await acquireIndexLock(base);
-  await lock.commit([
-    entry('README', blob, FILE_MODE.REGULAR),
-    entry('lib', pinned, FILE_MODE.GITLINK),
-  ]);
+  await lock.commit(
+    [entry('README', blob, FILE_MODE.REGULAR), entry('lib', pinned, FILE_MODE.GITLINK)],
+    'update',
+  );
   const cfgUpdate = opts.configMode !== undefined ? `\tupdate = ${opts.configMode}\n` : '';
   await base.fs.writeUtf8(
     `${base.layout.gitDir}/config`,

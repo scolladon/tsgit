@@ -1,4 +1,5 @@
 import type { IndexEntry } from '../../../domain/git-index/index-entry.js';
+import { FILE_MODE } from '../../../domain/objects/file-mode.js';
 import type { FileStat } from '../../../ports/file-system.js';
 
 /**
@@ -27,6 +28,22 @@ export const isRacy = (entry: IndexEntry, indexMtime: IndexMtime): boolean => {
   if (entry.mtimeSeconds < indexMtime.seconds) return false;
   return entry.mtimeNanoseconds >= indexMtime.nanoseconds;
 };
+
+/**
+ * Git's `has_racy_timestamp` as built without nanosecond stat support: the
+ * index is racy when any non-gitlink entry (every stage counts) was modified
+ * in the index file's own second or later. Nanoseconds are ignored on
+ * purpose — unlike {@link isRacy} — because second granularity is what the
+ * refresh write-back decision must match.
+ */
+export const hasRacyTimestamp = (
+  entries: ReadonlyArray<IndexEntry>,
+  indexMtime: IndexMtime,
+): boolean =>
+  indexMtime.seconds !== 0 &&
+  entries.some(
+    (entry) => entry.mode !== FILE_MODE.GITLINK && entry.mtimeSeconds >= indexMtime.seconds,
+  );
 
 const matchesMtime = (entry: IndexEntry, stat: FileStat): boolean => {
   if (entry.mtimeSeconds !== Math.floor(stat.mtimeMs / 1000)) return false;

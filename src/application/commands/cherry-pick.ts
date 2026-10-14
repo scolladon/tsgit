@@ -254,7 +254,7 @@ const applyOnePick = async (
     ourId,
     async (res, oursTree, lock) => {
       if (res.mergedTree === oursTree && !opts.allowEmpty) return { kind: 'empty' };
-      await lock.commit(res.result.newIndexEntries);
+      await lock.commit(res.result.newIndexEntries, 'replace');
       const id = await createPickCommit(ctx, source, cData, ourId, res.mergedTree, opts);
       // Written through the literal `HEAD` — cherry-pick refuses on a
       // detached HEAD, so `HEAD` always names the branch being advanced here.

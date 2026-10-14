@@ -6,7 +6,7 @@
  */
 import { workingTreeDirty } from '../../../domain/commands/error.js';
 import { comparePaths } from '../../../domain/diff/index.js';
-import type { IndexEntry } from '../../../domain/git-index/index.js';
+import type { GitIndex, IndexEntry } from '../../../domain/git-index/index.js';
 import type { FilePath, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { compareWorkingTreeEntry } from '../../primitives/compare-working-tree-entry.js';
@@ -55,24 +55,26 @@ const stagedDirty = async (
 const unstagedDirty = async (
   ctx: Context,
   stage0: ReadonlyArray<IndexEntry>,
+  indexMtime: GitIndex['indexMtime'],
 ): Promise<ReadonlyArray<FilePath>> => {
   const provider = await buildCheckinAttributeProvider(ctx);
   const dirty: FilePath[] = [];
   for (const entry of stage0) {
     // Skip-worktree (sparse-excluded) entries are intentionally off-disk.
     if (entry.flags.skipWorktree) continue;
-    if ((await compareWorkingTreeEntry(ctx, entry, provider)) !== 'unchanged')
+    if ((await compareWorkingTreeEntry(ctx, entry, provider, indexMtime)) !== 'unchanged')
       dirty.push(entry.path);
   }
   return dirty;
 };
 
 export const assertCleanWorkTree = async (ctx: Context, headTree: ObjectId): Promise<void> => {
-  const { stage0, unmerged } = partitionIndex((await readIndex(ctx)).entries);
+  const index = await readIndex(ctx);
+  const { stage0, unmerged } = partitionIndex(index.entries);
   const dirty = new Set<FilePath>([
     ...unmerged,
     ...(await stagedDirty(ctx, stage0, headTree)),
-    ...(await unstagedDirty(ctx, stage0)),
+    ...(await unstagedDirty(ctx, stage0, index.indexMtime)),
   ]);
   // Raw-byte path order matches git's refusal; the Set's insertion order
   // (unmerged, staged-dirty, unstaged-dirty) is not faithful for non-ASCII paths.
@@ -83,8 +85,9 @@ export const assertCleanWorkTree = async (ctx: Context, headTree: ObjectId): Pro
 
 /** Tracked paths whose working copy differs from the index, in git's raw-byte order. */
 export const unstagedChangePaths = async (ctx: Context): Promise<ReadonlyArray<FilePath>> => {
-  const { stage0 } = partitionIndex((await readIndex(ctx)).entries);
-  return [...(await unstagedDirty(ctx, stage0))].sort(comparePaths);
+  const index = await readIndex(ctx);
+  const { stage0 } = partitionIndex(index.entries);
+  return [...(await unstagedDirty(ctx, stage0, index.indexMtime))].sort(comparePaths);
 };
 
 /** Paths whose index entry differs from `headTree`, in git's raw-byte order. */

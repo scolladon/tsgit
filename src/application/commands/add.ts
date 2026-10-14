@@ -33,7 +33,10 @@ import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-
 import {
   admitWrite,
   type CleanOrder,
+  firstFailureOrValues,
   type OrderSpan,
+  type Settled,
+  settleInCleanTurn,
   withCleanOrder,
 } from '../primitives/internal/clean-order.js';
 import { limiterFor } from '../primitives/internal/concurrency.js';
@@ -41,6 +44,7 @@ import type { ConcurrencyLimiter } from '../primitives/internal/concurrency-limi
 import { type ConversionRoute, convertToGit } from '../primitives/internal/convert-blob.js';
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
+import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { indexRuleEntries } from '../primitives/internal/index-rule-entries.js';
 import { type IndexMtime, isEntryStatClean } from '../primitives/internal/is-entry-stat-clean.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
@@ -209,8 +213,11 @@ const addLiteralOnly = async (
   try {
     const { indexRules, ...state } = await readExistingEntries(ctx);
     const staging = { ctx, scope: { ...scope, indexRules }, ...state, ensurePromisorConfigValid };
-    const { newEntries, added, modified, eolNotices } = await stageLiterals(staging, validated);
-    await lock.commit(Array.from(newEntries.values()));
+    const { newEntries, added, modified, eolNotices, restagedPaths } = await stageLiterals(
+      staging,
+      validated,
+    );
+    await commitIfChanged(lock, state.entries.size, Array.from(newEntries.values()), restagedPaths);
     return { added, modified, removed: [], eolNotices };
   } finally {
     await lock.release();
@@ -247,12 +254,14 @@ const stageLiterals = async (
   readonly added: ReadonlyArray<FilePath>;
   readonly modified: ReadonlyArray<FilePath>;
   readonly eolNotices: ReadonlyArray<EolNotice>;
+  readonly restagedPaths: ReadonlyArray<FilePath>;
 }> => {
   const { ctx, scope, entries: existing, indexMtime } = staging;
   const newEntries = new Map<FilePath, IndexEntry>(existing);
   const added: FilePath[] = [];
   const modified: FilePath[] = [];
   const eolNotices: EolNotice[] = [];
+  const restagedPaths: FilePath[] = [];
   for (const path of trackedFirst(validated, existing)) {
     const previous = existing.get(path);
     const guard = staging.ensurePromisorConfigValid;
@@ -260,12 +269,34 @@ const stageLiterals = async (
     if (result === 'missing') throw pathspecNoMatch(path);
     const { entry, notice } = result;
     newEntries.set(path, entry);
+    if (wasRestaged(previous, entry)) restagedPaths.push(path);
     if (notice !== undefined) eolNotices.push(notice);
     if (previous === undefined) added.push(path);
     else if (previous.id !== entry.id || previous.mode !== entry.mode) modified.push(path);
   }
-  return { newEntries, added, modified, eolNotices };
+  return { newEntries, added, modified, eolNotices, restagedPaths };
 };
+
+/** git's SKIP_IF_UNCHANGED: a re-staged, added or removed path is a change; additions are always re-staged, so a size drift is a removal. */
+const changesIndex = (
+  existingCount: number,
+  entries: ReadonlyArray<IndexEntry>,
+  restagedPaths: ReadonlyArray<FilePath>,
+): boolean => restagedPaths.length > 0 || entries.length !== existingCount;
+
+const commitIfChanged = async (
+  lock: IndexLock,
+  existingCount: number,
+  entries: ReadonlyArray<IndexEntry>,
+  restagedPaths: ReadonlyArray<FilePath>,
+): Promise<void> => {
+  if (!changesIndex(existingCount, entries, restagedPaths)) return;
+  await lock.commit(entries, 'update', { restagedPaths });
+};
+
+/** `ie_match_stat` clean paths keep their entry object; every other path was rebuilt, which git's add_index_entry reports to the cache-tree. */
+const wasRestaged = (previous: IndexEntry | undefined, entry: IndexEntry): boolean =>
+  entry !== previous;
 
 const allLiteralsAreFiles = async (
   ctx: Context,
@@ -326,7 +357,7 @@ const stageWalkedEntries = async (
   indexMtime: IndexMtime | undefined,
   ensurePromisorConfigValid: PromisorGuard,
 ): Promise<WalkOutcome[]> => {
-  const stage = (walkEntry: WalkWorkingTreeEntry): Promise<WalkOutcome | undefined> =>
+  const stage = (walkEntry: WalkWorkingTreeEntry): Promise<WalkOutcome> =>
     processWalkEntry(ctx, walkEntry, existing, seen, scope, indexMtime, ensurePromisorConfigValid);
   // git converts and writes one path at a time, dying at the first loss, under safecrlf=true.
   const span: OrderSpan = scope.settings.safeCrlf === true ? 'write' : 'clean';
@@ -357,20 +388,12 @@ async function* walkedTrackedFirst(
   yield* walked.values();
 }
 
-/** One walked entry once staged: its outcome, or the failure staging it met. */
-type StagedEntry =
-  | { readonly kind: 'staged'; readonly outcome: WalkOutcome | undefined }
-  | { readonly kind: 'failed'; readonly error: unknown };
-
 /** The staged outcomes, in walk order; the earliest-walked entry's failure refuses instead. */
-const stagedOutcomes = (staged: ReadonlyArray<StagedEntry>): WalkOutcome[] => {
-  const outcomes: WalkOutcome[] = [];
-  for (const entry of staged) {
-    if (entry.kind === 'failed') throw entry.error;
-    if (entry.outcome !== undefined) outcomes.push(entry.outcome);
-  }
-  return outcomes;
-};
+const stagedOutcomes = (staged: ReadonlyArray<StagedEntry>): WalkOutcome[] =>
+  firstFailureOrValues(staged);
+
+/** One walked entry once staged: its outcome, or the failure staging it met. */
+type StagedEntry = Settled<WalkOutcome>;
 
 /**
  * A clean driver hears the paths in walk order, however the reads race. Every
@@ -379,7 +402,7 @@ const stagedOutcomes = (staged: ReadonlyArray<StagedEntry>): WalkOutcome[] => {
 const dispatchInCleanOrder = (
   ctx: Context,
   walk: AsyncIterable<WalkWorkingTreeEntry>,
-  stage: (walkEntry: WalkWorkingTreeEntry) => Promise<WalkOutcome | undefined>,
+  stage: (walkEntry: WalkWorkingTreeEntry) => Promise<WalkOutcome>,
   span: OrderSpan,
 ): Promise<ReadonlyArray<StagedEntry>> =>
   withCleanOrder(
@@ -407,22 +430,12 @@ const dispatchWalkEntry = (
   }: {
     readonly limiter: ConcurrencyLimiter;
     readonly order: CleanOrder;
-    readonly stage: (walkEntry: WalkWorkingTreeEntry) => Promise<WalkOutcome | undefined>;
+    readonly stage: (walkEntry: WalkWorkingTreeEntry) => Promise<WalkOutcome>;
   },
   walkEntry: WalkWorkingTreeEntry,
 ): Promise<StagedEntry> => {
   order.enlist(walkEntry.path);
-  return limiter
-    .run(() => stage(walkEntry))
-    .then(
-      (outcome): StagedEntry => ({ kind: 'staged', outcome }),
-      (error: unknown): StagedEntry => {
-        // git dies at the first path that fails to stage: no later path is cleaned.
-        order.halt(walkEntry.path, error);
-        return { kind: 'failed', error };
-      },
-    )
-    .finally(() => order.release(walkEntry.path));
+  return settleInCleanTurn(limiter, order, walkEntry.path, () => stage(walkEntry));
 };
 
 // Walk-and-filter add: applies `.gitignore` (so build artefacts stay
@@ -440,14 +453,19 @@ const addByPathspec = async (
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
     const staged = await stageIgnoredWalk(ctx, combinedIgnore, scope, ensurePromisorConfigValid);
-    const { newEntries, matched, added, modified, eolNotices } = tallyWalkOutcomes(
+    const { newEntries, matched, added, modified, eolNotices, restagedPaths } = tallyWalkOutcomes(
       staged.existing,
       staged.outcomes,
     );
     // git add never refuses the whole tree, even when it holds nothing to add.
     const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
     enforceLiteralMustMatch(mustMatch, matched, literalSpellings);
-    await lock.commit(Array.from(newEntries.values()));
+    await commitIfChanged(
+      lock,
+      staged.existing.size,
+      Array.from(newEntries.values()),
+      restagedPaths,
+    );
     return { added: [...added].sort(), modified: [...modified].sort(), removed: [], eolNotices };
   } finally {
     await lock.release();
@@ -483,7 +501,7 @@ const addRenormalized = async (
     // Stryker disable next-line MethodExpression: equivalent — the whole-tree literal is itself among the on-disk literals (the work tree exists), so enforceLiteralMustMatch accepts it unfiltered.
     const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
     enforceLiteralMustMatch(mustMatch, onDisk, literalSpellings);
-    await lock.commit([...renormalized.entries]);
+    await commitIfChanged(lock, entries.length, renormalized.entries, renormalized.restagedPaths);
     return { added: [], modified: renormalized.modified, removed: [], eolNotices: [] };
   } finally {
     await lock.release();
@@ -522,9 +540,11 @@ const renormalizeEntries = async (
 ): Promise<{
   readonly entries: ReadonlyArray<IndexEntry>;
   readonly modified: ReadonlyArray<FilePath>;
+  readonly restagedPaths: ReadonlyArray<FilePath>;
 }> => {
   const next: IndexEntry[] = [];
   const modified: FilePath[] = [];
+  const restagedPaths: FilePath[] = [];
   for (const previous of entries) {
     if (!isRecleaned(previous, matcher)) {
       next.push(previous);
@@ -532,9 +552,11 @@ const renormalizeEntries = async (
     }
     const entry = await renormalizeOne(staging, previous);
     next.push(entry);
+    // renormalizeOne rebuilds every re-cleaned entry, so each one is restaged.
+    restagedPaths.push(previous.path);
     if (entry.id !== previous.id || entry.mode !== previous.mode) modified.push(previous.path);
   }
-  return { entries: next, modified };
+  return { entries: next, modified, restagedPaths };
 };
 
 const renormalizeOne = async (
@@ -599,6 +621,14 @@ const hasNotice = (outcome: WalkOutcome): outcome is WalkOutcome & { readonly no
 
 const byPath = (a: WalkOutcome, b: WalkOutcome): number => comparePaths(a.path, b.path);
 
+const restagedPathsOf = (
+  outcomes: ReadonlyArray<WalkOutcome>,
+  existing: ReadonlyMap<FilePath, IndexEntry>,
+): FilePath[] =>
+  outcomes
+    .filter(({ path, entry }) => wasRestaged(existing.get(path), entry))
+    .map(({ path }) => path);
+
 /** The index once every walked outcome is staged, and which paths were matched, added, modified. */
 const tallyWalkOutcomes = (
   existing: ReadonlyMap<FilePath, IndexEntry>,
@@ -609,6 +639,7 @@ const tallyWalkOutcomes = (
   readonly added: ReadonlyArray<FilePath>;
   readonly modified: ReadonlyArray<FilePath>;
   readonly eolNotices: ReadonlyArray<EolNotice>;
+  readonly restagedPaths: ReadonlyArray<FilePath>;
 } => {
   const newEntries = new Map<FilePath, IndexEntry>(existing);
   const matched: FilePath[] = [];
@@ -620,7 +651,8 @@ const tallyWalkOutcomes = (
     if (outcome.kind === 'added') added.push(outcome.path);
     else if (outcome.kind === 'modified') modified.push(outcome.path);
   }
-  return { newEntries, matched, added, modified, eolNotices: noticesOf(outcomes) };
+  const restagedPaths = restagedPathsOf(outcomes, existing);
+  return { newEntries, matched, added, modified, eolNotices: noticesOf(outcomes), restagedPaths };
 };
 
 /**
@@ -666,7 +698,12 @@ export const addAll = async (
     modified.sort();
     // Stryker disable next-line MethodExpression: equivalent — `removed` is built by iterating `existing`, a Map populated from the always-byte-sorted index (serializeIndex sorts on every write), so it is already in ascending path order; the sort is a defensive no-op.
     removed.sort();
-    await lock.commit(Array.from(newEntries.values()));
+    await commitIfChanged(
+      lock,
+      existing.size,
+      Array.from(newEntries.values()),
+      restagedPathsOf(outcomes, existing),
+    );
     return { added, modified, removed, eolNotices: noticesOf(outcomes) };
   } finally {
     await lock.release();
@@ -732,7 +769,7 @@ const processWalkEntry = async (
   scope: StagingScope,
   indexMtime: IndexMtime | undefined,
   ensurePromisorConfigValid: PromisorGuard,
-): Promise<WalkOutcome | undefined> => {
+): Promise<WalkOutcome> => {
   const { path, isFile, isDirectory, isSymbolicLink } = walkEntry;
   // Mark presence BEFORE any further filter so the post-walk
   // "missing from disk → removed" pass is exact. Ignore filtering

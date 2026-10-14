@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { indexEntryFromStat } from '../../../../../src/application/primitives/internal/index-entry-from-stat.js';
-import { STAGE0_FLAGS } from '../../../../../src/domain/git-index/index.js';
+import {
+  indexEntryFromStat,
+  withStatData,
+} from '../../../../../src/application/primitives/internal/index-entry-from-stat.js';
+import { type IndexEntry, STAGE0_FLAGS } from '../../../../../src/domain/git-index/index.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/index.js';
 import type { FileStat } from '../../../../../src/ports/file-system.js';
@@ -62,6 +65,56 @@ describe('Given an lstat result carrying nanosecond-precision timestamps', () =>
       // the full ns-since-epoch value.
       expect(result.ctimeNanoseconds).toBe(456_789_012);
       expect(result.mtimeNanoseconds).toBe(123_456_789);
+    });
+  });
+});
+
+describe('Given a skip-worktree entry with a recorded id', () => {
+  describe('When withStatData(entry, stat) is applied', () => {
+    it('Then the stat fields come from the stat and id, mode, flags and path are kept', () => {
+      // Arrange
+      const flags = { ...STAGE0_FLAGS, skipWorktree: true };
+      const entry: IndexEntry = {
+        ctimeSeconds: 1,
+        ctimeNanoseconds: 2,
+        mtimeSeconds: 3,
+        mtimeNanoseconds: 4,
+        dev: 5,
+        ino: 6,
+        mode: FILE_MODE.EXECUTABLE,
+        uid: 7,
+        gid: 8,
+        fileSize: 9,
+        id: ID,
+        flags,
+        path: 'a/b' as FilePath,
+      };
+      const nsStat: FileStat = {
+        ...stat,
+        ctimeNs: 1_700_000_123_000_000_005n,
+        mtimeNs: 1_700_000_987_000_000_006n,
+      };
+
+      // Act
+      const sut = withStatData;
+      const result = sut(entry, nsStat);
+
+      // Assert
+      expect(result).toEqual({
+        ctimeSeconds: 1_700_000_123,
+        ctimeNanoseconds: 5,
+        mtimeSeconds: 1_700_000_987,
+        mtimeNanoseconds: 6,
+        dev: 42,
+        ino: 99,
+        mode: FILE_MODE.EXECUTABLE,
+        uid: 501,
+        gid: 20,
+        fileSize: 7,
+        id: ID,
+        flags,
+        path: 'a/b',
+      });
     });
   });
 });

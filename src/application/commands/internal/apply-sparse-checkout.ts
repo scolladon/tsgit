@@ -215,7 +215,7 @@ export const applySparseCheckout = async (
       { kind: 'index-first', index: attributeBlobLookup(stage0) },
     );
     const newEntries = assembleEntries(part, applied.writtenEntries);
-    await lock.commit(newEntries);
+    await lock.commit(newEntries, 'update');
     return {
       materialized: applied.written,
       removed: applied.deleted,

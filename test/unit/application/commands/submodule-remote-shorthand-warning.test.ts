@@ -62,7 +62,7 @@ const seed = async (
     `${gitmodulesRow('a', urls.a)}${gitmodulesRow('b', urls.b)}`,
   );
   const lock = await acquireIndexLock(ctx);
-  await lock.commit([gitlink('a'), gitlink('b')]);
+  await lock.commit([gitlink('a'), gitlink('b')], 'update');
   return { ctx, warnings };
 };
 

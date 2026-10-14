@@ -66,6 +66,30 @@ const writeNestedTree = async (
 };
 
 describe('materializeTree', () => {
+  describe('Given a tree holding �.txt and 😀.txt', () => {
+    describe('When materializeTree runs', () => {
+      it('Then the entries come back �.txt first', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'x');
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, '�.txt' as FilePath, blobId),
+          treeEntry(FILE_MODE.REGULAR, '\u{1F600}.txt' as FilePath, blobId),
+        ]);
+
+        // Act
+        const sut = materializeTree;
+        const result = await sut(ctx, {
+          targetTree: treeId,
+          currentIndex: EMPTY_INDEX,
+        });
+
+        // Assert
+        expect(result.newIndexEntries.map((e) => e.path)).toEqual(['�.txt', '\u{1F600}.txt']);
+      });
+    });
+  });
+
   describe('Given an empty index and a target tree with one blob', () => {
     describe('When materializeTree runs', () => {
       it('Then writes the blob to the workdir', async () => {
@@ -271,34 +295,44 @@ describe('materializeTree', () => {
     });
   });
 
-  describe('Given a scoped restore with a non-zero-stage index entry out of scope', () => {
+  describe('Given a scoped restore with conflict stages 1 to 3 of another path', () => {
     describe('When materializeTree runs', () => {
-      it('Then the conflicted entry is NOT preserved in newIndexEntries', async () => {
-        // Arrange — `indexEntriesByPath` filters to stage-0 entries only. A stage-2
-        // (merge-conflict) entry for an out-of-scope path must be excluded from
-        // `oldByPath`, so `preserveOutOfScope` cannot carry it into the result.
-        // If the stage guard were dropped (always-true), the stage-2 entry would
-        // leak into `newIndexEntries`.
+      it('Then every stage of the out-of-scope path is preserved in newIndexEntries', async () => {
+        // Arrange
         const ctx = await buildSeededContext();
         const idA = await writeBlob(ctx, 'A');
-        const idConflict = await writeBlob(ctx, 'conflict');
+        const ids = [
+          await writeBlob(ctx, 'base'),
+          await writeBlob(ctx, 'ours'),
+          await writeBlob(ctx, 'theirs'),
+        ];
         const treeId = await writeTree(ctx, [
           treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, idA),
         ]);
         const index: GitIndex = {
           ...EMPTY_INDEX,
-          entries: [makeIndexEntry('conflict.txt', idConflict, 2)],
+          entries: [
+            makeIndexEntry('conflict.txt', ids[0] as ObjectId, 1),
+            makeIndexEntry('conflict.txt', ids[1] as ObjectId, 2),
+            makeIndexEntry('conflict.txt', ids[2] as ObjectId, 3),
+          ],
         };
+        const sut = materializeTree;
 
-        // Act — restore only 'a.txt'; 'conflict.txt' is out of scope.
-        const result = await materializeTree(ctx, {
+        // Act
+        const result = await sut(ctx, {
           targetTree: treeId,
           currentIndex: index,
           paths: new Set(['a.txt' as FilePath]),
         });
 
-        // Assert — only 'a.txt' is present; the stage-2 entry was dropped.
-        expect(result.newIndexEntries.map((e) => e.path)).toEqual(['a.txt']);
+        // Assert
+        expect(result.newIndexEntries.map((e) => [e.path, e.flags.stage, e.id])).toEqual([
+          ['a.txt', 0, idA],
+          ['conflict.txt', 1, ids[0]],
+          ['conflict.txt', 2, ids[1]],
+          ['conflict.txt', 3, ids[2]],
+        ]);
       });
     });
   });

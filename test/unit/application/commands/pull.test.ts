@@ -263,6 +263,7 @@ describe('pull', () => {
         const lock = await acquireIndexLock(ctx);
         await lock.commit(
           (await readIndex(ctx)).entries.map((entry) => ({ ...entry, mode: FILE_MODE.EXECUTABLE })),
+          'update',
         );
 
         // Act

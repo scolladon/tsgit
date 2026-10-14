@@ -67,6 +67,10 @@ console.log(result.added.length, result.modified.length, result.removed.length);
 - `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
 - `EMPTY_PATHSPEC` — `paths` is empty and `all` is not set.
 
+## Index write
+
+When nothing was staged (every path already matches the index), `add` leaves the index file unwritten, as git's `SKIP_IF_UNCHANGED` does. A write keeps git's index extensions: the `TREE` cache is invalidated along each re-staged path and the rest is carried; unknown extensions are dropped.
+
 ## Entry name validation
 
 Every path this call would stage — literal, glob-matched, or walked in bulk

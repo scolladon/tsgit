@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  hasRacyTimestamp,
   type IndexMtime,
   isEntryStatClean,
 } from '../../../../../src/application/primitives/internal/is-entry-stat-clean.js';
@@ -322,6 +323,57 @@ describe('isEntryStatClean', () => {
 
         // Act
         const result = isEntryStatClean(BASE_ENTRY, stat, BASE_INDEX_MTIME);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+});
+
+describe('hasRacyTimestamp', () => {
+  const sameSecondIndexMtime: IndexMtime = { seconds: 946, nanoseconds: 85_000_000 };
+
+  describe('Given an entry with mtime 946.0 and an index mtime 946.085', () => {
+    describe('When hasRacyTimestamp', () => {
+      it('Then it is true because nanoseconds are ignored', () => {
+        // Arrange
+        const entries = [{ ...BASE_ENTRY, mtimeSeconds: 946, mtimeNanoseconds: 0 }];
+
+        // Act
+        const result = hasRacyTimestamp(entries, sameSecondIndexMtime);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given only a gitlink in the same second as the index', () => {
+    describe('When hasRacyTimestamp', () => {
+      it('Then it is false', () => {
+        // Arrange
+        const entries = [
+          { ...BASE_ENTRY, mode: FILE_MODE.GITLINK, mtimeSeconds: 946, mtimeNanoseconds: 0 },
+        ];
+
+        // Act
+        const result = hasRacyTimestamp(entries, sameSecondIndexMtime);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an index mtime of second 0', () => {
+    describe('When hasRacyTimestamp', () => {
+      it('Then it is false', () => {
+        // Arrange
+        const entries = [{ ...BASE_ENTRY, mtimeSeconds: 0, mtimeNanoseconds: 0 }];
+
+        // Act
+        const result = hasRacyTimestamp(entries, { seconds: 0, nanoseconds: 0 });
 
         // Assert
         expect(result).toBe(false);

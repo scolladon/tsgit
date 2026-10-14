@@ -180,7 +180,7 @@ const replayMerge = async (
   if (res.kind === 'would-overwrite')
     throw workingTreeDirty({ localChanges: res.localChanges, untracked: res.untracked });
   if (res.kind !== 'conflict') return res;
-  await lock.commit(res.indexEntries);
+  await lock.commit(res.indexEntries, 'replace');
   return { kind: 'conflict', conflicts: res.conflicts };
 };
 
@@ -242,7 +242,7 @@ export const runNoCommitReplay = async (
   try {
     const replayed = await accumulateReplays(ctx, lock, command, todo);
     if (replayed.kind === 'conflict') return replayed;
-    await lock.commit(replayed.index.entries);
+    await lock.commit(replayed.index.entries, 'replace');
     return { kind: 'no-commit', sources: todo };
   } finally {
     await lock.release();

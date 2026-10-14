@@ -34,7 +34,7 @@ The composable building blocks every Tier-1 command is built from. Same `Context
 | [`writeObject`](write-object.md) | Write any git object; returns the resulting id. |
 | [`writeTree`](write-tree.md) | Write a tree object from entries; returns the id. |
 
-For internal building blocks referenced from command pages (`materializeTree`, `fetchPack`, `buildPack`, `hasObject`, etc.) see [`internals.md`](internals.md).
+For internal building blocks referenced from command pages (`materializeTree`, `readConfig`, `findWouldOverwrite`, `resolveConversion`, `fetchPack`, `buildPack`, `hasObject`, etc.) see [`internals.md`](internals.md).
 
 ### Re-exported types
 

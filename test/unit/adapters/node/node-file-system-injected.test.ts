@@ -6061,3 +6061,121 @@ describe('NodeFileSystem — utimeNow (DI)', () => {
     });
   });
 });
+
+describe('NodeFileSystem.writeExclusive — create-first, mkdir only on ENOENT (DI)', () => {
+  const WRITE_EXCLUSIVE_FLAGS =
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW;
+
+  const build = (overrides: Parameters<typeof fakeFsOps>[0]) =>
+    new NodeFileSystem('/root', {
+      pathPolicy: posixPolicy,
+      fsOps: fakeFsOps({
+        realpath: vi.fn().mockImplementation(async (input: string) => input),
+        ...overrides,
+      }),
+    });
+
+  describe('Given the parent directory already exists', () => {
+    describe('When writeExclusive is called', () => {
+      it('Then the file is created in one call and mkdir is never called', async () => {
+        // Arrange
+        const writeFile = vi.fn().mockResolvedValue(undefined);
+        const mkdir = vi.fn().mockResolvedValue(undefined);
+        const adapter = build({ writeFile, mkdir });
+        const sut = adapter.writeExclusive.bind(adapter);
+
+        // Act
+        await sut('/root/.git/index.lock', new Uint8Array());
+
+        // Assert
+        expect(writeFile).toHaveBeenCalledTimes(1);
+        expect(mkdir).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given the parent directory is missing (first create throws ENOENT)', () => {
+    describe('When writeExclusive is called', () => {
+      it('Then it retries in order: writeFile, mkdir of the parent, writeFile', async () => {
+        // Arrange
+        const calls: string[] = [];
+        const writeFile = vi
+          .fn()
+          .mockImplementationOnce(() => {
+            calls.push('writeFile');
+            return Promise.reject(enoent());
+          })
+          .mockImplementationOnce(() => {
+            calls.push('writeFile');
+            return Promise.resolve(undefined);
+          });
+        const mkdir = vi.fn().mockImplementation(() => {
+          calls.push('mkdir');
+          return Promise.resolve(undefined);
+        });
+        const adapter = build({ writeFile, mkdir });
+        const sut = adapter.writeExclusive.bind(adapter);
+
+        // Act
+        await sut('/root/.git/index.lock', new Uint8Array());
+
+        // Assert
+        expect(calls).toEqual(['writeFile', 'mkdir', 'writeFile']);
+        expect(mkdir).toHaveBeenCalledWith('/root/.git', { recursive: true });
+        expect(writeFile).toHaveBeenLastCalledWith('/root/.git/index.lock', new Uint8Array(), {
+          flag: WRITE_EXCLUSIVE_FLAGS,
+        });
+      });
+    });
+  });
+
+  describe('Given a non-ENOENT failure on the first create (EACCES)', () => {
+    describe('When writeExclusive is called', () => {
+      it('Then PERMISSION_DENIED propagates and mkdir is never called', async () => {
+        // Arrange
+        const writeFile = vi.fn().mockRejectedValue(eacces());
+        const mkdir = vi.fn().mockResolvedValue(undefined);
+        const adapter = build({ writeFile, mkdir });
+        const sut = adapter.writeExclusive.bind(adapter);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut('/root/.git/index.lock', new Uint8Array());
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        dataFor(caught, 'PERMISSION_DENIED');
+        expect(mkdir).not.toHaveBeenCalled();
+        expect(writeFile).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a second ENOENT persists after mkdir', () => {
+    describe('When writeExclusive is called', () => {
+      it('Then FILE_NOT_FOUND propagates after exactly one retry', async () => {
+        // Arrange
+        const writeFile = vi.fn().mockRejectedValue(enoent());
+        const mkdir = vi.fn().mockResolvedValue(undefined);
+        const adapter = build({ writeFile, mkdir });
+        const sut = adapter.writeExclusive.bind(adapter);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut('/root/.git/index.lock', new Uint8Array());
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        dataFor(caught, 'FILE_NOT_FOUND');
+        expect(writeFile).toHaveBeenCalledTimes(2);
+        expect(mkdir).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+});

@@ -1,10 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { status } from '../../../../src/application/commands/status.js';
-import { withCleanOrder } from '../../../../src/application/primitives/internal/clean-order.js';
+import { inIndexOrder } from '../../../../src/application/primitives/internal/clean-order.js';
 import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
@@ -16,7 +16,7 @@ vi.mock(
       await importOriginal<
         typeof import('../../../../src/application/primitives/internal/clean-order.js')
       >();
-    return { ...actual, withCleanOrder: vi.fn(actual.withCleanOrder) };
+    return { ...actual, inIndexOrder: vi.fn(actual.inIndexOrder) };
   },
 );
 
@@ -43,14 +43,14 @@ describe('Given a runner-wired repository that configures no filter driver', () 
     it('Then no clean order is opened, as no clean can run whose order shows', async () => {
       // Arrange
       const ctx = await seedRunnerRepository('[core]\n\tbare = false\n');
-      vi.mocked(withCleanOrder).mockClear();
+      vi.mocked(inIndexOrder).mockClear();
       const sut = status;
 
       // Act
       await sut(ctx);
 
       // Assert
-      const result = vi.mocked(withCleanOrder).mock.calls.length;
+      const result = vi.mocked(inIndexOrder).mock.calls.length;
       expect(result).toBe(0);
     });
   });
@@ -63,14 +63,14 @@ describe('Given a runner-wired repository that configures a filter driver', () =
       const ctx = await seedRunnerRepository(
         '[core]\n\tbare = false\n[filter "up"]\n\tclean = cat\n',
       );
-      vi.mocked(withCleanOrder).mockClear();
+      vi.mocked(inIndexOrder).mockClear();
       const sut = status;
 
       // Act
       await sut(ctx);
 
       // Assert
-      const result = vi.mocked(withCleanOrder).mock.calls.length;
+      const result = vi.mocked(inIndexOrder).mock.calls.length;
       expect(result).toBe(1);
     });
   });
@@ -78,6 +78,12 @@ describe('Given a runner-wired repository that configures a filter driver', () =
 
 const LOG_DRIVER = '[core]\n\tbare = false\n[filter "log"]\n\tclean = log\n';
 const SETTLE_MS = 20;
+const SETTLED_EPOCH_MS = 1_800_000_000_000;
+const SECOND_MS = 1000;
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 const dec = (bytes: Uint8Array | undefined): string =>
   new TextDecoder().decode(bytes ?? new Uint8Array());
@@ -93,13 +99,19 @@ const repoUnderLogDriver = async (
   edited: Readonly<Record<string, string>>,
   attributes: string,
 ): Promise<Recorded> => {
+  // The files predate the index by two seconds and the edits follow it, so no entry
+  // is racy and the scan has nothing to write back: the driver hears the scan alone.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(SETTLED_EPOCH_MS);
   const base = createMemoryContext();
   await init(base);
   for (const [path, content] of Object.entries(files)) {
     await base.fs.writeUtf8(`${base.layout.workDir}/${path}`, content);
   }
+  vi.setSystemTime(SETTLED_EPOCH_MS + 2 * SECOND_MS);
   await add(base, Object.keys(files));
   await commit(base, { message: 'first', author: AUTHOR });
+  vi.setSystemTime(SETTLED_EPOCH_MS + 5 * SECOND_MS);
   for (const [path, content] of Object.entries(edited)) {
     await base.fs.writeUtf8(`${base.layout.workDir}/${path}`, content);
   }
@@ -179,14 +191,14 @@ describe('Given a filter driver configured in a repository with no command runne
       await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
       await add(ctx, ['a.txt']);
       await commit(ctx, { message: 'first', author: AUTHOR });
-      vi.mocked(withCleanOrder).mockClear();
+      vi.mocked(inIndexOrder).mockClear();
       const sut = status;
 
       // Act
       await sut(ctx);
 
       // Assert
-      const result = vi.mocked(withCleanOrder).mock.calls.length;
+      const result = vi.mocked(inIndexOrder).mock.calls.length;
       expect(result).toBe(1);
     });
   });

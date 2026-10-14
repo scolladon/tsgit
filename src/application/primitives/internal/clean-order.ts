@@ -1,5 +1,8 @@
+import type { IndexEntry } from '../../../domain/git-index/index.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
+import { readConfig } from '../config-read.js';
+import type { ConcurrencyLimiter } from './concurrency-limiter.js';
 
 /**
  * git cleans one path at a time, in index order. A command that reads the
@@ -149,3 +152,53 @@ export const releaseClean = (ctx: Context, path: FilePath): void => {
   const sequence = sequences.get(ctx);
   if (sequence?.span === 'clean') sequence.release(path);
 };
+
+/** Whether any `[filter "<driver>"]` section is configured: without one, a filter attribute
+ *  resolves to no driver, so no clean runs and none refuses. */
+export const configuresFilterDriver = async (ctx: Context): Promise<boolean> =>
+  ((await readConfig(ctx)).filter?.size ?? 0) > 0;
+
+/** Runs `scan` with every stage-0 path enlisted, so a clean driver hears them in index order. */
+export const inIndexOrder = <T>(
+  ctx: Context,
+  stage0: ReadonlyArray<IndexEntry>,
+  scan: (order: CleanOrder) => Promise<T>,
+): Promise<T> =>
+  withCleanOrder(ctx, (order) => {
+    for (const entry of stage0) order.enlist(entry.path);
+    return scan(order);
+  });
+
+/** One task once settled: its value, or the failure it met. */
+export type Settled<R> =
+  | { readonly kind: 'done'; readonly value: R }
+  | { readonly kind: 'failed'; readonly error: unknown };
+
+/**
+ * Runs `task` under the limiter and settles it, never rejecting. git dies at the first path
+ * that fails: the order is halted so no later path is cleaned, and `path`'s turn is released
+ * whatever the outcome. The caller enlists `path`.
+ */
+export const settleInCleanTurn = <R>(
+  limiter: ConcurrencyLimiter,
+  order: CleanOrder,
+  path: FilePath,
+  task: () => Promise<R>,
+): Promise<Settled<R>> =>
+  limiter
+    .run(task)
+    .then(
+      (value): Settled<R> => ({ kind: 'done', value }),
+      (error: unknown): Settled<R> => {
+        order.halt(path, error);
+        return { kind: 'failed', error };
+      },
+    )
+    .finally(() => order.release(path));
+
+/** The settled values, in input order; the earliest-in-order failure is thrown instead. */
+export const firstFailureOrValues = <R>(settled: ReadonlyArray<Settled<R>>): R[] =>
+  settled.map((outcome) => {
+    if (outcome.kind === 'failed') throw outcome.error;
+    return outcome.value;
+  });

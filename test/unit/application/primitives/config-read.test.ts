@@ -279,6 +279,49 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given a config with a [core] untrackedcache value', () => {
+    describe('When readConfig', () => {
+      it.each([
+        { title: 'true', body: 'untrackedCache = true', expected: true },
+        { title: 'false', body: 'untrackedCache = false', expected: false },
+        { title: 'yes', body: 'untrackedCache = yes', expected: true },
+        { title: 'keep', body: 'untrackedCache = keep', expected: undefined },
+        { title: 'bogus', body: 'untrackedCache = bogus', expected: undefined },
+        { title: 'valueless', body: 'untrackedCache', expected: undefined },
+        {
+          title: 'false then keep',
+          body: 'untrackedCache = false\n  untrackedCache = keep',
+          expected: undefined,
+        },
+        {
+          title: 'keep then false',
+          body: 'untrackedCache = keep\n  untrackedCache = false',
+          expected: false,
+        },
+        {
+          title: 'true then false',
+          body: 'untrackedCache = true\n  untrackedCache = false',
+          expected: false,
+        },
+        {
+          title: 'false then valueless',
+          body: 'untrackedCache = false\n  untrackedCache',
+          expected: undefined,
+        },
+      ])('Then untrackedCache for $title is $expected', async ({ body, expected }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, `[core]\n  ${body}\n`);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.untrackedCache).toBe(expected);
+      });
+    });
+  });
+
   describe('Given a config with core.eol = crlf followed by a later core.eol line', () => {
     describe('When readConfig', () => {
       it.each([

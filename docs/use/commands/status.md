@@ -5,7 +5,12 @@ Compare the working tree, the index, and HEAD. Returns a structured `StatusResul
 ## Signature
 
 ```ts
-repo.status(): Promise<StatusResult>;
+repo.status(opts?: StatusOptions): Promise<StatusResult>;
+
+interface StatusOptions {
+  /** Default true. false = git `--no-optional-locks status`: the index is never written. */
+  readonly refresh?: boolean;
+}
 
 interface StatusResult {
   readonly branch: RefName | undefined;
@@ -53,6 +58,9 @@ interface UnmergedEntry {
 
 ## Behaviour
 
+- **Refresh write-back.** Like git, `status` refreshes the index's cached stat data. The optional `index.lock` is taken **after** the tracked scan and held across the report and the untracked scan. The refreshed index is written only when an entry's stat data was refreshed or an entry is racy against the index file's mtime (compared at second granularity), and only while the on-disk index is unchanged since it was read (a trailer check); otherwise nothing is written. `refresh: false` (git's `--no-optional-locks`) takes no lock and never writes. The `GIT_OPTIONAL_LOCKS` variable, read from the context env, disables it too (`0`, `false`, `off`, `no` or the empty string); `refresh: false` wins without reading the variable. A value that is not a boolean refuses with `ENV_BAD_BOOLEAN_VALUE`. A failure to take the lock or to write the refresh degrades to a read-only status, reported through `ctx.logger.warn('status: index refresh skipped', { code, path, reason })` and never in the result.
+- **Index extensions on a refresh write.** `TREE`, `REUC` and `UNTR` are kept byte-for-byte; any other extension is dropped, as git does on every index write.
+- **No filter section, no filter resolution.** With no `[filter]` section in the config, the comparison skips filter-driver resolution entirely.
 - **One correlated record per path.** `changes` holds one `ChangedPath` per tracked path with a change — the structured form of `git status --porcelain=v2`'s ordinary line. `staged` (git's X, index vs HEAD) and `unstaged` (git's Y, working tree vs index) live on the **same** record, so correlating the two columns is a lookup, not a join. `clean` is `true` only when `changes`, `untracked`, **and** `unmerged` are all empty.
 - **Self-describing endpoints → hunks.** Each record carries the blobs that form its diffs: `head`/`index` (`{ id, mode }`) and `worktree` (`{ mode }` only — git prints `mW` but no working oid). The hunks for any path are one read away — staged: `readBlob(head)` vs `readBlob(index)`; unstaged: `readBlob(index)` vs the working file at `path`. A side is omitted when the path does not exist there (staged add → no `head`; staged delete → no `index`; deleted in the worktree → no `worktree`).
 - **Untracked.** `untracked` is the separate set of untracked paths (git's `?` lines). A path removed from the index but kept on disk (`git rm --cached`) appears as a staged `deleted` record in `changes` **and** in `untracked` — git's `D ` + `??`.

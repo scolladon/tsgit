@@ -116,7 +116,11 @@ export const findWouldOverwrite = async (
       if (await isUntrackedPresent(ctx, path)) untracked.push(path);
       continue;
     }
-    if (isWorkingTreeModified(await compareWorkingTreeEntry(ctx, entry, provider)))
+    if (
+      isWorkingTreeModified(
+        await compareWorkingTreeEntry(ctx, entry, provider, currentIndex.indexMtime),
+      )
+    )
       localChanges.push(path);
   }
   return {

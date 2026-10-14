@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../../src/application/commands/add.js';
 import { commit } from '../../../../../src/application/commands/commit.js';
@@ -71,6 +71,37 @@ const writeFramedIndex = async (
   const body = serializeIndex(index, ctx.hashConfig.digestLength);
   const trailer = hexToBytes(await ctx.hash.hashHex(body));
   const framed = new Uint8Array(body.length + 20);
+  framed.set(body);
+  framed.set(trailer, body.length);
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, framed);
+};
+
+const INDEX_HEADER_BYTES = 12;
+const INDEX_COUNT_OFFSET = 8;
+
+/** Writes `entries` in the order given: serializeIndex re-sorts, so each entry is serialized alone and spliced. */
+const writeFramedIndexInGivenOrder = async (
+  ctx: Context,
+  entries: ReadonlyArray<IndexEntry>,
+): Promise<void> => {
+  const bodies = entries.map((entry) =>
+    serializeIndex(
+      { version: 2, entries: [entry], extensions: [], trailerSha: new Uint8Array(0) },
+      ctx.hashConfig.digestLength,
+    ),
+  );
+  const records = bodies.map((body) => body.subarray(INDEX_HEADER_BYTES));
+  const header = bodies[0]?.slice(0, INDEX_HEADER_BYTES) ?? new Uint8Array(INDEX_HEADER_BYTES);
+  new DataView(header.buffer).setUint32(INDEX_COUNT_OFFSET, entries.length);
+  const body = new Uint8Array(header.length + records.reduce((n, r) => n + r.length, 0));
+  body.set(header);
+  let at = header.length;
+  for (const record of records) {
+    body.set(record, at);
+    at += record.length;
+  }
+  const trailer = hexToBytes(await ctx.hash.hashHex(body));
+  const framed = new Uint8Array(body.length + trailer.length);
   framed.set(body);
   framed.set(trailer, body.length);
   await ctx.fs.write(`${ctx.layout.gitDir}/index`, framed);
@@ -328,7 +359,7 @@ describe('unstagedChangePaths', () => {
         const bmp = 'f-\u{F8FF}.txt';
         const ctx = createMemoryContext();
         await init(ctx);
-        await writeFramedIndex(ctx, [
+        await writeFramedIndexInGivenOrder(ctx, [
           stageEntry(cjk, 'a'.repeat(40) as ObjectId, 0),
           stageEntry(emoji, 'b'.repeat(40) as ObjectId, 0),
           stageEntry(bmp, 'c'.repeat(40) as ObjectId, 0),
@@ -340,6 +371,49 @@ describe('unstagedChangePaths', () => {
 
         // Assert
         expect(result).toEqual([cjk, bmp, emoji]);
+      });
+    });
+  });
+});
+
+describe('unstagedChangePaths stat cache', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const SEED_MS = 1_700_000_000_000;
+
+  describe('Given a stat-clean, non-racy tracked file', () => {
+    describe('When unstagedChangePaths classifies it', () => {
+      it('Then the file is never read', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(SEED_MS);
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'v1\n');
+        vi.setSystemTime(SEED_MS + 2_000);
+        await add(ctx, ['a.txt']);
+        const reads: string[] = [];
+        const originalRead = ctx.fs.read.bind(ctx.fs);
+        const spiedCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: (p, ...rest) => {
+              reads.push(p);
+              return originalRead(p, ...rest);
+            },
+          },
+        };
+        const sut = unstagedChangePaths;
+
+        // Act
+        const result = await sut(spiedCtx);
+
+        // Assert
+        expect(result).toEqual([]);
+        expect(reads).not.toContain(work(ctx, 'a.txt'));
       });
     });
   });

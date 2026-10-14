@@ -33,6 +33,7 @@ import {
   configValueInvalid,
   emptyCommitMessage,
   emptyPathspec,
+  envBadBooleanValue,
   eolRoundTripUnsafe,
   fastForwardMultipleBranches,
   formatPlaceholderUnsupported,
@@ -1508,6 +1509,42 @@ describe('domain commands error — config factory data', () => {
     });
   });
 
+  describe('Given variable GIT_OPTIONAL_LOCKS and value bogus', () => {
+    describe('When envBadBooleanValue is called', () => {
+      it('Then data is { code, variable, value } and the message is git_env_bool text', () => {
+        // Arrange + Act
+        const sut = envBadBooleanValue;
+        const result = sut('GIT_OPTIONAL_LOCKS', 'bogus');
+
+        // Assert
+        const data = result.data;
+        expect(data.code).toBe('ENV_BAD_BOOLEAN_VALUE');
+        if (data.code !== 'ENV_BAD_BOOLEAN_VALUE') return;
+        expect(data.variable).toBe('GIT_OPTIONAL_LOCKS');
+        expect(data.value).toBe('bogus');
+        expect(result.message).toBe(
+          "ENV_BAD_BOOLEAN_VALUE: bad boolean environment value 'bogus' for 'GIT_OPTIONAL_LOCKS'",
+        );
+      });
+    });
+  });
+
+  describe('Given a value with a control character', () => {
+    describe('When envBadBooleanValue is called', () => {
+      it('Then value is sanitised for display', () => {
+        // Arrange + Act
+        const sut = envBadBooleanValue;
+        const result = sut('GIT_OPTIONAL_LOCKS', '\x01bad');
+
+        // Assert
+        const data = result.data;
+        expect(data.code).toBe('ENV_BAD_BOOLEAN_VALUE');
+        if (data.code !== 'ENV_BAD_BOOLEAN_VALUE') return;
+        expect(data.value).toBe('\\x01bad');
+      });
+    });
+  });
+
   describe('Given the configBadBooleanLiteral helper', () => {
     describe("When called with key='push.gpgsign', source='/abs/.git/config', value='maybe'", () => {
       it('Then data carries code, key, source, and value individually', () => {
@@ -2050,6 +2087,10 @@ describe('domain commands error — extractDetail message formatting', () => {
         value: 'maybe',
       },
       "CONFIG_BAD_BOOLEAN_VALUE: bad boolean config value 'maybe' for 'core.bare' in file /repo/.git/config",
+    ],
+    [
+      { code: 'ENV_BAD_BOOLEAN_VALUE', variable: 'GIT_OPTIONAL_LOCKS', value: 'bogus' },
+      "ENV_BAD_BOOLEAN_VALUE: bad boolean environment value 'bogus' for 'GIT_OPTIONAL_LOCKS'",
     ],
     [
       {

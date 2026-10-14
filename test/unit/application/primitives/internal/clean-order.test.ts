@@ -3,10 +3,18 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import {
   admitClean,
   admitWrite,
+  configuresFilterDriver,
+  firstFailureOrValues,
+  inIndexOrder,
   releaseClean,
+  type Settled,
+  settleInCleanTurn,
   withCleanOrder,
 } from '../../../../../src/application/primitives/internal/clean-order.js';
-import type { FilePath } from '../../../../../src/domain/objects/object-id.js';
+import { createConcurrencyLimiter } from '../../../../../src/application/primitives/internal/concurrency-limiter.js';
+import { stage0Entry } from '../../../../../src/application/primitives/internal/synthetic-index-entry.js';
+import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
+import type { FilePath, ObjectId } from '../../../../../src/domain/objects/object-id.js';
 
 const A = 'a' as FilePath;
 const B = 'b' as FilePath;
@@ -516,6 +524,154 @@ describe('withCleanOrder in a write span', () => {
         // Assert
         expect(admitted).toEqual([B]);
       });
+    });
+  });
+});
+
+describe('inIndexOrder', () => {
+  describe('Given stage-0 entries', () => {
+    describe('When a later path asks to clean first', () => {
+      it('Then every entry path is enlisted in order', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const admitted: FilePath[] = [];
+        const entries = [A, B].map((path) =>
+          stage0Entry(path, 'f'.repeat(40) as ObjectId, FILE_MODE.REGULAR),
+        );
+        const sut = inIndexOrder;
+
+        // Act
+        await sut(ctx, entries, async (order) => {
+          const later = track(ctx, B, admitted);
+          await drain();
+          expect(admitted).toEqual([]);
+          order.release(A);
+          await later;
+        });
+
+        // Assert
+        expect(admitted).toEqual([B]);
+      });
+    });
+  });
+});
+
+describe('configuresFilterDriver', () => {
+  describe('Given a config with a filter section, When it is queried', () => {
+    it('Then it is true', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[filter "x"]\n\tclean = cat\n');
+      const sut = configuresFilterDriver;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result).toBe(true);
+    });
+  });
+
+  describe('Given a config without a filter section, When it is queried', () => {
+    it('Then it is false', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbare = false\n');
+      const sut = configuresFilterDriver;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result).toBe(false);
+    });
+  });
+});
+
+describe('Given settleInCleanTurn', () => {
+  const calls = () => {
+    const log: string[] = [];
+    const order = {
+      enlist: () => undefined,
+      release: (path: FilePath) => void log.push(`release ${path}`),
+      halt: (path: FilePath, error: unknown) => void log.push(`halt ${path} ${String(error)}`),
+    };
+    return { log, order };
+  };
+
+  describe('When the task succeeds', () => {
+    it('Then it settles done with the value and releases the path', async () => {
+      // Arrange
+      const { log, order } = calls();
+      const limiter = createConcurrencyLimiter(1);
+
+      // Act
+      const sut = settleInCleanTurn;
+      const result = await sut(limiter, order, A, async () => 7);
+
+      // Assert
+      expect(result).toEqual({ kind: 'done', value: 7 });
+      expect(log).toEqual(['release a']);
+    });
+  });
+
+  describe('When the task fails', () => {
+    it('Then it settles failed, halts the order and releases the path', async () => {
+      // Arrange
+      const { log, order } = calls();
+      const limiter = createConcurrencyLimiter(1);
+
+      // Act
+      const sut = settleInCleanTurn;
+      const result = await sut(limiter, order, A, async () => {
+        throw 'boom';
+      });
+
+      // Assert
+      expect(result).toEqual({ kind: 'failed', error: 'boom' });
+      expect(log).toEqual(['halt a boom', 'release a']);
+    });
+  });
+});
+
+describe('Given firstFailureOrValues', () => {
+  describe('When every task is done', () => {
+    it('Then the values come back in input order', () => {
+      // Arrange
+      const settled: Settled<number>[] = [
+        { kind: 'done', value: 1 },
+        { kind: 'done', value: 2 },
+      ];
+
+      // Act
+      const sut = firstFailureOrValues;
+      const result = sut(settled);
+
+      // Assert
+      expect(result).toEqual([1, 2]);
+    });
+  });
+
+  describe('When several tasks failed', () => {
+    it('Then the earliest failure in input order is thrown', () => {
+      // Arrange
+      const settled: Settled<number>[] = [
+        { kind: 'done', value: 1 },
+        { kind: 'failed', error: 'first' },
+        { kind: 'failed', error: 'second' },
+      ];
+
+      // Act
+      const sut = firstFailureOrValues;
+      let result: unknown;
+      try {
+        sut(settled);
+      } catch (error) {
+        result = error;
+      }
+
+      // Assert
+      expect(result).toBe('first');
     });
   });
 });

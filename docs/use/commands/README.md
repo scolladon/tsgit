@@ -59,6 +59,17 @@ a bound `this`.
 | [`whatchanged`](whatchanged.md) | Walk reachable commits (merges excluded) pairing each with its raw structured changes; returns structured data (no rendered line). |
 | [`worktree`](worktree.md) | Manage linked working trees over one object store (`list`/`add`/`move`/`remove`); returns structured per-worktree data. Nested-namespace surface (`repo.worktree.*`). |
 
+## Index writes
+
+Every command that rewrites `.git/index` keeps git's index extensions the way git does: the cache-tree (`TREE`) is
+invalidated along each changed or re-staged path and kept elsewhere; resolve-undo records (`REUC`) survive in-place
+writers (`add`, `rm`, `mv`, `reset` without `--hard`, `checkout -- <paths>`, `submodule add`) and are dropped by writers
+that rebuild the index from a tree or a merge (`checkout <branch>`, `reset --hard`, `merge`, `pull`, `cherryPick`,
+`revert`, `rebase`, `stash`, `worktree add`); the untracked cache (`UNTR`) survives while the set of tracked paths is
+unchanged; extensions tsgit does not know are dropped, as git drops them. Entries are written in git's UTF-8 byte order.
+`status` writes refreshed stat data back under git's optional lock (see [`status`](status.md)); its `StatusOptions`
+type is exported from the `@scolladon/tsgit/commands` barrel.
+
 Commands that touch the working tree — `add`, `checkout`, `commit`, `merge`, `mv`, `rm`, `stash`, `sparseCheckout`, `cherryPick`, `revert`, `rebase`, `pull`, `submodule`'s local verbs, `reset({ mode: 'hard' })`, `grep`'s default (working-tree) target, `blame({ worktree: true })` outside a bare repository, `describe({ dirty: true })` — refuse with `WORK_TREE_REQUIRED` when the opened repository has none (bare, or a git directory opened without one). See [errors](../errors.md) for the full refusal matrix.
 
 ## Page shape

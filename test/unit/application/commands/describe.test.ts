@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
@@ -1532,6 +1532,38 @@ describe('Given a work tree with a corrupt index', () => {
       // Assert
       expect(caught).toBeInstanceOf(TsgitError);
       expect((caught as TsgitError).data.code).toBe('INVALID_INDEX_HEADER');
+    });
+  });
+});
+
+describe('Given a stat-moved tracked file', () => {
+  describe('When describe runs with the dirty option', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('Then the index is rewritten with the refreshed stat data', async () => {
+      // Arrange
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const base = 1_800_000_000_000;
+      vi.setSystemTime(base);
+      const ctx = await seed();
+      await commitFile(ctx, 'c1');
+      vi.setSystemTime(base + 5_000);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c1.txt`, 'c1\n');
+      vi.setSystemTime(base + 7_000);
+      const rename = vi.spyOn(ctx.fs, 'rename');
+
+      // Act
+      const sut = describeCmd;
+      const result = await sut(ctx, undefined, { dirty: true, always: true });
+
+      // Assert
+      expect(result.dirty).toBe(false);
+      expect(rename).toHaveBeenCalledWith(
+        `${ctx.layout.gitDir}/index.lock`,
+        `${ctx.layout.gitDir}/index`,
+      );
     });
   });
 });

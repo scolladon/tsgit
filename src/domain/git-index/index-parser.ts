@@ -1,4 +1,4 @@
-import { bytesToHex, decode, indexOf } from '../objects/encoding.js';
+import { bytesEqual, bytesToHex, decode, encode, indexOf } from '../objects/encoding.js';
 import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
 import { FilePath as FilePathFactory, normalizeFileMode } from '../objects/index.js';
 import { invalidIndexEntry, invalidIndexHeader } from './error.js';
@@ -266,7 +266,9 @@ function parseCacheTreeEntry(
   if (pathEnd === -1) {
     throw invalidIndexEntry(start, 'cache-tree entry missing NUL-terminated path');
   }
-  const path = decode(data.subarray(start, pathEnd));
+  const rawName = data.subarray(start, pathEnd);
+  const path = decode(rawName);
+  const nameBytes = roundTrips(path, rawName) ? undefined : rawName.slice();
 
   const spaceIndex = indexOf(data, CACHE_TREE_SPACE, pathEnd + 1);
   if (spaceIndex === -1) {
@@ -296,10 +298,21 @@ function parseCacheTreeEntry(
   );
   return readCacheTreeChildren(data, afterOid, subtreeCount, depth, digestLength, {
     path,
+    nameBytes,
     entryCount,
     subtreeCount,
     id,
   });
+}
+
+const ASCII_LIMIT = 0x80;
+
+/** ASCII always survives a decode/encode round trip, so only other names pay for the re-encode. */
+function roundTrips(path: string, rawName: Uint8Array): boolean {
+  for (const byte of rawName) {
+    if (byte >= ASCII_LIMIT) return bytesEqual(encode(path), rawName);
+  }
+  return true;
 }
 
 function readCacheTreeOid(
@@ -325,6 +338,7 @@ function readCacheTreeChildren(
   digestLength: 20 | 32,
   base: {
     readonly path: string;
+    readonly nameBytes: Uint8Array | undefined;
     readonly entryCount: number;
     readonly subtreeCount: number;
     readonly id: ObjectId | undefined;
@@ -337,16 +351,14 @@ function readCacheTreeChildren(
     children.push(child.entry);
     cursor = child.offset;
   }
-  const entry: CacheTreeEntry =
-    base.id === undefined
-      ? { path: base.path, entryCount: base.entryCount, subtreeCount: base.subtreeCount, children }
-      : {
-          path: base.path,
-          entryCount: base.entryCount,
-          subtreeCount: base.subtreeCount,
-          id: base.id,
-          children,
-        };
+  const entry: CacheTreeEntry = {
+    path: base.path,
+    ...(base.nameBytes === undefined ? {} : { nameBytes: base.nameBytes }),
+    entryCount: base.entryCount,
+    subtreeCount: base.subtreeCount,
+    ...(base.id === undefined ? {} : { id: base.id }),
+    children,
+  };
   return { entry, offset: cursor };
 }
 

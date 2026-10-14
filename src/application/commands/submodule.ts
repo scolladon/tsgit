@@ -630,7 +630,7 @@ const stageSubmodule = async (
         GITMODULES_FILE as FilePath,
       ),
     );
-    await lock.commit([...entries.values()]);
+    await lock.commit([...entries.values()], 'update');
     // Stryker disable next-line BlockStatement: equivalent — after `commit` sets `committed = true`, `release()` is a documented no-op, and stageSubmodule's try never throws in any reachable path (all fs ops succeed once the submodule is cloned+materialised), so the finally body is behaviorally inert.
   } finally {
     await lock.release();

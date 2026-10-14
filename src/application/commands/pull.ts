@@ -443,7 +443,7 @@ const fastForwardWorkTree = async (ctx: Context, target: ObjectId): Promise<void
       force: false,
       ...(matcher !== undefined ? { sparse: matcher } : {}),
     });
-    await lock.commit(result.newIndexEntries);
+    await lock.commit(result.newIndexEntries, 'replace');
   } finally {
     await lock.release();
   }

@@ -34,7 +34,17 @@ import {
 import { createCommit } from '../primitives/create-commit.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { hashBlob } from '../primitives/hash-blob.js';
-import { limiterFor } from '../primitives/internal/concurrency.js';
+import {
+  admitWrite,
+  type CleanOrder,
+  configuresFilterDriver,
+  firstFailureOrValues,
+  inIndexOrder,
+  type OrderSpan,
+  settleInCleanTurn,
+  withCleanOrder,
+} from '../primitives/internal/clean-order.js';
+import { boundedMapFor, limiterFor } from '../primitives/internal/concurrency.js';
 import { convertToGit } from '../primitives/internal/convert-blob.js';
 import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
@@ -88,6 +98,8 @@ import {
   untrackedMessage,
   wipMessage,
 } from './internal/stash-message.js';
+import { rejectUnmergedIndex } from './internal/unmerged-index.js';
+import { unstageChangesUnlessNew } from './internal/unstage-changes-unless-new.js';
 
 export type { ConflictType } from '../../domain/merge/index.js';
 
@@ -200,6 +212,7 @@ const hashFileAt = async (
   workDir: string,
   request: HashRequest,
 ): Promise<HashedFile> => {
+  await admitWrite(ctx, request.path);
   const { bytes, notice } = await cleanedContent(ctx, joinPath(workDir, request.path), request);
   const id = await hashBlob(ctx, bytes, { write: true });
   const mode = deriveWorkingMode(request.stat);
@@ -216,25 +229,92 @@ interface TrackedEntry {
   readonly state: WorkingTreeComparison;
 }
 
-/** Compare every stage-0 entry with its work-tree file, without hashing anything for the stash. */
+/** One entry against its work-tree file; a conflicted stage is not a tracked file to compare. */
+const classifyEntry = async (
+  ctx: Context,
+  entry: IndexEntry,
+  provider: AttributeProvider,
+  indexMtime: GitIndex['indexMtime'],
+): Promise<TrackedEntry | undefined> => {
+  // Stryker disable next-line ConditionalExpression: equivalent — a non-conflicted index (the only state stash push reaches) carries no stage!=0 entries, so this skip is never taken; the `if(true)` variant that drops every entry is killed by the W-tree-content tests.
+  if (entry.flags.stage !== 0) return undefined;
+  // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — a non-sparse index has no skip-worktree entries, so this verbatim-keep branch is never taken; the `if(true)` variant (keep stale id instead of re-hashing) is killed by the modified-content tests.
+  if (entry.flags.skipWorktree) return { entry, state: 'unchanged' };
+  return { entry, state: await compareWorkingTreeEntry(ctx, entry, provider, indexMtime) };
+};
+
+/**
+ * Compare every stage-0 entry with its work-tree file, without hashing anything for the stash.
+ * The comparisons fan out through the `ioBound` bucket; a clean driver, when one is configured,
+ * still hears the paths in index order.
+ */
 const classifyTracked = async (
   ctx: Context,
   index: GitIndex,
   provider: AttributeProvider,
 ): Promise<ReadonlyArray<TrackedEntry>> => {
-  const tracked: TrackedEntry[] = [];
-  for (const entry of index.entries) {
-    // Stryker disable next-line ConditionalExpression: equivalent — a non-conflicted index (the only state stash push reaches) carries no stage!=0 entries, so this skip is never taken; the `if(true)` variant that drops every entry is killed by the W-tree-content tests.
-    if (entry.flags.stage !== 0) continue;
-    // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — a non-sparse index has no skip-worktree entries, so this verbatim-keep branch is never taken; the `if(true)` variant (keep stale id instead of re-hashing) is killed by the modified-content tests.
-    if (entry.flags.skipWorktree) {
-      tracked.push({ entry, state: 'unchanged' });
-      continue;
-    }
-    const cmp = await compareWorkingTreeEntry(ctx, entry, provider);
-    tracked.push({ entry, state: cmp });
-  }
-  return tracked;
+  const classify = (order?: CleanOrder) =>
+    boundedMapFor(ctx, 'ioBound', index.entries, async (entry) => {
+      try {
+        return await classifyEntry(ctx, entry, provider, index.indexMtime);
+      } finally {
+        order?.release(entry.path);
+      }
+    });
+  const classified = (await configuresFilterDriver(ctx))
+    ? await inIndexOrder(ctx, index.entries, classify)
+    : await classify();
+  return classified.filter((tracked) => tracked !== undefined);
+};
+
+/**
+ * Runs `task` over `items` through the `ioBound` pool, a clean driver hearing the paths in
+ * input order however the reads race. Every task settles, then the earliest failure in input
+ * order is rethrown: no later path is converted or written once an earlier one refused.
+ */
+const inInputOrder = async <T, R>(
+  ctx: Context,
+  scope: ConversionScope,
+  items: ReadonlyArray<{ readonly path: FilePath; readonly item: T }>,
+  task: (item: T) => Promise<R>,
+): Promise<R[]> => {
+  // git converts and writes one path at a time, dying at the first loss, under safecrlf=true.
+  const span: OrderSpan = scope.settings.safeCrlf === true ? 'write' : 'clean';
+  const settled = await withCleanOrder(
+    ctx,
+    (order) => {
+      const limiter = limiterFor(ctx, 'ioBound');
+      for (const { path } of items) order.enlist(path);
+      return Promise.all(
+        items.map(({ path, item }) => settleInCleanTurn(limiter, order, path, () => task(item))),
+      );
+    },
+    span,
+  );
+  return firstFailureOrValues(settled);
+};
+
+interface Hashed {
+  readonly entry: IndexEntry | undefined;
+  readonly notice: EolNotice | undefined;
+}
+
+const projectEntry = async (
+  ctx: Context,
+  workDir: string,
+  scope: ConversionScope,
+  { entry, state }: TrackedEntry,
+): Promise<Hashed> => {
+  if (state === 'absent') return { entry: undefined, notice: undefined };
+  if (state === 'unchanged') return { entry, notice: undefined };
+  const stat = await ctx.fs.lstat(joinPath(workDir, entry.path));
+  const { id, mode, notice } = await hashFileAt(ctx, workDir, {
+    path: entry.path,
+    stat,
+    scope,
+    indexBlob: entry.id,
+  });
+  return { entry: stage0Entry(entry.path, id, mode), notice };
 };
 
 /** Project the classified entries onto their working-tree content (the W tree). */
@@ -244,26 +324,17 @@ const projectWorkingTree = async (
   tracked: ReadonlyArray<TrackedEntry>,
   scope: ConversionScope,
 ): Promise<WorkingTreeProjection> => {
-  const entries: IndexEntry[] = [];
-  const eolNotices: EolNotice[] = [];
-  for (const { entry, state } of tracked) {
-    if (state === 'absent') continue;
-    if (state === 'unchanged') {
-      entries.push(entry);
-      continue;
-    }
-    const stat = await ctx.fs.lstat(joinPath(workDir, entry.path));
-    const { id, mode, notice } = await hashFileAt(ctx, workDir, {
-      path: entry.path,
-      stat,
-      scope,
-      indexBlob: entry.id,
-    });
-    if (notice !== undefined) eolNotices.push(notice);
-    entries.push(stage0Entry(entry.path, id, mode));
-  }
-  return { entries, eolNotices };
+  const items = tracked.map((t) => ({ path: t.entry.path, item: t }));
+  const projected = await inInputOrder(ctx, scope, items, (t) =>
+    projectEntry(ctx, workDir, scope, t),
+  );
+  return assembled(projected);
 };
+
+const assembled = (hashed: ReadonlyArray<Hashed>): WorkingTreeProjection => ({
+  entries: hashed.flatMap(({ entry }) => (entry === undefined ? [] : [entry])),
+  eolNotices: hashed.flatMap(({ notice }) => (notice === undefined ? [] : [notice])),
+});
 
 interface UntrackedProjection {
   readonly paths: ReadonlyArray<FilePath>;
@@ -318,16 +389,12 @@ const hashUntracked = async (
   files: ReadonlyArray<UntrackedFile>,
   scope: ConversionScope,
 ): Promise<UntrackedProjection> => {
-  const paths: FilePath[] = [];
-  const entries: IndexEntry[] = [];
-  const eolNotices: EolNotice[] = [];
-  for (const { path, stat } of files) {
+  const items = files.map((file) => ({ path: file.path, item: file }));
+  const hashed = await inInputOrder(ctx, scope, items, async ({ path, stat }) => {
     const { id, mode, notice } = await hashFileAt(ctx, workDir, { path, stat, scope });
-    if (notice !== undefined) eolNotices.push(notice);
-    entries.push(stage0Entry(path, id, mode));
-    paths.push(path);
-  }
-  return { paths, entries, eolNotices };
+    return { entry: stage0Entry(path, id, mode), notice };
+  });
+  return { paths: files.map((file) => file.path), ...assembled(hashed) };
 };
 
 /**
@@ -517,7 +584,7 @@ const resetAfterPush = async (
     force: true,
     forceRewriteAll: true,
   });
-  await lock.commit(result.newIndexEntries);
+  await lock.commit(result.newIndexEntries, 'replace');
   // Stryker disable next-line ConditionalExpression: equivalent — when `includeUntracked` is falsy `untracked.paths` is always empty, so the `if(true)` variant iterates an empty list (no-op); the `if(false)` variant is killed by the `-u` removal test.
   if (opts.includeUntracked === true) {
     for (const path of untracked.paths) await removeWorkingTreeFile(ctx, path);
@@ -608,6 +675,13 @@ const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> =>
   }
 };
 
+/** git skips `--index` when the stash staged nothing, or the index already equals what was staged. */
+const hasStagedChanges = (trees: {
+  readonly bTree: ObjectId;
+  readonly cTree: ObjectId;
+  readonly iTree: ObjectId;
+}): boolean => trees.iTree !== trees.bTree && trees.iTree !== trees.cTree;
+
 /** Reinstate the staged state (`--index`) when the index-side 3-way merge is clean. */
 const reinstateIndex = async (
   ctx: Context,
@@ -615,15 +689,14 @@ const reinstateIndex = async (
   args: {
     readonly bTree: ObjectId;
     readonly cTree: ObjectId;
-    readonly indexParent: ObjectId;
+    readonly iTree: ObjectId;
     readonly currentIndex: GitIndex;
   },
 ): Promise<void> => {
-  const iTree = await commitTreeOf(ctx, args.indexParent);
   const merged = await mergeTreesToTree(ctx, {
     baseTree: args.bTree,
     oursTree: args.cTree,
-    theirsTree: iTree,
+    theirsTree: args.iTree,
     labels: STASH_LABELS,
   });
   if (merged.kind !== 'clean') return;
@@ -631,7 +704,7 @@ const reinstateIndex = async (
     targetTree: merged.mergedTree,
     currentIndex: args.currentIndex,
   });
-  await lock.commit(entries);
+  await lock.commit(entries, 'replace');
 };
 
 /** Apply `stash@{index}` (default newest) onto the working tree via a 3-way merge. */
@@ -650,13 +723,17 @@ export const stashApply = async (
  */
 export const applyAutostash = async (ctx: Context, w: ObjectId): Promise<void> => {
   const workDir = requireWorkTree(ctx, 'rebase');
-  const result = await applyStashCommit(ctx, workDir, w, {});
-  if (result.kind === 'applied') {
+  const result = await applyStashCommit(ctx, workDir, w, {}).catch((err: unknown) => {
+    if (!(err instanceof TsgitError)) throw err;
+    return err;
+  });
+  if (!(result instanceof TsgitError) && result.kind === 'applied') {
     ctx.logger?.info?.('Applied autostash.');
     return;
   }
   await pushStashRef(ctx, w, AUTOSTASH);
-  ctx.logger?.warn?.(AUTOSTASH_CONFLICT);
+  const refusal = result instanceof TsgitError ? { code: result.data.code } : undefined;
+  ctx.logger?.warn?.(AUTOSTASH_CONFLICT, refusal);
 };
 
 /** git's `apply_autostash_ref(MERGE_AUTOSTASH)`: re-apply a merge's autostash, if any. */
@@ -709,19 +786,26 @@ const applyUnderLock = async (
   { workDir, w, input, parsed, bTree, uTree }: StashApplication,
 ): Promise<StashApplyResult> => {
   const currentIndex = await readIndex(ctx);
+  rejectUnmergedIndex(currentIndex.entries);
   const cTree = await synthesizeTreeFromIndex(ctx, currentIndex.entries);
   if (uTree !== undefined) await refuseUntrackedOverwrites(ctx, workDir, uTree);
   const result = await mergeStash(ctx, { bTree, cTree, wTree: parsed.wTree, currentIndex });
   if (result.kind === 'conflict') {
-    await lock.commit(result.indexEntries);
+    await lock.commit(result.indexEntries, 'replace');
     return {
       kind: 'conflict',
       conflicts: result.conflicts.map((c) => ({ path: c.path, type: c.type })),
     };
   }
-  if (input.restoreIndex === true) {
-    const indexParent = parsed.indexParent;
-    await reinstateIndex(ctx, lock, { bTree, cTree, indexParent, currentIndex });
+  const iTree = await commitTreeOf(ctx, parsed.indexParent);
+  if (input.restoreIndex === true && hasStagedChanges({ bTree, cTree, iTree })) {
+    await reinstateIndex(ctx, lock, { bTree, cTree, iTree, currentIndex });
+  } else {
+    const { entries, restagedPaths } = unstageChangesUnlessNew(
+      result.result.newIndexEntries,
+      currentIndex.entries,
+    );
+    await lock.commit(entries, 'replace', { restagedPaths });
   }
   if (uTree !== undefined) await restoreUntracked(ctx, uTree);
   return { kind: 'applied', stash: w };

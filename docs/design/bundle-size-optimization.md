@@ -538,3 +538,16 @@ every other row is unchanged.
 
 The npm tarball cap moved 1370 → 1410 KiB (1 402 333 → 1 421 159 B); its attribution lives in
 `tooling/verify-tarball.sh`'s cap block.
+
+## Size-limit raise — status refresh write-back and index extension carry
+
+Measured with `npx size-limit --json` on a clean build after the review phase, gzip bytes, against
+`main` (unchanged since the EOL raise). Each failing row is raised to the measurement rounded up to the
+next 0.1 kB plus 2 kB of headroom for the remaining phases; every other row is unchanged. The review
+added about 0.8 kB of correctness fixes: byte-exact cache-tree names, git's `unstage_changes_unless_new`
+for a clean `stash apply`, the unmerged-index refusal, a refused autostash kept, and the lean lock create.
+
+| Row | main | measured | Δ | old limit | new limit | Attributable to |
+|---|--:|--:|--:|--:|--:|---|
+| Browser bundle (no-build) | 328 090 | 331 602 | +3 512 | 329.3 kB | 333.7 kB | the whole change below, bundled once |
+| Full library | 384 305 | 388 008 | +3 703 | 385.5 kB | 390.1 kB | the cache-tree serializer and chain invalidation, the index entry diff and the extension-carry policy (domain); the index-lock commit carrying extensions, the refresh-only commit with its trailer guard, the optional lock and its degrade report, the comparator's refresh verdict and the second-granularity racy check (primitives); `status`'s refresh write-back and `GIT_OPTIONAL_LOCKS`, `stash`'s pooled classification and hashing and its clean-apply index write, `add`'s re-staged paths and skipped no-op write, the `ENV_BAD_BOOLEAN_VALUE` refusal (commands) |

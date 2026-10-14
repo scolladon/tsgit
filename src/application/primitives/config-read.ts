@@ -111,6 +111,8 @@ export interface ParsedConfig {
      * (lenient read); `assertValidAbbrevConfig` refuses an unusable value.
      */
     readonly abbrev?: 'auto' | 'full' | number;
+    /** `core.untrackedCache` — absent for `keep`, a non-boolean or a valueless key (git's default). */
+    readonly untrackedCache?: boolean;
   };
   readonly user?: { readonly name?: string; readonly email?: string; readonly signingKey?: string };
   readonly remote?: ReadonlyMap<
@@ -1481,6 +1483,7 @@ type MutableCore = {
   packedGitLimit?: number;
   bigFileThreshold?: number;
   abbrev?: 'auto' | 'full' | number;
+  untrackedCache?: boolean;
   /** Transient: true when looseCompression was set via loosecompression key (not compression).
    *  Dropped by finalizeCore. Guards order-independent precedence: loosecompression > compression. */
   looseCompressionFromLoose?: boolean;
@@ -1670,6 +1673,14 @@ const applyCoreEol = (core: MutableCore, value: string | null): MutableCore => {
   return rest;
 };
 
+/** The last `core.untrackedCache` line wins; `keep`, a non-boolean or a valueless key restores the default. */
+const applyCoreUntrackedCache = (core: MutableCore, value: string | null): MutableCore => {
+  const parsed = value === null ? undefined : parseGitBoolean(value);
+  if (parsed?.ok) return { ...core, untrackedCache: parsed.value };
+  const { untrackedCache: _unset, ...rest } = core;
+  return rest;
+};
+
 /**
  * Apply one [core] entry to a mutable core accumulator. Returns the updated
  * accumulator, or `undefined` when the key is not recognised (so the caller
@@ -1682,6 +1693,7 @@ const applyCoreEntry = (
 ): MutableCore | undefined => {
   if (CORE_BOOLEAN_KEYS.has(lowered)) return applyCoreBooleanEntry(core, lowered, value);
   if (lowered === 'eol') return applyCoreEol(core, value);
+  if (lowered === 'untrackedcache') return applyCoreUntrackedCache(core, value);
   // String-typed and int-typed fields skip null (valueless key treated as absent).
   if (value === null) return undefined;
   if (lowered === 'excludesfile') return { ...core, excludesFile: value };
@@ -2367,6 +2379,7 @@ const finalizeCoreIdentityFields = (core: MutableCore): ParsedConfig['core'] => 
   ...(core.sparseCheckoutCone !== undefined ? { sparseCheckoutCone: core.sparseCheckoutCone } : {}),
   ...(core.ignoreCase !== undefined ? { ignoreCase: core.ignoreCase } : {}),
   ...(core.sshCommand !== undefined ? { sshCommand: core.sshCommand } : {}),
+  ...(core.untrackedCache !== undefined ? { untrackedCache: core.untrackedCache } : {}),
 });
 
 /** The `[core]` fields with a numeric size/count/limit grammar. Split out of

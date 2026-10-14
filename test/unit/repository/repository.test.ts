@@ -2093,3 +2093,44 @@ describe('openRepository — worktreeFs memoisation', () => {
     });
   });
 });
+
+describe('openRepository — status refresh option', () => {
+  describe('Given a stat-moved tracked file', () => {
+    describe('When repo.status runs with refresh false', () => {
+      it('Then the index lock is never taken', async () => {
+        // Arrange
+        const base = 1_800_000_000_000;
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          const sut = await openRepository({ cwd: '/repo' }, makeFallback());
+          vi.setSystemTime(base);
+          await sut.init();
+          await sut.ctx.fs.writeUtf8('/repo/a.txt', 'a');
+          vi.setSystemTime(base + 2000);
+          await sut.add(['a.txt']);
+          await sut.commit({
+            message: 'seed',
+            author: {
+              name: 'Ada',
+              email: 'ada@example.com',
+              timestamp: 1_700_000_000,
+              timezoneOffset: '+0000',
+            },
+          });
+          vi.setSystemTime(base + 5000);
+          await sut.ctx.fs.writeUtf8('/repo/a.txt', 'a');
+          vi.setSystemTime(base + 7000);
+          const exclusive = vi.spyOn(sut.ctx.fs, 'writeExclusive');
+
+          // Act
+          await sut.status({ refresh: false });
+
+          // Assert
+          expect(exclusive).not.toHaveBeenCalled();
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+  });
+});

@@ -96,8 +96,10 @@ With `autostash: true` (or `rebase.autostash`), a dirty tree is stashed as git's
 autostash: <abbrev>`) and the tree reset before the rebase. The stash oid is kept in
 `.git/rebase-merge/autostash` while the rebase is stopped. When the rebase finishes,
 aborts, or turns out up to date, the stash is re-applied (`Applied autostash.`); a
-conflicting re-apply leaves the conflicted tree, stores the stash in `refs/stash`
-with the reflog message `autostash` and logs git's warning.
+conflicting or refused re-apply (any `TsgitError`, such as `MERGE_HAS_CONFLICTS` or
+`STASH_APPLY_WOULD_OVERWRITE`) stores the stash in `refs/stash` with the reflog
+message `autostash` and logs git's warning, carrying the refusal's `code` when
+there was one.
 
 ## Recreating merges (`--rebase-merges`)
 

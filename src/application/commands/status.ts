@@ -1,3 +1,5 @@
+import { envBadBooleanValue } from '../../domain/commands/error.js';
+import { parseGitBoolean } from '../../domain/config/config-ini.js';
 import { primaryPath } from '../../domain/diff/change-path.js';
 import {
   type ConflictKind,
@@ -15,15 +17,20 @@ import { deriveWorkingMode, type FileMode, type RefName } from '../../domain/obj
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import {
-  compareWorkingTreeDelta,
+  compareAndRefresh,
   type WorkingTreeComparison,
   type WorkingTreeDelta,
 } from '../primitives/compare-working-tree-entry.js';
-import { readConfig } from '../primitives/config-read.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
-import { type CleanOrder, withCleanOrder } from '../primitives/internal/clean-order.js';
+import {
+  type CleanOrder,
+  configuresFilterDriver,
+  inIndexOrder,
+} from '../primitives/internal/clean-order.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
+import { acquireOptionalIndexLock, type IndexLock } from '../primitives/internal/index-lock.js';
+import { hasRacyTimestamp } from '../primitives/internal/is-entry-stat-clean.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
   type AttributeProvider,
@@ -92,6 +99,17 @@ export interface UnmergedEntry {
   readonly worktree?: WorktreeSide;
 }
 
+/** Options for {@link status}. */
+export interface StatusOptions {
+  /**
+   * Write refreshed stat data back to the index under the optional `index.lock`.
+   * Default `true`; `false` is git's `--no-optional-locks status`: no lock is taken
+   * and the index is never written. `GIT_OPTIONAL_LOCKS` in the context env disables
+   * it too; `refresh: false` takes precedence and skips reading the variable.
+   */
+  readonly refresh?: boolean;
+}
+
 export interface StatusResult {
   readonly branch: RefName | undefined;
   readonly detached: boolean;
@@ -123,12 +141,53 @@ interface GranularityTracker {
  * always pairs start with end. `total` is undefined — a design choice that avoids
  * revealing repository size to non-trusted progress sinks.
  */
-export const status = (ctx: Context): Promise<StatusResult> =>
-  withFilterProcessPool(ctx, () => statusInScope(ctx));
+export const status = (ctx: Context, opts: StatusOptions = {}): Promise<StatusResult> =>
+  withFilterProcessPool(ctx, () => statusInScope(ctx, opts));
+
+const OPTIONAL_LOCKS_ENV = 'GIT_OPTIONAL_LOCKS';
+
+/** Whether status may take the optional index lock: `refresh: false` wins without
+ *  reading the env (git's `--no-optional-locks` overwrites the variable); otherwise
+ *  `GIT_OPTIONAL_LOCKS` decides, unset meaning enabled. */
+const refreshEnabled = (ctx: Context, opts: StatusOptions): boolean => {
+  if (opts.refresh === false) return false;
+  const value = ctx.env?.get(OPTIONAL_LOCKS_ENV);
+  if (value === undefined) return true;
+  const parsed = parseGitBoolean(value);
+  if (!parsed.ok) throw envBadBooleanValue(OPTIONAL_LOCKS_ENV, value);
+  return parsed.value;
+};
 
 const HEAD_NAME = 'HEAD';
 
-const statusInScope = async (ctx: Context): Promise<StatusResult> => {
+type StatusReport = Omit<StatusResult, 'branch' | 'detached'>;
+
+/** What the report and the opportunistic refresh share, the lock held when refresh is enabled. */
+interface LockedScan {
+  readonly index: GitIndex;
+  readonly tracked: TrackedEntries;
+  readonly trackedScan: TrackedScan;
+  readonly workDir: string;
+  readonly lock: IndexLock | undefined;
+}
+
+/** Scans untracked, reports, then refreshes the index when able; the lock is released whatever happens. */
+const reportUnderLock = async (
+  ctx: Context,
+  { index, tracked, trackedScan, workDir, lock }: LockedScan,
+): Promise<StatusReport> => {
+  try {
+    const untracked = await scanUntracked(ctx, tracked.trackedPaths);
+    const scanned = { workingMap: trackedScan.workingMap, untracked };
+    const report = await reportStatus(ctx, { index, tracked, scanned, workDir });
+    if (lock) await updateIndexIfAble(lock, index, trackedScan);
+    return report;
+  } finally {
+    await lock?.release();
+  }
+};
+
+const statusInScope = async (ctx: Context, opts: StatusOptions): Promise<StatusResult> => {
   await assertOperationalRepositorySettingsFirst(ctx);
   const workDir = requireWorkTree(ctx, 'status');
   // Promisor-remote guard (see assertValidPromisorRemoteConfig) — loaded up front.
@@ -142,8 +201,9 @@ const statusInScope = async (ctx: Context): Promise<StatusResult> => {
   const tracked = trackedEntriesOf(index);
   ctx.progress.start(STATUS_SCAN_OP);
   try {
-    const scanned = await scanStatusTree(ctx, index, tracked);
-    const report = await reportStatus(ctx, { index, tracked, scanned, workDir });
+    const trackedScan = await scanTrackedTree(ctx, index, tracked);
+    const lock = refreshEnabled(ctx, opts) ? await acquireOptionalIndexLock(ctx) : undefined;
+    const report = await reportUnderLock(ctx, { index, tracked, trackedScan, workDir, lock });
     return { branch: branchRefFromHead(head), detached: head.kind === 'direct', ...report };
   } finally {
     ctx.progress.end(STATUS_SCAN_OP);
@@ -176,19 +236,40 @@ interface ScannedTree {
   readonly untracked: ReadonlyArray<FilePath>;
 }
 
+/** The tracked pass: every tracked file's delta plus the entries whose stat data drifted. */
+interface TrackedScan {
+  readonly workingMap: Map<FilePath, WorkingTreeDelta>;
+  readonly refreshed: ReadonlyArray<IndexEntry>;
+}
+
+/** Write the refreshed stat data back, only when something is worth persisting:
+ *  a drifted entry, or an entry racy against the index file's own mtime. */
+const updateIndexIfAble = async (
+  lock: IndexLock,
+  index: GitIndex,
+  { workingMap, refreshed }: TrackedScan,
+): Promise<void> => {
+  const racy = index.indexMtime !== undefined && hasRacyTimestamp(index.entries, index.indexMtime);
+  if (refreshed.length === 0 && !racy) return lock.release();
+  // A path the scan found unchanged, by stat or by content, is git's `CE_UPTODATE`.
+  await lock.commitRefresh(
+    index,
+    refreshed,
+    (path) => workingMap.get(path)?.status === 'unchanged',
+  );
+};
+
 /** Build the check-in attribute provider once per status invocation. It is always
  *  present; a path whose attributes resolve to the identity conversion costs one lookup. */
-const scanStatusTree = async (
+const scanTrackedTree = async (
   ctx: Context,
   index: GitIndex,
   tracked: TrackedEntries,
-): Promise<ScannedTree> => {
+): Promise<TrackedScan> => {
   const tracker = createGranularityTracker(ctx.progress, STATUS_SCAN_OP, STATUS_SCAN_GRANULARITY);
   const provider = await buildCheckinAttributeProvider(ctx, index);
   const { staged } = tracked.grouped;
-  const workingMap = await scanWorkingTree(ctx, staged, tracker, provider, index.indexMtime);
-  const untracked = await scanUntracked(ctx, tracked.trackedPaths);
-  return { workingMap, untracked };
+  return scanWorkingTree(ctx, staged, tracker, provider, index.indexMtime);
 };
 
 /** git's status names HEAD through `get_oid`, warning on an ambiguous HEAD and
@@ -206,7 +287,7 @@ const reportStatus = async (
     readonly scanned: ScannedTree;
     readonly workDir: string;
   },
-): Promise<Omit<StatusResult, 'branch' | 'detached'>> => {
+): Promise<StatusReport> => {
   await resolveRevisionName(ctx, HEAD_NAME);
   const headTree = await readHeadTree(ctx);
   const { unmerged: groups } = tracked.grouped;
@@ -222,11 +303,10 @@ const reportStatus = async (
  * Working-tree pass: compare every stage-0 entry to its working file. A
  * skip-worktree entry is intentionally absent from disk (sparse), so it is not
  * compared — its staged column is still surfaced via `stage0Map`. Every entry
- * ticks the progress tracker. The optional provider enables clean-filter
+ * ticks the progress tracker. The provider enables clean-filter
  * re-application so smudged-then-unmodified files report unchanged. The
  * optional `indexMtime` (the `.git/index` file's own mtime) arms the
- * stat-cache short-circuit in `compareWorkingTreeDelta` — `status` is the
- * only consumer that supplies it today. The comparisons fan out through the
+ * stat-cache short-circuit in `compareWorkingTreeDelta`. The comparisons fan out through the
  * `ioBound` bucket: each `lstat`+optional-hash is independent per path, and
  * `boundedMap`'s completion-order-independent result array is safe here
  * because every entry is keyed by its own unique path.
@@ -234,26 +314,37 @@ const reportStatus = async (
 const scanEntry = async (
   ctx: Context,
   entry: IndexEntry,
-  provider: AttributeProvider | undefined,
+  provider: AttributeProvider,
   indexMtime: GitIndex['indexMtime'],
-): Promise<readonly [FilePath, WorkingTreeDelta] | undefined> => {
-  const delta = entry.flags.skipWorktree
-    ? undefined
-    : await compareWorkingTreeDelta(ctx, entry, provider, indexMtime);
-  return delta === undefined ? undefined : [entry.path, delta];
+  filterDriversConfigured: boolean,
+): Promise<ScannedEntry | undefined> => {
+  if (entry.flags.skipWorktree) return undefined;
+  const { delta, refreshed } = await compareAndRefresh(ctx, entry, {
+    provider,
+    ...(indexMtime !== undefined && { indexMtime }),
+    filterDriversConfigured,
+  });
+  return { path: entry.path, delta, refreshed };
 };
+
+interface ScannedEntry {
+  readonly path: FilePath;
+  readonly delta: WorkingTreeDelta;
+  readonly refreshed: IndexEntry | undefined;
+}
 
 const scanWorkingTree = async (
   ctx: Context,
   stage0: ReadonlyArray<IndexEntry>,
   tracker: GranularityTracker,
-  provider: AttributeProvider | undefined,
+  provider: AttributeProvider,
   indexMtime: GitIndex['indexMtime'],
-): Promise<Map<FilePath, WorkingTreeDelta>> => {
+): Promise<TrackedScan> => {
+  const filterDriversConfigured = await configuresFilterDriver(ctx);
   const scan = (order?: CleanOrder) =>
     boundedMapFor(ctx, 'ioBound', stage0, async (entry) => {
       try {
-        const scanned = await scanEntry(ctx, entry, provider, indexMtime);
+        const scanned = await scanEntry(ctx, entry, provider, indexMtime, filterDriversConfigured);
         tracker.tick();
         return scanned;
       } finally {
@@ -261,37 +352,20 @@ const scanWorkingTree = async (
       }
     });
   // A clean driver hears the paths in index order, however the reads race;
-  // without attributes, or with no driver configured, no clean runs or
-  // refuses, and the scan needs no order.
-  const ordered = provider !== undefined && (await configuresFilterDriver(ctx));
-  const results = ordered ? await inIndexOrder(ctx, stage0, scan) : await scan();
-  return deltaMapOf(results);
+  // with no driver configured no clean runs or refuses, and the scan needs no order.
+  const results = filterDriversConfigured ? await inIndexOrder(ctx, stage0, scan) : await scan();
+  return trackedScanOf(results);
 };
 
-/** Whether any `[filter "<driver>"]` section is configured: without one, a filter attribute
- *  resolves to no driver, so no clean runs and none refuses. */
-const configuresFilterDriver = async (ctx: Context): Promise<boolean> =>
-  ((await readConfig(ctx)).filter?.size ?? 0) > 0;
-
-/** Runs `scan` with every stage-0 path enlisted, so a clean driver hears them in index order. */
-const inIndexOrder = <T>(
-  ctx: Context,
-  stage0: ReadonlyArray<IndexEntry>,
-  scan: (order: CleanOrder) => Promise<T>,
-): Promise<T> =>
-  withCleanOrder(ctx, (order) => {
-    for (const entry of stage0) order.enlist(entry.path);
-    return scan(order);
-  });
-
-const deltaMapOf = (
-  results: ReadonlyArray<readonly [FilePath, WorkingTreeDelta] | undefined>,
-): Map<FilePath, WorkingTreeDelta> => {
-  const map = new Map<FilePath, WorkingTreeDelta>();
+const trackedScanOf = (results: ReadonlyArray<ScannedEntry | undefined>): TrackedScan => {
+  const workingMap = new Map<FilePath, WorkingTreeDelta>();
+  const refreshed: IndexEntry[] = [];
   for (const result of results) {
-    if (result !== undefined) map.set(...result);
+    if (result === undefined) continue;
+    workingMap.set(result.path, result.delta);
+    if (result.refreshed !== undefined) refreshed.push(result.refreshed);
   }
-  return map;
+  return { workingMap, refreshed };
 };
 
 /**

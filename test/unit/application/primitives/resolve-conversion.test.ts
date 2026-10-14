@@ -319,6 +319,27 @@ describe('resolveConversion', () => {
       });
     });
   });
+
+  describe('Given filterDriversConfigured false and a malformed driver the path names', () => {
+    describe('When resolving with eagerSectionValidation', () => {
+      it('Then it returns the identity filter and does not refuse', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await writeConfig(ctx, '[filter "x"]\n\trequired = bogus\n');
+        const provider = providerFor('a.txt filter=x\n');
+
+        // Act
+        const sut = resolveConversion;
+        const result = await sut(ctx, provider, 'a.txt' as FilePath, SETTINGS, {
+          eagerSectionValidation: true,
+          filterDriversConfigured: false,
+        });
+
+        // Assert
+        expect(result.filter).toEqual({ kind: 'identity' });
+      });
+    });
+  });
 });
 
 const conversion = (overrides: Partial<Conversion>): Conversion => ({
