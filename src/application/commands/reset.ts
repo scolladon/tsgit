@@ -144,7 +144,7 @@ const rebuildIndexFromCommit = async (ctx: Context, commitId: ObjectId): Promise
     // --mixed always replaces the whole index with the rebuilt projection, so
     // the commit is unconditional — unlike --hard, which can skip it when the
     // materialise wrote and deleted nothing.
-    await lock.commit(newEntries);
+    await lock.commit(newEntries, 'update');
   } finally {
     await lock.release();
   }
@@ -198,7 +198,7 @@ const hardResetFromCommit = async (
     // entries differ from the pre-reset index — so a defined matcher forces
     // the commit (checkout commits unconditionally for the same reason).
     if (result.written > 0 || result.deleted > 0 || matcher !== undefined) {
-      await lock.commit(result.newIndexEntries);
+      await lock.commit(result.newIndexEntries, 'replace');
     }
   } finally {
     await lock.release();

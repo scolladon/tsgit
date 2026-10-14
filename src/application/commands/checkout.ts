@@ -262,7 +262,7 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
     // entries' ids — a skip-worktree file that differs between branches —
     // while `written`/`deleted` are both 0; guarding the commit on those
     // counts would leave a stale index that the next commit serialises wrong.
-    await lock.commit(materializeResult.newIndexEntries);
+    await lock.commit(materializeResult.newIndexEntries, 'replace');
   } finally {
     await lock.release();
   }
@@ -416,7 +416,7 @@ const materializePathRestoreLocked = async (
     // `result.written` is always `pathSet.size` (>= 1) and `result.deleted`
     // is always 0. A `written > 0 || deleted > 0` guard would therefore be
     // dead code (always true), so it is omitted.
-    await lock.commit(result.newIndexEntries);
+    await lock.commit(result.newIndexEntries, 'update');
     return result;
   } finally {
     await lock.release();

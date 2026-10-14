@@ -82,7 +82,7 @@ const seedSuper = async (
   await base.fs.writeUtf8(`${base.layout.gitDir}/refs/heads/main`, `${commit}\n`);
   await base.fs.writeUtf8(`${base.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
   const lock = await acquireIndexLock(base);
-  await lock.commit([indexEntry('README', blob)]);
+  await lock.commit([indexEntry('README', blob)], 'update');
   return { ctx: withTransport(base, remote.transport), remote };
 };
 
@@ -310,7 +310,7 @@ describe('Given a superproject and a submodule remote', () => {
       const { ctx } = await seedSuper();
       const oid = 'a'.repeat(40) as ObjectId;
       const lock = await acquireIndexLock(ctx);
-      await lock.commit([indexEntry('README', oid), indexEntry('docs.txt', oid)]);
+      await lock.commit([indexEntry('README', oid), indexEntry('docs.txt', oid)], 'update');
 
       // Act
       const error = await expectRefusal(
