@@ -1,5 +1,7 @@
+import type { IndexEntry } from '../../../domain/git-index/index.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
+import { readConfig } from '../config-read.js';
 
 /**
  * git cleans one path at a time, in index order. A command that reads the
@@ -149,3 +151,19 @@ export const releaseClean = (ctx: Context, path: FilePath): void => {
   const sequence = sequences.get(ctx);
   if (sequence?.span === 'clean') sequence.release(path);
 };
+
+/** Whether any `[filter "<driver>"]` section is configured: without one, a filter attribute
+ *  resolves to no driver, so no clean runs and none refuses. */
+export const configuresFilterDriver = async (ctx: Context): Promise<boolean> =>
+  ((await readConfig(ctx)).filter?.size ?? 0) > 0;
+
+/** Runs `scan` with every stage-0 path enlisted, so a clean driver hears them in index order. */
+export const inIndexOrder = <T>(
+  ctx: Context,
+  stage0: ReadonlyArray<IndexEntry>,
+  scan: (order: CleanOrder) => Promise<T>,
+): Promise<T> =>
+  withCleanOrder(ctx, (order) => {
+    for (const entry of stage0) order.enlist(entry.path);
+    return scan(order);
+  });

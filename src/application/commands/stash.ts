@@ -34,7 +34,14 @@ import {
 import { createCommit } from '../primitives/create-commit.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { hashBlob } from '../primitives/hash-blob.js';
-import { limiterFor } from '../primitives/internal/concurrency.js';
+import {
+  type CleanOrder,
+  configuresFilterDriver,
+  inIndexOrder,
+  type OrderSpan,
+  withCleanOrder,
+} from '../primitives/internal/clean-order.js';
+import { boundedMapFor, limiterFor } from '../primitives/internal/concurrency.js';
 import { convertToGit } from '../primitives/internal/convert-blob.js';
 import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
@@ -216,25 +223,111 @@ interface TrackedEntry {
   readonly state: WorkingTreeComparison;
 }
 
-/** Compare every stage-0 entry with its work-tree file, without hashing anything for the stash. */
+/** One entry against its work-tree file; a conflicted stage is not a tracked file to compare. */
+const classifyEntry = async (
+  ctx: Context,
+  entry: IndexEntry,
+  provider: AttributeProvider,
+  indexMtime: GitIndex['indexMtime'],
+): Promise<TrackedEntry | undefined> => {
+  // Stryker disable next-line ConditionalExpression: equivalent — a non-conflicted index (the only state stash push reaches) carries no stage!=0 entries, so this skip is never taken; the `if(true)` variant that drops every entry is killed by the W-tree-content tests.
+  if (entry.flags.stage !== 0) return undefined;
+  // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — a non-sparse index has no skip-worktree entries, so this verbatim-keep branch is never taken; the `if(true)` variant (keep stale id instead of re-hashing) is killed by the modified-content tests.
+  if (entry.flags.skipWorktree) return { entry, state: 'unchanged' };
+  return { entry, state: await compareWorkingTreeEntry(ctx, entry, provider, indexMtime) };
+};
+
+/**
+ * Compare every stage-0 entry with its work-tree file, without hashing anything for the stash.
+ * The comparisons fan out through the `ioBound` bucket; a clean driver, when one is configured,
+ * still hears the paths in index order.
+ */
 const classifyTracked = async (
   ctx: Context,
   index: GitIndex,
   provider: AttributeProvider,
 ): Promise<ReadonlyArray<TrackedEntry>> => {
-  const tracked: TrackedEntry[] = [];
-  for (const entry of index.entries) {
-    // Stryker disable next-line ConditionalExpression: equivalent — a non-conflicted index (the only state stash push reaches) carries no stage!=0 entries, so this skip is never taken; the `if(true)` variant that drops every entry is killed by the W-tree-content tests.
-    if (entry.flags.stage !== 0) continue;
-    // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — a non-sparse index has no skip-worktree entries, so this verbatim-keep branch is never taken; the `if(true)` variant (keep stale id instead of re-hashing) is killed by the modified-content tests.
-    if (entry.flags.skipWorktree) {
-      tracked.push({ entry, state: 'unchanged' });
-      continue;
-    }
-    const cmp = await compareWorkingTreeEntry(ctx, entry, provider);
-    tracked.push({ entry, state: cmp });
-  }
-  return tracked;
+  const classify = (order?: CleanOrder) =>
+    boundedMapFor(ctx, 'ioBound', index.entries, async (entry) => {
+      try {
+        return await classifyEntry(ctx, entry, provider, index.indexMtime);
+      } finally {
+        order?.release(entry.path);
+      }
+    });
+  const classified = (await configuresFilterDriver(ctx))
+    ? await inIndexOrder(ctx, index.entries, classify)
+    : await classify();
+  return classified.filter((tracked) => tracked !== undefined);
+};
+
+/** One task once settled: its value, or the failure it met. */
+type Settled<R> =
+  | { readonly kind: 'done'; readonly value: R }
+  | { readonly kind: 'failed'; readonly error: unknown };
+
+/**
+ * Runs `task` over `items` through the `ioBound` pool, a clean driver hearing the paths in
+ * input order however the reads race. Every task settles, then the earliest failure in input
+ * order is rethrown: no later path is converted or written once an earlier one refused.
+ */
+const inInputOrder = async <T, R>(
+  ctx: Context,
+  scope: ConversionScope,
+  items: ReadonlyArray<{ readonly path: FilePath; readonly item: T }>,
+  task: (item: T) => Promise<R>,
+): Promise<R[]> => {
+  // git converts and writes one path at a time, dying at the first loss, under safecrlf=true.
+  const span: OrderSpan = scope.settings.safeCrlf === true ? 'write' : 'clean';
+  const settled = await withCleanOrder(
+    ctx,
+    (order) => {
+      const limiter = limiterFor(ctx, 'ioBound');
+      for (const { path } of items) order.enlist(path);
+      return Promise.all(
+        items.map(({ path, item }) =>
+          limiter
+            .run(() => task(item))
+            .then(
+              (value): Settled<R> => ({ kind: 'done', value }),
+              (error: unknown): Settled<R> => {
+                order.halt(path, error);
+                return { kind: 'failed', error };
+              },
+            )
+            .finally(() => order.release(path)),
+        ),
+      );
+    },
+    span,
+  );
+  return settled.map((outcome) => {
+    if (outcome.kind === 'failed') throw outcome.error;
+    return outcome.value;
+  });
+};
+
+interface Hashed {
+  readonly entry: IndexEntry | undefined;
+  readonly notice: EolNotice | undefined;
+}
+
+const projectEntry = async (
+  ctx: Context,
+  workDir: string,
+  scope: ConversionScope,
+  { entry, state }: TrackedEntry,
+): Promise<Hashed> => {
+  if (state === 'absent') return { entry: undefined, notice: undefined };
+  if (state === 'unchanged') return { entry, notice: undefined };
+  const stat = await ctx.fs.lstat(joinPath(workDir, entry.path));
+  const { id, mode, notice } = await hashFileAt(ctx, workDir, {
+    path: entry.path,
+    stat,
+    scope,
+    indexBlob: entry.id,
+  });
+  return { entry: stage0Entry(entry.path, id, mode), notice };
 };
 
 /** Project the classified entries onto their working-tree content (the W tree). */
@@ -244,26 +337,17 @@ const projectWorkingTree = async (
   tracked: ReadonlyArray<TrackedEntry>,
   scope: ConversionScope,
 ): Promise<WorkingTreeProjection> => {
-  const entries: IndexEntry[] = [];
-  const eolNotices: EolNotice[] = [];
-  for (const { entry, state } of tracked) {
-    if (state === 'absent') continue;
-    if (state === 'unchanged') {
-      entries.push(entry);
-      continue;
-    }
-    const stat = await ctx.fs.lstat(joinPath(workDir, entry.path));
-    const { id, mode, notice } = await hashFileAt(ctx, workDir, {
-      path: entry.path,
-      stat,
-      scope,
-      indexBlob: entry.id,
-    });
-    if (notice !== undefined) eolNotices.push(notice);
-    entries.push(stage0Entry(entry.path, id, mode));
-  }
-  return { entries, eolNotices };
+  const items = tracked.map((t) => ({ path: t.entry.path, item: t }));
+  const projected = await inInputOrder(ctx, scope, items, (t) =>
+    projectEntry(ctx, workDir, scope, t),
+  );
+  return assembled(projected);
 };
+
+const assembled = (hashed: ReadonlyArray<Hashed>): WorkingTreeProjection => ({
+  entries: hashed.flatMap(({ entry }) => (entry === undefined ? [] : [entry])),
+  eolNotices: hashed.flatMap(({ notice }) => (notice === undefined ? [] : [notice])),
+});
 
 interface UntrackedProjection {
   readonly paths: ReadonlyArray<FilePath>;
@@ -318,16 +402,12 @@ const hashUntracked = async (
   files: ReadonlyArray<UntrackedFile>,
   scope: ConversionScope,
 ): Promise<UntrackedProjection> => {
-  const paths: FilePath[] = [];
-  const entries: IndexEntry[] = [];
-  const eolNotices: EolNotice[] = [];
-  for (const { path, stat } of files) {
+  const items = files.map((file) => ({ path: file.path, item: file }));
+  const hashed = await inInputOrder(ctx, scope, items, async ({ path, stat }) => {
     const { id, mode, notice } = await hashFileAt(ctx, workDir, { path, stat, scope });
-    if (notice !== undefined) eolNotices.push(notice);
-    entries.push(stage0Entry(path, id, mode));
-    paths.push(path);
-  }
-  return { paths, entries, eolNotices };
+    return { entry: stage0Entry(path, id, mode), notice };
+  });
+  return { paths: files.map((file) => file.path), ...assembled(hashed) };
 };
 
 /**

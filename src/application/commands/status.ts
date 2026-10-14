@@ -21,9 +21,12 @@ import {
   type WorkingTreeComparison,
   type WorkingTreeDelta,
 } from '../primitives/compare-working-tree-entry.js';
-import { readConfig } from '../primitives/config-read.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
-import { type CleanOrder, withCleanOrder } from '../primitives/internal/clean-order.js';
+import {
+  type CleanOrder,
+  configuresFilterDriver,
+  inIndexOrder,
+} from '../primitives/internal/clean-order.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
 import { acquireOptionalIndexLock, type IndexLock } from '../primitives/internal/index-lock.js';
@@ -331,22 +334,6 @@ const scanWorkingTree = async (
   const results = ordered ? await inIndexOrder(ctx, stage0, scan) : await scan();
   return trackedScanOf(results);
 };
-
-/** Whether any `[filter "<driver>"]` section is configured: without one, a filter attribute
- *  resolves to no driver, so no clean runs and none refuses. */
-const configuresFilterDriver = async (ctx: Context): Promise<boolean> =>
-  ((await readConfig(ctx)).filter?.size ?? 0) > 0;
-
-/** Runs `scan` with every stage-0 path enlisted, so a clean driver hears them in index order. */
-const inIndexOrder = <T>(
-  ctx: Context,
-  stage0: ReadonlyArray<IndexEntry>,
-  scan: (order: CleanOrder) => Promise<T>,
-): Promise<T> =>
-  withCleanOrder(ctx, (order) => {
-    for (const entry of stage0) order.enlist(entry.path);
-    return scan(order);
-  });
 
 const trackedScanOf = (results: ReadonlyArray<ScannedEntry | undefined>): TrackedScan => {
   const workingMap = new Map<FilePath, WorkingTreeDelta>();

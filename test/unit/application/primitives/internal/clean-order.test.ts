@@ -3,10 +3,14 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import {
   admitClean,
   admitWrite,
+  configuresFilterDriver,
+  inIndexOrder,
   releaseClean,
   withCleanOrder,
 } from '../../../../../src/application/primitives/internal/clean-order.js';
-import type { FilePath } from '../../../../../src/domain/objects/object-id.js';
+import { stage0Entry } from '../../../../../src/application/primitives/internal/synthetic-index-entry.js';
+import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
+import type { FilePath, ObjectId } from '../../../../../src/domain/objects/object-id.js';
 
 const A = 'a' as FilePath;
 const B = 'b' as FilePath;
@@ -516,6 +520,66 @@ describe('withCleanOrder in a write span', () => {
         // Assert
         expect(admitted).toEqual([B]);
       });
+    });
+  });
+});
+
+describe('inIndexOrder', () => {
+  describe('Given stage-0 entries', () => {
+    describe('When a later path asks to clean first', () => {
+      it('Then every entry path is enlisted in order', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const admitted: FilePath[] = [];
+        const entries = [A, B].map((path) =>
+          stage0Entry(path, 'f'.repeat(40) as ObjectId, FILE_MODE.REGULAR),
+        );
+        const sut = inIndexOrder;
+
+        // Act
+        await sut(ctx, entries, async (order) => {
+          const later = track(ctx, B, admitted);
+          await drain();
+          expect(admitted).toEqual([]);
+          order.release(A);
+          await later;
+        });
+
+        // Assert
+        expect(admitted).toEqual([B]);
+      });
+    });
+  });
+});
+
+describe('configuresFilterDriver', () => {
+  describe('Given a config with a filter section', () => {
+    it('Then it is true', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[filter "x"]\n\tclean = cat\n');
+      const sut = configuresFilterDriver;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result).toBe(true);
+    });
+  });
+
+  describe('Given a config without a filter section', () => {
+    it('Then it is false', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbare = false\n');
+      const sut = configuresFilterDriver;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result).toBe(false);
     });
   });
 });

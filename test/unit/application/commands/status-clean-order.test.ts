@@ -4,7 +4,7 @@ import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { status } from '../../../../src/application/commands/status.js';
-import { withCleanOrder } from '../../../../src/application/primitives/internal/clean-order.js';
+import { inIndexOrder } from '../../../../src/application/primitives/internal/clean-order.js';
 import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
@@ -16,7 +16,7 @@ vi.mock(
       await importOriginal<
         typeof import('../../../../src/application/primitives/internal/clean-order.js')
       >();
-    return { ...actual, withCleanOrder: vi.fn(actual.withCleanOrder) };
+    return { ...actual, inIndexOrder: vi.fn(actual.inIndexOrder) };
   },
 );
 
@@ -43,14 +43,14 @@ describe('Given a runner-wired repository that configures no filter driver', () 
     it('Then no clean order is opened, as no clean can run whose order shows', async () => {
       // Arrange
       const ctx = await seedRunnerRepository('[core]\n\tbare = false\n');
-      vi.mocked(withCleanOrder).mockClear();
+      vi.mocked(inIndexOrder).mockClear();
       const sut = status;
 
       // Act
       await sut(ctx);
 
       // Assert
-      const result = vi.mocked(withCleanOrder).mock.calls.length;
+      const result = vi.mocked(inIndexOrder).mock.calls.length;
       expect(result).toBe(0);
     });
   });
@@ -63,14 +63,14 @@ describe('Given a runner-wired repository that configures a filter driver', () =
       const ctx = await seedRunnerRepository(
         '[core]\n\tbare = false\n[filter "up"]\n\tclean = cat\n',
       );
-      vi.mocked(withCleanOrder).mockClear();
+      vi.mocked(inIndexOrder).mockClear();
       const sut = status;
 
       // Act
       await sut(ctx);
 
       // Assert
-      const result = vi.mocked(withCleanOrder).mock.calls.length;
+      const result = vi.mocked(inIndexOrder).mock.calls.length;
       expect(result).toBe(1);
     });
   });
@@ -191,14 +191,14 @@ describe('Given a filter driver configured in a repository with no command runne
       await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
       await add(ctx, ['a.txt']);
       await commit(ctx, { message: 'first', author: AUTHOR });
-      vi.mocked(withCleanOrder).mockClear();
+      vi.mocked(inIndexOrder).mockClear();
       const sut = status;
 
       // Act
       await sut(ctx);
 
       // Assert
-      const result = vi.mocked(withCleanOrder).mock.calls.length;
+      const result = vi.mocked(inIndexOrder).mock.calls.length;
       expect(result).toBe(1);
     });
   });
