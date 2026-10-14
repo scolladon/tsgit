@@ -366,6 +366,7 @@ export {
   type ChangedPath,
   type ChangeKind,
   type ConflictKind,
+  type StatusOptions,
   type StatusResult,
   status,
   type UnmergedEntry,

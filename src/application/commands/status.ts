@@ -1,3 +1,5 @@
+import { envBadBooleanValue } from '../../domain/commands/error.js';
+import { parseGitBoolean } from '../../domain/config/config-ini.js';
 import { primaryPath } from '../../domain/diff/change-path.js';
 import {
   type ConflictKind,
@@ -94,6 +96,17 @@ export interface UnmergedEntry {
   readonly worktree?: WorktreeSide;
 }
 
+/** Options for {@link status}. */
+export interface StatusOptions {
+  /**
+   * Write refreshed stat data back to the index under the optional `index.lock`.
+   * Default `true`; `false` is git's `--no-optional-locks status`: no lock is taken
+   * and the index is never written. `GIT_OPTIONAL_LOCKS` in the context env disables
+   * it too; `refresh: false` takes precedence and skips reading the variable.
+   */
+  readonly refresh?: boolean;
+}
+
 export interface StatusResult {
   readonly branch: RefName | undefined;
   readonly detached: boolean;
@@ -125,12 +138,26 @@ interface GranularityTracker {
  * always pairs start with end. `total` is undefined — a design choice that avoids
  * revealing repository size to non-trusted progress sinks.
  */
-export const status = (ctx: Context): Promise<StatusResult> =>
-  withFilterProcessPool(ctx, () => statusInScope(ctx));
+export const status = (ctx: Context, opts: StatusOptions = {}): Promise<StatusResult> =>
+  withFilterProcessPool(ctx, () => statusInScope(ctx, opts));
+
+const OPTIONAL_LOCKS_ENV = 'GIT_OPTIONAL_LOCKS';
+
+/** Whether status may take the optional index lock: `refresh: false` wins without
+ *  reading the env (git's `--no-optional-locks` overwrites the variable); otherwise
+ *  `GIT_OPTIONAL_LOCKS` decides, unset meaning enabled. */
+const refreshEnabled = (ctx: Context, opts: StatusOptions): boolean => {
+  if (opts.refresh === false) return false;
+  const value = ctx.env?.get(OPTIONAL_LOCKS_ENV);
+  if (value === undefined) return true;
+  const parsed = parseGitBoolean(value);
+  if (!parsed.ok) throw envBadBooleanValue(OPTIONAL_LOCKS_ENV, value);
+  return parsed.value;
+};
 
 const HEAD_NAME = 'HEAD';
 
-const statusInScope = async (ctx: Context): Promise<StatusResult> => {
+const statusInScope = async (ctx: Context, opts: StatusOptions): Promise<StatusResult> => {
   await assertOperationalRepositorySettingsFirst(ctx);
   const workDir = requireWorkTree(ctx, 'status');
   // Promisor-remote guard (see assertValidPromisorRemoteConfig) — loaded up front.
@@ -145,7 +172,7 @@ const statusInScope = async (ctx: Context): Promise<StatusResult> => {
   ctx.progress.start(STATUS_SCAN_OP);
   try {
     const { workingMap, refreshed } = await scanTrackedTree(ctx, index, tracked);
-    const lock = await acquireOptionalIndexLock(ctx);
+    const lock = refreshEnabled(ctx, opts) ? await acquireOptionalIndexLock(ctx) : undefined;
     try {
       const untracked = await scanUntracked(ctx, tracked.trackedPaths);
       const scanned = { workingMap, untracked };

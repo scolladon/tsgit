@@ -967,9 +967,9 @@ export const openRepository = async (
     }) as Repository['show'],
     sparseCheckout: commands.bindSparseCheckoutNamespace(ctx, guard),
     stash: commands.bindStashNamespace(ctx, guard),
-    status: (() => {
+    status: ((opts?: commands.StatusOptions) => {
       guard();
-      return commands.status(ctx);
+      return commands.status(ctx, opts);
     }) as Repository['status'],
     submodule: commands.bindSubmoduleNamespace(ctx, guard),
     tag: commands.bindTagNamespace(ctx, guard),

@@ -314,3 +314,125 @@ describe('status in a fresh repo', () => {
     });
   });
 });
+
+const withEnv = (ctx: Context, vars: Record<string, string>): Context =>
+  ({ ...ctx, env: { get: (name: string) => vars[name] } }) as Context;
+
+describe('status refresh option', () => {
+  describe('Given a stat-moved tracked file', () => {
+    describe('When status runs with refresh false', () => {
+      it('Then the index is not rewritten and writeExclusive was never called', async () => {
+        // Arrange
+        const ctx = await seedSettled();
+        await rewriteB(ctx);
+        const renames = indexRenames(ctx);
+        const exclusive = vi.spyOn(ctx.fs, 'writeExclusive');
+
+        // Act
+        const sut = await status(ctx, { refresh: false });
+
+        // Assert
+        expect(sut.clean).toBe(true);
+        expect(renames()).toBe(0);
+        expect(exclusive).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
+describe('status GIT_OPTIONAL_LOCKS', () => {
+  describe.each(['0', 'false', 'off', ''])(
+    'Given GIT_OPTIONAL_LOCKS=%j and a stat-moved file',
+    (value) => {
+      describe('When status runs', () => {
+        it('Then no lock is taken and the index is not rewritten', async () => {
+          // Arrange
+          const ctx = await seedSettled();
+          await rewriteB(ctx);
+          const renames = indexRenames(ctx);
+          const exclusive = vi.spyOn(ctx.fs, 'writeExclusive');
+
+          // Act
+          await status(withEnv(ctx, { GIT_OPTIONAL_LOCKS: value }));
+
+          // Assert
+          expect(exclusive).not.toHaveBeenCalled();
+          expect(renames()).toBe(0);
+        });
+      });
+    },
+  );
+
+  describe.each(['2', 'yes'])('Given GIT_OPTIONAL_LOCKS=%j and a stat-moved file', (value) => {
+    describe('When status runs', () => {
+      it('Then the index is rewritten once', async () => {
+        // Arrange
+        const ctx = await seedSettled();
+        await rewriteB(ctx);
+        const renames = indexRenames(ctx);
+
+        // Act
+        await status(withEnv(ctx, { GIT_OPTIONAL_LOCKS: value }));
+
+        // Assert
+        expect(renames()).toBe(1);
+      });
+    });
+  });
+
+  describe('Given GIT_OPTIONAL_LOCKS=bogus', () => {
+    describe('When status runs', () => {
+      it('Then it refuses with the variable data and leaves no lock', async () => {
+        // Arrange
+        const ctx = await seedSettled();
+        await rewriteB(ctx);
+
+        // Act
+        const refusal = await status(withEnv(ctx, { GIT_OPTIONAL_LOCKS: 'bogus' })).catch(
+          (err: TsgitError) => err.data,
+        );
+
+        // Assert
+        expect(refusal).toMatchObject({
+          code: 'ENV_BAD_BOOLEAN_VALUE',
+          variable: 'GIT_OPTIONAL_LOCKS',
+          value: 'bogus',
+        });
+        expect(await ctx.fs.exists(lockPathOf(ctx))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given GIT_OPTIONAL_LOCKS=0 and refresh true', () => {
+    describe('When status runs', () => {
+      it('Then the env still disables the write', async () => {
+        // Arrange
+        const ctx = await seedSettled();
+        await rewriteB(ctx);
+        const renames = indexRenames(ctx);
+
+        // Act
+        await status(withEnv(ctx, { GIT_OPTIONAL_LOCKS: '0' }), { refresh: true });
+
+        // Assert
+        expect(renames()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given GIT_OPTIONAL_LOCKS=bogus and refresh false', () => {
+    describe('When status runs', () => {
+      it('Then the option short-circuits before the env and no refusal occurs', async () => {
+        // Arrange
+        const ctx = await seedSettled();
+        await rewriteB(ctx);
+
+        // Act
+        const sut = await status(withEnv(ctx, { GIT_OPTIONAL_LOCKS: 'bogus' }), { refresh: false });
+
+        // Assert
+        expect(sut.clean).toBe(true);
+      });
+    });
+  });
+});
