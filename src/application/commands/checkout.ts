@@ -326,9 +326,9 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
   // Enumerate the source's flat path universe so globs (`*.ts`,
   // `src/**`) can be expanded into a concrete `pathSet` for the
   // existing materialise primitives. For `source: 'index'` this reads
-  // the index once here; the materialise call below reads it again
-  // (snapshot diff is benign — no commit happens on the lockless
-  // path). For `source: 'HEAD'` or an ObjectId, walk the tree once.
+  // the index once here, before the lock; the locked materialise below
+  // reads its own snapshot, which only decides what gets written — the
+  // pathspec expansion was done on this earlier read. For `source: 'HEAD'` or an ObjectId, walk the tree once.
   const universe: ReadonlyArray<FilePath> = await enumerateSourcePaths(ctx, source);
   const matched = universe.filter((p) => matchesPathspec(matcher, p));
   enforceLiteralMustMatch(literalMustMatch, matched, literalSpellings);

@@ -125,17 +125,12 @@ const writtenEntriesByPath = (
   return out;
 };
 
+/** Every stage of every out-of-scope path survives, so another path's conflict is kept. */
 const preserveOutOfScope = (
-  oldByPath: ReadonlyMap<FilePath, IndexEntry>,
+  currentIndex: GitIndex,
   scopedPaths: ReadonlySet<FilePath> | undefined,
-): IndexEntry[] => {
-  if (scopedPaths === undefined) return [];
-  const out: IndexEntry[] = [];
-  for (const [path, entry] of oldByPath) {
-    if (!scopedPaths.has(path)) out.push(entry);
-  }
-  return out;
-};
+): IndexEntry[] =>
+  scopedPaths === undefined ? [] : currentIndex.entries.filter((e) => !scopedPaths.has(e.path));
 
 const pickEntry = (
   path: FilePath,
@@ -152,7 +147,7 @@ const mergeNewIndexEntries = (
   const writtenByPath = writtenEntriesByPath(writtenEntries);
   const oldByPath = indexEntriesByPath(currentIndex);
 
-  const merged: IndexEntry[] = preserveOutOfScope(oldByPath, scopedPaths);
+  const merged: IndexEntry[] = preserveOutOfScope(currentIndex, scopedPaths);
   for (const entry of target) {
     const picked = pickEntry(entry.path, writtenByPath, oldByPath);
     if (picked !== undefined) merged.push(picked);
