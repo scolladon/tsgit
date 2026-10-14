@@ -29,18 +29,16 @@ const stageZero = (entries: ReadonlyArray<IndexEntry>): ReadonlyArray<IndexEntry
 
 const sameContent = (a: IndexEntry, b: IndexEntry): boolean => a.id === b.id && a.mode === b.mode;
 
-const ancestorDirs = (path: string): string[] => {
-  const dirs: string[] = [];
+function* ancestorDirs(path: string): Generator<string> {
   for (let at = path.indexOf(PATH_SEPARATOR); at !== -1; at = path.indexOf(PATH_SEPARATOR, at + 1))
-    dirs.push(path.slice(0, at));
-  return dirs;
-};
+    yield path.slice(0, at);
+}
 
 /** Paths a restored entry may not take: a kept new file, or a directory a kept new path lives in. */
 const occupiedBy = (kept: ReadonlyArray<IndexEntry>): ((path: FilePath) => boolean) => {
   const files = new Set<string>(kept.map((e) => e.path));
-  const dirs = new Set<string>(kept.flatMap((e) => ancestorDirs(e.path)));
-  return (path) => dirs.has(path) || ancestorDirs(path).some((dir) => files.has(dir));
+  const dirs = new Set<string>(kept.flatMap((e) => [...ancestorDirs(e.path)]));
+  return (path) => dirs.has(path) || [...ancestorDirs(path)].some((dir) => files.has(dir));
 };
 
 interface PathJoin {
