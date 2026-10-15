@@ -1275,10 +1275,10 @@ describe('parseIndex — path bytes', () => {
         const input = buildTestIndex([{ path: '\uFEFFa/x', sha: SHA_A }]);
 
         // Act
-        const sut = parseIndex(input, 20);
+        const result = parseIndex(input, 20);
 
         // Assert
-        expect(sut.entries[0]?.path).toBe('\uFEFFa/x');
+        expect(result.entries[0]?.path).toBe('\uFEFFa/x');
       });
 
       it('Then the entry carries no pathBytes key', () => {
@@ -1286,10 +1286,10 @@ describe('parseIndex — path bytes', () => {
         const input = buildTestIndex([{ path: '\uFEFFa/x', sha: SHA_A }]);
 
         // Act
-        const sut = parseIndex(input, 20);
+        const result = parseIndex(input, 20);
 
         // Assert
-        expect('pathBytes' in (sut.entries[0] as object)).toBe(false);
+        expect('pathBytes' in (result.entries[0] as object)).toBe(false);
       });
     });
 
@@ -1324,10 +1324,10 @@ describe('parseIndex — path bytes', () => {
         const input = buildTestIndex([{ path: 'sub/\uFEFFy', sha: SHA_A }]);
 
         // Act
-        const sut = parseIndex(input, 20);
+        const result = parseIndex(input, 20);
 
         // Assert
-        expect(sut.entries[0]?.path).toBe('sub/\uFEFFy');
+        expect(result.entries[0]?.path).toBe('sub/\uFEFFy');
       });
     });
   });
@@ -1350,11 +1350,11 @@ describe('parseIndex — path bytes', () => {
         const input = buildTestIndex([{ path: raw, sha: SHA_A }]);
 
         // Act
-        const sut = parseIndex(input, 20);
+        const result = parseIndex(input, 20);
 
         // Assert
-        expect(sut.entries[0]?.path).toBe('\uFFFD.txt');
-        expect(sut.entries[0]?.pathBytes).toEqual(raw);
+        expect(result.entries[0]?.path).toBe('\uFFFD.txt');
+        expect(result.entries[0]?.pathBytes).toEqual(raw);
       });
     });
 
@@ -1365,10 +1365,10 @@ describe('parseIndex — path bytes', () => {
         const input = buildTestIndex([{ path: raw, sha: SHA_A }]);
 
         // Act
-        const sut = parseIndex(input, 20);
+        const result = parseIndex(input, 20);
 
         // Assert
-        expect(sut.entries[0]?.pathBytes).toEqual(raw);
+        expect(result.entries[0]?.pathBytes).toEqual(raw);
       });
     });
 
@@ -1377,14 +1377,14 @@ describe('parseIndex — path bytes', () => {
         // Arrange
         const raw = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
         const input = buildTestIndex([{ path: raw, sha: SHA_A }]);
-        const sut = parseIndex(input, 20);
+        const result = parseIndex(input, 20);
         const pathStart = 12 + 62;
 
         // Act
         input.fill(0x41, pathStart, pathStart + raw.length);
 
         // Assert
-        expect(sut.entries[0]?.pathBytes).toEqual(raw);
+        expect(result.entries[0]?.pathBytes).toEqual(raw);
       });
     });
   });
@@ -1402,10 +1402,10 @@ describe('parseIndex — path bytes', () => {
         const input = buildTestIndex([{ path: Uint8Array.from(bytes), sha: SHA_A }]);
 
         // Act
-        const sut = parseIndex(input, 20);
+        const result = parseIndex(input, 20);
 
         // Assert
-        expect('pathBytes' in (sut.entries[0] as object)).toBe(false);
+        expect('pathBytes' in (result.entries[0] as object)).toBe(false);
       });
     });
   });

@@ -230,12 +230,12 @@ describe('computeChangeset', () => {
         const target = [makeTreeEntry('\uFFFD.txt', OID_B)];
 
         // Act
-        const sut = computeChangeset(index, target);
+        const result = computeChangeset(index, target);
 
         // Assert
-        expect(sut.entries).toHaveLength(2);
-        const deleted = sut.entries.find((e) => e.kind === 'delete');
-        const added = sut.entries.find((e) => e.kind === 'add');
+        expect(result.entries).toHaveLength(2);
+        const deleted = result.entries.find((e) => e.kind === 'delete');
+        const added = result.entries.find((e) => e.kind === 'add');
         expect(deleted?.pathBytes).toStrictEqual(raw);
         expect(added !== undefined && 'pathBytes' in added).toBe(false);
       });
@@ -250,12 +250,12 @@ describe('computeChangeset', () => {
         const target = [{ ...makeTreeEntry('\uFFFD.txt', OID_A), pathBytes: raw }];
 
         // Act
-        const sut = computeChangeset(makeIndex([]), target);
+        const result = computeChangeset(makeIndex([]), target);
 
         // Assert
-        expect(sut.entries).toHaveLength(1);
-        expect(sut.entries[0]?.kind).toBe('add');
-        expect(sut.entries[0]?.pathBytes).toStrictEqual(raw);
+        expect(result.entries).toHaveLength(1);
+        expect(result.entries[0]?.kind).toBe('add');
+        expect(result.entries[0]?.pathBytes).toStrictEqual(raw);
       });
     });
   });

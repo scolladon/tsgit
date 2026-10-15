@@ -212,11 +212,11 @@ describe('walkTree properties', () => {
               child = await writeTree(ctx, [treeEntry(mode, names[i]!, child)]);
             }
 
-            const sut = await collect(walkTreeWithLossyBytes(ctx, child));
+            const result = await collect(walkTreeWithLossyBytes(ctx, child));
             const oracle = await collect(walkTree(ctx, child, { pathBytes: true }));
 
-            expect(sut).toHaveLength(oracle.length);
-            sut.forEach((entry, i) => {
+            expect(result).toHaveLength(oracle.length);
+            result.forEach((entry, i) => {
               const full = oracle[i]!.pathBytes!;
               if (bytesEqual(encode(entry.path), full)) {
                 expect(Object.hasOwn(entry, 'pathBytes')).toBe(false);

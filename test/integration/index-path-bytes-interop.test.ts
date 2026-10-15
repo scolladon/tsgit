@@ -128,74 +128,84 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
 
     describe('Given git committed a BOM-prefixed directory', () => {
-      it('Then readIndex decodes the entry paths with the BOM kept', async () => {
-        // Arrange
-        buildBomState();
-        const ctx = createNodeContext({ workDir: pair.peer });
+      describe('When the index is read', () => {
+        it('Then readIndex decodes the entry paths with the BOM kept', async () => {
+          // Arrange
+          buildBomState();
+          const ctx = createNodeContext({ workDir: pair.peer });
 
-        // Act
-        const sut = await readIndex(ctx);
+          // Act
+          const result = await readIndex(ctx);
 
-        // Assert
-        expect(sut.entries.map((e) => hex(new TextEncoder().encode(e.path)))).toEqual([
-          Z_HEX,
-          BOM_DIR_HEX,
-        ]);
+          // Assert
+          expect(result.entries.map((e) => hex(new TextEncoder().encode(e.path)))).toEqual([
+            Z_HEX,
+            BOM_DIR_HEX,
+          ]);
+        });
       });
 
-      it('Then add of another file keeps the BOM entry bytes', async () => {
-        // Arrange
-        buildBomState();
-        writeFileSync(path.join(pair.peer, 'z'), 'z2\n');
+      describe('When another file is added', () => {
+        it('Then add of another file keeps the BOM entry bytes', async () => {
+          // Arrange
+          buildBomState();
+          writeFileSync(path.join(pair.peer, 'z'), 'z2\n');
 
-        // Act
-        await repo.add(['z']);
+          // Act
+          await repo.add(['z']);
 
-        // Assert
-        expect(lsFilesPathHex(pair.peer)).toEqual([Z_HEX, BOM_DIR_HEX]);
-        expect(() => git('fsck')).not.toThrow();
-        expect(git('status', '--porcelain', '-z')).toBe('M  z\0');
+          // Assert
+          expect(lsFilesPathHex(pair.peer)).toEqual([Z_HEX, BOM_DIR_HEX]);
+          expect(() => git('fsck')).not.toThrow();
+          expect(git('status', '--porcelain', '-z')).toBe('M  z\0');
+        });
       });
 
-      it('Then commit keeps the BOM tree entry bytes', async () => {
-        // Arrange
-        buildBomState();
-        writeFileSync(path.join(pair.peer, 'z'), 'z2\n');
-        await repo.add(['z']);
+      describe('When the staged change is committed', () => {
+        it('Then commit keeps the BOM tree entry bytes', async () => {
+          // Arrange
+          buildBomState();
+          writeFileSync(path.join(pair.peer, 'z'), 'z2\n');
+          await repo.add(['z']);
 
-        // Act
-        await repo.commit({ message: 'next', author: AUTHOR, committer: AUTHOR });
+          // Act
+          await repo.commit({ message: 'next', author: AUTHOR, committer: AUTHOR });
 
-        // Assert
-        expect(lsTreePathHex(pair.peer, 'HEAD')).toEqual([Z_HEX, BOM_DIR_HEX]);
-        expect(git('diff-tree', '-r', '--name-status', 'HEAD~1', 'HEAD')).toBe('M\tz\n');
+          // Assert
+          expect(lsTreePathHex(pair.peer, 'HEAD')).toEqual([Z_HEX, BOM_DIR_HEX]);
+          expect(git('diff-tree', '-r', '--name-status', 'HEAD~1', 'HEAD')).toBe('M\tz\n');
+        });
       });
 
-      it('Then status is clean for BOM names at any depth', async () => {
-        // Arrange
-        buildBomState();
-        mkdirSync(path.join(pair.peer, 'sub'));
-        writeFileSync(path.join(pair.peer, 'sub', '\uFEFFy'), 'y\n');
-        git('add', '.');
-        git('commit', '-q', '-m', 'second');
+      describe('When status runs', () => {
+        it('Then status is clean for BOM names at any depth', async () => {
+          // Arrange
+          buildBomState();
+          mkdirSync(path.join(pair.peer, 'sub'));
+          writeFileSync(path.join(pair.peer, 'sub', '\uFEFFy'), 'y\n');
+          git('add', '.');
+          git('commit', '-q', '-m', 'second');
 
-        // Act
-        const sut = await repo.status();
+          // Act
+          const sut = await repo.status();
 
-        // Assert
-        expect(sut.clean).toBe(true);
+          // Assert
+          expect(sut.clean).toBe(true);
+        });
       });
 
-      it('Then rm --cached removes the BOM entry by its BOM name', async () => {
-        // Arrange
-        buildBomState();
+      describe('When rm --cached runs', () => {
+        it('Then rm --cached removes the BOM entry by its BOM name', async () => {
+          // Arrange
+          buildBomState();
 
-        // Act
-        const sut = await repo.rm(['\uFEFFa/x'], { cached: true });
+          // Act
+          const sut = await repo.rm(['\uFEFFa/x'], { cached: true });
 
-        // Assert
-        expect(sut.removed).toEqual(['\uFEFFa/x']);
-        expect(lsFilesPathHex(pair.peer)).not.toContain(BOM_DIR_HEX);
+          // Assert
+          expect(sut.removed).toEqual(['\uFEFFa/x']);
+          expect(lsFilesPathHex(pair.peer)).not.toContain(BOM_DIR_HEX);
+        });
       });
     });
   },
@@ -236,72 +246,80 @@ describe.skipIf(!GIT_AVAILABLE)(
         git('commit', '-q', '-m', 'seed');
       };
 
-      it('Then readIndex keeps the raw bytes and the decoded view', async () => {
-        // Arrange
-        buildRawState();
-        const ctx = createNodeContext({ workDir: pair.peer });
+      describe('When the index is read', () => {
+        it('Then readIndex keeps the raw bytes and the decoded view', async () => {
+          // Arrange
+          buildRawState();
+          const ctx = createNodeContext({ workDir: pair.peer });
 
-        // Act
-        const sut = await readIndex(ctx);
+          // Act
+          const result = await readIndex(ctx);
 
-        // Assert
-        const lossy = sut.entries.find(
-          (e) => e.pathBytes !== undefined && e.path.startsWith('\uFFFD'),
-        );
-        expect(hex(lossy?.pathBytes ?? new Uint8Array())).toBe('ff2e747874');
-        expect(lossy?.path).toBe('\uFFFD.txt');
+          // Assert
+          const lossy = result.entries.find(
+            (e) => e.pathBytes !== undefined && e.path.startsWith('\uFFFD'),
+          );
+          expect(hex(lossy?.pathBytes ?? new Uint8Array())).toBe('ff2e747874');
+          expect(lossy?.path).toBe('\uFFFD.txt');
+        });
       });
 
-      it('Then add of z keeps every raw name byte-for-byte', async () => {
-        // Arrange
-        buildRawState();
-        writeFileSync(path.join(pair.peer, 'z'), 'z2\n');
+      describe('When z is added', () => {
+        it('Then add of z keeps every raw name byte-for-byte', async () => {
+          // Arrange
+          buildRawState();
+          writeFileSync(path.join(pair.peer, 'z'), 'z2\n');
 
-        // Act
-        await repo.add(['z']);
+          // Act
+          await repo.add(['z']);
 
-        // Assert
-        expect(lsFilesPathHex(pair.peer)).toEqual(['622fc3', Z_HEX, 'ff2e747874']);
-        expect(() => git('fsck')).not.toThrow();
+          // Assert
+          expect(lsFilesPathHex(pair.peer)).toEqual(['622fc3', Z_HEX, 'ff2e747874']);
+          expect(() => git('fsck')).not.toThrow();
+        });
       });
 
-      it('Then commit names the tree entries by their raw bytes', async () => {
-        // Arrange
-        buildRawState();
-        writeFileSync(path.join(pair.peer, 'z'), 'z2\n');
-        await repo.add(['z']);
+      describe('When the staged change is committed', () => {
+        it('Then commit names the tree entries by their raw bytes', async () => {
+          // Arrange
+          buildRawState();
+          writeFileSync(path.join(pair.peer, 'z'), 'z2\n');
+          await repo.add(['z']);
 
-        // Act
-        await repo.commit({ message: 'second', author: AUTHOR });
+          // Act
+          await repo.commit({ message: 'second', author: AUTHOR });
 
-        // Assert
-        expect(lsTreePathHex(pair.peer, 'HEAD')).toEqual(['622fc3', Z_HEX, 'ff2e747874']);
-        expect(git('diff-tree', '-r', '--name-status', 'HEAD~1', 'HEAD')).toBe('M\tz\n');
-        expect(() => git('fsck')).not.toThrow();
+          // Assert
+          expect(lsTreePathHex(pair.peer, 'HEAD')).toEqual(['622fc3', Z_HEX, 'ff2e747874']);
+          expect(git('diff-tree', '-r', '--name-status', 'HEAD~1', 'HEAD')).toBe('M\tz\n');
+          expect(() => git('fsck')).not.toThrow();
+        });
       });
     });
 
     describe('Given a committed tree naming a non-UTF-8 entry inside a directory', () => {
-      it('Then add elsewhere keeps the index and its tree in agreement', async () => {
-        // Arrange
-        const blob = hashBlob(pair.peer, 'raw\n');
-        mkdirSync(path.join(pair.peer, 'd'));
-        mkdirSync(path.join(pair.peer, 'e'));
-        writeFileSync(path.join(pair.peer, 'd', 'y'), 'y\n');
-        writeFileSync(path.join(pair.peer, 'e', 'f'), 'f\n');
-        git('add', '.');
-        stageRaw(pair.peer, [{ mode: REGULAR_MODE, oid: blob, path: D_SLASH_FF }]);
-        git('commit', '-q', '-m', 'seed');
-        writeFileSync(path.join(pair.peer, 'e', 'f'), 'f2\n');
+      describe('When another file is added', () => {
+        it('Then add elsewhere keeps the index and its tree in agreement', async () => {
+          // Arrange
+          const blob = hashBlob(pair.peer, 'raw\n');
+          mkdirSync(path.join(pair.peer, 'd'));
+          mkdirSync(path.join(pair.peer, 'e'));
+          writeFileSync(path.join(pair.peer, 'd', 'y'), 'y\n');
+          writeFileSync(path.join(pair.peer, 'e', 'f'), 'f\n');
+          git('add', '.');
+          stageRaw(pair.peer, [{ mode: REGULAR_MODE, oid: blob, path: D_SLASH_FF }]);
+          git('commit', '-q', '-m', 'seed');
+          writeFileSync(path.join(pair.peer, 'e', 'f'), 'f2\n');
 
-        // Act
-        await repo.add(['e/f']);
+          // Act
+          await repo.add(['e/f']);
 
-        // Assert
-        expect(lsFilesPathHex(pair.peer)).toEqual(['642f79', '642fff', '652f66']);
-        expect(() => git('fsck', '--cache')).not.toThrow();
-        const tree = git('write-tree').trim();
-        expect(lsTreePathHex(pair.peer, tree)).toEqual(lsFilesPathHex(pair.peer));
+          // Assert
+          expect(lsFilesPathHex(pair.peer)).toEqual(['642f79', '642fff', '652f66']);
+          expect(() => git('fsck', '--cache')).not.toThrow();
+          const tree = git('write-tree').trim();
+          expect(lsTreePathHex(pair.peer, tree)).toEqual(lsFilesPathHex(pair.peer));
+        });
       });
     });
   },
@@ -361,34 +379,38 @@ describe.skipIf(!GIT_AVAILABLE)(
     const EXPECTED_HEX = ['7a', 'efbbbf7a', 'efbfbd2e747874', 'ff2e747874'];
 
     describe('Given git staged z, the BOM z, the replacement-character name and the raw 0xff name', () => {
-      it('Then readIndex lists the four entries with their raw bytes', async () => {
-        // Arrange
-        const ctx = createNodeContext({ workDir: pair.peer });
+      describe('When the index is read', () => {
+        it('Then readIndex lists the four entries with their raw bytes', async () => {
+          // Arrange
+          const ctx = createNodeContext({ workDir: pair.peer });
 
-        // Act
-        const sut = await readIndex(ctx);
+          // Act
+          const result = await readIndex(ctx);
 
-        // Assert
-        const rawBytes = sut.entries.map((e) =>
-          hex(e.pathBytes ?? new TextEncoder().encode(e.path)),
-        );
-        expect(rawBytes).toEqual(EXPECTED_HEX);
+          // Assert
+          const rawBytes = result.entries.map((e) =>
+            hex(e.pathBytes ?? new TextEncoder().encode(e.path)),
+          );
+          expect(rawBytes).toEqual(EXPECTED_HEX);
+        });
       });
 
-      it('Then add of a modified z keeps the four entries and their blobs', async () => {
-        // Arrange
-        writeFileSync(path.join(pair.peer, 'z'), 'z2\n');
+      describe('When a modified z is added', () => {
+        it('Then add of a modified z keeps the four entries and their blobs', async () => {
+          // Arrange
+          writeFileSync(path.join(pair.peer, 'z'), 'z2\n');
 
-        // Act
-        await repo.add(['z']);
+          // Act
+          await repo.add(['z']);
 
-        // Assert
-        expect(lsFilesPathHex(pair.peer)).toEqual(EXPECTED_HEX);
-        const oids = oidByPathHex(pair.peer);
-        expect(oids.ff2e747874).toBe(blobX);
-        expect(oids.efbfbd2e747874).toBe(blobY);
-        expect(oids.efbbbf7a).toBe(blobY);
-        expect(() => git('fsck')).not.toThrow();
+          // Assert
+          expect(lsFilesPathHex(pair.peer)).toEqual(EXPECTED_HEX);
+          const oids = oidByPathHex(pair.peer);
+          expect(oids.ff2e747874).toBe(blobX);
+          expect(oids.efbfbd2e747874).toBe(blobY);
+          expect(oids.efbbbf7a).toBe(blobY);
+          expect(() => git('fsck')).not.toThrow();
+        });
       });
     });
   },
@@ -418,45 +440,49 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
 
     describe('Given HEAD holds a non-UTF-8 name and a BOM name and the index is empty', () => {
-      it('Then reset --mixed restores both names byte-for-byte', async () => {
-        // Arrange
-        const blob = hashBlob(pair.peer, 'raw\n');
-        stageRaw(pair.peer, [{ mode: REGULAR_MODE, oid: blob, path: FF_TXT }]);
-        writeFileSync(path.join(pair.peer, '\uFEFFb'), 'b\n');
-        git('add', '\uFEFFb');
-        git('commit', '-q', '-m', 'seed');
-        git('rm', '-r', '--cached', '-q', '.');
+      describe('When reset --mixed runs', () => {
+        it('Then reset --mixed restores both names byte-for-byte', async () => {
+          // Arrange
+          const blob = hashBlob(pair.peer, 'raw\n');
+          stageRaw(pair.peer, [{ mode: REGULAR_MODE, oid: blob, path: FF_TXT }]);
+          writeFileSync(path.join(pair.peer, '\uFEFFb'), 'b\n');
+          git('add', '\uFEFFb');
+          git('commit', '-q', '-m', 'seed');
+          git('rm', '-r', '--cached', '-q', '.');
 
-        // Act
-        await repo.reset({ mode: 'mixed', rev: 'HEAD' });
+          // Act
+          await repo.reset({ mode: 'mixed', rev: 'HEAD' });
 
-        // Assert
-        expect(lsFilesPathHex(pair.peer)).toEqual(['efbbbf62', 'ff2e747874']);
+          // Assert
+          expect(lsFilesPathHex(pair.peer)).toEqual(['efbbbf62', 'ff2e747874']);
+        });
       });
     });
 
     describe('Given a changed non-UTF-8 directory between two commits', () => {
-      it('Then reset --mixed HEAD~1 rebuilds an index whose tree equals the target tree', async () => {
-        // Arrange
-        const blobA = hashBlob(pair.peer, 'a\n');
-        const blobB = hashBlob(pair.peer, 'b\n');
-        const dirX = Uint8Array.of(0xff, 0x2f, 0x78);
-        stageRaw(pair.peer, [
-          { mode: REGULAR_MODE, oid: blobA, path: dirX },
-          { mode: REGULAR_MODE, oid: blobA, path: Uint8Array.of(0x79) },
-        ]);
-        git('commit', '-q', '-m', 'one');
-        stageRaw(pair.peer, [{ mode: REGULAR_MODE, oid: blobB, path: dirX }]);
-        git('commit', '-q', '-m', 'two');
-        const targetTree = git('rev-parse', 'HEAD~1^{tree}').trim();
+      describe('When reset --mixed HEAD~1 runs', () => {
+        it('Then reset --mixed HEAD~1 rebuilds an index whose tree equals the target tree', async () => {
+          // Arrange
+          const blobA = hashBlob(pair.peer, 'a\n');
+          const blobB = hashBlob(pair.peer, 'b\n');
+          const dirX = Uint8Array.of(0xff, 0x2f, 0x78);
+          stageRaw(pair.peer, [
+            { mode: REGULAR_MODE, oid: blobA, path: dirX },
+            { mode: REGULAR_MODE, oid: blobA, path: Uint8Array.of(0x79) },
+          ]);
+          git('commit', '-q', '-m', 'one');
+          stageRaw(pair.peer, [{ mode: REGULAR_MODE, oid: blobB, path: dirX }]);
+          git('commit', '-q', '-m', 'two');
+          const targetTree = git('rev-parse', 'HEAD~1^{tree}').trim();
 
-        // Act
-        await repo.reset({ mode: 'mixed', rev: 'HEAD~1' });
+          // Act
+          await repo.reset({ mode: 'mixed', rev: 'HEAD~1' });
 
-        // Assert
-        expect(git('write-tree').trim()).toBe(targetTree);
-        expect(lsFilesPathHex(pair.peer)).toEqual(['79', 'ff2f78']);
-        expect(oidByPathHex(pair.peer).ff2f78).toBe(blobA);
+          // Assert
+          expect(git('write-tree').trim()).toBe(targetTree);
+          expect(lsFilesPathHex(pair.peer)).toEqual(['79', 'ff2f78']);
+          expect(oidByPathHex(pair.peer).ff2f78).toBe(blobA);
+        });
       });
     });
   },

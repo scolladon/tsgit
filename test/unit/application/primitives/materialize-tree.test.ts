@@ -1091,13 +1091,16 @@ describe('materializeTree', () => {
         const treeId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'd' as FilePath, sub)]);
 
         // Act
-        const sut = await materializeTree(ctx, { targetTree: treeId, currentIndex: EMPTY_INDEX });
+        const result = await materializeTree(ctx, {
+          targetTree: treeId,
+          currentIndex: EMPTY_INDEX,
+        });
 
         // Assert
-        expect(sut.newIndexEntries).toHaveLength(2);
-        const plain = sut.newIndexEntries.find((e) => e.path === 'd/y');
+        expect(result.newIndexEntries).toHaveLength(2);
+        const plain = result.newIndexEntries.find((e) => e.path === 'd/y');
         expect(plain !== undefined && 'pathBytes' in plain).toBe(false);
-        const raw = sut.newIndexEntries.find((e) => e.pathBytes !== undefined);
+        const raw = result.newIndexEntries.find((e) => e.pathBytes !== undefined);
         expect(raw?.pathBytes).toStrictEqual(Uint8Array.of(0x64, 0x2f, 0xff));
       });
     });
@@ -1116,14 +1119,17 @@ describe('materializeTree', () => {
         ]);
 
         // Act
-        const sut = await materializeTree(ctx, { targetTree: treeId, currentIndex: EMPTY_INDEX });
+        const result = await materializeTree(ctx, {
+          targetTree: treeId,
+          currentIndex: EMPTY_INDEX,
+        });
 
         // Assert
-        expect(sut.newIndexEntries).toHaveLength(2);
-        expect(sut.newIndexEntries.filter((e) => e.pathBytes !== undefined)).toHaveLength(1);
-        expect(sut.newIndexEntries.find((e) => e.pathBytes !== undefined)?.pathBytes).toStrictEqual(
-          raw,
-        );
+        expect(result.newIndexEntries).toHaveLength(2);
+        expect(result.newIndexEntries.filter((e) => e.pathBytes !== undefined)).toHaveLength(1);
+        expect(
+          result.newIndexEntries.find((e) => e.pathBytes !== undefined)?.pathBytes,
+        ).toStrictEqual(raw);
       });
     });
   });

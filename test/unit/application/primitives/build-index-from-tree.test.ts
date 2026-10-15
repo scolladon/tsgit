@@ -815,12 +815,12 @@ describe('buildIndexFromTree', () => {
         const { ctx, treeId, lossyDonor, literalDonor } = await arrange();
         const currentIndex = { ...EMPTY_INDEX, entries: [literalDonor, lossyDonor] };
         // Act
-        const sut = await buildIndexFromTree(ctx, { targetTree: treeId, currentIndex });
+        const result = await buildIndexFromTree(ctx, { targetTree: treeId, currentIndex });
         // Assert
-        const raw = sut.find((e) => e.pathBytes !== undefined);
+        const raw = result.find((e) => e.pathBytes !== undefined);
         expect(raw?.pathBytes).toStrictEqual(RAW);
         expect(raw?.fileSize).toBe(11);
-        expect(sut.filter((e) => e.pathBytes !== undefined)).toHaveLength(1);
+        expect(result.filter((e) => e.pathBytes !== undefined)).toHaveLength(1);
       });
 
       it('Then the literal leaf keeps its own donor stat and no bytes', async () => {
@@ -828,27 +828,27 @@ describe('buildIndexFromTree', () => {
         const { ctx, treeId, lossyDonor, literalDonor } = await arrange();
         const currentIndex = { ...EMPTY_INDEX, entries: [literalDonor, lossyDonor] };
         // Act
-        const sut = await buildIndexFromTree(ctx, { targetTree: treeId, currentIndex });
+        const result = await buildIndexFromTree(ctx, { targetTree: treeId, currentIndex });
         // Assert
-        const literal = sut.find((e) => e.pathBytes === undefined);
+        const literal = result.find((e) => e.pathBytes === undefined);
         expect(literal?.fileSize).toBe(22);
-        expect(sut).toHaveLength(2);
+        expect(result).toHaveLength(2);
       });
 
       it('Then a sparse exclusion keeps the raw bytes on the skip-worktree entry', async () => {
         // Arrange
         const { ctx, treeId } = await arrange();
         // Act
-        const sut = await buildIndexFromTree(ctx, {
+        const result = await buildIndexFromTree(ctx, {
           targetTree: treeId,
           currentIndex: EMPTY_INDEX,
           sparse: () => false,
         });
         // Assert
-        expect(sut.filter((e) => e.pathBytes !== undefined).map((e) => e.pathBytes)).toStrictEqual([
-          RAW,
-        ]);
-        expect(sut.every((e) => e.flags.skipWorktree)).toBe(true);
+        expect(
+          result.filter((e) => e.pathBytes !== undefined).map((e) => e.pathBytes),
+        ).toStrictEqual([RAW]);
+        expect(result.every((e) => e.flags.skipWorktree)).toBe(true);
       });
     });
   });

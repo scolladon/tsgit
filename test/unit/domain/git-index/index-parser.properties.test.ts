@@ -89,18 +89,18 @@ describe('index raw path bytes round trip', () => {
             const first = withChecksum(serializeIndex(index, 20));
 
             // Act
-            const sut = parseIndex(first, 20);
-            const second = withChecksum(serializeIndex(sut, 20));
+            const result = parseIndex(first, 20);
+            const second = withChecksum(serializeIndex(result, 20));
 
             // Assert
             expect(second).toEqual(first);
             const source = new Map(
               index.entries.map((e) => [Buffer.from(pathBytesOf(e)).toString('hex'), e]),
             );
-            for (const entry of sut.entries) {
+            for (const entry of result.entries) {
               expect(source.has(Buffer.from(pathBytesOf(entry)).toString('hex'))).toBe(true);
             }
-            expect(sut.entries).toHaveLength(index.entries.length);
+            expect(result.entries).toHaveLength(index.entries.length);
           }),
           { numRuns: 200 },
         );

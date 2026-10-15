@@ -156,9 +156,9 @@ describe('synthesizeTreeFromIndex properties', () => {
               mode: FILE_MODE.REGULAR,
               flags: { ...e.flags, stage: 0 as const },
             }));
-            const sut = await synthesizeTreeFromIndex(ctx, regular);
+            const result = await synthesizeTreeFromIndex(ctx, regular);
             const leaves: string[] = [];
-            for await (const leaf of walkTree(ctx, sut, { recursive: true, pathBytes: true })) {
+            for await (const leaf of walkTree(ctx, result, { recursive: true, pathBytes: true })) {
               if (leaf.mode !== FILE_MODE.DIRECTORY)
                 leaves.push(bytesToHex(leaf.pathBytes as Uint8Array));
             }
