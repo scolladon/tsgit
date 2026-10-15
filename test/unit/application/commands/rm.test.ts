@@ -1121,3 +1121,58 @@ describe('rm of a directory holding a lossy entry beside a well-formed one', () 
     });
   });
 });
+
+describe('rm pathspec matching against an index holding U and its lossy twin L', () => {
+  const seedTwins = async (): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, { workingTree: { z: 'z' } });
+    const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/z`);
+    const entryOf = async (path: FilePath, text: string): Promise<IndexEntry> => ({
+      ...indexEntryFromStat(
+        stat,
+        FILE_MODE.REGULAR,
+        await writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: enc(text) }),
+        path,
+      ),
+      fileSize: 0,
+    });
+    const lossy: IndexEntry = {
+      ...(await entryOf(LOSSY_VIEW, 'x')),
+      pathBytes: LOSSY_NAME_BYTES,
+    };
+    await ctx.fs.write(
+      `${ctx.layout.gitDir}/index`,
+      await serializeIndexFixtureAsync(
+        {
+          version: 2,
+          entries: [await entryOf(LOSSY_VIEW, 'y'), lossy],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        },
+        ctx,
+      ),
+    );
+    return ctx;
+  };
+
+  describe.each([
+    ['a U+FFFD literal', '�.txt'],
+    ['a lone-surrogate literal', '\uDCFF.txt'],
+  ])('Given %s naming the UTF-8 twin', (_title, spelling) => {
+    describe('When rm --cached runs', () => {
+      it('Then only the twin leaves the index and L keeps its raw bytes', async () => {
+        // Arrange
+        const ctx = await seedTwins();
+        const sut = rm;
+
+        // Act
+        const result = await sut(ctx, [spelling], { cached: true, force: true });
+
+        // Assert
+        expect(result.removed).toEqual([LOSSY_VIEW]);
+        const index = await readIndex(ctx);
+        expect(index.entries.map((e) => e.pathBytes)).toEqual([LOSSY_NAME_BYTES]);
+      });
+    });
+  });
+});

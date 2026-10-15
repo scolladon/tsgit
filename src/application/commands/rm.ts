@@ -25,7 +25,7 @@ import type { IndexPathKey } from '../../domain/git-index/index-path-key.js';
 import { indexPathKey, isLossy } from '../../domain/git-index/index-path-key.js';
 import { emptyPathspec } from '../../domain/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
-import { matchesPathspec } from '../../domain/pathspec/index.js';
+import { matchesIndexPath } from '../../domain/pathspec/matching-path.js';
 import type { Context } from '../../ports/context.js';
 import {
   compareWorkingTreeEntry,
@@ -92,7 +92,7 @@ export const rm = async (
     const removedKeys: IndexPathKey[] = [];
     const removedEntries: IndexEntry[] = [];
     for (const [key, entry] of byPath) {
-      if (matchesPathspec(matcher, entry.path)) {
+      if (matchesIndexPath(matcher, entry)) {
         removed.push(entry.path);
         removedKeys.push(key);
         removedEntries.push(entry);

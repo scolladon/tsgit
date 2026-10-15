@@ -659,6 +659,47 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    describe('Given a lossy entry and its UTF-8 twin both tracked', () => {
+      describe('When rm --cached names the twin by its U+FFFD spelling', () => {
+        it('Then the twin leaves the index and the lossy entry stays', async () => {
+          // Arrange
+          seedLossyTwins();
+
+          // Act
+          await repo.rm(['\uFFFD.txt'], { cached: true });
+
+          // Assert
+          expect(lsFilesPathHex(pair.peer)).toEqual([D_FF_HEX, Z_HEX, L_HEX]);
+        });
+      });
+
+      describe('When rm --cached names *.txt', () => {
+        it('Then both entries leave the index', async () => {
+          // Arrange
+          seedLossyTwins();
+
+          // Act
+          await repo.rm(['*.txt'], { cached: true });
+
+          // Assert
+          expect(lsFilesPathHex(pair.peer)).toEqual([D_FF_HEX, Z_HEX]);
+        });
+      });
+
+      describe('When rm --cached --recursive names the directory d', () => {
+        it('Then the lossy d/\\xff entry leaves the index', async () => {
+          // Arrange
+          seedLossyTwins();
+
+          // Act
+          await repo.rm(['d'], { cached: true, recursive: true });
+
+          // Assert
+          expect(lsFilesPathHex(pair.peer)).toEqual([Z_HEX, U_HEX, L_HEX]);
+        });
+      });
+    });
+
     describe('Given a lossy entry whose blob equals its twin file content', () => {
       describe('When status runs', () => {
         it('Then the lossy entry keeps its zero stat', async () => {
