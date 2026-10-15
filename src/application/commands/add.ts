@@ -33,6 +33,7 @@ import {
 } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesPathspec } from '../../domain/pathspec/index.js';
+import { matchesIndexPath } from '../../domain/pathspec/matching-path.js';
 import { CHERRY_PICK, MERGE, REBASE, REVERT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
@@ -127,7 +128,9 @@ export interface AddResult {
  * Stage paths in the index. Two modes:
  *
  * - **Literal-path mode** (`paths` non-empty, `all` falsy): every path is
- *  validated, read, hashed, and staged. Missing paths reject the whole call.
+ *  validated, read, hashed, and staged. Untracked missing paths reject the whole
+ *  call; a tracked path missing from disk is staged as a deletion and lands in
+ *  `removed`, as are the tracked paths a glob or directory names.
  * - **Bulk mode** (`paths` empty, `all === true`): walk the working tree,
  *  stage every modified/new tracked file plus every untracked, non-ignored
  *  file. Files missing from disk but present in the prior index land in
@@ -455,7 +458,8 @@ const addByPathspec = async (
   { matcher, literalMustMatch, literalSpellings }: ResolvedPathspec,
   scope: ConversionScope,
 ): Promise<AddResult> => {
-  const combinedIgnore = withPathspec(await buildRepoIgnorePredicate(ctx), matcher);
+  const repoIgnore = await buildRepoIgnorePredicate(ctx);
+  const combinedIgnore = withPathspec(repoIgnore, matcher);
   const lock = await acquireIndexLock(ctx);
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
@@ -466,17 +470,46 @@ const addByPathspec = async (
     );
     // git add never refuses the whole tree, even when it holds nothing to add.
     const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
-    enforceLiteralMustMatch(mustMatch, matched, literalSpellings);
+    const removedEntries = await collectMatchedRemovals(
+      staged.existing,
+      matched,
+      repoIgnore,
+      matcher,
+    );
+    const removed = removedEntries.map(({ path }) => path);
+    enforceLiteralMustMatch(mustMatch, [...matched, ...removed], literalSpellings);
+    const remaining = new Map(newEntries);
+    for (const entry of removedEntries) remaining.delete(indexPathKey(entry));
     await commitIfChanged(
       lock,
       staged.existing.size,
-      Array.from(newEntries.values()),
+      Array.from(remaining.values()),
       restagedPaths,
     );
-    return { added: [...added].sort(), modified: [...modified].sort(), removed: [], eolNotices };
+    return {
+      added: [...added].sort(),
+      modified: [...modified].sort(),
+      removed: removed.sort(),
+      eolNotices,
+    };
   } finally {
     await lock.release();
   }
+};
+
+/** git ≥ 2.0: `add <pathspec>` stages the deletion of every tracked path it names that the walk found missing from disk. */
+const collectMatchedRemovals = (
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
+  matched: ReadonlyArray<FilePath>,
+  ignore: IgnorePredicate,
+  matcher: ResolvedPathspec['matcher'],
+): Promise<IndexEntry[]> => {
+  const named = new Map(
+    [...existing].filter(
+      ([, entry]) => entry.flags.stage === 0 && matchesIndexPath(matcher, entry),
+    ),
+  );
+  return collectRemovedEntries(named, new Set(matched.map(keyOfPath)), ignore);
 };
 
 /**
@@ -532,7 +565,7 @@ const isRecleaned = (entry: IndexEntry, matcher: ResolvedPathspec['matcher']): b
   entry.flags.stage === 0 &&
   !entry.flags.skipWorktree &&
   RECLEANED_MODES.has(entry.mode) &&
-  matchesPathspec(matcher, entry.path);
+  matchesIndexPath(matcher, entry);
 
 const RECLEANED_MODES: ReadonlySet<FileMode> = new Set([
   FILE_MODE.REGULAR,

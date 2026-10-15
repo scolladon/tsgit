@@ -3834,3 +3834,113 @@ describe('add on an index holding entries whose decoded paths collide', () => {
     });
   });
 });
+
+describe('add pathspecs match tracked entries on the escaped view', () => {
+  describe('Given a tracked UTF-8 file deleted from disk', () => {
+    describe('When add names it by literal', () => {
+      it('Then the deletion is staged and reported removed', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'f.txt': 'f', 'g.txt': 'g' });
+        await add(ctx, ['f.txt', 'g.txt']);
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/f.txt`);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['f.txt']);
+
+        // Assert
+        expect(result.removed).toEqual(['f.txt']);
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['g.txt']);
+      });
+    });
+
+    describe('When add names it by glob', () => {
+      it('Then only the matched deletion is staged', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'a.txt': 'a', 'b.md': 'b' });
+        await add(ctx, ['a.txt', 'b.md']);
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/a.txt`);
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/b.md`);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['*.txt']);
+
+        // Assert
+        expect(result.removed).toEqual(['a.txt']);
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['b.md']);
+      });
+    });
+
+    describe('When add names its directory', () => {
+      it('Then the deletion under it is staged', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'd/x': 'x', 'd/y': 'y' });
+        await add(ctx, ['d/x', 'd/y']);
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/d/x`);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['d']);
+
+        // Assert
+        expect(result.removed).toEqual(['d/x']);
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['d/y']);
+      });
+    });
+  });
+
+  describe('Given U and L tracked, U modified on disk', () => {
+    describe('When add names U by its U+FFFD literal', () => {
+      it('Then U is restaged and L keeps its bytes', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ z: 'z', [LOSSY_VIEW]: 'y2' });
+        await seedCollidingIndex(ctx);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, [LOSSY_VIEW]);
+
+        // Assert
+        expect(result.removed).toEqual([]);
+        const { entries } = await readIndex(ctx);
+        expect(await Promise.all(entries.map((e) => blobText(ctx, e)))).toEqual(['z', 'y2', 'x']);
+        expect(entries[2]?.pathBytes).toEqual(LOSSY_NAME_BYTES);
+      });
+    });
+
+    describe('When add names a glob', () => {
+      it('Then L is staged as removed and U restaged', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ z: 'z', [LOSSY_VIEW]: 'y2' });
+        await seedCollidingIndex(ctx);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['*.txt']);
+
+        // Assert
+        expect(result.removed).toEqual([LOSSY_VIEW]);
+        const { entries } = await readIndex(ctx);
+        expect(entries.map((e) => e.pathBytes)).toEqual([undefined, undefined]);
+        expect(await Promise.all(entries.map((e) => blobText(ctx, e)))).toEqual(['z', 'y2']);
+      });
+    });
+
+    describe('When add --renormalize names the U+FFFD literal', () => {
+      it('Then it resolves and the index still holds L with its bytes', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ z: 'z', [LOSSY_VIEW]: 'y' });
+        await seedCollidingIndex(ctx);
+        const sut = add;
+
+        // Act
+        await sut(ctx, [LOSSY_VIEW], { renormalize: true });
+
+        // Assert
+        const { entries } = await readIndex(ctx);
+        expect(entries.map((e) => e.pathBytes)).toEqual([undefined, undefined, LOSSY_NAME_BYTES]);
+      });
+    });
+  });
+});

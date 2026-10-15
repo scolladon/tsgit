@@ -153445,7 +153445,15 @@
 									},
 									{
 										"kind": "text",
-										"text": " falsy): every path is\n validated, read, hashed, and staged. Missing paths reject the whole call.\n- **Bulk mode** ("
+										"text": " falsy): every path is\n validated, read, hashed, and staged. Untracked missing paths reject the whole\n call; a tracked path missing from disk is staged as a deletion and lands in\n "
+									},
+									{
+										"kind": "code",
+										"text": "`removed`"
+									},
+									{
+										"kind": "text",
+										"text": ", as are the tracked paths a glob or directory names.\n- **Bulk mode** ("
 									},
 									{
 										"kind": "code",

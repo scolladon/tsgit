@@ -570,6 +570,36 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
+      describe('When add names the U+FFFD literal after U changed', () => {
+        it('Then U is restaged and the lossy entry keeps its bytes', async () => {
+          // Arrange
+          seedLossyTwins();
+          writeFileSync(path.join(pair.peer, U_FILE), 'u2\n');
+
+          // Act
+          await repo.add([U_FILE]);
+
+          // Assert
+          expect(lsFilesPathHex(pair.peer)).toEqual([D_FF_HEX, Z_HEX, U_HEX, L_HEX]);
+          expect(git('status', '--porcelain', '-z', '--', U_FILE)).toBe(`M  ${U_FILE}\0`);
+        });
+      });
+
+      describe('When add names the glob *.txt after U changed', () => {
+        it('Then the lossy match is staged as removed and U restaged', async () => {
+          // Arrange
+          seedLossyTwins();
+          writeFileSync(path.join(pair.peer, U_FILE), 'u2\n');
+
+          // Act
+          const result = await repo.add(['*.txt']);
+
+          // Assert
+          expect(result.removed).toEqual([U_FILE]);
+          expect(lsFilesPathHex(pair.peer)).toEqual([D_FF_HEX, Z_HEX, U_HEX]);
+        });
+      });
+
       describe('When add --renormalize runs', () => {
         it('Then it rejects PATHSPEC_NO_MATCH and leaves the index unchanged', async () => {
           // Arrange
