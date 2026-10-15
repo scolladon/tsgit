@@ -192,6 +192,28 @@ describe('validateIndexPath', () => {
   });
 });
 
+describe('validateIndexPath with a leading BOM', () => {
+  describe('Given a BOM-prefixed .git component', () => {
+    describe('When validated', () => {
+      it('Then it rejects as an HFS ignorable-codepoint alias', () => {
+        // Arrange
+        const path = '\uFEFF.git/x';
+
+        // Act
+        const caught = catchError(() => validateIndexPath(path, 0, FILE_MODE.REGULAR));
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: 0,
+          reason: "'.git' HFS+ ignorable-codepoint alias rejected",
+        });
+      });
+    });
+  });
+});
+
 describe('NO_PARSER_OFFSET', () => {
   describe('Given the sentinel', () => {
     describe('When inspected', () => {

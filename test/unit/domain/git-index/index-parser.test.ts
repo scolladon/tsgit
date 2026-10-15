@@ -1265,3 +1265,69 @@ describe('parseIndex — index v3 extended flags', () => {
     });
   });
 });
+
+describe('parseIndex — path bytes', () => {
+  describe('Given an entry whose path bytes start with EF BB BF', () => {
+    describe('When parsing a path with a nested directory', () => {
+      it('Then the decoded path keeps the leading BOM', () => {
+        // Arrange
+        const input = buildTestIndex([{ path: '\uFEFFa/x', sha: SHA_A }]);
+
+        // Act
+        const sut = parseIndex(input, 20);
+
+        // Assert
+        expect(sut.entries[0]?.path).toBe('\uFEFFa/x');
+      });
+
+      it('Then the entry carries no pathBytes key', () => {
+        // Arrange
+        const input = buildTestIndex([{ path: '\uFEFFa/x', sha: SHA_A }]);
+
+        // Act
+        const sut = parseIndex(input, 20);
+
+        // Assert
+        expect('pathBytes' in (sut.entries[0] as object)).toBe(false);
+      });
+    });
+
+    describe('When the path is a BOM-prefixed .git component', () => {
+      it('Then it is rejected as an HFS ignorable-codepoint alias', () => {
+        // Arrange
+        const input = buildTestIndex([{ path: '\uFEFF.git/x', sha: SHA_A }]);
+        let caught: unknown;
+
+        // Act
+        try {
+          parseIndex(input, 20);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'.git' HFS+ ignorable-codepoint alias rejected",
+        });
+      });
+    });
+  });
+
+  describe('Given an entry whose path has a BOM inside a later component', () => {
+    describe('When parsing', () => {
+      it('Then the inner BOM is kept', () => {
+        // Arrange
+        const input = buildTestIndex([{ path: 'sub/\uFEFFy', sha: SHA_A }]);
+
+        // Act
+        const sut = parseIndex(input, 20);
+
+        // Assert
+        expect(sut.entries[0]?.path).toBe('sub/\uFEFFy');
+      });
+    });
+  });
+});

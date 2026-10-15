@@ -1,4 +1,11 @@
-import { bytesEqual, bytesToHex, decode, encode, indexOf } from '../objects/encoding.js';
+import {
+  bytesEqual,
+  bytesToHex,
+  decode,
+  decodePreservingBom,
+  encode,
+  indexOf,
+} from '../objects/encoding.js';
 import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
 import { FilePath as FilePathFactory, normalizeFileMode } from '../objects/index.js';
 import { invalidIndexEntry, invalidIndexHeader } from './error.js';
@@ -114,7 +121,7 @@ export function parseIndex(bytes: Uint8Array, digestLength: 20 | 32): GitIndex {
 
     const nameLength = flagsRaw & 0xfff;
     const pathEnd = nameLength === 0xfff ? nulEnd : offset + nameLength;
-    const path = decode(bytes.subarray(offset, pathEnd));
+    const path = decodePreservingBom(bytes.subarray(offset, pathEnd));
     validateIndexPath(path, entryStart, mode);
 
     offset = nulEnd + 1;
