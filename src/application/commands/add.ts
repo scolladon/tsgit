@@ -16,7 +16,12 @@ import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import type { EolNotice } from '../../domain/eol/crlf-conversion.js';
 import { operationAborted, TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
-import type { IndexPath } from '../../domain/git-index/index-path-key.js';
+import {
+  type IndexPath,
+  type IndexPathKey,
+  indexPathKey,
+  keyOfPath,
+} from '../../domain/git-index/index-path-key.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import { emptyPathspec, pathspecNoMatch } from '../../domain/index.js';
 import {
@@ -229,7 +234,7 @@ const addLiteralOnly = async (
 interface Staging {
   readonly ctx: Context;
   readonly scope: StagingScope;
-  readonly entries: ReadonlyMap<FilePath, IndexEntry>;
+  readonly entries: ReadonlyMap<IndexPathKey, IndexEntry>;
   readonly indexMtime: IndexMtime | undefined;
   readonly ensurePromisorConfigValid: PromisorGuard;
 }
@@ -237,12 +242,12 @@ interface Staging {
 /** git stages the tracked paths first, then the untracked ones, each group in index order. */
 const trackedFirst = (
   paths: ReadonlyArray<FilePath>,
-  existing: ReadonlyMap<FilePath, IndexEntry>,
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
 ): FilePath[] => {
   const sorted = [...paths].sort(comparePaths);
   return [
-    ...sorted.filter((path) => existing.has(path)),
-    ...sorted.filter((path) => !existing.has(path)),
+    ...sorted.filter((path) => existing.has(keyOfPath(path))),
+    ...sorted.filter((path) => !existing.has(keyOfPath(path))),
   ];
 };
 
@@ -251,25 +256,25 @@ const stageLiterals = async (
   staging: Staging,
   validated: ReadonlyArray<FilePath>,
 ): Promise<{
-  readonly newEntries: ReadonlyMap<FilePath, IndexEntry>;
+  readonly newEntries: ReadonlyMap<IndexPathKey, IndexEntry>;
   readonly added: ReadonlyArray<FilePath>;
   readonly modified: ReadonlyArray<FilePath>;
   readonly eolNotices: ReadonlyArray<EolNotice>;
   readonly restagedPaths: ReadonlyArray<IndexPath>;
 }> => {
   const { ctx, scope, entries: existing, indexMtime } = staging;
-  const newEntries = new Map<FilePath, IndexEntry>(existing);
+  const newEntries = new Map<IndexPathKey, IndexEntry>(existing);
   const added: FilePath[] = [];
   const modified: FilePath[] = [];
   const eolNotices: EolNotice[] = [];
   const restagedPaths: IndexPath[] = [];
   for (const path of trackedFirst(validated, existing)) {
-    const previous = existing.get(path);
+    const previous = existing.get(keyOfPath(path));
     const guard = staging.ensurePromisorConfigValid;
     const result = await stageOne(ctx, path, scope, previous, indexMtime, guard);
     if (result === 'missing') throw pathspecNoMatch(path);
     const { entry, notice } = result;
-    newEntries.set(path, entry);
+    newEntries.set(keyOfPath(path), entry);
     if (wasRestaged(previous, entry)) restagedPaths.push(entry);
     if (notice !== undefined) eolNotices.push(notice);
     if (previous === undefined) added.push(path);
@@ -352,8 +357,8 @@ const lstatOrMissing = async (
 const stageWalkedEntries = async (
   ctx: Context,
   walk: AsyncIterable<WalkWorkingTreeEntry>,
-  existing: ReadonlyMap<FilePath, IndexEntry>,
-  seen: Set<FilePath>,
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
+  seen: Set<IndexPathKey>,
   scope: StagingScope,
   indexMtime: IndexMtime | undefined,
   ensurePromisorConfigValid: PromisorGuard,
@@ -376,14 +381,14 @@ const stageWalkedEntries = async (
  */
 async function* walkedTrackedFirst(
   walk: AsyncIterable<WalkWorkingTreeEntry>,
-  existing: ReadonlyMap<FilePath, IndexEntry>,
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
 ): AsyncGenerator<WalkWorkingTreeEntry> {
-  const walked = new Map<FilePath, WalkWorkingTreeEntry>();
-  for await (const walkEntry of walk) walked.set(walkEntry.path, walkEntry);
-  for (const path of existing.keys()) {
-    const walkEntry = walked.get(path);
+  const walked = new Map<IndexPathKey, WalkWorkingTreeEntry>();
+  for await (const walkEntry of walk) walked.set(keyOfPath(walkEntry.path), walkEntry);
+  for (const key of existing.keys()) {
+    const walkEntry = walked.get(key);
     if (walkEntry === undefined) continue;
-    walked.delete(path);
+    walked.delete(key);
     yield walkEntry;
   }
   yield* walked.values();
@@ -566,6 +571,8 @@ const renormalizeOne = async (
 ): Promise<IndexEntry> => {
   const { path } = previous;
   await ensurePromisorConfigValid();
+  // The string-pathed fs cannot name a non-UTF-8 file: the decoded view would stat a different file.
+  if (previous.pathBytes !== undefined) throw pathspecNoMatch(path);
   const fresh = await lstatOrMissing(ctx, path);
   if (fresh === undefined) throw pathspecNoMatch(path);
   if (fresh.size > MAX_WORKING_TREE_BLOB_BYTES) {
@@ -584,7 +591,7 @@ const stageIgnoredWalk = async (
   scope: ConversionScope,
   ensurePromisorConfigValid: PromisorGuard,
 ): Promise<{
-  readonly existing: ReadonlyMap<FilePath, IndexEntry>;
+  readonly existing: ReadonlyMap<IndexPathKey, IndexEntry>;
   readonly outcomes: ReadonlyArray<WalkOutcome>;
 }> => {
   const { entries: existing, indexMtime, indexRules } = await readExistingEntries(ctx);
@@ -592,7 +599,7 @@ const stageIgnoredWalk = async (
     ctx,
     walkWorkingTree(ctx, { ignore }),
     existing,
-    new Set<FilePath>(),
+    new Set<IndexPathKey>(),
     { ...scope, indexRules },
     indexMtime,
     ensurePromisorConfigValid,
@@ -624,31 +631,31 @@ const byPath = (a: WalkOutcome, b: WalkOutcome): number => comparePaths(a.path, 
 
 const restagedPathsOf = (
   outcomes: ReadonlyArray<WalkOutcome>,
-  existing: ReadonlyMap<FilePath, IndexEntry>,
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
 ): IndexPath[] =>
   outcomes
-    .filter(({ path, entry }) => wasRestaged(existing.get(path), entry))
+    .filter(({ path, entry }) => wasRestaged(existing.get(keyOfPath(path)), entry))
     .map(({ entry }) => entry);
 
 /** The index once every walked outcome is staged, and which paths were matched, added, modified. */
 const tallyWalkOutcomes = (
-  existing: ReadonlyMap<FilePath, IndexEntry>,
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
   outcomes: ReadonlyArray<WalkOutcome>,
 ): {
-  readonly newEntries: ReadonlyMap<FilePath, IndexEntry>;
+  readonly newEntries: ReadonlyMap<IndexPathKey, IndexEntry>;
   readonly matched: ReadonlyArray<FilePath>;
   readonly added: ReadonlyArray<FilePath>;
   readonly modified: ReadonlyArray<FilePath>;
   readonly eolNotices: ReadonlyArray<EolNotice>;
   readonly restagedPaths: ReadonlyArray<IndexPath>;
 } => {
-  const newEntries = new Map<FilePath, IndexEntry>(existing);
+  const newEntries = new Map<IndexPathKey, IndexEntry>(existing);
   const matched: FilePath[] = [];
   const added: FilePath[] = [];
   const modified: FilePath[] = [];
   for (const outcome of outcomes) {
     matched.push(outcome.path);
-    newEntries.set(outcome.path, outcome.entry);
+    newEntries.set(keyOfPath(outcome.path), outcome.entry);
     if (outcome.kind === 'added') added.push(outcome.path);
     else if (outcome.kind === 'modified') modified.push(outcome.path);
   }
@@ -671,8 +678,8 @@ export const addAll = async (
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
     const { entries: existing, indexMtime, indexRules } = await readExistingEntries(ctx);
-    const newEntries = new Map<FilePath, IndexEntry>(existing);
-    const seen = new Set<FilePath>();
+    const newEntries = new Map<IndexPathKey, IndexEntry>(existing);
+    const seen = new Set<IndexPathKey>();
     const added: FilePath[] = [];
     const modified: FilePath[] = [];
 
@@ -689,12 +696,13 @@ export const addAll = async (
       ensurePromisorConfigValid,
     );
     for (const outcome of outcomes) {
-      newEntries.set(outcome.path, outcome.entry);
+      newEntries.set(keyOfPath(outcome.path), outcome.entry);
       if (outcome.kind === 'added') added.push(outcome.path);
       else if (outcome.kind === 'modified') modified.push(outcome.path);
     }
-    const removed = await collectRemovedPaths(existing, seen, ignore);
-    for (const path of removed) newEntries.delete(path);
+    const removedEntries = await collectRemovedEntries(existing, seen, ignore);
+    for (const entry of removedEntries) newEntries.delete(indexPathKey(entry));
+    const removed = removedEntries.map(({ path }) => path);
     added.sort();
     modified.sort();
     // Stryker disable next-line MethodExpression: equivalent — `removed` is built by iterating `existing`, a Map populated from the always-byte-sorted index (serializeIndex sorts on every write), so it is already in ascending path order; the sort is a defensive no-op.
@@ -728,17 +736,17 @@ interface WalkOutcome {
  *   (directory-level ignore) the walker skipped. Git's invariant: ignore
  *   rules don't auto-untrack.
  */
-const collectRemovedPaths = async (
-  existing: ReadonlyMap<FilePath, IndexEntry>,
-  seen: ReadonlySet<FilePath>,
+const collectRemovedEntries = async (
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
+  seen: ReadonlySet<IndexPathKey>,
   ignore: IgnorePredicate,
-): Promise<FilePath[]> => {
-  const removed: FilePath[] = [];
-  for (const [path, entry] of existing) {
-    if (seen.has(path)) continue;
+): Promise<IndexEntry[]> => {
+  const removed: IndexEntry[] = [];
+  for (const [key, entry] of existing) {
+    if (seen.has(key)) continue;
     if (entry.flags.skipWorktree) continue;
-    if (await isPathOrAncestorIgnored(path, ignore)) continue;
-    removed.push(path);
+    if (await isPathOrAncestorIgnored(entry.path, ignore)) continue;
+    removed.push(entry);
   }
   return removed;
 };
@@ -765,8 +773,8 @@ const isPathOrAncestorIgnored = async (
 const processWalkEntry = async (
   ctx: Context,
   walkEntry: WalkWorkingTreeEntry,
-  existing: ReadonlyMap<FilePath, IndexEntry>,
-  seen: Set<FilePath>,
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
+  seen: Set<IndexPathKey>,
   scope: StagingScope,
   indexMtime: IndexMtime | undefined,
   ensurePromisorConfigValid: PromisorGuard,
@@ -776,7 +784,7 @@ const processWalkEntry = async (
   // "missing from disk → removed" pass is exact. Ignore filtering
   // already happened at walk-time in; this function only sees
   // leaves the walker chose to yield.
-  seen.add(path);
+  seen.add(keyOfPath(path));
   // The walker's kind bits come free from readdir (no `lstat`); passing them
   // straight to stageFromStat's TOCTOU check retires the walk-time `stat()`
   // this function used to pay just to re-derive the same three booleans.
@@ -787,11 +795,11 @@ const processWalkEntry = async (
     path,
     { isFile, isDirectory, isSymbolicLink },
     scope,
-    existing.get(path),
+    existing.get(keyOfPath(path)),
     indexMtime,
     ensurePromisorConfigValid,
   );
-  const previous = existing.get(path);
+  const previous = existing.get(keyOfPath(path));
   const withNotice = notice === undefined ? {} : { notice };
   if (previous === undefined) return { kind: 'added', path, entry, ...withNotice };
   if (previous.id !== entry.id || previous.mode !== entry.mode) {
@@ -801,17 +809,17 @@ const processWalkEntry = async (
 };
 
 interface ExistingIndexState {
-  readonly entries: ReadonlyMap<FilePath, IndexEntry>;
+  readonly entries: ReadonlyMap<IndexPathKey, IndexEntry>;
   readonly indexMtime: IndexMtime | undefined;
   readonly indexRules: ReadonlyMap<FilePath, IndexEntry>;
 }
 
 const readExistingEntries = async (ctx: Context): Promise<ExistingIndexState> => {
   const { entries, indexMtime } = await readIndexOrEmpty(ctx);
-  const out = new Map<FilePath, IndexEntry>();
+  const out = new Map<IndexPathKey, IndexEntry>();
   const unmerged: IndexEntry[] = [];
   for (const entry of entries) {
-    out.set(entry.path, entry);
+    out.set(indexPathKey(entry), entry);
     if (entry.flags.stage !== 0) unmerged.push(entry);
   }
   const indexRules = new Map(indexRuleEntries(unmerged).map((entry) => [entry.path, entry]));

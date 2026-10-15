@@ -306,3 +306,90 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+const REPLACEMENT_CHAR_TXT = Uint8Array.of(0xef, 0xbf, 0xbd, 0x2e, 0x74, 0x78, 0x74);
+const BOM_Z = Uint8Array.of(0xef, 0xbb, 0xbf, 0x7a);
+
+const oidByPathHex = (dir: string): Record<string, string> => {
+  const rows = new TextDecoder('latin1')
+    .decode(runGitBytes(['-C', dir, 'ls-files', '-s', '-z']))
+    .split('\0')
+    .filter((row) => row !== '');
+  return Object.fromEntries(
+    rows.map((row) => {
+      const [meta = '', name = ''] = row.split('\t');
+      const oid = meta.split(' ')[1] ?? '';
+      return [hex(Uint8Array.from(name, (c) => c.charCodeAt(0))), oid];
+    }),
+  );
+};
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'index path bytes interop — names whose decoded paths collide',
+  { timeout: 60_000 },
+  () => {
+    let pair: PeerPair;
+    let repo: Repository;
+    let blobX: string;
+    let blobY: string;
+
+    const git = (...args: ReadonlyArray<string>): string =>
+      runGit(['-C', pair.peer, ...args], { env: COMMIT_ENV });
+
+    beforeEach(async () => {
+      pair = await makePeerPair('index-path-bytes-collide');
+      runGit(['init', '-q', '-b', 'main', pair.peer]);
+      runGit(['-C', pair.peer, 'config', 'user.name', 'Ada']);
+      runGit(['-C', pair.peer, 'config', 'user.email', 'ada@example.com']);
+      repo = await openRepository({ cwd: pair.peer });
+      blobX = hashBlob(pair.peer, 'x\n');
+      blobY = hashBlob(pair.peer, 'y\n');
+      stageRaw(pair.peer, [
+        { mode: REGULAR_MODE, oid: blobX, path: FF_TXT },
+        { mode: REGULAR_MODE, oid: blobY, path: REPLACEMENT_CHAR_TXT },
+        { mode: REGULAR_MODE, oid: blobY, path: BOM_Z },
+      ]);
+      writeFileSync(path.join(pair.peer, 'z'), 'z\n');
+      git('add', 'z');
+    });
+
+    afterEach(async () => {
+      await repo.dispose();
+      await pair.dispose();
+    });
+
+    const EXPECTED_HEX = ['7a', 'efbbbf7a', 'efbfbd2e747874', 'ff2e747874'];
+
+    describe('Given git staged z, the BOM z, the replacement-character name and the raw 0xff name', () => {
+      it('Then readIndex lists the four entries with their raw bytes', async () => {
+        // Arrange
+        const ctx = createNodeContext({ workDir: pair.peer });
+
+        // Act
+        const sut = await readIndex(ctx);
+
+        // Assert
+        const rawBytes = sut.entries.map((e) =>
+          hex(e.pathBytes ?? new TextEncoder().encode(e.path)),
+        );
+        expect(rawBytes).toEqual(EXPECTED_HEX);
+      });
+
+      it('Then add of a modified z keeps the four entries and their blobs', async () => {
+        // Arrange
+        writeFileSync(path.join(pair.peer, 'z'), 'z2\n');
+
+        // Act
+        await repo.add(['z']);
+
+        // Assert
+        expect(lsFilesPathHex(pair.peer)).toEqual(EXPECTED_HEX);
+        const oids = oidByPathHex(pair.peer);
+        expect(oids.ff2e747874).toBe(blobX);
+        expect(oids.efbfbd2e747874).toBe(blobY);
+        expect(oids.efbbbf7a).toBe(blobY);
+        expect(() => git('fsck')).not.toThrow();
+      });
+    });
+  },
+);

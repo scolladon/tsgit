@@ -3738,3 +3738,99 @@ describe('add on a path recorded as a gitlink that is now a CRLF file', () => {
     });
   });
 });
+
+const LOSSY_NAME_BYTES = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+const LOSSY_VIEW = '�.txt' as FilePath;
+
+/** An index holding `z`, the literal U+FFFD name (U) and the raw `\xff.txt` name (L): U and L decode to the same string. */
+const seedCollidingIndex = async (ctx: RenormalizeCtx) => {
+  const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/z`);
+  const entryOf = async (path: FilePath, text: string): Promise<IndexEntry> => ({
+    ...indexEntryFromStat(stat, FILE_MODE.REGULAR, await putBlobText(ctx, text), path),
+    fileSize: 0,
+  });
+  const lossy: IndexEntry = {
+    ...(await entryOf(LOSSY_VIEW, 'x')),
+    pathBytes: LOSSY_NAME_BYTES,
+  };
+  const entries = [await entryOf('z' as FilePath, 'z'), await entryOf(LOSSY_VIEW, 'y'), lossy];
+  const index: GitIndex = { version: 2, entries, extensions: [], trailerSha: new Uint8Array(0) };
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, await serializeIndexFixtureAsync(index, ctx));
+};
+
+const blobText = async (ctx: RenormalizeCtx, entry: IndexEntry): Promise<string> =>
+  dec((await readBlob(ctx, entry.id)).content);
+
+describe('add on an index holding entries whose decoded paths collide', () => {
+  describe('Given U, L and a modified z in the index', () => {
+    describe('When add stages z by literal path', () => {
+      it('Then U and L keep their own blobs and L keeps its raw path bytes', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ z: 'z2' });
+        await seedCollidingIndex(ctx);
+        const sut = add;
+
+        // Act
+        await sut(ctx, ['z']);
+
+        // Assert
+        const { entries } = await readIndex(ctx);
+        expect(entries.map((e) => e.path)).toEqual(['z', LOSSY_VIEW, LOSSY_VIEW]);
+        expect(await Promise.all(entries.map((e) => blobText(ctx, e)))).toEqual(['z2', 'y', 'x']);
+        expect(entries[1]?.pathBytes).toBeUndefined();
+        expect(entries[2]?.pathBytes).toEqual(LOSSY_NAME_BYTES);
+      });
+    });
+  });
+
+  describe('Given U, L, an unchanged z and the U+FFFD file on disk', () => {
+    describe('When add stages everything', () => {
+      it('Then L is reported removed, U is kept and nothing is modified', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ z: 'z', [LOSSY_VIEW]: 'y' });
+        await seedCollidingIndex(ctx);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, [], { all: true });
+
+        // Assert
+        expect(result.removed).toEqual([LOSSY_VIEW]);
+        expect(result.modified).toEqual([]);
+        const { entries } = await readIndex(ctx);
+        expect(entries.map((e) => e.path)).toEqual(['z', LOSSY_VIEW]);
+        expect(entries[1]?.pathBytes).toBeUndefined();
+        expect(await blobText(ctx, entries[1] as IndexEntry)).toBe('y');
+      });
+    });
+  });
+
+  describe('Given L in the index and only the U+FFFD file on disk', () => {
+    describe('When add --renormalize stages everything', () => {
+      it('Then it refuses like git does for a tracked path absent from disk and leaves the index untouched', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ z: 'z', [LOSSY_VIEW]: 'y' });
+        await seedCollidingIndex(ctx);
+        const sut = add;
+        let thrown: unknown;
+
+        // Act
+        try {
+          await sut(ctx, ['.'], { renormalize: true });
+        } catch (error) {
+          thrown = error;
+        }
+
+        // Assert
+        expect(thrown).toBeInstanceOf(TsgitError);
+        expect((thrown as TsgitError).data).toEqual({
+          code: 'PATHSPEC_NO_MATCH',
+          pattern: LOSSY_VIEW,
+        });
+        const { entries } = await readIndex(ctx);
+        expect(entries.map((e) => e.pathBytes)).toEqual([undefined, undefined, LOSSY_NAME_BYTES]);
+        expect(await Promise.all(entries.map((e) => blobText(ctx, e)))).toEqual(['z', 'y', 'x']);
+      });
+    });
+  });
+});
