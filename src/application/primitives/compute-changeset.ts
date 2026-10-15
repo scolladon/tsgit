@@ -7,11 +7,14 @@
  * 13.1 design step 5).
  */
 import type { GitIndex } from '../../domain/git-index/index.js';
+import { type IndexPathKey, indexPathKey } from '../../domain/git-index/index-path-key.js';
 import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 
 export interface ChangesetEntry {
   readonly kind: 'add' | 'update' | 'delete' | 'noop';
   readonly path: FilePath;
+  /** Raw path bytes when `path` does not re-encode to them; the working-tree write still uses `path`. */
+  readonly pathBytes?: Uint8Array;
   readonly mode: FileMode;
   readonly id: ObjectId | undefined;
   readonly previousId: ObjectId | undefined;
@@ -32,39 +35,54 @@ export interface Changeset {
 
 interface TargetEntry {
   readonly path: FilePath;
+  readonly pathBytes?: Uint8Array;
   readonly id: ObjectId;
   readonly mode: FileMode;
 }
 
 interface IndexProjection {
+  readonly path: FilePath;
+  readonly pathBytes?: Uint8Array;
   readonly id: ObjectId;
   readonly mode: FileMode;
 }
 
-const projectIndex = (currentIndex: GitIndex): Map<FilePath, IndexProjection> => {
-  const indexByPath = new Map<FilePath, IndexProjection>();
+const projectIndex = (currentIndex: GitIndex): Map<IndexPathKey, IndexProjection> => {
+  const indexByKey = new Map<IndexPathKey, IndexProjection>();
   for (const entry of currentIndex.entries) {
     if (entry.flags.stage !== 0) continue;
-    indexByPath.set(entry.path, { id: entry.id, mode: entry.mode });
+    indexByKey.set(indexPathKey(entry), {
+      path: entry.path,
+      ...(entry.pathBytes === undefined ? {} : { pathBytes: entry.pathBytes }),
+      id: entry.id,
+      mode: entry.mode,
+    });
   }
-  return indexByPath;
+  return indexByKey;
 };
 
-const projectTarget = (targetTree: ReadonlyArray<TargetEntry>): Map<FilePath, TargetEntry> => {
-  const targetByPath = new Map<FilePath, TargetEntry>();
-  for (const t of targetTree) targetByPath.set(t.path, t);
-  return targetByPath;
+const projectTarget = (targetTree: ReadonlyArray<TargetEntry>): Map<IndexPathKey, TargetEntry> => {
+  const targetByKey = new Map<IndexPathKey, TargetEntry>();
+  for (const t of targetTree) targetByKey.set(indexPathKey(t), t);
+  return targetByKey;
 };
+
+const pathFields = (source: {
+  readonly path: FilePath;
+  readonly pathBytes?: Uint8Array;
+}): Pick<ChangesetEntry, 'path' | 'pathBytes'> => ({
+  path: source.path,
+  ...(source.pathBytes === undefined ? {} : { pathBytes: source.pathBytes }),
+});
 
 const classify = (
-  path: FilePath,
   indexEntry: IndexProjection | undefined,
   targetEntry: TargetEntry | undefined,
 ): ChangesetEntry => {
   if (indexEntry === undefined && targetEntry !== undefined) {
     return {
       kind: 'add',
-      path,
+      ...pathFields(targetEntry),
       mode: targetEntry.mode,
       id: targetEntry.id,
       previousId: undefined,
@@ -74,7 +92,7 @@ const classify = (
   if (indexEntry !== undefined && targetEntry === undefined) {
     return {
       kind: 'delete',
-      path,
+      ...pathFields(indexEntry),
       mode: indexEntry.mode,
       id: undefined,
       previousId: indexEntry.id,
@@ -87,7 +105,7 @@ const classify = (
   const unchanged = idx.id === tgt.id && idx.mode === tgt.mode;
   return {
     kind: unchanged ? 'noop' : 'update',
-    path,
+    ...pathFields(tgt),
     mode: tgt.mode,
     id: tgt.id,
     previousId: idx.id,
@@ -99,18 +117,18 @@ export const computeChangeset = (
   currentIndex: GitIndex,
   targetTree: ReadonlyArray<TargetEntry>,
 ): Changeset => {
-  const indexByPath = projectIndex(currentIndex);
-  const targetByPath = projectTarget(targetTree);
+  const indexByKey = projectIndex(currentIndex);
+  const targetByKey = projectTarget(targetTree);
 
-  const allPaths = new Set<FilePath>();
-  for (const p of indexByPath.keys()) allPaths.add(p);
-  for (const p of targetByPath.keys()) allPaths.add(p);
+  const allKeys = new Set<IndexPathKey>();
+  for (const k of indexByKey.keys()) allKeys.add(k);
+  for (const k of targetByKey.keys()) allKeys.add(k);
 
   const entries: ChangesetEntry[] = [];
   const stats = { add: 0, update: 0, delete: 0, noop: 0 };
 
-  for (const path of [...allPaths].sort()) {
-    const entry = classify(path, indexByPath.get(path), targetByPath.get(path));
+  for (const key of [...allKeys].sort()) {
+    const entry = classify(indexByKey.get(key), targetByKey.get(key));
     entries.push(entry);
     stats[entry.kind] += 1;
   }

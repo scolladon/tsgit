@@ -1076,4 +1076,55 @@ describe('materializeTree', () => {
       });
     });
   });
+
+  describe('Given a target tree holding d/\xff and d/y', () => {
+    describe('When materializeTree runs on an empty index', () => {
+      it('Then the raw name keeps its bytes and the plain name has none', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'x');
+        const rawName = Uint8Array.of(0xff);
+        const sub = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'y' as FilePath, blobId),
+          treeEntry(FILE_MODE.REGULAR, rawName, blobId),
+        ]);
+        const treeId = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'd' as FilePath, sub)]);
+
+        // Act
+        const sut = await materializeTree(ctx, { targetTree: treeId, currentIndex: EMPTY_INDEX });
+
+        // Assert
+        expect(sut.newIndexEntries).toHaveLength(2);
+        const plain = sut.newIndexEntries.find((e) => e.path === 'd/y');
+        expect(plain !== undefined && 'pathBytes' in plain).toBe(false);
+        const raw = sut.newIndexEntries.find((e) => e.pathBytes !== undefined);
+        expect(raw?.pathBytes).toStrictEqual(Uint8Array.of(0x64, 0x2f, 0xff));
+      });
+    });
+  });
+
+  describe('Given a target tree holding raw \xff.txt and literal U+FFFD .txt', () => {
+    describe('When materializeTree runs on an empty index', () => {
+      it('Then two index entries come back, one carrying the raw bytes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'x');
+        const raw = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, raw, blobId),
+          treeEntry(FILE_MODE.REGULAR, '\uFFFD.txt' as FilePath, blobId),
+        ]);
+
+        // Act
+        const sut = await materializeTree(ctx, { targetTree: treeId, currentIndex: EMPTY_INDEX });
+
+        // Assert
+        expect(sut.newIndexEntries).toHaveLength(2);
+        expect(sut.newIndexEntries.filter((e) => e.pathBytes !== undefined)).toHaveLength(1);
+        expect(sut.newIndexEntries.find((e) => e.pathBytes !== undefined)?.pathBytes).toStrictEqual(
+          raw,
+        );
+      });
+    });
+  });
 });

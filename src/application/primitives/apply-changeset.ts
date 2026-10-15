@@ -271,6 +271,7 @@ const buildIndexEntry = async (
   relPath: FilePath,
   id: string,
   mode: FileMode,
+  pathBytes: Uint8Array | undefined,
 ): Promise<IndexEntry> => {
   const stat = await ctx.fs.lstat(absPath);
   return {
@@ -287,6 +288,7 @@ const buildIndexEntry = async (
     id: id as IndexEntry['id'],
     flags: STAGE0_FLAGS,
     path: relPath,
+    ...(pathBytes === undefined ? {} : { pathBytes }),
   };
 };
 
@@ -312,7 +314,7 @@ const applyWriteEntry = async (
   if (entry.id === undefined) return undefined;
   const absPath = joinPath(workdir, entry.path);
   await writer.writeBlob(entry.path, entry.id as IndexEntry['id'], entry.mode, scanner);
-  return buildIndexEntry(ctx, absPath, entry.path, entry.id, entry.mode);
+  return buildIndexEntry(ctx, absPath, entry.path, entry.id, entry.mode, entry.pathBytes);
 };
 
 interface EntryWaves {
