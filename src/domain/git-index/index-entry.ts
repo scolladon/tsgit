@@ -31,6 +31,14 @@ export interface IndexEntry {
   readonly id: ObjectId;
   readonly flags: IndexEntryFlags;
   readonly path: FilePath;
+  /**
+   * Raw path bytes, present only when `path` does not re-encode to them (a
+   * non-UTF-8 name). Writers emit them verbatim. A fresh copy, never a view
+   * on the index buffer; read-only by contract, as parsed entries are shared
+   * through the index cache. Anything that changes `path` must drop or
+   * recompute it.
+   */
+  readonly pathBytes?: Uint8Array;
 }
 
 export interface IndexExtension {

@@ -7,7 +7,7 @@ const CHECKSUM_SIZE = 20;
 
 function buildTestIndex(
   entries: ReadonlyArray<{
-    readonly path: string;
+    readonly path: string | Uint8Array;
     readonly sha: string;
     readonly mode?: number;
     readonly stage?: number;
@@ -22,7 +22,8 @@ function buildTestIndex(
   const entryBuffers: Uint8Array[] = [];
 
   for (const entry of entries) {
-    const pathBytes = new TextEncoder().encode(entry.path);
+    const pathBytes =
+      typeof entry.path === 'string' ? new TextEncoder().encode(entry.path) : entry.path;
     const entryLength = 62 + pathBytes.length;
     const paddedLength = (entryLength + 8) & ~7;
     const buf = new Uint8Array(paddedLength);
@@ -1327,6 +1328,84 @@ describe('parseIndex — path bytes', () => {
 
         // Assert
         expect(sut.entries[0]?.path).toBe('sub/\uFEFFy');
+      });
+    });
+  });
+
+  describe('Given an entry whose raw path is not valid UTF-8', () => {
+    const TXT = [0x2e, 0x74, 0x78, 0x74];
+    const invalidClasses: ReadonlyArray<readonly [string, number[]]> = [
+      ['0xff', [0xff]],
+      ['a lone continuation byte', [0x80]],
+      ['a truncated sequence', [0xc3]],
+      ['an overlong sequence', [0xc0, 0xaf]],
+      ['an encoded surrogate', [0xed, 0xa0, 0x80]],
+      ['a byte above the unicode range', [0xf5]],
+    ];
+
+    describe('When parsing the 0xff path', () => {
+      it('Then the path is the decoded view and the raw bytes are carried', () => {
+        // Arrange
+        const raw = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+        const input = buildTestIndex([{ path: raw, sha: SHA_A }]);
+
+        // Act
+        const sut = parseIndex(input, 20);
+
+        // Assert
+        expect(sut.entries[0]?.path).toBe('\uFFFD.txt');
+        expect(sut.entries[0]?.pathBytes).toEqual(raw);
+      });
+    });
+
+    describe.each(invalidClasses)('When parsing a path starting with %s', (_label, head) => {
+      it('Then the raw bytes are carried verbatim', () => {
+        // Arrange
+        const raw = Uint8Array.from([...head, ...TXT]);
+        const input = buildTestIndex([{ path: raw, sha: SHA_A }]);
+
+        // Act
+        const sut = parseIndex(input, 20);
+
+        // Assert
+        expect(sut.entries[0]?.pathBytes).toEqual(raw);
+      });
+    });
+
+    describe('When the source buffer is overwritten after parsing', () => {
+      it('Then the carried bytes are unchanged', () => {
+        // Arrange
+        const raw = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+        const input = buildTestIndex([{ path: raw, sha: SHA_A }]);
+        const sut = parseIndex(input, 20);
+        const pathStart = 12 + 62;
+
+        // Act
+        input.fill(0x41, pathStart, pathStart + raw.length);
+
+        // Assert
+        expect(sut.entries[0]?.pathBytes).toEqual(raw);
+      });
+    });
+  });
+
+  describe('Given an entry whose raw path round-trips through UTF-8', () => {
+    const roundTripping: ReadonlyArray<readonly [string, number[]]> = [
+      ['a valid two-byte sequence', [0xc3, 0xa9, 0x2e, 0x74, 0x78, 0x74]],
+      ['a literal replacement character', [0xef, 0xbf, 0xbd, 0x2e, 0x74, 0x78, 0x74]],
+      ['a leading byte-order mark', [0xef, 0xbb, 0xbf, 0x61]],
+    ];
+
+    describe.each(roundTripping)('When parsing %s', (_label, bytes) => {
+      it('Then the entry carries no pathBytes key', () => {
+        // Arrange
+        const input = buildTestIndex([{ path: Uint8Array.from(bytes), sha: SHA_A }]);
+
+        // Act
+        const sut = parseIndex(input, 20);
+
+        // Assert
+        expect('pathBytes' in (sut.entries[0] as object)).toBe(false);
       });
     });
   });

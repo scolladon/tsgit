@@ -92,6 +92,14 @@ export function decodePreservingBom(bytes: Uint8Array): string {
   return bomPreservingDecoder.decode(bytes);
 }
 
+// `text` must come from `decodePreservingBom(raw)`: that decoder emits U+FFFD
+// only for an invalid sequence or a literal EF BF BD, and a valid decode
+// re-encodes to the same bytes, so a view without U+FFFD is lossless without
+// paying for an encode.
+export function decodesLosslessly(text: string, raw: Uint8Array): boolean {
+  return !text.includes('\uFFFD') || bytesEqual(encode(text), raw);
+}
+
 export function splitHeaderAndMessage(text: string): {
   readonly headerPart: string;
   readonly message: string;

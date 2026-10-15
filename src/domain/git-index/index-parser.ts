@@ -3,6 +3,7 @@ import {
   bytesToHex,
   decode,
   decodePreservingBom,
+  decodesLosslessly,
   encode,
   indexOf,
 } from '../objects/encoding.js';
@@ -121,7 +122,9 @@ export function parseIndex(bytes: Uint8Array, digestLength: 20 | 32): GitIndex {
 
     const nameLength = flagsRaw & 0xfff;
     const pathEnd = nameLength === 0xfff ? nulEnd : offset + nameLength;
-    const path = decodePreservingBom(bytes.subarray(offset, pathEnd));
+    const rawPath = bytes.subarray(offset, pathEnd);
+    const path = decodePreservingBom(rawPath);
+    const pathBytes = lossyPathBytes(path, rawPath);
     validateIndexPath(path, entryStart, mode);
 
     offset = nulEnd + 1;
@@ -130,7 +133,7 @@ export function parseIndex(bytes: Uint8Array, digestLength: 20 | 32): GitIndex {
     const paddedLength = (entryLength + 7) & ~7;
     offset = entryStart + paddedLength;
 
-    entries.push({
+    const entry: IndexEntry = {
       ctimeSeconds,
       ctimeNanoseconds,
       mtimeSeconds,
@@ -144,13 +147,22 @@ export function parseIndex(bytes: Uint8Array, digestLength: 20 | 32): GitIndex {
       id,
       flags,
       path: FilePathFactory.from(path) as FilePath,
-    });
+    };
+    entries.push(withPathBytes(entry, pathBytes));
   }
 
   const extensions = parseExtensions(bytes, offset, view, trailerSize);
   const trailerSha = bytes.slice(bytes.length - trailerSize);
 
   return { version: version as 2 | 3, entries, extensions, trailerSha };
+}
+
+function lossyPathBytes(path: string, rawPath: Uint8Array): Uint8Array | undefined {
+  return decodesLosslessly(path, rawPath) ? undefined : rawPath.slice();
+}
+
+function withPathBytes(entry: IndexEntry, pathBytes: Uint8Array | undefined): IndexEntry {
+  return pathBytes === undefined ? entry : { ...entry, pathBytes };
 }
 
 /**

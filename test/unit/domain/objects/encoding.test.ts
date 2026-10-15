@@ -8,6 +8,7 @@ import {
   concatBytes,
   decode,
   decodePreservingBom,
+  decodesLosslessly,
   encode,
   formatContinuationHeader,
   hexToBytes,
@@ -557,6 +558,37 @@ describe('encoding', () => {
 
           // Assert
           expect(result).toEqual(Uint8Array.of(1, 2, 3, 4, 5));
+        });
+      });
+    });
+  });
+
+  describe('decodesLosslessly', () => {
+    const cases: ReadonlyArray<readonly [string, number[], boolean]> = [
+      ['ascii', [0x61, 0x2e, 0x74], true],
+      ['a valid two-byte sequence', [0xc3, 0xa9], true],
+      ['a leading byte-order mark', [0xef, 0xbb, 0xbf, 0x61], true],
+      ['a literal replacement character', [0xef, 0xbf, 0xbd], true],
+      ['a lone 0xff', [0xff], false],
+      ['a lone continuation byte', [0x80], false],
+      ['a truncated sequence', [0xc3], false],
+      ['an overlong sequence', [0xc0, 0xaf], false],
+      ['an encoded surrogate', [0xed, 0xa0, 0x80], false],
+      ['a byte above the unicode range', [0xf5], false],
+    ];
+
+    describe.each(cases)('Given %s', (_label, input, expected) => {
+      describe('When checking the decoded view against the raw bytes', () => {
+        it(`Then it is ${expected ? 'lossless' : 'lossy'}`, () => {
+          // Arrange
+          const raw = Uint8Array.from(input);
+          const text = decodePreservingBom(raw);
+
+          // Act
+          const result = decodesLosslessly(text, raw);
+
+          // Assert
+          expect(result).toBe(expected);
         });
       });
     });
