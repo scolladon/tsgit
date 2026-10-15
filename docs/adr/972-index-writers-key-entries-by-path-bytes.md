@@ -5,7 +5,12 @@ subjects:
 <!-- cspell:ignore latin -->
 # 972 — Index writers key entries by path bytes
 
-- **Status:** accepted
+> **Superseded by [ADR-981](981-lossy-path-keys-are-escaped-paths.md)** for the lossy key
+> encoding: a lossy key is now its escaped path (`U+DC00 + byte` per invalid byte) instead of
+> `'\0' + latin1(bytes)`. The branded key at every keyed site, an injective key and zero cost for UTF-8
+> keys are carried forward.
+
+- **Status:** superseded by ADR-981
 - **Date:** 2026-10-15
 - **Design:** docs/design/index-entry-path-bytes.md · **Supersedes/Refines:** refines ADR-226
 
