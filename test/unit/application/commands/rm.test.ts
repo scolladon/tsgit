@@ -1050,3 +1050,74 @@ describe('rm on an index holding entries whose decoded paths collide', () => {
     });
   });
 });
+
+describe('rm of a directory holding a lossy entry beside a well-formed one', () => {
+  const seedDirectory = async (): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, { workingTree: { 'd/y': 'y' } });
+    await ctx.fs.write(`${ctx.layout.workDir}/d/\uFFFD`, enc('twin'));
+    const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/d/y`);
+    const entryOf = async (path: string, text: string): Promise<IndexEntry> => ({
+      ...indexEntryFromStat(
+        stat,
+        FILE_MODE.REGULAR,
+        await writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: enc(text) }),
+        path as FilePath,
+      ),
+      fileSize: 0,
+    });
+    const lossy: IndexEntry = {
+      ...(await entryOf('d/\uFFFD', 'x')),
+      pathBytes: Uint8Array.of(0x64, 0x2f, 0xff),
+    };
+    await ctx.fs.write(
+      `${ctx.layout.gitDir}/index`,
+      await serializeIndexFixtureAsync(
+        {
+          version: 2,
+          entries: [await entryOf('d/y', 'y'), lossy],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        },
+        ctx,
+      ),
+    );
+    return ctx;
+  };
+
+  describe('Given d/y, a lossy d/\\xff and an untracked file at d/\uFFFD', () => {
+    describe('When rm removes d recursively with force', () => {
+      it('Then both entries leave the index, d/y is unlinked and d/\uFFFD stays', async () => {
+        // Arrange
+        const ctx = await seedDirectory();
+        const sut = rm;
+
+        // Act
+        await sut(ctx, ['d'], { recursive: true, force: true });
+
+        // Assert
+        expect((await readIndex(ctx)).entries).toEqual([]);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/d/y`)).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/d/\uFFFD`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given d/y and a lossy d/\\xff', () => {
+    describe('When rm removes d recursively with cached', () => {
+      it('Then both entries leave the index and nothing is unlinked', async () => {
+        // Arrange
+        const ctx = await seedDirectory();
+        const sut = rm;
+
+        // Act
+        await sut(ctx, ['d'], { recursive: true, cached: true });
+
+        // Assert
+        expect((await readIndex(ctx)).entries).toEqual([]);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/d/y`)).toBe(true);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/d/\uFFFD`)).toBe(true);
+      });
+    });
+  });
+});

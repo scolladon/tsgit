@@ -9,7 +9,7 @@
  *   unique:         index entry path bytes round-trip like git
  *   interopSurface: index
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
@@ -73,6 +73,19 @@ const FF_TXT = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
 const B_SLASH_C3 = Uint8Array.of(0x62, 0x2f, 0xc3);
 const D_SLASH_FF = Uint8Array.of(0x64, 0x2f, 0xff);
 const REGULAR_MODE = '100644';
+
+const STATUS_FIELDS_BEFORE_PATH = 8;
+
+const deletedPathHex = (dir: string): string[] =>
+  Buffer.from(runGitBytes(['-C', dir, 'status', '--porcelain=v2', '-z']))
+    .toString('latin1')
+    .split('\0')
+    .filter((record) => record.startsWith('1 .D '))
+    .map((record) =>
+      Buffer.from(record.split(' ').slice(STATUS_FIELDS_BEFORE_PATH).join(' '), 'latin1').toString(
+        'hex',
+      ),
+    );
 
 const hashBlob = (dir: string, content: string): string =>
   runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: content }).trim();
@@ -588,6 +601,60 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Assert
           expect(lsTreePathHex(pair.peer, 'stash@{0}')).toEqual([Z_HEX, U_HEX]);
+        });
+      });
+    });
+
+    describe('Given a lossy entry and its UTF-8 twin both tracked', () => {
+      describe('When reset --hard HEAD runs', () => {
+        it('Then the twin keeps its content, no lossy name is written and the index is unchanged', async () => {
+          // Arrange
+          seedLossyTwins();
+          const before = lsFilesPathHex(pair.peer);
+
+          // Act
+          await repo.reset({ mode: 'hard', rev: 'HEAD' });
+
+          // Assert
+          expect(readFileSync(path.join(pair.peer, U_FILE), 'utf8')).toBe('u\n');
+          expect(existsSync(path.join(pair.peer, 'd'))).toBe(false);
+          expect(lsFilesPathHex(pair.peer)).toEqual(before);
+          expect(deletedPathHex(pair.peer).sort()).toEqual([D_FF_HEX, L_HEX]);
+        });
+      });
+
+      describe('When checkout restores *.txt from HEAD after the twin changed', () => {
+        it('Then the twin holds its committed content and the index bytes are unchanged', async () => {
+          // Arrange
+          seedLossyTwins();
+          writeFileSync(path.join(pair.peer, U_FILE), 'modified\n');
+          const before = lsFilesPathHex(pair.peer);
+
+          // Act
+          await repo.checkout({ paths: ['*.txt'], source: 'HEAD' });
+
+          // Assert
+          expect(readFileSync(path.join(pair.peer, U_FILE), 'utf8')).toBe('u\n');
+          expect(lsFilesPathHex(pair.peer)).toEqual(before);
+        });
+      });
+
+      describe('When checkout switches to a branch adding another lossy name', () => {
+        it('Then the index lists the new bytes and no decoded name is written', async () => {
+          // Arrange
+          seedLossyTwins();
+          const blob = hashBlob(pair.peer, 'n\n');
+          stageRaw(pair.peer, [{ mode: REGULAR_MODE, oid: blob, path: Uint8Array.of(0x6e, 0xfe) }]);
+          git('commit', '-q', '-m', 'add n');
+          git('branch', 'side');
+          git('reset', '-q', '--mixed', 'HEAD~1');
+
+          // Act
+          await repo.checkout({ rev: 'side' });
+
+          // Assert
+          expect(lsFilesPathHex(pair.peer)).toContain('6efe');
+          expect(existsSync(path.join(pair.peer, 'n\uFFFD'))).toBe(false);
         });
       });
     });

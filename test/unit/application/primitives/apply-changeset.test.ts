@@ -61,10 +61,18 @@ const makeChangeset = (entries: ChangesetEntry[]): Changeset => {
   return { entries, stats };
 };
 
+interface EntryOptions {
+  readonly pathBytes?: Uint8Array;
+}
+
+const bytesOf = (opts: EntryOptions): EntryOptions =>
+  opts.pathBytes === undefined ? {} : { pathBytes: opts.pathBytes };
+
 const makeAdd = (
   path: string,
   id: ObjectId,
   mode: FileMode = FILE_MODE.REGULAR,
+  opts: EntryOptions = {},
 ): ChangesetEntry => ({
   kind: 'add',
   path: path as FilePath,
@@ -72,12 +80,14 @@ const makeAdd = (
   id,
   previousId: undefined,
   previousMode: undefined,
+  ...bytesOf(opts),
 });
 
 const makeDelete = (
   path: string,
   previousId: ObjectId,
   previousMode: FileMode = FILE_MODE.REGULAR,
+  opts: EntryOptions = {},
 ): ChangesetEntry => ({
   kind: 'delete',
   path: path as FilePath,
@@ -85,6 +95,7 @@ const makeDelete = (
   id: undefined,
   previousId,
   previousMode,
+  ...bytesOf(opts),
 });
 
 const makeUpdate = (
@@ -92,6 +103,7 @@ const makeUpdate = (
   previousId: ObjectId,
   newId: ObjectId,
   mode: FileMode = FILE_MODE.REGULAR,
+  opts: EntryOptions = {},
 ): ChangesetEntry => ({
   kind: 'update',
   path: path as FilePath,
@@ -99,6 +111,7 @@ const makeUpdate = (
   id: newId,
   previousId,
   previousMode: mode,
+  ...bytesOf(opts),
 });
 
 const writeBlob = async (
@@ -2602,6 +2615,111 @@ describe('applyChangeset dirty probe under line-ending conversion', () => {
         // Assert
         expect(result).toBe(false);
         expect(isWorkingTreeDirty.length).toBe(3);
+      });
+    });
+  });
+});
+
+const LOSSY_BYTES = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+const LOSSY_VIEW_PATH = '\uFFFD.txt';
+const LOSSY_OPTS: EntryOptions = { pathBytes: LOSSY_BYTES };
+
+describe('applyChangeset and an entry whose name bytes are not UTF-8', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given a changeset adding a lossy L and a well-formed U on an empty work tree', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then only U is written and L is recorded with a zero stat and its bytes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const lossyId = await writeBlob(ctx, enc('l\n'));
+        const wellFormedId = await writeBlob(ctx, enc('u\n'));
+        const writeSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
+        const changeset = makeChangeset([
+          makeAdd(LOSSY_VIEW_PATH, lossyId, FILE_MODE.REGULAR, LOSSY_OPTS),
+          makeAdd(LOSSY_VIEW_PATH, wellFormedId),
+        ]);
+        const sut = applyChangeset;
+
+        // Act
+        const result = await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/${LOSSY_VIEW_PATH}`))).toBe('u\n');
+        expect(writeSpy).toHaveBeenCalledOnce();
+        expect(String(writeSpy.mock.calls[0]?.[1])).toMatch(/\uFFFD\.txt$/);
+        const lossy = result.writtenEntries.find((e) => e.pathBytes !== undefined);
+        expect(lossy?.pathBytes).toEqual(LOSSY_BYTES);
+        expect(lossy?.mtimeSeconds).toBe(0);
+        expect(lossy?.fileSize).toBe(0);
+      });
+    });
+  });
+
+  describe('Given the well-formed twin on disk and a changeset deleting the lossy entry', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the twin file is still there', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const lossyId = await writeBlob(ctx, enc('l\n'));
+        await ctx.fs.write(`${WORKDIR}/${LOSSY_VIEW_PATH}`, enc('u\n'));
+        const changeset = makeChangeset([
+          makeDelete(LOSSY_VIEW_PATH, lossyId, FILE_MODE.REGULAR, LOSSY_OPTS),
+        ]);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, { changeset, force: true, workdir: WORKDIR });
+
+        // Assert
+        expect(await ctx.fs.exists(`${WORKDIR}/${LOSSY_VIEW_PATH}`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given the twin file on disk and a non-forced update of the lossy entry', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then it resolves and leaves the twin untouched', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const previousId = await writeBlob(ctx, enc('l\n'));
+        const newId = await writeBlob(ctx, enc('l2\n'));
+        await ctx.fs.write(`${WORKDIR}/${LOSSY_VIEW_PATH}`, enc('x\n'));
+        const changeset = makeChangeset([
+          makeUpdate(LOSSY_VIEW_PATH, previousId, newId, FILE_MODE.REGULAR, LOSSY_OPTS),
+        ]);
+        const sut = applyChangeset;
+
+        // Act
+        const attempt = sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        await expect(attempt).resolves.toBeDefined();
+        expect(dec(await ctx.fs.read(`${WORKDIR}/${LOSSY_VIEW_PATH}`))).toBe('x\n');
+      });
+    });
+  });
+
+  describe('Given the twin file on disk and a non-forced add of the lossy entry', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then it resolves with no untracked clash', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('l\n'));
+        await ctx.fs.write(`${WORKDIR}/${LOSSY_VIEW_PATH}`, enc('x\n'));
+        const changeset = makeChangeset([
+          makeAdd(LOSSY_VIEW_PATH, id, FILE_MODE.REGULAR, LOSSY_OPTS),
+        ]);
+        const sut = applyChangeset;
+
+        // Act
+        const attempt = sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        await expect(attempt).resolves.toBeDefined();
+        expect(dec(await ctx.fs.read(`${WORKDIR}/${LOSSY_VIEW_PATH}`))).toBe('x\n');
       });
     });
   });

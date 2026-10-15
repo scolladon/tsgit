@@ -22,7 +22,7 @@ import type { FlatTreeEntry } from '../../domain/diff/flat-tree.js';
 import { TsgitError } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import type { IndexPathKey } from '../../domain/git-index/index-path-key.js';
-import { indexPathKey } from '../../domain/git-index/index-path-key.js';
+import { indexPathKey, isLossy } from '../../domain/git-index/index-path-key.js';
 import { emptyPathspec } from '../../domain/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesPathspec } from '../../domain/pathspec/index.js';
@@ -108,7 +108,7 @@ export const rm = async (
     }
     for (const key of removedKeys) byPath.delete(key);
     if (!opts.cached) {
-      for (const path of removed) {
+      for (const { path } of removedEntries.filter((entry) => !isLossy(entry))) {
         // FILE_NOT_FOUND is the only tolerable error: working file already gone.
         await removeFile(ctx, path).catch((err: unknown) => {
           if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return;

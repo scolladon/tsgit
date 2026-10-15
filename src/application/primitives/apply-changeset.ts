@@ -26,6 +26,7 @@ import { comparePaths } from '../../domain/diff/index.js';
 import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import { TsgitError } from '../../domain/error.js';
 import { type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
+import { isLossy } from '../../domain/git-index/index-path-key.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
@@ -50,6 +51,7 @@ import {
   createLeadingPathScanner,
   type LeadingPathScanner,
 } from './internal/symlinked-leading-path.js';
+import { stage0Entry } from './internal/synthetic-index-entry.js';
 import {
   createWorkingTreeWriter,
   type WorkingTreeWriter,
@@ -206,6 +208,7 @@ const evaluateDirtyPath = async (
   workdir: string,
   entry: ChangesetEntry,
 ): Promise<DirtyClass | undefined> => {
+  if (isLossy(entry)) return undefined;
   const absPath = joinPath(workdir, entry.path);
   if (entry.kind === 'update' || entry.kind === 'delete') {
     if (entry.previousId === undefined) return undefined;
@@ -298,11 +301,19 @@ const applyDeleteEntry = async (
   entry: ChangesetEntry,
   scanner: LeadingPathScanner,
 ): Promise<void> => {
+  if (isLossy(entry)) return;
   // git skips a removal silently when the leading directory is a symlink —
   // the delete is never attempted, not refused.
   if (await scanner.hasSymlinkedLeadingPath(entry.path)) return;
   await rmIfExists(ctx, joinPath(workdir, entry.path));
 };
+
+// The decoded name would alias a different file, so nothing is written for
+// it; the index still records the entry, with a zero stat, under its bytes.
+const absentLossyEntry = (entry: ChangesetEntry, id: string): IndexEntry => ({
+  ...stage0Entry(entry.path, id as ObjectId, entry.mode),
+  ...(entry.pathBytes === undefined ? {} : { pathBytes: entry.pathBytes }),
+});
 
 const applyWriteEntry = async (
   ctx: Context,
@@ -312,6 +323,7 @@ const applyWriteEntry = async (
   writer: WorkingTreeWriter,
 ): Promise<IndexEntry | undefined> => {
   if (entry.id === undefined) return undefined;
+  if (isLossy(entry)) return absentLossyEntry(entry, entry.id);
   const absPath = joinPath(workdir, entry.path);
   await writer.writeBlob(entry.path, entry.id as IndexEntry['id'], entry.mode, scanner);
   return buildIndexEntry(ctx, absPath, entry.path, entry.id, entry.mode, entry.pathBytes);
