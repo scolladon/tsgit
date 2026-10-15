@@ -324,6 +324,38 @@ describe('Given a superproject and a submodule remote', () => {
     });
   });
 
+  describe('When the index holds a UTF-8 path and a lossy path with the same decoded view', () => {
+    it('Then the written index still holds both beside the gitlink and .gitmodules', async () => {
+      // Arrange
+      const { ctx } = await seedSuper();
+      const oid = 'a'.repeat(40) as ObjectId;
+      const view = '\uFFFD.txt';
+      const bytes = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+      const lock = await acquireIndexLock(ctx);
+      await lock.commit(
+        [
+          indexEntry('README', oid),
+          indexEntry(view, oid),
+          { ...indexEntry(view, oid), pathBytes: bytes },
+        ],
+        'update',
+      );
+
+      // Act
+      await submoduleAdd(ctx, { url: SUB_URL, path: 'libs/sub' });
+
+      // Assert
+      const entries = (await readIndex(ctx)).entries;
+      const lossy = entries.filter((e) => e.path === view).map((e) => e.pathBytes);
+      expect(lossy).toHaveLength(2);
+      expect(lossy).toContainEqual(bytes);
+      expect(lossy).toContainEqual(undefined);
+      expect(entries.map((e) => e.path)).toEqual(
+        expect.arrayContaining(['libs/sub', '.gitmodules', 'README']),
+      );
+    });
+  });
+
   describe('When the superproject is bare', () => {
     it('Then add refuses with WORK_TREE_REQUIRED naming the operation', async () => {
       // Arrange — a bare repo (no work tree) with a HEAD

@@ -13,6 +13,11 @@ import {
   type UnmergedEntryGroup,
 } from '../../domain/diff/index.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
+import {
+  type IndexPathKey,
+  indexPathKey,
+  keyOfPath,
+} from '../../domain/git-index/index-path-key.js';
 import { deriveWorkingMode, type FileMode, type RefName } from '../../domain/objects/index.js';
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
@@ -214,7 +219,7 @@ const statusInScope = async (ctx: Context, opts: StatusOptions): Promise<StatusR
 interface TrackedEntries {
   readonly grouped: GroupedIndex;
   readonly stage0Map: ReadonlyMap<FilePath, IndexEntry>;
-  readonly trackedPaths: ReadonlySet<FilePath>;
+  readonly trackedPaths: ReadonlySet<IndexPathKey>;
 }
 
 /** Partition the index into the stage-0 (tracked) entries and the unmerged
@@ -225,8 +230,8 @@ const trackedEntriesOf = (index: GitIndex): TrackedEntries => {
   const stage0Map = new Map<FilePath, IndexEntry>(
     grouped.staged.map((entry) => [entry.path, entry]),
   );
-  const trackedPaths = new Set<FilePath>(grouped.unmerged.keys());
-  for (const path of stage0Map.keys()) trackedPaths.add(path);
+  const trackedPaths = new Set<IndexPathKey>(grouped.staged.map(indexPathKey));
+  for (const path of grouped.unmerged.keys()) trackedPaths.add(keyOfPath(path));
   return { grouped, stage0Map, trackedPaths };
 };
 
@@ -378,12 +383,12 @@ const trackedScanOf = (results: ReadonlyArray<ScannedEntry | undefined>): Tracke
  */
 const scanUntracked = async (
   ctx: Context,
-  trackedPaths: ReadonlySet<FilePath>,
+  trackedPaths: ReadonlySet<IndexPathKey>,
 ): Promise<FilePath[]> => {
   const ignore = await buildRepoIgnorePredicate(ctx);
   const untracked: FilePath[] = [];
   for await (const { path } of walkWorkingTree(ctx, { ignore })) {
-    if (!trackedPaths.has(path)) untracked.push(path);
+    if (!trackedPaths.has(keyOfPath(path))) untracked.push(path);
   }
   return untracked.sort(comparePaths);
 };

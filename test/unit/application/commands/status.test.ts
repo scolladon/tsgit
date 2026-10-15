@@ -16,8 +16,11 @@ import {
   toUnstagedKind,
 } from '../../../../src/application/commands/status.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
 import type { DiffChange } from '../../../../src/domain/diff/index.js';
 import { TsgitError } from '../../../../src/domain/error.js';
+import { type IndexEntry, STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
+import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type {
   AuthorIdentity,
   FileMode,
@@ -197,6 +200,42 @@ describe('status', () => {
         // Assert
         expect(result.detached).toBe(true);
         expect(result.branch).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given an index holding only a lossy path and an untracked file named like its view', () => {
+    describe('When status', () => {
+      it('Then the untracked file is reported', async () => {
+        // Arrange
+        const ctx = await seedClean();
+        const view = '\uFFFD.txt' as FilePath;
+        const lossy: IndexEntry = {
+          ctimeSeconds: 0,
+          ctimeNanoseconds: 0,
+          mtimeSeconds: 0,
+          mtimeNanoseconds: 0,
+          dev: 0,
+          ino: 0,
+          mode: FILE_MODE.REGULAR,
+          uid: 0,
+          gid: 0,
+          fileSize: 0,
+          id: 'a'.repeat(40) as ObjectId,
+          flags: STAGE0_FLAGS,
+          path: view,
+          pathBytes: Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74),
+        };
+        const lock = await acquireIndexLock(ctx);
+        await lock.commit([lossy], 'update');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${view}`, 'u');
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.untracked).toContain(view);
       });
     });
   });

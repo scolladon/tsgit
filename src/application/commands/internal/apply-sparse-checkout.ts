@@ -9,7 +9,8 @@
  * under `primitives/` (a primitive importing `commands/` breaks the hexagonal
  * dependency rule).
  */
-import { type IndexEntry, STAGE0_FLAGS } from '../../../domain/git-index/index.js';
+import { type IndexEntry, skipWorktreeEntry } from '../../../domain/git-index/index.js';
+import { type IndexPathKey, indexPathKey } from '../../../domain/git-index/index-path-key.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { SparseMatcher } from '../../../domain/sparse/index.js';
 import type { Context } from '../../../ports/context.js';
@@ -145,28 +146,6 @@ const buildChangeset = async (
   return { entries, stats };
 };
 
-/** Stat fields zeroed — the excluded file is gone, `status` skips the entry. */
-const ZEROED_STAT = {
-  ctimeSeconds: 0,
-  ctimeNanoseconds: 0,
-  mtimeSeconds: 0,
-  mtimeNanoseconds: 0,
-  dev: 0,
-  ino: 0,
-  uid: 0,
-  gid: 0,
-  fileSize: 0,
-} as const;
-
-/** An excluded entry — skip-worktree set, stat zeroed, `id` / `mode` kept. */
-const toSkipWorktree = (entry: IndexEntry): IndexEntry => ({
-  ...ZEROED_STAT,
-  mode: entry.mode,
-  id: entry.id,
-  flags: { ...STAGE0_FLAGS, skipWorktree: true },
-  path: entry.path,
-});
-
 /** An included entry — skip-worktree always cleared (a stale bit is dropped). */
 const clearSkipWorktree = (entry: IndexEntry): IndexEntry =>
   entry.flags.skipWorktree ? { ...entry, flags: { ...entry.flags, skipWorktree: false } } : entry;
@@ -182,13 +161,13 @@ const assembleEntries = (
   part: Partitioned,
   writtenEntries: ReadonlyArray<IndexEntry>,
 ): ReadonlyArray<IndexEntry> => {
-  const writtenByPath = new Map<FilePath, IndexEntry>();
-  for (const entry of writtenEntries) writtenByPath.set(entry.path, entry);
+  const writtenByPath = new Map<IndexPathKey, IndexEntry>();
+  for (const entry of writtenEntries) writtenByPath.set(indexPathKey(entry), entry);
   const out: IndexEntry[] = [];
   for (const entry of part.included) {
-    out.push(writtenByPath.get(entry.path) ?? clearSkipWorktree(entry));
+    out.push(writtenByPath.get(indexPathKey(entry)) ?? clearSkipWorktree(entry));
   }
-  for (const { entry } of part.removable) out.push(toSkipWorktree(entry));
+  for (const { entry } of part.removable) out.push(skipWorktreeEntry(entry));
   for (const entry of part.retained) out.push(clearSkipWorktree(entry));
   return out;
 };

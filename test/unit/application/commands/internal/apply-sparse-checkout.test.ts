@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { applySparseCheckout } from '../../../../../src/application/commands/internal/apply-sparse-checkout.js';
+import * as applyChangesetMod from '../../../../../src/application/primitives/apply-changeset.js';
 import * as gitattributesMod from '../../../../../src/application/primitives/internal/read-gitattributes.js';
 import { readIndex } from '../../../../../src/application/primitives/read-index.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
@@ -124,6 +125,62 @@ describe('commands/internal/apply-sparse-checkout', () => {
 
         // Assert
         expect(spy.mock.calls.length).toBe(single);
+        spy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a lossy path excluded by the new patterns', () => {
+    describe('When applySparseCheckout narrows', () => {
+      it('Then its skip-worktree entry keeps the raw path bytes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const id = await writeBlob(ctx, 'bbb');
+        const bytes = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+        const lossy: IndexEntry = { ...makeEntry('\uFFFD.txt', id), pathBytes: bytes };
+        await seedIndex(ctx, [lossy]);
+        const sut = applySparseCheckout;
+
+        // Act
+        await sut(ctx, { matcher: srcOnly });
+
+        // Assert
+        const entry = (await readIndex(ctx)).entries[0];
+        expect(entry?.flags.skipWorktree).toBe(true);
+        expect(entry?.pathBytes).toEqual(bytes);
+      });
+    });
+  });
+
+  describe('Given a lossy path and a UTF-8 path with the same view, both included', () => {
+    describe('When only the UTF-8 path has a written record', () => {
+      it('Then each keeps its own record', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const lossyId = await writeBlob(ctx, 'lossy');
+        const utf8Id = await writeBlob(ctx, 'utf8');
+        const writtenId = await writeBlob(ctx, 'written');
+        const bytes = Uint8Array.of(0x73, 0x72, 0x63, 0x2f, 0xff);
+        const view = 'src/\uFFFD';
+        const lossy: IndexEntry = { ...makeEntry(view, lossyId), pathBytes: bytes };
+        await seedIndex(ctx, [makeEntry(view, utf8Id), lossy]);
+        const spy = vi.spyOn(applyChangesetMod, 'applyChangesetWithAttributes').mockResolvedValue({
+          written: 1,
+          deleted: 0,
+          writtenEntries: [makeEntry(view, writtenId)],
+        });
+        const sut = applySparseCheckout;
+
+        // Act
+        await sut(ctx, { matcher: srcOnly });
+
+        // Assert
+        const entries = (await readIndex(ctx)).entries;
+        const lossyBack = entries.find((e) => e.pathBytes !== undefined);
+        const utf8Back = entries.find((e) => e.pathBytes === undefined);
+        expect(lossyBack?.pathBytes).toEqual(bytes);
+        expect(lossyBack?.id).toBe(lossyId);
+        expect(utf8Back?.id).toBe(writtenId);
         spy.mockRestore();
       });
     });
