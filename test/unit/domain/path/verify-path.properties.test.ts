@@ -20,6 +20,7 @@ import fc from 'fast-check';
 import { describe, it } from 'vitest';
 import { FILE_MODE, type FileMode } from '../../../../src/domain/objects/file-mode.js';
 import {
+  gitPickerValidPrefix,
   isDotGitAlias,
   type VerifyPathRejection,
   verifyPath,
@@ -131,6 +132,65 @@ describe('Given an arbitrary non-empty path built only from safe (non-alias) ASC
           fc.pre(path !== '');
           return verifyPath(path, FILE_MODE.REGULAR) === undefined;
         }),
+        { numRuns: COMPOSITION_NUM_RUNS },
+      );
+    });
+  });
+});
+
+const HFS_TAIL_MAX_LENGTH = 4;
+const BYTE_MAX = 0xff;
+const NUL = 0x00;
+const SLASH = 0x2f;
+const DOT = 0x2e;
+const SPACE = 0x20;
+const DOTGIT_BYTES = [0x2e, 0x67, 0x69, 0x74];
+const IGNORABLE_BYTE_SEQUENCES: readonly (readonly number[])[] = [
+  [0xe2, 0x80, 0x8c],
+  [0xe2, 0x80, 0x8d],
+  [0xe2, 0x80, 0x8e],
+  [0xe2, 0x80, 0x8f],
+  [0xef, 0xbb, 0xbf],
+];
+
+// Dot and space are the NTFS trailing-strip characters: their verdicts belong
+// to the NTFS arm, not to the HFS tail rule this property pins.
+const EXCLUDED_TAIL_BYTES: readonly number[] = [SLASH, NUL, DOT, SPACE];
+
+const arbTailByte = (): fc.Arbitrary<number> =>
+  fc.integer({ min: 0, max: BYTE_MAX }).filter((byte) => !EXCLUDED_TAIL_BYTES.includes(byte));
+
+const isIgnorableOnly = (tail: readonly number[]): boolean => {
+  let at = 0;
+  while (at < tail.length) {
+    const match = IGNORABLE_BYTE_SEQUENCES.find((sequence) =>
+      sequence.every((byte, offset) => tail[at + offset] === byte),
+    );
+    if (match === undefined) return false;
+    at += match.length;
+  }
+  return true;
+};
+
+const decodesToIgnorableOnly = (tail: readonly number[]): boolean => {
+  const validPrefix = gitPickerValidPrefix(Uint8Array.from(tail));
+  return isIgnorableOnly(tail.slice(0, validPrefix));
+};
+
+describe('Given the component bytes .git followed by 1-4 arbitrary bytes', () => {
+  describe('When verified with the raw bytes', () => {
+    it('Then it is a dotgit-hfs-alias iff git ignores the whole tail', () => {
+      // Arrange + Act + Assert
+      fc.assert(
+        fc.property(
+          fc.array(arbTailByte(), { minLength: 1, maxLength: HFS_TAIL_MAX_LENGTH }),
+          (tail) => {
+            const bytes = Uint8Array.from([...DOTGIT_BYTES, ...tail]);
+            const view = new TextDecoder().decode(bytes);
+            const verdict = verifyPath(view, FILE_MODE.REGULAR, bytes);
+            return (verdict === 'dotgit-hfs-alias') === decodesToIgnorableOnly(tail);
+          },
+        ),
         { numRuns: COMPOSITION_NUM_RUNS },
       );
     });

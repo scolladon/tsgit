@@ -224,3 +224,27 @@ describe('NO_PARSER_OFFSET', () => {
     });
   });
 });
+
+describe('validateIndexPath with raw path bytes', () => {
+  describe("Given a view '.git\\uFFFD/x' backed by the bytes .git\\xff/x", () => {
+    describe('When validated', () => {
+      it('Then it rejects as an HFS ignorable-codepoint alias', () => {
+        // Arrange
+        const pathBytes = Uint8Array.from([0x2e, 0x67, 0x69, 0x74, 0xff, 0x2f, 0x78]);
+
+        // Act
+        const caught = catchError(() =>
+          validateIndexPath('.git�/x', 0, FILE_MODE.REGULAR, pathBytes),
+        );
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: 0,
+          reason: "'.git' HFS+ ignorable-codepoint alias rejected",
+        });
+      });
+    });
+  });
+});

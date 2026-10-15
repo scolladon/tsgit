@@ -93,12 +93,17 @@ const unsafeReason = (path: string): string | undefined =>
  * embedding the path in `reason` would amplify log volume and reflect
  * untrusted content.
  */
-export const validateIndexPath = (path: string, offset: number, mode: FileMode): void => {
+export const validateIndexPath = (
+  path: string,
+  offset: number,
+  mode: FileMode,
+  pathBytes?: Uint8Array,
+): void => {
   const reason = unsafeReason(path);
   if (reason !== undefined) {
     throw invalidIndexEntry(offset, reason);
   }
-  const rejection = verifyPath(path, mode);
+  const rejection = verifyPath(path, mode, pathBytes);
   if (rejection !== undefined) {
     throw invalidIndexEntry(offset, VERIFY_PATH_REASON[rejection]);
   }
