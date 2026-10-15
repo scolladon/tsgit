@@ -264,6 +264,21 @@ describe.skipIf(!GIT_AVAILABLE)(
         expect(lsFilesPathHex(pair.peer)).toEqual(['622fc3', Z_HEX, 'ff2e747874']);
         expect(() => git('fsck')).not.toThrow();
       });
+
+      it('Then commit names the tree entries by their raw bytes', async () => {
+        // Arrange
+        buildRawState();
+        writeFileSync(path.join(pair.peer, 'z'), 'z2\n');
+        await repo.add(['z']);
+
+        // Act
+        await repo.commit({ message: 'second', author: AUTHOR });
+
+        // Assert
+        expect(lsTreePathHex(pair.peer, 'HEAD')).toEqual(['622fc3', Z_HEX, 'ff2e747874']);
+        expect(git('diff-tree', '-r', '--name-status', 'HEAD~1', 'HEAD')).toBe('M\tz\n');
+        expect(() => git('fsck')).not.toThrow();
+      });
     });
 
     describe('Given a committed tree naming a non-UTF-8 entry inside a directory', () => {

@@ -1,8 +1,13 @@
 import type { IndexEntry } from '../../domain/git-index/index.js';
+import {
+  indexPathKey,
+  indexPathOfBytes,
+  splitAtSlash,
+} from '../../domain/git-index/index-path-key.js';
 import { nothingToCommit } from '../../domain/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
-import type { AuthorIdentity, ObjectId, TreeEntry } from '../../domain/objects/index.js';
+import type { AuthorIdentity, FilePath, ObjectId, TreeEntry } from '../../domain/objects/index.js';
 import { zeroOid } from '../../domain/objects/index.js';
 import type { RefName } from '../../domain/objects/object-id.js';
 import { treeEntry } from '../../domain/objects/tree.js';
@@ -385,10 +390,27 @@ const getParentTree = async (ctx: Context, parentId: ObjectId): Promise<ObjectId
   return obj.data.tree;
 };
 
+// A tree entry name: a UTF-8 string, or the raw bytes of a name that is not valid UTF-8.
+type TreeName = string | Uint8Array;
+
 interface SubtreeNode {
-  readonly files: Map<string, { readonly id: ObjectId; readonly mode: string }>;
-  readonly subdirs: Map<string, SubtreeNode>;
+  readonly files: Map<
+    string,
+    { readonly name: TreeName; readonly id: ObjectId; readonly mode: string }
+  >;
+  readonly subdirs: Map<string, { readonly name: TreeName; readonly node: SubtreeNode }>;
 }
+
+const componentsOf = (entry: IndexEntry): ReadonlyArray<TreeName> =>
+  entry.pathBytes === undefined
+    ? entry.path.split('/')
+    : splitAtSlash(entry.pathBytes).map((bytes) => {
+        const component = indexPathOfBytes(bytes);
+        return component.pathBytes ?? component.path;
+      });
+
+const componentKey = (name: TreeName): string =>
+  typeof name === 'string' ? name : indexPathKey({ path: '' as FilePath, pathBytes: name });
 
 const buildTreeFromIndex = async (
   ctx: Context,
@@ -396,40 +418,46 @@ const buildTreeFromIndex = async (
 ): Promise<ObjectId> => {
   const root: SubtreeNode = { files: new Map(), subdirs: new Map() };
   for (const entry of entries) {
-    insertEntry(root, entry.path.split('/'), entry);
+    insertEntry(root, componentsOf(entry), entry);
   }
   return writeSubtree(ctx, root);
 };
 
-const insertEntry = (node: SubtreeNode, parts: ReadonlyArray<string>, entry: IndexEntry): void => {
+const insertEntry = (
+  node: SubtreeNode,
+  parts: ReadonlyArray<TreeName>,
+  entry: IndexEntry,
+): void => {
   if (parts.length === 1) {
-    node.files.set(parts[0] as string, { id: entry.id, mode: entry.mode });
+    const name = parts[0] as TreeName;
+    node.files.set(componentKey(name), { name, id: entry.id, mode: entry.mode });
     return;
   }
   const [head, ...rest] = parts;
-  const key = head as string;
+  const name = head as TreeName;
+  const key = componentKey(name);
   let child = node.subdirs.get(key);
   if (child === undefined) {
-    child = { files: new Map(), subdirs: new Map() };
+    child = { name, node: { files: new Map(), subdirs: new Map() } };
     node.subdirs.set(key, child);
   }
-  insertEntry(child, rest, entry);
+  insertEntry(child.node, rest, entry);
 };
 
 const writeSubtree = async (ctx: Context, node: SubtreeNode): Promise<ObjectId> => {
   const treeEntries: TreeEntry[] = [];
-  for (const [name, leaf] of node.files) {
-    treeEntries.push(treeEntry(leaf.mode as TreeEntry['mode'], name, leaf.id));
+  for (const leaf of node.files.values()) {
+    treeEntries.push(treeEntry(leaf.mode as TreeEntry['mode'], leaf.name, leaf.id));
   }
   // Subtrees at the same level are independent — write them in parallel,
   // bounded by the ioBound policy.
   const subdirs = await boundedMapFor(
     ctx,
     'ioBound',
-    Array.from(node.subdirs),
-    async ([name, child]) => ({
-      name,
-      id: await writeSubtree(ctx, child),
+    Array.from(node.subdirs.values()),
+    async (child) => ({
+      name: child.name,
+      id: await writeSubtree(ctx, child.node),
     }),
   );
   for (const { name, id } of subdirs) {

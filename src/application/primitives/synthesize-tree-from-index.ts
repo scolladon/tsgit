@@ -40,6 +40,7 @@
  */
 
 import type { IndexEntry } from '../../domain/git-index/index.js';
+import { indexPathKey, indexPathOfBytes } from '../../domain/git-index/index-path-key.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import { treeDepthExceeded } from '../../domain/objects/error.js';
 import {
@@ -56,9 +57,12 @@ import { writeTree } from './write-tree.js';
 
 interface PendingEntry {
   readonly path: string;
+  readonly pathBytes?: Uint8Array;
   readonly id: ObjectId;
   readonly mode: FileMode;
 }
+
+const SLASH = 0x2f;
 
 const assertDepthBounded = (path: string, maxDepth: number): void => {
   // Count slashes — each one corresponds to one level of tree nesting.
@@ -98,28 +102,68 @@ const stage0Entries = (
   for (const entry of entries) {
     if (entry.flags.stage !== 0) continue;
     check(entry, maxDepth);
-    out.push({ path: entry.path, id: entry.id, mode: entry.mode });
+    out.push(
+      entry.pathBytes === undefined
+        ? { path: entry.path, id: entry.id, mode: entry.mode }
+        : { path: entry.path, pathBytes: entry.pathBytes, id: entry.id, mode: entry.mode },
+    );
   }
   return out;
 };
 
+interface Bucket {
+  readonly name: FilePath | Uint8Array;
+  readonly entries: PendingEntry[];
+}
+
+const addToBucket = (
+  subdirs: Map<string, Bucket>,
+  key: string,
+  name: FilePath | Uint8Array,
+  sub: PendingEntry,
+): void => {
+  const bucket = subdirs.get(key);
+  if (bucket === undefined) subdirs.set(key, { name, entries: [sub] });
+  else bucket.entries.push(sub);
+};
+
+// A lossy path is cut on its bytes: its decoded view cannot name the raw name.
+const addLossyToBucket = (
+  subdirs: Map<string, Bucket>,
+  entry: PendingEntry,
+  pathBytes: Uint8Array,
+  slashIndex: number,
+): void => {
+  const rest = indexPathOfBytes(pathBytes.subarray(slashIndex + 1));
+  const sub: PendingEntry =
+    rest.pathBytes === undefined
+      ? { path: rest.path, id: entry.id, mode: entry.mode }
+      : { path: rest.path, pathBytes: rest.pathBytes, id: entry.id, mode: entry.mode };
+  const prefix = indexPathOfBytes(pathBytes.subarray(0, slashIndex));
+  addToBucket(subdirs, indexPathKey(prefix), prefix.pathBytes ?? prefix.path, sub);
+};
+
 const groupByPrefix = (
   entries: ReadonlyArray<PendingEntry>,
-): { readonly files: PendingEntry[]; readonly subdirs: Map<string, PendingEntry[]> } => {
+): { readonly files: PendingEntry[]; readonly subdirs: Map<string, Bucket> } => {
   const files: PendingEntry[] = [];
-  const subdirs = new Map<string, PendingEntry[]>();
+  const subdirs = new Map<string, Bucket>();
   for (const entry of entries) {
-    const slashIndex = entry.path.indexOf('/');
+    const slashIndex =
+      entry.pathBytes === undefined ? entry.path.indexOf('/') : entry.pathBytes.indexOf(SLASH);
     if (slashIndex === -1) {
       files.push(entry);
-      continue;
+    } else if (entry.pathBytes === undefined) {
+      const prefix = entry.path.slice(0, slashIndex) as FilePath;
+      const sub: PendingEntry = {
+        path: entry.path.slice(slashIndex + 1),
+        id: entry.id,
+        mode: entry.mode,
+      };
+      addToBucket(subdirs, prefix, prefix, sub);
+    } else {
+      addLossyToBucket(subdirs, entry, entry.pathBytes, slashIndex);
     }
-    const prefix = entry.path.slice(0, slashIndex);
-    const rest = entry.path.slice(slashIndex + 1);
-    const bucket = subdirs.get(prefix);
-    const sub: PendingEntry = { path: rest, id: entry.id, mode: entry.mode };
-    if (bucket === undefined) subdirs.set(prefix, [sub]);
-    else bucket.push(sub);
   }
   return { files, subdirs };
 };
@@ -144,7 +188,7 @@ const ROOT_PARENT_INDEX = -1;
  * descendant is visited before its ancestor).
  */
 interface TrieFrame {
-  readonly name: FilePath;
+  readonly name: FilePath | Uint8Array;
   readonly files: ReadonlyArray<PendingEntry>;
   readonly parentIndex: number;
 }
@@ -164,27 +208,27 @@ const buildTrieFrames = (rootEntries: ReadonlyArray<PendingEntry>): Trie => {
   const { files: rootFiles, subdirs: rootSubdirs } = groupByPrefix(rootEntries);
   const frames: TrieFrame[] = [];
   const toVisit: Array<{
-    readonly name: FilePath;
+    readonly name: FilePath | Uint8Array;
     readonly entries: ReadonlyArray<PendingEntry>;
     readonly parentIndex: number;
   }> = [];
-  for (const [prefix, subEntries] of rootSubdirs) {
-    toVisit.push({ name: prefix as FilePath, entries: subEntries, parentIndex: ROOT_PARENT_INDEX });
+  for (const { name, entries } of rootSubdirs.values()) {
+    toVisit.push({ name, entries, parentIndex: ROOT_PARENT_INDEX });
   }
   while (toVisit.length > 0) {
     const { name, entries, parentIndex } = toVisit.pop()!;
     const { files, subdirs } = groupByPrefix(entries);
     const index = frames.length;
     frames.push({ name, files, parentIndex });
-    for (const [prefix, subEntries] of subdirs) {
-      toVisit.push({ name: prefix as FilePath, entries: subEntries, parentIndex: index });
+    for (const bucket of subdirs.values()) {
+      toVisit.push({ name: bucket.name, entries: bucket.entries, parentIndex: index });
     }
   }
   return { rootFiles, frames };
 };
 
 const filesToTreeEntries = (files: ReadonlyArray<PendingEntry>): TreeEntry[] =>
-  files.map((file) => treeEntry(file.mode, file.path as FilePath, file.id));
+  files.map((file) => treeEntry(file.mode, file.pathBytes ?? file.path, file.id));
 
 /**
  * Write every frame bottom-up: a plain reverse scan over `frames` visits
