@@ -2723,4 +2723,36 @@ describe('applyChangeset and an entry whose name bytes are not UTF-8', () => {
       });
     });
   });
+
+  describe('Given an add entry whose raw bytes name a .git HFS alias', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then it refuses with the HFS reason and writes nothing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('x\n'));
+        const writeSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
+        const changeset = makeChangeset([
+          makeAdd('.git\uFFFD/x', id, FILE_MODE.REGULAR, {
+            pathBytes: Uint8Array.of(0x2e, 0x67, 0x69, 0x74, 0xff, 0x2f, 0x78),
+          }),
+        ]);
+        const sut = applyChangeset;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as { data?: unknown }).data).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'.git' HFS+ ignorable-codepoint alias rejected",
+        });
+        expect(writeSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
 });

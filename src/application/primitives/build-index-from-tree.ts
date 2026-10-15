@@ -120,7 +120,7 @@ const projectLeaf = (
   donors: ReadonlyMap<IndexPathKey, IndexEntry>,
   sparse: SparseMatcher | undefined,
 ): IndexEntry => {
-  validateIndexPath(leaf.path, NO_PARSER_OFFSET, leaf.mode);
+  validateIndexPath(leaf.path, NO_PARSER_OFFSET, leaf.mode, leaf.pathBytes);
   // An excluded path is rebuilt as a zero-stat skip-worktree entry — the file
   // is absent from disk, so any donor stat cache is meaningless.
   if (sparse !== undefined && !sparse(leaf.path)) return skipWorktreeEntry(leaf);

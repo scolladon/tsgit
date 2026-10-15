@@ -233,7 +233,7 @@ const evaluateDirtyPath = async (
 const validateChangesetEntry = (entry: ChangesetEntry): void => {
   // Stryker disable next-line ConditionalExpression: equivalent — computeChangeset sources a `delete`/`noop` entry's `path` AND `mode` unchanged from the current index (`classify` in compute-changeset.ts), which index-parser.ts already ran through this same validateIndexPath(path, _, mode) at parse time; the throw decision depends only on (path, mode), not offset, so re-running it on an already-validated pair can never newly throw.
   if (entry.kind !== 'add' && entry.kind !== 'update') return;
-  validateIndexPath(entry.path, NO_PARSER_OFFSET, entry.mode);
+  validateIndexPath(entry.path, NO_PARSER_OFFSET, entry.mode, entry.pathBytes);
 };
 
 const validateChangesetPaths = (changeset: Changeset): void => {

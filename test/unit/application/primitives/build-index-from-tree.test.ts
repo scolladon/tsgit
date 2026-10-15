@@ -852,4 +852,65 @@ describe('buildIndexFromTree', () => {
       });
     });
   });
+
+  describe('Given a tree holding raw .git\xff/x', () => {
+    describe('When buildIndexFromTree runs', () => {
+      it('Then it refuses with the HFS reason', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'x');
+        const inner = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'x' as FilePath, blobId)]);
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.DIRECTORY, Uint8Array.of(0x2e, 0x67, 0x69, 0x74, 0xff), inner),
+        ]);
+        const sut = buildIndexFromTree;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, { targetTree: treeId, currentIndex: EMPTY_INDEX });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as { data?: unknown }).data).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'.git' HFS+ ignorable-codepoint alias rejected",
+        });
+      });
+    });
+  });
+
+  describe('Given a donor with a different id and a tree holding raw \xff.txt', () => {
+    const RAW = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+    describe('When buildIndexFromTree runs', () => {
+      it('Then the rebuilt entry has the raw bytes, zero stat and no skip-worktree', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'x');
+        const otherId = await writeBlob(ctx, 'y');
+        const treeId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, RAW, blobId)]);
+        const donor = makeIndexEntry('\uFFFD.txt', otherId, FILE_MODE.REGULAR, {
+          fileSize: 11,
+          mtimeSeconds: 5,
+          pathBytes: RAW,
+        });
+        const sut = buildIndexFromTree;
+
+        // Act
+        const result = await sut(ctx, {
+          targetTree: treeId,
+          currentIndex: { ...EMPTY_INDEX, entries: [donor] },
+        });
+
+        // Assert
+        expect(result).toHaveLength(1);
+        expect(result[0]?.pathBytes).toStrictEqual(RAW);
+        expect(result[0]?.fileSize).toBe(0);
+        expect(result[0]?.mtimeSeconds).toBe(0);
+        expect(result[0]?.flags.skipWorktree).toBe(false);
+      });
+    });
+  });
 });
