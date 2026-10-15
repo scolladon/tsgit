@@ -18,6 +18,7 @@ import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import type { EolNotice } from '../../domain/eol/crlf-conversion.js';
 import { TsgitError } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
+import type { IndexPath } from '../../domain/git-index/index-path-key.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import { abbreviateOid, type ConflictType, STASH_LABELS } from '../../domain/merge/index.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
@@ -805,7 +806,9 @@ const applyUnderLock = async (
       result.result.newIndexEntries,
       currentIndex.entries,
     );
-    await lock.commit(entries, 'replace', { restagedPaths });
+    await lock.commit(entries, 'replace', {
+      restagedPaths: restagedPaths.map((path): IndexPath => ({ path })),
+    });
   }
   if (uTree !== undefined) await restoreUntracked(ctx, uTree);
   return { kind: 'applied', stash: w };

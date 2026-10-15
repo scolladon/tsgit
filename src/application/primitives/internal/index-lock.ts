@@ -10,8 +10,8 @@ import {
 import { diffIndexEntries } from '../../../domain/git-index/diff-index-entries.js';
 import { type IndexEntry, serializeIndex } from '../../../domain/git-index/index.js';
 import type { GitIndex, IndexExtension } from '../../../domain/git-index/index-entry.js';
+import type { IndexPath } from '../../../domain/git-index/index-path-key.js';
 import { bytesEqual } from '../../../domain/objects/encoding.js';
-import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../config-read.js';
 import { indexPath, lockSuffix } from '../path-layout.js';
@@ -36,8 +36,8 @@ interface AcquireOptions {
 export type IndexWriteKind = Exclude<CarryKind, 'refresh'>;
 
 export interface CommitOptions {
-  /** Paths the writer re-staged whatever their object name; honoured for `'update'` only. */
-  readonly restagedPaths?: ReadonlyArray<FilePath>;
+  /** Entries the writer re-staged whatever their object name; honoured for `'update'` only. */
+  readonly restagedPaths?: ReadonlyArray<IndexPath>;
 }
 
 export interface IndexLock {

@@ -354,7 +354,7 @@ describe('carryExtensions', () => {
 
         // Act
         const sut = withRestagedPaths;
-        const result = sut(change, ['d/c' as FilePath, 'b' as FilePath]);
+        const result = sut(change, [{ path: 'd/c' as FilePath }, { path: 'b' as FilePath }]);
 
         // Assert
         expect(result).toEqual({
@@ -373,7 +373,7 @@ describe('carryExtensions', () => {
 
         // Act
         const sut = withRestagedPaths;
-        const result = sut(change, ['\uFF5E' as FilePath]);
+        const result = sut(change, [{ path: '\uFF5E' as FilePath }]);
 
         // Assert
         expect(result.changedPaths).toEqual([{ path: '\uFF5E' }, { path: '\u{1F600}' }]);
@@ -391,7 +391,7 @@ describe('carryExtensions', () => {
 
         // Act
         const sut = withRestagedPaths;
-        const result = sut(change, ['\uFFFD.txt' as FilePath]);
+        const result = sut(change, [{ path: '\uFFFD.txt' as FilePath }]);
 
         // Assert
         expect(result.changedPaths).toEqual([{ path: '\uFFFD.txt' }, lossy]);
@@ -471,7 +471,7 @@ describe('carryExtensions', () => {
     describe("When the widened change is carried on an 'update'", () => {
       it('Then the root is invalidated and the sibling directory stays valid', () => {
         // Arrange
-        const change = withRestagedPaths(NO_INDEX_CHANGE, ['b' as FilePath]);
+        const change = withRestagedPaths(NO_INDEX_CHANGE, [{ path: 'b' as FilePath }]);
         const invalidated = invalidateCacheTree(cacheTree(40), [{ path: 'b' as FilePath }]);
 
         // Act

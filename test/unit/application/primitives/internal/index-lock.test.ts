@@ -12,13 +12,19 @@ import {
   readIndex,
 } from '../../../../../src/application/primitives/read-index.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
-import type {
-  CacheTreeEntry,
-  IndexEntry,
+import {
+  type CacheTreeEntry,
+  type IndexEntry,
+  STAGE0_FLAGS,
 } from '../../../../../src/domain/git-index/index-entry.js';
 import { parseCacheTree } from '../../../../../src/domain/git-index/index-parser.js';
-import type { FilePath, ObjectId } from '../../../../../src/domain/objects/index.js';
+import {
+  FILE_MODE,
+  type FilePath,
+  type ObjectId,
+} from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
+import { serializeIndexFixtureAsync } from '../fixtures.js';
 import {
   cacheTreeExtension,
   indexExtensionsOf,
@@ -160,7 +166,7 @@ describe('IndexLock.commit', () => {
         const sut = await acquireIndexLock(ctx);
 
         // Act
-        await sut.commit(entries, 'update', { restagedPaths: ['b' as FilePath] });
+        await sut.commit(entries, 'update', { restagedPaths: [{ path: 'b' as FilePath }] });
 
         // Assert
         const tree = parseCacheTree(
@@ -176,6 +182,70 @@ describe('IndexLock.commit', () => {
       });
     });
 
+    describe('When committing a lossy entry restaged as an update', () => {
+      it('Then the cache-tree child named by its raw bytes is invalidated', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const lossyEntry: IndexEntry = {
+          ctimeSeconds: 0,
+          ctimeNanoseconds: 0,
+          mtimeSeconds: 0,
+          mtimeNanoseconds: 0,
+          dev: 0,
+          ino: 0,
+          mode: FILE_MODE.REGULAR,
+          uid: 0,
+          gid: 0,
+          fileSize: 0,
+          id: OTHER_ID,
+          flags: STAGE0_FLAGS,
+          path: '\uFFFD/x' as FilePath,
+          pathBytes: Uint8Array.of(0xff, 0x2f, 0x78),
+        };
+        const root: CacheTreeEntry = {
+          path: '',
+          entryCount: 1,
+          subtreeCount: 1,
+          id: TREE_ID,
+          children: [
+            {
+              path: '\uFFFD',
+              nameBytes: Uint8Array.of(0xff),
+              entryCount: 1,
+              subtreeCount: 0,
+              id: TREE_ID,
+              children: [],
+            },
+          ],
+        };
+        const index = {
+          version: 2 as const,
+          entries: [lossyEntry],
+          extensions: [cacheTreeExtension(root, ctx.hashConfig.digestLength)],
+          trailerSha: new Uint8Array(0),
+        };
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync(index, ctx),
+        );
+        invalidateIndexCache(ctx);
+        const entries = (await readIndex(ctx)).entries;
+        const sut = await acquireIndexLock(ctx);
+
+        // Act
+        await sut.commit(entries, 'update', { restagedPaths: [entries[0] as IndexEntry] });
+
+        // Assert
+        const tree = parseCacheTree(
+          (await indexExtensionsOf(ctx)).get('TREE') as Uint8Array,
+          SHA1_DIGEST,
+        );
+        expect(tree.entryCount).toBe(-1);
+        expect(tree.children.map((child) => child.entryCount)).toEqual([-1]);
+      });
+    });
+
     describe('When committing identical entries as a replace restaging b', () => {
       it('Then the root is invalidated and d, e, x are untouched', async () => {
         // Arrange
@@ -184,7 +254,7 @@ describe('IndexLock.commit', () => {
         const sut = await acquireIndexLock(ctx);
 
         // Act
-        await sut.commit(entries, 'replace', { restagedPaths: ['b' as FilePath] });
+        await sut.commit(entries, 'replace', { restagedPaths: [{ path: 'b' as FilePath }] });
 
         // Assert
         const tree = parseCacheTree(

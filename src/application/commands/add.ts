@@ -16,6 +16,7 @@ import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import type { EolNotice } from '../../domain/eol/crlf-conversion.js';
 import { operationAborted, TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
+import type { IndexPath } from '../../domain/git-index/index-path-key.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import { emptyPathspec, pathspecNoMatch } from '../../domain/index.js';
 import {
@@ -254,14 +255,14 @@ const stageLiterals = async (
   readonly added: ReadonlyArray<FilePath>;
   readonly modified: ReadonlyArray<FilePath>;
   readonly eolNotices: ReadonlyArray<EolNotice>;
-  readonly restagedPaths: ReadonlyArray<FilePath>;
+  readonly restagedPaths: ReadonlyArray<IndexPath>;
 }> => {
   const { ctx, scope, entries: existing, indexMtime } = staging;
   const newEntries = new Map<FilePath, IndexEntry>(existing);
   const added: FilePath[] = [];
   const modified: FilePath[] = [];
   const eolNotices: EolNotice[] = [];
-  const restagedPaths: FilePath[] = [];
+  const restagedPaths: IndexPath[] = [];
   for (const path of trackedFirst(validated, existing)) {
     const previous = existing.get(path);
     const guard = staging.ensurePromisorConfigValid;
@@ -269,7 +270,7 @@ const stageLiterals = async (
     if (result === 'missing') throw pathspecNoMatch(path);
     const { entry, notice } = result;
     newEntries.set(path, entry);
-    if (wasRestaged(previous, entry)) restagedPaths.push(path);
+    if (wasRestaged(previous, entry)) restagedPaths.push(entry);
     if (notice !== undefined) eolNotices.push(notice);
     if (previous === undefined) added.push(path);
     else if (previous.id !== entry.id || previous.mode !== entry.mode) modified.push(path);
@@ -281,14 +282,14 @@ const stageLiterals = async (
 const changesIndex = (
   existingCount: number,
   entries: ReadonlyArray<IndexEntry>,
-  restagedPaths: ReadonlyArray<FilePath>,
+  restagedPaths: ReadonlyArray<IndexPath>,
 ): boolean => restagedPaths.length > 0 || entries.length !== existingCount;
 
 const commitIfChanged = async (
   lock: IndexLock,
   existingCount: number,
   entries: ReadonlyArray<IndexEntry>,
-  restagedPaths: ReadonlyArray<FilePath>,
+  restagedPaths: ReadonlyArray<IndexPath>,
 ): Promise<void> => {
   if (!changesIndex(existingCount, entries, restagedPaths)) return;
   await lock.commit(entries, 'update', { restagedPaths });
@@ -540,11 +541,11 @@ const renormalizeEntries = async (
 ): Promise<{
   readonly entries: ReadonlyArray<IndexEntry>;
   readonly modified: ReadonlyArray<FilePath>;
-  readonly restagedPaths: ReadonlyArray<FilePath>;
+  readonly restagedPaths: ReadonlyArray<IndexPath>;
 }> => {
   const next: IndexEntry[] = [];
   const modified: FilePath[] = [];
-  const restagedPaths: FilePath[] = [];
+  const restagedPaths: IndexPath[] = [];
   for (const previous of entries) {
     if (!isRecleaned(previous, matcher)) {
       next.push(previous);
@@ -553,7 +554,7 @@ const renormalizeEntries = async (
     const entry = await renormalizeOne(staging, previous);
     next.push(entry);
     // renormalizeOne rebuilds every re-cleaned entry, so each one is restaged.
-    restagedPaths.push(previous.path);
+    restagedPaths.push(previous);
     if (entry.id !== previous.id || entry.mode !== previous.mode) modified.push(previous.path);
   }
   return { entries: next, modified, restagedPaths };
@@ -624,10 +625,10 @@ const byPath = (a: WalkOutcome, b: WalkOutcome): number => comparePaths(a.path, 
 const restagedPathsOf = (
   outcomes: ReadonlyArray<WalkOutcome>,
   existing: ReadonlyMap<FilePath, IndexEntry>,
-): FilePath[] =>
+): IndexPath[] =>
   outcomes
     .filter(({ path, entry }) => wasRestaged(existing.get(path), entry))
-    .map(({ path }) => path);
+    .map(({ entry }) => entry);
 
 /** The index once every walked outcome is staged, and which paths were matched, added, modified. */
 const tallyWalkOutcomes = (
@@ -639,7 +640,7 @@ const tallyWalkOutcomes = (
   readonly added: ReadonlyArray<FilePath>;
   readonly modified: ReadonlyArray<FilePath>;
   readonly eolNotices: ReadonlyArray<EolNotice>;
-  readonly restagedPaths: ReadonlyArray<FilePath>;
+  readonly restagedPaths: ReadonlyArray<IndexPath>;
 } => {
   const newEntries = new Map<FilePath, IndexEntry>(existing);
   const matched: FilePath[] = [];

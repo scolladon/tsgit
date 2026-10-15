@@ -1,5 +1,4 @@
 import { errorDataCode } from '../error-data-code.js';
-import type { FilePath } from '../objects/index.js';
 import { invalidateCacheTree, namesEachSubtreeOnce, serializeCacheTree } from './cache-tree.js';
 import type { IndexChange } from './diff-index-entries.js';
 import type { IndexExtension } from './index-entry.js';
@@ -93,11 +92,10 @@ const uniqueByKey = (items: ReadonlyArray<IndexPath>): IndexPath[] => {
 
 export const withRestagedPaths = (
   change: IndexChange,
-  restagedPaths: ReadonlyArray<FilePath>,
+  restagedPaths: ReadonlyArray<IndexPath>,
 ): IndexChange => {
   if (restagedPaths.length === 0) return change;
-  const lifted = restagedPaths.map((path): IndexPath => ({ path }));
-  const union = uniqueByKey([...change.changedPaths, ...lifted]);
+  const union = uniqueByKey([...change.changedPaths, ...restagedPaths]);
   union.sort(pathComparatorFor(union));
   return { ...change, changedPaths: union };
 };
