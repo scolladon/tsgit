@@ -1,6 +1,6 @@
 import { MAX_FLAT_TREE_ENTRIES } from '../../domain/diff/index.js';
 import { operationAborted } from '../../domain/error.js';
-import { concatBytes } from '../../domain/objects/encoding.js';
+import { concatBytes, decodesLosslessly, encode } from '../../domain/objects/encoding.js';
 import {
   treeCycleDetected,
   treeDepthExceeded,
@@ -32,6 +32,9 @@ interface WalkConfig {
   readonly maxDepth: number;
   readonly maxEntries: number;
   readonly pathBytes: boolean;
+  /** Internal channel: raw bytes only for names that do not round-trip
+   *  through the decoded view. */
+  readonly lossyPathBytes: boolean;
   readonly strictSubtrees: boolean;
   readonly pathHasher?: PathHasher;
   readonly skipTree?: (id: ObjectId) => boolean;
@@ -56,6 +59,9 @@ interface FramePrefix {
   /** This frame's own path bytes — a private copy, `undefined` when the
    *  `pathBytes` option is off, an empty array at the root. */
   readonly bytes: Uint8Array | undefined;
+  /** This frame's own path bytes when its path does NOT round-trip through
+   *  `text`, else `undefined`; only maintained on the lossy-bytes channel. */
+  readonly lossyBytes: Uint8Array | undefined;
 }
 
 /** Full path of `name` appended to this prefix — git's own rule: a root
@@ -82,6 +88,28 @@ function foldPrefixHash(hasher: PathHasher, prefix: FramePrefix, nameBytes: Uint
 function joinPrefixBytes(prefix: FramePrefix, nameBytes: Uint8Array): Uint8Array {
   const bytes = prefix.bytes!;
   return bytes.length === 0 ? nameBytes.slice() : concatBytes([bytes, SLASH, nameBytes]);
+}
+
+/**
+ * Raw path of an entry on the lossy-bytes channel: `undefined` while the
+ * whole path round-trips (the common UTF-8 case, one U+FFFD scan per name),
+ * else the prefix's bytes joined with the name's raw bytes.
+ */
+function lossyPathBytesOf(prefix: FramePrefix, entry: TreeEntry): Uint8Array | undefined {
+  const { lossyBytes } = prefix;
+  if (lossyBytes === undefined && decodesLosslessly(entry.name, entry.nameBytes)) return undefined;
+  const base = lossyBytes ?? encode(prefix.text);
+  return prefix.text === '' ? entry.nameBytes.slice() : concatBytes([base, SLASH, entry.nameBytes]);
+}
+
+/** The entry's bytes under whichever channel is on; `pathBytes` wins. */
+function entryPathBytes(
+  config: WalkConfig,
+  prefix: FramePrefix,
+  entry: TreeEntry,
+): Uint8Array | undefined {
+  if (config.pathBytes) return joinPrefixBytes(prefix, entry.nameBytes);
+  return config.lossyPathBytes ? lossyPathBytesOf(prefix, entry) : undefined;
 }
 
 /**
@@ -127,6 +155,7 @@ function enterTree(
 async function resolveWalkConfig(
   ctx: Context,
   options: WalkTreeOptions | undefined,
+  lossyPathBytes: boolean,
 ): Promise<WalkConfig> {
   return {
     ctx,
@@ -134,6 +163,7 @@ async function resolveWalkConfig(
     maxDepth: options?.maxDepth ?? (await resolveMaxTreeDepth(ctx)),
     maxEntries: options?.maxEntries ?? MAX_FLAT_TREE_ENTRIES,
     pathBytes: options?.pathBytes ?? false,
+    lossyPathBytes,
     strictSubtrees: options?.strictSubtrees ?? false,
     ...(options?.pathHasher !== undefined ? { pathHasher: options.pathHasher } : {}),
     ...(options?.skipTree !== undefined ? { skipTree: options.skipTree } : {}),
@@ -178,7 +208,7 @@ function nextFrameEntry(config: WalkConfig, counter: Counter, frame: WalkFrame):
     nameHash: config.pathHasher
       ? foldPrefixHash(config.pathHasher, frame.framePrefix, entry.nameBytes)
       : undefined,
-    pathBytes: config.pathBytes ? joinPrefixBytes(frame.framePrefix, entry.nameBytes) : undefined,
+    pathBytes: entryPathBytes(config, frame.framePrefix, entry),
     descend: shouldRecurse(config.recursive, entry.mode) && !(config.skipTree?.(entry.id) ?? false),
   };
 }
@@ -190,6 +220,7 @@ function buildRootPrefix(config: WalkConfig): FramePrefix {
     text: '',
     hashState: config.pathHasher?.seed ?? 0,
     bytes: config.pathBytes ? new Uint8Array(0) : undefined,
+    lossyBytes: undefined,
   };
 }
 
@@ -208,6 +239,7 @@ function buildChildPrefix(
     text: path,
     hashState: nameHash ?? 0,
     bytes: config.pathBytes ? joinPrefixBytes(frame.framePrefix, entry.nameBytes) : undefined,
+    lossyBytes: config.lossyPathBytes ? lossyPathBytesOf(frame.framePrefix, entry) : undefined,
   };
 }
 
@@ -245,12 +277,34 @@ function buildYieldedEntry(
  * config (default 2048, honoured unclamped) — never from `~/.gitconfig` or
  * any other scope, which tsgit does not read for this key.
  */
-export async function* walkTree(
+export function walkTree(
   ctx: Context,
   treeIdOrObject: ObjectId | Tree,
   options?: WalkTreeOptions,
 ): AsyncIterable<WalkTreeEntry> {
-  const config = await resolveWalkConfig(ctx, options);
+  return walkResolved(ctx, treeIdOrObject, options, false);
+}
+
+/**
+ * {@link walkTree} that also yields `pathBytes` on exactly the entries whose
+ * path does not round-trip through the decoded view. Internal: index rebuilds
+ * need the raw name only for non-UTF-8 trees, so UTF-8 trees pay no allocation.
+ */
+export function walkTreeWithLossyBytes(
+  ctx: Context,
+  treeIdOrObject: ObjectId | Tree,
+  options?: WalkTreeOptions,
+): AsyncIterable<WalkTreeEntry> {
+  return walkResolved(ctx, treeIdOrObject, options, true);
+}
+
+async function* walkResolved(
+  ctx: Context,
+  treeIdOrObject: ObjectId | Tree,
+  options: WalkTreeOptions | undefined,
+  lossyPathBytes: boolean,
+): AsyncIterable<WalkTreeEntry> {
+  const config = await resolveWalkConfig(ctx, options, lossyPathBytes);
   const counter: Counter = { value: 0 };
   const rootTree =
     typeof treeIdOrObject === 'string'

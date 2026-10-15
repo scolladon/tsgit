@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { WalkTreeEntry as WTE } from '../../../../src/application/primitives/types.js';
-import { walkTree } from '../../../../src/application/primitives/walk-tree.js';
+import {
+  walkTree,
+  walkTreeWithLossyBytes,
+} from '../../../../src/application/primitives/walk-tree.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { DEFAULT_MAX_TREE_DEPTH } from '../../../../src/domain/diff/flat-tree.js';
@@ -1091,6 +1094,68 @@ describe('Given the same depth-5 tree chain tested at two different core.maxTree
         expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
         expect(data.depth).toBe(5);
       }
+    });
+  });
+});
+
+describe('walkTreeWithLossyBytes', () => {
+  describe('Given a tree holding a lossy directory, a lossy-free directory, a BOM name and a UTF-8 name', () => {
+    describe('When walkTreeWithLossyBytes is iterated', () => {
+      it('Then only lossy paths carry their raw pathBytes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blob = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([1]),
+          id: '' as ObjectId,
+        } satisfies Blob);
+        const lossyDir = await writeTree(ctx, [treeEntry('100644' as FileMode, 'x', blob)]);
+        const okDir = await writeTree(ctx, [treeEntry('100644' as FileMode, 'y', blob)]);
+        const rootId = await writeTree(ctx, [
+          treeEntry('40000' as FileMode, Uint8Array.of(0xff), lossyDir),
+          treeEntry('40000' as FileMode, 'ok', okDir),
+          treeEntry('100644' as FileMode, '\uFEFFb', blob),
+          treeEntry('100644' as FileMode, 'é', blob),
+        ]);
+        // Act
+        const out = await collect(walkTreeWithLossyBytes(ctx, rootId));
+        // Assert
+        const byPath = new Map(out.map((e) => [e.path, e]));
+        expect(byPath.get('\uFFFD' as FilePath)?.pathBytes).toStrictEqual(Uint8Array.of(0xff));
+        expect(byPath.get('\uFFFD/x' as FilePath)?.pathBytes).toStrictEqual(
+          Uint8Array.of(0xff, 0x2f, 0x78),
+        );
+        for (const clean of ['ok', 'ok/y', '\uFEFFb', 'é']) {
+          expect(Object.keys(byPath.get(clean as FilePath) ?? { pathBytes: 0 })).toStrictEqual([
+            'path',
+            'id',
+            'mode',
+          ]);
+        }
+      });
+    });
+
+    describe('When walkTree is iterated with pathBytes', () => {
+      it('Then every entry carries its bytes, unchanged', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blob = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([1]),
+          id: '' as ObjectId,
+        } satisfies Blob);
+        const rootId = await writeTree(ctx, [
+          treeEntry('100644' as FileMode, Uint8Array.of(0xff), blob),
+          treeEntry('100644' as FileMode, 'a', blob),
+        ]);
+        // Act
+        const out = await collect(walkTree(ctx, rootId, { pathBytes: true }));
+        // Assert
+        expect(out.map((e) => e.pathBytes)).toStrictEqual([
+          Uint8Array.of(0x61),
+          Uint8Array.of(0xff),
+        ]);
+      });
     });
   });
 });

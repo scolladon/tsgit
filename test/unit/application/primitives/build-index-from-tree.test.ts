@@ -789,4 +789,67 @@ describe('buildIndexFromTree', () => {
       });
     });
   });
+
+  describe('Given a tree holding raw \xff.txt and a literal U+FFFD .txt with donors for both', () => {
+    const RAW = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+    const arrange = async () => {
+      const ctx = await buildSeededContext();
+      const blobId = await writeBlob(ctx, 'x');
+      const treeId = await writeTree(ctx, [
+        treeEntry(FILE_MODE.REGULAR, RAW, blobId),
+        treeEntry(FILE_MODE.REGULAR, '\uFFFD.txt' as FilePath, blobId),
+      ]);
+      const lossyDonor = makeIndexEntry('\uFFFD.txt', blobId, FILE_MODE.REGULAR, {
+        fileSize: 11,
+        pathBytes: RAW,
+      });
+      const literalDonor = makeIndexEntry('\uFFFD.txt', blobId, FILE_MODE.REGULAR, {
+        fileSize: 22,
+      });
+      return { ctx, treeId, lossyDonor, literalDonor };
+    };
+
+    describe('When buildIndexFromTree runs', () => {
+      it('Then the raw leaf keeps its bytes and its own donor stat', async () => {
+        // Arrange
+        const { ctx, treeId, lossyDonor, literalDonor } = await arrange();
+        const currentIndex = { ...EMPTY_INDEX, entries: [literalDonor, lossyDonor] };
+        // Act
+        const sut = await buildIndexFromTree(ctx, { targetTree: treeId, currentIndex });
+        // Assert
+        const raw = sut.find((e) => e.pathBytes !== undefined);
+        expect(raw?.pathBytes).toStrictEqual(RAW);
+        expect(raw?.fileSize).toBe(11);
+        expect(sut.filter((e) => e.pathBytes !== undefined)).toHaveLength(1);
+      });
+
+      it('Then the literal leaf keeps its own donor stat and no bytes', async () => {
+        // Arrange
+        const { ctx, treeId, lossyDonor, literalDonor } = await arrange();
+        const currentIndex = { ...EMPTY_INDEX, entries: [literalDonor, lossyDonor] };
+        // Act
+        const sut = await buildIndexFromTree(ctx, { targetTree: treeId, currentIndex });
+        // Assert
+        const literal = sut.find((e) => e.pathBytes === undefined);
+        expect(literal?.fileSize).toBe(22);
+        expect(sut).toHaveLength(2);
+      });
+
+      it('Then a sparse exclusion keeps the raw bytes on the skip-worktree entry', async () => {
+        // Arrange
+        const { ctx, treeId } = await arrange();
+        // Act
+        const sut = await buildIndexFromTree(ctx, {
+          targetTree: treeId,
+          currentIndex: EMPTY_INDEX,
+          sparse: () => false,
+        });
+        // Assert
+        expect(sut.filter((e) => e.pathBytes !== undefined).map((e) => e.pathBytes)).toStrictEqual([
+          RAW,
+        ]);
+        expect(sut.every((e) => e.flags.skipWorktree)).toBe(true);
+      });
+    });
+  });
 });

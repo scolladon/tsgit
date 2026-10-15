@@ -7,10 +7,15 @@ import {
   exceedsMaxTreeDepth,
   exceedsMaxTreeEntries,
 } from '../../../../src/application/primitives/validators.js';
-import { walkTree } from '../../../../src/application/primitives/walk-tree.js';
+import {
+  walkTree,
+  walkTreeWithLossyBytes,
+} from '../../../../src/application/primitives/walk-tree.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { operationAborted } from '../../../../src/domain/error.js';
+import { splitAtSlash } from '../../../../src/domain/git-index/index-path-key.js';
+import { bytesEqual, encode } from '../../../../src/domain/objects/encoding.js';
 import {
   treeCycleDetected,
   treeDepthExceeded,
@@ -28,6 +33,7 @@ import {
 } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { arbPathBytes } from '../../domain/git-index/arbitraries.js';
 import { type TreeShapeEntry, treeShapeArb } from './arbitraries.js';
 import { buildSeededContext } from './fixtures.js';
 
@@ -178,6 +184,46 @@ describe('walkTree properties', () => {
             const recursive = await collect(walkTreeOracle(ctx, rootId, options));
 
             expect(iterative).toEqual(recursive);
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given a chain of directories named from arbitrary raw path bytes', () => {
+    describe('When walked with the lossy-bytes channel and with the pathBytes option', () => {
+      it('Then an entry carries pathBytes exactly when the full bytes differ from its encoded path', async () => {
+        // Arrange + Act + Assert
+        await fc.assert(
+          fc.asyncProperty(arbPathBytes(), async (raw) => {
+            const ctx = await buildSeededContext();
+            const blob = await writeObject(ctx, {
+              type: 'blob',
+              content: new Uint8Array([1]),
+              id: '' as ObjectId,
+            });
+            const names = splitAtSlash(raw);
+            let child = blob;
+            for (let i = names.length - 1; i >= 0; i--) {
+              const mode = (
+                i === names.length - 1 ? FILE_MODE.REGULAR : FILE_MODE.DIRECTORY
+              ) as FileMode;
+              child = await writeTree(ctx, [treeEntry(mode, names[i]!, child)]);
+            }
+
+            const sut = await collect(walkTreeWithLossyBytes(ctx, child));
+            const oracle = await collect(walkTree(ctx, child, { pathBytes: true }));
+
+            expect(sut).toHaveLength(oracle.length);
+            sut.forEach((entry, i) => {
+              const full = oracle[i]!.pathBytes!;
+              if (bytesEqual(encode(entry.path), full)) {
+                expect(Object.hasOwn(entry, 'pathBytes')).toBe(false);
+                return;
+              }
+              expect(entry.pathBytes).toStrictEqual(full);
+            });
           }),
           { numRuns: 100 },
         );

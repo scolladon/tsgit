@@ -393,3 +393,71 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'index path bytes interop — reset rebuilds the index from tree names',
+  { timeout: 60_000 },
+  () => {
+    let pair: PeerPair;
+    let repo: Repository;
+
+    const git = (...args: ReadonlyArray<string>): string =>
+      runGit(['-C', pair.peer, ...args], { env: COMMIT_ENV });
+
+    beforeEach(async () => {
+      pair = await makePeerPair('index-path-bytes-reset');
+      runGit(['init', '-q', '-b', 'main', pair.peer]);
+      runGit(['-C', pair.peer, 'config', 'user.name', 'Ada']);
+      runGit(['-C', pair.peer, 'config', 'user.email', 'ada@example.com']);
+      repo = await openRepository({ cwd: pair.peer });
+    });
+
+    afterEach(async () => {
+      await repo.dispose();
+      await pair.dispose();
+    });
+
+    describe('Given HEAD holds a non-UTF-8 name and a BOM name and the index is empty', () => {
+      it('Then reset --mixed restores both names byte-for-byte', async () => {
+        // Arrange
+        const blob = hashBlob(pair.peer, 'raw\n');
+        stageRaw(pair.peer, [{ mode: REGULAR_MODE, oid: blob, path: FF_TXT }]);
+        writeFileSync(path.join(pair.peer, '\uFEFFb'), 'b\n');
+        git('add', '\uFEFFb');
+        git('commit', '-q', '-m', 'seed');
+        git('rm', '-r', '--cached', '-q', '.');
+
+        // Act
+        await repo.reset({ mode: 'mixed', rev: 'HEAD' });
+
+        // Assert
+        expect(lsFilesPathHex(pair.peer)).toEqual(['efbbbf62', 'ff2e747874']);
+      });
+    });
+
+    describe('Given a changed non-UTF-8 directory between two commits', () => {
+      it('Then reset --mixed HEAD~1 rebuilds an index whose tree equals the target tree', async () => {
+        // Arrange
+        const blobA = hashBlob(pair.peer, 'a\n');
+        const blobB = hashBlob(pair.peer, 'b\n');
+        const dirX = Uint8Array.of(0xff, 0x2f, 0x78);
+        stageRaw(pair.peer, [
+          { mode: REGULAR_MODE, oid: blobA, path: dirX },
+          { mode: REGULAR_MODE, oid: blobA, path: Uint8Array.of(0x79) },
+        ]);
+        git('commit', '-q', '-m', 'one');
+        stageRaw(pair.peer, [{ mode: REGULAR_MODE, oid: blobB, path: dirX }]);
+        git('commit', '-q', '-m', 'two');
+        const targetTree = git('rev-parse', 'HEAD~1^{tree}').trim();
+
+        // Act
+        await repo.reset({ mode: 'mixed', rev: 'HEAD~1' });
+
+        // Assert
+        expect(git('write-tree').trim()).toBe(targetTree);
+        expect(lsFilesPathHex(pair.peer)).toEqual(['79', 'ff2f78']);
+        expect(oidByPathHex(pair.peer).ff2f78).toBe(blobA);
+      });
+    });
+  },
+);
