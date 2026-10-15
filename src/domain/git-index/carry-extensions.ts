@@ -4,7 +4,8 @@ import { invalidateCacheTree, namesEachSubtreeOnce, serializeCacheTree } from '.
 import type { IndexChange } from './diff-index-entries.js';
 import type { IndexExtension } from './index-entry.js';
 import { parseCacheTree } from './index-parser.js';
-import { pathStringComparatorFor } from './index-writer.js';
+import { type IndexPath, indexPathKey } from './index-path-key.js';
+import { pathComparatorFor } from './index-writer.js';
 
 export type CarryKind = 'refresh' | 'update' | 'replace';
 
@@ -40,10 +41,7 @@ const carryTree = (
   try {
     const root = parseCacheTree(tree.data, digestLength);
     if (!namesEachSubtreeOnce(root)) return undefined;
-    const invalidated = invalidateCacheTree(
-      root,
-      change.changedPaths.map((path) => ({ path })),
-    );
+    const invalidated = invalidateCacheTree(root, change.changedPaths);
     return { signature: TREE_SIGNATURE, data: serializeCacheTree(invalidated, digestLength) };
   } catch (err) {
     if (errorDataCode(err) === INVALID_INDEX_ENTRY_CODE) return undefined;
@@ -84,12 +82,22 @@ export const carryExtensions = (
   ].filter((extension) => extension !== undefined);
 };
 
+const uniqueByKey = (items: ReadonlyArray<IndexPath>): IndexPath[] => {
+  const byKey = new Map<string, IndexPath>();
+  for (const item of items) {
+    const key = indexPathKey(item);
+    if (!byKey.has(key)) byKey.set(key, item);
+  }
+  return [...byKey.values()];
+};
+
 export const withRestagedPaths = (
   change: IndexChange,
   restagedPaths: ReadonlyArray<FilePath>,
 ): IndexChange => {
   if (restagedPaths.length === 0) return change;
-  const union = [...new Set([...change.changedPaths, ...restagedPaths])];
-  union.sort(pathStringComparatorFor(union));
+  const lifted = restagedPaths.map((path): IndexPath => ({ path }));
+  const union = uniqueByKey([...change.changedPaths, ...lifted]);
+  union.sort(pathComparatorFor(union));
   return { ...change, changedPaths: union };
 };

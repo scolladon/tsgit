@@ -1,9 +1,9 @@
-import type { FilePath } from '../objects/index.js';
 import type { IndexEntry } from './index-entry.js';
+import { type IndexPath, indexPathKey } from './index-path-key.js';
 import { compareEntryPath, inOrder, pathComparatorFor } from './index-writer.js';
 
 export interface IndexChange {
-  readonly changedPaths: ReadonlyArray<FilePath>;
+  readonly changedPaths: ReadonlyArray<IndexPath>;
   readonly trackedSetChanged: boolean;
   readonly resolvedUnmerged: boolean;
 }
@@ -27,10 +27,11 @@ const collectChangedPaths = (
   before: ReadonlyArray<IndexEntry>,
   after: ReadonlyArray<IndexEntry>,
   comparePath: PathComparator,
-): ReadonlyArray<FilePath> => {
-  const changed: FilePath[] = [];
+): ReadonlyArray<IndexPath> => {
+  const changed: IndexPath[] = [];
   const mark = (entry: IndexEntry): void => {
-    if (changed[changed.length - 1] !== entry.path) changed.push(entry.path);
+    const last = changed[changed.length - 1];
+    if (last === undefined || indexPathKey(last) !== indexPathKey(entry)) changed.push(entry);
   };
   let i = 0;
   let j = 0;

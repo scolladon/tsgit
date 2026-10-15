@@ -9,7 +9,13 @@ const oid = (c: string): ObjectId => c.repeat(40) as ObjectId;
 
 const entry = (
   path: string,
-  options: { id?: string; mode?: FileMode; stage?: 0 | 1 | 2 | 3; fileSize?: number } = {},
+  options: {
+    id?: string;
+    mode?: FileMode;
+    stage?: 0 | 1 | 2 | 3;
+    fileSize?: number;
+    pathBytes?: Uint8Array;
+  } = {},
 ): IndexEntry => ({
   ctimeSeconds: 0,
   ctimeNanoseconds: 0,
@@ -24,6 +30,7 @@ const entry = (
   id: oid(options.id ?? 'a'),
   flags: { ...STAGE0_FLAGS, stage: options.stage ?? 0 },
   path: path as FilePath,
+  ...(options.pathBytes === undefined ? {} : { pathBytes: options.pathBytes }),
 });
 
 describe('diffIndexEntries', () => {
@@ -39,7 +46,7 @@ describe('diffIndexEntries', () => {
         const result = sut(before, after);
 
         // Assert
-        expect(result.changedPaths).toEqual(['d/c']);
+        expect(result.changedPaths.map(({ path }) => path)).toEqual(['d/c']);
         expect(result.trackedSetChanged).toBe(false);
         expect(result.resolvedUnmerged).toBe(false);
       });
@@ -58,7 +65,7 @@ describe('diffIndexEntries', () => {
         const result = sut(before, after);
 
         // Assert
-        expect(result.changedPaths).toEqual(['a']);
+        expect(result.changedPaths.map(({ path }) => path)).toEqual(['a']);
         expect(result.trackedSetChanged).toBe(false);
       });
     });
@@ -76,7 +83,7 @@ describe('diffIndexEntries', () => {
         const result = sut(before, after);
 
         // Assert
-        expect(result.changedPaths).toEqual(['a', 'd/e/n']);
+        expect(result.changedPaths.map(({ path }) => path)).toEqual(['a', 'd/e/n']);
         expect(result.trackedSetChanged).toBe(true);
       });
     });
@@ -95,7 +102,7 @@ describe('diffIndexEntries', () => {
 
         // Assert
         expect(result.trackedSetChanged).toBe(true);
-        expect(result.changedPaths).toEqual(['b']);
+        expect(result.changedPaths.map(({ path }) => path)).toEqual(['b']);
       });
     });
   });
@@ -117,7 +124,7 @@ describe('diffIndexEntries', () => {
 
         // Assert
         expect(result.resolvedUnmerged).toBe(true);
-        expect(result.changedPaths).toEqual(['m']);
+        expect(result.changedPaths.map(({ path }) => path)).toEqual(['m']);
         expect(result.trackedSetChanged).toBe(false);
       });
     });
@@ -208,7 +215,7 @@ describe('diffIndexEntries', () => {
         const result = sut(before, after);
 
         // Assert
-        expect(result.changedPaths).toEqual(['\u{1F600}.txt']);
+        expect(result.changedPaths.map(({ path }) => path)).toEqual(['\u{1F600}.txt']);
         expect(result.trackedSetChanged).toBe(true);
       });
     });
@@ -226,7 +233,7 @@ describe('diffIndexEntries', () => {
         const result = sut(before, after);
 
         // Assert
-        expect(result.changedPaths).toEqual(['b']);
+        expect(result.changedPaths.map(({ path }) => path)).toEqual(['b']);
         expect(before.map((e) => e.path)).toEqual(['b', 'a']);
       });
     });
@@ -244,7 +251,7 @@ describe('diffIndexEntries', () => {
         const result = sut(before, [flagged]);
 
         // Assert
-        expect(result.changedPaths).toEqual([]);
+        expect(result.changedPaths.map(({ path }) => path)).toEqual([]);
       });
     });
   });
@@ -271,7 +278,7 @@ describe('diffIndexEntries stage and path ordering', () => {
         const result = sut(before, after);
 
         // Assert
-        expect(result.changedPaths).toEqual([]);
+        expect(result.changedPaths.map(({ path }) => path)).toEqual([]);
       });
     });
   });
@@ -288,7 +295,7 @@ describe('diffIndexEntries stage and path ordering', () => {
         const result = sut(before, after);
 
         // Assert
-        expect(result.changedPaths).toEqual(['a', '￿', '\u{1F600}']);
+        expect(result.changedPaths.map(({ path }) => path)).toEqual(['a', '￿', '\u{1F600}']);
       });
     });
   });
@@ -305,7 +312,53 @@ describe('diffIndexEntries stage and path ordering', () => {
         const result = sut(before, after);
 
         // Assert
-        expect(result.changedPaths).toEqual(['a', '￿', '\u{1F600}']);
+        expect(result.changedPaths.map(({ path }) => path)).toEqual(['a', '￿', '\u{1F600}']);
+      });
+    });
+  });
+
+  describe('Given a raw-byte path and a literal U+FFFD path that decode alike', () => {
+    const rawBytes = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+    const decoded = '\uFFFD.txt';
+
+    describe('When both entries change id', () => {
+      it('Then both are reported, the second carrying its raw bytes', () => {
+        // Arrange
+        const before = [
+          entry(decoded, { id: '1' }),
+          entry(decoded, { id: '1', pathBytes: rawBytes }),
+        ];
+        const after = [
+          entry(decoded, { id: '2' }),
+          entry(decoded, { id: '3', pathBytes: rawBytes }),
+        ];
+
+        // Act
+        const sut = diffIndexEntries;
+        const result = sut(before, after);
+
+        // Assert
+        expect(result.changedPaths).toHaveLength(2);
+        expect(result.changedPaths[0]?.pathBytes).toBeUndefined();
+        expect(result.changedPaths[1]?.pathBytes).toEqual(rawBytes);
+      });
+    });
+
+    describe('When the raw-byte entry is added next to the literal one', () => {
+      it('Then only the raw-byte path is reported and the tracked set changed', () => {
+        // Arrange
+        const before = [entry(decoded)];
+        const after = [entry(decoded), entry(decoded, { pathBytes: rawBytes })];
+
+        // Act
+        const sut = diffIndexEntries;
+        const result = sut(before, after);
+
+        // Assert
+        expect(result.changedPaths).toHaveLength(1);
+        expect(result.changedPaths[0]?.path).toBe(decoded);
+        expect(result.changedPaths[0]?.pathBytes).toEqual(rawBytes);
+        expect(result.trackedSetChanged).toBe(true);
       });
     });
   });
