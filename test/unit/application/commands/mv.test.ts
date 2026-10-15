@@ -2,9 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { mv } from '../../../../src/application/commands/mv.js';
+import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { fileNotFound, TsgitError } from '../../../../src/domain/index.js';
+import type { FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
+import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { asBareContext, seedRepo } from './fixtures.js';
 
 const seedAndStage = async (workingTree: Readonly<Record<string, string>>): Promise<Context> => {
@@ -749,6 +755,56 @@ describe('mv', () => {
         expect(result.moved).toEqual([
           { from: 'a.txt', to: 'dir/a.txt' },
           { from: 'z.txt', to: 'dir/z.txt' },
+        ]);
+      });
+    });
+  });
+});
+
+describe('mv on a directory holding an entry with a non-UTF-8 name', () => {
+  describe('Given d/y and d/<0xff> in the index and d/y on disk', () => {
+    describe('When mv renames d to e', () => {
+      it('Then the lossy entry is re-pathed byte for byte under e', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { workingTree: { 'd/y': 'y' } });
+        const stat = await ctx.fs.lstat(work(ctx, 'd/y'));
+        const entryOf = async (path: FilePath): Promise<IndexEntry> => ({
+          ...indexEntryFromStat(
+            stat,
+            FILE_MODE.REGULAR,
+            await writeObject(ctx, {
+              type: 'blob',
+              id: '' as ObjectId,
+              content: new TextEncoder().encode('y'),
+            }),
+            path,
+          ),
+          fileSize: 0,
+        });
+        const lossy: IndexEntry = {
+          ...(await entryOf('d/\uFFFD' as FilePath)),
+          pathBytes: Uint8Array.of(0x64, 0x2f, 0xff),
+        };
+        const entries = [await entryOf('d/y' as FilePath), lossy];
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync(
+            { version: 2, entries, extensions: [], trailerSha: new Uint8Array(0) },
+            ctx,
+          ),
+        );
+        const sut = mv;
+
+        // Act
+        await sut(ctx, ['d'], 'e');
+
+        // Assert
+        const index = await readIndex(ctx);
+        expect(index.entries.map((e) => e.path)).toEqual(['e/y', 'e/\uFFFD']);
+        expect(index.entries.map((e) => e.pathBytes)).toEqual([
+          undefined,
+          Uint8Array.of(0x65, 0x2f, 0xff),
         ]);
       });
     });

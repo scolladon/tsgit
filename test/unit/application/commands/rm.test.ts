@@ -4,16 +4,20 @@ import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { rm } from '../../../../src/application/commands/rm.js';
+import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { fileNotFound, TsgitError } from '../../../../src/domain/index.js';
-import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
+import type { AuthorIdentity, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
+import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import type {
   CommandRequest,
   CommandResult,
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { asBareContext, seedRepo } from './fixtures.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -991,6 +995,57 @@ describe('rm stat cache', () => {
 
         // Assert
         expect(reads).not.toContain(path);
+      });
+    });
+  });
+});
+
+const LOSSY_NAME_BYTES = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+const LOSSY_VIEW = '\uFFFD.txt' as FilePath;
+
+describe('rm on an index holding entries whose decoded paths collide', () => {
+  describe('Given z, U and L in the index', () => {
+    describe('When rm --cached removes z', () => {
+      it('Then U and L both survive and L keeps its raw path bytes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { workingTree: { z: 'z' } });
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/z`);
+        const entryOf = async (path: FilePath, text: string): Promise<IndexEntry> => ({
+          ...indexEntryFromStat(
+            stat,
+            FILE_MODE.REGULAR,
+            await writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: enc(text) }),
+            path,
+          ),
+          fileSize: 0,
+        });
+        const lossy: IndexEntry = {
+          ...(await entryOf(LOSSY_VIEW, 'x')),
+          pathBytes: LOSSY_NAME_BYTES,
+        };
+        const entries = [
+          await entryOf('z' as FilePath, 'z'),
+          await entryOf(LOSSY_VIEW, 'y'),
+          lossy,
+        ];
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync(
+            { version: 2, entries, extensions: [], trailerSha: new Uint8Array(0) },
+            ctx,
+          ),
+        );
+        const sut = rm;
+
+        // Act
+        const result = await sut(ctx, ['z'], { cached: true });
+
+        // Assert
+        expect(result.removed).toEqual(['z']);
+        const index = await readIndex(ctx);
+        expect(index.entries.map((e) => e.path)).toEqual([LOSSY_VIEW, LOSSY_VIEW]);
+        expect(index.entries.map((e) => e.pathBytes)).toEqual([undefined, LOSSY_NAME_BYTES]);
       });
     });
   });

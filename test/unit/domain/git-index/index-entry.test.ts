@@ -5,6 +5,7 @@ import {
   isStatClean,
   STAGE0_FLAGS,
   skipWorktreeEntry,
+  withPath,
 } from '../../../../src/domain/git-index/index-entry.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE, FilePath } from '../../../../src/domain/objects/index.js';
@@ -248,6 +249,90 @@ describe('skipWorktreeEntry', () => {
           skipWorktree: true,
           intentToAdd: false,
         });
+      });
+    });
+  });
+});
+
+const LOSSY_BYTES = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+const LOSSY_ENTRY: IndexEntry = {
+  ...BASE_ENTRY,
+  mode: FILE_MODE.EXECUTABLE,
+  flags: { ...STAGE0_FLAGS, skipWorktree: true },
+  path: FilePath.from('\uFFFD.txt'),
+  pathBytes: LOSSY_BYTES,
+};
+
+describe('withPath', () => {
+  describe('Given a lossy entry', () => {
+    describe('When moved to a UTF-8 path', () => {
+      it('Then the result has no pathBytes key and keeps every other field', () => {
+        // Arrange
+        const to = { path: FilePath.from('e/x') };
+
+        // Act
+        const result = withPath(LOSSY_ENTRY, to);
+
+        // Assert
+        const { pathBytes: _dropped, ...expected } = LOSSY_ENTRY;
+        expect(result).toEqual({ ...expected, path: 'e/x' });
+        expect('pathBytes' in result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a UTF-8 entry', () => {
+    describe('When moved to a lossy path', () => {
+      it('Then the result carries the destination bytes', () => {
+        // Arrange
+        const to = { path: LOSSY_ENTRY.path, pathBytes: LOSSY_BYTES };
+
+        // Act
+        const result = withPath(BASE_ENTRY, to);
+
+        // Assert
+        expect(result).toEqual({ ...BASE_ENTRY, path: LOSSY_ENTRY.path, pathBytes: LOSSY_BYTES });
+      });
+    });
+  });
+});
+
+describe('skipWorktreeEntry with raw path bytes', () => {
+  describe('Given a tree path carrying raw bytes', () => {
+    describe('When skipWorktreeEntry', () => {
+      it('Then the bytes are kept', () => {
+        // Arrange
+        const input = {
+          path: LOSSY_ENTRY.path,
+          pathBytes: LOSSY_BYTES,
+          id: 'b'.repeat(40) as ObjectId,
+          mode: FILE_MODE.REGULAR,
+        };
+
+        // Act
+        const result = skipWorktreeEntry(input);
+
+        // Assert
+        expect(result.pathBytes).toEqual(LOSSY_BYTES);
+      });
+    });
+  });
+
+  describe('Given a tree path without raw bytes', () => {
+    describe('When skipWorktreeEntry', () => {
+      it('Then the pathBytes key is absent', () => {
+        // Arrange
+        const input = {
+          path: FilePath.from('a'),
+          id: 'b'.repeat(40) as ObjectId,
+          mode: FILE_MODE.REGULAR,
+        };
+
+        // Act
+        const result = skipWorktreeEntry(input);
+
+        // Assert
+        expect('pathBytes' in result).toBe(false);
       });
     });
   });

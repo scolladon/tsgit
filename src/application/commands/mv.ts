@@ -21,7 +21,15 @@ import {
 } from '../../domain/commands/error.js';
 import { basename, dirname, TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
+import { withPath } from '../../domain/git-index/index-entry.js';
+import type { IndexPath, IndexPathKey } from '../../domain/git-index/index-path-key.js';
+import {
+  indexPathKey,
+  indexPathOfBytes,
+  keyOfPath,
+} from '../../domain/git-index/index-path-key.js';
 import { emptyPathspec } from '../../domain/index.js';
+import { concatBytes, encode } from '../../domain/objects/encoding.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { joinPathSegment } from '../primitives/internal/join-path-segment.js';
@@ -126,15 +134,15 @@ export const mv = async (
   }
 };
 
-const readIndexMap = async (ctx: Context): Promise<Map<FilePath, IndexEntry>> => {
+const readIndexMap = async (ctx: Context): Promise<Map<IndexPathKey, IndexEntry>> => {
   const index = await readIndex(ctx).catch((err: unknown) => {
     if (err instanceof TsgitError && isIndexMissingCode(err.data.code)) {
       return { entries: [] as ReadonlyArray<IndexEntry> };
     }
     throw err;
   });
-  const byPath = new Map<FilePath, IndexEntry>();
-  for (const entry of index.entries) byPath.set(entry.path, entry);
+  const byPath = new Map<IndexPathKey, IndexEntry>();
+  for (const entry of index.entries) byPath.set(indexPathKey(entry), entry);
   return byPath;
 };
 
@@ -167,7 +175,7 @@ interface Plan {
 
 const buildPlan = async (
   ctx: Context,
-  byPath: ReadonlyMap<FilePath, IndexEntry>,
+  byPath: ReadonlyMap<IndexPathKey, IndexEntry>,
   sources: ReadonlyArray<FilePath>,
   mode: DestinationMode,
   opts: MvOptions,
@@ -194,7 +202,7 @@ const buildPlan = async (
 
 const validateMove = async (
   ctx: Context,
-  byPath: ReadonlyMap<FilePath, IndexEntry>,
+  byPath: ReadonlyMap<IndexPathKey, IndexEntry>,
   source: FilePath,
   target: FilePath,
   opts: MvOptions,
@@ -221,10 +229,10 @@ type SourceClass =
   | { readonly kind: 'untracked' };
 
 const classifySource = (
-  byPath: ReadonlyMap<FilePath, IndexEntry>,
+  byPath: ReadonlyMap<IndexPathKey, IndexEntry>,
   source: FilePath,
 ): SourceClass => {
-  const exact = byPath.get(source);
+  const exact = byPath.get(keyOfPath(source));
   if (exact !== undefined) return { kind: 'file', entries: [exact] };
   const prefix = `${source}/`;
   const entries = Array.from(byPath.values()).filter((entry) => entry.path.startsWith(prefix));
@@ -245,12 +253,13 @@ const sourceExistsOnDisk = async (
 
 const destinationFree = async (
   ctx: Context,
-  byPath: ReadonlyMap<FilePath, IndexEntry>,
+  byPath: ReadonlyMap<IndexPathKey, IndexEntry>,
   target: FilePath,
   kind: 'file' | 'directory',
   force: boolean,
 ): Promise<boolean> => {
-  const exists = byPath.has(target) || (await lstatOrUndefined(ctx, target)) !== undefined;
+  const exists =
+    byPath.has(keyOfPath(target)) || (await lstatOrUndefined(ctx, target)) !== undefined;
   if (!exists) return true;
   // `force` overwrites only a file source; a directory source over an existing
   // path is always refused (verified against git: `mv -f dir present-file` fails).
@@ -296,17 +305,26 @@ const plannedMoves = (planned: ReadonlyArray<PlanItem>): ReadonlyArray<MvMove> =
 };
 
 const applyToIndex = (
-  byPath: Map<FilePath, IndexEntry>,
+  byPath: Map<IndexPathKey, IndexEntry>,
   planned: ReadonlyArray<PlanItem>,
 ): void => {
   for (const item of planned) {
     for (const entry of item.entries) {
-      const newPath = repath(entry, item.source, item.target);
-      byPath.delete(entry.path);
-      byPath.set(newPath, { ...entry, path: newPath });
+      const moved = withPath(entry, movedPath(entry, item.source, item.target));
+      byPath.delete(indexPathKey(entry));
+      byPath.set(indexPathKey(moved), moved);
     }
   }
 };
+
+// The source prefix is a user string, so its encoded length is the exact byte cut
+// for an entry whose raw name is not UTF-8.
+const movedPath = (entry: IndexEntry, source: FilePath, target: FilePath): IndexPath =>
+  entry.pathBytes === undefined
+    ? { path: repath(entry, source, target) }
+    : indexPathOfBytes(
+        concatBytes([encode(target), entry.pathBytes.subarray(encode(source).length)]),
+      );
 
 // `entry.path` is `source` (file) or `${source}/…` (directory member), so the
 // suffix after `source` (possibly empty) reparents onto `target` unchanged.

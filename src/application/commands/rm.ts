@@ -21,6 +21,8 @@ import {
 import type { FlatTreeEntry } from '../../domain/diff/flat-tree.js';
 import { TsgitError } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
+import type { IndexPathKey } from '../../domain/git-index/index-path-key.js';
+import { indexPathKey } from '../../domain/git-index/index-path-key.js';
 import { emptyPathspec } from '../../domain/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesPathspec } from '../../domain/pathspec/index.js';
@@ -84,13 +86,15 @@ export const rm = async (
       }
       throw err;
     });
-    const byPath = new Map<FilePath, IndexEntry>();
-    for (const entry of index.entries) byPath.set(entry.path, entry);
+    const byPath = new Map<IndexPathKey, IndexEntry>();
+    for (const entry of index.entries) byPath.set(indexPathKey(entry), entry);
     const removed: FilePath[] = [];
+    const removedKeys: IndexPathKey[] = [];
     const removedEntries: IndexEntry[] = [];
-    for (const [path, entry] of byPath) {
-      if (matchesPathspec(matcher, path)) {
-        removed.push(path);
+    for (const [key, entry] of byPath) {
+      if (matchesPathspec(matcher, entry.path)) {
+        removed.push(entry.path);
+        removedKeys.push(key);
         removedEntries.push(entry);
       }
     }
@@ -102,7 +106,7 @@ export const rm = async (
     if (opts.force !== true) {
       await enforceSafetyValve(ctx, removedEntries, opts.cached === true, index.indexMtime);
     }
-    for (const path of removed) byPath.delete(path);
+    for (const key of removedKeys) byPath.delete(key);
     if (!opts.cached) {
       for (const path of removed) {
         // FILE_NOT_FOUND is the only tolerable error: working file already gone.
