@@ -10,8 +10,9 @@
  *   kind:    equivalent-under-readback
  *   format:  git-index-dirc
  */
-import { encode, hexToBytes } from '../objects/encoding.js';
+import { compareBytes, encode, hexToBytes } from '../objects/encoding.js';
 import type { GitIndex, IndexEntry } from './index-entry.js';
+import { type IndexPath, pathBytesOf } from './index-path-key.js';
 
 const DIRC_SIGNATURE = 0x44495243;
 const STAT_FIELDS_SIZE = 40;
@@ -53,9 +54,14 @@ function utf8Rank(unit: number): number {
  * first difference yields that order without encoding. Returns a negative,
  * zero or positive number so `Array.prototype.sort` produces ascending path
  * order and leaves equal-path entries in their original (stable) order.
+ * A pair where either side carries raw `pathBytes` (a path that is not valid
+ * UTF-8) compares those bytes, since the decoded view cannot rank them.
  */
-export function compareEntryPath(a: IndexEntry, b: IndexEntry): number {
-  return comparePathStrings(a.path as string, b.path as string);
+export function compareEntryPath(a: IndexPath, b: IndexPath): number {
+  if (a.pathBytes === undefined && b.pathBytes === undefined) {
+    return comparePathStrings(a.path as string, b.path as string);
+  }
+  return compareBytes(pathBytesOf(a), pathBytesOf(b));
 }
 
 export function comparePathStrings(left: string, right: string): number {
@@ -75,7 +81,7 @@ function compareUtf16Strings(left: string, right: string): number {
   return left > right ? 1 : 0;
 }
 
-const compareUtf16Path = (a: IndexEntry, b: IndexEntry): number =>
+const compareUtf16Path = (a: IndexPath, b: IndexPath): number =>
   compareUtf16Strings(a.path as string, b.path as string);
 
 /** Same pick-once rule as `pathComparatorFor`, for bare path strings. */
@@ -88,9 +94,11 @@ export function pathStringComparatorFor(paths: ReadonlyArray<string>): typeof co
 /**
  * UTF-16 and UTF-8 byte order only disagree when a path holds a code unit at
  * or above U+D800, so the engine's native string comparison serves every
- * other index at a fraction of the cost of the code-unit loop.
+ * other index at a fraction of the cost of the code-unit loop. A lossy path's
+ * decoded view always holds U+FFFD, so every index with raw path bytes takes
+ * the byte-aware comparator.
  */
-export function pathComparatorFor(entries: ReadonlyArray<IndexEntry>): typeof compareEntryPath {
+export function pathComparatorFor(entries: ReadonlyArray<IndexPath>): typeof compareEntryPath {
   return entries.some((entry) => SURROGATE_OR_ABOVE.test(entry.path as string))
     ? compareEntryPath
     : compareUtf16Path;
@@ -112,7 +120,7 @@ export function serializeIndex(index: GitIndex, digestLength: 20 | 32): Uint8Arr
   const sortedEntries = [...index.entries].sort(pathComparatorFor(index.entries));
 
   const entryMetas = sortedEntries.map((entry) => {
-    const pathBytes = encode(entry.path as string);
+    const pathBytes = pathBytesOf(entry);
     const extended = entry.flags.skipWorktree || entry.flags.intentToAdd;
     const entryLength = headerSize + (extended ? 2 : 0) + pathBytes.length;
     const paddedLength = (entryLength + 8) & ~7;

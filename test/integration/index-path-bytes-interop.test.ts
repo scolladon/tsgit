@@ -69,6 +69,33 @@ const lsFilesPathHex = (dir: string): string[] =>
 const lsTreePathHex = (dir: string, rev: string): string[] =>
   pathHexOfRecords(runGitBytes(['-C', dir, 'ls-tree', '-r', '-z', rev]));
 
+const FF_TXT = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+const B_SLASH_C3 = Uint8Array.of(0x62, 0x2f, 0xc3);
+const D_SLASH_FF = Uint8Array.of(0x64, 0x2f, 0xff);
+const REGULAR_MODE = '100644';
+
+const hashBlob = (dir: string, content: string): string =>
+  runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: content }).trim();
+
+const stageRaw = (
+  dir: string,
+  rows: ReadonlyArray<{ mode: string; oid: string; path: Uint8Array }>,
+): void => {
+  const encoder = new TextEncoder();
+  const chunks = rows.flatMap((row) => [
+    encoder.encode(`${row.mode} ${row.oid}\t`),
+    row.path,
+    Uint8Array.of(NUL),
+  ]);
+  const input = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    input.set(chunk, offset);
+    offset += chunk.length;
+  }
+  runGit(['-C', dir, 'update-index', '-z', '--index-info'], { input });
+};
+
 describe.skipIf(!GIT_AVAILABLE)(
   'index path bytes interop — leading BOM',
   { timeout: 60_000 },
@@ -169,6 +196,97 @@ describe.skipIf(!GIT_AVAILABLE)(
         // Assert
         expect(sut.removed).toEqual(['\uFEFFa/x']);
         expect(lsFilesPathHex(pair.peer)).not.toContain(BOM_DIR_HEX);
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'index path bytes interop — non-UTF-8 names',
+  { timeout: 60_000 },
+  () => {
+    let pair: PeerPair;
+    let repo: Repository;
+
+    const git = (...args: ReadonlyArray<string>): string =>
+      runGit(['-C', pair.peer, ...args], { env: COMMIT_ENV });
+
+    beforeEach(async () => {
+      pair = await makePeerPair('index-path-bytes-raw');
+      runGit(['init', '-q', '-b', 'main', pair.peer]);
+      runGit(['-C', pair.peer, 'config', 'user.name', 'Ada']);
+      runGit(['-C', pair.peer, 'config', 'user.email', 'ada@example.com']);
+      repo = await openRepository({ cwd: pair.peer });
+    });
+
+    afterEach(async () => {
+      await repo.dispose();
+      await pair.dispose();
+    });
+
+    describe('Given git committed non-UTF-8 names next to z', () => {
+      const buildRawState = (): void => {
+        const blob = hashBlob(pair.peer, 'raw\n');
+        stageRaw(pair.peer, [
+          { mode: REGULAR_MODE, oid: blob, path: FF_TXT },
+          { mode: REGULAR_MODE, oid: blob, path: B_SLASH_C3 },
+        ]);
+        writeFileSync(path.join(pair.peer, 'z'), 'z\n');
+        git('add', 'z');
+        git('commit', '-q', '-m', 'seed');
+      };
+
+      it('Then readIndex keeps the raw bytes and the decoded view', async () => {
+        // Arrange
+        buildRawState();
+        const ctx = createNodeContext({ workDir: pair.peer });
+
+        // Act
+        const sut = await readIndex(ctx);
+
+        // Assert
+        const lossy = sut.entries.find(
+          (e) => e.pathBytes !== undefined && e.path.startsWith('\uFFFD'),
+        );
+        expect(hex(lossy?.pathBytes ?? new Uint8Array())).toBe('ff2e747874');
+        expect(lossy?.path).toBe('\uFFFD.txt');
+      });
+
+      it('Then add of z keeps every raw name byte-for-byte', async () => {
+        // Arrange
+        buildRawState();
+        writeFileSync(path.join(pair.peer, 'z'), 'z2\n');
+
+        // Act
+        await repo.add(['z']);
+
+        // Assert
+        expect(lsFilesPathHex(pair.peer)).toEqual(['622fc3', Z_HEX, 'ff2e747874']);
+        expect(() => git('fsck')).not.toThrow();
+      });
+    });
+
+    describe('Given a committed tree naming a non-UTF-8 entry inside a directory', () => {
+      it('Then add elsewhere keeps the index and its tree in agreement', async () => {
+        // Arrange
+        const blob = hashBlob(pair.peer, 'raw\n');
+        mkdirSync(path.join(pair.peer, 'd'));
+        mkdirSync(path.join(pair.peer, 'e'));
+        writeFileSync(path.join(pair.peer, 'd', 'y'), 'y\n');
+        writeFileSync(path.join(pair.peer, 'e', 'f'), 'f\n');
+        git('add', '.');
+        stageRaw(pair.peer, [{ mode: REGULAR_MODE, oid: blob, path: D_SLASH_FF }]);
+        git('commit', '-q', '-m', 'seed');
+        writeFileSync(path.join(pair.peer, 'e', 'f'), 'f2\n');
+
+        // Act
+        await repo.add(['e/f']);
+
+        // Assert
+        expect(lsFilesPathHex(pair.peer)).toEqual(['642f79', '642fff', '652f66']);
+        expect(() => git('fsck', '--cache')).not.toThrow();
+        const tree = git('write-tree').trim();
+        expect(lsTreePathHex(pair.peer, tree)).toEqual(lsFilesPathHex(pair.peer));
       });
     });
   },

@@ -3,8 +3,9 @@ import { describe, expect, it } from 'vitest';
 
 import type { GitIndex } from '../../../../src/domain/git-index/index-entry.js';
 import { parseIndex } from '../../../../src/domain/git-index/index-parser.js';
+import { pathBytesOf } from '../../../../src/domain/git-index/index-path-key.js';
 import { compareEntryPath, serializeIndex } from '../../../../src/domain/git-index/index-writer.js';
-import { arbGitIndexV2, arbGitIndexV3 } from './arbitraries.js';
+import { arbGitIndexV2, arbGitIndexV3, arbGitIndexWithPathBytes } from './arbitraries.js';
 
 const CHECKSUM = new Uint8Array(20);
 
@@ -72,6 +73,36 @@ describe('index parser properties', () => {
             }
           }),
           { numRuns: 100 },
+        );
+      });
+    });
+  });
+});
+
+describe('index raw path bytes round trip', () => {
+  describe('Given an arbitrary index whose paths may be raw bytes', () => {
+    describe('When serialized, parsed and serialized again', () => {
+      it('Then the bytes and every entry path bytes are unchanged', () => {
+        fc.assert(
+          fc.property(arbGitIndexWithPathBytes(), (index) => {
+            // Arrange
+            const first = withChecksum(serializeIndex(index, 20));
+
+            // Act
+            const sut = parseIndex(first, 20);
+            const second = withChecksum(serializeIndex(sut, 20));
+
+            // Assert
+            expect(second).toEqual(first);
+            const source = new Map(
+              index.entries.map((e) => [Buffer.from(pathBytesOf(e)).toString('hex'), e]),
+            );
+            for (const entry of sut.entries) {
+              expect(source.has(Buffer.from(pathBytesOf(entry)).toString('hex'))).toBe(true);
+            }
+            expect(sut.entries).toHaveLength(index.entries.length);
+          }),
+          { numRuns: 200 },
         );
       });
     });
