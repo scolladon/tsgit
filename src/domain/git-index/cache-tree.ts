@@ -8,10 +8,10 @@
  *   kind:    equivalent-under-readback
  *   format:  git-index-dirc
  */
-import { encode, hexToBytes } from '../objects/encoding.js';
+import { decodeEscapingInvalid, encode, hexToBytes } from '../objects/encoding.js';
 import { invalidIndexEntry } from './error.js';
 import type { CacheTreeEntry } from './index-entry.js';
-import { type IndexPath, latin1, splitAtSlash } from './index-path-key.js';
+import { type IndexPath, indexPathKey } from './index-path-key.js';
 
 const NUL = 0;
 
@@ -69,17 +69,12 @@ export function serializeCacheTree(root: CacheTreeEntry, digestLength: 20 | 32):
 }
 
 /**
- * Children are matched by their byte name, never by the decoded `path`: two
+ * Children are matched by their escaped name, never by the decoded `path`: two
  * siblings may decode to the same string (BOM-prefixed or non-UTF-8 names).
- * ASCII components are their own key, so the common case allocates nothing.
+ * A child without `nameBytes` has a `path` that re-encodes to its name.
  */
-const NON_ASCII = /[\u0080-\uffff]/;
-
-const keyOfComponent = (component: string): string =>
-  NON_ASCII.test(component) ? latin1(encode(component)) : component;
-
 const keyOfChild = (child: CacheTreeEntry): string =>
-  child.nameBytes === undefined ? keyOfComponent(child.path) : latin1(child.nameBytes);
+  child.nameBytes === undefined ? child.path : decodeEscapingInvalid(child.nameBytes);
 
 /**
  * git never writes two subtrees of one node under the same name; a payload that does
@@ -97,10 +92,7 @@ export function namesEachSubtreeOnce(entry: CacheTreeEntry): boolean {
 
 type Pending = ReadonlyArray<string>;
 
-const componentKeysOf = ({ path, pathBytes }: IndexPath): Pending =>
-  pathBytes === undefined
-    ? path.split('/').map(keyOfComponent)
-    : splitAtSlash(pathBytes).map(latin1);
+const componentKeysOf = (entry: IndexPath): Pending => indexPathKey(entry).split('/');
 
 function groupByComponent(pending: ReadonlyArray<Pending>, depth: number): Map<string, Pending[]> {
   const groups = new Map<string, Pending[]>();

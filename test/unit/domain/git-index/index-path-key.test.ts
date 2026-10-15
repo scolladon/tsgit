@@ -6,7 +6,6 @@ import {
   indexPathOfEscaped,
   isLossy,
   keyOfPath,
-  latin1,
   pathBytesOf,
   splitAtSlash,
   viewOfEscaped,
@@ -196,24 +195,6 @@ describe('splitAtSlash', () => {
 
         // Assert
         expect(result).toEqual([bytes]);
-      });
-    });
-  });
-});
-
-describe('latin1', () => {
-  describe('Given every byte value', () => {
-    describe('When converting', () => {
-      it('Then each byte maps to the char with the same code', () => {
-        // Arrange
-        const bytes = Uint8Array.from({ length: 256 }, (_, i) => i);
-
-        // Act
-        const result = latin1(bytes);
-
-        // Assert
-        expect(result.length).toBe(256);
-        expect([...result].map((c) => c.charCodeAt(0))).toEqual([...bytes]);
       });
     });
   });

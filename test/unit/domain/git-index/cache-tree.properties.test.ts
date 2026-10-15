@@ -10,10 +10,13 @@ import { parseCacheTree } from '../../../../src/domain/git-index/index-parser.js
 import {
   type IndexPath,
   indexPathOfBytes,
-  latin1,
   splitAtSlash,
 } from '../../../../src/domain/git-index/index-path-key.js';
-import { concatBytes, decode } from '../../../../src/domain/objects/encoding.js';
+import {
+  concatBytes,
+  decode,
+  decodeEscapingInvalid,
+} from '../../../../src/domain/objects/encoding.js';
 import type { FilePath, ObjectId } from '../../../../src/domain/objects/object-id.js';
 import { arbCacheTreeEntry, arbPathBytes } from './arbitraries.js';
 
@@ -200,7 +203,7 @@ const arbRawComponents = (): fc.Arbitrary<Uint8Array[]> =>
       {
         minLength: 1,
         maxLength: 4,
-        selector: latin1,
+        selector: decodeEscapingInvalid,
       },
     )
     .map((components) => components.map((component) => component.slice()));
@@ -208,7 +211,9 @@ const arbRawComponents = (): fc.Arbitrary<Uint8Array[]> =>
 function keyCoversPath(node: CacheTreeEntry, components: ReadonlyArray<Uint8Array>): boolean {
   const [head, ...rest] = components;
   const child = node.children.find(
-    (c) => c.nameBytes !== undefined && latin1(c.nameBytes) === latin1(head as Uint8Array),
+    (c) =>
+      c.nameBytes !== undefined &&
+      decodeEscapingInvalid(c.nameBytes) === decodeEscapingInvalid(head as Uint8Array),
   );
   if (child === undefined) return node.entryCount >= 0;
   if (rest.length === 0) return true;

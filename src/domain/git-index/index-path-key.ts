@@ -17,12 +17,6 @@ export type IndexPathKey = string & { readonly __brand: 'IndexPathKey' };
 
 const SLASH = 0x2f;
 
-export const latin1 = (bytes: Uint8Array): string => {
-  let key = '';
-  for (const byte of bytes) key += String.fromCharCode(byte);
-  return key;
-};
-
 export const isLossy = (entry: IndexPath): boolean => entry.pathBytes !== undefined;
 
 export const escapedPathOf = (entry: IndexPath): FilePath =>
