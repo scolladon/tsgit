@@ -6,9 +6,14 @@
 > losslessly, on the model of the cache-tree's `nameBytes` (#317), and close every route that can
 > drop or re-admit the lossy name: parse, write, order, match, index → tree, tree → index.
 > Backlog 32.21 (data integrity).
-> Status: draft → self-reviewed ×3
+> Status: draft → self-reviewed ×3 → Parts 1-15 implemented → **revision 2** (2026-10-15): folds
+> ADR-973 (lossy entries never touched on disk), ADR-974 (no write through a leading symlink) and
+> the cycle-1 review (code / security / tests / perf). §D1-§D12 keep the original design; claims the
+> review falsified are marked **[falsified, see §Dn]** in place. New design: §D13-§D19, Parts 16-24.
 
-<!-- cspell:ignore xbfz injectivity xffit cgit bytewise FEFF FFFD DFFF EFBBBF EFBFBD efbbbf efbfbd ffff latin1 Latin1 roundtrip unpaired -->
+<!-- cspell:ignore xbfz injectivity xffit cgit bytewise FEFF FFFD DFFF EFBBBF EFBFBD efbbbf efbfbd ffff latin1 Latin1 roundtrip unpaired EILSEQ surrogateescape FFFE noncharacter noncharacters xfe xbe xaf xed xc0 xc3 xf4 lstat lstats unlinks pcheckout dirname -->
+<!-- cspell:ignore protectHFS protectNTFS ignorecase APFS mkdir symlinked repath repathed sut xbfit multibyte unloadable -->
+
 
 ## Context
 
@@ -23,6 +28,9 @@
 | Tree side (`TreeEntry.nameBytes`, `WalkTreeOptions.pathBytes`, `resolve-tree-path.ts:208`) | Bytes are authoritative, the decoded string is a display view, matches use bytes. `TreeEntry.name` is already `decodePreservingBom(nameBytes)`. |
 | ADR-963 / 964 / 965 | A content-changing index write invalidates the cache-tree along the changed paths. A changed lossy path must invalidate the subtree whose `nameBytes` carry it. |
 | CLAUDE.md performance priorities | The index parse is a hot path (every command). UTF-8 paths must not allocate more than today. |
+| ADR-968 … ADR-972 | Ratified DC1-DC5 below (raw `pathBytes` when lossy, BOM kept, tree round trip in scope, lossy-only walk channel, `IndexPathKey`). |
+| ADR-973 (revision 2) | A lossy entry has no working-tree file tsgit can name: never written, unlinked, stat'd or read through its decoded view. It reads as absent for every reader (§D13). |
+| ADR-974 (revision 2) | A working-tree write never follows a symlink in its leading path, whatever order the pool runs writes in (§D18). |
 
 All pins below ran in `mktemp -d` throwaways, never in this worktree.
 
@@ -233,8 +241,8 @@ export const indexPathKey = (entry: { path: FilePath; pathBytes?: Uint8Array }):
 | Site | Today | Change |
 |---|---|---|
 | `add.ts` `existing` / `newEntries` / `walked` maps (231-266, 378-383, 586-652); `restagedPaths.push(previous.path)` (556) | `Map<FilePath, …>` keyed on `entry.path` / walk path; restaged paths as strings | `Map<IndexPathKey, …>`; walk outcomes are UTF-8 (fs strings) → `indexPathKey({ path })`; restaged items become `ChangedPath` projections of `previous` (§D6) |
-| `rm.ts` `byPath` (87-115) | `byPath.set(entry.path)`, `byPath.delete(path)` | key by `indexPathKey(entry)`; delete by the matched entry's key, not the pathspec string |
-| `mv.ts` `readIndexMap`, `classifySource`, `applyToIndex` (129-306) | `Map<FilePath, …>`; spread `{ ...entry, path: newPath }` | keys; re-path through `withPath` (§D5.3) |
+| `rm.ts` `byPath` (87-115) | `byPath.set(entry.path)`, `byPath.delete(path)` | key by `indexPathKey(entry)`; delete by the matched entry's key, not the pathspec string. **[falsified, see §D15]**: the *match* itself still runs on `entry.path`, so a literal `�.txt` selects the lossy twin; the HEAD lookup of the safety valve (`rm.ts:204` `head.get(entry.path)`) collapses the twins too |
+| `mv.ts` `readIndexMap`, `classifySource`, `applyToIndex` (129-306) | `Map<FilePath, …>`; spread `{ ...entry, path: newPath }` | keys; re-path through `withPath` (§D5.3). **[falsified, see §D16]**: `classifySource` matches directory members on the view |
 | `index-lock.ts` `withRefreshedStat` (211) | `new Map(refreshed.map(e => [e.path, e]))` | `indexPathKey` |
 | `smudge-racily-clean.ts` `carriedOver` (60) | `racyByPath` on `entry.path` | `indexPathKey` |
 | `apply-sparse-checkout.ts` `toSkipWorktree` (~161), `writtenByPath` (185) | rebuilds the entry **without spread** (drops `pathBytes`); string map | spread the entry's path fields (`path`, `pathBytes`); keys |
@@ -262,6 +270,9 @@ export const withPath = (entry: IndexEntry, path: FilePath, pathBytes?: Uint8Arr
 - `mv` directory moves re-path `d/<raw>` → `e/<raw>` at the byte level when the source entry has
   `pathBytes`: `concat(encode(targetPrefix), pathBytes.subarray(encode(sourcePrefix).length)).slice()`.
   The prefix is a user string (UTF-8), and the ASCII-position invariant (§D2) makes the cut exact.
+  **[falsified, see §D16]**: the cut is exact only if membership was decided on bytes. Membership
+  ran on the view, so source `�` selected the lossy `\xff/x` and the cut at 3 bytes landed past
+  its `/`: the security repro re-pathed an entry to `.git/p`, which no check re-validated.
 - A spread that keeps `path` (`{ ...entry, flags }`, `zeroStat`, `clearSkipWorktree`) carries
   `pathBytes` unchanged. That is correct by construction, so those sites need no change.
 - `skipWorktreeEntry`, `stage0Entry`, `zeroStatEntry` accept an optional `pathBytes` and set the
@@ -318,7 +329,9 @@ export const withPath = (entry: IndexEntry, path: FilePath, pathBytes?: Uint8Arr
   and build entries through the §D5.3 helpers.
 - `apply-changeset.ts` builds the post-write entry from `relPath` (the fs-facing string). It takes
   `pathBytes` from the changeset entry when present. The file itself is written under the string
-  name. That residual is listed in §Out of scope.
+  name. That residual is listed in §Out of scope. **[superseded by ADR-973, see §D13-§D14]**: the
+  view-named write corrupts the literal twin (`reset --hard` wrote `\xff.txt`'s blob into
+  `�.txt`, pinned T2); a lossy entry is now never written.
 
 ### D9. Path validation
 
@@ -331,6 +344,10 @@ export const withPath = (entry: IndexEntry, path: FilePath, pathBytes?: Uint8Arr
 - Non-UTF-8: ASCII bytes keep their positions (§D2), so `.`/`..`/empty segments, leading `/`,
   NUL and the `.git`/`git~1` ASCII aliases give the same verdict on either view. The HFS alias
   check decodes non-ASCII. git's `next_hfs_char` on invalid UTF-8 is not pinned here (§Out of scope).
+  **[falsified, see §D17]**: git's HFS check ends a name at the first sequence its own UTF-8
+  picker rejects, so `.git\xff/x` is a `.git` alias under `core.protectHFS`. The view cannot tell
+  that `\xff` from a literal U+FFFD, and the picker also rejects U+FFFE/U+FFFF, which the WHATWG
+  decoder accepts.
 
 ### D10. Public API
 
@@ -358,10 +375,30 @@ module are internal. The snapshot `IndexEntryRow` (public, read-only) keeps `pat
 | `diffIndexEntries` → `carryTree` → `invalidateCacheTree` | read | stale `TREE` node (G6) | §D6 |
 | `commit.buildTreeFromIndex`, `synthesizeTreeFromIndex` | read | U+FFFD tree names (G5) | §D7 |
 | `buildIndexFromTree`, `materializeTree`, `apply-changeset` | write | U+FFFD from walk path (G4) | §D8 |
-| `indexEntryFromStat` (add, refresh) | write | none: the path comes from the fs port (a UTF-8 string by construction); a lossy entry is never re-statted because a string cannot address it | — |
-| merge engine (`mergedBlobEntries`/`stage0Entry`, `conflictsToIndexEntries`, `merge.ts:1902`) | write | U+FFFD from merge outcome paths | **not closed**: §Out of scope; an untouched lossy entry still survives through the carried index |
+| `indexEntryFromStat` (add, refresh) | write | none: the path comes from the fs port (a UTF-8 string by construction); a lossy entry is never re-statted because a string cannot address it. **[falsified]**: `compareAndRefresh` stats `entry.path`, the view (status reported `\xff.txt` as `modified` against `�.txt`'s file, pin T1) | §D14 Part 16 |
+| merge engine (`mergedBlobEntries`/`stage0Entry`, `conflictsToIndexEntries`, `merge.ts:1902`) | write | U+FFFD from merge outcome paths | **not closed**: §Out of scope; an untouched lossy entry still survives through the carried index. **[falsified, pin T9]**: a three-way merge rebuilds the whole tree from `flattenTree` outcomes, so an *untouched* `\xff.txt` lands in the merge commit as `efbfbd2e747874` | §D19, DC8 |
 | snapshot rows, `grep`, `blame`, `rev-parse :path`, status output | read | display only | — (U+FFFD view, ADR-249) |
 | hash width | — | none: `pathBytes` is independent of `digestLength`; the parser's offset arithmetic is unchanged | — |
+
+Revision 2 rows (each pinned in §D13; "absent" = the ADR-973 rule of §D14):
+
+| Route | Touches disk for an entry? | Before revision 2 | Closed by |
+|---|---|---|---|
+| `compareAndRefresh` (`compare-working-tree-entry.ts:255`) → status, diff, `clean-work-tree`, `find-would-overwrite`, `smudge-racily-clean`, rm safety valve, stash dirty checks | lstat + read | stats and hashes the view file | absent → `deleted` without an fs call (Part 16) |
+| `apply-sparse-checkout.partition` (`ctx.fs.exists`, `isDirty`) | exists + read | probes the view | absent (Part 16) |
+| `add --renormalize` | lstat + read | view | missing-file branch (Part 16) |
+| `add -A` / `add -u` / `add <glob>` | walk join | `-A` already removes (walk never yields a lossy key); a glob does **not** stage the deletion (pin T4 vs git S5) | glob reach through the matching view (Part 18) |
+| stash push worktree tree | lstat + read | view | absent → recorded as deleted (Part 16) |
+| `apply-changeset` write (`applyWriteEntry`) | write | writes blob under the view, last write wins | skipped; zero-stat entry with `pathBytes` (Part 17) |
+| `apply-changeset` delete (`applyDeleteEntry`) | unlink | unlinks the view | skipped (Part 17) |
+| `rm` (non-cached) unlink | unlink | unlinks the view | skipped (Part 17) |
+| `rm` pathspec match + HEAD map | — | literal selects lossy twin; `head.get(entry.path)` collapses twins | matching view + key-built HEAD map (Part 18) |
+| `checkout -- <paths>` universe, `materializeTree` `filterByPaths` / `preserveOutOfScope` | — | view `Set<FilePath>` | key sets (Part 18) |
+| `apply-sparse-checkout` `addEntry` / `deleteEntry` / `noopEntry` | — | drop `pathBytes` (lossy blob written into the literal twin) | spread path fields (Part 20) |
+| `mv` member match, cut, disk check, rename | rename | view match, unchecked cut, no member lstat | byte-prefix match, `validateIndexPath` on re-pathed entries, lossy member = bad source (Part 19) |
+| `verifyPath` HFS alias | — | view | git's picker over bytes (Part 21) |
+| write wave leading directories | mkdir -p | concurrent `mkdir -p` follows a symlink created by another group | §D18 (Part 22) |
+| merge engine tree synthesis + worktree writer | write | view (history rewrite, pin T9) | DC8 (Part 23) |
 
 ### D12. Parts
 
@@ -404,7 +441,429 @@ Context: `commit.ts` `buildTreeFromIndex` / `insertEntry` / `writeSubtree` (393-
 `src/domain/objects/tree.ts`. Tests: `walk-tree.test.ts` (lossy-only channel), commit and
 synthesize unit tests; interop rows A4, B4, E1 (`git ls-tree -r -z` byte equality).
 
+Parts 1-3 were planned as Parts 1-15 (`docs/plan/index-entry-path-bytes.md`) and are landed.
+Revision 2 adds Parts 16-24. Each new part is one TDD unit with its own interop rows from §D13.
+**Security diff review by the user before commit:** Part 19 (mv cut, HIGH) and Part 22 (leading
+symlink race, CRITICAL). Order: 16 → 17 → 18 → 19 → 20 → 21 → 22 → 23 → 24 (17 and 22 both edit
+`apply-changeset.ts`; 18 changes `materializeTree`'s `paths` type, which 20 and 23 consume).
+
+**Part 16 — Lossy entries read as absent (ADR-973, readers).**
+Context: one predicate `isLossy(entry: IndexPath): boolean` (`entry.pathBytes !== undefined`) in
+`src/domain/git-index/index-path-key.ts`. Chokepoint `src/application/primitives/compare-working-tree-entry.ts`
+`compareAndRefresh` (line 255, `lstat` at 261): for a lossy entry, return exactly what it returns when
+`lstat` rejects, with no fs call. That one change serves `compareWorkingTreeDelta` (270),
+`compareWorkingTreeEntry` (299) and their callers: `status.ts` (`compareAndRefresh`), `rm.ts`
+safety valve, `internal/clean-work-tree.ts:40`, `find-would-overwrite.ts`,
+`internal/smudge-racily-clean.ts` (`compareWorkingTreeDelta`), `stash.ts` dirty checks.
+Other readers: `internal/apply-sparse-checkout.ts` `partition` (`ctx.fs.exists` + `isDirty`,
+lines ~70-90) → `present: false`; `add.ts` renormalize branch → its missing-file branch;
+`stash.ts` worktree-tree builder → the entry is recorded deleted. Tests: one unit per site, "Given a
+lossy entry and a file at its view, When <route>, Then the verdict is absent and the fs double saw no
+call naming the view". Interop: S1 (status `.D`), S2/S3 (`add --all` removes lossy, already green,
+pin it), S4 (refusal, index bytes unchanged), S10 (stash worktree tree names), S16 (index stat untouched).
+
+**Part 17 — Lossy entries are never written or unlinked (ADR-973, writers).**
+Context: `src/application/primitives/apply-changeset.ts` `applyWriteEntry` (~307): a lossy changeset
+entry writes nothing and returns a zero-stat entry carrying `pathBytes` (reuse `zeroStatEntry`
+from `build-index-from-tree.ts:78`; move it to `primitives/internal/` if both import it);
+`applyDeleteEntry` (~295): return before the scan; `assertNoDirtyOverwrite` → `checkDirty`: a lossy
+entry is never dirty nor an untracked overwrite (it is absent). `rm.ts` unlink loop (~108): iterate
+`removedEntries` and skip lossy ones. Result reporting per DC6. Tests: `apply-changeset.test.ts`
+("Given L and U, When applied, Then U's file holds U's blob, no write names L's view, L's entry has
+zero stat and its bytes"), `rm.test.ts`. Interop: S1b/T2 (after tsgit `reset --hard`: worktree `z`,
+`�.txt` = U's bytes, no `d/`; `git status` shows ` D` for both lossy paths; `git ls-files -s -z`
+bytes unchanged), S8b, S12b, S13 (switch adds a lossy path: index carries `6efe`).
+
+**Part 18 — Pathspec matching view; key-scoped restore and rm.**
+Context: new `src/domain/pathspec/matching-path.ts` `matchingPathOf(entry: IndexPath): string` and
+`matchesIndexPath(spec: Pathspec, entry: IndexPath): boolean` (§D15). Sites: `rm.ts:95`
+(`matchesPathspec(matcher, entry.path)`), and the safety valve's HEAD map `rm.ts:204-213`
+(`isStaged`, `headTreeEntries` → `Map<IndexPathKey, …>` built with `walkTreeWithLossyBytes`, since
+the string-keyed `FlatTree` collapses L and U: pin T7); `checkout.ts:319-336` `pathRestore`
+(`enumerateSourcePaths` returns `IndexPath[]`; `pathSet: Set<IndexPathKey>`); `materialize-tree.ts`
+`MaterializeTreeOpts.paths` (line 61) becomes `ReadonlySet<IndexPathKey>`, `filterByPaths` (114) and
+`preserveOutOfScope` (136) test `indexPathKey(e)`; `add.ts:534` (tracked-entry match) and `:616`;
+`apply-sparse-checkout.ts:60` `isIncluded` runs the `SparseMatcher` on `matchingPathOf(entry)`.
+Tests: `matching-path.test.ts` + `matching-path.properties.test.ts` (UTF-8 entry → `path` itself;
+injective over bytes; no literal compiled from a well-formed string matches a lossy entry; `*`
+matches every lossy entry under its directory). If a pathspec carrying a lone surrogate matches a
+lossy entry in that test, add a well-formedness refusal to `resolvePathspec`. Interop: S5, S5b, S6,
+S7, S7b, S8b, S12, S12b.
+
+**Part 19 — mv: byte-prefix members, re-validation, absent lossy members.** *(user security review)*
+Context: `src/application/commands/mv.ts` `classifySource` (231-241): `exact` stays
+`byPath.get(keyOfPath(source))`; members are entries where `pathBytesOf(entry)` starts with
+`encode(source)` followed by `0x2f` (new `hasBytePrefix(bytes, prefix)` next to `splitAtSlash` in
+`index-path-key.ts`). `movedPath` (322) then cuts at a real component boundary. `applyToIndex` (307)
+runs `validateIndexPath(moved.path, NO_PARSER_OFFSET, moved.mode, moved.pathBytes)` on every
+re-pathed entry before `byPath.set`. `validateMove` (203): a directory source with a lossy member
+yields `bad-source` naming that member (`refusal`, line 334); under `-k` that member is skipped and
+stays at its old path while the rest moves (pins M1, S9c). Tests: unit for the `.git/p` security
+repro (index stays valid), U+FFFD source selects only literal members (M2), lossy-member refusal and
+`-k`; interop M1, M2, S9, S9c.
+
+**Part 20 — sparse-checkout changeset builders carry `pathBytes`.**
+Context: `internal/apply-sparse-checkout.ts` `deleteEntry` (97), `addEntry` (107), `noopEntry` (117):
+copy `path` and, when defined, `pathBytes` (one `changesetPathOf(entry)` helper). Delete the vacuous
+spy test `test/unit/application/commands/internal/apply-sparse-checkout.test.ts:155`; replace it with
+an end-to-end unit test without the `applyChangeset` mock (L+U, narrow then widen: U keeps U's blob,
+L keeps its bytes, nothing written for L). Interop: S15 analogue (index bytes unchanged).
+
+**Part 21 — HFS alias verdict on raw bytes.**
+Context: `src/domain/path/verify-path.ts` `verifyPath(path, mode)` gains `pathBytes?: Uint8Array`
+(DC9 decides the call sites); `matchAliasPart` (73) and `matchGitmodulesAliasPart` (~160) take the HFS
+candidate from a new pure `hfsCandidate(component, componentBytes?)` (§D17).
+`src/domain/git-index/path-validator.ts` `validateIndexPath` (line ~101) forwards bytes; callers
+holding an entry pass `entry.pathBytes`: `index-parser.ts:128`, `synthesize-tree-from-index.ts:90`,
+`build-index-from-tree.ts:123`, `apply-changeset.ts:233`, mv (Part 19). Tests: one example per H row;
+property sibling (`verify-path.properties.test.ts`, extend or create): for component bytes
+`.git` + `X`, the verdict is an alias iff git's picker rejects `X`'s first sequence, or `X` is only
+HFS-ignorable code points followed by end or a rejected sequence. Interop: H rows with
+`core.protectHFS=true` (tsgit refuses where git prints `Ignoring path`).
+
+**Part 22 — Leading-symlink-safe write wave (ADR-974).** *(user security review)*
+Context: §D18. `apply-changeset.ts` `applyWriteWave` (~470), `groupByCaseFoldedPath` (427),
+`applyWriteGroup`; `internal/symlinked-leading-path.ts` `PrefixShape` (gains `directory` vs `other`),
+new `ensureLeadingDirectories(path)` on `LeadingPathScanner`; `internal/write-working-tree-file.ts`
+`writeWorkingTreeEntry` (symlink arm invalidates the memo, as today). Test double: new
+`test/unit/application/primitives/support/interleaving-fs.ts` (§D18.3). Tests:
+`apply-changeset.test.ts` both name orders, no write or mkdir ever sees a symlinked prefix;
+`symlinked-leading-path.test.ts` for `ensureLeadingDirectories`; interop R1/R2 on a case-insensitive
+filesystem (gated on `nodeFilenameProbe`, `src/adapters/node/node-filename-probe.ts`) and R4 everywhere.
+
+**Part 23 — Three-way merge over lossy names (DC8).**
+Context (option B): the flatten walk (`src/application/primitives/internal/flatten-raw.ts`,
+`flattenRawTree` line 105) reports whether any name is lossy (`nameBytes` that do not round-trip).
+One helper asserts "no lossy side" on the flattened base/ours/theirs wherever a side is flattened
+for the engine: `apply-merge-to-worktree.ts` `applyMergeToWorktree` (445) and `mergeTreesToTree`
+(511), plus each of `merge.ts`, `stash.ts`, `internal/replay-sequence.ts`,
+`internal/rebase-merges-steps.ts` that calls the domain `mergeTrees` with its own flatten (all four
+call `mergeTrees`, `applyMergeToWorktree` or `mergeTreesToTree`; check which flatten each uses). The
+refusal is raised before any ref, index or worktree write.
+Interop: T9 (tsgit refuses; HEAD, index and worktree unchanged).
+
+**Part 24 — Review test gaps and LOW findings.**
+Context and items: (a) `commit.ts:413` lossy directory with two children (example test + property:
+no duplicate tree entry; kills the surviving `typeof name === 'string'` → `true` mutant);
+(b) `build-index-from-tree.ts:99` zero-stat rebuild of a lossy leaf with an empty index;
+(c) public `walkTree` (`walk-tree.ts:285`) never yields `pathBytes` (assert `Object.keys` on a `\xff`
+name); (d) `rm.ts:109` removing a lossy entry by key (`rm --cached -r d` over `d/y` + `d/\xff`);
+(e) `test/integration/index-path-bytes-interop.test.ts:190` and `:203`: the result variable is not
+`sut`; rename so `sut` is the system under test; (f) `walk-tree.ts` `walkResolved(…, lossyOnly:
+boolean)` (301) → a `ByteChannel = 'none' | 'lossy' | 'all'` field on the walk config;
+(g) `commit.ts:412` `componentKey` fabricates an `IndexPath` with `path: ''`: export
+`keyOfLossyBytes(bytes)` from `index-path-key.ts` and call it; (h) `carry-extensions.ts:88`
+`uniqueByKey`: drop the `!byKey.has(key)` guard (an equal key means equal bytes, and `Map.set` keeps
+the first insertion position), per the equivalent-mutant policy; (i) cache-tree cost per DC10.
+
+### D13. Revision 2 pinned behaviour
+
+Harness as in §D1 (git 2.55.0, scrubbed `GIT_*`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
+`mktemp -d`), tsgit = esbuild bundle of `src/` at `be0d7832`. **Every git row is macOS-specific**
+(APFS, case-insensitive, `core.ignorecase=true`) unless marked. Linux rows are **source-read**
+(git 2.55 `entry.c`, `symlinks.c`, `parallel-checkout.c`, `utf8.c`, `builtin/mv.c`).
+
+#### D13.1 Lossy entries on disk
+
+Fixture: `z` and the literal `\xef\xbf\xbd.txt` (U, content `u`) are real files; the lossy
+`\xff.txt` (L) and `d/\xff` are staged with `update-index -z --index-info` and committed.
+
+| # | Command | git 2.55 macOS | tsgit `be0d7832` |
+|---|---|---|---|
+| S0 | `printf x > $'\xff.txt'` | `Illegal byte sequence` (EILSEQ): APFS refuses the name. `lstat` of it gives ENOENT (S4 message) | — |
+| S1 | `status --porcelain=v2` | `1 .D` for `d/\xff` and `\xff.txt`; `diff-files`: `D` both | T1: `d/\xff` deleted; `\xff.txt` **`unstaged: modified`**, compared with U's file |
+| S1b | `reset --hard` | `error: unable to create file d/�: Illegal byte sequence` (and `�.txt`), `fatal: Could not reset index file to revision 'HEAD'.`, exit 128; `d/` left as an empty directory | T2: exit 0; writes L's blob to `d/�` **and to `�.txt`** (U overwritten) |
+| S1c | `checkout -f HEAD`; `checkout-index -a -f`; `read-tree -u --reset HEAD` | same two errors; exit 1, 1, 128 | — |
+| S13 | `switch side` (side adds `n\xfe`) | `error: unable to create file n�`, `Switched to branch 'side'`, **exit 0**; index holds `6efe` | — |
+| S14 | fast-forward `merge` adding a lossy path | error line, exit 1 | — |
+| S15 | `sparse-checkout set --no-cone z` then `disable` | `disable`: errors, `fatal: error while refreshing working directory`, exit 128 | — |
+| S16 | `update-index --refresh` | `needs update` for both, exit 1 | — |
+| S2/S3 | `add -A`; `add -u` | both lossy entries removed (deletion staged), exit 0 | T3: `add --all` removes both (matches) |
+| S4 | `add --renormalize .` | `fatal: unable to stat 'd/�': No such file or directory`, exit 128, index unchanged | `PATHSPEC_NO_MATCH` `d/�`, index unchanged |
+| S5 | U modified; `add '*.txt'` | U restaged, **L removed** | T4: L kept |
+| S5b | U modified; `add $'\xef\xbf\xbd.txt'` | U restaged, L kept | — |
+| S6 | `rm --cached $'\xef\xbf\xbd.txt'` | only U removed | both removed (code review, VERIFIED) |
+| S7 | `rm --cached '*.txt'` | both removed | T6: both removed (matches) |
+| S7b | `rm --cached -r d` | `d/\xff` removed | — |
+| S8 | `rm $'\xff.txt'` (raw argv) | L removed from the index, exit 0, nothing unlinked | not expressible (string API) |
+| S8b | `rm '*.txt'` | both entries removed, U unlinked, exit 0 | T7: `RM_STAGED_CHANGES` (HEAD map keyed by view, `rm.ts:205`), nothing removed |
+| S8c | `rm -r d` | `d/\xff` removed, exit 0 | — |
+| S9 | `mv $'\xff.txt' y` | `fatal: bad source, source=\xff.txt, destination=y`, exit 128 | — |
+| S9c | `mkdir d; mv d e` | `fatal: bad source, source=d/\xff, destination=e/\xff`, exit 128 | — |
+| M1 | `d/y` on disk + `d/\xff`; `mv d e` / `mv -k d e` | `bad source, source=d/\xff`, exit 128 / exit 0: index `d/\xff`, `e/y`; disk `e/y` | — |
+| M2 | `\xef\xbf\xbd/x` on disk + `\xff/x`; `mv $'\xef\xbf\xbd' dst` | exit 0: index `dst/x`, `\xff/x` | moves both; the security repro cuts a lossy path to `.git/p` (security review, VERIFIED) |
+| S10 | `z` modified; `stash push` | stash saved; its worktree tree lists `z`, `\xef\xbf\xbd.txt` only (lossy recorded deleted); the internal reset then fails as S1b, exit 1 | T8: saved; its reset writes L's blob to `d/�` and `�.txt` |
+| S17 | stage a change to L; `stash push`; `stash apply` | modify/delete conflict on `\xff.txt` (the stash's worktree tree deleted it) | — |
+| S11 | `clean -n -d` | nothing | — |
+| S12 | U modified; `checkout HEAD -- $'\xef\xbf\xbd.txt'` | exit 0, L kept | deletes staged L or refuses `CHECKOUT_OVERWRITE_DIRTY` (code review, VERIFIED) |
+| S12b | `checkout HEAD -- '*.txt'`; `restore --source=HEAD -- '*.txt'`; `checkout -- '*.txt'` | `error: unable to create file �.txt: Illegal byte sequence`, exit 255; U restored | `checkout HEAD -- '*.txt'`: exit 0, writes L's blob to `�.txt` |
+
+Linux (source-read): `write_entry` opens the raw bytes; ext4/xfs accept every byte but `/` and NUL, so
+git creates `\xff.txt`. Every row then behaves as for an ordinary name: status clean, `add -A` keeps
+the entries, `reset --hard` exits 0.
+
+#### D13.2 Leading symlink (ADR-974)
+
+Fixture: tree `A` → `<tmp>/outside` (120000) and `a/payload`; empty worktree.
+
+| # | Command | git 2.55 macOS (`core.ignorecase=true`) |
+|---|---|---|
+| R1 | `reset --hard` | exit 0; worktree `a/` (real directory) + `a/payload`; `<tmp>/outside` empty; `status`: ` D A` |
+| R2 | `-c checkout.workers=4 -c checkout.thresholdForParallelism=0 reset --hard` | identical to R1 |
+| R3 | `clone` | identical to R1 |
+| R4 | worktree symlink `a` → `<tmp>/outside`, tree `a/payload` only; `checkout -f HEAD` | symlink replaced by a directory holding `payload`; outside empty (Linux: same `create_directories` path, source-read) |
+
+Linux (source-read): `A` and `a` are distinct names; the symlink `A` and directory `a/payload` coexist.
+tsgit: the A/a fixture writes `payload` into the symlink target in 1 run of 10 on `main` and 1-2 of 10
+on this branch (security review, VERIFIED, pre-existing).
+
+git's mechanism (source-read):
+
+- `entry.c:19-58` `create_directories`: walks the leading components one at a time;
+  `has_dirs_only_path` (`symlinks.c`, an `lstat` cache that never follows a link) accepts a real
+  directory; otherwise `mkdir` one level; on `EEXIST` with `force`, `unlink` the occupant (a symlink)
+  and `mkdir` again. Never a recursive `mkdir`.
+- `checkout_entry_ca` runs `create_directories` in the main process, in index order, **before**
+  `enqueue_checkout` (`entry.c:581-591`).
+- `parallel-checkout.c:98`: only regular files are parallel-eligible; symlinks are written by the
+  main process in index order.
+- `parallel-checkout.c:340-375`: a worker re-checks the leading directories with
+  `has_dirs_only_path` and opens with `O_CREAT | O_EXCL`. A mismatch marks the item
+  `PC_ITEM_COLLIDED`; collided items are retried sequentially through `checkout_entry_ca` after the
+  workers finish (`:200-235`).
+
+#### D13.3 HFS alias on raw bytes
+
+`update-index -z --add --index-info`; git prints `Ignoring path` for a refused name. tsgit verdict =
+`verifyPath(decodePreservingBom(bytes), mode)` at `be0d7832`. `core.protectHFS` defaults to true on
+macOS only (source-read: `config.mak.uname`); tsgit applies the HFS rules on every platform today.
+
+| Name bytes | Mode | git `protectHFS=true` | git `false` | tsgit |
+|---|---|---|---|---|
+| `.git\xff/x` | 100644 | refused | accepted | accepted |
+| `.git\xed\xa0\x80/x` (surrogate) | 100644 | refused | accepted | accepted |
+| `.git\xc0\xaf` (overlong) | 100644 | refused | accepted | accepted |
+| `.git\xc3/x` (truncated) | 100644 | refused | accepted | accepted |
+| `.git\xf4\x90\x80\x80/x` (> U+10FFFF) | 100644 | refused | accepted | — |
+| `.g\xef\xbb\xbfit\xff/x` | 100644 | refused | accepted | accepted |
+| `.GiT\xe2\x80\x8c\xff/x` | 100644 | refused | accepted | — |
+| `.git\xef\xbf\xbe/x` (U+FFFE, **valid UTF-8**) | 100644 | refused | accepted | accepted |
+| `.git\xef\xbf\xbf/x` (U+FFFF, **valid UTF-8**) | 100644 | refused | accepted | accepted |
+| `.git\xef\xbf\xbd/x` (literal U+FFFD) | 100644 | accepted | accepted | accepted |
+| `.g\xffit/x` | 100644 | accepted | accepted | accepted |
+| `.git\xe2\x80\x8c/x` (control) | 100644 | refused | accepted | `dotgit-hfs-alias` |
+| `.gitmodules\xff` | 120000 | refused | accepted | accepted |
+| `.gitmodules\xef\xbf\xbe` | 120000 | refused | accepted | accepted |
+| `.gitmodules\xff` | 100644 | accepted | accepted | accepted |
+| `a/.git\xff/x`; `.git\xff` | 100644 | refused | accepted | — |
+
+Source (`utf8.c:122-185` `pick_one_utf8_char`, `:703-773` `next_hfs_char` / `is_hfs_dot_generic`): a
+sequence the picker rejects (C0/C1 lead, E0 overlong, ED A0-BF, EF BF BE/BF, F0 overlong, F4 90+,
+F5-FF, truncated, stray continuation) returns 0, which `is_hfs_dot_generic` reads as end of name. So
+`.git` + rejected sequence is `.git`; a rejected sequence *inside* the needle (`.g\xffit`) is not.
+The U+FFFE/U+FFFF rows are a pre-existing gap on `main` (valid UTF-8, no `pathBytes`).
+
+#### D13.4 Three-way merge over a lossy name
+
+`main` and `side` each change a different ASCII file; both carry the untouched lossy `\xff.txt`.
+
+| # | Command | git 2.55 | tsgit `be0d7832` |
+|---|---|---|---|
+| T9 | `merge side` (true merge) | exit 0; merge tree names `a`, `b`, `ff2e747874` | `merge.run` ok; merge tree names `a`, `b`, **`efbfbd2e747874`** (history rewrite). Source-read: the merged tree's U+FFFD name is valid UTF-8, so `materializeTree` writes L's blob to `�.txt` |
+
+### D14. ADR-973: lossy entries are absent on disk
+
+**Rule.** A lossy entry behaves, for every reader, exactly like a tracked entry whose `lstat`
+returned `FILE_NOT_FOUND`: each route takes its existing missing-file branch, reached by the
+`isLossy` test with no fs call. For every writer the write or unlink is skipped, and so is the
+creation of its leading directories. This is the macOS outcome (S0: `lstat` → ENOENT) on every
+platform; it differs from Linux git, which can write the raw name (ADR-973 consequence).
+
+| Route | "Absent" means | git (macOS) | tsgit after |
+|---|---|---|---|
+| status / diff (`compareAndRefresh`) | unstaged `deleted` | S1 `.D` | same (Part 16) |
+| stat refresh, racy smudge | entry carried unchanged, never smudged | S16: not refreshed | same (Part 16) |
+| `add --all` / `add -u` / `add <glob or dir>` | deletion staged | S2, S3, S5 | same; the glob case needs §D15 (Part 18) |
+| `add <literal>` | never matches | S5b | §D15 |
+| `add --renormalize` | missing-file refusal, index unchanged | S4 (exit 128) | `PATHSPEC_NO_MATCH`, index unchanged (tsgit's existing missing-file code) |
+| rm safety valve | no local modification | S8b | same (Parts 16, 18) |
+| rm unlink | skipped | S8 | same (Part 17) |
+| clean / clean-work-tree check | tracked and absent: work tree reads dirty | S1: `diff-files` reports `D`, the input of git's clean-tree check | same (Part 16) |
+| `find-would-overwrite` | a local deletion | `D` | same (Part 16) |
+| sparse partition | `present: false` | — | same (Part 16) |
+| stash push worktree tree | recorded deleted | S10 | same (Part 16) |
+| mv directory member | `bad source` / skipped by `-k` | M1, S9c | same (Part 19) |
+| checkout / switch / reset `--hard` / read-tree rebuild / materialize / stash restore / sparse widen / `checkout -- <paths>` (all through `applyChangeset`) | write skipped; the index entry keeps its bytes with zero stat | S1b, S1c, S12b, S13 (errors) | skipped, no error (DC6) (Part 17) |
+| `applyChangeset` delete | skipped | — | Part 17 |
+| leading directories of a skipped write | not created | `d/` created empty before `open` fails (S1b) | not created: divergence on disk only, invisible to every git command (an empty directory is never listed) |
+| merge engine | see §D19 | T9 | DC8 |
+
+Corollary: the S1b/T2 corruption (L's blob in U's file) and the security MEDIUM "L and U written to
+one on-disk name" (`apply-changeset.ts:314`) close with Part 17; the lossy-pair route of the
+symlink race (§D18) closes with it.
+
+### D15. String pathspecs against lossy entries
+
+A pathspec is a string; a lossy entry's bytes are not. git matches pathspecs bytewise (`wildmatch`,
+literal `memcmp`), pinned S5-S8c and S12-S12b: a literal never names a lossy entry (S6, S12), while a
+glob (`*.txt`, S5, S7, S12b) and a directory prefix (`d`, S7b, S8c) reach it.
+
+**Matching view.** `matchingPathOf(entry)` is `entry.path` for a UTF-8 entry (zero cost) and, for
+a lossy entry, `pathBytes` decoded with each byte of an invalid sequence mapped to the lone
+surrogate `U+DC00 + byte` (bytes of an invalid sequence are always ≥ 0x80, so `U+DC80`-`U+DCFF`).
+Valid sequences decode as usual; ASCII keeps its position (§D2). Matching the compiled pathspec
+against this view gives git's answers:
+
+- a literal compiled from a well-formed string contains no lone surrogate, so it never equals a
+  lossy entry's view (S6, S12, S5b);
+- `*` and `**` match any code units (S5, S7, S12b);
+- `?` matches one code unit, which is one byte for an invalid sequence, as git's `?` matches one
+  byte; for a *valid* multibyte character git's `?` matches one byte and tsgit's one character, a
+  pre-existing gap for every non-ASCII name (§Out of scope);
+- a directory prefix matches through the ASCII `/` (S7b).
+
+Every match of a pathspec against an index or tree entry goes through
+`matchesIndexPath(spec, entry)`: `rm.ts:95`, `checkout.ts:334`, `add.ts:534`/`:616`, and the sparse
+matcher in `apply-sparse-checkout.ts:60`. The resulting selections are `Set<IndexPathKey>`, never
+`Set<FilePath>`, so a restore scoped to U never drops or rewrites L (S12). Display-only matchers
+(`snapshot/*`, `grep.ts:204`, `fs-workdir-enumerator.ts`) keep the view (§Out of scope).
+
+### D16. mv: byte membership and re-validation
+
+- Membership: a directory source `s` selects entries whose bytes start with `encode(s)` + `0x2f`.
+  With that, the existing cut `pathBytes.subarray(encode(s).length)` is exact, and a lossy `\xff/x`
+  is never a member of `�` (M2).
+- Defence in depth: every re-pathed entry passes `validateIndexPath` with its bytes before it
+  enters the map (the security repro produced `.git/p` and tsgit then refused its own index).
+- On-disk check: git checks every member with `lstat` (`builtin/mv.c`, source-read) and a lossy
+  member is absent by §D14, so `mv d e` refuses `bad source` naming `d/\xff` and `mv -k d e` moves
+  the rest, leaving the lossy entry at its old path (M1). The disk rename moves directory `d` as
+  a whole, as git does.
+
+### D17. HFS alias on raw bytes
+
+`verifyPath` keeps its string shape and gains the component bytes for the HFS step only:
+
+```ts
+// verify-path.ts — the HFS candidate is the component cut where git's picker stops
+const hfsCandidate = (component: string, componentBytes?: Uint8Array): string =>
+  componentBytes === undefined
+    ? component.slice(0, firstNoncharacter(component))       // U+FFFE / U+FFFF end the name
+    : decodePreservingBom(componentBytes.subarray(0, gitPickerValidPrefix(componentBytes)));
+```
+
+- `gitPickerValidPrefix(bytes)` returns the offset of the first sequence `pick_one_utf8_char`
+  rejects (rules in §D13.3), else `bytes.length`. It is stricter than WHATWG on exactly
+  U+FFFE/U+FFFF, the only two rejections a well-formed JS string can encode, hence the string arm.
+- The candidate then goes through today's ignorable-code-point strip and comparison. The NTFS and
+  ASCII checks keep running on the view (ASCII positions are equal in both, §D2).
+- `isObviouslyNotAnAlias` stays valid: every target still begins with `.` or `g`.
+- Fast path: the bytes arm runs only for a component that starts like an alias and carries a
+  non-ASCII byte; UTF-8 paths without U+FFFE/U+FFFF pay one `indexOf` per such component.
+
+### D18. ADR-974: no write through a leading symlink
+
+#### D18.1 Root cause
+
+`applyWriteWave` pools `groupByCaseFoldedPath` groups. A symlink `A` and `a/payload` are different
+groups (`a` ≠ `a/payload` after folding). Task 2 scans `a` → `missing`
+(`unlinkSymlinkedLeadingComponent` returns, `symlinked-leading-path.ts:117-129`); task 1 creates the
+symlink; task 2's `fs.write` runs the port's recursive parent creation, which follows `a` → outside.
+A sequential run is already git-faithful: the scan of `a` sees the symlink, unlinks it and the
+write recreates a directory, which is R1. Only concurrency breaks the invariant.
+
+#### D18.2 Mechanism (git's shape)
+
+```
+applyWriteWave(writes):
+  if no write is a symlink (120000):                 # no task can create a symlink
+    pooled groups, as today                          # a pre-existing link is unlinked before any write
+  else:
+    phase 1 — sequential, index byte order:
+      symlink / gitlink entry → writeWorkingTreeEntry (scanner unlinks leading links, invalidates memo)
+      regular entry           → scanner.ensureLeadingDirectories(path):
+                                  per leading prefix, lstat (no follow):
+                                    directory → next
+                                    missing   → fs.mkdir(prefix)        # parent proven a real dir
+                                    symlink / other → fs.rm(prefix); fs.mkdir(prefix)
+    phase 2 — pooled regular-file groups (only regular writes: none creates a symlink):
+      each write re-runs unlinkSymlinkedLeadingComponent (git's worker re-check), then writes
+```
+
+- Phase 1 is `create_directories` + git's sequential symlink writes. Phase 2 tasks cannot create
+  links, so after phase 1 nothing inside tsgit can turn a leading directory into a symlink. The
+  phase 2 re-check covers a link that a phase-1 symlink write put over a directory created earlier
+  in phase 1 (index order `A/payload` < `a`): it is unlinked and the directory recreated, which is
+  git's collided-item retry, with the same final state (regular file wins, `status` ` D a`).
+- `PrefixShape` gains `directory` vs `other` (a regular file at a leading prefix needs the
+  unlink + mkdir, not a write into it).
+- **Memo keys are spellings, the disk folds them.** On a case-insensitive filesystem `A` and `a` are
+  one name under two memo keys, so `invalidate('a')` after a symlink write leaves `A`'s
+  `directory` verdict stale. In index order every path under one spelling is contiguous, so within
+  phase 1 a stale key is not revisited; phase 2 is where it bites (`A/payload` < link `a`: phase 2's
+  re-check would trust `A` = directory and write through the link). Hence the memo is **cleared at
+  the phase 1 → phase 2 boundary**. Within phase 2 no task creates a link, so the memo stays valid.
+  Every phase-1 symlink write also clears the memo: rare, cheap, and it removes the reliance on
+  index contiguity across filesystem folds (Unicode normalisation included).
+- Port contract unchanged: node, memory and browser adapters all reach this through `lstat`,
+  `mkdir`, `rm`, `symlink`, `write`. An adapter without symlinks never takes phase 1's link arms.
+- The filter-process / unloadable-source path (`applyGroup` on the sorted list) is already
+  sequential; it uses the same `ensureLeadingDirectories` so both paths share one behaviour.
+- Residual (no symlink, pre-existing, not ADR-974): regular `a` and regular `A/y` in different pool
+  groups on a case-insensitive filesystem can fail nondeterministically (`EEXIST`/`ENOTDIR`); never
+  an escape.
+
+#### D18.3 Deterministic test
+
+`test/unit/application/primitives/support/interleaving-fs.ts` wraps the memory `FileSystem`:
+
+- **case folding**: every path is lower-cased before delegating, so `A` and `a` are one entry on
+  every platform;
+- **gate 1**: `symlink(target, p)` proceeds once an `lstat` of a path folding to `p` has resolved,
+  or, after one macrotask, when it is the only fs operation in flight. The second arm prevents a
+  deadlock on the fix, where phase 1 writes the link alone before anything scans `a`; on today's
+  code the pooled payload task always scans `a` within microtasks, so the first arm fires;
+- **gate 2**: a `write`/`writeStream` whose leading prefix folds to a pending symlink's path waits
+  for that symlink to finish;
+- **recorder**: at every `write`, `writeStream` and `mkdir`, it `lstat`s each leading prefix
+  through the inner fs and records any `isSymbolicLink`.
+
+On today's code the gates force scan → symlink → write, and the recorder flags the write. On the
+fix, phase 1 runs the link and the directory creation in index order, gate 2 never holds a phase-2
+write (the link is done), and the recorder stays empty. The second order (`A/payload` < `a`) is
+also the memo case: phase 1 caches `A` as a directory, the link `a` then replaces that (still
+empty) directory, and only the boundary clear makes phase 2 re-`lstat` `A` instead of writing
+through the link. A mutant that drops the boundary clear must fail that test. Tests run both name orders
+(`A` link + `a/payload`; `a` link + `A/payload`) and assert: recorder empty; final memory state has a
+real directory holding `payload` and no symlink (R1). Interop R1/R2 run on a real case-insensitive
+filesystem only (probe-gated); R4 runs everywhere.
+
+### D19. Merge engine over lossy names
+
+Source-read: `applyMergeToWorktree` (`apply-merge-to-worktree.ts:445`) and `mergeTreesToTree` (511)
+flatten every side with `flattenTree` (string-keyed `FlatTree`), and a clean merge rebuilds the
+**whole** tree through `synthesiseMergedTree` → `synthesizeTreeFromIndex` from those string paths.
+A lossy name is therefore emitted as its U+FFFD view even when the merge never touched it (T9), and
+`materializeTree` then sees a valid `�.txt` and writes L's blob there, which ADR-973 forbids. The
+same engine serves `merge`, `stash apply`, `cherry-pick`/`revert` (`internal/replay-sequence.ts`)
+and `rebase --rebase-merges` (`internal/rebase-merges-steps.ts`). DC3 placed the merge engine out
+of scope on the premise that untouched lossy entries survive; T9 falsifies that premise. DC8.
+
 ## Decision candidates
+
+DC1-DC5 (first draft) were ratified as ADR-968 … ADR-972 and are kept below as history. Revision 2
+opens DC6-DC11 only; ADR-973 and ADR-974 already decide the policies they implement.
+
+| # | Choice | Alternatives (≤3) | Recommendation | Why |
+|---|---|---|---|---|
+| DC6 | Outcome of a command whose `applyChangeset` skipped a lossy write (reset `--hard`, checkout/switch, `checkout -- <paths>`, stash restore, sparse widen) | **A** succeed; nothing extra in the result; `status` reports the entries ` D`. **B** succeed and return a structured `absent: ReadonlyArray<IndexPath>` (raw bytes) on `ApplyChangesetResult` and each command result: an additive public type. **C** throw a typed error after writing the rest, as macOS git exits non-zero (S1b 128, S1c 1, S12b 255; S13 `switch` exits 0) | **A** | ADR-973 already accepts "without git's error line". Linux git exits 0 on the same commands, and macOS git is not even consistent (S13). Status already exposes the state as data (ADR-249). B is additive and can come later (YAGNI). C ties tsgit to one platform's failure and leaves half-applied state, as git does |
+| DC7 | When the write wave runs the sequential leading-directory phase (§D18) | **A** only when the changeset writes at least one symlink. **B** always. **C** keep a fully pooled wave and group each write with any symlink whose folded path is one of its leading prefixes | **A** | Without a symlink write, no tsgit task can create a link, and the scanner unlinks a pre-existing one before writing, so today's pool is safe. B adds a sequential `lstat`/`mkdir` pass per distinct directory to every checkout (hot path). C depends on reproducing the filesystem's fold (APFS case and normalisation, NTFS); one missed fold class reopens the escape |
+| DC8 | Merge engine over lossy names (§D19, T9) | **A** carry bytes through `FlatTree`, merge outcomes and tree synthesis (git-faithful; `FlatTree` has 37 consumer files). **B** refuse a merge-engine run (merge, stash apply, cherry-pick/revert, rebase-merges) whose base/ours/theirs holds a lossy name: a typed error before any ref, index or worktree write; needs a divergence ADR; A goes to the backlog. **C** document only; history keeps being rewritten | **B** now, A on the backlog | B stops a silent history rewrite and an ADR-973 violation with one check on the flattened sides. A is the faithful end state, but it reaches 37 files and the rename/attribute machinery. C leaves a proven data-loss route open. Your standing "fold gaps" preference argues for A in this run; B is the smaller safe step |
+| DC9 | Which `validateIndexPath` callers pass bytes to the HFS check (§D17) | **A** every caller that holds an entry, parse included. **B** write-side only (commit, synthesize, checkout, mv); parse keeps the view so tsgit can still read an index Linux git wrote with `.git\xff/x`. **C** gate all HFS rules on the platform like git's `core.protectHFS` default (Darwin only, `config.mak.uname:157`) | **A** | tsgit already applies the HFS rules on every platform and validates at parse (`.g‌it/x` is refused at parse today). A keeps one rule; B creates two verdicts for one path; C changes every existing HFS verdict and belongs in its own ADR |
+| DC10 | Cache-tree invalidation cost (perf review: `invalidateCacheTree` +13-27% on 10k changed UTF-8 paths, 40-110 ns/path, under 0.1% of a 100k-entry index write) | **A** accept. **B** precompute lighter component projections (gain unmeasured) | **A** | The cost is per *changed* path and invisible at command scale; B is an unproven optimisation |
+| DC11 | Pathspec matching for lossy entries (§D15) | **A** surrogate-escape matching view (`U+DC00 + byte` per invalid byte). **B** match the U+FFFD view and exclude lossy entries from literal matches only. **C** a byte-level matcher (compile pathspecs to bytes) | **A** | A gives git's answer for literals, `*`, `**`, directory prefixes, and `?` on invalid bytes, with zero cost for UTF-8 entries. B is wrong for `?` and classes (`\xe2\x80` is one U+FFFD for two bytes) and for globs carrying U+FFFD. C is the exact answer also for valid multibyte `?`, but it rewrites the pathspec engine for a pre-existing, separate gap |
+
+History (first draft, ratified):
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
@@ -446,23 +905,51 @@ synthesize unit tests; interop rows A4, B4, E1 (`git ls-tree -r -z` byte equalit
   (`bench:ab`). Expected flat (R9). The only added per-entry work is one U+FFFD scan of the decoded
   path in parse and in the lossy-only walk check.
 
+- **Revision 2 tests** (each part lists its own; the shared rules):
+  - every §D13 row a part closes becomes an interop row in `index-path-bytes-interop.test.ts`;
+    rows that depend on APFS (S0-S17 git side, R1-R3) assert the tsgit outcome on every platform
+    and compare with git only where the probe says the filesystem refuses non-UTF-8 names / folds
+    case;
+  - ADR-973 unit tests use an fs double that records every call and assert no call names a lossy
+    entry's view;
+  - ADR-974 uses the §D18.3 interleaving double: deterministic, no repeat loop;
+  - property siblings: `matching-path.properties.test.ts` (Part 18), `verify-path.properties.test.ts`
+    (Part 21), the commit lossy-directory property (Part 24a).
+- **Review test gaps folded into Part 24**: commit lossy directory with two children
+  (`commit.ts:413`); zero-stat lossy leaf rebuild (`build-index-from-tree.ts:99`); public `walkTree`
+  omits `pathBytes` (`walk-tree.ts:285`); rm of a lossy entry by key (`rm.ts:109`); `sut` naming in
+  `index-path-bytes-interop.test.ts:190` and `:203`. Suspected equivalent mutants from the tests
+  review (`walk-tree.ts:242`, `encoding.ts:100` `includes` fast path, `carry-extensions.ts:88`) go
+  through the mutation triage in `.claude/workflow/mutation.md`; `carry-extensions.ts:88` is removed
+  outright (Part 24h).
+
 ## Out of scope
 
 - **Working-tree I/O of non-UTF-8 names**: the `FileSystem` port is string-pathed, so a checkout writes
   the U+FFFD name and status cannot stat a raw-byte file. It needs a byte-path port, which is its own
-  design. Today's behaviour is unchanged.
+  design. Today's behaviour is unchanged. **[revision 2]** ADR-973 replaces "unchanged": lossy entries
+  are absent on disk (§D14). Materialising the raw name, as Linux git does, still needs the byte port.
 - **Pathspec addressing of non-UTF-8 entries** (`rm`, `add`, `checkout -- <path>` with a raw-byte
   name): a JS string cannot express the bytes. Directory and glob pathspecs still match through the
-  U+FFFD view.
+  U+FFFD view. **[revision 2]** Literals now never match a lossy entry and globs match through the
+  §D15 view. A *literal* naming the raw bytes is still not expressible.
 - **Merge engine** (`three-way-tree`, `mergedBlobEntries`, `conflictsToIndexEntries`, rename detection,
   `merge.ts:1902`): string-pathed end to end. A lossy path a merge *touches* still comes out as U+FFFD
-  (DC3-C). Untouched lossy entries survive through §D5.
+  (DC3-C). Untouched lossy entries survive through §D5. **[falsified, T9]**: untouched entries do
+  not survive a three-way merge; DC8 decides the fix.
+- **`?` and character classes on valid non-ASCII names** (git matches bytes, tsgit matches UTF-16
+  units): pre-existing for every non-ASCII path, not specific to lossy entries (§D15).
+- **Case-fold write collisions without symlinks** (regular `a` and regular `A/y` in separate pool
+  groups on a case-insensitive filesystem): a pre-existing nondeterministic failure, never an escape
+  (§D18.2).
+- **tsgit `fsck` on `.git\xff/x` trees** (git `fsck` warns `hasDotgit`, tsgit exits 0; security
+  review): pre-existing, separate surface.
+- **rm of an untracked file at a lossy entry's view** (security review, OUT-OF-SCOPE note): closed by
+  Part 17, since `rm` no longer unlinks for a lossy entry.
 - **Snapshot rows / display surfaces** (`IndexEntryRow`, `grep`, `blame`, `rev-parse :path`, archive,
   diff/patch headers): they read the decoded view, as `TreeEntry.name` does today (ADR-249).
 - **Cache-tree decode switch to `decodePreservingBom`**: not needed. Matching already keys on
   `nameBytes`, and a change would churn #317's tests for no observable gain.
-- **HFS alias check on invalid UTF-8**: git's `next_hfs_char` on malformed sequences is not pinned.
-  To prove it: stage `.g\xffit/x` and `.\xe2\x80\x8cgit` via `update-index` under
-  `core.protectHFS=true` and compare the refusal with `validateIndexPath`.
+- ~~**HFS alias check on invalid UTF-8**~~: pinned in §D13.3, in scope as Part 21.
 - **tsgit refusing unsafe paths at parse** (git verifies at write, not read): an existing divergence,
   untouched.
