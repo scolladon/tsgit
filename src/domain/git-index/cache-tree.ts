@@ -12,6 +12,7 @@ import { encode, hexToBytes } from '../objects/encoding.js';
 import type { FilePath } from '../objects/object-id.js';
 import { invalidIndexEntry } from './error.js';
 import type { CacheTreeEntry } from './index-entry.js';
+import { latin1 } from './index-path-key.js';
 
 const NUL = 0;
 
@@ -75,17 +76,11 @@ export function serializeCacheTree(root: CacheTreeEntry, digestLength: 20 | 32):
  */
 const NON_ASCII = /[\u0080-\uffff]/;
 
-const keyOfBytes = (bytes: Uint8Array): string => {
-  let key = '';
-  for (const byte of bytes) key += String.fromCharCode(byte);
-  return key;
-};
-
 const keyOfComponent = (component: string): string =>
-  NON_ASCII.test(component) ? keyOfBytes(encode(component)) : component;
+  NON_ASCII.test(component) ? latin1(encode(component)) : component;
 
 const keyOfChild = (child: CacheTreeEntry): string =>
-  child.nameBytes === undefined ? keyOfComponent(child.path) : keyOfBytes(child.nameBytes);
+  child.nameBytes === undefined ? keyOfComponent(child.path) : latin1(child.nameBytes);
 
 /**
  * git never writes two subtrees of one node under the same name; a payload that does
