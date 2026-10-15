@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   indexPathKey,
   indexPathOfBytes,
+  isLossy,
   keyOfPath,
   latin1,
   pathBytesOf,
@@ -179,6 +180,41 @@ describe('latin1', () => {
         // Assert
         expect(result.length).toBe(256);
         expect([...result].map((c) => c.charCodeAt(0))).toEqual([...bytes]);
+      });
+    });
+  });
+});
+
+describe('isLossy', () => {
+  describe('Given an entry carrying its raw path bytes', () => {
+    describe('When asking whether it is lossy', () => {
+      it('Then it is', () => {
+        // Arrange
+        const sut = {
+          path: REPLACEMENT_PATH,
+          pathBytes: Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74),
+        };
+
+        // Act
+        const result = isLossy(sut);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an entry whose path is its own bytes', () => {
+    describe('When asking whether it is lossy', () => {
+      it('Then it is not', () => {
+        // Arrange
+        const sut = { path: REPLACEMENT_PATH };
+
+        // Act
+        const result = isLossy(sut);
+
+        // Assert
+        expect(result).toBe(false);
       });
     });
   });

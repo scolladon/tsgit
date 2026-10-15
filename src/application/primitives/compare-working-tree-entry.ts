@@ -21,6 +21,7 @@
  */
 import { isSameKind } from '../../domain/diff/mode-kind.js';
 import type { IndexEntry } from '../../domain/git-index/index-entry.js';
+import { isLossy } from '../../domain/git-index/index-path-key.js';
 import { deriveWorkingMode, FILE_MODE, type FileMode } from '../../domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
@@ -257,6 +258,7 @@ export const compareAndRefresh = async (
   entry: IndexEntry,
   scope: ComparisonScope = {},
 ): Promise<RefreshedComparison> => {
+  if (isLossy(entry)) return { delta: { status: 'absent' } };
   const absPath = joinPath(requireWorkTree(ctx, 'compareWorkingTreeEntry'), entry.path);
   const stat = await ctx.fs.lstat(absPath).catch(() => undefined);
   if (stat === undefined) return { delta: { status: 'absent' } };

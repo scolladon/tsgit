@@ -20,6 +20,7 @@ import {
   type IndexPath,
   type IndexPathKey,
   indexPathKey,
+  isLossy,
   keyOfPath,
 } from '../../domain/git-index/index-path-key.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
@@ -571,8 +572,7 @@ const renormalizeOne = async (
 ): Promise<IndexEntry> => {
   const { path } = previous;
   await ensurePromisorConfigValid();
-  // The string-pathed fs cannot name a non-UTF-8 file: the decoded view would stat a different file.
-  if (previous.pathBytes !== undefined) throw pathspecNoMatch(path);
+  if (isLossy(previous)) throw pathspecNoMatch(path);
   const fresh = await lstatOrMissing(ctx, path);
   if (fresh === undefined) throw pathspecNoMatch(path);
   if (fresh.size > MAX_WORKING_TREE_BLOB_BYTES) {

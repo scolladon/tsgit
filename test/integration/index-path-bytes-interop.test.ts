@@ -487,3 +487,130 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'index path bytes interop — lossy entries on disk',
+  { timeout: 60_000 },
+  () => {
+    const U_FILE = '�.txt';
+    const U_HEX = 'efbfbd2e747874';
+    const L_HEX = 'ff2e747874';
+    const D_FF_HEX = '642fff';
+    let pair: PeerPair;
+    let repo: Repository;
+
+    const git = (...args: ReadonlyArray<string>): string =>
+      runGit(['-C', pair.peer, ...args], { env: COMMIT_ENV });
+
+    const seedLossyTwins = (opts: { readonly lossyBlob?: string } = {}): void => {
+      const lossyBlob = hashBlob(pair.peer, opts.lossyBlob ?? 'l\n');
+      writeFileSync(path.join(pair.peer, 'z'), 'z\n');
+      writeFileSync(path.join(pair.peer, U_FILE), 'u\n');
+      git('add', 'z', U_FILE);
+      stageRaw(pair.peer, [
+        { mode: REGULAR_MODE, oid: lossyBlob, path: FF_TXT },
+        { mode: REGULAR_MODE, oid: lossyBlob, path: D_SLASH_FF },
+      ]);
+      git('commit', '-q', '-m', 'seed');
+    };
+
+    beforeEach(async () => {
+      pair = await makePeerPair('index-path-bytes');
+      runGit(['init', '-q', '-b', 'main', pair.peer]);
+      runGit(['-C', pair.peer, 'config', 'user.name', 'Ada']);
+      runGit(['-C', pair.peer, 'config', 'user.email', 'ada@example.com']);
+      repo = await openRepository({ cwd: pair.peer });
+    });
+
+    afterEach(async () => {
+      await repo.dispose();
+      await pair.dispose();
+    });
+
+    describe('Given a lossy entry and its UTF-8 twin both tracked', () => {
+      describe('When status runs', () => {
+        it('Then only the lossy entries read as deleted from the working tree', async () => {
+          // Arrange
+          seedLossyTwins();
+
+          // Act
+          const result = await repo.status();
+
+          // Assert
+          expect(result.changes.map((c) => [c.path, c.unstaged])).toEqual([
+            ['d/�', 'deleted'],
+            [U_FILE, 'deleted'],
+          ]);
+        });
+      });
+
+      describe('When add --all runs', () => {
+        it('Then both lossy entries leave the index', async () => {
+          // Arrange
+          seedLossyTwins();
+
+          // Act
+          await repo.add([], { all: true });
+
+          // Assert
+          expect(lsFilesPathHex(pair.peer)).toEqual([Z_HEX, U_HEX]);
+        });
+      });
+
+      describe('When add --renormalize runs', () => {
+        it('Then it rejects PATHSPEC_NO_MATCH and leaves the index unchanged', async () => {
+          // Arrange
+          seedLossyTwins();
+          const before = lsFilesPathHex(pair.peer);
+          let code: string | undefined;
+
+          // Act
+          try {
+            await repo.add(['.'], { renormalize: true });
+          } catch (error) {
+            code = (error as { data?: { code?: string } }).data?.code;
+          }
+
+          // Assert
+          expect(code).toBe('PATHSPEC_NO_MATCH');
+          expect(lsFilesPathHex(pair.peer)).toEqual(before);
+        });
+      });
+
+      describe('When stash push runs after a tracked change', () => {
+        it('Then the stash work tree records the lossy paths deleted', async () => {
+          // Arrange
+          seedLossyTwins();
+          writeFileSync(path.join(pair.peer, 'z'), 'changed\n');
+
+          // Act
+          await repo.stash.push();
+
+          // Assert
+          expect(lsTreePathHex(pair.peer, 'stash@{0}')).toEqual([Z_HEX, U_HEX]);
+        });
+      });
+    });
+
+    describe('Given a lossy entry whose blob equals its twin file content', () => {
+      describe('When status runs', () => {
+        it('Then the lossy entry keeps its zero stat', async () => {
+          // Arrange
+          seedLossyTwins({ lossyBlob: 'u\n' });
+          const ctx = createNodeContext({ workDir: pair.peer });
+
+          // Act
+          await repo.status();
+
+          // Assert
+          const lossy = (await readIndex(ctx)).entries.filter((e) => e.pathBytes !== undefined);
+          expect(lossy.map((e) => hex(e.pathBytes as Uint8Array))).toEqual([D_FF_HEX, L_HEX]);
+          expect(lossy.map((e) => [e.mtimeSeconds, e.ctimeSeconds])).toEqual([
+            [0, 0],
+            [0, 0],
+          ]);
+        });
+      });
+    });
+  },
+);

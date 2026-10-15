@@ -23,6 +23,8 @@ export const indexPathKey = (entry: IndexPath): IndexPathKey =>
     ? entry.path
     : LOSSY_KEY_PREFIX + latin1(entry.pathBytes)) as IndexPathKey;
 
+export const isLossy = (entry: IndexPath): boolean => entry.pathBytes !== undefined;
+
 export const keyOfPath = (path: FilePath): IndexPathKey => path as string as IndexPathKey;
 
 export const pathBytesOf = (entry: IndexPath): Uint8Array => entry.pathBytes ?? encode(entry.path);
