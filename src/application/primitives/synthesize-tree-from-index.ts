@@ -87,7 +87,7 @@ type EntryCheck = (entry: IndexEntry, maxDepth: number) => void;
 // NO_PARSER_OFFSET because these entries did not come from a parsed byte
 // buffer — see `path-validator.ts` for the contract.
 const indexEntryCheck: EntryCheck = (entry, maxDepth) => {
-  validateIndexPath(entry.path, NO_PARSER_OFFSET, entry.mode);
+  validateIndexPath(entry.path, NO_PARSER_OFFSET, entry.mode, entry.pathBytes);
   assertDepthBounded(entry.path, maxDepth);
 };
 

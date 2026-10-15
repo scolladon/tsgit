@@ -125,7 +125,7 @@ export function parseIndex(bytes: Uint8Array, digestLength: 20 | 32): GitIndex {
     const rawPath = bytes.subarray(offset, pathEnd);
     const path = decodePreservingBom(rawPath);
     const pathBytes = lossyPathBytes(path, rawPath);
-    validateIndexPath(path, entryStart, mode);
+    validateIndexPath(path, entryStart, mode, pathBytes);
 
     offset = nulEnd + 1;
 

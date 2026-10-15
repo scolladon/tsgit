@@ -333,6 +333,35 @@ describe('synthesizeTreeFromIndex', () => {
     });
   });
 
+  describe('Given a lossy entry whose raw bytes name a .git HFS alias', () => {
+    describe('When the tree is synthesised', () => {
+      it('Then it refuses with the HFS reason', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'x');
+        const entry: IndexEntry = {
+          ...makeIndexEntry('.git\uFFFD/x', id),
+          pathBytes: Uint8Array.of(0x2e, 0x67, 0x69, 0x74, 0xff, 0x2f, 0x78),
+        };
+        const sut = synthesizeTreeFromIndex;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, [entry]);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as { data?: unknown }).data).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'.git' HFS+ ignorable-codepoint alias rejected",
+        });
+      });
+    });
+  });
+
   describe('Given config unset (default cap) and an entry at exactly the default depth', () => {
     describe('When synthesise', () => {
       it('Then completes and the tree round-trips', async () => {

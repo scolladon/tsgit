@@ -1317,6 +1317,32 @@ describe('parseIndex — path bytes', () => {
     });
   });
 
+  describe('Given an entry whose raw path is .git followed by an invalid UTF-8 byte', () => {
+    describe('When parsing', () => {
+      it('Then it is rejected as an HFS ignorable-codepoint alias', () => {
+        // Arrange
+        const rawPath = Uint8Array.of(0x2e, 0x67, 0x69, 0x74, 0xff, 0x2f, 0x78);
+        const input = buildTestIndex([{ path: rawPath, sha: SHA_A }]);
+        let caught: unknown;
+
+        // Act
+        try {
+          parseIndex(input, 20);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'.git' HFS+ ignorable-codepoint alias rejected",
+        });
+      });
+    });
+  });
+
   describe('Given an entry whose path has a BOM inside a later component', () => {
     describe('When parsing', () => {
       it('Then the inner BOM is kept', () => {

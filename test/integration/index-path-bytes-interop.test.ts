@@ -9,6 +9,7 @@
  *   unique:         index entry path bytes round-trip like git
  *   interopSurface: index
  */
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -788,6 +789,100 @@ describe.skipIf(!GIT_AVAILABLE)(
             [0, 0],
             [0, 0],
           ]);
+        });
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'index path bytes interop — HFS alias on raw bytes',
+  { timeout: 60_000 },
+  () => {
+    const HFS_REASON = "'.git' HFS+ ignorable-codepoint alias rejected";
+    let pair: PeerPair;
+    let repo: Repository;
+
+    const updateIndex = (protectHfs: boolean, rawPath: Uint8Array) => {
+      const oid = hashBlob(pair.peer, 'x\n');
+      const record = Buffer.concat([
+        Buffer.from(`${REGULAR_MODE} ${oid}\t`),
+        rawPath,
+        Buffer.of(NUL),
+      ]);
+      return spawnSync(
+        'git',
+        [
+          '-C',
+          pair.peer,
+          '-c',
+          `core.protectHFS=${protectHfs}`,
+          'update-index',
+          '-z',
+          '--add',
+          '--index-info',
+        ],
+        { input: record, env: runGitEnv() },
+      );
+    };
+
+    const readIndexError = async (): Promise<unknown> => {
+      try {
+        await readIndex(createNodeContext({ workDir: pair.peer }));
+      } catch (error) {
+        return (error as { data?: unknown }).data;
+      }
+      return undefined;
+    };
+
+    beforeEach(async () => {
+      pair = await makePeerPair('index-path-bytes');
+      runGit(['init', '-q', '-b', 'main', pair.peer]);
+      repo = await openRepository({ cwd: pair.peer });
+    });
+
+    afterEach(async () => {
+      await repo.dispose();
+      await pair.dispose();
+    });
+
+    describe.each([
+      ['.git\\xff/x', Uint8Array.of(0x2e, 0x67, 0x69, 0x74, 0xff, 0x2f, 0x78)],
+      ['.git\\xc0\\xaf', Uint8Array.of(0x2e, 0x67, 0x69, 0x74, 0xc0, 0xaf)],
+      [
+        '.git\\xef\\xbf\\xbe/x',
+        Uint8Array.of(0x2e, 0x67, 0x69, 0x74, 0xef, 0xbf, 0xbe, 0x2f, 0x78),
+      ],
+    ])('Given git staged %s with core.protectHFS=false', (_title, rawPath) => {
+      describe('When the index is read', () => {
+        it('Then tsgit refuses with the HFS reason and git protectHFS=true ignores the path', async () => {
+          // Arrange
+          updateIndex(false, rawPath);
+          const guarded = updateIndex(true, rawPath);
+
+          // Act
+          const data = await readIndexError();
+
+          // Assert
+          expect(data).toMatchObject({ code: 'INVALID_INDEX_ENTRY', reason: HFS_REASON });
+          expect(guarded.stderr.toString()).toContain('Ignoring path');
+        });
+      });
+    });
+
+    describe('Given git staged .git followed by U+FFFD', () => {
+      describe('When the index is read', () => {
+        it('Then both git and tsgit accept it', async () => {
+          // Arrange
+          const rawPath = Uint8Array.of(0x2e, 0x67, 0x69, 0x74, 0xef, 0xbf, 0xbd, 0x2f, 0x78);
+          const guarded = updateIndex(true, rawPath);
+
+          // Act
+          const data = await readIndexError();
+
+          // Assert
+          expect(guarded.stderr.toString()).not.toContain('Ignoring path');
+          expect(data).toBeUndefined();
         });
       });
     });
