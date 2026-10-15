@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  escapedPathOf,
   indexPathKey,
   indexPathOfBytes,
+  indexPathOfEscaped,
   isLossy,
   keyOfPath,
   latin1,
   pathBytesOf,
   splitAtSlash,
+  viewOfEscaped,
 } from '../../../../src/domain/git-index/index-path-key.js';
 import { encode } from '../../../../src/domain/objects/encoding.js';
 import { FilePath } from '../../../../src/domain/objects/index.js';
@@ -215,6 +218,117 @@ describe('isLossy', () => {
 
         // Assert
         expect(result).toBe(false);
+      });
+    });
+  });
+});
+
+describe('escapedPathOf', () => {
+  describe('Given a lossy entry', () => {
+    describe('When escaping its path', () => {
+      it('Then each rejected byte is a lone low surrogate', () => {
+        // Arrange
+        const sut = { path: REPLACEMENT_PATH, pathBytes: LOSSY_BYTES };
+
+        // Act
+        const result = escapedPathOf(sut);
+
+        // Assert
+        expect(result).toBe('\uDCFF.txt');
+      });
+    });
+  });
+
+  describe('Given an entry whose path is its own bytes', () => {
+    describe('When escaping its path', () => {
+      it('Then it is the same path instance', () => {
+        // Arrange
+        const sut = { path: REPLACEMENT_PATH };
+
+        // Act
+        const result = escapedPathOf(sut);
+
+        // Assert
+        expect(result).toBe(sut.path);
+      });
+    });
+  });
+});
+
+describe('indexPathOfEscaped', () => {
+  describe('Given an escaped path holding a lone escape', () => {
+    describe('When building the index path', () => {
+      it('Then it carries the view and the raw bytes', () => {
+        // Arrange
+        const sut = '\uDCFF.txt' as FilePath;
+
+        // Act
+        const result = indexPathOfEscaped(sut);
+
+        // Assert
+        expect(result).toEqual({ path: '�.txt', pathBytes: LOSSY_BYTES });
+      });
+    });
+  });
+
+  describe('Given a well-formed path', () => {
+    describe('When building the index path', () => {
+      it('Then it has no pathBytes key', () => {
+        // Arrange
+        const sut = 'a/b' as FilePath;
+
+        // Act
+        const result = indexPathOfEscaped(sut);
+
+        // Assert
+        expect(result).toStrictEqual({ path: 'a/b' });
+      });
+    });
+  });
+
+  describe('Given a non-canonical escape of a valid sequence', () => {
+    describe('When building the index path', () => {
+      it('Then the bytes are valid UTF-8 and no pathBytes key is kept', () => {
+        // Arrange
+        const sut = '\uDCC3\uDCA9' as FilePath;
+
+        // Act
+        const result = indexPathOfEscaped(sut);
+
+        // Assert
+        expect(result).toStrictEqual({ path: 'é' });
+      });
+    });
+  });
+});
+
+describe('viewOfEscaped', () => {
+  describe('Given an escaped maximal subpart', () => {
+    describe('When viewing it', () => {
+      it('Then it is one replacement character', () => {
+        // Arrange
+        const sut = '\uDCE2\uDC80A' as FilePath;
+
+        // Act
+        const result = viewOfEscaped(sut);
+
+        // Assert
+        expect(result).toBe('�A');
+      });
+    });
+  });
+
+  describe('Given a well-formed path', () => {
+    describe('When viewing it', () => {
+      it('Then the input comes back', () => {
+        // Arrange
+        const sut = 'a/b' as FilePath;
+
+        // Act
+        const result = viewOfEscaped(sut);
+
+        // Assert
+        expect(result).toBe(sut);
       });
     });
   });

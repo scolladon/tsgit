@@ -1,10 +1,13 @@
 import fc from 'fast-check';
-import { describe, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
+  escapedPathOf,
   indexPathKey,
   indexPathOfBytes,
+  indexPathOfEscaped,
   pathBytesOf,
   splitAtSlash,
+  viewOfEscaped,
 } from '../../../../src/domain/git-index/index-path-key.js';
 import {
   bytesEqual,
@@ -12,7 +15,7 @@ import {
   decodePreservingBom,
   encode,
 } from '../../../../src/domain/objects/encoding.js';
-import { arbPathBytes } from './arbitraries.js';
+import { arbIndexEntryWithPathBytes, arbPathBytes } from './arbitraries.js';
 
 const SLASH = Uint8Array.of(0x2f);
 
@@ -75,6 +78,57 @@ describe('index path key properties', () => {
 
         // Act & Assert
         fc.assert(property, { numRuns: 100 });
+      });
+    });
+  });
+
+  describe('Given an arbitrary entry', () => {
+    describe('When escaping its path and building the index path back', () => {
+      it('Then path and pathBytes are restored', () => {
+        // Arrange
+        const property = fc.property(arbIndexEntryWithPathBytes(), (entry) => {
+          const result = indexPathOfEscaped(escapedPathOf(entry));
+          expect(result).toStrictEqual({
+            path: entry.path,
+            ...(entry.pathBytes && { pathBytes: entry.pathBytes }),
+          });
+        });
+
+        // Act & Assert
+        fc.assert(property, { numRuns: 100 });
+      });
+    });
+  });
+
+  describe('Given two arbitrary path bytes', () => {
+    describe('When escaping both', () => {
+      it('Then the escaped paths are equal exactly when the bytes are', () => {
+        // Arrange
+        const property = fc.property(
+          arbPathBytes(),
+          arbPathBytes(),
+          (b1, b2) =>
+            (escapedPathOf(indexPathOfBytes(b1)) === escapedPathOf(indexPathOfBytes(b2))) ===
+            bytesEqual(b1, b2),
+        );
+
+        // Act & Assert
+        fc.assert(property, { numRuns: 100 });
+      });
+    });
+  });
+
+  describe('Given arbitrary path bytes', () => {
+    describe('When viewing their escaped path', () => {
+      it('Then it is the entry path', () => {
+        // Arrange
+        const property = fc.property(arbPathBytes(), (bytes) => {
+          const entry = indexPathOfBytes(bytes);
+          return viewOfEscaped(escapedPathOf(entry)) === entry.path;
+        });
+
+        // Act & Assert
+        fc.assert(property, { numRuns: 200 });
       });
     });
   });
