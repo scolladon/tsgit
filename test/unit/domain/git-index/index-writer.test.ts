@@ -11,7 +11,6 @@ import {
   compareEntryPath,
   inOrder,
   pathComparatorFor,
-  pathStringComparatorFor,
   serializeIndex,
 } from '../../../../src/domain/git-index/index-writer.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
@@ -113,72 +112,6 @@ describe('compareEntryPath UTF-8 byte order', () => {
 
         // Assert
         expect(result).toBeLessThan(0);
-      });
-    });
-  });
-});
-
-describe('pathStringComparatorFor', () => {
-  describe('Given paths holding a BMP character above U+E000 and an astral character', () => {
-    describe('When the picked comparator sorts them', () => {
-      it('Then they come out in UTF-8 byte order', () => {
-        // Arrange
-        const paths = ['\u{1F600}.txt', '\uFFFD.txt'];
-
-        // Act
-        const sut = pathStringComparatorFor;
-        const result = [...paths].sort(sut(paths));
-
-        // Assert
-        expect(result).toEqual(['\uFFFD.txt', '\u{1F600}.txt']);
-      });
-    });
-  });
-
-  describe('Given two equal ASCII paths', () => {
-    describe('When the picked comparator compares them', () => {
-      it('Then it reports them equal', () => {
-        // Arrange
-        const paths = ['a/c', 'a/c'];
-
-        // Act
-        const sut = pathStringComparatorFor;
-        const result = sut(paths)('a/c', 'a/c');
-
-        // Assert
-        expect(result).toBe(0);
-      });
-    });
-  });
-
-  describe('Given two ASCII paths in descending order', () => {
-    describe('When the picked comparator compares them', () => {
-      it('Then the later path compares greater', () => {
-        // Arrange
-        const paths = ['b', 'a'];
-
-        // Act
-        const sut = pathStringComparatorFor;
-        const result = sut(paths)('b', 'a');
-
-        // Assert
-        expect(result).toBeGreaterThan(0);
-      });
-    });
-  });
-
-  describe('Given ASCII-only paths', () => {
-    describe('When the picked comparator sorts them', () => {
-      it('Then they come out in byte order', () => {
-        // Arrange
-        const paths = ['b', 'a/c', 'a'];
-
-        // Act
-        const sut = pathStringComparatorFor;
-        const result = [...paths].sort(sut(paths));
-
-        // Assert
-        expect(result).toEqual(['a', 'a/c', 'b']);
       });
     });
   });
@@ -815,21 +748,6 @@ describe('Given inOrder', () => {
 describe('mixed plain and high code-unit paths', () => {
   const mixed = ['a', '\u{1F600}', '\uFFFD'];
   const utf8Order = ['a', '\uFFFD', '\u{1F600}'];
-
-  describe('Given paths where only some hold a code unit at or above U+D800', () => {
-    describe('When the string comparator sorts them', () => {
-      it('Then they come out in UTF-8 byte order', () => {
-        // Arrange
-        const sut = pathStringComparatorFor;
-
-        // Act
-        const result = [...mixed].sort(sut(mixed));
-
-        // Assert
-        expect(result).toEqual(utf8Order);
-      });
-    });
-  });
 
   describe('Given entries where only some hold a code unit at or above U+D800', () => {
     describe('When the entry comparator sorts them', () => {

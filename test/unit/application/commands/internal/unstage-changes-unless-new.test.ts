@@ -22,6 +22,11 @@ const entry = (path: string, id: string, stage: 0 | 1 | 2 | 3 = 0): IndexEntry =
   path: path as FilePath,
 });
 
+const lossy = (path: string, bytes: number[], id: string): IndexEntry => ({
+  ...entry(path, id),
+  pathBytes: Uint8Array.from(bytes),
+});
+
 const paths = (entries: ReadonlyArray<IndexEntry>): string[] => entries.map((e) => e.path);
 
 describe('unstageChangesUnlessNew', () => {
@@ -106,7 +111,7 @@ describe('unstageChangesUnlessNew', () => {
         const result = sut(merged, before);
 
         // Assert
-        expect(result.restagedPaths).toEqual(['c', 'd']);
+        expect(result.restagedPaths.map(({ path }) => path)).toEqual(['c', 'd']);
       });
     });
   });
@@ -123,7 +128,7 @@ describe('unstageChangesUnlessNew', () => {
         const result = sut(merged, before);
 
         // Assert
-        expect(result.restagedPaths).toEqual(['n']);
+        expect(result.restagedPaths.map(({ path }) => path)).toEqual(['n']);
       });
     });
   });
@@ -176,7 +181,7 @@ describe('unstageChangesUnlessNew', () => {
 
         // Assert
         expect(paths(result.entries)).toEqual(['a', 'b', 'y', 'z']);
-        expect(result.restagedPaths).toEqual(['y', 'b', 'z']);
+        expect(result.restagedPaths.map(({ path }) => path)).toEqual(['y', 'b', 'z']);
       });
     });
   });
@@ -194,6 +199,93 @@ describe('unstageChangesUnlessNew', () => {
 
         // Assert
         expect(result).toEqual({ entries: [], restagedPaths: [] });
+      });
+    });
+  });
+
+  describe('Given a lossy path new to the merged index and a deleted path with the same decoded view', () => {
+    describe('When the changes are unstaged', () => {
+      it('Then the deleted path is restored and the lossy path stays staged with its bytes', () => {
+        // Arrange
+        const before = [entry('\uFFFD.txt', 'u')];
+        const merged = [lossy('\uFFFD.txt', [0xff, 0x2e, 0x74, 0x78, 0x74], 'l')];
+
+        // Act
+        const sut = unstageChangesUnlessNew;
+        const result = sut(merged, before);
+
+        // Assert
+        expect(result.entries.map((e) => [e.id, e.fileSize, e.pathBytes])).toEqual([
+          ['u', 0, undefined],
+          ['l', STATTED, Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74)],
+        ]);
+      });
+
+      it('Then the restaged paths list the lossy path with its bytes before the restored one', () => {
+        // Arrange
+        const before = [entry('\uFFFD.txt', 'u')];
+        const merged = [lossy('\uFFFD.txt', [0xff, 0x2e, 0x74, 0x78, 0x74], 'l')];
+
+        // Act
+        const sut = unstageChangesUnlessNew;
+        const result = sut(merged, before);
+
+        // Assert
+        expect(result.restagedPaths).toEqual([
+          { path: '\uFFFD.txt', pathBytes: Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74) },
+          { path: '\uFFFD.txt' },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a kept new lossy path inside a directory and a deleted file named like its decoded directory', () => {
+    describe('When the changes are unstaged', () => {
+      it('Then the deleted file is restored because the directory bytes differ', () => {
+        // Arrange
+        const before = [entry('\uFFFD', 'u')];
+        const merged = [lossy('\uFFFD/x', [0xff, 0x2f, 0x78], 'l')];
+
+        // Act
+        const sut = unstageChangesUnlessNew;
+        const result = sut(merged, before);
+
+        // Assert
+        expect(result.entries.map((e) => e.id)).toEqual(['u', 'l']);
+      });
+    });
+  });
+
+  describe('Given a kept new lossy path inside a valid directory and a deleted file named like it', () => {
+    describe('When the changes are unstaged', () => {
+      it('Then the deleted file is dropped because the directory bytes match', () => {
+        // Arrange
+        const before = [entry('d', 'u')];
+        const merged = [lossy('d/\uFFFD', [0x64, 0x2f, 0xff], 'l')];
+
+        // Act
+        const sut = unstageChangesUnlessNew;
+        const result = sut(merged, before);
+
+        // Assert
+        expect(result.entries.map((e) => e.id)).toEqual(['l']);
+      });
+    });
+  });
+
+  describe('Given a restored lossy file and a kept new path below its raw name', () => {
+    describe('When the changes are unstaged', () => {
+      it('Then the restored lossy file is dropped by the directory it names', () => {
+        // Arrange
+        const before = [lossy('\uFFFD', [0xff], 'u')];
+        const merged = [lossy('\uFFFD/x', [0xff, 0x2f, 0x78], 'l')];
+
+        // Act
+        const sut = unstageChangesUnlessNew;
+        const result = sut(merged, before);
+
+        // Assert
+        expect(result.entries.map((e) => e.id)).toEqual(['l']);
       });
     });
   });

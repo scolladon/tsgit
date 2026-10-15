@@ -18,7 +18,7 @@ import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import type { EolNotice } from '../../domain/eol/crlf-conversion.js';
 import { TsgitError } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
-import type { IndexPath } from '../../domain/git-index/index-path-key.js';
+import { indexPathKey, keyOfPath } from '../../domain/git-index/index-path-key.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import { abbreviateOid, type ConflictType, STASH_LABELS } from '../../domain/merge/index.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
@@ -374,11 +374,11 @@ const listUntracked = async (
   ctx: Context,
   index: GitIndex,
 ): Promise<ReadonlyArray<UntrackedFile>> => {
-  const tracked = new Set(index.entries.map((e) => e.path));
+  const tracked = new Set(index.entries.map(indexPathKey));
   const ignore = await buildRepoIgnorePredicate(ctx);
   const files: UntrackedFile[] = [];
   for await (const { path, stat } of walkWorkingTree(ctx, { ignore })) {
-    if (tracked.has(path)) continue;
+    if (tracked.has(keyOfPath(path))) continue;
     files.push({ path, stat: await stat() });
   }
   return files;
@@ -806,9 +806,7 @@ const applyUnderLock = async (
       result.result.newIndexEntries,
       currentIndex.entries,
     );
-    await lock.commit(entries, 'replace', {
-      restagedPaths: restagedPaths.map((path): IndexPath => ({ path })),
-    });
+    await lock.commit(entries, 'replace', { restagedPaths });
   }
   if (uTree !== undefined) await restoreUntracked(ctx, uTree);
   return { kind: 'applied', stash: w };

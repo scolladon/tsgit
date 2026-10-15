@@ -16,6 +16,7 @@ import { invalidateConfigCache } from '../../../../src/application/primitives/co
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { flattenTree } from '../../../../src/application/primitives/flatten-tree.js';
 import * as convertBlobMod from '../../../../src/application/primitives/internal/convert-blob.js';
+import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
@@ -23,6 +24,7 @@ import { pushStashRef, readStashStack } from '../../../../src/application/primit
 import { MAX_WORKING_TREE_BLOB_BYTES } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
+import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { AuthorIdentity, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
@@ -32,7 +34,7 @@ import type {
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
 import { type Context, createSession } from '../../../../src/ports/context.js';
-import { refuseReadOnSymlink } from '../primitives/fixtures.js';
+import { refuseReadOnSymlink, serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { asBareContext } from './fixtures.js';
 
 const author: AuthorIdentity = {
@@ -320,6 +322,55 @@ describe('stash push', () => {
         // The untracked commit holds ONLY untracked files — the tracked `a.txt` is excluded.
         expect(await treeContent(ctx, uTree, 'a.txt')).toBe('<absent>');
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/new.txt`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a tracked lossy path and an untracked file named like its decoded view', () => {
+    describe('When push runs with includeUntracked', () => {
+      it('Then the untracked file is stashed and removed from the working tree', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        const view = '\uFFFD.txt';
+        await write(ctx, view, 'untracked\n');
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${view}`);
+        const tracked = await readIndex(ctx);
+        const lossy: IndexEntry = {
+          ...indexEntryFromStat(
+            stat,
+            FILE_MODE.REGULAR,
+            await writeObject(ctx, {
+              type: 'blob',
+              id: '' as ObjectId,
+              content: new TextEncoder().encode('tracked\n'),
+            }),
+            view as FilePath,
+          ),
+          pathBytes: Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74),
+        };
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync(
+            {
+              version: 2,
+              entries: [...tracked.entries, lossy],
+              extensions: [],
+              trailerSha: new Uint8Array(0),
+            },
+            ctx,
+          ),
+        );
+
+        // Act
+        const result = await stashPush(ctx, { includeUntracked: true });
+
+        // Assert
+        if (result.kind !== 'saved') throw new Error('expected saved');
+        const w = await commitOf(ctx, result.stash);
+        expect(w.parents).toHaveLength(3);
+        const uTree = (await commitOf(ctx, w.parents[2] as ObjectId)).tree;
+        expect(await treeContent(ctx, uTree, view)).toBe('untracked\n');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/${view}`)).toBe(false);
       });
     });
   });

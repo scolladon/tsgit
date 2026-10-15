@@ -84,13 +84,6 @@ function compareUtf16Strings(left: string, right: string): number {
 const compareUtf16Path = (a: IndexPath, b: IndexPath): number =>
   compareUtf16Strings(a.path as string, b.path as string);
 
-/** Same pick-once rule as `pathComparatorFor`, for bare path strings. */
-export function pathStringComparatorFor(paths: ReadonlyArray<string>): typeof comparePathStrings {
-  return paths.some((path) => SURROGATE_OR_ABOVE.test(path))
-    ? comparePathStrings
-    : compareUtf16Strings;
-}
-
 /**
  * UTF-16 and UTF-8 byte order only disagree when a path holds a code unit at
  * or above U+D800, so the engine's native string comparison serves every
