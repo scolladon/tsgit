@@ -13,6 +13,11 @@
 > **Revision 3** (2026-10-15): folds ADR-975 … ADR-980. ADR-977 (user-ratified) brings the merge
 > engine into scope: §D13.5 pins it, §D19 designs it, Parts 24-33 implement it. DC6-DC11 are
 > decided; DC12-DC15 are new. Revision 2's Parts 18-24 are renumbered 19-23 and 34.
+> **Revision 4** (2026-10-16): folds ADR-981 (user-ratified: a lossy key **is** its escaped path;
+> ADR-972's `'\0' + latin1(bytes)` encoding is superseded), ADR-982 (public results show the U+FFFD
+> view) and ADR-983 (incremental switch). DC12-DC15 are decided. Text stating the NUL-prefixed key
+> is marked **[superseded, ADR-981]** in place. New: Part 18a (key switch), Part 18b (cache-tree
+> component keys, only if DC16 is B), Part 18c (caller strings, DC17), DC16-DC17.
 
 <!-- cspell:ignore xbfz injectivity xffit cgit bytewise FEFF FFFD DFFF EFBBBF EFBFBD efbbbf efbfbd ffff latin1 Latin1 roundtrip unpaired EILSEQ surrogateescape FFFE noncharacter noncharacters xfe xbe xaf xed xc0 xc3 xf4 lstat lstats unlinks pcheckout dirname -->
 <!-- cspell:ignore protectHFS protectNTFS ignorecase APFS mkdir symlinked repath repathed sut xbfit multibyte unloadable -->
@@ -41,6 +46,9 @@
 | ADR-978 (revision 3) | Every `validateIndexPath` caller holding bytes passes them to the HFS check, parse included (§D17). |
 | ADR-979 (revision 3) | The cache-tree invalidation cost is accepted. |
 | ADR-980 (revision 3) | Pathspecs match lossy entries through the surrogate-escape view, internal only; the public `path` stays the U+FFFD view (§D15). |
+| ADR-981 (revision 4, user-ratified) | `indexPathKey` returns the escaped path: one key scheme for index writers, pathspecs and the merge engine. Supersedes ADR-972's key encoding only; the brand, injectivity, zero UTF-8 cost and "a string lookup never addresses a lossy entry" carry forward (§D5.1). |
+| ADR-982 (revision 4) | Merge, rebase, stash and cherry-pick results name paths by the U+FFFD view; no new public field (DC13 A, Part 29). |
+| ADR-983 (revision 4) | The engine switches outbound paths first, one consumer group per part, then brands its input (DC14 A, §D19.6). |
 
 All pins below ran in `mktemp -d` throwaways, never in this worktree.
 
@@ -230,8 +238,11 @@ export const compareEntryBytes = (a, b) =>
 
 #### D5.1 The key
 
+**[superseded, ADR-981]** The NUL-prefixed encoding below (code block and first bullet) is
+replaced by the escaped path; the current key follows the original text.
+
 ```ts
-// domain/git-index/index-path-key.ts
+// domain/git-index/index-path-key.ts — as landed by Parts 1-15, replaced in Part 18a
 export type IndexPathKey = string & { readonly __brand: 'IndexPathKey' };
 const LOSSY_KEY_PREFIX = '\0';     // NUL never occurs in a valid entry path (validateIndexPath)
 export const indexPathKey = (entry: { path: FilePath; pathBytes?: Uint8Array }): IndexPathKey =>
@@ -246,6 +257,38 @@ export const indexPathKey = (entry: { path: FilePath; pathBytes?: Uint8Array }):
 - The brand makes the compiler reject a `Map<IndexPathKey, …>.get(entry.path)`: each keyed site in
   the sweep fails `check:types` until it is converted.
 
+**Current key (ADR-981, Part 18a).**
+
+```ts
+// domain/git-index/index-path-key.ts
+export const escapedPathOf = (entry: IndexPath): FilePath =>          // Part 18
+  entry.pathBytes === undefined ? entry.path : (decodeEscapingInvalid(entry.pathBytes) as FilePath);
+export const indexPathKey = (entry: IndexPath): IndexPathKey =>
+  escapedPathOf(entry) as string as IndexPathKey;
+export const keyOfPath = (path: FilePath): IndexPathKey => path as string as IndexPathKey; // unchanged
+```
+
+- Injective: a UTF-8 path is its own key and is well-formed UTF-16. A lossy key holds at least one
+  lone `U+DC80`-`U+DCFF`, which the WHATWG decoder never produces from bytes (pinned below), and
+  `encodeEscaped` recovers the bytes. Two different byte strings → two different keys.
+- Structural: ASCII, `/` included, keeps its code-unit index and an invalid sequence never spans
+  `0x2F`, so the key of a byte prefix ending before a `/` is the key's own prefix at that `/`.
+  Ancestor keys are a plain `split('/')` (ADR-981 consequence; Part 18a).
+- Zero cost for UTF-8 paths, as before. The UTF-16 *string order* of keys changes for lossy keys
+  (`U+DCxx` sorts between `U+D7FF` and `U+E000`, no longer first); the only site that sorts bare keys
+  is `compute-changeset.ts:130` (`[...allKeys].sort()`), whose order only fixes the order of the
+  internal `Changeset.entries`. Lossy entries do no I/O there (Part 17), so no write order moves.
+- One scheme: the engine's `FlatTree` key (§D19.2) *is* the index key, so a `FilePath` coming from
+  the engine becomes an `IndexPathKey` through `keyOfPath`, with no conversion.
+- "A string lookup never addresses a lossy entry" now holds only for **well-formed** strings: a
+  caller string carrying a lone `U+DC80`-`U+DCFF` equals a lossy key under `keyOfPath`. Under the
+  NUL scheme it needed a leading NUL, which path validation refuses. Where public strings enter
+  is DC17.
+
+Pinned (node v22.22.3, 20 000 random 1-6 byte strings through `new TextDecoder('utf-8',
+{ ignoreBOM: true })`): 0 outputs with a lone surrogate. `new TextEncoder().encode('\uDCFF.txt')` is
+`efbfbd2e747874`: a lone-surrogate string written by tsgit today names U's bytes, not L's.
+
 #### D5.2 Sweep: every path-keyed structure on an index-writing route
 
 | Site | Today | Change |
@@ -256,7 +299,7 @@ export const indexPathKey = (entry: { path: FilePath; pathBytes?: Uint8Array }):
 | `index-lock.ts` `withRefreshedStat` (211) | `new Map(refreshed.map(e => [e.path, e]))` | `indexPathKey` |
 | `smudge-racily-clean.ts` `carriedOver` (60) | `racyByPath` on `entry.path` | `indexPathKey` |
 | `apply-sparse-checkout.ts` `toSkipWorktree` (~161), `writtenByPath` (185) | rebuilds the entry **without spread** (drops `pathBytes`); string map | spread the entry's path fields (`path`, `pathBytes`); keys |
-| `unstage-changes-unless-new.ts` `byPath`, `occupiedBy`, the ordered walk at line 62 | `comparePathStrings`; `Set<string>` of paths and ancestor dirs | entry comparator (§D4); key Sets by `indexPathKey`; ancestor dirs of a lossy path are cut from `pathBytes` at `0x2f` |
+| `unstage-changes-unless-new.ts` `byPath`, `occupiedBy`, the ordered walk at line 62 | `comparePathStrings`; `Set<string>` of paths and ancestor dirs | entry comparator (§D4); key Sets by `indexPathKey`; ancestor dirs of a lossy path are cut from `pathBytes` at `0x2f`. **[superseded, ADR-981]**: ancestor keys are the key's own prefixes at `/` (Part 18a) |
 | `build-index-from-tree.ts` `donorByPath` (60) | `Map<FilePath, IndexEntry>` | keys (§D8) |
 | `materialize-tree.ts` `indexEntriesByPath`, `writtenEntriesByPath`, `filterByPaths`, `preserveOutOfScope` | `Map`/`Set<FilePath>` | keys (§D8) |
 | `apply-merge-to-worktree.ts:293` `buildUnmergedIndex` sort | `pathComparatorFor(combined)` | inherits §D4 |
@@ -308,7 +351,9 @@ export const withPath = (entry: IndexEntry, path: FilePath, pathBytes?: Uint8Arr
   `nameBytes` are `EF BB BF 61`. Today the BOM-stripped `a` misses it (part of G1).
 - These **component keys** (`latin1` of the component bytes for non-ASCII, the component itself
   for ASCII) are a different scheme from `IndexPathKey` (§D5.1), which keys whole paths. Both use
-  one shared `latin1` helper.
+  one shared `latin1` helper. **[superseded, ADR-981]**: `IndexPathKey` no longer uses `latin1`;
+  `cache-tree.ts` is its only remaining user (`keyOfComponent`, `keyOfChild`, `componentKeysOf`).
+  Whether component keys stay `latin1` or become escaped components is DC16 (Part 18b).
 - `Pending` becomes `ReadonlyArray<string>` of **keys** (not components). `groupByComponent` stops
   calling `keyOfComponent` per level. That removes one regex test per component per level.
 
@@ -403,7 +448,7 @@ Revision 2 rows (each pinned in §D13; "absent" = the ADR-973 rule of §D14):
 | `apply-changeset` delete (`applyDeleteEntry`) | unlink | unlinks the view | skipped (Part 17) |
 | `rm` (non-cached) unlink | unlink | unlinks the view | skipped (Part 17) |
 | `rm` pathspec match + HEAD map | — | literal selects lossy twin; `head.get(entry.path)` collapses twins | matching view (Part 19) + escaped HEAD-tree lookup (Part 32) |
-| `checkout -- <paths>` universe, `materializeTree` `filterByPaths` / `preserveOutOfScope` | — | view `Set<FilePath>` | key sets (Part 19) |
+| `checkout -- <paths>` universe, `materializeTree` `filterByPaths` / `preserveOutOfScope` | — | view `Set<FilePath>` | key sets (Part 19b) |
 | `apply-sparse-checkout` `addEntry` / `deleteEntry` / `noopEntry` | — | drop `pathBytes` (lossy blob written into the literal twin) | spread path fields (Part 21) |
 | `mv` member match, cut, disk check, rename | rename | view match, unchecked cut, no member lstat | byte-prefix match, `validateIndexPath` on re-pathed entries, lossy member = bad source (Part 20) |
 | `verifyPath` HFS alias | — | view | git's picker over bytes (Part 22) |
@@ -411,6 +456,14 @@ Revision 2 rows (each pinned in §D13; "absent" = the ADR-973 rule of §D14):
 | merge engine tree synthesis + worktree writer | write | view (history rewrite, pin T9) | ADR-977 (Parts 24-33) |
 | merge engine keys (`FlatTree`, outcomes, conflicts), rename pairing, D/F `~label` names, marker labels, `MERGE_MSG` conflict list | read + write | view keys collapse twins (T12) and lose bytes everywhere downstream | escaped keys (§D19.2), exits at §D19.4 (Parts 24-33) |
 | merge-driven worktree I/O (`writeBlob`, `writeBytes`, `removeWorkingTreeFile`, would-overwrite `lstat`, stash untracked restore) | write + lstat | view-named I/O on the literal twin | skipped for escaped paths (§D19.5, Part 28) |
+
+Revision 4 rows (ADR-981):
+
+| Route | Touches disk for an entry? | Before revision 4 | Closed by |
+|---|---|---|---|
+| keyed maps of §D5.2 meeting engine keys (`pull-into-void.ts` → `materializeTree` `paths`, `find-would-overwrite.ts`, `assertIndexMatches`, `clean-work-tree.ts`, `rm.ts` `isStaged`) | — | two injective schemes, converted at each meeting point | one scheme: `indexPathKey(entry)` equals `escapedPathOf(entry)` (Part 18a) |
+| `unstage-changes-unless-new.ts` ancestor keys | — | separate UTF-8 and byte-cut branches | `/` split of the key (Part 18a) |
+| caller strings carrying a lone `U+DC80`-`U+DCFF` (pathspecs, `mv` source / destination) | — | equal a lossy key under `keyOfPath`; a literal pathspec matches the escaped view | DC17 (Parts 19, 20) |
 
 ### D12. Parts
 
@@ -454,7 +507,7 @@ Context: `commit.ts` `buildTreeFromIndex` / `insertEntry` / `writeSubtree` (393-
 synthesize unit tests; interop rows A4, B4, E1 (`git ls-tree -r -z` byte equality).
 
 Parts 1-3 were planned as Parts 1-15 (`docs/plan/index-entry-path-bytes.md`) and are landed.
-Revisions 2 and 3 add Parts 16-34. Each new part is one TDD unit with its own interop rows from §D13,
+Revisions 2 and 3 add Parts 16-34; revision 4 adds Parts 18a-18c. Each new part is one TDD unit with its own interop rows from §D13,
 compiles on its own commit, and lists at most six source files in its Context.
 **Security diff review by the user before commit:** Part 20 (mv cut, HIGH) and Part 23 (leading
 symlink race, CRITICAL).
@@ -463,8 +516,11 @@ Order and why:
 
 ```
 16 → 17                      ADR-973 readers, then writers (17 and 23 both edit apply-changeset.ts)
-18                           escaped-path codec: 19 and every merge part build on it
-19 → 20 → 21                 pathspec view (changes materializeTree's `paths` type, consumed by 21, 31)
+18                           escaped-path codec: 18a and every later part build on it
+18a                          indexPathKey returns the escaped path (ADR-981): one key scheme
+18b                          cache-tree component keys escaped: only if DC16 is B
+18c                          caller path strings never equal a lossy key (DC17)
+19 → 19b → 20 → 21          pathspec view; 19b changes materializeTree's `paths` type, consumed by 21, 31
 22                           HFS on bytes: 26's validateTreePath forwards bytes through it
 23                           leading-symlink write wave
 24 → 25 → 26 → 27 → 28 → 29  merge-engine exits, each identity on well-formed paths (no behaviour change yet)
@@ -523,6 +579,79 @@ Tests: `encoding.test.ts` (each invalid class of §Test strategy; U+FFFE/U+FFFF 
 their code-unit index), `index-path-key.test.ts` + property sibling (`indexPathOfEscaped(escapedPathOf(e))`
 round-trips `IndexPath`; `escapedPathOf` is injective over bytes). No interop row (no observable change).
 
+**Part 18a — The index key is the escaped path (ADR-981).**
+Context:
+- `src/domain/git-index/index-path-key.ts` `indexPathKey(entry: IndexPath): IndexPathKey`, today
+  `entry.pathBytes === undefined ? entry.path : LOSSY_KEY_PREFIX + latin1(entry.pathBytes)`, becomes
+  `escapedPathOf(entry) as string as IndexPathKey` (§D5.1). Delete `LOSSY_KEY_PREFIX` and its
+  comment. `latin1` stays exported: `cache-tree.ts` (lines 14, 79, 82, 103) is its only `src/` user,
+  and Part 18b deletes it only if DC16 is B. `keyOfPath`, `pathBytesOf`, `indexPathOfBytes` and
+  `splitAtSlash` (still used by `commit.ts:407` and `cache-tree.ts:103`) are unchanged.
+- `src/application/commands/internal/unstage-changes-unless-new.ts`: `utf8AncestorKeys(path)`,
+  `lossyAncestorKeys(bytes)` and the branching `ancestorKeys(entry)` become one
+  `ancestorKeys(entry)` that runs today's `utf8AncestorKeys` loop over `indexPathKey(entry)`: each
+  prefix of the key at a `/` is the key of that ancestor (§D5.1, structural). Drop `SLASH_BYTE` and
+  the `indexPathOfBytes` / `pathBytesOf` imports. `occupiedBy` and `joinByPath` are unchanged.
+- `src/application/commands/commit.ts:412` `componentKey(name: TreeName)`: the byte arm
+  `indexPathKey({ path: '' as FilePath, pathBytes: name })` becomes `decodeEscapingInvalid(name)`
+  (absorbs Part 34(g); no `keyOfLossyBytes` export; drop the `indexPathKey` / `FilePath` imports
+  if nothing else in the file uses them). Still injective against the string arm:
+  `componentsOf` keeps bytes only for a component that does not round-trip, whose escaped form holds
+  a lone surrogate that no string component has.
+- No other site changes: the 17 other `src/` files that name `indexPathKey` / `IndexPathKey` treat
+  the key as opaque.
+  `pull-into-void.ts` and `materializeTree`'s `paths` need no conversion code (Part 31).
+  `compute-changeset.ts:130` sorts bare keys; only the order of lossy entries in the internal
+  `Changeset.entries` moves (§D5.1), and `compute-changeset.test.ts:222-261` asserts by `find`, so
+  it stays green.
+Tests:
+- `test/unit/domain/git-index/index-path-key.test.ts` "documented scheme" (line 19): the lossy key
+  is `'\uDCFF.txt'` (today `String.fromCharCode(0, 0xff, …)`); new cases: the key of `d/\xff` cut at
+  its `/` equals `indexPathKey({ path: 'd' })`; `keyOfPath('\uDCFF.txt')` equals L's key (the
+  no-conversion property Parts 30-32 rely on).
+- `index-path-key.properties.test.ts`: keep the bytes ⇔ key property (`arbPathBytes` × 2) and add
+  (1) escaped vs UTF-8: for `b` from `arbRawPathBytes()` and any well-formed `s`
+  (`fc.string({ unit: 'grapheme' })`), `indexPathKey(indexPathOfBytes(b)) !== keyOfPath(s)`;
+  (2) recovery: `encodeEscaped(indexPathKey(indexPathOfBytes(b)))` bytes-equals `b` for `b` from
+  `arbPathBytes()`; (3) structure: for the k-th `0x2F` of `b` (at byte `at`), the key cut before its
+  k-th `/` equals `indexPathKey(indexPathOfBytes(b.subarray(0, at)))` (code-unit and byte indexes
+  differ past a multibyte character, the slash count does not).
+- `test/unit/application/commands/internal/unstage-changes-unless-new.test.ts`: a kept new
+  `\xff/x` drops a restored L file `\xff` and keeps a restored U file `�`; a kept new `d/\xff`
+  drops a restored `d`. The existing lossy test (line 206) stays green.
+- Interop: none (no observable change); the existing C rows (twins `\xff.txt` / `\xef\xbf\xbd.txt`,
+  `caf\xe9` / `caf\xe8`) must stay green.
+
+**Part 18b — Cache-tree component keys are escaped components (only if DC16 is B).**
+Context: `src/domain/git-index/cache-tree.ts` `componentKeysOf` (100-103) becomes
+`indexPathKey(entry).split('/')`; `keyOfChild` (81-82) becomes `child.nameBytes === undefined ?
+child.path : decodeEscapingInvalid(child.nameBytes)`; delete `NON_ASCII`, `keyOfComponent` and the
+`latin1` / `splitAtSlash` imports; the comment at 71-75 says children are matched by their escaped
+name. Correct because a child without `nameBytes` has a `path` that re-encodes to its name (#317
+rule), and a BOM child carries `nameBytes`, whose escaped decode keeps U+FEFF as the entry component
+does. `src/domain/git-index/index-path-key.ts`: delete `latin1` (no other `src/` user). Tests:
+`cache-tree.test.ts` (sibling subtrees `\xff` and `\xef\xbf\xbd`: a change under each invalidates
+only its own; BOM child; `namesEachSubtreeOnce` over the twins), `cache-tree.properties.test.ts:198-211`
+(selector `latin1` → `decodeEscapingInvalid`), `index-path-key.test.ts:169` (`latin1` describe
+removed). Perf: no bench covers `invalidateCacheTree`; re-run ADR-979's measurement (10k changed
+UTF-8 paths) before and after and record both. The change removes one `NON_ASCII` regex test per
+component and per child; the gain is unmeasured until then.
+
+**Part 18c — Caller path strings never equal a lossy key (DC17).**
+Context: under ADR-981 a caller string holding a lone `U+DC80`-`U+DCFF` equals a lossy key (§D5.1).
+Caller strings become keys or patterns at two intakes: `src/application/commands/internal/resolve-pathspec.ts`
+`resolvePathspec(patterns)` (line 56; serves `add`, `rm`, `checkout`, `grep`) and
+`src/application/commands/mv.ts` (source and destination, before `classifySource` at 231). Each
+intake applies DC17 to the raw string once per argument, never per entry. Per DC17 A: a new
+`wellFormed(text): string` in `src/domain/objects/encoding.ts` replaces every lone surrogate by
+U+FFFD (the replacement `encode` already applies, pinned in §D5.1; `String.prototype.toWellFormed`
+is outside the `ES2022` lib in `tsconfig.json`, so a one-regex helper). Per DC17 B: a typed refusal
+at the same two intakes instead. Tests: `encoding.test.ts` (lone high, lone low, valid pair kept,
+BOM kept, identity on well-formed input), `resolve-pathspec.test.ts` (`'\uDCFF.txt'` resolves to
+`'\uFFFD.txt'`), `mv.test.ts` (L and U present: `mv('\uDCFF.txt', 'x')` moves U under A, is refused under B,
+never moves L).
+Interop: none (no git counterpart: argv cannot carry a lone surrogate).
+
 **Part 19 — Pathspec matching view; key-scoped restore and rm.**
 Context: new `src/domain/pathspec/matching-path.ts` `matchesIndexPath(spec: Pathspec, entry:
 IndexPath): boolean` over `escapedPathOf(entry)` (Part 18; it is the §D15 matching view, so no
@@ -536,12 +665,33 @@ is one lookup; `checkout.ts:319-336` `pathRestore`
 Tests: `matching-path.test.ts` + `matching-path.properties.test.ts` (UTF-8 entry → `path` itself;
 injective over bytes; no literal compiled from a well-formed string matches a lossy entry; `*`
 matches every lossy entry under its directory). If a pathspec carrying a lone surrogate matches a
-lossy entry in that test, add a well-formedness refusal to `resolvePathspec`. Interop: S5, S5b, S6,
+lossy entry in that test, add a well-formedness refusal to `resolvePathspec`. **[superseded,
+ADR-981]**: it does match (an escaped key is the matching view and the index key), so the rule is
+no longer conditional: Part 18c applies DC17 in `resolvePathspec`, and `rm.test.ts` asserts that
+`rm('\uDCFF.txt')` never selects L. Interop: S5, S5b, S6,
 S7, S7b, S12, S12b (S8b lands with Part 32).
+**[revision 4: split]** Retyping `MaterializeTreeOpts.paths` also breaks `pull-into-void.ts:47`
+(`paths: new Set(target.entries.keys())`), a seventh source file this list missed. The key-scoped
+restore (`checkout.ts`, `materialize-tree.ts`, `pull-into-void.ts`) and its rows S12, S12b move to
+Part 19b; Part 19 keeps `matching-path.ts`, `rm.ts`, `add.ts`, `apply-sparse-checkout.ts` and rows
+S5-S7b.
+
+**Part 19b — Key-scoped restore (split from Part 19).**
+Context: `checkout.ts:319-336` `pathRestore` (`enumerateSourcePaths` returns `IndexPath[]`, matched
+through Part 19's `matchesIndexPath`; `pathSet: Set<IndexPathKey>` at 390 and 417);
+`materialize-tree.ts` `MaterializeTreeOpts.paths` (61) becomes `ReadonlySet<IndexPathKey>`,
+`filterByPaths` (114), `preserveOutOfScope` (136) and the use at 288 test `indexPathKey(e)`;
+`internal/pull-into-void.ts:47` maps `target.entries.keys()` through `keyOfPath` (a view key until
+Part 31 flips the flatten, an escaped key after; one scheme either way, ADR-981). No other
+`materializeTree` caller passes `paths`. Tests: `checkout.test.ts` (restore scoped to U leaves L's
+entry and bytes), `materialize-tree.test.ts` (`paths` holding U's key never drops or rewrites L),
+no `pull-into-void` unit suite exists (covered through `pull.test.ts`, which stays green). Interop: S12, S12b.
 
 **Part 20 — mv: byte-prefix members, re-validation, absent lossy members.** *(user security review)*
 Context: `src/application/commands/mv.ts` `classifySource` (231-241): `exact` stays
-`byPath.get(keyOfPath(source))`; members are entries where `pathBytesOf(entry)` starts with
+`byPath.get(keyOfPath(source))`, with `source` and the destination passed through DC17 first (Part 18c)
+(under ADR-981 a caller's `'\uDCFF'` would otherwise hit L's key exactly while `encode(source)`
+selects U's members); members are entries where `pathBytesOf(entry)` starts with
 `encode(source)` followed by `0x2f` (new `hasBytePrefix(bytes, prefix)` next to `splitAtSlash` in
 `index-path-key.ts`). `movedPath` (322) then cuts at a real component boundary. `applyToIndex` (307)
 runs `validateIndexPath(moved.path, NO_PARSER_OFFSET, moved.mode, moved.pathBytes)` on every
@@ -685,6 +835,9 @@ out). `internal/octopus-merge.ts:139` `[...paths].sort()` (UTF-16 order) → `so
 `internal/pull-into-void.ts`: `checkoutFromEmptyTree` (38) flattens escaped; `assertNoStagedCollision`
 (58) looks up `escapedPathOf(entry)`; the `materializeTree` `paths` set (Part 19:
 `ReadonlySet<IndexPathKey>`) is built with `indexPathKey(indexPathOfEscaped(key))`.
+**[superseded, ADR-981]**: an escaped key is the index key; `pull-into-void.ts:47` already maps
+`target.entries.keys()` through `keyOfPath` since Part 19b, so Part 31 changes nothing there and
+needs no decode/encode round trip.
 `src/domain/merge/match-trees.ts` (85, 114): subtree prefixes from tree entries use
 `decodeEscapingInvalid(entry.nameBytes)` when the name is lossy, so `shift-merge-side.ts`'s
 `startsWith(prefix)` meets escaped keys (git's `shift_tree` compares raw names, source-read).
@@ -731,7 +884,8 @@ name); (d) `rm.ts:109` removing a lossy entry by key (`rm --cached -r d` over `d
 `sut`; rename so `sut` is the system under test; (f) `walk-tree.ts` `walkResolved(…, lossyOnly:
 boolean)` (301) → a `ByteChannel = 'none' | 'lossy' | 'all'` field on the walk config;
 (g) `commit.ts:412` `componentKey` fabricates an `IndexPath` with `path: ''`: export
-`keyOfLossyBytes(bytes)` from `index-path-key.ts` and call it; (h) `carry-extensions.ts:88`
+`keyOfLossyBytes(bytes)` from `index-path-key.ts` and call it **[superseded, ADR-981: done in
+Part 18a with `decodeEscapingInvalid(name)`]**; (h) `carry-extensions.ts:88`
 `uniqueByKey`: drop the `!byKey.has(key)` guard (an equal key means equal bytes, and `Map.set` keeps
 the first insertion position), per the equivalent-mutant policy. The cache-tree cost is accepted
 (ADR-979): no item.
@@ -1101,6 +1255,9 @@ viewOfEscaped(path: FilePath): FilePath          // the U+FFFD view, for public 
 The whole-path `IndexPathKey` (`'\0' + latin1(bytes)`, ADR-972) is injective too, but it is not
 structural: the key of `d/\xff` is `\0d/\xff`, whose directory part `\0d` is not the key `d` of the
 directory, so every directory, rename and D/F site would have to branch on lossiness (DC12).
+**[superseded, ADR-981]**: `IndexPathKey` is now the escaped path itself (Part 18a), so
+`indexPathKey(entry)` and `escapedPathOf(entry)` are the same string under two types (`IndexPathKey`
+for index maps, `FilePath` for `FlatTree` keys); `keyOfPath` moves an engine key into an index map.
 
 #### D19.3 Module placement
 
@@ -1125,8 +1282,8 @@ imports `../git-index/index.js`. No module moves.
 | leave: worktree I/O | writer `writeBlob`/`writeBytes`, `removeWorkingTreeFile`, `isUntrackedPresent`, stash `untrackedOverwrites` | skipped for an escaped path (§D19.5) | 27 |
 | leave: state file | `MERGE_MSG` `# Conflicts:` lines (`merge-state.ts:67`, `rebase-state.ts:154`) | `encodeEscaped` | 28 |
 | leave: public data | conflict descriptors, would-overwrite lists, error strings, status | `viewOfEscaped` (DC13) | 27, 29, 32 |
-| meet the index | `find-would-overwrite.ts` `stage0ByPath`, `merge.ts` `assertIndexMatches`, `pull-into-void.ts`, `clean-work-tree.ts`, `rm.ts` `isStaged`, `index-diff.ts` `stage0IndexMap` | look up `escapedPathOf(entry)` | 27, 31, 32 |
-| meet `IndexPathKey` maps | `pull-into-void.ts` → `materializeTree` `paths` (Part 19) | `indexPathKey(indexPathOfEscaped(key))` | 31 |
+| meet the index | `find-would-overwrite.ts` `stage0ByPath`, `merge.ts` `assertIndexMatches`, `pull-into-void.ts`, `clean-work-tree.ts`, `rm.ts` `isStaged`, `index-diff.ts` `stage0IndexMap` | look up `escapedPathOf(entry)`. After Part 18a a map already keyed by `indexPathKey(entry)` holds that string, so only the lookup side changes (`keyOfPath(enginePath)`) | 27, 31, 32 |
+| meet `IndexPathKey` maps | `pull-into-void.ts` → `materializeTree` `paths` (Part 19b) | `indexPathKey(indexPathOfEscaped(key))` **[superseded, ADR-981]**: `keyOfPath(key)` | 31 |
 
 Every one of the 38 files that name `FlatTree`/`flattenTree` is in this table, in §D19.7, or only
 mentions the name in a comment or cache budget (`adapters/*`, `index.*.ts`, `ports/context.ts`,
@@ -1181,15 +1338,22 @@ the engine's inputs so `check:types` rejects a view-keyed tree from then on (DC1
 ## Decision candidates
 
 DC1-DC5 (first draft) were ratified as ADR-968 … ADR-972 and DC6-DC11 (revision 2) as ADR-975 …
-ADR-980; both are kept below as history. Revision 3 opens DC12-DC15 only: ADR-973, ADR-975 and
-ADR-977 already decide the merge engine's policy (§D19.5), so these are about how it is carried.
+ADR-980; both are kept below as history. Revision 3 opened DC12-DC15, decided as ADR-981 … ADR-983
+(DC15 against this doc's recommendation). Revision 4 opens DC16-DC17 only: both follow from ADR-981.
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
-| DC12 | Key of a lossy path inside the merge engine (`FlatTree` keys, outcome and conflict paths) (§D19.2) | **A** the escaped path (`U+DC00 + byte` per invalid byte, ADR-980's view), typed `FilePath`; entries unchanged; bytes recovered with `encodeEscaped`. **B** the whole-path `IndexPathKey` (`'\0' + latin1(bytes)`) with entries carrying `{ path, pathBytes? }`. **C** A under a new brand (`EscapedPath`) threaded through `MergeOutcome` / `MergeConflict` / `SidePaths` | **A** | A is structural: `/` keeps its index, so the directory, rename, D/F and `~label` code (`directory-renames.ts:24/28`, `trivial-merge.ts:28`, `uniquePath`, `shift-merge-side.ts`) runs unchanged, and a UTF-8 key is the path itself (zero cost). B breaks the structure (`\0d/\xff` has directory `\0d`, not `d`) and a UTF-8 `~label` appended to a latin1 key decodes to the wrong bytes, so every such site needs a lossy branch. C gives compile-time exits but retypes public types (`MergeConflict`, `TreeMergeResult` are in `reports/api.json`): a breaking change; Part 33's phantom brand on the engine input gets most of C's safety without it |
-| DC13 | What the public surface shows for an engine path that is escaped | **A** the U+FFFD view everywhere public (conflict descriptors, would-overwrite lists, errors, status, the public `flattenTree`); the bytes stay readable through `readIndex` (`IndexEntry.pathBytes`). **B** A plus `pathBytes?` on `CherryPickConflict`, `RevertConflict`, `RebaseConflict`, `StashConflict`, `MergeConflictDescriptor` (additive public type). **C** expose the escaped string (amends ADR-968 and ADR-980) | **A** | ADR-968 keeps lone surrogates out of public `FilePath` and ADR-980 keeps the escape internal; ADR-975 set the precedent of no new result field when the index already carries the data. B is additive and can follow. C puts lone surrogates in consumer strings (`encodeURIComponent` throws on them) |
-| DC14 | How the key change lands (§D19.6) | **A** exits first (Parts 24-29, identity on well-formed strings), then an internal `flattenEscapedTree` adopted one consumer group per part (30-32), then a phantom `EscapedFlatTree` brand on `mergeTrees` / `detectMergeRenames` (33). **B** flip `flattenRawTree` for every caller in one commit (~15 source files, public `flattenTree` included). **C** A without the brand | **A** | Both views are `FilePath`, so the compiler cannot find a missed site; A keeps each commit green and single-concern, and the brand then makes "no view-keyed tree reaches the engine" a type fact. B is one unreviewable commit and changes the public primitive (DC13). C leaves the invariant to tests only |
-| DC15 | Two injective keys now coexist: `IndexPathKey` (index writers, ADR-972) and the escaped path (engine, pathspecs) | **A** keep both; convert at the two meeting points (`pull-into-void.ts`, `materializeTree` `paths`). **B** replace `IndexPathKey` by the escaped path everywhere (re-sweep Parts 2-15's sites and ADR-972). **C** replace the escaped path by `IndexPathKey` in the engine (DC12-B) | **A** | ADR-972 is implemented and green; B is a refactor of landed code with no observable gain, a candidate follow-up once this run ships. C is DC12-B |
+| DC16 | Cache-tree **component** keys (`cache-tree.ts` `keyOfComponent` / `keyOfChild` / `componentKeysOf`, §D6) once whole-path keys are escaped | **A** keep `latin1` component keys (ASCII component = itself, else `latin1` of its bytes); `latin1` stays in `index-path-key.ts` for cache-tree alone. **B** escaped components: `indexPathKey(entry).split('/')` and `keyOfChild` = `child.path` or `decodeEscapingInvalid(nameBytes)` (Part 18b); `latin1` deleted. **C** B, deferred to a follow-up after this run | **B** | ADR-981's stated consequence is one scheme; component keys never leave `cache-tree.ts`, so A is correct but keeps a second encoding and a per-component `NON_ASCII` regex. B is a 5-file, behaviour-preserving change on landed, tested code, and its key is structural by the same argument as §D5.1. Its perf effect is unmeasured (no bench covers `invalidateCacheTree`); Part 18b records ADR-979's measurement before and after. C defers the same change for no gain |
+| DC17 | A caller string carrying a lone `U+DC80`-`U+DCFF` equals a lossy key under ADR-981 (`mv.ts:235` `byPath.get(keyOfPath(source))`; a literal pathspec matches the escaped view) (§D5.1, Part 18c) | **A** normalise at the two intakes (`resolvePathspec`, `mv` arguments): each lone surrogate becomes U+FFFD, the replacement `encode` already applies when tsgit writes that string (pinned: `efbfbd2e747874`). **B** refuse at the same intakes with a typed error. **C** accept: such a string addresses the lossy entry (the escape becomes a public input form; amends ADR-980 "internal only" and ADR-981's carried "a string lookup never addresses a lossy entry") | **A** | A keeps one rule for a caller string, the bytes `encode` gives it, at a per-argument cost and with no new error code. git has no counterpart (argv bytes cannot hold a lone surrogate), so neither A nor B diverges from observable git. B fails loudly on an input tsgit already accepts everywhere else. C leaks the internal encoding into the API |
+
+Decided (revision 3):
+
+| # | Choice | Alternatives (≤3) | Recommendation | Why |
+|---|---|---|---|---|
+| DC12 | Key of a lossy path inside the merge engine (`FlatTree` keys, outcome and conflict paths) (§D19.2) | **A** the escaped path (`U+DC00 + byte` per invalid byte, ADR-980's view), typed `FilePath`; entries unchanged; bytes recovered with `encodeEscaped`. **B** the whole-path `IndexPathKey` (`'\0' + latin1(bytes)`) with entries carrying `{ path, pathBytes? }`. **C** A under a new brand (`EscapedPath`) threaded through `MergeOutcome` / `MergeConflict` / `SidePaths` | **Decided: ADR-981, A** | A is structural: `/` keeps its index, so the directory, rename, D/F and `~label` code (`directory-renames.ts:24/28`, `trivial-merge.ts:28`, `uniquePath`, `shift-merge-side.ts`) runs unchanged, and a UTF-8 key is the path itself (zero cost). B breaks the structure (`\0d/\xff` has directory `\0d`, not `d`) and a UTF-8 `~label` appended to a latin1 key decodes to the wrong bytes, so every such site needs a lossy branch. C gives compile-time exits but retypes public types (`MergeConflict`, `TreeMergeResult` are in `reports/api.json`): a breaking change; Part 33's phantom brand on the engine input gets most of C's safety without it |
+| DC13 | What the public surface shows for an engine path that is escaped | **A** the U+FFFD view everywhere public (conflict descriptors, would-overwrite lists, errors, status, the public `flattenTree`); the bytes stay readable through `readIndex` (`IndexEntry.pathBytes`). **B** A plus `pathBytes?` on `CherryPickConflict`, `RevertConflict`, `RebaseConflict`, `StashConflict`, `MergeConflictDescriptor` (additive public type). **C** expose the escaped string (amends ADR-968 and ADR-980) | **Decided: ADR-982, A** | ADR-968 keeps lone surrogates out of public `FilePath` and ADR-980 keeps the escape internal; ADR-975 set the precedent of no new result field when the index already carries the data. B is additive and can follow. C puts lone surrogates in consumer strings (`encodeURIComponent` throws on them) |
+| DC14 | How the key change lands (§D19.6) | **A** exits first (Parts 24-29, identity on well-formed strings), then an internal `flattenEscapedTree` adopted one consumer group per part (30-32), then a phantom `EscapedFlatTree` brand on `mergeTrees` / `detectMergeRenames` (33). **B** flip `flattenRawTree` for every caller in one commit (~15 source files, public `flattenTree` included). **C** A without the brand | **Decided: ADR-983, A** | Both views are `FilePath`, so the compiler cannot find a missed site; A keeps each commit green and single-concern, and the brand then makes "no view-keyed tree reaches the engine" a type fact. B is one unreviewable commit and changes the public primitive (DC13). C leaves the invariant to tests only |
+| DC15 | Two injective keys now coexist: `IndexPathKey` (index writers, ADR-972) and the escaped path (engine, pathspecs) | **A** keep both; convert at the two meeting points (`pull-into-void.ts`, `materializeTree` `paths`). **B** replace `IndexPathKey` by the escaped path everywhere (re-sweep Parts 2-15's sites and ADR-972). **C** replace the escaped path by `IndexPathKey` in the engine (DC12-B) | **Decided: ADR-981, B** (user-ratified; this doc had recommended A) | ADR-972 is implemented and green; B is a refactor of landed code with no observable gain, a candidate follow-up once this run ships. C is DC12-B. As decided, B needs no re-sweep: every site already calls `indexPathKey`, so Part 18a changes its body, the unstage ancestor keys and `commit.ts`'s `componentKey` |
 
 Decided (revision 2):
 
@@ -1236,7 +1400,10 @@ History (first draft, ratified):
     `arbGitIndexV2/V3` extended with raw-path entries;
   - order: `compareEntryBytes` agrees in sign with `compareBytes(bytesOf(a), bytesOf(b))` on
     mixed arbitraries;
-  - key: `indexPathKey(a) === indexPathKey(b)` ⇔ `bytesEqual(bytesOf(a), bytesOf(b))`;
+  - key: `indexPathKey(a) === indexPathKey(b)` ⇔ `bytesEqual(bytesOf(a), bytesOf(b))`; from
+    Part 18a also: a lossy key never equals `keyOfPath(s)` for a well-formed `s`,
+    `encodeEscaped(key)` recovers the bytes, and the key cut before its k-th `/` is the key of the
+    bytes cut before their k-th `0x2F` (ADR-981);
   - invalidation: for raw changed paths, no cache-tree node on a changed path stays valid.
 - **Mutation**: the absent-key branches (`pathBytes === undefined ? … : …`) and the comparator tier
   selection each need an isolated test per branch (CLAUDE.md guard-clause rule).
@@ -1312,7 +1479,8 @@ History (first draft, ratified):
 - **Snapshot rows / display surfaces** (`IndexEntryRow`, `grep`, `blame`, `rev-parse :path`, archive,
   diff/patch headers): they read the decoded view, as `TreeEntry.name` does today (ADR-249).
 - **Cache-tree decode switch to `decodePreservingBom`**: not needed. Matching already keys on
-  `nameBytes`, and a change would churn #317's tests for no observable gain.
+  `nameBytes`, and a change would churn #317's tests for no observable gain. (Part 18b, if DC16 is
+  B, changes only the *keys* derived from `nameBytes`, not the parse decode.)
 - ~~**HFS alias check on invalid UTF-8**~~: pinned in §D13.3, in scope as Part 22.
 - **tsgit refusing unsafe paths at parse** (git verifies at write, not read): an existing divergence,
   untouched.
