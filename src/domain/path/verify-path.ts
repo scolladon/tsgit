@@ -138,7 +138,8 @@ const hfsCandidate = (part: string, partBytes?: Uint8Array): string =>
 const hfsAlias = (part: string, partBytes: Uint8Array | undefined, target: string): boolean => {
   const candidate = hfsCandidate(part, partBytes);
   if (candidate === part && !hasIgnorableCodepoint(part)) return false;
-  return normalizeAliasCandidate(stripIgnorableCodepoints(candidate)) === target;
+  // HFS folds case only; trailing dots and spaces are an NTFS rule.
+  return stripIgnorableCodepoints(candidate).toLowerCase() === target;
 };
 
 const splitBytesAtBackslash = (bytes: Uint8Array): Uint8Array[] => {

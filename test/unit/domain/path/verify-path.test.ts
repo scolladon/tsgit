@@ -798,6 +798,25 @@ describe('verifyPath on raw path bytes', () => {
     });
   });
 
+  describe('Given an ignorable code point before a trailing dot or space', () => {
+    describe('When verified', () => {
+      it.each([
+        { label: '.g\\u200cit./x', path: '.g‌it./x' },
+        { label: '.g\\u200cit /x', path: '.g‌it /x' },
+        { label: '.git\\u200c./x', path: '.git‌./x' },
+      ])('Then $label is accepted', ({ path }) => {
+        // Arrange
+        const mode = FILE_MODE.REGULAR;
+
+        // Act
+        const result = verifyPath(path, mode);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given names whose tail is a valid or non-alias sequence', () => {
     describe('When verified with the raw bytes', () => {
       it.each([
@@ -824,6 +843,24 @@ describe('verifyPath on raw path bytes', () => {
           bytes: rawPath('.git', [0xe2, 0x80, 0x8c], '/x'),
           mode: FILE_MODE.REGULAR,
           expected: 'dotgit-hfs-alias',
+        },
+        {
+          label: '.git.\\x80/x',
+          bytes: rawPath('.git.', [0x80], '/x'),
+          mode: FILE_MODE.REGULAR,
+          expected: undefined,
+        },
+        {
+          label: '.git.\\xff/x',
+          bytes: rawPath('.git.', [0xff], '/x'),
+          mode: FILE_MODE.REGULAR,
+          expected: undefined,
+        },
+        {
+          label: '.git \\xff/x',
+          bytes: rawPath('.git ', [0xff], '/x'),
+          mode: FILE_MODE.REGULAR,
+          expected: undefined,
         },
       ])('Then $label yields $expected', ({ bytes, mode, expected }) => {
         // Arrange
