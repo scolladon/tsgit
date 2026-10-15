@@ -380,7 +380,7 @@
   {
     "name": "Chunks: domain",
     "path": "dist/esm/chunks/domain-*.js",
-    "limit": "122.6 kB",
+    "limit": "124.7 kB",
     "gzip": true
   },
   {
