@@ -810,3 +810,49 @@ describe('mv on a directory holding an entry with a non-UTF-8 name', () => {
     });
   });
 });
+
+describe('mv with a source string holding a lone surrogate', () => {
+  describe('Given a lossy entry and its U+FFFD twin with the twin on disk', () => {
+    describe('When mv names the lone-surrogate spelling', () => {
+      it('Then the twin moves and the lossy entry stays', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { workingTree: { '\uFFFD.txt': 'u' } });
+        const stat = await ctx.fs.lstat(work(ctx, '\uFFFD.txt'));
+        const blob = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: new TextEncoder().encode('u'),
+        });
+        const entryOf = (path: FilePath): IndexEntry => ({
+          ...indexEntryFromStat(stat, FILE_MODE.REGULAR, blob, path),
+          fileSize: 0,
+        });
+        const lossy: IndexEntry = {
+          ...entryOf('\uFFFD.txt' as FilePath),
+          pathBytes: Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74),
+        };
+        const twin = entryOf('\uFFFD.txt' as FilePath);
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync(
+            { version: 2, entries: [twin, lossy], extensions: [], trailerSha: new Uint8Array(0) },
+            ctx,
+          ),
+        );
+        const sut = mv;
+
+        // Act
+        const result = await sut(ctx, ['\uDCFF.txt'], 'x');
+
+        // Assert
+        const index = await readIndex(ctx);
+        expect(result.moved).toEqual([{ from: '\uFFFD.txt', to: 'x' }]);
+        expect(index.entries.map((e) => [e.path, e.pathBytes])).toEqual([
+          ['x', undefined],
+          ['\uFFFD.txt', Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74)],
+        ]);
+      });
+    });
+  });
+});

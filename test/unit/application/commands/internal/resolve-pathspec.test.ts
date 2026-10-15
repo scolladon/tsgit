@@ -23,6 +23,21 @@ const expectError = (fn: () => unknown, code: string): TsgitError => {
 };
 
 describe('resolvePathspec', () => {
+  describe('Given a pattern holding a lone surrogate', () => {
+    describe('When resolved', () => {
+      it('Then the literal carries the replacement character', () => {
+        // Arrange
+        const sut = resolvePathspec;
+
+        // Act
+        const result = sut(['\uDCFF.txt']);
+
+        // Assert
+        expect(result.literalMustMatch).toEqual(['\uFFFD.txt']);
+      });
+    });
+  });
+
   describe('Given a set of pathspec patterns', () => {
     describe('When resolved', () => {
       it.each([

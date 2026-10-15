@@ -18,6 +18,7 @@ import {
   indexOf,
   parseHeaderLine,
   splitHeaderAndMessage,
+  wellFormed,
 } from '../../../../src/domain/objects/encoding.js';
 
 describe('encoding', () => {
@@ -674,6 +675,31 @@ describe('encoding', () => {
 
           // Act
           const result = hasEscapedBytes(sut);
+
+          // Assert
+          expect(result).toBe(expected);
+        });
+      });
+    });
+  });
+
+  describe('wellFormed', () => {
+    const cases: ReadonlyArray<readonly [string, string, string]> = [
+      ['a lone low surrogate', '\uDCFF.txt', '\uFFFD.txt'],
+      ['a lone high surrogate', 'a\uD800b', 'a\uFFFDb'],
+      ['a valid pair', '\u{1F600}', '\u{1F600}'],
+      ['a byte order mark', '\uFEFFa', '\uFEFFa'],
+      ['a well-formed string', 'src/a.ts', 'src/a.ts'],
+    ];
+
+    describe.each(cases)('Given %s', (_label, input, expected) => {
+      describe('When normalising', () => {
+        it(`Then it is ${JSON.stringify(expected)}`, () => {
+          // Arrange
+          const sut = wellFormed;
+
+          // Act
+          const result = sut(input);
 
           // Assert
           expect(result).toBe(expected);

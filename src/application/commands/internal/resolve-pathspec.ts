@@ -3,6 +3,7 @@ import {
   pathspecBeyondSymlink,
   pathspecNoMatch,
 } from '../../../domain/commands/error.js';
+import { wellFormed } from '../../../domain/objects/encoding.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import {
   compilePathspec,
@@ -54,11 +55,12 @@ export interface ResolvedPathspec {
 // limited to `MAX_DOUBLE_STAR_PER_PATTERN` `**` tokens to bound the
 // cost of the compiled regex; both throw `INVALID_OPTION`.
 export const resolvePathspec = (patterns: ReadonlyArray<string>): ResolvedPathspec => {
-  const collapsed = patterns.map(collapsePattern);
-  for (const raw of patterns) enforcePatternBudget(raw);
+  const wellFormedPatterns = patterns.map(wellFormed);
+  const collapsed = wellFormedPatterns.map(collapsePattern);
+  for (const raw of wellFormedPatterns) enforcePatternBudget(raw);
   const matcher = compilePathspec(collapsed);
   const literalMustMatch = matcher.filter(isPositiveLiteral).map((e) => bodyOf(e));
-  const literalSpellings = spellLiterals(matcher, patterns);
+  const literalSpellings = spellLiterals(matcher, wellFormedPatterns);
   const hasGlob = matcher.some(isPositiveGlob);
   const symlinkScanTargets = matcher.map((e) => bodyOf(e)).filter((body) => body !== WHOLE_TREE);
   return { matcher, literalMustMatch, literalSpellings, hasGlob, symlinkScanTargets };

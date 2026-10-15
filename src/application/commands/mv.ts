@@ -29,7 +29,7 @@ import {
   keyOfPath,
 } from '../../domain/git-index/index-path-key.js';
 import { emptyPathspec } from '../../domain/index.js';
-import { concatBytes, encode } from '../../domain/objects/encoding.js';
+import { concatBytes, encode, wellFormed } from '../../domain/objects/encoding.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { joinPathSegment } from '../primitives/internal/join-path-segment.js';
@@ -106,16 +106,17 @@ export const mv = async (
   await assertOperationalRepository(ctx);
   requireWorkTree(ctx, 'mv');
   await assertNoPendingOperation(ctx);
-  const validatedSources = sources.map((source) => validatePath(source));
+  const validatedSources = sources.map((source) => validatePath(wellFormed(source)));
   const [firstSource] = validatedSources;
   if (firstSource === undefined) throw emptyPathspec();
   assertNoOverlappingSources(validatedSources);
-  const destNoSlash = validatePath(stripTrailingSlash(destination));
+  const wellFormedDestination = wellFormed(destination);
+  const destNoSlash = validatePath(stripTrailingSlash(wellFormedDestination));
 
   const lock = await acquireIndexLock(ctx);
   try {
     const byPath = await readIndexMap(ctx);
-    const mode = await resolveDestinationMode(ctx, firstSource, destination, destNoSlash);
+    const mode = await resolveDestinationMode(ctx, firstSource, wellFormedDestination, destNoSlash);
     if (mode.kind === 'rename' && validatedSources.length > 1) {
       throw mvDestinationNotDirectory(firstSource, mode.target);
     }

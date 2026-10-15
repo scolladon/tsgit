@@ -188,6 +188,14 @@ export function hasEscapedBytes(text: string): boolean {
   return LONE_ESCAPE.test(text);
 }
 
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+const REPLACEMENT_CHARACTER = '\uFFFD';
+
+// `String.prototype.toWellFormed` is outside the ES2022 lib this project targets.
+export function wellFormed(text: string): string {
+  return text.replace(LONE_SURROGATE, REPLACEMENT_CHARACTER);
+}
+
 const isHighSurrogate = (unit: number): boolean =>
   unit >= HIGH_SURROGATE_MIN && unit <= HIGH_SURROGATE_MAX;
 
