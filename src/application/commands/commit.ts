@@ -1,13 +1,10 @@
 import type { IndexEntry } from '../../domain/git-index/index.js';
-import {
-  indexPathKey,
-  indexPathOfBytes,
-  splitAtSlash,
-} from '../../domain/git-index/index-path-key.js';
+import { indexPathOfBytes, splitAtSlash } from '../../domain/git-index/index-path-key.js';
 import { nothingToCommit } from '../../domain/index.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
-import type { AuthorIdentity, FilePath, ObjectId, TreeEntry } from '../../domain/objects/index.js';
+import { decodeEscapingInvalid } from '../../domain/objects/encoding.js';
+import type { AuthorIdentity, ObjectId, TreeEntry } from '../../domain/objects/index.js';
 import { zeroOid } from '../../domain/objects/index.js';
 import type { RefName } from '../../domain/objects/object-id.js';
 import { treeEntry } from '../../domain/objects/tree.js';
@@ -410,7 +407,7 @@ const componentsOf = (entry: IndexEntry): ReadonlyArray<TreeName> =>
       });
 
 const componentKey = (name: TreeName): string =>
-  typeof name === 'string' ? name : indexPathKey({ path: '' as FilePath, pathBytes: name });
+  typeof name === 'string' ? name : decodeEscapingInvalid(name);
 
 const buildTreeFromIndex = async (
   ctx: Context,

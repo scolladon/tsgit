@@ -15,8 +15,6 @@ export interface IndexPath {
 
 export type IndexPathKey = string & { readonly __brand: 'IndexPathKey' };
 
-// NUL never occurs in a valid entry path, so a lossy key can never equal a UTF-8 key.
-const LOSSY_KEY_PREFIX = '\0';
 const SLASH = 0x2f;
 
 export const latin1 = (bytes: Uint8Array): string => {
@@ -25,15 +23,13 @@ export const latin1 = (bytes: Uint8Array): string => {
   return key;
 };
 
-export const indexPathKey = (entry: IndexPath): IndexPathKey =>
-  (entry.pathBytes === undefined
-    ? entry.path
-    : LOSSY_KEY_PREFIX + latin1(entry.pathBytes)) as IndexPathKey;
-
 export const isLossy = (entry: IndexPath): boolean => entry.pathBytes !== undefined;
 
 export const escapedPathOf = (entry: IndexPath): FilePath =>
   entry.pathBytes === undefined ? entry.path : (decodeEscapingInvalid(entry.pathBytes) as FilePath);
+
+export const indexPathKey = (entry: IndexPath): IndexPathKey =>
+  escapedPathOf(entry) as string as IndexPathKey;
 
 export const keyOfPath = (path: FilePath): IndexPathKey => path as string as IndexPathKey;
 

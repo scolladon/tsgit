@@ -5,6 +5,7 @@ import {
   indexPathKey,
   indexPathOfBytes,
   indexPathOfEscaped,
+  keyOfPath,
   pathBytesOf,
   splitAtSlash,
   viewOfEscaped,
@@ -14,8 +15,10 @@ import {
   concatBytes,
   decodePreservingBom,
   encode,
+  encodeEscaped,
 } from '../../../../src/domain/objects/encoding.js';
-import { arbIndexEntryWithPathBytes, arbPathBytes } from './arbitraries.js';
+import type { FilePath } from '../../../../src/domain/objects/index.js';
+import { arbIndexEntryWithPathBytes, arbPathBytes, arbRawPathBytes } from './arbitraries.js';
 
 const SLASH = Uint8Array.of(0x2f);
 
@@ -129,6 +132,55 @@ describe('index path key properties', () => {
 
         // Act & Assert
         fc.assert(property, { numRuns: 200 });
+      });
+    });
+  });
+
+  describe('Given lossy path bytes and a well-formed string', () => {
+    describe('When keying both', () => {
+      it('Then the lossy key never equals the string key', () => {
+        // Arrange
+        const property = fc.property(
+          arbRawPathBytes(),
+          fc.string({ unit: 'grapheme' }),
+          (bytes, text) => indexPathKey(indexPathOfBytes(bytes)) !== keyOfPath(text as FilePath),
+        );
+
+        // Act & Assert
+        fc.assert(property, { numRuns: 100 });
+      });
+    });
+  });
+
+  describe('Given arbitrary path bytes', () => {
+    describe('When encoding the key back', () => {
+      it('Then the bytes come back', () => {
+        // Arrange
+        const property = fc.property(arbPathBytes(), (bytes) =>
+          bytesEqual(encodeEscaped(indexPathKey(indexPathOfBytes(bytes))), bytes),
+        );
+
+        // Act & Assert
+        fc.assert(property, { numRuns: 200 });
+      });
+    });
+
+    describe('When cutting the key before the k-th slash', () => {
+      it('Then it equals the key of the bytes cut before that slash', () => {
+        // Arrange
+        const property = fc.property(arbPathBytes(), (bytes) => {
+          const key = indexPathKey(indexPathOfBytes(bytes));
+          let keyAt = key.indexOf('/');
+          for (let at = bytes.indexOf(0x2f); at !== -1; at = bytes.indexOf(0x2f, at + 1)) {
+            if (key.slice(0, keyAt) !== indexPathKey(indexPathOfBytes(bytes.subarray(0, at))))
+              return false;
+            keyAt = key.indexOf('/', keyAt + 1);
+          }
+          return true;
+        });
+
+        // Act & Assert
+        fc.assert(property, { numRuns: 100 });
       });
     });
   });

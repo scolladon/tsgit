@@ -31,8 +31,39 @@ describe('indexPathKey', () => {
 
         // Assert
         expect(literalKey).toBe('�.txt');
-        expect(lossyKey).toBe(String.fromCharCode(0, 0xff, 0x2e, 0x74, 0x78, 0x74));
+        expect(lossyKey).toBe('\uDCFF.txt');
         expect(lossyKey).not.toBe(literalKey);
+      });
+    });
+  });
+
+  describe('Given a lossy entry whose directory prefix is valid UTF-8', () => {
+    describe('When cutting its key at the slash', () => {
+      it('Then the prefix equals the key of the directory entry', () => {
+        // Arrange
+        const entry = indexPathOfBytes(Uint8Array.of(0x64, 0x2f, 0xff));
+        const key = indexPathKey(entry);
+
+        // Act
+        const prefix = key.slice(0, key.indexOf('/'));
+
+        // Assert
+        expect(prefix).toBe(indexPathKey({ path: 'd' as FilePath }));
+      });
+    });
+  });
+
+  describe('Given a lossy entry', () => {
+    describe('When keying the escaped path string', () => {
+      it('Then it equals the entry key', () => {
+        // Arrange
+        const lossy = { path: REPLACEMENT_PATH, pathBytes: LOSSY_BYTES };
+
+        // Act
+        const result = keyOfPath('\uDCFF.txt' as FilePath);
+
+        // Assert
+        expect(result).toBe(indexPathKey(lossy));
       });
     });
   });

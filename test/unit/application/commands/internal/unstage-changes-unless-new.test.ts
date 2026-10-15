@@ -256,6 +256,40 @@ describe('unstageChangesUnlessNew', () => {
     });
   });
 
+  describe('Given a kept new lossy path in a lossy directory and deleted files around it', () => {
+    describe('When the changes are unstaged', () => {
+      it('Then the restored lossy file named like the directory is dropped and the U file kept', () => {
+        // Arrange
+        const before = [lossy('\uFFFD', [0xff], 'l'), entry('\uFFFD', 'u')];
+        const merged = [lossy('\uFFFD/x', [0xff, 0x2f, 0x78], 'n')];
+
+        // Act
+        const sut = unstageChangesUnlessNew;
+        const result = sut(merged, before);
+
+        // Assert
+        expect(result.entries.map((e) => e.id)).toEqual(['u', 'n']);
+      });
+    });
+  });
+
+  describe('Given a kept new lossy file inside a valid directory and a deleted file named like it', () => {
+    describe('When the changes are unstaged', () => {
+      it('Then the deleted file is dropped', () => {
+        // Arrange
+        const before = [entry('d', 'u')];
+        const merged = [lossy('d/\uFFFD', [0x64, 0x2f, 0xff], 'n')];
+
+        // Act
+        const sut = unstageChangesUnlessNew;
+        const result = sut(merged, before);
+
+        // Assert
+        expect(result.entries.map((e) => e.id)).toEqual(['n']);
+      });
+    });
+  });
+
   describe('Given a kept new lossy path inside a valid directory and a deleted file named like it', () => {
     describe('When the changes are unstaged', () => {
       it('Then the deleted file is dropped because the directory bytes match', () => {

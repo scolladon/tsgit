@@ -3,14 +3,10 @@ import {
   type IndexPath,
   type IndexPathKey,
   indexPathKey,
-  indexPathOfBytes,
-  keyOfPath,
-  pathBytesOf,
 } from '../../../domain/git-index/index-path-key.js';
 import { compareEntryPath, inOrder } from '../../../domain/git-index/index-writer.js';
 
 const PATH_SEPARATOR = '/';
-const SLASH_BYTE = 0x2f;
 
 const zeroStat = (entry: IndexEntry): IndexEntry => ({
   ...entry,
@@ -35,21 +31,12 @@ const stageZero = (entries: ReadonlyArray<IndexEntry>): ReadonlyArray<IndexEntry
 
 const sameContent = (a: IndexEntry, b: IndexEntry): boolean => a.id === b.id && a.mode === b.mode;
 
-function* utf8AncestorKeys(path: string): Generator<IndexPathKey> {
-  for (let at = path.indexOf(PATH_SEPARATOR); at !== -1; at = path.indexOf(PATH_SEPARATOR, at + 1))
-    yield keyOfPath(path.slice(0, at) as IndexPath['path']);
+/** Directory keys of an entry: its escaped path cut before each slash. */
+function* ancestorKeys(entry: IndexPath): Generator<IndexPathKey> {
+  const key = indexPathKey(entry);
+  for (let at = key.indexOf(PATH_SEPARATOR); at !== -1; at = key.indexOf(PATH_SEPARATOR, at + 1))
+    yield key.slice(0, at) as IndexPathKey;
 }
-
-function* lossyAncestorKeys(bytes: Uint8Array): Generator<IndexPathKey> {
-  for (let at = bytes.indexOf(SLASH_BYTE); at !== -1; at = bytes.indexOf(SLASH_BYTE, at + 1))
-    yield indexPathKey(indexPathOfBytes(bytes.subarray(0, at)));
-}
-
-/** Directory keys of an entry, cut from the raw bytes when the decoded view is lossy. */
-const ancestorKeys = (entry: IndexPath): Generator<IndexPathKey> =>
-  entry.pathBytes === undefined
-    ? utf8AncestorKeys(entry.path)
-    : lossyAncestorKeys(pathBytesOf(entry));
 
 /** Paths a restored entry may not take: a kept new file, or a directory a kept new path lives in. */
 const occupiedBy = (kept: ReadonlyArray<IndexEntry>): ((entry: IndexPath) => boolean) => {
