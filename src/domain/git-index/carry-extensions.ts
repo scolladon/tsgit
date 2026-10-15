@@ -40,7 +40,10 @@ const carryTree = (
   try {
     const root = parseCacheTree(tree.data, digestLength);
     if (!namesEachSubtreeOnce(root)) return undefined;
-    const invalidated = invalidateCacheTree(root, change.changedPaths);
+    const invalidated = invalidateCacheTree(
+      root,
+      change.changedPaths.map((path) => ({ path })),
+    );
     return { signature: TREE_SIGNATURE, data: serializeCacheTree(invalidated, digestLength) };
   } catch (err) {
     if (errorDataCode(err) === INVALID_INDEX_ENTRY_CODE) return undefined;

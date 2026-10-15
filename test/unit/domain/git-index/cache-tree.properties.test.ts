@@ -7,8 +7,15 @@ import {
 } from '../../../../src/domain/git-index/cache-tree.js';
 import type { CacheTreeEntry } from '../../../../src/domain/git-index/index-entry.js';
 import { parseCacheTree } from '../../../../src/domain/git-index/index-parser.js';
-import type { FilePath } from '../../../../src/domain/objects/object-id.js';
-import { arbCacheTreeEntry } from './arbitraries.js';
+import {
+  type IndexPath,
+  indexPathOfBytes,
+  latin1,
+  splitAtSlash,
+} from '../../../../src/domain/git-index/index-path-key.js';
+import { concatBytes, decode } from '../../../../src/domain/objects/encoding.js';
+import type { FilePath, ObjectId } from '../../../../src/domain/objects/object-id.js';
+import { arbCacheTreeEntry, arbPathBytes } from './arbitraries.js';
 
 describe('cache-tree serializer properties', () => {
   describe('Given an arbitrary CacheTreeEntry tree at width 20', () => {
@@ -49,17 +56,17 @@ function componentNames(tree: CacheTreeEntry): string[] {
   return tree.children.flatMap((child) => [child.path, ...componentNames(child)]);
 }
 
-function arbPaths(tree: CacheTreeEntry): fc.Arbitrary<FilePath[]> {
+function arbPaths(tree: CacheTreeEntry): fc.Arbitrary<IndexPath[]> {
   const names = [...componentNames(tree).filter((n) => n !== ''), ...RANDOM_COMPONENTS];
   const arbPath = fc
     .array(fc.constantFrom(...names), { minLength: 1, maxLength: 4 })
-    .map((parts) => parts.join('/') as FilePath);
+    .map((parts) => ({ path: parts.join('/') as FilePath }));
   return fc.array(arbPath, { maxLength: 4 });
 }
 
 function arbTreeWithPaths(
   hexLength: 40 | 64,
-): fc.Arbitrary<{ tree: CacheTreeEntry; paths: FilePath[] }> {
+): fc.Arbitrary<{ tree: CacheTreeEntry; paths: IndexPath[] }> {
   return arbCacheTreeEntry(3, hexLength).chain((tree) =>
     arbPaths(tree).map((paths) => ({ tree, paths })),
   );
@@ -108,7 +115,7 @@ describe('invalidateCacheTree properties', () => {
             const sut = invalidateCacheTree;
             const result = sut(tree, paths);
             for (const path of paths) {
-              expect(coversPath(result, path.split('/'))).toBe(false);
+              expect(coversPath(result, path.path.split('/'))).toBe(false);
             }
           }),
           { numRuns: NUM_RUNS },
@@ -120,7 +127,7 @@ describe('invalidateCacheTree properties', () => {
         fc.assert(
           fc.property(arbTreeWithPaths(40), ({ tree, paths }) => {
             const sut = invalidateCacheTree;
-            const entered = new Set(paths.map((p) => p.split('/')[0]));
+            const entered = new Set(paths.map((p) => p.path.split('/')[0]));
             const result = sut(tree, paths);
             for (const child of tree.children) {
               if (!entered.has(child.path)) expect(result.children).toContain(child);
@@ -135,7 +142,10 @@ describe('invalidateCacheTree properties', () => {
         fc.assert(
           fc.property(arbTreeWithPaths(40), ({ tree, paths }) => {
             const sut = invalidateCacheTree;
-            const expected = paths.reduce((acc, path) => oracleAlong(acc, path.split('/')), tree);
+            const expected = paths.reduce(
+              (acc, path) => oracleAlong(acc, path.path.split('/')),
+              tree,
+            );
             expect(sut(tree, paths)).toEqual(expected);
           }),
           { numRuns: NUM_RUNS },
@@ -162,6 +172,89 @@ describe('invalidateCacheTree properties', () => {
             const result = sut(tree, paths);
             expect(parseCacheTree(serializeCacheTree(result, 20), 20)).toEqual(result);
           }),
+          { numRuns: NUM_RUNS },
+        );
+      });
+    });
+  });
+});
+
+const SLASH = Uint8Array.of(0x2f);
+const ID: ObjectId = 'a'.repeat(40) as ObjectId;
+
+const rawNode = (name: Uint8Array, children: ReadonlyArray<CacheTreeEntry>): CacheTreeEntry => ({
+  path: decode(name),
+  nameBytes: name,
+  entryCount: 1,
+  subtreeCount: children.length,
+  id: ID,
+  children,
+});
+
+const arbRawComponents = (): fc.Arbitrary<Uint8Array[]> =>
+  fc
+    .uniqueArray(
+      arbPathBytes()
+        .map(splitAtSlash)
+        .map((parts) => parts[0] as Uint8Array),
+      {
+        minLength: 1,
+        maxLength: 4,
+        selector: latin1,
+      },
+    )
+    .map((components) => components.map((component) => component.slice()));
+
+function keyCoversPath(node: CacheTreeEntry, components: ReadonlyArray<Uint8Array>): boolean {
+  const [head, ...rest] = components;
+  const child = node.children.find(
+    (c) => c.nameBytes !== undefined && latin1(c.nameBytes) === latin1(head as Uint8Array),
+  );
+  if (child === undefined) return node.entryCount >= 0;
+  if (rest.length === 0) return true;
+  return node.entryCount >= 0 || keyCoversPath(child, rest);
+}
+
+describe('invalidateCacheTree raw-name properties', () => {
+  describe('Given a tree named by raw components and changed paths built from the same bytes', () => {
+    describe('When invalidateCacheTree', () => {
+      it('Then no valid node covers a changed path', () => {
+        // Arrange + Act + Assert
+        fc.assert(
+          fc.property(
+            arbRawComponents().chain((components) =>
+              fc.record({
+                components: fc.constant(components),
+                chains: fc.array(
+                  fc.array(fc.constantFrom(...components), { minLength: 1, maxLength: 2 }),
+                  {
+                    maxLength: 4,
+                  },
+                ),
+              }),
+            ),
+            ({ components, chains }) => {
+              const sut = invalidateCacheTree;
+              const tree: CacheTreeEntry = {
+                path: '',
+                entryCount: 1,
+                subtreeCount: components.length,
+                id: ID,
+                children: components.map((name) =>
+                  rawNode(
+                    name,
+                    components.map((inner) => rawNode(inner, [])),
+                  ),
+                ),
+              };
+              const joined = chains.map((chain) =>
+                chain.flatMap((component, i) => (i === 0 ? [component] : [SLASH, component])),
+              );
+              const paths = joined.map((parts) => indexPathOfBytes(concatBytes(parts)));
+              const result = sut(tree, paths);
+              for (const chain of chains) expect(keyCoversPath(result, chain)).toBe(false);
+            },
+          ),
           { numRuns: NUM_RUNS },
         );
       });

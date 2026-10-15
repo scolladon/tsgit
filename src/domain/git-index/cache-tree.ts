@@ -9,10 +9,9 @@
  *   format:  git-index-dirc
  */
 import { encode, hexToBytes } from '../objects/encoding.js';
-import type { FilePath } from '../objects/object-id.js';
 import { invalidIndexEntry } from './error.js';
 import type { CacheTreeEntry } from './index-entry.js';
-import { latin1 } from './index-path-key.js';
+import { type IndexPath, latin1, splitAtSlash } from './index-path-key.js';
 
 const NUL = 0;
 
@@ -98,10 +97,15 @@ export function namesEachSubtreeOnce(entry: CacheTreeEntry): boolean {
 
 type Pending = ReadonlyArray<string>;
 
+const componentKeysOf = ({ path, pathBytes }: IndexPath): Pending =>
+  pathBytes === undefined
+    ? path.split('/').map(keyOfComponent)
+    : splitAtSlash(pathBytes).map(latin1);
+
 function groupByComponent(pending: ReadonlyArray<Pending>, depth: number): Map<string, Pending[]> {
   const groups = new Map<string, Pending[]>();
   for (const item of pending) {
-    const key = keyOfComponent(item[depth] as string);
+    const key = item[depth] as string;
     const group = groups.get(key);
     if (group === undefined) groups.set(key, [item]);
     else group.push(item);
@@ -146,12 +150,8 @@ function invalidateNode(
 
 export function invalidateCacheTree(
   root: CacheTreeEntry,
-  paths: ReadonlyArray<FilePath>,
+  paths: ReadonlyArray<IndexPath>,
 ): CacheTreeEntry {
   if (paths.length === 0) return root;
-  return invalidateNode(
-    root,
-    paths.map((path) => path.split('/')),
-    0,
-  );
+  return invalidateNode(root, paths.map(componentKeysOf), 0);
 }

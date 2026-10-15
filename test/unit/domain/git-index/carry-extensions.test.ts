@@ -96,7 +96,10 @@ describe('carryExtensions', () => {
         // Arrange
         const previous = previousExtensions();
         const change: IndexChange = { ...NO_INDEX_CHANGE, changedPaths: ['d/c' as FilePath] };
-        const invalidated = invalidateCacheTree(cacheTree(40), change.changedPaths);
+        const invalidated = invalidateCacheTree(
+          cacheTree(40),
+          change.changedPaths.map((path) => ({ path })),
+        );
 
         // Act
         const sut = carryExtensions;
@@ -214,7 +217,10 @@ describe('carryExtensions', () => {
       it('Then REUC is dropped and TREE is invalidated', () => {
         // Arrange
         const change: IndexChange = { ...NO_INDEX_CHANGE, changedPaths: ['d/c' as FilePath] };
-        const invalidated = invalidateCacheTree(cacheTree(40), change.changedPaths);
+        const invalidated = invalidateCacheTree(
+          cacheTree(40),
+          change.changedPaths.map((path) => ({ path })),
+        );
 
         // Act
         const sut = carryExtensions;
@@ -305,7 +311,10 @@ describe('carryExtensions', () => {
         // Arrange
         const wide = { untrackedCache: undefined, digestLength: 32 } as const;
         const change: IndexChange = { ...NO_INDEX_CHANGE, changedPaths: ['d/c' as FilePath] };
-        const invalidated = invalidateCacheTree(cacheTree(64), change.changedPaths);
+        const invalidated = invalidateCacheTree(
+          cacheTree(64),
+          change.changedPaths.map((path) => ({ path })),
+        );
 
         // Act
         const sut = carryExtensions;
@@ -372,7 +381,7 @@ describe('carryExtensions', () => {
       it('Then the root is invalidated and the sibling directory stays valid', () => {
         // Arrange
         const change = withRestagedPaths(NO_INDEX_CHANGE, ['b' as FilePath]);
-        const invalidated = invalidateCacheTree(cacheTree(40), ['b' as FilePath]);
+        const invalidated = invalidateCacheTree(cacheTree(40), [{ path: 'b' as FilePath }]);
 
         // Act
         const sut = carryExtensions;
