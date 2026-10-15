@@ -1,5 +1,6 @@
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { GitIndex, IndexEntry } from '../../../domain/git-index/index-entry.js';
+import { type IndexPathKey, indexPathKey } from '../../../domain/git-index/index-path-key.js';
 import { deriveWorkingMode, FILE_MODE } from '../../../domain/objects/file-mode.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
@@ -57,10 +58,12 @@ const carriedOver = (
   previous: GitIndex,
   racy: ReadonlyArray<IndexEntry>,
 ): ReadonlyArray<IndexEntry> => {
-  const racyByPath = new Map<FilePath, IndexEntry>(racy.map((entry) => [entry.path, entry]));
+  const racyByPath = new Map<IndexPathKey, IndexEntry>(
+    racy.map((entry) => [indexPathKey(entry), entry]),
+  );
   const unchanged: IndexEntry[] = [];
   for (const entry of previous.entries) {
-    const candidate = racyByPath.get(entry.path);
+    const candidate = racyByPath.get(indexPathKey(entry));
     if (candidate !== undefined && statDataKey(candidate) === statDataKey(entry)) {
       unchanged.push(candidate);
     }

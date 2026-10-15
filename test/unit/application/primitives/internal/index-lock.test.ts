@@ -337,6 +337,38 @@ describe('IndexLock.commitRefresh', () => {
     });
   });
 
+  describe('Given an index holding a literal U+FFFD path and a raw invalid-UTF-8 path that decodes to it', () => {
+    describe('When refreshing only the literal U+FFFD entry', () => {
+      it('Then the raw-byte entry keeps its path bytes', async () => {
+        // Arrange
+        const ctx = await seededRepo();
+        const [template] = (await readIndex(ctx)).entries as [IndexEntry];
+        const literal: IndexEntry = { ...template, path: '\uFFFD.txt' as FilePath };
+        const raw: IndexEntry = {
+          ...literal,
+          id: OTHER_ID,
+          pathBytes: Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74),
+        };
+        const seed = await acquireIndexLock(ctx);
+        await seed.commit([literal, raw], 'replace');
+        invalidateIndexCache(ctx);
+        const read = await readIndex(ctx);
+        const sut = await acquireIndexLock(ctx);
+
+        // Act
+        await sut.commitRefresh(read, [withLaterMtime(literal)], NOTHING_VERIFIED);
+
+        // Assert
+        invalidateIndexCache(ctx);
+        const written = (await readIndex(ctx)).entries;
+        expect(written.map((entry) => entry.id)).toEqual([literal.id, OTHER_ID]);
+        expect(written[0]?.mtimeSeconds).toBe(literal.mtimeSeconds + 10);
+        expect(written[1]?.pathBytes).toEqual(Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74));
+        expect(written[1]?.mtimeSeconds).toBe(literal.mtimeSeconds);
+      });
+    });
+  });
+
   describe('Given a lock already released', () => {
     describe('When refreshing an entry', () => {
       it('Then it resolves false and leaves the index bytes unchanged', async () => {

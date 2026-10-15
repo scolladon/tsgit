@@ -10,7 +10,7 @@ import {
 import { diffIndexEntries } from '../../../domain/git-index/diff-index-entries.js';
 import { type IndexEntry, serializeIndex } from '../../../domain/git-index/index.js';
 import type { GitIndex, IndexExtension } from '../../../domain/git-index/index-entry.js';
-import type { IndexPath } from '../../../domain/git-index/index-path-key.js';
+import { type IndexPath, indexPathKey } from '../../../domain/git-index/index-path-key.js';
 import { bytesEqual } from '../../../domain/objects/encoding.js';
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../config-read.js';
@@ -208,9 +208,9 @@ const withRefreshedStat = (
   read: GitIndex,
   refreshed: ReadonlyArray<IndexEntry>,
 ): ReadonlyArray<IndexEntry> => {
-  const byPath = new Map(refreshed.map((entry) => [entry.path, entry]));
+  const byPath = new Map(refreshed.map((entry) => [indexPathKey(entry), entry]));
   return read.entries.map((entry) =>
-    entry.flags.stage === 0 ? (byPath.get(entry.path) ?? entry) : entry,
+    entry.flags.stage === 0 ? (byPath.get(indexPathKey(entry)) ?? entry) : entry,
   );
 };
 
