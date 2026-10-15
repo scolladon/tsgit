@@ -1133,4 +1133,45 @@ describe('materializeTree', () => {
       });
     });
   });
+
+  describe('Given an index and a target tree both holding raw \xff.txt and literal U+FFFD .txt', () => {
+    describe('When materializeTree runs scoped to the well-formed U+FFFD .txt path', () => {
+      it('Then the raw entry keeps its id and bytes while the literal one is updated', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldBlob = await writeBlob(ctx, 'old');
+        const rawBlob = await writeBlob(ctx, 'raw-new');
+        const literalBlob = await writeBlob(ctx, 'literal-new');
+        const raw = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+        const targetTree = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, raw, rawBlob),
+          treeEntry(FILE_MODE.REGULAR, '\uFFFD.txt' as FilePath, literalBlob),
+        ]);
+        const currentIndex: GitIndex = {
+          ...EMPTY_INDEX,
+          entries: [
+            { ...makeIndexEntry('\uFFFD.txt', oldBlob), pathBytes: raw },
+            makeIndexEntry('\uFFFD.txt', oldBlob),
+          ],
+        };
+
+        // Act
+        const result = await materializeTree(ctx, {
+          targetTree,
+          currentIndex,
+          force: true,
+          forceRewriteAll: true,
+          paths: new Set(['\uFFFD.txt' as FilePath]),
+        });
+
+        // Assert
+        const lossy = result.newIndexEntries.find((e) => e.pathBytes !== undefined);
+        const literal = result.newIndexEntries.find((e) => e.pathBytes === undefined);
+        expect(result.newIndexEntries).toHaveLength(2);
+        expect(lossy?.id).toBe(oldBlob);
+        expect(lossy?.pathBytes).toStrictEqual(raw);
+        expect(literal?.id).toBe(literalBlob);
+      });
+    });
+  });
 });

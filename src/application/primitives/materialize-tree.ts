@@ -27,7 +27,12 @@
  *  relative to the actual disk state.
  */
 import { type GitIndex, type IndexEntry, skipWorktreeEntry } from '../../domain/git-index/index.js';
-import { type IndexPathKey, indexPathKey } from '../../domain/git-index/index-path-key.js';
+import {
+  escapedPathOf,
+  type IndexPath,
+  type IndexPathKey,
+  indexPathKey,
+} from '../../domain/git-index/index-path-key.js';
 import { pathComparatorFor } from '../../domain/git-index/index-writer.js';
 import {
   FILE_MODE,
@@ -58,6 +63,10 @@ export interface MaterializeTreeOpts {
   readonly targetTree: ObjectId;
   readonly currentIndex: GitIndex;
   readonly force?: boolean;
+  /**
+   * Restrict the materialisation to these paths. A path selects the entry whose raw name it
+   * encodes; a well-formed path never selects an entry whose raw name is not UTF-8.
+   */
   readonly paths?: ReadonlySet<FilePath>;
   /**
    * When true, every target-tree path is written to the working tree
@@ -111,10 +120,10 @@ const collectTargetEntries = async (ctx: Context, treeId: ObjectId): Promise<Tar
   return collected;
 };
 
-const filterByPaths = <T extends { readonly path: FilePath }>(
+const filterByPaths = <T extends IndexPath>(
   entries: ReadonlyArray<T>,
   paths: ReadonlySet<FilePath>,
-): T[] => entries.filter((e) => paths.has(e.path));
+): T[] => entries.filter((e) => paths.has(escapedPathOf(e)));
 
 const indexEntriesByPath = (index: GitIndex): Map<IndexPathKey, IndexEntry> => {
   const out = new Map<IndexPathKey, IndexEntry>();
@@ -137,7 +146,9 @@ const preserveOutOfScope = (
   currentIndex: GitIndex,
   scopedPaths: ReadonlySet<FilePath> | undefined,
 ): IndexEntry[] =>
-  scopedPaths === undefined ? [] : currentIndex.entries.filter((e) => !scopedPaths.has(e.path));
+  scopedPaths === undefined
+    ? []
+    : currentIndex.entries.filter((e) => !scopedPaths.has(escapedPathOf(e)));
 
 const pickEntry = (
   entry: TargetEntry,
@@ -255,7 +266,7 @@ const checkoutDirection = (
   const kept = indexRuleEntries(
     // Stryker disable next-line MethodExpression: equivalent — `kept` feeds only attributeBlobLookup, whose attributeBlobMap re-applies isAttributesPath; the pre-filter only keeps indexRuleEntries off non-attribute entries.
     opts.currentIndex.entries.filter((entry) => isAttributesPath(entry.path)),
-  ).filter((entry) => !paths.has(entry.path));
+  ).filter((entry) => !paths.has(escapedPathOf(entry)));
   return { kind: 'worktree-first', index: attributeBlobLookup([...kept, ...plan.target]) };
 };
 

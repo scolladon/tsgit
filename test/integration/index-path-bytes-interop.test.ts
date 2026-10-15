@@ -605,6 +605,31 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    describe('Given HEAD holding only the UTF-8 twin and the index also holding the lossy entry', () => {
+      describe('When checkout restores the well-formed U+FFFD name from HEAD', () => {
+        it('Then the lossy index entry survives and the twin holds its committed content', async () => {
+          // Arrange
+          writeFileSync(path.join(pair.peer, 'z'), 'z\n');
+          writeFileSync(path.join(pair.peer, U_FILE), 'u\n');
+          git('add', 'z', U_FILE);
+          git('commit', '-q', '-m', 'seed');
+          stageRaw(pair.peer, [
+            { mode: REGULAR_MODE, oid: hashBlob(pair.peer, 'l\n'), path: FF_TXT },
+          ]);
+          writeFileSync(path.join(pair.peer, U_FILE), 'modified\n');
+          const before = lsFilesPathHex(pair.peer);
+
+          // Act
+          await repo.checkout({ paths: [U_FILE], source: 'HEAD' });
+
+          // Assert
+          expect(before).toContain(L_HEX);
+          expect(readFileSync(path.join(pair.peer, U_FILE), 'utf8')).toBe('u\n');
+          expect(lsFilesPathHex(pair.peer)).toEqual(before);
+        });
+      });
+    });
+
     describe('Given a lossy entry and its UTF-8 twin both tracked', () => {
       describe('When reset --hard HEAD runs', () => {
         it('Then the twin keeps its content, no lossy name is written and the index is unchanged', async () => {
@@ -632,6 +657,22 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Act
           await repo.checkout({ paths: ['*.txt'], source: 'HEAD' });
+
+          // Assert
+          expect(readFileSync(path.join(pair.peer, U_FILE), 'utf8')).toBe('u\n');
+          expect(lsFilesPathHex(pair.peer)).toEqual(before);
+        });
+      });
+
+      describe('When checkout restores the well-formed U+FFFD name from HEAD after the twin changed', () => {
+        it('Then the twin holds its committed content and the index bytes are unchanged', async () => {
+          // Arrange
+          seedLossyTwins();
+          writeFileSync(path.join(pair.peer, U_FILE), 'modified\n');
+          const before = lsFilesPathHex(pair.peer);
+
+          // Act
+          await repo.checkout({ paths: [U_FILE], source: 'HEAD' });
 
           // Assert
           expect(readFileSync(path.join(pair.peer, U_FILE), 'utf8')).toBe('u\n');

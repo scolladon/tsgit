@@ -7,13 +7,14 @@ import {
   revparseUnresolved,
 } from '../../domain/commands/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
+import { escapedPathOf, type IndexPath } from '../../domain/git-index/index-path-key.js';
 import {
   FILE_MODE,
   type FilePath,
   type ObjectId,
   type RefName,
 } from '../../domain/objects/index.js';
-import { matchesPathspec } from '../../domain/pathspec/index.js';
+import { matchesIndexPath } from '../../domain/pathspec/matching-path.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
@@ -35,7 +36,7 @@ import {
 } from '../primitives/resolve-ref.js';
 import { runInformationalHook } from '../primitives/run-hook.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
-import { walkTree } from '../primitives/walk-tree.js';
+import { walkTreeWithLossyBytes } from '../primitives/walk-tree.js';
 import { type BranchTrack, branchCreate } from './branch.js';
 import { removeBranchState } from './internal/branch-state.js';
 import { checkoutMetadataFor } from './internal/checkout-metadata.js';
@@ -330,10 +331,14 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
   // reads its own snapshot, which only decides what gets written — the
   // pathspec expansion was done on this earlier read.
   // For `source: 'HEAD'` or an ObjectId, walk the tree once.
-  const universe: ReadonlyArray<FilePath> = await enumerateSourcePaths(ctx, source);
-  const matched = universe.filter((p) => matchesPathspec(matcher, p));
-  enforceLiteralMustMatch(literalMustMatch, matched, literalSpellings);
-  const pathSet = new Set<FilePath>(matched);
+  const universe: ReadonlyArray<IndexPath> = await enumerateSourcePaths(ctx, source);
+  const matched = universe.filter((entry) => matchesIndexPath(matcher, entry));
+  enforceLiteralMustMatch(
+    literalMustMatch,
+    matched.map((entry) => entry.path),
+    literalSpellings,
+  );
+  const pathSet = new Set<FilePath>(matched.map(escapedPathOf));
 
   // Glob with zero matches → no-op (literals already threw above).
   if (pathSet.size === 0) {
@@ -443,15 +448,15 @@ const materializePathRestoreLocked = async (
 const enumerateSourcePaths = async (
   ctx: Context,
   source: PathSource | undefined,
-): Promise<ReadonlyArray<FilePath>> => {
+): Promise<ReadonlyArray<IndexPath>> => {
   if (source === undefined) {
     const index = await readIndex(ctx);
-    return index.entries.map((e) => e.path);
+    return index.entries;
   }
-  const paths: FilePath[] = [];
-  for await (const entry of walkTree(ctx, source.tree)) {
+  const paths: IndexPath[] = [];
+  for await (const entry of walkTreeWithLossyBytes(ctx, source.tree)) {
     // Stryker disable next-line ConditionalExpression: equivalent — directory entries in the universe are unobservable: materializeTree filters DIRECTORY modes itself and matches by exact path, and any pathspec matching a directory also matches its (non-empty) descendant files.
-    if (entry.mode !== FILE_MODE.DIRECTORY) paths.push(entry.path);
+    if (entry.mode !== FILE_MODE.DIRECTORY) paths.push(entry);
   }
   return paths;
 };

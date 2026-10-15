@@ -109692,6 +109692,14 @@
 								"isOptional": true,
 								"isReadonly": true
 							},
+							"comment": {
+								"summary": [
+									{
+										"kind": "text",
+										"text": "Restrict the materialisation to these paths. A path selects the entry whose raw name it\nencodes; a well-formed path never selects an entry whose raw name is not UTF-8."
+									}
+								]
+							},
 							"type": {
 								"type": "reference",
 								"target": {

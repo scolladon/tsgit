@@ -9,13 +9,23 @@ import { init } from '../../../../src/application/commands/init.js';
 import * as revParseMod from '../../../../src/application/commands/rev-parse.js';
 import { tagCreate } from '../../../../src/application/commands/tag.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import * as materializeTreeMod from '../../../../src/application/primitives/materialize-tree.js';
 import * as objectStoreMod from '../../../../src/application/primitives/object-store.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readTree } from '../../../../src/application/primitives/read-tree.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { TsgitError } from '../../../../src/domain/index.js';
-import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
+import type {
+  AuthorIdentity,
+  FilePath,
+  ObjectId,
+  RefName,
+} from '../../../../src/domain/objects/index.js';
+import { FILE_MODE } from '../../../../src/domain/objects/index.js';
+import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { snapshotFiles } from './fixtures.js';
 
 const author: AuthorIdentity = {
@@ -1939,6 +1949,89 @@ describe('checkout — the branch a switch reads', () => {
         // Assert
         expect(result.id).toBe(commitId);
         expect(open.mock.calls.filter(([path]) => path === featurePath)).toHaveLength(3);
+      });
+    });
+  });
+});
+
+const LOSSY_NAME_BYTES = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+const LITERAL_NAME = '\uFFFD.txt' as FilePath;
+
+const stageLossyTwinOf = async (
+  ctx: Awaited<ReturnType<typeof seedWithBranches>>['ctx'],
+  content = 'l\n',
+): Promise<IndexEntry> => {
+  const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${LITERAL_NAME}`);
+  const index = await readIndex(ctx);
+  const blob = await writeObject(ctx, {
+    type: 'blob',
+    id: '' as ObjectId,
+    content: new TextEncoder().encode(content),
+  });
+  const lossy: IndexEntry = {
+    ...indexEntryFromStat(stat, FILE_MODE.REGULAR, blob, LITERAL_NAME),
+    pathBytes: LOSSY_NAME_BYTES,
+  };
+  await ctx.fs.write(
+    `${ctx.layout.gitDir}/index`,
+    await serializeIndexFixtureAsync(
+      { ...index, entries: [...index.entries.filter((e) => e.pathBytes === undefined), lossy] },
+      ctx,
+    ),
+  );
+  return lossy;
+};
+
+describe('checkout — path restore over an index holding a lossy twin', () => {
+  describe('Given HEAD holds U+FFFD .txt only and the index also holds raw \\xff.txt', () => {
+    describe('When checkout restores the well-formed U+FFFD .txt path from HEAD', () => {
+      it('Then the literal file is restored and the raw entry keeps its id and bytes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${LITERAL_NAME}`, 'u\n');
+        await add(ctx, [LITERAL_NAME]);
+        await commit(ctx, { message: 'seed', author });
+        const lossy = await stageLossyTwinOf(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${LITERAL_NAME}`, 'modified\n');
+        const sut = checkout;
+
+        // Act
+        await sut(ctx, { paths: [LITERAL_NAME], source: 'HEAD' });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/${LITERAL_NAME}`)).toBe('u\n');
+        const index = await readIndex(ctx);
+        const kept = index.entries.find((e) => e.pathBytes !== undefined);
+        expect(index.entries).toHaveLength(2);
+        expect(kept?.id).toBe(lossy.id);
+        expect(kept?.pathBytes).toStrictEqual(LOSSY_NAME_BYTES);
+      });
+    });
+  });
+
+  describe('Given HEAD holds U+FFFD .txt and raw \\xff.txt and the index holds a stale raw entry', () => {
+    describe('When checkout restores *.txt from HEAD', () => {
+      it('Then the raw entry is reset to the HEAD blob and keeps its bytes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${LITERAL_NAME}`, 'u\n');
+        await add(ctx, [LITERAL_NAME]);
+        const committed = await stageLossyTwinOf(ctx);
+        await commit(ctx, { message: 'seed', author });
+        await stageLossyTwinOf(ctx, 'stale\n');
+        const sut = checkout;
+
+        // Act
+        await sut(ctx, { paths: ['*.txt'], source: 'HEAD' });
+
+        // Assert
+        const index = await readIndex(ctx);
+        const kept = index.entries.find((e) => e.pathBytes !== undefined);
+        expect(index.entries).toHaveLength(2);
+        expect(kept?.id).toBe(committed.id);
+        expect(kept?.pathBytes).toStrictEqual(LOSSY_NAME_BYTES);
       });
     });
   });
