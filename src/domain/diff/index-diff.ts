@@ -1,6 +1,8 @@
 import { type GitIndex, type IndexEntry, STAGE0_FLAGS, type StatData } from '../git-index/index.js';
+import { indexPathOfEscaped, pathBytesOf } from '../git-index/index-path-key.js';
 import type { MergeConflict } from '../merge/merge-types.js';
 import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
+import { compareBytes } from '../objects/index.js';
 import { primaryPath } from './change-path.js';
 import type { DiffChange, TreeDiff } from './diff-change.js';
 import { invalidDiffInput, invalidTreeForDiff } from './error.js';
@@ -220,7 +222,7 @@ function toIndexEntry(
     fileSize: stat.fileSize,
     id: emission.id,
     flags: { ...STAGE0_FLAGS, stage: emission.stage },
-    path: emission.path,
+    ...indexPathOfEscaped(emission.path),
   };
 }
 
@@ -245,7 +247,7 @@ export function conflictsToIndexEntries(
     }
   }
   entries.sort((a, b) => {
-    const pathCmp = comparePaths(a.path, b.path);
+    const pathCmp = compareBytes(pathBytesOf(a), pathBytesOf(b));
     if (pathCmp !== 0) return pathCmp;
     // Stryker disable next-line ArithmeticOperator: equivalent — same-path runs are either ascending triples (regular conflicts emit 1→2→3) which both operators leave in place, or two-element distinct-types runs (side stage then base stage 1) for which both operators return a positive value and produce the same sorted pair.
     return a.flags.stage - b.flags.stage;

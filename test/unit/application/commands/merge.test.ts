@@ -2728,6 +2728,34 @@ describe('resolveMergeAuthor / resolveMergeCommitter (direct)', () => {
 });
 
 describe('writeNestedTree (direct)', () => {
+  describe('Given leaves at an escaped file name and under an escaped directory name', () => {
+    describe('When writeNestedTree runs', () => {
+      it('Then the tree names are the raw bytes, not U+FFFD', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'x');
+        const leaves = [
+          { path: '\uDCFF.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          { path: '\uDCFF/x' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+        ];
+
+        // Act
+        const result = await writeNestedTree(ctx, leaves);
+
+        // Assert
+        const tree = await readObject(ctx, result);
+        if (tree.type !== 'tree') expect.unreachable();
+        const names = tree.entries.map((e) => Array.from(e.nameBytes));
+        expect(names).toContainEqual([0xff, 0x2e, 0x74, 0x78, 0x74]);
+        expect(names).toContainEqual([0xff]);
+        const dir = tree.entries.find((e) => e.nameBytes.length === 1);
+        const sub = await readObject(ctx, dir?.id as ObjectId);
+        if (sub.type !== 'tree') expect.unreachable();
+        expect(sub.entries.map((e) => e.name)).toEqual(['x']);
+      });
+    });
+  });
+
   describe('Given core.maxTreeDepth configured to zero and a top-level leaf', () => {
     describe('When writeNestedTree runs', () => {
       it('Then it completes — zero permits exactly the top level', async () => {

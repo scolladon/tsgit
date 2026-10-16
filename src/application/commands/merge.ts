@@ -36,6 +36,7 @@ import {
 } from '../../domain/merge/strategy-options.js';
 import { trivialMerge } from '../../domain/merge/trivial-merge.js';
 import type { CommitData, ExtraHeader } from '../../domain/objects/commit.js';
+import { encodeEscaped, hasEscapedBytes } from '../../domain/objects/encoding.js';
 import { treeDepthExceeded, unexpectedObjectType } from '../../domain/objects/error.js';
 import {
   type AuthorIdentity,
@@ -1514,8 +1515,11 @@ const buildLeafTrie = (rootLeaves: ReadonlyArray<LeafRecord>, maxDepth: number):
   return { rootFiles, frames, levels };
 };
 
+const treeEntryOfEscaped = (mode: FileMode, name: FilePath, id: ObjectId): TreeEntry =>
+  treeEntry(mode, hasEscapedBytes(name) ? encodeEscaped(name) : name, id);
+
 const leavesToTreeEntries = (files: ReadonlyArray<LeafRecord>): TreeEntry[] =>
-  files.map((f) => treeEntry(f.mode, f.path, f.id));
+  files.map((f) => treeEntryOfEscaped(f.mode, f.path, f.id));
 
 /**
  * Write the leaf trie deepest-level-first. Every frame WITHIN a level is
@@ -1549,7 +1553,7 @@ const writeLeafTrie = async (ctx: Context, trie: LeafTrie): Promise<ObjectId> =>
         frame.parentIndex === ROOT_PARENT_LEVEL_INDEX
           ? rootTreeEntries
           : treeEntries[frame.parentIndex]!;
-      parentEntries.push(treeEntry(FILE_MODE.DIRECTORY, frame.name, id));
+      parentEntries.push(treeEntryOfEscaped(FILE_MODE.DIRECTORY, frame.name, id));
     }
   }
   return writeTree(ctx, rootTreeEntries);

@@ -365,6 +365,37 @@ describe('conflictsToIndexEntries', () => {
     } as MergeConflict;
   }
 
+  describe('Given content conflicts at an escaped path and at its U+FFFD view', () => {
+    describe('When conflictsToIndexEntries called', () => {
+      it('Then the escaped path carries its bytes and sorts after the view by bytes', () => {
+        // Arrange
+        const ids = {
+          baseId: ID_A,
+          ourId: ID_B,
+          theirId: ID_C,
+          baseMode: FILE_MODE.REGULAR,
+          ourMode: FILE_MODE.REGULAR,
+          theirMode: FILE_MODE.REGULAR,
+        };
+        const lossy = conflict({ path: '\uDCFF.txt' as FilePath, ...ids });
+        const wellFormed = conflict({ path: '\uFFFD.txt' as FilePath, ...ids });
+
+        // Act
+        const result = conflictsToIndexEntries([lossy, wellFormed], zeroStat);
+
+        // Assert
+        expect(result).toHaveLength(6);
+        result.slice(0, 3).forEach((entry) => {
+          expect('pathBytes' in entry).toBe(false);
+        });
+        result.slice(3).forEach((entry) => {
+          expect(Array.from(entry.pathBytes ?? [])).toEqual([0xff, 0x2e, 0x74, 0x78, 0x74]);
+        });
+        expect(result.map((e) => e.flags.stage)).toEqual([1, 2, 3, 1, 2, 3]);
+      });
+    });
+  });
+
   describe('Given a single conflict with varying id presence', () => {
     describe('When conflictsToIndexEntries called', () => {
       it.each([
