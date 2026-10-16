@@ -40,10 +40,13 @@ const withoutFileDirectoryClashes = (entries: ReadonlyArray<IndexEntry>): IndexE
     .map((entry) => ({ ...entry, mode: FILE_MODE.REGULAR, flags: { ...STAGE0_FLAGS } }));
 };
 
+const indexEntryBytesHex = (entry: IndexEntry): string =>
+  bytesToHex(entry.pathBytes ?? new TextEncoder().encode(entry.path));
+
 describe('commit tree building', () => {
   describe('Given index entries sharing directories, whatever their path bytes', () => {
     describe('When commit', () => {
-      it('Then the committed tree has no duplicate entry name at any level', async () => {
+      it('Then the committed tree holds each index entry once, under its own bytes', async () => {
         // Arrange
         const arbEntries = fc
           .array(arbIndexEntryWithPathBytes(), { minLength: 1, maxLength: MAX_ENTRIES })
@@ -75,9 +78,12 @@ describe('commit tree building', () => {
               recursive: true,
               pathBytes: true,
             })) {
-              paths.push(bytesToHex(entry.pathBytes as Uint8Array));
+              if (entry.mode !== FILE_MODE.DIRECTORY) {
+                paths.push(bytesToHex(entry.pathBytes as Uint8Array));
+              }
             }
             expect(new Set(paths).size).toBe(paths.length);
+            expect(new Set(paths)).toEqual(new Set(entries.map(indexEntryBytesHex)));
           }),
           { numRuns: PROPERTY_RUNS },
         );

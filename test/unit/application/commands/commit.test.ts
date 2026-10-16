@@ -651,6 +651,48 @@ describe('commit — raw index path bytes', () => {
     });
   });
 
+  describe('Given an index holding distinct lossy siblings, as files and as directories', () => {
+    describe('When commit', () => {
+      it('Then every sibling reaches the tree under its own raw name', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const id = await writeObject(ctx, {
+          type: 'blob',
+          content: new TextEncoder().encode('x'),
+          id: '' as ObjectId,
+        });
+        const index: GitIndex = {
+          version: 2,
+          entries: [
+            indexEntryOf('d/\uFFFD', id, Uint8Array.of(0x64, 0x2f, 0xff)),
+            indexEntryOf('d/\uFFFD', id, Uint8Array.of(0x64, 0x2f, 0xfe)),
+            indexEntryOf('\uFFFD/x', id, Uint8Array.of(0xff, 0x2f, 0x78)),
+            indexEntryOf('\uFFFD/y', id, Uint8Array.of(0xfe, 0x2f, 0x79)),
+          ],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        };
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync(index, ctx),
+        );
+        const sut = commit;
+
+        // Act
+        const result = await sut(ctx, { message: 'lossy siblings', author });
+
+        // Assert
+        expect((await committedLeafPathHex(ctx, result.id)).sort()).toEqual([
+          '642ffe',
+          '642fff',
+          'fe2f79',
+          'ff2f78',
+        ]);
+      });
+    });
+  });
+
   describe('Given an index holding a BOM-prefixed entry', () => {
     describe('When commit', () => {
       it('Then the BOM bytes name the tree directory', async () => {
