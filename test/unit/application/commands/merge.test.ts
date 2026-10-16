@@ -1586,6 +1586,24 @@ describe('merge.4b conflict persistence', () => {
     });
   });
 
+  describe('Given a conflicting merge whose caller message holds a lone surrogate', () => {
+    describe('When merge runs', () => {
+      it('Then .git/MERGE_MSG carries U+FFFD bytes for it, as a commit would', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await setupConflictingMerge(ctx);
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', author, message: 'msg \uDCFF end' });
+
+        // Assert
+        const result = await ctx.fs.read(`${ctx.layout.gitDir}/MERGE_MSG`);
+        expect(new TextDecoder().decode(result).startsWith('msg \uFFFD end\n')).toBe(true);
+        expect(result.includes(0xff)).toBe(false);
+      });
+    });
+  });
+
   describe('Given a conflicting merge with a clean theirs-only-changed sibling path', () => {
     describe('When merge runs', () => {
       it('Then the clean sibling is materialised in the working tree with theirs content', async () => {

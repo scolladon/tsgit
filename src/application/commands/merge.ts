@@ -47,7 +47,7 @@ import {
 import { mergeEscapedTrees } from '../../domain/merge/three-way-tree.js';
 import { trivialMerge } from '../../domain/merge/trivial-merge.js';
 import type { CommitData, ExtraHeader } from '../../domain/objects/commit.js';
-import { encodeEscaped, hasEscapedBytes } from '../../domain/objects/encoding.js';
+import { encodeEscaped, hasEscapedBytes, wellFormed } from '../../domain/objects/encoding.js';
 import { treeDepthExceeded, unexpectedObjectType } from '../../domain/objects/error.js';
 import {
   type AuthorIdentity,
@@ -419,8 +419,10 @@ const settleMessage = async (
   const rev = remotes.map((remote) => remote.name).join(' ');
   const autostash = opts.autostash ?? (await configuredAutostash(ctx, 'merge')) ?? false;
   const log = await settleMergeLog(ctx, opts.log);
-  if (opts.message !== undefined && log.length === 0) {
-    return { ...opts, rev, autostash, message: opts.message };
+  // A lone surrogate is how the escaped byte form spells a raw byte; a caller's text never means one.
+  const given = opts.message === undefined ? undefined : wellFormed(opts.message);
+  if (given !== undefined && log.length === 0) {
+    return { ...opts, rev, autostash, message: given };
   }
   const heads =
     internal.heads ??
@@ -428,7 +430,7 @@ const settleMessage = async (
       remotes.map((remote) => describeMergeHead(ctx, remote.spelt, remote.id, remote.object)),
     ));
   const into = shortBranchName(target.branch ?? HEAD);
-  const formatted = await formatMergeMessage(ctx, heads, into, opts.message);
+  const formatted = await formatMergeMessage(ctx, heads, into, given);
   if (log.length === 0) {
     return { ...opts, rev, autostash, message: withoutFinalNewline(formatted) };
   }
