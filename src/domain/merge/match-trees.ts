@@ -3,7 +3,7 @@
 // caller reads the trees (through `TreeLister`) and applies it, so no object
 // is read or written here. An absent tree is git's empty tree.
 
-import { decodeEscapingInvalid } from '../objects/encoding.js';
+import { decodeEscapingInvalid, REPLACEMENT_CHARACTER } from '../objects/encoding.js';
 import { FILE_MODE, type FileMode, type ObjectId, type TreeEntry } from '../objects/index.js';
 import { treeEntryCompare } from '../objects/tree.js';
 
@@ -20,8 +20,6 @@ export type TreeShift =
 
 const NO_SHIFT: TreeShift = { kind: 'none' };
 const DEFAULT_DEPTH_LIMIT = 2;
-
-const REPLACEMENT_CHARACTER = '\uFFFD';
 
 /** The merge engine's key for a name: git compares raw names, so invalid bytes stay distinct. */
 const escapedNameOf = (entry: TreeEntry): string =>

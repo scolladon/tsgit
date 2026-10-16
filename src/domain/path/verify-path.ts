@@ -1,5 +1,5 @@
 import { splitAtSlash } from '../git-index/index-path-key.js';
-import { decodePreservingBom } from '../objects/encoding.js';
+import { decodePreservingBom, wellFormedSequenceLength } from '../objects/encoding.js';
 import { FILE_MODE, type FileMode } from '../objects/file-mode.js';
 
 export type VerifyPathRejection =
@@ -52,45 +52,12 @@ const hasIgnorableCodepoint = (part: string): boolean => {
   return false;
 };
 
-const ASCII_LIMIT = 0x80;
-const CONTINUATION_MIN = 0x80;
-const CONTINUATION_MAX = 0xbf;
-const TWO_BYTE_LEAD_MIN = 0xc2;
-const TWO_BYTE_LEAD_MAX = 0xdf;
-const THREE_BYTE_LEAD_MIN = 0xe0;
-const THREE_BYTE_LEAD_MAX = 0xef;
-const FOUR_BYTE_LEAD_MIN = 0xf0;
-const FOUR_BYTE_LEAD_MAX = 0xf4;
-const THREE_BYTE_LEAD_OVERLONG = 0xe0;
-const THREE_BYTE_OVERLONG_SECOND_MIN = 0xa0;
-const THREE_BYTE_LEAD_SURROGATE = 0xed;
-const THREE_BYTE_SURROGATE_SECOND_MAX = 0x9f;
 const THREE_BYTE_LEAD_NON_CHARACTER = 0xef;
 const NON_CHARACTER_SECOND = 0xbf;
 const NON_CHARACTER_THIRD_MIN = 0xbe;
-const FOUR_BYTE_LEAD_OVERLONG = 0xf0;
-const FOUR_BYTE_OVERLONG_SECOND_MIN = 0x90;
-const FOUR_BYTE_LEAD_BEYOND_UNICODE = 0xf4;
-const FOUR_BYTE_BEYOND_SECOND_MAX = 0x8f;
+const THREE_BYTE_LENGTH = 3;
 const BMP_LAST_MINUS_ONE = 0xfffe;
 const BMP_LAST = 0xffff;
-
-const isContinuation = (byte: number | undefined): boolean =>
-  byte !== undefined && byte >= CONTINUATION_MIN && byte <= CONTINUATION_MAX;
-
-const leadLength = (lead: number): number => {
-  if (lead < ASCII_LIMIT) return 1;
-  if (lead >= TWO_BYTE_LEAD_MIN && lead <= TWO_BYTE_LEAD_MAX) return 2;
-  if (lead >= THREE_BYTE_LEAD_MIN && lead <= THREE_BYTE_LEAD_MAX) return 3;
-  if (lead >= FOUR_BYTE_LEAD_MIN && lead <= FOUR_BYTE_LEAD_MAX) return 4;
-  return 0;
-};
-
-const isRejectedSecondByte = (lead: number, second: number): boolean =>
-  (lead === THREE_BYTE_LEAD_OVERLONG && second < THREE_BYTE_OVERLONG_SECOND_MIN) ||
-  (lead === THREE_BYTE_LEAD_SURROGATE && second > THREE_BYTE_SURROGATE_SECOND_MAX) ||
-  (lead === FOUR_BYTE_LEAD_OVERLONG && second < FOUR_BYTE_OVERLONG_SECOND_MIN) ||
-  (lead === FOUR_BYTE_LEAD_BEYOND_UNICODE && second > FOUR_BYTE_BEYOND_SECOND_MAX);
 
 const isNonCharacterTail = (bytes: Uint8Array, at: number): boolean =>
   bytes[at] === THREE_BYTE_LEAD_NON_CHARACTER &&
@@ -99,13 +66,8 @@ const isNonCharacterTail = (bytes: Uint8Array, at: number): boolean =>
 
 /** Length of the sequence git's `pick_one_utf8_char` accepts at `at`, or 0 when it rejects. */
 const acceptedSequenceLength = (bytes: Uint8Array, at: number): number => {
-  const length = leadLength(bytes[at] as number);
-  if (length === 0 || at + length > bytes.length) return 0;
-  for (let i = 1; i < length; i += 1) {
-    if (!isContinuation(bytes[at + i])) return 0;
-  }
-  if (length > 2 && isRejectedSecondByte(bytes[at] as number, bytes[at + 1] as number)) return 0;
-  return length === 3 && isNonCharacterTail(bytes, at) ? 0 : length;
+  const length = wellFormedSequenceLength(bytes, at);
+  return length === THREE_BYTE_LENGTH && isNonCharacterTail(bytes, at) ? 0 : length;
 };
 
 /** Offset of the first sequence git's `pick_one_utf8_char` rejects, else `bytes.length`. */

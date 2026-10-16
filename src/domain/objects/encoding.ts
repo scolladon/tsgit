@@ -144,7 +144,7 @@ const expectedLength = (lead: number): number => {
 };
 
 // Length of the well-formed UTF-8 sequence starting at `at` (Unicode Table 3-7), 0 when none does.
-function wellFormedLengthAt(bytes: Uint8Array, at: number): number {
+export function wellFormedSequenceLength(bytes: Uint8Array, at: number): number {
   const lead = bytes[at] as number;
   const length = expectedLength(lead);
   if (length <= 1) return length;
@@ -166,7 +166,7 @@ export function decodeEscapingInvalid(bytes: Uint8Array): string {
   let runStart = 0;
   let at = 0;
   while (at < bytes.length) {
-    const length = wellFormedLengthAt(bytes, at);
+    const length = wellFormedSequenceLength(bytes, at);
     if (length > 0) {
       at += length;
       continue;
@@ -189,7 +189,7 @@ export function hasEscapedBytes(text: string): boolean {
 }
 
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
-const REPLACEMENT_CHARACTER = '\uFFFD';
+export const REPLACEMENT_CHARACTER = '\uFFFD';
 
 // `String.prototype.toWellFormed` is outside the ES2022 lib this project targets.
 export function wellFormed(text: string): string {
