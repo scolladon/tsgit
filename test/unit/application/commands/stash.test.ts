@@ -846,6 +846,41 @@ describe('stash apply', () => {
     });
   });
 
+  describe('Given an untracked tree holding a lossy name and its U+FFFD twin present in the working tree', () => {
+    describe('When apply runs', () => {
+      it('Then the twin does not count as an overwrite and no fs probe names an escape', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        const blob = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: new TextEncoder().encode('payload\n'),
+        });
+        const untrackedTree = await writeObject(ctx, {
+          type: 'tree',
+          id: '' as ObjectId,
+          entries: [
+            treeEntry(FILE_MODE.REGULAR, Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74), blob),
+          ],
+        });
+        await pushHostileUntrackedStash(ctx, untrackedTree);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/\uFFFD.txt`, 'twin');
+        const lstatSpy = vi.spyOn(ctx.fs, 'lstat');
+        const lexistsSpy = ctx.fs.lexists === undefined ? undefined : vi.spyOn(ctx.fs, 'lexists');
+        const sut = stashApply;
+
+        // Act
+        const result = await sut({ ...ctx, session: createSession() }, {});
+
+        // Assert
+        const probed = [...lstatSpy.mock.calls, ...(lexistsSpy?.mock.calls ?? [])].flat();
+        expect(probed.filter((arg) => /[\uDC80-\uDCFF]/.test(String(arg)))).toEqual([]);
+        expect(result.kind).toBe('applied');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/\uFFFD.txt`)).toBe('twin');
+      });
+    });
+  });
+
   describe('Given an include-untracked stash whose untracked tree carries a hostile entry name', () => {
     describe('When apply runs', () => {
       it.each([
