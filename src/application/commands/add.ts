@@ -470,12 +470,7 @@ const addByPathspec = async (
     );
     // git add never refuses the whole tree, even when it holds nothing to add.
     const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
-    const removedEntries = await collectMatchedRemovals(
-      staged.existing,
-      matched,
-      repoIgnore,
-      matcher,
-    );
+    const removedEntries = await collectMatchedRemovals(ctx, staged.existing, matched, matcher);
     const removed = removedEntries.map(({ path }) => path);
     enforceLiteralMustMatch(mustMatch, [...matched, ...removed], literalSpellings);
     const remaining = new Map(newEntries);
@@ -499,9 +494,9 @@ const addByPathspec = async (
 
 /** git ≥ 2.0: `add <pathspec>` stages the deletion of every tracked path it names that the walk found missing from disk. */
 const collectMatchedRemovals = (
+  ctx: Context,
   existing: ReadonlyMap<IndexPathKey, IndexEntry>,
   matched: ReadonlyArray<FilePath>,
-  ignore: IgnorePredicate,
   matcher: ResolvedPathspec['matcher'],
 ): Promise<IndexEntry[]> => {
   const named = new Map(
@@ -509,7 +504,7 @@ const collectMatchedRemovals = (
       ([, entry]) => entry.flags.stage === 0 && matchesIndexPath(matcher, entry),
     ),
   );
-  return collectRemovedEntries(named, new Set(matched.map(keyOfPath)), ignore);
+  return collectRemovedEntries(ctx, named, new Set(matched.map(keyOfPath)));
 };
 
 /**
@@ -733,7 +728,7 @@ export const addAll = async (
       if (outcome.kind === 'added') added.push(outcome.path);
       else if (outcome.kind === 'modified') modified.push(outcome.path);
     }
-    const removedEntries = await collectRemovedEntries(existing, seen, ignore);
+    const removedEntries = await collectRemovedEntries(ctx, existing, seen);
     for (const entry of removedEntries) newEntries.delete(indexPathKey(entry));
     const removed = removedEntries.map(({ path }) => path);
     added.sort();
@@ -759,48 +754,39 @@ interface WalkOutcome {
   readonly notice?: EolNotice;
 }
 
+/** A path under a leading component that is no longer a directory is as gone as a missing one. */
+const presentOnDisk = async (ctx: Context, path: FilePath): Promise<boolean> => {
+  try {
+    return (await lstatOrMissing(ctx, path)) !== undefined;
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === 'NOT_A_DIRECTORY') return false;
+    throw err;
+  }
+};
+
 /**
- * The post-walk removal pass: every prior index entry the walk did not see on
- * disk is a candidate removal. Two entries are preserved (NOT removed):
+ * The post-walk removal pass: every prior index entry the walk did not see is a
+ * candidate, removed when it is really gone from disk. Ignore rules never
+ * untrack, and never shield a missing tracked path from `add`, so presence on
+ * disk (not the walk's ignore filter) decides. Two cases need no stat:
  *
  * - **skip-worktree** — a sparse-excluded entry is legitimately absent;
  *   staging its removal would silently un-sparse it into a deletion.
- * - **tracked-but-ignored** — a tracked file under a pruned subtree
- *   (directory-level ignore) the walker skipped. Git's invariant: ignore
- *   rules don't auto-untrack.
+ * - **lossy path** — its raw bytes have no faithful working-tree name to stat.
  */
 const collectRemovedEntries = async (
+  ctx: Context,
   existing: ReadonlyMap<IndexPathKey, IndexEntry>,
   seen: ReadonlySet<IndexPathKey>,
-  ignore: IgnorePredicate,
 ): Promise<IndexEntry[]> => {
   const removed: IndexEntry[] = [];
   for (const [key, entry] of existing) {
     if (seen.has(key)) continue;
     if (entry.flags.skipWorktree) continue;
-    if (await isPathOrAncestorIgnored(entry.path, ignore)) continue;
+    if (!isLossy(entry) && (await presentOnDisk(ctx, entry.path))) continue;
     removed.push(entry);
   }
   return removed;
-};
-
-/**
- * True if `path` or any ancestor directory is reported ignored by the
- * predicate. Git's directory-level ignore rules (`build/`) match the
- * directory entry, NOT the files under it; the walker handles this by
- * pruning at descent, but the post-walk re-check must mirror it.
- */
-const isPathOrAncestorIgnored = async (
-  path: FilePath,
-  ignore: IgnorePredicate,
-): Promise<boolean> => {
-  if (await ignore(path, false)) return true;
-  const segments = path.split('/');
-  for (let i = 1; i < segments.length; i += 1) {
-    const ancestor = segments.slice(0, i).join('/') as FilePath;
-    if (await ignore(ancestor, true)) return true;
-  }
-  return false;
 };
 
 const processWalkEntry = async (

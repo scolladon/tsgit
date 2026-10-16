@@ -1362,6 +1362,69 @@ describe('add', () => {
     });
   });
 
+  describe('Given a tracked file that an ignore rule matches and that is deleted from disk', () => {
+    describe.each([
+      { label: 'add({ all: true })', paths: [], options: { all: true } },
+      { label: "add(['.'])", paths: ['.'], options: undefined },
+      { label: "add(['*.log'])", paths: ['*.log'], options: undefined },
+      { label: "add(['a.log'])", paths: ['a.log'], options: undefined },
+    ])('When $label', ({ paths, options }) => {
+      it('Then the deletion is staged and the entry leaves the index', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'a.log': 'x', 'b.txt': 'b' });
+        await add(ctx, ['a.log', 'b.txt']);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.log\n');
+        await ctx.fs.rm(`${ctx.layout.workDir}/a.log`);
+
+        // Act
+        const result = await add(ctx, paths, options);
+
+        // Assert
+        expect(result.removed).toEqual(['a.log']);
+        const idx = await readIndex(ctx);
+        expect(idx.entries.map((e) => e.path)).not.toContain('a.log');
+      });
+    });
+  });
+
+  describe('Given a tracked file whose parent directory became a file', () => {
+    describe('When add({ all: true })', () => {
+      it('Then the deletion is staged', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'dir/foo.ts': 'export {};' });
+        await add(ctx, ['dir/foo.ts']);
+        await ctx.fs.rm(`${ctx.layout.workDir}/dir/foo.ts`);
+        await ctx.fs.rm(`${ctx.layout.workDir}/dir`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/dir`, 'now a file');
+
+        // Act
+        const result = await add(ctx, [], { all: true });
+
+        // Assert
+        expect(result.removed).toEqual(['dir/foo.ts']);
+        expect(result.added).toEqual(['dir']);
+      });
+    });
+  });
+
+  describe('Given a tracked file under an ignored directory that is deleted from disk', () => {
+    describe('When add({ all: true })', () => {
+      it('Then the deletion is staged', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'vendor/foo.ts': 'export {};' });
+        await add(ctx, ['vendor/foo.ts']);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'vendor/\n');
+        await ctx.fs.rm(`${ctx.layout.workDir}/vendor/foo.ts`);
+
+        // Act
+        const result = await add(ctx, [], { all: true });
+
+        // Assert
+        expect(result.removed).toEqual(['vendor/foo.ts']);
+      });
+    });
+  });
+
   describe('Given a tracked file that an ignore rule WOULD ignore', () => {
     describe('When add({ all: true })', () => {
       it('Then the index entry is preserved (Git invariant: tracked beats ignored)', async () => {

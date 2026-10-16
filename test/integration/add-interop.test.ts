@@ -12,7 +12,7 @@
  *   unique:         add porcelain index+tree state matches canonical git add
  *   interopSurface: add
  */
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openRepository } from '../../src/index.node.js';
@@ -128,4 +128,35 @@ describe.skipIf(!GIT_AVAILABLE)('add porcelain interop', () => {
       });
     });
   });
+
+  describe.each([['.'], ['*.log'], ['a.log']])(
+    'Given an ignored tracked file deleted from disk and pathspec %s',
+    (spec) => {
+      describe('When repo.add stages it like git add', () => {
+        it('Then the deletion is staged identically to git', async () => {
+          // Arrange
+          for (const dir of [pair.ours, pair.peer]) {
+            await writeFile(path.join(dir, '.gitignore'), '*.log\n');
+            await writeFile(path.join(dir, 'a.log'), 'x\n');
+          }
+          await repo.add(['a.log']);
+          runGit(['-C', pair.peer, 'add', '-f', 'a.log']);
+          await repo.add(['.gitignore']);
+          runGit(['-C', pair.peer, 'add', '.gitignore']);
+          for (const dir of [pair.ours, pair.peer]) await rm(path.join(dir, 'a.log'));
+
+          // Act
+          const added = await repo.add([spec]);
+          runGit(['-C', pair.peer, 'add', '--', spec]);
+          const result = snapshot(pair.ours);
+
+          // Assert
+          const peer = snapshot(pair.peer);
+          expect(added.removed).toEqual(['a.log']);
+          expect(result.stage).toBe(peer.stage);
+          expect(result.tree).toBe(peer.tree);
+        });
+      });
+    },
+  );
 });
