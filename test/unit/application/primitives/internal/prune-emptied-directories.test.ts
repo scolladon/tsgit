@@ -96,7 +96,7 @@ describe('pruneEmptiedDirectories', () => {
 
   describe('Given two removed paths that share an ancestor chain', () => {
     describe('When both are pruned', () => {
-      it('Then the shared ancestor is retried after its last child went and is removed', async () => {
+      it('Then the shared ancestor is attempted once, after both children went, and is removed', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         await ctx.fs.mkdir(inWork(ctx, 'd/e'));
@@ -108,8 +108,43 @@ describe('pruneEmptiedDirectories', () => {
         await sut(ctx, workdirOf(ctx), ['d/e/x', 'd/f/y'], NO_SURVIVORS);
 
         // Assert
-        expect(rmdir).toHaveBeenCalledTimes(4);
+        expect(rmdir).toHaveBeenCalledTimes(3);
         expect(await ctx.fs.exists(inWork(ctx, 'd'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given several same-depth directories and a shared parent', () => {
+    describe('When they are pruned', () => {
+      it('Then same-depth removals overlap and the parent starts only after every child settled', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        for (const leaf of ['d/a', 'd/b', 'd/c']) await ctx.fs.mkdir(inWork(ctx, leaf));
+        const events: string[] = [];
+        let inFlight = 0;
+        let maxInFlight = 0;
+        const realRmdir = ctx.fs.rmdir?.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'rmdir').mockImplementation(async (path) => {
+          events.push(`start ${path}`);
+          inFlight++;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          await realRmdir?.(path);
+          inFlight--;
+          events.push(`end ${path}`);
+        });
+        const sut = pruneEmptiedDirectories;
+
+        // Act
+        await sut(ctx, workdirOf(ctx), ['d/a/x', 'd/b/x', 'd/c/x'], NO_SURVIVORS);
+
+        // Assert
+        const parentStart = events.indexOf(`start ${inWork(ctx, 'd')}`);
+        const lastChildEnd = Math.max(
+          ...['d/a', 'd/b', 'd/c'].map((leaf) => events.indexOf(`end ${inWork(ctx, leaf)}`)),
+        );
+        expect(maxInFlight).toBeGreaterThan(1);
+        expect(parentStart).toBeGreaterThan(lastChildEnd);
       });
     });
   });
