@@ -7,9 +7,10 @@
 import { workingTreeDirty } from '../../../domain/commands/error.js';
 import type { FlatTree } from '../../../domain/diff/flat-tree.js';
 import type { GitIndex } from '../../../domain/git-index/index-entry.js';
+import { escapedPathOf } from '../../../domain/git-index/index-path-key.js';
 import { type ObjectId, RefName } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import { flattenTree } from '../../primitives/flatten-tree.js';
+import { flattenEscapedTree } from '../../primitives/flatten-tree.js';
 import { materializeTree } from '../../primitives/materialize-tree.js';
 import { readIndex } from '../../primitives/read-index.js';
 import { resolveRefOrMissing } from '../../primitives/resolve-ref.js';
@@ -35,7 +36,7 @@ export const pullIntoVoid = async (
 };
 
 const checkoutFromEmptyTree = async (ctx: Context, tree: ObjectId): Promise<void> => {
-  const target = await flattenTree(ctx, tree);
+  const target = await flattenEscapedTree(ctx, tree);
   const lock = await acquireIndexLock(ctx);
   try {
     const currentIndex = await readIndex(ctx);
@@ -58,7 +59,7 @@ const checkoutFromEmptyTree = async (ctx: Context, tree: ObjectId): Promise<void
 const assertNoStagedCollision = (index: GitIndex, target: FlatTree): void => {
   const localChanges = index.entries
     .filter((entry) => {
-      const incoming = target.entries.get(entry.path);
+      const incoming = target.entries.get(escapedPathOf(entry));
       return incoming !== undefined && (incoming.id !== entry.id || incoming.mode !== entry.mode);
     })
     .map((entry) => entry.path);

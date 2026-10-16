@@ -703,5 +703,62 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       },
     );
+
+    describe.each([
+      ['no head touches the lossy name', 'x\n', 'x\n'],
+      ['the first head edits the lossy name', 'x\n', 'y\n'],
+    ])('Given main edits a and two heads add c and d while %s', (_label, baseText, sideText) => {
+      describe('When merging both heads as an octopus', () => {
+        it('Then the commit has three parents and its tree is the sequential merge-tree result', async () => {
+          // Arrange
+          runGit(['init', '-q', '-b', 'main', pair.ours]);
+          gitIn('config', 'user.name', 'Ada');
+          gitIn('config', 'user.email', 'ada@example.com');
+          const base: ReadonlyArray<Row> = [
+            ['a', 'a0\n'],
+            [FF_TXT, baseText],
+          ];
+          const root = commitRows('main', base);
+          commitRows('s1', [...base.slice(0, 1), [FF_TXT, sideText], ['c', 'c\n']], root);
+          commitRows('s2', [...base, ['d', 'd\n']], root);
+          commitRows(
+            'main',
+            [
+              ['a', 'a1\n'],
+              [FF_TXT, baseText],
+            ],
+            root,
+          );
+          gitIn('read-tree', 'main');
+          gitIn('checkout-index', '-f', '--', 'a');
+          const firstStep = mergeTreeResult(pair.ours, 'main', 's1').tree;
+          const stepCommit = gitIn(
+            'commit-tree',
+            firstStep,
+            '-p',
+            'main',
+            '-p',
+            's1',
+            '-m',
+            'step',
+          );
+          gitIn('update-ref', 'refs/heads/step', stepCommit.trim());
+          const sequential = mergeTreeResult(pair.ours, 'step', 's2').tree;
+          repo = await openRepository({ cwd: pair.ours });
+
+          // Act
+          const sut = repo.merge;
+          const result = await sut.run({ rev: ['s1', 's2'], author: COMMIT_AUTHOR });
+
+          // Assert
+          expect(result.kind).toBe('merge');
+          expect(headTree()).toBe(sequential);
+          expect(gitIn('rev-list', '--parents', '-n1', 'HEAD').trim().split(' ')).toHaveLength(4);
+          expect(
+            Buffer.from(runGitBytes(['-C', pair.ours, 'ls-tree', '-z', 'HEAD'])).toString('latin1'),
+          ).toContain(`\t${FF_TXT_LATIN1}\0`);
+        });
+      });
+    });
   },
 );

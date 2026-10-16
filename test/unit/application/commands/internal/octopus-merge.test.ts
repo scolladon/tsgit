@@ -3,9 +3,11 @@ import { createMemoryContext } from '../../../../../src/adapters/memory/memory-a
 import { init } from '../../../../../src/application/commands/init.js';
 import { octopusMerge } from '../../../../../src/application/commands/internal/octopus-merge.js';
 import { flattenTree } from '../../../../../src/application/primitives/flatten-tree.js';
+import { readTree } from '../../../../../src/application/primitives/read-tree.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
+import { decodeEscapingInvalid } from '../../../../../src/domain/objects/encoding.js';
 import {
   type AuthorIdentity,
   FILE_MODE,
@@ -240,6 +242,111 @@ describe('octopusMerge', () => {
           expected: 'commit',
           actual: 'blob',
         });
+      });
+    });
+  });
+});
+
+type RawFiles = ReadonlyArray<readonly [name: Uint8Array | string, content: string]>;
+
+const commitOfRaw = async (
+  ctx: Context,
+  files: RawFiles,
+  parents: ObjectId[],
+): Promise<ObjectId> => {
+  const entries = await Promise.all(
+    files.map(async ([name, content]) =>
+      treeEntry(FILE_MODE.REGULAR, name, await blob(ctx, content)),
+    ),
+  );
+  const tree = await writeTree(ctx, entries);
+  return writeObject(ctx, {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: { tree, parents, author: t, committer: t, message: 'c\n', extraHeaders: [] },
+  });
+};
+
+const FF_TXT = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+const FF = Uint8Array.of(0xff);
+const FF5E = new TextEncoder().encode('\uFF5E');
+
+describe('octopusMerge over non-UTF-8 paths', () => {
+  describe('Given a tree holding a non-UTF-8 name that no head touches', () => {
+    describe('When three heads are merged', () => {
+      it('Then the written tree keeps the raw name bytes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const base: RawFiles = [
+          ['a', 'a\n'],
+          [FF_TXT, 'l\n'],
+        ];
+        const root = await commitOfRaw(ctx, base, []);
+        const head = await commitOfRaw(
+          ctx,
+          [
+            ['a', 'a2\n'],
+            [FF_TXT, 'l\n'],
+          ],
+          [root],
+        );
+        const r1 = await commitOfRaw(ctx, [...base, ['c', 'c\n']], [root]);
+        const r2 = await commitOfRaw(ctx, [...base, ['d', 'd\n']], [root]);
+        const sut = octopusMerge;
+
+        // Act
+        const result = await sut(ctx, head, [
+          { id: r1, name: 'r1' },
+          { id: r2, name: 'r2' },
+        ]);
+
+        // Assert
+        const tree = result.kind === 'clean' ? await readTree(ctx, result.tree) : undefined;
+        const names = tree?.entries.map((entry) => Array.from(entry.nameBytes));
+        expect(names).toContainEqual(Array.from(FF_TXT));
+      });
+    });
+  });
+
+  describe('Given the last head adds two names whose byte order differs from UTF-16 order', () => {
+    describe('When merged against a head adding them differently', () => {
+      it('Then the conflicts come in byte order', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const root = await commitOfRaw(ctx, [['a', 'a\n']], []);
+        const ours: RawFiles = [
+          ['a', 'a\n'],
+          [FF, 'o\n'],
+          [FF5E, 'o\n'],
+        ];
+        const theirs: RawFiles = [
+          ['a', 'a\n'],
+          [FF, 't\n'],
+          [FF5E, 't\n'],
+        ];
+        const head = await commitOfRaw(ctx, ours, [root]);
+        const r1 = await commitOfRaw(
+          ctx,
+          [
+            ['a', 'a\n'],
+            ['r1', 'r\n'],
+          ],
+          [root],
+        );
+        const r2 = await commitOfRaw(ctx, theirs, [root]);
+        const sut = octopusMerge;
+
+        // Act
+        const result = await sut(ctx, head, [
+          { id: r1, name: 'r1' },
+          { id: r2, name: 'r2' },
+        ]);
+
+        // Assert
+        const paths = result.kind === 'conflict' ? result.conflicts.map((c) => c.path) : [];
+        expect(paths).toEqual(['\uFF5E', decodeEscapingInvalid(FF)]);
       });
     });
   });
