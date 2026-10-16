@@ -109,7 +109,10 @@ import {
   createLeadingPathScanner,
   type LeadingPathScanner,
 } from '../primitives/internal/symlinked-leading-path.js';
-import { validateMergeWritePaths } from '../primitives/internal/validate-merge-write-paths.js';
+import {
+  validateConflictWritePaths,
+  validateMergeWritePaths,
+} from '../primitives/internal/validate-merge-write-paths.js';
 import type { WorkingTreeWriter } from '../primitives/internal/write-converted-entry.js';
 import { writeDistinctTypesSides } from '../primitives/internal/write-distinct-types-sides.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
@@ -1859,7 +1862,7 @@ const conflictWave = (
   return {
     path: conflict.path,
     isLink: hasLinkMode(modes),
-    validate: () => validateTreePath(conflict.path, mode ?? FILE_MODE.REGULAR),
+    validate: () => validateConflictWritePaths(conflict),
     needsDirectories: mode !== undefined,
     run: () => writeConflictToTree(ctx, conflict, writer, scanner),
   };
@@ -1938,7 +1941,7 @@ export const writeConflictToTree = async (
   // mode is derivable — the only mode-sensitive rule is the write-time-only
   // `.gitmodules`-symlink rejection, inapplicable when nothing is written.
   const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
-  validateTreePath(conflict.path, mode ?? FILE_MODE.REGULAR);
+  validateConflictWritePaths(conflict);
   if (recordsOwnPaths(conflict)) {
     await writeDistinctTypesSides(writer, conflict, scanner);
     return;

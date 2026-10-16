@@ -74,8 +74,10 @@ describe('Given a distinct-types conflict at ".gitmodules" where ours is a symli
         path: '.gitmodules' as FilePath,
         ourId: DUMMY_OID,
         ourMode: FILE_MODE.SYMLINK,
+        ourPath: '.gitmodules' as FilePath,
         theirId: DUMMY_OID,
         theirMode: FILE_MODE.REGULAR,
+        theirPath: '.gitmodules~side' as FilePath,
       };
       const sut = validateMergeWritePaths;
 
@@ -175,6 +177,85 @@ describe('Given a distinct-types conflict whose renamed side is an NTFS short na
         code: 'INVALID_INDEX_ENTRY',
         offset: -1,
         reason: "'git~1' NTFS short name rejected",
+      });
+    });
+  });
+});
+
+describe('Given a distinct-types conflict at ".gitmodules" where ours is regular and theirs is a symlink', () => {
+  describe('When validateMergeWritePaths runs', () => {
+    it('Then it throws because theirs is written as a symlink at ".gitmodules"', () => {
+      // Arrange
+      const conflict: MergeConflict = {
+        type: 'distinct-types',
+        path: '.gitmodules' as FilePath,
+        ourId: DUMMY_OID,
+        ourMode: FILE_MODE.REGULAR,
+        ourPath: '.gitmodules~HEAD' as FilePath,
+        theirId: DUMMY_OID,
+        theirMode: FILE_MODE.SYMLINK,
+        theirPath: '.gitmodules' as FilePath,
+      };
+      const sut = validateMergeWritePaths;
+
+      // Act
+      const caught = catchError(() => sut([], [conflict], new Set()));
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'INVALID_INDEX_ENTRY',
+        offset: -1,
+        reason: "'.gitmodules' must not be a symlink",
+      });
+    });
+  });
+});
+
+describe('Given a distinct-types conflict where ours is a symlink "gitmod" and theirs is a regular file moved to "gitmod~1"', () => {
+  describe('When validateMergeWritePaths runs', () => {
+    it('Then it accepts it because the moved path is written as a regular file', () => {
+      // Arrange
+      const conflict: MergeConflict = {
+        type: 'distinct-types',
+        path: 'gitmod' as FilePath,
+        ourId: DUMMY_OID,
+        ourMode: FILE_MODE.SYMLINK,
+        ourPath: 'gitmod' as FilePath,
+        theirId: DUMMY_OID,
+        theirMode: FILE_MODE.REGULAR,
+        theirPath: 'gitmod~1' as FilePath,
+      };
+      const sut = validateMergeWritePaths;
+
+      // Act & Assert
+      expect(() => sut([], [conflict], new Set())).not.toThrow();
+    });
+  });
+});
+
+describe('Given a file-directory conflict whose theirs symlink moves to "gitmod~1"', () => {
+  describe('When validateMergeWritePaths runs', () => {
+    it('Then it throws because the moved path is written as a symlink', () => {
+      // Arrange
+      const conflict: MergeConflict = {
+        type: 'file-directory',
+        path: 'gitmod' as FilePath,
+        theirId: DUMMY_OID,
+        theirMode: FILE_MODE.SYMLINK,
+        theirPath: 'gitmod~1' as FilePath,
+      };
+      const sut = validateMergeWritePaths;
+
+      // Act
+      const caught = catchError(() => sut([], [conflict], new Set()));
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'INVALID_INDEX_ENTRY',
+        offset: -1,
+        reason: "'.gitmodules' must not be a symlink",
       });
     });
   });

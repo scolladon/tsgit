@@ -7160,3 +7160,90 @@ describe('merge — a conflict rename onto an invalid path', () => {
     });
   });
 });
+
+describe('merge — a distinct-types conflict validates each side with the mode it is written with', () => {
+  /** Ours is added through the index; theirs is built from objects so a symlink `.gitmodules` can exist at all. */
+  const seedSides = async (
+    ctx: ReturnType<typeof createMemoryContext>,
+    name: string,
+    oursIsSymlink: boolean,
+  ): Promise<void> => {
+    const { createCommit } = await import(
+      '../../../../src/application/primitives/create-commit.js'
+    );
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/readme.txt`, 'base\n');
+    await add(ctx, ['readme.txt']);
+    const base = await commit(ctx, { message: 'base', author });
+    const readmeEntry = (await readIndex(ctx)).entries[0];
+    const theirBlob = await writeObject(ctx, {
+      type: 'blob',
+      content: new TextEncoder().encode('theirs\n'),
+      id: '' as ObjectId,
+    });
+    const theirTree = await writeTreeMod.writeTree(ctx, [
+      treeEntry(FILE_MODE.REGULAR, 'readme.txt' as never, readmeEntry?.id as ObjectId),
+      treeEntry(oursIsSymlink ? FILE_MODE.REGULAR : FILE_MODE.SYMLINK, name as never, theirBlob),
+    ]);
+    const theirCommit = await createCommit(ctx, {
+      tree: theirTree,
+      parents: [base.id],
+      author,
+      committer: author,
+      message: 'theirs',
+      extraHeaders: [],
+    });
+    await seedRef(ctx, 'refs/heads/1' as RefName, theirCommit, { reflogMessage: 'branch: seed' });
+    if (oursIsSymlink) await ctx.fs.symlink('target', `${ctx.layout.workDir}/${name}`);
+    else await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, 'file\n');
+    await add(ctx, [name]);
+    await commit(ctx, { message: 'ours', author });
+  };
+  const stagesOf = async (ctx: ReturnType<typeof createMemoryContext>): Promise<string[]> =>
+    (await readIndex(ctx)).entries.map((e) => `${e.path}:${e.flags.stage}`);
+
+  describe('Given ours holds a regular .gitmodules and branch 1 holds a symlink .gitmodules', () => {
+    describe('When merge runs', () => {
+      it('Then it throws INVALID_INDEX_ENTRY and leaves the index and work tree untouched', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedSides(ctx, '.gitmodules', false);
+        const indexBefore = await stagesOf(ctx);
+        const sut = mergeRun;
+
+        // Act
+        const caught = await sut(ctx, { rev: '1', author }).then(
+          () => undefined,
+          (err: unknown) => (err as TsgitError).data,
+        );
+
+        // Assert
+        expect(caught).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'.gitmodules' must not be a symlink",
+        });
+        expect(await stagesOf(ctx)).toEqual(indexBefore);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/.gitmodules~HEAD`)).toBe(false);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/.gitmodules`)).toBe('file\n');
+      });
+    });
+  });
+
+  describe('Given ours holds a symlink gitmod and branch 1 holds a regular gitmod', () => {
+    describe('When merge runs', () => {
+      it('Then the conflict is recorded with the regular side staged at gitmod~1', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedSides(ctx, 'gitmod', true);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: '1', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await stagesOf(ctx)).toEqual(['gitmod:2', 'gitmod~1:3', 'readme.txt:0']);
+      });
+    });
+  });
+});

@@ -68,7 +68,10 @@ import {
   type LeadingPathScanner,
 } from './internal/symlinked-leading-path.js';
 import { stage0Entry, zeroStat } from './internal/synthetic-index-entry.js';
-import { validateMergeWritePaths } from './internal/validate-merge-write-paths.js';
+import {
+  validateConflictWritePaths,
+  validateMergeWritePaths,
+} from './internal/validate-merge-write-paths.js';
 import {
   createWorkingTreeWriter,
   type WorkingTreeWriter,
@@ -283,8 +286,7 @@ const writeValidatedConflict = async (
   writer: WorkingTreeWriter,
   scanner: LeadingPathScanner,
 ): Promise<void> => {
-  const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
-  validateTreePath(conflict.path, mode ?? FILE_MODE.REGULAR);
+  validateConflictWritePaths(conflict);
   if (recordsOwnPaths(conflict)) {
     await writeDistinctTypesSides(writer, conflict, scanner);
     return;

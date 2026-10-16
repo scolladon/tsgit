@@ -1,6 +1,10 @@
 import { validateTreePath } from '../../../domain/git-index/path-validator.js';
-import type { MergeConflict, MergeOutcome } from '../../../domain/merge/index.js';
-import { FILE_MODE, type FilePath } from '../../../domain/objects/index.js';
+import {
+  type MergeConflict,
+  type MergeOutcome,
+  recordsOwnPaths,
+} from '../../../domain/merge/index.js';
+import { FILE_MODE, type FileMode, type FilePath } from '../../../domain/objects/index.js';
 
 /**
  * Whole-set path gate for a conflicting merge's working-tree write. Mirrors
@@ -32,15 +36,37 @@ export const validateMergeWritePaths = (
       outcome.status === 'resolved-deleted' ? FILE_MODE.REGULAR : outcome.mode,
     );
   }
-  for (const conflict of conflicts) {
-    const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
-    validateTreePath(conflict.path, mode ?? FILE_MODE.REGULAR);
-    for (const moved of movedPaths(conflict)) validateTreePath(moved, mode ?? FILE_MODE.REGULAR);
-  }
+  for (const conflict of conflicts) validateConflictWritePaths(conflict);
 };
 
+/**
+ * Validates every path a conflict writes with the mode it is written with —
+ * git checks each path against its own side's mode, so one side's symlink
+ * must not taint another side's path (or the reverse). Only the
+ * `.gitmodules`-symlink rule is mode-sensitive.
+ */
+export const validateConflictWritePaths = (conflict: MergeConflict): void => {
+  if (!recordsOwnPaths(conflict)) {
+    const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
+    validateTreePath(conflict.path, mode ?? FILE_MODE.REGULAR);
+    return;
+  }
+  validateTreePath(conflict.path, modeWrittenAt(conflict, conflict.path) ?? FILE_MODE.REGULAR);
+  for (const [path, mode] of sidePaths(conflict)) validateTreePath(path, mode ?? FILE_MODE.REGULAR);
+};
+
+type SidePath = readonly [FilePath, FileMode | undefined];
+
 /** A conflict that renames a side (`<path>~<label>`) writes the moved path too; git refuses the whole merge when it is invalid. */
-const movedPaths = (conflict: MergeConflict): ReadonlyArray<FilePath> =>
-  [conflict.ourPath, conflict.theirPath, conflict.basePath].filter(
-    (moved): moved is FilePath => moved !== undefined && moved !== conflict.path,
-  );
+const sidePaths = (conflict: MergeConflict): ReadonlyArray<SidePath> =>
+  (
+    [
+      [conflict.ourPath, conflict.ourMode],
+      [conflict.theirPath, conflict.theirMode],
+      [conflict.basePath, conflict.baseMode],
+    ] as const
+  ).filter((side): side is SidePath => side[0] !== undefined);
+
+/** The mode of the side written at `path`; a directory standing at `path` has none. */
+const modeWrittenAt = (conflict: MergeConflict, path: FilePath): FileMode | undefined =>
+  sidePaths(conflict).find(([sidePath]) => sidePath === path)?.[1];

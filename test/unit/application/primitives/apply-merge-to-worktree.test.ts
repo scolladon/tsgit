@@ -1433,23 +1433,16 @@ describe('applyMergeToWorktree', () => {
     });
   });
 
-  // The distinct-types mode-selection chain (mergedMode ?? ourMode ??
-  // theirMode) must pick ours over theirs when mergedMode is absent (only
-  // `content` conflicts carry one) — otherwise a hostile ".gitmodules"
-  // symlink from ours could be validated against theirs' (safe) mode
-  // instead, or a safe ours mode could be wrongly rejected using theirs'.
-  // This case pins the "wrongly rejected" direction: ours is the safe,
-  // regular side and must be the one validateIndexPath sees.
+  // git validates each written path with the mode it is written with: theirs
+  // writes a symlink at ".gitmodules", so the whole merge is refused.
   describe('Given a distinct-types conflict at ".gitmodules" (regular ours, symlink theirs)', () => {
     describe('When the merge is applied', () => {
-      it('Then it does not refuse the write — ours (regular) is the mode validateIndexPath sees', async () => {
+      it('Then it refuses the write because theirs is written as a symlink at ".gitmodules"', async () => {
         // Arrange — no base entry; ours adds `.gitmodules` as a regular
         // file, theirs adds it as a symlink.
         const ctx = await buildSeededContext();
-        const fileContent = new TextEncoder().encode('[submodule "x"]\n');
-        const linkTarget = new TextEncoder().encode('/etc/target');
-        const oursId = await writeBlob(ctx, new TextDecoder().decode(fileContent));
-        const theirsId = await writeBlob(ctx, new TextDecoder().decode(linkTarget));
+        const oursId = await writeBlob(ctx, '[submodule "x"]\n');
+        const theirsId = await writeBlob(ctx, '/etc/target');
         const emptyBase = await treeWith(ctx, []);
         const oursTree = await treeWith(ctx, [
           treeEntry(FILE_MODE.REGULAR, '.gitmodules' as FilePath, oursId),
@@ -1457,20 +1450,26 @@ describe('applyMergeToWorktree', () => {
         const theirsTree = await treeWith(ctx, [
           treeEntry(FILE_MODE.SYMLINK, '.gitmodules' as FilePath, theirsId),
         ]);
+        const sut = applyMergeToWorktree;
 
         // Act
-        const result = await applyMergeToWorktree(ctx, {
+        const caught = await sut(ctx, {
           baseTree: emptyBase,
           oursTree,
           theirsTree,
           currentIndex: index([]),
           labels: { ours: 'HEAD', theirs: 'side', base: 'base' },
-        });
+        }).then(
+          () => undefined,
+          (err: unknown) => (err as TsgitError).data,
+        );
 
         // Assert
-        expect(result.kind).toBe('conflict');
-        if (result.kind !== 'conflict') return;
-        expect(result.conflicts[0]?.type).toBe('distinct-types');
+        expect(caught).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'.gitmodules' must not be a symlink",
+        });
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/.gitmodules~HEAD`)).toBe(false);
       });
     });
   });
