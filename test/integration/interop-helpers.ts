@@ -490,8 +490,21 @@ const parseConflictedEntry = (record: Uint8Array): ConflictedEntry => {
   return { mode, oid, stage: Number(stage), pathHex: hex(record.subarray(tab + 1)) };
 };
 
+/** `git merge-tree` exits 1 on a conflicted merge and still prints the result on stdout. */
+const MERGE_TREE_CONFLICT_EXIT = 1;
+
+const runMergeTree = (args: ReadonlyArray<string>): Uint8Array => {
+  try {
+    return runGitBytes(args);
+  } catch (error) {
+    const failure = error as { status?: number; stdout?: Buffer };
+    if (failure.status !== MERGE_TREE_CONFLICT_EXIT || failure.stdout === undefined) throw error;
+    return new Uint8Array(failure.stdout);
+  }
+};
+
 export const mergeTreeResult = (dir: string, ours: string, theirs: string): MergeTreeResult => {
-  const output = runGitBytes([
+  const output = runMergeTree([
     '-C',
     dir,
     '-c',

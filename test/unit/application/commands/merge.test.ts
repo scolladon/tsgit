@@ -18,6 +18,7 @@ import {
   writeNestedTree,
   writeOutcomeToTree,
 } from '../../../../src/application/commands/merge.js';
+import { reset } from '../../../../src/application/commands/reset.js';
 import { rm } from '../../../../src/application/commands/rm.js';
 import { tagCreate, tagDelete } from '../../../../src/application/commands/tag.js';
 import {
@@ -25,6 +26,7 @@ import {
   removeChangedOutcome,
 } from '../../../../src/application/primitives/apply-merge-to-worktree.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
+import { flattenEscapedTree } from '../../../../src/application/primitives/flatten-tree.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
@@ -6481,6 +6483,344 @@ describe('merge — rename/rename to two paths', () => {
         ]);
         expect(staged[0]?.id).toBe(staged[1]?.id);
         expect(new TextDecoder().decode((await readBlob(ctx, staged[0]!.id)).content)).toBe(marked);
+      });
+    });
+  });
+});
+
+describe('merge — trees holding a non-UTF-8 path', () => {
+  const FF_TXT = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+  const FF_TXT_HEX = 'ff2e747874';
+  const VIEW_PATH = '\uFFFD.txt' as FilePath;
+
+  type Row = readonly [name: string | Uint8Array, text: string];
+
+  const hex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
+
+  const treeOf = async (ctx: Context, rows: ReadonlyArray<Row>): Promise<ObjectId> =>
+    writeTreeMod.writeTree(
+      ctx,
+      await Promise.all(
+        rows.map(async ([name, text]) =>
+          treeEntry(FILE_MODE.REGULAR, name, await writeBlob(ctx, text)),
+        ),
+      ),
+    );
+
+  const commitOf = async (
+    ctx: Context,
+    tree: ObjectId,
+    ref: string,
+    parents: ReadonlyArray<ObjectId>,
+  ): Promise<ObjectId> => {
+    const { createCommit } = await import(
+      '../../../../src/application/primitives/create-commit.js'
+    );
+    const id = await createCommit(ctx, {
+      tree,
+      parents,
+      author,
+      committer: author,
+      message: ref,
+      extraHeaders: [],
+    });
+    await seedRef(ctx, `refs/heads/${ref}` as RefName, id, { reflogMessage: 'seed' });
+    return id;
+  };
+
+  /** main and side fork from a base; the index and HEAD follow main, the work tree is empty. */
+  const seedHistory = async (
+    base: ReadonlyArray<Row>,
+    main: ReadonlyArray<Row>,
+    side: ReadonlyArray<Row>,
+  ): Promise<{ readonly ctx: Context; readonly root: ObjectId }> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const root = await commitOf(ctx, await treeOf(ctx, base), 'main', []);
+    await commitOf(ctx, await treeOf(ctx, side), 'side', [root]);
+    await commitOf(ctx, await treeOf(ctx, main), 'main', [root]);
+    await reset(ctx, { mode: 'mixed', rev: 'main' });
+    return { ctx, root };
+  };
+
+  const treeNames = async (ctx: Context, id: ObjectId): Promise<ReadonlyArray<string[]>> => {
+    const commitObj = await readObject(ctx, id);
+    if (commitObj.type !== 'commit') throw new Error('not a commit');
+    const tree = await readObject(ctx, commitObj.data.tree);
+    if (tree.type !== 'tree') throw new Error('not a tree');
+    return tree.entries.map((e) => [hex(e.nameBytes), e.name]);
+  };
+
+  describe('Given main and side change different ASCII files and both carry a non-UTF-8 name untouched', () => {
+    describe('When merge runs', () => {
+      it('Then the merge commit tree lists the name bytes unchanged', async () => {
+        // Arrange
+        const { ctx } = await seedHistory(
+          [
+            ['a', 'a0'],
+            ['b', 'b0'],
+            [FF_TXT, 'x'],
+          ],
+          [
+            ['a', 'a1'],
+            ['b', 'b0'],
+            [FF_TXT, 'x'],
+          ],
+          [
+            ['a', 'a0'],
+            ['b', 'b1'],
+            [FF_TXT, 'x'],
+          ],
+        );
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author });
+
+        // Assert
+        if (result.kind !== 'merge') throw new Error(`unexpected ${result.kind}`);
+        expect((await treeNames(ctx, result.id)).map(([bytes]) => bytes)).toEqual([
+          '61',
+          '62',
+          FF_TXT_HEX,
+        ]);
+      });
+    });
+  });
+
+  describe('Given twins named by the raw bytes and by their U+FFFD view where side modifies the raw one', () => {
+    describe('When merge runs', () => {
+      it('Then the merge tree keeps both entries with the modified content on the raw one', async () => {
+        // Arrange
+        const { ctx } = await seedHistory(
+          [
+            ['a', 'a0'],
+            [FF_TXT, 'x'],
+            [VIEW_PATH, 'y'],
+          ],
+          [
+            ['a', 'a1'],
+            [FF_TXT, 'x'],
+            [VIEW_PATH, 'y'],
+          ],
+          [
+            ['a', 'a0'],
+            [FF_TXT, 'x2'],
+            [VIEW_PATH, 'y'],
+          ],
+        );
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author });
+
+        // Assert
+        if (result.kind !== 'merge') throw new Error(`unexpected ${result.kind}`);
+        const names = (await treeNames(ctx, result.id)).map(([bytes]) => bytes);
+        expect(names).toEqual(['61', 'efbfbd2e747874', FF_TXT_HEX]);
+        const commitObj = await readObject(ctx, result.id);
+        if (commitObj.type !== 'commit') throw new Error('not a commit');
+        const flat = await flattenEscapedTree(ctx, commitObj.data.tree);
+        const content = async (key: string): Promise<string | undefined> => {
+          const id = flat.entries.get(key as FilePath)?.id;
+          if (id === undefined) return undefined;
+          return new TextDecoder().decode((await readBlob(ctx, id)).content);
+        };
+        expect(await content('\uDCFF.txt')).toBe('x2');
+        expect(await content(VIEW_PATH)).toBe('y');
+      });
+    });
+  });
+
+  describe('Given both sides edit the non-UTF-8 path', () => {
+    describe('When merge runs', () => {
+      it('Then stages 1, 2 and 3 keep the bytes, no work tree file appears and the descriptor names the view', async () => {
+        // Arrange
+        const { ctx } = await seedHistory(
+          [[FF_TXT, 'base\n']],
+          [[FF_TXT, 'ours\n']],
+          [[FF_TXT, 'theirs\n']],
+        );
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author });
+
+        // Assert
+        if (result.kind !== 'conflict') throw new Error(`unexpected ${result.kind}`);
+        expect(result.conflicts.map((c) => c.path)).toEqual([VIEW_PATH]);
+        const { entries } = await readIndex(ctx);
+        expect(entries.map((e) => [e.flags.stage, hex(e.pathBytes ?? new Uint8Array())])).toEqual([
+          [1, FF_TXT_HEX],
+          [2, FF_TXT_HEX],
+          [3, FF_TXT_HEX],
+        ]);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/${VIEW_PATH}`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given side adds a directory whose name is .git followed by a raw byte', () => {
+    describe('When merge runs', () => {
+      it('Then it refuses the path with the HFS reason', async () => {
+        // Arrange
+        const { ctx, root } = await seedHistory([['a', 'a0']], [['a', 'a1']], [['a', 'a0']]);
+        const hostileTree = await treeOf(ctx, [['x', 'x']]);
+        const sideTree = await writeTreeMod.writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'a', await writeBlob(ctx, 'a0')),
+          treeEntry(FILE_MODE.DIRECTORY, Uint8Array.of(0x2e, 0x67, 0x69, 0x74, 0xff), hostileTree),
+        ]);
+        await commitOf(ctx, sideTree, 'side', [root]);
+        const sut = mergeRun;
+
+        // Act
+        const caught = await sut(ctx, { rev: 'side', author }).then(
+          () => undefined,
+          (err: unknown) => (err as TsgitError).data,
+        );
+
+        // Assert
+        expect(caught).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'.git' HFS+ ignorable-codepoint alias rejected",
+        });
+      });
+    });
+  });
+
+  describe('Given an outcome whose escaped path is .git followed by a raw byte', () => {
+    describe('When writeOutcomeToTree runs', () => {
+      it('Then it refuses the path with the HFS reason before writing', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const id = await writeBlob(ctx, 'x');
+        const writer = {
+          writeBlob: vi.fn(),
+          writeBytes: vi.fn(),
+          removePath: vi.fn(),
+        } as unknown as Parameters<typeof writeOutcomeToTree>[2];
+        const sut = writeOutcomeToTree;
+
+        // Act
+        const caught = await sut(
+          {
+            status: 'resolved-known',
+            path: '.git\uDCFF/x' as FilePath,
+            id,
+            mode: FILE_MODE.REGULAR,
+          },
+          undefined,
+          writer,
+        ).then(
+          () => undefined,
+          (err: unknown) => (err as TsgitError).data,
+        );
+
+        // Assert
+        expect(caught).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'.git' HFS+ ignorable-codepoint alias rejected",
+        });
+      });
+    });
+  });
+
+  describe('Given a conflict whose escaped path is .git followed by a raw byte', () => {
+    describe('When writeConflictToTree runs', () => {
+      it('Then it refuses the path with the HFS reason before writing', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const writer = {
+          writeBlob: vi.fn(),
+          writeBytes: vi.fn(),
+          removePath: vi.fn(),
+        } as unknown as Parameters<typeof writeConflictToTree>[2];
+        const conflict = {
+          type: 'content',
+          path: '.git\uDCFF/x' as FilePath,
+          ourMode: FILE_MODE.REGULAR,
+        } as MergeConflict;
+        const sut = writeConflictToTree;
+
+        // Act
+        const caught = await sut(ctx, conflict, writer).then(
+          () => undefined,
+          (err: unknown) => (err as TsgitError).data,
+        );
+
+        // Assert
+        expect(caught).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'.git' HFS+ ignorable-codepoint alias rejected",
+        });
+      });
+    });
+  });
+
+  describe('Given side modifies the non-UTF-8 path beside a conflict on another file', () => {
+    describe('When merge runs', () => {
+      it('Then the stage 0 index entry keeps the raw bytes', async () => {
+        // Arrange
+        const { ctx } = await seedHistory(
+          [
+            ['a', 'base\n'],
+            [FF_TXT, 'x'],
+          ],
+          [
+            ['a', 'ours\n'],
+            [FF_TXT, 'x'],
+          ],
+          [
+            ['a', 'theirs\n'],
+            [FF_TXT, 'x2'],
+          ],
+        );
+        const sut = mergeRun;
+
+        // Act
+        await sut(ctx, { rev: 'side', author });
+
+        // Assert
+        const { entries } = await readIndex(ctx);
+        const staged = entries.filter((e) => e.flags.stage === 0);
+        expect(staged.map((e) => hex(e.pathBytes ?? new Uint8Array()))).toEqual([FF_TXT_HEX]);
+      });
+    });
+  });
+
+  describe('Given sparse checkout excluding the non-UTF-8 path that side modifies beside a conflict', () => {
+    describe('When merge runs', () => {
+      it('Then the skip-worktree index entry keeps the raw bytes', async () => {
+        // Arrange
+        const { ctx } = await seedHistory(
+          [
+            ['a', 'base\n'],
+            [FF_TXT, 'x'],
+          ],
+          [
+            ['a', 'ours\n'],
+            [FF_TXT, 'x'],
+          ],
+          [
+            ['a', 'theirs\n'],
+            [FF_TXT, 'x2'],
+          ],
+        );
+        const { updateCoreConfig } = await import(
+          '../../../../src/application/primitives/update-config.js'
+        );
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, '/a\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a`, 'ours\n');
+        await updateCoreConfig(ctx, { sparseCheckout: 'true', sparseCheckoutCone: 'false' });
+        const sut = mergeRun;
+
+        // Act
+        await sut(ctx, { rev: 'side', author });
+
+        // Assert
+        const { entries } = await readIndex(ctx);
+        const skipped = entries.filter((e) => e.flags.skipWorktree);
+        expect(skipped.map((e) => hex(e.pathBytes ?? new Uint8Array()))).toEqual([FF_TXT_HEX]);
       });
     });
   });

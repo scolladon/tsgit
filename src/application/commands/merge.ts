@@ -7,7 +7,11 @@ import {
   workingTreeDirty,
 } from '../../domain/commands/error.js';
 import type { FlatTree, FlatTreeEntry } from '../../domain/diff/flat-tree.js';
-import { conflictsToIndexEntries, sortedRecordedPaths } from '../../domain/diff/index.js';
+import {
+  comparePaths,
+  conflictsToIndexEntries,
+  sortedRecordedPaths,
+} from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import {
@@ -16,8 +20,12 @@ import {
   type StatData,
   skipWorktreeEntry,
 } from '../../domain/git-index/index.js';
-import { viewOfEscaped } from '../../domain/git-index/index-path-key.js';
-import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
+import {
+  escapedPathOf,
+  indexPathOfEscaped,
+  viewOfEscaped,
+} from '../../domain/git-index/index-path-key.js';
+import { validateTreePath } from '../../domain/git-index/path-validator.js';
 import { unsupportedOperation } from '../../domain/index.js';
 import {
   type ConflictType,
@@ -72,7 +80,7 @@ import { readConfig } from '../primitives/config-read.js';
 import { createCommitWithStoredHeaders } from '../primitives/create-commit.js';
 import { detectMergeRenames } from '../primitives/detect-merge-renames.js';
 import { changedPaths, findWouldOverwrite } from '../primitives/find-would-overwrite.js';
-import { flattenTree } from '../primitives/flatten-tree.js';
+import { flattenEscapedTree } from '../primitives/flatten-tree.js';
 import { writeAutoMerge } from '../primitives/internal/auto-merge-ref.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import {
@@ -836,7 +844,7 @@ const tryTrivialMerge = async (
   const { ourId } = commit;
   if (bases.length !== 1) return undefined;
   const [base, ours, theirs] = await Promise.all(
-    [bases[0]!, ourId, theirId].map(async (id) => flattenTree(ctx, await getTree(ctx, id))),
+    [bases[0]!, ourId, theirId].map(async (id) => flattenEscapedTree(ctx, await getTree(ctx, id))),
   );
   await assertIndexMatches(ctx, ours!.entries);
   const merged = trivialMerge(base!.entries, ours!.entries, theirs!.entries);
@@ -847,7 +855,7 @@ const tryTrivialMerge = async (
 /** git's `ours` strategy: HEAD's tree is the result, once the index matches it. */
 const oursAttempt = async (ctx: Context, commit: MergeCommitInput): Promise<StrategyAttempt> => {
   const tree = await getTree(ctx, commit.ourId);
-  await assertIndexMatches(ctx, (await flattenTree(ctx, tree)).entries);
+  await assertIndexMatches(ctx, (await flattenEscapedTree(ctx, tree)).entries);
   return { kind: 'clean', tree, note: mergeMadeBy('ours') };
 };
 
@@ -1186,7 +1194,7 @@ const octopusAttempt = async (
   remotes: ReadonlyArray<OctopusRemote>,
   strategy: string,
 ): Promise<StrategyAttempt> => {
-  const ours = await flattenTree(ctx, await getTree(ctx, commit.ourId));
+  const ours = await flattenEscapedTree(ctx, await getTree(ctx, commit.ourId));
   await assertIndexMatches(ctx, ours.entries);
   const result = await octopusMerge(ctx, commit.ourId, remotes);
   if (result.kind === 'clean')
@@ -1200,12 +1208,18 @@ const octopusAttempt = async (
 
 const assertIndexMatches = async (ctx: Context, ours: FlatEntries): Promise<void> => {
   const { entries } = await readIndex(ctx);
-  const indexed = new Set(entries.map((entry) => entry.path));
+  const indexed = new Set(entries.map(escapedPathOf));
   const staged = new Set([
-    ...entries.filter((entry) => !sameEntry(ours.get(entry.path), entry)).map((e) => e.path),
+    ...entries
+      .filter((entry) => !sameEntry(ours.get(escapedPathOf(entry)), entry))
+      .map(escapedPathOf),
     ...[...ours.keys()].filter((path) => !indexed.has(path)),
   ]);
-  if (staged.size > 0) throw workingTreeDirty({ localChanges: [...staged].sort(), untracked: [] });
+  if (staged.size === 0) return;
+  throw workingTreeDirty({
+    localChanges: [...staged].sort(comparePaths).map(viewOfEscaped),
+    untracked: [],
+  });
 };
 
 const sameEntry = (committed: FlatTreeEntry | undefined, entry: FlatTreeEntry): boolean =>
@@ -1318,9 +1332,9 @@ const readMergeSides = async (
   const theirTreeId = await getTree(ctx, theirId);
   const baseTreeId = baseId !== undefined ? await getTree(ctx, baseId) : undefined;
   const [ourFlat, theirSide, baseSide] = await Promise.all([
-    flattenTree(ctx, ourTreeId),
-    flattenTree(ctx, theirTreeId),
-    baseTreeId !== undefined ? flattenTree(ctx, baseTreeId) : Promise.resolve(undefined),
+    flattenEscapedTree(ctx, ourTreeId),
+    flattenEscapedTree(ctx, theirTreeId),
+    baseTreeId !== undefined ? flattenEscapedTree(ctx, baseTreeId) : Promise.resolve(undefined),
   ]);
   const shift = strategy.subtreeShift;
   if (shift === undefined) return { base: baseSide, ours: ourFlat, theirs: theirSide };
@@ -1797,7 +1811,7 @@ export const writeOutcomeToTree = async (
   // regardless of status. `conflict` is skipped because this function no-ops
   // on it (the conflict itself is validated by the parallel conflicts batch).
   if (outcome.status === 'conflict') return;
-  validateIndexPath(outcome.path, NO_PARSER_OFFSET, outcome.mode);
+  validateTreePath(outcome.path, outcome.mode);
   if (outcome.status === 'resolved-merged') {
     // The merged bytes exist only in memory — this write is their sole
     // persistence, so the path is materialised regardless of the matcher.
@@ -1827,7 +1841,7 @@ export const writeConflictToTree = async (
   // mode is derivable — the only mode-sensitive rule is the write-time-only
   // `.gitmodules`-symlink rejection, inapplicable when nothing is written.
   const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
-  validateIndexPath(conflict.path, NO_PARSER_OFFSET, mode ?? FILE_MODE.REGULAR);
+  validateTreePath(conflict.path, mode ?? FILE_MODE.REGULAR);
   if (conflict.type === 'distinct-types') {
     await writeDistinctTypesSides(writer, conflict, scanner);
     return;
@@ -1901,12 +1915,16 @@ export const buildConflictIndexEntries = (
       // report the (deliberately un-written) file as deleted.
       stage0.push(
         isExcluded(matcher, outcome.path)
-          ? skipWorktreeEntry({ path: outcome.path, id: outcome.id, mode: outcome.mode })
+          ? skipWorktreeEntry({
+              ...indexPathOfEscaped(outcome.path),
+              id: outcome.id,
+              mode: outcome.mode,
+            })
           : {
               ...zeroStat(outcome.mode),
               id: outcome.id,
               flags: STAGE0_FLAGS,
-              path: outcome.path,
+              ...indexPathOfEscaped(outcome.path),
             },
       );
     }
