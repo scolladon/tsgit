@@ -44,6 +44,7 @@ import { withFilterProcessPool } from './internal/filter-process-pool.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { lazily } from './internal/lazily.js';
 import { pathIsOccupied } from './internal/path-occupied.js';
+import { pruneEmptiedDirectories } from './internal/prune-emptied-directories.js';
 import {
   type AttributeDirection,
   type AttributeProvider,
@@ -338,12 +339,13 @@ const applyDeleteEntry = async (
   workdir: string,
   entry: ChangesetEntry,
   scanner: LeadingPathScanner,
-): Promise<void> => {
-  if (isLossy(entry)) return;
+): Promise<FilePath | undefined> => {
+  if (isLossy(entry)) return undefined;
   // git skips a removal silently when the leading directory is a symlink —
   // the delete is never attempted, not refused.
-  if (await scanner.hasSymlinkedLeadingPath(entry.path)) return;
+  if (await scanner.hasSymlinkedLeadingPath(entry.path)) return undefined;
   await rmIfExists(ctx, joinPath(workdir, entry.path));
+  return entry.path;
 };
 
 // The decoded name would alias a different file, so nothing is written for
@@ -455,10 +457,16 @@ const applyDeleteWave = async (
   total: number,
   counter: ProgressCounter,
 ): Promise<number> => {
-  await drainPooled(ctx, deletes, async (entry) => {
-    await applyDeleteEntry(ctx, workdir, entry, scanner);
+  const removed = await drainPooled(ctx, deletes, async (entry) => {
+    const path = await applyDeleteEntry(ctx, workdir, entry, scanner);
     reportCompletion(ctx, total, counter, entry.path);
+    return path;
   });
+  await pruneEmptiedDirectories(
+    ctx,
+    workdir,
+    removed.filter((path) => path !== undefined),
+  );
   return deletes.length;
 };
 

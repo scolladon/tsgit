@@ -279,6 +279,22 @@ describe('rm', () => {
     });
   });
 
+  describe('Given a tracked file that is the last one in its directory', () => {
+    describe('When rm', () => {
+      it('Then the emptied directory is removed and a non-empty sibling directory stays', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/e/q': 'q', 'k/a': 'a', 'k/b': 'b' });
+
+        // Act
+        await rm(ctx, ['d/e/q', 'k/a']);
+
+        // Assert
+        expect(await ctx.fs.exists(work(ctx, 'd'))).toBe(false);
+        expect(await ctx.fs.exists(work(ctx, 'k/b'))).toBe(true);
+      });
+    });
+  });
+
   describe('Given cached=true', () => {
     describe('When rm', () => {
       it('Then index entry removed but working file kept', async () => {

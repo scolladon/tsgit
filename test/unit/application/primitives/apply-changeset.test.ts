@@ -385,6 +385,73 @@ describe('applyChangeset', () => {
     });
   });
 
+  describe('Given a delete entry that empties its leading directories', () => {
+    describe('When applyChangeset runs with force', () => {
+      it('Then every emptied directory is removed and the work tree root stays', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('q'));
+        await ctx.fs.write(`${WORKDIR}/d/e/q`, enc('q'));
+        await ctx.fs.write(`${WORKDIR}/keep`, enc('k'));
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('d/e/q', id)]),
+          force: true,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(await ctx.fs.exists(`${WORKDIR}/d`)).toBe(false);
+        expect(await ctx.fs.exists(`${WORKDIR}/keep`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a delete entry whose directory still holds an untracked file', () => {
+    describe('When applyChangeset runs with force', () => {
+      it('Then the directory chain holding it is kept', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('q'));
+        await ctx.fs.write(`${WORKDIR}/d/e/q`, enc('q'));
+        await ctx.fs.write(`${WORKDIR}/d/e/untracked`, enc('u'));
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('d/e/q', id)]),
+          force: true,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(await ctx.fs.exists(`${WORKDIR}/d/e/untracked`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a nested directory f/g/x replaced by a file f', () => {
+    describe('When applyChangeset runs with force', () => {
+      it('Then the file f is written', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('x'));
+        const newId = await writeBlob(ctx, enc('file'));
+        await ctx.fs.write(`${WORKDIR}/f/g/x`, enc('x'));
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('f/g/x', oldId), makeAdd('f', newId)]),
+          force: true,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f`))).toBe('file');
+      });
+    });
+  });
+
   describe('Given an update with modified working-tree content and force=false', () => {
     describe('When applyChangeset runs', () => {
       it('Then throws CHECKOUT_OVERWRITE_DIRTY with the offending path', async () => {

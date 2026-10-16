@@ -31,6 +31,7 @@ import {
   compareWorkingTreeEntry,
   isWorkingTreeModified,
 } from '../primitives/compare-working-tree-entry.js';
+import { pruneEmptiedDirectories } from '../primitives/internal/prune-emptied-directories.js';
 import { buildCheckinAttributeProvider } from '../primitives/internal/read-gitattributes.js';
 import { readHeadTree } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -108,13 +109,19 @@ export const rm = async (
     }
     for (const key of removedKeys) byPath.delete(key);
     if (!opts.cached) {
-      for (const { path } of removedEntries.filter((entry) => !isLossy(entry))) {
+      const workingTreeEntries = removedEntries.filter((entry) => !isLossy(entry));
+      for (const { path } of workingTreeEntries) {
         // FILE_NOT_FOUND is the only tolerable error: working file already gone.
         await removeFile(ctx, path).catch((err: unknown) => {
           if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return;
           throw err;
         });
       }
+      await pruneEmptiedDirectories(
+        ctx,
+        requireWorkTree(ctx, 'rm'),
+        workingTreeEntries.map((entry) => entry.path),
+      );
     }
     await lock.commit(Array.from(byPath.values()), 'update');
     return { removed };

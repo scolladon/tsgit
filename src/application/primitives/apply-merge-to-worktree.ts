@@ -32,6 +32,7 @@ import {
   mergeTrees,
   recordsOwnPaths,
 } from '../../domain/merge/index.js';
+import { hasEscapedBytes } from '../../domain/objects/encoding.js';
 import { FILE_MODE, type FilePath, type ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import {
@@ -48,6 +49,7 @@ import { limiterFor } from './internal/concurrency.js';
 import { lazily } from './internal/lazily.js';
 import { readMergeRenormalize, readUiDiffAlgorithm } from './internal/merge-rename-config.js';
 import { mergedBlobEntries } from './internal/merged-blob-entries.js';
+import { pruneEmptiedDirectories } from './internal/prune-emptied-directories.js';
 import {
   attributeBlobLookup,
   buildAttributeProvider,
@@ -55,6 +57,7 @@ import {
   isAttributesPath,
 } from './internal/read-gitattributes.js';
 import { renormalizeAttributeLookup } from './internal/renormalize-attributes.js';
+import { requireWorkTree } from './internal/repo-state.js';
 import {
   createLeadingPathScanner,
   type LeadingPathScanner,
@@ -211,7 +214,9 @@ export const removeChangedOutcome = async (
   outcome: DeletedOutcome,
 ): Promise<void> => {
   validateTreePath(outcome.path, FILE_MODE.REGULAR);
+  if (hasEscapedBytes(outcome.path)) return;
   await removeWorkingTreeFile(ctx, outcome.path);
+  await pruneEmptiedDirectories(ctx, requireWorkTree(ctx, 'removeChangedOutcome'), [outcome.path]);
 };
 
 /** The file a directory displaces leaves its path before the directory is written; its moved copy is written with the conflict. */

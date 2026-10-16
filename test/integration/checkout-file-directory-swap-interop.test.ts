@@ -9,7 +9,14 @@
  *   unique:         checkout file<->directory swap runs against git
  *   interopSurface: checkout
  */
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { TsgitError } from '../../src/domain/index.js';
@@ -124,6 +131,87 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(oursCode).toBe('CHECKOUT_OVERWRITE_DIRTY');
           expect(readFileSync(path.join(pair.ours, 'f', 'y'), 'utf8')).toBe('y\n');
           expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+        });
+      });
+    });
+  },
+);
+
+const listWorkTree = (dir: string): ReadonlyArray<string> =>
+  readdirSync(dir, { recursive: true, encoding: 'utf8' })
+    .filter((entry) => entry !== '.git' && !entry.startsWith(`.git${path.sep}`))
+    .sort();
+
+const buildNestedHistory = (dir: string): void => {
+  writeFileSync(path.join(dir, 'b'), 'b\n');
+  git(dir, 'add', 'b');
+  git(dir, 'commit', '-q', '-m', 'base');
+  git(dir, 'checkout', '-q', '-b', 'side');
+  mkdirSync(path.join(dir, 'd', 'e'), { recursive: true });
+  writeFileSync(path.join(dir, 'd', 'e', 'q'), 'q\n');
+  mkdirSync(path.join(dir, 'f', 'g'), { recursive: true });
+  writeFileSync(path.join(dir, 'f', 'g', 'x'), 'x\n');
+  git(dir, 'add', '.');
+  git(dir, 'commit', '-q', '-m', 'adds nested directories');
+  git(dir, 'checkout', '-q', 'main');
+  writeFileSync(path.join(dir, 'f'), 'file\n');
+  git(dir, 'add', 'f');
+  git(dir, 'commit', '-q', '-m', 'adds file f');
+};
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'checkout interop — directories left empty',
+  { timeout: 60_000 },
+  () => {
+    let pair: PeerPair;
+    let repo: Repository;
+
+    beforeEach(async () => {
+      pair = await makePeerPair('checkout-empty-dirs');
+      initBothRepos(pair.peer, pair.ours);
+      buildNestedHistory(pair.peer);
+      buildNestedHistory(pair.ours);
+      repo = await openRepository({ cwd: pair.ours });
+      git(pair.peer, 'checkout', '-q', 'side');
+      await repo.checkout({ rev: 'side' });
+    });
+
+    afterEach(async () => {
+      await repo.dispose();
+      await pair.dispose();
+    });
+
+    describe('Given both tools sit on side holding d/e/q and f/g/x', () => {
+      describe('When both tools checkout main', () => {
+        it('Then the emptied directories are gone and the work tree listing matches git', async () => {
+          // Arrange
+          git(pair.peer, 'checkout', '-q', 'main');
+
+          // Act
+          await repo.checkout({ rev: 'main' });
+
+          // Assert
+          expect(existsSync(path.join(pair.ours, 'd'))).toBe(false);
+          expect(listWorkTree(pair.ours)).toEqual(listWorkTree(pair.peer));
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+        });
+      });
+    });
+
+    describe('Given both tools sit on side with an untracked file beside d/e/q', () => {
+      describe('When both tools checkout main', () => {
+        it('Then the directory holding it stays, matching git', async () => {
+          // Arrange
+          writeFileSync(path.join(pair.peer, 'd', 'e', 'untracked'), 'u\n');
+          writeFileSync(path.join(pair.ours, 'd', 'e', 'untracked'), 'u\n');
+          git(pair.peer, 'checkout', '-q', 'main');
+
+          // Act
+          await repo.checkout({ rev: 'main' });
+
+          // Assert
+          expect(listWorkTree(pair.ours)).toEqual(listWorkTree(pair.peer));
+          expect(existsSync(path.join(pair.ours, 'd', 'e', 'untracked'))).toBe(true);
         });
       });
     });

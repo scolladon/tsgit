@@ -4,6 +4,7 @@ import {
   conflictResultTree,
   createMergeResultWriter,
   mergeTreesToTree,
+  removeChangedOutcome,
   writeMarkedConflict,
 } from '../../../../src/application/primitives/apply-merge-to-worktree.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
@@ -337,6 +338,22 @@ describe('applyMergeToWorktree', () => {
         // Assert
         expect(result.kind).toBe('clean');
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/b`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a deleted outcome that is the last file in its directory', () => {
+    describe('When removeChangedOutcome runs', () => {
+      it('Then the emptied directory is removed with it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.write(`${ctx.layout.workDir}/d/e/y`, new TextEncoder().encode('y\n'));
+
+        // Act
+        await removeChangedOutcome(ctx, { status: 'resolved-deleted', path: 'd/e/y' as FilePath });
+
+        // Assert
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/d`)).toBe(false);
       });
     });
   });
