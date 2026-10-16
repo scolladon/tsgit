@@ -1,4 +1,4 @@
-import { concatBytes } from '../objects/encoding.js';
+import { concatBytes, encodeEscaped } from '../objects/encoding.js';
 import { invalidMergeInput } from './error.js';
 import type { ConflictMarkerOptions } from './merge-types.js';
 import { MAX_CONFLICT_OUTPUT_BYTES } from './merge-types.js';
@@ -34,7 +34,7 @@ function concatEnsuringTrailingLf(lines: ReadonlyArray<Uint8Array>): Uint8Array 
 
 /** One marker line: the run, then ` <label>` when the label is non-empty (git's `marker_size`). */
 const markerLine = (char: string, size: number, label: string): Uint8Array =>
-  encoder.encode(`${char.repeat(size)}${label === '' ? '' : ` ${label}`}\n`);
+  encodeEscaped(`${char.repeat(size)}${label === '' ? '' : ` ${label}`}\n`);
 
 /** The base section a base-showing style writes between ours and the separator. */
 interface BaseSection {
