@@ -260,3 +260,80 @@ describe('Given a file-directory conflict whose theirs symlink moves to "gitmod~
     });
   });
 });
+
+describe('Given a modify-delete conflict at ".gitmodules" where ours is a symlink and theirs is deleted', () => {
+  describe('When validateMergeWritePaths runs', () => {
+    it('Then it throws because ours is written as a symlink at ".gitmodules"', () => {
+      // Arrange — no merged mode and no theirs mode: ours alone decides.
+      const conflict: MergeConflict = {
+        type: 'modify-delete',
+        path: '.gitmodules' as FilePath,
+        ourId: DUMMY_OID,
+        ourMode: FILE_MODE.SYMLINK,
+      };
+      const sut = validateMergeWritePaths;
+
+      // Act
+      const caught = catchError(() => sut([], [conflict], new Set()));
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'INVALID_INDEX_ENTRY',
+        offset: -1,
+        reason: "'.gitmodules' must not be a symlink",
+      });
+    });
+  });
+});
+
+describe('Given a content conflict at ".gitmodules" whose merged mode is a symlink and theirs is regular', () => {
+  describe('When validateMergeWritePaths runs', () => {
+    it('Then it throws because the merged mode, not theirs, is written', () => {
+      // Arrange
+      const conflict: MergeConflict = {
+        type: 'content',
+        path: '.gitmodules' as FilePath,
+        ourId: DUMMY_OID,
+        ourMode: FILE_MODE.SYMLINK,
+        theirId: DUMMY_OID,
+        theirMode: FILE_MODE.REGULAR,
+        mergedMode: FILE_MODE.SYMLINK,
+      };
+      const sut = validateMergeWritePaths;
+
+      // Act
+      const caught = catchError(() => sut([], [conflict], new Set()));
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'INVALID_INDEX_ENTRY',
+        offset: -1,
+        reason: "'.gitmodules' must not be a symlink",
+      });
+    });
+  });
+});
+
+describe('Given a distinct-types conflict at ".gitmodules" where ours is a symlink moved to ".gitmodules~HEAD" and theirs is regular', () => {
+  describe('When validateMergeWritePaths runs', () => {
+    it('Then it accepts it because ".gitmodules" itself is written as a regular file', () => {
+      // Arrange
+      const conflict: MergeConflict = {
+        type: 'distinct-types',
+        path: '.gitmodules' as FilePath,
+        ourId: DUMMY_OID,
+        ourMode: FILE_MODE.SYMLINK,
+        ourPath: '.gitmodules~HEAD' as FilePath,
+        theirId: DUMMY_OID,
+        theirMode: FILE_MODE.REGULAR,
+        theirPath: '.gitmodules' as FilePath,
+      };
+      const sut = validateMergeWritePaths;
+
+      // Act & Assert
+      expect(() => sut([], [conflict], new Set())).not.toThrow();
+    });
+  });
+});

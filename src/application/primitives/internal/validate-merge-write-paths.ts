@@ -69,4 +69,5 @@ const sidePaths = (conflict: MergeConflict): ReadonlyArray<SidePath> =>
 
 /** The mode of the side written at `path`; a directory standing at `path` has none. */
 const modeWrittenAt = (conflict: MergeConflict, path: FilePath): FileMode | undefined =>
+  // Stryker disable next-line ArrowFunction: equivalent — the side loop re-validates the side standing at `path` with its own mode, so only the order of two refusals could change, and a moved `<path>~<label>` is invalid only when `<path>` ends in `git`, never in a `.gitmodules` alias.
   sidePaths(conflict).find(([sidePath]) => sidePath === path)?.[1];
