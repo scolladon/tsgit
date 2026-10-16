@@ -172,6 +172,43 @@ describe('merge-state', () => {
         });
       });
     });
+
+    describe('Given a conflict list naming an escaped path', () => {
+      describe('When writeMergeMsg is called', () => {
+        it('Then the file holds the raw path byte', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await init(ctx);
+
+          // Act
+          await writeMergeMsg(ctx, 'Merge\n\n# Conflicts:\n#\t\uDCFF.txt\n');
+
+          // Assert
+          const result = await ctx.fs.read(`${ctx.layout.gitDir}/MERGE_MSG`);
+          expect(Array.from(result.subarray(-8))).toEqual([
+            0x23, 0x09, 0xff, 0x2e, 0x74, 0x78, 0x74, 0x0a,
+          ]);
+        });
+      });
+    });
+
+    describe('Given a message without escapes', () => {
+      describe('When writeMergeMsg is called', () => {
+        it('Then the file is byte-identical to its UTF-8 encoding', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await init(ctx);
+          const message = 'Merge é\n\n# Conflicts:\n#\tf\n';
+
+          // Act
+          await writeMergeMsg(ctx, message);
+
+          // Assert
+          const result = await ctx.fs.read(`${ctx.layout.gitDir}/MERGE_MSG`);
+          expect(result).toEqual(new TextEncoder().encode(message));
+        });
+      });
+    });
   });
 
   describe('writeOrigHead', () => {

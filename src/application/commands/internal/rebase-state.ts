@@ -13,6 +13,7 @@
  */
 
 import { invalidSequencerTodo } from '../../../domain/commands/error.js';
+import { encodeEscaped } from '../../../domain/objects/encoding.js';
 import type { ObjectId, RefName } from '../../../domain/objects/index.js';
 import {
   type AuthorIdentity,
@@ -151,7 +152,9 @@ export const writeRebaseStop = async (ctx: Context, stop: RebaseStop): Promise<v
   }
   await writeStopMarkers(ctx, stop);
   if (stop.messageSquash !== undefined) await write('message-squash', stop.messageSquash);
-  if (stop.mergeMsg !== undefined) await ctx.fs.writeUtf8(mergeMsgPath(ctx), stop.mergeMsg);
+  if (stop.mergeMsg !== undefined) {
+    await ctx.fs.write(mergeMsgPath(ctx), encodeEscaped(stop.mergeMsg));
+  }
   await writeRootRef(ctx, REBASE_HEAD_REF, stop.stoppedSha);
 };
 

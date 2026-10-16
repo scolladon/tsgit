@@ -16,6 +16,7 @@
  *   format:  git-merge-state-files
  */
 
+import { encodeEscaped } from '../../../domain/objects/encoding.js';
 import type { ObjectId, RefName } from '../../../domain/objects/index.js';
 import { ObjectId as ObjectIdFactory } from '../../../domain/objects/index.js';
 import {
@@ -64,7 +65,7 @@ export const readsNoFastForward = async (ctx: Context): Promise<boolean> => {
 
 /** Write `.git/MERGE_MSG` containing the merge message draft. */
 export const writeMergeMsg = async (ctx: Context, message: string): Promise<void> => {
-  await ctx.fs.writeUtf8(mergeMsgPath(ctx), message);
+  await ctx.fs.write(mergeMsgPath(ctx), encodeEscaped(message));
 };
 
 /** Record the pre-merge HEAD commit in the `ORIG_HEAD` root ref. */
