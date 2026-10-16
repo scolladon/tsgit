@@ -3010,3 +3010,31 @@ describe('applyChangeset leading-symlink safety', () => {
     });
   });
 });
+
+describe('applyChangeset replacing a directory whose tracked child has a non-UTF-8 name', () => {
+  describe('Given a lossy delete d/<0xff>, an add of file d and an untracked d/� twin', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then it refuses upfront listing d and writes nothing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const lostId = await writeBlob(ctx, enc('x'));
+        const fileId = await writeBlob(ctx, enc('file'));
+        await ctx.fs.write(`${WORKDIR}/d/�`, enc('u'));
+        const changeset = makeChangeset([
+          makeDelete('d/�', lostId, FILE_MODE.REGULAR, {
+            pathBytes: Uint8Array.of(0x64, 0x2f, 0xff),
+          }),
+          makeAdd('d', fileId),
+        ]);
+        const sut = applyChangeset;
+
+        // Act
+        const outcome = await outcomeOf(sut(ctx, { changeset, force: false, workdir: WORKDIR }));
+
+        // Assert
+        expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY', untracked: ['d'] });
+        expect(dec(await ctx.fs.read(`${WORKDIR}/d/�`))).toBe('u');
+      });
+    });
+  });
+});

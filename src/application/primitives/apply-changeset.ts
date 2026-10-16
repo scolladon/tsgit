@@ -294,11 +294,14 @@ const validateChangesetPaths = (changeset: Changeset): void => {
   for (const entry of changeset.entries) validateChangesetEntry(entry);
 };
 
+// A lossy delete is never applied, and its decoded path may name a different, untracked file.
 const deletedPaths = (
   workdir: string,
   entries: ReadonlyArray<ChangesetEntry>,
 ): ReadonlySet<string> =>
-  new Set(entries.filter((e) => e.kind === 'delete').map((e) => joinPath(workdir, e.path)));
+  new Set(
+    entries.filter((e) => e.kind === 'delete' && !isLossy(e)).map((e) => joinPath(workdir, e.path)),
+  );
 
 const checkDirty = async (
   ctx: Context,
