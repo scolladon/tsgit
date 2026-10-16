@@ -4,7 +4,9 @@ import { MAX_FLAT_TREE_ENTRIES } from '../../../../src/domain/diff/flat-tree.js'
 import {
   conflictsToIndexEntries,
   diffIndexAgainstTree,
+  diffIndexAgainstTreeKeyed,
   groupUnmergedEntries,
+  groupUnmergedEntriesKeyed,
   sortedRecordedPaths,
 } from '../../../../src/domain/diff/index-diff.js';
 import type {
@@ -352,6 +354,73 @@ describe('groupUnmergedEntries', () => {
         expect(group?.stage1?.id).toBe(stage1);
         expect(group?.stage2?.id).toBe(stage2);
         expect(group?.stage3?.id).toBe(stage3);
+      });
+    });
+  });
+});
+
+const LOSSY_BYTES = new Uint8Array([0xff, 0x2e, 0x74, 0x78, 0x74]);
+
+function lossyEntry(id: ObjectId, stage: 0 | 1 | 2 | 3): IndexEntry {
+  return { ...entry('\uFFFD.txt', id, FILE_MODE.REGULAR, stage), pathBytes: LOSSY_BYTES };
+}
+
+describe('diffIndexAgainstTreeKeyed', () => {
+  describe('Given HEAD and index both holding a lossy path and its U+FFFD twin', () => {
+    describe('When diffIndexAgainstTreeKeyed called', () => {
+      it('Then no change is reported', () => {
+        // Arrange
+        const idx = index([entry('\uFFFD.txt', ID_B, FILE_MODE.REGULAR, 0), lossyEntry(ID_A, 0)]);
+        const tree = flatTree([
+          ['\uDCFF.txt', ID_A, FILE_MODE.REGULAR],
+          ['\uFFFD.txt', ID_B, FILE_MODE.REGULAR],
+        ]);
+        const sut = diffIndexAgainstTreeKeyed;
+
+        // Act
+        const result = sut(idx, tree);
+
+        // Assert
+        expect(result.changes).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('diffIndexAgainstTree over a view-keyed tree', () => {
+  describe('Given an index holding only the lossy path and a tree keyed by its view', () => {
+    describe('When diffIndexAgainstTree called', () => {
+      it('Then no change is reported', () => {
+        // Arrange
+        const idx = index([lossyEntry(ID_A, 0)]);
+        const tree = flatTree([['\uFFFD.txt', ID_A, FILE_MODE.REGULAR]]);
+        const sut = diffIndexAgainstTree;
+
+        // Act
+        const result = sut(idx, tree);
+
+        // Assert
+        expect(result.changes).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('groupUnmergedEntriesKeyed', () => {
+  describe('Given unmerged entries at a lossy path and its U+FFFD twin', () => {
+    describe('When groupUnmergedEntriesKeyed called', () => {
+      it('Then each path keeps its own group under its escaped key', () => {
+        // Arrange
+        const idx = index([entry('\uFFFD.txt', ID_B, FILE_MODE.REGULAR, 2), lossyEntry(ID_A, 1)]);
+        const sut = groupUnmergedEntriesKeyed;
+
+        // Act
+        const result = sut(idx);
+
+        // Assert
+        expect(result.unmerged.get('\uDCFF.txt' as FilePath)?.stage1?.id).toBe(ID_A);
+        expect(result.unmerged.get('\uFFFD.txt' as FilePath)?.stage2?.id).toBe(ID_B);
+        expect(result.unmerged.size).toBe(2);
       });
     });
   });

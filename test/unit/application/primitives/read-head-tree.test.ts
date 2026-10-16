@@ -9,6 +9,7 @@ import {
   FLAT_TREE_CACHE_MAX_ENTRIES,
   flatTreeByteSize,
   readHeadTree,
+  readHeadTreeEscaped,
 } from '../../../../src/application/primitives/read-head-tree.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -582,6 +583,88 @@ describe('readHeadTree', () => {
 
         // Assert
         expect(result).toBe(false);
+      });
+    });
+  });
+  describe('Given a HEAD tree holding a lossy name and its U+FFFD twin', () => {
+    const LOSSY_NAME = new Uint8Array([0xff, 0x2e, 0x74, 0x78, 0x74]);
+    const TWIN_NAME = new Uint8Array([0xef, 0xbf, 0xbd, 0x2e, 0x74, 0x78, 0x74]);
+    const blobId = 'a'.repeat(40) as ObjectId;
+
+    async function headWithTwins(): Promise<ReturnType<typeof createMemoryContext>> {
+      const ctx = createMemoryContext();
+      await init(ctx);
+      const treeId = await writeObject(ctx, {
+        type: 'tree',
+        id: '' as ObjectId,
+        entries: [
+          treeEntry(FILE_MODE.REGULAR, LOSSY_NAME, blobId),
+          treeEntry(FILE_MODE.REGULAR, TWIN_NAME, blobId),
+        ],
+      });
+      const commitId = await writeObject(ctx, {
+        type: 'commit',
+        id: '' as ObjectId,
+        data: {
+          tree: treeId,
+          parents: [],
+          author,
+          committer: author,
+          message: 'twins',
+          extraHeaders: [],
+        },
+      });
+      const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
+      const ref = head.replace('ref: ', '').trim();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${ref}`, `${commitId}\n`);
+      return ctx;
+    }
+
+    describe('When readHeadTreeEscaped runs', () => {
+      it('Then both names keep their own escaped key', async () => {
+        // Arrange
+        const ctx = await headWithTwins();
+        const sut = readHeadTreeEscaped;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect([...(result?.entries.keys() ?? [])].sort()).toEqual(['\uDCFF.txt', '\uFFFD.txt']);
+      });
+    });
+
+    describe('When readHeadTree runs after readHeadTreeEscaped', () => {
+      it('Then it still reports the single U+FFFD view key', async () => {
+        // Arrange
+        const ctx = await headWithTwins();
+        await readHeadTreeEscaped(ctx);
+        const sut = readHeadTree;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect([...(result?.entries.keys() ?? [])]).toEqual(['\uFFFD.txt']);
+      });
+    });
+
+    describe('When readHeadTreeEscaped runs twice', () => {
+      it('Then the second call is served from the cache', async () => {
+        // Arrange
+        const ctx = await headWithTwins();
+        const flattenSpy = vi.spyOn(flattenTreeMod, 'flattenEscapedTree');
+        const baseline = flattenSpy.mock.calls.length;
+        const sut = readHeadTreeEscaped;
+        await sut(ctx);
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(flattenCallsSince(flattenSpy, baseline)).toBe(1);
+        expect(result?.entries.size).toBe(2);
+        flattenSpy.mockRestore();
       });
     });
   });

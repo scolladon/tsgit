@@ -1,5 +1,5 @@
 import { type GitIndex, type IndexEntry, STAGE0_FLAGS, type StatData } from '../git-index/index.js';
-import { indexPathOfEscaped, pathBytesOf } from '../git-index/index-path-key.js';
+import { escapedPathOf, indexPathOfEscaped, pathBytesOf } from '../git-index/index-path-key.js';
 import { type MergeConflict, recordsOwnPaths } from '../merge/merge-types.js';
 import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
 import { compareBytes } from '../objects/index.js';
@@ -22,10 +22,14 @@ export interface GroupedIndex {
   readonly unmerged: ReadonlyMap<FilePath, UnmergedEntryGroup>;
 }
 
-function stage0IndexMap(index: GitIndex): Map<FilePath, IndexEntry> {
+type KeyOf = (entry: IndexEntry) => FilePath;
+
+const viewKeyOf: KeyOf = (entry) => entry.path;
+
+function stage0IndexMap(index: GitIndex, keyOf: KeyOf): Map<FilePath, IndexEntry> {
   const map = new Map<FilePath, IndexEntry>();
   for (const entry of index.entries) {
-    if (entry.flags.stage === 0) map.set(entry.path, entry);
+    if (entry.flags.stage === 0) map.set(keyOf(entry), entry);
   }
   return map;
 }
@@ -95,9 +99,13 @@ function changeForPath(
   return deleteFromTree(path, treeEntry!);
 }
 
-export function diffIndexAgainstTree(index: GitIndex, tree: FlatTree | undefined): TreeDiff {
+function diffIndexAgainstTreeBy(
+  index: GitIndex,
+  tree: FlatTree | undefined,
+  keyOf: KeyOf,
+): TreeDiff {
   enforceTreeCap(tree);
-  const indexMap = stage0IndexMap(index);
+  const indexMap = stage0IndexMap(index, keyOf);
   const allPaths = unionPaths(indexMap, tree);
 
   const changes: DiffChange[] = [];
@@ -108,6 +116,15 @@ export function diffIndexAgainstTree(index: GitIndex, tree: FlatTree | undefined
   return { changes: sortByPath(changes, primaryPath) };
 }
 
+export function diffIndexAgainstTree(index: GitIndex, tree: FlatTree | undefined): TreeDiff {
+  return diffIndexAgainstTreeBy(index, tree, viewKeyOf);
+}
+
+/** Internal: the tree is escaped-keyed (`flattenEscapedTree`), so the index side keys by escaped path. */
+export function diffIndexAgainstTreeKeyed(index: GitIndex, tree: FlatTree | undefined): TreeDiff {
+  return diffIndexAgainstTreeBy(index, tree, escapedPathOf);
+}
+
 function assignStage(group: UnmergedEntryGroup, entry: IndexEntry): UnmergedEntryGroup {
   const stage = entry.flags.stage;
   if (stage === 1) return { ...group, stage1: entry };
@@ -115,18 +132,27 @@ function assignStage(group: UnmergedEntryGroup, entry: IndexEntry): UnmergedEntr
   return { ...group, stage3: entry };
 }
 
-export function groupUnmergedEntries(index: GitIndex): GroupedIndex {
+function groupUnmergedEntriesBy(index: GitIndex, keyOf: KeyOf): GroupedIndex {
   const staged: IndexEntry[] = [];
   const unmerged = new Map<FilePath, UnmergedEntryGroup>();
   for (const entry of index.entries) {
     if (entry.flags.stage === 0) {
       staged.push(entry);
     } else {
-      const current = unmerged.get(entry.path) ?? {};
-      unmerged.set(entry.path, assignStage(current, entry));
+      const key = keyOf(entry);
+      unmerged.set(key, assignStage(unmerged.get(key) ?? {}, entry));
     }
   }
   return { staged, unmerged };
+}
+
+export function groupUnmergedEntries(index: GitIndex): GroupedIndex {
+  return groupUnmergedEntriesBy(index, viewKeyOf);
+}
+
+/** Internal: a lossy path and its U+FFFD twin form two groups. */
+export function groupUnmergedEntriesKeyed(index: GitIndex): GroupedIndex {
+  return groupUnmergedEntriesBy(index, escapedPathOf);
 }
 
 interface StageEmission {
