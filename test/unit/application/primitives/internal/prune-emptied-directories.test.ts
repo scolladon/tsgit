@@ -114,6 +114,28 @@ describe('pruneEmptiedDirectories', () => {
     });
   });
 
+  describe('Given removed paths whose climbs start at two depths of one chain', () => {
+    describe('When both are pruned', () => {
+      it('Then the deeper directory is attempted first and the shallower one once, after it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.mkdir(inWork(ctx, 'd/e'));
+        const rmdir = vi.spyOn(ctx.fs, 'rmdir');
+        const sut = pruneEmptiedDirectories;
+
+        // Act
+        await sut(ctx, workdirOf(ctx), ['d/x', 'd/e/y'], NO_SURVIVORS);
+
+        // Assert
+        expect(rmdir.mock.calls.map(([path]) => path)).toEqual([
+          inWork(ctx, 'd/e'),
+          inWork(ctx, 'd'),
+        ]);
+        expect(await ctx.fs.exists(inWork(ctx, 'd'))).toBe(false);
+      });
+    });
+  });
+
   describe('Given several same-depth directories and a shared parent', () => {
     describe('When they are pruned', () => {
       it('Then same-depth removals overlap and the parent starts only after every child settled', async () => {

@@ -80,6 +80,7 @@ export const pruneEmptiedDirectories = async (
   for (const path of removedPaths) schedule(levels, parentDirectory(path), surviving);
   while (levels.size > 0) {
     const depth = deepestDepth(levels);
+    // Stryker disable next-line ArrayDeclaration: equivalent — depth is one of levels.keys(), so levels.get(depth) is always defined and the ?? fallback never runs.
     const dirs = [...(levels.get(depth) ?? [])];
     levels.delete(depth);
     const removed = await boundedMapFor(ctx, 'ioBound', dirs, (dir) =>
