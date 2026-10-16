@@ -1,5 +1,6 @@
 import * as os from 'node:os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { errorDataCode } from '../../../src/domain/error-data-code.js';
 import { TsgitError } from '../../../src/domain/index.js';
 import type { FileStat, FileSystem } from '../../../src/ports/file-system.js';
 
@@ -1406,6 +1407,92 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       // DIRECTORY_NOT_EMPTY; other adapters may surface NOT_A_DIRECTORY or similar).
       // What matters is that a structured TsgitError is thrown, not the loose fact of throwing.
       expect(caught).toBeInstanceOf(TsgitError);
+    });
+
+    describe('Given the optional rmdir', () => {
+      const rmdirOf = (env: FileSystemContractEnv): ((path: string) => Promise<void>) => {
+        const { rmdir } = env.fs;
+        if (rmdir === undefined) throw new Error('the adapter under test must provide rmdir');
+        return (path) => rmdir.call(env.fs, path);
+      };
+      const codeOf = async (run: () => Promise<void>): Promise<unknown> => {
+        try {
+          await run();
+        } catch (err) {
+          return err instanceof TsgitError ? errorDataCode(err) : err;
+        }
+        return undefined;
+      };
+
+      it('Given an empty directory, When rmdir, Then the directory is removed', async () => {
+        // Arrange
+        const dir = `${env.rootDir}/rmdir-empty`;
+        await env.fs.mkdir(dir);
+        const sut = rmdirOf(env);
+
+        // Act
+        await sut(dir);
+
+        // Assert
+        expect(await env.fs.exists(dir)).toBe(false);
+      });
+
+      it('Given a non-empty directory, When rmdir, Then it refuses DIRECTORY_NOT_EMPTY and keeps the entry', async () => {
+        // Arrange
+        const dir = `${env.rootDir}/rmdir-full`;
+        await env.fs.mkdir(dir);
+        await env.fs.write(`${dir}/inside.txt`, new Uint8Array([1]));
+        const sut = rmdirOf(env);
+
+        // Act
+        const result = await codeOf(() => sut(dir));
+
+        // Assert
+        expect(result).toBe('DIRECTORY_NOT_EMPTY');
+        expect(await env.fs.exists(`${dir}/inside.txt`)).toBe(true);
+      });
+
+      it('Given a file, When rmdir, Then it refuses NOT_A_DIRECTORY and keeps the file', async () => {
+        // Arrange
+        const file = `${env.rootDir}/rmdir-file.txt`;
+        await env.fs.write(file, new Uint8Array([1]));
+        const sut = rmdirOf(env);
+
+        // Act
+        const result = await codeOf(() => sut(file));
+
+        // Assert
+        expect(result).toBe('NOT_A_DIRECTORY');
+        expect(await env.fs.exists(file)).toBe(true);
+      });
+
+      it('Given an absent path, When rmdir, Then it refuses FILE_NOT_FOUND', async () => {
+        // Arrange
+        const sut = rmdirOf(env);
+
+        // Act
+        const result = await codeOf(() => sut(`${env.rootDir}/rmdir-absent`));
+
+        // Assert
+        expect(result).toBe('FILE_NOT_FOUND');
+      });
+
+      it('Given a symlink to an empty directory, When rmdir, Then it refuses NOT_A_DIRECTORY and leaves link and target', async () => {
+        // Arrange
+        const target = `${env.rootDir}/rmdir-link-target`;
+        const link = `${env.rootDir}/rmdir-link`;
+        await env.fs.mkdir(target);
+        await env.fs.symlink('rmdir-link-target', link);
+        const sut = rmdirOf(env);
+
+        // Act
+        const result = await codeOf(() => sut(link));
+
+        // Assert
+        expect(result).toBe('NOT_A_DIRECTORY');
+        expect((await env.fs.lstat(link)).isSymbolicLink).toBe(true);
+        expect((await env.fs.lstat(target)).isDirectory).toBe(true);
+      });
     });
 
     it('Given symlink(target=escape, path=in-root), Then SUCCEEDS (port does not validate target)', async () => {

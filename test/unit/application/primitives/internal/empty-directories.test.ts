@@ -71,9 +71,9 @@ describe('internal/empty-directories', () => {
             ...base,
             fs: {
               ...base.fs,
-              rm: async (path: string) => {
+              rmdir: async (path: string) => {
                 if (path === dir) throw permissionDenied(path);
-                return base.fs.rm(path);
+                return base.fs.rmdir?.(path);
               },
             },
           };
@@ -85,6 +85,52 @@ describe('internal/empty-directories', () => {
           // Assert
           expect(refusal).toEqual({ code: 'PERMISSION_DENIED', path: dir });
         });
+      });
+    });
+  });
+});
+
+describe('internal/empty-directories without the optional rmdir', () => {
+  const withoutRmdir = (base: Context): Context => {
+    const { rmdir: _omitted, ...rest } = base.fs;
+    return { ...base, fs: rest };
+  };
+
+  describe('Given a port without rmdir and an empty directory', () => {
+    describe('When removeEmptyDirectory runs', () => {
+      it('Then it removes the directory through rm', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const dir = `${base.layout.gitDir}/fallback`;
+        await base.fs.mkdir(dir);
+        const ctx = withoutRmdir(base);
+        const sut = removeEmptyDirectory;
+
+        // Act
+        const result = await sut(ctx, dir);
+
+        // Assert
+        expect(result).toBe(true);
+        expect(await base.fs.exists(dir)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a path holding a file', () => {
+    describe('When removeEmptyDirectory runs', () => {
+      it('Then it reports the path as not removable and keeps the file', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const file = `${ctx.layout.gitDir}/plain`;
+        await ctx.fs.writeUtf8(file, 'x');
+        const sut = removeEmptyDirectory;
+
+        // Act
+        const result = await sut(ctx, file);
+
+        // Assert
+        expect(result).toBe(false);
+        expect(await ctx.fs.exists(file)).toBe(true);
       });
     });
   });

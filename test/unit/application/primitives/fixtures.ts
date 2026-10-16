@@ -509,6 +509,10 @@ export function instrumentedContext(base: Context): InstrumentedContext {
       record('rm', p);
       return base.fs.rm(p);
     },
+    rmdir: async (p) => {
+      record('rmdir', p);
+      return base.fs.rmdir?.(p);
+    },
     rename: async (s, d) => {
       record('rename', `${s}->${d}`);
       return base.fs.rename(s, d);

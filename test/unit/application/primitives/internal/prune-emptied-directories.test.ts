@@ -59,14 +59,17 @@ describe('pruneEmptiedDirectories', () => {
         const ctx = await buildSeededContext();
         await ctx.fs.mkdir(inWork(ctx, 'd/e'));
         await ctx.fs.write(inWork(ctx, 'd/y'), bytes('y\n'));
-        const rm = vi.spyOn(ctx.fs, 'rm');
+        const rmdir = vi.spyOn(ctx.fs, 'rmdir');
         const sut = pruneEmptiedDirectories;
 
         // Act
         await sut(ctx, workdirOf(ctx), ['d/e/x'], NO_SURVIVORS);
 
         // Assert
-        expect(rm.mock.calls.map(([path]) => path)).toEqual([inWork(ctx, 'd/e'), inWork(ctx, 'd')]);
+        expect(rmdir.mock.calls.map(([path]) => path)).toEqual([
+          inWork(ctx, 'd/e'),
+          inWork(ctx, 'd'),
+        ]);
         expect(await ctx.fs.exists(inWork(ctx, 'd/e'))).toBe(false);
         expect(await ctx.fs.exists(inWork(ctx, 'd/y'))).toBe(true);
       });
@@ -79,14 +82,14 @@ describe('pruneEmptiedDirectories', () => {
         // Arrange
         const ctx = await buildSeededContext();
         await ctx.fs.write(inWork(ctx, 'd/e/z'), bytes('z\n'));
-        const rm = vi.spyOn(ctx.fs, 'rm');
+        const rmdir = vi.spyOn(ctx.fs, 'rmdir');
         const sut = pruneEmptiedDirectories;
 
         // Act
         await sut(ctx, workdirOf(ctx), ['d/e/x'], NO_SURVIVORS);
 
         // Assert
-        expect(rm.mock.calls.map(([path]) => path)).toEqual([inWork(ctx, 'd/e')]);
+        expect(rmdir.mock.calls.map(([path]) => path)).toEqual([inWork(ctx, 'd/e')]);
       });
     });
   });
@@ -98,14 +101,14 @@ describe('pruneEmptiedDirectories', () => {
         const ctx = await buildSeededContext();
         await ctx.fs.mkdir(inWork(ctx, 'd/e'));
         await ctx.fs.mkdir(inWork(ctx, 'd/f'));
-        const rm = vi.spyOn(ctx.fs, 'rm');
+        const rmdir = vi.spyOn(ctx.fs, 'rmdir');
         const sut = pruneEmptiedDirectories;
 
         // Act
         await sut(ctx, workdirOf(ctx), ['d/e/x', 'd/f/y'], NO_SURVIVORS);
 
         // Assert
-        expect(rm).toHaveBeenCalledTimes(4);
+        expect(rmdir).toHaveBeenCalledTimes(4);
         expect(await ctx.fs.exists(inWork(ctx, 'd'))).toBe(false);
       });
     });
@@ -116,14 +119,14 @@ describe('pruneEmptiedDirectories', () => {
       it('Then nothing is removed and nothing throws', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const rm = vi.spyOn(ctx.fs, 'rm');
+        const rmdir = vi.spyOn(ctx.fs, 'rmdir');
         const sut = pruneEmptiedDirectories;
 
         // Act
         await sut(ctx, workdirOf(ctx), ['gone/x'], NO_SURVIVORS);
 
         // Assert
-        expect(rm).not.toHaveBeenCalled();
+        expect(rmdir).not.toHaveBeenCalled();
       });
     });
   });
@@ -134,7 +137,7 @@ describe('pruneEmptiedDirectories', () => {
         // Arrange
         const ctx = await buildSeededContext();
         await ctx.fs.write(inWork(ctx, 'd/e/z'), bytes('z\n'));
-        const rm = vi.spyOn(ctx.fs, 'rm');
+        const rmdir = vi.spyOn(ctx.fs, 'rmdir');
         const lstat = vi.spyOn(ctx.fs, 'lstat');
         const sut = pruneEmptiedDirectories;
 
@@ -142,7 +145,7 @@ describe('pruneEmptiedDirectories', () => {
         await sut(ctx, workdirOf(ctx), ['d/e/x'], survivingDirectoriesOf(['d/e/z']));
 
         // Assert
-        expect(rm).not.toHaveBeenCalled();
+        expect(rmdir).not.toHaveBeenCalled();
         expect(lstat).not.toHaveBeenCalled();
       });
     });
@@ -155,14 +158,14 @@ describe('pruneEmptiedDirectories', () => {
         const ctx = await buildSeededContext();
         await ctx.fs.mkdir(inWork(ctx, 'd/e'));
         await ctx.fs.write(inWork(ctx, 'd/y'), bytes('y\n'));
-        const rm = vi.spyOn(ctx.fs, 'rm');
+        const rmdir = vi.spyOn(ctx.fs, 'rmdir');
         const sut = pruneEmptiedDirectories;
 
         // Act
         await sut(ctx, workdirOf(ctx), ['d/e/x'], survivingDirectoriesOf(['d/y']));
 
         // Assert
-        expect(rm.mock.calls.map(([path]) => path)).toEqual([inWork(ctx, 'd/e')]);
+        expect(rmdir.mock.calls.map(([path]) => path)).toEqual([inWork(ctx, 'd/e')]);
         expect(await ctx.fs.exists(inWork(ctx, 'd/e'))).toBe(false);
       });
     });

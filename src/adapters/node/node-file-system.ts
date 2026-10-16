@@ -1394,6 +1394,18 @@ export class NodeFileSystem implements FileSystem {
     // remains valid; only the directory arm above invalidates.
   };
 
+  rmdir = async (path: string): Promise<void> => {
+    const real = await this.resolveWrite(path);
+    try {
+      await this.fsOps.rmdir(real);
+    } catch (err) {
+      if (!isErrnoException(err)) throw err;
+      // Some platforms report a non-empty directory as EEXIST; the port speaks one code for it.
+      throw err.code === 'EEXIST' ? directoryNotEmpty(path) : mapErrno(err, path);
+    }
+    this.parentRealpathCache.clear();
+  };
+
   /**
    * `rm`'s directory arm. The removed directory may itself be a cached parent
    * (or hold nested ones), and its path may be re-created as a symlink leaving

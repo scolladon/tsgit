@@ -168,6 +168,15 @@ export interface FileSystem {
   readonly rm: (path: string) => Promise<void>;
 
   /**
+   * Remove an EMPTY directory in one platform call, as POSIX `rmdir` does: nothing is followed,
+   * so a symbolic link (to a directory or not) and a file refuse NOT_A_DIRECTORY and stay in
+   * place; a non-empty directory refuses DIRECTORY_NOT_EMPTY; an absent path refuses
+   * FILE_NOT_FOUND. OPTIONAL: a caller that finds it absent falls back to {@link rm}, which
+   * removes the same empty directory at the cost of extra platform calls when it fails.
+   */
+  readonly rmdir?: (path: string) => Promise<void>;
+
+  /**
    * Rename `src` to `dst`. Atomic where the platform supports it (Node: yes on POSIX;
    * Browser OPFS: no — emulated as read + write + rm, caller must tolerate partial
    * failure between steps). Both paths must be on the same logical root.

@@ -12,14 +12,16 @@ import type { Context } from '../../../ports/context.js';
 const UNREMOVABLE_DIRECTORY_CODES: ReadonlySet<string> = new Set([
   'DIRECTORY_NOT_EMPTY',
   'FILE_NOT_FOUND',
+  'NOT_A_DIRECTORY',
 ]);
 
 /** Removes `dir` when it is empty; `false` when it is non-empty or already
- *  gone. `dir` must be known to be a directory — the port's `rm` also
- *  removes a file. */
+ *  gone. Through the port's `rmdir` when it has one — a single call that
+ *  refuses a file or a symbolic link — else through `rm`, which also removes
+ *  a file, so `dir` must then be known to be a directory. */
 export async function removeEmptyDirectory(ctx: Context, dir: string): Promise<boolean> {
   try {
-    await ctx.fs.rm(dir);
+    await (ctx.fs.rmdir ?? ctx.fs.rm).call(ctx.fs, dir);
     return true;
   } catch (err) {
     // Stryker disable next-line StringLiteral: equivalent — the `??` fallback is reached only when `errorDataCode` yields undefined, and no literal put there is a member of UNREMOVABLE_DIRECTORY_CODES, so the probe answers false whatever the literal is.

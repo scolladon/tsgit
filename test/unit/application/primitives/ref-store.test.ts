@@ -458,7 +458,7 @@ describe('ref-store', () => {
             (c) => c.method === 'rename' && c.path === `${PACKED_REFS}.lock->${PACKED_REFS}`,
           ),
         ).toHaveLength(1);
-        expect(log.filter((c) => c.method === 'rm' && c.path === ORIGIN_DIR)).toHaveLength(1);
+        expect(log.filter((c) => c.method === 'rmdir' && c.path === ORIGIN_DIR)).toHaveLength(1);
         expect(await base.fs.exists(ORIGIN_DIR)).toBe(false);
         expect(await base.fs.readUtf8(PACKED_REFS)).toBe(
           `# pack-refs with: peeled fully-peeled sorted \n${'e'.repeat(40)} refs/heads/kept\n`,
@@ -799,7 +799,7 @@ describe('ref-store', () => {
 
         // Assert
         expect(
-          calls().filter((c) => c.method === 'rm' && c.path.startsWith('/repo/.git/refs/')),
+          calls().filter((c) => c.method === 'rmdir' && c.path.startsWith('/repo/.git/refs/')),
         ).toEqual([]);
         expect(await sut.resolveDirect('refs/remotes/gone/z' as RefName)).toEqual({
           kind: 'missing',
@@ -1234,9 +1234,9 @@ describe('ref-store', () => {
           ...base,
           fs: {
             ...base.fs,
-            rm: async (path) => {
+            rmdir: async (path) => {
               if (path === '/repo/.git/refs/remotes/origin') throw denied;
-              return base.fs.rm(path);
+              return base.fs.rmdir?.(path);
             },
           },
         };
