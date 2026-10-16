@@ -6975,3 +6975,47 @@ describe('merge — file replaced by a directory on one side', () => {
     });
   });
 });
+
+describe('merge — a conflict rename onto an invalid path', () => {
+  describe('Given ours holds a directory git/ and the merged branch 1 holds a file git', () => {
+    describe('When merge runs', () => {
+      it('Then it throws INVALID_INDEX_ENTRY for git~1 and leaves the index and work tree untouched', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/readme.txt`, 'base\n');
+        await add(ctx, ['readme.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: '1' });
+        await checkout(ctx, { rev: '1' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/git`, 'file\n');
+        await add(ctx, ['git']);
+        await commit(ctx, { message: 'theirs', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/git`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/git/x`, 'dir\n');
+        await add(ctx, ['git/x']);
+        await commit(ctx, { message: 'ours', author });
+        const indexBefore = (await readIndex(ctx)).entries.map((e) => `${e.path}:${e.flags.stage}`);
+        const sut = mergeRun;
+
+        // Act
+        const caught = await sut(ctx, { rev: '1', author }).then(
+          () => undefined,
+          (err: unknown) => (err as TsgitError).data,
+        );
+
+        // Assert
+        expect(caught).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'git~1' NTFS short name rejected",
+        });
+        expect((await readIndex(ctx)).entries.map((e) => `${e.path}:${e.flags.stage}`)).toEqual(
+          indexBefore,
+        );
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/git~1`)).toBe(false);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/git/x`)).toBe('dir\n');
+      });
+    });
+  });
+});

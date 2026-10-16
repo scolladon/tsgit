@@ -119,3 +119,63 @@ describe('Given a changed clean outcome at an escaped path forming an HFS .git a
     });
   });
 });
+
+describe('Given a file-directory conflict whose moved path is an NTFS short name of .git', () => {
+  describe.each([['ourPath'], ['theirPath'], ['basePath']] as const)(
+    'When the moved path is carried in %s',
+    (field) => {
+      it('Then validateMergeWritePaths throws INVALID_INDEX_ENTRY with the NTFS reason', () => {
+        // Arrange
+        const conflict: MergeConflict = {
+          type: 'file-directory',
+          path: 'git' as FilePath,
+          ourId: DUMMY_OID,
+          ourMode: FILE_MODE.REGULAR,
+          [field]: 'git~1' as FilePath,
+        };
+        const sut = validateMergeWritePaths;
+
+        // Act
+        const caught = catchError(() => sut([], [conflict], new Set()));
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: -1,
+          reason: "'git~1' NTFS short name rejected",
+        });
+      });
+    },
+  );
+});
+
+describe('Given a distinct-types conflict whose renamed side is an NTFS short name of .git', () => {
+  describe('When validateMergeWritePaths runs', () => {
+    it('Then it throws INVALID_INDEX_ENTRY with the NTFS reason', () => {
+      // Arrange
+      const conflict: MergeConflict = {
+        type: 'distinct-types',
+        path: 'git' as FilePath,
+        ourId: DUMMY_OID,
+        ourMode: FILE_MODE.REGULAR,
+        ourPath: 'git' as FilePath,
+        theirId: DUMMY_OID,
+        theirMode: FILE_MODE.SYMLINK,
+        theirPath: 'git~1' as FilePath,
+      };
+      const sut = validateMergeWritePaths;
+
+      // Act
+      const caught = catchError(() => sut([], [conflict], new Set()));
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'INVALID_INDEX_ENTRY',
+        offset: -1,
+        reason: "'git~1' NTFS short name rejected",
+      });
+    });
+  });
+});

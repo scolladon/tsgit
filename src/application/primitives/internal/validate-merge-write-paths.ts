@@ -35,5 +35,12 @@ export const validateMergeWritePaths = (
   for (const conflict of conflicts) {
     const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
     validateTreePath(conflict.path, mode ?? FILE_MODE.REGULAR);
+    for (const moved of movedPaths(conflict)) validateTreePath(moved, mode ?? FILE_MODE.REGULAR);
   }
 };
+
+/** A conflict that renames a side (`<path>~<label>`) writes the moved path too; git refuses the whole merge when it is invalid. */
+const movedPaths = (conflict: MergeConflict): ReadonlyArray<FilePath> =>
+  [conflict.ourPath, conflict.theirPath, conflict.basePath].filter(
+    (moved): moved is FilePath => moved !== undefined && moved !== conflict.path,
+  );
