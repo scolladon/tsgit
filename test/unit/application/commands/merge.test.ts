@@ -6573,6 +6573,41 @@ describe('merge — rename/rename to two paths', () => {
       });
     });
   });
+
+  describe('Given both sides rename d/f apart while side also adds a symlink', () => {
+    describe('When merge runs', () => {
+      it('Then d, which neither side keeps, is not recreated for the renamed-away source', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const root = ctx.layout.workDir;
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${root}/d/f`, LINES);
+        await add(ctx, ['d/f']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'side' });
+        await checkout(ctx, { rev: 'side' });
+        await rm(ctx, ['d/f']);
+        await ctx.fs.writeUtf8(`${root}/b`, LINES);
+        await ctx.fs.symlink('b', `${root}/l`);
+        await add(ctx, ['b', 'l']);
+        await commit(ctx, { message: 'side', author });
+        await checkout(ctx, { rev: 'main' });
+        await rm(ctx, ['d/f']);
+        await ctx.fs.writeUtf8(`${root}/a`, LINES);
+        await add(ctx, ['a']);
+        await commit(ctx, { message: 'main', author });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.exists(`${root}/d`)).toBe(false);
+        expect(await ctx.fs.readlink(`${root}/l`)).toBe('b');
+      });
+    });
+  });
 });
 
 describe('merge — trees holding a non-UTF-8 path', () => {
@@ -6908,6 +6943,97 @@ describe('merge — trees holding a non-UTF-8 path', () => {
         const { entries } = await readIndex(ctx);
         const skipped = entries.filter((e) => e.flags.skipWorktree);
         expect(skipped.map((e) => hex(e.pathBytes ?? new Uint8Array()))).toEqual([FF_TXT_HEX]);
+      });
+    });
+  });
+
+  describe('Given a conflict on c.txt while side empties directory d of its tracked y', () => {
+    /** c.txt conflicts; d holds `rows` per side and the work tree holds main's c.txt and d/y. */
+    const seedEmptiedDirectory = async (
+      base: ReadonlyArray<Row>,
+      main: ReadonlyArray<Row>,
+      side: ReadonlyArray<Row>,
+    ): Promise<Context> => {
+      const ctx = createMemoryContext();
+      await init(ctx);
+      const rootOf = async (c: string, d: ReadonlyArray<Row>): Promise<ObjectId> =>
+        writeTreeMod.writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'c.txt', await writeBlob(ctx, c)),
+          treeEntry(FILE_MODE.DIRECTORY, 'd', await treeOf(ctx, d)),
+        ]);
+      const root = await commitOf(ctx, await rootOf('base\n', base), 'main', []);
+      await commitOf(ctx, await rootOf('theirs\n', side), 'side', [root]);
+      await commitOf(ctx, await rootOf('ours\n', main), 'main', [root]);
+      await reset(ctx, { mode: 'mixed', rev: 'main' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'ours\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/d/y`, 'y\n');
+      return ctx;
+    };
+
+    const checkOutOnlyC = async (ctx: Context): Promise<void> => {
+      const { updateCoreConfig } = await import(
+        '../../../../src/application/primitives/update-config.js'
+      );
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, '/c.txt\n');
+      await updateCoreConfig(ctx, { sparseCheckout: 'true', sparseCheckoutCone: 'false' });
+    };
+
+    describe('When side adds a non-UTF-8 name in d and merge runs', () => {
+      it('Then d stays, as it holds the name the merge records but cannot write', async () => {
+        // Arrange
+        const ctx = await seedEmptiedDirectory([['y', 'y\n']], [['y', 'y\n']], [[FF_TXT, 'l\n']]);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/d/y`)).toBe(false);
+        expect((await ctx.fs.lstat(`${ctx.layout.workDir}/d`)).isDirectory).toBe(true);
+      });
+    });
+
+    describe('When side adds a file in d that sparse checkout excludes and merge runs', () => {
+      it('Then d is removed, as the excluded file is never written', async () => {
+        // Arrange
+        const ctx = await seedEmptiedDirectory([['y', 'y\n']], [['y', 'y\n']], [['new', 'n\n']]);
+        await checkOutOnlyC(ctx);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/d`)).toBe(false);
+      });
+    });
+
+    describe('When both sides cleanly edit a non-UTF-8 name in d that sparse checkout excludes and merge runs', () => {
+      it('Then d stays, as the merged content is materialised there despite the exclusion', async () => {
+        // Arrange
+        const ctx = await seedEmptiedDirectory(
+          [
+            ['y', 'y\n'],
+            [FF_TXT, '1\n2\n3\n4\n5\n'],
+          ],
+          [
+            ['y', 'y\n'],
+            [FF_TXT, 'O\n2\n3\n4\n5\n'],
+          ],
+          [[FF_TXT, '1\n2\n3\n4\nT\n']],
+        );
+        await checkOutOnlyC(ctx);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/d/y`)).toBe(false);
+        expect((await ctx.fs.lstat(`${ctx.layout.workDir}/d`)).isDirectory).toBe(true);
       });
     });
   });
