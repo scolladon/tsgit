@@ -55,7 +55,6 @@ const hasIgnorableCodepoint = (part: string): boolean => {
 const THREE_BYTE_LEAD_NON_CHARACTER = 0xef;
 const NON_CHARACTER_SECOND = 0xbf;
 const NON_CHARACTER_THIRD_MIN = 0xbe;
-const THREE_BYTE_LENGTH = 3;
 const BMP_LAST_MINUS_ONE = 0xfffe;
 const BMP_LAST = 0xffff;
 
@@ -67,7 +66,8 @@ const isNonCharacterTail = (bytes: Uint8Array, at: number): boolean =>
 /** Length of the sequence git's `pick_one_utf8_char` accepts at `at`, or 0 when it rejects. */
 const acceptedSequenceLength = (bytes: Uint8Array, at: number): number => {
   const length = wellFormedSequenceLength(bytes, at);
-  return length === THREE_BYTE_LENGTH && isNonCharacterTail(bytes, at) ? 0 : length;
+  // The non-character tail starts with a three-byte lead, so it only ever meets a three-byte length or 0.
+  return isNonCharacterTail(bytes, at) ? 0 : length;
 };
 
 /** Offset of the first sequence git's `pick_one_utf8_char` rejects, else `bytes.length`. */
