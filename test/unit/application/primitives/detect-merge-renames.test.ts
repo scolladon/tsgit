@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { detectMergeRenames } from '../../../../src/application/primitives/detect-merge-renames.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import type { FlatTree } from '../../../../src/domain/diff/flat-tree.js';
-import { FILE_MODE, type FilePath, type ObjectId } from '../../../../src/domain/objects/index.js';
+import type { EscapedFlatTree } from '../../../../src/domain/diff/flat-tree.js';
+import { FILE_MODE, type ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { escapedFlatTree } from '../../support/escaped-flat-tree.js';
 
 const LINES = '1\n2\n3\n4\n5\n6\n7\n8\n';
 const EDITED = '1\n2\n3\n4\n5\n6\nseven\n8\n';
@@ -17,11 +18,8 @@ const blob = (ctx: Context, content: string): Promise<ObjectId> =>
     id: '' as ObjectId,
   });
 
-const flat = (pairs: ReadonlyArray<readonly [string, ObjectId]>): FlatTree => ({
-  entries: new Map(
-    pairs.map(([path, id]) => [path as FilePath, { id, mode: FILE_MODE.REGULAR }] as const),
-  ),
-});
+const flat = (pairs: ReadonlyArray<readonly [string, ObjectId]>): EscapedFlatTree =>
+  escapedFlatTree(pairs.map(([path, id]) => [path, { id, mode: FILE_MODE.REGULAR }]));
 
 const withConfig = async (ctx: Context, config: string): Promise<Context> => {
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
@@ -522,9 +520,7 @@ describe('detectMergeRenames', () => {
         const ctx = createMemoryContext();
         const content = await blob(ctx, LINES);
         const base = flat([['f', content]]);
-        const ours: FlatTree = {
-          entries: new Map([['f' as FilePath, { id: content, mode: FILE_MODE.EXECUTABLE }]]),
-        };
+        const ours = escapedFlatTree([['f', { id: content, mode: FILE_MODE.EXECUTABLE }]]);
         const theirs = flat([['g', content]]);
         const sut = detectMergeRenames;
 
@@ -545,7 +541,7 @@ describe('detectMergeRenames', () => {
         const { base, ours, theirs } = await renameVsModify(ctx, `0\n${LINES}`);
         const empty = await blob(ctx, '');
         const filled = await blob(ctx, 'x\n');
-        const withEmpty = (tree: FlatTree, id: ObjectId) =>
+        const withEmpty = (tree: EscapedFlatTree, id: ObjectId) =>
           flat([...[...tree.entries].map(([p, e]) => [p, e.id] as const), ['e', id]]);
         const sut = detectMergeRenames;
 
