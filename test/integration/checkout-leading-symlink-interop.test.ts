@@ -170,7 +170,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       await rm(outsides.ours, { recursive: true, force: true });
     });
 
-    describe('Given a worktree symlink a to an outside directory, an empty index and a tree holding only a/payload', () => {
+    describe('Given a worktree symlink a to an outside directory, an empty index and a tree holding only a/payload (guard: shared behaviour, not the case-fold race)', () => {
       describe('When both tools force-checkout HEAD', () => {
         it('Then a is a real directory holding payload and the outside directory stays empty, matching git', async () => {
           // Arrange

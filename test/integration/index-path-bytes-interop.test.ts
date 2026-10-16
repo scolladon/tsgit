@@ -162,10 +162,11 @@ describe.skipIf(!GIT_AVAILABLE)(
           git('commit', '-q', '-m', 'second');
 
           // Act
-          const sut = await repo.status();
+          const sut = repo;
+          const result = await sut.status();
 
           // Assert
-          expect(sut.clean).toBe(true);
+          expect(result.clean).toBe(true);
         });
       });
 
@@ -175,10 +176,11 @@ describe.skipIf(!GIT_AVAILABLE)(
           buildBomState();
 
           // Act
-          const sut = await repo.rm(['\uFEFFa/x'], { cached: true });
+          const sut = repo;
+          const result = await sut.rm(['\uFEFFa/x'], { cached: true });
 
           // Assert
-          expect(sut.removed).toEqual(['\uFEFFa/x']);
+          expect(result.removed).toEqual(['\uFEFFa/x']);
           expect(lsFilesPathHex(pair.peer)).not.toContain(BOM_DIR_HEX);
         });
       });
