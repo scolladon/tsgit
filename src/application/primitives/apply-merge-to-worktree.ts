@@ -236,7 +236,7 @@ export const removeChangedOutcome = async (
   );
 };
 
-/** The paths the merge leaves tracked: every outcome that is not a deletion, and each path a conflict records. */
+/** The paths the merge writes: every written outcome, and each path a conflict records. An outcome the merge leaves alone may be absent from disk. */
 export function* survivingPathsOf(
   outcomes: ReadonlyArray<MergeOutcome>,
   conflicts: ReadonlyArray<MergeConflict>,
@@ -316,7 +316,7 @@ const writeConflictWorktree = async (
   // before its first checkout: a deleted `.gitattributes` must not govern the writes.
   const deleted = touched.filter(isDeleted);
   const surviving = survivingDirectoriesOf(
-    deleted.length === 0 ? [] : survivingPathsOf(outcomes, conflicts),
+    deleted.length === 0 ? [] : survivingPathsOf(touched, conflicts),
   );
   for (const outcome of deleted) await removeChangedOutcome(ctx, outcome, scanner, surviving);
   for (const conflict of conflicts) await removeDisplacedFile(ctx, conflict);

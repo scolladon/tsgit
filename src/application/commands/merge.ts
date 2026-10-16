@@ -1787,10 +1787,14 @@ export const rejectUnsupportedConflicts = (conflicts: ReadonlyArray<MergeConflic
 const isExcluded = (matcher: SparseMatcher | undefined, path: FilePath): boolean =>
   matcher !== undefined && !matcher(path);
 
-/** Only a deletion can empty a directory, so a deletion-free merge derives nothing. */
+const isMaterialised = (outcome: MergeOutcome, matcher: SparseMatcher | undefined): boolean =>
+  outcome.status === 'resolved-merged' ||
+  (outcome.status !== 'conflict' && !isExcluded(matcher, outcome.path));
+
+/** Only a deletion can empty a directory; a sparse-excluded outcome is skipped, so it keeps none alive. */
 const survivingFor = (
   deleted: ReadonlyArray<DeletedOutcome>,
-  outcomes: ReadonlyArray<MergeOutcome>,
+  touched: ReadonlyArray<MergeOutcome>,
   conflicts: ReadonlyArray<MergeConflict>,
   matcher: SparseMatcher | undefined,
 ): SurvivingDirectories =>
@@ -1798,9 +1802,7 @@ const survivingFor = (
     deleted.length === 0
       ? []
       : survivingPathsOf(
-          outcomes.filter(
-            (outcome) => outcome.status === 'conflict' || !isExcluded(matcher, outcome.path),
-          ),
+          touched.filter((outcome) => isMaterialised(outcome, matcher)),
           conflicts,
         ),
   );
@@ -1828,7 +1830,7 @@ const writeConflictingWorkingTree = async (
   // Every deletion lands before the writer reads attributes, as git unlinks
   // before its first checkout: a deleted `.gitattributes` must not govern the writes.
   const deleted = touched.filter(isDeleted);
-  const surviving = survivingFor(deleted, outcomes, conflicts, matcher);
+  const surviving = survivingFor(deleted, touched, conflicts, matcher);
   await runBounded(ctx, deleted, (outcome) =>
     removeChangedOutcome(ctx, outcome, scanner, surviving),
   );
@@ -1859,7 +1861,7 @@ const outcomeWave = (
   path: outcome.path,
   isLink: hasLinkMode([outcome.mode]),
   validate: () => validateTreePath(outcome.path, outcome.mode),
-  needsDirectories: outcome.status === 'resolved-merged' || !isExcluded(matcher, outcome.path),
+  needsDirectories: isMaterialised(outcome, matcher),
   run: () => writeOutcomeToTree(outcome, matcher, writer, scanner),
 });
 

@@ -15,7 +15,7 @@
  *   unique:         rm porcelain index+worktree state matches canonical git rm
  *   interopSurface: rm
  */
-import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { TsgitError } from '../../src/domain/error.js';
@@ -311,6 +311,28 @@ describe.skipIf(!GIT_AVAILABLE)('rm porcelain interop', () => {
         // Assert
         expect(result).toBe(lsStage(pair.peer));
         await expect(pathExists(pair.ours, 'd/a')).resolves.toBe(false);
+      });
+    });
+  });
+
+  describe('Given a tracked sibling already deleted from the working tree', () => {
+    describe('When repo.rm and git rm remove the last file on disk of the directory', () => {
+      it('Then both remove the emptied directory', async () => {
+        // Arrange
+        await mkdir(path.join(pair.peer, 'd'));
+        await mkdir(path.join(pair.ours, 'd'));
+        await seedCommitted('d/a', 'a\n');
+        await seedCommitted('d/b', 'b\n');
+        await rm(path.join(pair.peer, 'd/b'));
+        await rm(path.join(pair.ours, 'd/b'));
+
+        // Act
+        await repo.rm(['d/a']);
+        runGit(['-C', pair.peer, 'rm', '-q', 'd/a']);
+
+        // Assert
+        await expect(pathExists(pair.peer, 'd')).resolves.toBe(false);
+        await expect(pathExists(pair.ours, 'd')).resolves.toBe(false);
       });
     });
   });

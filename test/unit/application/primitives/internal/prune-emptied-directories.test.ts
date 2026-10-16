@@ -116,7 +116,7 @@ describe('pruneEmptiedDirectories', () => {
 
   describe('Given a leading directory that is already gone', () => {
     describe('When its path is pruned', () => {
-      it('Then nothing is removed and nothing throws', async () => {
+      it('Then one removal is attempted and its refusal does not throw', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const rmdir = vi.spyOn(ctx.fs, 'rmdir');
@@ -126,7 +126,67 @@ describe('pruneEmptiedDirectories', () => {
         await sut(ctx, workdirOf(ctx), ['gone/x'], NO_SURVIVORS);
 
         // Assert
-        expect(rmdir).not.toHaveBeenCalled();
+        expect(rmdir.mock.calls.map(([path]) => path)).toEqual([inWork(ctx, 'gone')]);
+      });
+    });
+  });
+
+  describe('Given a leading component that is a symlink to an empty directory', () => {
+    describe('When its path is pruned', () => {
+      it('Then the link survives and its target is untouched', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.mkdir(inWork(ctx, 'real'));
+        await ctx.fs.symlink('real', inWork(ctx, 'a'));
+        const sut = pruneEmptiedDirectories;
+
+        // Act
+        await sut(ctx, workdirOf(ctx), ['a/x'], NO_SURVIVORS);
+
+        // Assert
+        expect((await ctx.fs.lstat(inWork(ctx, 'a'))).isSymbolicLink).toBe(true);
+        expect((await ctx.fs.lstat(inWork(ctx, 'real'))).isDirectory).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a port without rmdir', () => {
+    const withoutRmdir = (ctx: Context): Context => {
+      const { rmdir: _omitted, ...rest } = ctx.fs;
+      return { ...ctx, fs: rest };
+    };
+
+    describe('When a symlink to an empty directory is pruned', () => {
+      it('Then the link survives and its target is untouched', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await base.fs.mkdir(inWork(base, 'real'));
+        await base.fs.symlink('real', inWork(base, 'a'));
+        const ctx = withoutRmdir(base);
+        const sut = pruneEmptiedDirectories;
+
+        // Act
+        await sut(ctx, workdirOf(ctx), ['a/x'], NO_SURVIVORS);
+
+        // Assert
+        expect((await base.fs.lstat(inWork(base, 'a'))).isSymbolicLink).toBe(true);
+        expect((await base.fs.lstat(inWork(base, 'real'))).isDirectory).toBe(true);
+      });
+    });
+
+    describe('When an emptied directory is pruned', () => {
+      it('Then it is removed through rm', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await base.fs.mkdir(inWork(base, 'd/e'));
+        const ctx = withoutRmdir(base);
+        const sut = pruneEmptiedDirectories;
+
+        // Act
+        await sut(ctx, workdirOf(ctx), ['d/e/x'], NO_SURVIVORS);
+
+        // Assert
+        expect(await base.fs.exists(inWork(base, 'd'))).toBe(false);
       });
     });
   });

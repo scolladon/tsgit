@@ -684,9 +684,10 @@ const applyWriteWave = async (
   return writesSymlink(writes) ? writeOneByOne(sorted, scanner, applyGroup) : applyGroup(sorted);
 };
 
-/** The target state's paths: every changeset entry that is not a deletion. */
-function* survivingPaths(entries: ReadonlyArray<ChangesetEntry>): Generator<string> {
-  for (const entry of entries) if (entry.kind !== 'delete') yield entry.path;
+/** The paths this application writes: a noop entry's file may be absent from disk, so it keeps no directory alive. */
+function* writtenPaths(entries: ReadonlyArray<ChangesetEntry>): Generator<string> {
+  for (const entry of entries)
+    if (entry.kind === 'add' || entry.kind === 'update') yield entry.path;
 }
 
 const removeIgnoredBelow = async (
@@ -828,7 +829,7 @@ const applyChangesetInScope = async (
   const writer = createChangesetWriter(ctx, opts, direction);
   // Only a deletion can empty a directory, so a deletion-free changeset derives nothing.
   const surviving = survivingDirectoriesOf(
-    deletes.length === 0 ? [] : survivingPaths(changeset.entries),
+    deletes.length === 0 ? [] : writtenPaths(changeset.entries),
   );
   return applyAllEntries(ctx, deletes, writes, workdir, writer, scanner, surviving, force);
 };

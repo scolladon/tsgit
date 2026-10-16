@@ -299,16 +299,32 @@ describe('rm', () => {
 
   describe('Given a tracked file whose directory keeps another tracked file', () => {
     describe('When rm', () => {
-      it('Then only the file is removed and the directory is not probed', async () => {
+      it('Then only the file is removed and the directory stays', async () => {
         // Arrange
         const ctx = await seedAndStage({ 'd/q': 'q', 'd/kept': 'k' });
-        const fsRm = vi.spyOn(ctx.fs, 'rm');
 
         // Act
         await rm(ctx, ['d/q']);
 
         // Assert
-        expect(fsRm.mock.calls.map(([path]) => path)).toEqual([work(ctx, 'd/q')]);
+        expect(await ctx.fs.exists(work(ctx, 'd/q'))).toBe(false);
+        expect(await ctx.fs.exists(work(ctx, 'd/kept'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a tracked file whose directory keeps a tracked entry already gone from disk', () => {
+    describe('When rm', () => {
+      it('Then the emptied directory is removed', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/a': 'a', 'd/b': 'b' });
+        await ctx.fs.rm(work(ctx, 'd/b'));
+
+        // Act
+        await rm(ctx, ['d/a']);
+
+        // Assert
+        expect(await ctx.fs.exists(work(ctx, 'd'))).toBe(false);
       });
     });
   });

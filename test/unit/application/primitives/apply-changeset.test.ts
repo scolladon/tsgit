@@ -433,33 +433,53 @@ describe('applyChangeset', () => {
     });
   });
 
-  describe('Given a delete entry whose directory the target still tracks a file in', () => {
+  describe('Given a delete entry whose directory the target writes a file in', () => {
     describe('When applyChangeset runs with force', () => {
       it('Then the directory is not probed for removal', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, enc('q'));
         await ctx.fs.write(`${WORKDIR}/d/e/q`, enc('q'));
-        await ctx.fs.write(`${WORKDIR}/d/e/kept`, enc('k'));
-        const kept: ChangesetEntry = {
-          kind: 'noop',
-          path: 'd/e/kept' as FilePath,
-          mode: FILE_MODE.REGULAR,
-          id,
-          previousId: id,
-          previousMode: FILE_MODE.REGULAR,
-        };
         const rm = vi.spyOn(ctx.fs, 'rm');
 
         // Act
         await applyChangeset(ctx, {
-          changeset: makeChangeset([makeDelete('d/e/q', id), kept]),
+          changeset: makeChangeset([makeDelete('d/e/q', id), makeAdd('d/e/kept', id)]),
           force: true,
           workdir: WORKDIR,
         });
 
         // Assert
         expect(rm.mock.calls.map(([path]) => path)).toEqual([`${WORKDIR}/d/e/q`]);
+      });
+    });
+  });
+
+  describe('Given a delete entry whose directory keeps a noop entry absent from disk', () => {
+    describe('When applyChangeset runs with force', () => {
+      it('Then the emptied directory is removed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('q'));
+        await ctx.fs.write(`${WORKDIR}/d/e/q`, enc('q'));
+        const absent: ChangesetEntry = {
+          kind: 'noop',
+          path: 'd/e/absent' as FilePath,
+          mode: FILE_MODE.REGULAR,
+          id,
+          previousId: id,
+          previousMode: FILE_MODE.REGULAR,
+        };
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('d/e/q', id), absent]),
+          force: true,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(await ctx.fs.exists(`${WORKDIR}/d`)).toBe(false);
       });
     });
   });

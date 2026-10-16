@@ -44,8 +44,11 @@ const isRealDirectory = async (ctx: Context, absolute: string): Promise<boolean>
   return stat?.isDirectory === true;
 };
 
+/** `rmdir` refuses a link or a file itself; the `rm` fallback would remove them, so it is guarded by a probe. */
 const removeIfEmptyDirectory = async (ctx: Context, absolute: string): Promise<boolean> =>
-  (await isRealDirectory(ctx, absolute)) && (await removeEmptyDirectory(ctx, absolute));
+  ctx.fs.rmdir === undefined
+    ? (await isRealDirectory(ctx, absolute)) && (await removeEmptyDirectory(ctx, absolute))
+    : removeEmptyDirectory(ctx, absolute);
 
 /**
  * Climbs while each directory is removed, as git does; reaching a directory
