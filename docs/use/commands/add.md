@@ -95,6 +95,12 @@ points outside the repository or at a sibling directory inside it. It does
 not run in bulk mode, where `git add -A` stores the symlink itself rather
 than refusing.
 
+## Byte-exact paths and removals
+
+An index entry whose path is not valid UTF-8 is kept byte-exact: the raw bytes are what `.git/index` and the trees record, and the public result and `IndexEntry.path` show the U+FFFD view (see [`readIndex`](../primitives/read-index.md)). A literal pathspec never names such a lossy entry; it matches only entries whose bytes decode to the pathspec. A lone surrogate in a caller-supplied string normalises to U+FFFD before matching.
+
+A pathspec that matches a tracked path missing from disk stages its deletion, as `git add <pathspec>` does — ignored tracked paths included. A path beyond a symlinked directory counts as removed.
+
 ## Line-ending conversion (`core.autocrlf`, `core.eol`, `text`, `eol`, `ident`)
 
 Worktree bytes go through git's check-in conversion before they are hashed, so the stored blob is what `git add` stores. The step order is clean filter driver, then CRLF, then `ident`.
@@ -130,7 +136,7 @@ for (const n of eolNotices) {
 
 ## Renormalize
 
-`repo.add(paths, { renormalize: true })` (with `all: true` and `[]` for the whole tree) re-cleans every tracked stage-0 regular file or symlink the pathspec names, under the current attributes and config, with no stat shortcut. It never adds untracked paths, never removes anything, never touches the worktree, skips `skip-worktree` entries, ignores the index-CRLF rule and never raises a `core.safecrlf` refusal or notice (`eolNotices` is `[]`). A tracked path missing from disk aborts the call with `PATHSPEC_NO_MATCH`.
+`repo.add(paths, { renormalize: true })` (with `all: true` and `[]` for the whole tree) re-cleans every tracked stage-0 regular file or symlink the pathspec names, under the current attributes and config, with no stat shortcut. It never adds untracked paths, never removes anything, never touches the worktree, skips `skip-worktree` entries, ignores the index-CRLF rule and never raises a `core.safecrlf` refusal or notice (`eolNotices` is `[]`). A tracked path missing from disk, or a lossy (non-UTF-8) entry, aborts the call with `PATHSPEC_NO_MATCH`.
 
 ## Clean filter drivers (`filter=<name>`)
 

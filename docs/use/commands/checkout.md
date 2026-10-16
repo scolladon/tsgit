@@ -44,10 +44,14 @@ interface CheckoutPathsOptions {
 - **`-` is `@{-1}`.** A lone `-` as `rev` names the branch the previous switch left, and the reflog entry echoes it as spelt.
 - **A switch target must peel to a commit.** A tag peels to the commit it names; a tree refuses `CHECKOUT_NON_COMMIT`. A `rev` no revision answers matches nothing as a pathspec (`PATHSPEC_NO_MATCH`), or, under `createBranch`, refuses `CHECKOUT_START_POINT_NOT_COMMIT`.
 - **Dirty-tree guard.** Switch mode refuses to overwrite tracked modifications or to clobber untracked paths that would collide. Use `force: true` to override. The "is something already here?" probe does not follow symbolic links, so a **dangling** symlink at a target path counts as occupying it and refuses, rather than being silently replaced.
+- **Writes never follow a symlink.** A write never goes through a symlink in its leading path: links are written first, and leading directories are created one component at a time. An add beyond an untracked symlink is refused naming the link.
+- **Lossy entries stay off disk.** An entry whose name is not valid UTF-8 is never written or unlinked; it reads as deleted in [`status`](status.md), as git does on macOS.
+- **Pruning.** Directories a checkout leaves empty are removed, as git does.
+- **File and directory swaps.** A path may change between file and directory. A directory being replaced by a file lets ignored occupants go (with `force`, every occupant) and refuses untracked ones.
 - **Atomicity.** Per-file (matches canonical git). The index commit is atomic; working-tree writes are not all-or-nothing if power is cut mid-write.
 - **Sparse checkout.** Switch mode honours the active sparse pattern on the target branch.
 - **Path restore takes the index lock.** Both path-restore sources lock the index first and refuse `RESOURCE_LOCKED` when it is held. Entries of other paths keep their conflict stages.
-- **Path restore via globs.** `paths` accepts the same pathspec syntax as [`add`](add.md).
+- **Path restore via globs.** `paths` accepts the same pathspec syntax as [`add`](add.md). Scope is matched on raw path bytes, so a literal never restores a lossy entry through its U+FFFD view.
 
 ## Examples
 

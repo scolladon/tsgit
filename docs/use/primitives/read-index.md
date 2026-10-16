@@ -16,6 +16,8 @@ interface GitIndex {
 
 interface IndexEntry {
   readonly path: FilePath;
+  /** Present only when the path is not valid UTF-8. */
+  readonly pathBytes?: Uint8Array;
   readonly mode: FileMode;
   readonly id: ObjectId;
   readonly stage: 0 | 1 | 2 | 3;
@@ -23,6 +25,8 @@ interface IndexEntry {
   readonly stat?: StatFields;
 }
 ```
+
+`pathBytes` carries the entry's exact path bytes and is present only when they are not valid UTF-8; `path` is then the U+FFFD view (each invalid sequence decoded to U+FFFD) and may collide with a sibling's. Index writers key entries by the bytes, so a lossy entry round-trips byte-exact. Entries are ordered by raw path bytes.
 
 `indexMtime` is the `.git/index` file's own mtime (seconds + nanoseconds), as observed at read time — `undefined` when the index is unborn or absent. `status` threads it into the working-tree comparator as the racy-clean guard's reference point: an entry not provably older than this mtime is re-hashed rather than trusted.
 

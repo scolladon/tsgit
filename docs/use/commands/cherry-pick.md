@@ -67,16 +67,16 @@ type CherryPickResult =
   refuses with `CHERRY_PICK_MERGE_NO_MAINLINE`; in a range, earlier picks are
   committed and the sequence stops at the merge (git-faithful partial-apply).
 - **Refusals.** Detached HEAD (`UNSUPPORTED_OPERATION`), unborn branch
-  (`NO_INITIAL_COMMIT`), a dirty index/working tree (`WORKING_TREE_DIRTY`,
-  git's `require_clean_work_tree`), and an operation already in progress
-  (`OPERATION_IN_PROGRESS`).
+  (`NO_INITIAL_COMMIT`), staged changes (`WORKING_TREE_DIRTY`; the index must match HEAD),
+  and an operation already in progress (`OPERATION_IN_PROGRESS`). Unstaged
+  changes do not refuse, as in git: the merge's would-overwrite check guards
+  the paths it touches. `--no-commit` refuses only on unmerged entries.
 
 ## Throws
 
 - `UNSUPPORTED_OPERATION` — `run`/`continue`/`skip`/`abort` with a detached HEAD.
 - `NO_INITIAL_COMMIT` — `run` on an unborn branch (no commit yet).
-- `WORKING_TREE_DIRTY` — `run` against a dirty index / working tree
-  (git's `require_clean_work_tree`).
+- `WORKING_TREE_DIRTY` — `run` against staged changes (the index differs from HEAD).
 - `INVALID_INDEX_ENTRY` — a conflicting pick's outcome or conflict path fails
   git's own index-entry name rules. Every path the conflict write is about to
   touch is checked in one pass before any of them is written, so a hostile

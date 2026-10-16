@@ -177,6 +177,22 @@ When both sides **change** to different kinds — one a regular file and one a s
 
 An untracked working file at the rename target refuses with `WORKING_TREE_DIRTY` before anything is written (the target lands in the error's `untracked` array, covered by the conflict-wide guard above).
 
+### File vs directory
+
+When one side holds a file at a path where the other holds a directory, the conflict is `file-directory`. The file is moved to `<path>~<label>` (the side's conflict label, made unique as for `distinct-types`) and the directory's contents stay in place. The index carries the file at stage 2 or 3 under the new name, plus the base entry when there is one.
+
+The merge refuses, writing nothing, when:
+
+- the file/directory conflict would discard local edits (`WORKING_TREE_DIRTY`);
+- a conflict rename lands on a path git rejects (for example the NTFS short name `git~1`, `INVALID_INDEX_ENTRY`);
+- a changed path lies beyond a symlink in the work tree.
+
+Each conflict side is validated with the mode it is written with.
+
+### Byte-exact paths
+
+The merge engine carries non-UTF-8 path names as raw bytes through the three-way tree merge, renames, the index and the work tree. The `MERGE_MSG` conflict list is written with those raw bytes. Public results (`conflicts[].path`, `merged` paths) report the U+FFFD view; a lossy entry is never written to or unlinked on disk.
+
 ### Both-added paths
 
 When both sides **add** the same path (no merge-base entry):

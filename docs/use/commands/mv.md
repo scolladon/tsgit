@@ -70,6 +70,10 @@ const { moved } = await repo.mv(['a.txt'], 'b.txt', { dryRun: true });
 const { moved, skipped } = await repo.mv(['a.txt', 'ghost.txt'], 'dir', { skipErrors: true });
 ```
 
+## Byte-exact paths
+
+A directory source selects its members by raw path bytes. A lossy member (a non-UTF-8 name) is a bad source (`MV_BAD_SOURCE`), or skipped under `skipErrors`, since lossy entries are never touched on disk. Every moved path is re-validated against git's index-entry rules before the index is written.
+
 ## Throws
 
 - `MV_SOURCE_NOT_TRACKED` — a source is not in the index.
