@@ -6904,3 +6904,74 @@ describe('merge — file/directory add/add conflict', () => {
     });
   });
 });
+
+describe('merge — file replaced by a directory on one side', () => {
+  const seed = async (): Promise<ReturnType<typeof createMemoryContext>> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b`, 'b\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'base\n');
+    await add(ctx, ['b', 'f']);
+    await commit(ctx, { message: 'base', author });
+    await branchCreate(ctx, { name: 'side' });
+    await checkout(ctx, { rev: 'side' });
+    await rm(ctx, ['f']);
+    await ctx.fs.mkdir(`${ctx.layout.workDir}/f`);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f/x`, 'x\n');
+    await add(ctx, ['f/x']);
+    await commit(ctx, { message: 'replaces f with a directory', author });
+    await checkout(ctx, { rev: 'main', force: true });
+    await ctx.fs.rmRecursive(`${ctx.layout.workDir}/f`);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'main\n');
+    await add(ctx, ['f']);
+    await commit(ctx, { message: 'modifies f', author });
+    return ctx;
+  };
+
+  const stagesOf = async (ctx: ReturnType<typeof createMemoryContext>) =>
+    (await readIndex(ctx)).entries.map((e) => [e.path, e.flags.stage]);
+
+  describe('Given HEAD modifies file f and the merged branch replaces it with directory f/', () => {
+    describe('When merge runs', () => {
+      it('Then f~HEAD is staged at stages 1 and 2 beside f/x at stage 0', async () => {
+        // Arrange
+        const ctx = await seed();
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 'side', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await stagesOf(ctx)).toEqual([
+          ['b', 0],
+          ['f/x', 0],
+          ['f~HEAD', 1],
+          ['f~HEAD', 2],
+        ]);
+      });
+    });
+  });
+
+  describe('Given HEAD replaces file f with directory f/ and the merged branch modifies f', () => {
+    describe('When merge runs', () => {
+      it('Then f~main is staged at stages 1 and 3 beside f/x at stage 0', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.rm(`${ctx.layout.workDir}/f`);
+        await checkout(ctx, { rev: 'side', force: true });
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 'main', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await stagesOf(ctx)).toEqual([
+          ['b', 0],
+          ['f/x', 0],
+          ['f~main', 1],
+          ['f~main', 3],
+        ]);
+      });
+    });
+  });
+});

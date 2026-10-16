@@ -655,5 +655,53 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
     });
+
+    describe.each([
+      ['main modifies the file', 'side'],
+      ['side modifies the file', 'main'],
+    ] as const)(
+      'Given base holds file f, %s and the other replaces it with a directory',
+      (_title, merged) => {
+        describe('When merging the other branch', () => {
+          it('Then the modify/delete conflict, the index stages and the work tree are those of git merge', async () => {
+            // Arrange
+            const base: Row[] = [
+              ['b', 'b0\n'],
+              ['f', 'base\n'],
+            ];
+            const modified: Row[] = [
+              ['b', 'b0\n'],
+              ['f', 'changed\n'],
+            ];
+            const replaced: Row[] = [
+              ['b', 'b0\n'],
+              ['f/x', 'inner\n'],
+            ];
+            seed(
+              base,
+              merged === 'side' ? modified : replaced,
+              merged === 'side' ? replaced : modified,
+            );
+            if (merged === 'main') {
+              gitIn('checkout', '-q', 'side');
+            }
+            cpSync(pair.ours, pair.peer, { recursive: true });
+            const gitRun = tryRunGit(['-C', pair.peer, 'merge', merged], { env: COMMIT_ENV });
+            repo = await openRepository({ cwd: pair.ours });
+
+            // Act
+            const result = await repo.merge.run({ rev: merged, author: COMMIT_AUTHOR });
+
+            // Assert
+            expect(gitRun.ok).toBe(false);
+            expect(result.kind).toBe('conflict');
+            expect(records()).toEqual(peerRecords());
+            expect(gitIn('status', '--porcelain')).toBe(
+              runGit(['-C', pair.peer, 'status', '--porcelain']),
+            );
+          });
+        });
+      },
+    );
   },
 );

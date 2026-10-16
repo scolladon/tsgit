@@ -49,7 +49,7 @@ const merge = async (ctx: Context, path: string) => {
 const withSymlinkLstat = (ctx: Context): Context => {
   const hostileFs = new Proxy(ctx.fs, {
     get(target, prop, receiver) {
-      if (prop === 'lstat' || prop === 'tryLstat') {
+      if (prop === 'lstat' || prop === 'tryLstat' || prop === 'lstatIfReachable') {
         return async () => ({
           isFile: true,
           isDirectory: false,
@@ -441,7 +441,7 @@ describe('buildAttributeProvider', () => {
         const ctx = createMemoryContext();
         const hostileFs = new Proxy(ctx.fs, {
           get(target, prop, receiver) {
-            if (prop === 'lstat' || prop === 'tryLstat') {
+            if (prop === 'lstat' || prop === 'tryLstat' || prop === 'lstatIfReachable') {
               return async () => {
                 throw new Error('unexpected I/O failure');
               };
