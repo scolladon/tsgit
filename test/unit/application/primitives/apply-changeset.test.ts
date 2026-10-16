@@ -441,6 +441,7 @@ describe('applyChangeset', () => {
         const id = await writeBlob(ctx, enc('q'));
         await ctx.fs.write(`${WORKDIR}/d/e/q`, enc('q'));
         const rm = vi.spyOn(ctx.fs, 'rm');
+        const rmdir = vi.spyOn(ctx.fs, 'rmdir');
 
         // Act
         await applyChangeset(ctx, {
@@ -451,6 +452,32 @@ describe('applyChangeset', () => {
 
         // Assert
         expect(rm.mock.calls.map(([path]) => path)).toEqual([`${WORKDIR}/d/e/q`]);
+        expect(rmdir).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a delete entry whose directory the target updates a file in', () => {
+    describe('When applyChangeset runs with force', () => {
+      it('Then the directory is not probed for removal', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('old'));
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.write(`${WORKDIR}/d/q`, enc('old'));
+        await ctx.fs.write(`${WORKDIR}/d/u`, enc('old'));
+        const rmdir = vi.spyOn(ctx.fs, 'rmdir');
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('d/q', oldId), makeUpdate('d/u', oldId, newId)]),
+          force: true,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(rmdir).not.toHaveBeenCalled();
+        expect(dec(await ctx.fs.read(`${WORKDIR}/d/u`))).toBe('new');
       });
     });
   });
@@ -784,6 +811,31 @@ describe('applyChangeset', () => {
 
         // Assert
         expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY', untracked: ['a/L'] });
+      });
+    });
+  });
+
+  describe('Given an untracked symlink L, a directory-only ignore rule L/, and an add of L/x', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then it refuses naming L, as a directory-only rule never matches a link', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('x'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('L/\n'));
+        await ctx.fs.mkdir(`${WORKDIR}/inner`);
+        await ctx.fs.symlink('inner', `${WORKDIR}/L`);
+
+        // Act
+        const outcome = await outcomeOf(
+          applyChangeset(ctx, {
+            changeset: makeChangeset([makeAdd('L/x', newId)]),
+            force: false,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY', untracked: ['L'] });
       });
     });
   });
@@ -3383,6 +3435,35 @@ describe('applyChangeset leading-symlink safety', () => {
 
         // Assert
         await expectPayloadInRealDirectory(inner, recorded);
+      });
+    });
+  });
+
+  describe('Given a changeset listing a symlink a before a symlink A that one case-insensitive disk folds together', () => {
+    describe('When applyChangeset writes the pooled wave', () => {
+      it('Then the links land in byte order of the path, so a is the one left standing', async () => {
+        // Arrange
+        const inner = await buildSeededContext();
+        const { fs } = createInterleavingFs(inner.fs, { foldUnder: WORKDIR });
+        const ctx = { ...inner, fs };
+        const lower = await writeBlob(inner, enc('lower-target'));
+        const upper = await writeBlob(inner, enc('upper-target'));
+        const regular = await writeBlob(inner, enc('regular'));
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([
+            makeAdd('a', lower, FILE_MODE.SYMLINK),
+            makeAdd('A', upper, FILE_MODE.SYMLINK),
+            makeAdd('z', regular),
+          ]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(await inner.fs.readlink(`${WORKDIR}/a`)).toBe('lower-target');
       });
     });
   });

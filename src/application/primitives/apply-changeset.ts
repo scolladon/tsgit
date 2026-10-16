@@ -301,6 +301,7 @@ const evaluateDirtyPath = async (
       ? { class: 'local-changes', path: entry.path }
       : undefined;
   }
+  // Stryker disable next-line ConditionalExpression: equivalent — checkDirty only receives splitWaves' deletes and writes, which hold no noop, so an entry past the update/delete branch is always an add.
   if (entry.kind !== 'add') return undefined;
   const clash = await untrackedClashOf(ctx, workdir, entry, scope);
   return clash === undefined ? undefined : { class: 'untracked', path: clash };
@@ -829,6 +830,7 @@ const applyChangesetInScope = async (
   const writer = createChangesetWriter(ctx, opts, direction);
   // Only a deletion can empty a directory, so a deletion-free changeset derives nothing.
   const surviving = survivingDirectoriesOf(
+    // Stryker disable next-line ArrayDeclaration: equivalent — without a deletion nothing is scheduled for pruning, so the surviving set is never consulted.
     deletes.length === 0 ? [] : writtenPaths(changeset.entries),
   );
   return applyAllEntries(ctx, deletes, writes, workdir, writer, scanner, surviving, force);
