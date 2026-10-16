@@ -17,7 +17,11 @@
 import { comparePaths, recordedPaths } from '../../domain/diff/index.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import { escapedPathOf, viewOfEscaped } from '../../domain/git-index/index-path-key.js';
-import type { MergeConflict, MergeOutcome } from '../../domain/merge/index.js';
+import {
+  type MergeConflict,
+  type MergeOutcome,
+  recordsOwnPaths,
+} from '../../domain/merge/index.js';
 import { hasEscapedBytes } from '../../domain/objects/encoding.js';
 import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
@@ -59,6 +63,10 @@ const outcomeChangesOurs = (
   return outcome.status === 'resolved-deleted' && ours.has(outcome.path);
 };
 
+/** Whether the conflict moves ours' file off `conflict.path`, so the work-tree file there is lost. */
+const displacesOurFile = (conflict: MergeConflict): boolean =>
+  recordsOwnPaths(conflict) && conflict.ourPath !== undefined && conflict.ourPath !== conflict.path;
+
 /** Every path the merge would touch in the working tree (changed clean + conflicts). */
 export const changedPaths = (
   outcomes: ReadonlyArray<MergeOutcome>,
@@ -71,6 +79,7 @@ export const changedPaths = (
   }
   for (const conflict of conflicts) {
     for (const path of recordedPaths(conflict)) paths.add(path);
+    if (displacesOurFile(conflict)) paths.add(conflict.path);
   }
   return paths;
 };

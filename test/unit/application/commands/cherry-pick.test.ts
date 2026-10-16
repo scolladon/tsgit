@@ -1299,6 +1299,36 @@ describe('cherryPickRun', () => {
     });
   });
 
+  describe('Given an unstaged edit to a file the picked commit replaces by a directory', () => {
+    describe('When run', () => {
+      it('Then refuses naming that file and keeps its content, the index and HEAD', async () => {
+        // Arrange
+        const { ctx } = await seedFeature();
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.mkdir(work(ctx, 'f'));
+        await ctx.fs.writeUtf8(work(ctx, 'f/x'), 'x\n');
+        await add(ctx, ['f/x']);
+        await commit(ctx, { message: 'adds directory f', author: FEAT_AUTHOR });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(work(ctx, 'f'), 'file\n');
+        await add(ctx, ['f']);
+        await commit(ctx, { message: 'adds file f', author: MAIN_AUTHOR });
+        await ctx.fs.writeUtf8(work(ctx, 'f'), 'LOCAL-EDIT\n');
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        const indexBefore = (await readIndex(ctx)).entries.map((e) => [e.path, e.id]);
+
+        // Act
+        const data = await dataOf(() => cherryPickRun(ctx, { commits: ['feature'] }));
+
+        // Assert
+        expect(data).toMatchObject({ code: 'WORKING_TREE_DIRTY', localChanges: ['f'] });
+        expect(await ctx.fs.readUtf8(work(ctx, 'f'))).toBe('LOCAL-EDIT\n');
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(head);
+        expect((await readIndex(ctx)).entries.map((e) => [e.path, e.id])).toEqual(indexBefore);
+      });
+    });
+  });
+
   describe('Given another operation already in progress', () => {
     describe('When run', () => {
       it('Then refuses with OPERATION_IN_PROGRESS', async () => {

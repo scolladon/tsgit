@@ -11,6 +11,7 @@ import { readIndex } from '../../../../src/application/primitives/read-index.js'
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
+import type { MergeConflict } from '../../../../src/domain/merge/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -297,6 +298,91 @@ describe('changedPaths', () => {
 
         // Assert
         expect([...result]).toEqual(['newdir/a']);
+      });
+    });
+  });
+});
+
+describe('changedPaths displaced file', () => {
+  const ID = 'a'.repeat(40) as ObjectId;
+  const conflictOf = (
+    type: 'file-directory' | 'distinct-types',
+    ourPath: string,
+    theirPath: string,
+  ): MergeConflict => ({
+    type,
+    path: 'f' as FilePath,
+    ourId: ID,
+    ourMode: FILE_MODE.REGULAR,
+    theirId: ID,
+    theirMode: FILE_MODE.SYMLINK,
+    ourPath: ourPath as FilePath,
+    theirPath: theirPath as FilePath,
+  });
+
+  describe('Given a file-directory conflict where ours moved its file aside', () => {
+    describe('When the changed paths are listed', () => {
+      it('Then the displaced file path is listed with the moved copy', () => {
+        // Arrange
+        const sut = changedPaths;
+
+        // Act
+        const result = sut([], [conflictOf('file-directory', 'f~HEAD', 'f/x')], new Map());
+
+        // Assert
+        expect([...result].sort()).toEqual(['f', 'f/x', 'f~HEAD']);
+      });
+    });
+  });
+
+  describe('Given a distinct-types conflict where ours moved its file aside', () => {
+    describe('When the changed paths are listed', () => {
+      it('Then the displaced file path is listed', () => {
+        // Arrange
+        const sut = changedPaths;
+
+        // Act
+        const result = sut([], [conflictOf('distinct-types', 'f~HEAD', 'f')], new Map());
+
+        // Assert
+        expect([...result].sort()).toEqual(['f', 'f~HEAD']);
+      });
+    });
+  });
+
+  describe('Given a distinct-types conflict where ours keeps the path', () => {
+    describe('When the changed paths are listed', () => {
+      it('Then only the recorded paths are listed', () => {
+        // Arrange
+        const sut = changedPaths;
+
+        // Act
+        const result = sut([], [conflictOf('distinct-types', 'f', 'f~side')], new Map());
+
+        // Assert
+        expect([...result].sort()).toEqual(['f', 'f~side']);
+      });
+    });
+  });
+
+  describe('Given a file-directory conflict where theirs moved its file aside', () => {
+    describe('When the changed paths are listed', () => {
+      it('Then the directory-side path is not added', () => {
+        // Arrange
+        const sut = changedPaths;
+        const conflict: MergeConflict = {
+          type: 'file-directory',
+          path: 'f' as FilePath,
+          theirId: ID,
+          theirMode: FILE_MODE.REGULAR,
+          theirPath: 'f~side' as FilePath,
+        };
+
+        // Act
+        const result = sut([], [conflict], new Map());
+
+        // Assert
+        expect([...result]).toEqual(['f~side']);
       });
     });
   });

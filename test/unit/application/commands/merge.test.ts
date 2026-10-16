@@ -6974,6 +6974,60 @@ describe('merge — file/directory add/add conflict', () => {
   });
 });
 
+describe('merge — file/directory conflict over an edited file', () => {
+  const seed = async (): Promise<ReturnType<typeof createMemoryContext>> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b`, 'b\n');
+    await add(ctx, ['b']);
+    await commit(ctx, { message: 'base', author });
+    await branchCreate(ctx, { name: 'side' });
+    await checkout(ctx, { rev: 'side' });
+    await ctx.fs.mkdir(`${ctx.layout.workDir}/f`);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f/x`, 'x\n');
+    await add(ctx, ['f/x']);
+    await commit(ctx, { message: 'adds directory f', author });
+    await checkout(ctx, { rev: 'main' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'file\n');
+    await add(ctx, ['f']);
+    await commit(ctx, { message: 'adds file f', author });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'LOCAL-EDIT\n');
+    return ctx;
+  };
+
+  describe('Given HEAD holds file f with an unstaged edit and the merged branch adds directory f/', () => {
+    describe('When merge runs', () => {
+      it('Then it refuses naming f and leaves the file, the index and HEAD untouched', async () => {
+        // Arrange
+        const ctx = await seed();
+        const headBefore = await resolveRef(ctx, 'HEAD' as RefName);
+        const indexBefore = await readIndex(ctx);
+
+        // Act
+        let error: unknown;
+        try {
+          await mergeRun(ctx, { rev: 'side', author });
+        } catch (caught) {
+          error = caught;
+        }
+
+        // Assert
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('WORKING_TREE_DIRTY');
+        if (data.code === 'WORKING_TREE_DIRTY') {
+          expect(data.localChanges).toEqual(['f']);
+          expect(data.untracked).toEqual([]);
+        }
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f`)).toBe('LOCAL-EDIT\n');
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(headBefore);
+        expect((await readIndex(ctx)).entries.map((e) => [e.path, e.id])).toEqual(
+          indexBefore.entries.map((e) => [e.path, e.id]),
+        );
+      });
+    });
+  });
+});
+
 describe('merge — file replaced by a directory on one side', () => {
   const seed = async (): Promise<ReturnType<typeof createMemoryContext>> => {
     const ctx = createMemoryContext();

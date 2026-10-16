@@ -519,6 +519,76 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    // ── FD1: ours holds an edited file the merged branch replaces by a directory ──
+
+    /** base `b`; theirs adds directory `f/`; ours commits file `f`. */
+    const fileDirectoryGraph = async (): Promise<void> => {
+      await writeBoth('b', 'b\n');
+      await commitBoth('base', ['b']);
+      await branchBoth('theirs');
+      await mkdir(path.join(pair.peer, 'f'));
+      await mkdir(path.join(pair.ours, 'f'));
+      await writeBoth('f/x', 'x\n');
+      await commitBoth('theirs-directory', ['f/x']);
+      await checkoutBoth('main');
+      await writeBoth('f', 'file\n');
+      await commitBoth('ours-file', ['f']);
+      await writeBoth('f', 'LOCAL-EDIT\n');
+    };
+
+    describe('Given ours holds file f with an unstaged edit and theirs adds directory f/ (FD1)', () => {
+      describe('When both tools merge', () => {
+        it('Then both refuse naming f and keep the edited file', async () => {
+          // Arrange
+          await fileDirectoryGraph();
+
+          // Act
+          const { data, peerStderr } = await expectCoRefusal();
+
+          // Assert
+          expect(data.localChanges).toEqual(['f']);
+          expect(data.untracked).toEqual([]);
+          expect(peerStderr).toContain(localChangesBlock(['f']));
+          expect(await read(pair.ours, 'f')).toBe('LOCAL-EDIT\n');
+          expect(await read(pair.peer, 'f')).toBe('LOCAL-EDIT\n');
+        });
+      });
+    });
+
+    describe('Given ours holds file f with an unstaged edit and the picked commit adds directory f/ (FD2)', () => {
+      describe('When both tools cherry-pick', () => {
+        it('Then both refuse naming f and keep the edited file, HEAD and index', async () => {
+          // Arrange
+          await fileDirectoryGraph();
+          const stageBefore = lsStage(pair.ours);
+          const headBefore = headOf(pair.ours);
+
+          // Act
+          const peerResult = tryRunGit(['-C', pair.peer, 'cherry-pick', 'theirs'], {
+            env: COMMIT_ENV,
+          });
+          let data: WorkingTreeDirtyData | undefined;
+          try {
+            await repo.cherryPick.run({ commits: ['theirs'] });
+          } catch (err) {
+            data = (err as { data?: WorkingTreeDirtyData }).data;
+          }
+
+          // Assert
+          expect(peerResult.ok).toBe(false);
+          expect(peerResult.stderr).toContain(localChangesBlock(['f']));
+          expect(data?.code).toBe('WORKING_TREE_DIRTY');
+          expect(data?.localChanges).toEqual(['f']);
+          expect(await read(pair.ours, 'f')).toBe('LOCAL-EDIT\n');
+          expect(await read(pair.peer, 'f')).toBe('LOCAL-EDIT\n');
+          expect(headOf(pair.ours)).toBe(headBefore);
+          expect(lsStage(pair.ours)).toBe(stageBefore);
+          expect(headOf(pair.peer)).toBe(headBefore);
+          expect(lsStage(pair.peer)).toBe(stageBefore);
+        });
+      });
+    });
+
     /** Append `core.sparseCheckout=true` to tsgit's repo config for the SP1 row. */
     const sparseConfig = async (): Promise<string> => {
       const current = await read(pair.ours, path.join('.git', 'config'));
