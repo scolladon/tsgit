@@ -914,3 +914,21 @@ describe('buildIndexFromTree', () => {
     });
   });
 });
+
+describe('Given a UTF-8 leaf with no donor in the current index', () => {
+  describe('When buildIndexFromTree runs', () => {
+    it('Then its zero-stat entry carries no pathBytes key', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const blobId = await writeBlob(ctx, 'x');
+      const treeId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId)]);
+      const sut = buildIndexFromTree;
+
+      // Act
+      const result = await sut(ctx, { targetTree: treeId, currentIndex: EMPTY_INDEX });
+
+      // Assert
+      expect(result.map((entry) => Object.hasOwn(entry, 'pathBytes'))).toEqual([false]);
+    });
+  });
+});
