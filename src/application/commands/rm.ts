@@ -75,7 +75,7 @@ export const rm = async (
   opts: RmOptions = {},
 ): Promise<RmResult> => {
   await assertOperationalRepository(ctx);
-  requireWorkTree(ctx, 'rm');
+  const workDir = requireWorkTree(ctx, 'rm');
   await assertNoPendingOperation(ctx);
   if (paths.length === 0) throw emptyPathspec();
   const { matcher, literalSpellings } = resolvePathspec(paths);
@@ -122,7 +122,7 @@ export const rm = async (
       }
       await pruneEmptiedDirectories(
         ctx,
-        requireWorkTree(ctx, 'rm'),
+        workDir,
         workingTreeEntries.map((entry) => entry.path),
         survivingDirectoriesOf([]),
       );
