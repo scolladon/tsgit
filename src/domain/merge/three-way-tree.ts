@@ -572,9 +572,7 @@ function stepAside(
   which: MergeSide,
   scope: PathScope,
 ): MergeOutcome {
-  const isSurvivingFile =
-    outcome.status === 'resolved-known' ||
-    (outcome.status === 'conflict' && outcome.conflict.type === 'modify-delete');
+  const isSurvivingFile = outcome.status !== 'resolved-deleted';
   return isSurvivingFile ? fileDirectoryConflict(path, base, present, which, scope) : outcome;
 }
 
