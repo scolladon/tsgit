@@ -1782,14 +1782,15 @@ export const rejectUnsupportedConflicts = (conflicts: ReadonlyArray<MergeConflic
 const isExcluded = (matcher: SparseMatcher | undefined, path: FilePath): boolean =>
   matcher !== undefined && !matcher(path);
 
-const isMaterialised = (outcome: MergeOutcome, matcher: SparseMatcher | undefined): boolean =>
-  outcome.status === 'resolved-merged' ||
-  (outcome.status !== 'conflict' && !isExcluded(matcher, outcome.path));
+type ChangedOutcome = Exclude<MergeOutcome, { readonly status: 'conflict' }>;
+
+const isMaterialised = (outcome: ChangedOutcome, matcher: SparseMatcher | undefined): boolean =>
+  outcome.status === 'resolved-merged' || !isExcluded(matcher, outcome.path);
 
 /** Only a deletion can empty a directory; a sparse-excluded outcome is skipped, so it keeps none alive. */
 const survivingFor = (
   deleted: ReadonlyArray<DeletedOutcome>,
-  touched: ReadonlyArray<MergeOutcome>,
+  touched: ReadonlyArray<ChangedOutcome>,
   conflicts: ReadonlyArray<MergeConflict>,
   matcher: SparseMatcher | undefined,
 ): SurvivingDirectories =>
@@ -1815,7 +1816,8 @@ const writeConflictingWorkingTree = async (
   // user modified locally at a path the merge never touched. Conflict
   // outcomes carry no path and are materialised by the conflicts batch below.
   const touched = outcomes.filter(
-    (outcome) => outcome.status !== 'conflict' && changed.has(outcome.path),
+    (outcome): outcome is ChangedOutcome =>
+      outcome.status !== 'conflict' && changed.has(outcome.path),
   );
   // One scanner for the whole call, shared by both bounded batches below:
   // its per-directory memo means a deep tree with many paths under the
@@ -1894,8 +1896,7 @@ type WrittenOutcome = Exclude<MergeOutcome, DeletedOutcome>;
 
 type PathedWrite = Exclude<WrittenOutcome, { readonly status: 'conflict' }>;
 
-const isWrite = (outcome: MergeOutcome): outcome is PathedWrite =>
-  outcome.status !== 'conflict' && !isDeleted(outcome);
+const isWrite = (outcome: ChangedOutcome): outcome is PathedWrite => !isDeleted(outcome);
 
 /**
  * Write a single merge outcome to the working tree. Exported for direct unit
