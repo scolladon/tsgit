@@ -5,6 +5,7 @@ import {
   createMergeResultWriter,
   mergeTreesToTree,
   removeChangedOutcome,
+  removeDisplacedFile,
   survivingPathsOf,
   writeMarkedConflict,
 } from '../../../../src/application/primitives/apply-merge-to-worktree.js';
@@ -2747,6 +2748,133 @@ describe('applyMergeToWorktree writes through the working-tree writer', () => {
         // Assert
         expect(result.kind).toBe('conflict');
       });
+    });
+  });
+});
+
+describe('removeChangedOutcome', () => {
+  describe('Given a deleted outcome under a directory whose name is not valid UTF-8', () => {
+    describe('When removeChangedOutcome runs', () => {
+      it('Then no filesystem call is made', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const spies = (['lstat', 'rm', 'rmdir', 'readdir'] as const).map((method) =>
+          vi.spyOn(ctx.fs, method),
+        );
+        const sut = removeChangedOutcome;
+
+        // Act
+        await sut(
+          ctx,
+          { status: 'resolved-deleted', path: '\uDCFF/f' as FilePath },
+          createLeadingPathScanner(ctx),
+          survivingDirectoriesOf([]),
+        );
+
+        // Assert
+        expect(spies.map((spy) => spy.mock.calls.length)).toEqual([0, 0, 0, 0]);
+      });
+    });
+  });
+});
+
+describe('removeDisplacedFile', () => {
+  describe('Given a distinct-types conflict whose ours side is moved aside', () => {
+    describe('When removeDisplacedFile runs', () => {
+      it('Then the file at the conflict path stays, as no directory displaces it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const file = `${ctx.layout.workDir}/p`;
+        await ctx.fs.write(file, new TextEncoder().encode('p\n'));
+        const conflict: MergeConflict = {
+          type: 'distinct-types',
+          path: 'p' as FilePath,
+          ourId: '' as ObjectId,
+          ourMode: FILE_MODE.REGULAR,
+          ourPath: 'p~HEAD' as FilePath,
+          theirId: '' as ObjectId,
+          theirMode: FILE_MODE.SYMLINK,
+          theirPath: 'p' as FilePath,
+        };
+        const sut = removeDisplacedFile;
+
+        // Act
+        await sut(ctx, conflict);
+
+        // Assert
+        expect(await ctx.fs.exists(file)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a file-directory conflict at a hostile path', () => {
+    describe('When removeDisplacedFile runs', () => {
+      it('Then it refuses with INVALID_INDEX_ENTRY before removing anything', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const conflict: MergeConflict = {
+          type: 'file-directory',
+          path: '.git' as FilePath,
+          ourId: '' as ObjectId,
+          ourMode: FILE_MODE.REGULAR,
+          ourPath: '.git~HEAD' as FilePath,
+        };
+        const rm = vi.spyOn(ctx.fs, 'rm');
+        const sut = removeDisplacedFile;
+
+        // Act
+        const failure = await sut(ctx, conflict).catch((err: unknown) => err);
+
+        // Assert
+        expect((failure as TsgitError).data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: -1,
+          reason: "'.git' component rejected",
+        });
+        expect(rm).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
+describe('Given a conflicting merge that deletes the last file of a directory where theirs adds a non-UTF-8 name', () => {
+  describe('When the merge is applied', () => {
+    it('Then the directory the unwritable entry is recorded under stays', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const reg = FILE_MODE.REGULAR;
+      const [cBase, cOurs, cTheirs, y, lossy] = [
+        await writeBlob(ctx, 'base\n'),
+        await writeBlob(ctx, 'ours\n'),
+        await writeBlob(ctx, 'theirs\n'),
+        await writeBlob(ctx, 'y\n'),
+        await writeBlob(ctx, 'l\n'),
+      ];
+      const dOurs = await treeWith(ctx, [treeEntry(reg, 'y', y)]);
+      const dTheirs = await treeWith(ctx, [treeEntry(reg, Uint8Array.of(0xff), lossy)]);
+      const side = (c: ObjectId, d: ObjectId) =>
+        treeWith(ctx, [treeEntry(reg, 'c.txt', c), treeEntry(FILE_MODE.DIRECTORY, 'd', d)]);
+      const [base, ours, theirs] = [
+        await side(cBase, dOurs),
+        await side(cOurs, dOurs),
+        await side(cTheirs, dTheirs),
+      ];
+      await ctx.fs.write(`${ctx.layout.workDir}/c.txt`, new TextEncoder().encode('ours\n'));
+      await ctx.fs.write(`${ctx.layout.workDir}/d/y`, new TextEncoder().encode('y\n'));
+      const sut = applyMergeToWorktree;
+
+      // Act
+      const result = await sut(ctx, {
+        baseTree: base,
+        oursTree: ours,
+        theirsTree: theirs,
+        currentIndex: index([indexEntry('c.txt', cOurs), indexEntry('d/y', y)]),
+      });
+
+      // Assert
+      expect(result.kind).toBe('conflict');
+      expect(await ctx.fs.exists(`${ctx.layout.workDir}/d/y`)).toBe(false);
+      expect((await ctx.fs.lstat(`${ctx.layout.workDir}/d`)).isDirectory).toBe(true);
     });
   });
 });

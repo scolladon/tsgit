@@ -227,6 +227,7 @@ export const removeChangedOutcome = async (
   await removeWorkingTreeFile(ctx, outcome.path);
   await pruneEmptiedDirectories(
     ctx,
+    // Stryker disable next-line StringLiteral: equivalent — removeWorkingTreeFile above already required the work tree and threw under its own operation name.
     requireWorkTree(ctx, 'removeChangedOutcome'),
     [outcome.path],
     surviving,
@@ -302,6 +303,7 @@ const writeConflictWorktree = async (
   // before its first checkout: a deleted `.gitattributes` must not govern the writes.
   const deleted = touched.filter(isDeleted);
   const surviving = survivingDirectoriesOf(
+    // Stryker disable next-line ArrayDeclaration: equivalent — with no deletion the surviving set is never read.
     deleted.length === 0 ? [] : survivingPathsOf(touched, conflicts),
   );
   for (const outcome of deleted) await removeChangedOutcome(ctx, outcome, scanner, surviving);
