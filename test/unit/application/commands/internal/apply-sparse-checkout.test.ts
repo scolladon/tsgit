@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { applySparseCheckout } from '../../../../../src/application/commands/internal/apply-sparse-checkout.js';
-import * as applyChangesetMod from '../../../../../src/application/primitives/apply-changeset.js';
 import * as gitattributesMod from '../../../../../src/application/primitives/internal/read-gitattributes.js';
 import { readIndex } from '../../../../../src/application/primitives/read-index.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
@@ -14,7 +13,11 @@ import {
 } from '../../../../../src/domain/git-index/index.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/object-id.js';
-import type { SparseMatcher } from '../../../../../src/domain/sparse/index.js';
+import {
+  buildSparseMatcher,
+  parseSparseCheckout,
+  type SparseMatcher,
+} from '../../../../../src/domain/sparse/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
 const encoder = new TextEncoder();
@@ -152,36 +155,93 @@ describe('commands/internal/apply-sparse-checkout', () => {
     });
   });
 
-  describe('Given a lossy path and a UTF-8 path with the same view, both included', () => {
-    describe('When only the UTF-8 path has a written record', () => {
-      it('Then each keeps its own record', async () => {
+  describe('Given a lossy path and a UTF-8 path with the same view, both excluded then included', () => {
+    const view = '�.txt';
+    const lossyBytes = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+    const seedTwins = async (ctx: Context): Promise<{ utf8Id: ObjectId; lossyId: ObjectId }> => {
+      const lossyId = await writeBlob(ctx, 'lossy');
+      const utf8Id = await writeBlob(ctx, 'utf8');
+      const lossy: IndexEntry = { ...makeEntry(view, lossyId), pathBytes: lossyBytes };
+      await seedIndex(ctx, [makeEntry(view, utf8Id), lossy]);
+      return { utf8Id, lossyId };
+    };
+
+    describe('When the working tree narrows then widens through the real apply route', () => {
+      it('Then the UTF-8 entry keeps its blob and the lossy one keeps its bytes and blob', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const lossyId = await writeBlob(ctx, 'lossy');
-        const utf8Id = await writeBlob(ctx, 'utf8');
-        const writtenId = await writeBlob(ctx, 'written');
-        const bytes = Uint8Array.of(0x73, 0x72, 0x63, 0x2f, 0xff);
-        const view = 'src/\uFFFD';
-        const lossy: IndexEntry = { ...makeEntry(view, lossyId), pathBytes: bytes };
-        await seedIndex(ctx, [makeEntry(view, utf8Id), lossy]);
-        const spy = vi.spyOn(applyChangesetMod, 'applyChangesetWithAttributes').mockResolvedValue({
-          written: 1,
-          deleted: 0,
-          writtenEntries: [makeEntry(view, writtenId)],
-        });
+        const { utf8Id, lossyId } = await seedTwins(ctx);
+        await seedWorkFile(ctx, view, 'utf8');
         const sut = applySparseCheckout;
+        await sut(ctx, { matcher: srcOnly });
 
         // Act
-        await sut(ctx, { matcher: srcOnly });
+        await sut(ctx, { matcher: undefined });
 
         // Assert
         const entries = (await readIndex(ctx)).entries;
         const lossyBack = entries.find((e) => e.pathBytes !== undefined);
         const utf8Back = entries.find((e) => e.pathBytes === undefined);
-        expect(lossyBack?.pathBytes).toEqual(bytes);
+        expect(utf8Back?.id).toBe(utf8Id);
         expect(lossyBack?.id).toBe(lossyId);
-        expect(utf8Back?.id).toBe(writtenId);
-        spy.mockRestore();
+        expect(lossyBack?.pathBytes).toEqual(lossyBytes);
+        expect(decoder.decode(await ctx.fs.read(`${ctx.layout.workDir}/${view}`))).toBe('utf8');
+      });
+    });
+
+    describe('When the file of the UTF-8 twin is on disk and both are excluded', () => {
+      it('Then only the dirty UTF-8 twin is retained and the lossy entry is skip-worktree without a probe', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedTwins(ctx);
+        await seedWorkFile(ctx, view, 'other');
+        const exists = vi.spyOn(ctx.fs, 'exists');
+        const sut = applySparseCheckout;
+
+        // Act
+        const result = await sut(ctx, { matcher: srcOnly });
+
+        // Assert
+        const probes = exists.mock.calls.filter(([p]) => String(p).endsWith(view));
+        expect(probes).toHaveLength(1);
+        expect(result.retained).toEqual([view]);
+        const lossyBack = (await readIndex(ctx)).entries.find((e) => e.pathBytes !== undefined);
+        expect(lossyBack?.flags.skipWorktree).toBe(true);
+      });
+    });
+
+    describe('When a literal pattern names the U+FFFD view', () => {
+      it('Then the UTF-8 entry is included and the lossy one excluded', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedTwins(ctx);
+        const matcher = buildSparseMatcher(parseSparseCheckout(view, false).spec);
+        const sut = applySparseCheckout;
+
+        // Act
+        await sut(ctx, { matcher });
+
+        // Assert
+        const entries = (await readIndex(ctx)).entries;
+        expect(entries.find((e) => e.pathBytes === undefined)?.flags.skipWorktree).toBe(false);
+        expect(entries.find((e) => e.pathBytes !== undefined)?.flags.skipWorktree).toBe(true);
+      });
+    });
+
+    describe('When a glob pattern matches every txt file', () => {
+      it('Then both entries are included', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedTwins(ctx);
+        const matcher = buildSparseMatcher(parseSparseCheckout('*.txt', false).spec);
+        const sut = applySparseCheckout;
+
+        // Act
+        await sut(ctx, { matcher });
+
+        // Assert
+        const entries = (await readIndex(ctx)).entries;
+        expect(entries.map((e) => e.flags.skipWorktree)).toEqual([false, false]);
       });
     });
   });

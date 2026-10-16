@@ -772,6 +772,23 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    describe('Given a lossy entry and its UTF-8 twin tracked, with sparse-checkout narrowed then disabled', () => {
+      describe('When sparse-checkout set then disable runs', () => {
+        it('Then both lossy paths keep their bytes and the twin keeps its own content', async () => {
+          // Arrange
+          seedLossyTwins();
+
+          // Act
+          await repo.sparseCheckout.set({ patterns: ['z'], cone: false });
+          await repo.sparseCheckout.disable();
+
+          // Assert
+          expect(lsFilesPathHex(pair.peer)).toEqual([D_FF_HEX, Z_HEX, U_HEX, L_HEX]);
+          expect(readFileSync(path.join(pair.peer, U_FILE), 'utf8')).toBe('u\n');
+        });
+      });
+    });
+
     describe('Given a lossy entry whose blob equals its twin file content', () => {
       describe('When status runs', () => {
         it('Then the lossy entry keeps its zero stat', async () => {

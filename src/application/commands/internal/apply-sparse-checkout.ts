@@ -10,7 +10,12 @@
  * dependency rule).
  */
 import { type IndexEntry, skipWorktreeEntry } from '../../../domain/git-index/index.js';
-import { type IndexPathKey, indexPathKey } from '../../../domain/git-index/index-path-key.js';
+import {
+  escapedPathOf,
+  type IndexPathKey,
+  indexPathKey,
+  isLossy,
+} from '../../../domain/git-index/index-path-key.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { SparseMatcher } from '../../../domain/sparse/index.js';
 import type { Context } from '../../../ports/context.js';
@@ -58,8 +63,14 @@ interface Partitioned {
   readonly retained: ReadonlyArray<IndexEntry>;
 }
 
-const isIncluded = (matcher: SparseMatcher | undefined, path: FilePath): boolean =>
-  matcher === undefined ? true : matcher(path);
+const isIncluded = (matcher: SparseMatcher | undefined, entry: IndexEntry): boolean =>
+  matcher === undefined ? true : matcher(escapedPathOf(entry));
+
+/** `path`, plus `pathBytes` only for a lossy entry — a lossy entry never aliases its UTF-8 twin. */
+const changesetPathOf = (entry: IndexEntry): Pick<ChangesetEntry, 'path' | 'pathBytes'> => ({
+  path: entry.path,
+  ...(entry.pathBytes === undefined ? {} : { pathBytes: entry.pathBytes }),
+});
 
 /**
  * Partition stage-0 entries. An excluded entry whose working-tree file exists
@@ -78,8 +89,12 @@ const partition = async (
   const retained: IndexEntry[] = [];
   const isDirty = createWorkingTreeDirtyCheck(ctx);
   for (const entry of entries) {
-    if (isIncluded(opts.matcher, entry.path)) {
+    if (isIncluded(opts.matcher, entry)) {
       included.push(entry);
+      continue;
+    }
+    if (isLossy(entry)) {
+      removable.push({ entry, present: false });
       continue;
     }
     const absPath = joinPath(workdir, entry.path);
@@ -94,7 +109,7 @@ const partition = async (
 /** A `delete` changeset entry for an excluded file currently on disk. */
 const deleteEntry = (entry: IndexEntry): ChangesetEntry => ({
   kind: 'delete',
-  path: entry.path,
+  ...changesetPathOf(entry),
   mode: entry.mode,
   id: undefined,
   previousId: entry.id,
@@ -104,7 +119,7 @@ const deleteEntry = (entry: IndexEntry): ChangesetEntry => ({
 /** An `add` changeset entry for an included file currently absent from disk. */
 const addEntry = (entry: IndexEntry): ChangesetEntry => ({
   kind: 'add',
-  path: entry.path,
+  ...changesetPathOf(entry),
   mode: entry.mode,
   id: entry.id,
   previousId: undefined,
@@ -114,7 +129,7 @@ const addEntry = (entry: IndexEntry): ChangesetEntry => ({
 /** A `noop` changeset entry — the file already matches its desired state. */
 const noopEntry = (entry: IndexEntry): ChangesetEntry => ({
   kind: 'noop',
-  path: entry.path,
+  ...changesetPathOf(entry),
   mode: entry.mode,
   id: entry.id,
   previousId: entry.id,
