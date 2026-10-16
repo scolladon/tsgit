@@ -26,21 +26,25 @@ function addAncestors(directories: Set<string>, path: FilePath): void {
   }
 }
 
+function isKept([base, our, their]: PathEntries): boolean {
+  if (our !== undefined && their !== undefined) return true;
+  const present = our ?? their;
+  return present !== undefined && survives(base, present);
+}
+
 /**
- * Only a path one side added or changed can put a directory where the other
- * side holds a file; a path the merge deletes leaves no directory behind.
+ * A path the merge keeps puts a directory where either side may hold a file.
+ * A side never holds a file above its own paths, except where a rename carried
+ * the other side's path under it; a path the merge deletes leaves no directory.
  */
 export function directoryBlockers(
   rows: ReadonlyArray<readonly [FilePath, PathEntries]>,
 ): DirectoryBlockers {
   const blockers = { our: new Set<string>(), their: new Set<string>() };
-  for (const [path, [base, our, their]] of rows) {
-    if (our !== undefined && their === undefined && survives(base, our)) {
-      addAncestors(blockers.their, path);
-    }
-    if (their !== undefined && our === undefined && survives(base, their)) {
-      addAncestors(blockers.our, path);
-    }
+  for (const [path, entries] of rows) {
+    if (!isKept(entries)) continue;
+    addAncestors(blockers.our, path);
+    addAncestors(blockers.their, path);
   }
   return blockers;
 }

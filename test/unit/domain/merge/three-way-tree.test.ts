@@ -11,6 +11,7 @@ import { NO_MERGE_RENAMES } from '../../../../src/domain/merge/merge-renames.js'
 import type {
   ContentMergeContext,
   ContentMergeResult,
+  TreeMergeResult,
 } from '../../../../src/domain/merge/merge-types.js';
 import { MAX_CONFLICT_OUTPUT_BYTES } from '../../../../src/domain/merge/merge-types.js';
 import type { BlobUnchanged, ContentMerger } from '../../../../src/domain/merge/three-way-tree.js';
@@ -2858,6 +2859,80 @@ describe('mergeTrees — a directory replaced by a file on one side', () => {
       });
     });
   });
+});
+
+describe('mergeTrees — a file in the way of a rename-carried path', () => {
+  const LABELS = { ours: 'HEAD', theirs: 'side', base: '' };
+  const base = tree([['q', entry(ID_A)]]);
+  const editsAndAddsFile = tree([
+    ['q', entry(ID_B)],
+    ['p', entry(ID_C)],
+  ]);
+  const rename = [{ oldPath: 'q' as FilePath, newPath: 'p/x' as FilePath }];
+  const settledPaths = (result: TreeMergeResult) =>
+    result.outcomes.flatMap((o) => ('path' in o ? [[o.status, o.path]] : []));
+
+  describe.each([
+    { edit: 'a pure rename', renamedId: ID_A, settled: 'resolved-known' },
+    { edit: 'a rename with an edit', renamedId: ID_D, settled: 'resolved-merged' },
+  ])(
+    'Given one side renames q to p/x as $edit and the other edits q and adds a file p',
+    ({ renamedId, settled }) => {
+      const renamed = tree([['p/x', entry(renamedId)]]);
+
+      describe('When ours renames', () => {
+        it('Then their file p steps aside to p~side and p/x keeps the path', async () => {
+          // Arrange
+          const sut = mergeTrees;
+          const renames = { ours: rename, theirs: [] };
+
+          // Act
+          const result = await sut(base, renamed, editsAndAddsFile, noopMerger, LABELS, renames);
+
+          // Assert
+          expect(result.conflicts).toEqual([
+            {
+              type: 'file-directory',
+              path: 'p',
+              theirId: ID_C,
+              theirMode: FILE_MODE.REGULAR,
+              theirPath: 'p~side',
+            },
+          ]);
+          expect(settledPaths(result)).toEqual([
+            [settled, 'p/x'],
+            ['resolved-deleted', 'q'],
+          ]);
+        });
+      });
+
+      describe('When theirs renames', () => {
+        it('Then our file p steps aside to p~HEAD and p/x keeps the path', async () => {
+          // Arrange
+          const sut = mergeTrees;
+          const renames = { ours: [], theirs: rename };
+
+          // Act
+          const result = await sut(base, editsAndAddsFile, renamed, noopMerger, LABELS, renames);
+
+          // Assert
+          expect(result.conflicts).toEqual([
+            {
+              type: 'file-directory',
+              path: 'p',
+              ourId: ID_C,
+              ourMode: FILE_MODE.REGULAR,
+              ourPath: 'p~HEAD',
+            },
+          ]);
+          expect(settledPaths(result)).toEqual([
+            [settled, 'p/x'],
+            ['resolved-deleted', 'q'],
+          ]);
+        });
+      });
+    },
+  );
 });
 
 describe('mergeEscapedTrees', () => {
