@@ -152,6 +152,22 @@ describe('commands/internal/apply-sparse-checkout', () => {
         expect(entry?.flags.skipWorktree).toBe(true);
         expect(entry?.pathBytes).toEqual(bytes);
       });
+
+      it('Then it counts no removal, its file never being on disk', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const id = await writeBlob(ctx, 'bbb');
+        const bytes = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+        const lossy: IndexEntry = { ...makeEntry('�.txt', id), pathBytes: bytes };
+        await seedIndex(ctx, [lossy]);
+        const sut = applySparseCheckout;
+
+        // Act
+        const result = await sut(ctx, { matcher: srcOnly });
+
+        // Assert
+        expect(result.removed).toBe(0);
+      });
     });
   });
 
