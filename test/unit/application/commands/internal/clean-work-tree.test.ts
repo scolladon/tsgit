@@ -4,6 +4,7 @@ import { add } from '../../../../../src/application/commands/add.js';
 import { commit } from '../../../../../src/application/commands/commit.js';
 import { init } from '../../../../../src/application/commands/init.js';
 import {
+  assertCleanIndex,
   assertCleanWorkTree,
   stagedChangePaths,
   unstagedChangePaths,
@@ -414,6 +415,73 @@ describe('unstagedChangePaths stat cache', () => {
         // Assert
         expect(result).toEqual([]);
         expect(reads).not.toContain(work(ctx, 'a.txt'));
+      });
+    });
+  });
+});
+
+const dataOf = async (run: () => Promise<unknown>): Promise<Record<string, unknown>> => {
+  try {
+    await run();
+    throw new Error('expected a throw');
+  } catch (err) {
+    return (err as TsgitError).data as unknown as Record<string, unknown>;
+  }
+};
+
+describe('assertCleanIndex', () => {
+  describe('Given an unstaged change and an index matching HEAD', () => {
+    describe('When asserted', () => {
+      it('Then it passes', async () => {
+        // Arrange
+        const { ctx, headTree } = await seedClean('a.txt', 'hello\n');
+        await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'dirty\n');
+
+        // Act + Assert
+        await expect(assertCleanIndex(ctx, headTree)).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a staged change', () => {
+    describe('When asserted', () => {
+      it('Then throws WORKING_TREE_DIRTY listing the staged path only', async () => {
+        // Arrange
+        const { ctx, headTree } = await seedClean('a.txt', 'hello\n');
+        await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'staged\n');
+        await add(ctx, ['a.txt']);
+
+        // Act
+        const data = await dataOf(() => assertCleanIndex(ctx, headTree));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['a.txt'],
+          untracked: [],
+        });
+      });
+    });
+  });
+
+  describe('Given an unmerged index entry', () => {
+    describe('When asserted', () => {
+      it('Then throws WORKING_TREE_DIRTY listing the unmerged path', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const emptyTree = await writeTree(ctx, []);
+        await writeFramedIndex(ctx, [stageEntry('c.txt', 'c'.repeat(40) as ObjectId, 1)]);
+
+        // Act
+        const data = await dataOf(() => assertCleanIndex(ctx, emptyTree));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['c.txt'],
+          untracked: [],
+        });
       });
     });
   });

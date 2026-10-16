@@ -294,6 +294,42 @@ describe('revert run', () => {
     });
   });
 
+  describe('Given an unstaged change on a path the revert does not touch', () => {
+    describe('When run', () => {
+      it('Then reverts the commit and leaves the change in place', async () => {
+        // Arrange
+        const { ctx, c2 } = await seedLinear();
+        await ctx.fs.writeUtf8(work(ctx, 'other.txt'), 'o\n');
+        await add(ctx, ['other.txt']);
+        await commit(ctx, { message: 'c3 other', author: MAIN_AUTHOR });
+        await ctx.fs.writeUtf8(work(ctx, 'other.txt'), 'dirty\n');
+
+        // Act
+        const result = await revertRun(ctx, { commits: [c2] });
+
+        // Assert
+        expect(result.kind).toBe('reverted');
+        expect(await ctx.fs.readUtf8(work(ctx, 'other.txt'))).toBe('dirty\n');
+      });
+    });
+  });
+
+  describe('Given an unstaged change on a path the revert modifies', () => {
+    describe('When run', () => {
+      it('Then refuses with WORKING_TREE_DIRTY', async () => {
+        // Arrange
+        const { ctx, c2 } = await seedLinear();
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'dirty\n');
+
+        // Act
+        const code = await codeOf(() => revertRun(ctx, { commits: [c2] }));
+
+        // Assert
+        expect(code).toBe('WORKING_TREE_DIRTY');
+      });
+    });
+  });
+
   describe('Given an untracked working file the revert would re-create', () => {
     describe('When the reverse merge would overwrite it', () => {
       it('Then refuses with WORKING_TREE_DIRTY', async () => {
@@ -386,11 +422,12 @@ describe('revert run', () => {
           },
         },
         {
-          label: 'the working tree is dirty',
+          label: 'the index holds a staged change',
           code: 'WORKING_TREE_DIRTY',
           arrange: async (): Promise<{ ctx: Context; commits: ReadonlyArray<string> }> => {
             const { ctx, c2 } = await seedLinear();
             await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'dirty\n');
+            await add(ctx, ['f.txt']);
             return { ctx, commits: [c2] };
           },
         },
