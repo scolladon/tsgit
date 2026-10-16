@@ -7,10 +7,11 @@
 import { workingTreeDirty } from '../../../domain/commands/error.js';
 import { comparePaths } from '../../../domain/diff/index.js';
 import type { GitIndex, IndexEntry } from '../../../domain/git-index/index.js';
+import { escapedPathOf, viewOfEscaped } from '../../../domain/git-index/index-path-key.js';
 import type { FilePath, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { compareWorkingTreeEntry } from '../../primitives/compare-working-tree-entry.js';
-import { flattenTree } from '../../primitives/flatten-tree.js';
+import { flattenEscapedTree } from '../../primitives/flatten-tree.js';
 import { buildCheckinAttributeProvider } from '../../primitives/internal/read-gitattributes.js';
 import { readIndex } from '../../primitives/read-index.js';
 
@@ -36,17 +37,17 @@ const stagedDirty = async (
   stage0: ReadonlyArray<IndexEntry>,
   headTree: ObjectId,
 ): Promise<ReadonlyArray<FilePath>> => {
-  const headFlat = await flattenTree(ctx, headTree);
-  const indexPaths = new Set(stage0.map((e) => e.path));
+  const headFlat = await flattenEscapedTree(ctx, headTree);
+  const indexPaths = new Set(stage0.map(escapedPathOf));
   const dirty: FilePath[] = [];
   for (const entry of stage0) {
-    const head = headFlat.entries.get(entry.path);
+    const head = headFlat.entries.get(escapedPathOf(entry));
     if (head === undefined || head.id !== entry.id || head.mode !== entry.mode) {
       dirty.push(entry.path);
     }
   }
   for (const path of headFlat.entries.keys()) {
-    if (!indexPaths.has(path)) dirty.push(path);
+    if (!indexPaths.has(path)) dirty.push(viewOfEscaped(path));
   }
   return dirty;
 };

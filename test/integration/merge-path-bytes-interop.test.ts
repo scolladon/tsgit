@@ -245,6 +245,36 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    describe('Given a lossy path edited on side, checked out with the path absent from the work tree', () => {
+      describe('When rebasing side onto main', () => {
+        it('Then tsgit refuses on the unstaged deletion like git and nothing moves', async () => {
+          // Arrange
+          const history = { path: FF_TXT, sideBlob: 'side\n' };
+          for (const dir of [pair.peer, pair.ours]) {
+            seedHistory(dir, history);
+            gitIn(dir, 'symbolic-ref', 'HEAD', 'refs/heads/side');
+            gitIn(dir, 'read-tree', 'side');
+            gitIn(dir, 'checkout-index', '-f', '--', 'a');
+          }
+          const gitRun = tryRunGit(['-C', pair.peer, 'rebase', 'main'], { env: COMMIT_ENV });
+          repo = await openRepository({ cwd: pair.ours });
+          const sut = repo.rebase;
+
+          // Act
+          const tsgitRun = await sut.run({ upstream: 'main' }).then(
+            () => true,
+            () => false,
+          );
+
+          // Assert
+          expect(gitRun.ok).toBe(false);
+          expect(tsgitRun).toBe(false);
+          expect(headTree(pair.ours)).toBe(headTree(pair.peer));
+          expect(records(pair.ours)).toBe(records(pair.peer));
+        });
+      });
+    });
+
     describe('Given a UTF-8 tracked file deleted on disk and left unstaged', () => {
       describe('When cherry-picking an unrelated commit', () => {
         it('Then tsgit picks it like git and leaves the deletion unstaged', async () => {

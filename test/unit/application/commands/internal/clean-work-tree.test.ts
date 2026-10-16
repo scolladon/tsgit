@@ -10,6 +10,7 @@ import {
   unstagedChangePaths,
 } from '../../../../../src/application/commands/internal/clean-work-tree.js';
 import { readIndex } from '../../../../../src/application/primitives/read-index.js';
+import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
 import type { GitIndex, IndexEntry } from '../../../../../src/domain/git-index/index.js';
@@ -21,6 +22,7 @@ import type {
   FilePath,
   ObjectId,
 } from '../../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
 const AUTHOR: AuthorIdentity = { name: 'T', email: 't@x', timestamp: 1, timezoneOffset: '+0000' };
@@ -482,6 +484,49 @@ describe('assertCleanIndex', () => {
           localChanges: ['c.txt'],
           untracked: [],
         });
+      });
+    });
+  });
+});
+
+describe('stagedChangePaths on escaped paths', () => {
+  const LOSSY_BYTES = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+  const TWIN_BYTES = Uint8Array.of(0xef, 0xbf, 0xbd, 0x2e, 0x74, 0x78, 0x74);
+  const VIEW = '\uFFFD.txt' as FilePath;
+
+  describe('Given HEAD and the index holding a lossy path and its U+FFFD twin, both unchanged', () => {
+    describe('When the staged check runs', () => {
+      it('Then no path is staged-dirty', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const blob = (text: string): Promise<ObjectId> =>
+          writeObject(ctx, {
+            type: 'blob',
+            id: '' as ObjectId,
+            content: new TextEncoder().encode(text),
+          });
+        const lossyId = await blob('l');
+        const twinId = await blob('u');
+        const headTree = await writeObject(ctx, {
+          type: 'tree',
+          id: '' as ObjectId,
+          entries: [
+            treeEntry(FILE_MODE.REGULAR, LOSSY_BYTES, lossyId),
+            treeEntry(FILE_MODE.REGULAR, TWIN_BYTES, twinId),
+          ],
+        });
+        await writeFramedIndex(ctx, [
+          { ...stageEntry(VIEW, lossyId, 0), pathBytes: LOSSY_BYTES },
+          stageEntry(VIEW, twinId, 0),
+        ]);
+        const sut = stagedChangePaths;
+
+        // Act
+        const result = await sut(ctx, headTree);
+
+        // Assert
+        expect(result).toEqual([]);
       });
     });
   });

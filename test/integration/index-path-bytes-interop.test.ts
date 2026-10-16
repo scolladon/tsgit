@@ -581,6 +581,22 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
+      describe('When rm names the glob *.txt without cached', () => {
+        it('Then both matching entries leave the index and only the U+FFFD file is unlinked', async () => {
+          // Arrange
+          seedLossyTwins();
+          writeFileSync(path.join(pair.peer, U_FILE), 'u\n');
+
+          // Act
+          const result = await repo.rm(['*.txt']);
+
+          // Assert
+          expect(result.removed).toEqual([U_FILE, U_FILE]);
+          expect(lsFilesPathHex(pair.peer)).toEqual([D_FF_HEX, Z_HEX]);
+          expect(existsSync(path.join(pair.peer, U_FILE))).toBe(false);
+        });
+      });
+
       describe('When add --renormalize runs', () => {
         it('Then it rejects PATHSPEC_NO_MATCH and leaves the index unchanged', async () => {
           // Arrange

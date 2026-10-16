@@ -11,6 +11,7 @@ import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { fileNotFound, TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type {
   CommandRequest,
   CommandResult,
@@ -1188,6 +1189,87 @@ describe('rm pathspec matching against an index holding U and its lossy twin L',
         expect(result.removed).toEqual([LOSSY_VIEW]);
         const index = await readIndex(ctx);
         expect(index.entries.map((e) => e.pathBytes)).toEqual([LOSSY_NAME_BYTES]);
+      });
+    });
+  });
+});
+
+describe('rm of a lossy entry and its U+FFFD twin both committed in HEAD', () => {
+  const TWIN_BYTES = Uint8Array.of(0xef, 0xbf, 0xbd, 0x2e, 0x74, 0x78, 0x74);
+  const committer: AuthorIdentity = {
+    name: 'T',
+    email: 't@x',
+    timestamp: 1,
+    timezoneOffset: '+0000',
+  };
+
+  const seedCommittedTwins = async (): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, { workingTree: { z: 'z' } });
+    await ctx.fs.write(`${ctx.layout.workDir}/${LOSSY_VIEW}`, enc('u'));
+    const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${LOSSY_VIEW}`);
+    const blob = (text: string): Promise<ObjectId> =>
+      writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: enc(text) });
+    const lossyId = await blob('l');
+    const twinId = await blob('u');
+    const tree = await writeObject(ctx, {
+      type: 'tree',
+      id: '' as ObjectId,
+      entries: [
+        treeEntry(FILE_MODE.REGULAR, LOSSY_NAME_BYTES, lossyId),
+        treeEntry(FILE_MODE.REGULAR, TWIN_BYTES, twinId),
+      ],
+    });
+    const commitId = await writeObject(ctx, {
+      type: 'commit',
+      id: '' as ObjectId,
+      data: {
+        tree,
+        parents: [],
+        author: committer,
+        committer,
+        message: 'seed',
+        extraHeaders: [],
+      },
+    });
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+    const twin: IndexEntry = {
+      ...indexEntryFromStat(stat, FILE_MODE.REGULAR, twinId, LOSSY_VIEW),
+      fileSize: 1,
+    };
+    const lossy: IndexEntry = {
+      ...indexEntryFromStat(stat, FILE_MODE.REGULAR, lossyId, LOSSY_VIEW),
+      fileSize: 1,
+      pathBytes: LOSSY_NAME_BYTES,
+    };
+    await ctx.fs.write(
+      `${ctx.layout.gitDir}/index`,
+      await serializeIndexFixtureAsync(
+        {
+          version: 2,
+          entries: [twin, lossy],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        },
+        ctx,
+      ),
+    );
+    return ctx;
+  };
+
+  describe('Given both entries unchanged against HEAD and the twin clean on disk', () => {
+    describe('When rm runs on a star pathspec', () => {
+      it('Then both entries leave the index and only the twin is unlinked', async () => {
+        // Arrange
+        const ctx = await seedCommittedTwins();
+        const sut = rm;
+
+        // Act
+        await sut(ctx, ['*.txt']);
+
+        // Assert
+        expect((await readIndex(ctx)).entries).toEqual([]);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/${LOSSY_VIEW}`)).toBe(false);
       });
     });
   });

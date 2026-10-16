@@ -22,7 +22,7 @@ import type { FlatTreeEntry } from '../../domain/diff/flat-tree.js';
 import { TsgitError } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import type { IndexPathKey } from '../../domain/git-index/index-path-key.js';
-import { indexPathKey, isLossy } from '../../domain/git-index/index-path-key.js';
+import { escapedPathOf, indexPathKey, isLossy } from '../../domain/git-index/index-path-key.js';
 import { emptyPathspec } from '../../domain/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesIndexPath } from '../../domain/pathspec/matching-path.js';
@@ -33,7 +33,7 @@ import {
 } from '../primitives/compare-working-tree-entry.js';
 import { pruneEmptiedDirectories } from '../primitives/internal/prune-emptied-directories.js';
 import { buildCheckinAttributeProvider } from '../primitives/internal/read-gitattributes.js';
-import { readHeadTree } from '../primitives/read-head-tree.js';
+import { readHeadTreeEscaped } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
@@ -209,7 +209,7 @@ const enforceSafetyValve = async (
 };
 
 const isStaged = (head: ReadonlyMap<FilePath, FlatTreeEntry>, entry: IndexEntry): boolean => {
-  const headEntry = head.get(entry.path);
+  const headEntry = head.get(escapedPathOf(entry));
   // Absent from HEAD (newly added / never committed) counts as staged, as does a
   // blob-id or mode difference.
   return headEntry === undefined || headEntry.id !== entry.id || headEntry.mode !== entry.mode;
@@ -217,4 +217,4 @@ const isStaged = (head: ReadonlyMap<FilePath, FlatTreeEntry>, entry: IndexEntry)
 
 // An unborn HEAD (no commits yet) has no tree — every entry is then staged.
 const headTreeEntries = async (ctx: Context): Promise<ReadonlyMap<FilePath, FlatTreeEntry>> =>
-  (await readHeadTree(ctx))?.entries ?? new Map();
+  (await readHeadTreeEscaped(ctx))?.entries ?? new Map();
