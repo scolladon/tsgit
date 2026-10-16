@@ -257,6 +257,19 @@ describe('verifyPath', () => {
           expected: undefined,
         },
 
+        {
+          label: "'a\\.g<ZWNJ>it/x' accepts: the HFS alias check spans the whole component",
+          path: 'a\\.g\u200cit/x',
+          mode: FILE_MODE.REGULAR,
+          expected: undefined,
+        },
+        {
+          label: "'a\\.g<ZWNJ>it\\b' accepts: the HFS alias check spans the whole component",
+          path: 'a\\.g\u200cit\\b',
+          mode: FILE_MODE.REGULAR,
+          expected: undefined,
+        },
+
         // --- accepted family: reserved names, whitespace/dot noise, near-aliases ---
         { label: "'nul' accepts", path: 'nul', mode: FILE_MODE.REGULAR, expected: undefined },
         { label: "'con' accepts", path: 'con', mode: FILE_MODE.REGULAR, expected: undefined },
@@ -712,6 +725,25 @@ describe('verifyPath on raw path bytes', () => {
       ),
     );
   const viewOf = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
+
+  describe('Given a backslash-led part followed by a dotgit lookalike in the same component', () => {
+    describe('When verified with the raw bytes', () => {
+      it.each([
+        { label: 'a\\.git\\xff/x', bytes: rawPath('a\\.git', [0xff], '/x') },
+        { label: 'a\\.git\\xff', bytes: rawPath('a\\.git', [0xff]) },
+        { label: 'a\\.g\\xe2\\x80\\x8cit/x', bytes: rawPath('a\\.g', [0xe2, 0x80, 0x8c], 'it/x') },
+      ])('Then $label is accepted', ({ bytes }) => {
+        // Arrange
+        const view = viewOf(bytes);
+
+        // Act
+        const result = verifyPath(view, FILE_MODE.REGULAR, bytes);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
 
   describe("Given a '.git' component whose tail git's UTF-8 picker rejects", () => {
     describe('When verified with the raw bytes', () => {

@@ -74,7 +74,6 @@ const FOUR_BYTE_LEAD_BEYOND_UNICODE = 0xf4;
 const FOUR_BYTE_BEYOND_SECOND_MAX = 0x8f;
 const BMP_LAST_MINUS_ONE = 0xfffe;
 const BMP_LAST = 0xffff;
-const ASCII_BACKSLASH_BYTE = 0x5c;
 
 const isContinuation = (byte: number | undefined): boolean =>
   byte !== undefined && byte >= CONTINUATION_MIN && byte <= CONTINUATION_MAX;
@@ -142,18 +141,6 @@ const hfsAlias = (part: string, partBytes: Uint8Array | undefined, target: strin
   return stripIgnorableCodepoints(candidate).toLowerCase() === target;
 };
 
-const splitBytesAtBackslash = (bytes: Uint8Array): Uint8Array[] => {
-  const parts: Uint8Array[] = [];
-  let start = 0;
-  for (let i = 0; i < bytes.length; i += 1) {
-    if (bytes[i] !== ASCII_BACKSLASH_BYTE) continue;
-    parts.push(bytes.subarray(start, i));
-    start = i + 1;
-  }
-  parts.push(bytes.subarray(start));
-  return parts;
-};
-
 /**
  * git's `is_ntfs_dot_generic` treats `:` as a component terminator: an NTFS
  * alternate-data-stream suffix on EITHER the full name or a short-name alias
@@ -169,14 +156,14 @@ const splitAtStream = (part: string): { candidate: string; hasStream: boolean } 
     : { candidate: part.slice(0, colonIndex), hasStream: true };
 };
 
-const matchAliasPart = (part: string, partBytes?: Uint8Array): VerifyPathRejection | undefined => {
+const matchNtfsPart = (part: string): VerifyPathRejection | undefined => {
   const { candidate, hasStream } = splitAtStream(part);
   const normalized = normalizeAliasCandidate(candidate);
   if (normalized === DOTGIT) return hasStream ? 'dotgit-ntfs-stream' : 'dotgit-alias';
   if (normalized === NTFS_SHORT_NAME) {
     return hasStream ? 'dotgit-ntfs-stream' : 'dotgit-ntfs-alias';
   }
-  return hfsAlias(part, partBytes, DOTGIT) ? 'dotgit-hfs-alias' : undefined;
+  return undefined;
 };
 
 const ASCII_DOT = 0x2e;
@@ -188,7 +175,7 @@ const ASCII_MAX = 0x7f;
 /**
  * True when `component` cannot possibly normalise (case-fold, trailing
  * dot/space strip, or ignorable-codepoint strip) to `.git`, `git~1`, or
- * either of their stream/alias forms — every target of {@link matchAliasPart}
+ * either of their stream/alias forms — every target of {@link matchNtfsPart}
  * begins with `.` or `g`/`G` and is pure ASCII. A component whose first
  * character is neither, that carries no backslash (which could re-anchor a
  * LATER split part's own first character), and no byte ≥ 0x80 (every
@@ -200,7 +187,7 @@ const ASCII_MAX = 0x7f;
  * change what the FIRST character is.
  */
 const isObviouslyNotAnAlias = (component: string): boolean => {
-  // Stryker disable next-line BooleanLiteral: equivalent — an empty component can never equal DOTGIT/NTFS_SHORT_NAME either way; isDotGitAlias('') is false whether this fast path fires or falls through to matchAliasPart('') (verified: 'empty component' case in verify-path.test.ts passes unmutated).
+  // Stryker disable next-line BooleanLiteral: equivalent — an empty component can never equal DOTGIT/NTFS_SHORT_NAME either way; isDotGitAlias('') is false whether this fast path fires or falls through to matchAliasComponent('') (verified: 'empty component' case in verify-path.test.ts passes unmutated).
   if (component.length === 0) return false;
   const first = component.charCodeAt(0);
   if (first === ASCII_DOT || first === ASCII_UPPER_G || first === ASCII_LOWER_G) return false;
@@ -211,21 +198,19 @@ const isObviouslyNotAnAlias = (component: string): boolean => {
   return true;
 };
 
-// The `\` split exists only to feed this scan (`.git\config` reads as two
-// parts, `.git` and `config`) — a bare backslash is never a rejection. Most
-// components carry no backslash at all, so skip the allocating split for them.
+// git runs the NTFS scan per backslash part (`.git\config` reads as two parts,
+// `.git` and `config`) but hands the HFS check the whole `/` component, so an
+// HFS lookalike only matches when the component itself is the alias.
 const matchAliasComponent = (
   component: string,
   componentBytes?: Uint8Array,
 ): VerifyPathRejection | undefined => {
   if (isObviouslyNotAnAlias(component)) return undefined;
-  if (component.indexOf('\\') === -1) return matchAliasPart(component, componentBytes);
-  const partBytes = componentBytes && splitBytesAtBackslash(componentBytes);
-  for (const [index, part] of component.split('\\').entries()) {
-    const reason = matchAliasPart(part, partBytes?.[index]);
+  for (const part of component.split('\\')) {
+    const reason = matchNtfsPart(part);
     if (reason !== undefined) return reason;
   }
-  return undefined;
+  return hfsAlias(component, componentBytes, DOTGIT) ? 'dotgit-hfs-alias' : undefined;
 };
 
 /** True if `component` is `.git` or one of its NTFS/HFS-obscured aliases. */
@@ -289,7 +274,7 @@ const GITMOD_NTFS_HASHED_SHORT_NAME = /^gi7eba~[1-9]$/;
  * True if `component` is `.gitmodules` or one of its NTFS (`gitmod~1`..
  * `gitmod~4` truncated short name, `gi7eba~1`..`gi7eba~9` hashed short name —
  * either with a `:`-stream suffix) / HFS+ (ignorable-codepoint) aliases — the
- * same normalisation {@link matchAliasPart} runs for `.git`, re-targeted at
+ * same normalisation {@link matchNtfsPart} runs for `.git`, re-targeted at
  * `.gitmodules`. Unlike {@link matchAliasComponent}, this skips the
  * backslash-split: a component reaching `verifyPath` has already passed
  * `validateIndexPath`'s unconditional backslash rejection, so a
