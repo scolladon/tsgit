@@ -519,6 +519,25 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
+      describe('When status runs on the clean twin repo', () => {
+        it('Then no change is staged and git agrees on the two unstaged deletions', async () => {
+          // Arrange
+          seedLossyTwins();
+
+          // Act
+          const result = await repo.status();
+
+          // Assert
+          const gitRecords = git('status', '--porcelain=v2', '-z').split('\0').filter(Boolean);
+          expect(result.changes.filter((c) => c.staged !== undefined)).toEqual([]);
+          expect(result.changes.map((c) => [c.path, c.unstaged])).toEqual([
+            ['d/\uFFFD', 'deleted'],
+            [U_FILE, 'deleted'],
+          ]);
+          expect(gitRecords.map((record) => record.slice(0, 4))).toEqual(['1 .D', '1 .D']);
+        });
+      });
+
       describe('When add --all runs', () => {
         it('Then both lossy entries leave the index', async () => {
           // Arrange

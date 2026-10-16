@@ -6,18 +6,23 @@ import {
   classifyUnmerged,
   comparePaths,
   type DiffChange,
-  diffIndexAgainstTree,
   type FlatTree,
   type GroupedIndex,
-  groupUnmergedEntries,
   type UnmergedEntryGroup,
 } from '../../domain/diff/index.js';
+import {
+  diffIndexAgainstTreeKeyed,
+  groupUnmergedEntriesKeyed,
+} from '../../domain/diff/index-diff.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import {
+  escapedPathOf,
   type IndexPathKey,
   indexPathKey,
   keyOfPath,
+  viewOfEscaped,
 } from '../../domain/git-index/index-path-key.js';
+import { hasEscapedBytes } from '../../domain/objects/encoding.js';
 import { deriveWorkingMode, type FileMode, type RefName } from '../../domain/objects/index.js';
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
@@ -42,7 +47,7 @@ import {
   buildCheckinAttributeProvider,
 } from '../primitives/internal/read-gitattributes.js';
 import { assertOperationalRepositorySettingsFirst } from '../primitives/internal/repo-state.js';
-import { readHeadTree } from '../primitives/read-head-tree.js';
+import { readHeadTreeEscaped } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
@@ -226,9 +231,9 @@ interface TrackedEntries {
  *  (stage 1/2/3) groups. A conflicted path has no stage-0 entry, so it is
  *  reported only under the unmerged column. */
 const trackedEntriesOf = (index: GitIndex): TrackedEntries => {
-  const grouped = groupUnmergedEntries(index);
+  const grouped = groupUnmergedEntriesKeyed(index);
   const stage0Map = new Map<FilePath, IndexEntry>(
-    grouped.staged.map((entry) => [entry.path, entry]),
+    grouped.staged.map((entry) => [escapedPathOf(entry), entry]),
   );
   const trackedPaths = new Set<IndexPathKey>(grouped.staged.map(indexPathKey));
   for (const path of grouped.unmerged.keys()) trackedPaths.add(keyOfPath(path));
@@ -294,7 +299,7 @@ const reportStatus = async (
   },
 ): Promise<StatusReport> => {
   await resolveRevisionName(ctx, HEAD_NAME);
-  const headTree = await readHeadTree(ctx);
+  const headTree = await readHeadTreeEscaped(ctx);
   const { unmerged: groups } = tracked.grouped;
   const stagedKindMap = collectStagedKinds(index, headTree, groups);
   const changes = buildChanges(stagedKindMap, scanned.workingMap, headTree, tracked.stage0Map);
@@ -329,7 +334,7 @@ const scanEntry = async (
     ...(indexMtime !== undefined && { indexMtime }),
     filterDriversConfigured,
   });
-  return { path: entry.path, delta, refreshed };
+  return { path: escapedPathOf(entry), delta, refreshed };
 };
 
 interface ScannedEntry {
@@ -403,7 +408,7 @@ const collectStagedKinds = (
   unmerged: ReadonlyMap<FilePath, UnmergedEntryGroup>,
 ): Map<FilePath, ChangeKind> => {
   const map = new Map<FilePath, ChangeKind>();
-  for (const change of diffIndexAgainstTree(index, headTree).changes) {
+  for (const change of diffIndexAgainstTreeKeyed(index, headTree).changes) {
     const path = primaryPath(change);
     if (!unmerged.has(path)) map.set(path, toStagedKind(change));
   }
@@ -434,7 +439,9 @@ const buildChanges = (
       stage0Map.get(path),
     ),
   );
-  return changes.sort((a, b) => comparePaths(a.path, b.path));
+  return changes
+    .sort((a, b) => comparePaths(a.path, b.path))
+    .map((change) => ({ ...change, path: viewOfEscaped(change.path) }));
 };
 
 /**
@@ -511,7 +518,7 @@ const buildUnmergedEntries = (
     const worktreeMode = await readWorktreeMode(ctx, workDir, path);
     return {
       kind: classifyUnmerged(group),
-      path,
+      path: viewOfEscaped(path),
       ...(group.stage1 && { base: conflictStage(group.stage1) }),
       ...(group.stage2 && { ours: conflictStage(group.stage2) }),
       ...(group.stage3 && { theirs: conflictStage(group.stage3) }),
@@ -525,6 +532,8 @@ const readWorktreeMode = async (
   workDir: string,
   path: FilePath,
 ): Promise<FileMode | undefined> => {
+  // A lossy name reads as absent, with no fs call naming it.
+  if (hasEscapedBytes(path)) return undefined;
   const stat = await ctx.fs.lstat(joinPath(workDir, path)).catch(() => undefined);
   return stat === undefined ? undefined : deriveWorkingMode(stat);
 };

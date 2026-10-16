@@ -17,6 +17,7 @@ import {
 } from '../../../../src/application/commands/status.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { DiffChange } from '../../../../src/domain/diff/index.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { type IndexEntry, STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
@@ -27,6 +28,7 @@ import type {
   FilePath,
   ObjectId,
 } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
 import { asBareContext } from './fixtures.js';
@@ -1545,6 +1547,154 @@ describe('Given a same-size rewrite in the tick of the index write, then an inde
 
       // Assert
       expect(changeFor(result, 'm.txt')?.unstaged).toBe('modified');
+    });
+  });
+});
+
+const LOSSY_NAME = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+const TWIN_NAME = Uint8Array.of(0xef, 0xbf, 0xbd, 0x2e, 0x74, 0x78, 0x74);
+const ASTRAL_NAME = Uint8Array.of(0xf0, 0x90, 0x82, 0x80);
+const TWIN_VIEW = '�.txt' as FilePath;
+const ASTRAL_VIEW = '\u{10080}' as FilePath;
+
+const blobIn = (ctx: Context, content: string): Promise<ObjectId> =>
+  writeObject(ctx, {
+    type: 'blob',
+    id: '' as ObjectId,
+    content: new TextEncoder().encode(content),
+  });
+
+interface NamedBlob {
+  readonly name: Uint8Array;
+  readonly view: FilePath;
+  readonly id: ObjectId;
+  readonly lossy: boolean;
+}
+
+const indexEntryOf = ({ name, view, id, lossy }: NamedBlob): IndexEntry => ({
+  ctimeSeconds: 0,
+  ctimeNanoseconds: 0,
+  mtimeSeconds: 0,
+  mtimeNanoseconds: 0,
+  dev: 0,
+  ino: 0,
+  mode: FILE_MODE.REGULAR,
+  uid: 0,
+  gid: 0,
+  fileSize: 0,
+  id,
+  flags: STAGE0_FLAGS,
+  path: view,
+  ...(lossy && { pathBytes: name }),
+});
+
+/** HEAD and the index both hold `files`; nothing else is staged. */
+const seedCommittedAndIndexed = async (
+  ctx: Context,
+  files: ReadonlyArray<NamedBlob>,
+): Promise<void> => {
+  const tree = await writeObject(ctx, {
+    type: 'tree',
+    id: '' as ObjectId,
+    entries: files.map((f) => treeEntry(FILE_MODE.REGULAR, f.name, f.id)),
+  });
+  const commitId = await writeObject(ctx, {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: { tree, parents: [], author, committer: author, message: 'seed', extraHeaders: [] },
+  });
+  const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
+  await ctx.fs.writeUtf8(
+    `${ctx.layout.gitDir}/${head.replace('ref: ', '').trim()}`,
+    `${commitId}\n`,
+  );
+  const lock = await acquireIndexLock(ctx);
+  await lock.commit(files.map(indexEntryOf), 'update');
+};
+
+describe('status on escaped paths', () => {
+  describe('Given HEAD and the index holding a lossy path and its U+FFFD twin, the twin clean on disk', () => {
+    describe('When status', () => {
+      it('Then only the lossy path is reported, unstaged deleted, with no staged change', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const lossyId = await blobIn(ctx, 'l');
+        const twinId = await blobIn(ctx, 'u');
+        await seedCommittedAndIndexed(ctx, [
+          { name: LOSSY_NAME, view: TWIN_VIEW, id: lossyId, lossy: true },
+          { name: TWIN_NAME, view: TWIN_VIEW, id: twinId, lossy: false },
+        ]);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${TWIN_VIEW}`, 'u');
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.changes.map((c) => [c.path, c.staged, c.unstaged])).toEqual([
+          [TWIN_VIEW, undefined, 'deleted'],
+        ]);
+      });
+    });
+  });
+
+  describe('Given a lossy path deleted and a tracked astral-plane file modified', () => {
+    describe('When status', () => {
+      it('Then the records sort by raw bytes, the astral file first', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const lossyId = await blobIn(ctx, 'l');
+        const astralId = await blobIn(ctx, 'a');
+        await seedCommittedAndIndexed(ctx, [
+          { name: ASTRAL_NAME, view: ASTRAL_VIEW, id: astralId, lossy: false },
+          { name: LOSSY_NAME, view: TWIN_VIEW, id: lossyId, lossy: true },
+        ]);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${ASTRAL_VIEW}`, 'changed');
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.changes.map((c) => [c.path, c.unstaged])).toEqual([
+          [ASTRAL_VIEW, 'modified'],
+          [TWIN_VIEW, 'deleted'],
+        ]);
+      });
+    });
+  });
+  describe('Given a conflicted lossy path next to a clean U+FFFD file of the same view', () => {
+    describe('When status', () => {
+      it('Then the conflict shows the view, with no work tree mode and no fs call naming the twin or an escape', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const id = await blobIn(ctx, 'l');
+        const conflicted = (stage: 1 | 2 | 3): IndexEntry => ({
+          ...indexEntryOf({ name: LOSSY_NAME, view: TWIN_VIEW, id, lossy: true }),
+          flags: { ...STAGE0_FLAGS, stage },
+        });
+        const lock = await acquireIndexLock(ctx);
+        await lock.commit([conflicted(1), conflicted(2), conflicted(3)], 'update');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${TWIN_VIEW}`, 'u');
+        const lstatSpy = vi.spyOn(ctx.fs, 'lstat');
+        const sut = status;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.unmerged.map((u) => [u.kind, u.path, u.worktree])).toEqual([
+          ['both-modified', TWIN_VIEW, undefined],
+        ]);
+        expect(
+          lstatSpy.mock.calls.flat().filter((arg) => /[\uDC80-\uDCFF]/.test(String(arg))),
+        ).toEqual([]);
+        expect(result.untracked).toEqual([TWIN_VIEW]);
+        vi.restoreAllMocks();
+      });
     });
   });
 });
