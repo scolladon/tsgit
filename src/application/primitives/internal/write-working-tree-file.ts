@@ -8,6 +8,7 @@
  */
 import type { ChunkTransform } from '../../../domain/eol/chunk-transform.js';
 import { TsgitError } from '../../../domain/error.js';
+import { hasEscapedBytes } from '../../../domain/objects/encoding.js';
 import { objectNotFound, unexpectedObjectType } from '../../../domain/objects/error.js';
 import {
   FILE_MODE,
@@ -287,6 +288,7 @@ export const writeWorkingTreeEntryStream = async (
 };
 
 export const removeWorkingTreeFile = async (ctx: Context, path: FilePath): Promise<void> => {
+  if (hasEscapedBytes(path)) return;
   const fullPath = joinPath(requireWorkTree(ctx, 'writeWorkingTreeFile'), path);
   await rmIfExists(ctx, fullPath);
 };
