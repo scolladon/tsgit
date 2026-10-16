@@ -97,6 +97,7 @@ export function decodePreservingBom(bytes: Uint8Array): string {
 // re-encodes to the same bytes, so a view without U+FFFD is lossless without
 // paying for an encode.
 export function decodesLosslessly(text: string, raw: Uint8Array): boolean {
+  // Stryker disable next-line StringLiteral: equivalent — includes('') is always true, so only the byte comparison decides, and for a decodePreservingBom view it answers exactly what the U+FFFD shortcut answers.
   return !text.includes('\uFFFD') || bytesEqual(encode(text), raw);
 }
 
@@ -161,6 +162,7 @@ export function wellFormedSequenceLength(bytes: Uint8Array, at: number): number 
 // U+DC00 + byte, so the string keeps the bytes and stays injective.
 export function decodeEscapingInvalid(bytes: Uint8Array): string {
   const view = decodePreservingBom(bytes);
+  // Stryker disable next-line ConditionalExpression: equivalent — on lossless bytes the scan below accepts every sequence, escapes nothing and returns decodePreservingBom(bytes), i.e. the same view.
   if (decodesLosslessly(view, bytes)) return view;
   let result = '';
   let runStart = 0;
@@ -201,13 +203,16 @@ const isHighSurrogate = (unit: number): boolean =>
 
 // Inverse of `decodeEscapingInvalid`: a lone U+DC80..U+DCFF is its byte, the rest is UTF-8.
 export function encodeEscaped(text: string): Uint8Array {
+  // Stryker disable next-line ConditionalExpression: equivalent — without a lone U+DC80..U+DCFF the loop below pushes nothing and returns encode(text) whole.
   if (!hasEscapedBytes(text)) return encode(text);
   const parts: Uint8Array[] = [];
   let runStart = 0;
   for (let i = 0; i < text.length; i++) {
     const unit = text.charCodeAt(i);
     if (unit < ESCAPE_MIN || unit > ESCAPE_MAX) continue;
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — at i = 0, charCodeAt(-1) is NaN, which isHighSurrogate rejects, so dropping or widening the i > 0 guard changes nothing.
     if (i > 0 && isHighSurrogate(text.charCodeAt(i - 1))) continue;
+    // Stryker disable next-line ArithmeticOperator: equivalent — 0xdc00 is a multiple of 256 and Uint8Array stores modulo 256, so unit ± 0xdc00 store the same byte.
     parts.push(encode(text.slice(runStart, i)), Uint8Array.of(unit - ESCAPE_BASE));
     runStart = i + 1;
   }

@@ -602,6 +602,7 @@ describe('encoding', () => {
     const cases: ReadonlyArray<readonly [string, ReadonlyArray<number>, string]> = [
       ['a rejected lead byte before ascii', [0xff, 0x2e, 0x74], '\uDCFF.t'],
       ['a lone continuation byte', [0x80], '\uDC80'],
+      ['four continuation bytes', [0x80, 0x80, 0x80, 0x80], '\uDC80\uDC80\uDC80\uDC80'],
       ['a truncated two-byte lead', [0xc3], '\uDCC3'],
       ['an overlong two-byte lead', [0xc0, 0xaf], '\uDCC0\uDCAF'],
       ['an encoded surrogate', [0xed, 0xa0, 0x80], '\uDCED\uDCA0\uDC80'],
