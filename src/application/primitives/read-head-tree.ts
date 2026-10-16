@@ -139,6 +139,7 @@ const readHeadTreeWith = async (
 };
 
 export const readHeadTree = (ctx: Context): Promise<FlatTree | undefined> =>
+  // Stryker disable next-line StringLiteral: equivalent — only this file builds these cache keys, so any suffix other than ESCAPED_KEY_SUFFIX keeps the two views apart.
   readHeadTreeWith(ctx, flattenTree, '');
 
 /** Internal: keys are escaped paths, so names differing only in invalid UTF-8 stay distinct. */
