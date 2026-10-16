@@ -110,12 +110,7 @@ const collectTargetEntries = async (ctx: Context, treeId: ObjectId): Promise<Tar
   const collected: TargetEntry[] = [];
   for await (const entry of walkTreeWithLossyBytes(ctx, treeId)) {
     if (entry.mode === FILE_MODE.DIRECTORY) continue;
-    collected.push({
-      path: entry.path,
-      ...(entry.pathBytes === undefined ? {} : { pathBytes: entry.pathBytes }),
-      id: entry.id,
-      mode: entry.mode,
-    });
+    collected.push(entry);
   }
   return collected;
 };
