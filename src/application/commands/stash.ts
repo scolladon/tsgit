@@ -34,7 +34,7 @@ import {
   type WorkingTreeComparison,
 } from '../primitives/compare-working-tree-entry.js';
 import { createCommit } from '../primitives/create-commit.js';
-import { flattenTree } from '../primitives/flatten-tree.js';
+import { flattenEscapedTree } from '../primitives/flatten-tree.js';
 import { hashBlob } from '../primitives/hash-blob.js';
 import {
   admitWrite,
@@ -634,7 +634,7 @@ const untrackedOverwrites = async (
   workDir: string,
   uTree: ObjectId,
 ): Promise<ReadonlyArray<FilePath>> => {
-  const flat = await flattenTree(ctx, uTree);
+  const flat = await flattenEscapedTree(ctx, uTree);
   const clobbered: FilePath[] = [];
   for (const path of flat.entries.keys()) {
     if (hasEscapedBytes(path)) continue;
@@ -661,7 +661,7 @@ const untrackedWriter = (
 
 /** Check out the untracked tree into the working tree (clean-apply path only). */
 const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> => {
-  const flat = await flattenTree(ctx, uTree);
+  const flat = await flattenEscapedTree(ctx, uTree);
   // Whole-tree name gate before the first write: a stash's untracked tree is
   // attacker-controllable, so a hostile entry name (`.git/**`, a `.git` alias,
   // a traversal) must refuse the entire restore untouched — mirroring the

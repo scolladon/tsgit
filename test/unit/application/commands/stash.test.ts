@@ -917,6 +917,46 @@ describe('stash apply', () => {
       );
     });
   });
+
+  describe('Given an include-untracked stash whose untracked tree holds a non-UTF-8 name and a twin on disk named by its U+FFFD view', () => {
+    describe('When apply runs', () => {
+      it('Then it does not refuse, leaves the twin alone and writes no lone-surrogate name', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        const blob = await writeObject(ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: new TextEncoder().encode('raw\n'),
+        });
+        const untrackedTree = await writeObject(ctx, {
+          type: 'tree',
+          id: '' as ObjectId,
+          entries: [
+            treeEntry(FILE_MODE.REGULAR, Uint8Array.from([0xff, 0x2e, 0x74, 0x78, 0x74]), blob),
+          ],
+        });
+        await pushHostileUntrackedStash(ctx, untrackedTree);
+        await write(ctx, '\uFFFD.txt', 'twin\n');
+        const spies = [
+          vi.spyOn(ctx.fs, 'write'),
+          vi.spyOn(ctx.fs, 'writeUtf8'),
+          vi.spyOn(ctx.fs, 'mkdir'),
+          vi.spyOn(ctx.fs, 'rm'),
+        ];
+
+        // Act
+        const sut = stashApply;
+        const result = await sut({ ...ctx, session: createSession() }, {});
+
+        // Assert
+        expect(result.kind).toBe('applied');
+        expect(await read(ctx, '\uFFFD.txt')).toBe('twin\n');
+        const touched = spies.flatMap((spy) => spy.mock.calls.map(([path]) => String(path)));
+        expect(touched.filter((path) => /[\uDC80-\uDCFF]/.test(path))).toEqual([]);
+        expect(touched.filter((path) => path.includes('\uFFFD.txt'))).toEqual([]);
+      });
+    });
+  });
 });
 
 describe('stash pop', () => {

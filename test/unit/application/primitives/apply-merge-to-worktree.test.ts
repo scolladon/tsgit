@@ -1422,6 +1422,92 @@ describe('applyMergeToWorktree', () => {
       });
     });
   });
+
+  describe('Given twin paths \\xff.txt and its U+FFFD view where theirs modifies only the raw one', () => {
+    describe('When the merge is applied', () => {
+      it('Then the raw path takes the new blob by its bytes and the twin keeps its own, with no fs call naming either', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const raw = Uint8Array.from([0xff, 0x2e, 0x74, 0x78, 0x74]);
+        const [baseBlob, newBlob, twinBlob] = [
+          await writeBlob(ctx, 'l\n'),
+          await writeBlob(ctx, 'l2\n'),
+          await writeBlob(ctx, 'u\n'),
+        ];
+        const side = (lossy: ObjectId) =>
+          treeWith(ctx, [
+            treeEntry(FILE_MODE.REGULAR, raw, lossy),
+            treeEntry(FILE_MODE.REGULAR, '\uFFFD.txt', twinBlob),
+          ]);
+        const [base, ours, theirs] = [
+          await side(baseBlob),
+          await side(baseBlob),
+          await side(newBlob),
+        ];
+        await ctx.fs.write(`${ctx.layout.workDir}/\uFFFD.txt`, new TextEncoder().encode('u\n'));
+        const spies = [
+          vi.spyOn(ctx.fs, 'write'),
+          vi.spyOn(ctx.fs, 'writeUtf8'),
+          vi.spyOn(ctx.fs, 'rm'),
+          vi.spyOn(ctx.fs, 'mkdir'),
+          vi.spyOn(ctx.fs, 'lstat'),
+          vi.spyOn(ctx.fs, 'read'),
+        ];
+        const lossyEntry: IndexEntry = { ...indexEntry('\uFFFD.txt', baseBlob), pathBytes: raw };
+
+        // Act
+        const sut = applyMergeToWorktree;
+        const result = await sut(ctx, {
+          baseTree: base,
+          oursTree: ours,
+          theirsTree: theirs,
+          currentIndex: index([lossyEntry, indexEntry('\uFFFD.txt', twinBlob)]),
+        });
+
+        // Assert
+        expect(result.kind).toBe('clean');
+        if (result.kind !== 'clean') return;
+        const lossy = result.result.newIndexEntries.filter((e) => e.pathBytes !== undefined);
+        expect(lossy.map((e) => [Array.from(e.pathBytes ?? []), e.id, e.fileSize])).toEqual([
+          [Array.from(raw), newBlob, 0],
+        ]);
+        const twins = result.result.newIndexEntries.filter((e) => e.pathBytes === undefined);
+        expect(twins.map((e) => [e.path, e.id])).toEqual([['\uFFFD.txt', twinBlob]]);
+        const touched = spies.flatMap((spy) => spy.mock.calls.map(([path]) => String(path)));
+        expect(touched.filter((path) => /[\uDC80-\uDCFF]/.test(path))).toEqual([]);
+        expect(touched.filter((path) => path.endsWith('\uFFFD.txt')).length).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a gitlink that diverges on both sides at a non-UTF-8 path', () => {
+    describe('When the merge is applied', () => {
+      it('Then it rejects naming the U+FFFD view of the path', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const raw = Uint8Array.from([0xff, 0x2e, 0x74, 0x78, 0x74]);
+        const at = (id: string) =>
+          treeWith(ctx, [treeEntry(FILE_MODE.GITLINK, raw, id.repeat(40) as ObjectId)]);
+        const [base, ours, theirs] = [await at('0'), await at('1'), await at('2')];
+
+        // Act
+        const act = applyMergeToWorktree(ctx, {
+          baseTree: base,
+          oursTree: ours,
+          theirsTree: theirs,
+          currentIndex: index([]),
+        });
+
+        // Assert
+        const failure = await act.catch((err: TsgitError) => err);
+        expect((failure as TsgitError).data).toMatchObject({
+          code: 'UNSUPPORTED_OPERATION',
+          operation: 'apply-merge',
+          reason: "conflict type 'gitlink' not supported (path=\uFFFD.txt)",
+        });
+      });
+    });
+  });
 });
 
 describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', () => {

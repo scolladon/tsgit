@@ -2476,3 +2476,132 @@ describe('mergeTrees — blobUnchanged callback', () => {
     });
   });
 });
+
+describe('mergeTrees — escaped keys (raw non-UTF-8 path bytes)', () => {
+  const RAW = '\uDCFF.txt' as FilePath;
+  const ESCAPED_DIR_FILE = 'd/\uDCFF' as FilePath;
+
+  describe('Given theirs renamed an escaped path to r.txt while ours modified it', () => {
+    describe('When mergeTrees is called with the rename', () => {
+      it('Then the three versions merge at r.txt and the escaped source is deleted', async () => {
+        // Arrange
+        const base = tree([[RAW, entry(ID_A)]]);
+        const ours = tree([[RAW, entry(ID_B)]]);
+        const theirs = tree([['r.txt', entry(ID_C)]]);
+        const merger = spyMerger({ status: 'clean', bytes: new Uint8Array([1]) });
+        const renames = { ours: [], theirs: [{ oldPath: RAW, newPath: 'r.txt' as FilePath }] };
+        const sut = mergeTrees;
+
+        // Act
+        const result = await sut(base, ours, theirs, merger.fn, DEFAULT_MERGE_LABELS, renames);
+
+        // Assert
+        expect(result.outcomes).toEqual([
+          {
+            status: 'resolved-merged',
+            path: 'r.txt',
+            bytes: new Uint8Array([1]),
+            mode: FILE_MODE.REGULAR,
+          },
+          { status: 'resolved-deleted', path: RAW },
+        ]);
+        expect(merger.ctxs[0]?.sidePaths).toEqual({ base: RAW, ours: RAW, theirs: 'r.txt' });
+      });
+    });
+  });
+
+  describe('Given theirs renamed r.txt onto an escaped path while ours modified it', () => {
+    describe('When mergeTrees is called with the rename', () => {
+      it('Then the three versions merge at the escaped path', async () => {
+        // Arrange
+        const base = tree([['r.txt', entry(ID_A)]]);
+        const ours = tree([['r.txt', entry(ID_B)]]);
+        const theirs = tree([[RAW, entry(ID_C)]]);
+        const merger = spyMerger({ status: 'clean', bytes: new Uint8Array([1]) });
+        const renames = { ours: [], theirs: [{ oldPath: 'r.txt' as FilePath, newPath: RAW }] };
+        const sut = mergeTrees;
+
+        // Act
+        const result = await sut(base, ours, theirs, merger.fn, DEFAULT_MERGE_LABELS, renames);
+
+        // Assert
+        expect(merger.ctxs[0]?.path).toBe(RAW);
+        expect(result.outcomes).toContainEqual({ status: 'resolved-deleted', path: 'r.txt' });
+      });
+    });
+  });
+
+  describe('Given distinct types at an escaped path and a theirs label of main', () => {
+    describe('When mergeTrees is called', () => {
+      it('Then the regular side is recorded at the escaped name suffixed ~main', async () => {
+        // Arrange
+        const ours = tree([['\uDCFF', entry(ID_A, FILE_MODE.SYMLINK)]]);
+        const theirs = tree([['\uDCFF', entry(ID_B, FILE_MODE.REGULAR)]]);
+        const sut = mergeTrees;
+
+        // Act
+        const result = await sut(undefined, ours, theirs, noopMerger, {
+          ours: 'HEAD',
+          theirs: 'main',
+          base: '',
+        });
+
+        // Assert
+        expect(result.conflicts[0]?.theirPath).toBe('\uDCFF~main');
+        expect(result.conflicts[0]?.ourPath).toBe('\uDCFF');
+      });
+    });
+  });
+
+  describe('Given theirs renamed a directory ours added an escaped name into', () => {
+    describe('When mergeTrees is called with directory renames applied', () => {
+      it('Then the addition lands at e/ with the escaped name', async () => {
+        // Arrange
+        const base = tree([['d/a', entry(ID_A)]]);
+        const ours = tree([
+          ['d/a', entry(ID_A)],
+          [ESCAPED_DIR_FILE, entry(ID_C)],
+        ]);
+        const theirs = tree([['e/a', entry(ID_A)]]);
+        const renames = {
+          ours: [],
+          theirs: [{ oldPath: 'd/a' as FilePath, newPath: 'e/a' as FilePath }],
+          directoryRenames: 'apply',
+        } as const;
+        const sut = mergeTrees;
+
+        // Act
+        const result = await sut(base, ours, theirs, noopMerger, DEFAULT_MERGE_LABELS, renames);
+
+        // Assert
+        expect(result.cleanMerge).toBe(true);
+        expect(result.outcomes).toContainEqual(
+          expect.objectContaining({ path: 'e/\uDCFF', id: ID_C }),
+        );
+        expect(result.outcomes).toContainEqual({
+          status: 'resolved-deleted',
+          path: ESCAPED_DIR_FILE,
+        });
+      });
+    });
+  });
+
+  describe('Given both sides modified an escaped .txt path', () => {
+    describe('When mergeTrees is called', () => {
+      it('Then the content merger receives the escaped path to match attributes on', async () => {
+        // Arrange
+        const base = tree([[RAW, entry(ID_A)]]);
+        const ours = tree([[RAW, entry(ID_B)]]);
+        const theirs = tree([[RAW, entry(ID_C)]]);
+        const merger = spyMerger({ status: 'clean', bytes: new Uint8Array([1]) });
+        const sut = mergeTrees;
+
+        // Act
+        await sut(base, ours, theirs, merger.fn);
+
+        // Assert
+        expect(merger.ctxs.map((c) => c.path)).toEqual([RAW]);
+      });
+    });
+  });
+});

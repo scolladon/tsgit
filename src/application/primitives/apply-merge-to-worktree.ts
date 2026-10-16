@@ -20,6 +20,7 @@ import type { FlatTree } from '../../domain/diff/flat-tree.js';
 import { conflictsToIndexEntries } from '../../domain/diff/index.js';
 import { unsupportedOperation } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
+import { viewOfEscaped } from '../../domain/git-index/index-path-key.js';
 import { pathComparatorFor } from '../../domain/git-index/index-writer.js';
 import { validateTreePath } from '../../domain/git-index/path-validator.js';
 import {
@@ -40,7 +41,7 @@ import {
 } from './build-content-merger.js';
 import { detectMergeRenames } from './detect-merge-renames.js';
 import { changedPaths, findWouldOverwrite } from './find-would-overwrite.js';
-import { flattenTree } from './flatten-tree.js';
+import { flattenEscapedTree } from './flatten-tree.js';
 import { writeAutoMerge } from './internal/auto-merge-ref.js';
 import { limiterFor } from './internal/concurrency.js';
 import { lazily } from './internal/lazily.js';
@@ -301,7 +302,7 @@ const rejectUnsupported = (conflicts: ReadonlyArray<MergeConflict>): void => {
     if (UNSUPPORTED_CONFLICT_TYPES.has(conflict.type)) {
       throw unsupportedOperation(
         'apply-merge',
-        `conflict type '${conflict.type}' not supported (path=${conflict.path})`,
+        `conflict type '${conflict.type}' not supported (path=${viewOfEscaped(conflict.path)})`,
       );
     }
   }
@@ -447,9 +448,11 @@ export const applyMergeToWorktree = async (
   input: ApplyMergeInput,
 ): Promise<ApplyMergeResult> => {
   const [base, ours, theirs] = await Promise.all([
-    input.baseTree !== undefined ? flattenTree(ctx, input.baseTree) : Promise.resolve(undefined),
-    flattenTree(ctx, input.oursTree),
-    flattenTree(ctx, input.theirsTree),
+    input.baseTree !== undefined
+      ? flattenEscapedTree(ctx, input.baseTree)
+      : Promise.resolve(undefined),
+    flattenEscapedTree(ctx, input.oursTree),
+    flattenEscapedTree(ctx, input.theirsTree),
   ]);
   const detected = await detectMergeRenames(ctx, base, ours, theirs);
   const diffAlgorithm = await readUiDiffAlgorithm(ctx);
@@ -518,9 +521,11 @@ export const mergeTreesToTree = async (
   },
 ): Promise<MergeTreesResult> => {
   const [base, ours, theirs] = await Promise.all([
-    input.baseTree !== undefined ? flattenTree(ctx, input.baseTree) : Promise.resolve(undefined),
-    flattenTree(ctx, input.oursTree),
-    flattenTree(ctx, input.theirsTree),
+    input.baseTree !== undefined
+      ? flattenEscapedTree(ctx, input.baseTree)
+      : Promise.resolve(undefined),
+    flattenEscapedTree(ctx, input.oursTree),
+    flattenEscapedTree(ctx, input.theirsTree),
   ]);
   const renormalize = await configuredRenormalize(ctx, { base, ours, theirs });
   const merged = await mergeTrees(
