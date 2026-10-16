@@ -62,15 +62,16 @@ function extracted(side: FlatTree, prefix: string): FlatTree {
   };
 }
 
-function applyShift<Side extends FlatTree | undefined>(
+// A shift only re-roots keys, so the result keeps the key brand of `ours`; the cast is that boundary.
+function applyShift<Tree extends FlatTree, Side extends Tree | undefined>(
   shift: TreeShift,
-  ours: FlatTree,
+  ours: Tree,
   side: Side,
-): FlatTree | Side {
+): Tree | Side {
   if (shift.kind === 'none') return side;
   const prefix = normalizedPrefix(shift.prefix);
-  if (shift.kind === 'add') return spliced(ours, side ?? EMPTY_FLAT, prefix);
-  return extracted(side ?? EMPTY_FLAT, prefix);
+  if (shift.kind === 'add') return spliced(ours, side ?? EMPTY_FLAT, prefix) as Tree;
+  return extracted(side ?? EMPTY_FLAT, prefix) as Tree;
 }
 
 export interface ShiftableTree<Side extends FlatTree | undefined> {
@@ -83,12 +84,12 @@ export interface ShiftableTree<Side extends FlatTree | undefined> {
  * `subtreeShift` guesses the prefix (`shift_tree`), any other shifts by it
  * (`shift_tree_by`). An absent side tree is git's empty tree.
  */
-export const shiftMergeSide = async <Side extends FlatTree | undefined>(
+export const shiftMergeSide = async <Tree extends FlatTree, Side extends Tree | undefined>(
   ctx: Context,
-  ours: { readonly tree: ObjectId; readonly flat: FlatTree },
+  ours: { readonly tree: ObjectId; readonly flat: Tree },
   side: ShiftableTree<Side>,
   subtreeShift: string,
-): Promise<FlatTree | Side> => {
+): Promise<Tree | Side> => {
   const list = cachedLister(ctx);
   const shift =
     subtreeShift === ''

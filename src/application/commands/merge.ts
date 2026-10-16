@@ -1378,12 +1378,7 @@ const readMergeSides = async (
     shiftMergeSide(ctx, ours, { tree: theirTreeId, flat: theirSide }, shift),
     shiftMergeSide(ctx, ours, { tree: baseTreeId, flat: baseSide }, shift),
   ]);
-  // A shift only re-roots escaped keys under a prefix, so the shifted sides stay escaped-keyed.
-  return {
-    base: base as EscapedFlatTree | undefined,
-    ours: ourFlat,
-    theirs: theirs as EscapedFlatTree,
-  };
+  return { base, ours: ourFlat, theirs };
 };
 
 /** A clean merge's synthesised tree, or its conflicts with every split rename's blob staged. */
