@@ -85,7 +85,7 @@ const uniqueByKey = (items: ReadonlyArray<IndexPath>): IndexPath[] => {
   const byKey = new Map<string, IndexPath>();
   for (const item of items) {
     const key = indexPathKey(item);
-    if (!byKey.has(key)) byKey.set(key, item);
+    byKey.set(key, item);
   }
   return [...byKey.values()];
 };

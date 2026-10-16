@@ -88,6 +88,14 @@ const committedLeafPathHex = async (ctx: Context, commitId: ObjectId): Promise<s
   return out;
 };
 
+const collectRootNames = async (ctx: Context, treeId: ObjectId): Promise<string[]> => {
+  const out: string[] = [];
+  for await (const entry of walkTree(ctx, treeId, { recursive: false, pathBytes: true })) {
+    out.push(bytesToHex(entry.pathBytes as Uint8Array));
+  }
+  return out;
+};
+
 const expectError = async (fn: () => Promise<unknown>, code: string): Promise<TsgitError> => {
   let caught: unknown;
   try {
@@ -600,6 +608,45 @@ describe('commit — raw index path bytes', () => {
           'efbfbd2e747874',
           'ff2e747874',
         ]);
+      });
+    });
+  });
+
+  describe('Given an index holding two children of a directory whose name is not valid UTF-8', () => {
+    describe('When commit', () => {
+      it('Then one tree entry holds both children', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const id = await writeObject(ctx, {
+          type: 'blob',
+          content: new TextEncoder().encode('x'),
+          id: '' as ObjectId,
+        });
+        const index: GitIndex = {
+          version: 2,
+          entries: [
+            indexEntryOf('\uFFFD/x', id, Uint8Array.of(0xff, 0x2f, 0x78)),
+            indexEntryOf('\uFFFD/y', id, Uint8Array.of(0xff, 0x2f, 0x79)),
+          ],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        };
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync(index, ctx),
+        );
+        const sut = commit;
+
+        // Act
+        const result = await sut(ctx, { message: 'lossy dir', author });
+
+        // Assert
+        const head = await readObject(ctx, result.id);
+        if (head.type !== 'commit') throw new Error('expected a commit');
+        const rootEntries = await collectRootNames(ctx, head.data.tree);
+        expect(rootEntries).toEqual(['ff']);
+        expect((await committedLeafPathHex(ctx, result.id)).sort()).toEqual(['ff2f78', 'ff2f79']);
       });
     });
   });

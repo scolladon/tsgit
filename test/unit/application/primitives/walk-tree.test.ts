@@ -575,6 +575,26 @@ describe('walkTree', () => {
     });
   });
 
+  describe('Given a name that is not valid UTF-8 and the pathBytes option is not supplied', () => {
+    describe('When walkTree is iterated', () => {
+      it('Then the yielded entry has no pathBytes key', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const b1 = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array([1]),
+          id: '' as ObjectId,
+        } satisfies Blob);
+        const id = await writeTree(ctx, [treeEntry('100644' as FileMode, Uint8Array.of(0xff), b1)]);
+        const sut = walkTree;
+        // Act
+        const result = await collect(sut(ctx, id));
+        // Assert
+        expect(Object.keys(result[0] as object)).toEqual(['path', 'id', 'mode']);
+      });
+    });
+  });
+
   describe('Given a root-level entry', () => {
     describe('When walkTree is iterated with pathBytes enabled', () => {
       it('Then pathBytes equals nameBytes and is not the same object', async () => {

@@ -26,15 +26,16 @@ import { exceedsMaxTreeDepth, exceedsMaxTreeEntries } from './validators.js';
  *  The hashing counterpart lives with the fold in the domain. */
 const SLASH = Uint8Array.of(0x2f);
 
+/** Which raw path bytes a walk yields: none, only those of names that do not
+ *  round-trip through the decoded view, or all of them. */
+type ByteChannel = 'none' | 'lossy' | 'all';
+
 interface WalkConfig {
   readonly ctx: Context;
   readonly recursive: boolean;
   readonly maxDepth: number;
   readonly maxEntries: number;
-  readonly pathBytes: boolean;
-  /** Internal channel: raw bytes only for names that do not round-trip
-   *  through the decoded view. */
-  readonly lossyPathBytes: boolean;
+  readonly byteChannel: ByteChannel;
   readonly strictSubtrees: boolean;
   readonly pathHasher?: PathHasher;
   readonly skipTree?: (id: ObjectId) => boolean;
@@ -102,14 +103,14 @@ function lossyPathBytesOf(prefix: FramePrefix, entry: TreeEntry): Uint8Array | u
   return prefix.text === '' ? entry.nameBytes.slice() : concatBytes([base, SLASH, entry.nameBytes]);
 }
 
-/** The entry's bytes under whichever channel is on; `pathBytes` wins. */
+/** The entry's bytes under the walk's byte channel. */
 function entryPathBytes(
   config: WalkConfig,
   prefix: FramePrefix,
   entry: TreeEntry,
 ): Uint8Array | undefined {
-  if (config.pathBytes) return joinPrefixBytes(prefix, entry.nameBytes);
-  return config.lossyPathBytes ? lossyPathBytesOf(prefix, entry) : undefined;
+  if (config.byteChannel === 'all') return joinPrefixBytes(prefix, entry.nameBytes);
+  return config.byteChannel === 'lossy' ? lossyPathBytesOf(prefix, entry) : undefined;
 }
 
 /**
@@ -155,15 +156,14 @@ function enterTree(
 async function resolveWalkConfig(
   ctx: Context,
   options: WalkTreeOptions | undefined,
-  lossyPathBytes: boolean,
+  byteChannel: ByteChannel,
 ): Promise<WalkConfig> {
   return {
     ctx,
     recursive: options?.recursive ?? true,
     maxDepth: options?.maxDepth ?? (await resolveMaxTreeDepth(ctx)),
     maxEntries: options?.maxEntries ?? MAX_FLAT_TREE_ENTRIES,
-    pathBytes: options?.pathBytes ?? false,
-    lossyPathBytes,
+    byteChannel,
     strictSubtrees: options?.strictSubtrees ?? false,
     ...(options?.pathHasher !== undefined ? { pathHasher: options.pathHasher } : {}),
     ...(options?.skipTree !== undefined ? { skipTree: options.skipTree } : {}),
@@ -219,7 +219,7 @@ function buildRootPrefix(config: WalkConfig): FramePrefix {
   return {
     text: '',
     hashState: config.pathHasher?.seed ?? 0,
-    bytes: config.pathBytes ? new Uint8Array(0) : undefined,
+    bytes: config.byteChannel === 'all' ? new Uint8Array(0) : undefined,
     lossyBytes: undefined,
   };
 }
@@ -238,8 +238,12 @@ function buildChildPrefix(
   return {
     text: path,
     hashState: nameHash ?? 0,
-    bytes: config.pathBytes ? joinPrefixBytes(frame.framePrefix, entry.nameBytes) : undefined,
-    lossyBytes: config.lossyPathBytes ? lossyPathBytesOf(frame.framePrefix, entry) : undefined,
+    bytes:
+      config.byteChannel === 'all'
+        ? joinPrefixBytes(frame.framePrefix, entry.nameBytes)
+        : undefined,
+    lossyBytes:
+      config.byteChannel === 'lossy' ? lossyPathBytesOf(frame.framePrefix, entry) : undefined,
   };
 }
 
@@ -282,7 +286,7 @@ export function walkTree(
   treeIdOrObject: ObjectId | Tree,
   options?: WalkTreeOptions,
 ): AsyncIterable<WalkTreeEntry> {
-  return walkResolved(ctx, treeIdOrObject, options, false);
+  return walkResolved(ctx, treeIdOrObject, options, options?.pathBytes ? 'all' : 'none');
 }
 
 /**
@@ -295,16 +299,16 @@ export function walkTreeWithLossyBytes(
   treeIdOrObject: ObjectId | Tree,
   options?: WalkTreeOptions,
 ): AsyncIterable<WalkTreeEntry> {
-  return walkResolved(ctx, treeIdOrObject, options, true);
+  return walkResolved(ctx, treeIdOrObject, options, 'lossy');
 }
 
 async function* walkResolved(
   ctx: Context,
   treeIdOrObject: ObjectId | Tree,
   options: WalkTreeOptions | undefined,
-  lossyPathBytes: boolean,
+  byteChannel: ByteChannel,
 ): AsyncIterable<WalkTreeEntry> {
-  const config = await resolveWalkConfig(ctx, options, lossyPathBytes);
+  const config = await resolveWalkConfig(ctx, options, byteChannel);
   const counter: Counter = { value: 0 };
   const rootTree =
     typeof treeIdOrObject === 'string'
