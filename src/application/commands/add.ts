@@ -61,6 +61,10 @@ import {
   buildCheckinAttributeProvider,
 } from '../primitives/internal/read-gitattributes.js';
 import { assertBigFileThresholdValid } from '../primitives/internal/repo-settings-gate.js';
+import {
+  createLeadingPathScanner,
+  type LeadingPathScanner,
+} from '../primitives/internal/symlinked-leading-path.js';
 import { readIndex } from '../primitives/read-index.js';
 import {
   IDENTITY_CONVERSION,
@@ -754,9 +758,17 @@ interface WalkOutcome {
   readonly notice?: EolNotice;
 }
 
-/** A path under a leading component that is no longer a directory is as gone as a missing one. */
-const presentOnDisk = async (ctx: Context, path: FilePath): Promise<boolean> => {
+/**
+ * A path under a leading component that is no longer a directory, or is a symlink
+ * (git's `has_symlink_leading_path`), is as gone as a missing one.
+ */
+const presentOnDisk = async (
+  ctx: Context,
+  scanner: LeadingPathScanner,
+  path: FilePath,
+): Promise<boolean> => {
   try {
+    if (await scanner.hasSymlinkedLeadingPath(path)) return false;
     return (await lstatOrMissing(ctx, path)) !== undefined;
   } catch (err) {
     if (err instanceof TsgitError && err.data.code === 'NOT_A_DIRECTORY') return false;
@@ -780,10 +792,11 @@ const collectRemovedEntries = async (
   seen: ReadonlySet<IndexPathKey>,
 ): Promise<IndexEntry[]> => {
   const removed: IndexEntry[] = [];
+  const scanner = createLeadingPathScanner(ctx);
   for (const [key, entry] of existing) {
     if (seen.has(key)) continue;
     if (entry.flags.skipWorktree) continue;
-    if (!isLossy(entry) && (await presentOnDisk(ctx, entry.path))) continue;
+    if (!isLossy(entry) && (await presentOnDisk(ctx, scanner, entry.path))) continue;
     removed.push(entry);
   }
   return removed;

@@ -1407,6 +1407,63 @@ describe('add', () => {
     });
   });
 
+  describe('Given a tracked file whose directory became a symlink to a directory holding the same name', () => {
+    describe.each([
+      { label: 'add({ all: true })', paths: [], options: { all: true } },
+      { label: "add(['.'])", paths: ['.'], options: undefined },
+    ])('When $label', ({ paths, options }) => {
+      it('Then the path beyond the link is staged as removed and only the link and the real file remain', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'a/b': 'one', 'real/b': 'two' });
+        await add(ctx, ['a/b', 'real/b']);
+        await ctx.fs.rm(`${ctx.layout.workDir}/a/b`);
+        await ctx.fs.rm(`${ctx.layout.workDir}/a`);
+        await ctx.fs.symlink('real', `${ctx.layout.workDir}/a`);
+
+        // Act
+        const result = await add(ctx, paths, options);
+
+        // Assert
+        expect(result.removed).toEqual(['a/b']);
+        const idx = await readIndex(ctx);
+        expect(idx.entries.map((e) => e.path)).toEqual(['a', 'real/b']);
+      });
+    });
+  });
+
+  describe('Given a tracked file deleted from disk and a stat that fails on it', () => {
+    describe.each([
+      { label: 'PERMISSION_DENIED', fault: permissionDenied('x/y') },
+      { label: 'a plain Error', fault: new Error('boom') },
+    ])('When the fault is $label', ({ fault }) => {
+      it('Then add({ all: true }) rethrows it and stages no removal', async () => {
+        // Arrange
+        const seeded = await seedFreshRepo({ 'x/y': 'one' });
+        await add(seeded, ['x/y']);
+        await seeded.fs.rm(`${seeded.layout.workDir}/x/y`);
+        const target = `${seeded.layout.workDir}/x/y`;
+        const fs = new Proxy(seeded.fs, {
+          get(real, prop, receiver) {
+            if (prop !== 'lstat') return Reflect.get(real, prop, receiver);
+            return async (path: string) => {
+              if (path === target) throw fault;
+              return real.lstat(path);
+            };
+          },
+        });
+        const ctx = { ...seeded, fs };
+
+        // Act
+        const attempt = add(ctx, [], { all: true });
+
+        // Assert
+        await expect(attempt).rejects.toBe(fault);
+        const idx = await readIndex(seeded);
+        expect(idx.entries.map((e) => e.path)).toEqual(['x/y']);
+      });
+    });
+  });
+
   describe('Given a tracked file under an ignored directory that is deleted from disk', () => {
     describe('When add({ all: true })', () => {
       it('Then the deletion is staged', async () => {
