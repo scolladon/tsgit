@@ -356,6 +356,7 @@ describe('hasBytePrefix', () => {
       [0xef, 0xbf, 0xbd],
       false,
     ],
+    ['a prefix differing in its first byte only', [0xff, 0x62, 0x2f, 0x78], [0xfe, 0x62], false],
     ['the prefix with nothing after it', [0xff], [0xff], false],
     ['the prefix followed by a non-slash byte', [0xff, 0x78], [0xff], false],
   ])('Given bytes holding %s', (_title, bytes, prefix, expected) => {

@@ -45,6 +45,7 @@ export const viewOfEscaped = (path: FilePath): FilePath =>
 export const splitAtSlash = (bytes: Uint8Array): Uint8Array[] => {
   const parts: Uint8Array[] = [];
   let start = 0;
+  // Stryker disable next-line EqualityOperator: equivalent — bytes[bytes.length] is undefined, never a slash, so the extra iteration only continues.
   for (let i = 0; i < bytes.length; i++) {
     if (bytes[i] !== SLASH) continue;
     parts.push(bytes.subarray(start, i));
@@ -55,6 +56,7 @@ export const splitAtSlash = (bytes: Uint8Array): Uint8Array[] => {
 };
 
 export const hasBytePrefix = (bytes: Uint8Array, prefix: Uint8Array): boolean => {
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — when bytes is no longer than prefix, bytes[prefix.length] is undefined, so the slash test alone already returns false.
   if (bytes.length <= prefix.length || bytes[prefix.length] !== SLASH) return false;
   return prefix.every((byte, i) => bytes[i] === byte);
 };
