@@ -14,7 +14,7 @@
  *
  * Pure with respect to the working tree — only reads git objects.
  */
-import type { FlatTree } from '../../domain/diff/flat-tree.js';
+import type { EscapedFlatTree, FlatTree } from '../../domain/diff/flat-tree.js';
 import type { ObjectId, Tree } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import {
@@ -36,4 +36,10 @@ export const flattenTree = async (
 export const flattenEscapedTree = async (
   ctx: Context,
   treeIdOrObject: ObjectId | Tree,
-): Promise<FlatTree> => flattenRawTreeEscaped(ctx, treeIdOrObject, await resolveFlattenBounds(ctx));
+): Promise<EscapedFlatTree> =>
+  // The brand is phantom: `flattenRawTreeEscaped` is the one producer that keys by escaped path.
+  (await flattenRawTreeEscaped(
+    ctx,
+    treeIdOrObject,
+    await resolveFlattenBounds(ctx),
+  )) as EscapedFlatTree;

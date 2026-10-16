@@ -6,7 +6,7 @@ import {
   unrelatedHistories,
   workingTreeDirty,
 } from '../../domain/commands/error.js';
-import type { FlatTree, FlatTreeEntry } from '../../domain/diff/flat-tree.js';
+import type { EscapedFlatTree, FlatTreeEntry } from '../../domain/diff/flat-tree.js';
 import {
   comparePaths,
   conflictsToIndexEntries,
@@ -34,7 +34,6 @@ import {
   type MergeLabels,
   type MergeOutcome,
   mergeLabels,
-  mergeTrees,
   recordsOwnPaths,
   type TreeMergeResult,
 } from '../../domain/merge/index.js';
@@ -44,6 +43,7 @@ import {
   type OrtStrategyOptions,
   parseOrtStrategyOptions,
 } from '../../domain/merge/strategy-options.js';
+import { mergeEscapedTrees } from '../../domain/merge/three-way-tree.js';
 import { trivialMerge } from '../../domain/merge/trivial-merge.js';
 import type { CommitData, ExtraHeader } from '../../domain/objects/commit.js';
 import { encodeEscaped, hasEscapedBytes } from '../../domain/objects/encoding.js';
@@ -1306,7 +1306,7 @@ const computeMergeTreeResult = async (
   const contentMerger = buildContentMerger(ctx, labels, contentSettings(strategy, renormalize));
   const detected = await detectMergeRenames(ctx, base, ours, theirs, strategy.renames);
   const renames = await mergeCollidingRenameSources(ctx, trees, detected, contentMerger);
-  const merged = await mergeTrees(
+  const merged = await mergeEscapedTrees(
     base,
     ours,
     theirs,
@@ -1321,9 +1321,9 @@ const computeMergeTreeResult = async (
 
 /** The three sides a merge reads, flattened — and subtree-shifted onto ours when asked. */
 interface FlatMergeSides {
-  readonly base: FlatTree | undefined;
-  readonly ours: FlatTree;
-  readonly theirs: FlatTree;
+  readonly base: EscapedFlatTree | undefined;
+  readonly ours: EscapedFlatTree;
+  readonly theirs: EscapedFlatTree;
 }
 
 const readMergeSides = async (
@@ -1345,14 +1345,19 @@ const readMergeSides = async (
     shiftMergeSide(ctx, ours, { tree: theirTreeId, flat: theirSide }, shift),
     shiftMergeSide(ctx, ours, { tree: baseTreeId, flat: baseSide }, shift),
   ]);
-  return { base, ours: ourFlat, theirs };
+  // A shift only re-roots escaped keys under a prefix, so the shifted sides stay escaped-keyed.
+  return {
+    base: base as EscapedFlatTree | undefined,
+    ours: ourFlat,
+    theirs: theirs as EscapedFlatTree,
+  };
 };
 
 /** A clean merge's synthesised tree, or its conflicts with every split rename's blob staged. */
 const settleMergeTree = async (
   ctx: Context,
   result: TreeMergeResult,
-  ourFlat: FlatTree,
+  ourFlat: EscapedFlatTree,
 ): Promise<MergeTreeResult> => {
   if (result.cleanMerge) {
     const tree = await synthesiseMergedTree(ctx, result.outcomes);

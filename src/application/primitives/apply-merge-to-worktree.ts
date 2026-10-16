@@ -16,7 +16,7 @@
  *                nothing is written.
  */
 
-import type { FlatTree } from '../../domain/diff/flat-tree.js';
+import type { EscapedFlatTree } from '../../domain/diff/flat-tree.js';
 import { conflictsToIndexEntries } from '../../domain/diff/index.js';
 import { unsupportedOperation } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
@@ -29,9 +29,9 @@ import {
   type MergeConflict,
   type MergeLabels,
   type MergeOutcome,
-  mergeTrees,
   recordsOwnPaths,
 } from '../../domain/merge/index.js';
+import { mergeEscapedTrees } from '../../domain/merge/three-way-tree.js';
 import { hasEscapedBytes } from '../../domain/objects/encoding.js';
 import { FILE_MODE, type FilePath, type ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
@@ -448,9 +448,9 @@ const materialiseConflict = async (
 const configuredRenormalize = async (
   ctx: Context,
   trees: {
-    readonly base: FlatTree | undefined;
-    readonly ours: FlatTree;
-    readonly theirs: FlatTree;
+    readonly base: EscapedFlatTree | undefined;
+    readonly ours: EscapedFlatTree;
+    readonly theirs: EscapedFlatTree;
   },
 ): Promise<RenormalizeSettings | undefined> =>
   (await readMergeRenormalize(ctx))
@@ -478,7 +478,7 @@ export const applyMergeToWorktree = async (
   };
   const contentMerger = buildContentMerger(ctx, input.labels, settings);
   const renames = await mergeCollidingRenameSources(ctx, trees, detected, contentMerger);
-  const merged = await mergeTrees(
+  const merged = await mergeEscapedTrees(
     base,
     ours,
     theirs,
@@ -542,7 +542,7 @@ export const mergeTreesToTree = async (
     flattenEscapedTree(ctx, input.theirsTree),
   ]);
   const renormalize = await configuredRenormalize(ctx, { base, ours, theirs });
-  const merged = await mergeTrees(
+  const merged = await mergeEscapedTrees(
     base,
     ours,
     theirs,

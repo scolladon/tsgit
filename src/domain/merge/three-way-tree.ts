@@ -1,4 +1,4 @@
-import type { FlatTree, FlatTreeEntry } from '../diff/flat-tree.js';
+import type { EscapedFlatTree, FlatTree, FlatTreeEntry } from '../diff/flat-tree.js';
 import { MAX_FLAT_TREE_ENTRIES } from '../diff/flat-tree.js';
 import { isSameKind, kindOf } from '../diff/mode-kind.js';
 import { sortByPath } from '../diff/path-compare.js';
@@ -727,6 +727,19 @@ async function settleSplitRenames(
   }
   return settled;
 }
+
+/** The engine entry for escaped-keyed inputs: a view-keyed `FlatTree` does not type-check here. */
+export const mergeEscapedTrees = (
+  base: EscapedFlatTree | undefined,
+  ours: EscapedFlatTree | undefined,
+  theirs: EscapedFlatTree | undefined,
+  contentMerger: ContentMerger,
+  labels?: MergeLabels,
+  renames?: MergeRenames,
+  variant?: OrtVariant,
+  blobUnchanged?: BlobUnchanged,
+): Promise<TreeMergeResult> =>
+  mergeTrees(base, ours, theirs, contentMerger, labels, renames, variant, blobUnchanged);
 
 export async function mergeTrees(
   base: FlatTree | undefined,

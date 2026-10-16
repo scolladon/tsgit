@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { FlatTree, FlatTreeEntry } from '../../../../src/domain/diff/flat-tree.js';
+import type {
+  EscapedFlatTree,
+  FlatTree,
+  FlatTreeEntry,
+} from '../../../../src/domain/diff/flat-tree.js';
 import { MAX_FLAT_TREE_ENTRIES } from '../../../../src/domain/diff/flat-tree.js';
 import { DEFAULT_MERGE_LABELS } from '../../../../src/domain/merge/merge-labels.js';
 import type { MergeRenames } from '../../../../src/domain/merge/merge-renames.js';
@@ -10,7 +14,7 @@ import type {
 } from '../../../../src/domain/merge/merge-types.js';
 import { MAX_CONFLICT_OUTPUT_BYTES } from '../../../../src/domain/merge/merge-types.js';
 import type { BlobUnchanged, ContentMerger } from '../../../../src/domain/merge/three-way-tree.js';
-import { mergeTrees } from '../../../../src/domain/merge/three-way-tree.js';
+import { mergeEscapedTrees, mergeTrees } from '../../../../src/domain/merge/three-way-tree.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 
@@ -2765,6 +2769,30 @@ describe('mergeTrees — file/directory add/add conflict', () => {
 
         // Assert
         expect(result.conflicts.map((c) => c.ourPath)).toEqual([`${name}~HEAD`]);
+      });
+    });
+  });
+});
+
+describe('mergeEscapedTrees', () => {
+  describe('Given escaped twins that differ only in a lone surrogate versus U+FFFD', () => {
+    describe('When merged', () => {
+      it('Then it returns the same outcomes as mergeTrees', async () => {
+        // Arrange
+        const escapedOurs = tree([
+          ['\uDCFF.txt', entry(ID_A)],
+          ['\uFFFD.txt', entry(ID_B)],
+        ]) as EscapedFlatTree;
+
+        // Act
+        const result = await mergeEscapedTrees(undefined, escapedOurs, undefined, noopMerger);
+
+        // Assert
+        expect(result).toEqual(await mergeTrees(undefined, escapedOurs, undefined, noopMerger));
+        expect(result.outcomes.flatMap((o) => ('path' in o ? [o.path] : [])).sort()).toEqual([
+          '\uDCFF.txt',
+          '\uFFFD.txt',
+        ]);
       });
     });
   });
