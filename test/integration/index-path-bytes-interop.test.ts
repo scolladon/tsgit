@@ -15,17 +15,22 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { readIndex } from '../../src/application/primitives/read-index.js';
-import { bytesToHex } from '../../src/domain/objects/encoding.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
 import {
   GIT_AVAILABLE,
+  hashBlob,
+  hex,
+  lsFilesPathHex,
+  lsTreePathHex,
   makePeerPair,
+  NUL,
   type PeerPair,
   runGit,
   runGitBytes,
   runGitEnv,
+  stageRaw,
 } from './interop-helpers.js';
 
 const AUTHOR: AuthorIdentity = {
@@ -45,30 +50,8 @@ const COMMIT_ENV: NodeJS.ProcessEnv = {
   GIT_COMMITTER_DATE: `${AUTHOR.timestamp} ${AUTHOR.timezoneOffset}`,
 };
 
-const NUL = 0x00;
-const TAB = 0x09;
 const BOM_DIR_HEX = 'efbbbf612f78';
 const Z_HEX = '7a';
-
-const hex = (bytes: Uint8Array): string => bytesToHex(bytes);
-
-const pathHexOfRecords = (records: Uint8Array): string[] => {
-  const out: string[] = [];
-  let start = 0;
-  for (let i = 0; i < records.length; i++) {
-    if (records[i] !== NUL) continue;
-    const record = records.subarray(start, i);
-    out.push(hex(record.subarray(record.indexOf(TAB) + 1)));
-    start = i + 1;
-  }
-  return out;
-};
-
-const lsFilesPathHex = (dir: string): string[] =>
-  pathHexOfRecords(runGitBytes(['-C', dir, 'ls-files', '-s', '-z']));
-
-const lsTreePathHex = (dir: string, rev: string): string[] =>
-  pathHexOfRecords(runGitBytes(['-C', dir, 'ls-tree', '-r', '-z', rev]));
 
 const FF_TXT = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
 const B_SLASH_C3 = Uint8Array.of(0x62, 0x2f, 0xc3);
@@ -87,28 +70,6 @@ const deletedPathHex = (dir: string): string[] =>
         'hex',
       ),
     );
-
-const hashBlob = (dir: string, content: string): string =>
-  runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: content }).trim();
-
-const stageRaw = (
-  dir: string,
-  rows: ReadonlyArray<{ mode: string; oid: string; path: Uint8Array }>,
-): void => {
-  const encoder = new TextEncoder();
-  const chunks = rows.flatMap((row) => [
-    encoder.encode(`${row.mode} ${row.oid}\t`),
-    row.path,
-    Uint8Array.of(NUL),
-  ]);
-  const input = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
-  let offset = 0;
-  for (const chunk of chunks) {
-    input.set(chunk, offset);
-    offset += chunk.length;
-  }
-  runGit(['-C', dir, 'update-index', '-z', '--index-info'], { input });
-};
 
 describe.skipIf(!GIT_AVAILABLE)(
   'index path bytes interop — leading BOM',

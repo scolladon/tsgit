@@ -59,6 +59,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
 import type { RevParseEntry } from '../../src/application/commands/rev-parse.js';
+import { bytesToHex } from '../../src/domain/objects/encoding.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -423,3 +424,96 @@ const revParseLine = (entry: RevParseEntry): string =>
  */
 export const revParseStdout = (entries: ReadonlyArray<RevParseEntry>): string =>
   entries.map(revParseLine).join('\n');
+
+export const NUL = 0x00;
+const TAB = 0x09;
+
+export const hex = (bytes: Uint8Array): string => bytesToHex(bytes);
+
+export const pathHexOfRecords = (records: Uint8Array): string[] => {
+  const out: string[] = [];
+  let start = 0;
+  for (let i = 0; i < records.length; i++) {
+    if (records[i] !== NUL) continue;
+    const record = records.subarray(start, i);
+    out.push(hex(record.subarray(record.indexOf(TAB) + 1)));
+    start = i + 1;
+  }
+  return out;
+};
+
+export const lsFilesPathHex = (dir: string): string[] =>
+  pathHexOfRecords(runGitBytes(['-C', dir, 'ls-files', '-s', '-z']));
+
+export const lsTreePathHex = (dir: string, rev: string): string[] =>
+  pathHexOfRecords(runGitBytes(['-C', dir, 'ls-tree', '-r', '-z', rev]));
+
+export const hashBlob = (dir: string, content: string): string =>
+  runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: content }).trim();
+
+export const stageRaw = (
+  dir: string,
+  rows: ReadonlyArray<{ mode: string; oid: string; path: Uint8Array }>,
+): void => {
+  const encoder = new TextEncoder();
+  const chunks = rows.flatMap((row) => [
+    encoder.encode(`${row.mode} ${row.oid}\t`),
+    row.path,
+    Uint8Array.of(NUL),
+  ]);
+  const input = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    input.set(chunk, offset);
+    offset += chunk.length;
+  }
+  runGit(['-C', dir, 'update-index', '-z', '--index-info'], { input });
+};
+
+export interface ConflictedEntry {
+  readonly mode: string;
+  readonly oid: string;
+  readonly stage: number;
+  readonly pathHex: string;
+}
+
+export interface MergeTreeResult {
+  readonly tree: string;
+  readonly conflicted: ReadonlyArray<ConflictedEntry>;
+}
+
+const parseConflictedEntry = (record: Uint8Array): ConflictedEntry => {
+  const tab = record.indexOf(TAB);
+  const [mode = '', oid = '', stage = ''] = Buffer.from(record.subarray(0, tab))
+    .toString('latin1')
+    .split(' ');
+  return { mode, oid, stage: Number(stage), pathHex: hex(record.subarray(tab + 1)) };
+};
+
+export const mergeTreeResult = (dir: string, ours: string, theirs: string): MergeTreeResult => {
+  const output = runGitBytes([
+    '-C',
+    dir,
+    '-c',
+    'merge.conflictStyle=merge',
+    'merge-tree',
+    '--write-tree',
+    '-z',
+    ours,
+    theirs,
+  ]);
+  const fields: Uint8Array[] = [];
+  let start = 0;
+  for (let i = 0; i < output.length; i++) {
+    if (output[i] !== NUL) continue;
+    fields.push(output.subarray(start, i));
+    start = i + 1;
+  }
+  const [treeField = new Uint8Array(), ...rest] = fields;
+  const end = rest.findIndex((field) => field.length === 0);
+  const records = end === -1 ? rest : rest.slice(0, end);
+  return {
+    tree: Buffer.from(treeField).toString('latin1'),
+    conflicted: records.map(parseConflictedEntry),
+  };
+};
