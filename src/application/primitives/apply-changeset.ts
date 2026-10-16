@@ -40,7 +40,9 @@ import { readConfig } from './config-read.js';
 import type { CheckoutMetadata } from './internal/apply-smudge-filter.js';
 import { boundedMapFor, limiterFor } from './internal/concurrency.js';
 import { convertToGit } from './internal/convert-blob.js';
+import { removeEmptyDirectory } from './internal/empty-directories.js';
 import { withFilterProcessPool } from './internal/filter-process-pool.js';
+import { lstatIfReachable } from './internal/fs-probes.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { lazily } from './internal/lazily.js';
 import { pathIsOccupied } from './internal/path-occupied.js';
@@ -67,6 +69,7 @@ import {
   type WorkingTreeWriter,
 } from './internal/write-converted-entry.js';
 import { rmIfExists } from './internal/write-working-tree-file.js';
+import { isIgnored } from './is-ignored.js';
 import { everySourceLoadable } from './object-store.js';
 import { readEolSettings, resolveConversion } from './resolve-conversion.js';
 
@@ -204,18 +207,33 @@ export const isWorkingTreeDirty = async (
   expectedId: string,
 ): Promise<boolean> => createWorkingTreeDirtyCheck(ctx)(absPath, expectedId);
 
+type IgnoredProbe = (absPath: string, isDirectory: boolean) => Promise<boolean>;
+
+// What the untracked-clash check weighs a directory's occupants against: the paths
+// the changeset deletes, and the repo's ignore rules (git removes ignored files
+// along with a directory that becomes a file).
+interface ClashScope {
+  readonly removed: ReadonlySet<string>;
+  readonly isIgnoredPath: IgnoredProbe;
+}
+
+const createIgnoredProbe =
+  (ctx: Context): IgnoredProbe =>
+  async (absPath, isDirectory) => {
+    const [verdict] = await isIgnored(ctx, [{ path: repoRelativePath(ctx, absPath), isDirectory }]);
+    return verdict?.ignored === true;
+  };
+
 // Whether anything below `absDir` survives the changeset: a file the changeset does
-// not delete is an untracked occupant, while emptied directories go away with it.
-const holdsSurvivor = async (
-  ctx: Context,
-  absDir: string,
-  removed: ReadonlySet<string>,
-): Promise<boolean> => {
+// not delete and the ignore rules do not match is an untracked occupant, while
+// emptied directories go away with it.
+const holdsSurvivor = async (ctx: Context, absDir: string, scope: ClashScope): Promise<boolean> => {
   for (const child of await ctx.fs.readdir(absDir)) {
     const absChild = joinPath(absDir, child.name);
+    if (await scope.isIgnoredPath(absChild, child.isDirectory)) continue;
     if (child.isDirectory) {
-      if (await holdsSurvivor(ctx, absChild, removed)) return true;
-    } else if (!removed.has(absChild)) return true;
+      if (await holdsSurvivor(ctx, absChild, scope)) return true;
+    } else if (!scope.removed.has(absChild)) return true;
   }
   return false;
 };
@@ -225,11 +243,11 @@ const holdsSurvivor = async (
 const isUntrackedClash = async (
   ctx: Context,
   absPath: string,
-  removed: ReadonlySet<string>,
+  scope: ClashScope,
 ): Promise<boolean> => {
   if (!(await pathIsOccupied(ctx, absPath))) return false;
   const stat = await ctx.fs.lstat(absPath);
-  return !stat.isDirectory || holdsSurvivor(ctx, absPath, removed);
+  return !stat.isDirectory || holdsSurvivor(ctx, absPath, scope);
 };
 
 interface DirtyClass {
@@ -242,7 +260,7 @@ const evaluateDirtyPath = async (
   probe: () => Promise<DirtyProbe>,
   workdir: string,
   entry: ChangesetEntry,
-  removed: ReadonlySet<string>,
+  scope: ClashScope,
 ): Promise<DirtyClass | undefined> => {
   if (isLossy(entry)) return undefined;
   const absPath = joinPath(workdir, entry.path);
@@ -253,7 +271,7 @@ const evaluateDirtyPath = async (
       : undefined;
   }
   if (entry.kind === 'add') {
-    return (await isUntrackedClash(ctx, absPath, removed))
+    return (await isUntrackedClash(ctx, absPath, scope))
       ? { class: 'untracked', path: entry.path }
       : undefined;
   }
@@ -294,9 +312,12 @@ const checkDirty = async (
   // entry needs no dirty probe at all, so skipping it here avoids both a
   // wasted pool slot and an oversized `boundedMap` allocation.
   const probe = lazily(() => buildDirtyProbe(ctx));
-  const removed = deletedPaths(workdir, entries);
+  const scope: ClashScope = {
+    removed: deletedPaths(workdir, entries),
+    isIgnoredPath: createIgnoredProbe(ctx),
+  };
   const offending = await boundedMapFor(ctx, 'ioBound', entries, (entry) =>
-    evaluateDirtyPath(ctx, probe, workdir, entry, removed),
+    evaluateDirtyPath(ctx, probe, workdir, entry, scope),
   );
   const localChanges: FilePath[] = [];
   const untracked: FilePath[] = [];
@@ -640,6 +661,37 @@ function* survivingPaths(entries: ReadonlyArray<ChangesetEntry>): Generator<stri
   for (const entry of entries) if (entry.kind !== 'delete') yield entry.path;
 }
 
+const removeIgnoredBelow = async (
+  ctx: Context,
+  absDir: string,
+  isIgnoredPath: IgnoredProbe,
+): Promise<void> => {
+  for (const child of await ctx.fs.readdir(absDir)) {
+    const absChild = joinPath(absDir, child.name);
+    if (await isIgnoredPath(absChild, child.isDirectory)) await ctx.fs.rmRecursive(absChild);
+    else if (child.isDirectory) {
+      await removeIgnoredBelow(ctx, absChild, isIgnoredPath);
+      await removeEmptyDirectory(ctx, absChild);
+    }
+  }
+};
+
+// git's remove_subtree: the ignored files left under a directory that becomes a file
+// go with it. The clash check already refused anything else standing there.
+const clearIgnoredOccupants = async (
+  ctx: Context,
+  workdir: string,
+  writes: ReadonlyArray<ChangesetEntry>,
+): Promise<void> => {
+  const isIgnoredPath = createIgnoredProbe(ctx);
+  for (const entry of writes) {
+    if (entry.kind !== 'add' || isLossy(entry)) continue;
+    const absPath = joinPath(workdir, entry.path);
+    const stat = await lstatIfReachable(ctx.fs, absPath);
+    if (stat?.isDirectory === true) await removeIgnoredBelow(ctx, absPath, isIgnoredPath);
+  }
+};
+
 const applyAllEntries = async (
   ctx: Context,
   deletes: ReadonlyArray<ChangesetEntry>,
@@ -648,11 +700,13 @@ const applyAllEntries = async (
   writer: WorkingTreeWriter,
   scanner: LeadingPathScanner,
   surviving: SurvivingDirectories,
+  force: boolean,
 ): Promise<ApplyChangesetResult> => {
   const total = deletes.length + writes.length;
   const counter: ProgressCounter = { current: 0 };
 
   const deleted = await applyDeleteWave(ctx, workdir, deletes, surviving, scanner, total, counter);
+  if (!force) await clearIgnoredOccupants(ctx, workdir, writes);
   const writtenEntries = await applyWriteWave(
     ctx,
     workdir,
@@ -738,5 +792,5 @@ const applyChangesetInScope = async (
   const surviving = survivingDirectoriesOf(
     deletes.length === 0 ? [] : survivingPaths(changeset.entries),
   );
-  return applyAllEntries(ctx, deletes, writes, workdir, writer, scanner, surviving);
+  return applyAllEntries(ctx, deletes, writes, workdir, writer, scanner, surviving, force);
 };

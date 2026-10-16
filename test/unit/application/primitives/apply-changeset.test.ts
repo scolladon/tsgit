@@ -483,6 +483,60 @@ describe('applyChangeset', () => {
     });
   });
 
+  describe('Given a directory d holding only ignored files and a deleted tracked file, replaced by a file d', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then the ignored files, nested ones included, give way and d is written', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('x'));
+        const newId = await writeBlob(ctx, enc('file'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('*.o\nbuild/\n'));
+        await ctx.fs.write(`${WORKDIR}/d/x`, enc('x'));
+        await ctx.fs.write(`${WORKDIR}/d/junk.o`, enc('j'));
+        await ctx.fs.write(`${WORKDIR}/d/n/deep.o`, enc('j'));
+        await ctx.fs.write(`${WORKDIR}/d/build/out.txt`, enc('j'));
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('d/x', oldId), makeAdd('d', newId)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/d`))).toBe('file');
+      });
+    });
+  });
+
+  describe('Given a directory d holding an ignored file and an untracked file, replaced by a file d', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then it refuses listing d and keeps both files', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('x'));
+        const newId = await writeBlob(ctx, enc('file'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('*.o\n'));
+        await ctx.fs.write(`${WORKDIR}/d/x`, enc('x'));
+        await ctx.fs.write(`${WORKDIR}/d/junk.o`, enc('j'));
+        await ctx.fs.write(`${WORKDIR}/d/keep.txt`, enc('k'));
+
+        // Act
+        const outcome = await outcomeOf(
+          applyChangeset(ctx, {
+            changeset: makeChangeset([makeDelete('d/x', oldId), makeAdd('d', newId)]),
+            force: false,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY', untracked: ['d'] });
+        expect(await ctx.fs.exists(`${WORKDIR}/d/junk.o`)).toBe(true);
+      });
+    });
+  });
+
   describe('Given an update with modified working-tree content and force=false', () => {
     describe('When applyChangeset runs', () => {
       it('Then throws CHECKOUT_OVERWRITE_DIRTY with the offending path', async () => {

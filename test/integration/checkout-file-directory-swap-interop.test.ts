@@ -198,6 +198,28 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    describe('Given both tools sit on side with ignored files inside the directory f/', () => {
+      describe('When both tools checkout main', () => {
+        it('Then the ignored files give way to the file f, matching git', async () => {
+          // Arrange
+          for (const dir of [pair.peer, pair.ours]) {
+            writeFileSync(path.join(dir, '.git', 'info', 'exclude'), '*.o\n');
+            writeFileSync(path.join(dir, 'f', 'junk.o'), 'j\n');
+            writeFileSync(path.join(dir, 'f', 'g', 'deep.o'), 'j\n');
+          }
+          git(pair.peer, 'checkout', '-q', 'main');
+
+          // Act
+          await repo.checkout({ rev: 'main' });
+
+          // Assert
+          expect(lstatSync(path.join(pair.ours, 'f')).isFile()).toBe(true);
+          expect(listWorkTree(pair.ours)).toEqual(listWorkTree(pair.peer));
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+        });
+      });
+    });
+
     describe('Given both tools sit on side with an untracked file beside d/e/q', () => {
       describe('When both tools checkout main', () => {
         it('Then the directory holding it stays, matching git', async () => {
