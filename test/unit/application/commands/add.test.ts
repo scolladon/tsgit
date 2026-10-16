@@ -721,6 +721,25 @@ describe('add', () => {
     });
   });
 
+  describe('Given tracked ！ and 😀 deleted from disk, whose index order differs from code-unit order', () => {
+    describe('When add stages their deletion through a pathspec', () => {
+      it('Then removed lists them in code-unit order, as added and modified do', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ '！': 'bang', '😀': 'smile' });
+        await add(ctx, [], { all: true });
+        await ctx.fs.rm(`${ctx.layout.workDir}/！`);
+        await ctx.fs.rm(`${ctx.layout.workDir}/😀`);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.']);
+
+        // Assert
+        expect(result.removed).toEqual(['😀', '！']);
+      });
+    });
+  });
+
   describe('Given a tracked file deleted from disk and all: true', () => {
     describe('When add', () => {
       it('Then removed contains it and the index entry drops', async () => {
