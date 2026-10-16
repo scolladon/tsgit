@@ -72,12 +72,7 @@ const collectLeaves = async (ctx: Context, treeId: ObjectId): Promise<TargetLeaf
   const leaves: TargetLeaf[] = [];
   for await (const entry of walkTreeWithLossyBytes(ctx, treeId)) {
     if (entry.mode === FILE_MODE.DIRECTORY) continue;
-    leaves.push({
-      path: entry.path,
-      id: entry.id,
-      mode: entry.mode,
-      ...(entry.pathBytes === undefined ? {} : { pathBytes: entry.pathBytes }),
-    });
+    leaves.push(entry);
   }
   return leaves;
 };
