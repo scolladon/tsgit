@@ -17,7 +17,7 @@
  */
 
 import type { EscapedFlatTree } from '../../domain/diff/flat-tree.js';
-import { conflictsToIndexEntries } from '../../domain/diff/index.js';
+import { conflictsToIndexEntries, recordedPaths } from '../../domain/diff/index.js';
 import { unsupportedOperation } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import { viewOfEscaped } from '../../domain/git-index/index-path-key.js';
@@ -49,7 +49,11 @@ import { limiterFor } from './internal/concurrency.js';
 import { lazily } from './internal/lazily.js';
 import { readMergeRenormalize, readUiDiffAlgorithm } from './internal/merge-rename-config.js';
 import { mergedBlobEntries } from './internal/merged-blob-entries.js';
-import { pruneEmptiedDirectories } from './internal/prune-emptied-directories.js';
+import {
+  pruneEmptiedDirectories,
+  type SurvivingDirectories,
+  survivingDirectoriesOf,
+} from './internal/prune-emptied-directories.js';
 import {
   attributeBlobLookup,
   buildAttributeProvider,
@@ -214,13 +218,30 @@ export const removeChangedOutcome = async (
   ctx: Context,
   outcome: DeletedOutcome,
   scanner: LeadingPathScanner,
+  surviving: SurvivingDirectories,
 ): Promise<void> => {
   validateTreePath(outcome.path, FILE_MODE.REGULAR);
   if (hasEscapedBytes(outcome.path)) return;
   if (await scanner.hasSymlinkedLeadingPath(outcome.path)) return;
   await removeWorkingTreeFile(ctx, outcome.path);
-  await pruneEmptiedDirectories(ctx, requireWorkTree(ctx, 'removeChangedOutcome'), [outcome.path]);
+  await pruneEmptiedDirectories(
+    ctx,
+    requireWorkTree(ctx, 'removeChangedOutcome'),
+    [outcome.path],
+    surviving,
+  );
 };
+
+/** The paths the merge leaves tracked: every outcome that is not a deletion, and each path a conflict records. */
+export function* survivingPathsOf(
+  outcomes: ReadonlyArray<MergeOutcome>,
+  conflicts: ReadonlyArray<MergeConflict>,
+): Generator<string> {
+  for (const outcome of outcomes) {
+    if (outcome.status !== 'conflict' && outcome.status !== 'resolved-deleted') yield outcome.path;
+  }
+  for (const conflict of conflicts) yield* recordedPaths(conflict);
+}
 
 /** The file a directory displaces leaves its path before the directory is written; its moved copy is written with the conflict. */
 export const removeDisplacedFile = async (ctx: Context, conflict: MergeConflict): Promise<void> => {
@@ -289,8 +310,11 @@ const writeConflictWorktree = async (
   );
   // Every deletion lands before the writer reads attributes, as git unlinks
   // before its first checkout: a deleted `.gitattributes` must not govern the writes.
-  for (const outcome of touched.filter(isDeleted))
-    await removeChangedOutcome(ctx, outcome, scanner);
+  const deleted = touched.filter(isDeleted);
+  const surviving = survivingDirectoriesOf(
+    deleted.length === 0 ? [] : survivingPathsOf(outcomes, conflicts),
+  );
+  for (const outcome of deleted) await removeChangedOutcome(ctx, outcome, scanner, surviving);
   for (const conflict of conflicts) await removeDisplacedFile(ctx, conflict);
   const writer = await createMergeResultWriter(ctx, outcomes, conflicts);
   for (const outcome of touched) {

@@ -5,6 +5,7 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { rm } from '../../../../src/application/commands/rm.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
+import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
@@ -292,6 +293,49 @@ describe('rm', () => {
         // Assert
         expect(await ctx.fs.exists(work(ctx, 'd'))).toBe(false);
         expect(await ctx.fs.exists(work(ctx, 'k/b'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a tracked file whose directory keeps another tracked file', () => {
+    describe('When rm', () => {
+      it('Then only the file is removed and the directory is not probed', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/q': 'q', 'd/kept': 'k' });
+        const fsRm = vi.spyOn(ctx.fs, 'rm');
+
+        // Act
+        await rm(ctx, ['d/q']);
+
+        // Assert
+        expect(fsRm.mock.calls.map(([path]) => path)).toEqual([work(ctx, 'd/q')]);
+      });
+    });
+  });
+
+  describe('Given a tracked file whose directory keeps only a skip-worktree entry', () => {
+    describe('When rm', () => {
+      it('Then the directory is removed, as nothing of it is on disk', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/q': 'q', 'd/sparse': 's' });
+        const lock = await acquireIndexLock(ctx);
+        const { entries } = await readIndex(ctx);
+        await lock.commit(
+          entries.map((entry) =>
+            entry.path === 'd/sparse'
+              ? { ...entry, flags: { ...entry.flags, skipWorktree: true } }
+              : entry,
+          ),
+          'replace',
+        );
+        await lock.release();
+        await ctx.fs.rm(work(ctx, 'd/sparse'));
+
+        // Act
+        await rm(ctx, ['d/q']);
+
+        // Assert
+        expect(await ctx.fs.exists(work(ctx, 'd'))).toBe(false);
       });
     });
   });

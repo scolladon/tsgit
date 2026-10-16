@@ -44,7 +44,11 @@ import { withFilterProcessPool } from './internal/filter-process-pool.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { lazily } from './internal/lazily.js';
 import { pathIsOccupied } from './internal/path-occupied.js';
-import { pruneEmptiedDirectories } from './internal/prune-emptied-directories.js';
+import {
+  pruneEmptiedDirectories,
+  type SurvivingDirectories,
+  survivingDirectoriesOf,
+} from './internal/prune-emptied-directories.js';
 import {
   type AttributeDirection,
   type AttributeProvider,
@@ -453,6 +457,7 @@ const applyDeleteWave = async (
   ctx: Context,
   workdir: string,
   deletes: ReadonlyArray<ChangesetEntry>,
+  surviving: SurvivingDirectories,
   scanner: LeadingPathScanner,
   total: number,
   counter: ProgressCounter,
@@ -466,6 +471,7 @@ const applyDeleteWave = async (
     ctx,
     workdir,
     removed.filter((path) => path !== undefined),
+    surviving,
   );
   return deletes.length;
 };
@@ -629,6 +635,11 @@ const applyWriteWave = async (
   return writesSymlink(writes) ? writeOneByOne(sorted, scanner, applyGroup) : applyGroup(sorted);
 };
 
+/** The target state's paths: every changeset entry that is not a deletion. */
+function* survivingPaths(entries: ReadonlyArray<ChangesetEntry>): Generator<string> {
+  for (const entry of entries) if (entry.kind !== 'delete') yield entry.path;
+}
+
 const applyAllEntries = async (
   ctx: Context,
   deletes: ReadonlyArray<ChangesetEntry>,
@@ -636,11 +647,12 @@ const applyAllEntries = async (
   workdir: string,
   writer: WorkingTreeWriter,
   scanner: LeadingPathScanner,
+  surviving: SurvivingDirectories,
 ): Promise<ApplyChangesetResult> => {
   const total = deletes.length + writes.length;
   const counter: ProgressCounter = { current: 0 };
 
-  const deleted = await applyDeleteWave(ctx, workdir, deletes, scanner, total, counter);
+  const deleted = await applyDeleteWave(ctx, workdir, deletes, surviving, scanner, total, counter);
   const writtenEntries = await applyWriteWave(
     ctx,
     workdir,
@@ -722,5 +734,9 @@ const applyChangesetInScope = async (
   // `lstat` per distinct directory, not one per entry.
   const scanner = createLeadingPathScanner(ctx);
   const writer = createChangesetWriter(ctx, opts, direction);
-  return applyAllEntries(ctx, deletes, writes, workdir, writer, scanner);
+  // Only a deletion can empty a directory, so a deletion-free changeset derives nothing.
+  const surviving = survivingDirectoriesOf(
+    deletes.length === 0 ? [] : survivingPaths(changeset.entries),
+  );
+  return applyAllEntries(ctx, deletes, writes, workdir, writer, scanner, surviving);
 };

@@ -5,10 +5,12 @@ import {
   createMergeResultWriter,
   mergeTreesToTree,
   removeChangedOutcome,
+  survivingPathsOf,
   writeMarkedConflict,
 } from '../../../../src/application/primitives/apply-merge-to-worktree.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { flattenTree } from '../../../../src/application/primitives/flatten-tree.js';
+import { survivingDirectoriesOf } from '../../../../src/application/primitives/internal/prune-emptied-directories.js';
 import { createLeadingPathScanner } from '../../../../src/application/primitives/internal/symlinked-leading-path.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import * as streamBlobMod from '../../../../src/application/primitives/stream-blob.js';
@@ -17,7 +19,7 @@ import { writeTree } from '../../../../src/application/primitives/write-tree.js'
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
-import type { MergeConflict } from '../../../../src/domain/merge/index.js';
+import type { MergeConflict, MergeOutcome } from '../../../../src/domain/merge/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type {
   FileMode,
@@ -73,6 +75,8 @@ const index = (entries: ReadonlyArray<IndexEntry>): GitIndex => ({
 
 const readWork = async (ctx: Context, path: string): Promise<string> =>
   new TextDecoder().decode(await ctx.fs.read(`${ctx.layout.workDir}/${path}`));
+
+const conflictAt = (path: string): MergeConflict => ({ path: path as FilePath }) as MergeConflict;
 
 describe('applyMergeToWorktree', () => {
   describe('Given a conflict beside paths holding �.txt and 😀.txt', () => {
@@ -355,10 +359,67 @@ describe('applyMergeToWorktree', () => {
           ctx,
           { status: 'resolved-deleted', path: 'd/e/y' as FilePath },
           createLeadingPathScanner(ctx),
+          survivingDirectoriesOf([]),
         );
 
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/d`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a deleted outcome whose directory keeps a merged entry', () => {
+    describe('When removeChangedOutcome runs', () => {
+      it('Then only the file is removed and the directory is not probed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.write(`${ctx.layout.workDir}/d/e/y`, new TextEncoder().encode('y\n'));
+        await ctx.fs.write(`${ctx.layout.workDir}/d/e/z`, new TextEncoder().encode('z\n'));
+        const rm = vi.spyOn(ctx.fs, 'rm');
+        const surviving = survivingDirectoriesOf(
+          survivingPathsOf(
+            [
+              {
+                status: 'unchanged',
+                path: 'd/e/z' as FilePath,
+                id: '' as ObjectId,
+                mode: FILE_MODE.REGULAR,
+              },
+            ],
+            [],
+          ),
+        );
+
+        // Act
+        await removeChangedOutcome(
+          ctx,
+          { status: 'resolved-deleted', path: 'd/e/y' as FilePath },
+          createLeadingPathScanner(ctx),
+          surviving,
+        );
+
+        // Assert
+        expect(rm.mock.calls.map(([path]) => path)).toEqual([`${ctx.layout.workDir}/d/e/y`]);
+      });
+    });
+  });
+
+  describe('Given outcomes and conflicts of a merge', () => {
+    describe('When the surviving paths are listed', () => {
+      it('Then deletions are left out and clean and conflicted paths are kept', () => {
+        // Arrange
+        const id = '' as ObjectId;
+        const outcomes: ReadonlyArray<MergeOutcome> = [
+          { status: 'resolved-deleted', path: 'gone' as FilePath },
+          { status: 'resolved-known', path: 'known' as FilePath, id, mode: FILE_MODE.REGULAR },
+          { status: 'conflict', conflict: conflictAt('clash') },
+        ];
+
+        // Act
+        const result = [...survivingPathsOf(outcomes, [conflictAt('clash')])];
+
+        // Assert
+        expect(result).toEqual(['known', 'clash']);
       });
     });
   });
@@ -376,6 +437,7 @@ describe('applyMergeToWorktree', () => {
           ctx,
           { status: 'resolved-deleted', path: 'a/x' as FilePath },
           createLeadingPathScanner(ctx),
+          survivingDirectoriesOf([]),
         );
 
         // Assert

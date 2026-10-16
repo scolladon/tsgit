@@ -72,6 +72,7 @@ import {
   isDeleted,
   removeChangedOutcome,
   removeDisplacedFile,
+  survivingPathsOf,
 } from '../primitives/apply-merge-to-worktree.js';
 import {
   buildBlobUnchanged,
@@ -96,6 +97,7 @@ import {
 } from '../primitives/internal/merge-rename-config.js';
 import { mergedBlobEntries } from '../primitives/internal/merged-blob-entries.js';
 import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
+import { survivingDirectoriesOf } from '../primitives/internal/prune-emptied-directories.js';
 import { renormalizeAttributeLookup } from '../primitives/internal/renormalize-attributes.js';
 import { resolveMaxTreeDepth } from '../primitives/internal/resolve-max-tree-depth.js';
 import {
@@ -1794,8 +1796,19 @@ const writeConflictingWorkingTree = async (
   const scanner = createLeadingPathScanner(ctx);
   // Every deletion lands before the writer reads attributes, as git unlinks
   // before its first checkout: a deleted `.gitattributes` must not govern the writes.
-  await runBounded(ctx, touched.filter(isDeleted), (outcome) =>
-    removeChangedOutcome(ctx, outcome, scanner),
+  const deleted = touched.filter(isDeleted);
+  const surviving = survivingDirectoriesOf(
+    deleted.length === 0
+      ? []
+      : survivingPathsOf(
+          outcomes.filter(
+            (outcome) => outcome.status === 'conflict' || !isExcluded(matcher, outcome.path),
+          ),
+          conflicts,
+        ),
+  );
+  await runBounded(ctx, deleted, (outcome) =>
+    removeChangedOutcome(ctx, outcome, scanner, surviving),
   );
   await runBounded(ctx, conflicts, (conflict) => removeDisplacedFile(ctx, conflict));
   const writer = await createMergeResultWriter(ctx, outcomes, conflicts);

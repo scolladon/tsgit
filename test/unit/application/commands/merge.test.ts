@@ -27,6 +27,7 @@ import {
 } from '../../../../src/application/primitives/apply-merge-to-worktree.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { flattenEscapedTree } from '../../../../src/application/primitives/flatten-tree.js';
+import { survivingDirectoriesOf } from '../../../../src/application/primitives/internal/prune-emptied-directories.js';
 import { createLeadingPathScanner } from '../../../../src/application/primitives/internal/symlinked-leading-path.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
@@ -3249,7 +3250,12 @@ describe('writeOutcomeToTree (direct)', () => {
         let caught: unknown;
         let removeCallCount: number;
         try {
-          await removeChangedOutcome(ctx, outcome, createLeadingPathScanner(ctx));
+          await removeChangedOutcome(
+            ctx,
+            outcome,
+            createLeadingPathScanner(ctx),
+            survivingDirectoriesOf([]),
+          );
         } catch (err) {
           caught = err;
         } finally {

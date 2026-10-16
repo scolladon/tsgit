@@ -408,6 +408,37 @@ describe('applyChangeset', () => {
     });
   });
 
+  describe('Given a delete entry whose directory the target still tracks a file in', () => {
+    describe('When applyChangeset runs with force', () => {
+      it('Then the directory is not probed for removal', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('q'));
+        await ctx.fs.write(`${WORKDIR}/d/e/q`, enc('q'));
+        await ctx.fs.write(`${WORKDIR}/d/e/kept`, enc('k'));
+        const kept: ChangesetEntry = {
+          kind: 'noop',
+          path: 'd/e/kept' as FilePath,
+          mode: FILE_MODE.REGULAR,
+          id,
+          previousId: id,
+          previousMode: FILE_MODE.REGULAR,
+        };
+        const rm = vi.spyOn(ctx.fs, 'rm');
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('d/e/q', id), kept]),
+          force: true,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(rm.mock.calls.map(([path]) => path)).toEqual([`${WORKDIR}/d/e/q`]);
+      });
+    });
+  });
+
   describe('Given a delete entry whose directory still holds an untracked file', () => {
     describe('When applyChangeset runs with force', () => {
       it('Then the directory chain holding it is kept', async () => {

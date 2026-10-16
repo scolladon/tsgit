@@ -31,7 +31,10 @@ import {
   compareWorkingTreeEntry,
   isWorkingTreeModified,
 } from '../primitives/compare-working-tree-entry.js';
-import { pruneEmptiedDirectories } from '../primitives/internal/prune-emptied-directories.js';
+import {
+  pruneEmptiedDirectories,
+  survivingDirectoriesOf,
+} from '../primitives/internal/prune-emptied-directories.js';
 import { buildCheckinAttributeProvider } from '../primitives/internal/read-gitattributes.js';
 import { readHeadTreeEscaped } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -121,6 +124,7 @@ export const rm = async (
         ctx,
         requireWorkTree(ctx, 'rm'),
         workingTreeEntries.map((entry) => entry.path),
+        survivingDirectoriesOf(presentInWorkingTree(byPath.values())),
       );
     }
     await lock.commit(Array.from(byPath.values()), 'update');
@@ -129,6 +133,11 @@ export const rm = async (
     await lock.release();
   }
 };
+
+/** A skip-worktree entry is tracked but absent from disk, so it keeps no directory alive. */
+function* presentInWorkingTree(entries: Iterable<IndexEntry>): Generator<string> {
+  for (const entry of entries) if (!entry.flags.skipWorktree) yield entry.path;
+}
 
 /** Whether a pathspec may remove the paths beneath a directory (`-r`) or only paths it names. */
 type RemovalReach = 'recursive' | 'paths-only';
