@@ -9,6 +9,7 @@
 import { noOperationInProgress, workingTreeDirty } from '../../../domain/commands/error.js';
 import { type TsgitError, unsupportedOperation } from '../../../domain/error.js';
 import type { GitIndex } from '../../../domain/git-index/index.js';
+import { viewOfEscaped } from '../../../domain/git-index/index-path-key.js';
 import type { ConflictType, MergeConflict, MergeLabels } from '../../../domain/merge/index.js';
 import type { CommitData } from '../../../domain/objects/commit.js';
 import { subjectLine } from '../../../domain/objects/commit-message.js';
@@ -112,7 +113,8 @@ const isMergeCommit = (cData: CommitData): boolean => cData.parents.length >= 2;
 
 export const toConflictList = (
   conflicts: ReadonlyArray<MergeConflict>,
-): ReadonlyArray<ReplayConflict> => conflicts.map((c) => ({ path: c.path, type: c.type }));
+): ReadonlyArray<ReplayConflict> =>
+  conflicts.map((c) => ({ path: viewOfEscaped(c.path), type: c.type }));
 
 /**
  * A fresh run's pre-flight (after the caller's operational-tier check): a work

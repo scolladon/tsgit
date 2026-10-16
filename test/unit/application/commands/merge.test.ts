@@ -1685,6 +1685,26 @@ describe('merge.4b conflict persistence', () => {
             expect(data?.reason).toContain('sub/path.txt');
           },
         );
+        it('Then names the decoded view of an escaped path', async () => {
+          // Arrange
+          const { rejectUnsupportedConflicts } = await import(
+            '../../../../src/application/commands/merge.js'
+          );
+          const conflict = { type: 'gitlink', path: '\uDCFF.txt' as never } as never;
+
+          // Act
+          let caught: unknown;
+          try {
+            rejectUnsupportedConflicts([conflict]);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          const data = (caught as { data?: { reason?: string } })?.data;
+          expect(data?.reason).toContain('path=\uFFFD.txt');
+          expect(data?.reason).not.toMatch(/[\uDC80-\uDCFF]/);
+        });
         it.each([
           'content',
           'add-add',

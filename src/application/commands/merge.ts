@@ -16,6 +16,7 @@ import {
   type StatData,
   skipWorktreeEntry,
 } from '../../domain/git-index/index.js';
+import { viewOfEscaped } from '../../domain/git-index/index-path-key.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import { unsupportedOperation } from '../../domain/index.js';
 import {
@@ -142,6 +143,7 @@ import {
   writeFlatTree,
 } from './internal/octopus-merge.js';
 import { expandPriorCheckout } from './internal/prior-checkout.js';
+import { toConflictList } from './internal/replay-sequence.js';
 import {
   assertNoPendingOperation,
   assertOperationalRepositorySettingsFirst,
@@ -1685,7 +1687,7 @@ const conflictOutcome = (
   mergeHead: ObjectId,
   origHead: ObjectId,
 ): MergeEnding => {
-  const descriptors = conflicts.map((c) => ({ path: c.path, type: c.type }));
+  const descriptors = toConflictList(conflicts);
   if (opts.squash === true) {
     return {
       kind: 'headless-squash',
@@ -1707,7 +1709,7 @@ export const rejectUnsupportedConflicts = (conflicts: ReadonlyArray<MergeConflic
     if (UNSUPPORTED_CONFLICT_TYPES.has(conflict.type)) {
       throw unsupportedOperation(
         'merge',
-        `conflict type '${conflict.type}' not supported in v1 (path=${conflict.path})`,
+        `conflict type '${conflict.type}' not supported in v1 (path=${viewOfEscaped(conflict.path)})`,
       );
     }
   }

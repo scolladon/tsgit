@@ -93,6 +93,7 @@ import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { takeMergeAutostash } from './internal/merge-autostash.js';
+import { toConflictList } from './internal/replay-sequence.js';
 import {
   indexMessage,
   onMessage,
@@ -797,7 +798,7 @@ const applyUnderLock = async (
     await lock.commit(result.indexEntries, 'replace');
     return {
       kind: 'conflict',
-      conflicts: result.conflicts.map((c) => ({ path: c.path, type: c.type })),
+      conflicts: toConflictList(result.conflicts),
     };
   }
   const iTree = await commitTreeOf(ctx, parsed.indexParent);
