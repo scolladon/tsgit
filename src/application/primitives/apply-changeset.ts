@@ -199,8 +199,33 @@ export const isWorkingTreeDirty = async (
   expectedId: string,
 ): Promise<boolean> => createWorkingTreeDirtyCheck(ctx)(absPath, expectedId);
 
-const isUntrackedClash = async (ctx: Context, absPath: string): Promise<boolean> =>
-  pathIsOccupied(ctx, absPath);
+// Whether anything below `absDir` survives the changeset: a file the changeset does
+// not delete is an untracked occupant, while emptied directories go away with it.
+const holdsSurvivor = async (
+  ctx: Context,
+  absDir: string,
+  removed: ReadonlySet<string>,
+): Promise<boolean> => {
+  for (const child of await ctx.fs.readdir(absDir)) {
+    const absChild = joinPath(absDir, child.name);
+    if (child.isDirectory) {
+      if (await holdsSurvivor(ctx, absChild, removed)) return true;
+    } else if (!removed.has(absChild)) return true;
+  }
+  return false;
+};
+
+// A directory at an added path is the tracked tree being swapped for a file: its
+// tracked children arrive as `delete` entries and are dirty-checked on their own.
+const isUntrackedClash = async (
+  ctx: Context,
+  absPath: string,
+  removed: ReadonlySet<string>,
+): Promise<boolean> => {
+  if (!(await pathIsOccupied(ctx, absPath))) return false;
+  const stat = await ctx.fs.lstat(absPath);
+  return !stat.isDirectory || holdsSurvivor(ctx, absPath, removed);
+};
 
 interface DirtyClass {
   readonly class: 'local-changes' | 'untracked';
@@ -212,6 +237,7 @@ const evaluateDirtyPath = async (
   probe: () => Promise<DirtyProbe>,
   workdir: string,
   entry: ChangesetEntry,
+  removed: ReadonlySet<string>,
 ): Promise<DirtyClass | undefined> => {
   if (isLossy(entry)) return undefined;
   const absPath = joinPath(workdir, entry.path);
@@ -222,7 +248,7 @@ const evaluateDirtyPath = async (
       : undefined;
   }
   if (entry.kind === 'add') {
-    return (await isUntrackedClash(ctx, absPath))
+    return (await isUntrackedClash(ctx, absPath, removed))
       ? { class: 'untracked', path: entry.path }
       : undefined;
   }
@@ -245,6 +271,12 @@ const validateChangesetPaths = (changeset: Changeset): void => {
   for (const entry of changeset.entries) validateChangesetEntry(entry);
 };
 
+const deletedPaths = (
+  workdir: string,
+  entries: ReadonlyArray<ChangesetEntry>,
+): ReadonlySet<string> =>
+  new Set(entries.filter((e) => e.kind === 'delete').map((e) => joinPath(workdir, e.path)));
+
 const checkDirty = async (
   ctx: Context,
   workdir: string,
@@ -257,8 +289,9 @@ const checkDirty = async (
   // entry needs no dirty probe at all, so skipping it here avoids both a
   // wasted pool slot and an oversized `boundedMap` allocation.
   const probe = lazily(() => buildDirtyProbe(ctx));
+  const removed = deletedPaths(workdir, entries);
   const offending = await boundedMapFor(ctx, 'ioBound', entries, (entry) =>
-    evaluateDirtyPath(ctx, probe, workdir, entry),
+    evaluateDirtyPath(ctx, probe, workdir, entry, removed),
   );
   const localChanges: FilePath[] = [];
   const untracked: FilePath[] = [];

@@ -86,6 +86,23 @@ describe('internal/path-occupied', () => {
     });
   });
 
+  describe.each(contexts)('Given a file system answering through $probe', ({ build }) => {
+    describe('When pathIsOccupied runs on a path below a regular file', () => {
+      it('Then it reports false — git reads such a path as missing', async () => {
+        // Arrange
+        const ctx = build();
+        await ctx.fs.writeUtf8('/repo/f', 'content');
+        const sut = pathIsOccupied;
+
+        // Act
+        const result = await sut(ctx, '/repo/f/x');
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
   const faultingProbes: ReadonlyArray<{
     readonly probe: string;
     readonly build: (base: Context, target: string) => Context;

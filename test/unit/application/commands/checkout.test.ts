@@ -2036,3 +2036,155 @@ describe('checkout — path restore over an index holding a lossy twin', () => {
     });
   });
 });
+
+describe('checkout — file replaced by a directory', () => {
+  describe('Given main holds file f and side holds directory f/', () => {
+    describe('When checkout side', () => {
+      it('Then f/x is materialised in place of the file', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b`, 'b\n');
+        await add(ctx, ['b']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'side' });
+        await checkout(ctx, { rev: 'side' });
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/f`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f/x`, 'x\n');
+        await add(ctx, ['f/x']);
+        await commit(ctx, { message: 'adds directory f', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/f`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'file\n');
+        await add(ctx, ['f']);
+        await commit(ctx, { message: 'adds file f', author });
+
+        // Act
+        const result = await checkout(ctx, { rev: 'side' });
+
+        // Assert
+        expect(result.branch).toBe('refs/heads/side');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f/x`)).toBe('x\n');
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['b', 'f/x']);
+      });
+    });
+  });
+});
+
+describe('checkout — directory replaced by a file', () => {
+  describe('Given side holds directory f/ and main holds file f', () => {
+    describe('When checkout main from side', () => {
+      it('Then f is materialised as the file in place of the directory', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b`, 'b\n');
+        await add(ctx, ['b']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'side' });
+        await checkout(ctx, { rev: 'side' });
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/f`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f/x`, 'x\n');
+        await add(ctx, ['f/x']);
+        await commit(ctx, { message: 'adds directory f', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/f`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'file\n');
+        await add(ctx, ['f']);
+        await commit(ctx, { message: 'adds file f', author });
+        await checkout(ctx, { rev: 'side' });
+
+        // Act
+        const result = await checkout(ctx, { rev: 'main' });
+
+        // Assert
+        expect(result.branch).toBe('refs/heads/main');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f`)).toBe('file\n');
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['b', 'f']);
+      });
+    });
+  });
+
+  describe('Given side holds directory f/ with an untracked file inside', () => {
+    describe('When checkout main from side', () => {
+      it('Then it refuses listing f as untracked and keeps the file', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b`, 'b\n');
+        await add(ctx, ['b']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'side' });
+        await checkout(ctx, { rev: 'side' });
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/f`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f/x`, 'x\n');
+        await add(ctx, ['f/x']);
+        await commit(ctx, { message: 'adds directory f', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/f`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'file\n');
+        await add(ctx, ['f']);
+        await commit(ctx, { message: 'adds file f', author });
+        await checkout(ctx, { rev: 'side' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f/y`, 'y\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await checkout(ctx, { rev: 'main' });
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
+        if (data.code === 'CHECKOUT_OVERWRITE_DIRTY') expect(data.untracked).toEqual(['f']);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f/y`)).toBe('y\n');
+      });
+    });
+  });
+
+  describe('Given side holds directory f/ with an untracked file in a nested directory', () => {
+    describe('When checkout main from side', () => {
+      it('Then it refuses listing f as untracked and keeps the nested file', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b`, 'b\n');
+        await add(ctx, ['b']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'side' });
+        await checkout(ctx, { rev: 'side' });
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/f`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f/x`, 'x\n');
+        await add(ctx, ['f/x']);
+        await commit(ctx, { message: 'adds directory f', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/f`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'file\n');
+        await add(ctx, ['f']);
+        await commit(ctx, { message: 'adds file f', author });
+        await checkout(ctx, { rev: 'side' });
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/f/g`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f/g/y`, 'y\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await checkout(ctx, { rev: 'main' });
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
+        if (data.code === 'CHECKOUT_OVERWRITE_DIRTY') expect(data.untracked).toEqual(['f']);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f/g/y`)).toBe('y\n');
+      });
+    });
+  });
+});
