@@ -882,6 +882,11 @@ describe('gitPickerValidPrefix', () => {
       it.each([
         { label: 'empty', bytes: [], expected: 0 },
         { label: 'ASCII only', bytes: [0x61, 0x62], expected: 2 },
+        { label: 'DEL', bytes: [0x7f], expected: 1 },
+        { label: 'lowest 2-byte', bytes: [0xc2, 0x80], expected: 2 },
+        { label: 'highest 2-byte', bytes: [0xdf, 0xbf], expected: 2 },
+        { label: 'lowest 3-byte', bytes: [0xe0, 0xa0, 0x80], expected: 3 },
+        { label: 'continuation above range', bytes: [0xc3, 0xc0], expected: 0 },
         { label: 'valid 2-byte', bytes: [0xc3, 0xa9], expected: 2 },
         { label: 'valid 3-byte', bytes: [0xe2, 0x80, 0x8c], expected: 3 },
         { label: 'valid 4-byte', bytes: [0xf0, 0x90, 0x80, 0x80], expected: 4 },

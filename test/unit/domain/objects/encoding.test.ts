@@ -611,6 +611,33 @@ describe('encoding', () => {
       ['a literal replacement character', [0xef, 0xbf, 0xbd], '�'],
       ['a leading byte-order mark', [0xef, 0xbb, 0xbf, 0x61], '﻿a'],
       ['a valid astral sequence', [0xf0, 0x90, 0x82, 0x80], '\u{10080}'],
+      ['an overlong lead C1 then an invalid byte', [0xc1, 0xbf, 0xff], '\uDCC1\uDCBF\uDCFF'],
+      ['the lowest two-byte sequence then an invalid byte', [0xc2, 0x80, 0xff], '\u0080\uDCFF'],
+      ['the highest two-byte sequence then an invalid byte', [0xdf, 0xbf, 0xff], '\u07FF\uDCFF'],
+      ['a mid two-byte sequence then an invalid byte', [0xc3, 0x80, 0xff], '\u00C0\uDCFF'],
+      [
+        'the lowest three-byte sequence then an invalid byte',
+        [0xe0, 0xa0, 0x80, 0xff],
+        '\u0800\uDCFF',
+      ],
+      ['an overlong three-byte sequence', [0xe0, 0x9f, 0xbf], '\uDCE0\uDC9F\uDCBF'],
+      [
+        'the lowest four-byte sequence then an invalid byte',
+        [0xf0, 0x90, 0x80, 0x80, 0xff],
+        '\u{10000}\uDCFF',
+      ],
+      ['an overlong four-byte sequence', [0xf0, 0x8f, 0xbf, 0xbf], '\uDCF0\uDC8F\uDCBF\uDCBF'],
+      [
+        'the highest code point then an invalid byte',
+        [0xf4, 0x8f, 0xbf, 0xbf, 0xff],
+        '\u{10FFFF}\uDCFF',
+      ],
+      [
+        'a four-byte sequence above the unicode range',
+        [0xf4, 0x90, 0x80, 0x80],
+        '\uDCF4\uDC90\uDC80\uDC80',
+      ],
+      ['a lead above the four-byte range', [0xf5, 0x80, 0x80, 0x80], '\uDCF5\uDC80\uDC80\uDC80'],
     ];
 
     describe.each(cases)('Given %s', (_label, input, expected) => {
@@ -644,6 +671,16 @@ describe('encoding', () => {
       ],
       ['a lone high surrogate', '\uD800', [0xef, 0xbf, 0xbd]],
       ['a lone low surrogate outside the escape range', '\uDC41', [0xef, 0xbf, 0xbd]],
+      [
+        'an astral pair ending at the escape range start then a lone escape',
+        '\u{10FC80}\uDCFF',
+        [0xf4, 0x8f, 0xb2, 0x80, 0xff],
+      ],
+      [
+        'a lone low surrogate just below the escape range then a lone escape',
+        '\uDC7F\uDC80',
+        [0xef, 0xbf, 0xbd, 0x80],
+      ],
     ];
 
     describe.each(cases)('Given %s', (_label, input, expected) => {

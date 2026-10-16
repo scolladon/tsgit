@@ -3,6 +3,7 @@ import { describe, it } from 'vitest';
 
 import {
   bytesEqual,
+  concatBytes,
   decodeEscapingInvalid,
   encode,
   encodeEscaped,
@@ -10,6 +11,7 @@ import {
 } from '../../../../src/domain/objects/encoding.js';
 
 const ASCII_MAX = 0x7f;
+const ESCAPE_BASE = 0xdc00;
 
 const arbBytes = (): fc.Arbitrary<Uint8Array> => fc.uint8Array({ maxLength: 12 });
 const arbWellFormed = (): fc.Arbitrary<string> => fc.string({ unit: 'grapheme' });
@@ -57,6 +59,27 @@ describe('surrogate-escape codec properties', () => {
             !hasEscapedBytes(text) &&
             decodeEscapingInvalid(encode(text)) === text &&
             bytesEqual(encodeEscaped(text), encode(text)),
+        );
+
+        // Act & Assert
+        fc.assert(property, { numRuns: 200 });
+      });
+    });
+  });
+
+  describe('Given well-formed text around a byte no UTF-8 sequence can contain', () => {
+    describe('When decoding with escapes', () => {
+      it('Then only that byte is escaped and the text around it is kept', () => {
+        // Arrange
+        const property = fc.property(
+          arbWellFormed(),
+          fc.constantFrom(0xfe, 0xff),
+          arbWellFormed(),
+          (before, invalid, after) =>
+            decodeEscapingInvalid(
+              concatBytes([encode(before), Uint8Array.of(invalid), encode(after)]),
+            ) ===
+            before + String.fromCharCode(ESCAPE_BASE + invalid) + after,
         );
 
         // Act & Assert
