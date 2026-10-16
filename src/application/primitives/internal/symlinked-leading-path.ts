@@ -17,6 +17,8 @@ import { requireWorkTree } from './repo-state.js';
 export interface LeadingPathScanner {
   /** True when any leading component of `path` (its directories, never the leaf) is a symlink. */
   readonly hasSymlinkedLeadingPath: (path: FilePath) => Promise<boolean>;
+  /** The first leading component of `path` (its directories, never the leaf) that is a symlink — the path git names for it. */
+  readonly symlinkedLeadingComponent: (path: FilePath) => Promise<FilePath | undefined>;
   /**
    * Unlink the first symlinked leading directory component of `path`, if
    * any — git's checkout materialisation: a leading directory that is a
@@ -106,20 +108,23 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
     }
   };
 
-  const hasSymlinkedLeadingPath = async (path: FilePath): Promise<boolean> => {
+  const symlinkedLeadingComponent = async (path: FilePath): Promise<FilePath | undefined> => {
     const segments = path.split('/');
     // Stryker disable next-line StringLiteral: equivalent — split() always returns at least one element, so the '' default can never activate.
     let prefix = segments[0] ?? '';
     for (let i = 1; i < segments.length; i += 1) {
       const shape = await classifyPrefix(prefix);
-      // A missing prefix means no real filesystem could have a deeper entry
-      // beneath it either — stop walking rather than trust a longer prefix.
-      if (shape === 'missing') return false;
-      if (shape === 'symlink') return true;
+      // Nothing can sit beneath a missing prefix or a regular file, and a real
+      // filesystem refuses to stat there — stop walking rather than ask.
+      if (shape === 'missing' || shape === 'other') return undefined;
+      if (shape === 'symlink') return prefix as FilePath;
       prefix = `${prefix}/${segments[i]}`;
     }
-    return false;
+    return undefined;
   };
+
+  const hasSymlinkedLeadingPath = async (path: FilePath): Promise<boolean> =>
+    (await symlinkedLeadingComponent(path)) !== undefined;
 
   const unlinkSymlinkedLeadingComponent = async (path: FilePath): Promise<void> => {
     const segments = path.split('/');
@@ -181,6 +186,7 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
 
   return {
     hasSymlinkedLeadingPath,
+    symlinkedLeadingComponent,
     unlinkSymlinkedLeadingComponent,
     invalidate,
     ensureLeadingDirectories,

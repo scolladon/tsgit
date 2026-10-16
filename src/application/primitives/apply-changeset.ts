@@ -39,10 +39,12 @@ import type { Changeset, ChangesetEntry } from './compute-changeset.js';
 import { readConfig } from './config-read.js';
 import type { CheckoutMetadata } from './internal/apply-smudge-filter.js';
 import { boundedMapFor, limiterFor } from './internal/concurrency.js';
+import { createConcurrencyLimiter } from './internal/concurrency-limiter.js';
 import { convertToGit } from './internal/convert-blob.js';
 import { removeEmptyDirectory } from './internal/empty-directories.js';
 import { withFilterProcessPool } from './internal/filter-process-pool.js';
 import { lstatIfReachable } from './internal/fs-probes.js';
+import { buildRepoIgnorePredicate } from './internal/ignore-evaluator.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { lazily } from './internal/lazily.js';
 import { pathIsOccupied } from './internal/path-occupied.js';
@@ -69,7 +71,6 @@ import {
   type WorkingTreeWriter,
 } from './internal/write-converted-entry.js';
 import { rmIfExists } from './internal/write-working-tree-file.js';
-import { isIgnored } from './is-ignored.js';
 import { everySourceLoadable } from './object-store.js';
 import { readEolSettings, resolveConversion } from './resolve-conversion.js';
 
@@ -210,30 +211,41 @@ export const isWorkingTreeDirty = async (
 type IgnoredProbe = (absPath: string, isDirectory: boolean) => Promise<boolean>;
 
 // What the untracked-clash check weighs a directory's occupants against: the paths
-// the changeset deletes, and the repo's ignore rules (git removes ignored files
-// along with a directory that becomes a file).
+// the changeset deletes, the repo's ignore rules (git removes ignored files along
+// with a directory that becomes a file), and the symlinks standing in the way.
 interface ClashScope {
   readonly removed: ReadonlySet<string>;
   readonly isIgnoredPath: IgnoredProbe;
+  readonly scanner: LeadingPathScanner;
 }
 
-const createIgnoredProbe =
-  (ctx: Context): IgnoredProbe =>
-  async (absPath, isDirectory) => {
-    const [verdict] = await isIgnored(ctx, [{ path: repoRelativePath(ctx, absPath), isDirectory }]);
-    return verdict?.ignored === true;
-  };
+// One ignore predicate per probe, built on first use. It grows a shared stack as it
+// meets directories, so concurrent questions are answered one at a time.
+const createIgnoredProbe = (ctx: Context): IgnoredProbe => {
+  const predicate = lazily(() => buildRepoIgnorePredicate(ctx));
+  const oneAtATime = createConcurrencyLimiter(1);
+  return (absPath, isDirectory) =>
+    oneAtATime.run(async () => (await predicate())(repoRelativePath(ctx, absPath), isDirectory));
+};
 
-// Whether anything below `absDir` survives the changeset: a file the changeset does
-// not delete and the ignore rules do not match is an untracked occupant, while
-// emptied directories go away with it.
+// Whether a child of a directory that becomes a file outlives the changeset: a file
+// the changeset does not delete and the ignore rules do not match is an untracked
+// occupant, while emptied directories go away with it.
+const childSurvives = async (
+  ctx: Context,
+  absDir: string,
+  child: { readonly name: string; readonly isDirectory: boolean },
+  scope: ClashScope,
+): Promise<boolean> => {
+  const absChild = joinPath(absDir, child.name);
+  if (!child.isDirectory && scope.removed.has(absChild)) return false;
+  if (await scope.isIgnoredPath(absChild, child.isDirectory)) return false;
+  return child.isDirectory ? holdsSurvivor(ctx, absChild, scope) : true;
+};
+
 const holdsSurvivor = async (ctx: Context, absDir: string, scope: ClashScope): Promise<boolean> => {
   for (const child of await ctx.fs.readdir(absDir)) {
-    const absChild = joinPath(absDir, child.name);
-    if (await scope.isIgnoredPath(absChild, child.isDirectory)) continue;
-    if (child.isDirectory) {
-      if (await holdsSurvivor(ctx, absChild, scope)) return true;
-    } else if (!scope.removed.has(absChild)) return true;
+    if (await childSurvives(ctx, absDir, child, scope)) return true;
   }
   return false;
 };
@@ -248,6 +260,25 @@ const isUntrackedClash = async (
   if (!(await pathIsOccupied(ctx, absPath))) return false;
   const stat = await ctx.fs.lstat(absPath);
   return !stat.isDirectory || holdsSurvivor(ctx, absPath, scope);
+};
+
+// git's check_leading_path: a symlink standing where a leading directory must be is
+// the clash, named in place of the added path — unless the changeset deletes it or
+// the ignore rules cover it. Nothing beyond the link is looked at.
+const untrackedClashOf = async (
+  ctx: Context,
+  workdir: string,
+  entry: ChangesetEntry,
+  scope: ClashScope,
+): Promise<FilePath | undefined> => {
+  const link = await scope.scanner.symlinkedLeadingComponent(entry.path);
+  if (link === undefined) {
+    const clashes = await isUntrackedClash(ctx, joinPath(workdir, entry.path), scope);
+    return clashes ? entry.path : undefined;
+  }
+  const absLink = joinPath(workdir, link);
+  if (scope.removed.has(absLink)) return undefined;
+  return (await scope.isIgnoredPath(absLink, false)) ? undefined : link;
 };
 
 interface DirtyClass {
@@ -270,12 +301,9 @@ const evaluateDirtyPath = async (
       ? { class: 'local-changes', path: entry.path }
       : undefined;
   }
-  if (entry.kind === 'add') {
-    return (await isUntrackedClash(ctx, absPath, scope))
-      ? { class: 'untracked', path: entry.path }
-      : undefined;
-  }
-  return undefined;
+  if (entry.kind !== 'add') return undefined;
+  const clash = await untrackedClashOf(ctx, workdir, entry, scope);
+  return clash === undefined ? undefined : { class: 'untracked', path: clash };
 };
 
 // The checkout path's tree->index boundary. Every `add`/`update` entry
@@ -318,6 +346,7 @@ const checkDirty = async (
   const scope: ClashScope = {
     removed: deletedPaths(workdir, entries),
     isIgnoredPath: createIgnoredProbe(ctx),
+    scanner: createLeadingPathScanner(ctx),
   };
   const offending = await boundedMapFor(ctx, 'ioBound', entries, (entry) =>
     evaluateDirtyPath(ctx, probe, workdir, entry, scope),
@@ -679,19 +708,29 @@ const removeIgnoredBelow = async (
   }
 };
 
-// git's remove_subtree: the ignored files left under a directory that becomes a file
-// go with it. The clash check already refused anything else standing there.
-const clearIgnoredOccupants = async (
+// git's remove_subtree: what stands in a directory that becomes a file goes with it.
+// Forced, that is everything; otherwise only the ignored files, as the clash check
+// already refused anything else. A gitlink leaves its directory alone, and a symlink
+// in the leading path is replaced by the write, never followed.
+// Forced, every occupant goes; otherwise only the ignored ones.
+type OccupantPolicy = 'every' | 'ignored';
+
+const clearOccupants = async (
   ctx: Context,
   workdir: string,
   writes: ReadonlyArray<ChangesetEntry>,
+  policy: OccupantPolicy,
 ): Promise<void> => {
+  const scanner = createLeadingPathScanner(ctx);
   const isIgnoredPath = createIgnoredProbe(ctx);
   for (const entry of writes) {
-    if (entry.kind !== 'add' || isLossy(entry)) continue;
+    if (entry.kind !== 'add' || entry.mode === FILE_MODE.GITLINK || isLossy(entry)) continue;
+    if (await scanner.hasSymlinkedLeadingPath(entry.path)) continue;
     const absPath = joinPath(workdir, entry.path);
     const stat = await lstatIfReachable(ctx.fs, absPath);
-    if (stat?.isDirectory === true) await removeIgnoredBelow(ctx, absPath, isIgnoredPath);
+    if (stat?.isDirectory !== true) continue;
+    if (policy === 'every') await ctx.fs.rmRecursive(absPath);
+    else await removeIgnoredBelow(ctx, absPath, isIgnoredPath);
   }
 };
 
@@ -709,7 +748,7 @@ const applyAllEntries = async (
   const counter: ProgressCounter = { current: 0 };
 
   const deleted = await applyDeleteWave(ctx, workdir, deletes, surviving, scanner, total, counter);
-  if (!force) await clearIgnoredOccupants(ctx, workdir, writes);
+  await clearOccupants(ctx, workdir, writes, force ? 'every' : 'ignored');
   const writtenEntries = await applyWriteWave(
     ctx,
     workdir,

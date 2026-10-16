@@ -15,6 +15,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import * as path from 'node:path';
@@ -234,6 +235,150 @@ describe.skipIf(!GIT_AVAILABLE)(
           // Assert
           expect(listWorkTree(pair.ours)).toEqual(listWorkTree(pair.peer));
           expect(existsSync(path.join(pair.ours, 'd', 'e', 'untracked'))).toBe(true);
+        });
+      });
+    });
+  },
+);
+
+const buildLinkHistory = (dir: string, ignore: string): void => {
+  writeFileSync(path.join(dir, '.gitignore'), ignore);
+  mkdirSync(path.join(dir, 'inner', 'x'), { recursive: true });
+  writeFileSync(path.join(dir, 'inner', 'seed'), 's\n');
+  git(dir, 'add', '.');
+  git(dir, 'commit', '-q', '-m', 'base');
+  git(dir, 'checkout', '-q', '-b', 'side');
+  mkdirSync(path.join(dir, 'L'));
+  writeFileSync(path.join(dir, 'L', 'x'), 'x\n');
+  git(dir, 'add', '-f', 'L/x');
+  git(dir, 'commit', '-q', '-m', 'adds L/x');
+  git(dir, 'checkout', '-q', 'main');
+  symlinkSync('inner', path.join(dir, 'L'));
+  writeFileSync(path.join(dir, 'inner', 'x', 'keep.log'), 'k\n');
+};
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'checkout interop — an add beyond a symlink standing in the way',
+  { timeout: 60_000 },
+  () => {
+    let pair: PeerPair;
+    let repo: Repository;
+
+    afterEach(async () => {
+      await repo.dispose();
+      await pair.dispose();
+    });
+
+    const open = async (ignore: string): Promise<void> => {
+      pair = await makePeerPair('checkout-leading-link-clash');
+      initBothRepos(pair.peer, pair.ours);
+      buildLinkHistory(pair.peer, ignore);
+      buildLinkHistory(pair.ours, ignore);
+      repo = await openRepository({ cwd: pair.ours });
+    };
+
+    describe('Given an untracked symlink L to a directory holding an ignored file, and side adding L/x', () => {
+      describe('When both tools checkout side', () => {
+        it('Then both refuse and the ignored file and the link stay', async () => {
+          // Arrange
+          await open('*.log\n');
+
+          // Act
+          const peerRefused = !tryRunGit(['-C', pair.peer, 'checkout', 'side']).ok;
+          let oursError: TsgitError | undefined;
+          try {
+            await repo.checkout({ rev: 'side' });
+          } catch (err) {
+            oursError = err as TsgitError;
+          }
+
+          // Assert
+          expect(peerRefused).toBe(true);
+          expect(oursError?.data).toMatchObject({
+            code: 'CHECKOUT_OVERWRITE_DIRTY',
+            untracked: ['L'],
+          });
+          expect(readFileSync(path.join(pair.ours, 'inner', 'x', 'keep.log'), 'utf8')).toBe('k\n');
+          expect(lstatSync(path.join(pair.ours, 'L')).isSymbolicLink()).toBe(true);
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+        });
+      });
+    });
+
+    describe('Given an ignored symlink L to a directory holding an ignored file, and side adding L/x', () => {
+      describe('When both tools checkout side', () => {
+        it('Then L becomes a directory and the file behind the old link stays, matching git', async () => {
+          // Arrange
+          await open('*.log\nL\n');
+          git(pair.peer, 'checkout', '-q', 'side');
+
+          // Act
+          await repo.checkout({ rev: 'side' });
+
+          // Assert
+          expect(lstatSync(path.join(pair.ours, 'L')).isDirectory()).toBe(true);
+          expect(readFileSync(path.join(pair.ours, 'inner', 'x', 'keep.log'), 'utf8')).toBe('k\n');
+          expect(listWorkTree(pair.ours)).toEqual(listWorkTree(pair.peer));
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+        });
+      });
+    });
+  },
+);
+
+const buildOccupiedHistory = (dir: string): void => {
+  writeFileSync(path.join(dir, '.gitignore'), '*.o\n');
+  mkdirSync(path.join(dir, 'd'));
+  writeFileSync(path.join(dir, 'd', 'f'), 'f\n');
+  git(dir, 'add', '.');
+  git(dir, 'commit', '-q', '-m', 'base');
+  git(dir, 'checkout', '-q', '-b', 'side');
+  git(dir, 'rm', '-q', '-r', 'd');
+  writeFileSync(path.join(dir, 'd'), 'file\n');
+  git(dir, 'add', 'd');
+  git(dir, 'commit', '-q', '-m', 'd becomes a file');
+  git(dir, 'checkout', '-q', 'main');
+};
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'checkout interop — forced checkout over a directory that becomes a file',
+  { timeout: 60_000 },
+  () => {
+    let pair: PeerPair;
+    let repo: Repository;
+
+    beforeEach(async () => {
+      pair = await makePeerPair('checkout-force-occupants');
+      initBothRepos(pair.peer, pair.ours);
+      buildOccupiedHistory(pair.peer);
+      buildOccupiedHistory(pair.ours);
+      repo = await openRepository({ cwd: pair.ours });
+    });
+
+    afterEach(async () => {
+      await repo.dispose();
+      await pair.dispose();
+    });
+
+    describe.each([
+      ['only an ignored file', ['junk.o']],
+      ['an ignored and an untracked file', ['junk.o', 'untracked']],
+    ])('Given directory d holding %s', (_label, occupants) => {
+      describe('When both tools force-checkout side', () => {
+        it('Then d becomes the file, matching git', async () => {
+          // Arrange
+          for (const dir of [pair.peer, pair.ours]) {
+            for (const name of occupants) writeFileSync(path.join(dir, 'd', name), 'o\n');
+          }
+          git(pair.peer, 'checkout', '-q', '-f', 'side');
+
+          // Act
+          await repo.checkout({ rev: 'side', force: true });
+
+          // Assert
+          expect(lstatSync(path.join(pair.ours, 'd')).isFile()).toBe(true);
+          expect(listWorkTree(pair.ours)).toEqual(listWorkTree(pair.peer));
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
         });
       });
     });

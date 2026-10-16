@@ -47,6 +47,61 @@ const withLstatFailure = (ctx: Context, failPath: string, err: TsgitError): Cont
 };
 
 describe('createLeadingPathScanner', () => {
+  describe('Given a symlink nested under a real directory', () => {
+    describe('When symlinkedLeadingComponent is asked for a path beneath it', () => {
+      it('Then it names the symlink path, not the leaf or a deeper prefix', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/a`);
+        await ctx.fs.symlink('../elsewhere', `${ctx.layout.workDir}/a/link`);
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act
+        const result = await sut.symlinkedLeadingComponent(path('a/link/deep/leaf'));
+
+        // Assert
+        expect(result).toBe('a/link');
+      });
+    });
+  });
+
+  describe('Given a regular file standing where a leading directory should be, and an adapter that refuses to stat beneath it', () => {
+    describe('When symlinkedLeadingComponent is asked for a path beneath the file', () => {
+      it('Then it names nothing instead of surfacing the refusal', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await base.fs.write(`${base.layout.workDir}/f`, new Uint8Array());
+        const refusal = new TsgitError({ code: 'NOT_A_DIRECTORY', path: 'f/g' });
+        const ctx = withLstatFailure(base, `${base.layout.workDir}/f/g`, refusal);
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act
+        const result = await sut.symlinkedLeadingComponent(path('f/g/x'));
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a symlink as the leaf of the path', () => {
+    describe('When symlinkedLeadingComponent is asked for it', () => {
+      it('Then it names nothing — the leaf is never a leading component', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/a`);
+        await ctx.fs.symlink('../elsewhere', `${ctx.layout.workDir}/a/link`);
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act
+        const result = await sut.symlinkedLeadingComponent(path('a/link'));
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a leading directory that is a symlink pointing outside the repo', () => {
     describe('When hasSymlinkedLeadingPath is checked for a file beneath it', () => {
       it('Then it returns true', async () => {
