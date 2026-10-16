@@ -51,6 +51,68 @@ const set = (...paths: ReadonlyArray<string>): ReadonlySet<FilePath> =>
   new Set(paths.map((p) => p as FilePath));
 
 describe('findWouldOverwrite', () => {
+  describe('Given a tracked lossy entry and a file named like its decoded view on disk', () => {
+    describe('When the changed set carries the escaped key', () => {
+      it('Then it is neither a local change nor untracked and the name is never probed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const committed = await blob(ctx, 'committed\n');
+        await work(ctx, '\uFFFD.txt', 'view file\n');
+        const lossy: IndexEntry = {
+          ...entryOf('\uFFFD.txt', committed),
+          pathBytes: Uint8Array.from([0xff, 0x2e, 0x74, 0x78, 0x74]),
+        };
+        const lstat = vi.spyOn(ctx.fs, 'lstat');
+
+        // Act
+        const result = await findWouldOverwrite(ctx, set('\uDCFF.txt'), indexOf([lossy]));
+
+        // Assert
+        expect(result).toEqual({ localChanges: [], untracked: [] });
+        expect(lstat).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given an escaped path absent from the index', () => {
+    describe('When the changed set carries it', () => {
+      it('Then it is never reported untracked and never probed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await work(ctx, '\uFFFD.txt', 'view file\n');
+        const lstat = vi.spyOn(ctx.fs, 'lstat');
+
+        // Act
+        const result = await findWouldOverwrite(ctx, set('\uDCFF.txt', '\uDCFE.txt'), indexOf([]));
+
+        // Assert
+        expect(result).toEqual({ localChanges: [], untracked: [] });
+        expect(lstat).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a dirty entry whose name holds a real U+FFFD', () => {
+    describe('When the changed set carries that path', () => {
+      it('Then it is reported as a local change under the same name', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const committed = await blob(ctx, 'committed\n');
+        await work(ctx, '\uFFFD.txt', 'dirty\n');
+
+        // Act
+        const result = await findWouldOverwrite(
+          ctx,
+          set('\uFFFD.txt'),
+          indexOf([entryOf('\uFFFD.txt', committed)]),
+        );
+
+        // Assert
+        expect(result.localChanges).toEqual(['\uFFFD.txt']);
+      });
+    });
+  });
+
   describe('Given an untracked path present on disk', () => {
     describe('When the path is in the changed set', () => {
       it('Then it is reported in untracked and localChanges is empty', async () => {

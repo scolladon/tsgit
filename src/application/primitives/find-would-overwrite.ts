@@ -16,7 +16,9 @@
  */
 import { comparePaths, recordedPaths } from '../../domain/diff/index.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
+import { escapedPathOf, viewOfEscaped } from '../../domain/git-index/index-path-key.js';
 import type { MergeConflict, MergeOutcome } from '../../domain/merge/index.js';
+import { hasEscapedBytes } from '../../domain/objects/encoding.js';
 import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { compareWorkingTreeEntry, isWorkingTreeModified } from './compare-working-tree-entry.js';
@@ -74,6 +76,8 @@ export const changedPaths = (
 
 /** Whether an untracked path is present on disk (lstat — no follow). */
 const isUntrackedPresent = async (ctx: Context, path: FilePath): Promise<boolean> => {
+  // An escaped name is never on disk: git's lstat of it fails, so it reads as absent.
+  if (hasEscapedBytes(path)) return false;
   try {
     // Stryker disable next-line StringLiteral: equivalent — the catch below swallows ANY exception (including this one) into `false` unconditionally, so the thrown error's `operation` text is never observed by any caller regardless of its content.
     await ctx.fs.lstat(joinPath(requireWorkTree(ctx, 'findWouldOverwrite'), path));
@@ -88,7 +92,7 @@ const stage0ByPath = (currentIndex: GitIndex): Map<FilePath, IndexEntry> => {
   const byPath = new Map<FilePath, IndexEntry>();
   for (const entry of currentIndex.entries) {
     // Stryker disable next-line ConditionalExpression: equivalent — the apply caller's `currentIndex` is a stage-0 index (synthesised from the real index), so every entry already has stage 0; the filter never excludes anything.
-    if (entry.flags.stage === 0) byPath.set(entry.path, entry);
+    if (entry.flags.stage === 0) byPath.set(escapedPathOf(entry), entry);
   }
   return byPath;
 };
@@ -124,7 +128,7 @@ export const findWouldOverwrite = async (
       localChanges.push(path);
   }
   return {
-    localChanges: [...localChanges].sort(comparePaths),
-    untracked: [...untracked].sort(comparePaths),
+    localChanges: [...localChanges].sort(comparePaths).map(viewOfEscaped),
+    untracked: [...untracked].sort(comparePaths).map(viewOfEscaped),
   };
 };

@@ -19,9 +19,10 @@ import type { EolNotice } from '../../domain/eol/crlf-conversion.js';
 import { TsgitError } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import { indexPathKey, keyOfPath } from '../../domain/git-index/index-path-key.js';
-import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
+import { validateTreePath } from '../../domain/git-index/path-validator.js';
 import { abbreviateOid, type ConflictType, STASH_LABELS } from '../../domain/merge/index.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
+import { hasEscapedBytes } from '../../domain/objects/encoding.js';
 import { invalidCommit, unexpectedObjectType } from '../../domain/objects/error.js';
 import { deriveWorkingMode, type FilePath, type ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
@@ -635,6 +636,7 @@ const untrackedOverwrites = async (
   const flat = await flattenTree(ctx, uTree);
   const clobbered: FilePath[] = [];
   for (const path of flat.entries.keys()) {
+    if (hasEscapedBytes(path)) continue;
     if (await pathIsOccupied(ctx, joinPath(workDir, path))) clobbered.push(path);
   }
   return clobbered;
@@ -664,7 +666,7 @@ const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> =>
   // a traversal) must refuse the entire restore untouched — mirroring the
   // index-write boundary a checkout crosses.
   for (const [path, entry] of flat.entries) {
-    validateIndexPath(path, NO_PARSER_OFFSET, entry.mode);
+    validateTreePath(path, entry.mode);
   }
   // One scanner for the whole restore: its per-directory memo means a deep
   // untracked tree with many paths under the same symlinked directory costs
