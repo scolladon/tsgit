@@ -28,7 +28,12 @@ import { TsgitError } from '../../domain/error.js';
 import { type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
 import { isLossy } from '../../domain/git-index/index-path-key.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
-import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
+import {
+  FILE_MODE,
+  type FileMode,
+  type FilePath,
+  type ObjectId,
+} from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import type { Changeset, ChangesetEntry } from './compute-changeset.js';
 import { readConfig } from './config-read.js';
@@ -486,6 +491,82 @@ const convertsThroughFilterProcess = async (ctx: Context): Promise<boolean> => {
   return [...drivers].some((driver) => driver.process !== undefined && driver.process !== '');
 };
 
+type GroupWriter = (entries: ReadonlyArray<ChangesetEntry>) => Promise<ReadonlyArray<IndexEntry>>;
+
+const isLinkWrite = (entry: ChangesetEntry): boolean =>
+  entry.mode === FILE_MODE.SYMLINK || entry.mode === FILE_MODE.GITLINK;
+
+const writesSymlink = (writes: ReadonlyArray<ChangesetEntry>): boolean =>
+  writes.some((entry) => entry.mode === FILE_MODE.SYMLINK);
+
+// git's create_directories: a leading directory is made one component at a
+// time and a link or file in its way is replaced, so the write that follows
+// cannot be routed through a link another entry of the wave has created.
+const prepareLeadingDirectories = async (
+  entry: ChangesetEntry,
+  scanner: LeadingPathScanner,
+): Promise<void> => {
+  if (entry.id === undefined || isLossy(entry)) return;
+  await scanner.ensureLeadingDirectories(entry.path);
+};
+
+// Memo keys are spellings and a case-folding disk answers for another one, so
+// no verdict survives a link write.
+const writeLinkAndForget = async (
+  group: GroupWriter,
+  entry: ChangesetEntry,
+  scanner: LeadingPathScanner,
+): Promise<ReadonlyArray<IndexEntry>> => {
+  const written = await group([entry]);
+  scanner.invalidateAll();
+  return written;
+};
+
+const writePhaseOne = async (
+  writes: ReadonlyArray<ChangesetEntry>,
+  scanner: LeadingPathScanner,
+  group: GroupWriter,
+): Promise<ReadonlyArray<IndexEntry>> => {
+  const written: IndexEntry[] = [];
+  for (const entry of [...writes].sort(byEntryPath)) {
+    if (isLinkWrite(entry)) written.push(...(await writeLinkAndForget(group, entry, scanner)));
+    else await prepareLeadingDirectories(entry, scanner);
+  }
+  return written;
+};
+
+const writeOneByOne = async (
+  sorted: ReadonlyArray<ChangesetEntry>,
+  scanner: LeadingPathScanner,
+  group: GroupWriter,
+): Promise<ReadonlyArray<IndexEntry>> => {
+  const written: IndexEntry[] = [];
+  for (const entry of sorted) {
+    if (isLinkWrite(entry)) {
+      written.push(...(await writeLinkAndForget(group, entry, scanner)));
+      continue;
+    }
+    await prepareLeadingDirectories(entry, scanner);
+    written.push(...(await group([entry])));
+  }
+  return written;
+};
+
+const writePooled = async (
+  ctx: Context,
+  writes: ReadonlyArray<ChangesetEntry>,
+  scanner: LeadingPathScanner,
+  applyGroup: GroupWriter,
+): Promise<ReadonlyArray<IndexEntry>> => {
+  if (!writesSymlink(writes)) {
+    return (await drainPooled(ctx, groupByCaseFoldedPath(writes), applyGroup)).flat();
+  }
+  const linked = await writePhaseOne(writes, scanner, applyGroup);
+  const regulars = writes.filter((entry) => !isLinkWrite(entry));
+  const grouped = await drainPooled(ctx, groupByCaseFoldedPath(regulars), applyGroup);
+  return [...linked, ...grouped.flat()];
+};
+
 const applyWriteWave = async (
   ctx: Context,
   workdir: string,
@@ -495,16 +576,16 @@ const applyWriteWave = async (
   total: number,
   counter: ProgressCounter,
 ): Promise<ReadonlyArray<IndexEntry>> => {
-  const applyGroup = (group: ReadonlyArray<ChangesetEntry>) =>
+  const applyGroup: GroupWriter = (group) =>
     applyWriteGroup(ctx, workdir, group, writer, scanner, total, counter);
   if ((await everySourceLoadable(ctx)) && !(await convertsThroughFilterProcess(ctx))) {
-    const grouped = await drainPooled(ctx, groupByCaseFoldedPath(writes), applyGroup);
-    return grouped.flat();
+    return writePooled(ctx, writes, scanner, applyGroup);
   }
   // git writes one entry at a time in index order, so its residue under a
   // refused object read is an exact prefix; a concurrent wave would leave an
   // arbitrary subset.
-  return applyGroup([...writes].sort(byEntryPath));
+  const sorted = [...writes].sort(byEntryPath);
+  return writesSymlink(writes) ? writeOneByOne(sorted, scanner, applyGroup) : applyGroup(sorted);
 };
 
 const applyAllEntries = async (

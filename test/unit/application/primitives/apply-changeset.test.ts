@@ -26,6 +26,7 @@ import { type Context, createSession } from '../../../../src/ports/context.js';
 import type { FileStat } from '../../../../src/ports/file-system.js';
 import { scriptedCommandRunner } from '../../../fixtures/scripted-command-runner.js';
 import { buildSeededContext } from './fixtures.js';
+import { createInterleavingFs } from './support/interleaving-fs.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
@@ -2752,6 +2753,107 @@ describe('applyChangeset and an entry whose name bytes are not UTF-8', () => {
           reason: "'.git' HFS+ ignorable-codepoint alias rejected",
         });
         expect(writeSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
+describe('applyChangeset leading-symlink safety', () => {
+  const OUTSIDE = '/repo/.git/outside';
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const seedInterleaved = async (): Promise<{
+    readonly ctx: Context;
+    readonly inner: Context;
+    readonly recorded: ReturnType<typeof createInterleavingFs>['recorded'];
+  }> => {
+    const inner = await buildSeededContext();
+    await inner.fs.mkdir(OUTSIDE);
+    const { fs, recorded } = createInterleavingFs(inner.fs, { foldUnder: WORKDIR });
+    return { ctx: { ...inner, fs }, inner, recorded };
+  };
+
+  const expectPayloadInRealDirectory = async (
+    inner: Context,
+    recorded: ReturnType<typeof createInterleavingFs>['recorded'],
+  ): Promise<void> => {
+    expect(recorded).toEqual([]);
+    expect((await inner.fs.lstat(`${WORKDIR}/a`)).isDirectory).toBe(true);
+    expect(dec(await inner.fs.read(`${WORKDIR}/a/payload`))).toBe('payload');
+    expect(await inner.fs.readdir(OUTSIDE)).toEqual([]);
+  };
+
+  describe('Given a symlink A and a file a/payload that one case-insensitive disk folds together', () => {
+    describe('When applyChangeset runs with the interleaving that creates the link between the scan and the write', () => {
+      it('Then payload never lands through the link', async () => {
+        // Arrange
+        const { ctx, inner, recorded } = await seedInterleaved();
+        const link = await writeBlob(inner, enc(OUTSIDE));
+        const payload = await writeBlob(inner, enc('payload'));
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([
+            makeAdd('A', link, FILE_MODE.SYMLINK),
+            makeAdd('a/payload', payload),
+          ]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        await expectPayloadInRealDirectory(inner, recorded);
+      });
+    });
+  });
+
+  describe('Given a symlink a and a file A/payload that one case-insensitive disk folds together', () => {
+    describe('When applyChangeset runs, the directory A memoised before the link a replaces it', () => {
+      it('Then payload never lands through the link, which only clearing the memo after the link write guarantees', async () => {
+        // Arrange
+        const { ctx, inner, recorded } = await seedInterleaved();
+        const link = await writeBlob(inner, enc(OUTSIDE));
+        const payload = await writeBlob(inner, enc('payload'));
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([
+            makeAdd('a', link, FILE_MODE.SYMLINK),
+            makeAdd('A/payload', payload),
+          ]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        await expectPayloadInRealDirectory(inner, recorded);
+      });
+    });
+  });
+
+  describe('Given a changeset of regular files only', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the wave never calls mkdir itself', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('x'));
+        const mkdirSpy = vi.spyOn(ctx.fs, 'mkdir');
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([makeAdd('d/one', id), makeAdd('d/two', id)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(mkdirSpy).not.toHaveBeenCalled();
       });
     });
   });
