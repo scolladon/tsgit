@@ -210,6 +210,35 @@ describe('commands/internal/apply-sparse-checkout', () => {
       });
     });
 
+    describe('When the lossy entry is included and the UTF-8 twin name is on disk or absent', () => {
+      it.each([
+        { twin: 'absent', present: false },
+        { twin: 'present', present: true },
+      ])(
+        'Then the outcome and the probes are the same with the twin $twin',
+        async ({ present }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const lossyId = await writeBlob(ctx, 'lossy');
+          const lossy: IndexEntry = { ...makeEntry(view, lossyId), pathBytes: lossyBytes };
+          await seedIndex(ctx, [lossy]);
+          if (present) await seedWorkFile(ctx, view, 'untracked');
+          const exists = vi.spyOn(ctx.fs, 'exists');
+          const sut = applySparseCheckout;
+
+          // Act
+          const result = await sut(ctx, { matcher: undefined });
+
+          // Assert
+          expect(exists.mock.calls.filter(([p]) => String(p).endsWith(view))).toHaveLength(0);
+          expect(result.materialized).toBe(1);
+          const back = (await readIndex(ctx)).entries[0];
+          expect(back?.pathBytes).toEqual(lossyBytes);
+          expect(back?.id).toBe(lossyId);
+        },
+      );
+    });
+
     describe('When a literal pattern names the U+FFFD view', () => {
       it('Then the UTF-8 entry is included and the lossy one excluded', async () => {
         // Arrange

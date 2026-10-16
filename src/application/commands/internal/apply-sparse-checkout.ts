@@ -136,12 +136,23 @@ const noopEntry = (entry: IndexEntry): ChangesetEntry => ({
   previousMode: entry.mode,
 });
 
+/** An included entry is `noop` when its file is on disk, else `add`; a lossy one is never probed, its decoded name being another file. */
+const includedChange = async (
+  ctx: Context,
+  workdir: string,
+  entry: IndexEntry,
+): Promise<ChangesetEntry> => {
+  if (isLossy(entry)) return addEntry(entry);
+  const present = await ctx.fs.exists(joinPath(workdir, entry.path));
+  return present ? noopEntry(entry) : addEntry(entry);
+};
+
 /**
  * Build the changeset that re-shapes the working tree: `delete` every
  * removable excluded file still on disk, `add` every included file currently
  * absent, `noop` everything else. Removable entries reuse the existence
  * result the partition step already computed; only included entries are
- * stat-checked here.
+ * stat-checked here, never a lossy one.
  */
 const buildChangeset = async (
   ctx: Context,
@@ -152,10 +163,7 @@ const buildChangeset = async (
   for (const { entry, present } of part.removable) {
     entries.push(present ? deleteEntry(entry) : noopEntry(entry));
   }
-  for (const entry of part.included) {
-    const present = await ctx.fs.exists(joinPath(workdir, entry.path));
-    entries.push(present ? noopEntry(entry) : addEntry(entry));
-  }
+  for (const entry of part.included) entries.push(await includedChange(ctx, workdir, entry));
   const stats = { add: 0, update: 0, delete: 0, noop: 0 };
   for (const e of entries) stats[e.kind] += 1;
   return { entries, stats };
