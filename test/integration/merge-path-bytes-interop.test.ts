@@ -9,7 +9,7 @@
  *   unique:         merge-engine commands carry raw path bytes like git
  *   interopSurface: merge
  */
-import { readFileSync, rmSync } from 'node:fs';
+import { cpSync, readFileSync, rmSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openRepository } from '../../src/index.node.js';
@@ -343,6 +343,12 @@ describe.skipIf(!GIT_AVAILABLE)(
         .split('\0')
         .filter((record) => record !== '');
 
+    const peerRecords = (): string[] =>
+      Buffer.from(runGitBytes(['-C', pair.peer, 'ls-files', '-s', '-z']))
+        .toString('latin1')
+        .split('\0')
+        .filter((record) => record !== '');
+
     const conflictRecords = (): string[] => records().filter((record) => !/ 0\t/.test(record));
 
     const headTree = (): string => gitIn('rev-parse', 'HEAD^{tree}').trim();
@@ -581,6 +587,71 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Act + Assert
           await expectCleanLikeEngine();
+        });
+      });
+    });
+
+    describe('Given main adds a lossy-named file and side adds a directory of that name', () => {
+      describe('When merging side', () => {
+        it('Then the conflict stages are the merge-tree conflicted entries', async () => {
+          // Arrange
+          const lossyDir = Uint8Array.of(0xff, 0x2f, 0x78);
+          seed(
+            [['a', 'a0\n']],
+            [
+              ['a', 'a0\n'],
+              [Uint8Array.of(0xff), 'file\n'],
+            ],
+            [
+              ['a', 'a0\n'],
+              [lossyDir, 'inner\n'],
+            ],
+          );
+
+          // Act
+          const engine = mergeTreeResult(pair.ours, 'main', 'side');
+          const result = await mergeSide();
+
+          // Assert — merge-tree labels our side by branch name, merge by HEAD
+          expect(result.kind).toBe('conflict');
+          expect(conflictRecords()).toEqual(
+            engineConflictRecords(engine).map((record) => record.replace('~main', '~HEAD')),
+          );
+        });
+      });
+    });
+
+    describe.each([
+      ['main adds a file and side adds a directory', 'main', 'side'],
+      ['side adds a file and main adds a directory', 'side', 'main'],
+    ] as const)('Given %s of the same ASCII name', (_title, fileOn, merged) => {
+      describe('When merging the other branch', () => {
+        it('Then the conflict, the index stages and the work tree are those of git merge', async () => {
+          // Arrange
+          const file: Row[] = [['f', 'file\n']];
+          const directory: Row[] = [['f/x', 'inner\n']];
+          seed(
+            [['b', 'b0\n']],
+            [['b', 'b0\n'], ...(fileOn === 'main' ? file : directory)],
+            [['b', 'b0\n'], ...(fileOn === 'main' ? directory : file)],
+          );
+          if (merged === 'main') {
+            gitIn('checkout', '-q', 'side');
+          }
+          cpSync(pair.ours, pair.peer, { recursive: true });
+          const gitRun = tryRunGit(['-C', pair.peer, 'merge', merged], { env: COMMIT_ENV });
+          repo = await openRepository({ cwd: pair.ours });
+
+          // Act
+          const result = await repo.merge.run({ rev: merged, author: COMMIT_AUTHOR });
+
+          // Assert
+          expect(gitRun.ok).toBe(false);
+          expect(result.kind).toBe('conflict');
+          expect(records()).toEqual(peerRecords());
+          expect(gitIn('status', '--porcelain')).toBe(
+            runGit(['-C', pair.peer, 'status', '--porcelain']),
+          );
         });
       });
     });

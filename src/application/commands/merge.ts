@@ -35,6 +35,7 @@ import {
   type MergeOutcome,
   mergeLabels,
   mergeTrees,
+  recordsOwnPaths,
   type TreeMergeResult,
 } from '../../domain/merge/index.js';
 import type { MergeCommandLine } from '../../domain/merge/merge-command-line.js';
@@ -69,6 +70,7 @@ import {
   type DeletedOutcome,
   isDeleted,
   removeChangedOutcome,
+  removeDisplacedFile,
 } from '../primitives/apply-merge-to-worktree.js';
 import {
   buildBlobUnchanged,
@@ -1756,6 +1758,7 @@ const writeConflictingWorkingTree = async (
   // Every deletion lands before the writer reads attributes, as git unlinks
   // before its first checkout: a deleted `.gitattributes` must not govern the writes.
   await runBounded(ctx, touched.filter(isDeleted), (outcome) => removeChangedOutcome(ctx, outcome));
+  await runBounded(ctx, conflicts, (conflict) => removeDisplacedFile(ctx, conflict));
   const writer = await createMergeResultWriter(ctx, outcomes, conflicts);
   // Bounded parallelism — independent path writes overlap, but the pool
   // caps in-flight at the ioBound policy so a 10k-path merge doesn't
@@ -1842,7 +1845,7 @@ export const writeConflictToTree = async (
   // `.gitmodules`-symlink rejection, inapplicable when nothing is written.
   const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
   validateTreePath(conflict.path, mode ?? FILE_MODE.REGULAR);
-  if (conflict.type === 'distinct-types') {
+  if (recordsOwnPaths(conflict)) {
     await writeDistinctTypesSides(writer, conflict, scanner);
     return;
   }

@@ -1125,6 +1125,87 @@ describe('applyMergeToWorktree', () => {
     });
   });
 
+  describe('Given a file on one side meets a directory of the same name on the other', () => {
+    const blobOf = (ctx: Awaited<ReturnType<typeof buildSeededContext>>, text: string) =>
+      writeObject(ctx, {
+        type: 'blob',
+        content: new TextEncoder().encode(text),
+        id: '' as ObjectId,
+      });
+
+    describe('When the merge is applied with the file on our side', () => {
+      it('Then the work tree file is moved to f~HEAD and the index holds it at stage 2', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const fileId = await blobOf(ctx, 'file\n');
+        const innerId = await blobOf(ctx, 'inner\n');
+        const emptyBase = await treeWith(ctx, []);
+        const oursTree = await treeWith(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, fileId),
+        ]);
+        const theirsTree = await treeWith(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'f/x' as FilePath, innerId),
+        ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/f`, new TextEncoder().encode('file\n'));
+
+        // Act
+        const result = await applyMergeToWorktree(ctx, {
+          baseTree: emptyBase,
+          oursTree,
+          theirsTree,
+          currentIndex: index([indexEntry('f', fileId)]),
+          labels: { ours: 'HEAD', theirs: 'side', base: 'base' },
+        });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') return;
+        expect(result.indexEntries.map((e) => [e.path, e.flags.stage])).toEqual([
+          ['f/x', 0],
+          ['f~HEAD', 2],
+        ]);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f~HEAD`)).toBe('file\n');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f/x`)).toBe('inner\n');
+      });
+    });
+
+    describe('When the merge is applied with the file on their side', () => {
+      it('Then the file is written to f~side and the index holds it at stage 3', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const fileId = await blobOf(ctx, 'file\n');
+        const innerId = await blobOf(ctx, 'inner\n');
+        const emptyBase = await treeWith(ctx, []);
+        const oursTree = await treeWith(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'f/x' as FilePath, innerId),
+        ]);
+        const theirsTree = await treeWith(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'f' as FilePath, fileId),
+        ]);
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/f`);
+        await ctx.fs.write(`${ctx.layout.workDir}/f/x`, new TextEncoder().encode('inner\n'));
+
+        // Act
+        const result = await applyMergeToWorktree(ctx, {
+          baseTree: emptyBase,
+          oursTree,
+          theirsTree,
+          currentIndex: index([indexEntry('f/x', innerId)]),
+          labels: { ours: 'HEAD', theirs: 'side', base: 'base' },
+        });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        if (result.kind !== 'conflict') return;
+        expect(result.indexEntries.map((e) => [e.path, e.flags.stage])).toEqual([
+          ['f/x', 0],
+          ['f~side', 3],
+        ]);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f~side`)).toBe('file\n');
+      });
+    });
+  });
+
   describe('Given both sides add the same path as distinct types (regular ours, symlink theirs)', () => {
     describe('When the merge is applied', () => {
       it('Then both recorded paths are written: regular file at ourPath and symlink at theirPath, index has stage 2/3 at recorded paths', async () => {

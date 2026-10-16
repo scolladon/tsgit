@@ -5,6 +5,7 @@ export type ConflictType =
   | 'content'
   | 'add-add'
   | 'distinct-types'
+  | 'file-directory'
   | 'modify-delete'
   | 'rename-delete'
   | 'type-change'
@@ -108,5 +109,9 @@ export interface ConflictMarkerOptions {
   /** Marker run length (git's `conflict-marker-size`); defaults to 7 when omitted. */
   readonly markerSize?: number;
 }
+
+/** Conflicts that stage each side at its own recorded path rather than at `path`. */
+export const recordsOwnPaths = (conflict: MergeConflict): boolean =>
+  conflict.type === 'distinct-types' || conflict.type === 'file-directory';
 
 export const MAX_CONFLICT_OUTPUT_BYTES = 256 * 1024 * 1024;

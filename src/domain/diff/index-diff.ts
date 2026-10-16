@@ -1,6 +1,6 @@
 import { type GitIndex, type IndexEntry, STAGE0_FLAGS, type StatData } from '../git-index/index.js';
 import { indexPathOfEscaped, pathBytesOf } from '../git-index/index-path-key.js';
-import type { MergeConflict } from '../merge/merge-types.js';
+import { type MergeConflict, recordsOwnPaths } from '../merge/merge-types.js';
 import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
 import { compareBytes } from '../objects/index.js';
 import { primaryPath } from './change-path.js';
@@ -137,7 +137,7 @@ interface StageEmission {
 }
 
 function conflictStageEmissions(conflict: MergeConflict): ReadonlyArray<StageEmission> {
-  if (conflict.type === 'distinct-types') {
+  if (recordsOwnPaths(conflict)) {
     return distinctTypesEmissions(conflict);
   }
   return regularEmissions(conflict);
@@ -189,7 +189,7 @@ function regularEmissions(conflict: MergeConflict): ReadonlyArray<StageEmission>
 }
 
 export function recordedPaths(conflict: MergeConflict): ReadonlyArray<FilePath> {
-  if (conflict.type === 'distinct-types') {
+  if (recordsOwnPaths(conflict)) {
     const paths: FilePath[] = [];
     if (conflict.ourPath !== undefined) paths.push(conflict.ourPath);
     if (conflict.theirPath !== undefined) paths.push(conflict.theirPath);

@@ -34,7 +34,7 @@ export type {
   MergeOutcome,
   TreeMergeResult,
 } from './merge-types.js';
-export { MAX_CONFLICT_OUTPUT_BYTES } from './merge-types.js';
+export { MAX_CONFLICT_OUTPUT_BYTES, recordsOwnPaths } from './merge-types.js';
 
 // Three-way content merge
 export { type MergeContentOptions, mergeContent } from './three-way-content.js';

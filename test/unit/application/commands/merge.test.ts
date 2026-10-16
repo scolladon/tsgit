@@ -6825,3 +6825,82 @@ describe('merge — trees holding a non-UTF-8 path', () => {
     });
   });
 });
+
+describe('merge — file/directory add/add conflict', () => {
+  const commitFile = async (ctx: ReturnType<typeof createMemoryContext>): Promise<void> => {
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'file\n');
+    await add(ctx, ['f']);
+    await commit(ctx, { message: 'adds file f', author });
+  };
+
+  const commitDirectory = async (ctx: ReturnType<typeof createMemoryContext>): Promise<void> => {
+    await ctx.fs.mkdir(`${ctx.layout.workDir}/f`);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f/x`, 'x\n');
+    await add(ctx, ['f/x']);
+    await commit(ctx, { message: 'adds directory f', author });
+  };
+
+  const seed = async (
+    onMain: typeof commitFile,
+    onSide: typeof commitFile,
+  ): Promise<ReturnType<typeof createMemoryContext>> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b`, 'b\n');
+    await add(ctx, ['b']);
+    await commit(ctx, { message: 'base', author });
+    await branchCreate(ctx, { name: 'side' });
+    await checkout(ctx, { rev: 'side' });
+    await onSide(ctx);
+    await checkout(ctx, { rev: 'main' });
+    await ctx.fs.rmRecursive(`${ctx.layout.workDir}/f`);
+    await onMain(ctx);
+    return ctx;
+  };
+
+  const stagesOf = async (ctx: ReturnType<typeof createMemoryContext>) =>
+    (await readIndex(ctx)).entries.map((e) => [e.path, e.flags.stage]);
+
+  describe('Given HEAD adds file f and the merged branch adds directory f/', () => {
+    describe('When merge runs', () => {
+      it('Then the file is moved to f~HEAD at stage 2 and the directory entry is staged', async () => {
+        // Arrange
+        const ctx = await seed(commitFile, commitDirectory);
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 'side', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await stagesOf(ctx)).toEqual([
+          ['b', 0],
+          ['f/x', 0],
+          ['f~HEAD', 2],
+        ]);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f~HEAD`)).toBe('file\n');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f/x`)).toBe('x\n');
+      });
+    });
+  });
+
+  describe('Given HEAD adds directory f/ and the merged branch adds file f', () => {
+    describe('When merge runs', () => {
+      it('Then the file is moved to f~side at stage 3 and the directory entry is staged', async () => {
+        // Arrange
+        const ctx = await seed(commitDirectory, commitFile);
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 'side', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await stagesOf(ctx)).toEqual([
+          ['b', 0],
+          ['f/x', 0],
+          ['f~side', 3],
+        ]);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f~side`)).toBe('file\n');
+      });
+    });
+  });
+});

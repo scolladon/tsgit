@@ -30,6 +30,7 @@ import {
   type MergeLabels,
   type MergeOutcome,
   mergeTrees,
+  recordsOwnPaths,
 } from '../../domain/merge/index.js';
 import { FILE_MODE, type FilePath, type ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
@@ -213,6 +214,13 @@ export const removeChangedOutcome = async (
   await removeWorkingTreeFile(ctx, outcome.path);
 };
 
+/** The file a directory displaces leaves its path before the directory is written; its moved copy is written with the conflict. */
+export const removeDisplacedFile = async (ctx: Context, conflict: MergeConflict): Promise<void> => {
+  if (conflict.type !== 'file-directory' || conflict.ourPath === undefined) return;
+  validateTreePath(conflict.path, FILE_MODE.REGULAR);
+  await removeWorkingTreeFile(ctx, conflict.path);
+};
+
 /** Materialise one changed clean outcome that is not a deletion; its path is gated upfront by `validateMergeWritePaths`. */
 const writeChangedOutcome = async (
   outcome: WrittenOutcome,
@@ -246,7 +254,7 @@ const writeValidatedConflict = async (
 ): Promise<void> => {
   const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
   validateTreePath(conflict.path, mode ?? FILE_MODE.REGULAR);
-  if (conflict.type === 'distinct-types') {
+  if (recordsOwnPaths(conflict)) {
     await writeDistinctTypesSides(writer, conflict, scanner);
     return;
   }
@@ -274,6 +282,7 @@ const writeConflictWorktree = async (
   // Every deletion lands before the writer reads attributes, as git unlinks
   // before its first checkout: a deleted `.gitattributes` must not govern the writes.
   for (const outcome of touched.filter(isDeleted)) await removeChangedOutcome(ctx, outcome);
+  for (const conflict of conflicts) await removeDisplacedFile(ctx, conflict);
   const writer = await createMergeResultWriter(ctx, outcomes, conflicts);
   for (const outcome of touched) {
     if (!isDeleted(outcome)) await writeChangedOutcome(outcome, writer, scanner);
@@ -339,7 +348,7 @@ const conflictLeaves = async (
   ctx: Context,
   conflict: MergeConflict,
 ): Promise<ReadonlyArray<IndexEntry>> => {
-  if (conflict.type === 'distinct-types') return distinctTypesLeaves(conflict);
+  if (recordsOwnPaths(conflict)) return distinctTypesLeaves(conflict);
   const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
   const id = await conflictBlobId(ctx, conflict);
   return mode === undefined || id === undefined ? [] : [stage0Entry(conflict.path, id, mode)];

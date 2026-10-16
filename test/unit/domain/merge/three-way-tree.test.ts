@@ -2605,3 +2605,167 @@ describe('mergeTrees — escaped keys (raw non-UTF-8 path bytes)', () => {
     });
   });
 });
+
+describe('mergeTrees — file/directory add/add conflict', () => {
+  const LABELS = { ours: 'HEAD', theirs: 'side', base: '' };
+
+  describe('Given ours adds file f and theirs adds directory f/', () => {
+    describe('When mergeTrees called', () => {
+      it('Then the file moves to f~HEAD as our side and the directory entry resolves', async () => {
+        // Arrange
+        const base = tree([['b', entry(ID_D)]]);
+        const ours = tree([
+          ['b', entry(ID_D)],
+          ['f', entry(ID_A)],
+        ]);
+        const theirs = tree([
+          ['b', entry(ID_D)],
+          ['f/x', entry(ID_B)],
+          ['f/y', entry(ID_C)],
+        ]);
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, noopMerger, LABELS);
+
+        // Assert
+        expect(result.cleanMerge).toBe(false);
+        expect(result.conflicts).toEqual([
+          {
+            type: 'file-directory',
+            path: 'f',
+            ourId: ID_A,
+            ourMode: FILE_MODE.REGULAR,
+            ourPath: 'f~HEAD',
+          },
+        ]);
+        expect(result.outcomes.filter((o) => o.status === 'resolved-known')).toEqual([
+          { status: 'resolved-known', path: 'f/x', id: ID_B, mode: FILE_MODE.REGULAR },
+          { status: 'resolved-known', path: 'f/y', id: ID_C, mode: FILE_MODE.REGULAR },
+        ]);
+      });
+    });
+  });
+
+  describe('Given ours adds directory f/ and theirs adds file f', () => {
+    describe('When mergeTrees called', () => {
+      it('Then the file moves to f~side as their side', async () => {
+        // Arrange
+        const ours = tree([['f/x', entry(ID_B)]]);
+        const theirs = tree([['f', entry(ID_A)]]);
+
+        // Act
+        const result = await mergeTrees(undefined, ours, theirs, noopMerger, LABELS);
+
+        // Assert
+        expect(result.conflicts).toEqual([
+          {
+            type: 'file-directory',
+            path: 'f',
+            theirId: ID_A,
+            theirMode: FILE_MODE.REGULAR,
+            theirPath: 'f~side',
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a nested file a/f against a directory a/f/', () => {
+    describe('When mergeTrees called', () => {
+      it('Then the file moves beside its directory as a/f~HEAD', async () => {
+        // Arrange
+        const ours = tree([['a/f', entry(ID_A)]]);
+        const theirs = tree([['a/f/x', entry(ID_B)]]);
+
+        // Act
+        const result = await mergeTrees(undefined, ours, theirs, noopMerger, LABELS);
+
+        // Assert
+        expect(result.conflicts.map((c) => [c.type, c.path, c.ourPath])).toEqual([
+          ['file-directory', 'a/f', 'a/f~HEAD'],
+        ]);
+      });
+    });
+  });
+
+  describe('Given the moved name is already taken', () => {
+    describe('When mergeTrees called', () => {
+      it('Then the moved file takes the next free suffix', async () => {
+        // Arrange
+        const ours = tree([
+          ['f', entry(ID_A)],
+          ['f~HEAD', entry(ID_C)],
+        ]);
+        const theirs = tree([['f/x', entry(ID_B)]]);
+
+        // Act
+        const result = await mergeTrees(undefined, ours, theirs, noopMerger, LABELS);
+
+        // Assert
+        expect(result.conflicts.map((c) => [c.path, c.ourPath])).toEqual([['f', 'f~HEAD_0']]);
+      });
+    });
+  });
+
+  describe('Given the file was modified by ours and replaced by a directory on theirs', () => {
+    describe('When mergeTrees called', () => {
+      it('Then the base and our versions both sit at f~HEAD', async () => {
+        // Arrange
+        const base = tree([['f', entry(ID_D)]]);
+        const ours = tree([['f', entry(ID_A)]]);
+        const theirs = tree([['f/x', entry(ID_B)]]);
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, noopMerger, LABELS);
+
+        // Assert
+        expect(result.conflicts).toEqual([
+          {
+            type: 'file-directory',
+            path: 'f',
+            baseId: ID_D,
+            baseMode: FILE_MODE.REGULAR,
+            basePath: 'f~HEAD',
+            ourId: ID_A,
+            ourMode: FILE_MODE.REGULAR,
+            ourPath: 'f~HEAD',
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given the file is unchanged from base and theirs replaced it with a directory', () => {
+    describe('When mergeTrees called', () => {
+      it('Then the merge is clean', async () => {
+        // Arrange
+        const base = tree([['f', entry(ID_D)]]);
+        const ours = tree([['f', entry(ID_D)]]);
+        const theirs = tree([['f/x', entry(ID_B)]]);
+
+        // Act
+        const result = await mergeTrees(base, ours, theirs, noopMerger, LABELS);
+
+        // Assert
+        expect(result.cleanMerge).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a lossy-escaped file name against a directory of the same name', () => {
+    describe('When mergeTrees called', () => {
+      it('Then the escaped file moves to the escaped name plus the ASCII suffix', async () => {
+        // Arrange
+        const name = '\\xff';
+        const ours = tree([[name, entry(ID_A)]]);
+        const theirs = tree([[`${name}/x`, entry(ID_B)]]);
+
+        // Act
+        const result = await mergeTrees(undefined, ours, theirs, noopMerger, LABELS);
+
+        // Assert
+        expect(result.conflicts.map((c) => c.ourPath)).toEqual([`${name}~HEAD`]);
+      });
+    });
+  });
+});
