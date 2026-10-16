@@ -21,7 +21,7 @@ import { conflictsToIndexEntries } from '../../domain/diff/index.js';
 import { unsupportedOperation } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import { pathComparatorFor } from '../../domain/git-index/index-writer.js';
-import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
+import { validateTreePath } from '../../domain/git-index/path-validator.js';
 import {
   type ConflictType,
   MAX_CONFLICT_OUTPUT_BYTES,
@@ -208,7 +208,7 @@ export const removeChangedOutcome = async (
   ctx: Context,
   outcome: DeletedOutcome,
 ): Promise<void> => {
-  validateIndexPath(outcome.path, NO_PARSER_OFFSET, FILE_MODE.REGULAR);
+  validateTreePath(outcome.path, FILE_MODE.REGULAR);
   await removeWorkingTreeFile(ctx, outcome.path);
 };
 
@@ -244,7 +244,7 @@ const writeValidatedConflict = async (
   scanner: LeadingPathScanner,
 ): Promise<void> => {
   const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
-  validateIndexPath(conflict.path, NO_PARSER_OFFSET, mode ?? FILE_MODE.REGULAR);
+  validateTreePath(conflict.path, mode ?? FILE_MODE.REGULAR);
   if (conflict.type === 'distinct-types') {
     await writeDistinctTypesSides(writer, conflict, scanner);
     return;

@@ -4,8 +4,10 @@ import { TsgitError } from '../../../../src/domain/error.js';
 import {
   NO_PARSER_OFFSET,
   validateIndexPath,
+  validateTreePath,
 } from '../../../../src/domain/git-index/path-validator.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
+import type { FilePath } from '../../../../src/domain/objects/index.js';
 
 const catchError = (fn: () => void): unknown => {
   try {
@@ -243,6 +245,59 @@ describe('validateIndexPath with raw path bytes', () => {
           code: 'INVALID_INDEX_ENTRY',
           offset: 0,
           reason: "'.git' HFS+ ignorable-codepoint alias rejected",
+        });
+      });
+    });
+  });
+});
+
+describe('validateTreePath', () => {
+  describe('Given an escaped path whose raw bytes form an HFS .git alias', () => {
+    describe('When validated', () => {
+      it('Then it rejects as an HFS ignorable-codepoint alias', () => {
+        // Arrange
+        const path = '.git\uDCFF/x' as FilePath;
+
+        // Act
+        const caught = catchError(() => validateTreePath(path, FILE_MODE.REGULAR));
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: NO_PARSER_OFFSET,
+          reason: "'.git' HFS+ ignorable-codepoint alias rejected",
+        });
+      });
+    });
+  });
+
+  describe('Given an escaped path that names no reserved component', () => {
+    describe('When validated', () => {
+      it('Then it does not throw', () => {
+        // Arrange
+        const path = '\uDCFF.txt' as FilePath;
+
+        // Assert
+        expect(() => validateTreePath(path, FILE_MODE.REGULAR)).not.toThrow();
+      });
+    });
+  });
+
+  describe('Given a path with a parent segment', () => {
+    describe('When validated', () => {
+      it('Then it rejects as validateIndexPath does', () => {
+        // Arrange
+        const path = '../x' as FilePath;
+
+        // Act
+        const caught = catchError(() => validateTreePath(path, FILE_MODE.REGULAR));
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: NO_PARSER_OFFSET,
+          reason: "'..' segment rejected",
         });
       });
     });

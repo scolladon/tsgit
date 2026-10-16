@@ -93,3 +93,29 @@ describe('Given a distinct-types conflict at ".gitmodules" where ours is a symli
     });
   });
 });
+
+describe('Given a changed clean outcome at an escaped path forming an HFS .git alias', () => {
+  describe('When validateMergeWritePaths runs', () => {
+    it('Then it throws INVALID_INDEX_ENTRY with the HFS reason', () => {
+      // Arrange
+      const outcome: MergeOutcome = {
+        status: 'resolved-known',
+        path: '.git\uDCFF/x' as FilePath,
+        id: DUMMY_OID,
+        mode: FILE_MODE.REGULAR,
+      };
+      const sut = validateMergeWritePaths;
+
+      // Act
+      const caught = catchError(() => sut([outcome], [], new Set([outcome.path])));
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'INVALID_INDEX_ENTRY',
+        offset: -1,
+        reason: "'.git' HFS+ ignorable-codepoint alias rejected",
+      });
+    });
+  });
+});

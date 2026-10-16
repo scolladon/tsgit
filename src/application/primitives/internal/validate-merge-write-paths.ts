@@ -1,4 +1,4 @@
-import { NO_PARSER_OFFSET, validateIndexPath } from '../../../domain/git-index/path-validator.js';
+import { validateTreePath } from '../../../domain/git-index/path-validator.js';
 import type { MergeConflict, MergeOutcome } from '../../../domain/merge/index.js';
 import { FILE_MODE, type FilePath } from '../../../domain/objects/index.js';
 
@@ -27,14 +27,13 @@ export const validateMergeWritePaths = (
 ): void => {
   for (const outcome of outcomes) {
     if (outcome.status === 'conflict' || !changed.has(outcome.path)) continue;
-    validateIndexPath(
+    validateTreePath(
       outcome.path,
-      NO_PARSER_OFFSET,
       outcome.status === 'resolved-deleted' ? FILE_MODE.REGULAR : outcome.mode,
     );
   }
   for (const conflict of conflicts) {
     const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
-    validateIndexPath(conflict.path, NO_PARSER_OFFSET, mode ?? FILE_MODE.REGULAR);
+    validateTreePath(conflict.path, mode ?? FILE_MODE.REGULAR);
   }
 };

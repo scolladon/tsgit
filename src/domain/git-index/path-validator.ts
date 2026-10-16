@@ -9,9 +9,10 @@
  * The throw is shaped as `INVALID_INDEX_ENTRY` so the parser's error
  * vocabulary stays consistent.
  */
-import type { FileMode } from '../objects/index.js';
+import type { FileMode, FilePath } from '../objects/index.js';
 import { type VerifyPathRejection, verifyPath } from '../path/verify-path.js';
 import { invalidIndexEntry } from './error.js';
+import { indexPathOfEscaped } from './index-path-key.js';
 
 /**
  * Sentinel offset for callers that re-use `validateIndexPath` outside the
@@ -107,4 +108,9 @@ export const validateIndexPath = (
   if (rejection !== undefined) {
     throw invalidIndexEntry(offset, VERIFY_PATH_REASON[rejection]);
   }
+};
+
+export const validateTreePath = (path: FilePath, mode: FileMode): void => {
+  const { path: view, pathBytes } = indexPathOfEscaped(path);
+  validateIndexPath(view, NO_PARSER_OFFSET, mode, pathBytes);
 };
