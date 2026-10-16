@@ -483,6 +483,54 @@ describe('applyChangeset', () => {
     });
   });
 
+  describe('Given a directory f holding only a nested directory f/sub with a deleted tracked file, replaced by a file f', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then no untracked clash is reported and f is written', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('x'));
+        const newId = await writeBlob(ctx, enc('file'));
+        await ctx.fs.write(`${WORKDIR}/f/sub/x`, enc('x'));
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('f/sub/x', oldId), makeAdd('f', newId)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f`))).toBe('file');
+      });
+    });
+  });
+
+  describe('Given a directory f holding a nested f/sub with a deleted tracked file and an untracked f/z beside it', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then it refuses listing f and keeps the untracked file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('x'));
+        const newId = await writeBlob(ctx, enc('file'));
+        await ctx.fs.write(`${WORKDIR}/f/sub/x`, enc('x'));
+        await ctx.fs.write(`${WORKDIR}/f/z`, enc('z'));
+
+        // Act
+        const outcome = await outcomeOf(
+          applyChangeset(ctx, {
+            changeset: makeChangeset([makeDelete('f/sub/x', oldId), makeAdd('f', newId)]),
+            force: false,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY', untracked: ['f'] });
+        expect(await ctx.fs.exists(`${WORKDIR}/f/z`)).toBe(true);
+      });
+    });
+  });
+
   describe('Given a directory d holding only ignored files and a deleted tracked file, replaced by a file d', () => {
     describe('When applyChangeset runs without force', () => {
       it('Then the ignored files, nested ones included, give way and d is written', async () => {
