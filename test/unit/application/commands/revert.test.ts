@@ -1121,6 +1121,25 @@ describe('revert no-commit (-n)', () => {
     });
   });
 
+  describe('Given --no-commit and a staged change on a path the revert does not touch', () => {
+    describe('When run', () => {
+      it('Then stages the revert next to the unrelated staged change', async () => {
+        // Arrange
+        const { ctx, c2 } = await seedLinear();
+        await ctx.fs.writeUtf8(work(ctx, 'other.txt'), 'staged\n');
+        await add(ctx, ['other.txt']);
+
+        // Act
+        const result = await revertRun(ctx, { commits: [c2], noCommit: true });
+
+        // Assert
+        expect(result.kind).toBe('no-commit');
+        const index = await readIndex(ctx);
+        expect(index.entries.map((e) => e.path)).toEqual(['f.txt', 'other.txt']);
+      });
+    });
+  });
+
   describe('Given a conflicting revert with --no-commit', () => {
     describe('When run', () => {
       it('Then returns a conflict and persists no resume state', async () => {

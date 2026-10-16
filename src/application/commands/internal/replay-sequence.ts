@@ -36,7 +36,7 @@ import { resolveRef } from '../../primitives/resolve-ref.js';
 import { synthesizeTreeFromIndex } from '../../primitives/synthesize-tree-from-index.js';
 import { updateRef } from '../../primitives/update-ref.js';
 import { abortSequencerReset } from './abort-sequencer-reset.js';
-import { assertCleanIndex } from './clean-work-tree.js';
+import { assertCleanIndex, assertNoUnmergedEntries } from './clean-work-tree.js';
 import { sanitizeMessage, stripComments } from './commit-message.js';
 import { resolveCurrentIdentity } from './current-identity.js';
 import {
@@ -119,12 +119,13 @@ export const toConflictList = (
 /**
  * A fresh run's pre-flight (after the caller's operational-tier check): a work
  * tree, no pending operation, every source loadable, an attached HEAD on a born branch
- * and a clean index. Returns HEAD's commit and the resolved revisions.
+ * and a clean index (only free of unmerged entries under no-commit). Returns HEAD's commit and the resolved revisions.
  */
 export const openReplayRun = async (
   ctx: Context,
   command: ReplayCommand,
   commits: ReadonlyArray<string>,
+  { noCommit }: { readonly noCommit: boolean },
 ): Promise<{ readonly ourId: ObjectId; readonly revisions: SequencerRevisions }> => {
   requireWorkTree(ctx, command.operation);
   await assertNoPendingOperation(ctx);
@@ -134,7 +135,9 @@ export const openReplayRun = async (
     throw unsupportedOperation(command.operation, command.detachedRefusal);
   const ourId = await resolveHeadCommit(ctx, head.target);
   const revisions = await resolveSequencerRevisions(ctx, commits);
-  await assertCleanIndex(ctx, await treeOf(ctx, ourId));
+  // Nothing is committed under --no-commit, so staged changes ride along; only unmerged entries refuse.
+  if (noCommit) await assertNoUnmergedEntries(ctx);
+  else await assertCleanIndex(ctx, await treeOf(ctx, ourId));
   return { ourId, revisions };
 };
 

@@ -84,6 +84,12 @@ export const assertCleanWorkTree = async (ctx: Context, headTree: ObjectId): Pro
   }
 };
 
+/** Throws `WORKING_TREE_DIRTY` naming `dirty`, deduplicated, in git's raw-byte order. */
+const refuseDirty = (dirty: ReadonlyArray<FilePath>): void => {
+  if (dirty.length === 0) return;
+  throw workingTreeDirty({ localChanges: [...new Set(dirty)].sort(comparePaths), untracked: [] });
+};
+
 /**
  * git's sequencer pre-flight for `cherry-pick` and `revert` (`index_differs_from`):
  * refuses unmerged entries and an index that differs from HEAD, but tolerates
@@ -91,10 +97,12 @@ export const assertCleanWorkTree = async (ctx: Context, headTree: ObjectId): Pro
  */
 export const assertCleanIndex = async (ctx: Context, headTree: ObjectId): Promise<void> => {
   const { stage0, unmerged } = partitionIndex((await readIndex(ctx)).entries);
-  const dirty = new Set<FilePath>([...unmerged, ...(await stagedDirty(ctx, stage0, headTree))]);
-  if (dirty.size > 0) {
-    throw workingTreeDirty({ localChanges: [...dirty].sort(comparePaths), untracked: [] });
-  }
+  refuseDirty([...unmerged, ...(await stagedDirty(ctx, stage0, headTree))]);
+};
+
+/** The `--no-commit` pre-flight: staged changes ride along, only unmerged entries refuse. */
+export const assertNoUnmergedEntries = async (ctx: Context): Promise<void> => {
+  refuseDirty(partitionIndex((await readIndex(ctx)).entries).unmerged);
 };
 
 /** Tracked paths whose working copy differs from the index, in git's raw-byte order. */

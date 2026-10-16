@@ -287,7 +287,9 @@ export const cherryPickRun = async (
   input: CherryPickRunInput,
 ): Promise<CherryPickResult> => {
   await assertOperationalRepository(ctx);
-  const { ourId, revisions } = await openReplayRun(ctx, CHERRY_PICK_COMMAND, input.commits);
+  const { ourId, revisions } = await openReplayRun(ctx, CHERRY_PICK_COMMAND, input.commits, {
+    noCommit: input.noCommit === true,
+  });
   const todo = pickOrder(revisions);
   if (input.noCommit === true) return runNoCommitReplay(ctx, CHERRY_PICK_COMMAND, todo);
   const opts: PickOptions = {

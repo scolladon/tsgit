@@ -1109,6 +1109,25 @@ describe('cherryPickRun', () => {
     });
   });
 
+  describe('Given --no-commit and a staged change on a path the pick does not touch', () => {
+    describe('When run', () => {
+      it('Then stages the pick next to the unrelated staged change', async () => {
+        // Arrange
+        const { ctx } = await seedFeature();
+        await ctx.fs.writeUtf8(work(ctx, 'other.txt'), 'staged\n');
+        await add(ctx, ['other.txt']);
+
+        // Act
+        const result = await cherryPickRun(ctx, { commits: ['feature'], noCommit: true });
+
+        // Assert
+        expect(result.kind).toBe('no-commit');
+        const index = await readIndex(ctx);
+        expect(index.entries.map((e) => e.path)).toEqual(['base.txt', 'feat.txt', 'other.txt']);
+      });
+    });
+  });
+
   describe('Given --no-commit for a two-pick list', () => {
     describe('When run', () => {
       it('Then accumulates both changes in the index without committing', async () => {

@@ -6,6 +6,7 @@ import { init } from '../../../../../src/application/commands/init.js';
 import {
   assertCleanIndex,
   assertCleanWorkTree,
+  assertNoUnmergedEntries,
   stagedChangePaths,
   unstagedChangePaths,
 } from '../../../../../src/application/commands/internal/clean-work-tree.js';
@@ -482,6 +483,104 @@ describe('assertCleanIndex', () => {
         expect(data).toEqual({
           code: 'WORKING_TREE_DIRTY',
           localChanges: ['c.txt'],
+          untracked: [],
+        });
+      });
+    });
+  });
+});
+
+describe('assertCleanIndex ordering and lossy views', () => {
+  const emptyBlob = (ctx: Context): Promise<ObjectId> =>
+    writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: new Uint8Array(0) });
+
+  describe('Given an unmerged path sorting after a staged-new path', () => {
+    describe('When asserted', () => {
+      it('Then the refusal lists both in byte order, not discovery order', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const emptyTree = await writeTree(ctx, []);
+        const id = await emptyBlob(ctx);
+        await writeFramedIndex(ctx, [stageEntry('z.txt', id, 1), stageEntry('a.txt', id, 0)]);
+
+        // Act
+        const data = await dataOf(() => assertCleanIndex(ctx, emptyTree));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['a.txt', 'z.txt'],
+          untracked: [],
+        });
+      });
+    });
+  });
+
+  describe('Given a lossy path in HEAD only, deleted from the index', () => {
+    describe('When asserted', () => {
+      it('Then the refusal lists its U+FFFD view, not the escaped key', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const id = await emptyBlob(ctx);
+        const headTree = await writeObject(ctx, {
+          type: 'tree',
+          id: '' as ObjectId,
+          entries: [treeEntry(FILE_MODE.REGULAR, Uint8Array.of(0xff, 0x2e, 0x74), id)],
+        });
+        await writeFramedIndex(ctx, []);
+
+        // Act
+        const data = await dataOf(() => assertCleanIndex(ctx, headTree));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['\uFFFD.t'],
+          untracked: [],
+        });
+      });
+    });
+  });
+});
+
+describe('assertNoUnmergedEntries', () => {
+  describe('Given a staged change and no unmerged entry', () => {
+    describe('When asserted', () => {
+      it('Then it passes', async () => {
+        // Arrange
+        const { ctx } = await seedClean('a.txt', 'hello\n');
+        await ctx.fs.writeUtf8(work(ctx, 'a.txt'), 'staged\n');
+        await add(ctx, ['a.txt']);
+
+        // Act + Assert
+        await expect(assertNoUnmergedEntries(ctx)).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a path unmerged at all three stages and another unmerged path sorting before it', () => {
+    describe('When asserted', () => {
+      it('Then throws WORKING_TREE_DIRTY naming each path once, in byte order', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const id = 'c'.repeat(40) as ObjectId;
+        await writeFramedIndex(ctx, [
+          stageEntry('z.txt', id, 1),
+          stageEntry('z.txt', id, 2),
+          stageEntry('z.txt', id, 3),
+          stageEntry('a.txt', id, 3),
+        ]);
+
+        // Act
+        const data = await dataOf(() => assertNoUnmergedEntries(ctx));
+
+        // Assert
+        expect(data).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['a.txt', 'z.txt'],
           untracked: [],
         });
       });
