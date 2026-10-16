@@ -1179,3 +1179,30 @@ describe('walkTreeWithLossyBytes', () => {
     });
   });
 });
+
+describe('Given a root-level name that is not valid UTF-8', () => {
+  describe('When walkTreeWithLossyBytes is iterated', () => {
+    it('Then its pathBytes is a copy, not a view onto the parsed tree body', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const blob = await writeObject(ctx, {
+        type: 'blob',
+        content: new Uint8Array([1]),
+        id: '' as ObjectId,
+      } satisfies Blob);
+      const rootId = await writeTree(ctx, [
+        treeEntry('100644' as FileMode, Uint8Array.of(0xff), blob),
+      ]);
+      const sut = walkTreeWithLossyBytes;
+
+      // Act
+      const out = await collect(sut(ctx, rootId));
+
+      // Assert
+      const pathBytes = out[0]?.pathBytes;
+      expect(pathBytes).toStrictEqual(Uint8Array.of(0xff));
+      expect(pathBytes?.byteOffset).toBe(0);
+      expect(pathBytes?.buffer.byteLength).toBe(pathBytes?.byteLength);
+    });
+  });
+});
