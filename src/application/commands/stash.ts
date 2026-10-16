@@ -51,6 +51,7 @@ import { convertToGit } from '../primitives/internal/convert-blob.js';
 import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import { lazily } from '../primitives/internal/lazily.js';
+import { forgetAfterLink } from '../primitives/internal/link-first-wave.js';
 import { pathIsOccupied } from '../primitives/internal/path-occupied.js';
 import {
   type AttributeProvider,
@@ -676,6 +677,7 @@ const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> =>
   const writer = untrackedWriter(ctx, flat.entries);
   for (const [path, entry] of flat.entries) {
     await writer.writeBlob(path, entry.id, entry.mode, scanner);
+    forgetAfterLink(scanner, [entry.mode]);
   }
 };
 

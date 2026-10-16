@@ -78,6 +78,57 @@ const commitTree = (dir: string, entries: ReadonlyArray<TreeEntry>): void => {
   runGit(['-C', dir, 'update-ref', 'refs/heads/main', commit]);
 };
 
+const commitOn = (
+  dir: string,
+  entries: ReadonlyArray<TreeEntry>,
+  parent: string | undefined,
+  message: string,
+): string => {
+  runGit(['-C', dir, 'read-tree', '--empty']);
+  for (const entry of entries) {
+    const oid = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], {
+      input: entry.content,
+    }).trim();
+    runGit([
+      '-C',
+      dir,
+      'update-index',
+      '--add',
+      '--cacheinfo',
+      `${entry.mode},${oid},${entry.path}`,
+    ]);
+  }
+  const tree = runGit(['-C', dir, 'write-tree']).trim();
+  const parents = parent === undefined ? [] : ['-p', parent];
+  return runGit(['-C', dir, 'commit-tree', tree, ...parents, '-m', message], {
+    env: COMMIT_ENV,
+  }).trim();
+};
+
+const seedConflictedMerge = (dir: string, outside: string): void => {
+  runGit(['-C', dir, 'init', '-q', '-b', 'main']);
+  const text = (content: string): TreeEntry => ({
+    mode: REGULAR_MODE,
+    content,
+    path: 'file.txt',
+  });
+  const base = commitOn(dir, [text('a\nb\nc\n')], undefined, 'base');
+  const theirs = commitOn(
+    dir,
+    [
+      text('a\nY\nc\n'),
+      { mode: SYMLINK_MODE, content: outside, path: 'A' },
+      { mode: REGULAR_MODE, content: PAYLOAD, path: 'a/payload' },
+    ],
+    base,
+    'theirs',
+  );
+  const ours = commitOn(dir, [text('a\nX\nc\n')], base, 'ours');
+  runGit(['-C', dir, 'update-ref', 'refs/heads/theirs', theirs]);
+  runGit(['-C', dir, 'update-ref', 'refs/heads/main', ours]);
+  runGit(['-C', dir, 'reset', '-q', '--hard', 'main']);
+};
+
 const listing = (dir: string): string[] =>
   readdirSync(dir, { recursive: true, withFileTypes: true })
     .filter((entry) => !entry.parentPath.includes(`${path.sep}.git`) && entry.name !== '.git')
@@ -199,6 +250,27 @@ describe.skipIf(!GIT_AVAILABLE)(
             await repo.reset({ mode: 'hard', rev: 'HEAD' });
 
             // Assert
+            for (const { outside } of sides) expect(readdirSync(outside)).toEqual([]);
+          });
+        });
+        describe('When both tools run a conflicted merge whose theirs adds A and a/payload', () => {
+          it('Then the outside directory is empty on both tools', async () => {
+            // Arrange
+            const sides = [
+              { dir: pair.peer, outside: outsides.peer },
+              { dir: pair.ours, outside: outsides.ours },
+            ];
+            for (const { dir, outside } of sides) seedConflictedMerge(dir, outside);
+            repo = await openRepository({ cwd: pair.ours });
+
+            // Act
+            expect(() =>
+              runGit(['-C', pair.peer, 'merge', '-q', 'theirs'], { env: COMMIT_ENV }),
+            ).toThrow();
+            const result = await repo.merge.run({ rev: 'theirs' });
+
+            // Assert
+            expect(result.kind).toBe('conflict');
             for (const { outside } of sides) expect(readdirSync(outside)).toEqual([]);
           });
         });

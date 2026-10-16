@@ -47,6 +47,7 @@ import { flattenEscapedTree } from './flatten-tree.js';
 import { writeAutoMerge } from './internal/auto-merge-ref.js';
 import { limiterFor } from './internal/concurrency.js';
 import { lazily } from './internal/lazily.js';
+import { forgetAfterLink } from './internal/link-first-wave.js';
 import { readMergeRenormalize, readUiDiffAlgorithm } from './internal/merge-rename-config.js';
 import { mergedBlobEntries } from './internal/merged-blob-entries.js';
 import {
@@ -258,10 +259,11 @@ const writeChangedOutcome = async (
 ): Promise<void> => {
   if (outcome.status === 'resolved-merged') {
     await writer.writeBytes(outcome.path, outcome.bytes, outcome.mode, scanner);
-    return;
+  } else {
+    // Known and unchanged outcomes alike: an unchanged one is changed only once a rename moved it.
+    await writer.writeBlob(outcome.path, outcome.id, outcome.mode, scanner);
   }
-  // Known and unchanged outcomes alike: an unchanged one is changed only once a rename moved it.
-  await writer.writeBlob(outcome.path, outcome.id, outcome.mode, scanner);
+  forgetAfterLink(scanner, [outcome.mode]);
 };
 
 /**
@@ -322,6 +324,7 @@ const writeConflictWorktree = async (
   }
   for (const conflict of conflicts) {
     await writeValidatedConflict(ctx, conflict, writer, scanner);
+    forgetAfterLink(scanner, [conflict.mergedMode, conflict.ourMode, conflict.theirMode]);
   }
 };
 

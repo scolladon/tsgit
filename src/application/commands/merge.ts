@@ -92,6 +92,11 @@ import { flattenEscapedTree } from '../primitives/flatten-tree.js';
 import { writeAutoMerge } from '../primitives/internal/auto-merge-ref.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import {
+  hasLinkMode,
+  runLinkFirstWave,
+  type WaveWrite,
+} from '../primitives/internal/link-first-wave.js';
+import {
   readMergeRenormalize,
   readUiDiffAlgorithm,
 } from '../primitives/internal/merge-rename-config.js';
@@ -1817,15 +1822,47 @@ const writeConflictingWorkingTree = async (
   // Bounded parallelism — independent path writes overlap, but the pool
   // caps in-flight at the ioBound policy so a 10k-path merge doesn't
   // exhaust file descriptors.
-  await runBounded(ctx, touched.filter(isWrite), (outcome) =>
-    writeOutcomeToTree(outcome, matcher, writer, scanner),
-  );
   // Conflicted paths are materialised even when sparse-excluded — a conflict
   // the user cannot see is unresolvable, so `writeConflictToTree` takes no
   // matcher.
-  await runBounded(ctx, conflicts, (conflict) =>
-    writeConflictToTree(ctx, conflict, writer, scanner),
+  await runLinkFirstWave(
+    ctx,
+    [
+      touched.filter(isWrite).map((outcome) => outcomeWave(outcome, matcher, writer, scanner)),
+      conflicts.map((conflict) => conflictWave(ctx, conflict, writer, scanner)),
+    ],
+    scanner,
   );
+};
+
+const outcomeWave = (
+  outcome: PathedWrite,
+  matcher: SparseMatcher | undefined,
+  writer: WorkingTreeWriter,
+  scanner: LeadingPathScanner,
+): WaveWrite => ({
+  path: outcome.path,
+  isLink: hasLinkMode([outcome.mode]),
+  validate: () => validateTreePath(outcome.path, outcome.mode),
+  needsDirectories: outcome.status === 'resolved-merged' || !isExcluded(matcher, outcome.path),
+  run: () => writeOutcomeToTree(outcome, matcher, writer, scanner),
+});
+
+const conflictWave = (
+  ctx: Context,
+  conflict: MergeConflict,
+  writer: WorkingTreeWriter,
+  scanner: LeadingPathScanner,
+): WaveWrite => {
+  const modes = [conflict.mergedMode, conflict.ourMode, conflict.theirMode];
+  const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
+  return {
+    path: conflict.path,
+    isLink: hasLinkMode(modes),
+    validate: () => validateTreePath(conflict.path, mode ?? FILE_MODE.REGULAR),
+    needsDirectories: mode !== undefined,
+    run: () => writeConflictToTree(ctx, conflict, writer, scanner),
+  };
 };
 
 /**
@@ -1843,7 +1880,10 @@ const runBounded = async <T>(
 
 type WrittenOutcome = Exclude<MergeOutcome, DeletedOutcome>;
 
-const isWrite = (outcome: MergeOutcome): outcome is WrittenOutcome => !isDeleted(outcome);
+type PathedWrite = Exclude<WrittenOutcome, { readonly status: 'conflict' }>;
+
+const isWrite = (outcome: MergeOutcome): outcome is PathedWrite =>
+  outcome.status !== 'conflict' && !isDeleted(outcome);
 
 /**
  * Write a single merge outcome to the working tree. Exported for direct unit
