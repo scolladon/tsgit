@@ -68,10 +68,7 @@ import {
   type LeadingPathScanner,
 } from './internal/symlinked-leading-path.js';
 import { stage0Entry, zeroStat } from './internal/synthetic-index-entry.js';
-import {
-  validateConflictWritePaths,
-  validateMergeWritePaths,
-} from './internal/validate-merge-write-paths.js';
+import { validateMergeWritePaths } from './internal/validate-merge-write-paths.js';
 import {
   createWorkingTreeWriter,
   type WorkingTreeWriter,
@@ -269,24 +266,13 @@ const writeChangedOutcome = async (
   forgetAfterLink(scanner, [outcome.mode]);
 };
 
-/**
- * Validate then materialise one conflict's working-tree marker/sides.
- * Validated ahead of the `distinct-types` dispatch (using the resolved mode's
- * fallback chain) so one call covers both branches below. Runs
- * unconditionally, whether or not a mode is derivable: `conflictsToIndexEntries`
- * still writes an index entry for a mode-less conflict, so its path reaches
- * `.git/index` regardless of whether this function goes on to write
- * working-tree bytes. REGULAR stands in when no mode is derivable — the only
- * mode-sensitive rule is the write-time-only `.gitmodules`-symlink
- * rejection, inapplicable when nothing is written.
- */
+/** Materialise one conflict's working-tree marker/sides; its paths are gated upfront by `validateMergeWritePaths`. */
 const writeValidatedConflict = async (
   ctx: Context,
   conflict: MergeConflict,
   writer: WorkingTreeWriter,
   scanner: LeadingPathScanner,
 ): Promise<void> => {
-  validateConflictWritePaths(conflict);
   if (recordsOwnPaths(conflict)) {
     await writeDistinctTypesSides(writer, conflict, scanner);
     return;
