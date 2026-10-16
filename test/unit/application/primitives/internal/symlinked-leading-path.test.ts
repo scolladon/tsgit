@@ -599,6 +599,24 @@ describe('createLeadingPathScanner', () => {
     });
   });
 
+  describe('Given an empty work tree', () => {
+    describe('When ensureLeadingDirectories runs for a/b then for a/c', () => {
+      it('Then the directory a is created once and remembered', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const mkdirSpy = vi.spyOn(ctx.fs, 'mkdir');
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act
+        await sut.ensureLeadingDirectories(path('a/b'));
+        await sut.ensureLeadingDirectories(path('a/c'));
+
+        // Assert
+        expect(mkdirSpy.mock.calls.map(([dir]) => dir)).toEqual([`${ctx.layout.workDir}/a`]);
+      });
+    });
+  });
+
   describe('Given a scanned prefix', () => {
     describe('When invalidateAll runs and the same path is scanned again', () => {
       it('Then the prefix is lstat-ed again', async () => {

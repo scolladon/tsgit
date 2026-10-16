@@ -3036,6 +3036,143 @@ describe('applyChangeset leading-symlink safety', () => {
     });
   });
 
+  describe('Given a symlink wave holding a gitlink and a regular file', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the gitlink directory exists before the first pooled regular write starts', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const regular = await writeBlob(ctx, enc('regular'));
+        const link = await writeBlob(ctx, enc('target'));
+        const events: string[] = [];
+        const realMkdir = ctx.fs.mkdir.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'mkdir').mockImplementation(async (dir) => {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          await realMkdir(dir);
+          events.push(`mkdir ${dir}`);
+        });
+        const realWriteStream = ctx.fs.writeStream.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'writeStream').mockImplementation(async (file, chunks) => {
+          events.push(`write ${file}`);
+          await realWriteStream(file, chunks);
+        });
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([
+            makeAdd('a-file', regular),
+            makeAdd('sub', 'd'.repeat(40) as ObjectId, FILE_MODE.GITLINK),
+            makeAdd('link', link, FILE_MODE.SYMLINK),
+          ]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(events.indexOf(`mkdir ${WORKDIR}/sub`)).toBeLessThan(
+          events.indexOf(`write ${WORKDIR}/a-file`),
+        );
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'pooled', config: '' },
+    { label: 'one at a time', config: '[filter "a"]\n\tprocess = proc\n' },
+  ])(
+    'Given a file standing where a symlink wave needs a directory, written $label',
+    ({ config }) => {
+      describe('When applyChangeset writes d/x beside a symlink', () => {
+        it('Then the file gives way to the directory holding x', async () => {
+          // Arrange
+          const base = await buildSeededContext();
+          await base.fs.writeUtf8(`${base.layout.gitDir}/config`, config);
+          await base.fs.write(`${WORKDIR}/d`, enc('file'));
+          const ctx = { ...base, command: scriptedCommandRunner(new Uint8Array(0)).runner };
+          const link = await writeBlob(ctx, enc('target'));
+          const payload = await writeBlob(ctx, enc('payload'));
+          const sut = applyChangeset;
+
+          // Act
+          await sut(ctx, {
+            changeset: makeChangeset([
+              makeAdd('l', link, FILE_MODE.SYMLINK),
+              makeAdd('d/x', payload),
+            ]),
+            force: true,
+            workdir: WORKDIR,
+          });
+
+          // Assert
+          expect((await ctx.fs.lstat(`${WORKDIR}/d`)).isDirectory).toBe(true);
+          expect(dec(await ctx.fs.read(`${WORKDIR}/d/x`))).toBe('payload');
+        });
+      });
+    },
+  );
+
+  describe('Given a process filter driver and a symlink A beside a/payload on a folding disk (guard: no seeded defect fails it)', () => {
+    describe('When applyChangeset writes the entries one at a time', () => {
+      it('Then payload never lands through the link', async () => {
+        // Arrange
+        const { ctx, inner, recorded } = await seedInterleaved();
+        await inner.fs.writeUtf8(
+          `${inner.layout.gitDir}/config`,
+          '[filter "a"]\n\tprocess = proc\n',
+        );
+        const withProcess = { ...ctx, command: scriptedCommandRunner(new Uint8Array(0)).runner };
+        const link = await writeBlob(inner, enc(OUTSIDE));
+        const payload = await writeBlob(inner, enc('payload'));
+        const sut = applyChangeset;
+
+        // Act
+        await sut(withProcess, {
+          changeset: makeChangeset([
+            makeAdd('a/payload', payload),
+            makeAdd('A', link, FILE_MODE.SYMLINK),
+          ]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        await expectPayloadInRealDirectory(inner, recorded);
+      });
+    });
+  });
+
+  describe('Given a symlink wave holding a lossy d<0xff>/x and an untracked twin file d�', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the twin file survives and no directory is made for the view of the name', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('x'));
+        const link = await writeBlob(ctx, enc('target'));
+        await ctx.fs.write(`${WORKDIR}/d\uFFFD`, enc('twin'));
+        const mkdirSpy = vi.spyOn(ctx.fs, 'mkdir');
+        const sut = applyChangeset;
+
+        // Act
+        await outcomeOf(
+          sut(ctx, {
+            changeset: makeChangeset([
+              makeAdd('link', link, FILE_MODE.SYMLINK),
+              makeAdd('d\uFFFD/x', id, FILE_MODE.REGULAR, {
+                pathBytes: Uint8Array.of(0x64, 0xff, 0x2f, 0x78),
+              }),
+            ]),
+            force: true,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/d\uFFFD`))).toBe('twin');
+        expect(mkdirSpy.mock.calls.map(([dir]) => dir)).not.toContain(`${WORKDIR}/d\uFFFD`);
+      });
+    });
+  });
+
   describe('Given a changeset of regular files only', () => {
     describe('When applyChangeset runs', () => {
       it('Then the wave never calls mkdir itself', async () => {
