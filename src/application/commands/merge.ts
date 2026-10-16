@@ -1762,7 +1762,9 @@ const writeConflictingWorkingTree = async (
   const scanner = createLeadingPathScanner(ctx);
   // Every deletion lands before the writer reads attributes, as git unlinks
   // before its first checkout: a deleted `.gitattributes` must not govern the writes.
-  await runBounded(ctx, touched.filter(isDeleted), (outcome) => removeChangedOutcome(ctx, outcome));
+  await runBounded(ctx, touched.filter(isDeleted), (outcome) =>
+    removeChangedOutcome(ctx, outcome, scanner),
+  );
   await runBounded(ctx, conflicts, (conflict) => removeDisplacedFile(ctx, conflict));
   const writer = await createMergeResultWriter(ctx, outcomes, conflicts);
   // Bounded parallelism — independent path writes overlap, but the pool

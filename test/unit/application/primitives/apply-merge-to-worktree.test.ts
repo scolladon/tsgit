@@ -9,6 +9,7 @@ import {
 } from '../../../../src/application/primitives/apply-merge-to-worktree.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { flattenTree } from '../../../../src/application/primitives/flatten-tree.js';
+import { createLeadingPathScanner } from '../../../../src/application/primitives/internal/symlinked-leading-path.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import * as streamBlobMod from '../../../../src/application/primitives/stream-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -350,10 +351,36 @@ describe('applyMergeToWorktree', () => {
         await ctx.fs.write(`${ctx.layout.workDir}/d/e/y`, new TextEncoder().encode('y\n'));
 
         // Act
-        await removeChangedOutcome(ctx, { status: 'resolved-deleted', path: 'd/e/y' as FilePath });
+        await removeChangedOutcome(
+          ctx,
+          { status: 'resolved-deleted', path: 'd/e/y' as FilePath },
+          createLeadingPathScanner(ctx),
+        );
 
         // Assert
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/d`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a deleted outcome whose leading directory is a symlink', () => {
+    describe('When removeChangedOutcome runs', () => {
+      it('Then the link and the file behind it both stay', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.write(`${ctx.layout.workDir}/real/x`, new TextEncoder().encode('x\n'));
+        await ctx.fs.symlink('real', `${ctx.layout.workDir}/a`);
+
+        // Act
+        await removeChangedOutcome(
+          ctx,
+          { status: 'resolved-deleted', path: 'a/x' as FilePath },
+          createLeadingPathScanner(ctx),
+        );
+
+        // Assert
+        expect((await ctx.fs.lstat(`${ctx.layout.workDir}/a`)).isSymbolicLink).toBe(true);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/real/x`)).toBe(true);
       });
     });
   });

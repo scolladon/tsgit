@@ -207,14 +207,17 @@ export const isDeleted = (outcome: MergeOutcome): outcome is DeletedOutcome =>
  * anywhere upstream. A delete carries no mode of its own; REGULAR stands in
  * because the only mode-sensitive rule this call can trigger — the
  * `.gitmodules`-symlink rejection — is a write-time concern that does not
- * apply to a removal.
+ * apply to a removal. A path beyond a symlinked leading directory is left
+ * alone, as git skips it: nothing is removed or pruned through the link.
  */
 export const removeChangedOutcome = async (
   ctx: Context,
   outcome: DeletedOutcome,
+  scanner: LeadingPathScanner,
 ): Promise<void> => {
   validateTreePath(outcome.path, FILE_MODE.REGULAR);
   if (hasEscapedBytes(outcome.path)) return;
+  if (await scanner.hasSymlinkedLeadingPath(outcome.path)) return;
   await removeWorkingTreeFile(ctx, outcome.path);
   await pruneEmptiedDirectories(ctx, requireWorkTree(ctx, 'removeChangedOutcome'), [outcome.path]);
 };
@@ -286,7 +289,8 @@ const writeConflictWorktree = async (
   );
   // Every deletion lands before the writer reads attributes, as git unlinks
   // before its first checkout: a deleted `.gitattributes` must not govern the writes.
-  for (const outcome of touched.filter(isDeleted)) await removeChangedOutcome(ctx, outcome);
+  for (const outcome of touched.filter(isDeleted))
+    await removeChangedOutcome(ctx, outcome, scanner);
   for (const conflict of conflicts) await removeDisplacedFile(ctx, conflict);
   const writer = await createMergeResultWriter(ctx, outcomes, conflicts);
   for (const outcome of touched) {
