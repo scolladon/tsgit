@@ -19,7 +19,7 @@ const parentDirectory = (path: string): string => {
 
 const distinctParentsDeepestFirst = (paths: Iterable<string>): ReadonlyArray<string> => {
   const parents = new Set<string>();
-  for (const path of paths) if (path.includes('/')) parents.add(parentDirectory(path));
+  for (const path of paths) parents.add(parentDirectory(path));
   return [...parents].sort((a, b) => b.length - a.length);
 };
 

@@ -642,11 +642,7 @@ const writeOneByOne = async (
 ): Promise<ReadonlyArray<IndexEntry>> => {
   const written: IndexEntry[] = [];
   for (const entry of sorted) {
-    if (isLinkWrite(entry)) {
-      written.push(...(await writeLinkAndForget(group, entry, scanner)));
-      continue;
-    }
-    await prepareLeadingDirectories(entry, scanner);
+    if (!isLinkWrite(entry)) await prepareLeadingDirectories(entry, scanner);
     written.push(...(await group([entry])));
   }
   return written;

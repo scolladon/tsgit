@@ -102,7 +102,10 @@ import {
 } from '../primitives/internal/merge-rename-config.js';
 import { mergedBlobEntries } from '../primitives/internal/merged-blob-entries.js';
 import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
-import { survivingDirectoriesOf } from '../primitives/internal/prune-emptied-directories.js';
+import {
+  type SurvivingDirectories,
+  survivingDirectoriesOf,
+} from '../primitives/internal/prune-emptied-directories.js';
 import { renormalizeAttributeLookup } from '../primitives/internal/renormalize-attributes.js';
 import { resolveMaxTreeDepth } from '../primitives/internal/resolve-max-tree-depth.js';
 import {
@@ -1784,6 +1787,24 @@ export const rejectUnsupportedConflicts = (conflicts: ReadonlyArray<MergeConflic
 const isExcluded = (matcher: SparseMatcher | undefined, path: FilePath): boolean =>
   matcher !== undefined && !matcher(path);
 
+/** Only a deletion can empty a directory, so a deletion-free merge derives nothing. */
+const survivingFor = (
+  deleted: ReadonlyArray<DeletedOutcome>,
+  outcomes: ReadonlyArray<MergeOutcome>,
+  conflicts: ReadonlyArray<MergeConflict>,
+  matcher: SparseMatcher | undefined,
+): SurvivingDirectories =>
+  survivingDirectoriesOf(
+    deleted.length === 0
+      ? []
+      : survivingPathsOf(
+          outcomes.filter(
+            (outcome) => outcome.status === 'conflict' || !isExcluded(matcher, outcome.path),
+          ),
+          conflicts,
+        ),
+  );
+
 const writeConflictingWorkingTree = async (
   ctx: Context,
   outcomes: ReadonlyArray<MergeOutcome>,
@@ -1807,16 +1828,7 @@ const writeConflictingWorkingTree = async (
   // Every deletion lands before the writer reads attributes, as git unlinks
   // before its first checkout: a deleted `.gitattributes` must not govern the writes.
   const deleted = touched.filter(isDeleted);
-  const surviving = survivingDirectoriesOf(
-    deleted.length === 0
-      ? []
-      : survivingPathsOf(
-          outcomes.filter(
-            (outcome) => outcome.status === 'conflict' || !isExcluded(matcher, outcome.path),
-          ),
-          conflicts,
-        ),
-  );
+  const surviving = survivingFor(deleted, outcomes, conflicts, matcher);
   await runBounded(ctx, deleted, (outcome) =>
     removeChangedOutcome(ctx, outcome, scanner, surviving),
   );
