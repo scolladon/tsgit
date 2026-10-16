@@ -51,12 +51,7 @@ const projectIndex = (currentIndex: GitIndex): Map<IndexPathKey, IndexProjection
   const indexByKey = new Map<IndexPathKey, IndexProjection>();
   for (const entry of currentIndex.entries) {
     if (entry.flags.stage !== 0) continue;
-    indexByKey.set(indexPathKey(entry), {
-      path: entry.path,
-      ...(entry.pathBytes === undefined ? {} : { pathBytes: entry.pathBytes }),
-      id: entry.id,
-      mode: entry.mode,
-    });
+    indexByKey.set(indexPathKey(entry), entry);
   }
   return indexByKey;
 };
