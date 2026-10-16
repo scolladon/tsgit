@@ -2779,7 +2779,7 @@ describe('mergeTrees — file/directory add/add conflict', () => {
     describe('When mergeTrees called', () => {
       it('Then the escaped file moves to the escaped name plus the ASCII suffix', async () => {
         // Arrange
-        const name = '\\xff';
+        const name = '\uDCFF';
         const ours = tree([[name, entry(ID_A)]]);
         const theirs = tree([[`${name}/x`, entry(ID_B)]]);
 
@@ -2788,6 +2788,73 @@ describe('mergeTrees — file/directory add/add conflict', () => {
 
         // Assert
         expect(result.conflicts.map((c) => c.ourPath)).toEqual([`${name}~HEAD`]);
+      });
+    });
+  });
+});
+
+describe('mergeTrees — a directory replaced by a file on one side', () => {
+  const LABELS = { ours: 'HEAD', theirs: 'side', base: '' };
+  const base = tree([['d/f', entry(ID_A)]]);
+  const replacedByFile = tree([['d', entry(ID_C)]]);
+
+  describe('Given the other side left the directory file unchanged', () => {
+    describe.each([
+      { label: 'theirs replaces the directory', ours: base, theirs: replacedByFile },
+      { label: 'ours replaces the directory', ours: replacedByFile, theirs: base },
+    ])('When $label', ({ ours, theirs }) => {
+      it('Then the merge is clean and the file takes the path', async () => {
+        // Arrange
+        const sut = mergeTrees;
+
+        // Act
+        const result = await sut(base, ours, theirs, noopMerger, LABELS);
+
+        // Assert
+        expect(result.cleanMerge).toBe(true);
+        expect(result.conflicts).toEqual([]);
+        expect(result.outcomes.filter((o) => o.status === 'resolved-known')).toEqual([
+          { status: 'resolved-known', path: 'd', id: ID_C, mode: FILE_MODE.REGULAR },
+        ]);
+      });
+    });
+  });
+
+  describe('Given the other side changed the directory file', () => {
+    describe.each([
+      { change: 'content', changed: tree([['d/f', entry(ID_B)]]) },
+      { change: 'mode only', changed: tree([['d/f', entry(ID_A, FILE_MODE.EXECUTABLE)]]) },
+    ])('When it changed its $change', ({ changed }) => {
+      it('Then theirs replacing the directory steps its file aside to d~side', async () => {
+        // Arrange
+        const sut = mergeTrees;
+
+        // Act
+        const result = await sut(base, changed, replacedByFile, noopMerger, LABELS);
+
+        // Assert
+        expect(result.cleanMerge).toBe(false);
+        expect(result.conflicts.map((c) => [c.type, c.path])).toEqual([
+          ['file-directory', 'd'],
+          ['modify-delete', 'd/f'],
+        ]);
+        expect(result.conflicts.map((c) => c.theirPath)).toContain('d~side');
+      });
+
+      it('Then ours replacing the directory steps its file aside to d~HEAD', async () => {
+        // Arrange
+        const sut = mergeTrees;
+
+        // Act
+        const result = await sut(base, replacedByFile, changed, noopMerger, LABELS);
+
+        // Assert
+        expect(result.cleanMerge).toBe(false);
+        expect(result.conflicts.map((c) => [c.type, c.path])).toEqual([
+          ['file-directory', 'd'],
+          ['modify-delete', 'd/f'],
+        ]);
+        expect(result.conflicts.map((c) => c.ourPath)).toContain('d~HEAD');
       });
     });
   });
