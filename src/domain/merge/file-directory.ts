@@ -18,6 +18,7 @@ function survives(base: FlatTreeEntry | undefined, present: FlatTreeEntry): bool
 }
 
 function addAncestors(directories: Set<string>, path: FilePath): void {
+  // Stryker disable next-line StringLiteral: equivalent — indexOf('') is 0, so the mutant only adds '' before the same ancestors, and the set is only queried with has() for tree paths, which are never empty
   let slash = path.indexOf('/');
   while (slash !== -1) {
     directories.add(path.slice(0, slash));
