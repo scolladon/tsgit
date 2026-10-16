@@ -346,6 +346,30 @@ describe('applyChangeset', () => {
     });
   });
 
+  describe('Given an add entry without an id next to a symlink add', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then no directory is made for the entry without an id', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('target'));
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([
+            makeAdd('p/q', undefined as unknown as ObjectId),
+            makeAdd('link', id, FILE_MODE.SYMLINK),
+          ]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(await ctx.fs.exists(`${WORKDIR}/p`)).toBe(false);
+        expect(await ctx.fs.readlink(`${WORKDIR}/link`)).toBe('target');
+      });
+    });
+  });
+
   describe('Given an add entry with gitlink mode', () => {
     describe('When applyChangeset runs', () => {
       it('Then creates an empty directory placeholder', async () => {
