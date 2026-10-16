@@ -33,6 +33,8 @@ import {
   initBothRepos,
   makePeerPair,
   type PeerPair,
+  runGit,
+  runGitEnv,
   tryRunGit,
 } from './interop-helpers.js';
 
@@ -43,6 +45,12 @@ const AUTHOR: AuthorIdentity = {
   timezoneOffset: '+0000',
 };
 const OURS_B = 'ours\n';
+// Both twins must commit to identical ids, whichever second each build lands in.
+const FIXED_DATE = '1700000000 +0000';
+const gitAtFixedDate = (dir: string, ...args: ReadonlyArray<string>): string =>
+  runGit(['-C', dir, ...args], {
+    env: { ...runGitEnv(), GIT_AUTHOR_DATE: FIXED_DATE, GIT_COMMITTER_DATE: FIXED_DATE },
+  });
 const THEIRS_B = 'theirs\n';
 
 /** `a/x` is tracked on base and ours and deleted by theirs; `b` is edited by theirs and, when `conflicting`, by ours. */
@@ -51,15 +59,15 @@ const buildTrackedBeneathA = async (dir: string, conflicting: boolean): Promise<
   await mkdir(path.join(dir, 'a'));
   await writeFile(path.join(dir, 'a', 'x'), 'x\n');
   git(dir, 'add', 'b', 'a/x');
-  git(dir, 'commit', '-q', '-m', 'base');
+  gitAtFixedDate(dir, 'commit', '-q', '-m', 'base');
   git(dir, 'checkout', '-q', '-b', 'theirs');
   git(dir, 'rm', '-q', 'a/x');
   await writeFile(path.join(dir, 'b'), THEIRS_B);
-  git(dir, 'commit', '-q', '-am', 'theirs');
+  gitAtFixedDate(dir, 'commit', '-q', '-am', 'theirs');
   git(dir, 'checkout', '-q', 'main');
   await writeFile(path.join(dir, conflicting ? 'b' : 'c'), OURS_B);
   git(dir, 'add', '-A');
-  git(dir, 'commit', '-q', '-m', 'ours');
+  gitAtFixedDate(dir, 'commit', '-q', '-m', 'ours');
 };
 
 const replaceAWithLinkToReal = async (dir: string): Promise<void> => {
