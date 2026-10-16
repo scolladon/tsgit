@@ -2337,6 +2337,25 @@ describe('mergeTrees — blobUnchanged callback', () => {
       blobUnchanged,
     );
 
+  describe('Given base f, ours changes f, theirs replaces f with a directory, and a callback answering false', () => {
+    describe('When mergeTrees is called', () => {
+      it('Then the changed file steps aside as a file-directory conflict', async () => {
+        // Arrange
+        const blobUnchanged = vi.fn<BlobUnchanged>().mockResolvedValue(false);
+        const sut = run;
+        const directory = tree([['f/x' as FilePath, entry(ID_C)]]);
+
+        // Act
+        const result = await sut(changed, directory, blobUnchanged);
+
+        // Assert
+        expect(result.conflicts.map((c) => [c.type, c.path, c.ourPath, c.ourId])).toEqual([
+          ['file-directory', F, `${F}~${DEFAULT_MERGE_LABELS.ours}`, ID_B],
+        ]);
+      });
+    });
+  });
+
   describe('Given base f, ours deletes f, theirs changes f, and a callback answering true', () => {
     describe('When mergeTrees is called', () => {
       it('Then f resolves deleted and the merge is clean', async () => {

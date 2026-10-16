@@ -637,6 +637,11 @@ describe('encoding', () => {
         '\u{10080}',
         [0xf0, 0x90, 0x82, 0x80],
       ],
+      [
+        'an astral pair in the escape range next to a lone escape',
+        '\u{10080}\uDCFF',
+        [0xf0, 0x90, 0x82, 0x80, 0xff],
+      ],
       ['a lone high surrogate', '\uD800', [0xef, 0xbf, 0xbd]],
       ['a lone low surrogate outside the escape range', '\uDC41', [0xef, 0xbf, 0xbd]],
     ];

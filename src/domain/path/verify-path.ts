@@ -96,7 +96,7 @@ const isRejectedSecondByte = (lead: number, second: number): boolean =>
 const isNonCharacterTail = (bytes: Uint8Array, at: number): boolean =>
   bytes[at] === THREE_BYTE_LEAD_NON_CHARACTER &&
   bytes[at + 1] === NON_CHARACTER_SECOND &&
-  (bytes[at + 2] ?? 0) >= NON_CHARACTER_THIRD_MIN;
+  (bytes[at + 2] as number) >= NON_CHARACTER_THIRD_MIN;
 
 /** Length of the sequence git's `pick_one_utf8_char` accepts at `at`, or 0 when it rejects. */
 const acceptedSequenceLength = (bytes: Uint8Array, at: number): number => {
