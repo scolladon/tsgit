@@ -7,7 +7,7 @@ import { readIndex } from '../../../../src/application/primitives/read-index.js'
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { fileNotFound, TsgitError } from '../../../../src/domain/index.js';
-import type { FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
+import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
@@ -761,56 +761,6 @@ describe('mv', () => {
   });
 });
 
-describe('mv on a directory holding an entry with a non-UTF-8 name', () => {
-  describe('Given d/y and d/<0xff> in the index and d/y on disk', () => {
-    describe('When mv renames d to e', () => {
-      it('Then the lossy entry is re-pathed byte for byte under e', async () => {
-        // Arrange
-        const ctx = createMemoryContext();
-        await seedRepo(ctx, { workingTree: { 'd/y': 'y' } });
-        const stat = await ctx.fs.lstat(work(ctx, 'd/y'));
-        const entryOf = async (path: FilePath): Promise<IndexEntry> => ({
-          ...indexEntryFromStat(
-            stat,
-            FILE_MODE.REGULAR,
-            await writeObject(ctx, {
-              type: 'blob',
-              id: '' as ObjectId,
-              content: new TextEncoder().encode('y'),
-            }),
-            path,
-          ),
-          fileSize: 0,
-        });
-        const lossy: IndexEntry = {
-          ...(await entryOf('d/\uFFFD' as FilePath)),
-          pathBytes: Uint8Array.of(0x64, 0x2f, 0xff),
-        };
-        const entries = [await entryOf('d/y' as FilePath), lossy];
-        await ctx.fs.write(
-          `${ctx.layout.gitDir}/index`,
-          await serializeIndexFixtureAsync(
-            { version: 2, entries, extensions: [], trailerSha: new Uint8Array(0) },
-            ctx,
-          ),
-        );
-        const sut = mv;
-
-        // Act
-        await sut(ctx, ['d'], 'e');
-
-        // Assert
-        const index = await readIndex(ctx);
-        expect(index.entries.map((e) => e.path)).toEqual(['e/y', 'e/\uFFFD']);
-        expect(index.entries.map((e) => e.pathBytes)).toEqual([
-          undefined,
-          Uint8Array.of(0x65, 0x2f, 0xff),
-        ]);
-      });
-    });
-  });
-});
-
 describe('mv with a source string holding a lone surrogate', () => {
   describe('Given a lossy entry and its U+FFFD twin with the twin on disk', () => {
     describe('When mv names the lone-surrogate spelling', () => {
@@ -851,6 +801,186 @@ describe('mv with a source string holding a lone surrogate', () => {
         expect(index.entries.map((e) => [e.path, e.pathBytes])).toEqual([
           ['x', undefined],
           ['\uFFFD.txt', Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74)],
+        ]);
+      });
+    });
+  });
+});
+
+interface SeededRow {
+  readonly path: string;
+  readonly bytes?: ReadonlyArray<number>;
+  readonly mode?: FileMode;
+}
+
+const seedRows = async (
+  workingTree: Readonly<Record<string, string>>,
+  rows: ReadonlyArray<SeededRow>,
+): Promise<Context> => {
+  const ctx = createMemoryContext();
+  await seedRepo(ctx, { workingTree });
+  const stat = await ctx.fs.lstat(work(ctx, Object.keys(workingTree)[0] as string));
+  const blob = await writeObject(ctx, {
+    type: 'blob',
+    id: '' as ObjectId,
+    content: new TextEncoder().encode('b'),
+  });
+  const entries: IndexEntry[] = rows.map((row) => ({
+    ...indexEntryFromStat(stat, row.mode ?? FILE_MODE.REGULAR, blob, row.path as FilePath),
+    fileSize: 0,
+    ...(row.bytes === undefined ? {} : { pathBytes: Uint8Array.from(row.bytes) }),
+  }));
+  await ctx.fs.write(
+    `${ctx.layout.gitDir}/index`,
+    await serializeIndexFixtureAsync(
+      { version: 2, entries, extensions: [], trailerSha: new Uint8Array(0) },
+      ctx,
+    ),
+  );
+  return ctx;
+};
+
+const indexView = async (ctx: Context) =>
+  (await readIndex(ctx)).entries.map((e) => [e.path, e.pathBytes && Array.from(e.pathBytes)]);
+
+const captureError = async (fn: () => Promise<unknown>): Promise<TsgitError | undefined> => {
+  try {
+    await fn();
+  } catch (err) {
+    return err as TsgitError;
+  }
+  return undefined;
+};
+
+describe('mv selecting directory members by path bytes', () => {
+  describe('Given a U+FFFD directory member and a lossy entry whose bytes cross a slash', () => {
+    describe('When mv moves the U+FFFD directory to .g', () => {
+      it('Then only the literal member moves and the index never names a .git path', async () => {
+        // Arrange
+        const ctx = await seedRows({ '�/k': 'k' }, [
+          { path: '�/k' },
+          { path: '�/it/p', bytes: [0xff, 0x2f, 0x69, 0x74, 0x2f, 0x70] },
+        ]);
+        const sut = mv;
+
+        // Act
+        const result = await sut(ctx, ['�'], '.g');
+
+        // Assert
+        expect(result.moved).toEqual([{ from: '�/k', to: '.g/k' }]);
+        expect(await indexView(ctx)).toEqual([
+          ['.g/k', undefined],
+          ['�/it/p', [0xff, 0x2f, 0x69, 0x74, 0x2f, 0x70]],
+        ]);
+      });
+    });
+  });
+
+  describe('Given a U+FFFD directory member and a lossy entry under the same view', () => {
+    describe('When mv moves the U+FFFD directory to dst', () => {
+      it('Then the lossy entry keeps its bytes and only the literal member moves', async () => {
+        // Arrange
+        const ctx = await seedRows({ '�/x': 'x' }, [
+          { path: '�/x' },
+          { path: '�/x', bytes: [0xff, 0x2f, 0x78] },
+        ]);
+        const sut = mv;
+
+        // Act
+        const result = await sut(ctx, ['�'], 'dst');
+
+        // Assert
+        expect(result.moved).toEqual([{ from: '�/x', to: 'dst/x' }]);
+        expect(await indexView(ctx)).toEqual([
+          ['dst/x', undefined],
+          ['�/x', [0xff, 0x2f, 0x78]],
+        ]);
+      });
+    });
+  });
+});
+
+describe('mv re-validating the moved path', () => {
+  describe('Given a tracked symlink entry', () => {
+    describe('When mv targets .gitmodules', () => {
+      it('Then it rejects with the gitmodules-symlink reason and the index is unchanged', async () => {
+        // Arrange
+        const ctx = await seedRows({ x: 'x' }, [{ path: 'x', mode: FILE_MODE.SYMLINK }]);
+        const before = await indexView(ctx);
+        const sut = mv;
+
+        // Act
+        const error = await captureError(() => sut(ctx, ['x'], '.gitmodules'));
+
+        // Assert
+        expect(error?.data).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'.gitmodules' must not be a symlink",
+        });
+        expect(await indexView(ctx)).toEqual(before);
+      });
+    });
+  });
+});
+
+describe('mv on a directory holding a lossy member', () => {
+  const seedMember = (): Promise<Context> =>
+    seedRows({ 'd/y': 'y' }, [{ path: 'd/y' }, { path: 'd/�', bytes: [0x64, 0x2f, 0xff] }]);
+
+  describe('Given a directory on disk holding only a lossy member', () => {
+    describe('When mv renames it with skipErrors', () => {
+      it('Then the directory is skipped as a bad source and nothing moves', async () => {
+        // Arrange
+        const ctx = await seedRows({ 'd/y': 'y' }, [
+          { path: 'd/\uFFFD', bytes: [0x64, 0x2f, 0xff] },
+        ]);
+        const sut = mv;
+
+        // Act
+        const result = await sut(ctx, ['d'], 'e', { skipErrors: true });
+
+        // Assert
+        expect(result).toEqual({ moved: [], skipped: [{ source: 'd', reason: 'bad-source' }] });
+        expect(await exists(ctx, 'd/y')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given d/y on disk and a lossy d/<0xff> member', () => {
+    describe('When mv renames d without skipErrors', () => {
+      it('Then it refuses naming the member and the index is unchanged', async () => {
+        // Arrange
+        const ctx = await seedMember();
+        const before = await indexView(ctx);
+        const sut = mv;
+
+        // Act
+        const error = await captureError(() => sut(ctx, ['d'], 'e'));
+
+        // Assert
+        expect(error?.data).toMatchObject({
+          code: 'MV_BAD_SOURCE',
+          source: 'd/�',
+          destination: 'e/�',
+        });
+        expect(await indexView(ctx)).toEqual(before);
+      });
+    });
+
+    describe('When mv renames d with skipErrors', () => {
+      it('Then the lossy member stays and the rest moves', async () => {
+        // Arrange
+        const ctx = await seedMember();
+        const sut = mv;
+
+        // Act
+        const result = await sut(ctx, ['d'], 'e', { skipErrors: true });
+
+        // Assert
+        expect(result.moved).toEqual([{ from: 'd/y', to: 'e/y' }]);
+        expect(await indexView(ctx)).toEqual([
+          ['d/�', [0x64, 0x2f, 0xff]],
+          ['e/y', undefined],
         ]);
       });
     });

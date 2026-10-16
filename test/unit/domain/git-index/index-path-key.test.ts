@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   escapedPathOf,
+  hasBytePrefix,
   indexPathKey,
   indexPathOfBytes,
   indexPathOfEscaped,
@@ -341,6 +342,33 @@ describe('viewOfEscaped', () => {
 
         // Assert
         expect(result).toBe(sut);
+      });
+    });
+  });
+});
+
+describe('hasBytePrefix', () => {
+  describe.each([
+    ['the prefix followed by a slash', [0xff, 0x2f, 0x78], [0xff], true],
+    [
+      'a different prefix whose decoded view matches',
+      [0xff, 0x2f, 0x78],
+      [0xef, 0xbf, 0xbd],
+      false,
+    ],
+    ['the prefix with nothing after it', [0xff], [0xff], false],
+    ['the prefix followed by a non-slash byte', [0xff, 0x78], [0xff], false],
+  ])('Given bytes holding %s', (_title, bytes, prefix, expected) => {
+    describe('When testing for the directory prefix', () => {
+      it(`Then it answers ${expected}`, () => {
+        // Arrange
+        const sut = hasBytePrefix;
+
+        // Act
+        const result = sut(Uint8Array.from(bytes), Uint8Array.from(prefix));
+
+        // Assert
+        expect(result).toBe(expected);
       });
     });
   });

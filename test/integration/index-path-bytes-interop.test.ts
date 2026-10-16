@@ -888,3 +888,162 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'index path bytes interop — mv with lossy members',
+  { timeout: 60_000 },
+  () => {
+    const U_DIR = '�';
+    const D_FF_HEX = '642fff';
+    const E_Y_HEX = '652f79';
+    const FF_X_HEX = 'ff2f78';
+    const DST_X_HEX = '6473742f78';
+    const U_TXT = '�.txt';
+    const FF_TXT_HEX = 'ff2e747874';
+    let pair: PeerPair;
+    let repo: Repository;
+
+    const git = (...args: ReadonlyArray<string>): string =>
+      runGit(['-C', pair.peer, ...args], { env: COMMIT_ENV });
+
+    const stageLossy = (rawPath: Uint8Array): void =>
+      stageRaw(pair.peer, [{ mode: REGULAR_MODE, oid: hashBlob(pair.peer, 'l\n'), path: rawPath }]);
+
+    const rejectionOf = async (run: () => Promise<unknown>): Promise<unknown> => {
+      try {
+        await run();
+      } catch (error) {
+        return (error as { data?: unknown }).data;
+      }
+      return undefined;
+    };
+
+    beforeEach(async () => {
+      pair = await makePeerPair('index-path-bytes');
+      runGit(['init', '-q', '-b', 'main', pair.peer]);
+      runGit(['-C', pair.peer, 'config', 'user.name', 'Ada']);
+      runGit(['-C', pair.peer, 'config', 'user.email', 'ada@example.com']);
+      repo = await openRepository({ cwd: pair.peer });
+    });
+
+    afterEach(async () => {
+      await repo.dispose();
+      await pair.dispose();
+    });
+
+    describe('Given d/y on disk and a lossy d/<0xff> staged', () => {
+      beforeEach(() => {
+        mkdirSync(path.join(pair.peer, 'd'));
+        writeFileSync(path.join(pair.peer, 'd', 'y'), 'y\n');
+        git('add', 'd/y');
+        stageLossy(D_SLASH_FF);
+      });
+
+      describe('When mv d e runs', () => {
+        it('Then it refuses naming the member and the index bytes are unchanged', async () => {
+          // Arrange
+          const before = lsFilesPathHex(pair.peer);
+
+          // Act
+          const data = await rejectionOf(() => repo.mv(['d'], 'e'));
+
+          // Assert
+          expect(data).toMatchObject({
+            code: 'MV_BAD_SOURCE',
+            source: 'd/�',
+            destination: 'e/�',
+          });
+          expect(lsFilesPathHex(pair.peer)).toEqual(before);
+        });
+      });
+
+      describe('When mv -k d e runs', () => {
+        it('Then the lossy entry stays and the rest moves', async () => {
+          // Arrange
+          const sut = repo;
+
+          // Act
+          await sut.mv(['d'], 'e', { skipErrors: true });
+
+          // Assert
+          expect(lsFilesPathHex(pair.peer)).toEqual([D_FF_HEX, E_Y_HEX]);
+        });
+      });
+    });
+
+    describe('Given only a lossy d/<0xff> staged under a directory on disk', () => {
+      describe('When mv d e runs', () => {
+        it('Then it refuses naming the member', async () => {
+          // Arrange
+          mkdirSync(path.join(pair.peer, 'd'));
+          stageLossy(D_SLASH_FF);
+
+          // Act
+          const data = await rejectionOf(() => repo.mv(['d'], 'e'));
+
+          // Assert
+          expect(data).toMatchObject({
+            code: 'MV_BAD_SOURCE',
+            source: 'd/�',
+            destination: 'e/�',
+          });
+          expect(lsFilesPathHex(pair.peer)).toEqual([D_FF_HEX]);
+        });
+      });
+    });
+
+    describe('Given a U+FFFD directory on disk and a lossy <0xff>/x staged', () => {
+      describe('When mv moves the U+FFFD directory to dst', () => {
+        it('Then only the literal member moves and the lossy entry keeps its bytes', async () => {
+          // Arrange
+          mkdirSync(path.join(pair.peer, U_DIR));
+          writeFileSync(path.join(pair.peer, U_DIR, 'x'), 'x\n');
+          git('add', '.');
+          stageLossy(Uint8Array.of(0xff, 0x2f, 0x78));
+
+          // Act
+          await repo.mv([U_DIR], 'dst');
+
+          // Assert
+          expect(lsFilesPathHex(pair.peer)).toEqual([DST_X_HEX, FF_X_HEX]);
+        });
+      });
+    });
+
+    describe('Given a U+FFFD file on disk and a lossy <0xff>.txt staged', () => {
+      describe('When mv moves the U+FFFD file', () => {
+        it('Then only the literal entry moves and the lossy entry stays', async () => {
+          // Arrange
+          writeFileSync(path.join(pair.peer, U_TXT), 'u\n');
+          git('add', '.');
+          stageLossy(FF_TXT);
+
+          // Act
+          await repo.mv([U_TXT], 'y');
+
+          // Assert
+          expect(lsFilesPathHex(pair.peer)).toEqual(['79', FF_TXT_HEX]);
+        });
+      });
+    });
+
+    describe('Given a lossy <0xff>/zit/p staged next to a U+FFFD/k directory member', () => {
+      describe('When mv moves the U+FFFD directory to .g', () => {
+        it('Then no .git entry appears and tsgit and git still read the index', async () => {
+          // Arrange
+          mkdirSync(path.join(pair.peer, U_DIR));
+          writeFileSync(path.join(pair.peer, U_DIR, 'k'), 'k\n');
+          git('add', '.');
+          stageLossy(Uint8Array.of(0xff, 0x2f, 0x7a, 0x69, 0x74, 0x2f, 0x70));
+
+          // Act
+          await repo.mv([U_DIR], '.g');
+
+          // Assert
+          expect(lsFilesPathHex(pair.peer)).toEqual(['2e672f6b', 'ff2f7a69742f70']);
+          expect(() => git('ls-files')).not.toThrow();
+        });
+      });
+    });
+  },
+);

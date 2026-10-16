@@ -53,3 +53,8 @@ export const splitAtSlash = (bytes: Uint8Array): Uint8Array[] => {
   parts.push(bytes.subarray(start));
   return parts;
 };
+
+export const hasBytePrefix = (bytes: Uint8Array, prefix: Uint8Array): boolean => {
+  if (bytes.length <= prefix.length || bytes[prefix.length] !== SLASH) return false;
+  return prefix.every((byte, i) => bytes[i] === byte);
+};

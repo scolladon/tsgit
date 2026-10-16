@@ -22,14 +22,19 @@ import {
 import { basename, dirname, TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { withPath } from '../../domain/git-index/index-entry.js';
-import type { IndexPath, IndexPathKey } from '../../domain/git-index/index-path-key.js';
+import type { IndexPathKey } from '../../domain/git-index/index-path-key.js';
 import {
+  escapedPathOf,
+  hasBytePrefix,
   indexPathKey,
-  indexPathOfBytes,
+  isLossy,
   keyOfPath,
+  pathBytesOf,
+  viewOfEscaped,
 } from '../../domain/git-index/index-path-key.js';
+import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import { emptyPathspec } from '../../domain/index.js';
-import { concatBytes, encode, wellFormed } from '../../domain/objects/encoding.js';
+import { encode, wellFormed } from '../../domain/objects/encoding.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { joinPathSegment } from '../primitives/internal/join-path-segment.js';
@@ -89,7 +94,12 @@ interface PlanItem {
 
 type Verdict =
   | { readonly kind: 'file' | 'directory'; readonly entries: ReadonlyArray<IndexEntry> }
-  | { readonly skip: MvSkipReason };
+  | {
+      readonly skip: MvSkipReason;
+      /** Names the refused member when it differs from the user's source. */
+      readonly source?: FilePath;
+      readonly target?: FilePath;
+    };
 
 /**
  * Move/rename tracked paths in the index and the working tree, faithful to
@@ -194,7 +204,7 @@ const buildPlan = async (
         skipped.push({ source, reason: verdict.skip });
         continue;
       }
-      throw refusal(verdict.skip, source, target);
+      throw refusal(verdict.skip, verdict.source ?? source, verdict.target ?? target);
     }
     planned.push({ source, target, entries: verdict.entries });
   }
@@ -211,6 +221,12 @@ const validateMove = async (
   const classified = classifySource(byPath, source);
   if (classified.kind === 'untracked') return { skip: 'source-not-tracked' };
   if (!(await sourceExistsOnDisk(ctx, source, classified.kind))) return { skip: 'bad-source' };
+  const lossyMember = classified.entries.find(isLossy);
+  if (lossyMember !== undefined && opts.skipErrors !== true) {
+    return memberBadSource(lossyMember, source, target);
+  }
+  const entries = classified.entries.filter((entry) => !isLossy(entry));
+  if (entries.length === 0) return { skip: 'bad-source' };
   if (target === source || target.startsWith(`${source}/`)) return { skip: 'into-self' };
   // `dirname` of a validated path is a prefix of it — still a valid repo path.
   const parent = dirname(target) as FilePath;
@@ -221,7 +237,17 @@ const validateMove = async (
   if (!(await destinationFree(ctx, byPath, target, classified.kind, opts.force === true))) {
     return { skip: 'destination-exists' };
   }
-  return { kind: classified.kind, entries: classified.entries };
+  return { kind: classified.kind, entries };
+};
+
+// Git names the member it cannot address, in the view a message can carry.
+const memberBadSource = (member: IndexEntry, source: FilePath, target: FilePath): Verdict => {
+  const escaped = escapedPathOf(member);
+  return {
+    skip: 'bad-source',
+    source: viewOfEscaped(escaped),
+    target: viewOfEscaped(`${target}${escaped.slice(source.length)}` as FilePath),
+  };
 };
 
 type SourceClass =
@@ -235,8 +261,10 @@ const classifySource = (
 ): SourceClass => {
   const exact = byPath.get(keyOfPath(source));
   if (exact !== undefined) return { kind: 'file', entries: [exact] };
-  const prefix = `${source}/`;
-  const entries = Array.from(byPath.values()).filter((entry) => entry.path.startsWith(prefix));
+  const prefix = encode(source);
+  const entries = Array.from(byPath.values()).filter((entry) =>
+    hasBytePrefix(pathBytesOf(entry), prefix),
+  );
   if (entries.length > 0) return { kind: 'directory', entries };
   return { kind: 'untracked' };
 };
@@ -311,21 +339,13 @@ const applyToIndex = (
 ): void => {
   for (const item of planned) {
     for (const entry of item.entries) {
-      const moved = withPath(entry, movedPath(entry, item.source, item.target));
+      const moved = withPath(entry, { path: repath(entry, item.source, item.target) });
+      validateIndexPath(moved.path, NO_PARSER_OFFSET, moved.mode);
       byPath.delete(indexPathKey(entry));
       byPath.set(indexPathKey(moved), moved);
     }
   }
 };
-
-// The source prefix is a user string, so its encoded length is the exact byte cut
-// for an entry whose raw name is not UTF-8.
-const movedPath = (entry: IndexEntry, source: FilePath, target: FilePath): IndexPath =>
-  entry.pathBytes === undefined
-    ? { path: repath(entry, source, target) }
-    : indexPathOfBytes(
-        concatBytes([encode(target), entry.pathBytes.subarray(encode(source).length)]),
-      );
 
 // `entry.path` is `source` (file) or `${source}/…` (directory member), so the
 // suffix after `source` (possibly empty) reparents onto `target` unchanged.
