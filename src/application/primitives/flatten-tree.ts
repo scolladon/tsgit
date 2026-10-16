@@ -17,9 +17,23 @@
 import type { FlatTree } from '../../domain/diff/flat-tree.js';
 import type { ObjectId, Tree } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { flattenRawTree, resolveFlattenBounds } from './internal/flatten-raw.js';
+import {
+  flattenRawTree,
+  flattenRawTreeEscaped,
+  resolveFlattenBounds,
+} from './internal/flatten-raw.js';
 
 export const flattenTree = async (
   ctx: Context,
   treeIdOrObject: ObjectId | Tree,
 ): Promise<FlatTree> => flattenRawTree(ctx, treeIdOrObject, await resolveFlattenBounds(ctx));
+
+/**
+ * Internal merge-input flatten: keys are escaped paths, so names differing
+ * only in invalid UTF-8 bytes stay distinct. The public `flattenTree` keeps
+ * the U+FFFD view.
+ */
+export const flattenEscapedTree = async (
+  ctx: Context,
+  treeIdOrObject: ObjectId | Tree,
+): Promise<FlatTree> => flattenRawTreeEscaped(ctx, treeIdOrObject, await resolveFlattenBounds(ctx));

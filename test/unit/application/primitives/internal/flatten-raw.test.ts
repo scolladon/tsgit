@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   type FlattenBounds,
   flattenRawTree,
+  flattenRawTreeEscaped,
 } from '../../../../../src/application/primitives/internal/flatten-raw.js';
 import * as rawTreeIoMod from '../../../../../src/application/primitives/internal/raw-tree-io.js';
 import * as readObjectMod from '../../../../../src/application/primitives/read-object.js';
@@ -22,7 +23,7 @@ import {
 } from '../../../../../src/domain/objects/index.js';
 import type { TreeEntry } from '../../../../../src/domain/objects/tree.js';
 import { treeEntry } from '../../../../../src/domain/objects/tree.js';
-import { buildSeededContext } from '../fixtures.js';
+import { buildSeededContext, writeRawObjectBytes } from '../fixtures.js';
 
 async function writeBlob(
   ctx: Awaited<ReturnType<typeof buildSeededContext>>,
@@ -677,6 +678,119 @@ describe('flattenRawTree', () => {
             spy.mockRestore();
           }
         }
+      });
+    });
+  });
+});
+
+const LOSSY_NAME_BYTES = new Uint8Array([0xff, 0x2e, 0x74, 0x78, 0x74]);
+const LOSSY_DIR_BYTES = new Uint8Array([0xff]);
+const UTF8_TWIN_BYTES = new Uint8Array([0xef, 0xbf, 0xbd, 0x2e, 0x74, 0x78, 0x74]);
+const BOM_NAME_BYTES = new Uint8Array([0xef, 0xbb, 0xbf, 0x61]);
+
+function rawEntryOfBytes(mode: string, nameBytes: Uint8Array, id: ObjectId): Uint8Array {
+  return concatBytes(encode(`${mode} `), nameBytes, new Uint8Array([0]), hexToBytes(id));
+}
+
+describe('flattenRawTreeEscaped', () => {
+  describe('Given a tree holding a lossy name and its U+FFFD twin', () => {
+    describe('When flattening with escaped names', () => {
+      it('Then each keeps its own key and id', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const lossyId = await writeBlob(ctx, 'lossy');
+        const twinId = await writeBlob(ctx, 'twin');
+        const content = concatBytes(
+          rawEntryOfBytes(FILE_MODE.REGULAR, LOSSY_NAME_BYTES, lossyId),
+          rawEntryOfBytes(FILE_MODE.REGULAR, UTF8_TWIN_BYTES, twinId),
+        );
+        const rootId = await writeRawObjectBytes(ctx, 'tree', content);
+        const sut = flattenRawTreeEscaped;
+
+        // Act
+        const result = await sut(ctx, rootId, TEST_BOUNDS);
+
+        // Assert
+        expect(result.entries.size).toBe(2);
+        expect(result.entries.get('\uDCFF.txt' as FilePath)?.id).toBe(lossyId);
+        expect(result.entries.get('\uFFFD.txt' as FilePath)?.id).toBe(twinId);
+      });
+    });
+  });
+
+  describe('Given a lossy directory holding a plain child', () => {
+    describe('When flattening with escaped names', () => {
+      it('Then the child key carries the escaped directory', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'x');
+        const subId = await writeRawObjectBytes(
+          ctx,
+          'tree',
+          rawEntryOfBytes(FILE_MODE.REGULAR, encode('x'), blobId),
+        );
+        const rootId = await writeRawObjectBytes(
+          ctx,
+          'tree',
+          rawEntryOfBytes(FILE_MODE.DIRECTORY, LOSSY_DIR_BYTES, subId),
+        );
+        const sut = flattenRawTreeEscaped;
+
+        // Act
+        const result = await sut(ctx, rootId, TEST_BOUNDS);
+
+        // Assert
+        expect([...result.entries.keys()]).toEqual(['\uDCFF/x']);
+      });
+    });
+  });
+
+  describe('Given a name starting with a byte-order mark', () => {
+    describe('When flattening with escaped names', () => {
+      it('Then the BOM stays unescaped', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'x');
+        const rootId = await writeRawObjectBytes(
+          ctx,
+          'tree',
+          rawEntryOfBytes(FILE_MODE.REGULAR, BOM_NAME_BYTES, blobId),
+        );
+        const sut = flattenRawTreeEscaped;
+
+        // Act
+        const result = await sut(ctx, rootId, TEST_BOUNDS);
+
+        // Assert
+        expect([...result.entries.keys()]).toEqual(['\uFEFFa']);
+      });
+    });
+  });
+});
+
+describe('flattenRawTree on a lossy name and its U+FFFD twin', () => {
+  describe('Given the view flatten', () => {
+    describe('When both names decode to the same view', () => {
+      it('Then they collapse onto one key', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const lossyId = await writeBlob(ctx, 'lossy');
+        const twinId = await writeBlob(ctx, 'twin');
+        const rootId = await writeRawObjectBytes(
+          ctx,
+          'tree',
+          concatBytes(
+            rawEntryOfBytes(FILE_MODE.REGULAR, LOSSY_NAME_BYTES, lossyId),
+            rawEntryOfBytes(FILE_MODE.REGULAR, UTF8_TWIN_BYTES, twinId),
+          ),
+        );
+        const sut = flattenRawTree;
+
+        // Act
+        const result = await sut(ctx, rootId, TEST_BOUNDS);
+
+        // Assert
+        expect([...result.entries.keys()]).toEqual(['\uFFFD.txt']);
       });
     });
   });

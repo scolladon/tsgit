@@ -8,6 +8,7 @@ import {
   compareCursorNames,
   cursorMode,
   cursorName,
+  cursorNameBytes,
   cursorNameEquals,
   cursorOid,
   cursorsSame,
@@ -593,6 +594,31 @@ describe('tree-cursor', () => {
           // Assert
           expect(result).toBe('100644');
         });
+      });
+    });
+  });
+});
+
+describe('cursorNameBytes', () => {
+  describe('Given an entry whose name bytes are not valid UTF-8', () => {
+    describe('When reading the name bytes', () => {
+      it('Then they equal the raw name bytes', () => {
+        // Arrange
+        const nameBytes = new Uint8Array([0xff, 0x2e, 0x74, 0x78, 0x74]);
+        const content = concatBytes(
+          encode('100644 '),
+          nameBytes,
+          new Uint8Array([0]),
+          hexToBytes(OID_HEX_20_A),
+        );
+        const cursor = openTreeCursor(content, SHA1_CONFIG);
+        const sut = cursorNameBytes;
+
+        // Act
+        const result = sut(cursor);
+
+        // Assert
+        expect(Array.from(result)).toEqual(Array.from(nameBytes));
       });
     });
   });

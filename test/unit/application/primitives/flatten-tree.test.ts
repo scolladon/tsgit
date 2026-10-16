@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { flattenTree } from '../../../../src/application/primitives/flatten-tree.js';
+import {
+  flattenEscapedTree,
+  flattenTree,
+} from '../../../../src/application/primitives/flatten-tree.js';
 import { getObjectStore } from '../../../../src/application/primitives/object-store.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { walkTree } from '../../../../src/application/primitives/walk-tree.js';
@@ -712,6 +715,33 @@ describe('flattenTree', () => {
           expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
           expect(data.depth).toBe(4);
         }
+      });
+    });
+  });
+});
+
+describe('flattenEscapedTree', () => {
+  describe('Given a tree holding a lossy name and its U+FFFD twin', () => {
+    describe('When flattening', () => {
+      it('Then both names keep their own key', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'x');
+        const oidBytes = hexToBytes(blobId);
+        const entryOf = (name: number[]): Uint8Array =>
+          new Uint8Array([...encode('100644 '), ...name, 0, ...oidBytes]);
+        const content = new Uint8Array([
+          ...entryOf([0xff, 0x2e, 0x74, 0x78, 0x74]),
+          ...entryOf([0xef, 0xbf, 0xbd, 0x2e, 0x74, 0x78, 0x74]),
+        ]);
+        const treeId = await writeRawObjectBytes(ctx, 'tree', content);
+        const sut = flattenEscapedTree;
+
+        // Act
+        const result = await sut(ctx, treeId);
+
+        // Assert
+        expect([...result.entries.keys()].sort()).toEqual(['\uDCFF.txt', '\uFFFD.txt']);
       });
     });
   });
