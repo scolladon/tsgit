@@ -923,6 +923,7 @@ describe('gitPickerValidPrefix', () => {
         { label: 'valid 3-byte', bytes: [0xe2, 0x80, 0x8c], expected: 3 },
         { label: 'valid 4-byte', bytes: [0xf0, 0x90, 0x80, 0x80], expected: 4 },
         { label: 'U+10FFFF', bytes: [0xf4, 0x8f, 0xbf, 0xbf], expected: 4 },
+        { label: 'U+3FFFF', bytes: [0xf0, 0xbf, 0xbf, 0xbf], expected: 4 },
         { label: 'U+FFFD', bytes: [0xef, 0xbf, 0xbd], expected: 3 },
         { label: 'C0 lead', bytes: [0x61, 0xc0, 0xaf], expected: 1 },
         { label: 'C1 lead', bytes: [0xc1, 0xbf], expected: 0 },

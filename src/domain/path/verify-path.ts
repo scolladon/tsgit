@@ -73,6 +73,7 @@ const acceptedSequenceLength = (bytes: Uint8Array, at: number): number => {
 /** Offset of the first sequence git's `pick_one_utf8_char` rejects, else `bytes.length`. */
 export const gitPickerValidPrefix = (bytes: Uint8Array): number => {
   let at = 0;
+  // Stryker disable next-line EqualityOperator: equivalent — at bytes.length the lead reads undefined, acceptedSequenceLength is 0 and the loop returns at, which is bytes.length.
   while (at < bytes.length) {
     const length = acceptedSequenceLength(bytes, at);
     if (length === 0) return at;
@@ -82,6 +83,7 @@ export const gitPickerValidPrefix = (bytes: Uint8Array): number => {
 };
 
 const firstNonCharacter = (part: string): number => {
+  // Stryker disable next-line EqualityOperator: equivalent — charCodeAt(part.length) is NaN, matches neither non-character, so the loop still ends at part.length.
   for (let i = 0; i < part.length; i += 1) {
     const code = part.charCodeAt(i);
     if (code === BMP_LAST_MINUS_ONE || code === BMP_LAST) return i;
@@ -98,6 +100,7 @@ const hfsCandidate = (part: string, partBytes?: Uint8Array): string =>
 
 const hfsAlias = (part: string, partBytes: Uint8Array | undefined, target: string): boolean => {
   const candidate = hfsCandidate(part, partBytes);
+  // Stryker disable next-line ConditionalExpression: equivalent — when it holds the result is part.toLowerCase() === target, which both callers' normalizeAliasCandidate check already caught before calling, so it is false here.
   if (candidate === part && !hasIgnorableCodepoint(part)) return false;
   // HFS folds case only; trailing dots and spaces are an NTFS rule.
   return stripIgnorableCodepoints(candidate).toLowerCase() === target;
@@ -167,6 +170,7 @@ const matchAliasComponent = (
   component: string,
   componentBytes?: Uint8Array,
 ): VerifyPathRejection | undefined => {
+  // Stryker disable next-line ConditionalExpression: equivalent — a fast path: a component it admits is all-ASCII, backslash-free and opens with neither . nor g, so both the NTFS and the HFS arms below return undefined for it.
   if (isObviouslyNotAnAlias(component)) return undefined;
   for (const part of component.split('\\')) {
     const reason = matchNtfsPart(part);
