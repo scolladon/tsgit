@@ -607,6 +607,68 @@ describe('merge', () => {
     });
   });
 
+  describe.each([
+    ['clashes on another path', true],
+    ['merges cleanly', false],
+  ] as const)(
+    'Given theirs deletes a/x, a was swapped for a symlink to real and the merge %s',
+    (_title, conflicting) => {
+      describe('When merge', () => {
+        it('Then it refuses with WORKING_TREE_DIRTY on a/x before any ref, index or work-tree write', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await init(ctx);
+          const root = ctx.layout.workDir;
+          await ctx.fs.writeUtf8(`${root}/b`, 'base\n');
+          await ctx.fs.writeUtf8(`${root}/a/x`, 'x\n');
+          await add(ctx, ['b', 'a/x']);
+          await commit(ctx, { message: 'base', author });
+          await branchCreate(ctx, { name: 'theirs' });
+          await checkout(ctx, { rev: 'theirs' });
+          const { rm } = await import('../../../../src/application/commands/rm.js');
+          await rm(ctx, ['a/x']);
+          await ctx.fs.writeUtf8(`${root}/b`, 'theirs\n');
+          await add(ctx, ['b']);
+          await commit(ctx, { message: 'theirs', author });
+          await checkout(ctx, { rev: 'main' });
+          await ctx.fs.writeUtf8(`${root}/b`, conflicting ? 'ours\n' : 'base\n');
+          await ctx.fs.writeUtf8(`${root}/c`, 'c\n');
+          await add(ctx, ['b', 'c']);
+          const oursTip = await commit(ctx, { message: 'ours', author });
+          await ctx.fs.rm(`${root}/a/x`);
+          await ctx.fs.rm(`${root}/a`);
+          await ctx.fs.writeUtf8(`${root}/real/x`, 'x\n');
+          await ctx.fs.writeUtf8(`${root}/real/survivor`, 'k\n');
+          await ctx.fs.symlink('real', `${root}/a`);
+          const indexBefore = await readIndex(ctx);
+
+          // Act
+          let error: unknown;
+          try {
+            await mergeRun(ctx, { rev: 'theirs', author });
+          } catch (caught) {
+            error = caught;
+          }
+
+          // Assert
+          expect((error as TsgitError).data).toEqual({
+            code: 'WORKING_TREE_DIRTY',
+            localChanges: ['a/x'],
+            untracked: [],
+          });
+          expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(oursTip.id);
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe(false);
+          expect(await ctx.fs.readUtf8(`${root}/b`)).toBe(conflicting ? 'ours\n' : 'base\n');
+          expect(await ctx.fs.readlink(`${root}/a`)).toBe('real');
+          expect(await ctx.fs.readUtf8(`${root}/real/x`)).toBe('x\n');
+          expect(await ctx.fs.readUtf8(`${root}/real/survivor`)).toBe('k\n');
+          expect(await readIndex(ctx)).toEqual(indexBefore);
+        });
+      });
+    },
+  );
+
   describe('Given an untracked file clashes with a theirs-only add', () => {
     describe('When merge', () => {
       it('Then it refuses with WORKING_TREE_DIRTY, leaving HEAD and the untracked file intact', async () => {

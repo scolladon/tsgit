@@ -4,6 +4,7 @@ import { add } from '../../../../src/application/commands/add.js';
 import { init } from '../../../../src/application/commands/init.js';
 import {
   changedPaths,
+  findTrackedBeyondSymlink,
   findWouldOverwrite,
 } from '../../../../src/application/primitives/find-would-overwrite.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
@@ -340,6 +341,59 @@ describe('findWouldOverwrite stat cache', () => {
         // Assert
         expect(result.localChanges).toEqual([]);
         expect(reads).not.toContain(`${ctx.layout.workDir}/a.txt`);
+      });
+    });
+  });
+});
+
+describe('findTrackedBeyondSymlink', () => {
+  describe('Given tracked and untracked paths beneath a directory swapped for a symlink', () => {
+    describe('When the changed set carries them with a tracked path beyond no link', () => {
+      it('Then only the tracked paths beyond the link come back, sorted ascending', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const id = await blob(ctx, 'x\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/real/keep`, 'k\n');
+        await ctx.fs.symlink('real', `${ctx.layout.workDir}/a`);
+        await work(ctx, 'plain/y', 'y\n');
+        const index = indexOf([
+          entryOf('a/z', id),
+          entryOf('a/x', id),
+          entryOf('plain/y', id),
+          entryOf('top', id),
+        ]);
+
+        // Act
+        const result = await findTrackedBeyondSymlink(
+          ctx,
+          set('a/z', 'a/x', 'a/untracked', 'plain/y', 'top'),
+          index,
+        );
+
+        // Assert
+        expect(result).toEqual(['a/x', 'a/z']);
+      });
+    });
+  });
+
+  describe('Given a tracked lossy entry', () => {
+    describe('When the changed set carries its escaped key', () => {
+      it('Then it is never probed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const id = await blob(ctx, 'x\n');
+        const lossy: IndexEntry = {
+          ...entryOf('d/\uFFFD.txt', id),
+          pathBytes: Uint8Array.from([0x64, 0x2f, 0xff, 0x2e, 0x74, 0x78, 0x74]),
+        };
+        const lstat = vi.spyOn(ctx.fs, 'lstat');
+
+        // Act
+        const result = await findTrackedBeyondSymlink(ctx, set('d/\uDCFF.txt'), indexOf([lossy]));
+
+        // Assert
+        expect(result).toEqual([]);
+        expect(lstat).not.toHaveBeenCalled();
       });
     });
   });

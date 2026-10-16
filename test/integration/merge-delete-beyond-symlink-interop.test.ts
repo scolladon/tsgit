@@ -2,9 +2,10 @@
  * Cross-tool interop — a merge that deletes a path beyond a symlinked leading
  * directory leaves the link and the files behind it alone. The same history is
  * built with canonical git in a peer and a tsgit repo, the directory `a` is
- * then replaced by a symlink to a real directory, and both tools merge; the
- * work tree left behind is compared. Git refuses the whole merge here (it cannot
- * stash the path it sees as deleted); only the shared invariant is pinned.
+ * then replaced by a symlink to a real directory, and both tools merge. Git
+ * refuses the whole merge here (it cannot save the path it sees as deleted),
+ * with or without a conflict elsewhere: both tools must refuse and leave HEAD,
+ * the index, the merge state and the work tree exactly as they were.
  *
  * @proves
  *   surface:        repo.merge
@@ -12,7 +13,14 @@
  *   unique:         merge-side delete beyond a symlink runs against git
  *   interopSurface: merge
  */
-import { existsSync, lstatSync, readlinkSync, symlinkSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  symlinkSync,
+} from 'node:fs';
 import { mkdir, rename, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -37,8 +45,8 @@ const AUTHOR: AuthorIdentity = {
 const OURS_B = 'ours\n';
 const THEIRS_B = 'theirs\n';
 
-/** `a/x` is tracked on base and ours and deleted by theirs. */
-const buildTrackedBeneathA = async (dir: string): Promise<void> => {
+/** `a/x` is tracked on base and ours and deleted by theirs; `b` is edited by theirs and, when `conflicting`, by ours. */
+const buildTrackedBeneathA = async (dir: string, conflicting: boolean): Promise<void> => {
   await writeFile(path.join(dir, 'b'), 'base\n');
   await mkdir(path.join(dir, 'a'));
   await writeFile(path.join(dir, 'a', 'x'), 'x\n');
@@ -49,8 +57,9 @@ const buildTrackedBeneathA = async (dir: string): Promise<void> => {
   await writeFile(path.join(dir, 'b'), THEIRS_B);
   git(dir, 'commit', '-q', '-am', 'theirs');
   git(dir, 'checkout', '-q', 'main');
-  await writeFile(path.join(dir, 'b'), OURS_B);
-  git(dir, 'commit', '-q', '-am', 'ours');
+  await writeFile(path.join(dir, conflicting ? 'b' : 'c'), OURS_B);
+  git(dir, 'add', '-A');
+  git(dir, 'commit', '-q', '-m', 'ours');
 };
 
 const replaceAWithLinkToReal = async (dir: string): Promise<void> => {
@@ -60,9 +69,12 @@ const replaceAWithLinkToReal = async (dir: string): Promise<void> => {
 };
 
 const snapshot = (dir: string): Record<string, unknown> => ({
+  head: git(dir, 'rev-parse', 'HEAD'),
+  index: git(dir, 'ls-files', '-s'),
+  mergeHead: existsSync(path.join(dir, '.git', 'MERGE_HEAD')),
+  b: readFileSync(path.join(dir, 'b'), 'utf8'),
   link: lstatSync(path.join(dir, 'a')).isSymbolicLink() ? readlinkSync(path.join(dir, 'a')) : null,
-  behindLink: existsSync(path.join(dir, 'real', 'x')),
-  survivor: existsSync(path.join(dir, 'real', 'survivor')),
+  behindLink: readdirSync(path.join(dir, 'real')).sort(),
 });
 
 describe.skipIf(!GIT_AVAILABLE)(
@@ -83,28 +95,37 @@ describe.skipIf(!GIT_AVAILABLE)(
       await pair.dispose();
     });
 
-    describe('Given theirs deletes a/x, a is now a symlink to real and b conflicts', () => {
-      describe('When both tools merge theirs', () => {
-        it('Then the link and the files behind it survive on both tools, as in git', async () => {
-          // Arrange
-          for (const dir of [pair.peer, pair.ours]) {
-            await buildTrackedBeneathA(dir);
-            await replaceAWithLinkToReal(dir);
-          }
-          repo = await openRepository({ cwd: pair.ours });
+    describe.each([
+      ['b conflicts', true],
+      ['the merge is otherwise clean', false],
+    ] as const)(
+      'Given theirs deletes a/x, a is now a symlink to real and %s',
+      (_title, conflicting) => {
+        describe('When both tools merge theirs', () => {
+          it('Then both refuse and leave HEAD, the index and the work tree untouched', async () => {
+            // Arrange
+            for (const dir of [pair.peer, pair.ours]) {
+              await buildTrackedBeneathA(dir, conflicting);
+              await replaceAWithLinkToReal(dir);
+            }
+            const before = snapshot(pair.ours);
+            expect(snapshot(pair.peer)).toEqual(before);
+            repo = await openRepository({ cwd: pair.ours });
 
-          // Act
-          const peerRun = tryRunGit(['-C', pair.peer, 'merge', 'theirs']);
-          await repo.merge
-            .run({ rev: 'theirs', message: 'm', author: AUTHOR })
-            .catch((error: unknown) => error);
+            // Act
+            const peerRun = tryRunGit(['-C', pair.peer, 'merge', 'theirs']);
+            const oursError = await repo.merge
+              .run({ rev: 'theirs', message: 'm', author: AUTHOR })
+              .catch((error: unknown) => error);
 
-          // Assert
-          expect(peerRun.ok).toBe(false);
-          expect(snapshot(pair.ours)).toEqual(snapshot(pair.peer));
-          expect(snapshot(pair.ours)).toEqual({ link: 'real', behindLink: true, survivor: true });
+            // Assert
+            expect(peerRun.ok).toBe(false);
+            expect(oursError).toMatchObject({ data: { code: 'WORKING_TREE_DIRTY' } });
+            expect(snapshot(pair.peer)).toEqual(before);
+            expect(snapshot(pair.ours)).toEqual(before);
+          });
         });
-      });
-    });
+      },
+    );
   },
 );

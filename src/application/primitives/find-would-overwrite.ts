@@ -25,6 +25,7 @@ import { compareWorkingTreeEntry, isWorkingTreeModified } from './compare-workin
 import { joinPath } from './internal/join-working-tree-path.js';
 import { buildCheckinAttributeProvider } from './internal/read-gitattributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
+import { createLeadingPathScanner } from './internal/symlinked-leading-path.js';
 
 export interface WouldOverwrite {
   readonly localChanges: ReadonlyArray<FilePath>;
@@ -131,4 +132,25 @@ export const findWouldOverwrite = async (
     localChanges: [...localChanges].sort(comparePaths).map(viewOfEscaped),
     untracked: [...untracked].sort(comparePaths).map(viewOfEscaped),
   };
+};
+
+/**
+ * The tracked changed paths whose leading directory is now a symlink. git sees
+ * each as deleted from the work tree, cannot save that state and refuses the
+ * merge outright, so the caller refuses them as local changes before any write.
+ * Sorted ascending.
+ */
+export const findTrackedBeyondSymlink = async (
+  ctx: Context,
+  paths: ReadonlySet<FilePath>,
+  currentIndex: GitIndex,
+): Promise<ReadonlyArray<FilePath>> => {
+  const byPath = stage0ByPath(currentIndex);
+  const scanner = createLeadingPathScanner(ctx);
+  const beyond: FilePath[] = [];
+  for (const path of paths) {
+    if (!byPath.has(path) || hasEscapedBytes(path)) continue;
+    if (await scanner.hasSymlinkedLeadingPath(path)) beyond.push(path);
+  }
+  return beyond.sort(comparePaths).map(viewOfEscaped);
 };

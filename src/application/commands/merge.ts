@@ -15,6 +15,7 @@ import {
 import { TsgitError } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import {
+  type GitIndex,
   type IndexEntry,
   STAGE0_FLAGS,
   type StatData,
@@ -81,7 +82,11 @@ import {
 import { readConfig } from '../primitives/config-read.js';
 import { createCommitWithStoredHeaders } from '../primitives/create-commit.js';
 import { detectMergeRenames } from '../primitives/detect-merge-renames.js';
-import { changedPaths, findWouldOverwrite } from '../primitives/find-would-overwrite.js';
+import {
+  changedPaths,
+  findTrackedBeyondSymlink,
+  findWouldOverwrite,
+} from '../primitives/find-would-overwrite.js';
 import { flattenEscapedTree } from '../primitives/flatten-tree.js';
 import { writeAutoMerge } from '../primitives/internal/auto-merge-ref.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
@@ -708,6 +713,8 @@ type StrategyAttempt =
       readonly kind: 'clean';
       readonly tree: ObjectId;
       readonly note: string;
+      /** The tracked-or-not paths the merge changes; absent when the strategy does not report them. */
+      readonly changed?: ReadonlySet<FilePath>;
       /** The tree an ort merge records in `AUTO_MERGE` as it switches to its result. */
       readonly autoMerge?: ObjectId;
     }
@@ -756,6 +763,9 @@ const commitCleanAttempt = async (
   commit: MergeCommitInput,
   tried: Extract<StrategyAttempt, { readonly kind: 'clean' }>,
 ): Promise<MergeEnding> => {
+  if (tried.changed !== undefined) {
+    await assertNoneBeyondSymlink(ctx, tried.changed, await readIndex(ctx));
+  }
   if (tried.autoMerge !== undefined) await writeAutoMerge(ctx, tried.autoMerge);
   return commitCleanMerge(ctx, commit, tried.tree, tried.note);
 };
@@ -816,7 +826,7 @@ const ortAttempt = async (
     { ourId, theirId, baseId, strategy: settings },
     opts.rev,
   );
-  if (result.kind === 'clean') return cleanOrtAttempt(result.tree, strategy);
+  if (result.kind === 'clean') return cleanOrtAttempt(result, strategy);
   return {
     kind: 'conflict',
     weight: conflictWeight(result.conflicts),
@@ -825,9 +835,13 @@ const ortAttempt = async (
 };
 
 /** A clean ort merge records its tree as the `AUTO_MERGE` too. */
-const cleanOrtAttempt = (tree: ObjectId, strategy: string): StrategyAttempt => ({
+const cleanOrtAttempt = (
+  { tree, changed }: Extract<MergeTreeResult, { readonly kind: 'clean' }>,
+  strategy: string,
+): StrategyAttempt => ({
   kind: 'clean',
   tree,
+  changed,
   note: mergeMadeBy(strategy),
   autoMerge: tree,
 });
@@ -1270,7 +1284,11 @@ const persistOctopusConflict = async (
 };
 
 type MergeTreeResult =
-  | { readonly kind: 'clean'; readonly tree: ObjectId }
+  | {
+      readonly kind: 'clean';
+      readonly tree: ObjectId;
+      readonly changed: ReadonlySet<FilePath>;
+    }
   | {
       readonly kind: 'conflict';
       readonly outcomes: ReadonlyArray<MergeOutcome>;
@@ -1361,7 +1379,7 @@ const settleMergeTree = async (
 ): Promise<MergeTreeResult> => {
   if (result.cleanMerge) {
     const tree = await synthesiseMergedTree(ctx, result.outcomes);
-    return { kind: 'clean', tree };
+    return { kind: 'clean', tree, changed: changedPaths(result.outcomes, [], ourFlat.entries) };
   }
   const staged = await stageSplitRenameBlobs(ctx, result.conflicts);
   return {
@@ -1680,10 +1698,24 @@ const assertNothingOverwritten = async (
   changed: ReadonlySet<FilePath>,
 ): Promise<void> => {
   const currentIndex = await readIndex(ctx);
+  await assertNoneBeyondSymlink(ctx, changed, currentIndex);
   const { localChanges, untracked } = await findWouldOverwrite(ctx, changed, currentIndex);
   if (localChanges.length > 0 || untracked.length > 0) {
     throw workingTreeDirty({ localChanges, untracked });
   }
+};
+
+/**
+ * git's merge cannot save a work tree where a tracked path now lies beyond a
+ * symlink and dies before touching anything; that path is a local change.
+ */
+const assertNoneBeyondSymlink = async (
+  ctx: Context,
+  changed: ReadonlySet<FilePath>,
+  currentIndex: GitIndex,
+): Promise<void> => {
+  const localChanges = await findTrackedBeyondSymlink(ctx, changed, currentIndex);
+  if (localChanges.length > 0) throw workingTreeDirty({ localChanges, untracked: [] });
 };
 
 /**
