@@ -1849,6 +1849,9 @@ const writeConflictingWorkingTree = async (
   );
 };
 
+/** The writer skips a path holding escaped bytes, so no leading directory is made for it on any route. */
+const isWritablePath = (path: FilePath): boolean => !hasEscapedBytes(path);
+
 const outcomeWave = (
   outcome: PathedWrite,
   matcher: SparseMatcher | undefined,
@@ -1858,7 +1861,7 @@ const outcomeWave = (
   path: outcome.path,
   isLink: hasLinkMode([outcome.mode]),
   validate: () => validateTreePath(outcome.path, outcome.mode),
-  needsDirectories: isMaterialised(outcome, matcher),
+  needsDirectories: isWritablePath(outcome.path) && isMaterialised(outcome, matcher),
   run: () => writeOutcomeToTree(outcome, matcher, writer, scanner),
 });
 
@@ -1874,7 +1877,7 @@ const conflictWave = (
     path: conflict.path,
     isLink: hasLinkMode(modes),
     validate: () => validateConflictWritePaths(conflict),
-    needsDirectories: mode !== undefined,
+    needsDirectories: isWritablePath(conflict.path) && mode !== undefined,
     run: () => writeConflictToTree(ctx, conflict, writer, scanner),
   };
 };

@@ -6,6 +6,7 @@ import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
+import { rm } from '../../../../src/application/commands/rm.js';
 import { stashApply, stashPush } from '../../../../src/application/commands/stash.js';
 import { applyMergeToWorktree } from '../../../../src/application/primitives/apply-merge-to-worktree.js';
 import * as scannerMod from '../../../../src/application/primitives/internal/symlinked-leading-path.js';
@@ -102,6 +103,35 @@ const seedDistinctTypesConflict = async (): Promise<Context> => {
   return ctx;
 };
 
+/** Theirs adds symlink `link` and edits every `files` entry ours deletes: each is a modify/delete conflict. */
+const seedLinkBesideModifyDeletes = async (
+  link: string,
+  files: ReadonlyArray<string>,
+): Promise<Context> => {
+  const ctx = createMemoryContext();
+  const root = ctx.layout.workDir;
+  const writeAll = async (text: string): Promise<void> => {
+    for (const file of files) {
+      await ctx.fs.mkdir(`${root}/${file.split('/')[0]}`);
+      await ctx.fs.writeUtf8(`${root}/${file}`, text);
+    }
+  };
+  await init(ctx);
+  await writeAll('base');
+  await add(ctx, [...files]);
+  await commit(ctx, { message: 'base', author });
+  await branchCreate(ctx, { name: 'theirs' });
+  await checkout(ctx, { rev: 'theirs' });
+  await writeAll('payload');
+  await ctx.fs.symlink(OUTSIDE, `${root}/${link}`);
+  await add(ctx, [...files, link]);
+  await commit(ctx, { message: 'theirs', author });
+  await checkout(ctx, { rev: 'main' });
+  await rm(ctx, [...files]);
+  await commit(ctx, { message: 'ours', author });
+  return ctx;
+};
+
 describe('conflicted merge leading-symlink safety', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -169,6 +199,52 @@ describe('conflicted merge leading-symlink safety', () => {
         expect(result.kind).toBe('conflict');
         expect(recorded).toEqual([]);
         expect(await inner.fs.readdir(OUTSIDE)).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given theirs adds symlink A and edits a/f that ours deletes, on a disk folding A and a', () => {
+    describe('When the conflicted merge writes them', () => {
+      it('Then the a/f conflict never lands through the link', async () => {
+        // Arrange
+        const inner = await seedLinkBesideModifyDeletes('A', ['a/f']);
+        await inner.fs.mkdir(OUTSIDE);
+        const { fs, recorded } = createInterleavingFs(inner.fs, {
+          foldUnder: WORKDIR,
+        });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut({ ...inner, fs }, { rev: 'theirs', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(recorded).toEqual([]);
+        expect(await inner.fs.readdir(OUTSIDE)).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given theirs adds symlink AB and edits ab/f and Ab/g that ours deletes, on a disk folding them', () => {
+    describe('When the conflicted merge writes them', () => {
+      it('Then both conflicts land in one directory replacing the link', async () => {
+        // Arrange
+        const inner = await seedLinkBesideModifyDeletes('AB', ['ab/f', 'Ab/g']);
+        await inner.fs.mkdir(OUTSIDE);
+        const { fs, recorded } = createInterleavingFs(inner.fs, {
+          foldUnder: WORKDIR,
+        });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut({ ...inner, fs }, { rev: 'theirs', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(recorded).toEqual([]);
+        expect(await inner.fs.readdir(OUTSIDE)).toEqual([]);
+        expect(await fs.readUtf8(`${WORKDIR}/ab/f`)).toBe('payload');
+        expect(await fs.readUtf8(`${WORKDIR}/ab/g`)).toBe('payload');
       });
     });
   });

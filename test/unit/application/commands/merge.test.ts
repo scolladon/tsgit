@@ -49,6 +49,7 @@ import { NO_PARSER_OFFSET } from '../../../../src/domain/git-index/path-validato
 import type { MergeConflict, MergeOutcome } from '../../../../src/domain/merge/index.js';
 import type {
   AuthorIdentity,
+  FileMode,
   FilePath,
   ObjectId,
   RefName,
@@ -6943,6 +6944,73 @@ describe('merge — trees holding a non-UTF-8 path', () => {
         const { entries } = await readIndex(ctx);
         const skipped = entries.filter((e) => e.flags.skipWorktree);
         expect(skipped.map((e) => hex(e.pathBytes ?? new Uint8Array()))).toEqual([FF_TXT_HEX]);
+      });
+    });
+  });
+
+  describe('Given a non-UTF-8 name under a directory d the work tree lacks', () => {
+    type Entries = (ctx: Context) => Promise<ReadonlyArray<TreeEntry>>;
+
+    const aOf = async (ctx: Context, text: string): Promise<TreeEntry> =>
+      treeEntry(FILE_MODE.REGULAR, 'a', await writeBlob(ctx, text));
+    const dOf = async (ctx: Context, text: string): Promise<TreeEntry> =>
+      treeEntry(FILE_MODE.DIRECTORY, 'd', await treeOf(ctx, [[FF_TXT, text]]));
+    const lOf = async (ctx: Context, mode: FileMode): Promise<TreeEntry> =>
+      treeEntry(mode, 'l', await writeBlob(ctx, 'target'));
+
+    /** main and side fork from a base; the index and HEAD follow main, the work tree is empty. */
+    const seedEntries = async (base: Entries, main: Entries, side: Entries): Promise<Context> => {
+      const ctx = createMemoryContext();
+      await init(ctx);
+      const treeFrom = async (entries: Entries): Promise<ObjectId> =>
+        writeTreeMod.writeTree(ctx, await entries(ctx));
+      const root = await commitOf(ctx, await treeFrom(base), 'main', []);
+      await commitOf(ctx, await treeFrom(side), 'side', [root]);
+      await commitOf(ctx, await treeFrom(main), 'main', [root]);
+      await reset(ctx, { mode: 'mixed', rev: 'main' });
+      return ctx;
+    };
+
+    describe.each([
+      ['a symlink', FILE_MODE.SYMLINK],
+      ['a regular file', FILE_MODE.REGULAR],
+    ] as const)('And side adds %s l', (_kind, linkMode) => {
+      describe('When merge conflicts on the name main edits and side deletes', () => {
+        it('Then d is not created, as the name is never written', async () => {
+          // Arrange
+          const ctx = await seedEntries(
+            async (c) => [await dOf(c, 'base\n')],
+            async (c) => [await dOf(c, 'ours\n')],
+            async (c) => [await lOf(c, linkMode)],
+          );
+          const sut = mergeRun;
+
+          // Act
+          const result = await sut(ctx, { rev: 'side', author });
+
+          // Assert
+          expect(result.kind).toBe('conflict');
+          expect(await ctx.fs.exists(`${ctx.layout.workDir}/d`)).toBe(false);
+        });
+      });
+
+      describe('When merge resolves the name side edits beside a conflict on a', () => {
+        it('Then d is not created, as the name is never written', async () => {
+          // Arrange
+          const ctx = await seedEntries(
+            async (c) => [await aOf(c, 'base\n'), await dOf(c, 'x')],
+            async (c) => [await aOf(c, 'ours\n'), await dOf(c, 'x')],
+            async (c) => [await aOf(c, 'theirs\n'), await dOf(c, 'x2'), await lOf(c, linkMode)],
+          );
+          const sut = mergeRun;
+
+          // Act
+          const result = await sut(ctx, { rev: 'side', author });
+
+          // Assert
+          expect(result.kind).toBe('conflict');
+          expect(await ctx.fs.exists(`${ctx.layout.workDir}/d`)).toBe(false);
+        });
       });
     });
   });
