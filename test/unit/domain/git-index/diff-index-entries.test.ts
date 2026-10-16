@@ -34,6 +34,24 @@ const entry = (
 });
 
 describe('diffIndexEntries', () => {
+  describe('Given changed entries with and without raw path bytes', () => {
+    describe('When diffing', () => {
+      it('Then each changed path carries only its path and its raw bytes', () => {
+        // Arrange
+        const raw = Uint8Array.of(0xff);
+        const before = [entry('a'), entry('�', { pathBytes: raw })];
+        const after = [entry('a', { id: 'b' }), entry('�', { id: 'b', pathBytes: raw })];
+
+        // Act
+        const sut = diffIndexEntries;
+        const result = sut(before, after);
+
+        // Assert
+        expect(result.changedPaths).toStrictEqual([{ path: 'a' }, { path: '�', pathBytes: raw }]);
+      });
+    });
+  });
+
   describe('Given an entry whose id changed', () => {
     describe('When diffing', () => {
       it('Then only that path is changed and the tracked set is stable', () => {

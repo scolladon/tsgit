@@ -23,6 +23,13 @@ const comparatorForBoth = (
 
 const differs = (a: IndexEntry, b: IndexEntry): boolean => a.id !== b.id || a.mode !== b.mode;
 
+// The path alone: duplicate-path entries differing in other fields must not
+// make the change depend on which one was seen first.
+const indexPathOf = (entry: IndexEntry): IndexPath =>
+  entry.pathBytes === undefined
+    ? { path: entry.path }
+    : { path: entry.path, pathBytes: entry.pathBytes };
+
 const collectChangedPaths = (
   before: ReadonlyArray<IndexEntry>,
   after: ReadonlyArray<IndexEntry>,
@@ -31,7 +38,9 @@ const collectChangedPaths = (
   const changed: IndexPath[] = [];
   const mark = (entry: IndexEntry): void => {
     const last = changed[changed.length - 1];
-    if (last === undefined || indexPathKey(last) !== indexPathKey(entry)) changed.push(entry);
+    if (last === undefined || indexPathKey(last) !== indexPathKey(entry)) {
+      changed.push(indexPathOf(entry));
+    }
   };
   let i = 0;
   let j = 0;
