@@ -978,7 +978,7 @@ const presentOnDisk = async (
     if (stat === undefined) return false;
     return !stat.isDirectory || entry.mode === FILE_MODE.GITLINK;
   } catch (err) {
-    if (err instanceof TsgitError && err.data.code === 'NOT_A_DIRECTORY') return false;
+    if (err instanceof TsgitError && err.data.code === NOT_A_DIRECTORY) return false;
     throw err;
   }
 };
