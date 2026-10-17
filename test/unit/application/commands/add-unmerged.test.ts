@@ -723,18 +723,22 @@ describe('Given a path held at stage 0 and at the conflict stages 1 and 2, modif
 });
 
 describe('Given a path held at stage 0 and at the conflict stages 1 and 2, unchanged on disk', () => {
-  describe('When add c runs', () => {
-    it('Then the index keeps every entry and reports no change', async () => {
+  describe.each([
+    { title: 'add c', run: (ctx: Ctx) => add(ctx, ['c']) },
+    { title: 'add all', run: (ctx: Ctx) => add(ctx, [], { all: true }) },
+    { title: 'add .', run: (ctx: Ctx) => add(ctx, ['.']) },
+  ])('When $title runs', ({ run }) => {
+    it('Then the path is reported and the index keeps every entry', async () => {
       // Arrange
       const ctx = await seedZeroBesideConflict('c-zero');
       const before = await stagesOf(ctx);
-      const sut = add;
+      const sut = run;
 
       // Act
-      const result = await sut(ctx, ['c']);
+      const result = await sut(ctx);
 
       // Assert
-      expect(result.modified).toEqual([]);
+      expect(result.modified).toEqual(['c']);
       expect(await stagesOf(ctx)).toEqual(before);
       expect(await recordedStages(ctx)).toEqual([]);
     });

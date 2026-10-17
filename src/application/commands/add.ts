@@ -238,7 +238,13 @@ const addLiteralOnly = async (
   try {
     const { indexRules, unmergedStages, stageZeroBeside, sorted, ...state } =
       await readExistingEntries(ctx);
-    const staging = { ctx, scope: { ...scope, indexRules }, ...state, ensurePromisorConfigValid };
+    const staging = {
+      ctx,
+      scope: { ...scope, indexRules },
+      ...state,
+      stageZeroBeside,
+      ensurePromisorConfigValid,
+    };
     const { remaining, restagedPaths, ...result } = await stageLiteralsOver(
       staging,
       sorted,
@@ -281,6 +287,7 @@ interface Staging {
   readonly ctx: Context;
   readonly scope: StagingScope;
   readonly entries: ReadonlyMap<IndexPathKey, IndexEntry>;
+  readonly stageZeroBeside: ReadonlyMap<IndexPathKey, IndexEntry>;
   readonly indexMtime: IndexMtime | undefined;
   readonly ensurePromisorConfigValid: PromisorGuard;
 }
@@ -330,7 +337,9 @@ const stageLiterals = async (
     if (wasRestaged(previous, entry)) restagedPaths.push(entry);
     if (notice !== undefined) eolNotices.push(notice);
     if (previous === undefined) added.push(path);
-    else if (isModified(previous, entry)) modified.push(path);
+    else if (isModified(previous, entry) || staging.stageZeroBeside.has(keyOfPath(path))) {
+      modified.push(path);
+    }
     if (previous === undefined || previous.flags.stage !== 0) inserted.push({ path, previous });
   }
   return { newEntries, added, modified, eolNotices, restagedPaths, inserted };
@@ -691,6 +700,7 @@ const addByPathspec = async (
     const { newEntries, matched, added, modified, eolNotices, restagedPaths } = tallyWalkOutcomes(
       staged.existing,
       staged.outcomes,
+      staged.stageZeroBeside,
     );
     // git add never refuses the whole tree, even when it holds nothing to add.
     const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
@@ -789,7 +799,7 @@ const RECLEANED_MODES: ReadonlySet<FileMode> = new Set([
 ]);
 
 const renormalizeEntries = async (
-  staging: Omit<Staging, 'entries' | 'indexMtime'>,
+  staging: Omit<Staging, 'entries' | 'indexMtime' | 'stageZeroBeside'>,
   entries: ReadonlyArray<IndexEntry>,
   matcher: ResolvedPathspec['matcher'],
 ): Promise<{
@@ -815,7 +825,11 @@ const renormalizeEntries = async (
 };
 
 const renormalizeOne = async (
-  { ctx, scope, ensurePromisorConfigValid }: Omit<Staging, 'entries' | 'indexMtime'>,
+  {
+    ctx,
+    scope,
+    ensurePromisorConfigValid,
+  }: Omit<Staging, 'entries' | 'indexMtime' | 'stageZeroBeside'>,
   previous: IndexEntry,
 ): Promise<IndexEntry> => {
   const { path } = previous;
@@ -909,6 +923,7 @@ const restagedPathsOf = (
 const tallyWalkOutcomes = (
   existing: ReadonlyMap<IndexPathKey, IndexEntry>,
   outcomes: ReadonlyArray<WalkOutcome>,
+  stageZeroBeside: ReadonlyMap<IndexPathKey, IndexEntry>,
 ): {
   readonly newEntries: Map<IndexPathKey, IndexEntry>;
   readonly matched: ReadonlyArray<FilePath>;
@@ -925,7 +940,9 @@ const tallyWalkOutcomes = (
     matched.push(outcome.path);
     newEntries.set(keyOfPath(outcome.path), outcome.entry);
     if (outcome.kind === 'added') added.push(outcome.path);
-    else if (outcome.kind === 'modified') modified.push(outcome.path);
+    else if (outcome.kind === 'modified' || stageZeroBeside.has(keyOfPath(outcome.path))) {
+      modified.push(outcome.path);
+    }
   }
   const restagedPaths = restagedPathsOf(outcomes, existing);
   return { newEntries, matched, added, modified, eolNotices: noticesOf(outcomes), restagedPaths };
@@ -963,6 +980,7 @@ export const addAll = async (
     const { newEntries, added, modified, eolNotices, restagedPaths } = tallyWalkOutcomes(
       existing,
       outcomes,
+      state.stageZeroBeside,
     );
     const removedEntries = await collectRemovedEntries(ctx, existing, seen);
     const view = { sorted, inserted: insertedBy(outcomes, existing) };
