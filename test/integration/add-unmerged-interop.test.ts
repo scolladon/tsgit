@@ -633,6 +633,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Assert
           expect(result.modified).toEqual(reported.added);
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
           await expectSameResolveUndo();
         });
       });
