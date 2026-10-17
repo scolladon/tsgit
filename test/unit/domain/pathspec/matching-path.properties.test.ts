@@ -3,8 +3,14 @@ import { describe, expect, it } from 'vitest';
 import { indexPathOfBytes } from '../../../../src/domain/git-index/index-path-key.js';
 import { wellFormed } from '../../../../src/domain/objects/encoding.js';
 import { compilePathspec } from '../../../../src/domain/pathspec/compile-pathspec.js';
-import { matchesPathspec } from '../../../../src/domain/pathspec/match-pathspec.js';
-import { matchesIndexPath } from '../../../../src/domain/pathspec/matching-path.js';
+import {
+  matchesPathspec,
+  matchesUnmergedPath,
+} from '../../../../src/domain/pathspec/match-pathspec.js';
+import {
+  matchesIndexPath,
+  matchesUnmergedIndexPath,
+} from '../../../../src/domain/pathspec/matching-path.js';
 import { arbRawPathBytes } from '../git-index/arbitraries.js';
 import { arbCandidatePath, arbGlobPattern, arbLiteralPattern } from './arbitraries.js';
 
@@ -64,6 +70,30 @@ describe('matchesIndexPath properties', () => {
             if (bytes.includes(SLASH)) return;
             expect(matchesIndexPath(compilePathspec(['*']), entry)).toBe(true);
           }),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+});
+
+describe('matchesUnmergedIndexPath properties', () => {
+  describe('Given a UTF-8 entry, an arbitrary spec and entry count', () => {
+    describe('When matchesUnmergedIndexPath is called', () => {
+      it('Then the verdict equals matchesUnmergedPath on the entry path', () => {
+        // Arrange + Act + Assert
+        fc.assert(
+          fc.property(
+            fc.array(fc.oneof(arbLiteralPattern(), arbGlobPattern()), { maxLength: 4 }),
+            arbCandidatePath(),
+            fc.integer({ min: 1, max: 4 }),
+            (patterns, path, count) => {
+              const spec = compilePathspec([...patterns, '', `!${path}`]);
+              expect(matchesUnmergedIndexPath(spec, { path }, count)).toBe(
+                matchesUnmergedPath(spec, path, count),
+              );
+            },
+          ),
           { numRuns: 100 },
         );
       });

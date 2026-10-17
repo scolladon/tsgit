@@ -17,3 +17,15 @@ export const matchesPathspec = (spec: Pathspec, path: FilePath): boolean => {
   }
   return matched;
 };
+
+// The elements that do not name `path` exactly: a literal whose body is `path`.
+export const withoutExactly = (spec: Pathspec, path: FilePath): Pathspec =>
+  spec.filter((entry) => !(entry.isLiteral && entry.body === path));
+
+const CONFLICTED_ENTRY_COUNT = 2;
+
+// git's verdict for a path held at `entryCount` index entries: a conflicted
+// path stays selected when only an exact exclusion would have removed it.
+export const matchesUnmergedPath = (spec: Pathspec, path: FilePath, entryCount: number): boolean =>
+  matchesPathspec(spec, path) ||
+  (entryCount >= CONFLICTED_ENTRY_COUNT && matchesPathspec(withoutExactly(spec, path), path));

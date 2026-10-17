@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import type { IndexPath } from '../../../../src/domain/git-index/index-path-key.js';
+import {
+  type IndexPath,
+  indexPathOfBytes,
+} from '../../../../src/domain/git-index/index-path-key.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import { compilePathspec } from '../../../../src/domain/pathspec/compile-pathspec.js';
-import { matchesIndexPath } from '../../../../src/domain/pathspec/matching-path.js';
+import {
+  matchesIndexPath,
+  matchesUnmergedIndexPath,
+} from '../../../../src/domain/pathspec/matching-path.js';
 
 const LOSSY: IndexPath = {
   path: '�.txt' as FilePath,
@@ -91,6 +97,56 @@ describe('matchesIndexPath', () => {
 
         // Act
         const result = sut(spec, NESTED_LOSSY);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+});
+
+describe('matchesUnmergedIndexPath', () => {
+  describe('Given a lossy entry held at three stages', () => {
+    describe('When matched through its escaped view', () => {
+      it('Then a covering directory spec matches and a foreign one does not', () => {
+        // Arrange
+        const entry = indexPathOfBytes(Uint8Array.of(0x64, 0x2f, 0xff));
+        const sut = matchesUnmergedIndexPath;
+
+        // Act
+        const covered = sut(compilePathspec(['d']), entry, 3);
+        const foreign = sut(compilePathspec(['e']), entry, 3);
+
+        // Assert
+        expect(covered).toBe(true);
+        expect(foreign).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a plain entry', () => {
+    describe('When one stage exists and an exact exclusion follows the dot', () => {
+      it('Then the verdict is false', () => {
+        // Arrange
+        const spec = compilePathspec(['', '!f']);
+        const sut = matchesUnmergedIndexPath;
+
+        // Act
+        const result = sut(spec, { path: 'f' as FilePath }, 1);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+
+    describe('When three stages exist and an exact exclusion follows the dot', () => {
+      it('Then the verdict is true', () => {
+        // Arrange
+        const spec = compilePathspec(['', '!f']);
+        const sut = matchesUnmergedIndexPath;
+
+        // Act
+        const result = sut(spec, { path: 'f' as FilePath }, 3);
 
         // Assert
         expect(result).toBe(true);
