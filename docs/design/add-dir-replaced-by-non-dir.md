@@ -1017,13 +1017,13 @@ Settled:
 | DC8 | Report a staged unmerged path in `modified` whatever its content | Folded: ADR-997 (R10, Part 5) |
 | DC9 | An exclusion does not shield an unmerged path a positive covers | Folded, against the recommendation: ADR-998 (§D1.5, §D9, Part 11); its bound is DC10 |
 | O5 | Record resolve-undo when `add` resolves a conflict | Folded for `add` only, against the recommendation: ADR-999 (§D1.6, §D8, Parts 3 and 6) |
+| DC10 | Which exclusions stop shielding an unmerged path | Adopted as recommended (option A, the pinned rule): ADR-1000 refines ADR-998 (§D9, Part 11) |
 
-Open:
+Open: none. The DC10 row below is kept as the record of the options.
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
-| DC10 | Which exclusions stop shielding an unmerged path (ADR-998 says "whatever the exclusions say"; §D1.5 pins that only an *exact* exclusion of a path with ≥ 2 stages leaks, and not when an exact positive is the only cover) | A. Follow the pinned rule (§D9 `matchesUnmergedPath`): every §D1.5 row a tsgit route hosts matches; ADR-998 gets a refining ADR stating the bound. B. ADR-998 as worded: any covering positive stages an unmerged path; one simpler predicate, but D5, D6, E3, E4, E7, S1, R12h, R12hd diverge (tsgit resolves or removes conflicts git keeps, which `add .` after a `:!*.lock`-style exclusion would hit). C. Fold only the D/F rows (R12, R12d) and leave the walk leaf filter as today: smallest change, D0-class rows stay divergent against ADR-998. | **A** | ADR-226: the ADR's intent is git's behaviour, and the pin shows its wording over-reaches. A costs the same predicate as B plus one `filter` over the pathspec for unmerged paths only; B trades a shorter predicate for 8 pinned divergences, each one resolving a conflict the user excluded. C contradicts ADR-998. |
-
+| DC10 (settled) 
 ## Test strategy
 
 - **Interop (faithfulness proof):** `test/integration/add-interop.test.ts`, one describe per row
