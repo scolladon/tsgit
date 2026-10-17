@@ -1,6 +1,7 @@
 import { splitAtSlash } from '../git-index/index-path-key.js';
-import { decodePreservingBom, wellFormedSequenceLength } from '../objects/encoding.js';
+import { decodePreservingBom, encode, wellFormedSequenceLength } from '../objects/encoding.js';
 import { FILE_MODE, type FileMode } from '../objects/file-mode.js';
+import { matchesNtfsDotgitAlias } from '../objects/tree-entry-bytes.js';
 
 export type VerifyPathRejection =
   | 'absolute-path'
@@ -100,7 +101,7 @@ const hfsCandidate = (part: string, partBytes?: Uint8Array): string =>
 
 const hfsAlias = (part: string, partBytes: Uint8Array | undefined, target: string): boolean => {
   const candidate = hfsCandidate(part, partBytes);
-  // Stryker disable next-line ConditionalExpression: equivalent — when it holds the result is part.toLowerCase() === target, which both callers' normalizeAliasCandidate check already caught before calling, so it is false here.
+  // Stryker disable next-line ConditionalExpression: equivalent — when it holds the result is part.toLowerCase() === target, which the .git caller's normalizeAliasCandidate check and the .gitmodules caller's exact-name check already caught before calling, so it is false here.
   if (candidate === part && !hasIgnorableCodepoint(part)) return false;
   // HFS folds case only; trailing dots and spaces are an NTFS rule.
   return stripIgnorableCodepoints(candidate).toLowerCase() === target;
@@ -135,6 +136,7 @@ const ASCII_DOT = 0x2e;
 const ASCII_UPPER_G = 0x47;
 const ASCII_LOWER_G = 0x67;
 const ASCII_BACKSLASH = 0x5c;
+const ASCII_SLASH = 0x2f;
 const ASCII_MAX = 0x7f;
 
 /**
@@ -224,52 +226,40 @@ const findComponentRejection = (
   return undefined;
 };
 
-// NTFS short-name forms for `.gitmodules`: Windows' 8.3 generator emits
-// `GITMOD~1`..`GITMOD~4` for the truncated base name, then falls back to a
-// hashed 6-char prefix (`GI7EBA~<digit>`) once those four are taken — pinned
-// against git 2.55 (`update-index --add --cacheinfo 120000,<blob>,<name>`):
-// `gitmod~1`..`gitmod~4` are refused, `gitmod~0` and `gitmod~5`+ are not;
-// `gi7eba~1`..`gi7eba~9` are refused, while any OTHER 6-char prefix, digit
-// `0`, or 2+ digits (`gi7eba~10`) is not — the hashed prefix is a hardcoded
-// literal, not a computed check, and Windows only ever emits a single
-// trailing digit for the hashed form.
-const GITMOD_NTFS_SHORT_NAME = /^gitmod~[1-4]$/;
-const GITMOD_NTFS_HASHED_SHORT_NAME = /^gi7eba~[1-9]$/;
+// git re-tests the rest of the whole path at each component start and after each
+// `\` it reads mid-component. The `.gitmodules` alias must be followed only by
+// dots/spaces up to the end or a `:`, so a `/` ends a match, and a `\` opening a
+// component is consumed untested.
+const opensComponent = (bytes: Uint8Array, at: number): boolean =>
+  at === 0 || bytes[at - 1] === ASCII_SLASH;
 
-/**
- * True if `component` is `.gitmodules` or one of its NTFS (`gitmod~1`..
- * `gitmod~4` truncated short name, `gi7eba~1`..`gi7eba~9` hashed short name —
- * either with a `:`-stream suffix) / HFS+ (ignorable-codepoint) aliases — the
- * same normalisation {@link matchNtfsPart} runs for `.git`, re-targeted at
- * `.gitmodules`. Unlike {@link matchAliasComponent}, this skips the
- * backslash-split: a component reaching `verifyPath` has already passed
- * `validateIndexPath`'s unconditional backslash rejection, so a
- * `.gitmodules`-alias component can never itself carry an embedded `\`.
- */
-const matchGitmodulesAliasPart = (component: string, componentBytes?: Uint8Array): boolean => {
-  const { candidate } = splitAtStream(component);
-  const normalized = normalizeAliasCandidate(candidate);
-  if (normalized === GITMODULES) return true;
-  if (GITMOD_NTFS_SHORT_NAME.test(normalized)) return true;
-  if (GITMOD_NTFS_HASHED_SHORT_NAME.test(normalized)) return true;
-  return hfsAlias(component, componentBytes, GITMODULES);
-};
+const isNtfsRetestPoint = (bytes: Uint8Array, at: number): boolean =>
+  bytes[at] === ASCII_SLASH || (bytes[at] === ASCII_BACKSLASH && !opensComponent(bytes, at));
+
+const startsNtfsGitmodulesAlias = (bytes: Uint8Array, start: number): boolean =>
+  matchesNtfsDotgitAlias(bytes, start, bytes.length, 'gitmodules');
+
+const hasNtfsGitmodulesAlias = (bytes: Uint8Array): boolean =>
+  startsNtfsGitmodulesAlias(bytes, 0) ||
+  bytes.some((_, at) => isNtfsRetestPoint(bytes, at) && startsNtfsGitmodulesAlias(bytes, at + 1));
+
+// git's `verify_dotfile`: the exact name per `/` component, ASCII case-fold only,
+// plus the HFS+ ignorable-codepoint aliases.
+const namesGitmodulesComponent = (component: string, componentBytes?: Uint8Array): boolean =>
+  component.toLowerCase() === GITMODULES || hfsAlias(component, componentBytes, GITMODULES);
 
 // CVE-2018-11235 hardening: an entry whose mode is a symlink must not carry
 // a `.gitmodules` path component (or one of its NTFS/HFS-obscured aliases)
-// ANYWHERE — not only as the leaf. Verified against git (`update-index --add
-// --cacheinfo 120000,<blob>,.gitmodules/foo` → `error: Invalid path`): the
-// check runs once per path component, gated on the entry's own mode, exactly
-// like the `.git`-alias scan above — a `.gitmodules` directory holding an
-// unrelated symlinked leaf is refused exactly as a symlinked `.gitmodules`
-// leaf itself is.
-const hasGitmodulesSymlinkComponent = (
+// ANYWHERE — not only as the leaf. The check is gated on the entry's own mode,
+// so a `.gitmodules` directory holding an unrelated symlinked leaf is refused
+// exactly as a symlinked `.gitmodules` leaf itself is.
+const hasGitmodulesSymlinkAlias = (
+  pathBytes: Uint8Array,
   components: readonly string[],
-  mode: FileMode,
   bytes?: readonly Uint8Array[],
 ): boolean =>
-  mode === FILE_MODE.SYMLINK &&
-  components.some((component, index) => matchGitmodulesAliasPart(component, bytes?.[index]));
+  hasNtfsGitmodulesAlias(pathBytes) ||
+  components.some((component, index) => namesGitmodulesComponent(component, bytes?.[index]));
 
 /**
  * Mirrors git's `verify_path(path, mode)`: a total function over any string,
@@ -287,7 +277,8 @@ export const verifyPath = (
   const bytes = pathBytes && splitAtSlash(pathBytes);
   const reason = findComponentRejection(components, bytes);
   if (reason !== undefined) return reason;
-  return hasGitmodulesSymlinkComponent(components, mode, bytes)
+  if (mode !== FILE_MODE.SYMLINK) return undefined;
+  return hasGitmodulesSymlinkAlias(pathBytes ?? encode(path), components, bytes)
     ? 'gitmodules-not-regular'
     : undefined;
 };

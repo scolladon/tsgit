@@ -8,7 +8,9 @@
  * Lens 2 (compositional matcher) partially fits isDotGitAlias: joining two
  * non-alias components with a backslash never produces an alias, and only a
  * codepoint from the closed ignorable set can hide inside the HFS `.g<CP>it`
- * form — any other codepoint keeps it accepted.
+ * form — any other codepoint keeps it accepted. It also covers the
+ * `.gitmodules` symlink check: an NTFS alias behind a mid-component backslash
+ * is always refused, and a short name used as a directory is never refused.
  *
  * Lens 1 (round-trip pair) does not fit — verifyPath has no serialise/decode
  * counterpart to round-trip against. Lens 4 (idempotence / 1:1 syntactic↔
@@ -28,6 +30,9 @@ import {
 import {
   arbComponentPair,
   arbIgnorableCodepoint,
+  arbNtfsGitmodulesAlias,
+  arbNtfsGitmodulesShortName,
+  arbPathComponent,
   arbSafeAsciiPath,
   arbStringWithIgnorableCodepoint,
 } from './arbitraries.js';
@@ -191,6 +196,35 @@ describe('Given the component bytes .git followed by 1-4 arbitrary bytes', () =>
             return (verdict === 'dotgit-hfs-alias') === decodesToIgnorableOnly(tail);
           },
         ),
+        { numRuns: COMPOSITION_NUM_RUNS },
+      );
+    });
+  });
+});
+
+describe('Given an arbitrary plain component and an arbitrary NTFS .gitmodules alias', () => {
+  describe('When joined with a backslash and verified as a symlink', () => {
+    it('Then it is gitmodules-not-regular', () => {
+      // Arrange + Act + Assert
+      fc.assert(
+        fc.property(arbPathComponent(), arbNtfsGitmodulesAlias(), (prefix, alias) => {
+          return verifyPath(`${prefix}\\${alias}`, FILE_MODE.SYMLINK) === 'gitmodules-not-regular';
+        }),
+        { numRuns: COMPOSITION_NUM_RUNS },
+      );
+    });
+  });
+});
+
+describe('Given an arbitrary NTFS .gitmodules short name and a non-empty safe suffix path', () => {
+  describe('When the short name is a directory of a symlink', () => {
+    it('Then it is accepted', () => {
+      // Arrange + Act + Assert
+      fc.assert(
+        fc.property(arbNtfsGitmodulesShortName(), arbSafeAsciiPath(), (alias, suffix) => {
+          fc.pre(suffix !== '');
+          return verifyPath(`${alias}/${suffix}`, FILE_MODE.SYMLINK) === undefined;
+        }),
         { numRuns: COMPOSITION_NUM_RUNS },
       );
     });

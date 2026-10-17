@@ -123,3 +123,61 @@ export function arbComponentPair(): fc.Arbitrary<readonly [string, string]> {
     arbAliasSplitPair(),
   );
 }
+
+const GITMODULES_NAME = '.gitmodules';
+const GITMOD_SHORT_NAME_PREFIX = 'gitmod~';
+const FALLBACK_PREFIX = 'gi7eba';
+const FALLBACK_BASENAME_LENGTH = 6;
+const MAX_NTFS_TAIL_LENGTH = 3;
+
+const arbRandomCase = (text: string): fc.Arbitrary<string> =>
+  fc
+    .array(fc.boolean(), { minLength: text.length, maxLength: text.length })
+    .map((flags) =>
+      [...text].map((char, at) => (flags[at] ? char.toUpperCase() : char.toLowerCase())).join(''),
+    );
+
+const arbDigit = (min: number): fc.Arbitrary<string> =>
+  fc.integer({ min, max: 9 }).map((digit) => String(digit));
+
+// Windows' generic 8.3 fall-back: k leading chars of the hashed prefix, `~`, a
+// digit 1-9, then digits filling the name up to eight characters.
+const arbFallbackShortName = (): fc.Arbitrary<string> =>
+  fc.integer({ min: 0, max: FALLBACK_BASENAME_LENGTH }).chain((lead) =>
+    fc
+      .array(arbDigit(0), {
+        minLength: FALLBACK_BASENAME_LENGTH - lead,
+        maxLength: FALLBACK_BASENAME_LENGTH - lead,
+      })
+      .chain((digits) =>
+        arbDigit(1).map((first) => `${FALLBACK_PREFIX.slice(0, lead)}~${first}${digits.join('')}`),
+      ),
+  );
+
+const arbNtfsTail = (): fc.Arbitrary<string> =>
+  fc
+    .array(fc.constantFrom('.', ' '), { minLength: 0, maxLength: MAX_NTFS_TAIL_LENGTH })
+    .map((chars) => chars.join(''));
+
+/** `gitmod~[1-4]` or the generic 8.3 fall-back, random case, with a dot/space tail. */
+export function arbNtfsGitmodulesShortName(): fc.Arbitrary<string> {
+  const nameFromDigit = arbDigit(1)
+    .filter((digit) => Number(digit) <= 4)
+    .map((digit) => `${GITMOD_SHORT_NAME_PREFIX}${digit}`);
+  return fc
+    .tuple(fc.oneof(nameFromDigit, arbFallbackShortName()), arbNtfsTail())
+    .chain(([name, tail]) => arbRandomCase(name).map((cased) => `${cased}${tail}`));
+}
+
+/** An NTFS `.gitmodules` alias: the full name or a short name, with tail and optional stream. */
+export function arbNtfsGitmodulesAlias(): fc.Arbitrary<string> {
+  const arbBase = fc.oneof(
+    arbRandomCase(GITMODULES_NAME).chain((cased) => arbNtfsTail().map((tail) => `${cased}${tail}`)),
+    arbNtfsGitmodulesShortName(),
+  );
+  const arbStream = fc.option(
+    arbPathComponent().map((stream) => `:${stream}`),
+    { nil: '' },
+  );
+  return fc.tuple(arbBase, arbStream).map(([base, stream]) => `${base}${stream}`);
+}
