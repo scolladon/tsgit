@@ -40,9 +40,10 @@ const COMMIT_ENV: NodeJS.ProcessEnv = {
   GIT_COMMITTER_DATE: '1700000000 +0000',
 };
 
-type Shape = 'both-modified' | 'deleted-by-them' | 'deleted-by-us';
+type Shape = 'both-modified' | 'deleted-by-them' | 'deleted-by-us' | 'added-by-both';
 
 const SHAPES: ReadonlyArray<Shape> = ['both-modified', 'deleted-by-them', 'deleted-by-us'];
+const RESOLVE_UNDO_SHAPES: ReadonlyArray<Shape> = [...SHAPES, 'added-by-both'];
 
 const put = async (dir: string, file: string, content: string): Promise<void> => {
   await mkdir(path.dirname(path.join(dir, file)), { recursive: true });
@@ -73,7 +74,9 @@ const buildConflict = async (dir: string, shape: Shape, conflicted = 'f'): Promi
   runGit(['init', '-q', '-b', 'main', dir]);
   runGit(['-C', dir, 'config', 'user.name', 'Ada']);
   runGit(['-C', dir, 'config', 'user.email', 'ada@example.com']);
-  for (const file of [conflicted, 'h', 'top', 'd/e']) await put(dir, file, `${file}-base\n`);
+  const baseFiles =
+    shape === 'added-by-both' ? ['h', 'top', 'd/e'] : [conflicted, 'h', 'top', 'd/e'];
+  for (const file of baseFiles) await put(dir, file, `${file}-base\n`);
   commitAll(dir, 'base');
   runGit(['-C', dir, 'checkout', '-q', '-b', 'side']);
   await changeF(dir, shape, 'side', conflicted);
@@ -248,7 +251,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       expect(resolveUndoListing(pair.ours)).toBe(resolveUndoListing(pair.peer));
     };
 
-    describe.each(SHAPES)('Given %s next to an unmerged h', (shape) => {
+    describe.each(RESOLVE_UNDO_SHAPES)('Given %s next to an unmerged h', (shape) => {
       describe.each([
         { title: 'f', specs: ['f'] },
         { title: 'f and h', specs: ['f', 'h'] },

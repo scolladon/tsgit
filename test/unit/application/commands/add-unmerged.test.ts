@@ -62,6 +62,15 @@ const SHAPES: ReadonlyArray<Shape> = [
     fOnDisk: 'f-theirs',
     fStages: ['1', '3'],
   },
+  {
+    title: 'f added by both (stages 2 and 3)',
+    fRows: [
+      { path: 'f', text: 'f-ours', stage: 2 },
+      { path: 'f', text: 'f-theirs', stage: 3 },
+    ],
+    fOnDisk: 'f-merged',
+    fStages: ['2', '3'],
+  },
 ];
 
 const HRows: ReadonlyArray<IndexRow> = [
