@@ -692,24 +692,21 @@ const addByPathspec = async (
       scope,
       ensurePromisorConfigValid,
     );
-    const { newEntries, matched, added, modified, eolNotices, restagedPaths } = tallyWalkOutcomes(
-      staged.existing,
-      staged.outcomes,
-      staged.stageZeroBeside,
-    );
+    const tally = tallyWalkOutcomes(staged.existing, staged.outcomes, staged.stageZeroBeside);
+    const { matched } = tally;
     // git add never refuses the whole tree, even when it holds nothing to add.
     const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
     const removedEntries = await collectMatchedRemovals(ctx, staged.existing, matched, matcher);
-    const view = { sorted: staged.sorted, inserted: insertedBy(staged.outcomes, staged.existing) };
-    const settled = await settleRemovals(ctx, view, matcher, newEntries, removedEntries);
+    const settled = await settleWalkRemovals(
+      ctx,
+      staged,
+      matcher,
+      tally.newEntries,
+      removedEntries,
+    );
     enforceLiteralMustMatch(mustMatch, [...matched, ...settled.everyRemoval], literalSpellings);
-    await commitStaged(lock, staged, settled.remaining, restagedPaths);
-    return {
-      added: [...added].sort(),
-      modified: [...modified].sort(),
-      removed: settled.removed.sort(),
-      eolNotices,
-    };
+    await commitStaged(lock, staged, settled.remaining, tally.restagedPaths);
+    return sortedResult(tally, settled.removed);
   } finally {
     await lock.release();
   }
@@ -943,6 +940,45 @@ const tallyWalkOutcomes = (
   return { newEntries, matched, added, modified, eolNotices: noticesOf(outcomes), restagedPaths };
 };
 
+/** The settled removals of a walk, given what it staged over the index it started from. */
+const settleWalkRemovals = (
+  ctx: Context,
+  {
+    sorted,
+    existing,
+    outcomes,
+  }: {
+    readonly sorted: ReadonlyArray<IndexEntry>;
+    readonly existing: ReadonlyMap<IndexPathKey, IndexEntry>;
+    readonly outcomes: ReadonlyArray<WalkOutcome>;
+  },
+  matcher: ResolvedPathspec['matcher'],
+  newEntries: Map<IndexPathKey, IndexEntry>,
+  removedEntries: ReadonlyArray<IndexEntry>,
+) =>
+  settleRemovals(
+    ctx,
+    { sorted, inserted: insertedBy(outcomes, existing) },
+    matcher,
+    newEntries,
+    removedEntries,
+  );
+
+/** The walk's report, each list in path order. */
+const sortedResult = (
+  {
+    added,
+    modified,
+    eolNotices,
+  }: Pick<ReturnType<typeof tallyWalkOutcomes>, 'added' | 'modified' | 'eolNotices'>,
+  removed: FilePath[],
+): AddResult => ({
+  added: [...added].sort(),
+  modified: [...modified].sort(),
+  removed: removed.sort(),
+  eolNotices,
+});
+
 /**
  * Bulk-mode `add --all`. Exposed for testability (custom `ignore` predicate).
  * Production callers go through `add({ all: true })`.
@@ -972,21 +1008,18 @@ export const addAll = async (
       state.indexMtime,
       ensurePromisorConfigValid,
     );
-    const { newEntries, added, modified, eolNotices, restagedPaths } = tallyWalkOutcomes(
-      existing,
-      outcomes,
-      state.stageZeroBeside,
-    );
+    const tally = tallyWalkOutcomes(existing, outcomes, state.stageZeroBeside);
     const removedEntries = await collectRemovedEntries(ctx, existing, seen);
-    const view = { sorted, inserted: insertedBy(outcomes, existing) };
-    const settled = await settleRemovals(ctx, view, WHOLE_TREE_MATCHER, newEntries, removedEntries);
-    await commitStaged(lock, state, settled.remaining, restagedPaths);
-    return {
-      added: [...added].sort(),
-      modified: [...modified].sort(),
-      removed: settled.removed.sort(),
-      eolNotices,
-    };
+    const walked = { sorted, existing, outcomes };
+    const settled = await settleWalkRemovals(
+      ctx,
+      walked,
+      WHOLE_TREE_MATCHER,
+      tally.newEntries,
+      removedEntries,
+    );
+    await commitStaged(lock, state, settled.remaining, tally.restagedPaths);
+    return sortedResult(tally, settled.removed);
   } finally {
     await lock.release();
   }
