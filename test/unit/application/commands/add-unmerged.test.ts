@@ -3,7 +3,13 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add, addAll } from '../../../../src/application/commands/add.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
+import { parseResolveUndo } from '../../../../src/domain/git-index/resolve-undo.js';
 import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
+import {
+  indexExtensionsOf,
+  resolveUndoExtension,
+  withIndexExtensions,
+} from '../primitives/helpers/index-extensions.js';
 import { type IndexRow, seedIndex, stagesOf } from './add-index-fixtures.js';
 import { seedRepo } from './fixtures.js';
 
@@ -348,6 +354,223 @@ describe('Given f unmerged at stages 1, 2 and 3 with a merged file on disk', () 
 
       // Assert
       expect(result.modified).toEqual(['f']);
+    });
+  });
+});
+
+const SHA1_DIGEST = 20;
+
+const recordedStages = async (
+  ctx: Ctx,
+): Promise<ReadonlyArray<readonly [string, ReadonlyArray<number>]>> => {
+  const reuc = (await indexExtensionsOf(ctx)).get('REUC');
+  if (reuc === undefined) return [];
+  const records = parseResolveUndo(reuc, SHA1_DIGEST) ?? [];
+  return records.map((record) => [record.path, record.stages.map(({ stage }) => stage)]);
+};
+
+describe.each(SHAPES)('Given $title next to an unmerged h, resolve-undo', (shape) => {
+  describe('When add stages f', () => {
+    it('Then REUC records f with the stages it had', async () => {
+      // Arrange
+      const ctx = await seedConflicted(shape);
+      const sut = add;
+
+      // Act
+      await sut(ctx, ['f']);
+      const result = await recordedStages(ctx);
+
+      // Assert
+      expect(result).toEqual([['f', shape.fStages.map(Number)]]);
+    });
+  });
+});
+
+describe('Given f and h unmerged', () => {
+  describe('When add stages f then h', () => {
+    it('Then REUC records f and h', async () => {
+      // Arrange
+      const ctx = await seedConflicted(SHAPES[0] as Shape);
+      const sut = add;
+
+      // Act
+      await sut(ctx, ['f']);
+      await sut(ctx, ['h']);
+      const result = await recordedStages(ctx);
+
+      // Assert
+      expect(result).toEqual([
+        ['f', [1, 2, 3]],
+        ['h', [1, 2, 3]],
+      ]);
+    });
+  });
+
+  describe('When add all stages the deletion of f', () => {
+    it('Then REUC records f and h', async () => {
+      // Arrange
+      const ctx = await seedConflicted(SHAPES[0] as Shape);
+      await ctx.fs.rm(`${ctx.layout.workDir}/f`);
+      const sut = add;
+
+      // Act
+      await sut(ctx, [], { all: true });
+      const result = await recordedStages(ctx);
+
+      // Assert
+      expect(result).toEqual([
+        ['f', [1, 2, 3]],
+        ['h', [1, 2, 3]],
+      ]);
+    });
+  });
+
+  describe('When add stages only top', () => {
+    it('Then no REUC is written', async () => {
+      // Arrange
+      const ctx = await seedConflicted(SHAPES[0] as Shape);
+      const sut = add;
+
+      // Act
+      await sut(ctx, ['top']);
+      const result = await recordedStages(ctx);
+
+      // Assert
+      expect(result).toEqual([]);
+    });
+  });
+
+  describe('When add walks a directory that leaves f and h unmerged', () => {
+    it('Then no REUC is written', async () => {
+      // Arrange
+      const ctx = await seedConflicted(SHAPES[0] as Shape);
+      const sut = add;
+
+      // Act
+      await sut(ctx, ['d']);
+      const result = await recordedStages(ctx);
+
+      // Assert
+      expect(result).toEqual([]);
+    });
+  });
+});
+
+describe('Given f and h unmerged beside a seeded REUC record for another path', () => {
+  describe('When add stages f', () => {
+    it('Then REUC keeps the prior record beside f', async () => {
+      // Arrange
+      const ctx = await seedConflicted(SHAPES[0] as Shape);
+      const index = await readIndex(ctx);
+      await withIndexExtensions(ctx, [
+        ...index.extensions,
+        resolveUndoExtension('a', 'b'.repeat(40), SHA1_DIGEST),
+      ]);
+      const sut = add;
+
+      // Act
+      await sut(ctx, ['f']);
+      const result = await recordedStages(ctx);
+
+      // Assert
+      expect(result).toEqual([
+        ['a', [1]],
+        ['f', [1, 2, 3]],
+      ]);
+    });
+  });
+
+  describe('When add stages top', () => {
+    it('Then REUC keeps the prior record untouched', async () => {
+      // Arrange
+      const ctx = await seedConflicted(SHAPES[0] as Shape);
+      const index = await readIndex(ctx);
+      await withIndexExtensions(ctx, [
+        ...index.extensions,
+        resolveUndoExtension('a', 'b'.repeat(40), SHA1_DIGEST),
+      ]);
+      const sut = add;
+
+      // Act
+      await sut(ctx, ['top']);
+      const result = await recordedStages(ctx);
+
+      // Assert
+      expect(result).toEqual([['a', [1]]]);
+    });
+  });
+});
+
+describe('Given a malformed seeded REUC and an unmerged h', () => {
+  describe('When add stages h', () => {
+    it('Then REUC holds h only', async () => {
+      // Arrange
+      const ctx = await seedConflicted(SHAPES[0] as Shape);
+      const index = await readIndex(ctx);
+      const malformed = { signature: 'REUC', data: Uint8Array.of(0x61, 0x00, 0x39, 0x00) };
+      await withIndexExtensions(ctx, [...index.extensions, malformed]);
+      const sut = add;
+
+      // Act
+      await sut(ctx, ['h']);
+      const result = await recordedStages(ctx);
+
+      // Assert
+      expect(result).toEqual([['h', [1, 2, 3]]]);
+    });
+  });
+});
+
+describe('Given f resolved once with a record, and a seeded record for f stages', () => {
+  describe('When add stages f again and then the whole tree', () => {
+    it('Then the f record bytes are unchanged', async () => {
+      // Arrange
+      const ctx = await seedConflicted(SHAPES[0] as Shape);
+      const sut = add;
+      await sut(ctx, ['f']);
+      const before = (await indexExtensionsOf(ctx)).get('REUC');
+
+      // Act
+      await sut(ctx, ['f']);
+      await sut(ctx, ['top']);
+      const result = (await indexExtensionsOf(ctx)).get('REUC');
+
+      // Assert
+      expect(result).toEqual(before);
+    });
+  });
+});
+
+describe('Given a re-created unmerged f beside a seeded record for f at stages 1, 2 and 3', () => {
+  describe('When add stages f', () => {
+    it('Then the new ids replace stages 1 and 2 and the stale stage 3 stays', async () => {
+      // Arrange
+      const ctx = await seedConflicted(SHAPES[0] as Shape);
+      await add(ctx, ['f']);
+      const resolvedAt = await readIndex(ctx);
+      const seeded = (await indexExtensionsOf(ctx)).get('REUC') as Uint8Array;
+      const old = parseResolveUndo(seeded, SHA1_DIGEST)?.[0];
+      await seedIndex(ctx, [
+        { path: 'f', text: 'f-new-base', stage: 1 },
+        { path: 'f', text: 'f-new-ours', stage: 2 },
+      ]);
+      await withIndexExtensions(ctx, resolvedAt.extensions);
+      const sut = add;
+
+      // Act
+      await sut(ctx, ['f']);
+      const result = parseResolveUndo(
+        (await indexExtensionsOf(ctx)).get('REUC') as Uint8Array,
+        SHA1_DIGEST,
+      )?.[0];
+
+      // Assert
+      const stage = (n: number) => result?.stages.find((s) => s.stage === n)?.id;
+      const oldStage = (n: number) => old?.stages.find((s) => s.stage === n)?.id;
+      expect(result?.stages.map((s) => s.stage)).toEqual([1, 2, 3]);
+      expect(stage(1)).not.toBe(oldStage(1));
+      expect(stage(2)).not.toBe(oldStage(2));
+      expect(stage(3)).toBe(oldStage(3));
     });
   });
 });

@@ -24,6 +24,10 @@ import {
   keyOfPath,
 } from '../../domain/git-index/index-path-key.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
+import {
+  type ResolveUndoRecord,
+  resolveUndoRecordOf,
+} from '../../domain/git-index/resolve-undo.js';
 import { emptyPathspec, pathspecNoMatch } from '../../domain/index.js';
 import {
   deriveWorkingMode,
@@ -52,7 +56,7 @@ import type { ConcurrencyLimiter } from '../primitives/internal/concurrency-limi
 import { type ConversionRoute, convertToGit } from '../primitives/internal/convert-blob.js';
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
-import type { IndexLock } from '../primitives/internal/index-lock.js';
+import type { CommitOptions, IndexLock } from '../primitives/internal/index-lock.js';
 import { indexRuleEntries } from '../primitives/internal/index-rule-entries.js';
 import { type IndexMtime, isEntryStatClean } from '../primitives/internal/is-entry-stat-clean.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
@@ -235,7 +239,7 @@ const addLiteralOnly = async (
       lock,
       sorted.length,
       withEveryStage(newEntries, unmergedStages),
-      restagedPaths,
+      resolutionOptions(restagedPaths, newEntries, unmergedStages),
     );
     return { added, modified, removed: [], eolNotices };
   } finally {
@@ -304,17 +308,17 @@ const stageLiterals = async (
 const changesIndex = (
   existingCount: number,
   entries: ReadonlyArray<IndexEntry>,
-  restagedPaths: ReadonlyArray<IndexPath>,
+  { restagedPaths = [] }: CommitOptions,
 ): boolean => restagedPaths.length > 0 || entries.length !== existingCount;
 
 const commitIfChanged = async (
   lock: IndexLock,
   existingCount: number,
   entries: ReadonlyArray<IndexEntry>,
-  restagedPaths: ReadonlyArray<IndexPath>,
+  options: CommitOptions,
 ): Promise<void> => {
-  if (!changesIndex(existingCount, entries, restagedPaths)) return;
-  await lock.commit(entries, 'update', { restagedPaths });
+  if (!changesIndex(existingCount, entries, options)) return;
+  await lock.commit(entries, 'update', options);
 };
 
 /** `ie_match_stat` clean paths keep their entry object; every other path was rebuilt, which git's add_index_entry reports to the cache-tree. */
@@ -492,7 +496,7 @@ const addByPathspec = async (
       lock,
       staged.sorted.length,
       withEveryStage(remaining, staged.unmergedStages),
-      restagedPaths,
+      resolutionOptions(restagedPaths, remaining, staged.unmergedStages),
     );
     return {
       added: [...added].sort(),
@@ -549,7 +553,9 @@ const addRenormalized = async (
     // Stryker disable next-line MethodExpression: equivalent — the whole-tree literal is itself among the on-disk literals (the work tree exists), so enforceLiteralMustMatch accepts it unfiltered.
     const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
     enforceLiteralMustMatch(mustMatch, onDisk, literalSpellings);
-    await commitIfChanged(lock, entries.length, renormalized.entries, renormalized.restagedPaths);
+    await commitIfChanged(lock, entries.length, renormalized.entries, {
+      restagedPaths: renormalized.restagedPaths,
+    });
     return { added: [], modified: renormalized.modified, removed: [], eolNotices: [] };
   } finally {
     await lock.release();
@@ -766,7 +772,7 @@ export const addAll = async (
       lock,
       sorted.length,
       withEveryStage(newEntries, unmergedStages),
-      restagedPathsOf(outcomes, existing),
+      resolutionOptions(restagedPathsOf(outcomes, existing), newEntries, unmergedStages),
     );
     return { added, modified, removed, eolNotices: noticesOf(outcomes) };
   } finally {
@@ -890,6 +896,12 @@ const readExistingEntries = async (ctx: Context): Promise<ExistingIndexState> =>
   return { entries: out, unmergedStages, sorted: entries, indexMtime, indexRules };
 };
 
+/** An unmerged path stays so when the add left it unstaged: it is neither removed nor staged. */
+const stillUnmerged = (
+  entries: ReadonlyMap<IndexPathKey, IndexEntry>,
+  key: IndexPathKey,
+): boolean => (entries.get(key)?.flags.stage ?? 0) !== 0;
+
 /** The entries to write: what the add staged, plus every stage of the unmerged paths it left alone. */
 const withEveryStage = (
   entries: ReadonlyMap<IndexPathKey, IndexEntry>,
@@ -898,10 +910,25 @@ const withEveryStage = (
   if (unmergedStages.size === 0) return Array.from(entries.values());
   const out = Array.from(entries.values()).filter((entry) => entry.flags.stage === 0);
   for (const [key, stages] of unmergedStages) {
-    if ((entries.get(key)?.flags.stage ?? 0) !== 0) out.push(...stages);
+    if (stillUnmerged(entries, key)) out.push(...stages);
   }
   return out;
 };
+
+/** The unmerged paths the add resolved, by staging them or removing them. */
+const resolvedRecords = (
+  unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
+  working: ReadonlyMap<IndexPathKey, IndexEntry>,
+): ReadonlyArray<ResolveUndoRecord> =>
+  Array.from(unmergedStages)
+    .filter(([key]) => !stillUnmerged(working, key))
+    .map(([, stages]) => resolveUndoRecordOf(stages));
+
+const resolutionOptions = (
+  restagedPaths: ReadonlyArray<IndexPath>,
+  working: ReadonlyMap<IndexPathKey, IndexEntry>,
+  unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
+): CommitOptions => ({ restagedPaths, resolveUndo: resolvedRecords(unmergedStages, working) });
 
 const readIndexOrEmpty = async (
   ctx: Context,

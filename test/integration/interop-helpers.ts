@@ -58,7 +58,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
+import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import type { RevParseEntry } from '../../src/application/commands/rev-parse.js';
+import { readIndex } from '../../src/application/primitives/read-index.js';
 import { bytesToHex } from '../../src/domain/objects/encoding.js';
 
 const execFileAsync = promisify(execFile);
@@ -529,4 +531,13 @@ export const mergeTreeResult = (dir: string, ours: string, theirs: string): Merg
     tree: Buffer.from(treeField).toString('latin1'),
     conflicted: records.map(parseConflictedEntry),
   };
+};
+
+/** The bytes of the index extension `signature` in `dir`, or `undefined` when the index lacks it. */
+export const indexExtensionOf = async (
+  dir: string,
+  signature: string,
+): Promise<Uint8Array | undefined> => {
+  const index = await readIndex(createNodeContext({ workDir: dir }));
+  return index.extensions.find((extension) => extension.signature === signature)?.data;
 };

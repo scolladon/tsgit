@@ -7,6 +7,7 @@ import { rm } from '../../../../src/application/commands/rm.js';
 import { sparseCheckoutSet } from '../../../../src/application/commands/sparse-checkout.js';
 import type { CacheTreeEntry } from '../../../../src/domain/git-index/index-entry.js';
 import { parseCacheTree } from '../../../../src/domain/git-index/index-parser.js';
+import { parseResolveUndo } from '../../../../src/domain/git-index/resolve-undo.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../src/ports/context.js';
 import {
@@ -17,6 +18,7 @@ import {
   UNTR_EXTENSION,
   withIndexExtensions,
 } from '../primitives/helpers/index-extensions.js';
+import { seedIndex } from './add-index-fixtures.js';
 
 const SHA1_DIGEST = 20;
 const TREE_ID = 'c'.repeat(40) as ObjectId;
@@ -124,6 +126,37 @@ describe('add carries index extensions', () => {
           true,
         ]);
         expect(await carriedSignatures(ctx)).toEqual(['TREE', 'REUC', 'UNTR']);
+      });
+    });
+  });
+
+  describe('Given a seeded resolve-undo record for m and a conflicted path', () => {
+    describe('When add stages the conflicted path', () => {
+      it('Then REUC holds the seeded record and the resolved one, sorted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await write(ctx, 'c', 'c-merged\n');
+        await seedIndex(ctx, [
+          { path: 'c', text: 'c-base', stage: 1 },
+          { path: 'c', text: 'c-ours', stage: 2 },
+        ]);
+        await withIndexExtensions(ctx, [resolveUndoExtension('m', BLOB_ID, SHA1_DIGEST)]);
+        const sut = add;
+
+        // Act
+        await sut(ctx, ['c']);
+        const reuc = (await indexExtensionsOf(ctx)).get('REUC') as Uint8Array;
+
+        // Assert
+        const result = parseResolveUndo(reuc, SHA1_DIGEST)?.map(({ path, stages }) => [
+          path,
+          stages.map(({ stage }) => stage),
+        ]);
+        expect(result).toEqual([
+          ['c', [1, 2]],
+          ['m', [1]],
+        ]);
       });
     });
   });

@@ -11,13 +11,15 @@
  *   unique:         add keeps every stage of the unmerged paths it does not stage
  *   interopSurface: add
  */
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
 import {
   GIT_AVAILABLE,
+  indexExtensionOf,
   lsStage,
   makePeerPair,
   type PeerPair,
@@ -79,6 +81,20 @@ const buildConflict = async (dir: string, shape: Shape): Promise<void> => {
   expect(merged.ok).toBe(false);
   await put(dir, 'top', 'top-new\n');
   await put(dir, 'd/e', 'e-new\n');
+};
+
+const REUC_SIGNATURE = Buffer.from('REUC');
+const MODE_FIELD = Buffer.from('100644\0');
+
+/** Rewrites the first mode of REUC to `9...` (not octal) and re-seals the index SHA-1 trailer. */
+const corruptReuc = async (dir: string): Promise<void> => {
+  const file = path.join(dir, '.git', 'index');
+  const bytes = await readFile(file);
+  const start = bytes.indexOf(REUC_SIGNATURE);
+  const mode = bytes.indexOf(MODE_FIELD, start);
+  bytes[mode] = 0x39;
+  const body = bytes.subarray(0, bytes.length - 20);
+  await writeFile(file, Buffer.concat([body, createHash('sha1').update(body).digest()]));
 };
 
 describe.skipIf(!GIT_AVAILABLE)(
@@ -215,6 +231,142 @@ describe.skipIf(!GIT_AVAILABLE)(
           // Assert
           expect(ours).toBe(peer);
           expect(writeTreeOf(pair.ours)).toBe(writeTreeOf(pair.peer));
+        });
+      });
+    });
+
+    const resolveUndoListing = (dir: string): string =>
+      runGit(['-C', dir, 'ls-files', '--resolve-undo']);
+
+    const expectSameResolveUndo = async (): Promise<void> => {
+      expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+      expect(await indexExtensionOf(pair.ours, 'REUC')).toEqual(
+        await indexExtensionOf(pair.peer, 'REUC'),
+      );
+      expect(resolveUndoListing(pair.ours)).toBe(resolveUndoListing(pair.peer));
+    };
+
+    describe.each(SHAPES)('Given %s next to an unmerged h', (shape) => {
+      describe.each([
+        { title: 'f', specs: ['f'] },
+        { title: 'f and h', specs: ['f', 'h'] },
+        { title: 'the whole tree', specs: ['.'] },
+        { title: 'top only', specs: ['top'] },
+      ])('When add stages $title', ({ specs }) => {
+        it('Then REUC and the resolve-undo listing match canonical git', async () => {
+          // Arrange / Act
+          await agreesAfter(shape, specs);
+
+          // Assert
+          await expectSameResolveUndo();
+        });
+      });
+    });
+
+    describe('Given an unmerged f deleted from the working tree', () => {
+      describe('When add all runs', () => {
+        it('Then REUC matches canonical git', async () => {
+          // Arrange / Act
+          await agreesAfter('both-modified', [], { all: true }, (dir) => rm(path.join(dir, 'f')));
+
+          // Assert
+          await expectSameResolveUndo();
+        });
+      });
+    });
+
+    describe('Given f resolved by add, then add f, then add of the whole tree', () => {
+      describe('When the later adds resolve nothing', () => {
+        it('Then the f record bytes stay equal to canonical git', async () => {
+          // Arrange
+          await agreesAfter('both-modified', ['f']);
+
+          // Act
+          await repo.add(['f']);
+          await repo.add(['top']);
+          runGit(['-C', pair.peer, 'add', '--', 'f']);
+          runGit(['-C', pair.peer, 'add', '--', 'top']);
+
+          // Assert
+          await expectSameResolveUndo();
+        });
+      });
+    });
+
+    describe('Given a resolve-undo record for h and an unmerged f', () => {
+      describe('When add stages f', () => {
+        it('Then REUC holds both records as in canonical git', async () => {
+          // Arrange
+          await seedBoth('both-modified');
+          await repo.add(['h']);
+          runGit(['-C', pair.peer, 'add', '--', 'h']);
+
+          // Act
+          await repo.add(['f']);
+          runGit(['-C', pair.peer, 'add', '--', 'f']);
+
+          // Assert
+          await expectSameResolveUndo();
+        });
+      });
+    });
+
+    describe('Given f re-created at stages 1 and 2 after its resolution', () => {
+      describe('When add stages f', () => {
+        it('Then the stale stage 3 stays as in canonical git', async () => {
+          // Arrange
+          await seedBoth('both-modified');
+          await repo.add(['f']);
+          runGit(['-C', pair.peer, 'add', '--', 'f']);
+          for (const dir of [pair.ours, pair.peer]) {
+            const info = [
+              `100644 ${runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: 'n1\n' }).trim()} 1\tf`,
+              `100755 ${runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: 'n2\n' }).trim()} 2\tf`,
+            ].join('\n');
+            runGit(['-C', dir, 'update-index', '--force-remove', 'f']);
+            runGit(['-C', dir, 'update-index', '--index-info'], { input: `${info}\n` });
+          }
+
+          // Act
+          await repo.add(['f']);
+          runGit(['-C', pair.peer, 'add', '--', 'f']);
+
+          // Assert
+          await expectSameResolveUndo();
+        });
+      });
+    });
+
+    describe('Given a corrupt REUC and an unmerged h', () => {
+      describe('When add stages h', () => {
+        it('Then the result matches canonical git', async () => {
+          // Arrange
+          await seedBoth('both-modified');
+          await repo.add(['f']);
+          runGit(['-C', pair.peer, 'add', '--', 'f']);
+          for (const dir of [pair.ours, pair.peer]) await corruptReuc(dir);
+
+          // Act
+          await repo.add(['h']);
+          runGit(['-C', pair.peer, 'add', '--', 'h']);
+
+          // Assert
+          await expectSameResolveUndo();
+        });
+      });
+    });
+
+    describe('Given two unmerged paths named in one add', () => {
+      describe('When add stages f and h', () => {
+        it('Then REUC and TREE match canonical git', async () => {
+          // Arrange / Act
+          await agreesAfter('both-modified', ['f', 'h']);
+
+          // Assert
+          await expectSameResolveUndo();
+          expect(await indexExtensionOf(pair.ours, 'TREE')).toEqual(
+            await indexExtensionOf(pair.peer, 'TREE'),
+          );
         });
       });
     });
