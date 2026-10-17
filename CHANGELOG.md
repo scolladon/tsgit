@@ -1,5 +1,30 @@
 # Changelog
 
+## [5.1.0](https://github.com/scolladon/tsgit/compare/v5.0.0...v5.1.0) (2026-10-17)
+
+
+### Features
+
+* **add:** record resolve-undo for the conflicts add resolves ([785fadf](https://github.com/scolladon/tsgit/commit/785fadfc5c726a4ca911687379d207657de5bb33))
+* **eol:** line-ending conversion — core.autocrlf, core.eol, core.safecrlf, text/eol/ident attributes and renormalize ([5a1ebe0](https://github.com/scolladon/tsgit/commit/5a1ebe055e89e5a16f84b4b206069843ccd2a76c))
+* **status:** refresh the index under the optional lock and keep its extensions ([#317](https://github.com/scolladon/tsgit/issues/317)) ([7337e22](https://github.com/scolladon/tsgit/commit/7337e22ef50d1a5ab7282d42b714c92e49d8a9e7))
+
+
+### Bug Fixes
+
+* **add:** drop the entries a replaced directory or file leaves behind ([785fadf](https://github.com/scolladon/tsgit/commit/785fadfc5c726a4ca911687379d207657de5bb33))
+* **add:** keep every stage of the unmerged paths add does not stage ([785fadf](https://github.com/scolladon/tsgit/commit/785fadfc5c726a4ca911687379d207657de5bb33))
+* **add:** stage an unmerged path an exact exclusion names when another element covers it ([785fadf](https://github.com/scolladon/tsgit/commit/785fadfc5c726a4ca911687379d207657de5bb33))
+* **add:** stage the removal of a path beneath a regular file ([785fadf](https://github.com/scolladon/tsgit/commit/785fadfc5c726a4ca911687379d207657de5bb33))
+* **index:** keep index entry paths byte-exact through every write ([#318](https://github.com/scolladon/tsgit/issues/318)) ([0f8d0b1](https://github.com/scolladon/tsgit/commit/0f8d0b169790a373cded6a821b79b15c6e742a4b))
+
+
+### Documentation
+
+* **backlog:** mark [#309](https://github.com/scolladon/tsgit/issues/309) shipped in [#314](https://github.com/scolladon/tsgit/issues/314) ([15d5df6](https://github.com/scolladon/tsgit/commit/15d5df65d17ef3bcc0682c5d2b8712d8c51f579d))
+* **backlog:** mark 31.4 run 1 shipped in [#317](https://github.com/scolladon/tsgit/issues/317) ([732b617](https://github.com/scolladon/tsgit/commit/732b617254dfb9abaa8c0e49a75756b385d2d68f))
+* **backlog:** mark 32.6 shipped in [#316](https://github.com/scolladon/tsgit/issues/316) ([c38b045](https://github.com/scolladon/tsgit/commit/c38b045a1e3687265d6acfd5e1c289ed42f00902))
+
 ## [5.0.0](https://github.com/scolladon/tsgit/compare/v4.0.0...v5.0.0) (2026-10-12)
 
 
