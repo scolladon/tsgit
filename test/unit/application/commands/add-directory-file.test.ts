@@ -578,6 +578,123 @@ describe('add — a tracked directory replaced by a non-directory', () => {
 
         // Assert
         expect(result.removed).toEqual(['a/b']);
+        expect(result.modified).toEqual(['a']);
+        expect((await indexPaths(ctx)).map((line) => line.split(':')[0])).toEqual([
+          'a@0',
+          'real/b@0',
+          'top@0',
+        ]);
+        expect(await recordedStages(ctx)).toEqual([['a', [1, 2]]]);
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'stage 2 only', stages: [2] as const },
+    { label: 'stage 3 only', stages: [3] as const },
+    { label: 'stages 1 and 2', stages: [1, 2] as const },
+  ])('Given a path unmerged at $label with stage-0 entries beneath it', ({ stages }) => {
+    const seedPartial = async (): Promise<Ctx> => {
+      const ctx = await trackedTree();
+      await seedIndex(ctx, [
+        ...stages.map((stage) => ({ path: 'a', text: `a-${stage}`, stage })),
+        { path: 'a/b', text: 'b' },
+        { path: 'a/c', text: 'c' },
+        { path: 'a/x/y', text: 'y' },
+        { path: 'd/e', text: 'e' },
+        { path: 'real/b', text: 'rb' },
+        { path: 'top', text: 'top' },
+      ]);
+      await ctx.fs.write(`${ctx.layout.workDir}/d/e`, new TextEncoder().encode('changed'));
+      await replaceDirectoryWithFile(ctx, 'a');
+      return ctx;
+    };
+
+    describe.each([
+      { how: 'add a', paths: ['a'], options: undefined, removed: [], modified: ['a'] },
+      {
+        how: 'add a d',
+        paths: ['a', 'd'],
+        options: undefined,
+        removed: [],
+        modified: ['a', 'd/e'],
+      },
+      {
+        how: 'add a .',
+        paths: ['a', '.'],
+        options: undefined,
+        removed: ['a/b', 'a/c', 'a/x/y'],
+        modified: ['a', 'd/e'],
+      },
+      {
+        how: 'add -A',
+        paths: [] as string[],
+        options: { all: true },
+        removed: ['a/b', 'a/c', 'a/x/y'],
+        modified: ['a', 'd/e'],
+      },
+    ])('When $how', ({ paths, options, removed, modified }) => {
+      it('Then the file is stage 0, the stages are recorded and only the reported entries beneath go', async () => {
+        // Arrange
+        const ctx = await seedPartial();
+
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, paths, options);
+
+        // Assert
+        expect(result.removed).toEqual(removed);
+        expect(result.modified).toEqual(modified);
+        expect((await indexPaths(ctx)).map((line) => line.split(':')[0])).toEqual([
+          'a@0',
+          'd/e@0',
+          'real/b@0',
+          'top@0',
+        ]);
+        expect(await recordedStages(ctx)).toEqual([['a', stages]]);
+      });
+    });
+  });
+
+  describe('Given a nested path unmerged at stages 1, 2 and 3 with a stage-0 entry beneath it', () => {
+    const seedNested = async (): Promise<Ctx> => {
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, { workingTree: { 'x/a/b': 'b', 'real/b': 'rb', top: 'top' } });
+      await seedIndex(ctx, [
+        { path: 'x/a', text: 'base', stage: 1 },
+        { path: 'x/a', text: 'ours', stage: 2 },
+        { path: 'x/a', text: 'theirs', stage: 3 },
+        { path: 'x/a/b', text: 'b' },
+        { path: 'real/b', text: 'rb' },
+        { path: 'top', text: 'top' },
+      ]);
+      await replaceDirectoryWithFile(ctx, 'x/a');
+      return ctx;
+    };
+
+    describe.each([
+      { how: 'x', paths: ['x'], removed: ['x/a/b'] },
+      { how: 'x/a', paths: ['x/a'], removed: [] },
+    ])('When add names $how', ({ paths, removed }) => {
+      it('Then x/a is stage 0 and only the reported entry beneath it goes', async () => {
+        // Arrange
+        const ctx = await seedNested();
+
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, paths);
+
+        // Assert
+        expect(result.removed).toEqual(removed);
+        expect(result.modified).toEqual(['x/a']);
+        expect((await indexPaths(ctx)).map((line) => line.split(':')[0])).toEqual([
+          'real/b@0',
+          'top@0',
+          'x/a@0',
+        ]);
+        expect(await recordedStages(ctx)).toEqual([['x/a', [1, 2, 3]]]);
       });
     });
   });

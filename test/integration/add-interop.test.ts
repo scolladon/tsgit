@@ -46,6 +46,7 @@ interface ReplacedRow {
   readonly title: string;
   readonly replacement: Replacement;
   readonly replaced?: string;
+  readonly tree?: ReadonlyArray<string>;
   readonly paths: ReadonlyArray<string>;
   readonly all?: true;
   readonly prepare?: (dir: string) => void;
@@ -71,11 +72,17 @@ const unmergedBeneath = (dir: string): void => {
   );
 };
 
-const unmergedAtDirectory = (dir: string): void =>
-  stageRows(
-    dir,
-    UNMERGED_STAGES.map((stage) => ({ stage, path: 'a' })),
-  );
+const unmergedAt =
+  (file: string, stages: ReadonlyArray<StagedRow['stage']>) =>
+  (dir: string): void =>
+    stageRows(
+      dir,
+      stages.map((stage) => ({ stage, path: file })),
+    );
+
+const unmergedAtDirectory = unmergedAt('a', UNMERGED_STAGES);
+
+const NESTED_TREE: ReadonlyArray<string> = ['x/a/b', 'real/b', 'top'];
 
 const trackModifiedDirectory = (dir: string): void => {
   mkdirSync(path.join(dir, 'd'), { recursive: true });
@@ -84,7 +91,89 @@ const trackModifiedDirectory = (dir: string): void => {
   writeFileSync(path.join(dir, 'd/e'), 'changed\n');
 };
 
+const PARTIAL_STAGES: ReadonlyArray<{
+  readonly label: string;
+  readonly stages: ReadonlyArray<StagedRow['stage']>;
+}> = [
+  { label: 'stage 2 only', stages: [2] },
+  { label: 'stage 3 only', stages: [3] },
+  { label: 'stages 1 and 2', stages: [1, 2] },
+];
+
+const BENEATH_A = ['a/b', 'a/c', 'a/x/y'];
+
+const partialConflictRows = ({
+  label,
+  stages,
+}: (typeof PARTIAL_STAGES)[number]): ReadonlyArray<ReplacedRow> => {
+  const prepare = (dir: string): void => {
+    trackModifiedDirectory(dir);
+    unmergedAt('a', stages)(dir);
+  };
+  const base = { replacement: 'file', prepare } as const;
+  return [
+    {
+      ...base,
+      title: `a regular file named a that was unmerged at ${label}, staged alone`,
+      paths: ['a'],
+      removed: [],
+      modified: ['a'],
+    },
+    {
+      ...base,
+      title: `a regular file named a that was unmerged at ${label}, staged beside the directory d`,
+      paths: ['a', 'd'],
+      removed: [],
+      modified: ['a', 'd/e'],
+    },
+    {
+      ...base,
+      title: `a regular file named a that was unmerged at ${label}, staged beside the whole tree`,
+      paths: ['a', '.'],
+      removed: BENEATH_A,
+      modified: ['a', 'd/e'],
+    },
+    {
+      ...base,
+      title: `a regular file named a that was unmerged at ${label}, staged with add -A`,
+      paths: [],
+      all: true,
+      removed: BENEATH_A,
+      modified: ['a', 'd/e'],
+    },
+  ];
+};
+
 const REPLACED_ROWS: ReadonlyArray<ReplacedRow> = [
+  ...PARTIAL_STAGES.flatMap(partialConflictRows),
+  {
+    title: 'a nested regular file named x/a that was unmerged, staged by naming x',
+    replacement: 'file',
+    replaced: 'x/a',
+    tree: NESTED_TREE,
+    paths: ['x'],
+    prepare: unmergedAt('x/a', UNMERGED_STAGES),
+    removed: ['x/a/b'],
+    modified: ['x/a'],
+  },
+  {
+    title: 'a nested regular file named x/a that was unmerged, staged by naming x/a',
+    replacement: 'file',
+    replaced: 'x/a',
+    tree: NESTED_TREE,
+    paths: ['x/a'],
+    prepare: unmergedAt('x/a', UNMERGED_STAGES),
+    removed: [],
+    modified: ['x/a'],
+  },
+  {
+    title: 'a regular file named a that was unmerged, staged beside the whole tree',
+    replacement: 'file',
+    paths: ['a', '.'],
+    prepare: unmergedAtDirectory,
+    removed: BENEATH_A,
+    modified: ['a'],
+  },
   {
     title: 'a symlink named a',
     replacement: 'symlink',
@@ -512,7 +601,7 @@ describe.skipIf(!GIT_AVAILABLE)('add porcelain interop', () => {
       it('Then the index, resolve-undo and report match canonical git', async () => {
         // Arrange
         for (const dir of [pair.ours, pair.peer]) {
-          for (const file of TREE_FILES) {
+          for (const file of row.tree ?? TREE_FILES) {
             await mkdir(path.join(dir, path.dirname(file)), { recursive: true });
             await writeFile(path.join(dir, file), `${file}\n`);
           }
