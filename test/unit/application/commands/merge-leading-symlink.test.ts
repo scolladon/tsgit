@@ -132,6 +132,34 @@ const seedLinkBesideModifyDeletes = async (
   return ctx;
 };
 
+/** Theirs adds symlink `link` and every `files` entry cleanly while both sides edit file.txt: the merge conflicts on file.txt only. */
+const seedLinkBesideCleanAdds = async (
+  link: string,
+  files: ReadonlyArray<string>,
+): Promise<Context> => {
+  const ctx = createMemoryContext();
+  const root = ctx.layout.workDir;
+  await init(ctx);
+  await ctx.fs.writeUtf8(`${root}/file.txt`, 'a\nb\nc\n');
+  await add(ctx, ['file.txt']);
+  await commit(ctx, { message: 'base', author });
+  await branchCreate(ctx, { name: 'theirs' });
+  await checkout(ctx, { rev: 'theirs' });
+  await ctx.fs.writeUtf8(`${root}/file.txt`, 'a\nY\nc\n');
+  for (const file of files) {
+    await ctx.fs.mkdir(`${root}/${file.split('/')[0]}`);
+    await ctx.fs.writeUtf8(`${root}/${file}`, 'payload');
+  }
+  await ctx.fs.symlink(OUTSIDE, `${root}/${link}`);
+  await add(ctx, ['file.txt', ...files, link]);
+  await commit(ctx, { message: 'theirs', author });
+  await checkout(ctx, { rev: 'main' });
+  await ctx.fs.writeUtf8(`${root}/file.txt`, 'a\nX\nc\n');
+  await add(ctx, ['file.txt']);
+  await commit(ctx, { message: 'ours', author });
+  return ctx;
+};
+
 describe('conflicted merge leading-symlink safety', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -243,6 +271,31 @@ describe('conflicted merge leading-symlink safety', () => {
         expect(result.kind).toBe('conflict');
         expect(recorded).toEqual([]);
         expect(await inner.fs.readdir(OUTSIDE)).toEqual([]);
+        expect(await fs.readUtf8(`${WORKDIR}/ab/f`)).toBe('payload');
+        expect(await fs.readUtf8(`${WORKDIR}/ab/g`)).toBe('payload');
+      });
+    });
+  });
+
+  describe('Given a merge conflicting on file.txt whose theirs cleanly adds symlink AB, ab/f and Ab/g, on a disk folding them', () => {
+    describe('When the conflicted merge writes them', () => {
+      it('Then both files land in one directory replacing the link', async () => {
+        // Arrange
+        const inner = await seedLinkBesideCleanAdds('AB', ['ab/f', 'Ab/g']);
+        await inner.fs.mkdir(OUTSIDE);
+        const { fs, recorded } = createInterleavingFs(inner.fs, {
+          foldUnder: WORKDIR,
+        });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut({ ...inner, fs }, { rev: 'theirs', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(recorded).toEqual([]);
+        expect(await inner.fs.readdir(OUTSIDE)).toEqual([]);
+        expect((await fs.lstat(`${WORKDIR}/AB`)).isDirectory).toBe(true);
         expect(await fs.readUtf8(`${WORKDIR}/ab/f`)).toBe('payload');
         expect(await fs.readUtf8(`${WORKDIR}/ab/g`)).toBe('payload');
       });
