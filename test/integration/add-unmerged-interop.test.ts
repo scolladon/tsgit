@@ -629,7 +629,8 @@ describe.skipIf(!GIT_AVAILABLE)(
           const reported = gitAddVerbose(pair.peer, ['c']);
 
           // Assert
-          expect(result.modified).toEqual(reported.added);
+          expect([...new Set(reported.removed)]).toEqual(result.removed);
+          expect([...result.added, ...result.modified].sort()).toEqual(reported.added);
           await expectSameResolveUndo();
         });
       });
@@ -650,7 +651,8 @@ describe.skipIf(!GIT_AVAILABLE)(
           const reported = gitAddVerbose(pair.peer, row.git);
 
           // Assert
-          expect(result.modified).toEqual(reported.added);
+          expect([...new Set(reported.removed)]).toEqual(result.removed);
+          expect([...result.added, ...result.modified].sort()).toEqual(reported.added);
           await expectSameResolveUndo();
         });
       });
