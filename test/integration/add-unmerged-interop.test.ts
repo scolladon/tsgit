@@ -298,13 +298,16 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given a resolve-undo record for h and an unmerged f', () => {
+    describe('Given a resolve-undo record for h written by canonical git and an unmerged f', () => {
       describe('When add stages f', () => {
         it('Then REUC holds both records as in canonical git', async () => {
           // Arrange
           await seedBoth('both-modified');
-          await repo.add(['h']);
-          runGit(['-C', pair.peer, 'add', '--', 'h']);
+          for (const dir of [pair.ours, pair.peer]) {
+            runGit(['-C', dir, 'rm', '--cached', '-q', 'h']);
+          }
+          await repo.dispose();
+          repo = await openRepository({ cwd: pair.ours });
 
           // Act
           await repo.add(['f']);
