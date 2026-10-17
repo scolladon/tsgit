@@ -20,6 +20,7 @@ import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
 import {
   GIT_AVAILABLE,
+  gitAddVerbose,
   hashBlob,
   indexExtensionOf,
   lsStage,
@@ -616,11 +617,13 @@ describe.skipIf(!GIT_AVAILABLE)('add porcelain interop', () => {
         // Act
         const added = await repo.add([...row.paths], row.all === true ? { all: true } : undefined);
         const peerArguments = row.all === true ? ['-A'] : row.paths.map(gitPathspec);
-        runGit(['-C', pair.peer, 'add', ...peerArguments]);
+        const reported = gitAddVerbose(pair.peer, peerArguments);
         const stage = lsStage(pair.ours);
 
         // Assert
         expect(added.removed).toEqual(row.removed);
+        expect([...added.removed].sort()).toEqual(reported.removed);
+        expect([...added.added, ...added.modified].sort()).toEqual(reported.added);
         expect(added.modified).toEqual(row.modified ?? []);
         expect(stage).toBe(lsStage(pair.peer));
         if (!HAS_UNMERGED_STAGE.test(stage)) {
@@ -654,11 +657,13 @@ describe.skipIf(!GIT_AVAILABLE)('add porcelain interop', () => {
         // Act
         const added = await repo.add([...row.paths], row.all === true ? { all: true } : undefined);
         const peerArguments = row.all === true ? ['-A'] : row.paths.map(gitPathspec);
-        runGit(['-C', pair.peer, 'add', ...peerArguments]);
+        const reported = gitAddVerbose(pair.peer, peerArguments);
         const stage = lsStage(pair.ours);
 
         // Assert
         expect(added.removed).toEqual(row.removed);
+        expect([...added.removed].sort()).toEqual(reported.removed);
+        expect([...added.added, ...added.modified].sort()).toEqual(reported.added);
         expect(stage).toBe(lsStage(pair.peer));
         if (!HAS_UNMERGED_STAGE.test(stage)) {
           expect(writeTreeOf(pair.ours)).toBe(writeTreeOf(pair.peer));

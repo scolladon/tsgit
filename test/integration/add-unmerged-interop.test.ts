@@ -19,6 +19,7 @@ import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
 import {
   GIT_AVAILABLE,
+  gitAddVerbose,
   indexExtensionOf,
   lsStage,
   makePeerPair,
@@ -160,13 +161,9 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    const ADD_LINE = /^add '(.*)'$/;
-
-    const gitReported = (dir: string, args: ReadonlyArray<string>): string[] =>
-      runGit(['-C', dir, 'add', '-v', ...args])
-        .split('\n')
-        .flatMap((line) => ADD_LINE.exec(line)?.[1] ?? [])
-        .sort();
+    const gitReported = (dir: string, args: ReadonlyArray<string>): string[] => [
+      ...gitAddVerbose(dir, args).added,
+    ];
 
     describe.each(['deleted-by-them', 'deleted-by-us'] as const)(
       'Given %s with f equal to its last stage',

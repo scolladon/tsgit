@@ -173,6 +173,57 @@ export const runGit = (
   return execFileSync('git', args as string[], opts).toString();
 };
 
+const REPORT_LINE = /^(add|remove) '(.*)'$/;
+const C_ESCAPES: Readonly<Record<string, number>> = {
+  a: 0x07,
+  b: 0x08,
+  f: 0x0c,
+  n: 0x0a,
+  r: 0x0d,
+  t: 0x09,
+  v: 0x0b,
+  '\\': 0x5c,
+  '"': 0x22,
+};
+const C_QUOTED_TOKEN = /\\([0-7]{3}|.)|[^\\]/gs;
+const OCTAL_RADIX = 8;
+const OCTAL_ESCAPE_LENGTH = 3;
+
+const escapedByte = (escaped: string): number =>
+  escaped.length === OCTAL_ESCAPE_LENGTH
+    ? Number.parseInt(escaped, OCTAL_RADIX)
+    : (C_ESCAPES[escaped] ?? escaped.charCodeAt(0));
+
+/** Decodes a path as `git add -v` quotes it; a byte sequence that is not UTF-8 reads as U+FFFD. */
+const unquoteGitPath = (reported: string): string => {
+  if (!reported.startsWith('"') || !reported.endsWith('"')) return reported;
+  const bytes = [...reported.slice(1, -1).matchAll(C_QUOTED_TOKEN)].flatMap(([token, escaped]) =>
+    escaped === undefined ? [...Buffer.from(token)] : [escapedByte(escaped)],
+  );
+  return new TextDecoder().decode(Uint8Array.from(bytes));
+};
+
+export interface GitAddReport {
+  readonly added: ReadonlyArray<string>;
+  readonly removed: ReadonlyArray<string>;
+}
+
+/** Runs `git add -v <args>` and returns the sorted paths it reports as added and removed. */
+export const gitAddVerbose = (dir: string, args: ReadonlyArray<string>): GitAddReport => {
+  const reports = runGit(['-C', dir, 'add', '-v', ...args])
+    .split('\n')
+    .flatMap((line) => {
+      const [, verb = '', quoted = ''] = REPORT_LINE.exec(line) ?? [];
+      return verb === '' ? [] : [{ verb, path: unquoteGitPath(quoted) }];
+    });
+  const pathsOf = (verb: string): string[] =>
+    reports
+      .filter((report) => report.verb === verb)
+      .map((report) => report.path)
+      .sort();
+  return { added: pathsOf('add'), removed: pathsOf('remove') };
+};
+
 /** Snapshot of the sanitised env, for tests that need to extend it. */
 export const runGitEnv = (): NodeJS.ProcessEnv => ({ ...SAFE_ENV });
 
