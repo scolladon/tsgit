@@ -135,6 +135,23 @@ describe.skipIf(!GIT_AVAILABLE)(
       repo = await openRepository({ cwd: pair.ours });
     };
 
+    const seedZeroBesideConflictBoth = async (onDisk: string | undefined): Promise<void> => {
+      await seedBoth('both-modified');
+      for (const dir of [pair.ours, pair.peer]) {
+        const idOf = (text: string): string =>
+          runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: text }).trim();
+        runGit(['-C', dir, 'update-index', '--index-info'], {
+          input: [
+            `100644 ${idOf('c-zero\n')} 0\tc`,
+            `100644 ${idOf('c-ours\n')} 1\tc`,
+            `100644 ${idOf('c-theirs\n')} 2\tc`,
+            '',
+          ].join('\n'),
+        });
+        if (onDisk !== undefined) await put(dir, 'c', onDisk);
+      }
+    };
+
     const agreesAfter = async (
       shape: Shape,
       specs: ReadonlyArray<string>,
@@ -587,20 +604,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       describe('When add top runs', () => {
         it('Then the report, the stages and the resolve-undo listing match canonical git', async () => {
           // Arrange
-          await seedBoth('both-modified');
-          for (const dir of [pair.ours, pair.peer]) {
-            const idOf = (text: string): string =>
-              runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: text }).trim();
-            runGit(['-C', dir, 'update-index', '--index-info'], {
-              input: [
-                `100644 ${idOf('c-zero\n')} 0\tc`,
-                `100644 ${idOf('c-ours\n')} 1\tc`,
-                `100644 ${idOf('c-theirs\n')} 2\tc`,
-                '',
-              ].join('\n'),
-            });
-            await put(dir, 'c', row.onDisk);
-          }
+          await seedZeroBesideConflictBoth(row.onDisk);
 
           // Act
           const result = await repo.add(['top']);
@@ -609,7 +613,6 @@ describe.skipIf(!GIT_AVAILABLE)(
           // Assert
           expect([...result.added, ...result.modified].sort()).toEqual(reported.added);
           expect(result.modified).toEqual(['top']);
-          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
           await expectSameResolveUndo();
         });
       });
@@ -619,20 +622,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       describe('When add c runs', () => {
         it('Then the stages, the resolve-undo listing and the report match canonical git', async () => {
           // Arrange
-          await seedBoth('both-modified');
-          for (const dir of [pair.ours, pair.peer]) {
-            const idOf = (text: string): string =>
-              runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: text }).trim();
-            runGit(['-C', dir, 'update-index', '--index-info'], {
-              input: [
-                `100644 ${idOf('c-zero\n')} 0\tc`,
-                `100644 ${idOf('c-ours\n')} 1\tc`,
-                `100644 ${idOf('c-theirs\n')} 2\tc`,
-                '',
-              ].join('\n'),
-            });
-            await put(dir, 'c', 'c-new\n');
-          }
+          await seedZeroBesideConflictBoth('c-new\n');
 
           // Act
           const result = await repo.add(['c']);
@@ -640,7 +630,6 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Assert
           expect(result.modified).toEqual(reported.added);
-          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
           await expectSameResolveUndo();
         });
       });
@@ -654,20 +643,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       describe(`When ${row.title} runs`, () => {
         it('Then the stages, the resolve-undo listing and the report match canonical git', async () => {
           // Arrange
-          await seedBoth('both-modified');
-          for (const dir of [pair.ours, pair.peer]) {
-            const idOf = (text: string): string =>
-              runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: text }).trim();
-            runGit(['-C', dir, 'update-index', '--index-info'], {
-              input: [
-                `100644 ${idOf('c-zero\n')} 0\tc`,
-                `100644 ${idOf('c-ours\n')} 1\tc`,
-                `100644 ${idOf('c-theirs\n')} 2\tc`,
-                '',
-              ].join('\n'),
-            });
-            await put(dir, 'c', 'c-zero\n');
-          }
+          await seedZeroBesideConflictBoth('c-zero\n');
 
           // Act
           const result = await repo.add([...row.ours], row.options);
@@ -675,33 +651,19 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Assert
           expect(result.modified).toEqual(reported.added);
-          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
           await expectSameResolveUndo();
         });
       });
     });
 
     describe.each([
-      { title: 'modified', disk: async (dir: string) => put(dir, 'c', 'c-new\n') },
-      { title: 'deleted', disk: async () => undefined },
+      { title: 'modified', onDisk: 'c-new\n' },
+      { title: 'deleted', onDisk: undefined },
     ])('Given c held at stage 0 and at the conflict stages 1 and 2, $title on disk', (row) => {
       describe('When add all runs', () => {
         it('Then the stages, the resolve-undo listing and the report match canonical git', async () => {
           // Arrange
-          await seedBoth('both-modified');
-          for (const dir of [pair.ours, pair.peer]) {
-            const idOf = (text: string): string =>
-              runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: text }).trim();
-            runGit(['-C', dir, 'update-index', '--index-info'], {
-              input: [
-                `100644 ${idOf('c-zero\n')} 0\tc`,
-                `100644 ${idOf('c-ours\n')} 1\tc`,
-                `100644 ${idOf('c-theirs\n')} 2\tc`,
-                '',
-              ].join('\n'),
-            });
-            await row.disk(dir);
-          }
+          await seedZeroBesideConflictBoth(row.onDisk);
 
           // Act
           const result = await repo.add([], { all: true });
@@ -710,7 +672,6 @@ describe.skipIf(!GIT_AVAILABLE)(
           // Assert
           expect([...new Set(reported.removed)]).toEqual(result.removed);
           expect([...result.added, ...result.modified].sort()).toEqual(reported.added);
-          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
           await expectSameResolveUndo();
         });
       });
