@@ -6,7 +6,9 @@ import {
   readIndex,
 } from '../../../../src/application/primitives/read-index.js';
 import { parseResolveUndo } from '../../../../src/domain/git-index/resolve-undo.js';
+import { TsgitError } from '../../../../src/domain/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
+import { FilePath } from '../../../../src/domain/objects/object-id.js';
 import { indexExtensionsOf } from '../primitives/helpers/index-extensions.js';
 import { seedIndex } from './add-index-fixtures.js';
 import { seedRepo } from './fixtures.js';
@@ -204,6 +206,36 @@ describe('add — a tracked directory replaced by a non-directory', () => {
           'a/b@0:100644',
           'a/c@0:100644',
           'a/x@0:120000',
+          'real/b@0:100644',
+          'top@0:100644',
+        ]);
+      });
+    });
+  });
+
+  describe('Given a file staged at a, with entries beneath a still tracked', () => {
+    describe('When add walks the whole tree excluding one of them', () => {
+      it('Then the excluded entry is kept: a stage-0 entry is replaced in place', async () => {
+        // Arrange
+        const ctx = await trackedTree();
+        await seedIndex(ctx, [
+          { path: 'a', text: 'was' },
+          { path: 'a/b', text: 'b' },
+          { path: 'a/c', text: 'c' },
+        ]);
+        await replaceDirectoryWithFile(ctx, 'a');
+
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.', '!a/b']);
+
+        // Assert
+        expect(result.removed).toEqual(['a/c']);
+        expect(result.modified).toEqual(['a']);
+        expect(await indexPaths(ctx)).toEqual([
+          'a@0:100644',
+          'a/b@0:100644',
           'real/b@0:100644',
           'top@0:100644',
         ]);
@@ -790,6 +822,65 @@ describe('add — a path beneath a regular file that replaced a tracked director
           'top@0',
         ]);
         expect(await recordedStages(ctx)).toEqual([['a', [1, 2, 3]]]);
+      });
+    });
+  });
+
+  describe('Given a tracked directory replaced by a file and a first probe of a path beneath it that fails', () => {
+    const failingFirstProbe = async (failure: Error): Promise<Ctx> => {
+      const ctx = await trackedTree();
+      await replaceDirectoryWithFile(ctx, 'a');
+      const beneath = `${ctx.layout.workDir}/a/b`;
+      const baseLstat = ctx.fs.lstat;
+      let probed = false;
+      const fs = new Proxy(ctx.fs, {
+        get(target, prop, receiver) {
+          if (prop !== 'lstat') return Reflect.get(target, prop, receiver);
+          return async (path: string) => {
+            if (path === beneath && !probed) {
+              probed = true;
+              throw failure;
+            }
+            return baseLstat(path);
+          };
+        },
+      });
+      return { ...ctx, fs };
+    };
+
+    describe('When the failure is a TsgitError other than NOT_A_DIRECTORY', () => {
+      it('Then add rethrows it', async () => {
+        // Arrange
+        const ctx = await failingFirstProbe(
+          new TsgitError({ code: 'PERMISSION_DENIED', path: FilePath.from('a/b') }),
+        );
+        const sut = add;
+
+        // Act
+        const code = await sut(ctx, ['a/b']).then(
+          () => undefined,
+          (err: { data: { code: string } }) => err.data.code,
+        );
+
+        // Assert
+        expect(code).toBe('PERMISSION_DENIED');
+      });
+    });
+
+    describe('When the failure is not a TsgitError', () => {
+      it('Then add rethrows it', async () => {
+        // Arrange
+        const ctx = await failingFirstProbe(new Error('disk on fire'));
+        const sut = add;
+
+        // Act
+        const message = await sut(ctx, ['a/b']).then(
+          () => undefined,
+          (err: Error) => err.message,
+        );
+
+        // Assert
+        expect(message).toBe('disk on fire');
       });
     });
   });
