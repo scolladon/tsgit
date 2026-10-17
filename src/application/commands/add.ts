@@ -15,6 +15,7 @@ import { comparePaths } from '../../domain/diff/path-compare.js';
 import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import type { EolNotice } from '../../domain/eol/crlf-conversion.js';
 import { operationAborted, TsgitError } from '../../domain/error.js';
+import { entriesBeneath } from '../../domain/git-index/directory-file-conflict.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import {
   type IndexPath,
@@ -37,7 +38,8 @@ import {
 } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesPathspec } from '../../domain/pathspec/index.js';
-import { matchesIndexPath } from '../../domain/pathspec/matching-path.js';
+import { withoutExactly } from '../../domain/pathspec/match-pathspec.js';
+import { matchesIndexPath, matchesUnmergedIndexPath } from '../../domain/pathspec/matching-path.js';
 import { CHERRY_PICK, MERGE, REBASE, REVERT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
@@ -216,14 +218,14 @@ const dispatchPathspec = async (
   const { literalMustMatch } = resolved;
   await assertNoSymlinkedLeadingPath(ctx, resolved.symlinkScanTargets);
   if (!resolved.hasGlob && (await allLiteralsAreFiles(ctx, literalMustMatch))) {
-    return addLiteralOnly(ctx, literalMustMatch, scope);
+    return addLiteralOnly(ctx, resolved, scope);
   }
   return addByPathspec(ctx, resolved, scope);
 };
 
 const addLiteralOnly = async (
   ctx: Context,
-  validated: ReadonlyArray<FilePath>,
+  resolved: ResolvedPathspec,
   scope: ConversionScope,
 ): Promise<AddResult> => {
   const lock = await acquireIndexLock(ctx);
@@ -231,20 +233,41 @@ const addLiteralOnly = async (
   try {
     const { indexRules, unmergedStages, sorted, ...state } = await readExistingEntries(ctx);
     const staging = { ctx, scope: { ...scope, indexRules }, ...state, ensurePromisorConfigValid };
-    const { newEntries, added, modified, eolNotices, restagedPaths } = await stageLiterals(
+    const { remaining, restagedPaths, ...result } = await stageLiteralsOver(
       staging,
-      validated,
+      sorted,
+      resolved,
     );
     await commitIfChanged(
       lock,
       sorted.length,
-      withEveryStage(newEntries, unmergedStages),
-      resolutionOptions(restagedPaths, newEntries, unmergedStages),
+      withEveryStage(remaining, unmergedStages),
+      resolutionOptions(restagedPaths, remaining, unmergedStages),
     );
-    return { added, modified, removed: [], eolNotices };
+    return result;
   } finally {
     await lock.release();
   }
+};
+
+/** Stage the literals, then drop what a non-directory they inserted now replaces. */
+const stageLiteralsOver = async (
+  staging: Staging,
+  sorted: ReadonlyArray<IndexEntry>,
+  { literalMustMatch, matcher }: ResolvedPathspec,
+) => {
+  const { newEntries, inserted, restagedPaths, ...staged } = await stageLiterals(
+    staging,
+    literalMustMatch,
+  );
+  const view = { sorted, inserted };
+  const dropped = await dropBeneathInserted(staging.ctx, view, matcher, newEntries);
+  return {
+    ...staged,
+    restagedPaths,
+    remaining: dropped.remaining,
+    removed: dropped.removed.sort(),
+  };
 };
 
 /** What every path is staged against: the index as read, and the add's attributes and guard. */
@@ -282,6 +305,7 @@ const stageLiterals = async (
   readonly modified: ReadonlyArray<FilePath>;
   readonly eolNotices: ReadonlyArray<EolNotice>;
   readonly restagedPaths: ReadonlyArray<IndexPath>;
+  readonly inserted: ReadonlyArray<InsertedPath>;
 }> => {
   const { ctx, scope, entries: existing, indexMtime } = staging;
   const newEntries = new Map<IndexPathKey, IndexEntry>(existing);
@@ -289,6 +313,7 @@ const stageLiterals = async (
   const modified: FilePath[] = [];
   const eolNotices: EolNotice[] = [];
   const restagedPaths: IndexPath[] = [];
+  const inserted: InsertedPath[] = [];
   for (const path of trackedFirst(validated, existing)) {
     const previous = existing.get(keyOfPath(path));
     const guard = staging.ensurePromisorConfigValid;
@@ -300,8 +325,80 @@ const stageLiterals = async (
     if (notice !== undefined) eolNotices.push(notice);
     if (previous === undefined) added.push(path);
     else if (isModified(previous, entry)) modified.push(path);
+    if (previous === undefined || previous.flags.stage !== 0) inserted.push({ path, previous });
   }
-  return { newEntries, added, modified, eolNotices, restagedPaths };
+  return { newEntries, added, modified, eolNotices, restagedPaths, inserted };
+};
+
+/** The index an add started from, as the directory/file step reads it. */
+interface IndexView {
+  readonly sorted: ReadonlyArray<IndexEntry>;
+  readonly inserted: ReadonlyArray<InsertedPath>;
+}
+
+/** A path staged where the index had no stage-0 entry: `previous` is absent or unmerged. */
+interface InsertedPath {
+  readonly path: FilePath;
+  readonly previous: IndexEntry | undefined;
+}
+
+/** A path that now holds a non-directory leaves nothing beneath it. */
+const dropBeneathInserted = async (
+  ctx: Context,
+  { sorted, inserted }: IndexView,
+  matcher: ResolvedPathspec['matcher'],
+  newEntries: ReadonlyMap<IndexPathKey, IndexEntry>,
+): Promise<{ remaining: Map<IndexPathKey, IndexEntry>; removed: FilePath[] }> => {
+  const remaining = new Map(newEntries);
+  const removed: FilePath[] = [];
+  for (const { path, previous } of inserted) {
+    const reportMatcher = previous === undefined ? matcher : withoutExactly(matcher, path);
+    const replaced = await replacedBeneath(ctx, stagesBeneath(sorted, path), reportMatcher);
+    for (const key of replaced.dropped) remaining.delete(key);
+    removed.push(...replaced.reported);
+  }
+  return { remaining, removed };
+};
+
+/** Every stage of each path beneath `path`, grouped by path. */
+const stagesBeneath = (
+  sorted: ReadonlyArray<IndexEntry>,
+  path: FilePath,
+): Map<IndexPathKey, IndexEntry[]> => {
+  const beneath = new Map<IndexPathKey, IndexEntry[]>();
+  for (const entry of entriesBeneath(sorted, path)) {
+    const key = indexPathKey(entry);
+    beneath.set(key, [...(beneath.get(key) ?? []), entry]);
+  }
+  return beneath;
+};
+
+/**
+ * What the new non-directory replaces: every stage-0 path beneath it goes (reported when the
+ * matcher selects it and it is gone from disk, silent otherwise); an unmerged one goes only
+ * when the matcher selects it, and is kept with every stage otherwise.
+ */
+const replacedBeneath = async (
+  ctx: Context,
+  beneath: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
+  matcher: ResolvedPathspec['matcher'],
+): Promise<{ dropped: IndexPathKey[]; reported: FilePath[] }> => {
+  const stageZero = new Map<IndexPathKey, IndexEntry>();
+  const dropped: IndexPathKey[] = [];
+  const reported: FilePath[] = [];
+  for (const [key, stages] of beneath) {
+    const [first] = stages as [IndexEntry];
+    if (first.flags.stage === 0) stageZero.set(key, first);
+    else if (matchesUnmergedIndexPath(matcher, first, stages.length)) {
+      dropped.push(key);
+      reported.push(first.path);
+    }
+  }
+  const gone = await collectMatchedRemovals(ctx, stageZero, [], matcher);
+  return {
+    dropped: [...stageZero.keys(), ...dropped],
+    reported: [...gone.map(({ path }) => path), ...reported],
+  };
 };
 
 /** git's SKIP_IF_UNCHANGED: a re-staged, added or removed path is a change; additions are always re-staged, so a size drift is a removal. */
