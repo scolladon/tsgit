@@ -256,6 +256,67 @@ const REPLACED_ROWS: ReadonlyArray<ReplacedRow> = [
   },
 ];
 
+interface MirrorRow {
+  readonly title: string;
+  readonly tracked: Replacement;
+  readonly paths: ReadonlyArray<string>;
+  readonly all?: true;
+  readonly prepare?: (dir: string) => void;
+  readonly removed: ReadonlyArray<string>;
+}
+
+const unmergedFile = (dir: string): void => {
+  runGit(['-C', dir, 'update-index', '--force-remove', 'a']);
+  unmergedAtDirectory(dir);
+};
+
+const skipWorktreeFile = (dir: string): void => {
+  runGit(['-C', dir, 'update-index', '--skip-worktree', 'a']);
+};
+
+const MIRROR_ROWS: ReadonlyArray<MirrorRow> = [
+  { title: 'M1 add a/b', tracked: 'file', paths: ['a/b'], removed: [] },
+  { title: 'M2 add a', tracked: 'file', paths: ['a'], removed: ['a'] },
+  { title: 'M3 add .', tracked: 'file', paths: ['.'], removed: ['a'] },
+  { title: 'M4 add -A', tracked: 'file', paths: [], all: true, removed: ['a'] },
+  { title: 'M6 add a/b over a symlink', tracked: 'symlink', paths: ['a/b'], removed: [] },
+  { title: 'M6 add a over a symlink', tracked: 'symlink', paths: ['a'], removed: ['a'] },
+  { title: 'M6 add . over a symlink', tracked: 'symlink', paths: ['.'], removed: ['a'] },
+  { title: 'M6 add -A over a symlink', tracked: 'symlink', paths: [], all: true, removed: ['a'] },
+  {
+    title: 'M5 add a/b over an unmerged a',
+    tracked: 'file',
+    paths: ['a/b'],
+    prepare: unmergedFile,
+    removed: [],
+  },
+  {
+    title: 'M7a add -A over an unmerged a',
+    tracked: 'file',
+    paths: [],
+    all: true,
+    prepare: unmergedFile,
+    removed: ['a'],
+  },
+  { title: 'M8 add a/', tracked: 'file', paths: ['a/'], removed: [] },
+  { title: 'M9 add a/*', tracked: 'file', paths: ['a/*'], removed: [] },
+  {
+    title: 'M10 add -A over a skip-worktree a',
+    tracked: 'file',
+    paths: [],
+    all: true,
+    prepare: skipWorktreeFile,
+    removed: [],
+  },
+  {
+    title: 'M11 add . over a skip-worktree a',
+    tracked: 'file',
+    paths: ['.'],
+    prepare: skipWorktreeFile,
+    removed: [],
+  },
+];
+
 const gitPathspec = (spec: string): string => (spec.startsWith('!') ? `:${spec}` : spec);
 
 interface SeedFile {
@@ -449,6 +510,43 @@ describe.skipIf(!GIT_AVAILABLE)('add porcelain interop', () => {
         // Assert
         expect(added.removed).toEqual(row.removed);
         expect(added.modified).toEqual(row.modified ?? []);
+        expect(stage).toBe(lsStage(pair.peer));
+        if (!HAS_UNMERGED_STAGE.test(stage)) {
+          expect(writeTreeOf(pair.ours)).toBe(writeTreeOf(pair.peer));
+        }
+        expect(await indexExtensionOf(pair.ours, 'REUC')).toEqual(
+          await indexExtensionOf(pair.peer, 'REUC'),
+        );
+      });
+    });
+  });
+
+  describe.each(MIRROR_ROWS)('Given a directory that replaced a tracked file: $title', (row) => {
+    describe('When repo.add stages it like git add', () => {
+      it('Then the index, resolve-undo and report match canonical git', async () => {
+        // Arrange
+        for (const dir of [pair.ours, pair.peer]) {
+          for (const file of ['real/b', 'top']) {
+            await mkdir(path.join(dir, path.dirname(file)), { recursive: true });
+            await writeFile(path.join(dir, file), `${file}\n`);
+          }
+          if (row.tracked === 'symlink') await symlink('real', path.join(dir, 'a'));
+          else await writeFile(path.join(dir, 'a'), 'a\n');
+          runGit(['-C', dir, 'add', '-A']);
+          row.prepare?.(dir);
+          await rm(path.join(dir, 'a'));
+          await mkdir(path.join(dir, 'a'));
+          await writeFile(path.join(dir, 'a', 'b'), 'a/b\n');
+        }
+
+        // Act
+        const added = await repo.add([...row.paths], row.all === true ? { all: true } : undefined);
+        const peerArguments = row.all === true ? ['-A'] : row.paths.map(gitPathspec);
+        runGit(['-C', pair.peer, 'add', ...peerArguments]);
+        const stage = lsStage(pair.ours);
+
+        // Assert
+        expect(added.removed).toEqual(row.removed);
         expect(stage).toBe(lsStage(pair.peer));
         if (!HAS_UNMERGED_STAGE.test(stage)) {
           expect(writeTreeOf(pair.ours)).toBe(writeTreeOf(pair.peer));

@@ -68,6 +68,50 @@ const recordedStages = async (
   return records.map((record) => [record.path, record.stages.map(({ stage }) => stage)]);
 };
 
+const MIRROR_TREE: Readonly<Record<string, string>> = { a: 'a', 'real/b': 'rb', top: 'top' };
+
+const replaceWithDirectory = async (ctx: Ctx): Promise<void> => {
+  await ctx.fs.rm(`${ctx.layout.workDir}/a`);
+  await ctx.fs.write(`${ctx.layout.workDir}/a/b`, new TextEncoder().encode('b'));
+};
+
+const trackedFile = async (): Promise<Ctx> => {
+  const ctx = createMemoryContext();
+  await seedRepo(ctx, { workingTree: MIRROR_TREE });
+  await add(ctx, [], { all: true });
+  return ctx;
+};
+
+const trackedSymlink = async (): Promise<Ctx> => {
+  const ctx = createMemoryContext();
+  await seedRepo(ctx, { workingTree: { 'real/b': 'rb', top: 'top' } });
+  await ctx.fs.symlink('real', `${ctx.layout.workDir}/a`);
+  await add(ctx, [], { all: true });
+  return ctx;
+};
+
+const unmergedFile = async (): Promise<Ctx> => {
+  const ctx = await trackedFile();
+  await seedIndex(ctx, [
+    { path: 'a', text: 'base', stage: 1 },
+    { path: 'a', text: 'ours', stage: 2 },
+    { path: 'a', text: 'theirs', stage: 3 },
+    { path: 'real/b', text: 'rb' },
+    { path: 'top', text: 'top' },
+  ]);
+  return ctx;
+};
+
+const skipWorktreeFile = async (): Promise<Ctx> => {
+  const ctx = await trackedFile();
+  await seedIndex(ctx, [
+    { path: 'a', text: 'a', skipWorktree: true },
+    { path: 'real/b', text: 'rb' },
+    { path: 'top', text: 'top' },
+  ]);
+  return ctx;
+};
+
 describe('add — a tracked directory replaced by a non-directory', () => {
   describe('Given a tracked directory replaced by a symlink', () => {
     describe('When add names the symlink', () => {
@@ -511,6 +555,120 @@ describe('add — a tracked directory replaced by a non-directory', () => {
         // Assert
         expect(sut.removed).toEqual([]);
         expect((await indexPaths(ctx)).length).toBe(5);
+      });
+    });
+  });
+});
+
+describe('add — a directory replaced a tracked file or symlink', () => {
+  describe.each([
+    ['a tracked file', trackedFile],
+    ['a tracked symlink', trackedSymlink],
+  ])('Given a directory that replaced %s', (_title, track) => {
+    describe.each([
+      ['add a/b', (ctx: Ctx) => add(ctx, ['a/b']), []],
+      ['add a/', (ctx: Ctx) => add(ctx, ['a/']), []],
+      ['add a/*', (ctx: Ctx) => add(ctx, ['a/*']), []],
+      ['add a', (ctx: Ctx) => add(ctx, ['a']), ['a']],
+      ['add .', (ctx: Ctx) => add(ctx, ['.']), ['a']],
+      ['add -A', (ctx: Ctx) => add(ctx, [], { all: true }), ['a']],
+    ])('When %s', (_how, run, removed) => {
+      it('Then the replaced entry is gone and a/b is staged', async () => {
+        // Arrange
+        const ctx = await track();
+        await ctx.fs.rm(`${ctx.layout.workDir}/a`);
+        await ctx.fs.write(`${ctx.layout.workDir}/a/b`, new TextEncoder().encode('b'));
+
+        // Act
+        const sut = await run(ctx);
+
+        // Assert
+        expect(sut.removed).toEqual(removed);
+        expect(await indexPaths(ctx)).toEqual(['a/b@0:100644', 'real/b@0:100644', 'top@0:100644']);
+      });
+    });
+  });
+
+  describe('Given a skip-worktree file that a directory replaced', () => {
+    describe.each([
+      ['add -A', (ctx: Ctx) => add(ctx, [], { all: true })],
+      ['add .', (ctx: Ctx) => add(ctx, ['.'])],
+    ])('When %s', (_how, run) => {
+      it('Then the entry is dropped without being reported', async () => {
+        // Arrange
+        const ctx = await skipWorktreeFile();
+        await replaceWithDirectory(ctx);
+
+        // Act
+        const sut = await run(ctx);
+
+        // Assert
+        expect(sut.removed).toEqual([]);
+        expect(await indexPaths(ctx)).toEqual(['a/b@0:100644', 'real/b@0:100644', 'top@0:100644']);
+      });
+    });
+  });
+
+  describe('Given a file unmerged at stages 1, 2 and 3 that a directory replaced', () => {
+    describe('When add names a/b', () => {
+      it('Then every stage is kept beside a/b and nothing is recorded', async () => {
+        // Arrange
+        const ctx = await unmergedFile();
+        await replaceWithDirectory(ctx);
+
+        // Act
+        const sut = await add(ctx, ['a/b']);
+
+        // Assert
+        expect(sut.removed).toEqual([]);
+        expect(await indexPaths(ctx)).toEqual([
+          'a@1:100644',
+          'a@2:100644',
+          'a@3:100644',
+          'a/b@0:100644',
+          'real/b@0:100644',
+          'top@0:100644',
+        ]);
+        expect(await recordedStages(ctx)).toEqual([]);
+      });
+    });
+
+    describe('When add -A', () => {
+      it('Then every stage is removed and recorded', async () => {
+        // Arrange
+        const ctx = await unmergedFile();
+        await replaceWithDirectory(ctx);
+
+        // Act
+        const sut = await add(ctx, [], { all: true });
+
+        // Assert
+        expect(sut.removed).toEqual(['a']);
+        expect(await indexPaths(ctx)).toEqual(['a/b@0:100644', 'real/b@0:100644', 'top@0:100644']);
+        expect(await recordedStages(ctx)).toEqual([['a', [1, 2, 3]]]);
+      });
+    });
+  });
+
+  describe('Given a tracked gitlink whose directory exists', () => {
+    describe('When add -A', () => {
+      it('Then the gitlink is kept', async () => {
+        // Arrange
+        const ctx = await trackedFile();
+        await seedIndex(ctx, [
+          { path: 'a', text: 'a', mode: FILE_MODE.GITLINK },
+          { path: 'real/b', text: 'rb' },
+          { path: 'top', text: 'top' },
+        ]);
+        await replaceWithDirectory(ctx);
+        await ctx.fs.rm(`${ctx.layout.workDir}/a/b`);
+
+        // Act
+        const sut = await add(ctx, [], { all: true });
+
+        // Assert
+        expect(sut.removed).toEqual([]);
+        expect(await indexPaths(ctx)).toContain('a@0:160000');
       });
     });
   });

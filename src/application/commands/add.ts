@@ -15,7 +15,10 @@ import { comparePaths } from '../../domain/diff/path-compare.js';
 import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import type { EolNotice } from '../../domain/eol/crlf-conversion.js';
 import { operationAborted, TsgitError } from '../../domain/error.js';
-import { entriesBeneath } from '../../domain/git-index/directory-file-conflict.js';
+import {
+  entriesAtLeadingDirectories,
+  entriesBeneath,
+} from '../../domain/git-index/directory-file-conflict.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import {
   type IndexPath,
@@ -344,7 +347,10 @@ interface InsertedPath {
   readonly previous: IndexEntry | undefined;
 }
 
-/** A path that now holds a non-directory leaves nothing beneath it. */
+/**
+ * A path that now holds a non-directory leaves nothing beneath it, and a path staged beneath a
+ * tracked file or symlink leaves that one behind — silently, as the removal pass reports it.
+ */
 const dropBeneathInserted = async (
   ctx: Context,
   { sorted, inserted }: IndexView,
@@ -359,6 +365,9 @@ const dropBeneathInserted = async (
   const removed: FilePath[] = [];
   const dropped = new Set<IndexPathKey>();
   for (const { path, previous } of inserted) {
+    for (const leading of entriesAtLeadingDirectories(remaining, path)) {
+      remaining.delete(indexPathKey(leading));
+    }
     const reportMatcher = previous === undefined ? matcher : withoutExactly(matcher, path);
     const replaced = await replacedBeneath(ctx, stagesBeneath(sorted, path), reportMatcher);
     for (const key of replaced.dropped) {
@@ -926,16 +935,19 @@ interface WalkOutcome {
 
 /**
  * A path under a leading component that is no longer a directory, or is a symlink
- * (git's `has_symlink_leading_path`), is as gone as a missing one.
+ * (git's `has_symlink_leading_path`), is as gone as a missing one; so is a tracked file
+ * or symlink a directory replaced. A submodule checkout is a directory by design.
  */
 const presentOnDisk = async (
   ctx: Context,
   scanner: LeadingPathScanner,
-  path: FilePath,
+  entry: IndexEntry,
 ): Promise<boolean> => {
   try {
-    if (await scanner.hasSymlinkedLeadingPath(path)) return false;
-    return (await lstatOrMissing(ctx, path)) !== undefined;
+    if (await scanner.hasSymlinkedLeadingPath(entry.path)) return false;
+    const stat = await lstatOrMissing(ctx, entry.path);
+    if (stat === undefined) return false;
+    return !stat.isDirectory || entry.mode === FILE_MODE.GITLINK;
   } catch (err) {
     if (err instanceof TsgitError && err.data.code === 'NOT_A_DIRECTORY') return false;
     throw err;
@@ -962,7 +974,7 @@ const collectRemovedEntries = async (
   for (const [key, entry] of existing) {
     if (seen.has(key)) continue;
     if (entry.flags.skipWorktree) continue;
-    if (!isLossy(entry) && (await presentOnDisk(ctx, scanner, entry.path))) continue;
+    if (!isLossy(entry) && (await presentOnDisk(ctx, scanner, entry))) continue;
     removed.push(entry);
   }
   return removed;
