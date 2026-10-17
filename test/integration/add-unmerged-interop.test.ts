@@ -493,6 +493,13 @@ describe.skipIf(!GIT_AVAILABLE)(
         git: ['.', ':!f*'],
       },
       {
+        title: 'E3 on a path literally named f*',
+        conflicted: 'f*',
+        shape: 'both-modified',
+        ours: ['.', '!f*'],
+        git: ['.', ':!f*'],
+      },
+      {
         title: 'E4',
         conflicted: 'd/f',
         shape: 'both-modified',
