@@ -19,7 +19,6 @@ import type { EolNotice } from '../../domain/eol/crlf-conversion.js';
 import { TsgitError } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
 import { indexPathKey, keyOfPath } from '../../domain/git-index/index-path-key.js';
-import { validateTreePath } from '../../domain/git-index/path-validator.js';
 import { abbreviateOid, type ConflictType, STASH_LABELS } from '../../domain/merge/index.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import { hasEscapedBytes } from '../../domain/objects/encoding.js';
@@ -49,6 +48,7 @@ import {
 import { boundedMapFor, limiterFor } from '../primitives/internal/concurrency.js';
 import { convertToGit } from '../primitives/internal/convert-blob.js';
 import type { IndexLock } from '../primitives/internal/index-lock.js';
+import { indexPathRulesOf } from '../primitives/internal/index-path-rules.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import { lazily } from '../primitives/internal/lazily.js';
 import { forgetAfterLink } from '../primitives/internal/link-first-wave.js';
@@ -667,8 +667,9 @@ const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> =>
   // attacker-controllable, so a hostile entry name (`.git/**`, a `.git` alias,
   // a traversal) must refuse the entire restore untouched — mirroring the
   // index-write boundary a checkout crosses.
+  const pathRules = indexPathRulesOf(ctx);
   for (const [path, entry] of flat.entries) {
-    validateTreePath(path, entry.mode);
+    pathRules.validateTreePath(path, entry.mode);
   }
   // One scanner for the whole restore: its per-directory memo means a deep
   // untracked tree with many paths under the same symlinked directory costs

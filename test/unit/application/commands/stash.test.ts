@@ -953,6 +953,62 @@ describe('stash apply', () => {
     });
   });
 
+  describe('Given an include-untracked stash whose untracked tree holds x\\y', () => {
+    const seedBackslashStash = async (): Promise<Context> => {
+      const ctx = await setupRepo();
+      const blob = await writeObject(ctx, {
+        type: 'blob',
+        id: '' as ObjectId,
+        content: new TextEncoder().encode('payload\n'),
+      });
+      const untrackedTree = await writeObject(ctx, {
+        type: 'tree',
+        id: '' as ObjectId,
+        entries: [treeEntry(FILE_MODE.REGULAR, 'x\\y', blob)],
+      });
+      await pushHostileUntrackedStash(ctx, untrackedTree);
+      return ctx;
+    };
+
+    describe('When apply runs under Windows path syntax', () => {
+      it('Then it refuses with the backslash reason and writes nothing', async () => {
+        // Arrange
+        const ctx = await seedBackslashStash();
+        const sut = stashApply;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut({ ...ctx, windowsPathSyntax: true }, {});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: -1,
+          reason: 'backslash rejected under Windows path syntax',
+        });
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/x\\y`)).toBe(false);
+      });
+    });
+
+    describe('When apply runs under POSIX path syntax', () => {
+      it('Then it resolves and writes the blob', async () => {
+        // Arrange
+        const ctx = await seedBackslashStash();
+        const sut = stashApply;
+
+        // Act
+        await sut(ctx, {});
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/x\\y`)).toBe('payload\n');
+      });
+    });
+  });
+
   describe('Given an include-untracked stash whose untracked tree holds a non-UTF-8 name and a twin on disk named by its U+FFFD view', () => {
     describe('When apply runs', () => {
       it('Then it does not refuse, leaves the twin alone and writes no lone-surrogate name', async () => {
