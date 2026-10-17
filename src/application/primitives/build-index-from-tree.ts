@@ -29,7 +29,7 @@ import {
 } from '../../domain/git-index/index.js';
 import { type IndexPathKey, indexPathKey } from '../../domain/git-index/index-path-key.js';
 import { pathComparatorFor } from '../../domain/git-index/index-writer.js';
-import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
+import { type IndexPathRules, NO_PARSER_OFFSET } from '../../domain/git-index/path-validator.js';
 import {
   FILE_MODE,
   type FileMode,
@@ -38,6 +38,7 @@ import {
 } from '../../domain/objects/index.js';
 import type { SparseMatcher } from '../../domain/sparse/index.js';
 import type { Context } from '../../ports/context.js';
+import { indexPathRulesOf } from './internal/index-path-rules.js';
 import { walkTreeWithLossyBytes } from './walk-tree.js';
 
 export interface BuildIndexFromTreeOpts {
@@ -111,11 +112,12 @@ const includedFlags = (
     : { ...donorFlags, stage: 0 };
 
 const projectLeaf = (
+  pathRules: IndexPathRules,
   leaf: TargetLeaf,
   donors: ReadonlyMap<IndexPathKey, IndexEntry>,
   sparse: SparseMatcher | undefined,
 ): IndexEntry => {
-  validateIndexPath(leaf.path, NO_PARSER_OFFSET, leaf.mode, leaf.pathBytes);
+  pathRules.validateIndexPath(leaf.path, NO_PARSER_OFFSET, leaf.mode, leaf.pathBytes);
   // An excluded path is rebuilt as a zero-stat skip-worktree entry — the file
   // is absent from disk, so any donor stat cache is meaningless.
   if (sparse !== undefined && !sparse(leaf.path)) return skipWorktreeEntry(leaf);
@@ -131,7 +133,8 @@ export const buildIndexFromTree = async (
 ): Promise<ReadonlyArray<IndexEntry>> => {
   const donors = donorByPath(opts.currentIndex);
   const leaves = await collectLeaves(ctx, opts.targetTree);
-  const entries = leaves.map((leaf) => projectLeaf(leaf, donors, opts.sparse));
+  const pathRules = indexPathRulesOf(ctx);
+  const entries = leaves.map((leaf) => projectLeaf(pathRules, leaf, donors, opts.sparse));
   entries.sort(pathComparatorFor(entries));
   return entries;
 };
