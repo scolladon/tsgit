@@ -1340,8 +1340,9 @@ const writeCleanedBlob = async (
 
 /**
  * git reads the index-CRLF rule from stage 0, else stage 2; a gitlink has no
- * blob to read. `previous` is the last stage recorded, so only an unmerged
- * path consults the stage-2 entries read with the index.
+ * blob to read. `previous` is the path's stage-0 entry when it has one, else
+ * its last stage, so only a path with no stage-0 entry consults the stage-2
+ * entries read with the index.
  */
 const indexRuleBlob = (
   indexRules: StagingScope['indexRules'],
