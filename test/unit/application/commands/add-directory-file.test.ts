@@ -120,11 +120,13 @@ describe('add — a tracked directory replaced by a non-directory', () => {
         const ctx = await trackedTree();
         await replaceDirectoryWithSymlink(ctx, 'a');
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, ['a']);
+        const result = await sut(ctx, ['a']);
 
         // Assert
-        expect(sut.removed).toEqual(['a/b', 'a/c', 'a/x/y']);
+        expect(result.removed).toEqual(['a/b', 'a/c', 'a/x/y']);
         expect(await indexPaths(ctx)).toEqual(['a@0:120000', 'real/b@0:100644', 'top@0:100644']);
       });
     });
@@ -137,11 +139,13 @@ describe('add — a tracked directory replaced by a non-directory', () => {
         const ctx = await trackedTree();
         await replaceDirectoryWithFile(ctx, 'a');
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, ['a']);
+        const result = await sut(ctx, ['a']);
 
         // Assert
-        expect(sut.removed).toEqual(['a/b', 'a/c', 'a/x/y']);
+        expect(result.removed).toEqual(['a/b', 'a/c', 'a/x/y']);
         expect(await indexPaths(ctx)).toEqual(['a@0:100644', 'real/b@0:100644', 'top@0:100644']);
       });
     });
@@ -154,11 +158,13 @@ describe('add — a tracked directory replaced by a non-directory', () => {
         const ctx = await trackedTree();
         await replaceDirectoryWithSymlink(ctx, 'a');
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, ['./a']);
+        const result = await sut(ctx, ['./a']);
 
         // Assert
-        expect(sut.removed).toEqual(['a/b', 'a/c', 'a/x/y']);
+        expect(result.removed).toEqual(['a/b', 'a/c', 'a/x/y']);
       });
     });
 
@@ -168,12 +174,14 @@ describe('add — a tracked directory replaced by a non-directory', () => {
         const ctx = await trackedTree();
         await replaceDirectoryWithSymlink(ctx, 'a');
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, ['top', 'a']);
+        const result = await sut(ctx, ['top', 'a']);
 
         // Assert
-        expect(sut.removed).toEqual(['a/b', 'a/c', 'a/x/y']);
-        expect(sut.modified).toEqual([]);
+        expect(result.removed).toEqual(['a/b', 'a/c', 'a/x/y']);
+        expect(result.modified).toEqual([]);
       });
     });
   });
@@ -185,11 +193,13 @@ describe('add — a tracked directory replaced by a non-directory', () => {
         const ctx = await trackedTree();
         await replaceDirectoryWithSymlink(ctx, 'a/x');
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, ['a/x']);
+        const result = await sut(ctx, ['a/x']);
 
         // Assert
-        expect(sut.removed).toEqual(['a/x/y']);
+        expect(result.removed).toEqual(['a/x/y']);
         expect(await indexPaths(ctx)).toEqual([
           'a/b@0:100644',
           'a/c@0:100644',
@@ -215,12 +225,14 @@ describe('add — a tracked directory replaced by a non-directory', () => {
         await ctx.fs.rm(`${ctx.layout.workDir}/a`);
         await ctx.fs.symlink('elsewhere', `${ctx.layout.workDir}/a`);
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, ['a']);
+        const result = await sut(ctx, ['a']);
 
         // Assert
-        expect(sut.removed).toEqual([]);
-        expect(sut.modified).toEqual(['a']);
+        expect(result.removed).toEqual([]);
+        expect(result.modified).toEqual(['a']);
         expect(await indexPaths(ctx)).toEqual(['a@0:120000', 'a/b@0:100644', 'a/c@0:100644']);
       });
     });
@@ -237,11 +249,13 @@ describe('add — a tracked directory replaced by a non-directory', () => {
         ]);
         await replaceDirectoryWithSymlink(ctx, 'a');
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, ['a']);
+        const result = await sut(ctx, ['a']);
 
         // Assert
-        expect(sut.removed).toEqual(['a/\uFFFD']);
+        expect(result.removed).toEqual(['a/\uFFFD']);
         expect(await indexPaths(ctx)).toEqual(['a@0:120000', 'top@0:100644']);
       });
     });
@@ -253,11 +267,13 @@ describe('add — a tracked directory replaced by a non-directory', () => {
         // Arrange
         const ctx = await trackedTree();
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, ['top']);
+        const result = await sut(ctx, ['top']);
 
         // Assert
-        expect(sut.removed).toEqual([]);
+        expect(result.removed).toEqual([]);
         expect(await indexPaths(ctx)).toHaveLength(5);
       });
     });
@@ -270,11 +286,13 @@ describe('add — a tracked directory replaced by a non-directory', () => {
         const ctx = await trackedTree();
         await replaceDirectoryWithFile(ctx, 'a');
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, ['a', '!a/b']);
+        const result = await sut(ctx, ['a', '!a/b']);
 
         // Assert
-        expect(sut.removed).toEqual(['a/c', 'a/x/y']);
+        expect(result.removed).toEqual(['a/c', 'a/x/y']);
         expect(await indexPaths(ctx)).toEqual(['a@0:100644', 'real/b@0:100644', 'top@0:100644']);
       });
     });
@@ -293,11 +311,13 @@ describe('add — a tracked directory replaced by a non-directory', () => {
         ]);
         await replaceDirectoryWithSymlink(ctx, 'a');
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, ['a']);
+        const result = await sut(ctx, ['a']);
 
         // Assert
-        expect(sut.removed).toEqual(['a/c', 'a/x/y']);
+        expect(result.removed).toEqual(['a/c', 'a/x/y']);
         expect(await indexPaths(ctx)).toEqual(['a@0:120000', 'top@0:100644']);
       });
     });
@@ -313,11 +333,13 @@ describe('add — a tracked directory replaced by a non-directory', () => {
         const ctx = await unmergedBeneath();
         await replaceDirectoryWithFile(ctx, 'a');
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, paths);
+        const result = await sut(ctx, paths);
 
         // Assert
-        expect(sut.removed).toEqual(['a/b', 'a/c', 'a/x/y']);
+        expect(result.removed).toEqual(['a/b', 'a/c', 'a/x/y']);
         expect(await indexPaths(ctx)).toEqual(['a@0:100644', 'top@0:100644']);
         expect(await recordedStages(ctx)).toEqual([['a/b', [1, 2, 3]]]);
       });
@@ -331,11 +353,13 @@ describe('add — a tracked directory replaced by a non-directory', () => {
         const ctx = await unmergedBeneath();
         await replaceDirectoryWithFile(ctx, 'a');
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, ['a', '!a/b*']);
+        const result = await sut(ctx, ['a', '!a/b*']);
 
         // Assert
-        expect(sut.removed).toEqual(['a/c', 'a/x/y']);
+        expect(result.removed).toEqual(['a/c', 'a/x/y']);
         expect(await indexPaths(ctx)).toEqual([
           'a@0:100644',
           'a/b@1:100644',
@@ -370,12 +394,14 @@ describe('add — a tracked directory replaced by a non-directory', () => {
         ]);
         await replace(ctx, 'a');
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, paths);
+        const result = await sut(ctx, paths);
 
         // Assert
-        expect(sut.removed).toEqual([]);
-        expect(sut.modified).toEqual(['a']);
+        expect(result.removed).toEqual([]);
+        expect(result.modified).toEqual(['a']);
         expect((await indexPaths(ctx)).map((line) => line.split(':')[0])).toEqual([
           'a@0',
           'real/b@0',
@@ -393,11 +419,13 @@ describe('add — a tracked directory replaced by a non-directory', () => {
         const ctx = await trackedTree();
         await replaceDirectoryWithFile(ctx, 'a');
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, ['.', '!a/b']);
+        const result = await sut(ctx, ['.', '!a/b']);
 
         // Assert
-        expect(sut.removed).toEqual(['a/c', 'a/x/y']);
+        expect(result.removed).toEqual(['a/c', 'a/x/y']);
         expect(await indexPaths(ctx)).toEqual(['a@0:100644', 'real/b@0:100644', 'top@0:100644']);
       });
     });
@@ -417,11 +445,13 @@ describe('add — a tracked directory replaced by a non-directory', () => {
         ]);
         await replaceDirectoryWithSymlink(ctx, 'a');
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, [], { all: true });
+        const result = await sut(ctx, [], { all: true });
 
         // Assert
-        expect(sut.removed).toEqual(['a/c', 'a/x/y']);
+        expect(result.removed).toEqual(['a/c', 'a/x/y']);
         expect(await indexPaths(ctx)).toEqual(['a@0:120000', 'real/b@0:100644', 'top@0:100644']);
       });
     });
@@ -437,11 +467,13 @@ describe('add — a tracked directory replaced by a non-directory', () => {
         const ctx = await unmergedBeneath();
         await replaceDirectoryWithFile(ctx, 'a');
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, paths);
+        const result = await sut(ctx, paths);
 
         // Assert
-        expect(sut.removed).toEqual(['a/b', 'a/c', 'a/x/y']);
+        expect(result.removed).toEqual(['a/b', 'a/c', 'a/x/y']);
         expect(await indexPaths(ctx)).toEqual(['a@0:100644', 'real/b@0:100644', 'top@0:100644']);
         expect(await recordedStages(ctx)).toEqual([['a/b', [1, 2, 3]]]);
       });
@@ -455,11 +487,13 @@ describe('add — a tracked directory replaced by a non-directory', () => {
         const ctx = await unmergedBeneath();
         await replaceDirectoryWithFile(ctx, 'a');
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, [], { all: true });
+        const result = await sut(ctx, [], { all: true });
 
         // Assert
-        expect(sut.removed).toEqual(['a/b', 'a/c', 'a/x/y']);
+        expect(result.removed).toEqual(['a/b', 'a/c', 'a/x/y']);
         expect(await recordedStages(ctx)).toEqual([['a/b', [1, 2, 3]]]);
       });
     });
@@ -470,11 +504,13 @@ describe('add — a tracked directory replaced by a non-directory', () => {
         const ctx = await unmergedBeneath();
         await replaceDirectoryWithFile(ctx, 'a');
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, ['.', '!a/b*']);
+        const result = await sut(ctx, ['.', '!a/b*']);
 
         // Assert
-        expect(sut.removed).toEqual(['a/c', 'a/x/y']);
+        expect(result.removed).toEqual(['a/c', 'a/x/y']);
         expect((await indexPaths(ctx)).filter((line) => line.startsWith('a/b'))).toEqual([
           'a/b@1:100644',
           'a/b@2:100644',
@@ -505,12 +541,14 @@ describe('add — a tracked directory replaced by a non-directory', () => {
         await ctx.fs.write(`${ctx.layout.workDir}/d/e`, new TextEncoder().encode('changed'));
         await replace(ctx, 'a');
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, ['a', 'd']);
+        const result = await sut(ctx, ['a', 'd']);
 
         // Assert
-        expect(sut.removed).toEqual([]);
-        expect(sut.modified).toEqual(['a', 'd/e']);
+        expect(result.removed).toEqual([]);
+        expect(result.modified).toEqual(['a', 'd/e']);
         expect((await indexPaths(ctx)).map((line) => line.split(':')[0])).toEqual([
           'a@0',
           'd/e@0',
@@ -533,11 +571,13 @@ describe('add — a tracked directory replaced by a non-directory', () => {
         ]);
         await replaceDirectoryWithFile(ctx, 'a');
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, ['.']);
+        const result = await sut(ctx, ['.']);
 
         // Assert
-        expect(sut.removed).toEqual(['a/b']);
+        expect(result.removed).toEqual(['a/b']);
       });
     });
   });
@@ -549,11 +589,13 @@ describe('add — a tracked directory replaced by a non-directory', () => {
         const ctx = await trackedTree();
         await replaceDirectoryWithFile(ctx, 'a');
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, ['real']);
+        const result = await sut(ctx, ['real']);
 
         // Assert
-        expect(sut.removed).toEqual([]);
+        expect(result.removed).toEqual([]);
         expect((await indexPaths(ctx)).length).toBe(5);
       });
     });
@@ -568,11 +610,13 @@ describe('add — a path beneath a regular file that replaced a tracked director
         const ctx = await trackedTree();
         await replaceDirectoryWithFile(ctx, 'a');
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, ['a/b']);
+        const result = await sut(ctx, ['a/b']);
 
         // Assert
-        expect(sut.removed).toEqual(['a/b']);
+        expect(result.removed).toEqual(['a/b']);
         expect(await indexPaths(ctx)).toEqual([
           'a/c@0:100644',
           'a/x/y@0:100644',
@@ -588,12 +632,14 @@ describe('add — a path beneath a regular file that replaced a tracked director
         const ctx = await trackedTree();
         await replaceDirectoryWithFile(ctx, 'a');
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, ['a', 'a/b']);
+        const result = await sut(ctx, ['a', 'a/b']);
 
         // Assert
-        expect(sut.added).toEqual(['a']);
-        expect(sut.removed).toEqual(['a/b', 'a/c', 'a/x/y']);
+        expect(result.added).toEqual(['a']);
+        expect(result.removed).toEqual(['a/b', 'a/c', 'a/x/y']);
       });
     });
   });
@@ -614,11 +660,13 @@ describe('add — a path beneath a regular file that replaced a tracked director
         ]);
         await replaceDirectoryWithFile(ctx, 'a');
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, ['a/b', 'a']);
+        const result = await sut(ctx, ['a/b', 'a']);
 
         // Assert
-        expect(sut.removed).toEqual(['a/b']);
+        expect(result.removed).toEqual(['a/b']);
         expect((await indexPaths(ctx)).map((line) => line.split(':')[0])).toEqual([
           'a@0',
           'real/b@0',
@@ -666,11 +714,13 @@ describe('add — a directory replaced a tracked file or symlink', () => {
         await ctx.fs.rm(`${ctx.layout.workDir}/a`);
         await ctx.fs.write(`${ctx.layout.workDir}/a/b`, new TextEncoder().encode('b'));
 
+        const sut = run;
+
         // Act
-        const sut = await run(ctx);
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut.removed).toEqual(removed);
+        expect(result.removed).toEqual(removed);
         expect(await indexPaths(ctx)).toEqual(['a/b@0:100644', 'real/b@0:100644', 'top@0:100644']);
       });
     });
@@ -686,11 +736,13 @@ describe('add — a directory replaced a tracked file or symlink', () => {
         const ctx = await skipWorktreeFile();
         await replaceWithDirectory(ctx);
 
+        const sut = run;
+
         // Act
-        const sut = await run(ctx);
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut.removed).toEqual([]);
+        expect(result.removed).toEqual([]);
         expect(await indexPaths(ctx)).toEqual(['a/b@0:100644', 'real/b@0:100644', 'top@0:100644']);
       });
     });
@@ -703,11 +755,13 @@ describe('add — a directory replaced a tracked file or symlink', () => {
         const ctx = await unmergedFile();
         await replaceWithDirectory(ctx);
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, ['a/b']);
+        const result = await sut(ctx, ['a/b']);
 
         // Assert
-        expect(sut.removed).toEqual([]);
+        expect(result.removed).toEqual([]);
         expect(await indexPaths(ctx)).toEqual([
           'a@1:100644',
           'a@2:100644',
@@ -726,11 +780,13 @@ describe('add — a directory replaced a tracked file or symlink', () => {
         const ctx = await unmergedFile();
         await replaceWithDirectory(ctx);
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, [], { all: true });
+        const result = await sut(ctx, [], { all: true });
 
         // Assert
-        expect(sut.removed).toEqual(['a']);
+        expect(result.removed).toEqual(['a']);
         expect(await indexPaths(ctx)).toEqual(['a/b@0:100644', 'real/b@0:100644', 'top@0:100644']);
         expect(await recordedStages(ctx)).toEqual([['a', [1, 2, 3]]]);
       });
@@ -750,11 +806,13 @@ describe('add — a directory replaced a tracked file or symlink', () => {
         await replaceWithDirectory(ctx);
         await ctx.fs.rm(`${ctx.layout.workDir}/a/b`);
 
+        const sut = add;
+
         // Act
-        const sut = await add(ctx, [], { all: true });
+        const result = await sut(ctx, [], { all: true });
 
         // Assert
-        expect(sut.removed).toEqual([]);
+        expect(result.removed).toEqual([]);
         expect(await indexPaths(ctx)).toContain('a@0:160000');
       });
     });

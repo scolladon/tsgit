@@ -21,7 +21,7 @@ const startsWithDirectory = (bytes: Uint8Array, directory: Uint8Array): boolean 
   bytesEqual(bytes.subarray(0, directory.length), directory);
 
 describe('entriesBeneath properties', () => {
-  describe('Given any sorted entries and a leading directory of one of them', () => {
+  describe('Given any sorted entries and a leading directory of one of them, When entriesBeneath looks beneath it', () => {
     it('Then the result equals a linear filter on path bytes', () => {
       fc.assert(
         fc.property(
