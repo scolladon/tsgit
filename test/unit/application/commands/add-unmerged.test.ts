@@ -234,16 +234,16 @@ describe('Given a stat-clean top and d/e beside an unmerged f and h', () => {
 
 describe('Given an unmerged f and h on disk next to tracked top and d/e', () => {
   describe.each([
-    { title: 'add all', run: (ctx: Ctx) => add(ctx, [], { all: true }) },
-    { title: 'add of the whole tree', run: (ctx: Ctx) => add(ctx, ['.']) },
-  ])('When $title stages every path', ({ run }) => {
+    { title: 'add all', paths: [] as string[], options: { all: true } },
+    { title: 'add of the whole tree', paths: ['.'], options: undefined },
+  ])('When $title stages every path', ({ paths, options }) => {
     it('Then every path is stage 0', async () => {
       // Arrange
       const ctx = await seedConflicted(SHAPES[0] as Shape);
-      const sut = run;
+      const sut = add;
 
       // Act
-      await sut(ctx);
+      await sut(ctx, paths, options);
       const result = await stagesOf(ctx);
 
       // Assert

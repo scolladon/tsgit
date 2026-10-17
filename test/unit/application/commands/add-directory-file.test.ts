@@ -818,23 +818,23 @@ describe('add — a directory replaced a tracked file or symlink', () => {
     ['a tracked symlink', trackedSymlink],
   ])('Given a directory that replaced %s', (_title, track) => {
     describe.each([
-      ['add a/b', (ctx: Ctx) => add(ctx, ['a/b']), []],
-      ['add a/', (ctx: Ctx) => add(ctx, ['a/']), []],
-      ['add a/*', (ctx: Ctx) => add(ctx, ['a/*']), []],
-      ['add a', (ctx: Ctx) => add(ctx, ['a']), ['a']],
-      ['add .', (ctx: Ctx) => add(ctx, ['.']), ['a']],
-      ['add -A', (ctx: Ctx) => add(ctx, [], { all: true }), ['a']],
-    ])('When %s', (_how, run, removed) => {
+      { how: 'add a/b', paths: ['a/b'], options: undefined, removed: [] },
+      { how: 'add a/', paths: ['a/'], options: undefined, removed: [] },
+      { how: 'add a/*', paths: ['a/*'], options: undefined, removed: [] },
+      { how: 'add a', paths: ['a'], options: undefined, removed: ['a'] },
+      { how: 'add .', paths: ['.'], options: undefined, removed: ['a'] },
+      { how: 'add -A', paths: [] as string[], options: { all: true }, removed: ['a'] },
+    ])('When $how', ({ paths, options, removed }) => {
       it('Then the replaced entry is gone and a/b is staged', async () => {
         // Arrange
         const ctx = await track();
         await ctx.fs.rm(`${ctx.layout.workDir}/a`);
         await ctx.fs.write(`${ctx.layout.workDir}/a/b`, new TextEncoder().encode('b'));
 
-        const sut = run;
+        const sut = add;
 
         // Act
-        const result = await sut(ctx);
+        const result = await sut(ctx, paths, options);
 
         // Assert
         expect(result.removed).toEqual(removed);
@@ -845,18 +845,18 @@ describe('add — a directory replaced a tracked file or symlink', () => {
 
   describe('Given a skip-worktree file that a directory replaced', () => {
     describe.each([
-      ['add -A', (ctx: Ctx) => add(ctx, [], { all: true })],
-      ['add .', (ctx: Ctx) => add(ctx, ['.'])],
-    ])('When %s', (_how, run) => {
+      { how: 'add -A', paths: [] as string[], options: { all: true } },
+      { how: 'add .', paths: ['.'], options: undefined },
+    ])('When $how', ({ paths, options }) => {
       it('Then the entry is dropped without being reported', async () => {
         // Arrange
         const ctx = await skipWorktreeFile();
         await replaceWithDirectory(ctx);
 
-        const sut = run;
+        const sut = add;
 
         // Act
-        const result = await sut(ctx);
+        const result = await sut(ctx, paths, options);
 
         // Assert
         expect(result.removed).toEqual([]);
