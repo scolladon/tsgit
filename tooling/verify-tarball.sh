@@ -346,7 +346,11 @@ done
 # the measured pack landed at 1 457 786 B, 634 B over the old cap, attributable
 # to the directory/file replacement rule, the resolve-undo encoder and merge,
 # and the unmerged-path pathspec predicates. Measured rounded up to the next KiB.
-SIZE_CAP=$((1424 * 1024))
+# Raised 1424 -> 1425 KiB by the .gitmodules/.git alias scan and the Windows
+# backslash refusal: the measured pack landed at 1 458 653 B, 477 B over the old
+# cap, attributable to the whole-path NTFS scan, the windows index path rules and
+# their threading through every index-write surface. Measured rounded up to the next KiB.
+SIZE_CAP=$((1425 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
