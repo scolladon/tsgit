@@ -700,18 +700,18 @@ const conflictStagesOf = async (ctx: Ctx): Promise<string[]> =>
 
 describe('Given a path held at stage 0 and at the conflict stages 1 and 2, modified on disk', () => {
   describe.each([
-    { title: 'add c', run: (ctx: Ctx) => add(ctx, ['c']) },
-    { title: 'add all', run: (ctx: Ctx) => add(ctx, [], { all: true }) },
-  ])('When $title runs', ({ run }) => {
+    { title: 'add c', paths: ['c'], options: undefined },
+    { title: 'add all', paths: [] as string[], options: { all: true } },
+  ])('When $title runs', ({ paths, options }) => {
     it('Then the stage 0 entry is re-staged and the conflict stages stay without a record', async () => {
       // Arrange
       const ctx = await seedZeroBesideConflict('c-new');
       const before = await conflictStagesOf(ctx);
       const zeroBefore = (await stagesOf(ctx)).find((line) => line.startsWith('c@0:'));
-      const sut = run;
+      const sut = add;
 
       // Act
-      const result = await sut(ctx);
+      const result = await sut(ctx, paths, options);
       const after = await stagesOf(ctx);
 
       // Assert
@@ -726,18 +726,18 @@ describe('Given a path held at stage 0 and at the conflict stages 1 and 2, modif
 
 describe('Given a path held at stage 0 and at the conflict stages 1 and 2, unchanged on disk', () => {
   describe.each([
-    { title: 'add c', run: (ctx: Ctx) => add(ctx, ['c']) },
-    { title: 'add all', run: (ctx: Ctx) => add(ctx, [], { all: true }) },
-    { title: 'add .', run: (ctx: Ctx) => add(ctx, ['.']) },
-  ])('When $title runs', ({ run }) => {
+    { title: 'add c', paths: ['c'], options: undefined },
+    { title: 'add all', paths: [] as string[], options: { all: true } },
+    { title: 'add .', paths: ['.'], options: undefined },
+  ])('When $title runs', ({ paths, options }) => {
     it('Then the path is reported and the index keeps every entry', async () => {
       // Arrange
       const ctx = await seedZeroBesideConflict('c-zero');
       const before = await stagesOf(ctx);
-      const sut = run;
+      const sut = add;
 
       // Act
-      const result = await sut(ctx);
+      const result = await sut(ctx, paths, options);
 
       // Assert
       expect(result.modified).toEqual(['c']);
