@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
 import {
@@ -38,6 +39,13 @@ const COMMIT_ENV: NodeJS.ProcessEnv = {
   GIT_COMMITTER_NAME: 'Ada',
   GIT_COMMITTER_EMAIL: 'ada@example.com',
   GIT_COMMITTER_DATE: '1700000000 +0000',
+};
+
+const AUTHOR: AuthorIdentity = {
+  name: 'Ada',
+  email: 'ada@example.com',
+  timestamp: 1_700_000_000,
+  timezoneOffset: '+0000',
 };
 
 type Shape = 'both-modified' | 'deleted-by-them' | 'deleted-by-us' | 'added-by-both';
@@ -280,19 +288,28 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given f resolved by add, then add f, then add of the whole tree', () => {
-      describe('When the later adds resolve nothing', () => {
-        it('Then the f record bytes stay equal to canonical git', async () => {
+    describe('Given f resolved by add', () => {
+      describe('When add f, the whole tree, add all and a commit follow', () => {
+        it('Then the resolve-undo records stay equal to canonical git after each', async () => {
           // Arrange
           await agreesAfter('both-modified', ['f']);
+          const runBoth = async (
+            specs: ReadonlyArray<string>,
+            options: { readonly all?: boolean } = {},
+          ): Promise<void> => {
+            await repo.add([...specs], options);
+            runGit(['-C', pair.peer, 'add', ...(options.all === true ? ['-A'] : ['--', ...specs])]);
+            await expectSameResolveUndo();
+          };
 
-          // Act
-          await repo.add(['f']);
-          await repo.add(['top']);
-          runGit(['-C', pair.peer, 'add', '--', 'f']);
-          runGit(['-C', pair.peer, 'add', '--', 'top']);
-
-          // Assert
+          // Act / Assert
+          await runBoth(['f']);
+          await runBoth(['top']);
+          await runBoth(['.']);
+          await runBoth([], { all: true });
+          await runBoth(['h']);
+          await repo.commit({ message: 'merge', author: AUTHOR, committer: AUTHOR });
+          runGit(['-C', pair.peer, 'commit', '-q', '-m', 'merge'], { env: COMMIT_ENV });
           await expectSameResolveUndo();
         });
       });
