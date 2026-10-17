@@ -1,14 +1,25 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { serializeCacheTree } from '../../../../src/domain/git-index/cache-tree.js';
-import { carryExtensions } from '../../../../src/domain/git-index/carry-extensions.js';
+import {
+  carryExtensions,
+  withResolveUndo,
+} from '../../../../src/domain/git-index/carry-extensions.js';
 import type {
   CacheTreeEntry,
   IndexExtension,
 } from '../../../../src/domain/git-index/index-entry.js';
+import {
+  parseResolveUndo,
+  recordResolveUndo,
+  serializeResolveUndo,
+} from '../../../../src/domain/git-index/resolve-undo.js';
 import type { FilePath, ObjectId } from '../../../../src/domain/objects/object-id.js';
+import { arbResolveUndoRecord } from './arbitraries.js';
 
 const NUM_RUNS = 200;
+const RESOLVE_UNDO_RUNS = 100;
+const arbRecords = fc.array(arbResolveUndoRecord(), { maxLength: 4 });
 const DIGEST_LENGTH = 20;
 const SETTINGS = { untrackedCache: undefined, digestLength: DIGEST_LENGTH } as const;
 const TREE_ID = 'a'.repeat(40) as ObjectId;
@@ -63,6 +74,51 @@ describe('carryExtensions TREE properties', () => {
             expect(result.some((e) => e.signature === 'TREE')).toBe(!repeatsAChildName(root));
           }),
           { numRuns: NUM_RUNS },
+        );
+      });
+    });
+  });
+});
+
+describe('withResolveUndo properties', () => {
+  describe('Given arbitrary prior and resolved records', () => {
+    describe('When merged into the carried extensions', () => {
+      it('Then REUC decodes to the recorded merge', () => {
+        // Arrange
+        const sut = withResolveUndo;
+
+        // Act + Assert
+        fc.assert(
+          fc.property(arbRecords, arbRecords, (prior, resolved) => {
+            const previous = [{ signature: 'REUC', data: serializeResolveUndo(prior) }];
+            const result = sut([], previous, resolved, DIGEST_LENGTH);
+            if (resolved.length === 0) return;
+            const data = result.find((e) => e.signature === 'REUC')?.data as Uint8Array;
+            expect(parseResolveUndo(data, DIGEST_LENGTH)).toEqual(
+              recordResolveUndo(
+                parseResolveUndo(previous[0]?.data as Uint8Array, DIGEST_LENGTH) ?? [],
+                resolved,
+              ),
+            );
+          }),
+          { numRuns: RESOLVE_UNDO_RUNS },
+        );
+      });
+    });
+
+    describe('When no record was resolved', () => {
+      it('Then the carried array is returned', () => {
+        // Arrange
+        const sut = withResolveUndo;
+        const carried: IndexExtension[] = [{ signature: 'UNTR', data: new Uint8Array([1]) }];
+
+        // Act + Assert
+        fc.assert(
+          fc.property(arbRecords, (prior) => {
+            const previous = [{ signature: 'REUC', data: serializeResolveUndo(prior) }];
+            expect(sut(carried, previous, [], DIGEST_LENGTH)).toBe(carried);
+          }),
+          { numRuns: RESOLVE_UNDO_RUNS },
         );
       });
     });

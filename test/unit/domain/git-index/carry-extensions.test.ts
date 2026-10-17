@@ -6,6 +6,7 @@ import {
 import {
   carryExtensions,
   NO_INDEX_CHANGE,
+  withResolveUndo,
   withRestagedPaths,
 } from '../../../../src/domain/git-index/carry-extensions.js';
 import {
@@ -19,6 +20,11 @@ import {
   STAGE0_FLAGS,
 } from '../../../../src/domain/git-index/index-entry.js';
 import { parseCacheTree } from '../../../../src/domain/git-index/index-parser.js';
+import {
+  parseResolveUndo,
+  type ResolveUndoRecord,
+  serializeResolveUndo,
+} from '../../../../src/domain/git-index/resolve-undo.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import type { FilePath, ObjectId } from '../../../../src/domain/objects/object-id.js';
 
@@ -482,6 +488,139 @@ describe('carryExtensions', () => {
         expect(result[0]?.data).toEqual(serializeCacheTree(invalidated, 20));
         expect(invalidated.entryCount).toBe(-1);
         expect(invalidated.children[0]?.entryCount).toBe(2);
+      });
+    });
+  });
+});
+
+describe('withResolveUndo', () => {
+  const BLOB_ID = '1'.repeat(40) as ObjectId;
+  const stageOne = (path: string): ResolveUndoRecord => ({
+    path: path as FilePath,
+    stages: [{ stage: 1, mode: 0o100644, id: BLOB_ID }],
+  });
+  const carriedTreeAndUntracked = [
+    extension('TREE', new Uint8Array([7])),
+    extension('UNTR', new Uint8Array([8])),
+  ];
+  const reucOf = (records: ReadonlyArray<ResolveUndoRecord>) =>
+    extension('REUC', serializeResolveUndo(records));
+  const recordsOf = (extensions: ReadonlyArray<IndexExtension>) =>
+    parseResolveUndo(extensions.find((e) => e.signature === 'REUC')?.data as Uint8Array, 20);
+
+  describe('Given no previous REUC and a resolved record', () => {
+    describe('When merging', () => {
+      it('Then REUC holds the record between TREE and UNTR', () => {
+        // Arrange
+        const sut = withResolveUndo;
+
+        // Act
+        const result = sut(carriedTreeAndUntracked, [], [stageOne('f')], 20);
+
+        // Assert
+        expect(signaturesOf(result)).toEqual(['TREE', 'REUC', 'UNTR']);
+        expect(result[1]).toEqual(reucOf([stageOne('f')]));
+      });
+    });
+  });
+
+  describe('Given a previous REUC for h and a resolved f', () => {
+    describe('When merging', () => {
+      it('Then REUC holds f then h', () => {
+        // Arrange
+        const sut = withResolveUndo;
+
+        // Act
+        const result = sut(carriedTreeAndUntracked, [reucOf([stageOne('h')])], [stageOne('f')], 20);
+
+        // Assert
+        expect(recordsOf(result)).toEqual([stageOne('f'), stageOne('h')]);
+      });
+    });
+  });
+
+  describe('Given a malformed previous REUC', () => {
+    describe('When merging a resolved f', () => {
+      it('Then REUC holds f alone', () => {
+        // Arrange
+        const sut = withResolveUndo;
+        const malformed = extension(
+          'REUC',
+          new TextEncoder().encode('h\0' + '9\0' + '0\0' + '0\0'),
+        );
+
+        // Act
+        const result = sut(carriedTreeAndUntracked, [malformed], [stageOne('f')], 20);
+
+        // Assert
+        expect(recordsOf(result)).toEqual([stageOne('f')]);
+      });
+    });
+  });
+
+  describe('Given an empty previous REUC', () => {
+    describe('When merging a resolved f', () => {
+      it('Then REUC holds f alone', () => {
+        // Arrange
+        const sut = withResolveUndo;
+
+        // Act
+        const result = sut(
+          carriedTreeAndUntracked,
+          [extension('REUC', new Uint8Array())],
+          [stageOne('f')],
+          20,
+        );
+
+        // Assert
+        expect(recordsOf(result)).toEqual([stageOne('f')]);
+      });
+    });
+  });
+
+  describe('Given a carried list without REUC and a previous REUC for h', () => {
+    describe('When merging a resolved f', () => {
+      it('Then REUC holds f then h', () => {
+        // Arrange
+        const sut = withResolveUndo;
+
+        // Act
+        const result = sut(carriedTreeAndUntracked, [reucOf([stageOne('h')])], [stageOne('f')], 20);
+
+        // Assert
+        expect(signaturesOf(result)).toEqual(['TREE', 'REUC', 'UNTR']);
+        expect(recordsOf(result)).toEqual([stageOne('f'), stageOne('h')]);
+      });
+    });
+  });
+
+  describe('Given no resolved record', () => {
+    describe('When merging', () => {
+      it('Then the carried list is returned as is', () => {
+        // Arrange
+        const sut = withResolveUndo;
+        const carried = [...carriedTreeAndUntracked, reucOf([stageOne('h')])];
+
+        // Act
+        const result = sut(carried, [reucOf([stageOne('x')])], [], 20);
+
+        // Assert
+        expect(result).toBe(carried);
+      });
+    });
+  });
+
+  describe('Given a carried list lacking TREE and UNTR', () => {
+    describe('When merging a resolved f', () => {
+      it('Then only REUC is written', () => {
+        // Arrange
+        const sut = withResolveUndo;
+
+        // Act
+        const result = sut([], [], [stageOne('f')], 20);
+
+        // Assert
+        expect(signaturesOf(result)).toEqual(['REUC']);
       });
     });
   });

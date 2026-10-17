@@ -19,6 +19,10 @@ import {
 } from '../../../../../src/domain/git-index/index-entry.js';
 import { parseCacheTree } from '../../../../../src/domain/git-index/index-parser.js';
 import {
+  parseResolveUndo,
+  type ResolveUndoRecord,
+} from '../../../../../src/domain/git-index/resolve-undo.js';
+import {
   FILE_MODE,
   type FilePath,
   type ObjectId,
@@ -113,6 +117,63 @@ describe('IndexLock.commit', () => {
         expect([...written.keys()].sort()).toEqual(['TREE', 'UNTR']);
         const tree = parseCacheTree(written.get('TREE') as Uint8Array, SHA1_DIGEST);
         expect([tree.entryCount, tree.children[0]?.entryCount]).toEqual([-1, -1]);
+      });
+    });
+  });
+
+  describe('Given resolved unmerged paths', () => {
+    const resolvedF: ResolveUndoRecord = {
+      path: 'f' as FilePath,
+      stages: [{ stage: 1, mode: 0o100644, id: OTHER_ID }],
+    };
+    const reucRecords = async (ctx: Context) =>
+      parseResolveUndo((await indexExtensionsOf(ctx)).get('REUC') as Uint8Array, SHA1_DIGEST)?.map(
+        (record) => record.path,
+      );
+
+    describe('When committing an update over an extension-less index', () => {
+      it('Then REUC records the resolved path', async () => {
+        // Arrange
+        const ctx = await seededRepo();
+        await withIndexExtensions(ctx, []);
+        const entries = (await readIndex(ctx)).entries;
+        const sut = await acquireIndexLock(ctx);
+
+        // Act
+        await sut.commit(entries, 'update', { resolveUndo: [resolvedF] });
+
+        // Assert
+        expect(await reucRecords(ctx)).toEqual(['f']);
+      });
+    });
+
+    describe('When committing an update over an index carrying REUC for r', () => {
+      it('Then REUC records the resolved path before the previous one', async () => {
+        // Arrange
+        const ctx = await seededRepo();
+        const entries = (await readIndex(ctx)).entries;
+        const sut = await acquireIndexLock(ctx);
+
+        // Act
+        await sut.commit(entries, 'update', { resolveUndo: [resolvedF] });
+
+        // Assert
+        expect(await reucRecords(ctx)).toEqual(['f', 'r']);
+      });
+    });
+
+    describe('When committing an update over no index', () => {
+      it('Then no extension is written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const sut = await acquireIndexLock(ctx);
+
+        // Act
+        await sut.commit([], 'update', { resolveUndo: [resolvedF] });
+
+        // Assert
+        expect([...(await indexExtensionsOf(ctx)).keys()]).toEqual([]);
       });
     });
   });

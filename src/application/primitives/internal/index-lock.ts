@@ -5,12 +5,14 @@ import {
   type CarrySettings,
   carryExtensions,
   NO_INDEX_CHANGE,
+  withResolveUndo,
   withRestagedPaths,
 } from '../../../domain/git-index/carry-extensions.js';
 import { diffIndexEntries } from '../../../domain/git-index/diff-index-entries.js';
 import { type IndexEntry, serializeIndex } from '../../../domain/git-index/index.js';
 import type { GitIndex, IndexExtension } from '../../../domain/git-index/index-entry.js';
 import { type IndexPath, indexPathKey } from '../../../domain/git-index/index-path-key.js';
+import type { ResolveUndoRecord } from '../../../domain/git-index/resolve-undo.js';
 import { bytesEqual } from '../../../domain/objects/encoding.js';
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../config-read.js';
@@ -38,6 +40,8 @@ export type IndexWriteKind = Exclude<CarryKind, 'refresh'>;
 export interface CommitOptions {
   /** Entries the writer re-staged whatever their object name; honoured for `'update'` only. */
   readonly restagedPaths?: ReadonlyArray<IndexPath>;
+  /** The unmerged paths this write resolved; written into `REUC` merged with the previous records. */
+  readonly resolveUndo?: ReadonlyArray<ResolveUndoRecord>;
 }
 
 export interface IndexLock {
@@ -185,7 +189,7 @@ const maybeBreakStaleLock = async (
   }
 };
 
-const carriedExtensions = async (
+const carriedByRule = async (
   ctx: Context,
   previous: GitIndex | undefined,
   entries: ReadonlyArray<IndexEntry>,
@@ -197,6 +201,22 @@ const carriedExtensions = async (
   const diff = diffIndexEntries(previous.entries, entries);
   const change = withRestagedPaths(diff, options.restagedPaths ?? []);
   return carryExtensions(previous.extensions, change, kind, await carrySettings(ctx));
+};
+
+const carriedExtensions = async (
+  ctx: Context,
+  previous: GitIndex | undefined,
+  entries: ReadonlyArray<IndexEntry>,
+  kind: IndexWriteKind,
+  options: CommitOptions,
+): Promise<ReadonlyArray<IndexExtension>> => {
+  if (previous === undefined) return [];
+  return withResolveUndo(
+    await carriedByRule(ctx, previous, entries, kind, options),
+    previous.extensions,
+    options.resolveUndo ?? [],
+    ctx.hashConfig.digestLength,
+  );
 };
 
 const carrySettings = async (ctx: Context): Promise<CarrySettings> => ({
