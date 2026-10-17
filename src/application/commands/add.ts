@@ -396,6 +396,41 @@ const reportedRemovals = (
   ...removed,
 ];
 
+/** What a walk leaves once the D/F step and the removal pass have spoken: the entries to keep and the paths to report. */
+const settleRemovals = async (
+  ctx: Context,
+  view: IndexView,
+  matcher: ResolvedPathspec['matcher'],
+  newEntries: Map<IndexPathKey, IndexEntry>,
+  removedEntries: ReadonlyArray<IndexEntry>,
+) => {
+  const replaced = await dropBeneathInserted(ctx, view, matcher, newEntries);
+  for (const entry of removedEntries) replaced.remaining.delete(indexPathKey(entry));
+  return {
+    remaining: replaced.remaining,
+    removed: reportedRemovals(removedEntries, replaced),
+    everyRemoval: [...removedEntries.map(({ path }) => path), ...replaced.removed],
+  };
+};
+
+/** Writes a walk's entries beside the stages of the paths it left alone. */
+const commitWalk = (
+  lock: IndexLock,
+  {
+    sorted,
+    unmergedStages,
+    stageZeroBeside,
+  }: Pick<ExistingIndexState, 'sorted' | 'unmergedStages' | 'stageZeroBeside'>,
+  remaining: ReadonlyMap<IndexPathKey, IndexEntry>,
+  restagedPaths: ReadonlyArray<IndexPath>,
+): Promise<void> =>
+  commitIfChanged(
+    lock,
+    sorted.length,
+    withEveryStage(remaining, unmergedStages, stageZeroBeside),
+    resolutionOptions(restagedPaths, remaining, unmergedStages),
+  );
+
 /** The paths a walk staged where the index held no stage-0 entry. */
 const insertedBy = (
   outcomes: ReadonlyArray<WalkOutcome>,
@@ -661,22 +696,13 @@ const addByPathspec = async (
     const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
     const removedEntries = await collectMatchedRemovals(ctx, staged.existing, matched, matcher);
     const view = { sorted: staged.sorted, inserted: insertedBy(staged.outcomes, staged.existing) };
-    const replaced = await dropBeneathInserted(ctx, view, matcher, newEntries);
-    const removed = reportedRemovals(removedEntries, replaced);
-    const everyRemoval = [...removedEntries.map(({ path }) => path), ...replaced.removed];
-    enforceLiteralMustMatch(mustMatch, [...matched, ...everyRemoval], literalSpellings);
-    const remaining = replaced.remaining;
-    for (const entry of removedEntries) remaining.delete(indexPathKey(entry));
-    await commitIfChanged(
-      lock,
-      staged.sorted.length,
-      withEveryStage(remaining, staged.unmergedStages, staged.stageZeroBeside),
-      resolutionOptions(restagedPaths, remaining, staged.unmergedStages),
-    );
+    const settled = await settleRemovals(ctx, view, matcher, newEntries, removedEntries);
+    enforceLiteralMustMatch(mustMatch, [...matched, ...settled.everyRemoval], literalSpellings);
+    await commitWalk(lock, staged, settled.remaining, restagedPaths);
     return {
       added: [...added].sort(),
       modified: [...modified].sort(),
-      removed: removed.sort(),
+      removed: settled.removed.sort(),
       eolNotices,
     };
   } finally {
@@ -919,19 +945,9 @@ export const addAll = async (
   const lock = await acquireIndexLock(ctx);
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
-    const {
-      entries: existing,
-      unmergedStages,
-      stageZeroBeside,
-      sorted,
-      indexMtime,
-      indexRules,
-    } = await readExistingEntries(ctx);
-    const newEntries = new Map<IndexPathKey, IndexEntry>(existing);
+    const state = await readExistingEntries(ctx);
+    const { entries: existing, sorted } = state;
     const seen = new Set<IndexPathKey>();
-    const added: FilePath[] = [];
-    const modified: FilePath[] = [];
-
     // Walk-time pruning: the walker calls `ignore` on every directory
     // (skipping ignored subtrees) and every leaf. By the time we see a
     // leaf here, the ignore filter has already passed.
@@ -940,31 +956,24 @@ export const addAll = async (
       walkWorkingTree(ctx, { ignore }),
       existing,
       seen,
-      { ...scope, indexRules },
-      indexMtime,
+      { ...scope, indexRules: state.indexRules },
+      state.indexMtime,
       ensurePromisorConfigValid,
     );
-    for (const outcome of outcomes) {
-      newEntries.set(keyOfPath(outcome.path), outcome.entry);
-      if (outcome.kind === 'added') added.push(outcome.path);
-      else if (outcome.kind === 'modified') modified.push(outcome.path);
-    }
+    const { newEntries, added, modified, eolNotices, restagedPaths } = tallyWalkOutcomes(
+      existing,
+      outcomes,
+    );
     const removedEntries = await collectRemovedEntries(ctx, existing, seen);
     const view = { sorted, inserted: insertedBy(outcomes, existing) };
-    const replaced = await dropBeneathInserted(ctx, view, WHOLE_TREE_MATCHER, newEntries);
-    const remaining = replaced.remaining;
-    for (const entry of removedEntries) remaining.delete(indexPathKey(entry));
-    const removed = reportedRemovals(removedEntries, replaced);
-    added.sort();
-    modified.sort();
-    removed.sort();
-    await commitIfChanged(
-      lock,
-      sorted.length,
-      withEveryStage(remaining, unmergedStages, stageZeroBeside),
-      resolutionOptions(restagedPathsOf(outcomes, existing), remaining, unmergedStages),
-    );
-    return { added, modified, removed, eolNotices: noticesOf(outcomes) };
+    const settled = await settleRemovals(ctx, view, WHOLE_TREE_MATCHER, newEntries, removedEntries);
+    await commitWalk(lock, state, settled.remaining, restagedPaths);
+    return {
+      added: [...added].sort(),
+      modified: [...modified].sort(),
+      removed: settled.removed.sort(),
+      eolNotices,
+    };
   } finally {
     await lock.release();
   }
