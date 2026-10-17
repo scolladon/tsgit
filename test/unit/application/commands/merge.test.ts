@@ -2723,6 +2723,47 @@ describe('merge — conflicting-write atomicity under Windows path syntax', () =
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/x\\y`)).toBe(true);
       });
     });
+
+    describe('When the default strategy runs under Windows path syntax', () => {
+      it('Then throws INVALID_INDEX_ENTRY and neither the conflict nor the clean sibling is written', async () => {
+        // Arrange
+        const ctx = await seedBackslashTheirs();
+        const sut = mergeRun;
+
+        // Act
+        const caught = await sut(
+          { ...ctx, windowsPathSyntax: true },
+          { rev: 'feature', author },
+        ).then(
+          () => undefined,
+          (err: unknown) => (err as TsgitError).data,
+        );
+
+        // Assert
+        expect(caught).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: 'backslash rejected under Windows path syntax',
+        });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`)).toBe('MAIN\n');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/clean.txt`)).toBe('base-clean\n');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/x\\y`)).toBe(false);
+      });
+    });
+
+    describe('When the default strategy runs under POSIX path syntax', () => {
+      it('Then it conflicts and writes x\\y', async () => {
+        // Arrange
+        const ctx = await seedBackslashTheirs();
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'feature', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/x\\y`)).toBe(true);
+      });
+    });
   });
 });
 

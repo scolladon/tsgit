@@ -32,6 +32,7 @@ const ROW_TIMEOUT = 60_000;
 const SYMLINK_MODE = '120000';
 const REGULAR_MODE = '100644';
 const GIT_REFUSED_EXIT = 128;
+const GIT_CHECKOUT_REFUSED_EXIT = 1;
 const INVALID_INDEX_ENTRY = 'INVALID_INDEX_ENTRY';
 const BACKSLASH_REASON = 'backslash rejected under Windows path syntax';
 const SEED_FILE = 'seed.txt';
@@ -224,7 +225,7 @@ describe('backslash path windows interop', () => {
           const oursError = await captureError(() => repo.checkout({ rev: oursCommit }));
 
           // Assert
-          expect(gitResult.exitCode).toBe(gitRefuses ? 1 : 0);
+          expect(gitResult.exitCode).toBe(gitRefuses ? GIT_CHECKOUT_REFUSED_EXIT : 0);
           expect(errorCodeOf(oursError)).toBe(gitRefuses ? INVALID_INDEX_ENTRY : undefined);
           expect(errorReasonOf(oursError)).toBe(gitRefuses ? BACKSLASH_REASON : undefined);
           expect(gitOut(peerDir, ['rev-parse', 'HEAD'])).toBe(gitRefuses ? peerSeed : peerCommit);
@@ -246,20 +247,24 @@ describe('backslash path windows interop', () => {
         async () => {
           // Arrange
           const { oursDir, repo } = await buildSeededPair(root, 'parsed');
-          const blob = gitOut(oursDir, ['hash-object', '-w', '--stdin'], 'target');
-          gitOut(
-            oursDir,
-            ['-c', 'core.protectNTFS=false', 'update-index', '--add', '--index-info'],
-            `${REGULAR_MODE} ${blob}\t${STAGED_PATH}\n`,
-          );
+          try {
+            const blob = gitOut(oursDir, ['hash-object', '-w', '--stdin'], 'target');
+            gitOut(
+              oursDir,
+              ['-c', 'core.protectNTFS=false', 'update-index', '--add', '--index-info'],
+              `${REGULAR_MODE} ${blob}\t${STAGED_PATH}\n`,
+            );
 
-          // Act
-          const listing = listIndex(oursDir);
-          const index = await repo.primitives.readIndex();
+            // Act
+            const listing = listIndex(oursDir);
+            const index = await repo.primitives.readIndex();
 
-          // Assert
-          expect(listing).toContain(STAGED_PATH);
-          expect(index.entries.map((entry) => entry.path)).toContain(STAGED_PATH);
+            // Assert
+            expect(listing).toContain(STAGED_PATH);
+            expect(index.entries.map((entry) => entry.path)).toContain(STAGED_PATH);
+          } finally {
+            await repo.dispose();
+          }
         },
         ROW_TIMEOUT,
       );
