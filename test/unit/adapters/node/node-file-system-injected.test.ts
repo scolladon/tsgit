@@ -4161,6 +4161,112 @@ describe('NodeFileSystem rmdir', () => {
       });
     });
   });
+
+  describe('Given posixPolicy and an empty directory', () => {
+    describe('When rmdir runs', () => {
+      it('Then it is one rmdir syscall: lstat is never called', async () => {
+        // Arrange
+        const lstatSpy = vi.fn().mockResolvedValue(entry('directory', 2));
+        const rmdirSpy = vi.fn().mockResolvedValue(undefined);
+        const sut = new NodeFileSystem(rootDir, {
+          pathPolicy: posixPolicy,
+          fsOps: fakeFsOps({
+            realpath: vi.fn().mockImplementation(async (input: string) => input),
+            lstat: lstatSpy,
+            rmdir: rmdirSpy,
+          }),
+        });
+
+        // Act
+        await sut.rmdir('/root/d');
+
+        // Assert
+        expect(rmdirSpy).toHaveBeenCalledTimes(1);
+        expect(rmdirSpy).toHaveBeenCalledWith('/root/d');
+        expect(lstatSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given windowsPolicy, whose own rmdir does not enforce the POSIX kind rules', () => {
+    // Windows' rmdir reports a regular file as ENOENT and removes a symlink
+    // to a directory, while a missing entry is ENOENT from both syscalls.
+    const windowsLike = (kind: Parameters<typeof entry>[0] | 'absent') => {
+      const rmdirSpy =
+        kind === 'directory' || kind === 'symlink'
+          ? vi.fn().mockResolvedValue(undefined)
+          : vi.fn().mockRejectedValue(enoent());
+      const lstat =
+        kind === 'absent'
+          ? vi.fn().mockRejectedValue(enoent())
+          : vi.fn().mockResolvedValue(entry(kind, 2));
+      const sut = new NodeFileSystem('C:\\Root', {
+        pathPolicy: windowsPolicy,
+        fsOps: fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          lstat,
+          rmdir: rmdirSpy,
+        }),
+      });
+      return { sut, rmdirSpy };
+    };
+
+    describe('When rmdir targets a regular file the platform reports as ENOENT', () => {
+      it('Then it refuses NOT_A_DIRECTORY without calling rmdir', async () => {
+        // Arrange
+        const { sut, rmdirSpy } = windowsLike('file');
+
+        // Act
+        const result = await codeOf(() => sut.rmdir('C:\\Root\\f.bin'));
+
+        // Assert
+        expect(result).toBe('NOT_A_DIRECTORY');
+        expect(rmdirSpy).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When rmdir targets a symlink to a directory the platform would remove', () => {
+      it('Then it refuses NOT_A_DIRECTORY without calling rmdir', async () => {
+        // Arrange
+        const { sut, rmdirSpy } = windowsLike('symlink');
+
+        // Act
+        const result = await codeOf(() => sut.rmdir('C:\\Root\\link'));
+
+        // Assert
+        expect(result).toBe('NOT_A_DIRECTORY');
+        expect(rmdirSpy).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When rmdir targets an empty directory', () => {
+      it('Then it delegates to rmdir once', async () => {
+        // Arrange
+        const { sut, rmdirSpy } = windowsLike('directory');
+
+        // Act
+        await sut.rmdir('C:\\Root\\d');
+
+        // Assert
+        expect(rmdirSpy).toHaveBeenCalledTimes(1);
+        expect(rmdirSpy).toHaveBeenCalledWith('C:\\Root\\d');
+      });
+    });
+
+    describe('When rmdir targets an absent entry', () => {
+      it('Then rmdir reports it as FILE_NOT_FOUND', async () => {
+        // Arrange
+        const { sut, rmdirSpy } = windowsLike('absent');
+
+        // Act
+        const result = await codeOf(() => sut.rmdir('C:\\Root\\gone'));
+
+        // Assert
+        expect(result).toBe('FILE_NOT_FOUND');
+        expect(rmdirSpy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
 });
 
 describe('NodeFileSystem — options object (DI)', () => {
