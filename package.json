@@ -1386,7 +1386,7 @@
     "knip": "6.33.0",
     "lint-staged": "17.6.0",
     "minimatch": "10.2.6",
-    "rollup": "4.64.7",
+    "rollup": "4.64.8",
     "rollup-plugin-dts": "6.5.1",
     "rollup-plugin-visualizer": "7.1.1",
     "size-limit": "14.2.0",
