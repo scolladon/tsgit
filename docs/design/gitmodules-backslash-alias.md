@@ -73,7 +73,7 @@ Then `only_spaces_and_periods` must hold: only ` ` or `.` until `\0` or `:`. **A
 - it cannot match a name followed by `/` (class B), or a `\` that has no `:` before it
   (`x\.gitmodules\y` is admitted).
 
-HFS runs at component starts only, so `x\.g<ZWNJ>itmodules` is admitted.
+HFS runs at component starts only, so `x\` followed by the ZWNJ alias (`.gitmodules` with U+200C after the `g`) is admitted.
 `verify_dotfile` adds one more rule: exact `.gitmodules` (case-insensitive) followed by
 `/`, which refuses `.gitmodules/y`.
 
@@ -89,9 +89,9 @@ on-disk symlink. The two always agreed, and 3/3 runs were identical. As regular 
 | path (symlink, `120000`) | git | tsgit @ 785fadfc | class |
 |---|---|---|---|
 | `.gitmodules`, `.GITMODULES`, `gitmod~1`, `gitmod~1 `, `GI7EBA~1`, `x\/gitmod~1` | refused | refused | — |
-| `.gitmodules/y`, `.GITMODULES/y`, `.gitmodules:s/y`, `gitmod~1:s/y`, `.g<ZWNJ>itmodules/y` | refused | refused | — |
+| `.gitmodules/y`, `.GITMODULES/y`, `.gitmodules:s/y`, `gitmod~1:s/y`, the ZWNJ alias then `/y` | refused | refused | — |
 | `.gitmodules\y`, `x\.gitmodules\y`, `x\gitmod~1\y`, `x\.gitmodules/y`, `x\gitmod~1/y` | admitted | admitted | — |
-| `x\gitmod~5`, `x\.g<ZWNJ>itmodules`, `gi7eba~10`, `gi7eb~1`, `x\` | admitted | admitted | — |
+| `x\gitmod~5`, `x\` + the ZWNJ alias, `gi7eba~10`, `gi7eb~1`, `x\` | admitted | admitted | — |
 | `\gitmod~1`, `x/\gitmod~1`, `\.gitmodules` (backslash **first** in its component) | admitted | admitted | — (must stay admitted) |
 | `x\.gitmodules`, `x\.GITMODULES`, `x\gitmod~1`, `x\GITMOD~1`, `x\gitmod~4`, `x\gi7eba~1` | **refused** | admitted | A |
 | `x\.gitmodules.`, `x\.gitmodules `, `x\.gitmodules. .`, `x\gitmod~1.`, `x\gitmod~1 `, `x\gitmod~1 . ` | **refused** | admitted | A |
@@ -307,12 +307,17 @@ scope.
   the interop suite pins it.
 - **Platform gating** — git gates HFS on `core.protectHFS` (default on only on macOS)
   and NTFS on `core.protectNTFS` (default on). tsgit applies both unconditionally, as
-  ADR-978 records. The pinned rows here are NTFS rows, plus the `.g<ZWNJ>itmodules/y`
+  ADR-978 records. The pinned rows here are NTFS rows, plus the ZWNJ-alias `/y`
   HFS row, which is refused on darwin.
+
+## Decisions taken
+
+- D1 → all three classes (ADR-1003). D2/D3 → import `matchesNtfsDotgitAlias`, `encode(path)` when no bytes (ADR-1003).
+- D6 → **in scope**: `matchAliasComponent` skips the part before a component-leading `\` — i.e. it tests only parts after a backslash that is not the component's first byte (ADR-1004). P1 carries it; `isDotGitAlias` shares the fix, unobservable through `working-tree-path.ts`, which rejects `\` first.
+- D4 → interop row asserting the parsed-index divergence (ADR-1005). D5 → new interop file (ADR-1005).
 
 ## Non-goals
 
-- The `.git` alias arm's component-leading-backslash over-refusal (proven above; D6).
   32.26, fsck's raw-byte `.git`.
 - A tsgit `update-index` surface (none exists). The `--index-info` column is covered by
   the unit tests on `verifyPath` itself.
