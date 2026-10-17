@@ -235,8 +235,8 @@ const findComponentRejection = (
 
 // git re-tests the rest of the whole path at each component start and after each
 // `\` it reads mid-component. The `.gitmodules` alias must be followed only by
-// dots/spaces up to the end or a `:`, so a `/` ends a match, and a `\` opening a
-// component is consumed untested.
+// dots/spaces up to the end or a `:`; any other byte after it, `/` included, defeats
+// the match, unlike the `.git` arm. A `\` opening a component is consumed untested.
 const opensComponent = (bytes: Uint8Array, at: number): boolean =>
   at === 0 || bytes[at - 1] === ASCII_SLASH;
 
