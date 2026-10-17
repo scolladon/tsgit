@@ -12,6 +12,7 @@
  *   unique:         add porcelain index+tree state matches canonical git add
  *   interopSurface: add
  */
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -46,6 +47,7 @@ interface ReplacedRow {
   readonly replacement: Replacement;
   readonly replaced?: string;
   readonly paths: ReadonlyArray<string>;
+  readonly all?: true;
   readonly prepare?: (dir: string) => void;
   readonly removed: ReadonlyArray<string>;
   readonly modified?: ReadonlyArray<string>;
@@ -74,6 +76,13 @@ const unmergedAtDirectory = (dir: string): void =>
     dir,
     UNMERGED_STAGES.map((stage) => ({ stage, path: 'a' })),
   );
+
+const trackModifiedDirectory = (dir: string): void => {
+  mkdirSync(path.join(dir, 'd'), { recursive: true });
+  writeFileSync(path.join(dir, 'd/e'), 'd/e\n');
+  runGit(['-C', dir, 'add', 'd/e']);
+  writeFileSync(path.join(dir, 'd/e'), 'changed\n');
+};
 
 const REPLACED_ROWS: ReadonlyArray<ReplacedRow> = [
   {
@@ -170,6 +179,79 @@ const REPLACED_ROWS: ReadonlyArray<ReplacedRow> = [
     paths: ['a', 'top'],
     prepare: unmergedAtDirectory,
     removed: [],
+    modified: ['a'],
+  },
+  {
+    title: 'a regular file named a, staged with the whole tree and a/b excluded',
+    replacement: 'file',
+    paths: ['.', '!a/b'],
+    removed: ['a/c', 'a/x/y'],
+  },
+  {
+    title: 'a symlink named a over a skip-worktree a/b, staged with add -A',
+    replacement: 'symlink',
+    paths: [],
+    all: true,
+    prepare: (dir) => runGit(['-C', dir, 'update-index', '--skip-worktree', 'a/b']),
+    removed: ['a/c', 'a/x/y'],
+  },
+  {
+    title: 'a regular file named a over an unmerged a/b, staged with the whole tree',
+    replacement: 'file',
+    paths: ['.'],
+    prepare: unmergedBeneath,
+    removed: ['a/b', 'a/c', 'a/x/y'],
+  },
+  {
+    title:
+      'a regular file named a over an unmerged a/b, staged with the whole tree and a/b excluded',
+    replacement: 'file',
+    paths: ['.', '!a/b'],
+    prepare: unmergedBeneath,
+    removed: ['a/b', 'a/c', 'a/x/y'],
+  },
+  {
+    title:
+      'a regular file named a over an unmerged a/b, staged with the whole tree and a/b* excluded',
+    replacement: 'file',
+    paths: ['.', '!a/b*'],
+    prepare: unmergedBeneath,
+    removed: ['a/c', 'a/x/y'],
+  },
+  {
+    title: 'a regular file named a over an unmerged a/b, staged with add -A',
+    replacement: 'file',
+    paths: [],
+    all: true,
+    prepare: unmergedBeneath,
+    removed: ['a/b', 'a/c', 'a/x/y'],
+  },
+  {
+    title: 'a regular file named a that was unmerged, staged beside the directory d',
+    replacement: 'file',
+    paths: ['a', 'd'],
+    prepare: (dir) => {
+      trackModifiedDirectory(dir);
+      unmergedAtDirectory(dir);
+    },
+    removed: [],
+    modified: ['a', 'd/e'],
+  },
+  {
+    title: 'a regular file named a that was unmerged, staged with the whole tree',
+    replacement: 'file',
+    paths: ['.'],
+    prepare: unmergedAtDirectory,
+    removed: ['a/b', 'a/c', 'a/x/y'],
+    modified: ['a'],
+  },
+  {
+    title: 'a regular file named a that was unmerged, staged with add -A',
+    replacement: 'file',
+    paths: [],
+    all: true,
+    prepare: unmergedAtDirectory,
+    removed: ['a/b', 'a/c', 'a/x/y'],
     modified: ['a'],
   },
 ];
@@ -359,8 +441,9 @@ describe.skipIf(!GIT_AVAILABLE)('add porcelain interop', () => {
         }
 
         // Act
-        const added = await repo.add([...row.paths]);
-        runGit(['-C', pair.peer, 'add', ...row.paths.map(gitPathspec)]);
+        const added = await repo.add([...row.paths], row.all === true ? { all: true } : undefined);
+        const peerArguments = row.all === true ? ['-A'] : row.paths.map(gitPathspec);
+        runGit(['-C', pair.peer, 'add', ...peerArguments]);
         const stage = lsStage(pair.ours);
 
         // Assert

@@ -341,4 +341,177 @@ describe('add — a tracked directory replaced by a non-directory', () => {
       });
     });
   });
+
+  describe('Given a tracked directory replaced by a file and an excluded entry beneath it', () => {
+    describe('When add walks the whole tree excluding that entry', () => {
+      it('Then the excluded entry is dropped silently beside the reported ones', async () => {
+        // Arrange
+        const ctx = await trackedTree();
+        await replaceDirectoryWithFile(ctx, 'a');
+
+        // Act
+        const sut = await add(ctx, ['.', '!a/b']);
+
+        // Assert
+        expect(sut.removed).toEqual(['a/c', 'a/x/y']);
+        expect(await indexPaths(ctx)).toEqual(['a@0:100644', 'real/b@0:100644', 'top@0:100644']);
+      });
+    });
+  });
+
+  describe('Given a tracked directory replaced by a symlink with a skip-worktree entry beneath it', () => {
+    describe('When add stages everything', () => {
+      it('Then the skip-worktree entry is dropped silently beside the reported ones', async () => {
+        // Arrange
+        const ctx = await trackedTree();
+        await seedIndex(ctx, [
+          { path: 'a/b', text: 'b', skipWorktree: true },
+          { path: 'a/c', text: 'c' },
+          { path: 'a/x/y', text: 'y' },
+          { path: 'real/b', text: 'rb' },
+          { path: 'top', text: 'top' },
+        ]);
+        await replaceDirectoryWithSymlink(ctx, 'a');
+
+        // Act
+        const sut = await add(ctx, [], { all: true });
+
+        // Assert
+        expect(sut.removed).toEqual(['a/c', 'a/x/y']);
+        expect(await indexPaths(ctx)).toEqual(['a@0:120000', 'real/b@0:100644', 'top@0:100644']);
+      });
+    });
+  });
+
+  describe.each([
+    ['the whole tree', ['.']],
+    ['the whole tree excluding it', ['.', '!a/b']],
+  ])('Given an unmerged entry beneath a replaced directory', (_title, paths) => {
+    describe(`When add names ${_title}`, () => {
+      it('Then it is reported once, leaves no stage and is recorded in resolve-undo', async () => {
+        // Arrange
+        const ctx = await unmergedBeneath();
+        await replaceDirectoryWithFile(ctx, 'a');
+
+        // Act
+        const sut = await add(ctx, paths);
+
+        // Assert
+        expect(sut.removed).toEqual(['a/b', 'a/c', 'a/x/y']);
+        expect(await indexPaths(ctx)).toEqual(['a@0:100644', 'real/b@0:100644', 'top@0:100644']);
+        expect(await recordedStages(ctx)).toEqual([['a/b', [1, 2, 3]]]);
+      });
+    });
+  });
+
+  describe('Given an unmerged entry beneath a replaced directory', () => {
+    describe('When add stages everything', () => {
+      it('Then it is reported once and recorded in resolve-undo', async () => {
+        // Arrange
+        const ctx = await unmergedBeneath();
+        await replaceDirectoryWithFile(ctx, 'a');
+
+        // Act
+        const sut = await add(ctx, [], { all: true });
+
+        // Assert
+        expect(sut.removed).toEqual(['a/b', 'a/c', 'a/x/y']);
+        expect(await recordedStages(ctx)).toEqual([['a/b', [1, 2, 3]]]);
+      });
+    });
+
+    describe('When add excludes it with a glob over the whole tree', () => {
+      it('Then every stage of it is kept', async () => {
+        // Arrange
+        const ctx = await unmergedBeneath();
+        await replaceDirectoryWithFile(ctx, 'a');
+
+        // Act
+        const sut = await add(ctx, ['.', '!a/b*']);
+
+        // Assert
+        expect(sut.removed).toEqual(['a/c', 'a/x/y']);
+        expect((await indexPaths(ctx)).filter((line) => line.startsWith('a/b'))).toEqual([
+          'a/b@1:100644',
+          'a/b@2:100644',
+          'a/b@3:100644',
+        ]);
+      });
+    });
+  });
+
+  describe('Given a path unmerged with stage-0 entries beneath it', () => {
+    describe.each([
+      ['a file', replaceDirectoryWithFile],
+      ['a symlink', replaceDirectoryWithSymlink],
+    ])('When it is now %s and add names it beside a directory', (_title, replace) => {
+      it('Then the entries beneath it are dropped silently', async () => {
+        // Arrange
+        const ctx = await trackedTree();
+        await seedIndex(ctx, [
+          { path: 'a', text: 'base', stage: 1 },
+          { path: 'a', text: 'ours', stage: 2 },
+          { path: 'a', text: 'theirs', stage: 3 },
+          { path: 'a/b', text: 'b' },
+          { path: 'a/c', text: 'c' },
+          { path: 'd/e', text: 'e' },
+          { path: 'real/b', text: 'rb' },
+          { path: 'top', text: 'top' },
+        ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/d/e`, new TextEncoder().encode('changed'));
+        await replace(ctx, 'a');
+
+        // Act
+        const sut = await add(ctx, ['a', 'd']);
+
+        // Assert
+        expect(sut.removed).toEqual([]);
+        expect(sut.modified).toEqual(['a', 'd/e']);
+        expect((await indexPaths(ctx)).map((line) => line.split(':')[0])).toEqual([
+          'a@0',
+          'd/e@0',
+          'real/b@0',
+          'top@0',
+        ]);
+        expect(await recordedStages(ctx)).toEqual([['a', [1, 2, 3]]]);
+      });
+    });
+
+    describe('When it is now a file and add walks the whole tree', () => {
+      it('Then the entries beneath it are reported', async () => {
+        // Arrange
+        const ctx = await trackedTree();
+        await seedIndex(ctx, [
+          { path: 'a', text: 'base', stage: 1 },
+          { path: 'a', text: 'ours', stage: 2 },
+          { path: 'a/b', text: 'b' },
+          { path: 'top', text: 'top' },
+        ]);
+        await replaceDirectoryWithFile(ctx, 'a');
+
+        // Act
+        const sut = await add(ctx, ['.']);
+
+        // Assert
+        expect(sut.removed).toEqual(['a/b']);
+      });
+    });
+  });
+
+  describe('Given a tracked directory replaced by a file', () => {
+    describe('When add names a path under another directory', () => {
+      it('Then the replaced directory is left alone', async () => {
+        // Arrange
+        const ctx = await trackedTree();
+        await replaceDirectoryWithFile(ctx, 'a');
+
+        // Act
+        const sut = await add(ctx, ['real']);
+
+        // Assert
+        expect(sut.removed).toEqual([]);
+        expect((await indexPaths(ctx)).length).toBe(5);
+      });
+    });
+  });
 });

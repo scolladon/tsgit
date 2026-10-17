@@ -179,6 +179,8 @@ const buildConversionScope = async (ctx: Context): Promise<ConversionScope> => (
 
 const WHOLE_TREE_PATHSPEC = '.';
 
+const WHOLE_TREE_MATCHER = resolvePathspec([WHOLE_TREE_PATHSPEC]).matcher;
+
 const addInScope = async (
   ctx: Context,
   paths: ReadonlyArray<string>,
@@ -348,17 +350,49 @@ const dropBeneathInserted = async (
   { sorted, inserted }: IndexView,
   matcher: ResolvedPathspec['matcher'],
   newEntries: ReadonlyMap<IndexPathKey, IndexEntry>,
-): Promise<{ remaining: Map<IndexPathKey, IndexEntry>; removed: FilePath[] }> => {
+): Promise<{
+  remaining: Map<IndexPathKey, IndexEntry>;
+  removed: FilePath[];
+  dropped: Set<IndexPathKey>;
+}> => {
   const remaining = new Map(newEntries);
   const removed: FilePath[] = [];
+  const dropped = new Set<IndexPathKey>();
   for (const { path, previous } of inserted) {
     const reportMatcher = previous === undefined ? matcher : withoutExactly(matcher, path);
     const replaced = await replacedBeneath(ctx, stagesBeneath(sorted, path), reportMatcher);
-    for (const key of replaced.dropped) remaining.delete(key);
+    for (const key of replaced.dropped) {
+      remaining.delete(key);
+      dropped.add(key);
+    }
     removed.push(...replaced.reported);
   }
-  return { remaining, removed };
+  return { remaining, removed, dropped };
 };
+
+/**
+ * The removals a walk reports once the D/F step has spoken: the post-walk pass's own, except for
+ * what sits beneath an inserted path — that is the step's to report or to keep silent.
+ */
+const reportedRemovals = (
+  removedEntries: ReadonlyArray<IndexEntry>,
+  {
+    removed,
+    dropped,
+  }: { readonly removed: ReadonlyArray<FilePath>; readonly dropped: ReadonlySet<IndexPathKey> },
+): FilePath[] => [
+  ...removedEntries.filter((entry) => !dropped.has(indexPathKey(entry))).map(({ path }) => path),
+  ...removed,
+];
+
+/** The paths a walk staged where the index held no stage-0 entry. */
+const insertedBy = (
+  outcomes: ReadonlyArray<WalkOutcome>,
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
+): InsertedPath[] =>
+  outcomes
+    .map(({ path }) => ({ path, previous: existing.get(keyOfPath(path)) }))
+    .filter(({ previous }) => previous === undefined || previous.flags.stage !== 0);
 
 /** Every stage of each path beneath `path`, grouped by path. */
 const stagesBeneath = (
@@ -585,9 +619,12 @@ const addByPathspec = async (
     // git add never refuses the whole tree, even when it holds nothing to add.
     const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
     const removedEntries = await collectMatchedRemovals(ctx, staged.existing, matched, matcher);
-    const removed = removedEntries.map(({ path }) => path);
-    enforceLiteralMustMatch(mustMatch, [...matched, ...removed], literalSpellings);
-    const remaining = new Map(newEntries);
+    const view = { sorted: staged.sorted, inserted: insertedBy(staged.outcomes, staged.existing) };
+    const replaced = await dropBeneathInserted(ctx, view, matcher, newEntries);
+    const removed = reportedRemovals(removedEntries, replaced);
+    const everyRemoval = [...removedEntries.map(({ path }) => path), ...replaced.removed];
+    enforceLiteralMustMatch(mustMatch, [...matched, ...everyRemoval], literalSpellings);
+    const remaining = replaced.remaining;
     for (const entry of removedEntries) remaining.delete(indexPathKey(entry));
     await commitIfChanged(
       lock,
@@ -859,8 +896,11 @@ export const addAll = async (
       else if (outcome.kind === 'modified') modified.push(outcome.path);
     }
     const removedEntries = await collectRemovedEntries(ctx, existing, seen);
-    for (const entry of removedEntries) newEntries.delete(indexPathKey(entry));
-    const removed = removedEntries.map(({ path }) => path);
+    const view = { sorted, inserted: insertedBy(outcomes, existing) };
+    const replaced = await dropBeneathInserted(ctx, view, WHOLE_TREE_MATCHER, newEntries);
+    const remaining = replaced.remaining;
+    for (const entry of removedEntries) remaining.delete(indexPathKey(entry));
+    const removed = reportedRemovals(removedEntries, replaced);
     added.sort();
     modified.sort();
     // Stryker disable next-line MethodExpression: equivalent — `removed` is built by iterating `existing`, a Map populated from the always-byte-sorted index (serializeIndex sorts on every write), so it is already in ascending path order; the sort is a defensive no-op.
@@ -868,8 +908,8 @@ export const addAll = async (
     await commitIfChanged(
       lock,
       sorted.length,
-      withEveryStage(newEntries, unmergedStages),
-      resolutionOptions(restagedPathsOf(outcomes, existing), newEntries, unmergedStages),
+      withEveryStage(remaining, unmergedStages),
+      resolutionOptions(restagedPathsOf(outcomes, existing), remaining, unmergedStages),
     );
     return { added, modified, removed, eolNotices: noticesOf(outcomes) };
   } finally {
