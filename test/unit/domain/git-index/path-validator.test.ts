@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 import { TsgitError } from '../../../../src/domain/error.js';
 import {
   NO_PARSER_OFFSET,
+  posixIndexPathRules,
   validateIndexPath,
   validateTreePath,
+  windowsIndexPathRules,
 } from '../../../../src/domain/git-index/path-validator.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FilePath } from '../../../../src/domain/objects/index.js';
@@ -299,6 +301,138 @@ describe('validateTreePath', () => {
           offset: NO_PARSER_OFFSET,
           reason: "'..' segment rejected",
         });
+      });
+    });
+  });
+});
+
+describe('windowsIndexPathRules', () => {
+  describe('Given a path holding a backslash', () => {
+    describe('When validated as an index path at an offset', () => {
+      it('Then it rejects with the backslash reason and that offset', () => {
+        // Arrange
+        const sut = windowsIndexPathRules;
+
+        // Act
+        const caught = catchError(() => sut.validateIndexPath('x\\y', 7, FILE_MODE.REGULAR));
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: 7,
+          reason: 'backslash rejected under Windows path syntax',
+        });
+      });
+    });
+  });
+
+  describe('Given an escaped tree path holding backslashes', () => {
+    describe('When validated as a tree path', () => {
+      it('Then it rejects with the backslash reason and no parser offset', () => {
+        // Arrange
+        const sut = windowsIndexPathRules;
+
+        // Act
+        const caught = catchError(() =>
+          sut.validateTreePath('\\.git\\config' as FilePath, FILE_MODE.REGULAR),
+        );
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: NO_PARSER_OFFSET,
+          reason: 'backslash rejected under Windows path syntax',
+        });
+      });
+    });
+  });
+
+  describe('Given a path holding both a backslash and a NUL byte', () => {
+    describe('When validated', () => {
+      it('Then the NUL byte reason wins', () => {
+        // Arrange
+        const sut = windowsIndexPathRules;
+
+        // Act
+        const caught = catchError(() => sut.validateIndexPath('a\\\0b', 0, FILE_MODE.REGULAR));
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: 0,
+          reason: 'NUL byte rejected',
+        });
+      });
+    });
+  });
+
+  describe("Given a view '.git\\uFFFD/x' backed by the bytes .git\\xff/x", () => {
+    describe('When validated', () => {
+      it('Then it rejects as an HFS ignorable-codepoint alias', () => {
+        // Arrange
+        const sut = windowsIndexPathRules;
+        const pathBytes = Uint8Array.from([0x2e, 0x67, 0x69, 0x74, 0xff, 0x2f, 0x78]);
+
+        // Act
+        const caught = catchError(() =>
+          sut.validateIndexPath('.git\uFFFD/x', 0, FILE_MODE.REGULAR, pathBytes),
+        );
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: 0,
+          reason: "'.git' HFS+ ignorable-codepoint alias rejected",
+        });
+      });
+    });
+  });
+});
+
+describe('posixIndexPathRules', () => {
+  describe('Given a path holding a backslash', () => {
+    describe('When validated as an index path', () => {
+      it('Then it does not throw', () => {
+        // Arrange
+        const sut = posixIndexPathRules;
+
+        // Act
+        const act = () => sut.validateIndexPath('x\\y', 0, FILE_MODE.REGULAR);
+
+        // Assert
+        expect(act).not.toThrow();
+      });
+    });
+
+    describe('When validated as a tree path', () => {
+      it('Then it does not throw', () => {
+        // Arrange
+        const sut = posixIndexPathRules;
+
+        // Act
+        const act = () => sut.validateTreePath('\\.git\\config' as FilePath, FILE_MODE.REGULAR);
+
+        // Assert
+        expect(act).not.toThrow();
+      });
+    });
+  });
+
+  describe('Given the named validateIndexPath and validateTreePath exports', () => {
+    describe('When compared with the POSIX rules', () => {
+      it('Then they are its members', () => {
+        // Arrange
+        const sut = posixIndexPathRules;
+
+        // Act
+        const result = [validateIndexPath, validateTreePath];
+
+        // Assert
+        expect(result).toEqual([sut.validateIndexPath, sut.validateTreePath]);
+        expect(result[0]).toBe(sut.validateIndexPath);
+        expect(result[1]).toBe(sut.validateTreePath);
       });
     });
   });

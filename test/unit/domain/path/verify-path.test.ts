@@ -5,6 +5,7 @@ import {
   isDotGitAlias,
   isDotGitWalkEntry,
   verifyPath,
+  verifyWindowsPath,
 } from '../../../../src/domain/path/verify-path.js';
 
 // TAB (0x09) is accepted inside a component — verified by the matrix row below.
@@ -731,6 +732,54 @@ describe('verifyPath', () => {
         // Assert
         expect(result).toBe('dotgit-alias');
       });
+    });
+  });
+});
+
+describe('verifyWindowsPath', () => {
+  const ROWS = [
+    {
+      path: '\\.git\\hooks\\post-checkout',
+      mode: FILE_MODE.REGULAR,
+      posix: undefined,
+      windows: 'backslash',
+    },
+    { path: '\\.git\\config', mode: FILE_MODE.REGULAR, posix: undefined, windows: 'backslash' },
+    { path: 'x/\\.git\\hooks\\y', mode: FILE_MODE.REGULAR, posix: undefined, windows: 'backslash' },
+    { path: 'x\\y', mode: FILE_MODE.REGULAR, posix: undefined, windows: 'backslash' },
+    { path: 'a\\b\\c', mode: FILE_MODE.REGULAR, posix: undefined, windows: 'backslash' },
+    { path: '\\gitmod~1', mode: FILE_MODE.SYMLINK, posix: undefined, windows: 'backslash' },
+    { path: '\\.gitmodules', mode: FILE_MODE.SYMLINK, posix: undefined, windows: 'backslash' },
+    { path: 'x/\\gitmod~1', mode: FILE_MODE.SYMLINK, posix: undefined, windows: 'backslash' },
+    {
+      path: 'x\\gitmod~1',
+      mode: FILE_MODE.SYMLINK,
+      posix: 'gitmodules-not-regular',
+      windows: 'backslash',
+    },
+    { path: '../a\\b', mode: FILE_MODE.REGULAR, posix: 'dotdot-segment', windows: 'backslash' },
+    { path: 'a/b', mode: FILE_MODE.REGULAR, posix: undefined, windows: undefined },
+    { path: 'gitmod~1/y', mode: FILE_MODE.SYMLINK, posix: undefined, windows: undefined },
+    { path: '.git/x', mode: FILE_MODE.REGULAR, posix: 'dotgit-alias', windows: 'dotgit-alias' },
+  ] as const;
+
+  describe('Given a path from the git for Windows matrix', () => {
+    describe('When verified under each path syntax', () => {
+      it.each(ROWS)(
+        'Then $path is $posix under POSIX and $windows under Windows',
+        ({ path, mode, posix, windows }) => {
+          // Arrange
+          const sut = verifyWindowsPath;
+
+          // Act
+          const posixResult = verifyPath(path, mode);
+          const result = sut(path, mode);
+
+          // Assert
+          expect(posixResult).toBe(posix);
+          expect(result).toBe(windows);
+        },
+      );
     });
   });
 });

@@ -12,7 +12,8 @@ export type VerifyPathRejection =
   | 'dotgit-ntfs-alias'
   | 'dotgit-ntfs-stream'
   | 'dotgit-hfs-alias'
-  | 'gitmodules-not-regular';
+  | 'gitmodules-not-regular'
+  | 'backslash';
 
 const DOTGIT = '.git';
 const NTFS_SHORT_NAME = 'git~1';
@@ -289,3 +290,13 @@ export const verifyPath = (
     ? 'gitmodules-not-regular'
     : undefined;
 };
+
+const BACKSLASH = '\\';
+
+/** git for Windows' `verify_path`: `\` is a directory separator there, and every one is refused. */
+export const verifyWindowsPath = (
+  path: string,
+  mode: FileMode,
+  pathBytes?: Uint8Array,
+): VerifyPathRejection | undefined =>
+  path.includes(BACKSLASH) ? 'backslash' : verifyPath(path, mode, pathBytes);
