@@ -279,3 +279,75 @@ describe('Given an unmerged f deleted from the working tree', () => {
     });
   });
 });
+
+describe.each([SHAPES[1], SHAPES[2]] as Shape[])(
+  'Given $title whose working file equals its last stage',
+  (shape) => {
+    describe('When add stages f', () => {
+      it('Then f is reported as modified', async () => {
+        // Arrange
+        const ctx = await seedConflicted(shape);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['f']);
+
+        // Assert
+        expect(result.modified).toEqual(['f']);
+      });
+    });
+  },
+);
+
+describe.each([SHAPES[1], SHAPES[2]] as Shape[])(
+  'Given $title whose working file equals its last stage, walked by add all',
+  (shape) => {
+    describe('When add stages every path', () => {
+      it('Then f is reported as modified', async () => {
+        // Arrange
+        const ctx = await seedConflicted(shape);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, [], { all: true });
+
+        // Assert
+        expect(result.modified).toContain('f');
+      });
+    });
+  },
+);
+
+describe('Given a merged top rewritten with identical bytes', () => {
+  describe('When add stages top', () => {
+    it('Then modified is empty', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, { workingTree: { top: 'top-old' } });
+      await seedIndex(ctx, [{ path: 'top', text: 'top-old' }]);
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, ['top']);
+
+      // Assert
+      expect(result.modified).toEqual([]);
+    });
+  });
+});
+
+describe('Given f unmerged at stages 1, 2 and 3 with a merged file on disk', () => {
+  describe('When add stages f', () => {
+    it('Then f is reported as modified', async () => {
+      // Arrange
+      const ctx = await seedConflicted(SHAPES[0] as Shape);
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, ['f']);
+
+      // Assert
+      expect(result.modified).toEqual(['f']);
+    });
+  });
+});

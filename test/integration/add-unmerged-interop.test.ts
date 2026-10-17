@@ -139,6 +139,39 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    const ADD_LINE = /^add '(.*)'$/;
+
+    const gitReported = (dir: string, args: ReadonlyArray<string>): string[] =>
+      runGit(['-C', dir, 'add', '-v', ...args])
+        .split('\n')
+        .flatMap((line) => ADD_LINE.exec(line)?.[1] ?? [])
+        .sort();
+
+    describe.each(['deleted-by-them', 'deleted-by-us'] as const)(
+      'Given %s with f equal to its last stage',
+      (shape) => {
+        describe.each([
+          { title: 'add of f', specs: ['f'], options: {} },
+          { title: 'add all', specs: [] as string[], options: { all: true } },
+        ])('When $title runs', ({ specs, options }) => {
+          it('Then modified is what canonical git reports', async () => {
+            // Arrange
+            await seedBoth(shape);
+            const gitArgs = [...(options.all === true ? ['-A'] : []), ...specs];
+
+            // Act
+            const result = await repo.add(specs, options);
+
+            // Assert
+            const reported = gitReported(pair.peer, gitArgs);
+            expect(result.added).toEqual([]);
+            expect([...result.modified].sort()).toEqual(reported);
+            expect(result.modified).toContain('f');
+          });
+        });
+      },
+    );
+
     describe('Given a deleted f next to an unmerged h', () => {
       describe('When add stages top', () => {
         it('Then every stage matches canonical git', async () => {

@@ -252,6 +252,10 @@ interface Staging {
   readonly ensurePromisorConfigValid: PromisorGuard;
 }
 
+/** A staged unmerged path is always a change: its conflict is resolved whatever the content. */
+const isModified = (previous: IndexEntry, entry: IndexEntry): boolean =>
+  previous.flags.stage !== 0 || previous.id !== entry.id || previous.mode !== entry.mode;
+
 /** git stages the tracked paths first, then the untracked ones, each group in index order. */
 const trackedFirst = (
   paths: ReadonlyArray<FilePath>,
@@ -291,7 +295,7 @@ const stageLiterals = async (
     if (wasRestaged(previous, entry)) restagedPaths.push(entry);
     if (notice !== undefined) eolNotices.push(notice);
     if (previous === undefined) added.push(path);
-    else if (previous.id !== entry.id || previous.mode !== entry.mode) modified.push(path);
+    else if (isModified(previous, entry)) modified.push(path);
   }
   return { newEntries, added, modified, eolNotices, restagedPaths };
 };
@@ -853,7 +857,7 @@ const processWalkEntry = async (
   const previous = existing.get(keyOfPath(path));
   const withNotice = notice === undefined ? {} : { notice };
   if (previous === undefined) return { kind: 'added', path, entry, ...withNotice };
-  if (previous.id !== entry.id || previous.mode !== entry.mode) {
+  if (isModified(previous, entry)) {
     return { kind: 'modified', path, entry, ...withNotice };
   }
   return { kind: 'unchanged', path, entry, ...withNotice };
