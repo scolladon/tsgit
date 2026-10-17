@@ -6,11 +6,18 @@ import type {
   IndexEntryFlags,
   StatData,
 } from '../../../../src/domain/git-index/index-entry.js';
-import { indexPathKey, indexPathOfBytes } from '../../../../src/domain/git-index/index-path-key.js';
+import {
+  indexPathKey,
+  indexPathOfBytes,
+  pathBytesOf,
+} from '../../../../src/domain/git-index/index-path-key.js';
+import type { ResolveUndoRecord } from '../../../../src/domain/git-index/resolve-undo.js';
 import {
   bytesEqual,
+  concatBytes,
   decodePreservingBom,
   encode,
+  hexToBytes,
 } from '../../../../src/domain/objects/encoding.js';
 import type { FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE, FilePath } from '../../../../src/domain/objects/index.js';
@@ -299,4 +306,47 @@ function dedupeByPathKey(entries: ReadonlyArray<IndexEntry>): ReadonlyArray<Inde
     seen.add(key);
     return true;
   });
+}
+
+const MAX_RESOLVE_UNDO_MODE = 0o177777;
+
+const arbResolveUndoStage = fc.option(
+  fc.record({
+    mode: fc.integer({ min: 1, max: MAX_RESOLVE_UNDO_MODE }),
+    id: arbObjectId(),
+  }),
+  { nil: undefined },
+);
+
+export function arbResolveUndoRecord(): fc.Arbitrary<ResolveUndoRecord> {
+  return fc
+    .record({
+      path: arbPathBytes(),
+      stages: fc.tuple(arbResolveUndoStage, arbResolveUndoStage, arbResolveUndoStage),
+    })
+    .filter(({ stages }) => stages.some((stage) => stage !== undefined))
+    .map(({ path, stages }) => ({
+      ...indexPathOfBytes(path),
+      stages: stages.flatMap((stage, index) =>
+        stage === undefined ? [] : [{ stage: (index + 1) as 1 | 2 | 3, ...stage }],
+      ),
+    }));
+}
+
+/** git's `resolve_undo_write` layout for `records`: the independent oracle for the codec. */
+export function encodeResolveUndo(records: ReadonlyArray<ResolveUndoRecord>): Uint8Array {
+  const NUL = Uint8Array.of(0);
+  return concatBytes(
+    records.flatMap(({ stages, ...path }) => {
+      const modes = [1, 2, 3].map(
+        (stage) => stages.find((entry) => entry.stage === stage)?.mode ?? 0,
+      );
+      return [
+        pathBytesOf(path),
+        NUL,
+        ...modes.flatMap((mode) => [encode(mode.toString(8)), NUL]),
+        ...stages.map(({ id }) => hexToBytes(id)),
+      ];
+    }),
+  );
 }

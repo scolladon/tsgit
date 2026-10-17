@@ -1,6 +1,9 @@
-import { bytesToHex, indexOf } from '../objects/encoding.js';
+import { bytesToHex, concatBytes, encode, hexToBytes, indexOf } from '../objects/encoding.js';
 import type { ObjectId } from '../objects/index.js';
 import { isAsciiSpace } from '../pretty/ascii.js';
+import type { IndexEntry } from './index-entry.js';
+import { type IndexPath, indexPathKey, indexPathOfBytes, pathBytesOf } from './index-path-key.js';
+import { compareEntryPath } from './index-writer.js';
 
 /** One conflicted stage a resolution replaced: its mode and the id it named. */
 export interface ResolveUndoStage {
@@ -10,8 +13,7 @@ export interface ResolveUndoStage {
 }
 
 /** One `REUC` record: a resolved path and the conflicted stages it had. */
-export interface ResolveUndoRecord {
-  readonly path: string;
+export interface ResolveUndoRecord extends IndexPath {
   readonly stages: ReadonlyArray<ResolveUndoStage>;
 }
 
@@ -19,6 +21,7 @@ const NUL = 0x00;
 const OCTAL_ZERO = 0x30;
 const OCTAL_SEVEN = 0x37;
 const OCTAL_RADIX = 8n;
+const OCTAL_RADIX_NUMBER = 8;
 const PLUS = 0x2b;
 const MINUS = 0x2d;
 const ULONG_BITS = 64;
@@ -26,7 +29,6 @@ const ULONG_RANGE = 1n << BigInt(ULONG_BITS);
 const ULONG_MAX = ULONG_RANGE - 1n;
 const UINT_BITS = 32;
 const STAGES = [1, 2, 3] as const;
-const DECODER = new TextDecoder();
 
 interface Cursor {
   readonly data: Uint8Array;
@@ -115,7 +117,7 @@ function readRecord(cursor: Cursor, digestLength: number): ResolveUndoRecord | u
   const modes = readModes(cursor);
   if (modes === undefined) return undefined;
   const stages = readStages(cursor, modes, digestLength);
-  return stages === undefined ? undefined : { path: DECODER.decode(path), stages };
+  return stages === undefined ? undefined : { ...indexPathOfBytes(path), stages };
 }
 
 /**
@@ -135,4 +137,66 @@ export function parseResolveUndo(
     records.push(record);
   }
   return records;
+}
+
+const NUL_BYTE = Uint8Array.of(NUL);
+const ABSENT_MODE = '0';
+
+function recordParts(record: ResolveUndoRecord): ReadonlyArray<Uint8Array> {
+  const byStage = STAGES.map((stage) => record.stages.find((entry) => entry.stage === stage));
+  const modes = byStage.flatMap((entry) => [
+    encode(entry === undefined ? ABSENT_MODE : entry.mode.toString(OCTAL_RADIX_NUMBER)),
+    NUL_BYTE,
+  ]);
+  const ids = byStage.flatMap((entry) => (entry === undefined ? [] : [hexToBytes(entry.id)]));
+  return [pathBytesOf(record), NUL_BYTE, ...modes, ...ids];
+}
+
+/** The `REUC` payload as git's `resolve_undo_write` lays it out: records in the order given. */
+export function serializeResolveUndo(records: ReadonlyArray<ResolveUndoRecord>): Uint8Array {
+  return concatBytes(records.flatMap(recordParts));
+}
+
+function mergeStages(
+  prior: ReadonlyArray<ResolveUndoStage>,
+  resolved: ReadonlyArray<ResolveUndoStage>,
+): ReadonlyArray<ResolveUndoStage> {
+  return STAGES.flatMap((stage) => {
+    const entry =
+      resolved.find((candidate) => candidate.stage === stage) ??
+      prior.find((candidate) => candidate.stage === stage);
+    return entry === undefined ? [] : [entry];
+  });
+}
+
+/** `records` with each resolved record folded in: its stages win, stages it lacks stay. */
+export function recordResolveUndo(
+  records: ReadonlyArray<ResolveUndoRecord>,
+  resolved: ReadonlyArray<ResolveUndoRecord>,
+): ReadonlyArray<ResolveUndoRecord> {
+  const byKey = new Map(records.map((record) => [indexPathKey(record), record]));
+  for (const record of resolved) {
+    const prior = byKey.get(indexPathKey(record));
+    byKey.set(
+      indexPathKey(record),
+      prior === undefined
+        ? record
+        : { ...record, stages: mergeStages(prior.stages, record.stages) },
+    );
+  }
+  return [...byKey.values()].sort(compareEntryPath);
+}
+
+/** The record for a path's unmerged stages; callers pass stages 1 to 3 only. */
+export function resolveUndoRecordOf(stages: ReadonlyArray<IndexEntry>): ResolveUndoRecord {
+  const [first] = stages as readonly [IndexEntry, ...IndexEntry[]];
+  return {
+    path: first.path,
+    ...(first.pathBytes === undefined ? {} : { pathBytes: first.pathBytes }),
+    stages: stages.map((entry) => ({
+      stage: entry.flags.stage as 1 | 2 | 3,
+      mode: Number.parseInt(entry.mode, OCTAL_RADIX_NUMBER),
+      id: entry.id,
+    })),
+  };
 }

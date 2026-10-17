@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import { compilePathspec } from '../../../../src/domain/pathspec/compile-pathspec.js';
-import { matchesPathspec } from '../../../../src/domain/pathspec/match-pathspec.js';
+import {
+  matchesPathspec,
+  matchesUnmergedPath,
+  withoutExactly,
+} from '../../../../src/domain/pathspec/match-pathspec.js';
 
 const path = (s: string): FilePath => s as FilePath;
 
@@ -110,6 +114,74 @@ describe('matchesPathspec', () => {
         // Assert
         expect(matchesPathspec(spec, path('keep.test.ts'))).toBe(true);
         expect(matchesPathspec(spec, path('other.test.ts'))).toBe(false);
+      });
+    });
+  });
+});
+
+describe('matchesUnmergedPath', () => {
+  const MANY = 3;
+  const rows: ReadonlyArray<readonly [string, readonly string[], string, number, boolean]> = [
+    ['D0', ['', '!f'], 'f', MANY, true],
+    ['D4', ['d', '!d/f'], 'd/f', MANY, true],
+    ['D7', ['*.txt', '!f.txt'], 'f.txt', MANY, true],
+    ['E1', ['f', '', '!f'], 'f', MANY, true],
+    ['D5', ['', '!d'], 'd/f', MANY, false],
+    ['D6', ['', '!*.txt'], 'f.txt', MANY, false],
+    ['E3', ['', '!f*'], 'f', MANY, false],
+    ['E7', ['', '!f', '!f*'], 'f', MANY, false],
+    ['D9', ['f', '!f'], 'f', MANY, false],
+    ['D10', ['top', '!f'], 'f', MANY, false],
+    ['S1', ['', '!f'], 'f', 1, false],
+    ['G1', ['', '!f*'], 'f*', MANY, false],
+  ];
+
+  describe.each(rows)('Given rule %s', (_id, patterns, target, entryCount, expected) => {
+    describe('When matched', () => {
+      it(`Then the verdict is ${expected}`, () => {
+        // Arrange
+        const spec = compilePathspec(patterns);
+        const sut = matchesUnmergedPath;
+
+        // Act
+        const result = sut(spec, path(target), entryCount);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('withoutExactly', () => {
+  describe('Given a spec with an exact literal, its descendant, a negated literal and a glob', () => {
+    describe('When the exact path is removed', () => {
+      it('Then only the descendant and the glob remain, in order', () => {
+        // Arrange
+        const spec = compilePathspec(['a', 'a/c', '!a', 'a*']);
+        const sut = withoutExactly;
+
+        // Act
+        const result = sut(spec, path('a'));
+
+        // Assert
+        expect(result.map((entry) => entry.pattern)).toEqual(['a/c', 'a*']);
+      });
+    });
+  });
+
+  describe('Given a path named like a glob and an exclusion spelled the same', () => {
+    describe('When the path is removed', () => {
+      it('Then the exclusion stays because it is a glob, not a literal', () => {
+        // Arrange
+        const spec = compilePathspec(['', '!f*']);
+        const sut = withoutExactly;
+
+        // Act
+        const result = sut(spec, path('f*'));
+
+        // Assert
+        expect(result.map((entry) => entry.pattern)).toEqual(['', '!f*']);
       });
     });
   });

@@ -569,3 +569,18 @@ headroom for the remaining phases; every other row is unchanged.
 
 The npm tarball cap moved 1410 → 1423 KiB (measured pack 1 448 579 B); its attribution lives in
 `tooling/verify-tarball.sh`'s cap block.
+
+## Size-limit raise — add directory/file replacement and conflict stages
+
+Measured with `npx size-limit --json` on clean builds, gzip: `main` at `0f8d0b16`, the branch after
+the validation phase. Each failing row is raised to its measurement plus about 100 B; every other row
+is unchanged. The `Command (add)` row had 41 B of headroom on `main`.
+
+| Row | main | measured | old limit | new limit | Attributable to |
+|---|--:|--:|--:|--:|---|
+| Command (add) | 3 459 B | 4 286 B | 3.5 kB | 4.4 kB | the directory/file drop on all three add routes, the multi-stage index map, resolve-undo recording and the unmerged-path exclusion rule |
+| Browser bundle (no-build) | 336 112 B | 337 410 B | 337.1 kB | 337.5 kB | the whole change, bundled once |
+| Full library | 393 249 B | 394 361 B | 393.8 kB | 394.5 kB | the above plus the domain additions: the directory/file lookup, the resolve-undo encoder and merge, and the unmerged-path pathspec predicates |
+
+The npm tarball cap moved 1423 → 1424 KiB (measured pack 1 457 786 B); its attribution lives in
+`tooling/verify-tarball.sh`'s cap block.

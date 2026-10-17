@@ -69,7 +69,21 @@ console.log(result.added.length, result.modified.length, result.removed.length);
 
 ## Index write
 
-When nothing was staged (every path already matches the index), `add` leaves the index file unwritten, as git's `SKIP_IF_UNCHANGED` does. A write keeps git's index extensions: the `TREE` cache is invalidated along each re-staged path and the rest is carried; unknown extensions are dropped.
+When nothing was staged (every path already matches the index), `add` leaves the index file unwritten, as git's `SKIP_IF_UNCHANGED` does. A write keeps git's index extensions: the `TREE` cache is invalidated along each re-staged path and the rest is carried; unknown extensions are dropped. Resolving a conflict also records its stages in `REUC` (see [Conflicts](#conflicts)).
+
+## Directory and file replacement
+
+A non-directory (symlink or regular file) that replaced a tracked directory is staged by `add <it>` and drops every index entry beneath it, whichever route names it: a literal, a `<dir>` / `.` / glob pathspec, or `all: true`. Entries the pathspec selects that are gone from disk are reported in `removed` (git's `remove` lines); excluded and skip-worktree entries beneath it are dropped without being reported. A path that already held a stage-0 entry is replaced in place with no such drop, as in git.
+
+The mirror holds too: a directory that replaced a tracked file or symlink drops that entry when anything beneath it is staged. It is silent for `add a/b` and reported in `removed` for `add a`, `.` or `all: true`. `add a/b` (or `add a a/b`) when `a` is now a regular file stages the removal of `a/b` instead of refusing.
+
+`removed` lists only what git reports with `remove` lines; silent drops show only in the resulting index.
+
+## Conflicts
+
+`add` keeps every stage of an unmerged path it does not stage. Staging an unmerged path collapses it to stage 0, reports it in `modified` whatever its content, and records its prior stages in the index's resolve-undo (`REUC`) extension, merged with the records already there (git's `ls-files --resolve-undo`). A path held at stage 0 beside conflict stages (an `update-index --index-info` can build that) is re-staged in place: its conflict stages stay, no resolve-undo record is written, and it is reported in `modified`.
+
+Exclusions follow git 2.55 on conflicts: an exact exclusion (`!f`) does not shield an unmerged path that another pathspec element covers, so the path is staged; a glob or leading-directory exclusion (`!*.txt`, `!d/`) shields it.
 
 ## Entry name validation
 
@@ -189,4 +203,4 @@ section.
 - Primitives: [`walkWorkingTree`](../primitives/walk-working-tree.md), [`readIndex`](../primitives/read-index.md), [`writeObject`](../primitives/write-object.md)
 - Related commands: [`rm`](rm.md), [`checkout`](checkout.md) — share the pathspec syntax
 - Recipes: [stage with globs](../recipes.md#stage-with-globs), [bulk add --all](../recipes.md#bulk-add---all)
-- ADRs: [029](../../adr/029-add-all-ignore-stub.md), [030](../../adr/030-add-all-walk-strategy.md), [031](../../adr/031-add-all-symlink-gitlink-policy.md), [032](../../adr/032-add-all-large-file-guard.md), [037](../../adr/037-pathspec-auto-detect.md), [038](../../adr/038-pathspec-exclusion.md), [627](../../adr/627-boolean-config-values-are-refused-as-git-refuses-them.md), [625](../../adr/625-git-parity-containment-posture.md), [626](../../adr/626-pathspec-beyond-symlink-error-code.md), [950](../../adr/950-conversion-extends-the-clean-smudge-pipeline.md), [952](../../adr/952-the-safecrlf-refusal-carries-path-loss-and-line-ending-counts.md), [953](../../adr/953-safecrlf-warnings-are-notices-on-the-command-result.md), [954](../../adr/954-safecrlf-true-serialises-conversion-and-object-writes-in-index-order.md), [956](../../adr/956-renormalize-covers-every-merge-ort-consumer-and-add-renormalize.md)
+- ADRs: [029](../../adr/029-add-all-ignore-stub.md), [030](../../adr/030-add-all-walk-strategy.md), [031](../../adr/031-add-all-symlink-gitlink-policy.md), [032](../../adr/032-add-all-large-file-guard.md), [037](../../adr/037-pathspec-auto-detect.md), [038](../../adr/038-pathspec-exclusion.md), [627](../../adr/627-boolean-config-values-are-refused-as-git-refuses-them.md), [625](../../adr/625-git-parity-containment-posture.md), [626](../../adr/626-pathspec-beyond-symlink-error-code.md), [950](../../adr/950-conversion-extends-the-clean-smudge-pipeline.md), [952](../../adr/952-the-safecrlf-refusal-carries-path-loss-and-line-ending-counts.md), [953](../../adr/953-safecrlf-warnings-are-notices-on-the-command-result.md), [954](../../adr/954-safecrlf-true-serialises-conversion-and-object-writes-in-index-order.md), [956](../../adr/956-renormalize-covers-every-merge-ort-consumer-and-add-renormalize.md), [990](../../adr/990-add-applies-the-directory-file-replacement-on-every-route.md), [991](../../adr/991-add-folds-the-mirror-directory-file-replacement.md), [992](../../adr/992-the-directory-file-rule-is-a-pure-domain-module.md), [993](../../adr/993-add-stages-the-removal-beneath-a-regular-file.md), [994](../../adr/994-add-removed-lists-only-what-git-reports.md), [995](../../adr/995-add-bench-covers-a-large-index.md), [996](../../adr/996-add-keeps-every-stage-of-other-unmerged-paths.md), [997](../../adr/997-add-reports-a-staged-unmerged-path-as-modified.md), [998](../../adr/998-an-exclusion-does-not-shield-an-unmerged-path.md), [999](../../adr/999-add-writes-resolve-undo-when-it-resolves-a-conflict.md), [1000](../../adr/1000-only-an-exact-exclusion-yields-to-another-cover.md), [1001](../../adr/1001-an-exact-literal-silences-the-drop-beneath-a-resolved-path.md), [1002](../../adr/1002-resolve-undo-merges-after-the-extension-carry.md)

@@ -5,6 +5,12 @@ import type { IndexExtension } from './index-entry.js';
 import { parseCacheTree } from './index-parser.js';
 import { type IndexPath, indexPathKey } from './index-path-key.js';
 import { pathComparatorFor } from './index-writer.js';
+import {
+  parseResolveUndo,
+  type ResolveUndoRecord,
+  recordResolveUndo,
+  serializeResolveUndo,
+} from './resolve-undo.js';
 
 export type CarryKind = 'refresh' | 'update' | 'replace';
 
@@ -78,6 +84,31 @@ export const carryExtensions = (
     carryTree(findExtension(previous, TREE_SIGNATURE), change, kind, settings.digestLength),
     carryUnmerged(findExtension(previous, REUC_SIGNATURE), change, kind),
     carryUntracked(findExtension(previous, UNTR_SIGNATURE), change, kind, settings.untrackedCache),
+  ].filter((extension) => extension !== undefined);
+};
+
+/**
+ * `carried` with the records of the unmerged paths a write resolved folded into `REUC`.
+ * The prior records come from `previous`: the carry rule may have dropped them. A prior
+ * `REUC` git cannot decode is dropped, as git does on read.
+ */
+export const withResolveUndo = (
+  carried: ReadonlyArray<IndexExtension>,
+  previous: ReadonlyArray<IndexExtension>,
+  resolved: ReadonlyArray<ResolveUndoRecord>,
+  digestLength: 20 | 32,
+): ReadonlyArray<IndexExtension> => {
+  if (resolved.length === 0) return carried;
+  const prior = findExtension(previous, REUC_SIGNATURE);
+  const records = prior === undefined ? [] : (parseResolveUndo(prior.data, digestLength) ?? []);
+  const reuc = {
+    signature: REUC_SIGNATURE,
+    data: serializeResolveUndo(recordResolveUndo(records, resolved)),
+  };
+  return [
+    findExtension(carried, TREE_SIGNATURE),
+    reuc,
+    findExtension(carried, UNTR_SIGNATURE),
   ].filter((extension) => extension !== undefined);
 };
 

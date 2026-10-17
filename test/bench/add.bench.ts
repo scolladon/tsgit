@@ -14,6 +14,7 @@ import {
   buildAddManyScratch,
   buildAddScratch,
   buildCommitScratch,
+  buildManyLooseObjectsScratch,
   type ScratchRepo,
 } from './support/write-scratch.js';
 
@@ -113,6 +114,44 @@ benchScenario(
         // Rewriting identical bytes bumps the mtime, so add() re-hashes a file whose blob is stored.
         await writeFile(path.join(scratch.cwd, 'a.txt'), 'a\n');
         await scratch.repo.add(['a.txt']);
+      },
+    };
+  },
+);
+
+const LARGE_INDEX_FILE_COUNT = 10_000;
+
+benchScenario(
+  'Given a scratch repo with 10 000 committed files',
+  'When add() re-stages one modified tracked file, Then measure tsgit',
+  async () => {
+    const scratch = await buildManyLooseObjectsScratch(LARGE_INDEX_FILE_COUNT);
+    let counter = 0;
+    return {
+      teardown: (): void => scratch.disposeSync(),
+      sut: async (): Promise<void> => {
+        counter += 1;
+        // A per-iteration payload forces a re-hash of the tracked file every time.
+        await writeFile(path.join(scratch.cwd, 'f005000.txt'), `modified ${counter}\n`);
+        await scratch.repo.add(['f005000.txt']);
+      },
+    };
+  },
+);
+
+benchScenario(
+  'Given a scratch repo with 10 000 committed files',
+  'When add() stages one new file, Then measure tsgit',
+  async () => {
+    const scratch = await buildManyLooseObjectsScratch(LARGE_INDEX_FILE_COUNT);
+    let counter = 0;
+    return {
+      teardown: (): void => scratch.disposeSync(),
+      sut: async (): Promise<void> => {
+        counter += 1;
+        const name = `new-${counter}.txt`;
+        await writeFile(path.join(scratch.cwd, name), `new ${counter}\n`);
+        await scratch.repo.add([name]);
       },
     };
   },

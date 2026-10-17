@@ -15,6 +15,10 @@ import { comparePaths } from '../../domain/diff/path-compare.js';
 import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import type { EolNotice } from '../../domain/eol/crlf-conversion.js';
 import { operationAborted, TsgitError } from '../../domain/error.js';
+import {
+  entriesAtLeadingDirectories,
+  entriesBeneath,
+} from '../../domain/git-index/directory-file-conflict.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import {
   type IndexPath,
@@ -24,6 +28,10 @@ import {
   keyOfPath,
 } from '../../domain/git-index/index-path-key.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
+import {
+  type ResolveUndoRecord,
+  resolveUndoRecordOf,
+} from '../../domain/git-index/resolve-undo.js';
 import { emptyPathspec, pathspecNoMatch } from '../../domain/index.js';
 import {
   deriveWorkingMode,
@@ -33,7 +41,8 @@ import {
 } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesPathspec } from '../../domain/pathspec/index.js';
-import { matchesIndexPath } from '../../domain/pathspec/matching-path.js';
+import { matchesUnmergedPath, withoutExactly } from '../../domain/pathspec/match-pathspec.js';
+import { matchesIndexPath, matchesUnmergedIndexPath } from '../../domain/pathspec/matching-path.js';
 import { CHERRY_PICK, MERGE, REBASE, REVERT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
@@ -52,7 +61,7 @@ import type { ConcurrencyLimiter } from '../primitives/internal/concurrency-limi
 import { type ConversionRoute, convertToGit } from '../primitives/internal/convert-blob.js';
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
-import type { IndexLock } from '../primitives/internal/index-lock.js';
+import type { CommitOptions, IndexLock } from '../primitives/internal/index-lock.js';
 import { indexRuleEntries } from '../primitives/internal/index-rule-entries.js';
 import { type IndexMtime, isEntryStatClean } from '../primitives/internal/is-entry-stat-clean.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
@@ -173,6 +182,8 @@ const buildConversionScope = async (ctx: Context): Promise<ConversionScope> => (
 
 const WHOLE_TREE_PATHSPEC = '.';
 
+const WHOLE_TREE_MATCHER = resolvePathspec([WHOLE_TREE_PATHSPEC]).matcher;
+
 const addInScope = async (
   ctx: Context,
   paths: ReadonlyArray<string>,
@@ -212,30 +223,58 @@ const dispatchPathspec = async (
   const { literalMustMatch } = resolved;
   await assertNoSymlinkedLeadingPath(ctx, resolved.symlinkScanTargets);
   if (!resolved.hasGlob && (await allLiteralsAreFiles(ctx, literalMustMatch))) {
-    return addLiteralOnly(ctx, literalMustMatch, scope);
+    return addLiteralOnly(ctx, resolved, scope);
   }
   return addByPathspec(ctx, resolved, scope);
 };
 
 const addLiteralOnly = async (
   ctx: Context,
-  validated: ReadonlyArray<FilePath>,
+  resolved: ResolvedPathspec,
   scope: ConversionScope,
 ): Promise<AddResult> => {
   const lock = await acquireIndexLock(ctx);
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
-    const { indexRules, ...state } = await readExistingEntries(ctx);
-    const staging = { ctx, scope: { ...scope, indexRules }, ...state, ensurePromisorConfigValid };
-    const { newEntries, added, modified, eolNotices, restagedPaths } = await stageLiterals(
+    const { indexRules, unmergedStages, stageZeroBeside, sorted, ...state } =
+      await readExistingEntries(ctx);
+    const staging = {
+      ctx,
+      scope: { ...scope, indexRules },
+      ...state,
+      stageZeroBeside,
+      ensurePromisorConfigValid,
+    };
+    const { remaining, restagedPaths, ...result } = await stageLiteralsOver(
       staging,
-      validated,
+      sorted,
+      resolved,
     );
-    await commitIfChanged(lock, state.entries.size, Array.from(newEntries.values()), restagedPaths);
-    return { added, modified, removed: [], eolNotices };
+    await commitStaged(lock, { sorted, unmergedStages, stageZeroBeside }, remaining, restagedPaths);
+    return result;
   } finally {
     await lock.release();
   }
+};
+
+/** Stage the literals, then drop what a non-directory they inserted now replaces. */
+const stageLiteralsOver = async (
+  staging: Staging,
+  sorted: ReadonlyArray<IndexEntry>,
+  { literalMustMatch, matcher }: ResolvedPathspec,
+) => {
+  const { newEntries, inserted, restagedPaths, ...staged } = await stageLiterals(
+    staging,
+    literalMustMatch,
+  );
+  const view = { sorted, inserted };
+  const dropped = await dropBeneathInserted(staging.ctx, view, matcher, newEntries);
+  return {
+    ...staged,
+    restagedPaths,
+    remaining: dropped.remaining,
+    removed: dropped.removed.sort(),
+  };
 };
 
 /** What every path is staged against: the index as read, and the add's attributes and guard. */
@@ -243,9 +282,14 @@ interface Staging {
   readonly ctx: Context;
   readonly scope: StagingScope;
   readonly entries: ReadonlyMap<IndexPathKey, IndexEntry>;
+  readonly stageZeroBeside: ReadonlyMap<IndexPathKey, IndexEntry>;
   readonly indexMtime: IndexMtime | undefined;
   readonly ensurePromisorConfigValid: PromisorGuard;
 }
+
+/** A staged unmerged path is always a change: its conflict is resolved whatever the content. */
+const isModified = (previous: IndexEntry, entry: IndexEntry): boolean =>
+  previous.flags.stage !== 0 || previous.id !== entry.id || previous.mode !== entry.mode;
 
 /** git stages the tracked paths first, then the untracked ones, each group in index order. */
 const trackedFirst = (
@@ -264,11 +308,12 @@ const stageLiterals = async (
   staging: Staging,
   validated: ReadonlyArray<FilePath>,
 ): Promise<{
-  readonly newEntries: ReadonlyMap<IndexPathKey, IndexEntry>;
+  readonly newEntries: Map<IndexPathKey, IndexEntry>;
   readonly added: ReadonlyArray<FilePath>;
   readonly modified: ReadonlyArray<FilePath>;
   readonly eolNotices: ReadonlyArray<EolNotice>;
   readonly restagedPaths: ReadonlyArray<IndexPath>;
+  readonly inserted: ReadonlyArray<InsertedPath>;
 }> => {
   const { ctx, scope, entries: existing, indexMtime } = staging;
   const newEntries = new Map<IndexPathKey, IndexEntry>(existing);
@@ -276,6 +321,7 @@ const stageLiterals = async (
   const modified: FilePath[] = [];
   const eolNotices: EolNotice[] = [];
   const restagedPaths: IndexPath[] = [];
+  const inserted: InsertedPath[] = [];
   for (const path of trackedFirst(validated, existing)) {
     const previous = existing.get(keyOfPath(path));
     const guard = staging.ensurePromisorConfigValid;
@@ -286,26 +332,184 @@ const stageLiterals = async (
     if (wasRestaged(previous, entry)) restagedPaths.push(entry);
     if (notice !== undefined) eolNotices.push(notice);
     if (previous === undefined) added.push(path);
-    else if (previous.id !== entry.id || previous.mode !== entry.mode) modified.push(path);
+    else if (isModified(previous, entry) || staging.stageZeroBeside.has(keyOfPath(path))) {
+      modified.push(path);
+    }
+    if (previous === undefined || previous.flags.stage !== 0) inserted.push({ path, previous });
   }
-  return { newEntries, added, modified, eolNotices, restagedPaths };
+  return { newEntries, added, modified, eolNotices, restagedPaths, inserted };
+};
+
+/** The index an add started from, as the directory/file step reads it. */
+interface IndexView {
+  readonly sorted: ReadonlyArray<IndexEntry>;
+  readonly inserted: ReadonlyArray<InsertedPath>;
+}
+
+/** A path staged where the index had no stage-0 entry: `previous` is absent or unmerged. */
+interface InsertedPath {
+  readonly path: FilePath;
+  readonly previous: IndexEntry | undefined;
+}
+
+/**
+ * A path that now holds a non-directory leaves nothing beneath it, and a path staged beneath a
+ * tracked file or symlink leaves that one behind — silently, as the removal pass reports it.
+ * Takes ownership of `newEntries` (the caller's fresh map) and returns it as `remaining`.
+ */
+const dropBeneathInserted = async (
+  ctx: Context,
+  { sorted, inserted }: IndexView,
+  matcher: ResolvedPathspec['matcher'],
+  newEntries: Map<IndexPathKey, IndexEntry>,
+): Promise<{
+  remaining: Map<IndexPathKey, IndexEntry>;
+  removed: FilePath[];
+  dropped: Set<IndexPathKey>;
+}> => {
+  const remaining = newEntries;
+  const removed: FilePath[] = [];
+  const dropped = new Set<IndexPathKey>();
+  for (const { path, previous } of inserted) {
+    for (const leading of entriesAtLeadingDirectories(remaining, path)) {
+      remaining.delete(indexPathKey(leading));
+    }
+    const reportMatcher = previous === undefined ? matcher : withoutExactly(matcher, path);
+    const replaced = await replacedBeneath(ctx, stagesBeneath(sorted, path), reportMatcher);
+    for (const key of replaced.dropped) {
+      remaining.delete(key);
+      dropped.add(key);
+    }
+    removed.push(...replaced.reported);
+  }
+  return { remaining, removed, dropped };
+};
+
+/**
+ * The removals a walk reports once the D/F step has spoken: the post-walk pass's own, except for
+ * what sits beneath an inserted path — that is the step's to report or to keep silent.
+ */
+const reportedRemovals = (
+  removedEntries: ReadonlyArray<IndexEntry>,
+  {
+    removed,
+    dropped,
+  }: { readonly removed: ReadonlyArray<FilePath>; readonly dropped: ReadonlySet<IndexPathKey> },
+): FilePath[] => [
+  ...removedEntries.filter((entry) => !dropped.has(indexPathKey(entry))).map(({ path }) => path),
+  ...removed,
+];
+
+/** What a walk leaves once the D/F step and the removal pass have spoken: the entries to keep and the paths to report. */
+const settleRemovals = async (
+  ctx: Context,
+  view: IndexView,
+  matcher: ResolvedPathspec['matcher'],
+  newEntries: Map<IndexPathKey, IndexEntry>,
+  removedEntries: ReadonlyArray<IndexEntry>,
+) => {
+  const replaced = await dropBeneathInserted(ctx, view, matcher, newEntries);
+  for (const entry of removedEntries) replaced.remaining.delete(indexPathKey(entry));
+  return {
+    remaining: replaced.remaining,
+    removed: reportedRemovals(removedEntries, replaced),
+    everyRemoval: [...removedEntries.map(({ path }) => path), ...replaced.removed],
+  };
+};
+
+/** Writes the staged entries beside the stages of the paths the add left alone. */
+const commitStaged = (
+  lock: IndexLock,
+  {
+    sorted,
+    unmergedStages,
+    stageZeroBeside,
+  }: Pick<ExistingIndexState, 'sorted' | 'unmergedStages' | 'stageZeroBeside'>,
+  remaining: ReadonlyMap<IndexPathKey, IndexEntry>,
+  restagedPaths: ReadonlyArray<IndexPath>,
+): Promise<void> =>
+  commitIfChanged(
+    lock,
+    sorted.length,
+    withEveryStage(remaining, unmergedStages, stageZeroBeside),
+    resolutionOptions(restagedPaths, remaining, unmergedStages, stageZeroBeside),
+  );
+
+/** The paths a walk staged where the index held no stage-0 entry. */
+const insertedBy = (
+  outcomes: ReadonlyArray<WalkOutcome>,
+  existing: ReadonlyMap<IndexPathKey, IndexEntry>,
+): InsertedPath[] =>
+  outcomes
+    .map(({ path }) => ({ path, previous: existing.get(keyOfPath(path)) }))
+    .filter(({ previous }) => previous === undefined || previous.flags.stage !== 0);
+
+const appendTo = (
+  groups: Map<IndexPathKey, IndexEntry[]>,
+  key: IndexPathKey,
+  entry: IndexEntry,
+): void => {
+  const group = groups.get(key);
+  if (group === undefined) groups.set(key, [entry]);
+  else group.push(entry);
+};
+
+/** Every stage of each path beneath `path`, grouped by path. */
+const stagesBeneath = (
+  sorted: ReadonlyArray<IndexEntry>,
+  path: FilePath,
+): Map<IndexPathKey, IndexEntry[]> => {
+  const beneath = new Map<IndexPathKey, IndexEntry[]>();
+  for (const entry of entriesBeneath(sorted, path)) {
+    const key = indexPathKey(entry);
+    appendTo(beneath, key, entry);
+  }
+  return beneath;
+};
+
+/**
+ * What the new non-directory replaces: every stage-0 path beneath it goes (reported when the
+ * matcher selects it and it is gone from disk, silent otherwise); an unmerged one goes only
+ * when the matcher selects it, and is kept with every stage otherwise.
+ */
+const replacedBeneath = async (
+  ctx: Context,
+  beneath: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
+  matcher: ResolvedPathspec['matcher'],
+): Promise<{ dropped: IndexPathKey[]; reported: FilePath[] }> => {
+  const stageZero = new Map<IndexPathKey, IndexEntry>();
+  const dropped: IndexPathKey[] = [];
+  const reported: FilePath[] = [];
+  for (const [key, stages] of beneath) {
+    const [first] = stages as [IndexEntry];
+    if (first.flags.stage === 0) stageZero.set(key, first);
+    else if (matchesUnmergedIndexPath(matcher, first, stages.length)) {
+      dropped.push(key);
+      reported.push(first.path);
+    }
+  }
+  const gone = await collectMatchedRemovals(ctx, stageZero, [], matcher);
+  return {
+    dropped: [...stageZero.keys(), ...dropped],
+    reported: [...gone.map(({ path }) => path), ...reported],
+  };
 };
 
 /** git's SKIP_IF_UNCHANGED: a re-staged, added or removed path is a change; additions are always re-staged, so a size drift is a removal. */
 const changesIndex = (
   existingCount: number,
   entries: ReadonlyArray<IndexEntry>,
-  restagedPaths: ReadonlyArray<IndexPath>,
+  { restagedPaths = [] }: CommitOptions,
 ): boolean => restagedPaths.length > 0 || entries.length !== existingCount;
 
 const commitIfChanged = async (
   lock: IndexLock,
   existingCount: number,
   entries: ReadonlyArray<IndexEntry>,
-  restagedPaths: ReadonlyArray<IndexPath>,
+  options: CommitOptions,
 ): Promise<void> => {
-  if (!changesIndex(existingCount, entries, restagedPaths)) return;
-  await lock.commit(entries, 'update', { restagedPaths });
+  if (!changesIndex(existingCount, entries, options)) return;
+  await lock.commit(entries, 'update', options);
 };
 
 /** `ie_match_stat` clean paths keep their entry object; every other path was rebuilt, which git's add_index_entry reports to the cache-tree. */
@@ -319,11 +523,26 @@ const allLiteralsAreFiles = async (
   if (literals.length === 0) return false;
   for (const path of literals) {
     if (namesDirectoryOnly(path)) return false;
-    const stat = await lstatOrMissing(ctx, path);
+    const stat = await lstatOrBeneathFile(ctx, path);
     if (stat === undefined) return false;
     if (stat.isDirectory && !stat.isSymbolicLink) return false;
   }
   return true;
+};
+
+const NOT_A_DIRECTORY = 'NOT_A_DIRECTORY';
+
+/** A literal beneath a regular file is routed to the pathspec walk, which stages its removal. */
+const lstatOrBeneathFile = async (
+  ctx: Context,
+  path: FilePath,
+): Promise<Awaited<ReturnType<typeof lstatOrMissing>>> => {
+  try {
+    return await lstatOrMissing(ctx, path);
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === NOT_A_DIRECTORY) return undefined;
+    throw err;
+  }
 };
 
 /**
@@ -463,34 +682,31 @@ const addByPathspec = async (
   scope: ConversionScope,
 ): Promise<AddResult> => {
   const repoIgnore = await buildRepoIgnorePredicate(ctx);
-  const combinedIgnore = withPathspec(repoIgnore, matcher);
   const lock = await acquireIndexLock(ctx);
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
-    const staged = await stageIgnoredWalk(ctx, combinedIgnore, scope, ensurePromisorConfigValid);
-    const { newEntries, matched, added, modified, eolNotices, restagedPaths } = tallyWalkOutcomes(
-      staged.existing,
-      staged.outcomes,
+    const staged = await stageIgnoredWalk(
+      ctx,
+      repoIgnore,
+      matcher,
+      scope,
+      ensurePromisorConfigValid,
     );
+    const tally = tallyWalkOutcomes(staged.existing, staged.outcomes, staged.stageZeroBeside);
+    const { matched } = tally;
     // git add never refuses the whole tree, even when it holds nothing to add.
     const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
     const removedEntries = await collectMatchedRemovals(ctx, staged.existing, matched, matcher);
-    const removed = removedEntries.map(({ path }) => path);
-    enforceLiteralMustMatch(mustMatch, [...matched, ...removed], literalSpellings);
-    const remaining = new Map(newEntries);
-    for (const entry of removedEntries) remaining.delete(indexPathKey(entry));
-    await commitIfChanged(
-      lock,
-      staged.existing.size,
-      Array.from(remaining.values()),
-      restagedPaths,
+    const settled = await settleWalkRemovals(
+      ctx,
+      staged,
+      matcher,
+      tally.newEntries,
+      removedEntries,
     );
-    return {
-      added: [...added].sort(),
-      modified: [...modified].sort(),
-      removed: removed.sort(),
-      eolNotices,
-    };
+    enforceLiteralMustMatch(mustMatch, [...matched, ...settled.everyRemoval], literalSpellings);
+    await commitStaged(lock, staged, settled.remaining, tally.restagedPaths);
+    return sortedResult(tally, settled.removed);
   } finally {
     await lock.release();
   }
@@ -540,7 +756,9 @@ const addRenormalized = async (
     // Stryker disable next-line MethodExpression: equivalent — the whole-tree literal is itself among the on-disk literals (the work tree exists), so enforceLiteralMustMatch accepts it unfiltered.
     const mustMatch = literalMustMatch.filter((literal) => !namesWholeTree(literal));
     enforceLiteralMustMatch(mustMatch, onDisk, literalSpellings);
-    await commitIfChanged(lock, entries.length, renormalized.entries, renormalized.restagedPaths);
+    await commitIfChanged(lock, entries.length, renormalized.entries, {
+      restagedPaths: renormalized.restagedPaths,
+    });
     return { added: [], modified: renormalized.modified, removed: [], eolNotices: [] };
   } finally {
     await lock.release();
@@ -573,7 +791,7 @@ const RECLEANED_MODES: ReadonlySet<FileMode> = new Set([
 ]);
 
 const renormalizeEntries = async (
-  staging: Omit<Staging, 'entries' | 'indexMtime'>,
+  staging: Omit<Staging, 'entries' | 'indexMtime' | 'stageZeroBeside'>,
   entries: ReadonlyArray<IndexEntry>,
   matcher: ResolvedPathspec['matcher'],
 ): Promise<{
@@ -599,7 +817,11 @@ const renormalizeEntries = async (
 };
 
 const renormalizeOne = async (
-  { ctx, scope, ensurePromisorConfigValid }: Omit<Staging, 'entries' | 'indexMtime'>,
+  {
+    ctx,
+    scope,
+    ensurePromisorConfigValid,
+  }: Omit<Staging, 'entries' | 'indexMtime' | 'stageZeroBeside'>,
   previous: IndexEntry,
 ): Promise<IndexEntry> => {
   const { path } = previous;
@@ -619,14 +841,26 @@ const renormalizeOne = async (
 /** Read the index, then stage every walked entry `ignore` keeps. */
 const stageIgnoredWalk = async (
   ctx: Context,
-  ignore: IgnorePredicate,
+  repoIgnore: IgnorePredicate,
+  matcher: ResolvedPathspec['matcher'],
   scope: ConversionScope,
   ensurePromisorConfigValid: PromisorGuard,
 ): Promise<{
   readonly existing: ReadonlyMap<IndexPathKey, IndexEntry>;
+  readonly unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>;
+  readonly stageZeroBeside: ReadonlyMap<IndexPathKey, IndexEntry>;
+  readonly sorted: ReadonlyArray<IndexEntry>;
   readonly outcomes: ReadonlyArray<WalkOutcome>;
 }> => {
-  const { entries: existing, indexMtime, indexRules } = await readExistingEntries(ctx);
+  const {
+    entries: existing,
+    unmergedStages,
+    stageZeroBeside,
+    sorted,
+    indexMtime,
+    indexRules,
+  } = await readExistingEntries(ctx);
+  const ignore = withPathspec(repoIgnore, matcher, unmergedStages);
   const outcomes = await stageWalkedEntries(
     ctx,
     walkWorkingTree(ctx, { ignore }),
@@ -636,16 +870,24 @@ const stageIgnoredWalk = async (
     indexMtime,
     ensurePromisorConfigValid,
   );
-  return { existing, outcomes };
+  return { existing, unmergedStages, stageZeroBeside, sorted, outcomes };
 };
 
-/** `.gitignore` prunes directories and leaves; the pathspec filters leaves only. */
+/**
+ * `.gitignore` prunes directories and leaves; the pathspec filters leaves only,
+ * and keeps a multi-stage unmerged leaf that only an exact exclusion removes.
+ */
 const withPathspec =
-  (ignore: IgnorePredicate, matcher: ResolvedPathspec['matcher']): IgnorePredicate =>
+  (
+    ignore: IgnorePredicate,
+    matcher: ResolvedPathspec['matcher'],
+    unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
+  ): IgnorePredicate =>
   async (path, isDirectory) => {
     if (await ignore(path, isDirectory)) return true;
-    if (isDirectory) return false;
-    return !matchesPathspec(matcher, path);
+    if (isDirectory || matchesPathspec(matcher, path)) return false;
+    const stages = unmergedStages.get(keyOfPath(path));
+    return stages === undefined || !matchesUnmergedPath(matcher, path, stages.length);
   };
 
 /** The safecrlf notices of the walked outcomes: git warns for the tracked paths first, in index order. */
@@ -673,8 +915,9 @@ const restagedPathsOf = (
 const tallyWalkOutcomes = (
   existing: ReadonlyMap<IndexPathKey, IndexEntry>,
   outcomes: ReadonlyArray<WalkOutcome>,
+  stageZeroBeside: ReadonlyMap<IndexPathKey, IndexEntry>,
 ): {
-  readonly newEntries: ReadonlyMap<IndexPathKey, IndexEntry>;
+  readonly newEntries: Map<IndexPathKey, IndexEntry>;
   readonly matched: ReadonlyArray<FilePath>;
   readonly added: ReadonlyArray<FilePath>;
   readonly modified: ReadonlyArray<FilePath>;
@@ -689,11 +932,52 @@ const tallyWalkOutcomes = (
     matched.push(outcome.path);
     newEntries.set(keyOfPath(outcome.path), outcome.entry);
     if (outcome.kind === 'added') added.push(outcome.path);
-    else if (outcome.kind === 'modified') modified.push(outcome.path);
+    else if (outcome.kind === 'modified' || stageZeroBeside.has(keyOfPath(outcome.path))) {
+      modified.push(outcome.path);
+    }
   }
   const restagedPaths = restagedPathsOf(outcomes, existing);
   return { newEntries, matched, added, modified, eolNotices: noticesOf(outcomes), restagedPaths };
 };
+
+/** The settled removals of a walk, given what it staged over the index it started from. */
+const settleWalkRemovals = (
+  ctx: Context,
+  {
+    sorted,
+    existing,
+    outcomes,
+  }: {
+    readonly sorted: ReadonlyArray<IndexEntry>;
+    readonly existing: ReadonlyMap<IndexPathKey, IndexEntry>;
+    readonly outcomes: ReadonlyArray<WalkOutcome>;
+  },
+  matcher: ResolvedPathspec['matcher'],
+  newEntries: Map<IndexPathKey, IndexEntry>,
+  removedEntries: ReadonlyArray<IndexEntry>,
+) =>
+  settleRemovals(
+    ctx,
+    { sorted, inserted: insertedBy(outcomes, existing) },
+    matcher,
+    newEntries,
+    removedEntries,
+  );
+
+/** The walk's report, each list in path order. */
+const sortedResult = (
+  {
+    added,
+    modified,
+    eolNotices,
+  }: Pick<ReturnType<typeof tallyWalkOutcomes>, 'added' | 'modified' | 'eolNotices'>,
+  removed: ReadonlyArray<FilePath>,
+): AddResult => ({
+  added: [...added].sort(),
+  modified: [...modified].sort(),
+  removed: [...removed].sort(),
+  eolNotices,
+});
 
 /**
  * Bulk-mode `add --all`. Exposed for testability (custom `ignore` predicate).
@@ -709,12 +993,9 @@ export const addAll = async (
   const lock = await acquireIndexLock(ctx);
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
-    const { entries: existing, indexMtime, indexRules } = await readExistingEntries(ctx);
-    const newEntries = new Map<IndexPathKey, IndexEntry>(existing);
+    const state = await readExistingEntries(ctx);
+    const { entries: existing, sorted } = state;
     const seen = new Set<IndexPathKey>();
-    const added: FilePath[] = [];
-    const modified: FilePath[] = [];
-
     // Walk-time pruning: the walker calls `ignore` on every directory
     // (skipping ignored subtrees) and every leaf. By the time we see a
     // leaf here, the ignore filter has already passed.
@@ -723,29 +1004,22 @@ export const addAll = async (
       walkWorkingTree(ctx, { ignore }),
       existing,
       seen,
-      { ...scope, indexRules },
-      indexMtime,
+      { ...scope, indexRules: state.indexRules },
+      state.indexMtime,
       ensurePromisorConfigValid,
     );
-    for (const outcome of outcomes) {
-      newEntries.set(keyOfPath(outcome.path), outcome.entry);
-      if (outcome.kind === 'added') added.push(outcome.path);
-      else if (outcome.kind === 'modified') modified.push(outcome.path);
-    }
+    const tally = tallyWalkOutcomes(existing, outcomes, state.stageZeroBeside);
     const removedEntries = await collectRemovedEntries(ctx, existing, seen);
-    for (const entry of removedEntries) newEntries.delete(indexPathKey(entry));
-    const removed = removedEntries.map(({ path }) => path);
-    added.sort();
-    modified.sort();
-    // Stryker disable next-line MethodExpression: equivalent — `removed` is built by iterating `existing`, a Map populated from the always-byte-sorted index (serializeIndex sorts on every write), so it is already in ascending path order; the sort is a defensive no-op.
-    removed.sort();
-    await commitIfChanged(
-      lock,
-      existing.size,
-      Array.from(newEntries.values()),
-      restagedPathsOf(outcomes, existing),
+    const walked = { sorted, existing, outcomes };
+    const settled = await settleWalkRemovals(
+      ctx,
+      walked,
+      WHOLE_TREE_MATCHER,
+      tally.newEntries,
+      removedEntries,
     );
-    return { added, modified, removed, eolNotices: noticesOf(outcomes) };
+    await commitStaged(lock, state, settled.remaining, tally.restagedPaths);
+    return sortedResult(tally, settled.removed);
   } finally {
     await lock.release();
   }
@@ -760,18 +1034,21 @@ interface WalkOutcome {
 
 /**
  * A path under a leading component that is no longer a directory, or is a symlink
- * (git's `has_symlink_leading_path`), is as gone as a missing one.
+ * (git's `has_symlink_leading_path`), is as gone as a missing one; so is a tracked file
+ * or symlink a directory replaced. A submodule checkout is a directory by design.
  */
 const presentOnDisk = async (
   ctx: Context,
   scanner: LeadingPathScanner,
-  path: FilePath,
+  entry: IndexEntry,
 ): Promise<boolean> => {
   try {
-    if (await scanner.hasSymlinkedLeadingPath(path)) return false;
-    return (await lstatOrMissing(ctx, path)) !== undefined;
+    if (await scanner.hasSymlinkedLeadingPath(entry.path)) return false;
+    const stat = await lstatOrMissing(ctx, entry.path);
+    if (stat === undefined) return false;
+    return !stat.isDirectory || entry.mode === FILE_MODE.GITLINK;
   } catch (err) {
-    if (err instanceof TsgitError && err.data.code === 'NOT_A_DIRECTORY') return false;
+    if (err instanceof TsgitError && err.data.code === NOT_A_DIRECTORY) return false;
     throw err;
   }
 };
@@ -796,7 +1073,7 @@ const collectRemovedEntries = async (
   for (const [key, entry] of existing) {
     if (seen.has(key)) continue;
     if (entry.flags.skipWorktree) continue;
-    if (!isLossy(entry) && (await presentOnDisk(ctx, scanner, entry.path))) continue;
+    if (!isLossy(entry) && (await presentOnDisk(ctx, scanner, entry))) continue;
     removed.push(entry);
   }
   return removed;
@@ -834,14 +1111,21 @@ const processWalkEntry = async (
   const previous = existing.get(keyOfPath(path));
   const withNotice = notice === undefined ? {} : { notice };
   if (previous === undefined) return { kind: 'added', path, entry, ...withNotice };
-  if (previous.id !== entry.id || previous.mode !== entry.mode) {
+  if (isModified(previous, entry)) {
     return { kind: 'modified', path, entry, ...withNotice };
   }
   return { kind: 'unchanged', path, entry, ...withNotice };
 };
 
 interface ExistingIndexState {
+  /** One entry per path: its stage-0 entry, else the last stage of an unmerged path. */
   readonly entries: ReadonlyMap<IndexPathKey, IndexEntry>;
+  /** Every stage of every unmerged path, in index order. */
+  readonly unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>;
+  /** A stage-0 entry the index holds beside the conflict stages of the same path. */
+  readonly stageZeroBeside: ReadonlyMap<IndexPathKey, IndexEntry>;
+  /** The entries as read — one per stage, so its length is what the index holds. */
+  readonly sorted: ReadonlyArray<IndexEntry>;
   readonly indexMtime: IndexMtime | undefined;
   readonly indexRules: ReadonlyMap<FilePath, IndexEntry>;
 }
@@ -850,13 +1134,73 @@ const readExistingEntries = async (ctx: Context): Promise<ExistingIndexState> =>
   const { entries, indexMtime } = await readIndexOrEmpty(ctx);
   const out = new Map<IndexPathKey, IndexEntry>();
   const unmerged: IndexEntry[] = [];
+  const unmergedStages = new Map<IndexPathKey, IndexEntry[]>();
+  const stageZero = new Map<IndexPathKey, IndexEntry>();
   for (const entry of entries) {
-    out.set(indexPathKey(entry), entry);
-    if (entry.flags.stage !== 0) unmerged.push(entry);
+    const key = indexPathKey(entry);
+    if (entry.flags.stage === 0 || out.get(key)?.flags.stage !== 0) out.set(key, entry);
+    if (entry.flags.stage === 0) {
+      stageZero.set(key, entry);
+      continue;
+    }
+    unmerged.push(entry);
+    appendTo(unmergedStages, key, entry);
   }
   const indexRules = new Map(indexRuleEntries(unmerged).map((entry) => [entry.path, entry]));
-  return { entries: out, indexMtime, indexRules };
+  const stageZeroBeside = new Map([...stageZero].filter(([key]) => unmergedStages.has(key)));
+  return { entries: out, unmergedStages, stageZeroBeside, sorted: entries, indexMtime, indexRules };
 };
+
+/** An unmerged path stays so when the add left it unstaged: it is neither removed nor staged. */
+const stillUnmerged = (
+  entries: ReadonlyMap<IndexPathKey, IndexEntry>,
+  key: IndexPathKey,
+): boolean => (entries.get(key)?.flags.stage ?? 0) !== 0;
+
+/** A stage-0 entry beside conflict stages is re-staged in place; the stages go only with the path. */
+const keepsStages = (
+  entries: ReadonlyMap<IndexPathKey, IndexEntry>,
+  key: IndexPathKey,
+  stageZeroBeside: ReadonlyMap<IndexPathKey, IndexEntry>,
+): boolean => (stageZeroBeside.has(key) ? entries.has(key) : stillUnmerged(entries, key));
+
+/**
+ * The entries to write: what the add staged, plus every stage of the unmerged paths it left
+ * alone — and of those whose stage-0 entry it re-staged.
+ */
+const withEveryStage = (
+  entries: ReadonlyMap<IndexPathKey, IndexEntry>,
+  unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
+  stageZeroBeside: ReadonlyMap<IndexPathKey, IndexEntry>,
+): IndexEntry[] => {
+  if (unmergedStages.size === 0) return Array.from(entries.values());
+  const out = Array.from(entries.values()).filter((entry) => entry.flags.stage === 0);
+  for (const [key, stages] of unmergedStages) {
+    if (!keepsStages(entries, key, stageZeroBeside)) continue;
+    out.push(...stages);
+  }
+  return out;
+};
+
+/** The unmerged paths the add resolved, by staging them or removing them. */
+const resolvedRecords = (
+  unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
+  working: ReadonlyMap<IndexPathKey, IndexEntry>,
+  stageZeroBeside: ReadonlyMap<IndexPathKey, IndexEntry>,
+): ReadonlyArray<ResolveUndoRecord> =>
+  Array.from(unmergedStages)
+    .filter(([key]) => !keepsStages(working, key, stageZeroBeside))
+    .map(([, stages]) => resolveUndoRecordOf(stages));
+
+const resolutionOptions = (
+  restagedPaths: ReadonlyArray<IndexPath>,
+  working: ReadonlyMap<IndexPathKey, IndexEntry>,
+  unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
+  stageZeroBeside: ReadonlyMap<IndexPathKey, IndexEntry>,
+): CommitOptions => ({
+  restagedPaths,
+  resolveUndo: resolvedRecords(unmergedStages, working, stageZeroBeside),
+});
 
 const readIndexOrEmpty = async (
   ctx: Context,
@@ -1024,8 +1368,9 @@ const writeCleanedBlob = async (
 
 /**
  * git reads the index-CRLF rule from stage 0, else stage 2; a gitlink has no
- * blob to read. `previous` is the last stage recorded, so only an unmerged
- * path consults the stage-2 entries read with the index.
+ * blob to read. `previous` is the path's stage-0 entry when it has one, else
+ * its last stage, so only a path with no stage-0 entry consults the stage-2
+ * entries read with the index.
  */
 const indexRuleBlob = (
   indexRules: StagingScope['indexRules'],
