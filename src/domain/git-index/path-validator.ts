@@ -1,10 +1,11 @@
 /**
  * Path-segment safety check for git index entries.
  *
- * Called from `parseIndex` before constructing the branded
- * `FilePath`. Downstream consumers can then trust that any `FilePath`
- * value obtained from a parsed `GitIndex` is free of `..`, `.`, empty
- * segments, and leading-slash absolute paths.
+ * The posix rules guard `parseIndex` and write-tree before the branded
+ * `FilePath` is constructed; the windows rules guard index writes under
+ * Windows path syntax. Downstream consumers can then trust that any
+ * `FilePath` they hold is free of `..`, `.`, empty segments, and
+ * leading-slash absolute paths.
  *
  * The throw is shaped as `INVALID_INDEX_ENTRY` so the parser's error
  * vocabulary stays consistent.
@@ -76,16 +77,6 @@ type PathVerifier = typeof verifyPath;
 
 /** The index-write path check, under one platform's path syntax. */
 export interface IndexPathRules {
-  readonly validateIndexPath: (
-    path: string,
-    offset: number,
-    mode: FileMode,
-    pathBytes?: Uint8Array,
-  ) => void;
-  readonly validateTreePath: (path: FilePath, mode: FileMode) => void;
-}
-
-const indexPathRulesFor = (verify: PathVerifier): IndexPathRules => {
   /**
    * Throws `INVALID_INDEX_ENTRY` if `path` is unsafe. The `offset` is the
    * byte offset of the failing entry's header — propagated into the error
@@ -112,6 +103,17 @@ const indexPathRulesFor = (verify: PathVerifier): IndexPathRules => {
    * embedding the path in `reason` would amplify log volume and reflect
    * untrusted content.
    */
+  readonly validateIndexPath: (
+    path: string,
+    offset: number,
+    mode: FileMode,
+    pathBytes?: Uint8Array,
+  ) => void;
+  /** Same checks as `validateIndexPath` for a tree entry, which has no index-file offset. */
+  readonly validateTreePath: (path: FilePath, mode: FileMode) => void;
+}
+
+const indexPathRulesFor = (verify: PathVerifier): IndexPathRules => {
   const validateIndexPath = (
     path: string,
     offset: number,
