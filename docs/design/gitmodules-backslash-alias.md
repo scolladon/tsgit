@@ -389,3 +389,336 @@ scope.
 
 - **32.25** — the `.gitmodules` symlink alias behind a backslash part. Classes B and C
   are included subject to D1.
+
+## Addendum — git for Windows' backslash refusal
+
+### Why
+
+Part 2 (`ntfsParts`, ADR-1004) admits `\.git\hooks\post-checkout`, `\.git\config` and
+`x/\.git\hooks\…` at `100644`, as git does on POSIX. On Windows the node adapter resolves
+`\` as a separator (`joinPath` → `path.win32.resolve`), so a checkout writes
+`<worktree>\.git\hooks\post-checkout`. The fs containment wrapper allows it, because `.git`
+is inside the worktree. Before Part 2 these paths were refused only by accident. The symlink
+`\gitmod~1` / `\.gitmodules` rows (CVE-2018-11235 vector) have the same root cause and were
+already admitted before this branch.
+
+**User decision (binding):** keep Part 2 (POSIX-faithful) and add git for Windows' rule.
+When the repository runs with Windows path syntax, the index-write boundary refuses any
+path that holds `\`.
+
+### Faithfulness anchor (git for Windows, source read)
+
+git v2.55.0 `read-cache.c` `verify_path_internal`, Windows build:
+
+```c
+if (is_dir_sep(c)) {            /* is_dir_sep('\\') is true on Windows (compat/win32/path-utils.h) */
+inside:
+    ...
+    if (protect_ntfs) {
+#if defined GIT_WINDOWS_NATIVE || defined __CYGWIN__
+        if (c == '\\') return PATH_INVALID;
+#endif
+    ...
+    c = *path++;
+    if ((c == '.' && !verify_dotfile(path, mode)) || is_dir_sep(c)) return PATH_INVALID;
+```
+
+Traced byte by byte:
+
+- `\` mid-component: the bottom read yields `c == '\\'`, `is_dir_sep` sends it to `inside:`,
+  and `c == '\\'` returns `PATH_INVALID`.
+- `\` opening a component, or the whole path: the `inside:` block reads it as the first byte
+  (`c = *path++`), and `is_dir_sep(c)` returns `PATH_INVALID`, whatever `protect_ntfs` says.
+- So with `core.protectNTFS` on (the default), **every** `\` is refused, for every mode.
+  tsgit applies the NTFS protections unconditionally (ADR-978), so the Windows rule is
+  unconditional too. With `protectNTFS=false`, git for Windows admits a mid-component `\` as a
+  separator; tsgit does not model that switch (the existing ADR-978 posture).
+
+Where git runs `verify_path` (source read, v2.55.0):
+
+| git operation | runs `verify_path`? | where |
+|---|---|---|
+| `add`, `mv`, `stash` restore, checkout / `reset` / `read-tree` / merge (unpack-trees, merge-ort) | yes | `add_index_entry_with_check` (`read-cache.c:1287`), `make_cache_entry` (`:854`) |
+| `apply` | yes | `apply.c:4047-4049` |
+| `write-tree` | no | `cache-tree.c` `verify_cache` checks unmerged entries and D/F only |
+| reading the index (`ls-files`, `status`, `write-tree`) | no | `read_index_from` has no path check (pinned on POSIX above, same code) |
+| `archive` | no | `archive.c` has no `verify_path` call |
+
+**Not pinned empirically.** git for Windows cannot run on this darwin host. The matrix below
+is derived from the source; the win-only interop arm (WP3) is its empirical pin, run by CI's
+`win-integration` job on `windows-latest`. If that run disagrees with a row, the design is
+reopened before merge.
+
+| path | mode | git POSIX (pinned above) | git for Windows (source) | tsgit posix rules | tsgit windows rules |
+|---|---|---|---|---|---|
+| `\.git\hooks\post-checkout`, `\.git\config`, `x/\.git\hooks\y` | `100644` | admitted | refused | admitted | refused `backslash` |
+| `x\y`, `a\b\c` | `100644` | admitted | refused | admitted | refused `backslash` |
+| `\gitmod~1`, `\.gitmodules`, `x/\gitmod~1` | `120000` | admitted | refused | admitted | refused `backslash` |
+| `x\gitmod~1` | `120000` | refused | refused | `gitmodules-not-regular` | `backslash` |
+| `a/b`, `gitmod~1/y` | `100644` / `120000` | admitted | admitted | admitted | admitted |
+| `.git/x` | `100644` | refused | refused | `dotgit-alias` | `dotgit-alias` |
+| an index already holding `a\b`, read | — | read | read | read | read (parse stays posix, WD1) |
+
+### Design
+
+#### Domain: two rule sets, one switch
+
+```ts
+// src/domain/path/verify-path.ts
+export type VerifyPathRejection = /* existing members */ | 'backslash';
+
+const BACKSLASH = '\\';
+
+/** git for Windows' `verify_path`: `\` is a directory separator there, and it refuses every one. */
+export const verifyWindowsPath = (
+  path: string,
+  mode: FileMode,
+  pathBytes?: Uint8Array,
+): VerifyPathRejection | undefined =>
+  path.includes(BACKSLASH) ? 'backslash' : verifyPath(path, mode, pathBytes);
+```
+
+```ts
+// src/domain/git-index/path-validator.ts
+type PathVerifier = typeof verifyPath;
+
+export interface IndexPathRules {
+  readonly validateIndexPath: (path: string, offset: number, mode: FileMode, pathBytes?: Uint8Array) => void;
+  readonly validateTreePath: (path: FilePath, mode: FileMode) => void;
+}
+
+const indexPathRulesFor = (verify: PathVerifier): IndexPathRules => { /* today's two bodies, verify injected */ };
+
+export const posixIndexPathRules = indexPathRulesFor(verifyPath);
+export const windowsIndexPathRules = indexPathRulesFor(verifyWindowsPath);
+export const { validateIndexPath, validateTreePath } = posixIndexPathRules;
+```
+
+```ts
+// src/application/primitives/internal/index-path-rules.ts   (mirrors gitPathSyntaxOf)
+export const indexPathRulesOf = (host: { readonly windowsPathSyntax?: boolean }): IndexPathRules =>
+  host.windowsPathSyntax === true ? windowsIndexPathRules : posixIndexPathRules;
+```
+
+- No boolean parameter crosses a function: the flag is read once, in `indexPathRulesOf`,
+  and every site receives a rules value (WD2).
+- The domain stays pure: it exports two values and knows nothing of `Context`.
+- The string test is exact for byte paths. `\` is ASCII, so a lossy view keeps it, and
+  `U+FFFD` never equals it. `validateTreePath` tests the decoded view of an escaped
+  `FilePath` (`indexPathOfEscaped`), which keeps `\` too.
+- `VERIFY_PATH_REASON` (`path-validator.ts:38`) is a total `Record<VerifyPathRejection, string>`,
+  so the compiler forces the new entry: `'backslash': 'backslash rejected under Windows path syntax'`.
+  The reason does not echo the path, as the header requires.
+- The header comment at `path-validator.ts:63-68` ("backslash … deliberately NOT rejected
+  here") gets one more sentence: true for the posix rules; the windows rules refuse it, as
+  git for Windows does.
+
+Where the flag comes from: `Context.windowsPathSyntax` (`src/ports/context.ts:358`). It is set
+by the node runtime (`src/index.node.ts:171`, `src/adapters/node/node-adapter.ts:155`, from
+`nativePolicy.windowsSyntax`). `openRepository` drops it when the caller supplies its own `fs`
+(`hostHooksFor`, `src/repository.ts:599`): a caller's fs reads `\` as a plain byte, so the
+windows rules would be an over-refusal there. The flag means exactly "this fs resolves `\` as
+a separator", which is the threat.
+
+#### Call-site map
+
+`rg -n "validateIndexPath\(|validateTreePath\(|verifyPath\(|isDotGitAlias\(" src` → 21 calls.
+
+| site | mirrors (git) | git `verify_path`? | rules | how the rules arrive |
+|---|---|---|---|---|
+| `src/application/commands/add.ts:836` `renormalizeOne` | `add --renormalize` → `add_index_entry` | yes | windows | `ctx` destructured in scope |
+| `src/application/commands/add.ts:1270` `stageFromStat` | `add` → `add_index_entry` | yes | windows | `ctx` param |
+| `src/application/commands/mv.ts:343` `applyToIndex` | `rename_index_entry_at` → `add_index_entry` | yes | windows | new `rules: IndexPathRules` param; caller `mv` (`:137`) has `ctx` |
+| `src/application/primitives/build-index-from-tree.ts:118` `projectLeaf` | `reset` / `read-tree` → unpack-trees | yes | windows | new param; `buildIndexFromTree(ctx, opts)` (`:128`) derives it, public signature unchanged |
+| `src/application/primitives/apply-changeset.ts:319` `validateChangesetEntry` | checkout → unpack-trees | yes | windows | new param through `validateChangesetPaths` (`:322`); `applyChangesetInScope` (`:815`) has `ctx` |
+| `src/application/commands/stash.ts:671` `restoreUntracked` | `read-tree` + `checkout-index` (`builtin/stash.c:508,519`) | yes | windows | `ctx` param |
+| `src/application/primitives/internal/validate-merge-write-paths.ts:34,51,54,55` | merge-ort / unpack-trees | yes | windows | new `rules` param on `validateMergeWritePaths` (`:27`) and `validateConflictWritePaths` (`:48`); callers `merge.ts:1288`, `merge.ts:1661`, `apply-merge-to-worktree.ts:454` have `ctx` |
+| `src/application/commands/merge.ts:1863` `outcomeWave`, `:1927` `writeOutcomeToTree`; plus the two `validateConflictWritePaths` calls at `:1879` `conflictWave` and `:1957` `writeConflictToTree` | re-checks behind the merge gate | — | WD3 | the two `validateConflictWritePaths` calls need a rules value once it takes one (`posixIndexPathRules` under WD3 (a)) |
+| `src/application/primitives/apply-merge-to-worktree.ts:224` `removeChangedOutcome`, `:251` `removeDisplacedFile` | removals behind the merge gate | no (removal) | WD3 | `ctx` param |
+| `src/application/primitives/internal/submodule-context.ts:74` `deriveSubmoduleContext` | none (tsgit-only; the path becomes the child's work directory) | — | windows | `ctx` param |
+| `src/application/commands/archive.ts:164` `buildEntryStream` | `archive` | no | posix | unchanged (tar/zip member names; nothing written on the host) |
+| `src/application/primitives/synthesize-tree-from-index.ts:90` `indexEntryCheck` | `write-tree` | no | posix | unchanged (must agree with parse, WD1) |
+| `src/domain/git-index/index-parser.ts:128` (via `read-index.ts:147` `parseIndex`) | `read_index_from` | no | posix | unchanged (WD1) |
+| `src/domain/git-index/path-validator.ts:107,115` | — | — | — | become the bodies of `indexPathRulesFor` |
+| `src/domain/working-tree-path.ts:96` `isDotGitAlias` | — | — | — | unchanged; it rejects `\` before the call |
+
+Count by category: 11 index-write calls take the windows rules (add 2, mv 1,
+build-index-from-tree 1, apply-changeset 1, stash 1, validate-merge-write-paths 4,
+submodule-context 1). 3 read-side or no-verify calls stay posix (index-parser,
+synthesize-tree-from-index, archive). 4 merge re-checks and removals are decided by WD3.
+3 are internals (path-validator ×2, working-tree-path).
+
+Existing suppression affected: the `Stryker disable` at `apply-changeset.ts:317` argues that a
+`delete`/`noop` entry already passed "this same validateIndexPath" at parse. Under the windows
+rules that is false: a `delete` of `a\b` from a parsed index would newly throw if the guard
+were mutated. The mutant becomes killable, so the comment goes and a kill test replaces it
+(windows rules, a `delete` entry `a\b`, no throw). That keeps git's behaviour: removing an
+entry does not verify its path.
+
+#### Parsed index (WD1)
+
+git for Windows reads an index holding `a\b` without complaint (`read_index_from` does not
+verify paths). If tsgit refused every `\` at parse on Windows, it could not open a repository
+whose index was written on Linux with a backslash filename. That is a new over-refusal git
+does not have, and it stops every command, `status` included, not only writes. The ADR-978 /
+ADR-1005 read posture refuses aliases at parse; it does not refuse POSIX-legal bytes. So parse
+and `synthesizeTreeFromIndex` keep the posix rules. The windows rule applies only where a path
+enters the index from a tree or the worktree, or is written to the worktree.
+
+The exposure left is the same as git for Windows': an index that already holds `\.git\hooks\x`
+(only another tool can write one) is read, and `checkout-index`-style writes from it are not
+re-verified by git either.
+
+#### Ordering
+
+`verifyWindowsPath` tests `\` before every other rule, so `../a\b` reports `backslash`, not
+`dotdot-segment`. git returns one `invalid path` for every rule, so the order is not
+observable against git. It is observable in `INVALID_INDEX_ENTRY.data.reason` (WD4).
+
+#### Bundle size
+
+Estimate, gzip, Full library row: about 150-300 B. That covers the wrapper and reason string
+(~60 B), the rules factory and two values (~80 B), `indexPathRulesOf` (~50 B), and about 10
+threaded call sites. The previous domain-only change on this branch measured 242 B
+(`38124a7f`). The Full library row has about 97 B of headroom, so it will fail. Other rows that
+bundle `add.ts` or `path-validator.ts` (`Command (add)`, `Primitives`, the facades) may fail too.
+Measure with `npx size-limit --json` on clean builds (`rm -rf dist .wireit` first). Raise only
+the failing rows, to measured + ~100 B, with a row appended to
+`docs/design/bundle-size-optimization.md` in the `38124a7f` format, as its own
+`chore(size)` commit.
+
+#### Public API
+
+No exported type changes. `reports/api.json` names none of `VerifyPathRejection`,
+`validateIndexPath` or `IndexPathRules`. It names `windowsPathSyntax` (unchanged) and
+`applyChangeset`, `buildIndexFromTree`, `synthesizeTreeFromIndex`, `parseIndex`, `readIndex`,
+whose signatures stay as they are: the rules are derived from the `ctx` they already take. No
+regeneration is expected. Confirm with the pre-push `api.json` check.
+
+### Parts
+
+#### WP1 — domain: windows rules
+
+- **Files:** `src/domain/path/verify-path.ts` (`VerifyPathRejection` `:6-15`, new
+  `verifyWindowsPath` after `verifyPath` `:277`); `src/domain/git-index/path-validator.ts`
+  (`VERIFY_PATH_REASON` `:38`, header `:63-68`, `validateIndexPath` `:97`, `validateTreePath`
+  `:113`, new `IndexPathRules`, `indexPathRulesFor`, `posixIndexPathRules`,
+  `windowsIndexPathRules`).
+- **Unit tests:** `test/unit/domain/path/verify-path.test.ts`, a new
+  `describe('Given the Windows rules')` table with the rows of the matrix above
+  (`verifyWindowsPath`), each with its posix verdict alongside: `\.git\hooks\post-checkout`
+  (`100644`), `x\y`, `\gitmod~1` (`120000`), `x\gitmod~1` (`120000` → `backslash`), `a/b`
+  admitted, `.git/x` → `dotgit-alias`, `../a\b` → `backslash`.
+  `test/unit/domain/git-index/path-validator.test.ts`: `windowsIndexPathRules.validateIndexPath`
+  and `.validateTreePath` throw `INVALID_INDEX_ENTRY` with
+  `reason: 'backslash rejected under Windows path syntax'` and the given offset /
+  `NO_PARSER_OFFSET`; `posixIndexPathRules` admits the same paths. Assert `.data` with
+  try/catch, not `toThrow(Class)`.
+- **Property tests:** `test/unit/domain/path/verify-path.properties.test.ts`:
+  "for any path holding `\` and any mode, `verifyWindowsPath` is `'backslash'`" and
+  "for any `\`-free path and any mode, `verifyWindowsPath === verifyPath`" (composition lens).
+- **Mutation focus:** the `includes` operand (the `x\y` row versus the `a/b` row), the
+  `'backslash'` literal (asserted reason), and the factory's injected verifier (posix versus
+  windows on the same `\.git\config` row).
+
+#### WP2 — application: thread the rules
+
+- **New:** `src/application/primitives/internal/index-path-rules.ts` (`indexPathRulesOf`),
+  test `test/unit/application/primitives/internal/index-path-rules.test.ts` with three rows:
+  `true` → windows, `false` → posix, absent → posix.
+- **Sites:** the "windows" rows of the call-site map, plus WD3's choice.
+- **Tests:** one twin per threaded site, beside the existing hostile-path refusal test in the
+  same file. Context `{ ...ctx, windowsPathSyntax: true }` on the memory adapter (precedent:
+  `test/unit/application/primitives/object-store.test.ts:949-951`). The memory fs treats `\`
+  as a plain byte, so the refusal is the rule alone. Each test asserts the reason and that the
+  index and worktree are untouched. Files:
+  `test/unit/application/commands/add.test.ts`, `mv.test.ts`, `stash.test.ts`, `merge.test.ts`;
+  `test/unit/application/primitives/build-index-from-tree.test.ts` (fixture
+  `buildSeededContext`), `apply-changeset.test.ts` (plus the `delete` kill test above),
+  `apply-merge-to-worktree.test.ts`, `internal/validate-merge-write-paths.test.ts`,
+  `internal/submodule-context.test.ts`. Plus one posix-context control row per file where none
+  exists: `x\y` admitted.
+
+#### WP3 — interop: pin git for Windows on CI
+
+- **New file:** `test/integration/win-only/backslash-path-windows-interop.test.ts`, which runs
+  in the `win-integration` vitest project (`npm run test:win-integration`, CI job
+  `win-integration` on `windows-latest`, which ships git for Windows). Same `@proves` header
+  and `interop-helpers.js` imports as `gitmodules-symlink-alias-interop.test.ts`, the same
+  scrubbed env, and a mktemp repo.
+- **Rows:** build a commit with `git mktree` (it refuses only `/` in a name, so a `\` name is
+  accepted) holding `\.git\hooks\post-checkout` (`100644`), `x\y` (`100644`), `\gitmod~1`
+  (`120000`), and the control `a/b`. For each, compare `git reset -q <c>` (expected exit 128,
+  `invalid path`) with tsgit `repo.reset` mixed through the node adapter, which has
+  `windowsPathSyntax: true` on win32 (expected `INVALID_INDEX_ENTRY`, reason `backslash …`).
+  Assert that `<worktree>\.git\hooks\post-checkout` does not exist after either.
+- **Parsed-index row:** write `a\b` with `-c core.protectNTFS=false update-index --index-info`
+  (with the switch off, git for Windows admits a mid-component `\`). Then git `ls-files` exits
+  0 and tsgit `readIndex` succeeds (WD1).
+- **Gate:** this is the only empirical proof of the Windows column. Run it on CI before
+  integrate, and read its row output, not only the job status.
+
+### Out of scope (proven by source read, not acted on)
+
+- git for Windows also refuses a drive prefix (`has_dos_drive_prefix`, `read-cache.c:993`) and
+  names `is_valid_win32_path` rejects (`compat/mingw.c:3403`: reserved device names, a
+  trailing `.` or space, `<>:"|?*`). tsgit's `verifyPath` admits `c:x` (no rule at
+  `verify-path.ts:282-290`). To prove the impact: a win-only test that checks out a tree
+  holding `c:x`.
+
+### Decision candidates (addendum)
+
+- **WD1 — Does the windows rule apply when the index is parsed?** (a) No: parse and
+  `synthesizeTreeFromIndex` keep the posix rules, and only index-write and worktree-write sites
+  take the windows rules; (b) yes, refuse every `\` at parse on Windows; (c) parse admits, but
+  `status` / `checkout-index`-style writes from a parsed entry re-check with the windows rules.
+  **Recommend (a):** git for Windows reads such an index. (b) is a new over-refusal that blocks
+  even `status` on a repository written on Linux. (c) adds checks git does not have, on read
+  paths that are not part of the reported attack, which comes from trees.
+- **WD2 — API shape.** (a) Domain strategy values `posixIndexPathRules` /
+  `windowsIndexPathRules` (an `IndexPathRules` interface), chosen once by `indexPathRulesOf(ctx)`,
+  which mirrors `gitPathSyntaxOf`; (b) an `indexPathRules` member on `GitPathSyntax`, so sites
+  write `gitPathSyntaxOf(ctx).indexPathRules`; (c) a 4th positional `syntax: 'posix' | 'windows'`
+  argument on `verifyPath` / `validateIndexPath`.
+  **Recommend (a):** no boolean or tag parameter, the domain stays free of `Context`, and the
+  existing `validateIndexPath` / `validateTreePath` names stay as the posix rules, so the three
+  posix sites do not change. (b) mixes host-path parsing with index policy and adds a Demeter
+  chain. (c) needs an `undefined` placeholder for `pathBytes` at four sites, and the tag is a
+  primitive.
+- **WD3 — The merge re-checks and removals behind the merge gate** (`merge.ts:1863,1927,1957`,
+  `apply-merge-to-worktree.ts:224,251`). (a) Leave them on the posix rules: every path they see
+  already passed `validateMergeWritePaths` with the windows rules (`merge.ts:1288,1661`,
+  `apply-merge-to-worktree.ts:454`); (b) thread the windows rules into all of them, for
+  uniform defence in depth (5 more parameters, more bytes); (c) like (a), but also exempt
+  `resolved-deleted` outcomes from the windows rules in the gate, since git does not verify a
+  removal.
+  Under (a), `merge.ts:1879,1957` pass `posixIndexPathRules` to `validateConflictWritePaths`.
+  **Recommend (a):** the gate already refuses the whole set before the first write, so (b)
+  adds bytes for no new refusal. (c) would let a merge on Windows delete through a `\` path
+  (`\.git\config` → `.git/config`), and tsgit already validates removals where git does not
+  (the `REGULAR` stand-in). The planner must confirm that every `removeChangedOutcome` /
+  `removeDisplacedFile` call follows a gate call; if one does not, that site takes the windows
+  rules.
+- **WD4 — Rejection precedence.** (a) `backslash` first, so `verifyWindowsPath` wraps
+  `verifyPath`; (b) `\` tested per component inside `findComponentRejection`, in git's
+  left-to-right order (`../a\b` → `dotdot-segment`); (c) `\` tested last, after the posix rules.
+  **Recommend (a):** git's verdict is one `invalid path` for every rule, so the order is not
+  git-observable. (a) is one scan and the smallest bundle, and it keeps `verifyPath` unchanged.
+- **WD5 — The win-only interop arm.** (a) Add it (WP3) as the empirical pin, gated on CI;
+  (b) unit tests only, citing the source read; (c) add it, but run it only when someone asks.
+  **Recommend (a):** faithfulness rules forbid designing from a source read alone, and CI's
+  `windows-latest` runner is the only git for Windows available. The cost is one file in an
+  existing project.
+
+### Self-review (addendum, 2 passes, converged)
+
+- Pass 1 traced the component-leading `\` through git's Windows loop. It is refused by
+  `is_dir_sep(c)` after the `inside:` read, not by the `c == '\\'` arm. So "every `\`" holds
+  for `\gitmod~1` too, which Part 2 admits on POSIX.
+- Pass 1 found that the `apply-changeset.ts:317` equivalence argument breaks under split rules,
+  and added the kill test.
+- Pass 2 checked that `windowsPathSyntax` is absent when the caller supplies its own fs
+  (`hostHooksFor`), so a sandboxed fs on a Windows host keeps the posix rules. That is correct,
+  because that fs does not split on `\`.
+- Pass 2 checked byte-path exactness (`\` is ASCII, and the lossy view and the escaped view
+  both keep it) and that no public signature changes.
