@@ -342,7 +342,11 @@ done
 # merge/checkout gaps folded with them (file/directory conflicts, emptied
 # directory pruning, the staged-only cherry-pick check). Measured rounded up to
 # the next KiB plus 8 KiB of review headroom.
-SIZE_CAP=$((1423 * 1024))
+# Raised 1423 -> 1424 KiB by the add directory/file and conflict-stage work:
+# the measured pack landed at 1 457 786 B, 634 B over the old cap, attributable
+# to the directory/file replacement rule, the resolve-undo encoder and merge,
+# and the unmerged-path pathspec predicates. Measured rounded up to the next KiB.
+SIZE_CAP=$((1424 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
