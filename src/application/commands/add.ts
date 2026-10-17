@@ -971,11 +971,11 @@ const sortedResult = (
     modified,
     eolNotices,
   }: Pick<ReturnType<typeof tallyWalkOutcomes>, 'added' | 'modified' | 'eolNotices'>,
-  removed: FilePath[],
+  removed: ReadonlyArray<FilePath>,
 ): AddResult => ({
   added: [...added].sort(),
   modified: [...modified].sort(),
-  removed: removed.sort(),
+  removed: [...removed].sort(),
   eolNotices,
 });
 
