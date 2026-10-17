@@ -4083,3 +4083,35 @@ describe('add pathspecs match tracked entries on the escaped view', () => {
     });
   });
 });
+
+describe('add — a literal whose probe lstat fails for a reason other than a missing path', () => {
+  describe('Given an lstat that throws PERMISSION_DENIED for the literal', () => {
+    describe('When add names it', () => {
+      it('Then PERMISSION_DENIED propagates', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'a.txt': 'a' });
+        const baseLstat = ctx.fs.lstat;
+        const deniedCtx = {
+          ...ctx,
+          fs: new Proxy(ctx.fs, {
+            get(target, prop, receiver) {
+              if (prop === 'lstat') {
+                return async (path: string) => {
+                  if (path.endsWith('/a.txt')) throw permissionDenied(path);
+                  return baseLstat(path);
+                };
+              }
+              return Reflect.get(target, prop, receiver);
+            },
+          }),
+        };
+
+        // Act
+        const caught = await expectError(() => add(deniedCtx, ['a.txt']), 'PERMISSION_DENIED');
+
+        // Assert
+        expect(caught.data).toMatchObject({ code: 'PERMISSION_DENIED' });
+      });
+    });
+  });
+});

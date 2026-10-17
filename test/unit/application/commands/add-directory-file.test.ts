@@ -560,6 +560,93 @@ describe('add — a tracked directory replaced by a non-directory', () => {
   });
 });
 
+describe('add — a path beneath a regular file that replaced a tracked directory', () => {
+  describe('Given a tracked directory replaced by a regular file', () => {
+    describe('When add names a path beneath the file', () => {
+      it('Then the removal of that path is staged', async () => {
+        // Arrange
+        const ctx = await trackedTree();
+        await replaceDirectoryWithFile(ctx, 'a');
+
+        // Act
+        const sut = await add(ctx, ['a/b']);
+
+        // Assert
+        expect(sut.removed).toEqual(['a/b']);
+        expect(await indexPaths(ctx)).toEqual([
+          'a/c@0:100644',
+          'a/x/y@0:100644',
+          'real/b@0:100644',
+          'top@0:100644',
+        ]);
+      });
+    });
+
+    describe('When add names the file and a path beneath it', () => {
+      it('Then the file is added and every entry beneath it is removed', async () => {
+        // Arrange
+        const ctx = await trackedTree();
+        await replaceDirectoryWithFile(ctx, 'a');
+
+        // Act
+        const sut = await add(ctx, ['a', 'a/b']);
+
+        // Assert
+        expect(sut.added).toEqual(['a']);
+        expect(sut.removed).toEqual(['a/b', 'a/c', 'a/x/y']);
+      });
+    });
+  });
+
+  describe('Given a file unmerged at stages 1, 2 and 3 over stage-0 entries a/b and a/c', () => {
+    describe('When add names a/b then the file', () => {
+      it('Then only a/b is reported removed and the stages are recorded', async () => {
+        // Arrange
+        const ctx = await trackedTree();
+        await seedIndex(ctx, [
+          { path: 'a', text: 'base', stage: 1 },
+          { path: 'a', text: 'ours', stage: 2 },
+          { path: 'a', text: 'theirs', stage: 3 },
+          { path: 'a/b', text: 'b' },
+          { path: 'a/c', text: 'c' },
+          { path: 'real/b', text: 'rb' },
+          { path: 'top', text: 'top' },
+        ]);
+        await replaceDirectoryWithFile(ctx, 'a');
+
+        // Act
+        const sut = await add(ctx, ['a/b', 'a']);
+
+        // Assert
+        expect(sut.removed).toEqual(['a/b']);
+        expect((await indexPaths(ctx)).map((line) => line.split(':')[0])).toEqual([
+          'a@0',
+          'real/b@0',
+          'top@0',
+        ]);
+        expect(await recordedStages(ctx)).toEqual([['a', [1, 2, 3]]]);
+      });
+    });
+  });
+
+  describe('Given a renormalize add of a path beneath a regular file', () => {
+    describe.each([['a/b'], ['a']])('When it names %s', (literal) => {
+      it('Then it is refused as not a directory', async () => {
+        // Arrange
+        const ctx = await trackedTree();
+        await replaceDirectoryWithFile(ctx, 'a');
+        const code = await add(ctx, [literal], { renormalize: true }).then(
+          () => undefined,
+          (err: { data: { code: string } }) => err.data.code,
+        );
+
+        // Assert
+        expect(code).toBe('NOT_A_DIRECTORY');
+      });
+    });
+  });
+});
+
 describe('add — a directory replaced a tracked file or symlink', () => {
   describe.each([
     ['a tracked file', trackedFile],

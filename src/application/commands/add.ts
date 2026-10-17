@@ -472,11 +472,26 @@ const allLiteralsAreFiles = async (
   if (literals.length === 0) return false;
   for (const path of literals) {
     if (namesDirectoryOnly(path)) return false;
-    const stat = await lstatOrMissing(ctx, path);
+    const stat = await lstatOrBeneathFile(ctx, path);
     if (stat === undefined) return false;
     if (stat.isDirectory && !stat.isSymbolicLink) return false;
   }
   return true;
+};
+
+const NOT_A_DIRECTORY = 'NOT_A_DIRECTORY';
+
+/** A literal beneath a regular file is routed to the pathspec walk, which stages its removal. */
+const lstatOrBeneathFile = async (
+  ctx: Context,
+  path: FilePath,
+): Promise<Awaited<ReturnType<typeof lstatOrMissing>>> => {
+  try {
+    return await lstatOrMissing(ctx, path);
+  } catch (err) {
+    if (err instanceof TsgitError && err.data.code === NOT_A_DIRECTORY) return undefined;
+    throw err;
+  }
 };
 
 /**

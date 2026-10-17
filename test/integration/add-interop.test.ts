@@ -254,6 +254,29 @@ const REPLACED_ROWS: ReadonlyArray<ReplacedRow> = [
     removed: ['a/b', 'a/c', 'a/x/y'],
     modified: ['a'],
   },
+  {
+    title: 'a regular file named a, staged by naming a/b',
+    replacement: 'file',
+    paths: ['a/b'],
+    removed: ['a/b'],
+  },
+  {
+    title: 'a regular file named a, staged by naming a and a/b',
+    replacement: 'file',
+    paths: ['a', 'a/b'],
+    removed: ['a/b', 'a/c', 'a/x/y'],
+  },
+  {
+    title: 'a regular file named a that was unmerged over a/b and a/c, staged by naming a/b and a',
+    replacement: 'file',
+    paths: ['a/b', 'a'],
+    prepare: (dir) => {
+      runGit(['-C', dir, 'update-index', '--force-remove', 'a/x/y']);
+      unmergedAtDirectory(dir);
+    },
+    removed: ['a/b'],
+    modified: ['a'],
+  },
 ];
 
 interface MirrorRow {
