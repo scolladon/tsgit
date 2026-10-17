@@ -404,6 +404,16 @@ const insertedBy = (
     .map(({ path }) => ({ path, previous: existing.get(keyOfPath(path)) }))
     .filter(({ previous }) => previous === undefined || previous.flags.stage !== 0);
 
+const appendTo = (
+  groups: Map<IndexPathKey, IndexEntry[]>,
+  key: IndexPathKey,
+  entry: IndexEntry,
+): void => {
+  const group = groups.get(key);
+  if (group === undefined) groups.set(key, [entry]);
+  else group.push(entry);
+};
+
 /** Every stage of each path beneath `path`, grouped by path. */
 const stagesBeneath = (
   sorted: ReadonlyArray<IndexEntry>,
@@ -412,7 +422,7 @@ const stagesBeneath = (
   const beneath = new Map<IndexPathKey, IndexEntry[]>();
   for (const entry of entriesBeneath(sorted, path)) {
     const key = indexPathKey(entry);
-    beneath.set(key, [...(beneath.get(key) ?? []), entry]);
+    appendTo(beneath, key, entry);
   }
   return beneath;
 };
@@ -1069,7 +1079,7 @@ const readExistingEntries = async (ctx: Context): Promise<ExistingIndexState> =>
     out.set(key, entry);
     if (entry.flags.stage === 0) continue;
     unmerged.push(entry);
-    unmergedStages.set(key, [...(unmergedStages.get(key) ?? []), entry]);
+    appendTo(unmergedStages, key, entry);
   }
   const indexRules = new Map(indexRuleEntries(unmerged).map((entry) => [entry.path, entry]));
   return { entries: out, unmergedStages, sorted: entries, indexMtime, indexRules };
