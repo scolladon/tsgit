@@ -584,3 +584,12 @@ is unchanged. The `Command (add)` row had 41 B of headroom on `main`.
 
 The npm tarball cap moved 1423 → 1424 KiB (measured pack 1 457 786 B); its attribution lives in
 `tooling/verify-tarball.sh`'s cap block.
+
+## Size-limit raise — `.gitmodules` symlink aliases behind a backslash
+
+Measured with `npx size-limit --json` on clean builds, gzip: `main` at `785fadfc`, the branch after
+the implementation phase. Only the failing row is raised, to its measurement plus about 100 B.
+
+| Row | main | measured | old limit | new limit | Attributable to |
+|---|--:|--:|--:|--:|---|
+| Full library | 394 361 B | 394 603 B | 394.5 kB | 394.7 kB | the `.gitmodules` symlink check's whole-path NTFS scan and the `.git` scan's component-leading backslash skip, both in the domain chunk |

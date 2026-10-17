@@ -374,7 +374,7 @@
   {
     "name": "Full library",
     "path": "dist/esm/**/*.js",
-    "limit": "394.5 kB",
+    "limit": "394.7 kB",
     "gzip": true
   },
   {
