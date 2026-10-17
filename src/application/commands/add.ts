@@ -236,7 +236,8 @@ const addLiteralOnly = async (
   const lock = await acquireIndexLock(ctx);
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
-    const { indexRules, unmergedStages, sorted, ...state } = await readExistingEntries(ctx);
+    const { indexRules, unmergedStages, stageZeroBeside, sorted, ...state } =
+      await readExistingEntries(ctx);
     const staging = { ctx, scope: { ...scope, indexRules }, ...state, ensurePromisorConfigValid };
     const { remaining, restagedPaths, ...result } = await stageLiteralsOver(
       staging,
@@ -246,7 +247,7 @@ const addLiteralOnly = async (
     await commitIfChanged(
       lock,
       sorted.length,
-      withEveryStage(remaining, unmergedStages),
+      withEveryStage(remaining, unmergedStages, stageZeroBeside),
       resolutionOptions(restagedPaths, remaining, unmergedStages),
     );
     return result;
@@ -669,7 +670,7 @@ const addByPathspec = async (
     await commitIfChanged(
       lock,
       staged.sorted.length,
-      withEveryStage(remaining, staged.unmergedStages),
+      withEveryStage(remaining, staged.unmergedStages, staged.stageZeroBeside),
       resolutionOptions(restagedPaths, remaining, staged.unmergedStages),
     );
     return {
@@ -815,12 +816,14 @@ const stageIgnoredWalk = async (
 ): Promise<{
   readonly existing: ReadonlyMap<IndexPathKey, IndexEntry>;
   readonly unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>;
+  readonly stageZeroBeside: ReadonlyMap<IndexPathKey, IndexEntry>;
   readonly sorted: ReadonlyArray<IndexEntry>;
   readonly outcomes: ReadonlyArray<WalkOutcome>;
 }> => {
   const {
     entries: existing,
     unmergedStages,
+    stageZeroBeside,
     sorted,
     indexMtime,
     indexRules,
@@ -835,7 +838,7 @@ const stageIgnoredWalk = async (
     indexMtime,
     ensurePromisorConfigValid,
   );
-  return { existing, unmergedStages, sorted, outcomes };
+  return { existing, unmergedStages, stageZeroBeside, sorted, outcomes };
 };
 
 /**
@@ -919,6 +922,7 @@ export const addAll = async (
     const {
       entries: existing,
       unmergedStages,
+      stageZeroBeside,
       sorted,
       indexMtime,
       indexRules,
@@ -957,7 +961,7 @@ export const addAll = async (
     await commitIfChanged(
       lock,
       sorted.length,
-      withEveryStage(remaining, unmergedStages),
+      withEveryStage(remaining, unmergedStages, stageZeroBeside),
       resolutionOptions(restagedPathsOf(outcomes, existing), remaining, unmergedStages),
     );
     return { added, modified, removed, eolNotices: noticesOf(outcomes) };
@@ -1063,6 +1067,8 @@ interface ExistingIndexState {
   readonly entries: ReadonlyMap<IndexPathKey, IndexEntry>;
   /** Every stage of every unmerged path, in index order. */
   readonly unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>;
+  /** A stage-0 entry the index holds beside the conflict stages of the same path. */
+  readonly stageZeroBeside: ReadonlyMap<IndexPathKey, IndexEntry>;
   /** The entries as read — one per stage, so its length is what the index holds. */
   readonly sorted: ReadonlyArray<IndexEntry>;
   readonly indexMtime: IndexMtime | undefined;
@@ -1074,15 +1080,20 @@ const readExistingEntries = async (ctx: Context): Promise<ExistingIndexState> =>
   const out = new Map<IndexPathKey, IndexEntry>();
   const unmerged: IndexEntry[] = [];
   const unmergedStages = new Map<IndexPathKey, IndexEntry[]>();
+  const stageZero = new Map<IndexPathKey, IndexEntry>();
   for (const entry of entries) {
     const key = indexPathKey(entry);
     out.set(key, entry);
-    if (entry.flags.stage === 0) continue;
+    if (entry.flags.stage === 0) {
+      stageZero.set(key, entry);
+      continue;
+    }
     unmerged.push(entry);
     appendTo(unmergedStages, key, entry);
   }
   const indexRules = new Map(indexRuleEntries(unmerged).map((entry) => [entry.path, entry]));
-  return { entries: out, unmergedStages, sorted: entries, indexMtime, indexRules };
+  const stageZeroBeside = new Map([...stageZero].filter(([key]) => unmergedStages.has(key)));
+  return { entries: out, unmergedStages, stageZeroBeside, sorted: entries, indexMtime, indexRules };
 };
 
 /** An unmerged path stays so when the add left it unstaged: it is neither removed nor staged. */
@@ -1091,15 +1102,22 @@ const stillUnmerged = (
   key: IndexPathKey,
 ): boolean => (entries.get(key)?.flags.stage ?? 0) !== 0;
 
-/** The entries to write: what the add staged, plus every stage of the unmerged paths it left alone. */
+/**
+ * The entries to write: what the add staged, plus every stage of the unmerged paths it left
+ * alone — and the stage-0 entry that sat beside them.
+ */
 const withEveryStage = (
   entries: ReadonlyMap<IndexPathKey, IndexEntry>,
   unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
+  stageZeroBeside: ReadonlyMap<IndexPathKey, IndexEntry>,
 ): IndexEntry[] => {
   if (unmergedStages.size === 0) return Array.from(entries.values());
   const out = Array.from(entries.values()).filter((entry) => entry.flags.stage === 0);
   for (const [key, stages] of unmergedStages) {
-    if (stillUnmerged(entries, key)) out.push(...stages);
+    if (!stillUnmerged(entries, key)) continue;
+    const beside = stageZeroBeside.get(key);
+    if (beside !== undefined) out.push(beside);
+    out.push(...stages);
   }
   return out;
 };

@@ -647,3 +647,28 @@ describe('Given an unmerged path an exclusion still shields', () => {
     });
   });
 });
+
+describe('Given a path held at stage 0 and at the conflict stages 1 and 2', () => {
+  describe('When add stages an unrelated path', () => {
+    it('Then the stage 0 entry is kept beside the conflict stages', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx, { workingTree: { z: 'z-new' } });
+      await seedIndex(ctx, [
+        { path: 'c', text: 'c-zero', stage: 0 },
+        { path: 'c', text: 'c-ours', stage: 1 },
+        { path: 'c', text: 'c-theirs', stage: 2 },
+      ]);
+      const before = await stagesOf(ctx);
+      const sut = add;
+
+      // Act
+      await sut(ctx, ['z']);
+      const result = await stagesOf(ctx);
+
+      // Assert
+      expect(fNames(result, 'c')).toEqual(fNames(before, 'c'));
+      expect(stagesAt(result, 'z')).toEqual(['0']);
+    });
+  });
+});
