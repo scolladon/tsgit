@@ -11,7 +11,7 @@
  * @proves
  *   surface:        repo.reset
  *   bucket:         cross-tool-interop
- *   unique:         .gitmodules symlink aliases behind a backslash are refused like git
+ *   unique:         .gitmodules symlink and .git aliases behind a backslash are refused like git
  *   interopSurface: reset, checkout, add, update-index, ls-files
  */
 import { mkdirSync, symlinkSync } from 'node:fs';
@@ -34,6 +34,7 @@ const SETUP_TIMEOUT = 60_000;
 const ROW_TIMEOUT = 60_000;
 const ZWNJ = String.fromCodePoint(0x200c);
 const SYMLINK_MODE = '120000';
+const REGULAR_MODE = '100644';
 const GIT_REFUSED_EXIT = 128;
 const GIT_CHECKOUT_REFUSED_EXIT = 1;
 const INVALID_INDEX_ENTRY = 'INVALID_INDEX_ENTRY';
@@ -135,6 +136,11 @@ const PROTECTION_INDEPENDENT_ROWS = ROWS.filter(
   (row) => !row.path.split('/').some((component) => component.toLowerCase() === '.gitmodules'),
 );
 
+const DOTGIT_BACKSLASH_ROWS: ReadonlyArray<Row> = [
+  ...admitted(['\\.git', '\\git~1', 'x/\\.git', '\\.git\\y', 'x/\\.git/y', '\\.git:s']),
+  ...refused(['\\\\.git', 'x\\.git']),
+];
+
 const BACKSLASH_FREE_ROWS = ROWS.filter((row) => !row.path.includes('\\'));
 
 // git on Windows reads `\` as a directory separator, so the pinned verdicts are POSIX git's.
@@ -171,19 +177,23 @@ const captureError = async (action: () => Promise<unknown>): Promise<unknown> =>
   return undefined;
 };
 
-const treeLinesOf = (blob: string, name: string): string => `${SYMLINK_MODE} blob ${blob}\t${name}`;
+const treeLinesOf = (blob: string, name: string, mode: string): string =>
+  `${mode} blob ${blob}\t${name}`;
 
 /** Builds the nested trees for `target` bottom-up and commits the root tree. */
-const buildSymlinkCommit = (dir: string, target: string): string => {
+const buildLeafCommit = (dir: string, target: string, mode: string): string => {
   const blob = gitOut(dir, ['hash-object', '-w', '--stdin'], 'target');
   const components = target.split('/');
   const leaf = components.pop() as string;
-  let tree = gitOut(dir, ['mktree'], `${treeLinesOf(blob, leaf)}\n`);
+  let tree = gitOut(dir, ['mktree'], `${treeLinesOf(blob, leaf, mode)}\n`);
   for (const name of components.reverse()) {
     tree = gitOut(dir, ['mktree'], `040000 tree ${tree}\t${name}\n`);
   }
   return gitOut(dir, ['commit-tree', tree, '-m', 'symlink']);
 };
+
+const buildSymlinkCommit = (dir: string, target: string): string =>
+  buildLeafCommit(dir, target, SYMLINK_MODE);
 
 const initPeerDir = (dir: string): void => {
   runGit(['init', '-q', '-b', 'main', dir]);
@@ -358,6 +368,69 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             expect(errorReasonOf(oursError)).toBe(
               gitRefuses ? GITMODULES_SYMLINK_REASON : undefined,
             );
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    });
+
+    describe('Given a regular file whose component opens with a backslash', () => {
+      describe('When the tree is loaded into the index with reset', () => {
+        it.each(DOTGIT_BACKSLASH_ROWS)(
+          'Then $path is refused by tsgit iff refused by git ($gitRefuses)',
+          async ({ path: target, gitRefuses }) => {
+            // Arrange
+            const { peerDir, oursDir, repo } = shared;
+            const peerSeed = gitOut(peerDir, ['rev-parse', 'HEAD']);
+            const oursSeed = gitOut(oursDir, ['rev-parse', 'HEAD']);
+            const peerCommit = buildLeafCommit(peerDir, target, REGULAR_MODE);
+            const oursCommit = buildLeafCommit(oursDir, target, REGULAR_MODE);
+
+            // Act
+            const gitResult = gitIn(peerDir, ['reset', '-q', peerCommit]);
+            const oursError = await captureError(() =>
+              repo.reset({ mode: 'mixed', rev: oursCommit }),
+            );
+
+            // Assert
+            expect(gitResult.exitCode).toBe(gitRefuses ? GIT_REFUSED_EXIT : 0);
+            expect(errorCodeOf(oursError)).toBe(gitRefuses ? INVALID_INDEX_ENTRY : undefined);
+            expect(listIndex(oursDir)).toStrictEqual(listIndex(peerDir));
+            expect(listIndex(peerDir)).toStrictEqual(gitRefuses ? [SEED_FILE] : [target]);
+
+            // Cleanup — back to the seed commit for the next row
+            gitOut(peerDir, ['reset', '-q', peerSeed]);
+            await repo.reset({ mode: 'mixed', rev: oursSeed });
+          },
+          ROW_TIMEOUT,
+        );
+      });
+
+      describe('When tsgit reads an index git wrote with the file staged', () => {
+        it.each(
+          DOTGIT_BACKSLASH_ROWS.filter((row) => !row.gitRefuses).map((row, index) => ({
+            ...row,
+            index,
+          })),
+        )(
+          'Then $path is read back',
+          async ({ path: target, index }) => {
+            // Arrange
+            const { oursDir, repo } = await buildSeededPair(root, `dg-${slugOf(index)}`);
+            const blob = gitOut(oursDir, ['hash-object', '-w', '--stdin'], 'target');
+            gitOut(
+              oursDir,
+              ['update-index', '--add', '--index-info'],
+              `${REGULAR_MODE} ${blob}\t${target}\n`,
+            );
+
+            // Act
+            const listing = listIndex(oursDir);
+            const oursError = await captureError(() => repo.primitives.readIndex());
+
+            // Assert
+            expect(listing).toContain(target);
+            expect(errorCodeOf(oursError)).toBeUndefined();
           },
           ROW_TIMEOUT,
         );

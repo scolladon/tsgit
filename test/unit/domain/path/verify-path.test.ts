@@ -704,6 +704,35 @@ describe('verifyPath', () => {
       });
     });
   });
+
+  describe("Given a regular path whose component opens with a backslash, from git's pinned verify_path matrix", () => {
+    describe('When verified at 100644', () => {
+      it.each(['\\.git', '\\git~1', 'x/\\.git', '\\.git\\y', 'x/\\.git/y', '\\.git:s'])(
+        'Then %j is admitted',
+        (path) => {
+          // Arrange
+          const mode = FILE_MODE.REGULAR;
+
+          // Act
+          const result = verifyPath(path, mode);
+
+          // Assert
+          expect(result).toBeUndefined();
+        },
+      );
+
+      it.each(['\\\\.git', 'x\\.git'])('Then %j is refused as dotgit-alias', (path) => {
+        // Arrange
+        const mode = FILE_MODE.REGULAR;
+
+        // Act
+        const result = verifyPath(path, mode);
+
+        // Assert
+        expect(result).toBe('dotgit-alias');
+      });
+    });
+  });
 });
 
 describe('isDotGitAlias', () => {

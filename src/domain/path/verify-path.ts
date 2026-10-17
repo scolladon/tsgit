@@ -167,14 +167,21 @@ const isObviouslyNotAnAlias = (component: string): boolean => {
 
 // git runs the NTFS scan per backslash part (`.git\config` reads as two parts,
 // `.git` and `config`) but hands the HFS check the whole `/` component, so an
-// HFS lookalike only matches when the component itself is the alias.
+// HFS lookalike only matches when the component itself is the alias. git consumes a
+// component's first byte untested, so a backslash there opens no part of its own; the
+// leading empty part it leaves can never match an alias either.
+const ntfsParts = (component: string): readonly string[] => {
+  const parts = component.split('\\');
+  return component.startsWith('\\') ? parts.slice(2) : parts;
+};
+
 const matchAliasComponent = (
   component: string,
   componentBytes?: Uint8Array,
 ): VerifyPathRejection | undefined => {
   // Stryker disable next-line ConditionalExpression: equivalent — a fast path: a component it admits is all-ASCII, backslash-free and opens with neither . nor g, so both the NTFS and the HFS arms below return undefined for it.
   if (isObviouslyNotAnAlias(component)) return undefined;
-  for (const part of component.split('\\')) {
+  for (const part of ntfsParts(component)) {
     const reason = matchNtfsPart(part);
     if (reason !== undefined) return reason;
   }
