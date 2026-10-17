@@ -18,7 +18,7 @@ import { mkdirSync, symlinkSync } from 'node:fs';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
@@ -241,11 +241,22 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
   () => {
     let root: string;
     let shared: RepoPair;
+    let peerSeed: string;
+    let oursSeed: string;
 
     beforeAll(async () => {
       root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-interop-symlink-alias-')));
       shared = await buildSeededPair(root, 'shared');
+      peerSeed = gitOut(shared.peerDir, ['rev-parse', 'HEAD']);
+      oursSeed = gitOut(shared.oursDir, ['rev-parse', 'HEAD']);
     }, SETUP_TIMEOUT);
+
+    // Rows share one repo pair: rewind it even when a row fails, so one defect
+    // cannot cascade into every later row.
+    const rewindShared = async (): Promise<void> => {
+      gitOut(shared.peerDir, ['reset', '-q', peerSeed]);
+      await shared.repo.reset({ mode: 'mixed', rev: oursSeed });
+    };
 
     afterAll(async () => {
       await rm(root, { recursive: true, force: true });
@@ -253,13 +264,13 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
 
     describe('Given a tree holding a symlink at the row path', () => {
       describe('When the tree is loaded into the index with reset', () => {
+        afterEach(rewindShared);
+
         it.each(ROWS.map((row, index) => ({ ...row, index })))(
           'Then $path is refused by tsgit iff refused by git ($gitRefuses)',
           async ({ path: target, gitRefuses }) => {
             // Arrange
             const { peerDir, oursDir, repo } = shared;
-            const peerSeed = gitOut(peerDir, ['rev-parse', 'HEAD']);
-            const oursSeed = gitOut(oursDir, ['rev-parse', 'HEAD']);
             const peerCommit = buildSymlinkCommit(peerDir, target);
             const oursCommit = buildSymlinkCommit(oursDir, target);
 
@@ -274,10 +285,6 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             expect(errorCodeOf(oursError)).toBe(gitRefuses ? INVALID_INDEX_ENTRY : undefined);
             expect(listIndex(oursDir)).toStrictEqual(listIndex(peerDir));
             expect(listIndex(peerDir)).toStrictEqual(gitRefuses ? [SEED_FILE] : [target]);
-
-            // Cleanup — back to the seed commit for the next row
-            gitOut(peerDir, ['reset', '-q', peerSeed]);
-            await repo.reset({ mode: 'mixed', rev: oursSeed });
           },
           ROW_TIMEOUT,
         );
@@ -303,10 +310,8 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             expect(errorCodeOf(oursError)).toBe(gitRefuses ? INVALID_INDEX_ENTRY : undefined);
             expect(gitOut(peerDir, ['rev-parse', 'HEAD'])).toBe(gitRefuses ? peerHead : peerCommit);
             expect(gitOut(oursDir, ['rev-parse', 'HEAD'])).toBe(gitRefuses ? oursHead : oursCommit);
-            if (!gitRefuses) {
-              expect(listIndex(oursDir)).toStrictEqual([target]);
-              expect(listIndex(peerDir)).toStrictEqual([target]);
-            }
+            expect(listIndex(oursDir)).toStrictEqual(listIndex(peerDir));
+            expect(listIndex(peerDir)).toStrictEqual(gitRefuses ? [SEED_FILE] : [target]);
           },
           ROW_TIMEOUT,
         );
@@ -376,13 +381,13 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
 
     describe('Given a regular file whose component opens with a backslash', () => {
       describe('When the tree is loaded into the index with reset', () => {
+        afterEach(rewindShared);
+
         it.each(DOTGIT_BACKSLASH_ROWS)(
           'Then $path is refused by tsgit iff refused by git ($gitRefuses)',
           async ({ path: target, gitRefuses }) => {
             // Arrange
             const { peerDir, oursDir, repo } = shared;
-            const peerSeed = gitOut(peerDir, ['rev-parse', 'HEAD']);
-            const oursSeed = gitOut(oursDir, ['rev-parse', 'HEAD']);
             const peerCommit = buildLeafCommit(peerDir, target, REGULAR_MODE);
             const oursCommit = buildLeafCommit(oursDir, target, REGULAR_MODE);
 
@@ -397,10 +402,6 @@ describe.skipIf(!GIT_AVAILABLE || process.platform === 'win32')(
             expect(errorCodeOf(oursError)).toBe(gitRefuses ? INVALID_INDEX_ENTRY : undefined);
             expect(listIndex(oursDir)).toStrictEqual(listIndex(peerDir));
             expect(listIndex(peerDir)).toStrictEqual(gitRefuses ? [SEED_FILE] : [target]);
-
-            // Cleanup — back to the seed commit for the next row
-            gitOut(peerDir, ['reset', '-q', peerSeed]);
-            await repo.reset({ mode: 'mixed', rev: oursSeed });
           },
           ROW_TIMEOUT,
         );
