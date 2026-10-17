@@ -672,10 +672,12 @@ describe('Given a path held at stage 0 and at the conflict stages 1 and 2', () =
       const sut = add;
 
       // Act
-      await sut(ctx, ['z']);
+      const report = await sut(ctx, ['z']);
       const result = await stagesOf(ctx);
 
       // Assert
+      expect(report.added).toEqual(['z']);
+      expect(report.modified).toEqual([]);
       expect(fNames(result, 'c')).toEqual(fNames(before, 'c'));
       expect(stagesAt(result, 'z')).toEqual(['0']);
     });
