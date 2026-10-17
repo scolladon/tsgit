@@ -833,6 +833,65 @@ describe('applyMergeToWorktree', () => {
     });
   });
 
+  describe('Given a conflicting merge where a backslash path conflicts and a sibling path is clean', () => {
+    const seed = async () => {
+      const ctx = await buildSeededContext();
+      const cleanBase = await writeBlob(ctx, 'base-clean\n');
+      const cleanTheirs = await writeBlob(ctx, 'THEIRS-CLEAN\n');
+      const baseId = await writeBlob(ctx, 'base\n');
+      const oursId = await writeBlob(ctx, 'ours\n');
+      const theirsId = await writeBlob(ctx, 'theirs\n');
+      const treeOf = (clean: ObjectId, hostile: ObjectId) =>
+        treeWith(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'clean.txt' as FilePath, clean),
+          treeEntry(FILE_MODE.REGULAR, 'x\\y' as FilePath, hostile),
+        ]);
+      const input = {
+        baseTree: await treeOf(cleanBase, baseId),
+        oursTree: await treeOf(cleanBase, oursId),
+        theirsTree: await treeOf(cleanTheirs, theirsId),
+        currentIndex: index([indexEntry('clean.txt', cleanBase), indexEntry('x\\y', oursId)]),
+      };
+      return { ctx, input };
+    };
+
+    describe('When the merge is applied under Windows path syntax', () => {
+      it('Then throws the backslash reason and the clean sibling is never written', async () => {
+        // Arrange
+        const { ctx, input } = await seed();
+        const sut = applyMergeToWorktree;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut({ ...ctx, windowsPathSyntax: true }, input);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as { data?: { code?: string; reason?: string } })?.data;
+        expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+        expect(data?.reason).toBe('backslash rejected under Windows path syntax');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/clean.txt`)).toBe(false);
+      });
+    });
+
+    describe('When the merge is applied under POSIX path syntax', () => {
+      it('Then it reports a conflict', async () => {
+        // Arrange
+        const { ctx, input } = await seed();
+        const sut = applyMergeToWorktree;
+
+        // Act
+        const result = await sut(ctx, input);
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+      });
+    });
+  });
+
   // The counterpart to the test above: THERE the hostile name was the
   // conflict and the clean sibling was innocuous; HERE the hostile name is
   // itself the CLEAN (`resolved-known`) outcome, reached only through

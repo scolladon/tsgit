@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import { validateMergeWritePaths } from '../../../../../src/application/primitives/internal/validate-merge-write-paths.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
+import {
+  posixIndexPathRules,
+  windowsIndexPathRules,
+} from '../../../../../src/domain/git-index/path-validator.js';
 import type { MergeConflict, MergeOutcome } from '../../../../../src/domain/merge/index.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/index.js';
@@ -31,7 +35,9 @@ describe('Given a changed clean outcome at a hostile path', () => {
       const sut = validateMergeWritePaths;
 
       // Act
-      const caught = catchError(() => sut([outcome], [], new Set([outcome.path])));
+      const caught = catchError(() =>
+        sut(posixIndexPathRules, [outcome], [], new Set([outcome.path])),
+      );
 
       // Assert
       expect(caught).toBeInstanceOf(TsgitError);
@@ -59,7 +65,7 @@ describe('Given a changed clean outcome NOT in the changed set', () => {
       const sut = validateMergeWritePaths;
 
       // Act & Assert
-      expect(() => sut([outcome], [], new Set())).not.toThrow();
+      expect(() => sut(posixIndexPathRules, [outcome], [], new Set())).not.toThrow();
     });
   });
 });
@@ -82,7 +88,7 @@ describe('Given a distinct-types conflict at ".gitmodules" where ours is a symli
       const sut = validateMergeWritePaths;
 
       // Act
-      const caught = catchError(() => sut([], [conflict], new Set()));
+      const caught = catchError(() => sut(posixIndexPathRules, [], [conflict], new Set()));
 
       // Assert
       expect(caught).toBeInstanceOf(TsgitError);
@@ -109,7 +115,9 @@ describe('Given a changed clean outcome at an escaped path forming an HFS .git a
       const sut = validateMergeWritePaths;
 
       // Act
-      const caught = catchError(() => sut([outcome], [], new Set([outcome.path])));
+      const caught = catchError(() =>
+        sut(posixIndexPathRules, [outcome], [], new Set([outcome.path])),
+      );
 
       // Assert
       expect(caught).toBeInstanceOf(TsgitError);
@@ -138,7 +146,7 @@ describe('Given a file-directory conflict whose moved path is an NTFS short name
         const sut = validateMergeWritePaths;
 
         // Act
-        const caught = catchError(() => sut([], [conflict], new Set()));
+        const caught = catchError(() => sut(posixIndexPathRules, [], [conflict], new Set()));
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
@@ -169,7 +177,7 @@ describe('Given a distinct-types conflict whose renamed side is an NTFS short na
       const sut = validateMergeWritePaths;
 
       // Act
-      const caught = catchError(() => sut([], [conflict], new Set()));
+      const caught = catchError(() => sut(posixIndexPathRules, [], [conflict], new Set()));
 
       // Assert
       expect(caught).toBeInstanceOf(TsgitError);
@@ -199,7 +207,7 @@ describe('Given a distinct-types conflict at ".gitmodules" where ours is regular
       const sut = validateMergeWritePaths;
 
       // Act
-      const caught = catchError(() => sut([], [conflict], new Set()));
+      const caught = catchError(() => sut(posixIndexPathRules, [], [conflict], new Set()));
 
       // Assert
       expect(caught).toBeInstanceOf(TsgitError);
@@ -229,7 +237,7 @@ describe('Given a distinct-types conflict where ours is a symlink "gitmod" and t
       const sut = validateMergeWritePaths;
 
       // Act & Assert
-      expect(() => sut([], [conflict], new Set())).not.toThrow();
+      expect(() => sut(posixIndexPathRules, [], [conflict], new Set())).not.toThrow();
     });
   });
 });
@@ -248,7 +256,7 @@ describe('Given a file-directory conflict whose theirs symlink moves to "gitmod~
       const sut = validateMergeWritePaths;
 
       // Act
-      const caught = catchError(() => sut([], [conflict], new Set()));
+      const caught = catchError(() => sut(posixIndexPathRules, [], [conflict], new Set()));
 
       // Assert
       expect(caught).toBeInstanceOf(TsgitError);
@@ -274,7 +282,7 @@ describe('Given a modify-delete conflict at ".gitmodules" where ours is a symlin
       const sut = validateMergeWritePaths;
 
       // Act
-      const caught = catchError(() => sut([], [conflict], new Set()));
+      const caught = catchError(() => sut(posixIndexPathRules, [], [conflict], new Set()));
 
       // Assert
       expect(caught).toBeInstanceOf(TsgitError);
@@ -303,7 +311,7 @@ describe('Given a content conflict at ".gitmodules" whose merged mode is a symli
       const sut = validateMergeWritePaths;
 
       // Act
-      const caught = catchError(() => sut([], [conflict], new Set()));
+      const caught = catchError(() => sut(posixIndexPathRules, [], [conflict], new Set()));
 
       // Assert
       expect(caught).toBeInstanceOf(TsgitError);
@@ -333,7 +341,88 @@ describe('Given a distinct-types conflict at ".gitmodules" where ours is a symli
       const sut = validateMergeWritePaths;
 
       // Act & Assert
-      expect(() => sut([], [conflict], new Set())).not.toThrow();
+      expect(() => sut(posixIndexPathRules, [], [conflict], new Set())).not.toThrow();
     });
   });
+});
+
+describe('Given a backslash path at each write the gate checks', () => {
+  const BACKSLASH_REASON = 'backslash rejected under Windows path syntax';
+  const backslash = 'x\\y' as FilePath;
+  const resolvedKnown: MergeOutcome = {
+    status: 'resolved-known',
+    path: backslash,
+    id: DUMMY_OID,
+    mode: FILE_MODE.REGULAR,
+  };
+  const resolvedDeleted: MergeOutcome = { status: 'resolved-deleted', path: backslash };
+  const modifyDelete = {
+    type: 'modify-delete',
+    path: backslash,
+    ourId: DUMMY_OID,
+    ourMode: FILE_MODE.REGULAR,
+  } as MergeConflict;
+  const fileDirectory = {
+    type: 'file-directory',
+    path: backslash,
+    theirId: DUMMY_OID,
+    theirMode: FILE_MODE.REGULAR,
+  } as MergeConflict;
+  const distinctTypes: MergeConflict = {
+    type: 'distinct-types',
+    path: 'p' as FilePath,
+    ourPath: 'p' as FilePath,
+    ourId: DUMMY_OID,
+    ourMode: FILE_MODE.REGULAR,
+    theirPath: backslash,
+    theirId: DUMMY_OID,
+    theirMode: FILE_MODE.SYMLINK,
+  };
+  const rows: ReadonlyArray<
+    readonly [string, ReadonlyArray<MergeOutcome>, ReadonlyArray<MergeConflict>]
+  > = [
+    ['a resolved-known outcome', [resolvedKnown], []],
+    ['a resolved-deleted outcome', [resolvedDeleted], []],
+    ['a modify-delete conflict', [], [modifyDelete]],
+    ['a file-directory conflict', [], [fileDirectory]],
+    ['a distinct-types side path', [], [distinctTypes]],
+  ];
+
+  describe.each(rows)(
+    'When validateMergeWritePaths runs with the Windows rules on %s',
+    (_label, outcomes, conflicts) => {
+      it('Then it throws INVALID_INDEX_ENTRY with the backslash reason', () => {
+        // Arrange
+        const sut = validateMergeWritePaths;
+
+        // Act
+        const caught = catchError(() =>
+          sut(windowsIndexPathRules, outcomes, conflicts, new Set([backslash])),
+        );
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_INDEX_ENTRY',
+          offset: -1,
+          reason: BACKSLASH_REASON,
+        });
+      });
+    },
+  );
+
+  describe.each(rows)(
+    'When validateMergeWritePaths runs with the POSIX rules on %s',
+    (_label, outcomes, conflicts) => {
+      it('Then it does not throw', () => {
+        // Arrange
+        const sut = validateMergeWritePaths;
+
+        // Act
+        const act = () => sut(posixIndexPathRules, outcomes, conflicts, new Set([backslash]));
+
+        // Assert
+        expect(act).not.toThrow();
+      });
+    },
+  );
 });

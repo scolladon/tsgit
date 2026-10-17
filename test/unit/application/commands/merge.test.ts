@@ -2648,6 +2648,84 @@ describe('merge — conflicting-write atomicity under strategy resolve', () => {
   });
 });
 
+describe('merge — conflicting-write atomicity under Windows path syntax', () => {
+  const seedBackslashTheirs = async (): Promise<ReturnType<typeof createMemoryContext>> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'base\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/clean.txt`, 'base-clean\n');
+    await add(ctx, ['file.txt', 'clean.txt']);
+    const base = await commit(ctx, { message: 'base', author });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/file.txt`, 'MAIN\n');
+    await add(ctx, ['file.txt']);
+    await commit(ctx, { message: 'on-main', author });
+    const featureTree = await writeTreeMod.writeTree(ctx, [
+      treeEntry(FILE_MODE.REGULAR, 'clean.txt', await writeBlob(ctx, 'THEIRS-CLEAN\n')),
+      treeEntry(FILE_MODE.REGULAR, 'file.txt', await writeBlob(ctx, 'FEATURE\n')),
+      treeEntry(FILE_MODE.REGULAR, 'x\\y', await writeBlob(ctx, 'backslash\n')),
+    ]);
+    const { createCommit: createCommitPrim } = await import(
+      '../../../../src/application/primitives/create-commit.js'
+    );
+    const { updateRef } = await import('../../../../src/application/primitives/update-ref.js');
+    const feature = await createCommitPrim(ctx, {
+      tree: featureTree,
+      parents: [base.id],
+      author,
+      committer: author,
+      message: 'theirs',
+      extraHeaders: [],
+    });
+    await updateRef(ctx, 'refs/heads/feature' as RefName, feature, {
+      reflogMessage: 'branch: Created from seed',
+    });
+    return ctx;
+  };
+
+  describe('Given theirs adds x\\y and conflicts with ours on another', () => {
+    describe('When merge runs under Windows path syntax', () => {
+      it('Then throws INVALID_INDEX_ENTRY and neither the conflict nor the clean sibling is written', async () => {
+        // Arrange
+        const ctx = await seedBackslashTheirs();
+        const sut = mergeRun;
+
+        // Act
+        const caught = await sut(
+          { ...ctx, windowsPathSyntax: true },
+          { rev: 'feature', strategy: 'resolve', author },
+        ).then(
+          () => undefined,
+          (err: unknown) => (err as TsgitError).data,
+        );
+
+        // Assert
+        expect(caught).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: 'backslash rejected under Windows path syntax',
+        });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/file.txt`)).toBe('MAIN\n');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/clean.txt`)).toBe('base-clean\n');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/x\\y`)).toBe(false);
+      });
+    });
+
+    describe('When merge runs under POSIX path syntax', () => {
+      it('Then it conflicts and writes x\\y', async () => {
+        // Arrange
+        const ctx = await seedBackslashTheirs();
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'feature', strategy: 'resolve', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/x\\y`)).toBe(true);
+      });
+    });
+  });
+});
+
 describe('merge commit — HEAD through a chain of symbolic refs', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -5880,6 +5958,62 @@ describe('merge — several heads (octopus)', () => {
   };
 
   const MAIN_M2 = '22cb5f2099b7f48e95e0eb659e0686300bef355b';
+
+  describe('Given b1 carries a backslash path and c1 conflicts with main', () => {
+    const seedBackslashB1 = async (): Promise<Context> => {
+      const ctx = await seedConflicting();
+      const b1 = await resolveRef(ctx, 'refs/heads/b1' as RefName);
+      const b1Commit = (await readObject(ctx, b1)) as {
+        readonly data: { readonly tree: ObjectId };
+      };
+      const b1Tree = (await readObject(ctx, b1Commit.data.tree)) as {
+        readonly entries: ReadonlyArray<TreeEntry>;
+      };
+      const tree = await writeTreeMod.writeTree(ctx, [
+        ...b1Tree.entries,
+        treeEntry(FILE_MODE.REGULAR, 'x\\y', await writeBlob(ctx, 'backslash\n')),
+      ]);
+      const { createCommit } = await import(
+        '../../../../src/application/primitives/create-commit.js'
+      );
+      const moved = await createCommit(ctx, {
+        tree,
+        parents: [b1],
+        author: t,
+        committer: t,
+        message: 'b1 backslash',
+        extraHeaders: [],
+      });
+      await seedRef(ctx, 'refs/heads/b1' as RefName, moved, { reflogMessage: 'seed' });
+      return ctx;
+    };
+
+    describe('When merge runs under Windows path syntax', () => {
+      it('Then it refuses with the backslash reason and writes nothing', async () => {
+        // Arrange
+        const ctx = await seedBackslashB1();
+        const sut = mergeRun;
+
+        // Act
+        const caught = await sut(
+          { ...ctx, windowsPathSyntax: true },
+          { rev: ['b1', 'b2', 'c1'], author: t, committer: t },
+        ).then(
+          () => undefined,
+          (err: unknown) => (err as TsgitError).data,
+        );
+
+        // Assert
+        expect(caught).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: 'backslash rejected under Windows path syntax',
+        });
+        expect((await resolveRef(ctx, 'HEAD' as RefName)) as string).toBe(MAIN_M2);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/x\\y`)).toBe(false);
+      });
+    });
+  });
 
   describe.each([
     ['c1', ['c1']],
