@@ -250,12 +250,7 @@ const addLiteralOnly = async (
       sorted,
       resolved,
     );
-    await commitIfChanged(
-      lock,
-      sorted.length,
-      withEveryStage(remaining, unmergedStages, stageZeroBeside),
-      resolutionOptions(restagedPaths, remaining, unmergedStages, stageZeroBeside),
-    );
+    await commitStaged(lock, { sorted, unmergedStages, stageZeroBeside }, remaining, restagedPaths);
     return result;
   } finally {
     await lock.release();
@@ -422,8 +417,8 @@ const settleRemovals = async (
   };
 };
 
-/** Writes a walk's entries beside the stages of the paths it left alone. */
-const commitWalk = (
+/** Writes the staged entries beside the stages of the paths the add left alone. */
+const commitStaged = (
   lock: IndexLock,
   {
     sorted,
@@ -708,7 +703,7 @@ const addByPathspec = async (
     const view = { sorted: staged.sorted, inserted: insertedBy(staged.outcomes, staged.existing) };
     const settled = await settleRemovals(ctx, view, matcher, newEntries, removedEntries);
     enforceLiteralMustMatch(mustMatch, [...matched, ...settled.everyRemoval], literalSpellings);
-    await commitWalk(lock, staged, settled.remaining, restagedPaths);
+    await commitStaged(lock, staged, settled.remaining, restagedPaths);
     return {
       added: [...added].sort(),
       modified: [...modified].sort(),
@@ -985,7 +980,7 @@ export const addAll = async (
     const removedEntries = await collectRemovedEntries(ctx, existing, seen);
     const view = { sorted, inserted: insertedBy(outcomes, existing) };
     const settled = await settleRemovals(ctx, view, WHOLE_TREE_MATCHER, newEntries, removedEntries);
-    await commitWalk(lock, state, settled.remaining, restagedPaths);
+    await commitStaged(lock, state, settled.remaining, restagedPaths);
     return {
       added: [...added].sort(),
       modified: [...modified].sort(),
