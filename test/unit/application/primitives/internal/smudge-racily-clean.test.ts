@@ -165,6 +165,33 @@ describe('smudgeRacilyClean', () => {
     });
   });
 
+  describe('Given a racy raw-byte entry whose decoded path equals that of a literal U+FFFD entry in the index as read', () => {
+    describe('When the index is written', () => {
+      it('Then the raw-byte entry is kept as is', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const literalPath = '\uFFFD.txt' as FilePath;
+        await write(ctx, literalPath, 'm1\n');
+        await add(ctx, [literalPath]);
+        await write(ctx, literalPath, SAME_SIZE_REWRITE);
+        const [literal] = await entriesAsRead(ctx);
+        const raw: IndexEntry = {
+          ...(literal as IndexEntry),
+          pathBytes: Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74),
+        };
+        const sut = smudgeRacilyClean;
+
+        // Act
+        const result = await sut(ctx, [raw], await readPreviousIndex(ctx));
+
+        // Assert
+        expect(result).toEqual([raw]);
+        expect(result[0]).toBe(raw);
+      });
+    });
+  });
+
   describe('Given a racy entry whose id differs from the index as read', () => {
     describe('When the index is written', () => {
       it('Then the freshly built entry is kept as is', async () => {

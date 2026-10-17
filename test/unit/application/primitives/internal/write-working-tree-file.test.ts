@@ -683,6 +683,25 @@ describe('write-working-tree-file', () => {
       });
     });
 
+    describe('Given an escaped path whose view names an existing file', () => {
+      describe('When it is removed', () => {
+        it('Then no filesystem call is made and the file remains', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const file = `${ctx.layout.workDir}/\uFFFD.txt`;
+          await ctx.fs.write(file, new Uint8Array([1]));
+          const spies = (['lstat', 'rm'] as const).map((method) => vi.spyOn(ctx.fs, method));
+
+          // Act
+          await removeWorkingTreeFile(ctx, '\uDCFF.txt' as FilePath);
+
+          // Assert
+          expect(spies.map((spy) => spy.mock.calls.length)).toEqual([0, 0]);
+          expect(await ctx.fs.exists(file)).toBe(true);
+        });
+      });
+    });
+
     describe('Given an absent working file', () => {
       describe('When it is removed', () => {
         it('Then it is a no-op (no throw)', async () => {

@@ -8,8 +8,10 @@ import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { Context } from '../../../ports/context.js';
 import type { FileSystem } from '../../../ports/file-system.js';
 
-function isFileNotFound(error: unknown): boolean {
-  return errorDataCode(error) === 'FILE_NOT_FOUND';
+/** A path below a regular file is missing for git, the same as an absent one. */
+function isAbsence(error: unknown): boolean {
+  const code = errorDataCode(error);
+  return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';
 }
 
 /** The answer an adapter without `lexists` gives: `lstat`, with absence read off its refusal. */
@@ -18,13 +20,25 @@ async function lstatFindsEntry(fs: FileSystem, absPath: string): Promise<boolean
     await fs.lstat(absPath);
     return true;
   } catch (err) {
-    if (isFileNotFound(err)) return false;
+    if (isAbsence(err)) return false;
+    throw err;
+  }
+}
+
+async function lexistsFindsEntry(
+  lexists: NonNullable<FileSystem['lexists']>,
+  absPath: string,
+): Promise<boolean> {
+  try {
+    return await lexists(absPath);
+  } catch (err) {
+    if (isAbsence(err)) return false;
     throw err;
   }
 }
 
 export async function pathIsOccupied(ctx: Context, absPath: string): Promise<boolean> {
   const { fs } = ctx;
-  if (fs.lexists !== undefined) return fs.lexists(absPath);
+  if (fs.lexists !== undefined) return lexistsFindsEntry(fs.lexists.bind(fs), absPath);
   return lstatFindsEntry(fs, absPath);
 }

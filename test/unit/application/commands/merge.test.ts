@@ -18,6 +18,7 @@ import {
   writeNestedTree,
   writeOutcomeToTree,
 } from '../../../../src/application/commands/merge.js';
+import { reset } from '../../../../src/application/commands/reset.js';
 import { rm } from '../../../../src/application/commands/rm.js';
 import { tagCreate, tagDelete } from '../../../../src/application/commands/tag.js';
 import {
@@ -25,6 +26,9 @@ import {
   removeChangedOutcome,
 } from '../../../../src/application/primitives/apply-merge-to-worktree.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
+import { flattenEscapedTree } from '../../../../src/application/primitives/flatten-tree.js';
+import { survivingDirectoriesOf } from '../../../../src/application/primitives/internal/prune-emptied-directories.js';
+import { createLeadingPathScanner } from '../../../../src/application/primitives/internal/symlinked-leading-path.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
@@ -45,6 +49,7 @@ import { NO_PARSER_OFFSET } from '../../../../src/domain/git-index/path-validato
 import type { MergeConflict, MergeOutcome } from '../../../../src/domain/merge/index.js';
 import type {
   AuthorIdentity,
+  FileMode,
   FilePath,
   ObjectId,
   RefName,
@@ -603,6 +608,68 @@ describe('merge', () => {
       });
     });
   });
+
+  describe.each([
+    ['clashes on another path', true],
+    ['merges cleanly', false],
+  ] as const)(
+    'Given theirs deletes a/x, a was swapped for a symlink to real and the merge %s',
+    (_title, conflicting) => {
+      describe('When merge', () => {
+        it('Then it refuses with WORKING_TREE_DIRTY on a/x before any ref, index or work-tree write', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await init(ctx);
+          const root = ctx.layout.workDir;
+          await ctx.fs.writeUtf8(`${root}/b`, 'base\n');
+          await ctx.fs.writeUtf8(`${root}/a/x`, 'x\n');
+          await add(ctx, ['b', 'a/x']);
+          await commit(ctx, { message: 'base', author });
+          await branchCreate(ctx, { name: 'theirs' });
+          await checkout(ctx, { rev: 'theirs' });
+          const { rm } = await import('../../../../src/application/commands/rm.js');
+          await rm(ctx, ['a/x']);
+          await ctx.fs.writeUtf8(`${root}/b`, 'theirs\n');
+          await add(ctx, ['b']);
+          await commit(ctx, { message: 'theirs', author });
+          await checkout(ctx, { rev: 'main' });
+          await ctx.fs.writeUtf8(`${root}/b`, conflicting ? 'ours\n' : 'base\n');
+          await ctx.fs.writeUtf8(`${root}/c`, 'c\n');
+          await add(ctx, ['b', 'c']);
+          const oursTip = await commit(ctx, { message: 'ours', author });
+          await ctx.fs.rm(`${root}/a/x`);
+          await ctx.fs.rm(`${root}/a`);
+          await ctx.fs.writeUtf8(`${root}/real/x`, 'x\n');
+          await ctx.fs.writeUtf8(`${root}/real/survivor`, 'k\n');
+          await ctx.fs.symlink('real', `${root}/a`);
+          const indexBefore = await readIndex(ctx);
+
+          // Act
+          let error: unknown;
+          try {
+            await mergeRun(ctx, { rev: 'theirs', author });
+          } catch (caught) {
+            error = caught;
+          }
+
+          // Assert
+          expect((error as TsgitError).data).toEqual({
+            code: 'WORKING_TREE_DIRTY',
+            localChanges: ['a/x'],
+            untracked: [],
+          });
+          expect(await resolveRef(ctx, 'refs/heads/main' as RefName)).toBe(oursTip.id);
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/MERGE_HEAD`)).toBe(false);
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/AUTO_MERGE`)).toBe(false);
+          expect(await ctx.fs.readUtf8(`${root}/b`)).toBe(conflicting ? 'ours\n' : 'base\n');
+          expect(await ctx.fs.readlink(`${root}/a`)).toBe('real');
+          expect(await ctx.fs.readUtf8(`${root}/real/x`)).toBe('x\n');
+          expect(await ctx.fs.readUtf8(`${root}/real/survivor`)).toBe('k\n');
+          expect(await readIndex(ctx)).toEqual(indexBefore);
+        });
+      });
+    },
+  );
 
   describe('Given an untracked file clashes with a theirs-only add', () => {
     describe('When merge', () => {
@@ -1520,6 +1587,24 @@ describe('merge.4b conflict persistence', () => {
     });
   });
 
+  describe('Given a conflicting merge whose caller message holds a lone surrogate', () => {
+    describe('When merge runs', () => {
+      it('Then .git/MERGE_MSG carries U+FFFD bytes for it, as a commit would', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await setupConflictingMerge(ctx);
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', author, message: 'msg \uDCFF end' });
+
+        // Assert
+        const result = await ctx.fs.read(`${ctx.layout.gitDir}/MERGE_MSG`);
+        expect(new TextDecoder().decode(result).startsWith('msg \uFFFD end\n')).toBe(true);
+        expect(result.includes(0xff)).toBe(false);
+      });
+    });
+  });
+
   describe('Given a conflicting merge with a clean theirs-only-changed sibling path', () => {
     describe('When merge runs', () => {
       it('Then the clean sibling is materialised in the working tree with theirs content', async () => {
@@ -1685,6 +1770,26 @@ describe('merge.4b conflict persistence', () => {
             expect(data?.reason).toContain('sub/path.txt');
           },
         );
+        it('Then names the decoded view of an escaped path', async () => {
+          // Arrange
+          const { rejectUnsupportedConflicts } = await import(
+            '../../../../src/application/commands/merge.js'
+          );
+          const conflict = { type: 'gitlink', path: '\uDCFF.txt' as never } as never;
+
+          // Act
+          let caught: unknown;
+          try {
+            rejectUnsupportedConflicts([conflict]);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          const data = (caught as { data?: { reason?: string } })?.data;
+          expect(data?.reason).toContain('path=\uFFFD.txt');
+          expect(data?.reason).not.toMatch(/[\uDC80-\uDCFF]/);
+        });
         it.each([
           'content',
           'add-add',
@@ -2728,6 +2833,34 @@ describe('resolveMergeAuthor / resolveMergeCommitter (direct)', () => {
 });
 
 describe('writeNestedTree (direct)', () => {
+  describe('Given leaves at an escaped file name and under an escaped directory name', () => {
+    describe('When writeNestedTree runs', () => {
+      it('Then the tree names are the raw bytes, not U+FFFD', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'x');
+        const leaves = [
+          { path: '\uDCFF.txt' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+          { path: '\uDCFF/x' as FilePath, id: blobId, mode: FILE_MODE.REGULAR },
+        ];
+
+        // Act
+        const result = await writeNestedTree(ctx, leaves);
+
+        // Assert
+        const tree = await readObject(ctx, result);
+        if (tree.type !== 'tree') expect.unreachable();
+        const names = tree.entries.map((e) => Array.from(e.nameBytes));
+        expect(names).toContainEqual([0xff, 0x2e, 0x74, 0x78, 0x74]);
+        expect(names).toContainEqual([0xff]);
+        const dir = tree.entries.find((e) => e.nameBytes.length === 1);
+        const sub = await readObject(ctx, dir?.id as ObjectId);
+        if (sub.type !== 'tree') expect.unreachable();
+        expect(sub.entries.map((e) => e.name)).toEqual(['x']);
+      });
+    });
+  });
+
   describe('Given core.maxTreeDepth configured to zero and a top-level leaf', () => {
     describe('When writeNestedTree runs', () => {
       it('Then it completes — zero permits exactly the top level', async () => {
@@ -3136,7 +3269,12 @@ describe('writeOutcomeToTree (direct)', () => {
         let caught: unknown;
         let removeCallCount: number;
         try {
-          await removeChangedOutcome(ctx, outcome);
+          await removeChangedOutcome(
+            ctx,
+            outcome,
+            createLeadingPathScanner(ctx),
+            survivingDirectoriesOf([]),
+          );
         } catch (err) {
           caught = err;
         } finally {
@@ -6433,6 +6571,872 @@ describe('merge — rename/rename to two paths', () => {
         ]);
         expect(staged[0]?.id).toBe(staged[1]?.id);
         expect(new TextDecoder().decode((await readBlob(ctx, staged[0]!.id)).content)).toBe(marked);
+      });
+    });
+  });
+
+  describe('Given both sides rename d/f apart while side also adds a symlink', () => {
+    describe('When merge runs', () => {
+      it('Then d, which neither side keeps, is not recreated for the renamed-away source', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const root = ctx.layout.workDir;
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${root}/d/f`, LINES);
+        await add(ctx, ['d/f']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'side' });
+        await checkout(ctx, { rev: 'side' });
+        await rm(ctx, ['d/f']);
+        await ctx.fs.writeUtf8(`${root}/b`, LINES);
+        await ctx.fs.symlink('b', `${root}/l`);
+        await add(ctx, ['b', 'l']);
+        await commit(ctx, { message: 'side', author });
+        await checkout(ctx, { rev: 'main' });
+        await rm(ctx, ['d/f']);
+        await ctx.fs.writeUtf8(`${root}/a`, LINES);
+        await add(ctx, ['a']);
+        await commit(ctx, { message: 'main', author });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.exists(`${root}/d`)).toBe(false);
+        expect(await ctx.fs.readlink(`${root}/l`)).toBe('b');
+      });
+    });
+  });
+});
+
+describe('merge — trees holding a non-UTF-8 path', () => {
+  const FF_TXT = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+  const FF_TXT_HEX = 'ff2e747874';
+  const VIEW_PATH = '\uFFFD.txt' as FilePath;
+
+  type Row = readonly [name: string | Uint8Array, text: string];
+
+  const hex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
+
+  const treeOf = async (ctx: Context, rows: ReadonlyArray<Row>): Promise<ObjectId> =>
+    writeTreeMod.writeTree(
+      ctx,
+      await Promise.all(
+        rows.map(async ([name, text]) =>
+          treeEntry(FILE_MODE.REGULAR, name, await writeBlob(ctx, text)),
+        ),
+      ),
+    );
+
+  const commitOf = async (
+    ctx: Context,
+    tree: ObjectId,
+    ref: string,
+    parents: ReadonlyArray<ObjectId>,
+  ): Promise<ObjectId> => {
+    const { createCommit } = await import(
+      '../../../../src/application/primitives/create-commit.js'
+    );
+    const id = await createCommit(ctx, {
+      tree,
+      parents,
+      author,
+      committer: author,
+      message: ref,
+      extraHeaders: [],
+    });
+    await seedRef(ctx, `refs/heads/${ref}` as RefName, id, { reflogMessage: 'seed' });
+    return id;
+  };
+
+  /** main and side fork from a base; the index and HEAD follow main, the work tree is empty. */
+  const seedHistory = async (
+    base: ReadonlyArray<Row>,
+    main: ReadonlyArray<Row>,
+    side: ReadonlyArray<Row>,
+  ): Promise<{ readonly ctx: Context; readonly root: ObjectId }> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const root = await commitOf(ctx, await treeOf(ctx, base), 'main', []);
+    await commitOf(ctx, await treeOf(ctx, side), 'side', [root]);
+    await commitOf(ctx, await treeOf(ctx, main), 'main', [root]);
+    await reset(ctx, { mode: 'mixed', rev: 'main' });
+    return { ctx, root };
+  };
+
+  const treeNames = async (ctx: Context, id: ObjectId): Promise<ReadonlyArray<string[]>> => {
+    const commitObj = await readObject(ctx, id);
+    if (commitObj.type !== 'commit') throw new Error('not a commit');
+    const tree = await readObject(ctx, commitObj.data.tree);
+    if (tree.type !== 'tree') throw new Error('not a tree');
+    return tree.entries.map((e) => [hex(e.nameBytes), e.name]);
+  };
+
+  describe('Given main and side change different ASCII files and both carry a non-UTF-8 name untouched', () => {
+    describe('When merge runs', () => {
+      it('Then the merge commit tree lists the name bytes unchanged', async () => {
+        // Arrange
+        const { ctx } = await seedHistory(
+          [
+            ['a', 'a0'],
+            ['b', 'b0'],
+            [FF_TXT, 'x'],
+          ],
+          [
+            ['a', 'a1'],
+            ['b', 'b0'],
+            [FF_TXT, 'x'],
+          ],
+          [
+            ['a', 'a0'],
+            ['b', 'b1'],
+            [FF_TXT, 'x'],
+          ],
+        );
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author });
+
+        // Assert
+        if (result.kind !== 'merge') throw new Error(`unexpected ${result.kind}`);
+        expect((await treeNames(ctx, result.id)).map(([bytes]) => bytes)).toEqual([
+          '61',
+          '62',
+          FF_TXT_HEX,
+        ]);
+      });
+    });
+  });
+
+  describe('Given twins named by the raw bytes and by their U+FFFD view where side modifies the raw one', () => {
+    describe('When merge runs', () => {
+      it('Then the merge tree keeps both entries with the modified content on the raw one', async () => {
+        // Arrange
+        const { ctx } = await seedHistory(
+          [
+            ['a', 'a0'],
+            [FF_TXT, 'x'],
+            [VIEW_PATH, 'y'],
+          ],
+          [
+            ['a', 'a1'],
+            [FF_TXT, 'x'],
+            [VIEW_PATH, 'y'],
+          ],
+          [
+            ['a', 'a0'],
+            [FF_TXT, 'x2'],
+            [VIEW_PATH, 'y'],
+          ],
+        );
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author });
+
+        // Assert
+        if (result.kind !== 'merge') throw new Error(`unexpected ${result.kind}`);
+        const names = (await treeNames(ctx, result.id)).map(([bytes]) => bytes);
+        expect(names).toEqual(['61', 'efbfbd2e747874', FF_TXT_HEX]);
+        const commitObj = await readObject(ctx, result.id);
+        if (commitObj.type !== 'commit') throw new Error('not a commit');
+        const flat = await flattenEscapedTree(ctx, commitObj.data.tree);
+        const content = async (key: string): Promise<string | undefined> => {
+          const id = flat.entries.get(key as FilePath)?.id;
+          if (id === undefined) return undefined;
+          return new TextDecoder().decode((await readBlob(ctx, id)).content);
+        };
+        expect(await content('\uDCFF.txt')).toBe('x2');
+        expect(await content(VIEW_PATH)).toBe('y');
+      });
+    });
+  });
+
+  describe('Given both sides edit the non-UTF-8 path', () => {
+    describe('When merge runs', () => {
+      it('Then stages 1, 2 and 3 keep the bytes, no work tree file appears and the descriptor names the view', async () => {
+        // Arrange
+        const { ctx } = await seedHistory(
+          [[FF_TXT, 'base\n']],
+          [[FF_TXT, 'ours\n']],
+          [[FF_TXT, 'theirs\n']],
+        );
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author });
+
+        // Assert
+        if (result.kind !== 'conflict') throw new Error(`unexpected ${result.kind}`);
+        expect(result.conflicts.map((c) => c.path)).toEqual([VIEW_PATH]);
+        const { entries } = await readIndex(ctx);
+        expect(entries.map((e) => [e.flags.stage, hex(e.pathBytes ?? new Uint8Array())])).toEqual([
+          [1, FF_TXT_HEX],
+          [2, FF_TXT_HEX],
+          [3, FF_TXT_HEX],
+        ]);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/${VIEW_PATH}`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given side adds a directory whose name is .git followed by a raw byte', () => {
+    describe('When merge runs', () => {
+      it('Then it refuses the path with the HFS reason', async () => {
+        // Arrange
+        const { ctx, root } = await seedHistory([['a', 'a0']], [['a', 'a1']], [['a', 'a0']]);
+        const hostileTree = await treeOf(ctx, [['x', 'x']]);
+        const sideTree = await writeTreeMod.writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'a', await writeBlob(ctx, 'a0')),
+          treeEntry(FILE_MODE.DIRECTORY, Uint8Array.of(0x2e, 0x67, 0x69, 0x74, 0xff), hostileTree),
+        ]);
+        await commitOf(ctx, sideTree, 'side', [root]);
+        const sut = mergeRun;
+
+        // Act
+        const caught = await sut(ctx, { rev: 'side', author }).then(
+          () => undefined,
+          (err: unknown) => (err as TsgitError).data,
+        );
+
+        // Assert
+        expect(caught).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'.git' HFS+ ignorable-codepoint alias rejected",
+        });
+      });
+    });
+  });
+
+  describe('Given an outcome whose escaped path is .git followed by a raw byte', () => {
+    describe('When writeOutcomeToTree runs', () => {
+      it('Then it refuses the path with the HFS reason before writing', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const id = await writeBlob(ctx, 'x');
+        const writer = {
+          writeBlob: vi.fn(),
+          writeBytes: vi.fn(),
+          removePath: vi.fn(),
+        } as unknown as Parameters<typeof writeOutcomeToTree>[2];
+        const sut = writeOutcomeToTree;
+
+        // Act
+        const caught = await sut(
+          {
+            status: 'resolved-known',
+            path: '.git\uDCFF/x' as FilePath,
+            id,
+            mode: FILE_MODE.REGULAR,
+          },
+          undefined,
+          writer,
+        ).then(
+          () => undefined,
+          (err: unknown) => (err as TsgitError).data,
+        );
+
+        // Assert
+        expect(caught).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'.git' HFS+ ignorable-codepoint alias rejected",
+        });
+      });
+    });
+  });
+
+  describe('Given a conflict whose escaped path is .git followed by a raw byte', () => {
+    describe('When writeConflictToTree runs', () => {
+      it('Then it refuses the path with the HFS reason before writing', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const writer = {
+          writeBlob: vi.fn(),
+          writeBytes: vi.fn(),
+          removePath: vi.fn(),
+        } as unknown as Parameters<typeof writeConflictToTree>[2];
+        const conflict = {
+          type: 'content',
+          path: '.git\uDCFF/x' as FilePath,
+          ourMode: FILE_MODE.REGULAR,
+        } as MergeConflict;
+        const sut = writeConflictToTree;
+
+        // Act
+        const caught = await sut(ctx, conflict, writer).then(
+          () => undefined,
+          (err: unknown) => (err as TsgitError).data,
+        );
+
+        // Assert
+        expect(caught).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'.git' HFS+ ignorable-codepoint alias rejected",
+        });
+      });
+    });
+  });
+
+  describe('Given side modifies the non-UTF-8 path beside a conflict on another file', () => {
+    describe('When merge runs', () => {
+      it('Then the stage 0 index entry keeps the raw bytes', async () => {
+        // Arrange
+        const { ctx } = await seedHistory(
+          [
+            ['a', 'base\n'],
+            [FF_TXT, 'x'],
+          ],
+          [
+            ['a', 'ours\n'],
+            [FF_TXT, 'x'],
+          ],
+          [
+            ['a', 'theirs\n'],
+            [FF_TXT, 'x2'],
+          ],
+        );
+        const sut = mergeRun;
+
+        // Act
+        await sut(ctx, { rev: 'side', author });
+
+        // Assert
+        const { entries } = await readIndex(ctx);
+        const staged = entries.filter((e) => e.flags.stage === 0);
+        expect(staged.map((e) => hex(e.pathBytes ?? new Uint8Array()))).toEqual([FF_TXT_HEX]);
+      });
+    });
+  });
+
+  describe('Given sparse checkout excluding the non-UTF-8 path that side modifies beside a conflict', () => {
+    describe('When merge runs', () => {
+      it('Then the skip-worktree index entry keeps the raw bytes', async () => {
+        // Arrange
+        const { ctx } = await seedHistory(
+          [
+            ['a', 'base\n'],
+            [FF_TXT, 'x'],
+          ],
+          [
+            ['a', 'ours\n'],
+            [FF_TXT, 'x'],
+          ],
+          [
+            ['a', 'theirs\n'],
+            [FF_TXT, 'x2'],
+          ],
+        );
+        const { updateCoreConfig } = await import(
+          '../../../../src/application/primitives/update-config.js'
+        );
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, '/a\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a`, 'ours\n');
+        await updateCoreConfig(ctx, { sparseCheckout: 'true', sparseCheckoutCone: 'false' });
+        const sut = mergeRun;
+
+        // Act
+        await sut(ctx, { rev: 'side', author });
+
+        // Assert
+        const { entries } = await readIndex(ctx);
+        const skipped = entries.filter((e) => e.flags.skipWorktree);
+        expect(skipped.map((e) => hex(e.pathBytes ?? new Uint8Array()))).toEqual([FF_TXT_HEX]);
+      });
+    });
+  });
+
+  describe('Given a non-UTF-8 name under a directory d the work tree lacks', () => {
+    type Entries = (ctx: Context) => Promise<ReadonlyArray<TreeEntry>>;
+
+    const aOf = async (ctx: Context, text: string): Promise<TreeEntry> =>
+      treeEntry(FILE_MODE.REGULAR, 'a', await writeBlob(ctx, text));
+    const dOf = async (ctx: Context, text: string): Promise<TreeEntry> =>
+      treeEntry(FILE_MODE.DIRECTORY, 'd', await treeOf(ctx, [[FF_TXT, text]]));
+    const lOf = async (ctx: Context, mode: FileMode): Promise<TreeEntry> =>
+      treeEntry(mode, 'l', await writeBlob(ctx, 'target'));
+
+    /** main and side fork from a base; the index and HEAD follow main, the work tree is empty. */
+    const seedEntries = async (base: Entries, main: Entries, side: Entries): Promise<Context> => {
+      const ctx = createMemoryContext();
+      await init(ctx);
+      const treeFrom = async (entries: Entries): Promise<ObjectId> =>
+        writeTreeMod.writeTree(ctx, await entries(ctx));
+      const root = await commitOf(ctx, await treeFrom(base), 'main', []);
+      await commitOf(ctx, await treeFrom(side), 'side', [root]);
+      await commitOf(ctx, await treeFrom(main), 'main', [root]);
+      await reset(ctx, { mode: 'mixed', rev: 'main' });
+      return ctx;
+    };
+
+    describe.each([
+      ['a symlink', FILE_MODE.SYMLINK],
+      ['a regular file', FILE_MODE.REGULAR],
+    ] as const)('And side adds %s l', (_kind, linkMode) => {
+      describe('When merge conflicts on the name main edits and side deletes', () => {
+        it('Then d is not created, as the name is never written', async () => {
+          // Arrange
+          const ctx = await seedEntries(
+            async (c) => [await dOf(c, 'base\n')],
+            async (c) => [await dOf(c, 'ours\n')],
+            async (c) => [await lOf(c, linkMode)],
+          );
+          const sut = mergeRun;
+
+          // Act
+          const result = await sut(ctx, { rev: 'side', author });
+
+          // Assert
+          expect(result.kind).toBe('conflict');
+          expect(await ctx.fs.exists(`${ctx.layout.workDir}/d`)).toBe(false);
+        });
+      });
+
+      describe('When merge resolves the name side edits beside a conflict on a', () => {
+        it('Then d is not created, as the name is never written', async () => {
+          // Arrange
+          const ctx = await seedEntries(
+            async (c) => [await aOf(c, 'base\n'), await dOf(c, 'x')],
+            async (c) => [await aOf(c, 'ours\n'), await dOf(c, 'x')],
+            async (c) => [await aOf(c, 'theirs\n'), await dOf(c, 'x2'), await lOf(c, linkMode)],
+          );
+          const sut = mergeRun;
+
+          // Act
+          const result = await sut(ctx, { rev: 'side', author });
+
+          // Assert
+          expect(result.kind).toBe('conflict');
+          expect(await ctx.fs.exists(`${ctx.layout.workDir}/d`)).toBe(false);
+        });
+      });
+    });
+  });
+
+  describe('Given a conflict on c.txt while side empties directory d of its tracked y', () => {
+    /** c.txt conflicts; d holds `rows` per side and the work tree holds main's c.txt and d/y. */
+    const seedEmptiedDirectory = async (
+      base: ReadonlyArray<Row>,
+      main: ReadonlyArray<Row>,
+      side: ReadonlyArray<Row>,
+    ): Promise<Context> => {
+      const ctx = createMemoryContext();
+      await init(ctx);
+      const rootOf = async (c: string, d: ReadonlyArray<Row>): Promise<ObjectId> =>
+        writeTreeMod.writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'c.txt', await writeBlob(ctx, c)),
+          treeEntry(FILE_MODE.DIRECTORY, 'd', await treeOf(ctx, d)),
+        ]);
+      const root = await commitOf(ctx, await rootOf('base\n', base), 'main', []);
+      await commitOf(ctx, await rootOf('theirs\n', side), 'side', [root]);
+      await commitOf(ctx, await rootOf('ours\n', main), 'main', [root]);
+      await reset(ctx, { mode: 'mixed', rev: 'main' });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'ours\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/d/y`, 'y\n');
+      return ctx;
+    };
+
+    const checkOutOnlyC = async (ctx: Context): Promise<void> => {
+      const { updateCoreConfig } = await import(
+        '../../../../src/application/primitives/update-config.js'
+      );
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/sparse-checkout`, '/c.txt\n');
+      await updateCoreConfig(ctx, { sparseCheckout: 'true', sparseCheckoutCone: 'false' });
+    };
+
+    describe('When side adds a non-UTF-8 name in d and merge runs', () => {
+      it('Then d stays, as it holds the name the merge records but cannot write', async () => {
+        // Arrange
+        const ctx = await seedEmptiedDirectory([['y', 'y\n']], [['y', 'y\n']], [[FF_TXT, 'l\n']]);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/d/y`)).toBe(false);
+        expect((await ctx.fs.lstat(`${ctx.layout.workDir}/d`)).isDirectory).toBe(true);
+      });
+    });
+
+    describe('When side adds a file in d that sparse checkout excludes and merge runs', () => {
+      it('Then d is removed, as the excluded file is never written', async () => {
+        // Arrange
+        const ctx = await seedEmptiedDirectory([['y', 'y\n']], [['y', 'y\n']], [['new', 'n\n']]);
+        await checkOutOnlyC(ctx);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/d`)).toBe(false);
+      });
+    });
+
+    describe('When both sides cleanly edit a non-UTF-8 name in d that sparse checkout excludes and merge runs', () => {
+      it('Then d stays, as the merged content is materialised there despite the exclusion', async () => {
+        // Arrange
+        const ctx = await seedEmptiedDirectory(
+          [
+            ['y', 'y\n'],
+            [FF_TXT, '1\n2\n3\n4\n5\n'],
+          ],
+          [
+            ['y', 'y\n'],
+            [FF_TXT, 'O\n2\n3\n4\n5\n'],
+          ],
+          [[FF_TXT, '1\n2\n3\n4\nT\n']],
+        );
+        await checkOutOnlyC(ctx);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'side', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/d/y`)).toBe(false);
+        expect((await ctx.fs.lstat(`${ctx.layout.workDir}/d`)).isDirectory).toBe(true);
+      });
+    });
+  });
+});
+
+describe('merge — file/directory add/add conflict', () => {
+  const commitFile = async (ctx: ReturnType<typeof createMemoryContext>): Promise<void> => {
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'file\n');
+    await add(ctx, ['f']);
+    await commit(ctx, { message: 'adds file f', author });
+  };
+
+  const commitDirectory = async (ctx: ReturnType<typeof createMemoryContext>): Promise<void> => {
+    await ctx.fs.mkdir(`${ctx.layout.workDir}/f`);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f/x`, 'x\n');
+    await add(ctx, ['f/x']);
+    await commit(ctx, { message: 'adds directory f', author });
+  };
+
+  const seed = async (
+    onMain: typeof commitFile,
+    onSide: typeof commitFile,
+  ): Promise<ReturnType<typeof createMemoryContext>> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b`, 'b\n');
+    await add(ctx, ['b']);
+    await commit(ctx, { message: 'base', author });
+    await branchCreate(ctx, { name: 'side' });
+    await checkout(ctx, { rev: 'side' });
+    await onSide(ctx);
+    await checkout(ctx, { rev: 'main' });
+    await ctx.fs.rmRecursive(`${ctx.layout.workDir}/f`);
+    await onMain(ctx);
+    return ctx;
+  };
+
+  const stagesOf = async (ctx: ReturnType<typeof createMemoryContext>) =>
+    (await readIndex(ctx)).entries.map((e) => [e.path, e.flags.stage]);
+
+  describe('Given HEAD adds file f and the merged branch adds directory f/', () => {
+    describe('When merge runs', () => {
+      it('Then the file is moved to f~HEAD at stage 2 and the directory entry is staged', async () => {
+        // Arrange
+        const ctx = await seed(commitFile, commitDirectory);
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 'side', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await stagesOf(ctx)).toEqual([
+          ['b', 0],
+          ['f/x', 0],
+          ['f~HEAD', 2],
+        ]);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f~HEAD`)).toBe('file\n');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f/x`)).toBe('x\n');
+      });
+    });
+  });
+
+  describe('Given HEAD adds directory f/ and the merged branch adds file f', () => {
+    describe('When merge runs', () => {
+      it('Then the file is moved to f~side at stage 3 and the directory entry is staged', async () => {
+        // Arrange
+        const ctx = await seed(commitDirectory, commitFile);
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 'side', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await stagesOf(ctx)).toEqual([
+          ['b', 0],
+          ['f/x', 0],
+          ['f~side', 3],
+        ]);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f~side`)).toBe('file\n');
+      });
+    });
+  });
+});
+
+describe('merge — file/directory conflict over an edited file', () => {
+  const seed = async (): Promise<ReturnType<typeof createMemoryContext>> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b`, 'b\n');
+    await add(ctx, ['b']);
+    await commit(ctx, { message: 'base', author });
+    await branchCreate(ctx, { name: 'side' });
+    await checkout(ctx, { rev: 'side' });
+    await ctx.fs.mkdir(`${ctx.layout.workDir}/f`);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f/x`, 'x\n');
+    await add(ctx, ['f/x']);
+    await commit(ctx, { message: 'adds directory f', author });
+    await checkout(ctx, { rev: 'main' });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'file\n');
+    await add(ctx, ['f']);
+    await commit(ctx, { message: 'adds file f', author });
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'LOCAL-EDIT\n');
+    return ctx;
+  };
+
+  describe('Given HEAD holds file f with an unstaged edit and the merged branch adds directory f/', () => {
+    describe('When merge runs', () => {
+      it('Then it refuses naming f and leaves the file, the index and HEAD untouched', async () => {
+        // Arrange
+        const ctx = await seed();
+        const headBefore = await resolveRef(ctx, 'HEAD' as RefName);
+        const indexBefore = await readIndex(ctx);
+
+        // Act
+        let error: unknown;
+        try {
+          await mergeRun(ctx, { rev: 'side', author });
+        } catch (caught) {
+          error = caught;
+        }
+
+        // Assert
+        const data = (error as TsgitError).data;
+        expect(data.code).toBe('WORKING_TREE_DIRTY');
+        if (data.code === 'WORKING_TREE_DIRTY') {
+          expect(data.localChanges).toEqual(['f']);
+          expect(data.untracked).toEqual([]);
+        }
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f`)).toBe('LOCAL-EDIT\n');
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(headBefore);
+        expect((await readIndex(ctx)).entries.map((e) => [e.path, e.id])).toEqual(
+          indexBefore.entries.map((e) => [e.path, e.id]),
+        );
+      });
+    });
+  });
+});
+
+describe('merge — file replaced by a directory on one side', () => {
+  const seed = async (): Promise<ReturnType<typeof createMemoryContext>> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b`, 'b\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'base\n');
+    await add(ctx, ['b', 'f']);
+    await commit(ctx, { message: 'base', author });
+    await branchCreate(ctx, { name: 'side' });
+    await checkout(ctx, { rev: 'side' });
+    await rm(ctx, ['f']);
+    await ctx.fs.mkdir(`${ctx.layout.workDir}/f`);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f/x`, 'x\n');
+    await add(ctx, ['f/x']);
+    await commit(ctx, { message: 'replaces f with a directory', author });
+    await checkout(ctx, { rev: 'main', force: true });
+    await ctx.fs.rmRecursive(`${ctx.layout.workDir}/f`);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'main\n');
+    await add(ctx, ['f']);
+    await commit(ctx, { message: 'modifies f', author });
+    return ctx;
+  };
+
+  const stagesOf = async (ctx: ReturnType<typeof createMemoryContext>) =>
+    (await readIndex(ctx)).entries.map((e) => [e.path, e.flags.stage]);
+
+  describe('Given HEAD modifies file f and the merged branch replaces it with directory f/', () => {
+    describe('When merge runs', () => {
+      it('Then f~HEAD is staged at stages 1 and 2 beside f/x at stage 0', async () => {
+        // Arrange
+        const ctx = await seed();
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 'side', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await stagesOf(ctx)).toEqual([
+          ['b', 0],
+          ['f/x', 0],
+          ['f~HEAD', 1],
+          ['f~HEAD', 2],
+        ]);
+      });
+    });
+  });
+
+  describe('Given HEAD replaces file f with directory f/ and the merged branch modifies f', () => {
+    describe('When merge runs', () => {
+      it('Then f~main is staged at stages 1 and 3 beside f/x at stage 0', async () => {
+        // Arrange
+        const ctx = await seed();
+        await ctx.fs.rm(`${ctx.layout.workDir}/f`);
+        await checkout(ctx, { rev: 'side', force: true });
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 'main', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await stagesOf(ctx)).toEqual([
+          ['b', 0],
+          ['f/x', 0],
+          ['f~main', 1],
+          ['f~main', 3],
+        ]);
+      });
+    });
+  });
+});
+
+describe('merge — a conflict rename onto an invalid path', () => {
+  describe('Given ours holds a directory git/ and the merged branch 1 holds a file git', () => {
+    describe('When merge runs', () => {
+      it('Then it throws INVALID_INDEX_ENTRY for git~1 and leaves the index and work tree untouched', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/readme.txt`, 'base\n');
+        await add(ctx, ['readme.txt']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: '1' });
+        await checkout(ctx, { rev: '1' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/git`, 'file\n');
+        await add(ctx, ['git']);
+        await commit(ctx, { message: 'theirs', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/git`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/git/x`, 'dir\n');
+        await add(ctx, ['git/x']);
+        await commit(ctx, { message: 'ours', author });
+        const indexBefore = (await readIndex(ctx)).entries.map((e) => `${e.path}:${e.flags.stage}`);
+        const sut = mergeRun;
+
+        // Act
+        const caught = await sut(ctx, { rev: '1', author }).then(
+          () => undefined,
+          (err: unknown) => (err as TsgitError).data,
+        );
+
+        // Assert
+        expect(caught).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'git~1' NTFS short name rejected",
+        });
+        expect((await readIndex(ctx)).entries.map((e) => `${e.path}:${e.flags.stage}`)).toEqual(
+          indexBefore,
+        );
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/git~1`)).toBe(false);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/git/x`)).toBe('dir\n');
+      });
+    });
+  });
+});
+
+describe('merge — a distinct-types conflict validates each side with the mode it is written with', () => {
+  /** Ours is added through the index; theirs is built from objects so a symlink `.gitmodules` can exist at all. */
+  const seedSides = async (
+    ctx: ReturnType<typeof createMemoryContext>,
+    name: string,
+    oursIsSymlink: boolean,
+  ): Promise<void> => {
+    const { createCommit } = await import(
+      '../../../../src/application/primitives/create-commit.js'
+    );
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/readme.txt`, 'base\n');
+    await add(ctx, ['readme.txt']);
+    const base = await commit(ctx, { message: 'base', author });
+    const readmeEntry = (await readIndex(ctx)).entries[0];
+    const theirBlob = await writeObject(ctx, {
+      type: 'blob',
+      content: new TextEncoder().encode('theirs\n'),
+      id: '' as ObjectId,
+    });
+    const theirTree = await writeTreeMod.writeTree(ctx, [
+      treeEntry(FILE_MODE.REGULAR, 'readme.txt' as never, readmeEntry?.id as ObjectId),
+      treeEntry(oursIsSymlink ? FILE_MODE.REGULAR : FILE_MODE.SYMLINK, name as never, theirBlob),
+    ]);
+    const theirCommit = await createCommit(ctx, {
+      tree: theirTree,
+      parents: [base.id],
+      author,
+      committer: author,
+      message: 'theirs',
+      extraHeaders: [],
+    });
+    await seedRef(ctx, 'refs/heads/1' as RefName, theirCommit, { reflogMessage: 'branch: seed' });
+    if (oursIsSymlink) await ctx.fs.symlink('target', `${ctx.layout.workDir}/${name}`);
+    else await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, 'file\n');
+    await add(ctx, [name]);
+    await commit(ctx, { message: 'ours', author });
+  };
+  const stagesOf = async (ctx: ReturnType<typeof createMemoryContext>): Promise<string[]> =>
+    (await readIndex(ctx)).entries.map((e) => `${e.path}:${e.flags.stage}`);
+
+  describe('Given ours holds a regular .gitmodules and branch 1 holds a symlink .gitmodules', () => {
+    describe('When merge runs', () => {
+      it('Then it throws INVALID_INDEX_ENTRY and leaves the index and work tree untouched', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedSides(ctx, '.gitmodules', false);
+        const indexBefore = await stagesOf(ctx);
+        const sut = mergeRun;
+
+        // Act
+        const caught = await sut(ctx, { rev: '1', author }).then(
+          () => undefined,
+          (err: unknown) => (err as TsgitError).data,
+        );
+
+        // Assert
+        expect(caught).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'.gitmodules' must not be a symlink",
+        });
+        expect(await stagesOf(ctx)).toEqual(indexBefore);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/.gitmodules~HEAD`)).toBe(false);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/.gitmodules`)).toBe('file\n');
+      });
+    });
+  });
+
+  describe('Given ours holds a symlink gitmod and branch 1 holds a regular gitmod', () => {
+    describe('When merge runs', () => {
+      it('Then the conflict is recorded with the regular side staged at gitmod~1', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedSides(ctx, 'gitmod', true);
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: '1', author });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        expect(await stagesOf(ctx)).toEqual(['gitmod:2', 'gitmod~1:3', 'readme.txt:0']);
       });
     });
   });

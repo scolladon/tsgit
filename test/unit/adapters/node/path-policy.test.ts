@@ -360,16 +360,17 @@ describe('windowsPolicy.rootOf — parity with path.win32.parse(p).root', () => 
   });
 });
 
-describe('policy capability quadruples', () => {
+describe('policy capability flags', () => {
   describe('Given posixPolicy', () => {
     describe('When its capability flags are read', () => {
-      it('Then caseInsensitive/windowsSyntax are false and honoursNoFollow/honoursRenameKinds are true', () => {
+      it('Then caseInsensitive/windowsSyntax are false and honoursNoFollow/honoursRenameKinds/honoursRmdirKinds are true', () => {
         // Arrange & Act
         const result = {
           caseInsensitive: posixPolicy.caseInsensitive,
           windowsSyntax: posixPolicy.windowsSyntax,
           honoursNoFollow: posixPolicy.honoursNoFollow,
           honoursRenameKinds: posixPolicy.honoursRenameKinds,
+          honoursRmdirKinds: posixPolicy.honoursRmdirKinds,
         };
 
         // Assert
@@ -378,6 +379,7 @@ describe('policy capability quadruples', () => {
           windowsSyntax: false,
           honoursNoFollow: true,
           honoursRenameKinds: true,
+          honoursRmdirKinds: true,
         });
       });
     });
@@ -385,13 +387,14 @@ describe('policy capability quadruples', () => {
 
   describe('Given windowsPolicy', () => {
     describe('When its capability flags are read', () => {
-      it('Then caseInsensitive/windowsSyntax are true and honoursNoFollow/honoursRenameKinds are false', () => {
+      it('Then caseInsensitive/windowsSyntax are true and honoursNoFollow/honoursRenameKinds/honoursRmdirKinds are false', () => {
         // Arrange & Act
         const result = {
           caseInsensitive: windowsPolicy.caseInsensitive,
           windowsSyntax: windowsPolicy.windowsSyntax,
           honoursNoFollow: windowsPolicy.honoursNoFollow,
           honoursRenameKinds: windowsPolicy.honoursRenameKinds,
+          honoursRmdirKinds: windowsPolicy.honoursRmdirKinds,
         };
 
         // Assert
@@ -400,6 +403,7 @@ describe('policy capability quadruples', () => {
           windowsSyntax: true,
           honoursNoFollow: false,
           honoursRenameKinds: false,
+          honoursRmdirKinds: false,
         });
       });
     });

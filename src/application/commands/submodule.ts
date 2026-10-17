@@ -16,6 +16,11 @@ import {
 } from '../../domain/commands/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import {
+  type IndexPathKey,
+  indexPathKey,
+  keyOfPath,
+} from '../../domain/git-index/index-path-key.js';
+import {
   FILE_MODE,
   type FilePath,
   type HashConfig,
@@ -614,15 +619,17 @@ const stageSubmodule = async (
   const lock = await acquireIndexLock(ctx);
   try {
     const index = await readIndex(ctx);
-    const entries = new Map<string, IndexEntry>(index.entries.map((e) => [e.path, e]));
+    const entries = new Map<IndexPathKey, IndexEntry>(
+      index.entries.map((e) => [indexPathKey(e), e]),
+    );
     const gitlinkStat = await ctx.fs.lstat(joinPath(workDir, path));
     entries.set(
-      path,
+      keyOfPath(path as FilePath),
       indexEntryFromStat(gitlinkStat, FILE_MODE.GITLINK, subHead, path as FilePath),
     );
     const gitmodulesStat = await ctx.fs.lstat(joinPath(workDir, GITMODULES_FILE));
     entries.set(
-      GITMODULES_FILE,
+      keyOfPath(GITMODULES_FILE as FilePath),
       indexEntryFromStat(
         gitmodulesStat,
         FILE_MODE.REGULAR,

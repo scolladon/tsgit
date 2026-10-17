@@ -14,7 +14,7 @@ import type {
   DiffChange,
   RenameChange,
 } from '../../domain/diff/diff-change.js';
-import type { FlatTree } from '../../domain/diff/flat-tree.js';
+import type { EscapedFlatTree } from '../../domain/diff/flat-tree.js';
 import { sortByPath } from '../../domain/diff/path-compare.js';
 import { detectRenames, type RenameDetectOptions } from '../../domain/diff/rename-detect.js';
 import {
@@ -31,9 +31,9 @@ import { detectSimilarityRenames } from './detect-similarity-renames.js';
 import { readMergeRenameConfig } from './internal/merge-rename-config.js';
 
 interface SidePass {
-  readonly base: FlatTree;
-  readonly side: FlatTree;
-  readonly other: FlatTree;
+  readonly base: EscapedFlatTree;
+  readonly side: EscapedFlatTree;
+  readonly other: EscapedFlatTree;
   /** Shared by both sides' passes, so each tree is scanned once per merge. */
   readonly scans: MergeTreeScans;
   readonly empty: ObjectId;
@@ -152,9 +152,9 @@ const warnRenameLimit = (ctx: Context, needed: number): void => {
 
 export const detectMergeRenames = async (
   ctx: Context,
-  base: FlatTree | undefined,
-  ours: FlatTree,
-  theirs: FlatTree,
+  base: EscapedFlatTree | undefined,
+  ours: EscapedFlatTree,
+  theirs: EscapedFlatTree,
   overrides: OrtRenameOptions = {},
 ): Promise<MergeRenames> => {
   const config = await readMergeRenameConfig(ctx);

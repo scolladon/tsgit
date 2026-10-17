@@ -40,6 +40,13 @@ Like `git rm`, `rm` refuses to destroy un-recoverable changes (validated up fron
 A path whose working file is already gone is never refused. `cached` keeps the
 working file in every case; `force` overrides the valve entirely.
 
+## Byte-exact paths and the work tree
+
+- A literal pathspec never selects a lossy twin: an entry whose name is not valid UTF-8 is matched only by a pathspec that decodes to the same bytes, never by its U+FFFD view alone.
+- A lossy entry is never unlinked on disk; only its index entry is removed.
+- Without `cached`, directories the removal leaves empty are pruned, as git does.
+- The `HEAD` comparison looks the path up by raw bytes.
+
 ## Examples
 
 ```ts

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import {
+  gitPickerValidPrefix,
   isDotGitAlias,
   isDotGitWalkEntry,
   verifyPath,
@@ -252,6 +253,19 @@ describe('verifyPath', () => {
         {
           label: "'a\\\\b' accepts (bare backslash is not itself a rejection)",
           path: 'a\\b',
+          mode: FILE_MODE.REGULAR,
+          expected: undefined,
+        },
+
+        {
+          label: "'a\\.g<ZWNJ>it/x' accepts: the HFS alias check spans the whole component",
+          path: 'a\\.g\u200cit/x',
+          mode: FILE_MODE.REGULAR,
+          expected: undefined,
+        },
+        {
+          label: "'a\\.g<ZWNJ>it\\b' accepts: the HFS alias check spans the whole component",
+          path: 'a\\.g\u200cit\\b',
           mode: FILE_MODE.REGULAR,
           expected: undefined,
         },
@@ -695,6 +709,242 @@ describe('isDotGitWalkEntry', () => {
 
         // Act
         const result = isDotGitWalkEntry(name);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('verifyPath on raw path bytes', () => {
+  const rawPath = (...parts: (string | readonly number[])[]): Uint8Array =>
+    Uint8Array.from(
+      parts.flatMap((part) =>
+        typeof part === 'string' ? [...new TextEncoder().encode(part)] : [...part],
+      ),
+    );
+  const viewOf = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
+
+  describe('Given a backslash-led part followed by a dotgit lookalike in the same component', () => {
+    describe('When verified with the raw bytes', () => {
+      it.each([
+        { label: 'a\\.git\\xff/x', bytes: rawPath('a\\.git', [0xff], '/x') },
+        { label: 'a\\.git\\xff', bytes: rawPath('a\\.git', [0xff]) },
+        { label: 'a\\.g\\xe2\\x80\\x8cit/x', bytes: rawPath('a\\.g', [0xe2, 0x80, 0x8c], 'it/x') },
+      ])('Then $label is accepted', ({ bytes }) => {
+        // Arrange
+        const view = viewOf(bytes);
+
+        // Act
+        const result = verifyPath(view, FILE_MODE.REGULAR, bytes);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe("Given a '.git' component whose tail git's UTF-8 picker rejects", () => {
+    describe('When verified with the raw bytes', () => {
+      it.each([
+        { label: '.git\\xff/x', bytes: rawPath('.git', [0xff], '/x') },
+        { label: '.git\\xed\\xa0\\x80/x', bytes: rawPath('.git', [0xed, 0xa0, 0x80], '/x') },
+        { label: '.git\\xc0\\xaf', bytes: rawPath('.git', [0xc0, 0xaf]) },
+        { label: '.git\\xc3/x', bytes: rawPath('.git', [0xc3], '/x') },
+        {
+          label: '.git\\xf4\\x90\\x80\\x80/x',
+          bytes: rawPath('.git', [0xf4, 0x90, 0x80, 0x80], '/x'),
+        },
+        {
+          label: '.g\\xef\\xbb\\xbfit\\xff/x',
+          bytes: rawPath('.g', [0xef, 0xbb, 0xbf], 'it', [0xff], '/x'),
+        },
+        {
+          label: '.GiT\\xe2\\x80\\x8c\\xff/x',
+          bytes: rawPath('.GiT', [0xe2, 0x80, 0x8c, 0xff], '/x'),
+        },
+        { label: 'a/.git\\xff/x', bytes: rawPath('a/.git', [0xff], '/x') },
+        { label: '.git\\xff', bytes: rawPath('.git', [0xff]) },
+        { label: '.git\\xef\\xbf\\xbe/x', bytes: rawPath('.git', [0xef, 0xbf, 0xbe], '/x') },
+      ])('Then $label is a dotgit-hfs-alias', ({ bytes }) => {
+        // Arrange
+        const view = viewOf(bytes);
+
+        // Act
+        const result = verifyPath(view, FILE_MODE.REGULAR, bytes);
+
+        // Assert
+        expect(result).toBe('dotgit-hfs-alias');
+      });
+    });
+
+    describe('When verified as a symlink named .gitmodules with such a tail', () => {
+      it.each([
+        { label: '.gitmodules\\xff', bytes: rawPath('.gitmodules', [0xff]) },
+        { label: '.gitmodules\\xef\\xbf\\xbe', bytes: rawPath('.gitmodules', [0xef, 0xbf, 0xbe]) },
+      ])('Then $label is gitmodules-not-regular', ({ bytes }) => {
+        // Arrange
+        const view = viewOf(bytes);
+
+        // Act
+        const result = verifyPath(view, FILE_MODE.SYMLINK, bytes);
+
+        // Assert
+        expect(result).toBe('gitmodules-not-regular');
+      });
+    });
+  });
+
+  describe('Given a string path with a U+FFFE or U+FFFF tail and no bytes', () => {
+    describe('When verified', () => {
+      it.each([
+        {
+          label: '.git\\uFFFE/x',
+          path: '.git￾/x',
+          mode: FILE_MODE.REGULAR,
+          expected: 'dotgit-hfs-alias',
+        },
+        {
+          label: '.git\\uFFFF/x',
+          path: '.git￿/x',
+          mode: FILE_MODE.REGULAR,
+          expected: 'dotgit-hfs-alias',
+        },
+        {
+          label: '.gitmodules\\uFFFE symlink',
+          path: '.gitmodules￾',
+          mode: FILE_MODE.SYMLINK,
+          expected: 'gitmodules-not-regular',
+        },
+      ])('Then $label is rejected', (row) => {
+        // Arrange
+        const { path, mode, expected } = row;
+
+        // Act
+        const result = verifyPath(path, mode);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given an ignorable code point before a trailing dot or space', () => {
+    describe('When verified', () => {
+      it.each([
+        { label: '.g\\u200cit./x', path: '.g‌it./x' },
+        { label: '.g\\u200cit /x', path: '.g‌it /x' },
+        { label: '.git\\u200c./x', path: '.git‌./x' },
+      ])('Then $label is accepted', ({ path }) => {
+        // Arrange
+        const mode = FILE_MODE.REGULAR;
+
+        // Act
+        const result = verifyPath(path, mode);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given names whose tail is a valid or non-alias sequence', () => {
+    describe('When verified with the raw bytes', () => {
+      it.each([
+        {
+          label: '.git\\xef\\xbf\\xbd/x (literal U+FFFD)',
+          bytes: rawPath('.git', [0xef, 0xbf, 0xbd], '/x'),
+          mode: FILE_MODE.REGULAR,
+          expected: undefined,
+        },
+        {
+          label: '.g\\xffit/x',
+          bytes: rawPath('.g', [0xff], 'it/x'),
+          mode: FILE_MODE.REGULAR,
+          expected: undefined,
+        },
+        {
+          label: '.gitmodules\\xff regular',
+          bytes: rawPath('.gitmodules', [0xff]),
+          mode: FILE_MODE.REGULAR,
+          expected: undefined,
+        },
+        {
+          label: '.git\\xe2\\x80\\x8c/x',
+          bytes: rawPath('.git', [0xe2, 0x80, 0x8c], '/x'),
+          mode: FILE_MODE.REGULAR,
+          expected: 'dotgit-hfs-alias',
+        },
+        {
+          label: '.git.\\x80/x',
+          bytes: rawPath('.git.', [0x80], '/x'),
+          mode: FILE_MODE.REGULAR,
+          expected: undefined,
+        },
+        {
+          label: '.git.\\xff/x',
+          bytes: rawPath('.git.', [0xff], '/x'),
+          mode: FILE_MODE.REGULAR,
+          expected: undefined,
+        },
+        {
+          label: '.git \\xff/x',
+          bytes: rawPath('.git ', [0xff], '/x'),
+          mode: FILE_MODE.REGULAR,
+          expected: undefined,
+        },
+      ])('Then $label yields $expected', ({ bytes, mode, expected }) => {
+        // Arrange
+        const view = viewOf(bytes);
+
+        // Act
+        const result = verifyPath(view, mode, bytes);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('gitPickerValidPrefix', () => {
+  describe("Given byte sequences git's UTF-8 picker accepts or rejects", () => {
+    describe('When the valid prefix is measured', () => {
+      it.each([
+        { label: 'empty', bytes: [], expected: 0 },
+        { label: 'ASCII only', bytes: [0x61, 0x62], expected: 2 },
+        { label: 'DEL', bytes: [0x7f], expected: 1 },
+        { label: 'lowest 2-byte', bytes: [0xc2, 0x80], expected: 2 },
+        { label: 'highest 2-byte', bytes: [0xdf, 0xbf], expected: 2 },
+        { label: 'lowest 3-byte', bytes: [0xe0, 0xa0, 0x80], expected: 3 },
+        { label: 'continuation above range', bytes: [0xc3, 0xc0], expected: 0 },
+        { label: 'valid 2-byte', bytes: [0xc3, 0xa9], expected: 2 },
+        { label: 'valid 3-byte', bytes: [0xe2, 0x80, 0x8c], expected: 3 },
+        { label: 'valid 4-byte', bytes: [0xf0, 0x90, 0x80, 0x80], expected: 4 },
+        { label: 'U+10FFFF', bytes: [0xf4, 0x8f, 0xbf, 0xbf], expected: 4 },
+        { label: 'U+3FFFF', bytes: [0xf0, 0xbf, 0xbf, 0xbf], expected: 4 },
+        { label: 'U+FFFD', bytes: [0xef, 0xbf, 0xbd], expected: 3 },
+        { label: 'C0 lead', bytes: [0x61, 0xc0, 0xaf], expected: 1 },
+        { label: 'C1 lead', bytes: [0xc1, 0xbf], expected: 0 },
+        { label: 'stray continuation', bytes: [0x61, 0x80], expected: 1 },
+        { label: 'E0 overlong', bytes: [0xe0, 0x9f, 0xbf], expected: 0 },
+        { label: 'surrogate ED A0', bytes: [0xed, 0xa0, 0x80], expected: 0 },
+        { label: 'ED 9F is not a surrogate', bytes: [0xed, 0x9f, 0xbf], expected: 3 },
+        { label: 'U+FFFE', bytes: [0xef, 0xbf, 0xbe], expected: 0 },
+        { label: 'U+FFFF', bytes: [0xef, 0xbf, 0xbf], expected: 0 },
+        { label: 'F0 overlong', bytes: [0xf0, 0x8f, 0x80, 0x80], expected: 0 },
+        { label: 'F4 beyond Unicode', bytes: [0xf4, 0x90, 0x80, 0x80], expected: 0 },
+        { label: 'F5 lead', bytes: [0xf5, 0x80, 0x80, 0x80], expected: 0 },
+        { label: 'truncated 3-byte', bytes: [0x61, 0xe2, 0x80], expected: 1 },
+        { label: 'bad continuation', bytes: [0xc3, 0x28], expected: 0 },
+        { label: 'bad third byte', bytes: [0xe2, 0x80, 0x28], expected: 0 },
+      ])('Then $label yields $expected', ({ bytes, expected }) => {
+        // Arrange
+        const sut = Uint8Array.from(bytes);
+
+        // Act
+        const result = gitPickerValidPrefix(sut);
 
         // Assert
         expect(result).toBe(expected);

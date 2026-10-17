@@ -17,6 +17,8 @@ import { requireWorkTree } from './repo-state.js';
 export interface LeadingPathScanner {
   /** True when any leading component of `path` (its directories, never the leaf) is a symlink. */
   readonly hasSymlinkedLeadingPath: (path: FilePath) => Promise<boolean>;
+  /** The first leading component of `path` (its directories, never the leaf) that is a symlink — the path git names for it. */
+  readonly symlinkedLeadingComponent: (path: FilePath) => Promise<FilePath | undefined>;
   /**
    * Unlink the first symlinked leading directory component of `path`, if
    * any — git's checkout materialisation: a leading directory that is a
@@ -33,9 +35,18 @@ export interface LeadingPathScanner {
    * there (handled internally by `unlinkSymlinkedLeadingComponent`).
    */
   readonly invalidate: (path: FilePath) => void;
+  /**
+   * git's `create_directories`: make every leading directory of `path` a real
+   * directory, one component at a time and never recursively. A missing
+   * component is created; a symlink or a regular file standing in the way is
+   * removed first, so a later write can never be routed through a link.
+   */
+  readonly ensureLeadingDirectories: (path: FilePath) => Promise<void>;
+  /** Forget every verdict. Memo keys are spellings, so a case-folding disk can outdate any of them. */
+  readonly invalidateAll: () => void;
 }
 
-type PrefixShape = 'symlink' | 'plain' | 'missing';
+type PrefixShape = 'symlink' | 'directory' | 'other' | 'missing';
 
 /**
  * Build a scanner whose per-directory memo lives for the scanner's lifetime
@@ -87,7 +98,8 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
   const lstatPrefix = async (prefix: string): Promise<PrefixShape> => {
     try {
       const stat = await ctx.fs.lstat(joinPath(workDir, prefix));
-      return stat.isSymbolicLink ? 'symlink' : 'plain';
+      if (stat.isSymbolicLink) return 'symlink';
+      return stat.isDirectory ? 'directory' : 'other';
     } catch (err) {
       // A missing prefix is not a symlink. Never swallow anything else —
       // a genuine PERMISSION_DENIED (or similar) must propagate.
@@ -96,20 +108,23 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
     }
   };
 
-  const hasSymlinkedLeadingPath = async (path: FilePath): Promise<boolean> => {
+  const symlinkedLeadingComponent = async (path: FilePath): Promise<FilePath | undefined> => {
     const segments = path.split('/');
     // Stryker disable next-line StringLiteral: equivalent — split() always returns at least one element, so the '' default can never activate.
     let prefix = segments[0] ?? '';
     for (let i = 1; i < segments.length; i += 1) {
       const shape = await classifyPrefix(prefix);
-      // A missing prefix means no real filesystem could have a deeper entry
-      // beneath it either — stop walking rather than trust a longer prefix.
-      if (shape === 'missing') return false;
-      if (shape === 'symlink') return true;
+      // Nothing can sit beneath a missing prefix or a regular file, and a real
+      // filesystem refuses to stat there — stop walking rather than ask.
+      if (shape === 'missing' || shape === 'other') return undefined;
+      if (shape === 'symlink') return prefix as FilePath;
       prefix = `${prefix}/${segments[i]}`;
     }
-    return false;
+    return undefined;
   };
+
+  const hasSymlinkedLeadingPath = async (path: FilePath): Promise<boolean> =>
+    (await symlinkedLeadingComponent(path)) !== undefined;
 
   const unlinkSymlinkedLeadingComponent = async (path: FilePath): Promise<void> => {
     const segments = path.split('/');
@@ -141,5 +156,40 @@ export const createLeadingPathScanner = (ctx: Context): LeadingPathScanner => {
     memo.delete(path);
   };
 
-  return { hasSymlinkedLeadingPath, unlinkSymlinkedLeadingComponent, invalidate };
+  const makeDirectory = async (prefix: string): Promise<void> => {
+    await ctx.fs.mkdir(joinPath(workDir, prefix));
+    memo.set(
+      prefix,
+      createPromiseMemo<PrefixShape>(async () => 'directory'),
+    );
+  };
+
+  const ensureDirectory = async (prefix: string): Promise<void> => {
+    const shape = await classifyPrefix(prefix);
+    if (shape === 'directory') return;
+    if (shape !== 'missing') await ctx.fs.rm(joinPath(workDir, prefix));
+    await makeDirectory(prefix);
+  };
+
+  const ensureLeadingDirectories = async (path: FilePath): Promise<void> => {
+    const segments = path.split('/');
+    let prefix = '';
+    for (const segment of segments.slice(0, -1)) {
+      prefix = prefix === '' ? segment : `${prefix}/${segment}`;
+      await ensureDirectory(prefix);
+    }
+  };
+
+  const invalidateAll = (): void => {
+    memo.clear();
+  };
+
+  return {
+    hasSymlinkedLeadingPath,
+    symlinkedLeadingComponent,
+    unlinkSymlinkedLeadingComponent,
+    invalidate,
+    ensureLeadingDirectories,
+    invalidateAll,
+  };
 };

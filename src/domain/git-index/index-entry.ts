@@ -1,4 +1,5 @@
 import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
+import type { IndexPath } from './index-path-key.js';
 
 export interface IndexEntryFlags {
   readonly assumeValid: boolean;
@@ -31,6 +32,14 @@ export interface IndexEntry {
   readonly id: ObjectId;
   readonly flags: IndexEntryFlags;
   readonly path: FilePath;
+  /**
+   * Raw path bytes, present only when `path` does not re-encode to them (a
+   * non-UTF-8 name). Writers emit them verbatim. A fresh copy, never a view
+   * on the index buffer; read-only by contract, as parsed entries are shared
+   * through the index cache. Anything that changes `path` must drop or
+   * recompute it.
+   */
+  readonly pathBytes?: Uint8Array;
 }
 
 export interface IndexExtension {
@@ -125,11 +134,9 @@ export function isStatClean(entry: IndexEntry, stat: StatData): boolean {
  * Shared by the sparse-aware primitives (`materializeTree`,
  * `buildIndexFromTree`) so the synthesised-entry shape lives in one place.
  */
-export const skipWorktreeEntry = (entry: {
-  readonly path: FilePath;
-  readonly id: ObjectId;
-  readonly mode: FileMode;
-}): IndexEntry => ({
+export const skipWorktreeEntry = (
+  entry: IndexPath & { readonly id: ObjectId; readonly mode: FileMode },
+): IndexEntry => ({
   ctimeSeconds: 0,
   ctimeNanoseconds: 0,
   mtimeSeconds: 0,
@@ -143,4 +150,26 @@ export const skipWorktreeEntry = (entry: {
   id: entry.id,
   flags: { ...STAGE0_FLAGS, skipWorktree: true },
   path: entry.path,
+  ...(entry.pathBytes === undefined ? {} : { pathBytes: entry.pathBytes }),
+});
+
+/**
+ * The entry relocated to `to`. Built field by field so the previous raw path
+ * bytes never ride along to a path they do not spell.
+ */
+export const withPath = (entry: IndexEntry, to: IndexPath): IndexEntry => ({
+  ctimeSeconds: entry.ctimeSeconds,
+  ctimeNanoseconds: entry.ctimeNanoseconds,
+  mtimeSeconds: entry.mtimeSeconds,
+  mtimeNanoseconds: entry.mtimeNanoseconds,
+  dev: entry.dev,
+  ino: entry.ino,
+  mode: entry.mode,
+  uid: entry.uid,
+  gid: entry.gid,
+  fileSize: entry.fileSize,
+  id: entry.id,
+  flags: entry.flags,
+  path: to.path,
+  ...(to.pathBytes === undefined ? {} : { pathBytes: to.pathBytes }),
 });

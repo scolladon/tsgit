@@ -1,3 +1,5 @@
+import { splitAtSlash } from '../git-index/index-path-key.js';
+import { decodePreservingBom, wellFormedSequenceLength } from '../objects/encoding.js';
 import { FILE_MODE, type FileMode } from '../objects/file-mode.js';
 
 export type VerifyPathRejection =
@@ -50,6 +52,60 @@ const hasIgnorableCodepoint = (part: string): boolean => {
   return false;
 };
 
+const THREE_BYTE_LEAD_NON_CHARACTER = 0xef;
+const NON_CHARACTER_SECOND = 0xbf;
+const NON_CHARACTER_THIRD_MIN = 0xbe;
+const BMP_LAST_MINUS_ONE = 0xfffe;
+const BMP_LAST = 0xffff;
+
+const isNonCharacterTail = (bytes: Uint8Array, at: number): boolean =>
+  bytes[at] === THREE_BYTE_LEAD_NON_CHARACTER &&
+  bytes[at + 1] === NON_CHARACTER_SECOND &&
+  (bytes[at + 2] as number) >= NON_CHARACTER_THIRD_MIN;
+
+/** Length of the sequence git's `pick_one_utf8_char` accepts at `at`, or 0 when it rejects. */
+const acceptedSequenceLength = (bytes: Uint8Array, at: number): number => {
+  const length = wellFormedSequenceLength(bytes, at);
+  // The non-character tail starts with a three-byte lead, so it only ever meets a three-byte length or 0.
+  return isNonCharacterTail(bytes, at) ? 0 : length;
+};
+
+/** Offset of the first sequence git's `pick_one_utf8_char` rejects, else `bytes.length`. */
+export const gitPickerValidPrefix = (bytes: Uint8Array): number => {
+  let at = 0;
+  // Stryker disable next-line EqualityOperator: equivalent — at bytes.length the lead reads undefined, acceptedSequenceLength is 0 and the loop returns at, which is bytes.length.
+  while (at < bytes.length) {
+    const length = acceptedSequenceLength(bytes, at);
+    if (length === 0) return at;
+    at += length;
+  }
+  return bytes.length;
+};
+
+const firstNonCharacter = (part: string): number => {
+  // Stryker disable next-line EqualityOperator: equivalent — charCodeAt(part.length) is NaN, matches neither non-character, so the loop still ends at part.length.
+  for (let i = 0; i < part.length; i += 1) {
+    const code = part.charCodeAt(i);
+    if (code === BMP_LAST_MINUS_ONE || code === BMP_LAST) return i;
+  }
+  return part.length;
+};
+
+// git hands the HFS check only the bytes its UTF-8 picker accepts, so the
+// candidate ends where the picker stops, not where the lossy view does.
+const hfsCandidate = (part: string, partBytes?: Uint8Array): string =>
+  partBytes === undefined
+    ? part.slice(0, firstNonCharacter(part))
+    : decodePreservingBom(partBytes.subarray(0, gitPickerValidPrefix(partBytes)));
+
+const hfsAlias = (part: string, partBytes: Uint8Array | undefined, target: string): boolean => {
+  const candidate = hfsCandidate(part, partBytes);
+  // Stryker disable next-line ConditionalExpression: equivalent — when it holds the result is part.toLowerCase() === target, which both callers' normalizeAliasCandidate check already caught before calling, so it is false here.
+  if (candidate === part && !hasIgnorableCodepoint(part)) return false;
+  // HFS folds case only; trailing dots and spaces are an NTFS rule.
+  return stripIgnorableCodepoints(candidate).toLowerCase() === target;
+};
+
 /**
  * git's `is_ntfs_dot_generic` treats `:` as a component terminator: an NTFS
  * alternate-data-stream suffix on EITHER the full name or a short-name alias
@@ -65,16 +121,14 @@ const splitAtStream = (part: string): { candidate: string; hasStream: boolean } 
     : { candidate: part.slice(0, colonIndex), hasStream: true };
 };
 
-const matchAliasPart = (part: string): VerifyPathRejection | undefined => {
+const matchNtfsPart = (part: string): VerifyPathRejection | undefined => {
   const { candidate, hasStream } = splitAtStream(part);
   const normalized = normalizeAliasCandidate(candidate);
   if (normalized === DOTGIT) return hasStream ? 'dotgit-ntfs-stream' : 'dotgit-alias';
   if (normalized === NTFS_SHORT_NAME) {
     return hasStream ? 'dotgit-ntfs-stream' : 'dotgit-ntfs-alias';
   }
-  if (!hasIgnorableCodepoint(part)) return undefined;
-  const hfsNormalized = normalizeAliasCandidate(stripIgnorableCodepoints(part));
-  return hfsNormalized === DOTGIT ? 'dotgit-hfs-alias' : undefined;
+  return undefined;
 };
 
 const ASCII_DOT = 0x2e;
@@ -86,7 +140,7 @@ const ASCII_MAX = 0x7f;
 /**
  * True when `component` cannot possibly normalise (case-fold, trailing
  * dot/space strip, or ignorable-codepoint strip) to `.git`, `git~1`, or
- * either of their stream/alias forms — every target of {@link matchAliasPart}
+ * either of their stream/alias forms — every target of {@link matchNtfsPart}
  * begins with `.` or `g`/`G` and is pure ASCII. A component whose first
  * character is neither, that carries no backslash (which could re-anchor a
  * LATER split part's own first character), and no byte ≥ 0x80 (every
@@ -98,7 +152,7 @@ const ASCII_MAX = 0x7f;
  * change what the FIRST character is.
  */
 const isObviouslyNotAnAlias = (component: string): boolean => {
-  // Stryker disable next-line BooleanLiteral: equivalent — an empty component can never equal DOTGIT/NTFS_SHORT_NAME either way; isDotGitAlias('') is false whether this fast path fires or falls through to matchAliasPart('') (verified: 'empty component' case in verify-path.test.ts passes unmutated).
+  // Stryker disable next-line BooleanLiteral: equivalent — an empty component can never equal DOTGIT/NTFS_SHORT_NAME either way; isDotGitAlias('') is false whether this fast path fires or falls through to matchAliasComponent('') (verified: 'empty component' case in verify-path.test.ts passes unmutated).
   if (component.length === 0) return false;
   const first = component.charCodeAt(0);
   if (first === ASCII_DOT || first === ASCII_UPPER_G || first === ASCII_LOWER_G) return false;
@@ -109,17 +163,20 @@ const isObviouslyNotAnAlias = (component: string): boolean => {
   return true;
 };
 
-// The `\` split exists only to feed this scan (`.git\config` reads as two
-// parts, `.git` and `config`) — a bare backslash is never a rejection. Most
-// components carry no backslash at all, so skip the allocating split for them.
-const matchAliasComponent = (component: string): VerifyPathRejection | undefined => {
+// git runs the NTFS scan per backslash part (`.git\config` reads as two parts,
+// `.git` and `config`) but hands the HFS check the whole `/` component, so an
+// HFS lookalike only matches when the component itself is the alias.
+const matchAliasComponent = (
+  component: string,
+  componentBytes?: Uint8Array,
+): VerifyPathRejection | undefined => {
+  // Stryker disable next-line ConditionalExpression: equivalent — a fast path: a component it admits is all-ASCII, backslash-free and opens with neither . nor g, so both the NTFS and the HFS arms below return undefined for it.
   if (isObviouslyNotAnAlias(component)) return undefined;
-  if (component.indexOf('\\') === -1) return matchAliasPart(component);
   for (const part of component.split('\\')) {
-    const reason = matchAliasPart(part);
+    const reason = matchNtfsPart(part);
     if (reason !== undefined) return reason;
   }
-  return undefined;
+  return hfsAlias(component, componentBytes, DOTGIT) ? 'dotgit-hfs-alias' : undefined;
 };
 
 /** True if `component` is `.git` or one of its NTFS/HFS-obscured aliases. */
@@ -156,9 +213,12 @@ const matchShape = (component: string): VerifyPathRejection | undefined => {
   return undefined;
 };
 
-const findComponentRejection = (components: readonly string[]): VerifyPathRejection | undefined => {
-  for (const component of components) {
-    const reason = matchShape(component) ?? matchAliasComponent(component);
+const findComponentRejection = (
+  components: readonly string[],
+  bytes?: readonly Uint8Array[],
+): VerifyPathRejection | undefined => {
+  for (const [index, component] of components.entries()) {
+    const reason = matchShape(component) ?? matchAliasComponent(component, bytes?.[index]);
     if (reason !== undefined) return reason;
   }
   return undefined;
@@ -180,21 +240,19 @@ const GITMOD_NTFS_HASHED_SHORT_NAME = /^gi7eba~[1-9]$/;
  * True if `component` is `.gitmodules` or one of its NTFS (`gitmod~1`..
  * `gitmod~4` truncated short name, `gi7eba~1`..`gi7eba~9` hashed short name —
  * either with a `:`-stream suffix) / HFS+ (ignorable-codepoint) aliases — the
- * same normalisation {@link matchAliasPart} runs for `.git`, re-targeted at
+ * same normalisation {@link matchNtfsPart} runs for `.git`, re-targeted at
  * `.gitmodules`. Unlike {@link matchAliasComponent}, this skips the
  * backslash-split: a component reaching `verifyPath` has already passed
  * `validateIndexPath`'s unconditional backslash rejection, so a
  * `.gitmodules`-alias component can never itself carry an embedded `\`.
  */
-const matchGitmodulesAliasPart = (component: string): boolean => {
+const matchGitmodulesAliasPart = (component: string, componentBytes?: Uint8Array): boolean => {
   const { candidate } = splitAtStream(component);
   const normalized = normalizeAliasCandidate(candidate);
   if (normalized === GITMODULES) return true;
   if (GITMOD_NTFS_SHORT_NAME.test(normalized)) return true;
   if (GITMOD_NTFS_HASHED_SHORT_NAME.test(normalized)) return true;
-  // Stryker disable next-line ConditionalExpression: equivalent — when hasIgnorableCodepoint(component) is false, stripIgnorableCodepoints(component) removes nothing, so the line below reduces to normalizeAliasCandidate(component) === GITMODULES; component either equals `candidate` (already ruled out on line 159) or carries a `:` stream suffix that normalizeAliasCandidate never strips, so that comparison can never be true — skipping the early return produces the same `false` either way.
-  if (!hasIgnorableCodepoint(component)) return false;
-  return normalizeAliasCandidate(stripIgnorableCodepoints(component)) === GITMODULES;
+  return hfsAlias(component, componentBytes, GITMODULES);
 };
 
 // CVE-2018-11235 hardening: an entry whose mode is a symlink must not carry
@@ -205,8 +263,13 @@ const matchGitmodulesAliasPart = (component: string): boolean => {
 // like the `.git`-alias scan above — a `.gitmodules` directory holding an
 // unrelated symlinked leaf is refused exactly as a symlinked `.gitmodules`
 // leaf itself is.
-const hasGitmodulesSymlinkComponent = (components: readonly string[], mode: FileMode): boolean =>
-  mode === FILE_MODE.SYMLINK && components.some(matchGitmodulesAliasPart);
+const hasGitmodulesSymlinkComponent = (
+  components: readonly string[],
+  mode: FileMode,
+  bytes?: readonly Uint8Array[],
+): boolean =>
+  mode === FILE_MODE.SYMLINK &&
+  components.some((component, index) => matchGitmodulesAliasPart(component, bytes?.[index]));
 
 /**
  * Mirrors git's `verify_path(path, mode)`: a total function over any string,
@@ -214,10 +277,17 @@ const hasGitmodulesSymlinkComponent = (components: readonly string[], mode: File
  * become an index entry). Never throws — each call site shapes its own error
  * vocabulary from the returned reason.
  */
-export const verifyPath = (path: string, mode: FileMode): VerifyPathRejection | undefined => {
+export const verifyPath = (
+  path: string,
+  mode: FileMode,
+  pathBytes?: Uint8Array,
+): VerifyPathRejection | undefined => {
   if (path.startsWith('/')) return 'absolute-path';
   const components = path.split('/');
-  const reason = findComponentRejection(components);
+  const bytes = pathBytes && splitAtSlash(pathBytes);
+  const reason = findComponentRejection(components, bytes);
   if (reason !== undefined) return reason;
-  return hasGitmodulesSymlinkComponent(components, mode) ? 'gitmodules-not-regular' : undefined;
+  return hasGitmodulesSymlinkComponent(components, mode, bytes)
+    ? 'gitmodules-not-regular'
+    : undefined;
 };

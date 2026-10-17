@@ -9,7 +9,13 @@
  * under `primitives/` (a primitive importing `commands/` breaks the hexagonal
  * dependency rule).
  */
-import { type IndexEntry, STAGE0_FLAGS } from '../../../domain/git-index/index.js';
+import { type IndexEntry, skipWorktreeEntry } from '../../../domain/git-index/index.js';
+import {
+  escapedPathOf,
+  type IndexPathKey,
+  indexPathKey,
+  isLossy,
+} from '../../../domain/git-index/index-path-key.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { SparseMatcher } from '../../../domain/sparse/index.js';
 import type { Context } from '../../../ports/context.js';
@@ -57,8 +63,14 @@ interface Partitioned {
   readonly retained: ReadonlyArray<IndexEntry>;
 }
 
-const isIncluded = (matcher: SparseMatcher | undefined, path: FilePath): boolean =>
-  matcher === undefined ? true : matcher(path);
+const isIncluded = (matcher: SparseMatcher | undefined, entry: IndexEntry): boolean =>
+  matcher === undefined ? true : matcher(escapedPathOf(entry));
+
+/** `path`, plus `pathBytes` only for a lossy entry — a lossy entry never aliases its UTF-8 twin. */
+const changesetPathOf = (entry: IndexEntry): Pick<ChangesetEntry, 'path' | 'pathBytes'> => ({
+  path: entry.path,
+  ...(entry.pathBytes === undefined ? {} : { pathBytes: entry.pathBytes }),
+});
 
 /**
  * Partition stage-0 entries. An excluded entry whose working-tree file exists
@@ -77,8 +89,12 @@ const partition = async (
   const retained: IndexEntry[] = [];
   const isDirty = createWorkingTreeDirtyCheck(ctx);
   for (const entry of entries) {
-    if (isIncluded(opts.matcher, entry.path)) {
+    if (isIncluded(opts.matcher, entry)) {
       included.push(entry);
+      continue;
+    }
+    if (isLossy(entry)) {
+      removable.push({ entry, present: false });
       continue;
     }
     const absPath = joinPath(workdir, entry.path);
@@ -93,7 +109,7 @@ const partition = async (
 /** A `delete` changeset entry for an excluded file currently on disk. */
 const deleteEntry = (entry: IndexEntry): ChangesetEntry => ({
   kind: 'delete',
-  path: entry.path,
+  ...changesetPathOf(entry),
   mode: entry.mode,
   id: undefined,
   previousId: entry.id,
@@ -103,7 +119,7 @@ const deleteEntry = (entry: IndexEntry): ChangesetEntry => ({
 /** An `add` changeset entry for an included file currently absent from disk. */
 const addEntry = (entry: IndexEntry): ChangesetEntry => ({
   kind: 'add',
-  path: entry.path,
+  ...changesetPathOf(entry),
   mode: entry.mode,
   id: entry.id,
   previousId: undefined,
@@ -113,19 +129,30 @@ const addEntry = (entry: IndexEntry): ChangesetEntry => ({
 /** A `noop` changeset entry — the file already matches its desired state. */
 const noopEntry = (entry: IndexEntry): ChangesetEntry => ({
   kind: 'noop',
-  path: entry.path,
+  ...changesetPathOf(entry),
   mode: entry.mode,
   id: entry.id,
   previousId: entry.id,
   previousMode: entry.mode,
 });
 
+/** An included entry is `noop` when its file is on disk, else `add`; a lossy one is never probed, its decoded name being another file. */
+const includedChange = async (
+  ctx: Context,
+  workdir: string,
+  entry: IndexEntry,
+): Promise<ChangesetEntry> => {
+  if (isLossy(entry)) return addEntry(entry);
+  const present = await ctx.fs.exists(joinPath(workdir, entry.path));
+  return present ? noopEntry(entry) : addEntry(entry);
+};
+
 /**
  * Build the changeset that re-shapes the working tree: `delete` every
  * removable excluded file still on disk, `add` every included file currently
  * absent, `noop` everything else. Removable entries reuse the existence
  * result the partition step already computed; only included entries are
- * stat-checked here.
+ * stat-checked here, never a lossy one.
  */
 const buildChangeset = async (
   ctx: Context,
@@ -136,36 +163,11 @@ const buildChangeset = async (
   for (const { entry, present } of part.removable) {
     entries.push(present ? deleteEntry(entry) : noopEntry(entry));
   }
-  for (const entry of part.included) {
-    const present = await ctx.fs.exists(joinPath(workdir, entry.path));
-    entries.push(present ? noopEntry(entry) : addEntry(entry));
-  }
+  for (const entry of part.included) entries.push(await includedChange(ctx, workdir, entry));
   const stats = { add: 0, update: 0, delete: 0, noop: 0 };
   for (const e of entries) stats[e.kind] += 1;
   return { entries, stats };
 };
-
-/** Stat fields zeroed — the excluded file is gone, `status` skips the entry. */
-const ZEROED_STAT = {
-  ctimeSeconds: 0,
-  ctimeNanoseconds: 0,
-  mtimeSeconds: 0,
-  mtimeNanoseconds: 0,
-  dev: 0,
-  ino: 0,
-  uid: 0,
-  gid: 0,
-  fileSize: 0,
-} as const;
-
-/** An excluded entry — skip-worktree set, stat zeroed, `id` / `mode` kept. */
-const toSkipWorktree = (entry: IndexEntry): IndexEntry => ({
-  ...ZEROED_STAT,
-  mode: entry.mode,
-  id: entry.id,
-  flags: { ...STAGE0_FLAGS, skipWorktree: true },
-  path: entry.path,
-});
 
 /** An included entry — skip-worktree always cleared (a stale bit is dropped). */
 const clearSkipWorktree = (entry: IndexEntry): IndexEntry =>
@@ -182,13 +184,13 @@ const assembleEntries = (
   part: Partitioned,
   writtenEntries: ReadonlyArray<IndexEntry>,
 ): ReadonlyArray<IndexEntry> => {
-  const writtenByPath = new Map<FilePath, IndexEntry>();
-  for (const entry of writtenEntries) writtenByPath.set(entry.path, entry);
+  const writtenByPath = new Map<IndexPathKey, IndexEntry>();
+  for (const entry of writtenEntries) writtenByPath.set(indexPathKey(entry), entry);
   const out: IndexEntry[] = [];
   for (const entry of part.included) {
-    out.push(writtenByPath.get(entry.path) ?? clearSkipWorktree(entry));
+    out.push(writtenByPath.get(indexPathKey(entry)) ?? clearSkipWorktree(entry));
   }
-  for (const { entry } of part.removable) out.push(toSkipWorktree(entry));
+  for (const { entry } of part.removable) out.push(skipWorktreeEntry(entry));
   for (const entry of part.retained) out.push(clearSkipWorktree(entry));
   return out;
 };

@@ -1,4 +1,4 @@
-import type { FlatTree, FlatTreeEntry } from '../diff/flat-tree.js';
+import type { EscapedFlatTree, FlatTree, FlatTreeEntry } from '../diff/flat-tree.js';
 import { MAX_FLAT_TREE_ENTRIES } from '../diff/flat-tree.js';
 import { isSameKind, kindOf } from '../diff/mode-kind.js';
 import { sortByPath } from '../diff/path-compare.js';
@@ -6,6 +6,12 @@ import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
 import { FILE_MODE } from '../objects/index.js';
 import { applyDirectoryRenames } from './directory-renames.js';
 import { invalidMergeInput, invalidMergeTree } from './error.js';
+import {
+  type DirectoryBlockers,
+  directoryBlockers,
+  type MergeSide,
+  type PathEntries,
+} from './file-directory.js';
 import { DEFAULT_MERGE_LABELS, type MergeLabels } from './merge-labels.js';
 import {
   applyMergeRenames,
@@ -149,7 +155,7 @@ function resolveOneSideAbsent(
   path: FilePath,
   base: FlatTreeEntry | undefined,
   present: FlatTreeEntry,
-  which: 'our' | 'their',
+  which: MergeSide,
   blobUnchanged: BlobUnchanged | undefined,
 ): MergeOutcome | Promise<MergeOutcome> {
   if (base === undefined) {
@@ -172,7 +178,7 @@ function modifyDeleteOutcome(
   path: FilePath,
   base: FlatTreeEntry,
   present: FlatTreeEntry,
-  which: 'our' | 'their',
+  which: MergeSide,
 ): MergeOutcome {
   return which === 'our'
     ? modifyDeleteConflict(path, base, present, undefined)
@@ -535,6 +541,53 @@ interface PathScope {
   readonly reserved: Set<FilePath>;
   readonly variant: OrtVariant | undefined;
   readonly blobUnchanged: BlobUnchanged | undefined;
+  readonly blockers: DirectoryBlockers;
+}
+
+/** git's CONFLICT (file/directory): the file steps aside to `<path>~<label>`, the directory keeps the path. */
+function fileDirectoryConflict(
+  path: FilePath,
+  base: FlatTreeEntry | undefined,
+  present: FlatTreeEntry,
+  which: MergeSide,
+  scope: PathScope,
+): MergeOutcome {
+  const label = which === 'our' ? scope.labels.ours : scope.labels.theirs;
+  const moved = uniquePath(scope.reserved, path, label);
+  return conflictOutcome({
+    type: 'file-directory',
+    path,
+    ...sideIdsAt('base', base),
+    ...sideIdsAt(which, present),
+    ...(base === undefined ? {} : { basePath: moved }),
+    [`${which}Path`]: moved,
+  });
+}
+
+function stepAside(
+  outcome: MergeOutcome,
+  path: FilePath,
+  base: FlatTreeEntry | undefined,
+  present: FlatTreeEntry,
+  which: MergeSide,
+  scope: PathScope,
+): MergeOutcome {
+  const isSurvivingFile = outcome.status !== 'resolved-deleted';
+  return isSurvivingFile ? fileDirectoryConflict(path, base, present, which, scope) : outcome;
+}
+
+/** A path only one side holds; a file there meeting the other side's directory moves aside. */
+function resolveSoleSide(
+  path: FilePath,
+  base: FlatTreeEntry | undefined,
+  present: FlatTreeEntry,
+  which: MergeSide,
+  scope: PathScope,
+): MergeOutcome | Promise<MergeOutcome> {
+  const outcome = resolveOneSideAbsent(path, base, present, which, scope.blobUnchanged);
+  if (!scope.blockers[which].has(path)) return outcome;
+  const settle = (o: MergeOutcome) => stepAside(o, path, base, present, which, scope);
+  return outcome instanceof Promise ? outcome.then(settle) : settle(outcome);
 }
 
 function resolvePath(
@@ -548,12 +601,8 @@ function resolvePath(
   if (our === undefined && their === undefined) {
     return { status: 'resolved-deleted', path };
   }
-  if (our === undefined) {
-    return resolveOneSideAbsent(path, base, their!, 'their', scope.blobUnchanged);
-  }
-  if (their === undefined) {
-    return resolveOneSideAbsent(path, base, our, 'our', scope.blobUnchanged);
-  }
+  if (our === undefined) return resolveSoleSide(path, base, their!, 'their', scope);
+  if (their === undefined) return resolveSoleSide(path, base, our, 'our', scope);
   if (base === undefined) {
     return resolveAddAdd(path, our, their, contentMerger, scope);
   }
@@ -677,6 +726,19 @@ async function settleSplitRenames(
   return settled;
 }
 
+/** The engine entry for escaped-keyed inputs: a view-keyed `FlatTree` does not type-check here. */
+export const mergeEscapedTrees = (
+  base: EscapedFlatTree | undefined,
+  ours: EscapedFlatTree | undefined,
+  theirs: EscapedFlatTree | undefined,
+  contentMerger: ContentMerger,
+  labels?: MergeLabels,
+  renames?: MergeRenames,
+  variant?: OrtVariant,
+  blobUnchanged?: BlobUnchanged,
+): Promise<TreeMergeResult> =>
+  mergeTrees(base, ours, theirs, contentMerger, labels, renames, variant, blobUnchanged);
+
 export async function mergeTrees(
   base: FlatTree | undefined,
   ours: FlatTree | undefined,
@@ -696,6 +758,7 @@ export async function mergeTrees(
     reserved: new Set<FilePath>(plan.paths),
     variant,
     blobUnchanged,
+    blockers: directoryBlockers(plan.sortedPaths.map((p) => [p, entriesAt(plan.renamed, p)])),
   };
   const merger = withSidePaths(contentMerger, plan.sidePaths);
   const { forced, splitRenames } = plan.renamed;
@@ -727,12 +790,6 @@ function planTreeMerge(
   const sidePaths = new Map([...located.sidePaths, ...renamed.sidePaths]);
   return { located, renamed, paths, sortedPaths: sortByPath([...paths], (p) => p), sidePaths };
 }
-
-type PathEntries = readonly [
-  FlatTreeEntry | undefined,
-  FlatTreeEntry | undefined,
-  FlatTreeEntry | undefined,
-];
 
 /** The path's base, ours and theirs entries, in that order. */
 function entriesAt(renamed: RenamedMergeInput, path: FilePath): PathEntries {

@@ -309,6 +309,15 @@ export class MemoryFileSystem implements FileSystem {
     throw fileNotFound(path);
   };
 
+  rmdir = async (path: string): Promise<void> => {
+    const normalized = this.walk(path, 'no-follow');
+    if (this.files.has(normalized) || this.symlinks.has(normalized)) throw notADirectory(path);
+    if (!this.directories.has(normalized)) throw fileNotFound(path);
+    if (this.hasChildren(normalized)) throw directoryNotEmpty(path);
+    this.directories.delete(normalized);
+    this.times.delete(normalized);
+  };
+
   rename = async (src: string, dst: string): Promise<void> => {
     const normalizedSrc = this.walk(src, 'no-follow');
     const normalizedDst = this.walk(dst, 'create');

@@ -16,13 +16,16 @@
  */
 import { comparePaths, recordedPaths } from '../../domain/diff/index.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
+import { escapedPathOf, viewOfEscaped } from '../../domain/git-index/index-path-key.js';
 import type { MergeConflict, MergeOutcome } from '../../domain/merge/index.js';
+import { hasEscapedBytes } from '../../domain/objects/encoding.js';
 import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { compareWorkingTreeEntry, isWorkingTreeModified } from './compare-working-tree-entry.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { buildCheckinAttributeProvider } from './internal/read-gitattributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
+import { createLeadingPathScanner } from './internal/symlinked-leading-path.js';
 
 export interface WouldOverwrite {
   readonly localChanges: ReadonlyArray<FilePath>;
@@ -56,6 +59,9 @@ const outcomeChangesOurs = (
   return outcome.status === 'resolved-deleted' && ours.has(outcome.path);
 };
 
+/** Whether ours' file is recorded at a path of its own: the work-tree file at `conflict.path` is then lost. Re-adding an already recorded path is harmless. */
+const displacesOurFile = (conflict: MergeConflict): boolean => conflict.ourPath !== undefined;
+
 /** Every path the merge would touch in the working tree (changed clean + conflicts). */
 export const changedPaths = (
   outcomes: ReadonlyArray<MergeOutcome>,
@@ -68,12 +74,15 @@ export const changedPaths = (
   }
   for (const conflict of conflicts) {
     for (const path of recordedPaths(conflict)) paths.add(path);
+    if (displacesOurFile(conflict)) paths.add(conflict.path);
   }
   return paths;
 };
 
 /** Whether an untracked path is present on disk (lstat — no follow). */
 const isUntrackedPresent = async (ctx: Context, path: FilePath): Promise<boolean> => {
+  // An escaped name is never on disk: git's lstat of it fails, so it reads as absent.
+  if (hasEscapedBytes(path)) return false;
   try {
     // Stryker disable next-line StringLiteral: equivalent — the catch below swallows ANY exception (including this one) into `false` unconditionally, so the thrown error's `operation` text is never observed by any caller regardless of its content.
     await ctx.fs.lstat(joinPath(requireWorkTree(ctx, 'findWouldOverwrite'), path));
@@ -88,7 +97,7 @@ const stage0ByPath = (currentIndex: GitIndex): Map<FilePath, IndexEntry> => {
   const byPath = new Map<FilePath, IndexEntry>();
   for (const entry of currentIndex.entries) {
     // Stryker disable next-line ConditionalExpression: equivalent — the apply caller's `currentIndex` is a stage-0 index (synthesised from the real index), so every entry already has stage 0; the filter never excludes anything.
-    if (entry.flags.stage === 0) byPath.set(entry.path, entry);
+    if (entry.flags.stage === 0) byPath.set(escapedPathOf(entry), entry);
   }
   return byPath;
 };
@@ -124,7 +133,28 @@ export const findWouldOverwrite = async (
       localChanges.push(path);
   }
   return {
-    localChanges: [...localChanges].sort(comparePaths),
-    untracked: [...untracked].sort(comparePaths),
+    localChanges: [...localChanges].sort(comparePaths).map(viewOfEscaped),
+    untracked: [...untracked].sort(comparePaths).map(viewOfEscaped),
   };
+};
+
+/**
+ * The tracked changed paths whose leading directory is now a symlink. git sees
+ * each as deleted from the work tree, cannot save that state and refuses the
+ * merge outright, so the caller refuses them as local changes before any write.
+ * Sorted ascending.
+ */
+export const findTrackedBeyondSymlink = async (
+  ctx: Context,
+  paths: ReadonlySet<FilePath>,
+  currentIndex: GitIndex,
+): Promise<ReadonlyArray<FilePath>> => {
+  const byPath = stage0ByPath(currentIndex);
+  const scanner = createLeadingPathScanner(ctx);
+  const beyond: FilePath[] = [];
+  for (const path of paths) {
+    if (!byPath.has(path) || hasEscapedBytes(path)) continue;
+    if (await scanner.hasSymlinkedLeadingPath(path)) beyond.push(path);
+  }
+  return beyond.sort(comparePaths).map(viewOfEscaped);
 };

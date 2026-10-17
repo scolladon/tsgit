@@ -9,13 +9,23 @@ import { init } from '../../../../src/application/commands/init.js';
 import * as revParseMod from '../../../../src/application/commands/rev-parse.js';
 import { tagCreate } from '../../../../src/application/commands/tag.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import * as materializeTreeMod from '../../../../src/application/primitives/materialize-tree.js';
 import * as objectStoreMod from '../../../../src/application/primitives/object-store.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readTree } from '../../../../src/application/primitives/read-tree.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { TsgitError } from '../../../../src/domain/index.js';
-import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
+import type {
+  AuthorIdentity,
+  FilePath,
+  ObjectId,
+  RefName,
+} from '../../../../src/domain/objects/index.js';
+import { FILE_MODE } from '../../../../src/domain/objects/index.js';
+import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { snapshotFiles } from './fixtures.js';
 
 const author: AuthorIdentity = {
@@ -1939,6 +1949,241 @@ describe('checkout — the branch a switch reads', () => {
         // Assert
         expect(result.id).toBe(commitId);
         expect(open.mock.calls.filter(([path]) => path === featurePath)).toHaveLength(3);
+      });
+    });
+  });
+});
+
+const LOSSY_NAME_BYTES = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+const LITERAL_NAME = '\uFFFD.txt' as FilePath;
+
+const stageLossyTwinOf = async (
+  ctx: Awaited<ReturnType<typeof seedWithBranches>>['ctx'],
+  content = 'l\n',
+): Promise<IndexEntry> => {
+  const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${LITERAL_NAME}`);
+  const index = await readIndex(ctx);
+  const blob = await writeObject(ctx, {
+    type: 'blob',
+    id: '' as ObjectId,
+    content: new TextEncoder().encode(content),
+  });
+  const lossy: IndexEntry = {
+    ...indexEntryFromStat(stat, FILE_MODE.REGULAR, blob, LITERAL_NAME),
+    pathBytes: LOSSY_NAME_BYTES,
+  };
+  await ctx.fs.write(
+    `${ctx.layout.gitDir}/index`,
+    await serializeIndexFixtureAsync(
+      { ...index, entries: [...index.entries.filter((e) => e.pathBytes === undefined), lossy] },
+      ctx,
+    ),
+  );
+  return lossy;
+};
+
+describe('checkout — path restore over an index holding a lossy twin', () => {
+  describe('Given HEAD holds U+FFFD .txt only and the index also holds raw \\xff.txt', () => {
+    describe('When checkout restores the well-formed U+FFFD .txt path from HEAD', () => {
+      it('Then the literal file is restored and the raw entry keeps its id and bytes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${LITERAL_NAME}`, 'u\n');
+        await add(ctx, [LITERAL_NAME]);
+        await commit(ctx, { message: 'seed', author });
+        const lossy = await stageLossyTwinOf(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${LITERAL_NAME}`, 'modified\n');
+        const sut = checkout;
+
+        // Act
+        await sut(ctx, { paths: [LITERAL_NAME], source: 'HEAD' });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/${LITERAL_NAME}`)).toBe('u\n');
+        const index = await readIndex(ctx);
+        const kept = index.entries.find((e) => e.pathBytes !== undefined);
+        expect(index.entries).toHaveLength(2);
+        expect(kept?.id).toBe(lossy.id);
+        expect(kept?.pathBytes).toStrictEqual(LOSSY_NAME_BYTES);
+      });
+    });
+  });
+
+  describe('Given HEAD holds U+FFFD .txt and raw \\xff.txt and the index holds a stale raw entry', () => {
+    describe('When checkout restores *.txt from HEAD', () => {
+      it('Then the raw entry is reset to the HEAD blob and keeps its bytes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${LITERAL_NAME}`, 'u\n');
+        await add(ctx, [LITERAL_NAME]);
+        const committed = await stageLossyTwinOf(ctx);
+        await commit(ctx, { message: 'seed', author });
+        await stageLossyTwinOf(ctx, 'stale\n');
+        const sut = checkout;
+
+        // Act
+        await sut(ctx, { paths: ['*.txt'], source: 'HEAD' });
+
+        // Assert
+        const index = await readIndex(ctx);
+        const kept = index.entries.find((e) => e.pathBytes !== undefined);
+        expect(index.entries).toHaveLength(2);
+        expect(kept?.id).toBe(committed.id);
+        expect(kept?.pathBytes).toStrictEqual(LOSSY_NAME_BYTES);
+      });
+    });
+  });
+});
+
+describe('checkout — file replaced by a directory', () => {
+  describe('Given main holds file f and side holds directory f/', () => {
+    describe('When checkout side', () => {
+      it('Then f/x is materialised in place of the file', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b`, 'b\n');
+        await add(ctx, ['b']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'side' });
+        await checkout(ctx, { rev: 'side' });
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/f`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f/x`, 'x\n');
+        await add(ctx, ['f/x']);
+        await commit(ctx, { message: 'adds directory f', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/f`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'file\n');
+        await add(ctx, ['f']);
+        await commit(ctx, { message: 'adds file f', author });
+
+        // Act
+        const result = await checkout(ctx, { rev: 'side' });
+
+        // Assert
+        expect(result.branch).toBe('refs/heads/side');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f/x`)).toBe('x\n');
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['b', 'f/x']);
+      });
+    });
+  });
+});
+
+describe('checkout — directory replaced by a file', () => {
+  describe('Given side holds directory f/ and main holds file f', () => {
+    describe('When checkout main from side', () => {
+      it('Then f is materialised as the file in place of the directory', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b`, 'b\n');
+        await add(ctx, ['b']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'side' });
+        await checkout(ctx, { rev: 'side' });
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/f`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f/x`, 'x\n');
+        await add(ctx, ['f/x']);
+        await commit(ctx, { message: 'adds directory f', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/f`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'file\n');
+        await add(ctx, ['f']);
+        await commit(ctx, { message: 'adds file f', author });
+        await checkout(ctx, { rev: 'side' });
+
+        // Act
+        const result = await checkout(ctx, { rev: 'main' });
+
+        // Assert
+        expect(result.branch).toBe('refs/heads/main');
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f`)).toBe('file\n');
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['b', 'f']);
+      });
+    });
+  });
+
+  describe('Given side holds directory f/ with an untracked file inside', () => {
+    describe('When checkout main from side', () => {
+      it('Then it refuses listing f as untracked and keeps the file', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b`, 'b\n');
+        await add(ctx, ['b']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'side' });
+        await checkout(ctx, { rev: 'side' });
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/f`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f/x`, 'x\n');
+        await add(ctx, ['f/x']);
+        await commit(ctx, { message: 'adds directory f', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/f`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'file\n');
+        await add(ctx, ['f']);
+        await commit(ctx, { message: 'adds file f', author });
+        await checkout(ctx, { rev: 'side' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f/y`, 'y\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await checkout(ctx, { rev: 'main' });
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
+        if (data.code === 'CHECKOUT_OVERWRITE_DIRTY') expect(data.untracked).toEqual(['f']);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f/y`)).toBe('y\n');
+      });
+    });
+  });
+
+  describe('Given side holds directory f/ with an untracked file in a nested directory', () => {
+    describe('When checkout main from side', () => {
+      it('Then it refuses listing f as untracked and keeps the nested file', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b`, 'b\n');
+        await add(ctx, ['b']);
+        await commit(ctx, { message: 'base', author });
+        await branchCreate(ctx, { name: 'side' });
+        await checkout(ctx, { rev: 'side' });
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/f`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f/x`, 'x\n');
+        await add(ctx, ['f/x']);
+        await commit(ctx, { message: 'adds directory f', author });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/f`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, 'file\n');
+        await add(ctx, ['f']);
+        await commit(ctx, { message: 'adds file f', author });
+        await checkout(ctx, { rev: 'side' });
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/f/g`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f/g/y`, 'y\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await checkout(ctx, { rev: 'main' });
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('CHECKOUT_OVERWRITE_DIRTY');
+        if (data.code === 'CHECKOUT_OVERWRITE_DIRTY') expect(data.untracked).toEqual(['f']);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/f/g/y`)).toBe('y\n');
       });
     });
   });

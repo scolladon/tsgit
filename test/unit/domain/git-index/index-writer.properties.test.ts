@@ -2,10 +2,12 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { IndexEntry } from '../../../../src/domain/git-index/index-entry.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index-entry.js';
+import { pathBytesOf } from '../../../../src/domain/git-index/index-path-key.js';
 import { compareEntryPath } from '../../../../src/domain/git-index/index-writer.js';
 import { compareBytes, encode } from '../../../../src/domain/objects/encoding.js';
 import type { FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
+import { arbIndexEntryWithPathBytes } from './arbitraries.js';
 
 const NUM_RUNS = 200;
 
@@ -58,6 +60,28 @@ describe('compareEntryPath properties', () => {
 
             // Assert
             expect(Math.sign(result)).toBe(Math.sign(compareBytes(encode(a), encode(b))));
+          }),
+          { numRuns: NUM_RUNS },
+        );
+      });
+    });
+  });
+});
+
+describe('compareEntryPath with raw path bytes properties', () => {
+  describe('Given arbitrary entries that may carry raw path bytes', () => {
+    describe('When comparing them', () => {
+      it('Then the sign equals the sign of the byte comparison', () => {
+        fc.assert(
+          fc.property(arbIndexEntryWithPathBytes(), arbIndexEntryWithPathBytes(), (a, b) => {
+            // Arrange
+            const sut = compareEntryPath;
+
+            // Act
+            const result = sut(a, b);
+
+            // Assert
+            expect(Math.sign(result)).toBe(Math.sign(compareBytes(pathBytesOf(a), pathBytesOf(b))));
           }),
           { numRuns: NUM_RUNS },
         );

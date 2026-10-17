@@ -18,9 +18,11 @@ import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import type { EolNotice } from '../../domain/eol/crlf-conversion.js';
 import { TsgitError } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
-import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
+import { indexPathKey, keyOfPath } from '../../domain/git-index/index-path-key.js';
+import { validateTreePath } from '../../domain/git-index/path-validator.js';
 import { abbreviateOid, type ConflictType, STASH_LABELS } from '../../domain/merge/index.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
+import { hasEscapedBytes } from '../../domain/objects/encoding.js';
 import { invalidCommit, unexpectedObjectType } from '../../domain/objects/error.js';
 import { deriveWorkingMode, type FilePath, type ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
@@ -32,7 +34,7 @@ import {
   type WorkingTreeComparison,
 } from '../primitives/compare-working-tree-entry.js';
 import { createCommit } from '../primitives/create-commit.js';
-import { flattenTree } from '../primitives/flatten-tree.js';
+import { flattenEscapedTree } from '../primitives/flatten-tree.js';
 import { hashBlob } from '../primitives/hash-blob.js';
 import {
   admitWrite,
@@ -49,6 +51,7 @@ import { convertToGit } from '../primitives/internal/convert-blob.js';
 import type { IndexLock } from '../primitives/internal/index-lock.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import { lazily } from '../primitives/internal/lazily.js';
+import { forgetAfterLink } from '../primitives/internal/link-first-wave.js';
 import { pathIsOccupied } from '../primitives/internal/path-occupied.js';
 import {
   type AttributeProvider,
@@ -91,6 +94,7 @@ import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { takeMergeAutostash } from './internal/merge-autostash.js';
+import { toConflictList } from './internal/replay-sequence.js';
 import {
   indexMessage,
   onMessage,
@@ -373,11 +377,11 @@ const listUntracked = async (
   ctx: Context,
   index: GitIndex,
 ): Promise<ReadonlyArray<UntrackedFile>> => {
-  const tracked = new Set(index.entries.map((e) => e.path));
+  const tracked = new Set(index.entries.map(indexPathKey));
   const ignore = await buildRepoIgnorePredicate(ctx);
   const files: UntrackedFile[] = [];
   for await (const { path, stat } of walkWorkingTree(ctx, { ignore })) {
-    if (tracked.has(path)) continue;
+    if (tracked.has(keyOfPath(path))) continue;
     files.push({ path, stat: await stat() });
   }
   return files;
@@ -631,9 +635,10 @@ const untrackedOverwrites = async (
   workDir: string,
   uTree: ObjectId,
 ): Promise<ReadonlyArray<FilePath>> => {
-  const flat = await flattenTree(ctx, uTree);
+  const flat = await flattenEscapedTree(ctx, uTree);
   const clobbered: FilePath[] = [];
   for (const path of flat.entries.keys()) {
+    if (hasEscapedBytes(path)) continue;
     if (await pathIsOccupied(ctx, joinPath(workDir, path))) clobbered.push(path);
   }
   return clobbered;
@@ -657,13 +662,13 @@ const untrackedWriter = (
 
 /** Check out the untracked tree into the working tree (clean-apply path only). */
 const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> => {
-  const flat = await flattenTree(ctx, uTree);
+  const flat = await flattenEscapedTree(ctx, uTree);
   // Whole-tree name gate before the first write: a stash's untracked tree is
   // attacker-controllable, so a hostile entry name (`.git/**`, a `.git` alias,
   // a traversal) must refuse the entire restore untouched — mirroring the
   // index-write boundary a checkout crosses.
   for (const [path, entry] of flat.entries) {
-    validateIndexPath(path, NO_PARSER_OFFSET, entry.mode);
+    validateTreePath(path, entry.mode);
   }
   // One scanner for the whole restore: its per-directory memo means a deep
   // untracked tree with many paths under the same symlinked directory costs
@@ -672,6 +677,7 @@ const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> =>
   const writer = untrackedWriter(ctx, flat.entries);
   for (const [path, entry] of flat.entries) {
     await writer.writeBlob(path, entry.id, entry.mode, scanner);
+    forgetAfterLink(scanner, [entry.mode]);
   }
 };
 
@@ -794,7 +800,7 @@ const applyUnderLock = async (
     await lock.commit(result.indexEntries, 'replace');
     return {
       kind: 'conflict',
-      conflicts: result.conflicts.map((c) => ({ path: c.path, type: c.type })),
+      conflicts: toConflictList(result.conflicts),
     };
   }
   const iTree = await commitTreeOf(ctx, parsed.indexParent);

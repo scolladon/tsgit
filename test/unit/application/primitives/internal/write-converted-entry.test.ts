@@ -4,6 +4,7 @@ import { createConcurrencyLimiter } from '../../../../../src/application/primiti
 import * as convertBlobMod from '../../../../../src/application/primitives/internal/convert-blob.js';
 import { buildAttributeProvider } from '../../../../../src/application/primitives/internal/read-gitattributes.js';
 import * as serializeAndHashMod from '../../../../../src/application/primitives/internal/serialize-and-hash.js';
+import { createLeadingPathScanner } from '../../../../../src/application/primitives/internal/symlinked-leading-path.js';
 import {
   createWorkingTreeWriter,
   type WorkingTreeWriter,
@@ -407,6 +408,51 @@ describe('createWorkingTreeWriter', () => {
 
         // Assert
         expect(spy.mock.calls[0]?.[1].target.metadata).toEqual({ ref: 'refs/heads/x', treeish });
+      });
+    });
+  });
+
+  describe('Given an escaped merge path', () => {
+    const ESCAPED_SEGMENT = /[\uDC80-\uDCFF]/;
+    const spiedFs = (ctx: Context) =>
+      (['write', 'writeUtf8', 'mkdir', 'lstat', 'symlink'] as const).map((method) =>
+        vi.spyOn(ctx.fs, method),
+      );
+
+    describe('When writeBlob and writeBytes run on it', () => {
+      it('Then no filesystem call is made', async () => {
+        // Arrange
+        const { ctx, sut, blob } = await setup();
+        const id = await blob('x');
+        const spies = spiedFs(ctx);
+        const scanner = createLeadingPathScanner(ctx);
+
+        // Act
+        await sut.writeBlob('\uDCFF.txt' as FilePath, id, FILE_MODE.REGULAR, scanner);
+        await sut.writeBytes('\uDCFF/x' as FilePath, enc('x'), FILE_MODE.REGULAR, scanner);
+
+        // Assert
+        const calls = spies.flatMap((spy) => spy.mock.calls.flat());
+        expect(calls.filter((arg) => typeof arg === 'string' && ESCAPED_SEGMENT.test(arg))).toEqual(
+          [],
+        );
+        expect(spies.map((spy) => spy.mock.calls.length)).toEqual([0, 0, 0, 0, 0]);
+      });
+    });
+  });
+
+  describe('Given a well-formed path holding U+FFFD', () => {
+    describe('When writeBlob runs on it', () => {
+      it('Then the file is written', async () => {
+        // Arrange
+        const { sut, worktree, blob } = await setup();
+        const id = await blob('x');
+
+        // Act
+        await sut.writeBlob('\uFFFD.txt' as FilePath, id, FILE_MODE.REGULAR);
+
+        // Assert
+        expect(await worktree('\uFFFD.txt')).toBe('x');
       });
     });
   });

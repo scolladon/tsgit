@@ -4,15 +4,18 @@ import {
   synthesizeResultTree,
   synthesizeTreeFromIndex,
 } from '../../../../src/application/primitives/synthesize-tree-from-index.js';
+import { walkTree } from '../../../../src/application/primitives/walk-tree.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { DEFAULT_MAX_TREE_DEPTH } from '../../../../src/domain/diff/flat-tree.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import { NO_PARSER_OFFSET } from '../../../../src/domain/git-index/path-validator.js';
+import { bytesToHex } from '../../../../src/domain/objects/encoding.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FileMode, FilePath, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
+import type { Context } from '../../../../src/ports/context.js';
 import {
   buildSeededContext,
   buildTreeChain,
@@ -26,6 +29,14 @@ const EMPTY_INDEX: GitIndex = {
   entries: [],
   extensions: [],
   trailerSha: new Uint8Array(0),
+};
+
+const leafPathHex = async (ctx: Context, treeId: ObjectId): Promise<string[]> => {
+  const out: string[] = [];
+  for await (const entry of walkTree(ctx, treeId, { recursive: true, pathBytes: true })) {
+    if (entry.mode !== FILE_MODE.DIRECTORY) out.push(bytesToHex(entry.pathBytes as Uint8Array));
+  }
+  return out;
 };
 
 const writeBlob = async (
@@ -322,6 +333,35 @@ describe('synthesizeTreeFromIndex', () => {
     });
   });
 
+  describe('Given a lossy entry whose raw bytes name a .git HFS alias', () => {
+    describe('When the tree is synthesised', () => {
+      it('Then it refuses with the HFS reason', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'x');
+        const entry: IndexEntry = {
+          ...makeIndexEntry('.git\uFFFD/x', id),
+          pathBytes: Uint8Array.of(0x2e, 0x67, 0x69, 0x74, 0xff, 0x2f, 0x78),
+        };
+        const sut = synthesizeTreeFromIndex;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, [entry]);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as { data?: unknown }).data).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'.git' HFS+ ignorable-codepoint alias rejected",
+        });
+      });
+    });
+  });
+
   describe('Given config unset (default cap) and an entry at exactly the default depth', () => {
     describe('When synthesise', () => {
       it('Then completes and the tree round-trips', async () => {
@@ -525,6 +565,54 @@ describe('synthesizeTreeFromIndex', () => {
         // Assert
         const tree = (await readObject(ctx, treeId)) as Tree;
         expect(tree.entries[0]?.mode).toBe(FILE_MODE.EXECUTABLE);
+      });
+    });
+  });
+
+  describe('Given stage-0 entries whose index path bytes are not valid UTF-8', () => {
+    describe('When the tree is synthesized', () => {
+      it('Then every leaf is named by its raw bytes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'x');
+        const entries = [
+          makeIndexEntry('d/y', id),
+          { ...makeIndexEntry('d/\uFFFD', id), pathBytes: Uint8Array.of(0x64, 0x2f, 0xff) },
+          makeIndexEntry('\uFFFD.txt', id),
+          {
+            ...makeIndexEntry('\uFFFD.txt', id),
+            pathBytes: Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74),
+          },
+        ];
+        const sut = synthesizeTreeFromIndex;
+
+        // Act
+        const result = await sut(ctx, entries);
+
+        // Assert
+        expect((await leafPathHex(ctx, result)).sort()).toEqual([
+          '642f79',
+          '642fff',
+          'efbfbd2e747874',
+          'ff2e747874',
+        ]);
+      });
+    });
+  });
+
+  describe('Given a BOM-prefixed entry', () => {
+    describe('When the tree is synthesized', () => {
+      it('Then the BOM bytes name the directory', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'x');
+        const sut = synthesizeTreeFromIndex;
+
+        // Act
+        const result = await sut(ctx, [makeIndexEntry('\uFEFFa/x', id)]);
+
+        // Assert
+        expect(await leafPathHex(ctx, result)).toEqual(['efbbbf612f78']);
       });
     });
   });

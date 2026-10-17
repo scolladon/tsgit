@@ -7,13 +7,18 @@ import {
   compareBytes,
   concatBytes,
   decode,
+  decodeEscapingInvalid,
   decodePreservingBom,
+  decodesLosslessly,
   encode,
+  encodeEscaped,
   formatContinuationHeader,
+  hasEscapedBytes,
   hexToBytes,
   indexOf,
   parseHeaderLine,
   splitHeaderAndMessage,
+  wellFormed,
 } from '../../../../src/domain/objects/encoding.js';
 
 describe('encoding', () => {
@@ -557,6 +562,190 @@ describe('encoding', () => {
 
           // Assert
           expect(result).toEqual(Uint8Array.of(1, 2, 3, 4, 5));
+        });
+      });
+    });
+  });
+
+  describe('decodesLosslessly', () => {
+    const cases: ReadonlyArray<readonly [string, number[], boolean]> = [
+      ['ascii', [0x61, 0x2e, 0x74], true],
+      ['a valid two-byte sequence', [0xc3, 0xa9], true],
+      ['a leading byte-order mark', [0xef, 0xbb, 0xbf, 0x61], true],
+      ['a literal replacement character', [0xef, 0xbf, 0xbd], true],
+      ['a lone 0xff', [0xff], false],
+      ['a lone continuation byte', [0x80], false],
+      ['a truncated sequence', [0xc3], false],
+      ['an overlong sequence', [0xc0, 0xaf], false],
+      ['an encoded surrogate', [0xed, 0xa0, 0x80], false],
+      ['a byte above the unicode range', [0xf5], false],
+    ];
+
+    describe.each(cases)('Given %s', (_label, input, expected) => {
+      describe('When checking the decoded view against the raw bytes', () => {
+        it(`Then it is ${expected ? 'lossless' : 'lossy'}`, () => {
+          // Arrange
+          const raw = Uint8Array.from(input);
+          const text = decodePreservingBom(raw);
+
+          // Act
+          const result = decodesLosslessly(text, raw);
+
+          // Assert
+          expect(result).toBe(expected);
+        });
+      });
+    });
+  });
+
+  describe('decodeEscapingInvalid', () => {
+    const cases: ReadonlyArray<readonly [string, ReadonlyArray<number>, string]> = [
+      ['a rejected lead byte before ascii', [0xff, 0x2e, 0x74], '\uDCFF.t'],
+      ['a lone continuation byte', [0x80], '\uDC80'],
+      ['four continuation bytes', [0x80, 0x80, 0x80, 0x80], '\uDC80\uDC80\uDC80\uDC80'],
+      ['a truncated two-byte lead', [0xc3], '\uDCC3'],
+      ['an overlong two-byte lead', [0xc0, 0xaf], '\uDCC0\uDCAF'],
+      ['an encoded surrogate', [0xed, 0xa0, 0x80], '\uDCED\uDCA0\uDC80'],
+      ['a byte above the unicode range', [0xf5], '\uDCF5'],
+      ['a truncated three-byte sequence', [0xe2, 0x80, 0x41], '\uDCE2\uDC80A'],
+      ['a valid non-character code point', [0xef, 0xbf, 0xbe], '￾'],
+      ['a literal replacement character', [0xef, 0xbf, 0xbd], '�'],
+      ['a leading byte-order mark', [0xef, 0xbb, 0xbf, 0x61], '﻿a'],
+      ['a valid astral sequence', [0xf0, 0x90, 0x82, 0x80], '\u{10080}'],
+      ['an overlong lead C1 then an invalid byte', [0xc1, 0xbf, 0xff], '\uDCC1\uDCBF\uDCFF'],
+      ['the lowest two-byte sequence then an invalid byte', [0xc2, 0x80, 0xff], '\u0080\uDCFF'],
+      ['the highest two-byte sequence then an invalid byte', [0xdf, 0xbf, 0xff], '\u07FF\uDCFF'],
+      ['a mid two-byte sequence then an invalid byte', [0xc3, 0x80, 0xff], '\u00C0\uDCFF'],
+      [
+        'the lowest three-byte sequence then an invalid byte',
+        [0xe0, 0xa0, 0x80, 0xff],
+        '\u0800\uDCFF',
+      ],
+      ['an overlong three-byte sequence', [0xe0, 0x9f, 0xbf], '\uDCE0\uDC9F\uDCBF'],
+      [
+        'the lowest four-byte sequence then an invalid byte',
+        [0xf0, 0x90, 0x80, 0x80, 0xff],
+        '\u{10000}\uDCFF',
+      ],
+      ['an overlong four-byte sequence', [0xf0, 0x8f, 0xbf, 0xbf], '\uDCF0\uDC8F\uDCBF\uDCBF'],
+      [
+        'the highest code point then an invalid byte',
+        [0xf4, 0x8f, 0xbf, 0xbf, 0xff],
+        '\u{10FFFF}\uDCFF',
+      ],
+      [
+        'a four-byte sequence above the unicode range',
+        [0xf4, 0x90, 0x80, 0x80],
+        '\uDCF4\uDC90\uDC80\uDC80',
+      ],
+      ['a lead above the four-byte range', [0xf5, 0x80, 0x80, 0x80], '\uDCF5\uDC80\uDC80\uDC80'],
+    ];
+
+    describe.each(cases)('Given %s', (_label, input, expected) => {
+      describe('When decoding with escapes', () => {
+        it('Then each rejected byte becomes a lone low surrogate', () => {
+          // Arrange
+          const sut = Uint8Array.from(input);
+
+          // Act
+          const result = decodeEscapingInvalid(sut);
+
+          // Assert
+          expect(result).toBe(expected);
+        });
+      });
+    });
+  });
+
+  describe('encodeEscaped', () => {
+    const cases: ReadonlyArray<readonly [string, string, ReadonlyArray<number>]> = [
+      ['a lone escape before ascii', '\uDCFF.t', [0xff, 0x2e, 0x74]],
+      [
+        'an astral pair whose low half is in the escape range',
+        '\u{10080}',
+        [0xf0, 0x90, 0x82, 0x80],
+      ],
+      [
+        'an astral pair in the escape range next to a lone escape',
+        '\u{10080}\uDCFF',
+        [0xf0, 0x90, 0x82, 0x80, 0xff],
+      ],
+      ['a lone high surrogate', '\uD800', [0xef, 0xbf, 0xbd]],
+      ['a lone low surrogate outside the escape range', '\uDC41', [0xef, 0xbf, 0xbd]],
+      [
+        'an astral pair ending at the escape range start then a lone escape',
+        '\u{10FC80}\uDCFF',
+        [0xf4, 0x8f, 0xb2, 0x80, 0xff],
+      ],
+      [
+        'a lone low surrogate just below the escape range then a lone escape',
+        '\uDC7F\uDC80',
+        [0xef, 0xbf, 0xbd, 0x80],
+      ],
+    ];
+
+    describe.each(cases)('Given %s', (_label, input, expected) => {
+      describe('When encoding with escapes', () => {
+        it('Then a lone escape returns its byte and the rest is UTF-8', () => {
+          // Arrange
+          const sut = input;
+
+          // Act
+          const result = encodeEscaped(sut);
+
+          // Assert
+          expect(Array.from(result)).toEqual(expected);
+        });
+      });
+    });
+  });
+
+  describe('hasEscapedBytes', () => {
+    const cases: ReadonlyArray<readonly [string, string, boolean]> = [
+      ['a lone escape', '\uDCFF', true],
+      ['an escape after ascii', 'a\uDC80', true],
+      ['an astral pair', '\u{10080}', false],
+      ['a lone low surrogate outside the escape range', '\uDC41', false],
+      ['the replacement character', '�', false],
+      ['the empty string', '', false],
+    ];
+
+    describe.each(cases)('Given %s', (_label, input, expected) => {
+      describe('When looking for escaped bytes', () => {
+        it(`Then it is ${expected}`, () => {
+          // Arrange
+          const sut = input;
+
+          // Act
+          const result = hasEscapedBytes(sut);
+
+          // Assert
+          expect(result).toBe(expected);
+        });
+      });
+    });
+  });
+
+  describe('wellFormed', () => {
+    const cases: ReadonlyArray<readonly [string, string, string]> = [
+      ['a lone low surrogate', '\uDCFF.txt', '\uFFFD.txt'],
+      ['a lone high surrogate', 'a\uD800b', 'a\uFFFDb'],
+      ['a valid pair', '\u{1F600}', '\u{1F600}'],
+      ['a byte order mark', '\uFEFFa', '\uFEFFa'],
+      ['a well-formed string', 'src/a.ts', 'src/a.ts'],
+    ];
+
+    describe.each(cases)('Given %s', (_label, input, expected) => {
+      describe('When normalising', () => {
+        it(`Then it is ${JSON.stringify(expected)}`, () => {
+          // Arrange
+          const sut = wellFormed;
+
+          // Act
+          const result = sut(input);
+
+          // Assert
+          expect(result).toBe(expected);
         });
       });
     });

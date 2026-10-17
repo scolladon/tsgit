@@ -29,14 +29,14 @@ const withCountedLstat = (base: Context): CountedLstat => {
   return { ctx: withCounter(base, base.fs, countingLstat), calls: () => calls };
 };
 
-/** The context's fs no longer has `tryLstat` at all — the fallback arm. */
+/** The context's fs no longer has `tryLstat` or `lstatIfReachable` — the fallback arm. */
 const withCountedLstatNoProbe = (base: Context): CountedLstat => {
   let calls = 0;
   const countingLstat = async (p: string): Promise<FileStat> => {
     calls += 1;
     return base.fs.lstat(p);
   };
-  const { tryLstat: _tryLstat, ...withoutProbe } = base.fs;
+  const { tryLstat: _tryLstat, lstatIfReachable: _reachable, ...withoutProbe } = base.fs;
   return { ctx: withCounter(base, withoutProbe, countingLstat), calls: () => calls };
 };
 
@@ -145,6 +145,27 @@ describe('loadCappedUtf8', () => {
 
         // Assert
         expect(calls()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a path beneath a regular file', () => {
+    describe.each([
+      ['with', withCountedLstat],
+      ['without', withCountedLstatNoProbe],
+    ])('When loadCappedUtf8 runs on a file system %s the probes', (_label, wrap) => {
+      it('Then it resolves undefined', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await base.fs.writeUtf8('/repo/f', 'file\n');
+        const { ctx } = wrap(base);
+        const sut = loadCappedUtf8;
+
+        // Act
+        const result = await sut(ctx, '/repo/f/.gitignore', LIMIT, gitignoreFileTooLarge);
+
+        // Assert
+        expect(result).toBeUndefined();
       });
     });
   });

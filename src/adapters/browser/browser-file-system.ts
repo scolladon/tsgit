@@ -1,5 +1,6 @@
 /// <reference lib="dom" />
 import {
+  directoryNotEmpty,
   fileExists,
   fileNotFound,
   notADirectory,
@@ -215,6 +216,34 @@ export class BrowserFileSystem implements FileSystem {
       throw fileNotFound(path);
     }
     this.invalidateDirectoryHandleCache(segments.join('/'));
+  }
+
+  async rmdir(path: string): Promise<void> {
+    const segments = this.splitPath(path);
+    if (segments.length === 0) throw permissionDenied(path);
+    const dir = await this.walkToParent(segments, false, path);
+    const leaf = leafSegment(segments, path);
+    // `removeEntry` also removes a file, so the entry's kind is checked first.
+    await this.assertDirectoryEntry(dir, leaf, path);
+    try {
+      await dir.removeEntry(leaf);
+    } catch (err) {
+      throw isInvalidModification(err) ? directoryNotEmpty(path) : fileNotFound(path);
+    }
+    this.invalidateDirectoryHandleCache(segments.join('/'));
+  }
+
+  private async assertDirectoryEntry(
+    dir: FileSystemDirectoryHandle,
+    leaf: string,
+    path: string,
+  ): Promise<void> {
+    try {
+      await dir.getDirectoryHandle(leaf);
+    } catch (err) {
+      if (isTypeMismatch(err)) throw notADirectory(path);
+      throw fileNotFound(path);
+    }
   }
 
   async rename(src: string, dst: string): Promise<void> {
@@ -440,6 +469,10 @@ function rejectionName(err: unknown): string | undefined {
 
 function isTypeMismatch(err: unknown): boolean {
   return rejectionName(err) === 'TypeMismatchError';
+}
+
+function isInvalidModification(err: unknown): boolean {
+  return rejectionName(err) === 'InvalidModificationError';
 }
 
 function isNotFoundRejection(err: unknown): boolean {

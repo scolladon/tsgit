@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import {
   invalidateCacheTree,
+  namesEachSubtreeOnce,
   serializeCacheTree,
 } from '../../../../src/domain/git-index/cache-tree.js';
 import type { CacheTreeEntry } from '../../../../src/domain/git-index/index-entry.js';
 import { parseCacheTree } from '../../../../src/domain/git-index/index-parser.js';
+import type { IndexPath } from '../../../../src/domain/git-index/index-path-key.js';
 import { concatBytes, encode, hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import type { FilePath, ObjectId } from '../../../../src/domain/objects/object-id.js';
 
@@ -98,7 +100,7 @@ describe('serializeCacheTree', () => {
   });
 });
 
-const fp = (...paths: string[]): FilePath[] => paths as FilePath[];
+const fp = (...paths: string[]): IndexPath[] => paths.map((path) => ({ path: path as FilePath }));
 
 function baseTree(): CacheTreeEntry {
   const e: CacheTreeEntry = {
@@ -245,10 +247,7 @@ describe('Given sibling cache-tree names that do not survive a UTF-8 round trip'
     it('Then the invalidated subtree keeps its exact name bytes', () => {
       // Arrange
       const sut = (data: Uint8Array): Uint8Array =>
-        serializeCacheTree(
-          invalidateCacheTree(parseCacheTree(data, 20), ['a/\uFEFFb/x' as FilePath]),
-          20,
-        );
+        serializeCacheTree(invalidateCacheTree(parseCacheTree(data, 20), fp('a/\uFEFFb/x')), 20);
 
       // Act
       const result = sut(original);
@@ -270,7 +269,7 @@ describe('Given sibling cache-tree names that do not survive a UTF-8 round trip'
     it('Then the untouched subtrees keep their exact name bytes', () => {
       // Arrange
       const sut = (data: Uint8Array): Uint8Array =>
-        serializeCacheTree(invalidateCacheTree(parseCacheTree(data, 20), ['a/c' as FilePath]), 20);
+        serializeCacheTree(invalidateCacheTree(parseCacheTree(data, 20), fp('a/c')), 20);
 
       // Act
       const result = sut(original);
@@ -285,10 +284,7 @@ describe('Given sibling cache-tree names that do not survive a UTF-8 round trip'
     it('Then a path component sharing the lossy decode of a sibling does not remove it', () => {
       // Arrange
       const sut = (data: Uint8Array): Uint8Array =>
-        serializeCacheTree(
-          invalidateCacheTree(parseCacheTree(data, 20), ['a/\uFEFFb' as FilePath]),
-          20,
-        );
+        serializeCacheTree(invalidateCacheTree(parseCacheTree(data, 20), fp('a/\uFEFFb')), 20);
 
       // Act
       const result = sut(original);
@@ -373,6 +369,173 @@ describe('Given a tree without raw name bytes', () => {
       // Assert
       expect(result).not.toHaveProperty('nameBytes');
       expect(result.children[0]).not.toHaveProperty('nameBytes');
+    });
+  });
+});
+
+describe('Given subtrees named by raw non-UTF-8 bytes', () => {
+  const FF = Uint8Array.of(0xff);
+  const lossyChild = (): CacheTreeEntry => ({
+    path: '\uFFFD',
+    nameBytes: FF,
+    entryCount: 1,
+    subtreeCount: 0,
+    id: oid(40, 'b'),
+    children: [],
+  });
+  const validSibling = (path: string, digit: string): CacheTreeEntry => ({
+    path,
+    entryCount: 1,
+    subtreeCount: 0,
+    id: oid(40, digit),
+    children: [],
+  });
+  const rootOf = (children: CacheTreeEntry[]): CacheTreeEntry => ({
+    path: '',
+    entryCount: 3,
+    subtreeCount: children.length,
+    id: oid(40, 'a'),
+    children,
+  });
+  const lossyChange: IndexPath = {
+    path: '\uFFFD/x' as FilePath,
+    pathBytes: Uint8Array.of(0xff, 0x2f, 0x78),
+  };
+
+  describe('When a lossy path below the raw-named subtree is invalidated', () => {
+    it('Then that subtree is invalidated, keeps its nameBytes, and a sibling is untouched', () => {
+      // Arrange
+      const sibling = validSibling('a', 'c');
+      const root = rootOf([lossyChild(), sibling]);
+      const sut = invalidateCacheTree;
+
+      // Act
+      const result = sut(root, [lossyChange]);
+
+      // Assert
+      expect(result.children[0]?.entryCount).toBe(-1);
+      expect(result.children[0]).not.toHaveProperty('id');
+      expect(result.children[0]?.nameBytes).toEqual(FF);
+      expect(result.children[1]).toBe(sibling);
+    });
+  });
+
+  describe('When a lossy path is invalidated beside a subtree named by the literal U+FFFD', () => {
+    it('Then only the raw-named subtree is invalidated', () => {
+      // Arrange
+      const twin = validSibling('\uFFFD', 'c');
+      const root = rootOf([lossyChild(), twin]);
+      const sut = invalidateCacheTree;
+
+      // Act
+      const result = sut(root, [lossyChange]);
+
+      // Assert
+      expect(result.children[0]?.entryCount).toBe(-1);
+      expect(result.children[1]).toBe(twin);
+    });
+  });
+
+  describe('When a BOM path is invalidated', () => {
+    it('Then the subtree whose nameBytes start with the BOM bytes is invalidated', () => {
+      // Arrange
+      const bomChild: CacheTreeEntry = {
+        path: 'a',
+        nameBytes: Uint8Array.of(0xef, 0xbb, 0xbf, 0x61),
+        entryCount: 1,
+        subtreeCount: 0,
+        id: oid(40, 'b'),
+        children: [],
+      };
+      const sibling = validSibling('a', 'c');
+      const root = rootOf([bomChild, sibling]);
+      const sut = invalidateCacheTree;
+
+      // Act
+      const result = sut(root, fp('\uFEFFa/x'));
+
+      // Assert
+      expect(result.children[0]?.entryCount).toBe(-1);
+      expect(result.children[1]).toBe(sibling);
+    });
+  });
+});
+
+describe('Given sibling subtrees whose names decode to the same or an escaped string', () => {
+  const subtree = (nameBytes: Uint8Array, path: string, id: string): CacheTreeEntry => ({
+    path: path as FilePath,
+    nameBytes,
+    entryCount: 1,
+    subtreeCount: 0,
+    id: id.repeat(40) as ObjectId,
+    children: [],
+  });
+  const LONE_FF = subtree(new Uint8Array([0xff]), '\uFFFD', 'b');
+  const REPLACEMENT = subtree(new Uint8Array([0xef, 0xbf, 0xbd]), '\uFFFD', 'c');
+  const BOM_A = subtree(new Uint8Array([0xef, 0xbb, 0xbf, 0x61]), '\uFEFFa', 'd');
+  const rootOf = (...children: CacheTreeEntry[]): CacheTreeEntry => ({
+    path: '' as FilePath,
+    entryCount: 3,
+    subtreeCount: children.length,
+    id: 'a'.repeat(40) as ObjectId,
+    children,
+  });
+
+  describe('When a lossy path below the lone-byte subtree is invalidated', () => {
+    it('Then only the lone-byte subtree is invalidated', () => {
+      // Arrange
+      const sut = invalidateCacheTree;
+      const changed: IndexPath = {
+        path: '\uFFFD/x' as FilePath,
+        pathBytes: new Uint8Array([0xff, 0x2f, 0x78]),
+      };
+
+      // Act
+      const result = sut(rootOf(LONE_FF, REPLACEMENT), [changed]);
+
+      // Assert
+      expect(result.children[0]?.entryCount).toBe(-1);
+      expect(result.children[1]).toBe(REPLACEMENT);
+    });
+  });
+
+  describe('When a well-formed path below the replacement-character subtree is invalidated', () => {
+    it('Then only the replacement-character subtree is invalidated', () => {
+      // Arrange
+      const sut = invalidateCacheTree;
+
+      // Act
+      const result = sut(rootOf(LONE_FF, REPLACEMENT), fp('\uFFFD/x'));
+
+      // Assert
+      expect(result.children[0]).toBe(LONE_FF);
+      expect(result.children[1]?.entryCount).toBe(-1);
+    });
+  });
+
+  describe('When a path below the BOM-prefixed subtree is invalidated', () => {
+    it('Then that subtree is invalidated', () => {
+      // Arrange
+      const sut = invalidateCacheTree;
+
+      // Act
+      const result = sut(rootOf(BOM_A), fp('\uFEFFa/x'));
+
+      // Assert
+      expect(result.children[0]?.entryCount).toBe(-1);
+    });
+  });
+
+  describe('When checking that each subtree is named once over the twins', () => {
+    it('Then the names are distinct', () => {
+      // Arrange
+      const sut = namesEachSubtreeOnce;
+
+      // Act
+      const result = sut(rootOf(LONE_FF, REPLACEMENT, BOM_A));
+
+      // Assert
+      expect(result).toBe(true);
     });
   });
 });

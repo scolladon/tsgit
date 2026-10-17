@@ -4,12 +4,14 @@ import { add } from '../../../../src/application/commands/add.js';
 import { init } from '../../../../src/application/commands/init.js';
 import {
   changedPaths,
+  findTrackedBeyondSymlink,
   findWouldOverwrite,
 } from '../../../../src/application/primitives/find-would-overwrite.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
+import type { MergeConflict } from '../../../../src/domain/merge/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -51,6 +53,68 @@ const set = (...paths: ReadonlyArray<string>): ReadonlySet<FilePath> =>
   new Set(paths.map((p) => p as FilePath));
 
 describe('findWouldOverwrite', () => {
+  describe('Given a tracked lossy entry and a file named like its decoded view on disk', () => {
+    describe('When the changed set carries the escaped key', () => {
+      it('Then it is neither a local change nor untracked and the name is never probed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const committed = await blob(ctx, 'committed\n');
+        await work(ctx, '\uFFFD.txt', 'view file\n');
+        const lossy: IndexEntry = {
+          ...entryOf('\uFFFD.txt', committed),
+          pathBytes: Uint8Array.from([0xff, 0x2e, 0x74, 0x78, 0x74]),
+        };
+        const lstat = vi.spyOn(ctx.fs, 'lstat');
+
+        // Act
+        const result = await findWouldOverwrite(ctx, set('\uDCFF.txt'), indexOf([lossy]));
+
+        // Assert
+        expect(result).toEqual({ localChanges: [], untracked: [] });
+        expect(lstat).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given an escaped path absent from the index', () => {
+    describe('When the changed set carries it', () => {
+      it('Then it is never reported untracked and never probed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await work(ctx, '\uFFFD.txt', 'view file\n');
+        const lstat = vi.spyOn(ctx.fs, 'lstat');
+
+        // Act
+        const result = await findWouldOverwrite(ctx, set('\uDCFF.txt', '\uDCFE.txt'), indexOf([]));
+
+        // Assert
+        expect(result).toEqual({ localChanges: [], untracked: [] });
+        expect(lstat).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a dirty entry whose name holds a real U+FFFD', () => {
+    describe('When the changed set carries that path', () => {
+      it('Then it is reported as a local change under the same name', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const committed = await blob(ctx, 'committed\n');
+        await work(ctx, '\uFFFD.txt', 'dirty\n');
+
+        // Act
+        const result = await findWouldOverwrite(
+          ctx,
+          set('\uFFFD.txt'),
+          indexOf([entryOf('\uFFFD.txt', committed)]),
+        );
+
+        // Assert
+        expect(result.localChanges).toEqual(['\uFFFD.txt']);
+      });
+    });
+  });
+
   describe('Given an untracked path present on disk', () => {
     describe('When the path is in the changed set', () => {
       it('Then it is reported in untracked and localChanges is empty', async () => {
@@ -239,6 +303,91 @@ describe('changedPaths', () => {
   });
 });
 
+describe('changedPaths displaced file', () => {
+  const ID = 'a'.repeat(40) as ObjectId;
+  const conflictOf = (
+    type: 'file-directory' | 'distinct-types',
+    ourPath: string,
+    theirPath: string,
+  ): MergeConflict => ({
+    type,
+    path: 'f' as FilePath,
+    ourId: ID,
+    ourMode: FILE_MODE.REGULAR,
+    theirId: ID,
+    theirMode: FILE_MODE.SYMLINK,
+    ourPath: ourPath as FilePath,
+    theirPath: theirPath as FilePath,
+  });
+
+  describe('Given a file-directory conflict where ours moved its file aside', () => {
+    describe('When the changed paths are listed', () => {
+      it('Then the displaced file path is listed with the moved copy', () => {
+        // Arrange
+        const sut = changedPaths;
+
+        // Act
+        const result = sut([], [conflictOf('file-directory', 'f~HEAD', 'f/x')], new Map());
+
+        // Assert
+        expect([...result].sort()).toEqual(['f', 'f/x', 'f~HEAD']);
+      });
+    });
+  });
+
+  describe('Given a distinct-types conflict where ours moved its file aside', () => {
+    describe('When the changed paths are listed', () => {
+      it('Then the displaced file path is listed', () => {
+        // Arrange
+        const sut = changedPaths;
+
+        // Act
+        const result = sut([], [conflictOf('distinct-types', 'f~HEAD', 'f')], new Map());
+
+        // Assert
+        expect([...result].sort()).toEqual(['f', 'f~HEAD']);
+      });
+    });
+  });
+
+  describe('Given a distinct-types conflict where ours keeps the path', () => {
+    describe('When the changed paths are listed', () => {
+      it('Then only the recorded paths are listed', () => {
+        // Arrange
+        const sut = changedPaths;
+
+        // Act
+        const result = sut([], [conflictOf('distinct-types', 'f', 'f~side')], new Map());
+
+        // Assert
+        expect([...result].sort()).toEqual(['f', 'f~side']);
+      });
+    });
+  });
+
+  describe('Given a file-directory conflict where theirs moved its file aside', () => {
+    describe('When the changed paths are listed', () => {
+      it('Then the directory-side path is not added', () => {
+        // Arrange
+        const sut = changedPaths;
+        const conflict: MergeConflict = {
+          type: 'file-directory',
+          path: 'f' as FilePath,
+          theirId: ID,
+          theirMode: FILE_MODE.REGULAR,
+          theirPath: 'f~side' as FilePath,
+        };
+
+        // Act
+        const result = sut([], [conflict], new Map());
+
+        // Assert
+        expect([...result]).toEqual(['f~side']);
+      });
+    });
+  });
+});
+
 describe('findWouldOverwrite stat cache', () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -278,6 +427,59 @@ describe('findWouldOverwrite stat cache', () => {
         // Assert
         expect(result.localChanges).toEqual([]);
         expect(reads).not.toContain(`${ctx.layout.workDir}/a.txt`);
+      });
+    });
+  });
+});
+
+describe('findTrackedBeyondSymlink', () => {
+  describe('Given tracked and untracked paths beneath a directory swapped for a symlink', () => {
+    describe('When the changed set carries them with a tracked path beyond no link', () => {
+      it('Then only the tracked paths beyond the link come back, sorted ascending', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const id = await blob(ctx, 'x\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/real/keep`, 'k\n');
+        await ctx.fs.symlink('real', `${ctx.layout.workDir}/a`);
+        await work(ctx, 'plain/y', 'y\n');
+        const index = indexOf([
+          entryOf('a/z', id),
+          entryOf('a/x', id),
+          entryOf('plain/y', id),
+          entryOf('top', id),
+        ]);
+
+        // Act
+        const result = await findTrackedBeyondSymlink(
+          ctx,
+          set('a/z', 'a/x', 'a/untracked', 'plain/y', 'top'),
+          index,
+        );
+
+        // Assert
+        expect(result).toEqual(['a/x', 'a/z']);
+      });
+    });
+  });
+
+  describe('Given a tracked lossy entry', () => {
+    describe('When the changed set carries its escaped key', () => {
+      it('Then it is never probed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const id = await blob(ctx, 'x\n');
+        const lossy: IndexEntry = {
+          ...entryOf('d/\uFFFD.txt', id),
+          pathBytes: Uint8Array.from([0x64, 0x2f, 0xff, 0x2e, 0x74, 0x78, 0x74]),
+        };
+        const lstat = vi.spyOn(ctx.fs, 'lstat');
+
+        // Act
+        const result = await findTrackedBeyondSymlink(ctx, set('d/\uDCFF.txt'), indexOf([lossy]));
+
+        // Assert
+        expect(result).toEqual([]);
+        expect(lstat).not.toHaveBeenCalled();
       });
     });
   });

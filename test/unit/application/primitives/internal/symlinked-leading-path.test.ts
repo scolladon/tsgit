@@ -1,9 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { createLeadingPathScanner } from '../../../../../src/application/primitives/internal/symlinked-leading-path.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
 import type { FilePath } from '../../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../../src/ports/context.js';
+
+afterEach(() => vi.restoreAllMocks());
 
 const path = (s: string): FilePath => s as FilePath;
 
@@ -45,6 +47,61 @@ const withLstatFailure = (ctx: Context, failPath: string, err: TsgitError): Cont
 };
 
 describe('createLeadingPathScanner', () => {
+  describe('Given a symlink nested under a real directory', () => {
+    describe('When symlinkedLeadingComponent is asked for a path beneath it', () => {
+      it('Then it names the symlink path, not the leaf or a deeper prefix', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/a`);
+        await ctx.fs.symlink('../elsewhere', `${ctx.layout.workDir}/a/link`);
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act
+        const result = await sut.symlinkedLeadingComponent(path('a/link/deep/leaf'));
+
+        // Assert
+        expect(result).toBe('a/link');
+      });
+    });
+  });
+
+  describe('Given a regular file standing where a leading directory should be, and an adapter that refuses to stat beneath it', () => {
+    describe('When symlinkedLeadingComponent is asked for a path beneath the file', () => {
+      it('Then it names nothing instead of surfacing the refusal', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await base.fs.write(`${base.layout.workDir}/f`, new Uint8Array());
+        const refusal = new TsgitError({ code: 'NOT_A_DIRECTORY', path: 'f/g' });
+        const ctx = withLstatFailure(base, `${base.layout.workDir}/f/g`, refusal);
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act
+        const result = await sut.symlinkedLeadingComponent(path('f/g/x'));
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a symlink as the leaf of the path', () => {
+    describe('When symlinkedLeadingComponent is asked for it', () => {
+      it('Then it names nothing — the leaf is never a leading component', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/a`);
+        await ctx.fs.symlink('../elsewhere', `${ctx.layout.workDir}/a/link`);
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act
+        const result = await sut.symlinkedLeadingComponent(path('a/link'));
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a leading directory that is a symlink pointing outside the repo', () => {
     describe('When hasSymlinkedLeadingPath is checked for a file beneath it', () => {
       it('Then it returns true', async () => {
@@ -513,6 +570,124 @@ describe('createLeadingPathScanner', () => {
         expect(first).toBe(false);
         expect(second).toBe(false);
         expect(calls).toEqual([`${ctx.layout.workDir}/dir`]);
+      });
+    });
+  });
+
+  describe('Given a path whose leading directories are all missing', () => {
+    describe('When ensureLeadingDirectories runs', () => {
+      it('Then each level is created by its own non-recursive mkdir, outermost first', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const mkdirSpy = vi.spyOn(ctx.fs, 'mkdir');
+        const work = ctx.layout.workDir;
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act
+        await sut.ensureLeadingDirectories(path('a/b/c'));
+
+        // Assert
+        expect(mkdirSpy.mock.calls.map(([target]) => target)).toEqual([`${work}/a`, `${work}/a/b`]);
+        expect((await ctx.fs.lstat(`${work}/a/b`)).isDirectory).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a leading directory that is a symlink to an outside directory', () => {
+    describe('When ensureLeadingDirectories runs', () => {
+      it('Then the link is replaced by a real directory and the outside directory is untouched', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const work = ctx.layout.workDir;
+        const outside = `${ctx.layout.gitDir}/outside`;
+        await ctx.fs.mkdir(outside);
+        await ctx.fs.symlink(outside, `${work}/a`);
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act
+        await sut.ensureLeadingDirectories(path('a/b/c'));
+
+        // Assert
+        expect((await ctx.fs.lstat(`${work}/a`)).isDirectory).toBe(true);
+        expect((await ctx.fs.lstat(`${work}/a/b`)).isDirectory).toBe(true);
+        expect(await ctx.fs.readdir(outside)).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a leading component that is a regular file', () => {
+    describe('When ensureLeadingDirectories runs', () => {
+      it('Then the file is replaced by a directory', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const work = ctx.layout.workDir;
+        await ctx.fs.write(`${work}/a`, new Uint8Array([1]));
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act
+        await sut.ensureLeadingDirectories(path('a/b'));
+
+        // Assert
+        expect((await ctx.fs.lstat(`${work}/a`)).isDirectory).toBe(true);
+      });
+    });
+  });
+
+  describe('Given leading directories that already exist', () => {
+    describe('When ensureLeadingDirectories runs twice', () => {
+      it('Then neither run creates or removes anything', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/a`);
+        const mkdirSpy = vi.spyOn(ctx.fs, 'mkdir');
+        const rmSpy = vi.spyOn(ctx.fs, 'rm');
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act
+        await sut.ensureLeadingDirectories(path('a/b'));
+        await sut.ensureLeadingDirectories(path('a/c'));
+
+        // Assert
+        expect(mkdirSpy).not.toHaveBeenCalled();
+        expect(rmSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given an empty work tree', () => {
+    describe('When ensureLeadingDirectories runs for a/b then for a/c', () => {
+      it('Then the directory a is created once and remembered', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const mkdirSpy = vi.spyOn(ctx.fs, 'mkdir');
+        const sut = createLeadingPathScanner(ctx);
+
+        // Act
+        await sut.ensureLeadingDirectories(path('a/b'));
+        await sut.ensureLeadingDirectories(path('a/c'));
+
+        // Assert
+        expect(mkdirSpy.mock.calls.map(([dir]) => dir)).toEqual([`${ctx.layout.workDir}/a`]);
+      });
+    });
+  });
+
+  describe('Given a scanned prefix', () => {
+    describe('When invalidateAll runs and the same path is scanned again', () => {
+      it('Then the prefix is lstat-ed again', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir(`${ctx.layout.workDir}/a`);
+        const { ctx: countedCtx, calls } = withLstatCallCounter(ctx);
+        const sut = createLeadingPathScanner(countedCtx);
+        await sut.ensureLeadingDirectories(path('a/b'));
+
+        // Act
+        sut.invalidateAll();
+        await sut.ensureLeadingDirectories(path('a/b'));
+
+        // Assert
+        expect(calls).toEqual([`${ctx.layout.workDir}/a`, `${ctx.layout.workDir}/a`]);
       });
     });
   });

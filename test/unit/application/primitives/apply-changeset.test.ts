@@ -11,6 +11,7 @@ import type {
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import * as blobSourceMod from '../../../../src/application/primitives/internal/blob-source.js';
 import * as concurrencyMod from '../../../../src/application/primitives/internal/concurrency.js';
+import * as ignoreEvaluatorMod from '../../../../src/application/primitives/internal/ignore-evaluator.js';
 import * as readGitattributesMod from '../../../../src/application/primitives/internal/read-gitattributes.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -26,6 +27,7 @@ import { type Context, createSession } from '../../../../src/ports/context.js';
 import type { FileStat } from '../../../../src/ports/file-system.js';
 import { scriptedCommandRunner } from '../../../fixtures/scripted-command-runner.js';
 import { buildSeededContext } from './fixtures.js';
+import { createInterleavingFs } from './support/interleaving-fs.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
@@ -61,10 +63,18 @@ const makeChangeset = (entries: ChangesetEntry[]): Changeset => {
   return { entries, stats };
 };
 
+interface EntryOptions {
+  readonly pathBytes?: Uint8Array;
+}
+
+const bytesOf = (opts: EntryOptions): EntryOptions =>
+  opts.pathBytes === undefined ? {} : { pathBytes: opts.pathBytes };
+
 const makeAdd = (
   path: string,
   id: ObjectId,
   mode: FileMode = FILE_MODE.REGULAR,
+  opts: EntryOptions = {},
 ): ChangesetEntry => ({
   kind: 'add',
   path: path as FilePath,
@@ -72,12 +82,14 @@ const makeAdd = (
   id,
   previousId: undefined,
   previousMode: undefined,
+  ...bytesOf(opts),
 });
 
 const makeDelete = (
   path: string,
   previousId: ObjectId,
   previousMode: FileMode = FILE_MODE.REGULAR,
+  opts: EntryOptions = {},
 ): ChangesetEntry => ({
   kind: 'delete',
   path: path as FilePath,
@@ -85,6 +97,7 @@ const makeDelete = (
   id: undefined,
   previousId,
   previousMode,
+  ...bytesOf(opts),
 });
 
 const makeUpdate = (
@@ -92,6 +105,7 @@ const makeUpdate = (
   previousId: ObjectId,
   newId: ObjectId,
   mode: FileMode = FILE_MODE.REGULAR,
+  opts: EntryOptions = {},
 ): ChangesetEntry => ({
   kind: 'update',
   path: path as FilePath,
@@ -99,6 +113,7 @@ const makeUpdate = (
   id: newId,
   previousId,
   previousMode: mode,
+  ...bytesOf(opts),
 });
 
 const writeBlob = async (
@@ -331,6 +346,30 @@ describe('applyChangeset', () => {
     });
   });
 
+  describe('Given an add entry without an id next to a symlink add', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then no directory is made for the entry without an id', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('target'));
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([
+            makeAdd('p/q', undefined as unknown as ObjectId),
+            makeAdd('link', id, FILE_MODE.SYMLINK),
+          ]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(await ctx.fs.exists(`${WORKDIR}/p`)).toBe(false);
+        expect(await ctx.fs.readlink(`${WORKDIR}/link`)).toBe('target');
+      });
+    });
+  });
+
   describe('Given an add entry with gitlink mode', () => {
     describe('When applyChangeset runs', () => {
       it('Then creates an empty directory placeholder', async () => {
@@ -367,6 +406,562 @@ describe('applyChangeset', () => {
         // Assert
         expect(result.deleted).toBe(1);
         expect(await ctx.fs.exists(`${WORKDIR}/doomed.txt`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a delete entry that empties its leading directories', () => {
+    describe('When applyChangeset runs with force', () => {
+      it('Then every emptied directory is removed and the work tree root stays', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('q'));
+        await ctx.fs.write(`${WORKDIR}/d/e/q`, enc('q'));
+        await ctx.fs.write(`${WORKDIR}/keep`, enc('k'));
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('d/e/q', id)]),
+          force: true,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(await ctx.fs.exists(`${WORKDIR}/d`)).toBe(false);
+        expect(await ctx.fs.exists(`${WORKDIR}/keep`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a delete entry whose directory the target writes a file in', () => {
+    describe('When applyChangeset runs with force', () => {
+      it('Then the directory is not probed for removal', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('q'));
+        await ctx.fs.write(`${WORKDIR}/d/e/q`, enc('q'));
+        const rm = vi.spyOn(ctx.fs, 'rm');
+        const rmdir = vi.spyOn(ctx.fs, 'rmdir');
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('d/e/q', id), makeAdd('d/e/kept', id)]),
+          force: true,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(rm.mock.calls.map(([path]) => path)).toEqual([`${WORKDIR}/d/e/q`]);
+        expect(rmdir).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a delete entry whose directory the target updates a file in', () => {
+    describe('When applyChangeset runs with force', () => {
+      it('Then the directory is not probed for removal', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('old'));
+        const newId = await writeBlob(ctx, enc('new'));
+        await ctx.fs.write(`${WORKDIR}/d/q`, enc('old'));
+        await ctx.fs.write(`${WORKDIR}/d/u`, enc('old'));
+        const rmdir = vi.spyOn(ctx.fs, 'rmdir');
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('d/q', oldId), makeUpdate('d/u', oldId, newId)]),
+          force: true,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(rmdir).not.toHaveBeenCalled();
+        expect(dec(await ctx.fs.read(`${WORKDIR}/d/u`))).toBe('new');
+      });
+    });
+  });
+
+  describe('Given a delete entry whose directory keeps a noop entry absent from disk', () => {
+    describe('When applyChangeset runs with force', () => {
+      it('Then the emptied directory is removed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('q'));
+        await ctx.fs.write(`${WORKDIR}/d/e/q`, enc('q'));
+        const absent: ChangesetEntry = {
+          kind: 'noop',
+          path: 'd/e/absent' as FilePath,
+          mode: FILE_MODE.REGULAR,
+          id,
+          previousId: id,
+          previousMode: FILE_MODE.REGULAR,
+        };
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('d/e/q', id), absent]),
+          force: true,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(await ctx.fs.exists(`${WORKDIR}/d`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a delete entry whose directory still holds an untracked file', () => {
+    describe('When applyChangeset runs with force', () => {
+      it('Then the directory chain holding it is kept', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('q'));
+        await ctx.fs.write(`${WORKDIR}/d/e/q`, enc('q'));
+        await ctx.fs.write(`${WORKDIR}/d/e/untracked`, enc('u'));
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('d/e/q', id)]),
+          force: true,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(await ctx.fs.exists(`${WORKDIR}/d/e/untracked`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a nested directory f/g/x replaced by a file f', () => {
+    describe('When applyChangeset runs with force', () => {
+      it('Then the file f is written', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('x'));
+        const newId = await writeBlob(ctx, enc('file'));
+        await ctx.fs.write(`${WORKDIR}/f/g/x`, enc('x'));
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('f/g/x', oldId), makeAdd('f', newId)]),
+          force: true,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f`))).toBe('file');
+      });
+    });
+  });
+
+  describe('Given a directory f holding only a nested directory f/sub with a deleted tracked file, replaced by a file f', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then no untracked clash is reported and f is written', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('x'));
+        const newId = await writeBlob(ctx, enc('file'));
+        await ctx.fs.write(`${WORKDIR}/f/sub/x`, enc('x'));
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('f/sub/x', oldId), makeAdd('f', newId)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/f`))).toBe('file');
+      });
+    });
+  });
+
+  describe('Given a directory f holding a nested f/sub with a deleted tracked file and an untracked f/z beside it', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then it refuses listing f and keeps the untracked file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('x'));
+        const newId = await writeBlob(ctx, enc('file'));
+        await ctx.fs.write(`${WORKDIR}/f/sub/x`, enc('x'));
+        await ctx.fs.write(`${WORKDIR}/f/z`, enc('z'));
+
+        // Act
+        const outcome = await outcomeOf(
+          applyChangeset(ctx, {
+            changeset: makeChangeset([makeDelete('f/sub/x', oldId), makeAdd('f', newId)]),
+            force: false,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY', untracked: ['f'] });
+        expect(await ctx.fs.exists(`${WORKDIR}/f/z`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a directory d holding only ignored files and a deleted tracked file, replaced by a file d', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then the ignored files, nested ones included, give way and d is written', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('x'));
+        const newId = await writeBlob(ctx, enc('file'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('*.o\nbuild/\n'));
+        await ctx.fs.write(`${WORKDIR}/d/x`, enc('x'));
+        await ctx.fs.write(`${WORKDIR}/d/junk.o`, enc('j'));
+        await ctx.fs.write(`${WORKDIR}/d/n/deep.o`, enc('j'));
+        await ctx.fs.write(`${WORKDIR}/d/build/out.txt`, enc('j'));
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('d/x', oldId), makeAdd('d', newId)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/d`))).toBe('file');
+      });
+    });
+  });
+
+  describe('Given a directory d holding an ignored file and an untracked file, replaced by a file d', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then it refuses listing d and keeps both files', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('x'));
+        const newId = await writeBlob(ctx, enc('file'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('*.o\n'));
+        await ctx.fs.write(`${WORKDIR}/d/x`, enc('x'));
+        await ctx.fs.write(`${WORKDIR}/d/junk.o`, enc('j'));
+        await ctx.fs.write(`${WORKDIR}/d/keep.txt`, enc('k'));
+
+        // Act
+        const outcome = await outcomeOf(
+          applyChangeset(ctx, {
+            changeset: makeChangeset([makeDelete('d/x', oldId), makeAdd('d', newId)]),
+            force: false,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY', untracked: ['d'] });
+        expect(await ctx.fs.exists(`${WORKDIR}/d/junk.o`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given d/x, a directory-only ignore rule build/ and an untracked FILE d/build, replaced by a file d', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then the file is not mistaken for the ignored directory: it refuses listing d and keeps it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('x'));
+        const newId = await writeBlob(ctx, enc('file'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('build/\n'));
+        await ctx.fs.write(`${WORKDIR}/d/x`, enc('x'));
+        await ctx.fs.write(`${WORKDIR}/d/build`, enc('b'));
+
+        // Act
+        const outcome = await outcomeOf(
+          applyChangeset(ctx, {
+            changeset: makeChangeset([makeDelete('d/x', oldId), makeAdd('d', newId)]),
+            force: false,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY', untracked: ['d'] });
+        expect(dec(await ctx.fs.read(`${WORKDIR}/d/build`))).toBe('b');
+      });
+    });
+  });
+
+  describe('Given directories whose every file the changeset deletes, replaced by files', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then the ignore rules are never read for the deleted files', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('x'));
+        const newId = await writeBlob(ctx, enc('file'));
+        await ctx.fs.write(`${WORKDIR}/d1/x`, enc('x'));
+        await ctx.fs.write(`${WORKDIR}/d2/x`, enc('x'));
+        const buildSpy = vi.spyOn(ignoreEvaluatorMod, 'buildRepoIgnorePredicate');
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([
+            makeDelete('d1/x', oldId),
+            makeDelete('d2/x', oldId),
+            makeAdd('d1', newId),
+            makeAdd('d2', newId),
+          ]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(buildSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given several directories each holding a deleted file and an ignored file, replaced by files', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then the ignore rules are built once for the clash check and once for the clearing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('x'));
+        const newId = await writeBlob(ctx, enc('file'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('*.o\n'));
+        for (const dir of ['d1', 'd2', 'd3']) {
+          await ctx.fs.write(`${WORKDIR}/${dir}/x`, enc('x'));
+          await ctx.fs.write(`${WORKDIR}/${dir}/junk.o`, enc('j'));
+        }
+        const buildSpy = vi.spyOn(ignoreEvaluatorMod, 'buildRepoIgnorePredicate');
+        const dirs = ['d1', 'd2', 'd3'];
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([
+            ...dirs.map((dir) => makeDelete(`${dir}/x`, oldId)),
+            ...dirs.map((dir) => makeAdd(dir, newId)),
+          ]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(buildSpy).toHaveBeenCalledTimes(2);
+        expect(dec(await ctx.fs.read(`${WORKDIR}/d3`))).toBe('file');
+      });
+    });
+  });
+
+  describe('Given a directory holding an untracked file at a gitlink path, and a forced add of the gitlink', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the directory and its file are left alone, as git leaves a gitlink directory', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('0123456789012345678901234567890123456789'));
+        await ctx.fs.write(`${WORKDIR}/sub/keep.txt`, enc('k'));
+        const changeset = makeChangeset([makeAdd('sub', id, FILE_MODE.GITLINK)]);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, { changeset, force: true, workdir: WORKDIR });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/sub/keep.txt`))).toBe('k');
+      });
+    });
+  });
+
+  describe('Given an untracked symlink L to a directory holding an ignored file, and an add of L/x', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then it refuses naming L, and the ignored file behind the link and the link stay', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('x'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('*.log\n'));
+        await ctx.fs.write(`${WORKDIR}/inner/x/keep.log`, enc('k'));
+        await ctx.fs.symlink('inner', `${WORKDIR}/L`);
+
+        // Act
+        const outcome = await outcomeOf(
+          applyChangeset(ctx, {
+            changeset: makeChangeset([makeAdd('L/x', newId)]),
+            force: false,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY', untracked: ['L'] });
+        expect(await ctx.fs.exists(`${WORKDIR}/inner/x/keep.log`)).toBe(true);
+        expect((await ctx.fs.lstat(`${WORKDIR}/L`)).isSymbolicLink).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an untracked symlink a/L and an add of a/L/x', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then it refuses naming the symlinked component a/L', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('x'));
+        await ctx.fs.write(`${WORKDIR}/a/keep`, enc('k'));
+        await ctx.fs.symlink('../inner', `${WORKDIR}/a/L`);
+
+        // Act
+        const outcome = await outcomeOf(
+          applyChangeset(ctx, {
+            changeset: makeChangeset([makeAdd('a/L/x', newId)]),
+            force: false,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY', untracked: ['a/L'] });
+      });
+    });
+  });
+
+  describe('Given an untracked symlink L, a directory-only ignore rule L/, and an add of L/x', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then it refuses naming L, as a directory-only rule never matches a link', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('x'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('L/\n'));
+        await ctx.fs.mkdir(`${WORKDIR}/inner`);
+        await ctx.fs.symlink('inner', `${WORKDIR}/L`);
+
+        // Act
+        const outcome = await outcomeOf(
+          applyChangeset(ctx, {
+            changeset: makeChangeset([makeAdd('L/x', newId)]),
+            force: false,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY', untracked: ['L'] });
+      });
+    });
+  });
+
+  describe('Given an ignored symlink L to a directory holding an ignored file, and an add of L/x', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then L becomes a directory holding x and the file behind the old link stays', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('x'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('*.log\nL\n'));
+        await ctx.fs.write(`${WORKDIR}/inner/x/keep.log`, enc('k'));
+        await ctx.fs.symlink('inner', `${WORKDIR}/L`);
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeAdd('L/x', newId)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/L/x`))).toBe('x');
+        expect((await ctx.fs.lstat(`${WORKDIR}/L`)).isSymbolicLink).toBe(false);
+        expect(dec(await ctx.fs.read(`${WORKDIR}/inner/x/keep.log`))).toBe('k');
+      });
+    });
+  });
+
+  describe('Given a tracked symlink L that the changeset deletes, and an add of L/x', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then L becomes a directory holding x and the file behind the old link stays', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const linkId = await writeBlob(ctx, enc('inner'));
+        const newId = await writeBlob(ctx, enc('x'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('*.log\n'));
+        await ctx.fs.write(`${WORKDIR}/inner/x/keep.log`, enc('k'));
+        await ctx.fs.symlink('inner', `${WORKDIR}/L`);
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([
+            makeDelete('L', linkId, FILE_MODE.SYMLINK),
+            makeAdd('L/x', newId),
+          ]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/L/x`))).toBe('x');
+        expect(dec(await ctx.fs.read(`${WORKDIR}/inner/x/keep.log`))).toBe('k');
+      });
+    });
+  });
+
+  describe('Given an untracked symlink L to a directory holding an ignored file, and an add of L/x', () => {
+    describe('When applyChangeset runs with force', () => {
+      it('Then L becomes a directory holding x and the file behind the old link stays', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const newId = await writeBlob(ctx, enc('x'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('*.log\n'));
+        await ctx.fs.write(`${WORKDIR}/inner/x/keep.log`, enc('k'));
+        await ctx.fs.symlink('inner', `${WORKDIR}/L`);
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeAdd('L/x', newId)]),
+          force: true,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/L/x`))).toBe('x');
+        expect(dec(await ctx.fs.read(`${WORKDIR}/inner/x/keep.log`))).toBe('k');
+      });
+    });
+  });
+
+  describe('Given a directory d holding an ignored file and an untracked file, replaced by a file d', () => {
+    describe('When applyChangeset runs with force', () => {
+      it('Then every occupant gives way and d is written', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('x'));
+        const newId = await writeBlob(ctx, enc('file'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('*.o\n'));
+        await ctx.fs.write(`${WORKDIR}/d/x`, enc('x'));
+        await ctx.fs.write(`${WORKDIR}/d/junk.o`, enc('j'));
+        await ctx.fs.write(`${WORKDIR}/d/keep.txt`, enc('k'));
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('d/x', oldId), makeAdd('d', newId)]),
+          force: true,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/d`))).toBe('file');
+      });
+    });
+  });
+
+  describe('Given a directory d holding only an ignored file, replaced by a file d', () => {
+    describe('When applyChangeset runs with force', () => {
+      it('Then the ignored file gives way and d is written', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, enc('x'));
+        const newId = await writeBlob(ctx, enc('file'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('*.o\n'));
+        await ctx.fs.write(`${WORKDIR}/d/x`, enc('x'));
+        await ctx.fs.write(`${WORKDIR}/d/junk.o`, enc('j'));
+
+        // Act
+        await applyChangeset(ctx, {
+          changeset: makeChangeset([makeDelete('d/x', oldId), makeAdd('d', newId)]),
+          force: true,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/d`))).toBe('file');
       });
     });
   });
@@ -2602,6 +3197,460 @@ describe('applyChangeset dirty probe under line-ending conversion', () => {
         // Assert
         expect(result).toBe(false);
         expect(isWorkingTreeDirty.length).toBe(3);
+      });
+    });
+  });
+});
+
+const LOSSY_BYTES = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+const LOSSY_VIEW_PATH = '\uFFFD.txt';
+const LOSSY_OPTS: EntryOptions = { pathBytes: LOSSY_BYTES };
+
+describe('applyChangeset and an entry whose name bytes are not UTF-8', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given a changeset adding a lossy L and a well-formed U on an empty work tree', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then only U is written and L is recorded with a zero stat and its bytes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const lossyId = await writeBlob(ctx, enc('l\n'));
+        const wellFormedId = await writeBlob(ctx, enc('u\n'));
+        const writeSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
+        const changeset = makeChangeset([
+          makeAdd(LOSSY_VIEW_PATH, lossyId, FILE_MODE.REGULAR, LOSSY_OPTS),
+          makeAdd(LOSSY_VIEW_PATH, wellFormedId),
+        ]);
+        const sut = applyChangeset;
+
+        // Act
+        const result = await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/${LOSSY_VIEW_PATH}`))).toBe('u\n');
+        expect(writeSpy).toHaveBeenCalledOnce();
+        expect(String(writeSpy.mock.calls[0]?.[1])).toMatch(/\uFFFD\.txt$/);
+        const lossy = result.writtenEntries.find((e) => e.pathBytes !== undefined);
+        expect(lossy?.pathBytes).toEqual(LOSSY_BYTES);
+        expect(lossy?.mtimeSeconds).toBe(0);
+        expect(lossy?.fileSize).toBe(0);
+      });
+    });
+  });
+
+  describe('Given the well-formed twin on disk and a changeset deleting the lossy entry', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the twin file is still there', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const lossyId = await writeBlob(ctx, enc('l\n'));
+        await ctx.fs.write(`${WORKDIR}/${LOSSY_VIEW_PATH}`, enc('u\n'));
+        const changeset = makeChangeset([
+          makeDelete(LOSSY_VIEW_PATH, lossyId, FILE_MODE.REGULAR, LOSSY_OPTS),
+        ]);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, { changeset, force: true, workdir: WORKDIR });
+
+        // Assert
+        expect(await ctx.fs.exists(`${WORKDIR}/${LOSSY_VIEW_PATH}`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given the twin file on disk and a non-forced update of the lossy entry', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then it resolves and leaves the twin untouched', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const previousId = await writeBlob(ctx, enc('l\n'));
+        const newId = await writeBlob(ctx, enc('l2\n'));
+        await ctx.fs.write(`${WORKDIR}/${LOSSY_VIEW_PATH}`, enc('x\n'));
+        const changeset = makeChangeset([
+          makeUpdate(LOSSY_VIEW_PATH, previousId, newId, FILE_MODE.REGULAR, LOSSY_OPTS),
+        ]);
+        const sut = applyChangeset;
+
+        // Act
+        const attempt = sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        await expect(attempt).resolves.toBeDefined();
+        expect(dec(await ctx.fs.read(`${WORKDIR}/${LOSSY_VIEW_PATH}`))).toBe('x\n');
+      });
+    });
+  });
+
+  describe('Given the twin file on disk and a non-forced add of the lossy entry', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then it resolves with no untracked clash', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('l\n'));
+        await ctx.fs.write(`${WORKDIR}/${LOSSY_VIEW_PATH}`, enc('x\n'));
+        const changeset = makeChangeset([
+          makeAdd(LOSSY_VIEW_PATH, id, FILE_MODE.REGULAR, LOSSY_OPTS),
+        ]);
+        const sut = applyChangeset;
+
+        // Act
+        const attempt = sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        await expect(attempt).resolves.toBeDefined();
+        expect(dec(await ctx.fs.read(`${WORKDIR}/${LOSSY_VIEW_PATH}`))).toBe('x\n');
+      });
+    });
+  });
+
+  describe('Given a directory at the lossy view path holding an ignored file, and a non-forced add of the lossy entry', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the unrelated directory and its ignored file are left alone', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('l\n'));
+        await ctx.fs.write(`${WORKDIR}/.gitignore`, enc('*.o\n'));
+        await ctx.fs.write(`${WORKDIR}/${LOSSY_VIEW_PATH}/junk.o`, enc('j'));
+        const changeset = makeChangeset([
+          makeAdd(LOSSY_VIEW_PATH, id, FILE_MODE.REGULAR, LOSSY_OPTS),
+        ]);
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/${LOSSY_VIEW_PATH}/junk.o`))).toBe('j');
+      });
+    });
+  });
+
+  describe('Given an add entry whose raw bytes name a .git HFS alias', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then it refuses with the HFS reason and writes nothing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('x\n'));
+        const writeSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
+        const changeset = makeChangeset([
+          makeAdd('.git\uFFFD/x', id, FILE_MODE.REGULAR, {
+            pathBytes: Uint8Array.of(0x2e, 0x67, 0x69, 0x74, 0xff, 0x2f, 0x78),
+          }),
+        ]);
+        const sut = applyChangeset;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as { data?: unknown }).data).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'.git' HFS+ ignorable-codepoint alias rejected",
+        });
+        expect(writeSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
+describe('applyChangeset leading-symlink safety', () => {
+  const OUTSIDE = '/repo/.git/outside';
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const seedInterleaved = async (): Promise<{
+    readonly ctx: Context;
+    readonly inner: Context;
+    readonly recorded: ReturnType<typeof createInterleavingFs>['recorded'];
+  }> => {
+    const inner = await buildSeededContext();
+    await inner.fs.mkdir(OUTSIDE);
+    const { fs, recorded } = createInterleavingFs(inner.fs, { foldUnder: WORKDIR });
+    return { ctx: { ...inner, fs }, inner, recorded };
+  };
+
+  const expectPayloadInRealDirectory = async (
+    inner: Context,
+    recorded: ReturnType<typeof createInterleavingFs>['recorded'],
+  ): Promise<void> => {
+    expect(recorded).toEqual([]);
+    expect((await inner.fs.lstat(`${WORKDIR}/a`)).isDirectory).toBe(true);
+    expect(dec(await inner.fs.read(`${WORKDIR}/a/payload`))).toBe('payload');
+    expect(await inner.fs.readdir(OUTSIDE)).toEqual([]);
+  };
+
+  describe('Given a symlink A and a file a/payload that one case-insensitive disk folds together', () => {
+    describe('When applyChangeset runs with the interleaving that creates the link between the scan and the write', () => {
+      it('Then payload never lands through the link', async () => {
+        // Arrange
+        const { ctx, inner, recorded } = await seedInterleaved();
+        const link = await writeBlob(inner, enc(OUTSIDE));
+        const payload = await writeBlob(inner, enc('payload'));
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([
+            makeAdd('A', link, FILE_MODE.SYMLINK),
+            makeAdd('a/payload', payload),
+          ]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        await expectPayloadInRealDirectory(inner, recorded);
+      });
+    });
+  });
+
+  describe('Given a symlink a and a file A/payload that one case-insensitive disk folds together', () => {
+    describe('When applyChangeset runs, the directory A memoised before the link a replaces it', () => {
+      it('Then payload never lands through the link, which only clearing the memo after the link write guarantees', async () => {
+        // Arrange
+        const { ctx, inner, recorded } = await seedInterleaved();
+        const link = await writeBlob(inner, enc(OUTSIDE));
+        const payload = await writeBlob(inner, enc('payload'));
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([
+            makeAdd('a', link, FILE_MODE.SYMLINK),
+            makeAdd('A/payload', payload),
+          ]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        await expectPayloadInRealDirectory(inner, recorded);
+      });
+    });
+  });
+
+  describe('Given a changeset listing a symlink a before a symlink A that one case-insensitive disk folds together', () => {
+    describe('When applyChangeset writes the pooled wave', () => {
+      it('Then the links land in byte order of the path, so a is the one left standing', async () => {
+        // Arrange
+        const inner = await buildSeededContext();
+        const { fs } = createInterleavingFs(inner.fs, { foldUnder: WORKDIR });
+        const ctx = { ...inner, fs };
+        const lower = await writeBlob(inner, enc('lower-target'));
+        const upper = await writeBlob(inner, enc('upper-target'));
+        const regular = await writeBlob(inner, enc('regular'));
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([
+            makeAdd('a', lower, FILE_MODE.SYMLINK),
+            makeAdd('A', upper, FILE_MODE.SYMLINK),
+            makeAdd('z', regular),
+          ]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(await inner.fs.readlink(`${WORKDIR}/a`)).toBe('lower-target');
+      });
+    });
+  });
+
+  describe('Given a symlink wave holding a gitlink and a regular file', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the gitlink directory exists before the first pooled regular write starts', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const regular = await writeBlob(ctx, enc('regular'));
+        const link = await writeBlob(ctx, enc('target'));
+        const events: string[] = [];
+        const realMkdir = ctx.fs.mkdir.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'mkdir').mockImplementation(async (dir) => {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          await realMkdir(dir);
+          events.push(`mkdir ${dir}`);
+        });
+        const realWriteStream = ctx.fs.writeStream.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'writeStream').mockImplementation(async (file, chunks) => {
+          events.push(`write ${file}`);
+          await realWriteStream(file, chunks);
+        });
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([
+            makeAdd('a-file', regular),
+            makeAdd('sub', 'd'.repeat(40) as ObjectId, FILE_MODE.GITLINK),
+            makeAdd('link', link, FILE_MODE.SYMLINK),
+          ]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(events.indexOf(`mkdir ${WORKDIR}/sub`)).toBeLessThan(
+          events.indexOf(`write ${WORKDIR}/a-file`),
+        );
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'pooled', config: '' },
+    { label: 'one at a time', config: '[filter "a"]\n\tprocess = proc\n' },
+  ])(
+    'Given a file standing where a symlink wave needs a directory, written $label',
+    ({ config }) => {
+      describe('When applyChangeset writes d/x beside a symlink', () => {
+        it('Then the file gives way to the directory holding x', async () => {
+          // Arrange
+          const base = await buildSeededContext();
+          await base.fs.writeUtf8(`${base.layout.gitDir}/config`, config);
+          await base.fs.write(`${WORKDIR}/d`, enc('file'));
+          const ctx = { ...base, command: scriptedCommandRunner(new Uint8Array(0)).runner };
+          const link = await writeBlob(ctx, enc('target'));
+          const payload = await writeBlob(ctx, enc('payload'));
+          const sut = applyChangeset;
+
+          // Act
+          await sut(ctx, {
+            changeset: makeChangeset([
+              makeAdd('l', link, FILE_MODE.SYMLINK),
+              makeAdd('d/x', payload),
+            ]),
+            force: true,
+            workdir: WORKDIR,
+          });
+
+          // Assert
+          expect((await ctx.fs.lstat(`${WORKDIR}/d`)).isDirectory).toBe(true);
+          expect(dec(await ctx.fs.read(`${WORKDIR}/d/x`))).toBe('payload');
+        });
+      });
+    },
+  );
+
+  describe('Given a process filter driver and a symlink A beside a/payload on a folding disk (guard: no seeded defect fails it)', () => {
+    describe('When applyChangeset writes the entries one at a time', () => {
+      it('Then payload never lands through the link', async () => {
+        // Arrange
+        const { ctx, inner, recorded } = await seedInterleaved();
+        await inner.fs.writeUtf8(
+          `${inner.layout.gitDir}/config`,
+          '[filter "a"]\n\tprocess = proc\n',
+        );
+        const withProcess = { ...ctx, command: scriptedCommandRunner(new Uint8Array(0)).runner };
+        const link = await writeBlob(inner, enc(OUTSIDE));
+        const payload = await writeBlob(inner, enc('payload'));
+        const sut = applyChangeset;
+
+        // Act
+        await sut(withProcess, {
+          changeset: makeChangeset([
+            makeAdd('a/payload', payload),
+            makeAdd('A', link, FILE_MODE.SYMLINK),
+          ]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        await expectPayloadInRealDirectory(inner, recorded);
+      });
+    });
+  });
+
+  describe('Given a symlink wave holding a lossy d<0xff>/x and an untracked twin file d�', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the twin file survives and no directory is made for the view of the name', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('x'));
+        const link = await writeBlob(ctx, enc('target'));
+        await ctx.fs.write(`${WORKDIR}/d\uFFFD`, enc('twin'));
+        const mkdirSpy = vi.spyOn(ctx.fs, 'mkdir');
+        const sut = applyChangeset;
+
+        // Act
+        await outcomeOf(
+          sut(ctx, {
+            changeset: makeChangeset([
+              makeAdd('link', link, FILE_MODE.SYMLINK),
+              makeAdd('d\uFFFD/x', id, FILE_MODE.REGULAR, {
+                pathBytes: Uint8Array.of(0x64, 0xff, 0x2f, 0x78),
+              }),
+            ]),
+            force: true,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/d\uFFFD`))).toBe('twin');
+        expect(mkdirSpy.mock.calls.map(([dir]) => dir)).not.toContain(`${WORKDIR}/d\uFFFD`);
+      });
+    });
+  });
+
+  describe('Given a changeset of regular files only', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the wave never calls mkdir itself', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('x'));
+        const mkdirSpy = vi.spyOn(ctx.fs, 'mkdir');
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([makeAdd('d/one', id), makeAdd('d/two', id)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(mkdirSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
+describe('applyChangeset replacing a directory whose tracked child has a non-UTF-8 name', () => {
+  describe('Given a lossy delete d/<0xff>, an add of file d and an untracked d/� twin', () => {
+    describe('When applyChangeset runs without force', () => {
+      it('Then it refuses upfront listing d and writes nothing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const lostId = await writeBlob(ctx, enc('x'));
+        const fileId = await writeBlob(ctx, enc('file'));
+        await ctx.fs.write(`${WORKDIR}/d/�`, enc('u'));
+        const changeset = makeChangeset([
+          makeDelete('d/�', lostId, FILE_MODE.REGULAR, {
+            pathBytes: Uint8Array.of(0x64, 0x2f, 0xff),
+          }),
+          makeAdd('d', fileId),
+        ]);
+        const sut = applyChangeset;
+
+        // Act
+        const outcome = await outcomeOf(sut(ctx, { changeset, force: false, workdir: WORKDIR }));
+
+        // Assert
+        expect(outcome).toMatchObject({ code: 'CHECKOUT_OVERWRITE_DIRTY', untracked: ['d'] });
+        expect(dec(await ctx.fs.read(`${WORKDIR}/d/�`))).toBe('u');
       });
     });
   });

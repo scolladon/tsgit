@@ -4,16 +4,22 @@ import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { rm } from '../../../../src/application/commands/rm.js';
+import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
+import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import type { IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { fileNotFound, TsgitError } from '../../../../src/domain/index.js';
-import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
+import type { AuthorIdentity, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
+import { FILE_MODE } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type {
   CommandRequest,
   CommandResult,
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { asBareContext, seedRepo } from './fixtures.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -271,6 +277,81 @@ describe('rm', () => {
         // Assert
         expect(result.removed).toEqual(['a.txt']);
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/a.txt`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a tracked file that is the last one in its directory', () => {
+    describe('When rm', () => {
+      it('Then the emptied directory is removed and a non-empty sibling directory stays', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/e/q': 'q', 'k/a': 'a', 'k/b': 'b' });
+
+        // Act
+        await rm(ctx, ['d/e/q', 'k/a']);
+
+        // Assert
+        expect(await ctx.fs.exists(work(ctx, 'd'))).toBe(false);
+        expect(await ctx.fs.exists(work(ctx, 'k/b'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a tracked file whose directory keeps another tracked file', () => {
+    describe('When rm', () => {
+      it('Then only the file is removed and the directory stays', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/q': 'q', 'd/kept': 'k' });
+
+        // Act
+        await rm(ctx, ['d/q']);
+
+        // Assert
+        expect(await ctx.fs.exists(work(ctx, 'd/q'))).toBe(false);
+        expect(await ctx.fs.exists(work(ctx, 'd/kept'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a tracked file whose directory keeps a tracked entry already gone from disk', () => {
+    describe('When rm', () => {
+      it('Then the emptied directory is removed', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/a': 'a', 'd/b': 'b' });
+        await ctx.fs.rm(work(ctx, 'd/b'));
+
+        // Act
+        await rm(ctx, ['d/a']);
+
+        // Assert
+        expect(await ctx.fs.exists(work(ctx, 'd'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a tracked file whose directory keeps only a skip-worktree entry', () => {
+    describe('When rm', () => {
+      it('Then the directory is removed, as nothing of it is on disk', async () => {
+        // Arrange
+        const ctx = await seedAndStage({ 'd/q': 'q', 'd/sparse': 's' });
+        const lock = await acquireIndexLock(ctx);
+        const { entries } = await readIndex(ctx);
+        await lock.commit(
+          entries.map((entry) =>
+            entry.path === 'd/sparse'
+              ? { ...entry, flags: { ...entry.flags, skipWorktree: true } }
+              : entry,
+          ),
+          'replace',
+        );
+        await lock.release();
+        await ctx.fs.rm(work(ctx, 'd/sparse'));
+
+        // Act
+        await rm(ctx, ['d/q']);
+
+        // Assert
+        expect(await ctx.fs.exists(work(ctx, 'd'))).toBe(false);
       });
     });
   });
@@ -991,6 +1072,264 @@ describe('rm stat cache', () => {
 
         // Assert
         expect(reads).not.toContain(path);
+      });
+    });
+  });
+});
+
+const LOSSY_NAME_BYTES = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+const LOSSY_VIEW = '\uFFFD.txt' as FilePath;
+
+describe('rm on an index holding entries whose decoded paths collide', () => {
+  describe('Given z, U and L in the index', () => {
+    describe('When rm --cached removes z', () => {
+      it('Then U and L both survive and L keeps its raw path bytes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { workingTree: { z: 'z' } });
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/z`);
+        const entryOf = async (path: FilePath, text: string): Promise<IndexEntry> => ({
+          ...indexEntryFromStat(
+            stat,
+            FILE_MODE.REGULAR,
+            await writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: enc(text) }),
+            path,
+          ),
+          fileSize: 0,
+        });
+        const lossy: IndexEntry = {
+          ...(await entryOf(LOSSY_VIEW, 'x')),
+          pathBytes: LOSSY_NAME_BYTES,
+        };
+        const entries = [
+          await entryOf('z' as FilePath, 'z'),
+          await entryOf(LOSSY_VIEW, 'y'),
+          lossy,
+        ];
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync(
+            { version: 2, entries, extensions: [], trailerSha: new Uint8Array(0) },
+            ctx,
+          ),
+        );
+        const sut = rm;
+
+        // Act
+        const result = await sut(ctx, ['z'], { cached: true });
+
+        // Assert
+        expect(result.removed).toEqual(['z']);
+        const index = await readIndex(ctx);
+        expect(index.entries.map((e) => e.path)).toEqual([LOSSY_VIEW, LOSSY_VIEW]);
+        expect(index.entries.map((e) => e.pathBytes)).toEqual([undefined, LOSSY_NAME_BYTES]);
+      });
+    });
+  });
+});
+
+describe('rm of a directory holding a lossy entry beside a well-formed one', () => {
+  const seedDirectory = async (): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, { workingTree: { 'd/y': 'y' } });
+    await ctx.fs.write(`${ctx.layout.workDir}/d/\uFFFD`, enc('twin'));
+    const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/d/y`);
+    const entryOf = async (path: string, text: string): Promise<IndexEntry> => ({
+      ...indexEntryFromStat(
+        stat,
+        FILE_MODE.REGULAR,
+        await writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: enc(text) }),
+        path as FilePath,
+      ),
+      fileSize: 0,
+    });
+    const lossy: IndexEntry = {
+      ...(await entryOf('d/\uFFFD', 'x')),
+      pathBytes: Uint8Array.of(0x64, 0x2f, 0xff),
+    };
+    await ctx.fs.write(
+      `${ctx.layout.gitDir}/index`,
+      await serializeIndexFixtureAsync(
+        {
+          version: 2,
+          entries: [await entryOf('d/y', 'y'), lossy],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        },
+        ctx,
+      ),
+    );
+    return ctx;
+  };
+
+  describe('Given d/y, a lossy d/\\xff and an untracked file at d/\uFFFD', () => {
+    describe('When rm removes d recursively with force', () => {
+      it('Then both entries leave the index, d/y is unlinked and d/\uFFFD stays', async () => {
+        // Arrange
+        const ctx = await seedDirectory();
+        const sut = rm;
+
+        // Act
+        await sut(ctx, ['d'], { recursive: true, force: true });
+
+        // Assert
+        expect((await readIndex(ctx)).entries).toEqual([]);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/d/y`)).toBe(false);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/d/\uFFFD`)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given d/y and a lossy d/\\xff', () => {
+    describe('When rm removes d recursively with cached', () => {
+      it('Then both entries leave the index and nothing is unlinked', async () => {
+        // Arrange
+        const ctx = await seedDirectory();
+        const sut = rm;
+
+        // Act
+        await sut(ctx, ['d'], { recursive: true, cached: true });
+
+        // Assert
+        expect((await readIndex(ctx)).entries).toEqual([]);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/d/y`)).toBe(true);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/d/\uFFFD`)).toBe(true);
+      });
+    });
+  });
+});
+
+describe('rm pathspec matching against an index holding U and its lossy twin L', () => {
+  const seedTwins = async (): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, { workingTree: { z: 'z' } });
+    const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/z`);
+    const entryOf = async (path: FilePath, text: string): Promise<IndexEntry> => ({
+      ...indexEntryFromStat(
+        stat,
+        FILE_MODE.REGULAR,
+        await writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: enc(text) }),
+        path,
+      ),
+      fileSize: 0,
+    });
+    const lossy: IndexEntry = {
+      ...(await entryOf(LOSSY_VIEW, 'x')),
+      pathBytes: LOSSY_NAME_BYTES,
+    };
+    await ctx.fs.write(
+      `${ctx.layout.gitDir}/index`,
+      await serializeIndexFixtureAsync(
+        {
+          version: 2,
+          entries: [await entryOf(LOSSY_VIEW, 'y'), lossy],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        },
+        ctx,
+      ),
+    );
+    return ctx;
+  };
+
+  describe.each([
+    ['a U+FFFD literal', '�.txt'],
+    ['a lone-surrogate literal', '\uDCFF.txt'],
+  ])('Given %s naming the UTF-8 twin', (_title, spelling) => {
+    describe('When rm --cached runs', () => {
+      it('Then only the twin leaves the index and L keeps its raw bytes', async () => {
+        // Arrange
+        const ctx = await seedTwins();
+        const sut = rm;
+
+        // Act
+        const result = await sut(ctx, [spelling], { cached: true, force: true });
+
+        // Assert
+        expect(result.removed).toEqual([LOSSY_VIEW]);
+        const index = await readIndex(ctx);
+        expect(index.entries.map((e) => e.pathBytes)).toEqual([LOSSY_NAME_BYTES]);
+      });
+    });
+  });
+});
+
+describe('rm of a lossy entry and its U+FFFD twin both committed in HEAD', () => {
+  const TWIN_BYTES = Uint8Array.of(0xef, 0xbf, 0xbd, 0x2e, 0x74, 0x78, 0x74);
+  const committer: AuthorIdentity = {
+    name: 'T',
+    email: 't@x',
+    timestamp: 1,
+    timezoneOffset: '+0000',
+  };
+
+  const seedCommittedTwins = async (): Promise<Context> => {
+    const ctx = createMemoryContext();
+    await seedRepo(ctx, { workingTree: { z: 'z' } });
+    await ctx.fs.write(`${ctx.layout.workDir}/${LOSSY_VIEW}`, enc('u'));
+    const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/${LOSSY_VIEW}`);
+    const blob = (text: string): Promise<ObjectId> =>
+      writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: enc(text) });
+    const lossyId = await blob('l');
+    const twinId = await blob('u');
+    const tree = await writeObject(ctx, {
+      type: 'tree',
+      id: '' as ObjectId,
+      entries: [
+        treeEntry(FILE_MODE.REGULAR, LOSSY_NAME_BYTES, lossyId),
+        treeEntry(FILE_MODE.REGULAR, TWIN_BYTES, twinId),
+      ],
+    });
+    const commitId = await writeObject(ctx, {
+      type: 'commit',
+      id: '' as ObjectId,
+      data: {
+        tree,
+        parents: [],
+        author: committer,
+        committer,
+        message: 'seed',
+        extraHeaders: [],
+      },
+    });
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+    const twin: IndexEntry = {
+      ...indexEntryFromStat(stat, FILE_MODE.REGULAR, twinId, LOSSY_VIEW),
+      fileSize: 1,
+    };
+    const lossy: IndexEntry = {
+      ...indexEntryFromStat(stat, FILE_MODE.REGULAR, lossyId, LOSSY_VIEW),
+      fileSize: 1,
+      pathBytes: LOSSY_NAME_BYTES,
+    };
+    await ctx.fs.write(
+      `${ctx.layout.gitDir}/index`,
+      await serializeIndexFixtureAsync(
+        {
+          version: 2,
+          entries: [twin, lossy],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        },
+        ctx,
+      ),
+    );
+    return ctx;
+  };
+
+  describe('Given both entries unchanged against HEAD and the twin clean on disk', () => {
+    describe('When rm runs on a star pathspec', () => {
+      it('Then both entries leave the index and only the twin is unlinked', async () => {
+        // Arrange
+        const ctx = await seedCommittedTwins();
+        const sut = rm;
+
+        // Act
+        await sut(ctx, ['*.txt']);
+
+        // Assert
+        expect((await readIndex(ctx)).entries).toEqual([]);
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/${LOSSY_VIEW}`)).toBe(false);
       });
     });
   });

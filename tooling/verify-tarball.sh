@@ -336,7 +336,13 @@ done
 # code shipped in every distribution form, none removable without dropping
 # the behaviour. The 40 KiB step leaves review-round headroom in place of the
 # per-cycle re-raise a previous three-cycle review paid for.
-SIZE_CAP=$((1410 * 1024))
+# Raised 1410 -> 1423 KiB by byte-exact index paths: the measured pack landed
+# at 1 448 579 B, 4 739 B over the old cap, attributable to the raw-path codec
+# and keys, the escaped merge engine, the symlink-safe write wave and the git
+# merge/checkout gaps folded with them (file/directory conflicts, emptied
+# directory pruning, the staged-only cherry-pick check). Measured rounded up to
+# the next KiB plus 8 KiB of review headroom.
+SIZE_CAP=$((1423 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

@@ -8,11 +8,18 @@ import {
   NO_INDEX_CHANGE,
   withRestagedPaths,
 } from '../../../../src/domain/git-index/carry-extensions.js';
-import type { IndexChange } from '../../../../src/domain/git-index/diff-index-entries.js';
-import type {
-  CacheTreeEntry,
-  IndexExtension,
+import {
+  diffIndexEntries,
+  type IndexChange,
+} from '../../../../src/domain/git-index/diff-index-entries.js';
+import {
+  type CacheTreeEntry,
+  type IndexEntry,
+  type IndexExtension,
+  STAGE0_FLAGS,
 } from '../../../../src/domain/git-index/index-entry.js';
+import { parseCacheTree } from '../../../../src/domain/git-index/index-parser.js';
+import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import type { FilePath, ObjectId } from '../../../../src/domain/objects/object-id.js';
 
 const oid = (hexLength: 40 | 64, digit: string): ObjectId => digit.repeat(hexLength) as ObjectId;
@@ -72,7 +79,7 @@ describe('carryExtensions', () => {
         // Arrange
         const previous = previousExtensions();
         const change: IndexChange = {
-          changedPaths: ['d/c' as FilePath],
+          changedPaths: [{ path: 'd/c' as FilePath }],
           trackedSetChanged: true,
           resolvedUnmerged: true,
         };
@@ -95,7 +102,10 @@ describe('carryExtensions', () => {
       it('Then TREE is the serialised invalidated tree and REUC and UNTR are kept', () => {
         // Arrange
         const previous = previousExtensions();
-        const change: IndexChange = { ...NO_INDEX_CHANGE, changedPaths: ['d/c' as FilePath] };
+        const change: IndexChange = {
+          ...NO_INDEX_CHANGE,
+          changedPaths: [{ path: 'd/c' as FilePath }],
+        };
         const invalidated = invalidateCacheTree(cacheTree(40), change.changedPaths);
 
         // Act
@@ -147,7 +157,10 @@ describe('carryExtensions', () => {
 
       it('Then a TREE naming the same subtree twice is dropped and the others are kept', () => {
         // Arrange
-        const change: IndexChange = { ...NO_INDEX_CHANGE, changedPaths: ['d/c' as FilePath] };
+        const change: IndexChange = {
+          ...NO_INDEX_CHANGE,
+          changedPaths: [{ path: 'd/c' as FilePath }],
+        };
         const twin = cacheTree(40).children[0] as CacheTreeEntry;
         const duplicated: CacheTreeEntry = {
           ...cacheTree(40),
@@ -168,7 +181,10 @@ describe('carryExtensions', () => {
 
       it('Then a TREE naming the same subtree twice below the root is dropped and the others are kept', () => {
         // Arrange
-        const change: IndexChange = { ...NO_INDEX_CHANGE, changedPaths: ['x' as FilePath] };
+        const change: IndexChange = {
+          ...NO_INDEX_CHANGE,
+          changedPaths: [{ path: 'x' as FilePath }],
+        };
         const leaf = (path: string): CacheTreeEntry => ({
           path,
           entryCount: 1,
@@ -194,7 +210,10 @@ describe('carryExtensions', () => {
 
       it('Then a corrupt TREE payload is dropped and the others are kept', () => {
         // Arrange
-        const change: IndexChange = { ...NO_INDEX_CHANGE, changedPaths: ['d/c' as FilePath] };
+        const change: IndexChange = {
+          ...NO_INDEX_CHANGE,
+          changedPaths: [{ path: 'd/c' as FilePath }],
+        };
         const previous = previousExtensions().map((e) =>
           e.signature === 'TREE' ? extension('TREE', new Uint8Array([0xff, 0xff])) : e,
         );
@@ -213,7 +232,10 @@ describe('carryExtensions', () => {
     describe("When carried on a 'replace'", () => {
       it('Then REUC is dropped and TREE is invalidated', () => {
         // Arrange
-        const change: IndexChange = { ...NO_INDEX_CHANGE, changedPaths: ['d/c' as FilePath] };
+        const change: IndexChange = {
+          ...NO_INDEX_CHANGE,
+          changedPaths: [{ path: 'd/c' as FilePath }],
+        };
         const invalidated = invalidateCacheTree(cacheTree(40), change.changedPaths);
 
         // Act
@@ -304,7 +326,10 @@ describe('carryExtensions', () => {
       it('Then TREE is the 32-byte-digest serialisation of the invalidated tree', () => {
         // Arrange
         const wide = { untrackedCache: undefined, digestLength: 32 } as const;
-        const change: IndexChange = { ...NO_INDEX_CHANGE, changedPaths: ['d/c' as FilePath] };
+        const change: IndexChange = {
+          ...NO_INDEX_CHANGE,
+          changedPaths: [{ path: 'd/c' as FilePath }],
+        };
         const invalidated = invalidateCacheTree(cacheTree(64), change.changedPaths);
 
         // Act
@@ -322,18 +347,18 @@ describe('carryExtensions', () => {
       it('Then changedPaths is the UTF-8 byte-ordered union, each path once, flags kept', () => {
         // Arrange
         const change: IndexChange = {
-          changedPaths: ['d/c' as FilePath],
+          changedPaths: [{ path: 'd/c' as FilePath }],
           trackedSetChanged: true,
           resolvedUnmerged: true,
         };
 
         // Act
         const sut = withRestagedPaths;
-        const result = sut(change, ['d/c' as FilePath, 'b' as FilePath]);
+        const result = sut(change, [{ path: 'd/c' as FilePath }, { path: 'b' as FilePath }]);
 
         // Assert
         expect(result).toEqual({
-          changedPaths: ['b', 'd/c'],
+          changedPaths: [{ path: 'b' }, { path: 'd/c' }],
           trackedSetChanged: true,
           resolvedUnmerged: true,
         });
@@ -341,21 +366,45 @@ describe('carryExtensions', () => {
 
       it('Then the union orders by UTF-8 bytes, not UTF-16 code units', () => {
         // Arrange
-        const change: IndexChange = { ...NO_INDEX_CHANGE, changedPaths: ['\u{1F600}' as FilePath] };
+        const change: IndexChange = {
+          ...NO_INDEX_CHANGE,
+          changedPaths: [{ path: '\u{1F600}' as FilePath }],
+        };
 
         // Act
         const sut = withRestagedPaths;
-        const result = sut(change, ['\uFF5E' as FilePath]);
+        const result = sut(change, [{ path: '\uFF5E' as FilePath }]);
 
         // Assert
-        expect(result.changedPaths).toEqual(['\uFF5E', '\u{1F600}']);
+        expect(result.changedPaths).toEqual([{ path: '\uFF5E' }, { path: '\u{1F600}' }]);
+      });
+    });
+
+    describe('When a raw-byte path is changed and its decoded twin is restaged', () => {
+      it('Then both survive, the literal one ordered first', () => {
+        // Arrange
+        const lossy = {
+          path: '\uFFFD.txt' as FilePath,
+          pathBytes: Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74),
+        };
+        const change: IndexChange = { ...NO_INDEX_CHANGE, changedPaths: [lossy] };
+
+        // Act
+        const sut = withRestagedPaths;
+        const result = sut(change, [{ path: '\uFFFD.txt' as FilePath }]);
+
+        // Assert
+        expect(result.changedPaths).toEqual([{ path: '\uFFFD.txt' }, lossy]);
       });
     });
 
     describe('When withRestagedPaths adds nothing', () => {
       it('Then the same change object is returned', () => {
         // Arrange
-        const change: IndexChange = { ...NO_INDEX_CHANGE, changedPaths: ['d/c' as FilePath] };
+        const change: IndexChange = {
+          ...NO_INDEX_CHANGE,
+          changedPaths: [{ path: 'd/c' as FilePath }],
+        };
 
         // Act
         const sut = withRestagedPaths;
@@ -367,12 +416,63 @@ describe('carryExtensions', () => {
     });
   });
 
+  describe('Given a lossy entry whose bytes name a valid subtree of the cache tree', () => {
+    describe("When its change from diffIndexEntries is carried on an 'update'", () => {
+      it('Then the subtree is invalidated', () => {
+        // Arrange
+        const tree: CacheTreeEntry = {
+          path: '',
+          entryCount: 1,
+          subtreeCount: 1,
+          id: oid(40, 'a'),
+          children: [
+            {
+              path: '\uFFFD',
+              nameBytes: Uint8Array.of(0xff),
+              entryCount: 1,
+              subtreeCount: 0,
+              id: oid(40, 'b'),
+              children: [],
+            },
+          ],
+        };
+        const lossyEntry = (id: string): IndexEntry => ({
+          ctimeSeconds: 0,
+          ctimeNanoseconds: 0,
+          mtimeSeconds: 0,
+          mtimeNanoseconds: 0,
+          dev: 0,
+          ino: 0,
+          mode: FILE_MODE.REGULAR,
+          uid: 0,
+          gid: 0,
+          fileSize: 0,
+          id: oid(40, id),
+          flags: STAGE0_FLAGS,
+          path: '\uFFFD/x' as FilePath,
+          pathBytes: Uint8Array.of(0xff, 0x2f, 0x78),
+        });
+        const change = diffIndexEntries([lossyEntry('c')], [lossyEntry('d')]);
+        const previous = [extension('TREE', serializeCacheTree(tree, 20))];
+
+        // Act
+        const sut = carryExtensions;
+        const result = sut(previous, change, 'update', settings);
+
+        // Assert
+        const carried = parseCacheTree(result[0]?.data ?? new Uint8Array(), 20);
+        expect(carried.entryCount).toBe(-1);
+        expect(carried.children[0]?.entryCount).toBe(-1);
+      });
+    });
+  });
+
   describe('Given a restaged root-level path b', () => {
     describe("When the widened change is carried on an 'update'", () => {
       it('Then the root is invalidated and the sibling directory stays valid', () => {
         // Arrange
-        const change = withRestagedPaths(NO_INDEX_CHANGE, ['b' as FilePath]);
-        const invalidated = invalidateCacheTree(cacheTree(40), ['b' as FilePath]);
+        const change = withRestagedPaths(NO_INDEX_CHANGE, [{ path: 'b' as FilePath }]);
+        const invalidated = invalidateCacheTree(cacheTree(40), [{ path: 'b' as FilePath }]);
 
         // Act
         const sut = carryExtensions;

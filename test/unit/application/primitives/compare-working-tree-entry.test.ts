@@ -17,6 +17,7 @@ import {
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index-entry.js';
+import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import type {
   CommandRequest,
   CommandResult,
@@ -1406,6 +1407,80 @@ describe('compareAndRefresh', () => {
         // Assert
         expect(result).toBe('unchanged');
         expect(read).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
+describe('compareAndRefresh on a lossy entry', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const LOSSY_BYTES = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+  const OTHER_BLOB = 'a'.repeat(40) as ObjectId;
+
+  describe('Given a lossy entry and a file at its decoded view on disk', () => {
+    describe('When comparing', () => {
+      it('Then the entry is absent and the file system is never asked about it', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('\uFFFD.txt', 'u\n');
+        const sut = { ...entry, id: OTHER_BLOB, pathBytes: LOSSY_BYTES };
+        const lstat = vi.spyOn(ctx.fs, 'lstat');
+
+        // Act
+        const result = await compareAndRefresh(ctx, sut);
+
+        // Assert
+        expect(result).toEqual({ delta: { status: 'absent' } });
+        expect(lstat).toHaveBeenCalledTimes(0);
+      });
+    });
+  });
+
+  describe('Given a lossy entry whose blob equals the decoded view file content', () => {
+    describe('When comparing', () => {
+      it('Then no refresh is offered', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('\uFFFD.txt', 'u\n');
+        const sut = { ...entry, mtimeSeconds: 0, ctimeSeconds: 0, pathBytes: LOSSY_BYTES };
+
+        // Act
+        const result = await compareAndRefresh(ctx, sut);
+
+        // Assert
+        expect('refreshed' in result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a lossy entry', () => {
+    describe('When projecting the comparison to a status', () => {
+      it('Then it is absent', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('\uFFFD.txt', 'u\n');
+        const sut = { ...entry, pathBytes: LOSSY_BYTES };
+
+        // Act
+        const result = await compareWorkingTreeEntry(ctx, sut);
+
+        // Assert
+        expect(result).toBe('absent');
+      });
+    });
+  });
+
+  describe('Given the UTF-8 twin of a lossy entry', () => {
+    describe('When comparing', () => {
+      it('Then it is unchanged with its own stat', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('\uFFFD.txt', 'u\n');
+
+        // Act
+        const result = await compareAndRefresh(ctx, entry);
+
+        // Assert
+        expect(result.delta.status).toBe('unchanged');
       });
     });
   });

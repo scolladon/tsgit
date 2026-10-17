@@ -47,7 +47,7 @@ describe('carryExtensions TREE properties', () => {
         // Arrange
         const sut = carryExtensions;
         const change = {
-          changedPaths: ['zz' as FilePath],
+          changedPaths: [{ path: 'zz' as FilePath }],
           trackedSetChanged: false,
           resolvedUnmerged: false,
         };

@@ -866,6 +866,26 @@ describe('MemoryFileSystem', () => {
       });
     });
 
+    describe('Given a directory whose timestamps were stamped', () => {
+      describe('When rmdir removes it and mkdir recreates it', () => {
+        it('Then the new directory carries no stale timestamps', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.mkdir('/repo/d');
+          await sut.utimeNow('/repo/d');
+
+          // Act
+          await sut.rmdir('/repo/d');
+          await sut.mkdir('/repo/d');
+          const stat = await sut.stat('/repo/d');
+
+          // Assert
+          expect(stat.ctimeMs).toBe(0);
+          expect(stat.mtimeMs).toBe(0);
+        });
+      });
+    });
+
     describe('Given rootDir path itself', () => {
       describe('When exists', () => {
         it('Then returns true (resolve passes rootDir through)', async () => {

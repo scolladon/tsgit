@@ -100,4 +100,39 @@ describe('sortByPath', () => {
       });
     });
   });
+
+  describe('Given escaped paths carrying a raw non-UTF-8 byte', () => {
+    describe('When comparePaths called on an escaped byte versus its UTF-8 neighbour', () => {
+      it('Then it orders by the raw bytes (c3 78 < c3 a9)', () => {
+        // Arrange & Act
+        const result = comparePaths('\uDCC3x' as FilePath, '\u00e9' as FilePath);
+
+        // Assert
+        expect(result).toBeLessThan(0);
+      });
+    });
+
+    describe('When comparePaths called on an escaped byte versus a literal U+FFFD', () => {
+      it('Then ff sorts after ef', () => {
+        // Arrange & Act
+        const result = comparePaths('\uDCFF.txt' as FilePath, '\uFFFD.txt' as FilePath);
+
+        // Assert
+        expect(result).toBeGreaterThan(0);
+      });
+    });
+
+    describe('When sortByPath called', () => {
+      it('Then it yields 7a < f0 < ff', () => {
+        // Arrange
+        const items = ['\uDCFF', 'z', '\u{10080}'].map((path) => ({ path: path as FilePath }));
+
+        // Act
+        const result = sortByPath(items, (i) => i.path).map((i) => i.path);
+
+        // Assert
+        expect(result).toEqual(['z', '\u{10080}', '\uDCFF']);
+      });
+    });
+  });
 });

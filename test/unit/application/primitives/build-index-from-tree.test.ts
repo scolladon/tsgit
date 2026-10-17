@@ -789,4 +789,146 @@ describe('buildIndexFromTree', () => {
       });
     });
   });
+
+  describe('Given a tree holding raw \xff.txt and a literal U+FFFD .txt with donors for both', () => {
+    const RAW = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+    const arrange = async () => {
+      const ctx = await buildSeededContext();
+      const blobId = await writeBlob(ctx, 'x');
+      const treeId = await writeTree(ctx, [
+        treeEntry(FILE_MODE.REGULAR, RAW, blobId),
+        treeEntry(FILE_MODE.REGULAR, '\uFFFD.txt' as FilePath, blobId),
+      ]);
+      const lossyDonor = makeIndexEntry('\uFFFD.txt', blobId, FILE_MODE.REGULAR, {
+        fileSize: 11,
+        pathBytes: RAW,
+      });
+      const literalDonor = makeIndexEntry('\uFFFD.txt', blobId, FILE_MODE.REGULAR, {
+        fileSize: 22,
+      });
+      return { ctx, treeId, lossyDonor, literalDonor };
+    };
+
+    describe('When buildIndexFromTree runs', () => {
+      it('Then the raw leaf keeps its bytes and its own donor stat', async () => {
+        // Arrange
+        const { ctx, treeId, lossyDonor, literalDonor } = await arrange();
+        const currentIndex = { ...EMPTY_INDEX, entries: [literalDonor, lossyDonor] };
+        // Act
+        const result = await buildIndexFromTree(ctx, { targetTree: treeId, currentIndex });
+        // Assert
+        const raw = result.find((e) => e.pathBytes !== undefined);
+        expect(raw?.pathBytes).toStrictEqual(RAW);
+        expect(raw?.fileSize).toBe(11);
+        expect(result.filter((e) => e.pathBytes !== undefined)).toHaveLength(1);
+      });
+
+      it('Then the literal leaf keeps its own donor stat and no bytes', async () => {
+        // Arrange
+        const { ctx, treeId, lossyDonor, literalDonor } = await arrange();
+        const currentIndex = { ...EMPTY_INDEX, entries: [literalDonor, lossyDonor] };
+        // Act
+        const result = await buildIndexFromTree(ctx, { targetTree: treeId, currentIndex });
+        // Assert
+        const literal = result.find((e) => e.pathBytes === undefined);
+        expect(literal?.fileSize).toBe(22);
+        expect(result).toHaveLength(2);
+      });
+
+      it('Then a sparse exclusion keeps the raw bytes on the skip-worktree entry', async () => {
+        // Arrange
+        const { ctx, treeId } = await arrange();
+        // Act
+        const result = await buildIndexFromTree(ctx, {
+          targetTree: treeId,
+          currentIndex: EMPTY_INDEX,
+          sparse: () => false,
+        });
+        // Assert
+        expect(
+          result.filter((e) => e.pathBytes !== undefined).map((e) => e.pathBytes),
+        ).toStrictEqual([RAW]);
+        expect(result.every((e) => e.flags.skipWorktree)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a tree holding raw .git\xff/x', () => {
+    describe('When buildIndexFromTree runs', () => {
+      it('Then it refuses with the HFS reason', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'x');
+        const inner = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'x' as FilePath, blobId)]);
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.DIRECTORY, Uint8Array.of(0x2e, 0x67, 0x69, 0x74, 0xff), inner),
+        ]);
+        const sut = buildIndexFromTree;
+        let caught: unknown;
+
+        // Act
+        try {
+          await sut(ctx, { targetTree: treeId, currentIndex: EMPTY_INDEX });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as { data?: unknown }).data).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'.git' HFS+ ignorable-codepoint alias rejected",
+        });
+      });
+    });
+  });
+
+  describe('Given a donor with a different id and a tree holding raw \xff.txt', () => {
+    const RAW = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+    describe('When buildIndexFromTree runs', () => {
+      it('Then the rebuilt entry has the raw bytes, zero stat and no skip-worktree', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'x');
+        const otherId = await writeBlob(ctx, 'y');
+        const treeId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, RAW, blobId)]);
+        const donor = makeIndexEntry('\uFFFD.txt', otherId, FILE_MODE.REGULAR, {
+          fileSize: 11,
+          mtimeSeconds: 5,
+          pathBytes: RAW,
+        });
+        const sut = buildIndexFromTree;
+
+        // Act
+        const result = await sut(ctx, {
+          targetTree: treeId,
+          currentIndex: { ...EMPTY_INDEX, entries: [donor] },
+        });
+
+        // Assert
+        expect(result).toHaveLength(1);
+        expect(result[0]?.pathBytes).toStrictEqual(RAW);
+        expect(result[0]?.fileSize).toBe(0);
+        expect(result[0]?.mtimeSeconds).toBe(0);
+        expect(result[0]?.flags.skipWorktree).toBe(false);
+      });
+    });
+  });
+});
+
+describe('Given a UTF-8 leaf with no donor in the current index', () => {
+  describe('When buildIndexFromTree runs', () => {
+    it('Then its zero-stat entry carries no pathBytes key', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const blobId = await writeBlob(ctx, 'x');
+      const treeId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId)]);
+      const sut = buildIndexFromTree;
+
+      // Act
+      const result = await sut(ctx, { targetTree: treeId, currentIndex: EMPTY_INDEX });
+
+      // Assert
+      expect(result.map((entry) => Object.hasOwn(entry, 'pathBytes'))).toEqual([false]);
+    });
+  });
 });

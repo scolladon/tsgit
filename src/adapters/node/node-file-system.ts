@@ -1394,6 +1394,33 @@ export class NodeFileSystem implements FileSystem {
     // remains valid; only the directory arm above invalidates.
   };
 
+  rmdir = async (path: string): Promise<void> => {
+    const real = await this.resolveWrite(path);
+    try {
+      await this.assertRmdirKind(real, path);
+      await this.fsOps.rmdir(real);
+    } catch (err) {
+      if (!isErrnoException(err)) throw err;
+      // Some platforms report a non-empty directory as EEXIST; the port speaks one code for it.
+      throw err.code === 'EEXIST' ? directoryNotEmpty(path) : mapErrno(err, path);
+    }
+    this.parentRealpathCache.clear();
+  };
+
+  /**
+   * POSIX `rmdir(2)`'s kind rules, enforced here only on a platform whose own
+   * rmdir does not enforce them (Windows reports a file as absent and removes
+   * a symlink to a directory). Refuses on positive evidence and leaves absence
+   * to rmdir's own verdict; a POSIX platform keeps the single syscall.
+   */
+  private async assertRmdirKind(real: string, reported: string): Promise<void> {
+    if (this.pathPolicy.honoursRmdirKinds) return;
+    const target = await this.lstatOrMissing(real);
+    // `lstat` never reports a symlink as a directory (a junction is a
+    // symlink to it too), so the directory test alone decides the kind.
+    if (target !== undefined && !target.isDirectory()) throw notADirectory(reported);
+  }
+
   /**
    * `rm`'s directory arm. The removed directory may itself be a cached parent
    * (or hold nested ones), and its path may be re-created as a symlink leaving

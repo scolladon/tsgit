@@ -260,6 +260,48 @@ describe.skipIf(!GIT_AVAILABLE)('cherry-pick interop', () => {
       expect(topReflogSubject(pair.ours, 'HEAD')).toBe(topReflogSubject(pair.peer, 'HEAD'));
     });
   });
+
+  describe('Given a staged change on an untouched path, When repo.cherryPick.run picks with noCommit', () => {
+    it('Then tsgit matches git: the pick is staged next to the unrelated change', async () => {
+      // Arrange
+      runGit(['init', '-q', '-b', 'main', pair.peer]);
+      configGit(pair.peer);
+      writeWork(pair.peer, 'base.txt', 'base\n');
+      git(pair.peer, 'add', 'base.txt');
+      gitCommit(pair.peer, 'base');
+      git(pair.peer, 'checkout', '-q', '-b', 'feature');
+      writeWork(pair.peer, 'feat.txt', 'feat\n');
+      git(pair.peer, 'add', 'feat.txt');
+      gitCommit(pair.peer, 'feat');
+      git(pair.peer, 'checkout', '-q', 'main');
+      writeWork(pair.peer, 'other.txt', 'staged\n');
+      git(pair.peer, 'add', 'other.txt');
+      git(pair.peer, 'cherry-pick', '-n', 'feature');
+
+      const repo = await openRepository({ cwd: pair.ours });
+      await repo.init();
+      configGit(pair.ours);
+      await writeFile(path.join(pair.ours, 'base.txt'), 'base\n');
+      await repo.add(['base.txt']);
+      await repo.commit({ message: 'base', author: AUTHOR });
+      await repo.branch.create({ name: 'feature' });
+      await repo.checkout({ rev: 'feature' });
+      await writeFile(path.join(pair.ours, 'feat.txt'), 'feat\n');
+      await repo.add(['feat.txt']);
+      await repo.commit({ message: 'feat', author: AUTHOR });
+      await repo.checkout({ rev: 'main' });
+      await writeFile(path.join(pair.ours, 'other.txt'), 'staged\n');
+      await repo.add(['other.txt']);
+
+      // Act
+      const result = await repo.cherryPick.run({ commits: ['feature'], noCommit: true });
+
+      // Assert
+      expect(result.kind).toBe('no-commit');
+      expect(git(pair.ours, 'ls-files', '-s')).toBe(git(pair.peer, 'ls-files', '-s'));
+      await repo.dispose();
+    });
+  });
 });
 
 // ── git-CLI scenario builders ───────────────────────────────────────────────

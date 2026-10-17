@@ -85,6 +85,18 @@ describe('rebase-state', () => {
         expect(await read(ctx, 'done')).toBe(`pick ${T1} # t1\npick ${T2} # t2\n`);
       });
 
+      it('Then MERGE_MSG holds the raw path byte of an escaped conflict line', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        await writeRebaseStop(ctx, { ...STOP, mergeMsg: 't2\n\n# Conflicts:\n#\t\uDCFF\n' });
+
+        // Assert
+        const result = await ctx.fs.read(`${ctx.layout.gitDir}/MERGE_MSG`);
+        expect(Array.from(result.subarray(-3))).toEqual([0x09, 0xff, 0x0a]);
+      });
+
       it('Then the backup holds the full todo + help block', async () => {
         // Arrange
         const ctx = createMemoryContext();

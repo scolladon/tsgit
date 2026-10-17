@@ -192,4 +192,35 @@ describe('match-trees', () => {
       });
     });
   });
+
+  describe('Given a lossy-named directory holding the twin of the second tree', () => {
+    const LOSSY_DIR = treeEntry(FILE_MODE.DIRECTORY, Uint8Array.of(0xff), id('inner'));
+    const list = listerOf({ host: [LOSSY_DIR], inner: [file('q', 'bq')] });
+
+    describe('When shiftTree guesses the prefix', () => {
+      it('Then the prefix is the escaped name', async () => {
+        // Arrange
+        const sut = shiftTree;
+
+        // Act
+        const result = await sut(list, id('host'), id('inner'));
+
+        // Assert
+        expect(result).toEqual({ kind: 'add', prefix: '\uDCFF' });
+      });
+    });
+
+    describe('When shiftTreeBy shifts by the escaped name', () => {
+      it('Then it finds the directory and adds the prefix', async () => {
+        // Arrange
+        const sut = shiftTreeBy;
+
+        // Act
+        const result = await sut(list, id('host'), id('inner'), '\uDCFF');
+
+        // Assert
+        expect(result).toEqual({ kind: 'add', prefix: '\uDCFF' });
+      });
+    });
+  });
 });

@@ -21,6 +21,7 @@
 import type { FlatTree, FlatTreeEntry } from '../../../domain/diff/flat-tree.js';
 import { MAX_FLAT_TREE_ENTRIES } from '../../../domain/diff/index.js';
 import { operationAborted } from '../../../domain/error.js';
+import { decodeEscapingInvalid, decodesLosslessly } from '../../../domain/objects/encoding.js';
 import {
   treeCycleDetected,
   treeDepthExceeded,
@@ -36,6 +37,7 @@ import {
   advanceCursor,
   cursorMode,
   cursorName,
+  cursorNameBytes,
   cursorOid,
   openTreeCursor,
   type TreeCursor,
@@ -78,6 +80,12 @@ interface FlattenConfig {
    * multiplying the effective in-flight read count.
    */
   readonly limiter: ConcurrencyLimiter;
+  /**
+   * `'view'` keys an entry by its lossy U+FFFD decode (the public shape);
+   * `'escaped'` keeps every rejected byte distinct as a lone surrogate so two
+   * names that differ only in invalid bytes stay two entries.
+   */
+  readonly names: 'view' | 'escaped';
 }
 
 interface Counter {
@@ -103,12 +111,36 @@ export async function flattenRawTree(
   bounds: FlattenBounds,
   preread?: Uint8Array,
 ): Promise<FlatTree> {
+  return flattenRoot(ctx, root, bounds, 'view', preread);
+}
+
+/**
+ * `flattenRawTree` with escaped names: the merge engine's key space, where a
+ * name's invalid bytes survive as lone surrogates instead of collapsing to
+ * U+FFFD.
+ */
+export async function flattenRawTreeEscaped(
+  ctx: Context,
+  root: ObjectId | Tree,
+  bounds: FlattenBounds,
+): Promise<FlatTree> {
+  return flattenRoot(ctx, root, bounds, 'escaped');
+}
+
+async function flattenRoot(
+  ctx: Context,
+  root: ObjectId | Tree,
+  bounds: FlattenBounds,
+  names: FlattenConfig['names'],
+  preread?: Uint8Array,
+): Promise<FlatTree> {
   const rootId = typeof root === 'string' ? root : root.id;
   const content = preread ?? (await readRawTreeById(ctx, rootId));
   const config: FlattenConfig = {
     ctx,
     bounds,
     limiter: limiterFor(ctx, 'ioBound'),
+    names,
   };
   const state: FlattenState = { counter: { value: 0 }, entries: new Map() };
   await flattenLevel(config, state, content, rootId, '', 0, new Set());
@@ -174,7 +206,7 @@ function flattenEntry(
   prefix: string,
 ): { readonly id: ObjectId; readonly path: FilePath } | undefined {
   if (config.ctx.signal?.aborted) throw operationAborted();
-  const path = joinPath(prefix, cursorName(cursor));
+  const path = joinPath(prefix, keyNameOf(config, cursor));
   state.counter.value += 1;
   if (exceedsMaxTreeEntries(state.counter.value, config.bounds.maxEntries)) {
     throw treeEntryLimitExceeded(state.counter.value, config.bounds.maxEntries);
@@ -186,6 +218,13 @@ function flattenEntry(
     return undefined;
   }
   return { id, path };
+}
+
+function keyNameOf(config: FlattenConfig, cursor: TreeCursor): string {
+  const view = cursorName(cursor);
+  if (config.names === 'view') return view;
+  const nameBytes = cursorNameBytes(cursor);
+  return decodesLosslessly(view, nameBytes) ? view : decodeEscapingInvalid(nameBytes);
 }
 
 async function descendIfTree(

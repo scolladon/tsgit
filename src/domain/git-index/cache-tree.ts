@@ -8,10 +8,10 @@
  *   kind:    equivalent-under-readback
  *   format:  git-index-dirc
  */
-import { encode, hexToBytes } from '../objects/encoding.js';
-import type { FilePath } from '../objects/object-id.js';
+import { decodeEscapingInvalid, encode, hexToBytes } from '../objects/encoding.js';
 import { invalidIndexEntry } from './error.js';
 import type { CacheTreeEntry } from './index-entry.js';
+import { type IndexPath, indexPathKey } from './index-path-key.js';
 
 const NUL = 0;
 
@@ -69,23 +69,12 @@ export function serializeCacheTree(root: CacheTreeEntry, digestLength: 20 | 32):
 }
 
 /**
- * Children are matched by their byte name, never by the decoded `path`: two
+ * Children are matched by their escaped name, never by the decoded `path`: two
  * siblings may decode to the same string (BOM-prefixed or non-UTF-8 names).
- * ASCII components are their own key, so the common case allocates nothing.
+ * A child without `nameBytes` has a `path` that re-encodes to its name.
  */
-const NON_ASCII = /[\u0080-\uffff]/;
-
-const keyOfBytes = (bytes: Uint8Array): string => {
-  let key = '';
-  for (const byte of bytes) key += String.fromCharCode(byte);
-  return key;
-};
-
-const keyOfComponent = (component: string): string =>
-  NON_ASCII.test(component) ? keyOfBytes(encode(component)) : component;
-
 const keyOfChild = (child: CacheTreeEntry): string =>
-  child.nameBytes === undefined ? keyOfComponent(child.path) : keyOfBytes(child.nameBytes);
+  child.nameBytes === undefined ? child.path : decodeEscapingInvalid(child.nameBytes);
 
 /**
  * git never writes two subtrees of one node under the same name; a payload that does
@@ -103,10 +92,12 @@ export function namesEachSubtreeOnce(entry: CacheTreeEntry): boolean {
 
 type Pending = ReadonlyArray<string>;
 
+const componentKeysOf = (entry: IndexPath): Pending => indexPathKey(entry).split('/');
+
 function groupByComponent(pending: ReadonlyArray<Pending>, depth: number): Map<string, Pending[]> {
   const groups = new Map<string, Pending[]>();
   for (const item of pending) {
-    const key = keyOfComponent(item[depth] as string);
+    const key = item[depth] as string;
     const group = groups.get(key);
     if (group === undefined) groups.set(key, [item]);
     else group.push(item);
@@ -151,12 +142,8 @@ function invalidateNode(
 
 export function invalidateCacheTree(
   root: CacheTreeEntry,
-  paths: ReadonlyArray<FilePath>,
+  paths: ReadonlyArray<IndexPath>,
 ): CacheTreeEntry {
   if (paths.length === 0) return root;
-  return invalidateNode(
-    root,
-    paths.map((path) => path.split('/')),
-    0,
-  );
+  return invalidateNode(root, paths.map(componentKeysOf), 0);
 }

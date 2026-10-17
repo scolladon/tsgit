@@ -1,4 +1,5 @@
 import type { EolSettings } from '../../../domain/eol/crlf-action.js';
+import { hasEscapedBytes } from '../../../domain/objects/encoding.js';
 import {
   FILE_MODE,
   type FileMode,
@@ -112,6 +113,7 @@ export const createWorkingTreeWriter = (
   };
 
   const writeBlob: WorkingTreeWriter['writeBlob'] = async (path, id, mode, scanner) => {
+    if (hasEscapedBytes(path)) return;
     if (mode === FILE_MODE.GITLINK) {
       await writeWorkingTreeEntry(ctx, path, EMPTY_CONTENT, mode, scanner);
       return;
@@ -136,6 +138,7 @@ export const createWorkingTreeWriter = (
   };
 
   const writeBytes: WorkingTreeWriter['writeBytes'] = async (path, bytes, mode, scanner) => {
+    if (hasEscapedBytes(path)) return;
     const content = isConvertible(mode) ? await convertBytes(path, bytes) : bytes;
     await writeWorkingTreeEntry(ctx, path, content, mode, scanner);
   };

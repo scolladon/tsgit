@@ -721,6 +721,25 @@ describe('add', () => {
     });
   });
 
+  describe('Given tracked ！ and 😀 deleted from disk, whose index order differs from code-unit order', () => {
+    describe('When add stages their deletion through a pathspec', () => {
+      it('Then removed lists them in code-unit order, as added and modified do', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ '！': 'bang', '😀': 'smile' });
+        await add(ctx, [], { all: true });
+        await ctx.fs.rm(`${ctx.layout.workDir}/！`);
+        await ctx.fs.rm(`${ctx.layout.workDir}/😀`);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['.']);
+
+        // Assert
+        expect(result.removed).toEqual(['😀', '！']);
+      });
+    });
+  });
+
   describe('Given a tracked file deleted from disk and all: true', () => {
     describe('When add', () => {
       it('Then removed contains it and the index entry drops', async () => {
@@ -1358,6 +1377,126 @@ describe('add', () => {
         expect(result.removed).toEqual([]);
         const idx = await readIndex(ctx);
         expect(idx.entries.map((e) => e.path).sort()).toEqual(['.gitignore', 'vendor/foo.ts']);
+      });
+    });
+  });
+
+  describe('Given a tracked file that an ignore rule matches and that is deleted from disk', () => {
+    describe.each([
+      { label: 'add({ all: true })', paths: [], options: { all: true } },
+      { label: "add(['.'])", paths: ['.'], options: undefined },
+      { label: "add(['*.log'])", paths: ['*.log'], options: undefined },
+      { label: "add(['a.log'])", paths: ['a.log'], options: undefined },
+    ])('When $label', ({ paths, options }) => {
+      it('Then the deletion is staged and the entry leaves the index', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'a.log': 'x', 'b.txt': 'b' });
+        await add(ctx, ['a.log', 'b.txt']);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, '*.log\n');
+        await ctx.fs.rm(`${ctx.layout.workDir}/a.log`);
+
+        // Act
+        const result = await add(ctx, paths, options);
+
+        // Assert
+        expect(result.removed).toEqual(['a.log']);
+        const idx = await readIndex(ctx);
+        expect(idx.entries.map((e) => e.path)).not.toContain('a.log');
+      });
+    });
+  });
+
+  describe('Given a tracked file whose parent directory became a file', () => {
+    describe('When add({ all: true })', () => {
+      it('Then the deletion is staged', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'dir/foo.ts': 'export {};' });
+        await add(ctx, ['dir/foo.ts']);
+        await ctx.fs.rm(`${ctx.layout.workDir}/dir/foo.ts`);
+        await ctx.fs.rm(`${ctx.layout.workDir}/dir`);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/dir`, 'now a file');
+
+        // Act
+        const result = await add(ctx, [], { all: true });
+
+        // Assert
+        expect(result.removed).toEqual(['dir/foo.ts']);
+        expect(result.added).toEqual(['dir']);
+      });
+    });
+  });
+
+  describe('Given a tracked file whose directory became a symlink to a directory holding the same name', () => {
+    describe.each([
+      { label: 'add({ all: true })', paths: [], options: { all: true } },
+      { label: "add(['.'])", paths: ['.'], options: undefined },
+    ])('When $label', ({ paths, options }) => {
+      it('Then the path beyond the link is staged as removed and only the link and the real file remain', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'a/b': 'one', 'real/b': 'two' });
+        await add(ctx, ['a/b', 'real/b']);
+        await ctx.fs.rm(`${ctx.layout.workDir}/a/b`);
+        await ctx.fs.rm(`${ctx.layout.workDir}/a`);
+        await ctx.fs.symlink('real', `${ctx.layout.workDir}/a`);
+
+        // Act
+        const result = await add(ctx, paths, options);
+
+        // Assert
+        expect(result.removed).toEqual(['a/b']);
+        const idx = await readIndex(ctx);
+        expect(idx.entries.map((e) => e.path)).toEqual(['a', 'real/b']);
+      });
+    });
+  });
+
+  describe('Given a tracked file deleted from disk and a stat that fails on it', () => {
+    describe.each([
+      { label: 'PERMISSION_DENIED', fault: permissionDenied('x/y') },
+      { label: 'a plain Error', fault: new Error('boom') },
+    ])('When the fault is $label', ({ fault }) => {
+      it('Then add({ all: true }) rethrows it and stages no removal', async () => {
+        // Arrange
+        const seeded = await seedFreshRepo({ 'x/y': 'one' });
+        await add(seeded, ['x/y']);
+        await seeded.fs.rm(`${seeded.layout.workDir}/x/y`);
+        const target = `${seeded.layout.workDir}/x/y`;
+        const fs = new Proxy(seeded.fs, {
+          get(real, prop, receiver) {
+            if (prop !== 'lstat') return Reflect.get(real, prop, receiver);
+            return async (path: string) => {
+              if (path === target) throw fault;
+              return real.lstat(path);
+            };
+          },
+        });
+        const ctx = { ...seeded, fs };
+
+        // Act
+        const attempt = add(ctx, [], { all: true });
+
+        // Assert
+        await expect(attempt).rejects.toBe(fault);
+        const idx = await readIndex(seeded);
+        expect(idx.entries.map((e) => e.path)).toEqual(['x/y']);
+      });
+    });
+  });
+
+  describe('Given a tracked file under an ignored directory that is deleted from disk', () => {
+    describe('When add({ all: true })', () => {
+      it('Then the deletion is staged', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'vendor/foo.ts': 'export {};' });
+        await add(ctx, ['vendor/foo.ts']);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitignore`, 'vendor/\n');
+        await ctx.fs.rm(`${ctx.layout.workDir}/vendor/foo.ts`);
+
+        // Act
+        const result = await add(ctx, [], { all: true });
+
+        // Assert
+        expect(result.removed).toEqual(['vendor/foo.ts']);
       });
     });
   });
@@ -3734,6 +3873,212 @@ describe('add on a path recorded as a gitlink that is now a CRLF file', () => {
 
         // Assert
         expect(await stagedText(ctx, 'f.txt')).toBe('x\ny\n');
+      });
+    });
+  });
+});
+
+const LOSSY_NAME_BYTES = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+const LOSSY_VIEW = '�.txt' as FilePath;
+
+/** An index holding `z`, the literal U+FFFD name (U) and the raw `\xff.txt` name (L): U and L decode to the same string. */
+const seedCollidingIndex = async (ctx: RenormalizeCtx) => {
+  const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/z`);
+  const entryOf = async (path: FilePath, text: string): Promise<IndexEntry> => ({
+    ...indexEntryFromStat(stat, FILE_MODE.REGULAR, await putBlobText(ctx, text), path),
+    fileSize: 0,
+  });
+  const lossy: IndexEntry = {
+    ...(await entryOf(LOSSY_VIEW, 'x')),
+    pathBytes: LOSSY_NAME_BYTES,
+  };
+  const entries = [await entryOf('z' as FilePath, 'z'), await entryOf(LOSSY_VIEW, 'y'), lossy];
+  const index: GitIndex = { version: 2, entries, extensions: [], trailerSha: new Uint8Array(0) };
+  await ctx.fs.write(`${ctx.layout.gitDir}/index`, await serializeIndexFixtureAsync(index, ctx));
+};
+
+const blobText = async (ctx: RenormalizeCtx, entry: IndexEntry): Promise<string> =>
+  dec((await readBlob(ctx, entry.id)).content);
+
+describe('add on an index holding entries whose decoded paths collide', () => {
+  describe('Given U, L and a modified z in the index', () => {
+    describe('When add stages z by literal path', () => {
+      it('Then U and L keep their own blobs and L keeps its raw path bytes', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ z: 'z2' });
+        await seedCollidingIndex(ctx);
+        const sut = add;
+
+        // Act
+        await sut(ctx, ['z']);
+
+        // Assert
+        const { entries } = await readIndex(ctx);
+        expect(entries.map((e) => e.path)).toEqual(['z', LOSSY_VIEW, LOSSY_VIEW]);
+        expect(await Promise.all(entries.map((e) => blobText(ctx, e)))).toEqual(['z2', 'y', 'x']);
+        expect(entries[1]?.pathBytes).toBeUndefined();
+        expect(entries[2]?.pathBytes).toEqual(LOSSY_NAME_BYTES);
+      });
+    });
+  });
+
+  describe('Given U, L, an unchanged z and the U+FFFD file on disk', () => {
+    describe('When add stages everything', () => {
+      it('Then L is reported removed, U is kept and nothing is modified', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ z: 'z', [LOSSY_VIEW]: 'y' });
+        await seedCollidingIndex(ctx);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, [], { all: true });
+
+        // Assert
+        expect(result.removed).toEqual([LOSSY_VIEW]);
+        expect(result.modified).toEqual([]);
+        const { entries } = await readIndex(ctx);
+        expect(entries.map((e) => e.path)).toEqual(['z', LOSSY_VIEW]);
+        expect(entries[1]?.pathBytes).toBeUndefined();
+        expect(await blobText(ctx, entries[1] as IndexEntry)).toBe('y');
+      });
+    });
+  });
+
+  describe('Given L in the index and only the U+FFFD file on disk', () => {
+    describe('When add --renormalize stages everything', () => {
+      it('Then it refuses like git does for a tracked path absent from disk and leaves the index untouched', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ z: 'z', [LOSSY_VIEW]: 'y' });
+        await seedCollidingIndex(ctx);
+        const sut = add;
+        let thrown: unknown;
+
+        // Act
+        try {
+          await sut(ctx, ['.'], { renormalize: true });
+        } catch (error) {
+          thrown = error;
+        }
+
+        // Assert
+        expect(thrown).toBeInstanceOf(TsgitError);
+        expect((thrown as TsgitError).data).toEqual({
+          code: 'PATHSPEC_NO_MATCH',
+          pattern: LOSSY_VIEW,
+        });
+        const { entries } = await readIndex(ctx);
+        expect(entries.map((e) => e.pathBytes)).toEqual([undefined, undefined, LOSSY_NAME_BYTES]);
+        expect(await Promise.all(entries.map((e) => blobText(ctx, e)))).toEqual(['z', 'y', 'x']);
+      });
+    });
+  });
+});
+
+describe('add pathspecs match tracked entries on the escaped view', () => {
+  describe('Given a tracked UTF-8 file deleted from disk', () => {
+    describe('When add names it by literal', () => {
+      it('Then the deletion is staged and reported removed', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'f.txt': 'f', 'g.txt': 'g' });
+        await add(ctx, ['f.txt', 'g.txt']);
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/f.txt`);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['f.txt']);
+
+        // Assert
+        expect(result.removed).toEqual(['f.txt']);
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['g.txt']);
+      });
+    });
+
+    describe('When add names it by glob', () => {
+      it('Then only the matched deletion is staged', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'a.txt': 'a', 'b.md': 'b' });
+        await add(ctx, ['a.txt', 'b.md']);
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/a.txt`);
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/b.md`);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['*.txt']);
+
+        // Assert
+        expect(result.removed).toEqual(['a.txt']);
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['b.md']);
+      });
+    });
+
+    describe('When add names its directory', () => {
+      it('Then the deletion under it is staged', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'd/x': 'x', 'd/y': 'y' });
+        await add(ctx, ['d/x', 'd/y']);
+        await ctx.fs.rmRecursive(`${ctx.layout.workDir}/d/x`);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['d']);
+
+        // Assert
+        expect(result.removed).toEqual(['d/x']);
+        expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['d/y']);
+      });
+    });
+  });
+
+  describe('Given U and L tracked, U modified on disk', () => {
+    describe('When add names U by its U+FFFD literal', () => {
+      it('Then U is restaged and L keeps its bytes', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ z: 'z', [LOSSY_VIEW]: 'y2' });
+        await seedCollidingIndex(ctx);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, [LOSSY_VIEW]);
+
+        // Assert
+        expect(result.removed).toEqual([]);
+        const { entries } = await readIndex(ctx);
+        expect(await Promise.all(entries.map((e) => blobText(ctx, e)))).toEqual(['z', 'y2', 'x']);
+        expect(entries[2]?.pathBytes).toEqual(LOSSY_NAME_BYTES);
+      });
+    });
+
+    describe('When add names a glob', () => {
+      it('Then L is staged as removed and U restaged', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ z: 'z', [LOSSY_VIEW]: 'y2' });
+        await seedCollidingIndex(ctx);
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['*.txt']);
+
+        // Assert
+        expect(result.removed).toEqual([LOSSY_VIEW]);
+        const { entries } = await readIndex(ctx);
+        expect(entries.map((e) => e.pathBytes)).toEqual([undefined, undefined]);
+        expect(await Promise.all(entries.map((e) => blobText(ctx, e)))).toEqual(['z', 'y2']);
+      });
+    });
+
+    describe('When add --renormalize names the U+FFFD literal', () => {
+      it('Then it resolves and the index still holds L with its bytes', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ z: 'z', [LOSSY_VIEW]: 'y' });
+        await seedCollidingIndex(ctx);
+        const sut = add;
+
+        // Act
+        await sut(ctx, [LOSSY_VIEW], { renormalize: true });
+
+        // Assert
+        const { entries } = await readIndex(ctx);
+        expect(entries.map((e) => e.pathBytes)).toEqual([undefined, undefined, LOSSY_NAME_BYTES]);
       });
     });
   });

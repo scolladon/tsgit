@@ -310,6 +310,22 @@ describe('sparseCheckout command', () => {
       });
     });
 
+    describe('Given a directory whose only other tracked entry is excluded and absent from disk', () => {
+      describe('When set removes the last file on disk of that directory', () => {
+        it('Then the emptied directory is removed', async () => {
+          // Arrange
+          const ctx = await seedRepoWithTree();
+          await sparseCheckoutSet(ctx, { patterns: ['/docs/', '/src/app/'], cone: false });
+
+          // Act
+          await sparseCheckoutSet(ctx, { patterns: ['/docs/'], cone: false });
+
+          // Assert
+          expect(await fileExists(ctx, 'src')).toBe(false);
+        });
+      });
+    });
+
     describe('Given a cone of docs', () => {
       describe('When set', () => {
         it('Then both src files are removed and docs stays', async () => {

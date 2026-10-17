@@ -1,7 +1,7 @@
 import type { TsgitError } from '../../../domain/error.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
-import { lstatIfPresent } from './fs-probes.js';
+import { lstatIfReachable } from './fs-probes.js';
 
 /**
  * Expand a `~`/`~/…` config-driven path against `layout.homeDir`. Returns the
@@ -34,7 +34,8 @@ export const sanitizedErrorPath = (path: string): FilePath => {
 /**
  * Bounded read of a per-directory / config-driven text file (`.gitignore`,
  * `.gitattributes`, their `info/` and global variants). Returns `undefined`
- * when the file is absent, a symlink, or not a regular file; throws the
+ * when the file is absent (or sits beneath a regular file, as git reads
+ * it), a symlink, or not a regular file; throws the
  * caller's `tooLarge` error when it exceeds `limit`. The caller parses the
  * returned text.
  */
@@ -44,7 +45,7 @@ export const loadCappedUtf8 = async (
   limit: number,
   tooLarge: (path: FilePath, size: number, limit: number) => TsgitError,
 ): Promise<string | undefined> => {
-  const stat = await lstatIfPresent(ctx.fs, path);
+  const stat = await lstatIfReachable(ctx.fs, path);
   if (stat === undefined) return undefined;
   if (!stat.isFile || stat.isSymbolicLink) return undefined;
   if (stat.size > limit) {

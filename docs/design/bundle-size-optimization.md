@@ -551,3 +551,21 @@ for a clean `stash apply`, the unmerged-index refusal, a refused autostash kept,
 |---|--:|--:|--:|--:|--:|---|
 | Browser bundle (no-build) | 328 090 | 331 602 | +3 512 | 329.3 kB | 333.7 kB | the whole change below, bundled once |
 | Full library | 384 305 | 388 008 | +3 703 | 385.5 kB | 390.1 kB | the cache-tree serializer and chain invalidation, the index entry diff and the extension-carry policy (domain); the index-lock commit carrying extensions, the refresh-only commit with its trailer guard, the optional lock and its degrade report, the comparator's refresh verdict and the second-granularity racy check (primitives); `status`'s refresh write-back and `GIT_OPTIONAL_LOCKS`, `stash`'s pooled classification and hashing and its clean-apply index write, `add`'s re-staged paths and skipped no-op write, the `ENV_BAD_BOOLEAN_VALUE` refusal (commands) |
+
+## Size-limit raise — byte-exact index paths
+
+Measured with `npx size-limit --json` on a clean build, gzip, on the branch's tree after the review
+phase. The `main` column is not re-measured here: see the previous section's measured column for the
+rows it covers (browser bundle, full library); the domain and primitives chunks were not tracked
+there. Each failing row is raised to the measurement rounded up to the next 0.1 kB plus 2 kB of
+headroom for the remaining phases; every other row is unchanged.
+
+| Row | main | measured | old limit | new limit | Attributable to |
+|---|--:|--:|--:|--:|---|
+| Chunks: domain | — | 122.69 kB | 122.6 kB | 124.7 kB | the raw-path codec and keys: the surrogate-escape codec, git's UTF-8 well-formedness table, the path-bytes key and the byte-ordered index writer and parser |
+| Chunks: primitives | — | 104.46 kB | 103.9 kB | 106.5 kB | the symlink-safe write wave (links first, leading directories one component at a time), directory pruning, the lossy-entry skip in the changeset and the working-tree comparison |
+| Browser bundle (no-build) | see previous section | 335.06 kB | 333.7 kB | 337.1 kB | the whole change, bundled once |
+| Full library | see previous section | 391.73 kB | 390.1 kB | 393.8 kB | the above plus the escaped merge engine and file/directory conflicts (commands-internal), and the staged-only cherry-pick/revert check |
+
+The npm tarball cap moved 1410 → 1423 KiB (measured pack 1 448 579 B); its attribution lives in
+`tooling/verify-tarball.sh`'s cap block.

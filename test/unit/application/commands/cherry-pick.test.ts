@@ -74,6 +74,15 @@ const codeOf = async (run: () => Promise<unknown>): Promise<string | undefined> 
   }
 };
 
+const dataOf = async (run: () => Promise<unknown>): Promise<Record<string, unknown>> => {
+  try {
+    await run();
+    throw new Error('expected a throw');
+  } catch (err) {
+    return (err as TsgitError).data as unknown as Record<string, unknown>;
+  }
+};
+
 const FROZEN_SECONDS = 1_800_000_000;
 
 /** Freezes the wall clock every reflog entry reads its timestamp from. */
@@ -1100,6 +1109,25 @@ describe('cherryPickRun', () => {
     });
   });
 
+  describe('Given --no-commit and a staged change on a path the pick does not touch', () => {
+    describe('When run', () => {
+      it('Then stages the pick next to the unrelated staged change', async () => {
+        // Arrange
+        const { ctx } = await seedFeature();
+        await ctx.fs.writeUtf8(work(ctx, 'other.txt'), 'staged\n');
+        await add(ctx, ['other.txt']);
+
+        // Act
+        const result = await cherryPickRun(ctx, { commits: ['feature'], noCommit: true });
+
+        // Assert
+        expect(result.kind).toBe('no-commit');
+        const index = await readIndex(ctx);
+        expect(index.entries.map((e) => e.path)).toEqual(['base.txt', 'feat.txt', 'other.txt']);
+      });
+    });
+  });
+
   describe('Given --no-commit for a two-pick list', () => {
     describe('When run', () => {
       it('Then accumulates both changes in the index without committing', async () => {
@@ -1235,18 +1263,87 @@ describe('cherryPickRun', () => {
     });
   });
 
-  describe('Given a dirty working tree', () => {
+  describe('Given a staged change', () => {
     describe('When run', () => {
-      it('Then refuses with WORKING_TREE_DIRTY', async () => {
+      it('Then refuses with WORKING_TREE_DIRTY naming the staged path', async () => {
+        // Arrange
+        const { ctx } = await seedFeature();
+        await ctx.fs.writeUtf8(work(ctx, 'base.txt'), 'staged\n');
+        await add(ctx, ['base.txt']);
+
+        // Act
+        const data = await dataOf(() => cherryPickRun(ctx, { commits: ['feature'] }));
+
+        // Assert
+        expect(data).toMatchObject({ code: 'WORKING_TREE_DIRTY', localChanges: ['base.txt'] });
+      });
+    });
+  });
+
+  describe('Given an unstaged change on a path the pick does not touch', () => {
+    describe('When run', () => {
+      it('Then picks the commit and leaves the change in place', async () => {
         // Arrange
         const { ctx } = await seedFeature();
         await ctx.fs.writeUtf8(work(ctx, 'base.txt'), 'dirty\n');
 
         // Act
-        const code = await codeOf(() => cherryPickRun(ctx, { commits: ['feature'] }));
+        const result = await cherryPickRun(ctx, { commits: ['feature'] });
 
         // Assert
-        expect(code).toBe('WORKING_TREE_DIRTY');
+        expect(result.kind).toBe('picked');
+        expect(await ctx.fs.readUtf8(work(ctx, 'base.txt'))).toBe('dirty\n');
+      });
+    });
+  });
+
+  describe('Given an unstaged change on a path the pick modifies', () => {
+    describe('When run', () => {
+      it('Then refuses with WORKING_TREE_DIRTY naming that path', async () => {
+        // Arrange
+        const { ctx } = await seedFeature();
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(work(ctx, 'feat.txt'), 'feat2\n');
+        await add(ctx, ['feat.txt']);
+        await commit(ctx, { message: 'edit feat', author: FEAT_AUTHOR });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(work(ctx, 'feat.txt'), 'untracked\n');
+
+        // Act
+        const data = await dataOf(() => cherryPickRun(ctx, { commits: ['feature'] }));
+
+        // Assert
+        expect(data).toMatchObject({ code: 'WORKING_TREE_DIRTY' });
+      });
+    });
+  });
+
+  describe('Given an unstaged edit to a file the picked commit replaces by a directory', () => {
+    describe('When run', () => {
+      it('Then refuses naming that file and keeps its content, the index and HEAD', async () => {
+        // Arrange
+        const { ctx } = await seedFeature();
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.mkdir(work(ctx, 'f'));
+        await ctx.fs.writeUtf8(work(ctx, 'f/x'), 'x\n');
+        await add(ctx, ['f/x']);
+        await commit(ctx, { message: 'adds directory f', author: FEAT_AUTHOR });
+        await checkout(ctx, { rev: 'main' });
+        await ctx.fs.writeUtf8(work(ctx, 'f'), 'file\n');
+        await add(ctx, ['f']);
+        await commit(ctx, { message: 'adds file f', author: MAIN_AUTHOR });
+        await ctx.fs.writeUtf8(work(ctx, 'f'), 'LOCAL-EDIT\n');
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        const indexBefore = (await readIndex(ctx)).entries.map((e) => [e.path, e.id]);
+
+        // Act
+        const data = await dataOf(() => cherryPickRun(ctx, { commits: ['feature'] }));
+
+        // Assert
+        expect(data).toMatchObject({ code: 'WORKING_TREE_DIRTY', localChanges: ['f'] });
+        expect(await ctx.fs.readUtf8(work(ctx, 'f'))).toBe('LOCAL-EDIT\n');
+        expect(await resolveRef(ctx, 'HEAD' as RefName)).toBe(head);
+        expect((await readIndex(ctx)).entries.map((e) => [e.path, e.id])).toEqual(indexBefore);
       });
     });
   });
@@ -1269,14 +1366,6 @@ describe('cherryPickRun', () => {
 });
 
 describe('cherryPick — observable surfaces', () => {
-  const dataOf = async (run: () => Promise<unknown>): Promise<Record<string, unknown>> => {
-    try {
-      await run();
-      throw new Error('expected a throw');
-    } catch (err) {
-      return (err as TsgitError).data as unknown as Record<string, unknown>;
-    }
-  };
   const makeBare = async (): Promise<Context> => {
     const ctx = createMemoryContext();
     await init(ctx);

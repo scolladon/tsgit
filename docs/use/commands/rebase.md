@@ -68,6 +68,7 @@ type RebaseResult =
 - **Conflict.** Returns `{ kind: 'conflict', ... }`, leaving HEAD detached at the
   last good pick and writing the full `.git/rebase-merge/` state + `REBASE_HEAD`.
   Resolve with `repo.add(paths)` then `repo.rebase.continue()`.
+- **Raw path bytes.** The replay carries non-UTF-8 path names byte-exact through the merge, the index and the new commits; results report the U+FFFD view.
 - **Conflict path safety.** Before any conflict is materialised, every
   outcome/conflict path the replay is about to write is checked in one pass
   against git's own index-entry name rules (absolute path; `.`, `..`, or empty

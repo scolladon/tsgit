@@ -13,6 +13,7 @@ import { rm } from '../../../../src/application/commands/rm.js';
 import { sparseCheckoutSet } from '../../../../src/application/commands/sparse-checkout.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
+import { stage0Entry } from '../../../../src/application/primitives/internal/synthetic-index-entry.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
@@ -22,8 +23,15 @@ import { updateRef } from '../../../../src/application/primitives/update-ref.js'
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
+import { decodeEscapingInvalid } from '../../../../src/domain/objects/encoding.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
-import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import type {
+  AuthorIdentity,
+  FilePath,
+  ObjectId,
+  RefName,
+} from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type {
   HttpRequest,
@@ -57,6 +65,43 @@ const commitFile = async (
   await add(ctx, [path]);
   const result = await commit(ctx, { message, author });
   return result.id;
+};
+
+const RAW_NAME_FF = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+
+const blobOf = (ctx: Context, content: string): Promise<ObjectId> =>
+  writeObject(ctx, {
+    type: 'blob',
+    id: '' as ObjectId,
+    content: new TextEncoder().encode(content),
+  });
+
+const commitRawName = async (
+  ctx: Context,
+  name: Uint8Array,
+  content: string,
+): Promise<ObjectId> => {
+  const tree = await writeTree(ctx, [
+    treeEntry(FILE_MODE.REGULAR, name, await blobOf(ctx, content)),
+  ]);
+  return writeObject(ctx, {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: { tree, parents: [], author, committer: author, message: 'raw\n', extraHeaders: [] },
+  });
+};
+
+const stageRawName = async (ctx: Context, name: Uint8Array): Promise<void> => {
+  const id = await blobOf(ctx, 'staged');
+  const lock = await acquireIndexLock(ctx);
+  try {
+    await lock.commit(
+      [stage0Entry(decodeEscapingInvalid(name) as FilePath, id, FILE_MODE.REGULAR)],
+      'replace',
+    );
+  } finally {
+    await lock.release();
+  }
 };
 
 const emptyPack = async (ctx: Context): Promise<Uint8Array> =>
@@ -191,6 +236,46 @@ describe('pull', () => {
         expect((await readIndex(ctx)).entries.map((e) => e.path)).toEqual(['a.txt']);
         expect(await reflogMessages(ctx, 'HEAD')).toEqual(['initial pull']);
         expect(await reflogMessages(ctx, 'refs/heads/fresh')).toEqual(['initial pull']);
+      });
+    });
+  });
+
+  describe('Given HEAD names an unborn branch and the fetched head holds a non-UTF-8 path', () => {
+    describe('When pull', () => {
+      it('Then the index keeps the raw path bytes of that entry', async () => {
+        // Arrange
+        const { ctx } = await unbornWithUpstream();
+        const head = await commitRawName(ctx, RAW_NAME_FF, 'raw');
+
+        // Act
+        await unbornPull(ctx, head);
+
+        // Assert
+        const entries = (await readIndex(ctx)).entries;
+        expect(entries.map((e) => Array.from(e.pathBytes ?? []))).toEqual([
+          Array.from(RAW_NAME_FF),
+        ]);
+      });
+    });
+  });
+
+  describe('Given a staged non-UTF-8 path that the fetched head holds with another blob', () => {
+    describe('When pull', () => {
+      it('Then it refuses with WORKING_TREE_DIRTY naming the display path', async () => {
+        // Arrange
+        const { ctx } = await unbornWithUpstream();
+        await stageRawName(ctx, RAW_NAME_FF);
+        const head = await commitRawName(ctx, RAW_NAME_FF, 'raw');
+
+        // Act
+        const result = await pullError(() => unbornPull(ctx, head));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'WORKING_TREE_DIRTY',
+          localChanges: ['\uFFFD.txt'],
+          untracked: [],
+        });
       });
     });
   });

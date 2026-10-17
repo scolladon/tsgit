@@ -21,6 +21,8 @@ interface FlatTree {
 
 Recurses into every sub-tree; directory entries themselves are not included in the result — only blob and gitlink leaves. Accepts either a tree `ObjectId` or an already-resolved `Tree` object — either form re-reads the root raw by its `id` before walking (passing a resolved `Tree` is not a redundant-root-read shortcut; see Throws below for what that means for a hand-forged `Tree`). An entry with an empty name is refused as a structural fault before it is recorded — mode, name and oid cannot otherwise be read apart. An entry named `.` or `..`, or containing an embedded `/`, is recorded like any other name — no git read path refuses those shapes either; `.` and `..` are refused only where git refuses them, at worktree materialisation and index construction (not by this primitive), and an embedded `/` is refused nowhere outside `git fsck --strict`.
 
+A name that is not valid UTF-8 surfaces its U+FFFD view in the key; the tree's raw bytes are untouched.
+
 ## Example
 
 ```ts

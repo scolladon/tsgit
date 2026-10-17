@@ -126,6 +126,10 @@ The entry selector is a numeric stack `index` (default `0`, the newest); the
   index. `-X renormalize` is not a stash option; `merge.renormalize=true` makes
   the apply's 3-way merge renormalise (see [`merge`](merge.md#renormalize)).
 
+## Byte-exact paths
+
+`push`, `apply` and `pop` carry non-UTF-8 path names as raw bytes through the stash commits and the index. A restore never writes an escaped or lossy path to the work tree; results report the U+FFFD view.
+
 ## Examples
 
 ```ts

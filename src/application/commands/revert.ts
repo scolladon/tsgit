@@ -272,7 +272,9 @@ const runSequence = async (
 
 export const revertRun = async (ctx: Context, input: RevertRunInput): Promise<RevertResult> => {
   await assertOperationalRepository(ctx);
-  const { ourId, revisions } = await openReplayRun(ctx, REVERT_COMMAND, input.commits);
+  const { ourId, revisions } = await openReplayRun(ctx, REVERT_COMMAND, input.commits, {
+    noCommit: input.noCommit === true,
+  });
   const todo = revisions.commits;
   if (input.noCommit === true) return runNoCommitReplay(ctx, REVERT_COMMAND, todo);
   const seq: SequenceState = {

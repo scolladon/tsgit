@@ -92,6 +92,134 @@ export function decodePreservingBom(bytes: Uint8Array): string {
   return bomPreservingDecoder.decode(bytes);
 }
 
+// `text` must come from `decodePreservingBom(raw)`: that decoder emits U+FFFD
+// only for an invalid sequence or a literal EF BF BD, and a valid decode
+// re-encodes to the same bytes, so a view without U+FFFD is lossless without
+// paying for an encode.
+export function decodesLosslessly(text: string, raw: Uint8Array): boolean {
+  // Stryker disable next-line StringLiteral: equivalent — includes('') is always true, so only the byte comparison decides, and for a decodePreservingBom view it answers exactly what the U+FFFD shortcut answers.
+  return !text.includes('\uFFFD') || bytesEqual(encode(text), raw);
+}
+
+const ESCAPE_BASE = 0xdc00;
+const ESCAPE_MIN = 0xdc80;
+const ESCAPE_MAX = 0xdcff;
+const ASCII_MAX = 0x7f;
+const CONTINUATION_MIN = 0x80;
+const CONTINUATION_MAX = 0xbf;
+const TWO_BYTE_LEAD_MIN = 0xc2;
+const TWO_BYTE_LEAD_MAX = 0xdf;
+const THREE_BYTE_LEAD_MIN = 0xe0;
+const THREE_BYTE_LEAD_MAX = 0xef;
+const FOUR_BYTE_LEAD_MIN = 0xf0;
+const FOUR_BYTE_LEAD_MAX = 0xf4;
+const OVERLONG_THREE_LEAD = 0xe0;
+const OVERLONG_THREE_SECOND_MIN = 0xa0;
+const SURROGATE_LEAD = 0xed;
+const SURROGATE_SECOND_MAX = 0x9f;
+const OVERLONG_FOUR_LEAD = 0xf0;
+const OVERLONG_FOUR_SECOND_MIN = 0x90;
+const ABOVE_RANGE_LEAD = 0xf4;
+const ABOVE_RANGE_SECOND_MAX = 0x8f;
+const TWO = 2;
+const THREE = 3;
+const FOUR = 4;
+
+const isContinuation = (byte: number | undefined): boolean =>
+  byte !== undefined && byte >= CONTINUATION_MIN && byte <= CONTINUATION_MAX;
+
+const secondByteRange = (lead: number): readonly [number, number] => {
+  if (lead === OVERLONG_THREE_LEAD) return [OVERLONG_THREE_SECOND_MIN, CONTINUATION_MAX];
+  if (lead === SURROGATE_LEAD) return [CONTINUATION_MIN, SURROGATE_SECOND_MAX];
+  if (lead === OVERLONG_FOUR_LEAD) return [OVERLONG_FOUR_SECOND_MIN, CONTINUATION_MAX];
+  if (lead === ABOVE_RANGE_LEAD) return [CONTINUATION_MIN, ABOVE_RANGE_SECOND_MAX];
+  return [CONTINUATION_MIN, CONTINUATION_MAX];
+};
+
+const expectedLength = (lead: number): number => {
+  if (lead <= ASCII_MAX) return 1;
+  if (lead >= TWO_BYTE_LEAD_MIN && lead <= TWO_BYTE_LEAD_MAX) return TWO;
+  if (lead >= THREE_BYTE_LEAD_MIN && lead <= THREE_BYTE_LEAD_MAX) return THREE;
+  if (lead >= FOUR_BYTE_LEAD_MIN && lead <= FOUR_BYTE_LEAD_MAX) return FOUR;
+  return 0;
+};
+
+// Length of the well-formed UTF-8 sequence starting at `at` (Unicode Table 3-7), 0 when none does.
+export function wellFormedSequenceLength(bytes: Uint8Array, at: number): number {
+  const lead = bytes[at] as number;
+  const length = expectedLength(lead);
+  if (length <= 1) return length;
+  const [min, max] = secondByteRange(lead);
+  const second = bytes[at + 1];
+  if (second === undefined || second < min || second > max) return 0;
+  for (let i = TWO; i < length; i++) {
+    if (!isContinuation(bytes[at + i])) return 0;
+  }
+  return length;
+}
+
+// Python's surrogate-escape error handler: each byte of a rejected sequence becomes the lone surrogate
+// U+DC00 + byte, so the string keeps the bytes and stays injective.
+export function decodeEscapingInvalid(bytes: Uint8Array): string {
+  const view = decodePreservingBom(bytes);
+  // Stryker disable next-line ConditionalExpression: equivalent — on lossless bytes the scan below accepts every sequence, escapes nothing and returns decodePreservingBom(bytes), i.e. the same view.
+  if (decodesLosslessly(view, bytes)) return view;
+  let result = '';
+  let runStart = 0;
+  let at = 0;
+  while (at < bytes.length) {
+    const length = wellFormedSequenceLength(bytes, at);
+    if (length > 0) {
+      at += length;
+      continue;
+    }
+    result += decodePreservingBom(bytes.subarray(runStart, at));
+    result += String.fromCharCode(ESCAPE_BASE + (bytes[at] as number));
+    at++;
+    runStart = at;
+  }
+  return result + decodePreservingBom(bytes.subarray(runStart));
+}
+
+const HIGH_SURROGATE_MIN = 0xd800;
+const HIGH_SURROGATE_MAX = 0xdbff;
+const LONE_ESCAPE = /(?<![\uD800-\uDBFF])[\uDC80-\uDCFF]/;
+
+// A LONE low surrogate only: one that completes a pair is part of an astral character.
+export function hasEscapedBytes(text: string): boolean {
+  return LONE_ESCAPE.test(text);
+}
+
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+export const REPLACEMENT_CHARACTER = '\uFFFD';
+
+// `String.prototype.toWellFormed` is outside the ES2022 lib this project targets.
+export function wellFormed(text: string): string {
+  return text.replace(LONE_SURROGATE, REPLACEMENT_CHARACTER);
+}
+
+const isHighSurrogate = (unit: number): boolean =>
+  unit >= HIGH_SURROGATE_MIN && unit <= HIGH_SURROGATE_MAX;
+
+// Inverse of `decodeEscapingInvalid`: a lone U+DC80..U+DCFF is its byte, the rest is UTF-8.
+export function encodeEscaped(text: string): Uint8Array {
+  // Stryker disable next-line ConditionalExpression: equivalent — without a lone U+DC80..U+DCFF the loop below pushes nothing and returns encode(text) whole.
+  if (!hasEscapedBytes(text)) return encode(text);
+  const parts: Uint8Array[] = [];
+  let runStart = 0;
+  for (let i = 0; i < text.length; i++) {
+    const unit = text.charCodeAt(i);
+    if (unit < ESCAPE_MIN || unit > ESCAPE_MAX) continue;
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — at i = 0, charCodeAt(-1) is NaN, which isHighSurrogate rejects, so dropping or widening the i > 0 guard changes nothing.
+    if (i > 0 && isHighSurrogate(text.charCodeAt(i - 1))) continue;
+    // Stryker disable next-line ArithmeticOperator: equivalent — 0xdc00 is a multiple of 256 and Uint8Array stores modulo 256, so unit ± 0xdc00 store the same byte.
+    parts.push(encode(text.slice(runStart, i)), Uint8Array.of(unit - ESCAPE_BASE));
+    runStart = i + 1;
+  }
+  parts.push(encode(text.slice(runStart)));
+  return concatBytes(parts);
+}
+
 export function splitHeaderAndMessage(text: string): {
   readonly headerPart: string;
   readonly message: string;

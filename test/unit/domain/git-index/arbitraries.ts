@@ -6,6 +6,12 @@ import type {
   IndexEntryFlags,
   StatData,
 } from '../../../../src/domain/git-index/index-entry.js';
+import { indexPathKey, indexPathOfBytes } from '../../../../src/domain/git-index/index-path-key.js';
+import {
+  bytesEqual,
+  decodePreservingBom,
+  encode,
+} from '../../../../src/domain/objects/encoding.js';
 import type { FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE, FilePath } from '../../../../src/domain/objects/index.js';
 import { arbObjectId } from '../objects/arbitraries.js';
@@ -226,4 +232,71 @@ export function arbCacheTreeEntry(
     .map(({ path, entryCount, id, children }) =>
       buildCacheTreeEntry(path, entryCount, id, children),
     );
+}
+
+const PATH_TOKENS: ReadonlyArray<ReadonlyArray<number>> = [
+  [0x61],
+  [0x62],
+  [0x7a],
+  [0xc3, 0xa9],
+  [0xef, 0xbb, 0xbf],
+  [0xef, 0xbf, 0xbd],
+  [0xf0, 0x9f, 0x98, 0x80],
+  [0xff],
+  [0x80],
+  [0xc3],
+  [0xc0, 0xaf],
+  [0xed, 0xa0, 0x80],
+  [0xf5],
+];
+const SLASH_BYTE = 0x2f;
+
+const arbPathComponent = (): fc.Arbitrary<number[]> =>
+  fc
+    .array(fc.constantFrom(...PATH_TOKENS), { minLength: 1, maxLength: 4 })
+    .map((tokens) => tokens.flat());
+
+export function arbPathBytes(): fc.Arbitrary<Uint8Array> {
+  return fc
+    .array(arbPathComponent(), { minLength: 1, maxLength: 3 })
+    .map((components) =>
+      Uint8Array.from(components.flatMap((c, i) => (i === 0 ? c : [SLASH_BYTE, ...c]))),
+    );
+}
+
+export function arbRawPathBytes(): fc.Arbitrary<Uint8Array> {
+  return arbPathBytes().filter((b) => !bytesEqual(encode(decodePreservingBom(b)), b));
+}
+
+export function arbIndexEntryWithPathBytes(): fc.Arbitrary<IndexEntry> {
+  return fc
+    .tuple(arbStatData(), arbObjectId(), arbFlags(), arbPathBytes())
+    .map(([stat, id, flags, bytes]) => ({ ...stat, id, flags, ...indexPathOfBytes(bytes) }));
+}
+
+export function arbGitIndexWithPathBytes(): fc.Arbitrary<GitIndex> {
+  return fc
+    .tuple(
+      arbIndexEntryWithPathBytes(),
+      fc.array(arbIndexEntryWithPathBytes(), { minLength: 0, maxLength: 11 }),
+    )
+    .map(([head, rest]) =>
+      dedupeByPathKey([{ ...head, flags: { ...head.flags, skipWorktree: true } }, ...rest]),
+    )
+    .map((entries) => ({
+      version: 3 as const,
+      entries,
+      extensions: [] as ReadonlyArray<never>,
+      trailerSha: EMPTY_TRAILER,
+    }));
+}
+
+function dedupeByPathKey(entries: ReadonlyArray<IndexEntry>): ReadonlyArray<IndexEntry> {
+  const seen = new Set<string>();
+  return entries.filter((entry) => {
+    const key = indexPathKey(entry);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }

@@ -193,6 +193,10 @@ export function cursorName(c: TreeCursor): string {
   return decodePreservingBom(c.buf.subarray(c.nameStart, c.nameEnd));
 }
 
+export function cursorNameBytes(c: TreeCursor): Uint8Array {
+  return c.buf.subarray(c.nameStart, c.nameEnd);
+}
+
 export function cursorOid(c: TreeCursor): ObjectId {
   return ObjectId.fromRaw(c.buf.subarray(c.oidStart, c.oidStart + c.digestLength));
 }

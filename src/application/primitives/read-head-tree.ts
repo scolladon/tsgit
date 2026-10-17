@@ -20,7 +20,7 @@ import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import { createLruCache, type LruCache } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
-import { flattenTree } from './flatten-tree.js';
+import { flattenEscapedTree, flattenTree } from './flatten-tree.js';
 import { resolveFlattenBounds } from './internal/flatten-raw.js';
 import { budgetsFor, deltaBaseCachingEnabled } from './internal/object-caches.js';
 import { readObject } from './read-object.js';
@@ -109,7 +109,16 @@ export function flatTreeByteSize(tree: FlatTree): number {
   return total;
 }
 
-export const readHeadTree = async (ctx: Context): Promise<FlatTree | undefined> => {
+/** Separates the escaped-key view from the U+FFFD view in the shared cache. */
+const ESCAPED_KEY_SUFFIX = ':escaped';
+
+type TreeFlattener = (ctx: Context, treeId: ObjectId) => Promise<FlatTree>;
+
+const readHeadTreeWith = async (
+  ctx: Context,
+  flatten: TreeFlattener,
+  keySuffix: string,
+): Promise<FlatTree | undefined> => {
   const commitId = await resolveRef(ctx, 'HEAD').catch((err: unknown) => {
     if (err instanceof TsgitError && err.data.code === 'REF_NOT_FOUND') return undefined;
     throw err;
@@ -121,10 +130,18 @@ export const readHeadTree = async (ctx: Context): Promise<FlatTree | undefined> 
   }
   const { maxDepth } = await resolveFlattenBounds(ctx);
   const cache = flatTreeCacheFor(ctx);
-  const key = flatTreeCacheKey(commit.data.tree, maxDepth);
+  const key = `${flatTreeCacheKey(commit.data.tree, maxDepth)}${keySuffix}`;
   const cached = cache?.get(key);
   if (cached !== undefined) return cached;
-  const tree = await flattenTree(ctx, commit.data.tree);
+  const tree = await flatten(ctx, commit.data.tree);
   cache?.set(key, tree, flatTreeByteSize(tree));
   return tree;
 };
+
+export const readHeadTree = (ctx: Context): Promise<FlatTree | undefined> =>
+  // Stryker disable next-line StringLiteral: equivalent — only this file builds these cache keys, so any suffix other than ESCAPED_KEY_SUFFIX keeps the two views apart.
+  readHeadTreeWith(ctx, flattenTree, '');
+
+/** Internal: keys are escaped paths, so names differing only in invalid UTF-8 stay distinct. */
+export const readHeadTreeEscaped = (ctx: Context): Promise<FlatTree | undefined> =>
+  readHeadTreeWith(ctx, flattenEscapedTree, ESCAPED_KEY_SUFFIX);

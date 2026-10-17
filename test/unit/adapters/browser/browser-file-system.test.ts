@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 import { describe, expect, it, vi } from 'vitest';
 import { BrowserFileSystem } from '../../../../src/adapters/browser/browser-file-system.js';
+import { errorDataCode } from '../../../../src/domain/error-data-code.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 
 describe('BrowserFileSystem', () => {
@@ -761,6 +762,129 @@ describe('BrowserFileSystem directory-handle cache', () => {
         // Assert
         expect(directoryHandleCalls(residentParent)).toBeGreaterThan(callsBeforeInvalidate);
       });
+    });
+  });
+});
+
+describe('BrowserFileSystem rmdir', () => {
+  const codeOf = async (run: () => Promise<void>): Promise<unknown> => {
+    try {
+      await run();
+    } catch (err) {
+      return err instanceof TsgitError ? errorDataCode(err) : err;
+    }
+    return undefined;
+  };
+
+  const removable = (
+    children: Readonly<Record<string, 'file' | FileSystemDirectoryHandle>>,
+    removeEntry: () => Promise<void> = async () => {},
+  ): FileSystemDirectoryHandle & { removeEntry: ReturnType<typeof vi.fn> } =>
+    Object.assign(directory(children), { removeEntry: vi.fn(removeEntry) });
+
+  describe('Given an empty directory, When rmdir', () => {
+    it('Then removes the entry by name without the recursive option', async () => {
+      // Arrange
+      const root = removable({ sub: directory({}) });
+      const sut = new BrowserFileSystem(root);
+
+      // Act
+      await sut.rmdir('sub');
+
+      // Assert
+      expect(root.removeEntry.mock.calls).toEqual([['sub']]);
+    });
+  });
+
+  describe('Given a file, When rmdir', () => {
+    it('Then refuses NOT_A_DIRECTORY and removes nothing', async () => {
+      // Arrange
+      const root = removable({ leaf: 'file' });
+      const sut = new BrowserFileSystem(root);
+
+      // Act
+      const result = await codeOf(() => sut.rmdir('leaf'));
+
+      // Assert
+      expect(result).toBe('NOT_A_DIRECTORY');
+      expect(root.removeEntry).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Given an absent path, When rmdir', () => {
+    it('Then refuses FILE_NOT_FOUND and removes nothing', async () => {
+      // Arrange
+      const root = removable({});
+      const sut = new BrowserFileSystem(root);
+
+      // Act
+      const result = await codeOf(() => sut.rmdir('gone'));
+
+      // Assert
+      expect(result).toBe('FILE_NOT_FOUND');
+      expect(root.removeEntry).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Given a non-empty directory whose removal rejects InvalidModificationError, When rmdir', () => {
+    it('Then refuses DIRECTORY_NOT_EMPTY', async () => {
+      // Arrange
+      const root = removable({ sub: directory({}) }, () =>
+        Promise.reject(rejectionNamed('InvalidModificationError')),
+      );
+      const sut = new BrowserFileSystem(root);
+
+      // Act
+      const result = await codeOf(() => sut.rmdir('sub'));
+
+      // Assert
+      expect(result).toBe('DIRECTORY_NOT_EMPTY');
+    });
+  });
+
+  describe('Given a directory whose removal rejects NotFoundError, When rmdir', () => {
+    it('Then refuses FILE_NOT_FOUND, as the quirk of a non-empty directory reading as absent does for rm', async () => {
+      // Arrange
+      const root = removable({ sub: directory({}) }, () =>
+        Promise.reject(rejectionNamed('NotFoundError')),
+      );
+      const sut = new BrowserFileSystem(root);
+
+      // Act
+      const result = await codeOf(() => sut.rmdir('sub'));
+
+      // Assert
+      expect(result).toBe('FILE_NOT_FOUND');
+    });
+  });
+
+  describe('Given the root path, When rmdir', () => {
+    it('Then refuses PERMISSION_DENIED', async () => {
+      // Arrange
+      const sut = new BrowserFileSystem(removable({}));
+
+      // Act
+      const result = await codeOf(() => sut.rmdir(''));
+
+      // Assert
+      expect(result).toBe('PERMISSION_DENIED');
+    });
+  });
+
+  describe('Given a cached parent directory removed by rmdir, When reading under it again', () => {
+    it('Then the next read under it walks the directory handle again', async () => {
+      // Arrange
+      const sub = directory({ 'file.txt': 'file' });
+      const root = removable({ sub });
+      const sut = new BrowserFileSystem(root);
+      await sut.read('sub/file.txt');
+
+      // Act
+      await sut.rmdir('sub');
+      await sut.read('sub/file.txt');
+
+      // Assert
+      expect(root.getDirectoryHandle).toHaveBeenCalledTimes(3);
     });
   });
 });

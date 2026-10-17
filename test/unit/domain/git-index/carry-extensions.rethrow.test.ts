@@ -21,7 +21,10 @@ describe('carryExtensions TREE carry', () => {
         const { carryExtensions, NO_INDEX_CHANGE } = await import(
           '../../../../src/domain/git-index/carry-extensions.js'
         );
-        const change: IndexChange = { ...NO_INDEX_CHANGE, changedPaths: ['d/c' as FilePath] };
+        const change: IndexChange = {
+          ...NO_INDEX_CHANGE,
+          changedPaths: [{ path: 'd/c' as FilePath }],
+        };
         const previous = [{ signature: 'TREE', data: new Uint8Array([1]) }];
         const sut = carryExtensions;
         let thrown: unknown;

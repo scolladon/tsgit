@@ -4,7 +4,9 @@ import { MAX_FLAT_TREE_ENTRIES } from '../../../../src/domain/diff/flat-tree.js'
 import {
   conflictsToIndexEntries,
   diffIndexAgainstTree,
+  diffIndexAgainstTreeKeyed,
   groupUnmergedEntries,
+  groupUnmergedEntriesKeyed,
   sortedRecordedPaths,
 } from '../../../../src/domain/diff/index-diff.js';
 import type {
@@ -357,6 +359,73 @@ describe('groupUnmergedEntries', () => {
   });
 });
 
+const LOSSY_BYTES = new Uint8Array([0xff, 0x2e, 0x74, 0x78, 0x74]);
+
+function lossyEntry(id: ObjectId, stage: 0 | 1 | 2 | 3): IndexEntry {
+  return { ...entry('\uFFFD.txt', id, FILE_MODE.REGULAR, stage), pathBytes: LOSSY_BYTES };
+}
+
+describe('diffIndexAgainstTreeKeyed', () => {
+  describe('Given HEAD and index both holding a lossy path and its U+FFFD twin', () => {
+    describe('When diffIndexAgainstTreeKeyed called', () => {
+      it('Then no change is reported', () => {
+        // Arrange
+        const idx = index([entry('\uFFFD.txt', ID_B, FILE_MODE.REGULAR, 0), lossyEntry(ID_A, 0)]);
+        const tree = flatTree([
+          ['\uDCFF.txt', ID_A, FILE_MODE.REGULAR],
+          ['\uFFFD.txt', ID_B, FILE_MODE.REGULAR],
+        ]);
+        const sut = diffIndexAgainstTreeKeyed;
+
+        // Act
+        const result = sut(idx, tree);
+
+        // Assert
+        expect(result.changes).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('diffIndexAgainstTree over a view-keyed tree', () => {
+  describe('Given an index holding only the lossy path and a tree keyed by its view', () => {
+    describe('When diffIndexAgainstTree called', () => {
+      it('Then no change is reported', () => {
+        // Arrange
+        const idx = index([lossyEntry(ID_A, 0)]);
+        const tree = flatTree([['\uFFFD.txt', ID_A, FILE_MODE.REGULAR]]);
+        const sut = diffIndexAgainstTree;
+
+        // Act
+        const result = sut(idx, tree);
+
+        // Assert
+        expect(result.changes).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('groupUnmergedEntriesKeyed', () => {
+  describe('Given unmerged entries at a lossy path and its U+FFFD twin', () => {
+    describe('When groupUnmergedEntriesKeyed called', () => {
+      it('Then each path keeps its own group under its escaped key', () => {
+        // Arrange
+        const idx = index([entry('\uFFFD.txt', ID_B, FILE_MODE.REGULAR, 2), lossyEntry(ID_A, 1)]);
+        const sut = groupUnmergedEntriesKeyed;
+
+        // Act
+        const result = sut(idx);
+
+        // Assert
+        expect(result.unmerged.get('\uDCFF.txt' as FilePath)?.stage1?.id).toBe(ID_A);
+        expect(result.unmerged.get('\uFFFD.txt' as FilePath)?.stage2?.id).toBe(ID_B);
+        expect(result.unmerged.size).toBe(2);
+      });
+    });
+  });
+});
+
 describe('conflictsToIndexEntries', () => {
   function conflict(partial: Partial<MergeConflict> & { path: FilePath }): MergeConflict {
     return {
@@ -364,6 +433,37 @@ describe('conflictsToIndexEntries', () => {
       ...partial,
     } as MergeConflict;
   }
+
+  describe('Given content conflicts at an escaped path and at its U+FFFD view', () => {
+    describe('When conflictsToIndexEntries called', () => {
+      it('Then the escaped path carries its bytes and sorts after the view by bytes', () => {
+        // Arrange
+        const ids = {
+          baseId: ID_A,
+          ourId: ID_B,
+          theirId: ID_C,
+          baseMode: FILE_MODE.REGULAR,
+          ourMode: FILE_MODE.REGULAR,
+          theirMode: FILE_MODE.REGULAR,
+        };
+        const lossy = conflict({ path: '\uDCFF.txt' as FilePath, ...ids });
+        const wellFormed = conflict({ path: '\uFFFD.txt' as FilePath, ...ids });
+
+        // Act
+        const result = conflictsToIndexEntries([lossy, wellFormed], zeroStat);
+
+        // Assert
+        expect(result).toHaveLength(6);
+        result.slice(0, 3).forEach((entry) => {
+          expect('pathBytes' in entry).toBe(false);
+        });
+        result.slice(3).forEach((entry) => {
+          expect(Array.from(entry.pathBytes ?? [])).toEqual([0xff, 0x2e, 0x74, 0x78, 0x74]);
+        });
+        expect(result.map((e) => e.flags.stage)).toEqual([1, 2, 3, 1, 2, 3]);
+      });
+    });
+  });
 
   describe('Given a single conflict with varying id presence', () => {
     describe('When conflictsToIndexEntries called', () => {

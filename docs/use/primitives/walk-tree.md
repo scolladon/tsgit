@@ -44,6 +44,8 @@ through the replacement character, so two distinct entries can share one `path`.
 `pathBytes` is the authoritative value, and is what to compare or hash when a
 decision must be exact.
 
+A name that is not valid UTF-8 surfaces its U+FFFD view in `path`; ask for `pathBytes` to get the exact bytes.
+
 ## Example
 
 ```ts

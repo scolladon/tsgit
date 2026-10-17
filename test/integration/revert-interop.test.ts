@@ -224,6 +224,43 @@ describe.skipIf(!GIT_AVAILABLE)('revert interop', () => {
       await repo.dispose();
     });
   });
+
+  describe('Given a staged change on an untouched path, When repo.revert.run reverts with noCommit', () => {
+    it('Then tsgit matches git: the revert is staged next to the unrelated change', async () => {
+      // Arrange
+      runGit(['init', '-q', '-b', 'main', pair.peer]);
+      configGit(pair.peer);
+      writeWork(pair.peer, 'f.txt', 'v1\n');
+      git(pair.peer, 'add', 'f.txt');
+      gitCommit(pair.peer, 'base');
+      writeWork(pair.peer, 'f.txt', 'v2\n');
+      git(pair.peer, 'add', 'f.txt');
+      gitCommit(pair.peer, 'change f');
+      writeWork(pair.peer, 'other.txt', 'staged\n');
+      git(pair.peer, 'add', 'other.txt');
+      git(pair.peer, 'revert', '-n', 'HEAD');
+
+      const repo = await openRepository({ cwd: pair.ours });
+      await repo.init();
+      configGit(pair.ours);
+      await writeFile(path.join(pair.ours, 'f.txt'), 'v1\n');
+      await repo.add(['f.txt']);
+      await repo.commit({ message: 'base', author: AUTHOR, committer: AUTHOR });
+      await writeFile(path.join(pair.ours, 'f.txt'), 'v2\n');
+      await repo.add(['f.txt']);
+      await repo.commit({ message: 'change f', author: AUTHOR, committer: AUTHOR });
+      await writeFile(path.join(pair.ours, 'other.txt'), 'staged\n');
+      await repo.add(['other.txt']);
+
+      // Act
+      const result = await repo.revert.run({ commits: ['HEAD'], noCommit: true });
+
+      // Assert
+      expect(result.kind).toBe('no-commit');
+      expect(git(pair.ours, 'ls-files', '-s')).toBe(git(pair.peer, 'ls-files', '-s'));
+      await repo.dispose();
+    });
+  });
 });
 
 // ── git-CLI scenario builders ───────────────────────────────────────────────

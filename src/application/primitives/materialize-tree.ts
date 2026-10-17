@@ -27,6 +27,12 @@
  *  relative to the actual disk state.
  */
 import { type GitIndex, type IndexEntry, skipWorktreeEntry } from '../../domain/git-index/index.js';
+import {
+  escapedPathOf,
+  type IndexPath,
+  type IndexPathKey,
+  indexPathKey,
+} from '../../domain/git-index/index-path-key.js';
 import { pathComparatorFor } from '../../domain/git-index/index-writer.js';
 import {
   FILE_MODE,
@@ -51,12 +57,16 @@ import {
   isAttributesPath,
 } from './internal/read-gitattributes.js';
 import { requireWorkTree } from './internal/repo-state.js';
-import { walkTree } from './walk-tree.js';
+import { walkTreeWithLossyBytes } from './walk-tree.js';
 
 export interface MaterializeTreeOpts {
   readonly targetTree: ObjectId;
   readonly currentIndex: GitIndex;
   readonly force?: boolean;
+  /**
+   * Restrict the materialisation to these paths. A path selects the entry whose raw name it
+   * encodes; a well-formed path never selects an entry whose raw name is not UTF-8.
+   */
   readonly paths?: ReadonlySet<FilePath>;
   /**
    * When true, every target-tree path is written to the working tree
@@ -91,37 +101,38 @@ export interface MaterializeTreeResult {
 
 interface TargetEntry {
   readonly path: FilePath;
+  readonly pathBytes?: Uint8Array;
   readonly id: ObjectId;
   readonly mode: FileMode;
 }
 
 const collectTargetEntries = async (ctx: Context, treeId: ObjectId): Promise<TargetEntry[]> => {
   const collected: TargetEntry[] = [];
-  for await (const entry of walkTree(ctx, treeId)) {
+  for await (const entry of walkTreeWithLossyBytes(ctx, treeId)) {
     if (entry.mode === FILE_MODE.DIRECTORY) continue;
-    collected.push({ path: entry.path, id: entry.id, mode: entry.mode });
+    collected.push(entry);
   }
   return collected;
 };
 
-const filterByPaths = <T extends { readonly path: FilePath }>(
+const filterByPaths = <T extends IndexPath>(
   entries: ReadonlyArray<T>,
   paths: ReadonlySet<FilePath>,
-): T[] => entries.filter((e) => paths.has(e.path));
+): T[] => entries.filter((e) => paths.has(escapedPathOf(e)));
 
-const indexEntriesByPath = (index: GitIndex): Map<FilePath, IndexEntry> => {
-  const out = new Map<FilePath, IndexEntry>();
+const indexEntriesByPath = (index: GitIndex): Map<IndexPathKey, IndexEntry> => {
+  const out = new Map<IndexPathKey, IndexEntry>();
   for (const entry of index.entries) {
-    if (entry.flags.stage === 0) out.set(entry.path, entry);
+    if (entry.flags.stage === 0) out.set(indexPathKey(entry), entry);
   }
   return out;
 };
 
 const writtenEntriesByPath = (
   writtenEntries: ReadonlyArray<IndexEntry>,
-): Map<FilePath, IndexEntry> => {
-  const out = new Map<FilePath, IndexEntry>();
-  for (const entry of writtenEntries) out.set(entry.path, entry);
+): Map<IndexPathKey, IndexEntry> => {
+  const out = new Map<IndexPathKey, IndexEntry>();
+  for (const entry of writtenEntries) out.set(indexPathKey(entry), entry);
   return out;
 };
 
@@ -130,13 +141,18 @@ const preserveOutOfScope = (
   currentIndex: GitIndex,
   scopedPaths: ReadonlySet<FilePath> | undefined,
 ): IndexEntry[] =>
-  scopedPaths === undefined ? [] : currentIndex.entries.filter((e) => !scopedPaths.has(e.path));
+  scopedPaths === undefined
+    ? []
+    : currentIndex.entries.filter((e) => !scopedPaths.has(escapedPathOf(e)));
 
 const pickEntry = (
-  path: FilePath,
-  writtenByPath: ReadonlyMap<FilePath, IndexEntry>,
-  oldByPath: ReadonlyMap<FilePath, IndexEntry>,
-): IndexEntry | undefined => writtenByPath.get(path) ?? oldByPath.get(path);
+  entry: TargetEntry,
+  writtenByPath: ReadonlyMap<IndexPathKey, IndexEntry>,
+  oldByPath: ReadonlyMap<IndexPathKey, IndexEntry>,
+): IndexEntry | undefined => {
+  const key = indexPathKey(entry);
+  return writtenByPath.get(key) ?? oldByPath.get(key);
+};
 
 const mergeNewIndexEntries = (
   writtenEntries: ReadonlyArray<IndexEntry>,
@@ -149,7 +165,7 @@ const mergeNewIndexEntries = (
 
   const merged: IndexEntry[] = preserveOutOfScope(currentIndex, scopedPaths);
   for (const entry of target) {
-    const picked = pickEntry(entry.path, writtenByPath, oldByPath);
+    const picked = pickEntry(entry, writtenByPath, oldByPath);
     if (picked !== undefined) merged.push(picked);
   }
   merged.sort(pathComparatorFor(merged));
@@ -245,7 +261,7 @@ const checkoutDirection = (
   const kept = indexRuleEntries(
     // Stryker disable next-line MethodExpression: equivalent — `kept` feeds only attributeBlobLookup, whose attributeBlobMap re-applies isAttributesPath; the pre-filter only keeps indexRuleEntries off non-attribute entries.
     opts.currentIndex.entries.filter((entry) => isAttributesPath(entry.path)),
-  ).filter((entry) => !paths.has(entry.path));
+  ).filter((entry) => !paths.has(escapedPathOf(entry)));
   return { kind: 'worktree-first', index: attributeBlobLookup([...kept, ...plan.target]) };
 };
 

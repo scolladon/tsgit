@@ -21,6 +21,7 @@ import {
 } from '../../../../src/adapters/node/node-file-system.js';
 import { posixPolicy, windowsPolicy } from '../../../../src/adapters/node/path-policy.js';
 import type { SyncIoPolicy, TurnBudget } from '../../../../src/adapters/node/sync-io-budget.js';
+import { errorDataCode } from '../../../../src/domain/error-data-code.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import { dataFor } from '../../../fixtures/tsgit-error-data.js';
 import {
@@ -4081,6 +4082,192 @@ function fakeRemoveTreeFsOps(
   });
   return { fsOps, getMaxInFlight: () => maxInFlight };
 }
+
+describe('NodeFileSystem rmdir', () => {
+  const rootDir = '/root';
+  const codeOf = async (run: () => Promise<void>): Promise<unknown> => {
+    try {
+      await run();
+    } catch (err) {
+      return err instanceof TsgitError ? errorDataCode(err) : err;
+    }
+    return undefined;
+  };
+  const rmdirRejecting = (rejection: unknown): FsOperations =>
+    fakeFsOps({
+      realpath: vi.fn().mockImplementation(async (input: string) => input),
+      rmdir: vi.fn().mockRejectedValue(rejection),
+    });
+
+  describe('Given a platform reporting a non-empty directory as EEXIST', () => {
+    describe('When rmdir runs', () => {
+      it('Then it refuses DIRECTORY_NOT_EMPTY', async () => {
+        // Arrange
+        const sut = new NodeFileSystem(rootDir, {
+          pathPolicy: posixPolicy,
+          fsOps: rmdirRejecting(eexist()),
+        });
+
+        // Act
+        const result = await codeOf(() => sut.rmdir('/root/d'));
+
+        // Assert
+        expect(result).toBe('DIRECTORY_NOT_EMPTY');
+      });
+    });
+  });
+
+  describe('Given a removal rejecting with something that is not an errno error', () => {
+    describe('When rmdir runs', () => {
+      it('Then that rejection propagates untouched', async () => {
+        // Arrange
+        const failure = new Error('disk gone');
+        const sut = new NodeFileSystem(rootDir, {
+          pathPolicy: posixPolicy,
+          fsOps: rmdirRejecting(failure),
+        });
+
+        // Act
+        const result = await sut.rmdir('/root/d').catch((err: unknown) => err);
+
+        // Assert
+        expect(result).toBe(failure);
+      });
+    });
+  });
+
+  describe('Given a cached parent realpath and a removed directory', () => {
+    describe('When a later write resolves the same parent', () => {
+      it('Then the parent is realpathed afresh — the removal cleared the cache', async () => {
+        // Arrange
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const sut = new NodeFileSystem(rootDir, {
+          pathPolicy: posixPolicy,
+          fsOps: fakeFsOps({
+            realpath: realpathSpy as unknown as FsOperations['realpath'],
+            rmdir: vi.fn().mockResolvedValue(undefined),
+          }),
+        });
+        await sut.write('/root/sub/a.bin', new Uint8Array([1]));
+        await sut.rmdir('/root/sub');
+        const before = realpathSpy.mock.calls.filter(([arg]) => arg === '/root/sub').length;
+
+        // Act
+        await sut.write('/root/sub/b.bin', new Uint8Array([2]));
+
+        // Assert
+        const after = realpathSpy.mock.calls.filter(([arg]) => arg === '/root/sub').length;
+        expect(after).toBe(before + 1);
+      });
+    });
+  });
+
+  describe('Given posixPolicy and an empty directory', () => {
+    describe('When rmdir runs', () => {
+      it('Then it is one rmdir syscall: lstat is never called', async () => {
+        // Arrange
+        const lstatSpy = vi.fn().mockResolvedValue(entry('directory', 2));
+        const rmdirSpy = vi.fn().mockResolvedValue(undefined);
+        const sut = new NodeFileSystem(rootDir, {
+          pathPolicy: posixPolicy,
+          fsOps: fakeFsOps({
+            realpath: vi.fn().mockImplementation(async (input: string) => input),
+            lstat: lstatSpy,
+            rmdir: rmdirSpy,
+          }),
+        });
+
+        // Act
+        await sut.rmdir('/root/d');
+
+        // Assert
+        expect(rmdirSpy).toHaveBeenCalledTimes(1);
+        expect(rmdirSpy).toHaveBeenCalledWith('/root/d');
+        expect(lstatSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given windowsPolicy, whose own rmdir does not enforce the POSIX kind rules', () => {
+    // Windows' rmdir reports a regular file as ENOENT and removes a symlink
+    // to a directory, while a missing entry is ENOENT from both syscalls.
+    const windowsLike = (kind: Parameters<typeof entry>[0] | 'absent') => {
+      const rmdirSpy =
+        kind === 'directory' || kind === 'symlink'
+          ? vi.fn().mockResolvedValue(undefined)
+          : vi.fn().mockRejectedValue(enoent());
+      const lstat =
+        kind === 'absent'
+          ? vi.fn().mockRejectedValue(enoent())
+          : vi.fn().mockResolvedValue(entry(kind, 2));
+      const sut = new NodeFileSystem('C:\\Root', {
+        pathPolicy: windowsPolicy,
+        fsOps: fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          lstat,
+          rmdir: rmdirSpy,
+        }),
+      });
+      return { sut, rmdirSpy };
+    };
+
+    describe('When rmdir targets a regular file the platform reports as ENOENT', () => {
+      it('Then it refuses NOT_A_DIRECTORY without calling rmdir', async () => {
+        // Arrange
+        const { sut, rmdirSpy } = windowsLike('file');
+
+        // Act
+        const result = await codeOf(() => sut.rmdir('C:\\Root\\f.bin'));
+
+        // Assert
+        expect(result).toBe('NOT_A_DIRECTORY');
+        expect(rmdirSpy).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When rmdir targets a symlink to a directory the platform would remove', () => {
+      it('Then it refuses NOT_A_DIRECTORY without calling rmdir', async () => {
+        // Arrange
+        const { sut, rmdirSpy } = windowsLike('symlink');
+
+        // Act
+        const result = await codeOf(() => sut.rmdir('C:\\Root\\link'));
+
+        // Assert
+        expect(result).toBe('NOT_A_DIRECTORY');
+        expect(rmdirSpy).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When rmdir targets an empty directory', () => {
+      it('Then it delegates to rmdir once', async () => {
+        // Arrange
+        const { sut, rmdirSpy } = windowsLike('directory');
+
+        // Act
+        await sut.rmdir('C:\\Root\\d');
+
+        // Assert
+        expect(rmdirSpy).toHaveBeenCalledTimes(1);
+        expect(rmdirSpy).toHaveBeenCalledWith('C:\\Root\\d');
+      });
+    });
+
+    describe('When rmdir targets an absent entry', () => {
+      it('Then rmdir reports it as FILE_NOT_FOUND', async () => {
+        // Arrange
+        const { sut, rmdirSpy } = windowsLike('absent');
+
+        // Act
+        const result = await codeOf(() => sut.rmdir('C:\\Root\\gone'));
+
+        // Assert
+        expect(result).toBe('FILE_NOT_FOUND');
+        expect(rmdirSpy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+});
 
 describe('NodeFileSystem — options object (DI)', () => {
   describe('Given no `rootsArePreResolved` option', () => {

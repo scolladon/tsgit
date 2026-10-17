@@ -6,6 +6,7 @@
  */
 import { octopusMergeFailed } from '../../../domain/commands/error.js';
 import type { FlatTreeEntry } from '../../../domain/diff/flat-tree.js';
+import { sortByPath } from '../../../domain/diff/path-compare.js';
 import {
   MAX_CONFLICT_OUTPUT_BYTES,
   type MergeConflict,
@@ -16,7 +17,7 @@ import { type OctopusSide, resolveOctopusEntry } from '../../../domain/merge/oct
 import { unexpectedObjectType } from '../../../domain/objects/error.js';
 import type { FilePath, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import { flattenTree } from '../../primitives/flatten-tree.js';
+import { flattenEscapedTree } from '../../primitives/flatten-tree.js';
 import { readConflictStyle } from '../../primitives/internal/merge-rename-config.js';
 import { stage0Entry } from '../../primitives/internal/synthetic-index-entry.js';
 import { mergeBasesOf } from '../../primitives/merge-base.js';
@@ -64,7 +65,7 @@ const EMPTY = new Uint8Array(0);
 const flatOfCommit = async (ctx: Context, id: ObjectId): Promise<FlatEntries> => {
   const object = await readObject(ctx, id);
   if (object.type !== 'commit') throw unexpectedObjectType('commit', object.type, id);
-  return (await flattenTree(ctx, object.data.tree)).entries;
+  return (await flattenEscapedTree(ctx, object.data.tree)).entries;
 };
 
 const blobBytes = async (ctx: Context, side: OctopusSide | undefined): Promise<Uint8Array> =>
@@ -136,7 +137,7 @@ const stageSides = (
 const unionPaths = (maps: ReadonlyArray<FlatEntries>): FilePath[] => {
   const paths = new Set<FilePath>();
   for (const map of maps) for (const path of map.keys()) paths.add(path);
-  return [...paths].sort();
+  return sortByPath([...paths], (path) => path);
 };
 
 type PathOutcome =

@@ -11,7 +11,6 @@ import {
   compareEntryPath,
   inOrder,
   pathComparatorFor,
-  pathStringComparatorFor,
   serializeIndex,
 } from '../../../../src/domain/git-index/index-writer.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
@@ -113,72 +112,6 @@ describe('compareEntryPath UTF-8 byte order', () => {
 
         // Assert
         expect(result).toBeLessThan(0);
-      });
-    });
-  });
-});
-
-describe('pathStringComparatorFor', () => {
-  describe('Given paths holding a BMP character above U+E000 and an astral character', () => {
-    describe('When the picked comparator sorts them', () => {
-      it('Then they come out in UTF-8 byte order', () => {
-        // Arrange
-        const paths = ['\u{1F600}.txt', '\uFFFD.txt'];
-
-        // Act
-        const sut = pathStringComparatorFor;
-        const result = [...paths].sort(sut(paths));
-
-        // Assert
-        expect(result).toEqual(['\uFFFD.txt', '\u{1F600}.txt']);
-      });
-    });
-  });
-
-  describe('Given two equal ASCII paths', () => {
-    describe('When the picked comparator compares them', () => {
-      it('Then it reports them equal', () => {
-        // Arrange
-        const paths = ['a/c', 'a/c'];
-
-        // Act
-        const sut = pathStringComparatorFor;
-        const result = sut(paths)('a/c', 'a/c');
-
-        // Assert
-        expect(result).toBe(0);
-      });
-    });
-  });
-
-  describe('Given two ASCII paths in descending order', () => {
-    describe('When the picked comparator compares them', () => {
-      it('Then the later path compares greater', () => {
-        // Arrange
-        const paths = ['b', 'a'];
-
-        // Act
-        const sut = pathStringComparatorFor;
-        const result = sut(paths)('b', 'a');
-
-        // Assert
-        expect(result).toBeGreaterThan(0);
-      });
-    });
-  });
-
-  describe('Given ASCII-only paths', () => {
-    describe('When the picked comparator sorts them', () => {
-      it('Then they come out in byte order', () => {
-        // Arrange
-        const paths = ['b', 'a/c', 'a'];
-
-        // Act
-        const sut = pathStringComparatorFor;
-        const result = [...paths].sort(sut(paths));
-
-        // Assert
-        expect(result).toEqual(['a', 'a/c', 'b']);
       });
     });
   });
@@ -816,21 +749,6 @@ describe('mixed plain and high code-unit paths', () => {
   const mixed = ['a', '\u{1F600}', '\uFFFD'];
   const utf8Order = ['a', '\uFFFD', '\u{1F600}'];
 
-  describe('Given paths where only some hold a code unit at or above U+D800', () => {
-    describe('When the string comparator sorts them', () => {
-      it('Then they come out in UTF-8 byte order', () => {
-        // Arrange
-        const sut = pathStringComparatorFor;
-
-        // Act
-        const result = [...mixed].sort(sut(mixed));
-
-        // Assert
-        expect(result).toEqual(utf8Order);
-      });
-    });
-  });
-
   describe('Given entries where only some hold a code unit at or above U+D800', () => {
     describe('When the entry comparator sorts them', () => {
       it('Then they come out in UTF-8 byte order', () => {
@@ -843,6 +761,122 @@ describe('mixed plain and high code-unit paths', () => {
 
         // Assert
         expect(result).toEqual(utf8Order);
+      });
+    });
+  });
+});
+
+function makeRawEntry(bytes: number[]): IndexEntry {
+  const raw = Uint8Array.from(bytes);
+  return {
+    ...makeEntry(new TextDecoder().decode(raw)),
+    pathBytes: raw,
+  };
+}
+
+const RAW_FF_TXT = [0xff, 0x2e, 0x74, 0x78, 0x74];
+const FIRST_ENTRY_OFFSET = 12;
+const V2_ENTRY_HEADER = 62;
+const NAME_LENGTH_MASK = 0xfff;
+
+describe('serializeIndex raw path bytes', () => {
+  describe('Given an entry whose raw path bytes are not valid UTF-8', () => {
+    describe('When serializeIndex writes it', () => {
+      it('Then the raw bytes are written verbatim with their own length', () => {
+        // Arrange
+        const index: GitIndex = {
+          version: 2,
+          entries: [makeRawEntry(RAW_FF_TXT)],
+          extensions: [],
+          trailerSha: CHECKSUM,
+        };
+
+        // Act
+        const sut = serializeIndex;
+        const result = sut(index, 20);
+
+        // Assert
+        const flags = new DataView(result.buffer).getUint16(FIRST_ENTRY_OFFSET + 60);
+        expect(flags & NAME_LENGTH_MASK).toBe(5);
+        expect(
+          bytesToHex(
+            result.subarray(
+              FIRST_ENTRY_OFFSET + V2_ENTRY_HEADER,
+              FIRST_ENTRY_OFFSET + V2_ENTRY_HEADER + 5,
+            ),
+          ),
+        ).toBe('ff2e747874');
+      });
+    });
+  });
+
+  describe('Given raw, plain and invalid-continuation entries', () => {
+    describe('When serializeIndex orders them', () => {
+      it('Then they are written in raw byte order', () => {
+        // Arrange
+        const index: GitIndex = {
+          version: 2,
+          entries: [makeRawEntry(RAW_FF_TXT), makeEntry('z'), makeRawEntry([0x62, 0x2f, 0xc3])],
+          extensions: [],
+          trailerSha: CHECKSUM,
+        };
+
+        // Act
+        const sut = parseIndex;
+        const result = sut(withChecksum(serializeIndex(index, 20)), 20);
+
+        // Assert
+        expect(
+          result.entries.map((e) => bytesToHex(e.pathBytes ?? new TextEncoder().encode(e.path))),
+        ).toEqual(['622fc3', '7a', 'ff2e747874']);
+      });
+    });
+  });
+});
+
+describe('compareEntryPath with raw path bytes', () => {
+  describe.each([
+    { label: 'raw c3 against e-acute', left: [0xc3], right: [0xc3, 0xa9], sign: -1 },
+    {
+      label: 'raw ff against an astral character',
+      left: [0xff],
+      right: [0xf0, 0x9f, 0x98, 0x80],
+      sign: 1,
+    },
+    { label: 'raw ff against literal U+FFFD', left: [0xff], right: [0xef, 0xbf, 0xbd], sign: 1 },
+    { label: 'raw ff against raw fe', left: [0xff], right: [0xfe], sign: 1 },
+  ])('Given $label', ({ left, right, sign }) => {
+    describe('When compared', () => {
+      it('Then the sign follows the bytes', () => {
+        // Arrange
+        const a = makeRawEntry(left);
+        const b = { ...makeEntry(new TextDecoder().decode(Uint8Array.from(right))) };
+        const bBytes = right.length === 1 ? makeRawEntry(right) : b;
+
+        // Act
+        const sut = compareEntryPath;
+        const result = sut(a, bBytes);
+
+        // Assert
+        expect(Math.sign(result)).toBe(sign);
+      });
+    });
+  });
+});
+
+describe('pathComparatorFor with a lossy entry', () => {
+  describe('Given an index holding only a lossy entry', () => {
+    describe('When the comparator is picked', () => {
+      it('Then it is the byte-aware comparator', () => {
+        // Arrange
+        const entries = [makeRawEntry(RAW_FF_TXT)];
+
+        // Act
+        const sut = pathComparatorFor;
+        const result = sut(entries);
+
+        // Assert
+        expect(result).toBe(compareEntryPath);
       });
     });
   });

@@ -219,4 +219,44 @@ describe('computeChangeset', () => {
       });
     });
   });
+
+  describe('Given an index holding raw \xff.txt and a target holding literal U+FFFD .txt', () => {
+    describe('When computeChangeset runs', () => {
+      it('Then the raw path is deleted with its bytes and the literal path is added without bytes', () => {
+        // Arrange
+        const raw = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+        const lossy = { ...makeEntry('\uFFFD.txt', OID_A), pathBytes: raw };
+        const index = makeIndex([lossy]);
+        const target = [makeTreeEntry('\uFFFD.txt', OID_B)];
+
+        // Act
+        const result = computeChangeset(index, target);
+
+        // Assert
+        expect(result.entries).toHaveLength(2);
+        const deleted = result.entries.find((e) => e.kind === 'delete');
+        const added = result.entries.find((e) => e.kind === 'add');
+        expect(deleted?.pathBytes).toStrictEqual(raw);
+        expect(added !== undefined && 'pathBytes' in added).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an empty index and a target holding raw \xff.txt', () => {
+    describe('When computeChangeset runs', () => {
+      it('Then the add entry carries the raw bytes', () => {
+        // Arrange
+        const raw = Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74);
+        const target = [{ ...makeTreeEntry('\uFFFD.txt', OID_A), pathBytes: raw }];
+
+        // Act
+        const result = computeChangeset(makeIndex([]), target);
+
+        // Assert
+        expect(result.entries).toHaveLength(1);
+        expect(result.entries[0]?.kind).toBe('add');
+        expect(result.entries[0]?.pathBytes).toStrictEqual(raw);
+      });
+    });
+  });
 });

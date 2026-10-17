@@ -21,16 +21,22 @@ import {
 import type { FlatTreeEntry } from '../../domain/diff/flat-tree.js';
 import { TsgitError } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
+import type { IndexPathKey } from '../../domain/git-index/index-path-key.js';
+import { escapedPathOf, indexPathKey, isLossy } from '../../domain/git-index/index-path-key.js';
 import { emptyPathspec } from '../../domain/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
-import { matchesPathspec } from '../../domain/pathspec/index.js';
+import { matchesIndexPath } from '../../domain/pathspec/matching-path.js';
 import type { Context } from '../../ports/context.js';
 import {
   compareWorkingTreeEntry,
   isWorkingTreeModified,
 } from '../primitives/compare-working-tree-entry.js';
+import {
+  pruneEmptiedDirectories,
+  survivingDirectoriesOf,
+} from '../primitives/internal/prune-emptied-directories.js';
 import { buildCheckinAttributeProvider } from '../primitives/internal/read-gitattributes.js';
-import { readHeadTree } from '../primitives/read-head-tree.js';
+import { readHeadTreeEscaped } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
@@ -69,7 +75,7 @@ export const rm = async (
   opts: RmOptions = {},
 ): Promise<RmResult> => {
   await assertOperationalRepository(ctx);
-  requireWorkTree(ctx, 'rm');
+  const workDir = requireWorkTree(ctx, 'rm');
   await assertNoPendingOperation(ctx);
   if (paths.length === 0) throw emptyPathspec();
   const { matcher, literalSpellings } = resolvePathspec(paths);
@@ -84,13 +90,15 @@ export const rm = async (
       }
       throw err;
     });
-    const byPath = new Map<FilePath, IndexEntry>();
-    for (const entry of index.entries) byPath.set(entry.path, entry);
+    const byPath = new Map<IndexPathKey, IndexEntry>();
+    for (const entry of index.entries) byPath.set(indexPathKey(entry), entry);
     const removed: FilePath[] = [];
+    const removedKeys: IndexPathKey[] = [];
     const removedEntries: IndexEntry[] = [];
-    for (const [path, entry] of byPath) {
-      if (matchesPathspec(matcher, path)) {
-        removed.push(path);
+    for (const [key, entry] of byPath) {
+      if (matchesIndexPath(matcher, entry)) {
+        removed.push(entry.path);
+        removedKeys.push(key);
         removedEntries.push(entry);
       }
     }
@@ -102,15 +110,22 @@ export const rm = async (
     if (opts.force !== true) {
       await enforceSafetyValve(ctx, removedEntries, opts.cached === true, index.indexMtime);
     }
-    for (const path of removed) byPath.delete(path);
+    for (const key of removedKeys) byPath.delete(key);
     if (!opts.cached) {
-      for (const path of removed) {
+      const workingTreeEntries = removedEntries.filter((entry) => !isLossy(entry));
+      for (const { path } of workingTreeEntries) {
         // FILE_NOT_FOUND is the only tolerable error: working file already gone.
         await removeFile(ctx, path).catch((err: unknown) => {
           if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return;
           throw err;
         });
       }
+      await pruneEmptiedDirectories(
+        ctx,
+        workDir,
+        workingTreeEntries.map((entry) => entry.path),
+        survivingDirectoriesOf([]),
+      );
     }
     await lock.commit(Array.from(byPath.values()), 'update');
     return { removed };
@@ -198,7 +213,7 @@ const enforceSafetyValve = async (
 };
 
 const isStaged = (head: ReadonlyMap<FilePath, FlatTreeEntry>, entry: IndexEntry): boolean => {
-  const headEntry = head.get(entry.path);
+  const headEntry = head.get(escapedPathOf(entry));
   // Absent from HEAD (newly added / never committed) counts as staged, as does a
   // blob-id or mode difference.
   return headEntry === undefined || headEntry.id !== entry.id || headEntry.mode !== entry.mode;
@@ -206,4 +221,4 @@ const isStaged = (head: ReadonlyMap<FilePath, FlatTreeEntry>, entry: IndexEntry)
 
 // An unborn HEAD (no commits yet) has no tree — every entry is then staged.
 const headTreeEntries = async (ctx: Context): Promise<ReadonlyMap<FilePath, FlatTreeEntry>> =>
-  (await readHeadTree(ctx))?.entries ?? new Map();
+  (await readHeadTreeEscaped(ctx))?.entries ?? new Map();

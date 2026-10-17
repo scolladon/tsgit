@@ -6,6 +6,7 @@
  * unknown.
  */
 import { type IndexEntry, STAGE0_FLAGS, type StatData } from '../../../domain/git-index/index.js';
+import { indexPathOfEscaped } from '../../../domain/git-index/index-path-key.js';
 import type { FileMode, FilePath, ObjectId } from '../../../domain/objects/index.js';
 
 export const zeroStat = (mode: FileMode): StatData => ({
@@ -25,5 +26,5 @@ export const stage0Entry = (path: FilePath, id: ObjectId, mode: FileMode): Index
   ...zeroStat(mode),
   id,
   flags: STAGE0_FLAGS,
-  path,
+  ...indexPathOfEscaped(path),
 });

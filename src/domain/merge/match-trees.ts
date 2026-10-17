@@ -2,6 +2,8 @@
 // `shift_tree` and `shift_tree_by`. The domain only decides the shift; the
 // caller reads the trees (through `TreeLister`) and applies it, so no object
 // is read or written here. An absent tree is git's empty tree.
+
+import { decodeEscapingInvalid, REPLACEMENT_CHARACTER } from '../objects/encoding.js';
 import { FILE_MODE, type FileMode, type ObjectId, type TreeEntry } from '../objects/index.js';
 import { treeEntryCompare } from '../objects/tree.js';
 
@@ -18,6 +20,10 @@ export type TreeShift =
 
 const NO_SHIFT: TreeShift = { kind: 'none' };
 const DEFAULT_DEPTH_LIMIT = 2;
+
+/** The merge engine's key for a name: git compares raw names, so invalid bytes stay distinct. */
+const escapedNameOf = (entry: TreeEntry): string =>
+  entry.name.includes(REPLACEMENT_CHARACTER) ? decodeEscapingInvalid(entry.nameBytes) : entry.name;
 
 const isDir = (mode: FileMode): boolean => mode === FILE_MODE.DIRECTORY;
 const isLink = (mode: FileMode): boolean => mode === FILE_MODE.SYMLINK;
@@ -78,11 +84,11 @@ async function matchTrees(
     if (!isDir(entry.mode)) continue;
     const score = await scoreTrees(list, entry.id, two);
     if (scope.best.score < score) {
-      scope.best.path = `${scope.base}${entry.name}`;
+      scope.best.path = `${scope.base}${escapedNameOf(entry)}`;
       scope.best.score = score;
     }
     if (scope.limit === 0) continue;
-    const base = `${scope.base}${entry.name}/`;
+    const base = `${scope.base}${escapedNameOf(entry)}/`;
     await matchTrees(list, entry.id, two, { best: scope.best, base, limit: scope.limit - 1 });
   }
 }
@@ -112,7 +118,7 @@ async function subtreeAt(
 ): Promise<ObjectId | undefined> {
   let current = root;
   for (const name of path.split('/').filter((part) => part !== '')) {
-    const entry = (await list(current)).find((candidate) => candidate.name === name);
+    const entry = (await list(current)).find((candidate) => escapedNameOf(candidate) === name);
     if (entry === undefined || !isDir(entry.mode)) return undefined;
     current = entry.id;
   }

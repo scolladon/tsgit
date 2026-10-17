@@ -8,13 +8,24 @@ import { __resetConfigCacheForTests } from '../../../../src/application/primitiv
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
+import { walkTree } from '../../../../src/application/primitives/walk-tree.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import * as writeTreeMod from '../../../../src/application/primitives/write-tree.js';
+import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
+import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index.js';
 import { TsgitError } from '../../../../src/domain/index.js';
-import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import { bytesToHex } from '../../../../src/domain/objects/encoding.js';
+import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
+import type {
+  AuthorIdentity,
+  FilePath,
+  ObjectId,
+  RefName,
+} from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { HookResult, HookRunner } from '../../../../src/ports/hook-runner.js';
+import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { gpgSignerStub, stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
 import { asBareContext } from './fixtures.js';
 
@@ -48,6 +59,41 @@ const seed = async (workingTree: Readonly<Record<string, string>> = { 'a.txt': '
   }
   await add(ctx, Object.keys(workingTree));
   return ctx;
+};
+
+const indexEntryOf = (path: string, id: ObjectId, pathBytes?: Uint8Array): IndexEntry => ({
+  ctimeSeconds: 0,
+  ctimeNanoseconds: 0,
+  mtimeSeconds: 0,
+  mtimeNanoseconds: 0,
+  dev: 0,
+  ino: 0,
+  mode: FILE_MODE.REGULAR,
+  uid: 0,
+  gid: 0,
+  fileSize: 0,
+  id,
+  flags: { ...STAGE0_FLAGS },
+  path: path as FilePath,
+  ...(pathBytes === undefined ? {} : { pathBytes }),
+});
+
+const committedLeafPathHex = async (ctx: Context, commitId: ObjectId): Promise<string[]> => {
+  const head = await readObject(ctx, commitId);
+  if (head.type !== 'commit') throw new Error('expected a commit');
+  const out: string[] = [];
+  for await (const entry of walkTree(ctx, head.data.tree, { recursive: true, pathBytes: true })) {
+    if (entry.mode !== FILE_MODE.DIRECTORY) out.push(bytesToHex(entry.pathBytes as Uint8Array));
+  }
+  return out;
+};
+
+const collectRootNames = async (ctx: Context, treeId: ObjectId): Promise<string[]> => {
+  const out: string[] = [];
+  for await (const entry of walkTree(ctx, treeId, { recursive: false, pathBytes: true })) {
+    out.push(bytesToHex(entry.pathBytes as Uint8Array));
+  }
+  return out;
 };
 
 const expectError = async (fn: () => Promise<unknown>, code: string): Promise<TsgitError> => {
@@ -518,6 +564,163 @@ describe('commit', () => {
         // would make ObjectId.from throw INVALID_OBJECT_ID instead of returning.
         expect(result.id).toMatch(/^[0-9a-f]{40}$/);
         expect(result.parents).toEqual([blobId]);
+      });
+    });
+  });
+});
+
+describe('commit — raw index path bytes', () => {
+  describe('Given an index holding entries whose path bytes are not valid UTF-8', () => {
+    describe('When commit', () => {
+      it('Then every tree leaf is named by its raw bytes', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const id = await writeObject(ctx, {
+          type: 'blob',
+          content: new TextEncoder().encode('x'),
+          id: '' as ObjectId,
+        });
+        const index: GitIndex = {
+          version: 2,
+          entries: [
+            indexEntryOf('d/y', id),
+            indexEntryOf('d/\uFFFD', id, Uint8Array.of(0x64, 0x2f, 0xff)),
+            indexEntryOf('\uFFFD.txt', id),
+            indexEntryOf('\uFFFD.txt', id, Uint8Array.of(0xff, 0x2e, 0x74, 0x78, 0x74)),
+          ],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        };
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync(index, ctx),
+        );
+        const sut = commit;
+
+        // Act
+        const result = await sut(ctx, { message: 'raw', author });
+
+        // Assert
+        expect((await committedLeafPathHex(ctx, result.id)).sort()).toEqual([
+          '642f79',
+          '642fff',
+          'efbfbd2e747874',
+          'ff2e747874',
+        ]);
+      });
+    });
+  });
+
+  describe('Given an index holding two children of a directory whose name is not valid UTF-8', () => {
+    describe('When commit', () => {
+      it('Then one tree entry holds both children', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const id = await writeObject(ctx, {
+          type: 'blob',
+          content: new TextEncoder().encode('x'),
+          id: '' as ObjectId,
+        });
+        const index: GitIndex = {
+          version: 2,
+          entries: [
+            indexEntryOf('\uFFFD/x', id, Uint8Array.of(0xff, 0x2f, 0x78)),
+            indexEntryOf('\uFFFD/y', id, Uint8Array.of(0xff, 0x2f, 0x79)),
+          ],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        };
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync(index, ctx),
+        );
+        const sut = commit;
+
+        // Act
+        const result = await sut(ctx, { message: 'lossy dir', author });
+
+        // Assert
+        const head = await readObject(ctx, result.id);
+        if (head.type !== 'commit') throw new Error('expected a commit');
+        const rootEntries = await collectRootNames(ctx, head.data.tree);
+        expect(rootEntries).toEqual(['ff']);
+        expect((await committedLeafPathHex(ctx, result.id)).sort()).toEqual(['ff2f78', 'ff2f79']);
+      });
+    });
+  });
+
+  describe('Given an index holding distinct lossy siblings, as files and as directories', () => {
+    describe('When commit', () => {
+      it('Then every sibling reaches the tree under its own raw name', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const id = await writeObject(ctx, {
+          type: 'blob',
+          content: new TextEncoder().encode('x'),
+          id: '' as ObjectId,
+        });
+        const index: GitIndex = {
+          version: 2,
+          entries: [
+            indexEntryOf('d/\uFFFD', id, Uint8Array.of(0x64, 0x2f, 0xff)),
+            indexEntryOf('d/\uFFFD', id, Uint8Array.of(0x64, 0x2f, 0xfe)),
+            indexEntryOf('\uFFFD/x', id, Uint8Array.of(0xff, 0x2f, 0x78)),
+            indexEntryOf('\uFFFD/y', id, Uint8Array.of(0xfe, 0x2f, 0x79)),
+          ],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        };
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync(index, ctx),
+        );
+        const sut = commit;
+
+        // Act
+        const result = await sut(ctx, { message: 'lossy siblings', author });
+
+        // Assert
+        expect((await committedLeafPathHex(ctx, result.id)).sort()).toEqual([
+          '642ffe',
+          '642fff',
+          'fe2f79',
+          'ff2f78',
+        ]);
+      });
+    });
+  });
+
+  describe('Given an index holding a BOM-prefixed entry', () => {
+    describe('When commit', () => {
+      it('Then the BOM bytes name the tree directory', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        const id = await writeObject(ctx, {
+          type: 'blob',
+          content: new TextEncoder().encode('x'),
+          id: '' as ObjectId,
+        });
+        const index: GitIndex = {
+          version: 2,
+          entries: [indexEntryOf('\uFEFFa/x', id)],
+          extensions: [],
+          trailerSha: new Uint8Array(0),
+        };
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/index`,
+          await serializeIndexFixtureAsync(index, ctx),
+        );
+        const sut = commit;
+
+        // Act
+        const result = await sut(ctx, { message: 'bom', author });
+
+        // Assert
+        expect(await committedLeafPathHex(ctx, result.id)).toEqual(['efbbbf612f78']);
       });
     });
   });

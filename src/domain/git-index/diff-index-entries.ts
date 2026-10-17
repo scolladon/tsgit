@@ -1,9 +1,9 @@
-import type { FilePath } from '../objects/index.js';
 import type { IndexEntry } from './index-entry.js';
+import { type IndexPath, indexPathKey } from './index-path-key.js';
 import { compareEntryPath, inOrder, pathComparatorFor } from './index-writer.js';
 
 export interface IndexChange {
-  readonly changedPaths: ReadonlyArray<FilePath>;
+  readonly changedPaths: ReadonlyArray<IndexPath>;
   readonly trackedSetChanged: boolean;
   readonly resolvedUnmerged: boolean;
 }
@@ -23,14 +23,24 @@ const comparatorForBoth = (
 
 const differs = (a: IndexEntry, b: IndexEntry): boolean => a.id !== b.id || a.mode !== b.mode;
 
+// The path alone: duplicate-path entries differing in other fields must not
+// make the change depend on which one was seen first.
+const indexPathOf = (entry: IndexEntry): IndexPath =>
+  entry.pathBytes === undefined
+    ? { path: entry.path }
+    : { path: entry.path, pathBytes: entry.pathBytes };
+
 const collectChangedPaths = (
   before: ReadonlyArray<IndexEntry>,
   after: ReadonlyArray<IndexEntry>,
   comparePath: PathComparator,
-): ReadonlyArray<FilePath> => {
-  const changed: FilePath[] = [];
+): ReadonlyArray<IndexPath> => {
+  const changed: IndexPath[] = [];
   const mark = (entry: IndexEntry): void => {
-    if (changed[changed.length - 1] !== entry.path) changed.push(entry.path);
+    const last = changed[changed.length - 1];
+    if (last === undefined || indexPathKey(last) !== indexPathKey(entry)) {
+      changed.push(indexPathOf(entry));
+    }
   };
   let i = 0;
   let j = 0;

@@ -118,6 +118,46 @@ describe('writeConflictMarkers — positive', () => {
   });
 });
 
+describe('writeConflictMarkers — escaped labels', () => {
+  describe('Given a theirs label carrying an escaped raw byte', () => {
+    describe('When writeConflictMarkers called', () => {
+      it('Then the marker line holds the raw byte ff', () => {
+        // Arrange
+        const expected = new Uint8Array([
+          ...enc('<<<<<<< HEAD\na\n=======\nb\n>>>>>>> side:'),
+          0xff,
+          ...enc('.txt\n'),
+        ]);
+
+        // Act
+        const result = writeConflictMarkers([enc('a\n')], [enc('b\n')], {
+          labels: { ours: 'HEAD', theirs: 'side:\uDCFF.txt' },
+        });
+
+        // Assert
+        expect(bytesEqual(result, expected)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a well-formed non-ASCII label', () => {
+    describe('When writeConflictMarkers called', () => {
+      it('Then the label is plain UTF-8', () => {
+        // Arrange
+        const expected = enc('<<<<<<< HEAD\na\n=======\nb\n>>>>>>> é\n');
+
+        // Act
+        const result = writeConflictMarkers([enc('a\n')], [enc('b\n')], {
+          labels: { ours: 'HEAD', theirs: 'é' },
+        });
+
+        // Assert
+        expect(bytesEqual(result, expected)).toBe(true);
+      });
+    });
+  });
+});
+
 describe('writeConflictMarkers — marker size', () => {
   describe('Given a markerSize option', () => {
     describe('When writeConflictMarkers called', () => {

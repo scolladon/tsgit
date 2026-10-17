@@ -100,6 +100,7 @@ import {
   writeAutostash,
   writeRebaseStop,
 } from './internal/rebase-state.js';
+import { toConflictList } from './internal/replay-sequence.js';
 import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
 import { rejectUnmergedIndex } from './internal/unmerged-index.js';
 import { applyAutostash, createAutostash } from './stash.js';
@@ -505,7 +506,7 @@ const stopOnConflict = async (
   return {
     kind: 'conflict',
     commit: line.oid,
-    conflicts: conflicts.map((c) => ({ path: c.path, type: c.type })),
+    conflicts: toConflictList(conflicts),
     remaining: rc.todo.length - (at.index + 1),
   };
 };
@@ -1259,7 +1260,7 @@ const conflictResult = (
 ): RebaseResult => ({
   kind: 'conflict',
   commit: source,
-  conflicts: conflicts.map((c) => ({ path: c.path, type: c.type })),
+  conflicts: toConflictList(conflicts),
   remaining,
 });
 

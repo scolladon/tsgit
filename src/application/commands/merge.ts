@@ -6,17 +6,27 @@ import {
   unrelatedHistories,
   workingTreeDirty,
 } from '../../domain/commands/error.js';
-import type { FlatTree, FlatTreeEntry } from '../../domain/diff/flat-tree.js';
-import { conflictsToIndexEntries, sortedRecordedPaths } from '../../domain/diff/index.js';
+import type { EscapedFlatTree, FlatTreeEntry } from '../../domain/diff/flat-tree.js';
+import {
+  comparePaths,
+  conflictsToIndexEntries,
+  sortedRecordedPaths,
+} from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import {
+  type GitIndex,
   type IndexEntry,
   STAGE0_FLAGS,
   type StatData,
   skipWorktreeEntry,
 } from '../../domain/git-index/index.js';
-import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
+import {
+  escapedPathOf,
+  indexPathOfEscaped,
+  viewOfEscaped,
+} from '../../domain/git-index/index-path-key.js';
+import { validateTreePath } from '../../domain/git-index/path-validator.js';
 import { unsupportedOperation } from '../../domain/index.js';
 import {
   type ConflictType,
@@ -25,7 +35,7 @@ import {
   type MergeLabels,
   type MergeOutcome,
   mergeLabels,
-  mergeTrees,
+  recordsOwnPaths,
   type TreeMergeResult,
 } from '../../domain/merge/index.js';
 import type { MergeCommandLine } from '../../domain/merge/merge-command-line.js';
@@ -34,8 +44,10 @@ import {
   type OrtStrategyOptions,
   parseOrtStrategyOptions,
 } from '../../domain/merge/strategy-options.js';
+import { mergeEscapedTrees } from '../../domain/merge/three-way-tree.js';
 import { trivialMerge } from '../../domain/merge/trivial-merge.js';
 import type { CommitData, ExtraHeader } from '../../domain/objects/commit.js';
+import { encodeEscaped, hasEscapedBytes, wellFormed } from '../../domain/objects/encoding.js';
 import { treeDepthExceeded, unexpectedObjectType } from '../../domain/objects/error.js';
 import {
   type AuthorIdentity,
@@ -59,6 +71,8 @@ import {
   type DeletedOutcome,
   isDeleted,
   removeChangedOutcome,
+  removeDisplacedFile,
+  survivingPathsOf,
 } from '../primitives/apply-merge-to-worktree.js';
 import {
   buildBlobUnchanged,
@@ -69,23 +83,39 @@ import {
 import { readConfig } from '../primitives/config-read.js';
 import { createCommitWithStoredHeaders } from '../primitives/create-commit.js';
 import { detectMergeRenames } from '../primitives/detect-merge-renames.js';
-import { changedPaths, findWouldOverwrite } from '../primitives/find-would-overwrite.js';
-import { flattenTree } from '../primitives/flatten-tree.js';
+import {
+  changedPaths,
+  findTrackedBeyondSymlink,
+  findWouldOverwrite,
+} from '../primitives/find-would-overwrite.js';
+import { flattenEscapedTree } from '../primitives/flatten-tree.js';
 import { writeAutoMerge } from '../primitives/internal/auto-merge-ref.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
+import {
+  hasLinkMode,
+  runLinkFirstWave,
+  type WaveWrite,
+} from '../primitives/internal/link-first-wave.js';
 import {
   readMergeRenormalize,
   readUiDiffAlgorithm,
 } from '../primitives/internal/merge-rename-config.js';
 import { mergedBlobEntries } from '../primitives/internal/merged-blob-entries.js';
 import { peelChain, tagHop } from '../primitives/internal/peel-chain.js';
+import {
+  type SurvivingDirectories,
+  survivingDirectoriesOf,
+} from '../primitives/internal/prune-emptied-directories.js';
 import { renormalizeAttributeLookup } from '../primitives/internal/renormalize-attributes.js';
 import { resolveMaxTreeDepth } from '../primitives/internal/resolve-max-tree-depth.js';
 import {
   createLeadingPathScanner,
   type LeadingPathScanner,
 } from '../primitives/internal/symlinked-leading-path.js';
-import { validateMergeWritePaths } from '../primitives/internal/validate-merge-write-paths.js';
+import {
+  validateConflictWritePaths,
+  validateMergeWritePaths,
+} from '../primitives/internal/validate-merge-write-paths.js';
 import type { WorkingTreeWriter } from '../primitives/internal/write-converted-entry.js';
 import { writeDistinctTypesSides } from '../primitives/internal/write-distinct-types-sides.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
@@ -141,6 +171,7 @@ import {
   writeFlatTree,
 } from './internal/octopus-merge.js';
 import { expandPriorCheckout } from './internal/prior-checkout.js';
+import { toConflictList } from './internal/replay-sequence.js';
 import {
   assertNoPendingOperation,
   assertOperationalRepositorySettingsFirst,
@@ -399,8 +430,10 @@ const settleMessage = async (
   const rev = remotes.map((remote) => remote.name).join(' ');
   const autostash = opts.autostash ?? (await configuredAutostash(ctx, 'merge')) ?? false;
   const log = await settleMergeLog(ctx, opts.log);
-  if (opts.message !== undefined && log.length === 0) {
-    return { ...opts, rev, autostash, message: opts.message };
+  // A lone surrogate is how the escaped byte form spells a raw byte; a caller's text never means one.
+  const given = opts.message === undefined ? undefined : wellFormed(opts.message);
+  if (given !== undefined && log.length === 0) {
+    return { ...opts, rev, autostash, message: given };
   }
   const heads =
     internal.heads ??
@@ -408,7 +441,7 @@ const settleMessage = async (
       remotes.map((remote) => describeMergeHead(ctx, remote.spelt, remote.id, remote.object)),
     ));
   const into = shortBranchName(target.branch ?? HEAD);
-  const formatted = await formatMergeMessage(ctx, heads, into, opts.message);
+  const formatted = await formatMergeMessage(ctx, heads, into, given);
   if (log.length === 0) {
     return { ...opts, rev, autostash, message: withoutFinalNewline(formatted) };
   }
@@ -695,6 +728,8 @@ type StrategyAttempt =
       readonly kind: 'clean';
       readonly tree: ObjectId;
       readonly note: string;
+      /** The tracked-or-not paths the merge changes; absent when the strategy does not report them. */
+      readonly changed?: ReadonlySet<FilePath>;
       /** The tree an ort merge records in `AUTO_MERGE` as it switches to its result. */
       readonly autoMerge?: ObjectId;
     }
@@ -743,6 +778,9 @@ const commitCleanAttempt = async (
   commit: MergeCommitInput,
   tried: Extract<StrategyAttempt, { readonly kind: 'clean' }>,
 ): Promise<MergeEnding> => {
+  if (tried.changed !== undefined) {
+    await assertNoneBeyondSymlink(ctx, tried.changed, await readIndex(ctx));
+  }
   if (tried.autoMerge !== undefined) await writeAutoMerge(ctx, tried.autoMerge);
   return commitCleanMerge(ctx, commit, tried.tree, tried.note);
 };
@@ -803,7 +841,7 @@ const ortAttempt = async (
     { ourId, theirId, baseId, strategy: settings },
     opts.rev,
   );
-  if (result.kind === 'clean') return cleanOrtAttempt(result.tree, strategy);
+  if (result.kind === 'clean') return cleanOrtAttempt(result, strategy);
   return {
     kind: 'conflict',
     weight: conflictWeight(result.conflicts),
@@ -812,9 +850,13 @@ const ortAttempt = async (
 };
 
 /** A clean ort merge records its tree as the `AUTO_MERGE` too. */
-const cleanOrtAttempt = (tree: ObjectId, strategy: string): StrategyAttempt => ({
+const cleanOrtAttempt = (
+  { tree, changed }: Extract<MergeTreeResult, { readonly kind: 'clean' }>,
+  strategy: string,
+): StrategyAttempt => ({
   kind: 'clean',
   tree,
+  changed,
   note: mergeMadeBy(strategy),
   autoMerge: tree,
 });
@@ -833,7 +875,7 @@ const tryTrivialMerge = async (
   const { ourId } = commit;
   if (bases.length !== 1) return undefined;
   const [base, ours, theirs] = await Promise.all(
-    [bases[0]!, ourId, theirId].map(async (id) => flattenTree(ctx, await getTree(ctx, id))),
+    [bases[0]!, ourId, theirId].map(async (id) => flattenEscapedTree(ctx, await getTree(ctx, id))),
   );
   await assertIndexMatches(ctx, ours!.entries);
   const merged = trivialMerge(base!.entries, ours!.entries, theirs!.entries);
@@ -844,7 +886,7 @@ const tryTrivialMerge = async (
 /** git's `ours` strategy: HEAD's tree is the result, once the index matches it. */
 const oursAttempt = async (ctx: Context, commit: MergeCommitInput): Promise<StrategyAttempt> => {
   const tree = await getTree(ctx, commit.ourId);
-  await assertIndexMatches(ctx, (await flattenTree(ctx, tree)).entries);
+  await assertIndexMatches(ctx, (await flattenEscapedTree(ctx, tree)).entries);
   return { kind: 'clean', tree, note: mergeMadeBy('ours') };
 };
 
@@ -1183,7 +1225,7 @@ const octopusAttempt = async (
   remotes: ReadonlyArray<OctopusRemote>,
   strategy: string,
 ): Promise<StrategyAttempt> => {
-  const ours = await flattenTree(ctx, await getTree(ctx, commit.ourId));
+  const ours = await flattenEscapedTree(ctx, await getTree(ctx, commit.ourId));
   await assertIndexMatches(ctx, ours.entries);
   const result = await octopusMerge(ctx, commit.ourId, remotes);
   if (result.kind === 'clean')
@@ -1197,12 +1239,18 @@ const octopusAttempt = async (
 
 const assertIndexMatches = async (ctx: Context, ours: FlatEntries): Promise<void> => {
   const { entries } = await readIndex(ctx);
-  const indexed = new Set(entries.map((entry) => entry.path));
+  const indexed = new Set(entries.map(escapedPathOf));
   const staged = new Set([
-    ...entries.filter((entry) => !sameEntry(ours.get(entry.path), entry)).map((e) => e.path),
+    ...entries
+      .filter((entry) => !sameEntry(ours.get(escapedPathOf(entry)), entry))
+      .map(escapedPathOf),
     ...[...ours.keys()].filter((path) => !indexed.has(path)),
   ]);
-  if (staged.size > 0) throw workingTreeDirty({ localChanges: [...staged].sort(), untracked: [] });
+  if (staged.size === 0) return;
+  throw workingTreeDirty({
+    localChanges: [...staged].sort(comparePaths).map(viewOfEscaped),
+    untracked: [],
+  });
 };
 
 const sameEntry = (committed: FlatTreeEntry | undefined, entry: FlatTreeEntry): boolean =>
@@ -1251,7 +1299,11 @@ const persistOctopusConflict = async (
 };
 
 type MergeTreeResult =
-  | { readonly kind: 'clean'; readonly tree: ObjectId }
+  | {
+      readonly kind: 'clean';
+      readonly tree: ObjectId;
+      readonly changed: ReadonlySet<FilePath>;
+    }
   | {
       readonly kind: 'conflict';
       readonly outcomes: ReadonlyArray<MergeOutcome>;
@@ -1287,7 +1339,7 @@ const computeMergeTreeResult = async (
   const contentMerger = buildContentMerger(ctx, labels, contentSettings(strategy, renormalize));
   const detected = await detectMergeRenames(ctx, base, ours, theirs, strategy.renames);
   const renames = await mergeCollidingRenameSources(ctx, trees, detected, contentMerger);
-  const merged = await mergeTrees(
+  const merged = await mergeEscapedTrees(
     base,
     ours,
     theirs,
@@ -1302,9 +1354,9 @@ const computeMergeTreeResult = async (
 
 /** The three sides a merge reads, flattened — and subtree-shifted onto ours when asked. */
 interface FlatMergeSides {
-  readonly base: FlatTree | undefined;
-  readonly ours: FlatTree;
-  readonly theirs: FlatTree;
+  readonly base: EscapedFlatTree | undefined;
+  readonly ours: EscapedFlatTree;
+  readonly theirs: EscapedFlatTree;
 }
 
 const readMergeSides = async (
@@ -1315,9 +1367,9 @@ const readMergeSides = async (
   const theirTreeId = await getTree(ctx, theirId);
   const baseTreeId = baseId !== undefined ? await getTree(ctx, baseId) : undefined;
   const [ourFlat, theirSide, baseSide] = await Promise.all([
-    flattenTree(ctx, ourTreeId),
-    flattenTree(ctx, theirTreeId),
-    baseTreeId !== undefined ? flattenTree(ctx, baseTreeId) : Promise.resolve(undefined),
+    flattenEscapedTree(ctx, ourTreeId),
+    flattenEscapedTree(ctx, theirTreeId),
+    baseTreeId !== undefined ? flattenEscapedTree(ctx, baseTreeId) : Promise.resolve(undefined),
   ]);
   const shift = strategy.subtreeShift;
   if (shift === undefined) return { base: baseSide, ours: ourFlat, theirs: theirSide };
@@ -1333,11 +1385,11 @@ const readMergeSides = async (
 const settleMergeTree = async (
   ctx: Context,
   result: TreeMergeResult,
-  ourFlat: FlatTree,
+  ourFlat: EscapedFlatTree,
 ): Promise<MergeTreeResult> => {
   if (result.cleanMerge) {
     const tree = await synthesiseMergedTree(ctx, result.outcomes);
-    return { kind: 'clean', tree };
+    return { kind: 'clean', tree, changed: changedPaths(result.outcomes, [], ourFlat.entries) };
   }
   const staged = await stageSplitRenameBlobs(ctx, result.conflicts);
   return {
@@ -1514,8 +1566,11 @@ const buildLeafTrie = (rootLeaves: ReadonlyArray<LeafRecord>, maxDepth: number):
   return { rootFiles, frames, levels };
 };
 
+const treeEntryOfEscaped = (mode: FileMode, name: FilePath, id: ObjectId): TreeEntry =>
+  treeEntry(mode, hasEscapedBytes(name) ? encodeEscaped(name) : name, id);
+
 const leavesToTreeEntries = (files: ReadonlyArray<LeafRecord>): TreeEntry[] =>
-  files.map((f) => treeEntry(f.mode, f.path, f.id));
+  files.map((f) => treeEntryOfEscaped(f.mode, f.path, f.id));
 
 /**
  * Write the leaf trie deepest-level-first. Every frame WITHIN a level is
@@ -1549,7 +1604,7 @@ const writeLeafTrie = async (ctx: Context, trie: LeafTrie): Promise<ObjectId> =>
         frame.parentIndex === ROOT_PARENT_LEVEL_INDEX
           ? rootTreeEntries
           : treeEntries[frame.parentIndex]!;
-      parentEntries.push(treeEntry(FILE_MODE.DIRECTORY, frame.name, id));
+      parentEntries.push(treeEntryOfEscaped(FILE_MODE.DIRECTORY, frame.name, id));
     }
   }
   return writeTree(ctx, rootTreeEntries);
@@ -1653,10 +1708,24 @@ const assertNothingOverwritten = async (
   changed: ReadonlySet<FilePath>,
 ): Promise<void> => {
   const currentIndex = await readIndex(ctx);
+  await assertNoneBeyondSymlink(ctx, changed, currentIndex);
   const { localChanges, untracked } = await findWouldOverwrite(ctx, changed, currentIndex);
   if (localChanges.length > 0 || untracked.length > 0) {
     throw workingTreeDirty({ localChanges, untracked });
   }
+};
+
+/**
+ * git's merge cannot save a work tree where a tracked path now lies beyond a
+ * symlink and dies before touching anything; that path is a local change.
+ */
+const assertNoneBeyondSymlink = async (
+  ctx: Context,
+  changed: ReadonlySet<FilePath>,
+  currentIndex: GitIndex,
+): Promise<void> => {
+  const localChanges = await findTrackedBeyondSymlink(ctx, changed, currentIndex);
+  if (localChanges.length > 0) throw workingTreeDirty({ localChanges, untracked: [] });
 };
 
 /**
@@ -1681,7 +1750,7 @@ const conflictOutcome = (
   mergeHead: ObjectId,
   origHead: ObjectId,
 ): MergeEnding => {
-  const descriptors = conflicts.map((c) => ({ path: c.path, type: c.type }));
+  const descriptors = toConflictList(conflicts);
   if (opts.squash === true) {
     return {
       kind: 'headless-squash',
@@ -1703,7 +1772,7 @@ export const rejectUnsupportedConflicts = (conflicts: ReadonlyArray<MergeConflic
     if (UNSUPPORTED_CONFLICT_TYPES.has(conflict.type)) {
       throw unsupportedOperation(
         'merge',
-        `conflict type '${conflict.type}' not supported in v1 (path=${conflict.path})`,
+        `conflict type '${conflict.type}' not supported in v1 (path=${viewOfEscaped(conflict.path)})`,
       );
     }
   }
@@ -1712,6 +1781,27 @@ export const rejectUnsupportedConflicts = (conflicts: ReadonlyArray<MergeConflic
 /** True iff a sparse matcher is active AND rejects the path. */
 const isExcluded = (matcher: SparseMatcher | undefined, path: FilePath): boolean =>
   matcher !== undefined && !matcher(path);
+
+type ChangedOutcome = Exclude<MergeOutcome, { readonly status: 'conflict' }>;
+
+const isMaterialised = (outcome: ChangedOutcome, matcher: SparseMatcher | undefined): boolean =>
+  outcome.status === 'resolved-merged' || !isExcluded(matcher, outcome.path);
+
+/** Only a deletion can empty a directory; a sparse-excluded outcome is skipped, so it keeps none alive. */
+const survivingFor = (
+  deleted: ReadonlyArray<DeletedOutcome>,
+  touched: ReadonlyArray<ChangedOutcome>,
+  conflicts: ReadonlyArray<MergeConflict>,
+  matcher: SparseMatcher | undefined,
+): SurvivingDirectories =>
+  survivingDirectoriesOf(
+    deleted.length === 0
+      ? []
+      : survivingPathsOf(
+          touched.filter((outcome) => isMaterialised(outcome, matcher)),
+          conflicts,
+        ),
+  );
 
 const writeConflictingWorkingTree = async (
   ctx: Context,
@@ -1726,7 +1816,8 @@ const writeConflictingWorkingTree = async (
   // user modified locally at a path the merge never touched. Conflict
   // outcomes carry no path and are materialised by the conflicts batch below.
   const touched = outcomes.filter(
-    (outcome) => outcome.status !== 'conflict' && changed.has(outcome.path),
+    (outcome): outcome is ChangedOutcome =>
+      outcome.status !== 'conflict' && changed.has(outcome.path),
   );
   // One scanner for the whole call, shared by both bounded batches below:
   // its per-directory memo means a deep tree with many paths under the
@@ -1735,20 +1826,60 @@ const writeConflictingWorkingTree = async (
   const scanner = createLeadingPathScanner(ctx);
   // Every deletion lands before the writer reads attributes, as git unlinks
   // before its first checkout: a deleted `.gitattributes` must not govern the writes.
-  await runBounded(ctx, touched.filter(isDeleted), (outcome) => removeChangedOutcome(ctx, outcome));
+  const deleted = touched.filter(isDeleted);
+  const surviving = survivingFor(deleted, touched, conflicts, matcher);
+  await runBounded(ctx, deleted, (outcome) =>
+    removeChangedOutcome(ctx, outcome, scanner, surviving),
+  );
+  await runBounded(ctx, conflicts, (conflict) => removeDisplacedFile(ctx, conflict));
   const writer = await createMergeResultWriter(ctx, outcomes, conflicts);
   // Bounded parallelism — independent path writes overlap, but the pool
   // caps in-flight at the ioBound policy so a 10k-path merge doesn't
   // exhaust file descriptors.
-  await runBounded(ctx, touched.filter(isWrite), (outcome) =>
-    writeOutcomeToTree(outcome, matcher, writer, scanner),
-  );
   // Conflicted paths are materialised even when sparse-excluded — a conflict
   // the user cannot see is unresolvable, so `writeConflictToTree` takes no
   // matcher.
-  await runBounded(ctx, conflicts, (conflict) =>
-    writeConflictToTree(ctx, conflict, writer, scanner),
+  await runLinkFirstWave(
+    ctx,
+    [
+      touched.filter(isWrite).map((outcome) => outcomeWave(outcome, matcher, writer, scanner)),
+      conflicts.map((conflict) => conflictWave(ctx, conflict, writer, scanner)),
+    ],
+    scanner,
   );
+};
+
+/** The writer skips a path holding escaped bytes, so no leading directory is made for it on any route. */
+const isWritablePath = (path: FilePath): boolean => !hasEscapedBytes(path);
+
+const outcomeWave = (
+  outcome: PathedWrite,
+  matcher: SparseMatcher | undefined,
+  writer: WorkingTreeWriter,
+  scanner: LeadingPathScanner,
+): WaveWrite => ({
+  path: outcome.path,
+  isLink: hasLinkMode([outcome.mode]),
+  validate: () => validateTreePath(outcome.path, outcome.mode),
+  needsDirectories: isWritablePath(outcome.path) && isMaterialised(outcome, matcher),
+  run: () => writeOutcomeToTree(outcome, matcher, writer, scanner),
+});
+
+const conflictWave = (
+  ctx: Context,
+  conflict: MergeConflict,
+  writer: WorkingTreeWriter,
+  scanner: LeadingPathScanner,
+): WaveWrite => {
+  const modes = [conflict.mergedMode, conflict.ourMode, conflict.theirMode];
+  const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
+  return {
+    path: conflict.path,
+    isLink: hasLinkMode(modes),
+    validate: () => validateConflictWritePaths(conflict),
+    needsDirectories: isWritablePath(conflict.path) && mode !== undefined,
+    run: () => writeConflictToTree(ctx, conflict, writer, scanner),
+  };
 };
 
 /**
@@ -1766,7 +1897,9 @@ const runBounded = async <T>(
 
 type WrittenOutcome = Exclude<MergeOutcome, DeletedOutcome>;
 
-const isWrite = (outcome: MergeOutcome): outcome is WrittenOutcome => !isDeleted(outcome);
+type PathedWrite = Exclude<WrittenOutcome, { readonly status: 'conflict' }>;
+
+const isWrite = (outcome: ChangedOutcome): outcome is PathedWrite => !isDeleted(outcome);
 
 /**
  * Write a single merge outcome to the working tree. Exported for direct unit
@@ -1791,7 +1924,7 @@ export const writeOutcomeToTree = async (
   // regardless of status. `conflict` is skipped because this function no-ops
   // on it (the conflict itself is validated by the parallel conflicts batch).
   if (outcome.status === 'conflict') return;
-  validateIndexPath(outcome.path, NO_PARSER_OFFSET, outcome.mode);
+  validateTreePath(outcome.path, outcome.mode);
   if (outcome.status === 'resolved-merged') {
     // The merged bytes exist only in memory — this write is their sole
     // persistence, so the path is materialised regardless of the matcher.
@@ -1821,8 +1954,8 @@ export const writeConflictToTree = async (
   // mode is derivable — the only mode-sensitive rule is the write-time-only
   // `.gitmodules`-symlink rejection, inapplicable when nothing is written.
   const mode = conflict.mergedMode ?? conflict.ourMode ?? conflict.theirMode;
-  validateIndexPath(conflict.path, NO_PARSER_OFFSET, mode ?? FILE_MODE.REGULAR);
-  if (conflict.type === 'distinct-types') {
+  validateConflictWritePaths(conflict);
+  if (recordsOwnPaths(conflict)) {
     await writeDistinctTypesSides(writer, conflict, scanner);
     return;
   }
@@ -1895,12 +2028,16 @@ export const buildConflictIndexEntries = (
       // report the (deliberately un-written) file as deleted.
       stage0.push(
         isExcluded(matcher, outcome.path)
-          ? skipWorktreeEntry({ path: outcome.path, id: outcome.id, mode: outcome.mode })
+          ? skipWorktreeEntry({
+              ...indexPathOfEscaped(outcome.path),
+              id: outcome.id,
+              mode: outcome.mode,
+            })
           : {
               ...zeroStat(outcome.mode),
               id: outcome.id,
               flags: STAGE0_FLAGS,
-              path: outcome.path,
+              ...indexPathOfEscaped(outcome.path),
             },
       );
     }
