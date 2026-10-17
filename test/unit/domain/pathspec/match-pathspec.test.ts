@@ -133,6 +133,7 @@ describe('matchesUnmergedPath', () => {
     ['D9', ['f', '!f'], 'f', MANY, false],
     ['D10', ['top', '!f'], 'f', MANY, false],
     ['S1', ['', '!f'], 'f', 1, false],
+    ['G1', ['', '!f*'], 'f*', MANY, false],
   ];
 
   describe.each(rows)('Given rule %s', (_id, patterns, target, entryCount, expected) => {
@@ -165,6 +166,22 @@ describe('withoutExactly', () => {
 
         // Assert
         expect(result.map((entry) => entry.pattern)).toEqual(['a/c', 'a*']);
+      });
+    });
+  });
+
+  describe('Given a path named like a glob and an exclusion spelled the same', () => {
+    describe('When the path is removed', () => {
+      it('Then the exclusion stays because it is a glob, not a literal', () => {
+        // Arrange
+        const spec = compilePathspec(['', '!f*']);
+        const sut = withoutExactly;
+
+        // Act
+        const result = sut(spec, path('f*'));
+
+        // Assert
+        expect(result.map((entry) => entry.pattern)).toEqual(['', '!f*']);
       });
     });
   });
