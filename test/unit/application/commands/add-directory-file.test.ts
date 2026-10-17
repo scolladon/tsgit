@@ -817,4 +817,23 @@ describe('add — a directory replaced a tracked file or symlink', () => {
       });
     });
   });
+
+  describe('Given a directory replaced by a file and an unrelated tracked file deleted', () => {
+    describe('When add -A runs', () => {
+      it('Then the removals are reported in path order', async () => {
+        // Arrange
+        const ctx = await trackedTree();
+        await replaceDirectoryWithFile(ctx, 'a');
+        await ctx.fs.rm(`${ctx.layout.workDir}/real/b`);
+
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, [], { all: true });
+
+        // Assert
+        expect(result.removed).toEqual(['a/b', 'a/c', 'a/x/y', 'real/b']);
+      });
+    });
+  });
 });

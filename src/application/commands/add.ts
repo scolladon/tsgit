@@ -942,7 +942,6 @@ export const addAll = async (
     const removed = reportedRemovals(removedEntries, replaced);
     added.sort();
     modified.sort();
-    // Stryker disable next-line MethodExpression: equivalent — `removed` is built by iterating `existing`, a Map populated from the always-byte-sorted index (serializeIndex sorts on every write), so it is already in ascending path order; the sort is a defensive no-op.
     removed.sort();
     await commitIfChanged(
       lock,
