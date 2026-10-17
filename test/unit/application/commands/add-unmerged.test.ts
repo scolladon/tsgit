@@ -574,3 +574,76 @@ describe('Given a re-created unmerged f beside a seeded record for f at stages 1
     });
   });
 });
+
+const seedConflictedAt = async (
+  conflicted: string,
+  stages: ReadonlyArray<1 | 2 | 3>,
+): Promise<Ctx> => {
+  const ctx = createMemoryContext();
+  await seedRepo(ctx, { workingTree: { top: 'top-new', 'd/e': 'e-new', [conflicted]: 'merged' } });
+  await seedIndex(ctx, [
+    { path: 'top', text: 'top-old' },
+    { path: 'd/e', text: 'e-old' },
+    ...stages.map((stage) => ({ path: conflicted, text: `text-${stage}`, stage })),
+  ]);
+  return ctx;
+};
+
+const ALL_STAGES: ReadonlyArray<1 | 2 | 3> = [1, 2, 3];
+const OURS_BASE: ReadonlyArray<1 | 2 | 3> = [1, 2];
+
+describe('Given a multi-stage unmerged path an exact exclusion names and another element covers', () => {
+  describe.each([
+    { title: 'D0 the whole tree', path: 'f', stages: ALL_STAGES, specs: ['.', '!f'] },
+    { title: 'D1 two stages', path: 'f', stages: OURS_BASE, specs: ['.', '!f'] },
+    { title: 'D4 a directory', path: 'd/f', stages: ALL_STAGES, specs: ['d', '!d/f'] },
+    { title: 'D7 a glob', path: 'f.txt', stages: ALL_STAGES, specs: ['*.txt', '!f.txt'] },
+    { title: 'D8 a prefix glob', path: 'f', stages: ALL_STAGES, specs: ['f*', '!f'] },
+    {
+      title: 'E1 the path and the whole tree',
+      path: 'f',
+      stages: ALL_STAGES,
+      specs: ['f', '.', '!f'],
+    },
+  ])('When add walks $title', ({ path, stages, specs }) => {
+    it('Then the path is stage 0, modified and recorded in REUC', async () => {
+      // Arrange
+      const ctx = await seedConflictedAt(path, stages);
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, specs);
+      const recorded = await recordedStages(ctx);
+
+      // Assert
+      expect(stagesAt(await stagesOf(ctx), path)).toEqual(['0']);
+      expect(result.modified).toContain(path);
+      expect(recorded).toEqual([[path, stages]]);
+    });
+  });
+});
+
+describe('Given an unmerged path an exclusion still shields', () => {
+  describe.each([
+    { title: 'D5 a leading directory', path: 'd/f', stages: ALL_STAGES, specs: ['.', '!d'] },
+    { title: 'E4 a directory with a slash', path: 'd/f', stages: ALL_STAGES, specs: ['.', '!d/'] },
+    { title: 'D6 a glob', path: 'f.txt', stages: ALL_STAGES, specs: ['.', '!*.txt'] },
+    { title: 'E3 a prefix glob', path: 'f', stages: ALL_STAGES, specs: ['.', '!f*'] },
+    { title: 'E7 an exact and a glob', path: 'f', stages: ALL_STAGES, specs: ['.', '!f', '!f*'] },
+    { title: 'S1 a single stage', path: 'f', stages: [3] as const, specs: ['.', '!f'] },
+  ])('When add walks $title', ({ path, stages, specs }) => {
+    it('Then every stage is kept and no REUC is written', async () => {
+      // Arrange
+      const ctx = await seedConflictedAt(path, stages);
+      const sut = add;
+
+      // Act
+      await sut(ctx, specs);
+      const recorded = await recordedStages(ctx);
+
+      // Assert
+      expect(stagesAt(await stagesOf(ctx), path)).toEqual(stages.map(String));
+      expect(recorded).toEqual([]);
+    });
+  });
+});

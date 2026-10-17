@@ -41,7 +41,7 @@ import {
 } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesPathspec } from '../../domain/pathspec/index.js';
-import { withoutExactly } from '../../domain/pathspec/match-pathspec.js';
+import { matchesUnmergedPath, withoutExactly } from '../../domain/pathspec/match-pathspec.js';
 import { matchesIndexPath, matchesUnmergedIndexPath } from '../../domain/pathspec/matching-path.js';
 import { CHERRY_PICK, MERGE, REBASE, REVERT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
@@ -631,11 +631,16 @@ const addByPathspec = async (
   scope: ConversionScope,
 ): Promise<AddResult> => {
   const repoIgnore = await buildRepoIgnorePredicate(ctx);
-  const combinedIgnore = withPathspec(repoIgnore, matcher);
   const lock = await acquireIndexLock(ctx);
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
-    const staged = await stageIgnoredWalk(ctx, combinedIgnore, scope, ensurePromisorConfigValid);
+    const staged = await stageIgnoredWalk(
+      ctx,
+      repoIgnore,
+      matcher,
+      scope,
+      ensurePromisorConfigValid,
+    );
     const { newEntries, matched, added, modified, eolNotices, restagedPaths } = tallyWalkOutcomes(
       staged.existing,
       staged.outcomes,
@@ -792,7 +797,8 @@ const renormalizeOne = async (
 /** Read the index, then stage every walked entry `ignore` keeps. */
 const stageIgnoredWalk = async (
   ctx: Context,
-  ignore: IgnorePredicate,
+  repoIgnore: IgnorePredicate,
+  matcher: ResolvedPathspec['matcher'],
   scope: ConversionScope,
   ensurePromisorConfigValid: PromisorGuard,
 ): Promise<{
@@ -808,6 +814,7 @@ const stageIgnoredWalk = async (
     indexMtime,
     indexRules,
   } = await readExistingEntries(ctx);
+  const ignore = withPathspec(repoIgnore, matcher, unmergedStages);
   const outcomes = await stageWalkedEntries(
     ctx,
     walkWorkingTree(ctx, { ignore }),
@@ -820,13 +827,21 @@ const stageIgnoredWalk = async (
   return { existing, unmergedStages, sorted, outcomes };
 };
 
-/** `.gitignore` prunes directories and leaves; the pathspec filters leaves only. */
+/**
+ * `.gitignore` prunes directories and leaves; the pathspec filters leaves only,
+ * and keeps a multi-stage unmerged leaf that only an exact exclusion removes.
+ */
 const withPathspec =
-  (ignore: IgnorePredicate, matcher: ResolvedPathspec['matcher']): IgnorePredicate =>
+  (
+    ignore: IgnorePredicate,
+    matcher: ResolvedPathspec['matcher'],
+    unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
+  ): IgnorePredicate =>
   async (path, isDirectory) => {
     if (await ignore(path, isDirectory)) return true;
-    if (isDirectory) return false;
-    return !matchesPathspec(matcher, path);
+    if (isDirectory || matchesPathspec(matcher, path)) return false;
+    const stages = unmergedStages.get(keyOfPath(path));
+    return stages === undefined || !matchesUnmergedPath(matcher, path, stages.length);
   };
 
 /** The safecrlf notices of the walked outcomes: git warns for the tracked paths first, in index order. */

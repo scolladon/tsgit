@@ -53,27 +53,32 @@ const commitAll = (dir: string, message: string): void => {
   runGit(['-C', dir, 'commit', '-q', '-m', message], { env: COMMIT_ENV });
 };
 
-const changeF = async (dir: string, shape: Shape, side: 'main' | 'side'): Promise<void> => {
+const changeF = async (
+  dir: string,
+  shape: Shape,
+  side: 'main' | 'side',
+  conflicted: string,
+): Promise<void> => {
   const removes =
     (shape === 'deleted-by-them' && side === 'side') ||
     (shape === 'deleted-by-us' && side === 'main');
   await put(dir, 'h', `h-${side}\n`);
-  if (removes) runGit(['-C', dir, 'rm', '-q', 'f']);
-  else await put(dir, 'f', `f-${side}\n`);
+  if (removes) runGit(['-C', dir, 'rm', '-q', conflicted]);
+  else await put(dir, conflicted, `f-${side}\n`);
 };
 
 /** Leaves `f` and `h` unmerged (per `shape` for `f`) and `top`, `d/e` rewritten on disk. */
-const buildConflict = async (dir: string, shape: Shape): Promise<void> => {
+const buildConflict = async (dir: string, shape: Shape, conflicted = 'f'): Promise<void> => {
   runGit(['init', '-q', '-b', 'main', dir]);
   runGit(['-C', dir, 'config', 'user.name', 'Ada']);
   runGit(['-C', dir, 'config', 'user.email', 'ada@example.com']);
-  for (const file of ['f', 'h', 'top', 'd/e']) await put(dir, file, `${file}-base\n`);
+  for (const file of [conflicted, 'h', 'top', 'd/e']) await put(dir, file, `${file}-base\n`);
   commitAll(dir, 'base');
   runGit(['-C', dir, 'checkout', '-q', '-b', 'side']);
-  await changeF(dir, shape, 'side');
+  await changeF(dir, shape, 'side', conflicted);
   commitAll(dir, 'side');
   runGit(['-C', dir, 'checkout', '-q', 'main']);
-  await changeF(dir, shape, 'main');
+  await changeF(dir, shape, 'main', conflicted);
   commitAll(dir, 'main');
   const merged = tryRunGit(['-C', dir, '-c', 'merge.conflictStyle=merge', 'merge', 'side'], {
     env: COMMIT_ENV,
@@ -109,12 +114,12 @@ describe.skipIf(!GIT_AVAILABLE)(
       await pair.dispose();
     });
 
-    const seedBoth = async (shape: Shape): Promise<void> => {
+    const seedBoth = async (shape: Shape, conflicted = 'f'): Promise<void> => {
       pair = await makePeerPair('add-unmerged');
       await rm(pair.ours, { recursive: true, force: true });
       await rm(pair.peer, { recursive: true, force: true });
-      await buildConflict(pair.peer, shape);
-      await buildConflict(pair.ours, shape);
+      await buildConflict(pair.peer, shape, conflicted);
+      await buildConflict(pair.ours, shape, conflicted);
       repo = await openRepository({ cwd: pair.ours });
     };
 
@@ -367,6 +372,183 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(await indexExtensionOf(pair.ours, 'TREE')).toEqual(
             await indexExtensionOf(pair.peer, 'TREE'),
           );
+        });
+      });
+    });
+
+    interface ExclusionRow {
+      readonly title: string;
+      readonly conflicted: string;
+      readonly shape: Shape;
+      readonly ours: ReadonlyArray<string>;
+      readonly git: ReadonlyArray<string>;
+    }
+
+    const LEAKS: ReadonlyArray<ExclusionRow> = [
+      {
+        title: 'D0',
+        conflicted: 'f',
+        shape: 'both-modified',
+        ours: ['.', '!f'],
+        git: ['.', ':!f'],
+      },
+      {
+        title: 'D1',
+        conflicted: 'f',
+        shape: 'deleted-by-them',
+        ours: ['.', '!f'],
+        git: ['.', ':!f'],
+      },
+      {
+        title: 'D4',
+        conflicted: 'd/f',
+        shape: 'both-modified',
+        ours: ['d', '!d/f'],
+        git: ['d', ':!d/f'],
+      },
+      {
+        title: 'D7',
+        conflicted: 'f.txt',
+        shape: 'both-modified',
+        ours: ['*.txt', '!f.txt'],
+        git: ['*.txt', ':!f.txt'],
+      },
+      {
+        title: 'D8',
+        conflicted: 'f',
+        shape: 'both-modified',
+        ours: ['f*', '!f'],
+        git: ['f*', ':!f'],
+      },
+      {
+        title: 'E1',
+        conflicted: 'f',
+        shape: 'both-modified',
+        ours: ['f', '.', '!f'],
+        git: ['f', '.', ':!f'],
+      },
+      {
+        title: 'D16',
+        conflicted: 'f',
+        shape: 'both-modified',
+        ours: ['.', '!f'],
+        git: ['.', ':(exclude)f'],
+      },
+      {
+        title: 'E8',
+        conflicted: 'f',
+        shape: 'both-modified',
+        ours: ['.', '!f'],
+        git: ['.', ':!./f'],
+      },
+      {
+        title: 'E10',
+        conflicted: 'f.txt',
+        shape: 'both-modified',
+        ours: ['.', '!f.txt'],
+        git: ['.', ':(exclude,literal)f.txt'],
+      },
+    ];
+
+    const SHIELDS: ReadonlyArray<ExclusionRow> = [
+      {
+        title: 'D5',
+        conflicted: 'd/f',
+        shape: 'both-modified',
+        ours: ['.', '!d'],
+        git: ['.', ':!d'],
+      },
+      {
+        title: 'D6',
+        conflicted: 'f.txt',
+        shape: 'both-modified',
+        ours: ['.', '!*.txt'],
+        git: ['.', ':!*.txt'],
+      },
+      {
+        title: 'E3',
+        conflicted: 'f',
+        shape: 'both-modified',
+        ours: ['.', '!f*'],
+        git: ['.', ':!f*'],
+      },
+      {
+        title: 'E4',
+        conflicted: 'd/f',
+        shape: 'both-modified',
+        ours: ['.', '!d/'],
+        git: ['.', ':!d/'],
+      },
+      {
+        title: 'E7',
+        conflicted: 'f',
+        shape: 'both-modified',
+        ours: ['.', '!f', '!f*'],
+        git: ['.', ':!f', ':!f*'],
+      },
+    ];
+
+    describe.each(LEAKS)('Given $title an exact exclusion of a conflicted path', (row) => {
+      describe('When add walks a pathspec another element covers', () => {
+        it('Then the path, its report and REUC match canonical git', async () => {
+          // Arrange
+          await seedBoth(row.shape, row.conflicted);
+
+          // Act
+          const result = await repo.add([...row.ours]);
+
+          // Assert
+          const reported = gitReported(pair.peer, row.git);
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+          expect([...result.modified, ...result.added].sort()).toEqual(reported);
+          expect(result.modified).toContain(row.conflicted);
+          await expectSameResolveUndo();
+        });
+      });
+    });
+
+    describe.each(SHIELDS)(
+      'Given $title an exclusion that still shields a conflicted path',
+      (row) => {
+        describe('When add walks the whole tree', () => {
+          it('Then every stage is kept and no REUC is written as in canonical git', async () => {
+            // Arrange
+            await seedBoth(row.shape, row.conflicted);
+
+            // Act
+            await repo.add([...row.ours]);
+            runGit(['-C', pair.peer, 'add', '--', ...row.git]);
+
+            // Assert
+            expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+            await expectSameResolveUndo();
+          });
+        });
+      },
+    );
+
+    describe('Given S1 a conflicted f held at stage 3 only', () => {
+      describe('When add walks the whole tree excluding f', () => {
+        it('Then stage 3 is kept as in canonical git', async () => {
+          // Arrange
+          await seedBoth('both-modified');
+          for (const dir of [pair.ours, pair.peer]) {
+            const id = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], {
+              input: 's1\n',
+            }).trim();
+            runGit(['-C', dir, 'update-index', '--force-remove', 'f']);
+            runGit(['-C', dir, 'update-index', '--index-info'], {
+              input: `100644 ${id} 3\tf\n`,
+            });
+          }
+
+          // Act
+          await repo.add(['.', '!f']);
+          runGit(['-C', pair.peer, 'add', '--', '.', ':!f']);
+
+          // Assert
+          expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+          await expectSameResolveUndo();
         });
       });
     });
