@@ -572,5 +572,35 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
     });
+
+    describe('Given c held at stage 0 and at the conflict stages 1 and 2, modified on disk', () => {
+      describe('When add c runs', () => {
+        it('Then the stages, the resolve-undo listing and the report match canonical git', async () => {
+          // Arrange
+          await seedBoth('both-modified');
+          for (const dir of [pair.ours, pair.peer]) {
+            const idOf = (text: string): string =>
+              runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: text }).trim();
+            runGit(['-C', dir, 'update-index', '--index-info'], {
+              input: [
+                `100644 ${idOf('c-zero\n')} 0\tc`,
+                `100644 ${idOf('c-ours\n')} 1\tc`,
+                `100644 ${idOf('c-theirs\n')} 2\tc`,
+                '',
+              ].join('\n'),
+            });
+            await put(dir, 'c', 'c-new\n');
+          }
+
+          // Act
+          const result = await repo.add(['c']);
+          const reported = gitAddVerbose(pair.peer, ['c']);
+
+          // Assert
+          expect(result.modified).toEqual(reported.added);
+          await expectSameResolveUndo();
+        });
+      });
+    });
   },
 );

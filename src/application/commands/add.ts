@@ -248,7 +248,7 @@ const addLiteralOnly = async (
       lock,
       sorted.length,
       withEveryStage(remaining, unmergedStages, stageZeroBeside),
-      resolutionOptions(restagedPaths, remaining, unmergedStages),
+      resolutionOptions(restagedPaths, remaining, unmergedStages, stageZeroBeside),
     );
     return result;
   } finally {
@@ -428,7 +428,7 @@ const commitWalk = (
     lock,
     sorted.length,
     withEveryStage(remaining, unmergedStages, stageZeroBeside),
-    resolutionOptions(restagedPaths, remaining, unmergedStages),
+    resolutionOptions(restagedPaths, remaining, unmergedStages, stageZeroBeside),
   );
 
 /** The paths a walk staged where the index held no stage-0 entry. */
@@ -1072,7 +1072,7 @@ const processWalkEntry = async (
 };
 
 interface ExistingIndexState {
-  /** One entry per path: the stage-0 entry, or the last stage of an unmerged path. */
+  /** One entry per path: its stage-0 entry, else the last stage of an unmerged path. */
   readonly entries: ReadonlyMap<IndexPathKey, IndexEntry>;
   /** Every stage of every unmerged path, in index order. */
   readonly unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>;
@@ -1092,7 +1092,7 @@ const readExistingEntries = async (ctx: Context): Promise<ExistingIndexState> =>
   const stageZero = new Map<IndexPathKey, IndexEntry>();
   for (const entry of entries) {
     const key = indexPathKey(entry);
-    out.set(key, entry);
+    if (entry.flags.stage === 0 || out.get(key)?.flags.stage !== 0) out.set(key, entry);
     if (entry.flags.stage === 0) {
       stageZero.set(key, entry);
       continue;
@@ -1111,9 +1111,16 @@ const stillUnmerged = (
   key: IndexPathKey,
 ): boolean => (entries.get(key)?.flags.stage ?? 0) !== 0;
 
+/** A stage-0 entry beside conflict stages is re-staged in place; the stages go only with the path. */
+const keepsStages = (
+  entries: ReadonlyMap<IndexPathKey, IndexEntry>,
+  key: IndexPathKey,
+  stageZeroBeside: ReadonlyMap<IndexPathKey, IndexEntry>,
+): boolean => (stageZeroBeside.has(key) ? entries.has(key) : stillUnmerged(entries, key));
+
 /**
  * The entries to write: what the add staged, plus every stage of the unmerged paths it left
- * alone — and the stage-0 entry that sat beside them.
+ * alone — and of those whose stage-0 entry it re-staged.
  */
 const withEveryStage = (
   entries: ReadonlyMap<IndexPathKey, IndexEntry>,
@@ -1123,9 +1130,7 @@ const withEveryStage = (
   if (unmergedStages.size === 0) return Array.from(entries.values());
   const out = Array.from(entries.values()).filter((entry) => entry.flags.stage === 0);
   for (const [key, stages] of unmergedStages) {
-    if (!stillUnmerged(entries, key)) continue;
-    const beside = stageZeroBeside.get(key);
-    if (beside !== undefined) out.push(beside);
+    if (!keepsStages(entries, key, stageZeroBeside)) continue;
     out.push(...stages);
   }
   return out;
@@ -1135,16 +1140,21 @@ const withEveryStage = (
 const resolvedRecords = (
   unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
   working: ReadonlyMap<IndexPathKey, IndexEntry>,
+  stageZeroBeside: ReadonlyMap<IndexPathKey, IndexEntry>,
 ): ReadonlyArray<ResolveUndoRecord> =>
   Array.from(unmergedStages)
-    .filter(([key]) => !stillUnmerged(working, key))
+    .filter(([key]) => !keepsStages(working, key, stageZeroBeside))
     .map(([, stages]) => resolveUndoRecordOf(stages));
 
 const resolutionOptions = (
   restagedPaths: ReadonlyArray<IndexPath>,
   working: ReadonlyMap<IndexPathKey, IndexEntry>,
   unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
-): CommitOptions => ({ restagedPaths, resolveUndo: resolvedRecords(unmergedStages, working) });
+  stageZeroBeside: ReadonlyMap<IndexPathKey, IndexEntry>,
+): CommitOptions => ({
+  restagedPaths,
+  resolveUndo: resolvedRecords(unmergedStages, working, stageZeroBeside),
+});
 
 const readIndexOrEmpty = async (
   ctx: Context,

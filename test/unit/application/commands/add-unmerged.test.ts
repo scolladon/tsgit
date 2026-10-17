@@ -681,3 +681,80 @@ describe('Given a path held at stage 0 and at the conflict stages 1 and 2', () =
     });
   });
 });
+
+const seedZeroBesideConflict = async (onDisk: string | undefined) => {
+  const ctx = createMemoryContext();
+  await seedRepo(ctx, { workingTree: onDisk === undefined ? {} : { c: onDisk } });
+  await seedIndex(ctx, [
+    { path: 'c', text: 'c-zero', stage: 0 },
+    { path: 'c', text: 'c-ours', stage: 1 },
+    { path: 'c', text: 'c-theirs', stage: 2 },
+  ]);
+  return ctx;
+};
+
+const conflictStagesOf = async (ctx: Ctx): Promise<string[]> =>
+  fNames(await stagesOf(ctx), 'c').filter((line) => !line.startsWith('c@0'));
+
+describe('Given a path held at stage 0 and at the conflict stages 1 and 2, modified on disk', () => {
+  describe.each([
+    { title: 'add c', run: (ctx: Ctx) => add(ctx, ['c']) },
+    { title: 'add all', run: (ctx: Ctx) => add(ctx, [], { all: true }) },
+  ])('When $title runs', ({ run }) => {
+    it('Then the stage 0 entry is re-staged and the conflict stages stay without a record', async () => {
+      // Arrange
+      const ctx = await seedZeroBesideConflict('c-new');
+      const before = await conflictStagesOf(ctx);
+      const zeroBefore = (await stagesOf(ctx)).find((line) => line.startsWith('c@0:'));
+      const sut = run;
+
+      // Act
+      const result = await sut(ctx);
+      const after = await stagesOf(ctx);
+
+      // Assert
+      expect(result.modified).toEqual(['c']);
+      expect(after.find((line) => line.startsWith('c@0:'))).not.toBe(zeroBefore);
+      expect(stagesAt(after, 'c')).toEqual(['0', '1', '2']);
+      expect(await conflictStagesOf(ctx)).toEqual(before);
+      expect(await recordedStages(ctx)).toEqual([]);
+    });
+  });
+});
+
+describe('Given a path held at stage 0 and at the conflict stages 1 and 2, unchanged on disk', () => {
+  describe('When add c runs', () => {
+    it('Then the index keeps every entry and reports no change', async () => {
+      // Arrange
+      const ctx = await seedZeroBesideConflict('c-zero');
+      const before = await stagesOf(ctx);
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, ['c']);
+
+      // Assert
+      expect(result.modified).toEqual([]);
+      expect(await stagesOf(ctx)).toEqual(before);
+      expect(await recordedStages(ctx)).toEqual([]);
+    });
+  });
+});
+
+describe('Given a path held at stage 0 and at the conflict stages 1 and 2, deleted from disk', () => {
+  describe('When add all runs', () => {
+    it('Then every stage is gone and the conflict stages are recorded', async () => {
+      // Arrange
+      const ctx = await seedZeroBesideConflict(undefined);
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, [], { all: true });
+
+      // Assert
+      expect(result.removed).toEqual(['c']);
+      expect(await stagesOf(ctx)).toEqual([]);
+      expect(await recordedStages(ctx)).toEqual([['c', [1, 2]]]);
+    });
+  });
+});
