@@ -10,7 +10,7 @@
  *   surface:        repo.reset
  *   bucket:         cross-tool-interop
  *   unique:         a backslash index path is refused on Windows as git for Windows refuses it, and an index already holding one still reads
- *   interopSurface: reset, update-index, ls-files
+ *   interopSurface: reset, checkout, update-index, ls-files
  */
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
@@ -195,6 +195,41 @@ describe('backslash path windows interop', () => {
           expect(errorReasonOf(oursError)).toBe(gitRefuses ? BACKSLASH_REASON : undefined);
           expect(listIndex(oursDir)).toStrictEqual(listIndex(peerDir));
           expect(listIndex(peerDir)).toStrictEqual(gitRefuses ? [SEED_FILE] : [target]);
+          for (const dir of [peerDir, oursDir]) {
+            expect(existsSync(path.join(dir, '.git', 'hooks', 'post-checkout'))).toBe(false);
+          }
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a commit holding a backslash path', () => {
+    describe('When the commit is checked out', () => {
+      afterEach(rewindShared);
+
+      it.each([
+        ...REFUSED_ROWS.map((row) => ({ ...row, gitRefuses: true })),
+        ...ADMITTED_ROWS.map((row) => ({ ...row, gitRefuses: false })),
+      ])(
+        'Then $path is refused by tsgit iff refused by git ($gitRefuses)',
+        async ({ path: target, mode, gitRefuses }) => {
+          // Arrange
+          const { peerDir, oursDir, repo } = shared;
+          const peerCommit = buildLeafCommit(peerDir, target, mode);
+          const oursCommit = buildLeafCommit(oursDir, target, mode);
+
+          // Act
+          const gitResult = gitIn(peerDir, ['checkout', '-q', peerCommit]);
+          const oursError = await captureError(() => repo.checkout({ rev: oursCommit }));
+
+          // Assert
+          expect(gitResult.exitCode).toBe(gitRefuses ? 1 : 0);
+          expect(errorCodeOf(oursError)).toBe(gitRefuses ? INVALID_INDEX_ENTRY : undefined);
+          expect(errorReasonOf(oursError)).toBe(gitRefuses ? BACKSLASH_REASON : undefined);
+          expect(gitOut(peerDir, ['rev-parse', 'HEAD'])).toBe(gitRefuses ? peerSeed : peerCommit);
+          expect(gitOut(oursDir, ['rev-parse', 'HEAD'])).toBe(gitRefuses ? oursSeed : oursCommit);
+          expect(listIndex(oursDir)).toStrictEqual(listIndex(peerDir));
           for (const dir of [peerDir, oursDir]) {
             expect(existsSync(path.join(dir, '.git', 'hooks', 'post-checkout'))).toBe(false);
           }
