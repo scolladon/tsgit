@@ -65,7 +65,7 @@ Every command that rewrites `.git/index` keeps git's index extensions the way gi
 invalidated along each changed or re-staged path and kept elsewhere; resolve-undo records (`REUC`) survive in-place
 writers (`add`, `rm`, `mv`, `reset` without `--hard`, `checkout -- <paths>`, `submodule add`) and are dropped by writers
 that rebuild the index from a tree or a merge (`checkout <branch>`, `reset --hard`, `merge`, `pull`, `cherryPick`,
-`revert`, `rebase`, `stash`, `worktree add`); the untracked cache (`UNTR`) survives while the set of tracked paths is
+`revert`, `rebase`, `stash`, `worktree add`); `add` also records the stages of the conflicts it resolves in `REUC`, as git does; the untracked cache (`UNTR`) survives while the set of tracked paths is
 unchanged; extensions tsgit does not know are dropped, as git drops them. Entries are written in git's UTF-8 byte order.
 `status` writes refreshed stat data back under git's optional lock (see [`status`](status.md)); its `StatusOptions`
 type is exported from the `@scolladon/tsgit/commands` barrel.
