@@ -456,4 +456,17 @@ describe('Given the unmerged stages of a path', () => {
       expect(result.pathBytes).toEqual(pathBytes);
     });
   });
+
+  describe('When the first stage has a UTF-8 path', () => {
+    it('Then the record carries no pathBytes key', () => {
+      // Arrange
+      const stages = [unmerged(1, BASE)];
+
+      // Act
+      const result = resolveUndoRecordOf(stages);
+
+      // Assert
+      expect('pathBytes' in result).toBe(false);
+    });
+  });
 });
