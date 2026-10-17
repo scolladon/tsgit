@@ -225,13 +225,18 @@ const addLiteralOnly = async (
   const lock = await acquireIndexLock(ctx);
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
-    const { indexRules, ...state } = await readExistingEntries(ctx);
+    const { indexRules, unmergedStages, sorted, ...state } = await readExistingEntries(ctx);
     const staging = { ctx, scope: { ...scope, indexRules }, ...state, ensurePromisorConfigValid };
     const { newEntries, added, modified, eolNotices, restagedPaths } = await stageLiterals(
       staging,
       validated,
     );
-    await commitIfChanged(lock, state.entries.size, Array.from(newEntries.values()), restagedPaths);
+    await commitIfChanged(
+      lock,
+      sorted.length,
+      withEveryStage(newEntries, unmergedStages),
+      restagedPaths,
+    );
     return { added, modified, removed: [], eolNotices };
   } finally {
     await lock.release();
@@ -481,8 +486,8 @@ const addByPathspec = async (
     for (const entry of removedEntries) remaining.delete(indexPathKey(entry));
     await commitIfChanged(
       lock,
-      staged.existing.size,
-      Array.from(remaining.values()),
+      staged.sorted.length,
+      withEveryStage(remaining, staged.unmergedStages),
       restagedPaths,
     );
     return {
@@ -624,9 +629,17 @@ const stageIgnoredWalk = async (
   ensurePromisorConfigValid: PromisorGuard,
 ): Promise<{
   readonly existing: ReadonlyMap<IndexPathKey, IndexEntry>;
+  readonly unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>;
+  readonly sorted: ReadonlyArray<IndexEntry>;
   readonly outcomes: ReadonlyArray<WalkOutcome>;
 }> => {
-  const { entries: existing, indexMtime, indexRules } = await readExistingEntries(ctx);
+  const {
+    entries: existing,
+    unmergedStages,
+    sorted,
+    indexMtime,
+    indexRules,
+  } = await readExistingEntries(ctx);
   const outcomes = await stageWalkedEntries(
     ctx,
     walkWorkingTree(ctx, { ignore }),
@@ -636,7 +649,7 @@ const stageIgnoredWalk = async (
     indexMtime,
     ensurePromisorConfigValid,
   );
-  return { existing, outcomes };
+  return { existing, unmergedStages, sorted, outcomes };
 };
 
 /** `.gitignore` prunes directories and leaves; the pathspec filters leaves only. */
@@ -709,7 +722,13 @@ export const addAll = async (
   const lock = await acquireIndexLock(ctx);
   const ensurePromisorConfigValid = createPromisorGuard(ctx);
   try {
-    const { entries: existing, indexMtime, indexRules } = await readExistingEntries(ctx);
+    const {
+      entries: existing,
+      unmergedStages,
+      sorted,
+      indexMtime,
+      indexRules,
+    } = await readExistingEntries(ctx);
     const newEntries = new Map<IndexPathKey, IndexEntry>(existing);
     const seen = new Set<IndexPathKey>();
     const added: FilePath[] = [];
@@ -741,8 +760,8 @@ export const addAll = async (
     removed.sort();
     await commitIfChanged(
       lock,
-      existing.size,
-      Array.from(newEntries.values()),
+      sorted.length,
+      withEveryStage(newEntries, unmergedStages),
       restagedPathsOf(outcomes, existing),
     );
     return { added, modified, removed, eolNotices: noticesOf(outcomes) };
@@ -841,7 +860,12 @@ const processWalkEntry = async (
 };
 
 interface ExistingIndexState {
+  /** One entry per path: the stage-0 entry, or the last stage of an unmerged path. */
   readonly entries: ReadonlyMap<IndexPathKey, IndexEntry>;
+  /** Every stage of every unmerged path, in index order. */
+  readonly unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>;
+  /** The entries as read — one per stage, so its length is what the index holds. */
+  readonly sorted: ReadonlyArray<IndexEntry>;
   readonly indexMtime: IndexMtime | undefined;
   readonly indexRules: ReadonlyMap<FilePath, IndexEntry>;
 }
@@ -850,12 +874,29 @@ const readExistingEntries = async (ctx: Context): Promise<ExistingIndexState> =>
   const { entries, indexMtime } = await readIndexOrEmpty(ctx);
   const out = new Map<IndexPathKey, IndexEntry>();
   const unmerged: IndexEntry[] = [];
+  const unmergedStages = new Map<IndexPathKey, IndexEntry[]>();
   for (const entry of entries) {
-    out.set(indexPathKey(entry), entry);
-    if (entry.flags.stage !== 0) unmerged.push(entry);
+    const key = indexPathKey(entry);
+    out.set(key, entry);
+    if (entry.flags.stage === 0) continue;
+    unmerged.push(entry);
+    unmergedStages.set(key, [...(unmergedStages.get(key) ?? []), entry]);
   }
   const indexRules = new Map(indexRuleEntries(unmerged).map((entry) => [entry.path, entry]));
-  return { entries: out, indexMtime, indexRules };
+  return { entries: out, unmergedStages, sorted: entries, indexMtime, indexRules };
+};
+
+/** The entries to write: what the add staged, plus every stage of the unmerged paths it left alone. */
+const withEveryStage = (
+  entries: ReadonlyMap<IndexPathKey, IndexEntry>,
+  unmergedStages: ReadonlyMap<IndexPathKey, ReadonlyArray<IndexEntry>>,
+): IndexEntry[] => {
+  if (unmergedStages.size === 0) return Array.from(entries.values());
+  const out = Array.from(entries.values()).filter((entry) => entry.flags.stage === 0);
+  for (const [key, stages] of unmergedStages) {
+    if ((entries.get(key)?.flags.stage ?? 0) !== 0) out.push(...stages);
+  }
+  return out;
 };
 
 const readIndexOrEmpty = async (
