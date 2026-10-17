@@ -305,7 +305,7 @@ const stageLiterals = async (
   staging: Staging,
   validated: ReadonlyArray<FilePath>,
 ): Promise<{
-  readonly newEntries: ReadonlyMap<IndexPathKey, IndexEntry>;
+  readonly newEntries: Map<IndexPathKey, IndexEntry>;
   readonly added: ReadonlyArray<FilePath>;
   readonly modified: ReadonlyArray<FilePath>;
   readonly eolNotices: ReadonlyArray<EolNotice>;
@@ -350,18 +350,19 @@ interface InsertedPath {
 /**
  * A path that now holds a non-directory leaves nothing beneath it, and a path staged beneath a
  * tracked file or symlink leaves that one behind — silently, as the removal pass reports it.
+ * Takes ownership of `newEntries` (the caller's fresh map) and returns it as `remaining`.
  */
 const dropBeneathInserted = async (
   ctx: Context,
   { sorted, inserted }: IndexView,
   matcher: ResolvedPathspec['matcher'],
-  newEntries: ReadonlyMap<IndexPathKey, IndexEntry>,
+  newEntries: Map<IndexPathKey, IndexEntry>,
 ): Promise<{
   remaining: Map<IndexPathKey, IndexEntry>;
   removed: FilePath[];
   dropped: Set<IndexPathKey>;
 }> => {
-  const remaining = new Map(newEntries);
+  const remaining = newEntries;
   const removed: FilePath[] = [];
   const dropped = new Set<IndexPathKey>();
   for (const { path, previous } of inserted) {
@@ -870,7 +871,7 @@ const tallyWalkOutcomes = (
   existing: ReadonlyMap<IndexPathKey, IndexEntry>,
   outcomes: ReadonlyArray<WalkOutcome>,
 ): {
-  readonly newEntries: ReadonlyMap<IndexPathKey, IndexEntry>;
+  readonly newEntries: Map<IndexPathKey, IndexEntry>;
   readonly matched: ReadonlyArray<FilePath>;
   readonly added: ReadonlyArray<FilePath>;
   readonly modified: ReadonlyArray<FilePath>;
