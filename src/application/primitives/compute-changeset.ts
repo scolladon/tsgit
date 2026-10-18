@@ -7,12 +7,7 @@
  * 13.1 design step 5).
  */
 import type { GitIndex } from '../../domain/git-index/index.js';
-import {
-  type IndexPath,
-  type IndexPathKey,
-  indexPathKey,
-} from '../../domain/git-index/index-path-key.js';
-import { compareEntryPath } from '../../domain/git-index/index-writer.js';
+import { compareEntryPath, inOrder } from '../../domain/git-index/index-writer.js';
 import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 
 export interface ChangesetEntry {
@@ -52,20 +47,11 @@ interface IndexProjection {
   readonly mode: FileMode;
 }
 
-const projectIndex = (currentIndex: GitIndex): Map<IndexPathKey, IndexProjection> => {
-  const indexByKey = new Map<IndexPathKey, IndexProjection>();
-  for (const entry of currentIndex.entries) {
-    if (entry.flags.stage !== 0) continue;
-    indexByKey.set(indexPathKey(entry), entry);
-  }
-  return indexByKey;
-};
-
-const projectTarget = (targetTree: ReadonlyArray<TargetEntry>): Map<IndexPathKey, TargetEntry> => {
-  const targetByKey = new Map<IndexPathKey, TargetEntry>();
-  for (const t of targetTree) targetByKey.set(indexPathKey(t), t);
-  return targetByKey;
-};
+const stage0Ordered = (currentIndex: GitIndex): ReadonlyArray<IndexProjection> =>
+  inOrder(
+    currentIndex.entries.filter((entry) => entry.flags.stage === 0),
+    compareEntryPath,
+  );
 
 const pathFields = (source: {
   readonly path: FilePath;
@@ -113,31 +99,43 @@ const classify = (
   };
 };
 
+const headOrder = (
+  indexEntry: IndexProjection | undefined,
+  targetEntry: TargetEntry | undefined,
+) => {
+  if (indexEntry === undefined) return 1;
+  if (targetEntry === undefined) return -1;
+  return compareEntryPath(indexEntry, targetEntry);
+};
+
+const joinOrdered = (
+  indexSide: ReadonlyArray<IndexProjection>,
+  targetSide: ReadonlyArray<TargetEntry>,
+  emit: (entry: ChangesetEntry) => void,
+): void => {
+  let i = 0;
+  let t = 0;
+  while (i < indexSide.length || t < targetSide.length) {
+    const indexEntry = indexSide[i];
+    const targetEntry = targetSide[t];
+    const order = headOrder(indexEntry, targetEntry);
+    emit(classify(order <= 0 ? indexEntry : undefined, order >= 0 ? targetEntry : undefined));
+    if (order <= 0) i += 1;
+    if (order >= 0) t += 1;
+  }
+};
+
 export const computeChangeset = (
   currentIndex: GitIndex,
   targetTree: ReadonlyArray<TargetEntry>,
 ): Changeset => {
-  const indexByKey = projectIndex(currentIndex);
-  const targetByKey = projectTarget(targetTree);
-
-  const allKeys = new Set<IndexPathKey>();
-  for (const k of indexByKey.keys()) allKeys.add(k);
-  for (const k of targetByKey.keys()) allKeys.add(k);
-
   const entries: ChangesetEntry[] = [];
   const stats = { add: 0, update: 0, delete: 0, noop: 0 };
 
-  const byBytes = (a: IndexPathKey, b: IndexPathKey): number =>
-    compareEntryPath(
-      (indexByKey.get(a) ?? targetByKey.get(a)) as IndexPath,
-      (indexByKey.get(b) ?? targetByKey.get(b)) as IndexPath,
-    );
-
-  for (const key of [...allKeys].sort(byBytes)) {
-    const entry = classify(indexByKey.get(key), targetByKey.get(key));
+  joinOrdered(stage0Ordered(currentIndex), inOrder(targetTree, compareEntryPath), (entry) => {
     entries.push(entry);
     stats[entry.kind] += 1;
-  }
+  });
 
   return { entries, stats };
 };
