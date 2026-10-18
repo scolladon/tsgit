@@ -1,3 +1,4 @@
+import { MAX_FLAT_TREE_ENTRIES } from '../../../domain/diff/index.js';
 import { operationAborted } from '../../../domain/error.js';
 import {
   type IndexPath,
@@ -5,7 +6,7 @@ import {
   indexPathOfEscaped,
 } from '../../../domain/git-index/index-path-key.js';
 import { decodeEscapingInvalid } from '../../../domain/objects/encoding.js';
-import { treeDepthExceeded } from '../../../domain/objects/error.js';
+import { treeDepthExceeded, treeEntryLimitExceeded } from '../../../domain/objects/error.js';
 import { FILE_MODE } from '../../../domain/objects/file-mode.js';
 import type {
   FileMode,
@@ -16,7 +17,7 @@ import type {
 } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readTree } from '../read-tree.js';
-import { exceedsMaxTreeDepth } from '../validators.js';
+import { exceedsMaxTreeDepth, exceedsMaxTreeEntries } from '../validators.js';
 import { resolveMaxTreeDepth } from './resolve-max-tree-depth.js';
 
 export interface FileVersion extends IndexPath {
@@ -54,6 +55,9 @@ const subtreeEntries = async (
 interface Walk {
   readonly ctx: Context;
   readonly maxDepth: number;
+  readonly maxEntries: number;
+  /** Entries read so far, on both sides. */
+  visited: number;
   readonly oldFiles: FileVersion[];
   readonly sharedDirs: Set<string>;
 }
@@ -99,6 +103,10 @@ const walkPair = async (
 ): Promise<void> => {
   if (walk.ctx.signal?.aborted) throw operationAborted();
   if (exceedsMaxTreeDepth(depth, walk.maxDepth)) throw treeDepthExceeded(depth);
+  walk.visited += oldEntries.length + newEntries.length;
+  if (exceedsMaxTreeEntries(walk.visited, walk.maxEntries)) {
+    throw treeEntryLimitExceeded(walk.visited, walk.maxEntries);
+  }
   const [olds, news] = [byName(oldEntries), byName(newEntries)];
   for (const name of new Set([...olds.keys(), ...news.keys()])) {
     await visitPair(walk, prefix, depth, [olds.get(name), news.get(name)], name);
@@ -113,10 +121,13 @@ export const diffTreesPruned = async (
   ctx: Context,
   oldTree: ObjectId,
   newTree: ObjectId,
+  maxEntries: number = MAX_FLAT_TREE_ENTRIES,
 ): Promise<PrunedTreeDiff> => {
   const walk: Walk = {
     ctx,
     maxDepth: await resolveMaxTreeDepth(ctx),
+    maxEntries,
+    visited: 0,
     oldFiles: [],
     sharedDirs: new Set(),
   };

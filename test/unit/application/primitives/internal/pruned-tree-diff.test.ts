@@ -182,10 +182,56 @@ describe('diffTreesPruned', () => {
           ]);
 
         // Act
-        const attempt = diffTreesPruned(ctx, await nested(one), await nested(two));
+        const sut = diffTreesPruned;
+        const attempt = sut(ctx, await nested(one), await nested(two));
 
         // Assert
         await expect(attempt).rejects.toMatchObject({ data: { code: 'TREE_DEPTH_EXCEEDED' } });
+      });
+    });
+  });
+
+  describe('Given differing files exactly at core.maxTreeDepth', () => {
+    describe('When they are compared', () => {
+      it('Then the files are listed without descending into them', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 1\n');
+        const [one, two] = [await blob(ctx, '1'), await blob(ctx, '2')];
+        const rootWith = async (id: ObjectId) =>
+          writeTree(ctx, [dir('a', await writeTree(ctx, [file('f', id)]))]);
+
+        // Act
+        const sut = diffTreesPruned;
+        const result = await sut(ctx, await rootWith(one), await rootWith(two));
+
+        // Assert
+        expect(pathsOf(result)).toEqual(['a/f']);
+      });
+    });
+  });
+
+  describe('Given an old tree that fans out past the entry cap', () => {
+    describe('When it is compared with an empty tree', () => {
+      it('Then it refuses with TREE_ENTRY_LIMIT_EXCEEDED carrying the count and the cap', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const leaf = await writeTree(ctx, [file('f', await blob(ctx, '1'))]);
+        const fanOut = async (child: ObjectId) =>
+          writeTree(ctx, [dir('x', child), dir('y', child)]);
+        let bomb = leaf;
+        for (let level = 0; level < 4; level += 1) bomb = await fanOut(bomb);
+        const empty = await writeTree(ctx, []);
+        const cap = 10;
+
+        // Act
+        const sut = diffTreesPruned;
+        const attempt = sut(ctx, bomb, empty, cap);
+
+        // Assert
+        await expect(attempt).rejects.toMatchObject({
+          data: { code: 'TREE_ENTRY_LIMIT_EXCEEDED', count: 12, limit: cap },
+        });
       });
     });
   });
@@ -204,7 +250,8 @@ describe('diffTreesPruned', () => {
         controller.abort();
 
         // Act
-        const attempt = diffTreesPruned(ctx, oldRoot, newRoot);
+        const sut = diffTreesPruned;
+        const attempt = sut(ctx, oldRoot, newRoot);
 
         // Assert
         await expect(attempt).rejects.toMatchObject({ data: { code: 'OPERATION_ABORTED' } });
