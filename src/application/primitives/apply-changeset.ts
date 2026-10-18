@@ -25,7 +25,7 @@ import { checkoutOverwriteDirty, type WouldOverwriteClasses } from '../../domain
 import { comparePaths } from '../../domain/diff/index.js';
 import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import { TsgitError } from '../../domain/error.js';
-import { type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
+import type { IndexEntry } from '../../domain/git-index/index.js';
 import { isLossy } from '../../domain/git-index/index-path-key.js';
 import { type IndexPathRules, NO_PARSER_OFFSET } from '../../domain/git-index/path-validator.js';
 import {
@@ -45,6 +45,7 @@ import { removeEmptyDirectory } from './internal/empty-directories.js';
 import { withFilterProcessPool } from './internal/filter-process-pool.js';
 import { lstatIfReachable } from './internal/fs-probes.js';
 import { buildRepoIgnorePredicate } from './internal/ignore-evaluator.js';
+import { indexEntryFromStat } from './internal/index-entry-from-stat.js';
 import { indexPathRulesOf } from './internal/index-path-rules.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { lazily } from './internal/lazily.js';
@@ -372,22 +373,7 @@ const buildIndexEntry = async (
   id: string,
   mode: FileMode,
 ): Promise<IndexEntry> => {
-  const stat = await ctx.fs.lstat(absPath);
-  return {
-    ctimeSeconds: Math.floor(stat.ctimeMs / 1000),
-    ctimeNanoseconds: Number(stat.ctimeNs ?? 0n) % 1_000_000_000,
-    mtimeSeconds: Math.floor(stat.mtimeMs / 1000),
-    mtimeNanoseconds: Number(stat.mtimeNs ?? 0n) % 1_000_000_000,
-    dev: stat.dev,
-    ino: stat.ino,
-    mode,
-    uid: stat.uid,
-    gid: stat.gid,
-    fileSize: stat.size,
-    id: id as IndexEntry['id'],
-    flags: STAGE0_FLAGS,
-    path: relPath,
-  };
+  return indexEntryFromStat(await ctx.fs.lstat(absPath), mode, id as IndexEntry['id'], relPath);
 };
 
 const applyDeleteEntry = async (

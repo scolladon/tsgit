@@ -285,6 +285,35 @@ describe('applyChangeset', () => {
     });
   });
 
+  describe('Given a written file whose stat carries nanosecond times above 2^53', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then the entry records the exact nanosecond remainders', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, new TextEncoder().encode('hello world'));
+        const original = ctx.fs.lstat.bind(ctx.fs);
+        const exactNs = 1792332868089358810n;
+        vi.spyOn(ctx.fs, 'lstat').mockImplementation(async (path) => {
+          const stat = await original(path);
+          return path === `${WORKDIR}/foo.txt`
+            ? { ...stat, ctimeNs: exactNs, mtimeNs: exactNs }
+            : stat;
+        });
+
+        // Act
+        const result = await applyChangeset(ctx, {
+          changeset: makeChangeset([makeAdd('foo.txt', id)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(result.writtenEntries[0]?.mtimeNanoseconds).toBe(89358810);
+        expect(result.writtenEntries[0]?.ctimeNanoseconds).toBe(89358810);
+      });
+    });
+  });
+
   describe('Given an add entry with executable mode', () => {
     describe('When applyChangeset runs', () => {
       it('Then chmods to 0o755 and records the EXECUTABLE mode', async () => {
