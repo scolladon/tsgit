@@ -10,7 +10,10 @@ import { looseObjectPath } from '../../../../../src/application/primitives/path-
 import { readTree } from '../../../../../src/application/primitives/read-tree.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
-import { invalidateCacheTree } from '../../../../../src/domain/git-index/cache-tree.js';
+import {
+  invalidateCacheTree,
+  invalidateCacheTreeKeepingOids,
+} from '../../../../../src/domain/git-index/cache-tree.js';
 import {
   type CacheTreeEntry,
   type IndexEntry,
@@ -273,6 +276,131 @@ describe('updateCacheTree', () => {
           actual: 'blob',
           id: blob,
         });
+      });
+    });
+  });
+
+  describe('Given a carried root that names a blob', () => {
+    describe('When repairing', () => {
+      it('Then it resolves without a type check and keeps the root as carried', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const blob = await writeObject(ctx, {
+          type: 'blob',
+          content: new Uint8Array(0),
+          id: '' as ObjectId,
+        });
+        const carried = { path: '', entryCount: 1, subtreeCount: 0, id: blob, children: [] };
+        const entries = [{ ...entryAt('f'), id: blob }];
+        const sut = updateCacheTree;
+        // Act
+        const result = await sut(ctx, entries, carried, 'repair');
+        // Assert
+        expect(result.cacheTree.entryCount).toBe(1);
+        expect(result.cacheTree.id).toBe(blob);
+      });
+    });
+  });
+
+  describe('Given stored trees for b and c and a staged new directory', () => {
+    const shape = (root: CacheTreeEntry): string[] =>
+      nodesOf(root).map((node) => `${node.path === '' ? '<root>' : node.path}:${node.entryCount}`);
+
+    const carriedFor = async (stored: string[], invalid: string[]) => {
+      const ctx = createMemoryContext();
+      const { cacheTree } = await updateCacheTree(ctx, entriesOf(...stored), undefined, 'write');
+      return { ctx, cacheTree, seed: invalidateCacheTree(cacheTree, entriesOf(...invalid)) };
+    };
+
+    describe('When repairing an unrepairable a/new that precedes the carried b and c', () => {
+      it('Then the unvisited b and c keep their carried state and the children stay in subtree order', async () => {
+        // Arrange
+        const { ctx, seed } = await carriedFor(['b/f', 'c/f'], ['a/new/g']);
+        const entries = entriesOf('a/new/g', 'b/f', 'c/f');
+        const sut = updateCacheTree;
+        // Act
+        const result = await sut(ctx, entries, seed, 'repair');
+        // Assert
+        expect(shape(result.cacheTree)).toEqual(['<root>:-1', 'a:-1', 'new:-1', 'b:1', 'c:1']);
+      });
+    });
+
+    describe('When repairing a staged aa/n/g beside a carried invalid b', () => {
+      it('Then aa is met before b in index order and b stays invalid', async () => {
+        // Arrange
+        const { ctx, seed } = await carriedFor(['b/f', 'c/f'], ['b/f']);
+        const entries = entriesOf('aa/n/g', 'b/f', 'c/f');
+        const sut = updateCacheTree;
+        // Act
+        const result = await sut(ctx, entries, seed, 'repair');
+        // Assert
+        expect(shape(result.cacheTree)).toEqual(['<root>:-1', 'b:-1', 'c:1', 'aa:-1', 'n:-1']);
+      });
+    });
+
+    describe('When repairing a staged a/n/g beside a carried invalid a-b', () => {
+      it('Then a-b is met before a in index order and is repaired', async () => {
+        // Arrange
+        const { ctx, seed } = await carriedFor(['a-b/f', 'c/f'], ['a-b/f']);
+        const entries = entriesOf('a-b/f', 'a/n/g', 'c/f');
+        const sut = updateCacheTree;
+        // Act
+        const result = await sut(ctx, entries, seed, 'repair');
+        // Assert
+        expect(shape(result.cacheTree)).toEqual(['<root>:-1', 'a:-1', 'n:-1', 'c:1', 'a-b:1']);
+      });
+    });
+
+    describe('When repairing with an invalid a whose earlier oid is kept', () => {
+      it('Then the abort still reaches the root and the invalid b is left unvisited', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const stored = entriesOf('a/x', 'b/f', 'c/f');
+        const { cacheTree } = await updateCacheTree(ctx, stored, undefined, 'write');
+        const seed = invalidateCacheTreeKeepingOids(cacheTree, entriesOf('a/new/g', 'b/f'));
+        const entries = entriesOf('a/new/g', 'a/x', 'b/f', 'c/f');
+        const sut = updateCacheTree;
+        // Act
+        const result = await sut(ctx, entries, seed, 'repair');
+        // Assert
+        expect(shape(result.cacheTree)).toEqual(['<root>:-1', 'a:-1', 'new:-1', 'b:-1', 'c:1']);
+      });
+    });
+
+    describe('When repairing with the stored tree of c lost', () => {
+      it('Then c is unvisited and keeps the count it carried', async () => {
+        // Arrange
+        const { ctx, cacheTree, seed } = await carriedFor(['a/x', 'b/f', 'c/f'], ['a/new/g']);
+        await deleteObject(ctx, childNamed(cacheTree, 'c').id);
+        const entries = entriesOf('a/new/g', 'a/x', 'b/f', 'c/f');
+        const sut = updateCacheTree;
+        // Act
+        const result = await sut(ctx, entries, seed, 'repair');
+        // Assert
+        expect(childNamed(result.cacheTree, 'c').entryCount).toBe(1);
+        expect(childNamed(result.cacheTree, 'c').id).toBe(childNamed(cacheTree, 'c').id);
+      });
+    });
+  });
+
+  describe('Given a staged a/s/x whose new content has no stored tree and an earlier oid kept', () => {
+    describe('When repairing', () => {
+      it('Then the sibling b is still repaired because a/s does not abort its parent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { cacheTree } = await updateCacheTree(
+          ctx,
+          entriesOf('a/s/x', 'b/f'),
+          undefined,
+          'write',
+        );
+        const seed = invalidateCacheTreeKeepingOids(cacheTree, entriesOf('a/s/x', 'b/f'));
+        const restaged = [{ ...entryAt('a/s/x'), id: 'e'.repeat(40) as ObjectId }, entryAt('b/f')];
+        const sut = updateCacheTree;
+        // Act
+        const result = await sut(ctx, restaged, seed, 'repair');
+        // Assert
+        expect(childNamed(result.cacheTree, 'b').entryCount).toBe(1);
       });
     });
   });
