@@ -395,4 +395,61 @@ describe('stash carries index extensions', () => {
       });
     });
   });
+
+  describe('Given a staged edit and an unstaged edit and an index carrying extensions', () => {
+    describe('When stash push --keep-index resets to HEAD and restores the index', () => {
+      it('Then the cache-tree is invalid along the kept staged path only', async () => {
+        // Arrange
+        const ctx = await repoWithExtensions();
+        await write(ctx, 'x/y', 'staged\n');
+        await add(ctx, ['x/y']);
+        await write(ctx, 'a', 'unstaged\n');
+        await carryAllExtensions(ctx);
+
+        // Act
+        const sut = stashPush;
+        await sut(ctx, { keepIndex: true });
+
+        // Assert
+        expect(await chains(ctx)).toEqual([false, true, true, false]);
+      });
+    });
+  });
+
+  describe('Given a staged new file and an index carrying extensions', () => {
+    describe('When stash push --keep-index keeps the new file staged', () => {
+      it('Then the cache-tree is invalid along the new path and valid elsewhere', async () => {
+        // Arrange
+        const ctx = await repoWithExtensions();
+        await write(ctx, 'd/e/n', 'n\n');
+        await add(ctx, ['d/e/n']);
+        await carryAllExtensions(ctx);
+
+        // Act
+        const sut = stashPush;
+        await sut(ctx, { keepIndex: true });
+
+        // Assert
+        expect(await chains(ctx)).toEqual([false, false, false, true]);
+      });
+    });
+  });
+
+  describe('Given an unstaged edit only and an index carrying extensions', () => {
+    describe('When stash push --keep-index finds the index equal to HEAD', () => {
+      it('Then no cache-tree chain is invalid', async () => {
+        // Arrange
+        const ctx = await repoWithExtensions();
+        await write(ctx, 'x/y', 'edited\n');
+        await carryAllExtensions(ctx);
+
+        // Act
+        const sut = stashPush;
+        await sut(ctx, { keepIndex: true });
+
+        // Assert
+        expect(await chains(ctx)).toEqual(ALL_VALID);
+      });
+    });
+  });
 });

@@ -105,7 +105,7 @@ const pathOf = (entry: IndexEntry): IndexPath =>
     ? { path: entry.path }
     : { path: entry.path, pathBytes: entry.pathBytes };
 
-/** The entries after the unstage, and the paths git re-adds (so invalidates in the cache-tree). */
+/** The entries after the unstage, and the restored paths git re-adds (so invalidates in the cache-tree). */
 export interface UnstageOutcome {
   readonly entries: IndexEntry[];
   readonly restagedPaths: IndexPath[];
@@ -133,5 +133,5 @@ export const unstageChangesUnlessNew = (
       restored.push(pathOf(entry));
     }
   }
-  return { entries, restagedPaths: [...added.map(pathOf), ...restored] };
+  return { entries, restagedPaths: restored };
 };

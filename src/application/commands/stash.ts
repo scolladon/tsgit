@@ -18,7 +18,12 @@ import type { EolSettings } from '../../domain/eol/crlf-action.js';
 import type { EolNotice } from '../../domain/eol/crlf-conversion.js';
 import { TsgitError } from '../../domain/error.js';
 import type { GitIndex, IndexEntry } from '../../domain/git-index/index.js';
-import { indexPathKey, keyOfPath } from '../../domain/git-index/index-path-key.js';
+import {
+  type IndexPath,
+  indexPathKey,
+  indexPathOfEscaped,
+  keyOfPath,
+} from '../../domain/git-index/index-path-key.js';
 import { abbreviateOid, type ConflictType, STASH_LABELS } from '../../domain/merge/index.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import { hasEscapedBytes } from '../../domain/objects/encoding.js';
@@ -573,6 +578,35 @@ interface ResetInputs {
   readonly opts: StashPushInput;
 }
 
+/** Paths whose entry differs between two trees (present in one only, or another id or mode). */
+const pathsDifferingBetween = async (
+  ctx: Context,
+  left: ObjectId,
+  right: ObjectId,
+): Promise<ReadonlyArray<IndexPath>> => {
+  const [leftFlat, rightFlat] = await Promise.all([
+    flattenEscapedTree(ctx, left),
+    flattenEscapedTree(ctx, right),
+  ]);
+  const differing: IndexPath[] = [];
+  for (const [path, entry] of leftFlat.entries) {
+    const other = rightFlat.entries.get(path);
+    if (other?.id !== entry.id || other.mode !== entry.mode)
+      differing.push(indexPathOfEscaped(path));
+  }
+  for (const path of rightFlat.entries.keys()) {
+    if (!leftFlat.entries.has(path)) differing.push(indexPathOfEscaped(path));
+  }
+  return differing;
+};
+
+/** Git resets to HEAD, then restores the index paths in place: their cache-tree chains go stale. */
+const keptIndexPaths = async (
+  ctx: Context,
+  { base, iTree, opts }: ResetInputs,
+): Promise<ReadonlyArray<IndexPath>> =>
+  opts.keepIndex === true ? pathsDifferingBetween(ctx, iTree, base.bTree) : [];
+
 /** Reset the working tree + index to HEAD (or the index tree under `--keep-index`). */
 const resetAfterPush = async (
   ctx: Context,
@@ -588,7 +622,9 @@ const resetAfterPush = async (
     force: true,
     forceRewriteAll: true,
   });
-  await lock.commit(result.newIndexEntries, 'replace');
+  await lock.commit(result.newIndexEntries, 'replace', {
+    restagedPaths: await keptIndexPaths(ctx, inputs),
+  });
   // Stryker disable next-line ConditionalExpression: equivalent — when `includeUntracked` is falsy `untracked.paths` is always empty, so the `if(true)` variant iterates an empty list (no-op); the `if(false)` variant is killed by the `-u` removal test.
   if (opts.includeUntracked === true) {
     for (const path of untracked.paths) await removeWorkingTreeFile(ctx, path);
