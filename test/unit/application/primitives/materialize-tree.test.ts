@@ -1337,7 +1337,8 @@ describe('materializeTree carrying staged changes (headTree)', () => {
         ]);
 
         // Act
-        const result = await materializeTree(ctx, { targetTree, currentIndex, headTree });
+        const sut = materializeTree;
+        const result = await sut(ctx, { targetTree, currentIndex, headTree });
 
         // Assert
         const byPath = new Map(result.newIndexEntries.map((e) => [e.path, e.id]));
@@ -1360,7 +1361,8 @@ describe('materializeTree carrying staged changes (headTree)', () => {
         ]);
 
         // Act
-        const result = await materializeTree(ctx, { targetTree, currentIndex, force: true });
+        const sut = materializeTree;
+        const result = await sut(ctx, { targetTree, currentIndex, force: true });
 
         // Assert
         const byPath = new Map(result.newIndexEntries.map((e) => [e.path, e.id]));
@@ -1382,7 +1384,8 @@ describe('materializeTree carrying staged changes (headTree)', () => {
         ]);
 
         // Act
-        const result = await materializeTree(ctx, { targetTree, currentIndex, headTree });
+        const sut = materializeTree;
+        const result = await sut(ctx, { targetTree, currentIndex, headTree });
 
         // Assert
         const byPath = new Map(result.newIndexEntries.map((e) => [e.path, e.id]));
@@ -1401,7 +1404,8 @@ describe('materializeTree carrying staged changes (headTree)', () => {
         const currentIndex = indexOf([makeIndexEntry('b', blobs.old as ObjectId)]);
 
         // Act
-        const result = await materializeTree(ctx, { targetTree, currentIndex, headTree });
+        const sut = materializeTree;
+        const result = await sut(ctx, { targetTree, currentIndex, headTree });
 
         // Assert
         expect(result.newIndexEntries.some((e) => e.path === ('c' as FilePath))).toBe(false);
@@ -1421,7 +1425,8 @@ describe('materializeTree carrying staged changes (headTree)', () => {
         const currentIndex = indexOf([makeIndexEntry('b', blobs.old as ObjectId)]);
 
         // Act
-        const result = await materializeTree(ctx, { targetTree, currentIndex, headTree, sparse });
+        const sut = materializeTree;
+        const result = await sut(ctx, { targetTree, currentIndex, headTree, sparse });
 
         // Assert
         expect(result.newIndexEntries.some((e) => e.path === ('c' as FilePath))).toBe(false);
@@ -1441,7 +1446,8 @@ describe('materializeTree carrying staged changes (headTree)', () => {
         ]);
 
         // Act
-        const result = await materializeTree(ctx, { targetTree, currentIndex, headTree, sparse });
+        const sut = materializeTree;
+        const result = await sut(ctx, { targetTree, currentIndex, headTree, sparse });
 
         // Assert
         const staged = result.newIndexEntries.find((e) => e.path === ('n' as FilePath));
@@ -1464,7 +1470,8 @@ describe('materializeTree carrying staged changes (headTree)', () => {
         const currentIndex = indexOf([makeIndexEntry('b', blobs.old as ObjectId)]);
 
         // Act
-        const result = await materializeTree(ctx, { targetTree, currentIndex, headTree });
+        const sut = materializeTree;
+        const result = await sut(ctx, { targetTree, currentIndex, headTree });
 
         // Assert
         const modes = new Map(result.newIndexEntries.map((e) => [e.path, e.mode]));
@@ -1488,9 +1495,8 @@ describe('materializeTree carrying staged changes (headTree)', () => {
         ]);
 
         // Act
-        const data = await refusalOf(() =>
-          materializeTree(ctx, { targetTree, currentIndex, headTree }),
-        );
+        const sut = materializeTree;
+        const data = await refusalOf(() => sut(ctx, { targetTree, currentIndex, headTree }));
 
         // Assert
         expect(data).toEqual({
@@ -1516,7 +1522,8 @@ describe('materializeTree carrying staged changes (headTree)', () => {
         ]);
 
         // Act
-        const result = await materializeTree(ctx, { targetTree, currentIndex, headTree });
+        const sut = materializeTree;
+        const result = await sut(ctx, { targetTree, currentIndex, headTree });
 
         // Assert
         const byPath = new Map(result.newIndexEntries.map((e) => [e.path, e.id]));
@@ -1534,9 +1541,8 @@ describe('materializeTree carrying staged changes (headTree)', () => {
         const currentIndex = indexOf([makeIndexEntry('c', blobs.same as ObjectId)]);
 
         // Act
-        const data = await refusalOf(() =>
-          materializeTree(ctx, { targetTree, currentIndex, headTree }),
-        );
+        const sut = materializeTree;
+        const data = await refusalOf(() => sut(ctx, { targetTree, currentIndex, headTree }));
 
         // Assert
         expect(data).toEqual({
@@ -1561,9 +1567,8 @@ describe('materializeTree carrying staged changes (headTree)', () => {
         ]);
 
         // Act
-        const data = await refusalOf(() =>
-          materializeTree(ctx, { targetTree, currentIndex, headTree }),
-        );
+        const sut = materializeTree;
+        const data = await refusalOf(() => sut(ctx, { targetTree, currentIndex, headTree }));
 
         // Assert
         expect(data).toEqual({
@@ -1589,9 +1594,8 @@ describe('materializeTree carrying staged changes (headTree)', () => {
         ]);
 
         // Act
-        const data = await refusalOf(() =>
-          materializeTree(ctx, { targetTree, currentIndex, headTree }),
-        );
+        const sut = materializeTree;
+        const data = await refusalOf(() => sut(ctx, { targetTree, currentIndex, headTree }));
 
         // Assert
         expect(data).toMatchObject({ localChanges: ['b', 'z'] });
@@ -1611,7 +1615,8 @@ describe('materializeTree carrying staged changes (headTree)', () => {
         ]);
 
         // Act
-        const result = await materializeTree(ctx, {
+        const sut = materializeTree;
+        const result = await sut(ctx, {
           targetTree,
           currentIndex,
           headTree,
@@ -1637,7 +1642,8 @@ describe('materializeTree carrying staged changes (headTree)', () => {
         ]);
 
         // Act
-        const result = await materializeTree(ctx, {
+        const sut = materializeTree;
+        const result = await sut(ctx, {
           targetTree,
           currentIndex,
           headTree,
@@ -1645,9 +1651,38 @@ describe('materializeTree carrying staged changes (headTree)', () => {
         });
 
         // Assert
+        expect(result.newIndexEntries.map((e) => e.path)).toEqual(['b', 'c', 'z']);
         const moved = result.newIndexEntries.find((e) => e.path === ('c' as FilePath));
         expect(moved?.id).toBe(blobs.same);
         expect(moved?.flags.skipWorktree).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a sparse switch and c skip-worktree in the index, deleted by the target', () => {
+    describe('When the index still equals head', () => {
+      it('Then c leaves the index and only b remains', async () => {
+        // Arrange
+        const { ctx, blobs, headTree } = await buildFixture();
+        const targetTree = await flatTree(ctx, { b: blobs.old as ObjectId });
+        await ctx.fs.rm(`${ctx.layout.workDir}/c`);
+        const hidden = makeIndexEntry('c', blobs.same as ObjectId);
+        const currentIndex = indexOf([
+          makeIndexEntry('b', blobs.old as ObjectId),
+          { ...hidden, flags: { ...hidden.flags, skipWorktree: true } },
+        ]);
+
+        // Act
+        const sut = materializeTree;
+        const result = await sut(ctx, {
+          targetTree,
+          currentIndex,
+          headTree,
+          sparse: (path) => path === 'b',
+        });
+
+        // Assert
+        expect(result.newIndexEntries.map((e) => e.path)).toEqual(['b']);
       });
     });
   });
@@ -1665,7 +1700,8 @@ describe('materializeTree carrying staged changes (headTree)', () => {
         ]);
 
         // Act
-        await materializeTree(ctx, { targetTree, currentIndex, headTree, sparse: () => true });
+        const sut = materializeTree;
+        await sut(ctx, { targetTree, currentIndex, headTree, sparse: () => true });
 
         // Assert
         expect(await readWork(ctx, 'c')).toBe('same');

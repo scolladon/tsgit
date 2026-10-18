@@ -67,7 +67,8 @@ describe('materializeTree carrying head agreement', () => {
         vi.mocked(readObject).mockClear();
 
         // Act
-        await materializeTree(ctx, { targetTree, currentIndex, headTree });
+        const sut = materializeTree;
+        await sut(ctx, { targetTree, currentIndex, headTree });
 
         // Assert
         const readIds = vi.mocked(readObject).mock.calls.map(([, id]) => id);
