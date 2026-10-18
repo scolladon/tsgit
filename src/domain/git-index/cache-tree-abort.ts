@@ -13,15 +13,34 @@ const SLASH = 0x2f;
 
 type Ids = ReadonlyArray<ObjectId | undefined>;
 
-/** git's update_one returns -1 for a subtree it cannot store when it has no earlier oid to fall back on. */
-const cannotBeRepaired = (plan: CacheTreePlan, ids: Ids, node: number): boolean =>
-  ids[node] === undefined && (plan.nodes[node] as PlannedNode).previousId === undefined;
+/** Earlier oids whose object is not stored. */
+export type AbsentIds = ReadonlySet<ObjectId>;
+
+/** git's update_one returns -1 for a subtree it cannot store when it has no stored earlier oid to fall back on. */
+const cannotBeRepaired = (
+  plan: CacheTreePlan,
+  ids: Ids,
+  absent: AbsentIds,
+  node: number,
+): boolean => {
+  if (ids[node] !== undefined) return false;
+  const previous = (plan.nodes[node] as PlannedNode).previousId;
+  return previous === undefined || absent.has(previous);
+};
 
 /** The nodes whose update_one returns -1: a child does, or a child is unrepairable. */
-export const abortedNodes = (plan: CacheTreePlan, ids: Ids): ReadonlySet<number> => {
+export const abortedNodes = (
+  plan: CacheTreePlan,
+  ids: Ids,
+  absent: AbsentIds,
+): ReadonlySet<number> => {
   const aborted = new Set<number>();
   for (const build of plan.builds) {
-    if (build.subtrees.some((child) => aborted.has(child) || cannotBeRepaired(plan, ids, child))) {
+    if (
+      build.subtrees.some(
+        (child) => aborted.has(child) || cannotBeRepaired(plan, ids, absent, child),
+      )
+    ) {
       aborted.add(build.node);
     }
   }
@@ -62,6 +81,16 @@ const visitedBy = (
   );
 };
 
+/** An aborted node returns before it sets its count and oid, so it keeps the ones it carried in. */
+const carriedState = (
+  node: CacheTreeEntry,
+  previous: CacheTreeEntry | undefined,
+): CacheTreeEntry => ({
+  ...node,
+  entryCount: previous?.entryCount ?? -1,
+  ...(previous?.id === undefined ? {} : { id: previous.id }),
+});
+
 /**
  * git stops at the first unrepairable directory: the ones before it are repaired, the ones
  * after it keep their carried state, and carried directories the index no longer has stay.
@@ -71,16 +100,17 @@ export const toRepairedCacheTree = (
   plan: CacheTreePlan,
   ids: Ids,
   carried: CacheTreeEntry | undefined,
+  absent: AbsentIds,
 ): CacheTreeEntry => {
-  const aborted = abortedNodes(plan, ids);
+  const aborted = abortedNodes(plan, ids, absent);
   const nodes = cacheTreeNodesOf(plan, ids);
 
   const stoppedAtChild = (index: number): boolean =>
-    aborted.has(index) &&
     (plan.nodes[index] as PlannedNode).children.some((child) => aborted.has(child));
 
   const settled = (index: number, previous: CacheTreeEntry | undefined): CacheTreeEntry => {
-    if (!stoppedAtChild(index)) return nodes[index] as CacheTreeEntry;
+    if (!aborted.has(index)) return nodes[index] as CacheTreeEntry;
+    if (!stoppedAtChild(index)) return carriedState(nodes[index] as CacheTreeEntry, previous);
     const visited = visitedBy(plan, aborted, index);
     const kept = (previous?.children ?? []).map((old) => {
       const child = visited.get(keyOf(nameOf(old)));
@@ -89,7 +119,10 @@ export const toRepairedCacheTree = (
     });
     const added = [...visited.values()].map((child) => settled(child, undefined));
     const children = [...kept, ...added].sort((a, b) => compareSubtreeNames(nameOf(a), nameOf(b)));
-    return { ...(nodes[index] as CacheTreeEntry), subtreeCount: children.length, children };
+    return carriedState(
+      { ...(nodes[index] as CacheTreeEntry), subtreeCount: children.length, children },
+      previous,
+    );
   };
 
   return settled(ROOT, carried);

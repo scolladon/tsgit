@@ -243,7 +243,7 @@ describe('IndexLock.commit', () => {
     });
 
     describe('When committing as a replace while the d tree object is missing', () => {
-      it('Then d and the root are invalid', async () => {
+      it('Then d is invalid and the root keeps the count it carried', async () => {
         // Arrange
         const ctx = await seededRepo();
         const entries = (await readIndex(ctx)).entries;
@@ -258,7 +258,7 @@ describe('IndexLock.commit', () => {
           SHA1_DIGEST,
         );
         expect(summary(tree)).toEqual([
-          ['', -1],
+          ['', 2],
           ['d', -1],
         ]);
       });

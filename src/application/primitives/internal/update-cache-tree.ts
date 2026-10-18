@@ -1,4 +1,4 @@
-import { toRepairedCacheTree } from '../../../domain/git-index/cache-tree-abort.js';
+import { type AbsentIds, toRepairedCacheTree } from '../../../domain/git-index/cache-tree-abort.js';
 import {
   type CacheTreePlan,
   type PlannedNode,
@@ -91,7 +91,7 @@ const withoutObjects = (node: CacheTreeEntry, missing: ReadonlySet<ObjectId>): C
 
 interface SettledPlan {
   readonly plan: CacheTreePlan;
-  readonly tree: CacheTreeEntry | undefined;
+  readonly present: Set<ObjectId>;
 }
 
 /** Plans until every topmost reused node exists; a missing one is invalidated and rebuilt in either mode. */
@@ -106,7 +106,7 @@ const settlePlan = async (
   for (;;) {
     const plan = planCacheTree(entries, tree);
     const missing = await missingAmong(ctx, limiter, plan, present);
-    if (missing.length === 0) return { plan, tree };
+    if (missing.length === 0) return { plan, present };
     const ids = new Set(
       missing.map((index) => (plan.nodes[index] as PlannedNode).reused as ObjectId),
     );
@@ -245,12 +245,38 @@ export async function updateCacheTree(
   sink: TreeSink,
 ): Promise<WrittenCacheTree | RepairedCacheTree> {
   const limiter = limiterFor(ctx, 'ioBound');
-  const { plan, tree } = await settlePlan(ctx, limiter, entries, carried);
+  const { plan, present } = await settlePlan(ctx, limiter, entries, carried);
   if (sink === 'write') await assertReusedRootIsTree(ctx, plan);
   const ids = await buildAll(ctx, limiter, plan, sink);
-  if (sink === 'repair') return { cacheTree: toRepairedCacheTree(plan, ids, tree) };
+  if (sink === 'repair') {
+    const absent = await absentPreviousIds(ctx, limiter, plan, ids, present);
+    return { cacheTree: toRepairedCacheTree(plan, ids, carried, absent) };
+  }
   return { cacheTree: toCacheTreeEntry(plan, ids), rootTree: ids[ROOT] as ObjectId };
 }
+
+/** The earlier oids of the nodes that could not be stored, whose object is not there either. */
+const absentPreviousIds = async (
+  ctx: Context,
+  limiter: ConcurrencyLimiter,
+  plan: CacheTreePlan,
+  ids: Ids,
+  present: Set<ObjectId>,
+): Promise<AbsentIds> => {
+  const earlier = new Set(
+    plan.nodes.flatMap((node, i) =>
+      ids[i] === undefined && node.previousId !== undefined ? [node.previousId] : [],
+    ),
+  );
+  const checked = await Promise.all(
+    [...earlier].map(async (id) => {
+      if (present.has(id)) return undefined;
+      if (await limiter.run(() => presentIn(ctx, id))) return undefined;
+      return id;
+    }),
+  );
+  return new Set(checked.filter((id): id is ObjectId => id !== undefined));
+};
 
 const flatten = (root: CacheTreeEntry): CacheTreeEntry[] => {
   const nodes: CacheTreeEntry[] = [];

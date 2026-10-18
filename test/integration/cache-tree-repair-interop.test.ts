@@ -134,7 +134,7 @@ const buildMixedBase = async (dir: string, format: Format): Promise<void> => {
   await settle(dir);
 };
 
-type AbcLayout = 'plain' | 'withD' | 'withOld';
+type AbcLayout = 'plain' | 'withD' | 'withOld' | 'nested';
 
 const buildAbcBase = async (dir: string, format: Format, layout: AbcLayout): Promise<void> => {
   runGit(['init', '-q', '-b', 'main', `--object-format=${format}`, dir]);
@@ -142,7 +142,7 @@ const buildAbcBase = async (dir: string, format: Format, layout: AbcLayout): Pro
   git(dir, 'config', 'user.email', 'ada@example.com');
   git(dir, 'config', 'gc.auto', '0');
   git(dir, 'config', 'commit.gpgsign', 'false');
-  await write(dir, 'a/x', 'x\n');
+  await write(dir, layout === 'nested' ? 'a/s/x' : 'a/x', 'x\n');
   await write(dir, 'b/f', 'b\n');
   await write(dir, 'c/f', 'c\n');
   if (layout === 'withD') await write(dir, 'd/f', 'd\n');
@@ -159,7 +159,7 @@ const buildAbcBase = async (dir: string, format: Format, layout: AbcLayout): Pro
 
 interface Row {
   readonly title: string;
-  readonly base?: 'unpack' | 'mixed' | 'abc' | 'abcd' | 'oldDir';
+  readonly base?: 'unpack' | 'mixed' | 'abc' | 'abcd' | 'oldDir' | 'nested';
   readonly prepare?: (dir: string) => Promise<void>;
   readonly git: (dir: string) => void;
   readonly tsgit: (ctx: Context) => Promise<unknown>;
@@ -197,6 +197,16 @@ const stagedBThenStashed = async (dir: string): Promise<void> => {
   await write(dir, 'top', 'wt\n');
   git(dir, 'stash', 'push', '-q');
   await dirtyCacheTreeOfC(dir);
+};
+
+/** Stages new content under a/s, stores its trees, then loses the objects of a/s and a. */
+const stagedThenTreesLost = async (dir: string): Promise<void> => {
+  await restage(dir, 'a/s/x', 'y\n');
+  const root = git(dir, 'write-tree').trim();
+  for (const spec of [`${root}:a/s`, `${root}:a`]) {
+    const id = git(dir, 'rev-parse', spec).trim();
+    await rm(path.join(dir, '.git', 'objects', id.slice(0, 2), id.slice(2)));
+  }
 };
 
 const GUARDS: ReadonlyArray<Row> = [
@@ -405,12 +415,21 @@ const GUARDS: ReadonlyArray<Row> = [
     git: ok('checkout', '-q', 'other'),
     tsgit: (c) => checkout(c, { rev: 'other' }),
   },
+  {
+    title: 'checkout other with the stored trees of a staged a/s and a lost',
+    base: 'nested',
+    danglingByDesign: true,
+    prepare: stagedThenTreesLost,
+    git: ok('checkout', '-q', 'other'),
+    tsgit: (c) => checkout(c, { rev: 'other' }),
+  },
 ];
 
 const buildBase = (row: Row, dir: string, format: Format): Promise<void> => {
   if (row.base === 'mixed') return buildMixedBase(dir, format);
   if (row.base === 'abc') return buildAbcBase(dir, format, 'plain');
   if (row.base === 'abcd') return buildAbcBase(dir, format, 'withD');
+  if (row.base === 'nested') return buildAbcBase(dir, format, 'nested');
   if (row.base === 'oldDir') return buildAbcBase(dir, format, 'withOld');
   return buildUnpackBase(dir, format);
 };

@@ -163,6 +163,37 @@ describe('updateCacheTree', () => {
     });
   });
 
+  describe('Given a staged a/s whose stored trees for a/s and a were lost', () => {
+    const restaged = (): IndexEntry[] => [
+      { ...entryAt('a/s/x'), id: 'e'.repeat(40) as ObjectId },
+      entryAt('b/f'),
+      entryAt('c/f'),
+    ];
+
+    describe('When repairing', () => {
+      it('Then a keeps its carried count and oid, s and the unvisited b are invalid and c stays valid', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { cacheTree } = await updateCacheTree(ctx, restaged(), undefined, 'write');
+        const lost = childNamed(cacheTree, 'a');
+        await deleteObject(ctx, childNamed(lost, 's').id);
+        await deleteObject(ctx, lost.id);
+        const carried = invalidateCacheTree(cacheTree, [entryAt('b/f')]);
+        const sut = updateCacheTree;
+        // Act
+        const result = await sut(ctx, restaged(), carried, 'repair');
+        // Assert
+        const a = childNamed(result.cacheTree, 'a');
+        expect(result.cacheTree.entryCount).toBe(-1);
+        expect(a.entryCount).toBe(1);
+        expect(a.id).toBe(lost.id);
+        expect(childNamed(a, 's').entryCount).toBe(-1);
+        expect(childNamed(result.cacheTree, 'b').entryCount).toBe(-1);
+        expect(childNamed(result.cacheTree, 'c').entryCount).toBe(1);
+      });
+    });
+  });
+
   describe('Given no entries and a repo that never stored the empty tree', () => {
     describe('When repairing', () => {
       it('Then the root is valid and names the empty tree', async () => {
@@ -436,7 +467,7 @@ describe('updateCacheTree', () => {
 
   describe('Given a repaired tree whose reused node object is missing', () => {
     describe('When repairing with a carried tree', () => {
-      it('Then the missing node and its ancestors are invalid and nothing is written', async () => {
+      it('Then the missing node is invalid, the root keeps its carried count and oid, and nothing is written', async () => {
         // Arrange
         const ctx = createMemoryContext();
         const entries = entriesOf('b/f', 'top');
@@ -460,7 +491,9 @@ describe('updateCacheTree', () => {
         // Act
         const result = await sut(ctx, entries, carried, 'repair');
         // Assert
-        expect(result.cacheTree.entryCount).toBe(-1);
+        expect(childNamed(result.cacheTree, 'b').entryCount).toBe(-1);
+        expect(result.cacheTree.entryCount).toBe(2);
+        expect(result.cacheTree.id).toBe(carried.id);
         expect(writes()).toBe(0);
       });
     });
@@ -551,7 +584,7 @@ describe('isCacheTreeFullyValid', () => {
 describe('updateCacheTree with a missing reused subtree', () => {
   describe('Given a carried a whose own tree and child a2 are gone but a1 remains', () => {
     describe('When repairing', () => {
-      it('Then a, a2 and the root are invalid, a1 keeps its id and nothing is written', async () => {
+      it('Then a keeps its carried count and oid, a2 and the root are invalid, a1 keeps its id and nothing is written', async () => {
         // Arrange
         const ctx = createMemoryContext();
         const entries = entriesOf('a/a1/f', 'a/a2/g', 'top');
@@ -566,7 +599,8 @@ describe('updateCacheTree with a missing reused subtree', () => {
         const result = await sut(ctx, entries, carried, 'repair');
         // Assert
         const repaired = childNamed(result.cacheTree, 'a');
-        expect(repaired.entryCount).toBe(-1);
+        expect(repaired.entryCount).toBe(2);
+        expect(repaired.id).toBe(a.id);
         expect(childNamed(repaired, 'a1').id).toBe(childNamed(a, 'a1').id);
         expect(childNamed(repaired, 'a1').entryCount).toBe(1);
         expect(childNamed(repaired, 'a2').entryCount).toBe(-1);
