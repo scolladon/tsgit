@@ -1877,6 +1877,7 @@ const conflictWave = (
   return {
     path: conflict.path,
     isLink: hasLinkMode(modes),
+    // Stryker disable next-line ArrowFunction: equivalent — every conflict wave runs after the merge write gate, which already validated this conflict under the host's rules (a superset of the posix rules), so this re-check never throws.
     validate: () => validateConflictWritePaths(posixIndexPathRules, conflict),
     needsDirectories: isWritablePath(conflict.path) && mode !== undefined,
     run: () => writeConflictToTree(ctx, conflict, writer, scanner),
