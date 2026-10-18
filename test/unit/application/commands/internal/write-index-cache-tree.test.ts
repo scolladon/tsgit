@@ -6,6 +6,9 @@ import {
   writeContinuedIndex,
   writeIndexCacheTree,
 } from '../../../../../src/application/commands/internal/write-index-cache-tree.js';
+import { hasObject } from '../../../../../src/application/primitives/has-object.js';
+import { forgetLooseOidPrefix } from '../../../../../src/application/primitives/internal/loose-oid-cache.js';
+import { looseObjectPath } from '../../../../../src/application/primitives/path-layout.js';
 import {
   invalidateIndexCache,
   readIndex,
@@ -150,6 +153,29 @@ describe('writeIndexCacheTree', () => {
         expect(result).toBe(first);
         expect(renames).not.toHaveBeenCalled();
         expect(await indexBytes(ctx)).toEqual(before);
+      });
+    });
+  });
+
+  describe('Given a fully valid TREE whose root tree object was deleted', () => {
+    describe('When the cache-tree is written again', () => {
+      it('Then the root is rebuilt from the entries, stored, and the index is rewritten', async () => {
+        // Arrange
+        const ctx = await seed({ 'a/x': '1', top: '3' });
+        const first = await writeIndexCacheTree(ctx);
+        await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, first));
+        forgetLooseOidPrefix(ctx, first);
+        const renames = vi.spyOn(ctx.fs, 'rename');
+        const sut = writeIndexCacheTree;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBe(first);
+        expect(await hasObject(ctx, result)).toBe(true);
+        expect(renames).toHaveBeenCalledTimes(1);
+        expect((await carriedOf(ctx))?.id).toBe(first);
       });
     });
   });
