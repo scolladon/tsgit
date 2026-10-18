@@ -350,7 +350,11 @@ done
 # backslash refusal: the measured pack landed at 1 458 653 B, 477 B over the old
 # cap, attributable to the whole-path NTFS scan, the windows index path rules and
 # their threading through every index-write surface. Measured rounded up to the next KiB.
-SIZE_CAP=$((1425 * 1024))
+# Raised 1425 -> 1436 KiB by the cache-tree and write-path work: the measured
+# pack landed at 1 469 515 B, attributable to the cache-tree planner and
+# driver, the two-way checkout carry, the conflict-stop stats and the
+# FileSystem write options type in both ESM and CJS declarations.
+SIZE_CAP=$((1436 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

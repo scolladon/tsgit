@@ -598,3 +598,18 @@ every other row is unchanged.
 
 The npm tarball cap moved 1424 → 1425 KiB (measured pack 1 458 653 B); its attribution lives in
 `tooling/verify-tarball.sh`'s cap block.
+
+## Size-limit raise — cache-tree at O(change) and the checkout write path
+
+Measured with `npx size-limit --json` on a clean build of the branch at `0dc6b37d`. Each failing row
+is raised to its measurement plus about 100 B; every other row is unchanged.
+
+| Row | main | measured | old limit | new limit | Attributable to |
+|---|--:|--:|--:|--:|---|
+| Full library | — | 397 867 B | 394.8 kB | 398.0 kB | the cache-tree planner and its write/repair driver, commit's index pass with the stat refresh, the two-way carry of a branch switch, the conflict-stop stats and `rm`'s resolve-undo |
+| Browser bundle (no-build) | — | 340 458 B | 337.8 kB | 340.6 kB | the same change, bundled once |
+| Chunks: domain | — | 125 758 B | 124.7 kB | 125.9 kB | the cache-tree planner (subtree order, carried-tree reuse, intent-to-add and unmerged invalidation) |
+| Chunks: primitives | — | 107 189 B | 106.5 kB | 107.3 kB | the cache-tree driver, the shared tracked-entry scan, the two-way carry and the conflict-stop stats |
+
+The npm tarball cap moved 1425 → 1436 KiB (measured pack 1 469 515 B); its attribution lives in
+`tooling/verify-tarball.sh`'s cap block.
