@@ -1,6 +1,7 @@
 import { TsgitError } from '../../../domain/error.js';
 import { errorDataCode } from '../../../domain/error-data-code.js';
-import { serializeCacheTree } from '../../../domain/git-index/cache-tree.js';
+import { invalidateCacheTree, serializeCacheTree } from '../../../domain/git-index/cache-tree.js';
+import { carriedCacheTreeOf } from '../../../domain/git-index/cache-tree-update.js';
 import {
   type CarryKind,
   type CarrySettings,
@@ -24,6 +25,7 @@ import { readConfig } from '../config-read.js';
 import { indexPath, lockSuffix } from '../path-layout.js';
 import { invalidateIndexCache } from '../read-index.js';
 import { type IsVerified, readPreviousIndex, smudgeRacilyClean } from './smudge-racily-clean.js';
+import { updateCacheTree } from './update-cache-tree.js';
 
 const UNKNOWN_FAILURE_CODE = 'unknown';
 const REFRESH_SKIPPED = 'status: index refresh skipped';
@@ -240,6 +242,33 @@ const withComputedTree = (
   return [tree, ...extensions.filter((extension) => extension.signature !== TREE_SIGNATURE)];
 };
 
+/** git's unpack_trees: invalidate the changed paths, repair against the new entries, then invalidate the restaged ones. */
+const repairedCacheTree = async (
+  ctx: Context,
+  previous: GitIndex | undefined,
+  entries: ReadonlyArray<IndexEntry>,
+  restagedPaths: ReadonlyArray<IndexPath>,
+): Promise<CacheTreeEntry> => {
+  const carried = previous && carriedCacheTreeOf(previous.extensions, ctx.hashConfig.digestLength);
+  const seed =
+    previous && carried
+      ? invalidateCacheTree(carried, diffIndexEntries(previous.entries, entries).changedPaths)
+      : undefined;
+  const { cacheTree } = await updateCacheTree(ctx, entries, seed, 'repair');
+  return invalidateCacheTree(cacheTree, restagedPaths);
+};
+
+const treeToWrite = async (
+  ctx: Context,
+  previous: GitIndex | undefined,
+  entries: ReadonlyArray<IndexEntry>,
+  kind: IndexWriteKind,
+  options: CommitOptions,
+): Promise<CacheTreeEntry | undefined> =>
+  kind === 'replace'
+    ? repairedCacheTree(ctx, previous, entries, options.restagedPaths ?? [])
+    : options.cacheTree;
+
 const carrySettings = async (ctx: Context): Promise<CarrySettings> => ({
   untrackedCache: (await readConfig(ctx)).core?.untrackedCache,
   digestLength: ctx.hashConfig.digestLength,
@@ -383,7 +412,8 @@ const commitLocked = async (
   const previous = await readPreviousIndex(ctx);
   const smudged = await smudgeRacilyClean(ctx, entries, previous, options.verified);
   const carried = await carriedExtensions(ctx, previous, smudged, kind, options);
-  const extensions = withComputedTree(carried, options.cacheTree, ctx.hashConfig.digestLength);
+  const tree = await treeToWrite(ctx, previous, smudged, kind, options);
+  const extensions = withComputedTree(carried, tree, ctx.hashConfig.digestLength);
   await writeLocked(ctx, sites.lockPath, sites.indexFile, smudged, extensions);
   state.committed = true;
 };

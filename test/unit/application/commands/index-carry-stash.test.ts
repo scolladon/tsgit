@@ -375,7 +375,7 @@ describe('stash carries index extensions', () => {
 
   describe('Given a stash of a staged change and an index carrying extensions', () => {
     describe('When stash pop reinstates the index', () => {
-      it('Then REUC and the unknown extension are dropped and only the staged chain is invalid', async () => {
+      it('Then REUC and the unknown extension are dropped and the repaired TREE is fully valid', async () => {
         // Arrange
         const ctx = await repoWithExtensions();
         await write(ctx, 'x/y', 'staged\n');
@@ -391,7 +391,7 @@ describe('stash carries index extensions', () => {
 
         // Assert
         expect(await carriedSignatures(ctx)).toEqual(['TREE', 'UNTR']);
-        expect(await chains(ctx)).toEqual([false, true, true, false]);
+        expect(await chains(ctx)).toEqual([true, true, true, true]);
       });
     });
   });

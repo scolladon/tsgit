@@ -197,7 +197,7 @@ describe('reset carries index extensions', () => {
 describe('checkout carries index extensions', () => {
   describe('Given a branch changing x/y and adding z/w', () => {
     describe('When checkout switches to it', () => {
-      it('Then REUC and UNTR are dropped, root and x invalid, d valid', async () => {
+      it('Then REUC and UNTR are dropped, the repaired TREE is fully valid', async () => {
         // Arrange
         const ctx = await carryingRepo();
 
@@ -207,7 +207,7 @@ describe('checkout carries index extensions', () => {
 
         // Assert
         const valid = await validity(ctx);
-        expect([valid.get(''), valid.get('d'), valid.get('x')]).toEqual([false, true, false]);
+        expect([valid.get(''), valid.get('d'), valid.get('x')]).toEqual([true, true, true]);
         expect(await carriedSignatures(ctx)).toEqual(['TREE']);
       });
     });
