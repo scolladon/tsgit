@@ -114,10 +114,11 @@ describe('verifiedBy', () => {
         at(7);
         const index = await freshIndex(ctx);
         const scan = await scanTrackedEntries(ctx, index, index.entries, () => {});
-        const sut = verifiedBy(scan);
+        const sut = verifiedBy;
 
         // Act
-        const result = [sut(A), sut(B), sut('missing' as FilePath)];
+        const isVerified = sut(scan);
+        const result = [isVerified(A), isVerified(B), isVerified('missing' as FilePath)];
 
         // Assert
         expect(result).toEqual([true, false, false]);

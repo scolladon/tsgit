@@ -164,8 +164,11 @@ describe('Context file system write (creation mode under umask, public surface)'
   describe('Given umask 027', () => {
     describe('When ctx.fs.write creates a file with mode 0666', () => {
       it('Then the file mode is 0640', async () => {
+        // Arrange
+        const creationMode = 0o666;
+
         // Act
-        const result = await modeAfterWrite(0o666);
+        const result = await modeAfterWrite(creationMode);
 
         // Assert
         expect(result).toBe(0o640);
@@ -174,8 +177,11 @@ describe('Context file system write (creation mode under umask, public surface)'
 
     describe('When ctx.fs.write creates a file with mode 0777', () => {
       it('Then the file mode is 0750', async () => {
+        // Arrange
+        const creationMode = 0o777;
+
         // Act
-        const result = await modeAfterWrite(0o777);
+        const result = await modeAfterWrite(creationMode);
 
         // Assert
         expect(result).toBe(0o750);

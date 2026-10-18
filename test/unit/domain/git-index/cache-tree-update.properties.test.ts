@@ -105,13 +105,13 @@ describe('planCacheTree properties', () => {
           fc.property(arbSortedStage0Entries(), (entries) => {
             // Arrange
             const plan = planCacheTree(entries, undefined);
-            const sut = toCacheTreeEntry(plan, allIds(plan));
+            const emitted = toCacheTreeEntry(plan, allIds(plan));
 
             // Act
-            const result = parseCacheTree(serializeCacheTree(sut, 20), 20);
+            const result = parseCacheTree(serializeCacheTree(emitted, 20), 20);
 
             // Assert
-            expect(result).toEqual(sut);
+            expect(result).toEqual(emitted);
           }),
           { numRuns: 200 },
         );

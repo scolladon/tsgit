@@ -316,54 +316,78 @@ describe('updateCacheTree', () => {
 
 describe('isCacheTreeFullyValid', () => {
   describe('Given a fully stored tree', () => {
-    it('Then it is valid', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
-      const { cacheTree } = await updateCacheTree(ctx, entriesOf('a/f', 'top'), undefined, 'write');
-      // Act
-      const result = await isCacheTreeFullyValid(ctx, cacheTree);
-      // Assert
-      expect(result).toBe(true);
+    describe('When checking it is fully valid', () => {
+      it('Then it is valid', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { cacheTree } = await updateCacheTree(
+          ctx,
+          entriesOf('a/f', 'top'),
+          undefined,
+          'write',
+        );
+        // Act
+        const result = await isCacheTreeFullyValid(ctx, cacheTree);
+        // Assert
+        expect(result).toBe(true);
+      });
     });
   });
 
   describe('Given a node with a negative count', () => {
-    it('Then it is not valid', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
-      const { cacheTree } = await updateCacheTree(ctx, entriesOf('a/f', 'top'), undefined, 'write');
-      const sut = invalidateCacheTree(cacheTree, [entryAt('a/f')]);
-      // Act
-      const result = await isCacheTreeFullyValid(ctx, sut);
-      // Assert
-      expect(result).toBe(false);
+    describe('When checking it is fully valid', () => {
+      it('Then it is not valid', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { cacheTree } = await updateCacheTree(
+          ctx,
+          entriesOf('a/f', 'top'),
+          undefined,
+          'write',
+        );
+        const invalidated = invalidateCacheTree(cacheTree, [entryAt('a/f')]);
+        const sut = isCacheTreeFullyValid;
+        // Act
+        const result = await sut(ctx, invalidated);
+        // Assert
+        expect(result).toBe(false);
+      });
     });
   });
 
   describe('Given a node whose object is missing', () => {
-    it('Then it is not valid', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
-      const { cacheTree } = await updateCacheTree(ctx, entriesOf('a/f', 'top'), undefined, 'write');
-      const sut = {
-        ...cacheTree,
-        children: cacheTree.children.map((c) => ({ ...c, id: 'd'.repeat(40) as ObjectId })),
-      };
-      // Act
-      const result = await isCacheTreeFullyValid(ctx, sut);
-      // Assert
-      expect(result).toBe(false);
+    describe('When checking it is fully valid', () => {
+      it('Then it is not valid', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { cacheTree } = await updateCacheTree(
+          ctx,
+          entriesOf('a/f', 'top'),
+          undefined,
+          'write',
+        );
+        const sut = {
+          ...cacheTree,
+          children: cacheTree.children.map((c) => ({ ...c, id: 'd'.repeat(40) as ObjectId })),
+        };
+        // Act
+        const result = await isCacheTreeFullyValid(ctx, sut);
+        // Assert
+        expect(result).toBe(false);
+      });
     });
   });
 
   describe('Given no tree', () => {
-    it('Then it is not valid', async () => {
-      // Arrange
-      const ctx = createMemoryContext();
-      // Act
-      const result = await isCacheTreeFullyValid(ctx, undefined);
-      // Assert
-      expect(result).toBe(false);
+    describe('When checking it is fully valid', () => {
+      it('Then it is not valid', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        // Act
+        const result = await isCacheTreeFullyValid(ctx, undefined);
+        // Assert
+        expect(result).toBe(false);
+      });
     });
   });
 });
