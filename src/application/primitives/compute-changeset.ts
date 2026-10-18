@@ -7,7 +7,12 @@
  * 13.1 design step 5).
  */
 import type { GitIndex } from '../../domain/git-index/index.js';
-import { type IndexPathKey, indexPathKey } from '../../domain/git-index/index-path-key.js';
+import {
+  type IndexPath,
+  type IndexPathKey,
+  indexPathKey,
+} from '../../domain/git-index/index-path-key.js';
+import { compareEntryPath } from '../../domain/git-index/index-writer.js';
 import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 
 export interface ChangesetEntry {
@@ -122,7 +127,13 @@ export const computeChangeset = (
   const entries: ChangesetEntry[] = [];
   const stats = { add: 0, update: 0, delete: 0, noop: 0 };
 
-  for (const key of [...allKeys].sort()) {
+  const byBytes = (a: IndexPathKey, b: IndexPathKey): number =>
+    compareEntryPath(
+      (indexByKey.get(a) ?? targetByKey.get(a)) as IndexPath,
+      (indexByKey.get(b) ?? targetByKey.get(b)) as IndexPath,
+    );
+
+  for (const key of [...allKeys].sort(byBytes)) {
     const entry = classify(indexByKey.get(key), targetByKey.get(key));
     entries.push(entry);
     stats[entry.kind] += 1;
