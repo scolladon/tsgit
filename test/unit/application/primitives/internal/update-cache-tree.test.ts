@@ -15,7 +15,7 @@ import {
   type IndexEntryFlags,
   STAGE0_FLAGS,
 } from '../../../../../src/domain/git-index/index-entry.js';
-import { FILE_MODE, FilePath } from '../../../../../src/domain/objects/index.js';
+import { emptyTreeOid, FILE_MODE, FilePath } from '../../../../../src/domain/objects/index.js';
 import type { ObjectId } from '../../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
@@ -129,6 +129,40 @@ describe('updateCacheTree', () => {
         // Assert
         expect(result.cacheTree.subtreeCount).toBe(4);
         expect(childNamed(result.cacheTree, 'd').entryCount).toBe(-1);
+      });
+    });
+  });
+
+  describe('Given no entries and a repo that never stored the empty tree', () => {
+    describe('When repairing', () => {
+      it('Then the root is valid and names the empty tree', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        // Act
+        const result = await updateCacheTree(ctx, [], undefined, 'repair');
+        // Assert
+        expect(result.cacheTree.entryCount).toBe(0);
+        expect(result.cacheTree.id).toBe(emptyTreeOid(ctx.hashConfig));
+      });
+    });
+  });
+
+  describe('Given a carried root naming the empty tree that was never stored', () => {
+    describe('When checking the tree is fully valid', () => {
+      it('Then it is valid', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const root = {
+          path: '',
+          entryCount: 0,
+          subtreeCount: 0,
+          id: emptyTreeOid(ctx.hashConfig),
+          children: [],
+        };
+        // Act
+        const result = await isCacheTreeFullyValid(ctx, root);
+        // Assert
+        expect(result).toBe(true);
       });
     });
   });

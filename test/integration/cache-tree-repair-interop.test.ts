@@ -159,6 +159,8 @@ interface Row {
   readonly prepare?: (dir: string) => Promise<void>;
   readonly git: (dir: string) => void;
   readonly tsgit: (ctx: Context) => Promise<unknown>;
+  /** The prepared history names an object that was never stored, so fsck cannot pass in either repository. */
+  readonly danglingByDesign?: boolean;
   /** The index compared is the linked worktree's own, not the repository's. */
   readonly linked?: boolean;
 }
@@ -367,6 +369,18 @@ const GUARDS: ReadonlyArray<Row> = [
     tsgit: (c) => mergeRun(c, { rev: 'side' }),
   },
   {
+    title: 'checkout a commit of the empty tree that was never stored',
+    base: 'abc',
+    danglingByDesign: true,
+    prepare: async (dir) => {
+      const empty = git(dir, 'hash-object', '-t', 'tree', '/dev/null').trim();
+      const commit = git(dir, 'commit-tree', empty, '-m', 'empty').trim();
+      git(dir, 'tag', 'empty', commit);
+    },
+    git: ok('checkout', '-q', 'empty'),
+    tsgit: (c) => checkout(c, { rev: 'empty' }),
+  },
+  {
     title: 'checkout other above a staged new directory a/new that has no tree',
     base: 'abc',
     prepare: (dir) => restage(dir, 'a/new/f', 'n\n'),
@@ -426,7 +440,7 @@ const describeRow = (row: Row, format: Format = 'sha1'): void => {
         expect(ours).toEqual(peer);
       });
 
-      it('Then git fsck exits 0', () => {
+      it.skipIf(row.danglingByDesign === true)('Then git fsck exits 0', () => {
         // Arrange + Assert
         expect(tryRunGitWithExit(['-C', pair.ours, 'fsck']).exitCode).toBe(0);
       });

@@ -37,8 +37,9 @@ export interface RepairedCacheTree {
 
 type Ids = (ObjectId | undefined)[];
 
-const presentIn = (ctx: Context, id: ObjectId): Promise<boolean> =>
-  hasObject(ctx, id, { mode: 'recheck' });
+/** git answers for the empty tree from a built-in cached object, stored or not. */
+const presentIn = async (ctx: Context, id: ObjectId): Promise<boolean> =>
+  id === emptyTreeOid(ctx.hashConfig) || hasObject(ctx, id, { mode: 'recheck' });
 
 /** git existence-checks only the topmost valid node of a reused subtree. */
 const topmostReused = (plan: CacheTreePlan): number[] => {
