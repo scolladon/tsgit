@@ -366,12 +366,13 @@ describe('isCacheTreeFullyValid', () => {
           undefined,
           'write',
         );
-        const sut = {
+        const missingChildren = {
           ...cacheTree,
           children: cacheTree.children.map((c) => ({ ...c, id: 'd'.repeat(40) as ObjectId })),
         };
+        const sut = isCacheTreeFullyValid;
         // Act
-        const result = await isCacheTreeFullyValid(ctx, sut);
+        const result = await sut(ctx, missingChildren);
         // Assert
         expect(result).toBe(false);
       });
