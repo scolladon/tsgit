@@ -6,7 +6,9 @@ subjects:
 ---
 # 964 — Content-changing writes invalidate the cache-tree along changed paths
 
-- **Status:** accepted
+> Superseded in part by ADR-1009: unpack_trees-class writers leave changed chains invalid where git recomputes the cache-tree. Chain invalidation for in-place writers still stands.
+
+- **Status:** superseded by ADR-1009
 - **Date:** 2026-10-14
 - **Design:** docs/design/status-refresh-index-extensions.md · **Supersedes/Refines:** diverges from ADR-226 for `unpack_trees`-class writers
 
