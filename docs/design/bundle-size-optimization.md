@@ -613,3 +613,16 @@ is raised to its measurement plus about 100 B; every other row is unchanged.
 
 The npm tarball cap moved 1425 → 1436 KiB (measured pack 1 469 515 B); its attribution lives in
 `tooling/verify-tarball.sh`'s cap block.
+
+Review fixes on the same branch grew the measured rows again; raised the same way:
+
+| Row | measured | old limit | new limit | Attributable to |
+|---|--:|--:|--:|---|
+| Full library | 398 981 B | 398.0 kB | 399.1 kB | the repair abort (`update_one`), the empty-tree presence rule, the tree-type check of a reused root, the pruned HEAD/target walk of a branch switch and the bounded literal read |
+| Browser bundle (no-build) | 341 421 B | 340.6 kB | 341.6 kB | the same fixes, bundled once |
+| Chunks: domain | 126 098 B | 125.9 kB | 126.2 kB | the repair abort and the oid-keeping invalidation |
+| Chunks: primitives | 107 802 B | 107.3 kB | 107.9 kB | the pruned tree walk, the sparse carry and the root type check |
+| Command (add) | 4 418 B | 4.4 kB | 4.6 kB | the bounded literal read and the pooled literal stats |
+
+The npm tarball cap moved 1436 → 1439 KiB (measured pack 1 472 330 B); its attribution lives in
+`tooling/verify-tarball.sh`'s cap block.
