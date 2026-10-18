@@ -73,29 +73,23 @@ const withoutObjects = (node: CacheTreeEntry, missing: ReadonlySet<ObjectId>): C
   children: node.children.map((child) => withoutObjects(child, missing)),
 });
 
-interface Settled {
-  readonly plan: CacheTreePlan;
-  readonly missing: ReadonlyArray<number>;
-}
-
-/** Plans until every topmost reused node exists, invalidating the missing ones for a rebuild. */
+/** Plans until every topmost reused node exists; a missing one is invalidated and rebuilt in either mode. */
 const settlePlan = async (
   ctx: Context,
   limiter: ConcurrencyLimiter,
   entries: ReadonlyArray<IndexEntry>,
   carried: CacheTreeEntry | undefined,
-  sink: TreeSink,
-): Promise<Settled> => {
+): Promise<CacheTreePlan> => {
   const present = new Set<ObjectId>();
   let tree = carried;
   for (;;) {
     const plan = planCacheTree(entries, tree);
     const missing = await missingAmong(ctx, limiter, plan, present);
-    if (missing.length === 0 || sink === 'repair' || tree === undefined) return { plan, missing };
+    if (missing.length === 0) return plan;
     const ids = new Set(
       missing.map((index) => (plan.nodes[index] as PlannedNode).reused as ObjectId),
     );
-    tree = withoutObjects(tree, ids);
+    tree = withoutObjects(tree as CacheTreeEntry, ids);
   }
 };
 
@@ -196,21 +190,14 @@ const buildLevel = async (
   );
 };
 
-const reusedIds = (settled: Settled): Ids => {
-  const ids: Ids = settled.plan.nodes.map((node) => node.reused);
-  for (const index of settled.missing) ids[index] = undefined;
-  return ids;
-};
-
 const buildAll = async (
   ctx: Context,
   limiter: ConcurrencyLimiter,
-  settled: Settled,
+  plan: CacheTreePlan,
   sink: TreeSink,
 ): Promise<Ids> => {
-  const { plan } = settled;
   const leaf = sink === 'write' ? writeLeaf(ctx, limiter) : hashLeaf(ctx, limiter);
-  const ids = reusedIds(settled);
+  const ids: Ids = plan.nodes.map((node) => node.reused);
   const layout = layoutOf(plan);
   for (const level of levelsDeepestFirst(plan, layout)) {
     await buildLevel(ctx, plan, layout, level, ids, leaf);
@@ -237,9 +224,9 @@ export async function updateCacheTree(
   sink: TreeSink,
 ): Promise<WrittenCacheTree | RepairedCacheTree> {
   const limiter = limiterFor(ctx, 'ioBound');
-  const settled = await settlePlan(ctx, limiter, entries, carried, sink);
-  const ids = await buildAll(ctx, limiter, settled, sink);
-  const cacheTree = toCacheTreeEntry(settled.plan, ids);
+  const plan = await settlePlan(ctx, limiter, entries, carried);
+  const ids = await buildAll(ctx, limiter, plan, sink);
+  const cacheTree = toCacheTreeEntry(plan, ids);
   return sink === 'write' ? { cacheTree, rootTree: ids[ROOT] as ObjectId } : { cacheTree };
 }
 

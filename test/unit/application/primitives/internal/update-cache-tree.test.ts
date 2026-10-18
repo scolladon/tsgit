@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { hasObject } from '../../../../../src/application/primitives/has-object.js';
+import { forgetLooseOidPrefix } from '../../../../../src/application/primitives/internal/loose-oid-cache.js';
 import {
   isCacheTreeFullyValid,
   updateCacheTree,
 } from '../../../../../src/application/primitives/internal/update-cache-tree.js';
+import { looseObjectPath } from '../../../../../src/application/primitives/path-layout.js';
 import { readTree } from '../../../../../src/application/primitives/read-tree.js';
 import { invalidateCacheTree } from '../../../../../src/domain/git-index/cache-tree.js';
 import {
@@ -54,6 +56,11 @@ const childNamed = (root: CacheTreeEntry, name: string): CacheTreeEntry => {
   const found = root.children.find((child) => child.path === name);
   if (found === undefined) throw new Error(`no child ${name}`);
   return found;
+};
+
+const deleteObject = async (ctx: Context, id: ObjectId | undefined): Promise<void> => {
+  await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, id as ObjectId));
+  forgetLooseOidPrefix(ctx, id as ObjectId);
 };
 
 const countWrites = (ctx: Context): (() => number) => {
@@ -357,6 +364,54 @@ describe('isCacheTreeFullyValid', () => {
       const result = await isCacheTreeFullyValid(ctx, undefined);
       // Assert
       expect(result).toBe(false);
+    });
+  });
+});
+
+describe('updateCacheTree with a missing reused subtree', () => {
+  describe('Given a carried a whose own tree and child a2 are gone but a1 remains', () => {
+    describe('When repairing', () => {
+      it('Then a, a2 and the root are invalid, a1 keeps its id and nothing is written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const entries = entriesOf('a/a1/f', 'a/a2/g', 'top');
+        const first = await updateCacheTree(ctx, entries, undefined, 'write');
+        const a = childNamed(first.cacheTree, 'a');
+        await deleteObject(ctx, a.id);
+        await deleteObject(ctx, childNamed(a, 'a2').id);
+        const carried = invalidateCacheTree(first.cacheTree, [entries[2] as IndexEntry]);
+        const writes = countWrites(ctx);
+        // Act
+        const result = await updateCacheTree(ctx, entries, carried, 'repair');
+        // Assert
+        const repaired = childNamed(result.cacheTree, 'a');
+        expect(repaired.entryCount).toBe(-1);
+        expect(childNamed(repaired, 'a1').id).toBe(childNamed(a, 'a1').id);
+        expect(childNamed(repaired, 'a1').entryCount).toBe(1);
+        expect(childNamed(repaired, 'a2').entryCount).toBe(-1);
+        expect(result.cacheTree.entryCount).toBe(-1);
+        expect(writes()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a missing reused node forcing a second planning round', () => {
+    describe('When updating in write mode', () => {
+      it('Then a present reused sibling is probed exactly once', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const entries = entriesOf('a/x/f', 'b/g', 'top');
+        const first = await updateCacheTree(ctx, entries, undefined, 'write');
+        await deleteObject(ctx, childNamed(first.cacheTree, 'a').id);
+        const carried = invalidateCacheTree(first.cacheTree, [entries[2] as IndexEntry]);
+        vi.mocked(hasObject).mockClear();
+        // Act
+        await updateCacheTree(ctx, entries, carried, 'write');
+        // Assert
+        const siblingId = childNamed(first.cacheTree, 'b').id;
+        const probes = vi.mocked(hasObject).mock.calls.filter(([, id]) => id === siblingId);
+        expect(probes).toHaveLength(1);
+      });
     });
   });
 });
