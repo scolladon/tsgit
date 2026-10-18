@@ -14,7 +14,10 @@ import {
   withResolveUndo,
   withRestagedPaths,
 } from '../../../domain/git-index/carry-extensions.js';
-import { diffIndexEntries } from '../../../domain/git-index/diff-index-entries.js';
+import {
+  diffIndexEntries,
+  type IndexChange,
+} from '../../../domain/git-index/diff-index-entries.js';
 import { type IndexEntry, serializeIndex } from '../../../domain/git-index/index.js';
 import type {
   CacheTreeEntry,
@@ -49,7 +52,10 @@ interface AcquireOptions {
 export type IndexWriteKind = Exclude<CarryKind, 'refresh'>;
 
 export interface CommitOptions {
-  /** Entries the writer re-staged whatever their object name; honoured for `'update'` only. */
+  /**
+   * Entries the writer re-staged whatever their object name: kept out of the carried
+   * extensions on an `'update'`, invalidated in the repaired `TREE` on a `'replace'`.
+   */
   readonly restagedPaths?: ReadonlyArray<IndexPath>;
   /** The unmerged paths this write resolved; written into `REUC` merged with the previous records. */
   readonly resolveUndo?: ReadonlyArray<ResolveUndoRecord>;
@@ -204,37 +210,51 @@ const maybeBreakStaleLock = async (
   }
 };
 
-const carriedByRule = async (
-  ctx: Context,
+const TREE_SIGNATURE = 'TREE';
+
+/** The entry diff both the extension carry and the tree repair read; absent when nothing is carried. */
+const changeSince = (
   previous: GitIndex | undefined,
   entries: ReadonlyArray<IndexEntry>,
+): IndexChange | undefined => {
+  // Stryker disable next-line ConditionalExpression: equivalent — carryExtensions over no extensions yields [] too; the guard only skips the O(n) entry diff.
+  if (previous === undefined || previous.extensions.length === 0) return undefined;
+  return diffIndexEntries(previous.entries, entries);
+};
+
+const replacesTree = (kind: IndexWriteKind, options: CommitOptions): boolean =>
+  kind === 'replace' || options.cacheTree !== undefined;
+
+const carriedByRule = async (
+  ctx: Context,
+  previous: GitIndex,
+  change: IndexChange | undefined,
   kind: IndexWriteKind,
   options: CommitOptions,
 ): Promise<ReadonlyArray<IndexExtension>> => {
-  // Stryker disable next-line ConditionalExpression: equivalent — carryExtensions over no extensions yields [] too; the guard only skips the O(n) entry diff.
-  if (previous === undefined || previous.extensions.length === 0) return [];
-  const diff = diffIndexEntries(previous.entries, entries);
-  const change = withRestagedPaths(diff, options.restagedPaths ?? []);
-  return carryExtensions(previous.extensions, change, kind, await carrySettings(ctx));
+  if (change === undefined) return [];
+  const extensions = replacesTree(kind, options)
+    ? previous.extensions.filter((extension) => extension.signature !== TREE_SIGNATURE)
+    : previous.extensions;
+  const restaged = withRestagedPaths(change, options.restagedPaths ?? []);
+  return carryExtensions(extensions, restaged, kind, await carrySettings(ctx));
 };
 
 const carriedExtensions = async (
   ctx: Context,
   previous: GitIndex | undefined,
-  entries: ReadonlyArray<IndexEntry>,
+  change: IndexChange | undefined,
   kind: IndexWriteKind,
   options: CommitOptions,
 ): Promise<ReadonlyArray<IndexExtension>> => {
   if (previous === undefined) return [];
   return withResolveUndo(
-    await carriedByRule(ctx, previous, entries, kind, options),
+    await carriedByRule(ctx, previous, change, kind, options),
     previous.extensions,
     options.resolveUndo ?? [],
     ctx.hashConfig.digestLength,
   );
 };
-
-const TREE_SIGNATURE = 'TREE';
 
 const withComputedTree = (
   extensions: ReadonlyArray<IndexExtension>,
@@ -251,16 +271,12 @@ const repairedCacheTree = async (
   ctx: Context,
   previous: GitIndex | undefined,
   entries: ReadonlyArray<IndexEntry>,
+  change: IndexChange | undefined,
   restagedPaths: ReadonlyArray<IndexPath>,
 ): Promise<CacheTreeEntry> => {
   const carried = previous && carriedCacheTreeOf(previous.extensions, ctx.hashConfig.digestLength);
   const seed =
-    previous && carried
-      ? invalidateCacheTreeKeepingOids(
-          carried,
-          diffIndexEntries(previous.entries, entries).changedPaths,
-        )
-      : undefined;
+    carried && change ? invalidateCacheTreeKeepingOids(carried, change.changedPaths) : undefined;
   const { cacheTree } = await updateCacheTree(ctx, entries, seed, 'repair');
   return invalidateCacheTree(cacheTree, restagedPaths);
 };
@@ -269,11 +285,12 @@ const treeToWrite = async (
   ctx: Context,
   previous: GitIndex | undefined,
   entries: ReadonlyArray<IndexEntry>,
+  change: IndexChange | undefined,
   kind: IndexWriteKind,
   options: CommitOptions,
 ): Promise<CacheTreeEntry | undefined> =>
   kind === 'replace'
-    ? repairedCacheTree(ctx, previous, entries, options.restagedPaths ?? [])
+    ? repairedCacheTree(ctx, previous, entries, change, options.restagedPaths ?? [])
     : options.cacheTree;
 
 const carrySettings = async (ctx: Context): Promise<CarrySettings> => ({
@@ -418,8 +435,9 @@ const commitLocked = async (
   if (isSpent(state)) return;
   const previous = await readPreviousIndex(ctx);
   const smudged = await smudgeRacilyClean(ctx, entries, previous, options.verified);
-  const carried = await carriedExtensions(ctx, previous, smudged, kind, options);
-  const tree = await treeToWrite(ctx, previous, smudged, kind, options);
+  const change = changeSince(previous, smudged);
+  const carried = await carriedExtensions(ctx, previous, change, kind, options);
+  const tree = await treeToWrite(ctx, previous, smudged, change, kind, options);
   const extensions = withComputedTree(carried, tree, ctx.hashConfig.digestLength);
   await writeLocked(ctx, sites.lockPath, sites.indexFile, smudged, extensions);
   state.committed = true;
