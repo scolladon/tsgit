@@ -611,6 +611,96 @@ describe('materializeTree', () => {
     });
   });
 
+  describe('Given a sparse matcher excluding a path git would refuse to add', () => {
+    const refusalOf = async (run: () => Promise<unknown>): Promise<TsgitError['data']> => {
+      try {
+        await run();
+      } catch (error) {
+        if (error instanceof TsgitError) return error.data;
+        throw error;
+      }
+      throw new Error('expected materializeTree to refuse');
+    };
+
+    describe('When the excluded path sits under .git', () => {
+      it('Then it throws INVALID_INDEX_ENTRY, writes nothing and returns no index', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'x');
+        const treeId = await writeNestedTree(ctx, [
+          { dir: '.git', name: 'post-checkout', id },
+          { dir: 'keep', name: 'a.txt', id },
+        ]);
+
+        // Act
+        const data = await refusalOf(() =>
+          materializeTree(ctx, {
+            targetTree: treeId,
+            currentIndex: EMPTY_INDEX,
+            sparse: (path) => path.startsWith('keep/'),
+          }),
+        );
+
+        // Assert
+        expect(data).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: "'.git' component rejected",
+        });
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/keep/a.txt`)).toBe(false);
+      });
+    });
+
+    describe('When the excluded path holds a backslash under windows path rules', () => {
+      it('Then it throws INVALID_INDEX_ENTRY with the backslash reason', async () => {
+        // Arrange
+        const seeded = await buildSeededContext();
+        const ctx = { ...seeded, windowsPathSyntax: true };
+        const id = await writeBlob(ctx, 'x');
+        const treeId = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, '\\.git\\hooks\\post-checkout' as FilePath, id),
+          treeEntry(FILE_MODE.REGULAR, 'keep' as FilePath, id),
+        ]);
+
+        // Act
+        const data = await refusalOf(() =>
+          materializeTree(ctx, {
+            targetTree: treeId,
+            currentIndex: EMPTY_INDEX,
+            sparse: (path) => path === 'keep',
+          }),
+        );
+
+        // Assert
+        expect(data).toMatchObject({
+          code: 'INVALID_INDEX_ENTRY',
+          reason: 'backslash rejected under Windows path syntax',
+        });
+        expect(await ctx.fs.exists(`${ctx.layout.workDir}/keep`)).toBe(false);
+      });
+    });
+
+    describe('When the excluded path is legitimate', () => {
+      it('Then it becomes a skip-worktree entry', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'x');
+        const treeId = await writeNestedTree(ctx, [{ dir: 'docs', name: 'b.txt', id }]);
+
+        // Act
+        const result = await materializeTree(ctx, {
+          targetTree: treeId,
+          currentIndex: EMPTY_INDEX,
+          sparse: () => false,
+        });
+
+        // Assert
+        expect(result.newIndexEntries.map((e) => [e.path, e.flags.skipWorktree])).toEqual([
+          ['docs/b.txt', true],
+        ]);
+      });
+    });
+  });
+
   describe('Given a sparse matcher excluding a path whose file is currently on disk', () => {
     describe('When materializeTree runs', () => {
       it('Then the file is deleted and its entry becomes skip-worktree', async () => {

@@ -34,6 +34,7 @@ import {
   indexPathKey,
 } from '../../domain/git-index/index-path-key.js';
 import { pathComparatorFor } from '../../domain/git-index/index-writer.js';
+import { NO_PARSER_OFFSET } from '../../domain/git-index/path-validator.js';
 import {
   FILE_MODE,
   type FileMode,
@@ -50,6 +51,7 @@ import {
   computeChangeset,
 } from './compute-changeset.js';
 import type { CheckoutMetadata } from './internal/apply-smudge-filter.js';
+import { indexPathRulesOf } from './internal/index-path-rules.js';
 import { indexRuleEntries } from './internal/index-rule-entries.js';
 import {
   type AttributeDirection,
@@ -271,6 +273,11 @@ export const materializeTree = async (
 ): Promise<MaterializeTreeResult> => {
   const allTarget = await collectTargetEntries(ctx, opts.targetTree);
   const plan = planMaterialize(allTarget, opts);
+  // Excluded entries skip the changeset, yet git verifies every path it adds to the index.
+  const pathRules = indexPathRulesOf(ctx);
+  for (const entry of plan.excluded) {
+    pathRules.validateIndexPath(entry.path, NO_PARSER_OFFSET, entry.mode, entry.pathBytes);
+  }
 
   const rawChangeset = computeChangeset(plan.indexForDiff, plan.target);
   const changeset =
