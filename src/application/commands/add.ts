@@ -223,15 +223,15 @@ const dispatchPathspec = async (
   const resolved = resolvePathspec(paths);
   const { literalMustMatch } = resolved;
   await assertNoSymlinkedLeadingPath(ctx, resolved.symlinkScanTargets);
-  if (!resolved.hasGlob && (await allLiteralsAreFiles(ctx, literalMustMatch))) {
-    return addLiteralOnly(ctx, resolved, scope);
-  }
+  const stats = resolved.hasGlob ? undefined : await literalStats(ctx, literalMustMatch);
+  if (stats !== undefined) return addLiteralOnly(ctx, resolved, stats, scope);
   return addByPathspec(ctx, resolved, scope);
 };
 
 const addLiteralOnly = async (
   ctx: Context,
   resolved: ResolvedPathspec,
+  stats: LiteralStats,
   scope: ConversionScope,
 ): Promise<AddResult> => {
   const lock = await acquireIndexLock(ctx);
@@ -250,6 +250,7 @@ const addLiteralOnly = async (
       staging,
       sorted,
       resolved,
+      stats,
     );
     await commitStaged(lock, { sorted, unmergedStages, stageZeroBeside }, remaining, restagedPaths);
     return result;
@@ -263,10 +264,12 @@ const stageLiteralsOver = async (
   staging: Staging,
   sorted: ReadonlyArray<IndexEntry>,
   { literalMustMatch, matcher }: ResolvedPathspec,
+  stats: LiteralStats,
 ) => {
   const { newEntries, inserted, restagedPaths, ...staged } = await stageLiterals(
     staging,
     literalMustMatch,
+    stats,
   );
   const view = { sorted, inserted };
   const dropped = await dropBeneathInserted(staging.ctx, view, matcher, newEntries);
@@ -308,6 +311,7 @@ const trackedFirst = (
 const stageLiterals = async (
   staging: Staging,
   validated: ReadonlyArray<FilePath>,
+  stats: LiteralStats,
 ): Promise<{
   readonly newEntries: Map<IndexPathKey, IndexEntry>;
   readonly added: ReadonlyArray<FilePath>;
@@ -316,28 +320,56 @@ const stageLiterals = async (
   readonly restagedPaths: ReadonlyArray<IndexPath>;
   readonly inserted: ReadonlyArray<InsertedPath>;
 }> => {
-  const { ctx, scope, entries: existing, indexMtime } = staging;
+  const { ctx, scope } = staging;
+  const ordered = trackedFirst(validated, staging.entries).map((path) => ({
+    path,
+    stat: stats.get(path) as FileStat,
+  }));
+  // git converts and writes one path at a time, dying at the first loss, under safecrlf=true.
+  const span: OrderSpan = scope.settings.safeCrlf === true ? 'write' : 'clean';
+  const settled = await dispatchInCleanOrder(ctx, ordered, stageLiteral(staging), span);
+  return foldLiteralOutcomes(staging, ordered.map(pathOf), firstFailureOrValues(settled));
+};
+
+const pathOf = ({ path }: Named): FilePath => path;
+
+const stageLiteral =
+  ({ ctx, scope, entries, indexMtime, ensurePromisorConfigValid }: Staging) =>
+  ({ path, stat }: Named & { readonly stat: FileStat }): Promise<StagedBlob> =>
+    stageFromFreshStat(
+      ctx,
+      path,
+      stat,
+      scope,
+      entries.get(keyOfPath(path)),
+      indexMtime,
+      ensurePromisorConfigValid,
+    );
+
+/** The literals' outcomes folded in index order, so the result order is the staging order. */
+const foldLiteralOutcomes = (
+  { entries: existing, stageZeroBeside }: Staging,
+  paths: ReadonlyArray<FilePath>,
+  staged: ReadonlyArray<StagedBlob>,
+) => {
   const newEntries = new Map<IndexPathKey, IndexEntry>(existing);
   const added: FilePath[] = [];
   const modified: FilePath[] = [];
   const eolNotices: EolNotice[] = [];
   const restagedPaths: IndexPath[] = [];
   const inserted: InsertedPath[] = [];
-  for (const path of trackedFirst(validated, existing)) {
+  paths.forEach((path, index) => {
+    const { entry, notice } = staged[index] as StagedBlob;
     const previous = existing.get(keyOfPath(path));
-    const guard = staging.ensurePromisorConfigValid;
-    const result = await stageOne(ctx, path, scope, previous, indexMtime, guard);
-    if (result === 'missing') throw pathspecNoMatch(path);
-    const { entry, notice } = result;
     newEntries.set(keyOfPath(path), entry);
     if (wasRestaged(previous, entry)) restagedPaths.push(entry);
     if (notice !== undefined) eolNotices.push(notice);
     if (previous === undefined) added.push(path);
-    else if (isModified(previous, entry) || staging.stageZeroBeside.has(keyOfPath(path))) {
+    else if (isModified(previous, entry) || stageZeroBeside.has(keyOfPath(path))) {
       modified.push(path);
     }
     if (previous === undefined || previous.flags.stage !== 0) inserted.push({ path, previous });
-  }
+  });
   return { newEntries, added, modified, eolNotices, restagedPaths, inserted };
 };
 
@@ -517,18 +549,23 @@ const commitIfChanged = async (
 const wasRestaged = (previous: IndexEntry | undefined, entry: IndexEntry): boolean =>
   entry !== previous;
 
-const allLiteralsAreFiles = async (
+/** The lstat of every literal, taken once; a literal that is no file routes the add to the walk. */
+type LiteralStats = ReadonlyMap<FilePath, FileStat>;
+
+const literalStats = async (
   ctx: Context,
   literals: ReadonlyArray<FilePath>,
-): Promise<boolean> => {
-  if (literals.length === 0) return false;
+): Promise<LiteralStats | undefined> => {
+  if (literals.length === 0) return undefined;
+  const stats = new Map<FilePath, FileStat>();
   for (const path of literals) {
-    if (namesDirectoryOnly(path)) return false;
+    if (namesDirectoryOnly(path)) return undefined;
     const stat = await lstatOrBeneathFile(ctx, path);
-    if (stat === undefined) return false;
-    if (stat.isDirectory && !stat.isSymbolicLink) return false;
+    if (stat === undefined) return undefined;
+    if (stat.isDirectory && !stat.isSymbolicLink) return undefined;
+    stats.set(path, stat);
   }
-  return true;
+  return stats;
 };
 
 const NOT_A_DIRECTORY = 'NOT_A_DIRECTORY';
@@ -633,17 +670,17 @@ type StagedEntry = Settled<WalkOutcome>;
  * A clean driver hears the paths in walk order, however the reads race. Every
  * entry is settled, in walk order, before the walk's own failure surfaces.
  */
-const dispatchInCleanOrder = (
+const dispatchInCleanOrder = <T extends Named, R>(
   ctx: Context,
-  walk: AsyncIterable<WalkWorkingTreeEntry>,
-  stage: (walkEntry: WalkWorkingTreeEntry) => Promise<WalkOutcome>,
+  walk: AsyncIterable<T> | Iterable<T>,
+  stage: (item: T) => Promise<R>,
   span: OrderSpan,
-): Promise<ReadonlyArray<StagedEntry>> =>
+): Promise<ReadonlyArray<Settled<R>>> =>
   withCleanOrder(
     ctx,
     async (order) => {
       const dispatcher = { limiter: limiterFor(ctx, 'ioBound'), order, stage };
-      const pending: Promise<StagedEntry>[] = [];
+      const pending: Promise<Settled<R>>[] = [];
       try {
         for await (const walkEntry of walk) pending.push(dispatchWalkEntry(dispatcher, walkEntry));
       } catch (error) {
@@ -655,8 +692,11 @@ const dispatchInCleanOrder = (
     span,
   );
 
+/** Anything the clean order can enlist by its path. */
+type Named = { readonly path: FilePath };
+
 /** Stage one walked entry under the limiter, releasing its clean turn whatever the outcome. */
-const dispatchWalkEntry = (
+const dispatchWalkEntry = <T extends Named, R>(
   {
     limiter,
     order,
@@ -664,10 +704,10 @@ const dispatchWalkEntry = (
   }: {
     readonly limiter: ConcurrencyLimiter;
     readonly order: CleanOrder;
-    readonly stage: (walkEntry: WalkWorkingTreeEntry) => Promise<WalkOutcome>;
+    readonly stage: (item: T) => Promise<R>;
   },
-  walkEntry: WalkWorkingTreeEntry,
-): Promise<StagedEntry> => {
+  walkEntry: T,
+): Promise<Settled<R>> => {
   order.enlist(walkEntry.path);
   return settleInCleanTurn(limiter, order, walkEntry.path, () => stage(walkEntry));
 };
@@ -1221,22 +1261,9 @@ const readIndexOrEmpty = async (
   }
 };
 
-const stageOne = async (
-  ctx: Context,
-  path: FilePath,
-  scope: StagingScope,
-  previous: IndexEntry | undefined,
-  indexMtime: IndexMtime | undefined,
-  ensurePromisorConfigValid: PromisorGuard,
-): Promise<StagedBlob | 'missing'> => {
-  const stat = await lstatOrMissing(ctx, path);
-  if (stat === undefined) return 'missing';
-  return stageFromStat(ctx, path, stat, scope, previous, indexMtime, ensurePromisorConfigValid);
-};
-
 /**
  * The three kind bits `stageFromStat`'s TOCTOU check needs — satisfied
- * structurally by both a full `FileStat` (`stageOne`'s literal-path lstat)
+ * structurally by a full `FileStat`
  * and a `WalkWorkingTreeEntry` (`processWalkEntry`'s walk, readdir-sourced).
  */
 type EntryKind = Pick<FileStat, 'isFile' | 'isDirectory' | 'isSymbolicLink'>;
@@ -1260,6 +1287,31 @@ const stageFromStat = async (
   // invocation, first paid when the write path actually engages.
   await ensurePromisorConfigValid();
   const fresh = await freshStatOfSameKind(ctx, path, kind);
+  return stagePromisorChecked(ctx, path, fresh, scope, previous, indexMtime);
+};
+
+/** Stage a path whose stat was taken just now, by this call's own lstat. */
+const stageFromFreshStat = async (
+  ctx: Context,
+  path: FilePath,
+  fresh: FileStat,
+  scope: StagingScope,
+  previous: IndexEntry | undefined,
+  indexMtime: IndexMtime | undefined,
+  ensurePromisorConfigValid: PromisorGuard,
+): Promise<StagedBlob> => {
+  await ensurePromisorConfigValid();
+  return stagePromisorChecked(ctx, path, fresh, scope, previous, indexMtime);
+};
+
+const stagePromisorChecked = async (
+  ctx: Context,
+  path: FilePath,
+  fresh: FileStat,
+  scope: StagingScope,
+  previous: IndexEntry | undefined,
+  indexMtime: IndexMtime | undefined,
+): Promise<StagedBlob> => {
   if (previous !== undefined && restagesAsIs(previous, fresh, indexMtime))
     return { entry: previous };
   // Authoritative size cap — uses the fresh stat so a grow-between-walk-and-
@@ -1280,7 +1332,7 @@ const stageFromStat = async (
  * being observed and our read would otherwise re-route the read through
  * `ctx.fs.read` (which follows symlinks), break the mode classification, or
  * trip an opaque adapter error. Abort the whole add on any type flip. `kind`
- * comes either from a real lstat (`stageOne`) or from the walker's readdir
+ * comes either from a real lstat or from the walker's readdir
  * dirent bits (`processWalkEntry`, spending no lstat to get here) — for the
  * walked case the reference point is readdir instead of a walk-time lstat, a
  * marginally wider window of the SAME TOCTOU class; this fresh lstat remains

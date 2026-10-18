@@ -319,27 +319,22 @@ describe('add', () => {
     });
   });
 
-  describe('Given a genuine PERMISSION_DENIED from the adapter on a re-lstat of a literal path', () => {
+  describe('Given a genuine PERMISSION_DENIED from the adapter on the lstat of a literal path', () => {
     describe('When add', () => {
       it('Then the error propagates instead of degrading to PATHSPEC_NO_MATCH', async () => {
-        // Arrange — the first lstat (allLiteralsAreFiles's probe) reports a real
-        // file, routing to the literal-only path; the second lstat (stageOne's
-        // own read) fails with PERMISSION_DENIED. A narrowed catch must rethrow
-        // anything that is not FILE_NOT_FOUND; a bare `.catch(() => undefined)`
-        // would silently degrade this to a missing-path observable instead.
+        // Arrange — the literal probe's lstat fails with PERMISSION_DENIED.
+        // A narrowed catch must rethrow anything that is not FILE_NOT_FOUND;
+        // a bare `.catch(() => undefined)` would silently degrade this to a
+        // missing-path observable instead.
         const ctx = await seedFreshRepo({ 'blocked.txt': 'x' });
         const targetPath = `${ctx.layout.workDir}/blocked.txt`;
         const baseLstat = ctx.fs.lstat;
-        let lstatCount = 0;
         const fs = new Proxy(ctx.fs, {
           get(target, prop, receiver) {
             if (prop === 'lstat') {
               return async (p: string) => {
                 if (p === targetPath) {
-                  lstatCount += 1;
-                  if (lstatCount > 1) {
-                    throw new TsgitError({ code: 'PERMISSION_DENIED', path: targetPath });
-                  }
+                  throw new TsgitError({ code: 'PERMISSION_DENIED', path: targetPath });
                 }
                 return baseLstat(p);
               };
@@ -350,6 +345,38 @@ describe('add', () => {
 
         // Act + Assert
         await expectError(() => add({ ...ctx, fs }, ['blocked.txt']), 'PERMISSION_DENIED');
+      });
+    });
+  });
+
+  describe('Given two modified tracked files named by literal path', () => {
+    describe('When add', () => {
+      it('Then each path is lstat-ed exactly once', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ a: 'one', 'd/b': 'two' });
+        await add(ctx, ['a', 'd/b']);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a`, 'one changed');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/d/b`, 'two changed');
+        const counts = new Map<string, number>();
+        const baseLstat = ctx.fs.lstat;
+        const fs = new Proxy(ctx.fs, {
+          get(target, prop, receiver) {
+            if (prop !== 'lstat') return Reflect.get(target, prop, receiver);
+            return async (p: string) => {
+              counts.set(p, (counts.get(p) ?? 0) + 1);
+              return baseLstat(p);
+            };
+          },
+        });
+        const sut = add;
+
+        // Act
+        const result = await sut({ ...ctx, fs }, ['a', 'd/b']);
+
+        // Assert
+        expect(result.modified).toEqual(['a', 'd/b']);
+        expect(counts.get(`${ctx.layout.workDir}/a`)).toBe(1);
+        expect(counts.get(`${ctx.layout.workDir}/d/b`)).toBe(1);
       });
     });
   });
@@ -2331,36 +2358,16 @@ describe('add', () => {
       }>([
         {
           seed: { 'a.txt': 'a' },
-          makeFailingCtx: (ctx) => {
-            // `a.txt` passes allLiteralsAreFiles (its first lstat) but its
-            // second lstat (inside stageOne) throws, so stageOne returns
-            // 'missing' and addLiteralOnly throws PATHSPEC_NO_MATCH.
-            const baseLstat = ctx.fs.lstat;
-            let aSeen = false;
-            const flakyFs = new Proxy(ctx.fs, {
-              get(target, prop, receiver) {
-                if (prop === 'lstat') {
-                  return async (path: string) => {
-                    const real = await baseLstat(path);
-                    if (!path.endsWith('/a.txt')) return real;
-                    if (!aSeen) {
-                      aSeen = true;
-                      return real;
-                    }
-                    throw new TsgitError({ code: 'FILE_NOT_FOUND', path });
-                  };
-                }
-                return Reflect.get(target, prop, receiver);
-              },
-            });
-            return { ...ctx, fs: flakyFs };
-          },
+          makeFailingCtx: (ctx) => ({
+            ...ctx,
+            fs: racingLstatFs(ctx, '/a.txt', { size: MAX_WORKING_TREE_BLOB_BYTES + 1 }),
+          }),
           failPathspec: ['a.txt'],
           failOptions: undefined,
-          failCode: 'PATHSPEC_NO_MATCH',
+          failCode: 'WORKING_TREE_FILE_TOO_LARGE',
           retryPathspec: ['a.txt'],
           expectedAdded: ['a.txt'],
-          label: 'the finally block released the lock (literal-path mode; L116)',
+          label: 'the finally block released the lock (literal-path mode)',
         },
         {
           seed: { 'a.ts': 'a' },
