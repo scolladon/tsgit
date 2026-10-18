@@ -119,16 +119,23 @@ const buildCheckoutPool = async (startRev: string): Promise<CheckoutPool> => {
   if (startRev !== 'root') await source.repo.checkout({ rev: startRev, force: true });
   const copies: OpenedCopy[] = [];
   for (let i = 0; i < POOL_SIZE; i += 1) copies.push(await openPoolCopy(source));
+  let cursor = 0;
+  let released = false;
+  // Consumed copies stay listed so teardown releases them too.
+  const teardown = (): void => {
+    if (released) return;
+    released = true;
+    for (const copy of copies) copy.scratch.disposeSync();
+    source.disposeSync();
+  };
   return {
     next: (): Repository => {
-      const copy = copies.shift();
+      const copy = copies[cursor];
       if (copy === undefined) throw new Error('checkout pool exhausted');
+      cursor += 1;
       return copy.repo;
     },
-    teardown: (): void => {
-      for (const copy of copies) copy.scratch.disposeSync();
-      source.disposeSync();
-    },
+    teardown,
   };
 };
 
