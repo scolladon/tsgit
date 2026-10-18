@@ -123,6 +123,18 @@ describe('updateCacheTree', () => {
         expect(childNamed(result.cacheTree, 'c').entryCount).toBe(1);
       });
 
+      it('Then without a carried tree the later sibling is not repaired either', async () => {
+        // Arrange
+        const { ctx } = await setup(['b/f']);
+        const entries = entriesOf('a/new/g', 'b/f');
+        const sut = updateCacheTree;
+        // Act
+        const result = await sut(ctx, entries, undefined, 'repair');
+        // Assert
+        expect(result.cacheTree.children.map((child) => child.path)).toEqual(['a']);
+        expect(childNamed(result.cacheTree, 'a').entryCount).toBe(-1);
+      });
+
       it('Then a carried directory the index no longer has is kept', async () => {
         // Arrange
         const { ctx, seed } = await setup(['a/x', 'b/f', 'c/f', 'd/f']);
@@ -170,6 +182,22 @@ describe('updateCacheTree', () => {
         const result = await sut(ctx, root);
         // Assert
         expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a carried root naming the empty tree and no entries', () => {
+    describe('When updating in write mode', () => {
+      it('Then the empty tree is accepted without being stored', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const empty = emptyTreeOid(ctx.hashConfig);
+        const carried = { path: '', entryCount: 0, subtreeCount: 0, id: empty, children: [] };
+        const sut = updateCacheTree;
+        // Act
+        const result = await sut(ctx, [], carried, 'write');
+        // Assert
+        expect(result.rootTree).toBe(empty);
       });
     });
   });
