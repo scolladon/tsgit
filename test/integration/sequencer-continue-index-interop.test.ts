@@ -35,6 +35,7 @@ import {
 const ROW_TIMEOUT_MS = 60_000;
 const PAST_SECONDS = 20;
 const TOUCH_SECONDS = 5;
+const NS_PER_SECOND = 1_000_000_000n;
 const BYSTANDER = 'c/f';
 const RESOLVED = 'fixed\n';
 
@@ -126,10 +127,26 @@ const entryMtimeOf = async (ctx: Context): Promise<number | undefined> =>
 const fileMtimeOf = async (dir: string): Promise<number> =>
   Math.floor((await stat(path.join(dir, BYSTANDER))).mtimeMs / 1000);
 
+/** Stage-0 entries whose recorded mtime differs from the file on disk. */
+const staleEntriesOf = async (ctx: Context, dir: string): Promise<ReadonlyArray<string>> => {
+  const stale: string[] = [];
+  for (const entry of (await readIndex(ctx)).entries) {
+    if (entry.flags.stage !== 0) continue;
+    const { mtimeNs } = await stat(path.join(dir, entry.path), { bigint: true });
+    const recordedNs = BigInt(entry.mtimeSeconds) * NS_PER_SECOND + BigInt(entry.mtimeNanoseconds);
+    if (recordedNs !== mtimeNs) stale.push(entry.path);
+  }
+  return stale.sort();
+};
+
 interface Outcome {
   readonly ours: Context;
   readonly peer: Context;
   readonly pair: PeerPair;
+  readonly staleAfterStop: {
+    readonly ours: ReadonlyArray<string>;
+    readonly peer: ReadonlyArray<string>;
+  };
 }
 
 const play = async (
@@ -146,7 +163,10 @@ const play = async (
   const ours = createNodeContext({ workDir: pair.ours });
   operation.gitStop(pair.peer);
   await operation.tsgitStop(ours);
-  for (const dir of [pair.peer, pair.ours]) await settleStats(dir);
+  const staleAfterStop = {
+    ours: await staleEntriesOf(ours, pair.ours),
+    peer: await staleEntriesOf(peer, pair.peer),
+  };
   const touched = secondsAgo(TOUCH_SECONDS);
   for (const dir of [pair.peer, pair.ours]) {
     await write(dir, 'a/f', RESOLVED);
@@ -156,7 +176,7 @@ const play = async (
   await add(ours, ['a/f']);
   operation.gitContinue(pair.peer);
   await operation.tsgitContinue(ours);
-  return { ours, peer, pair };
+  return { ours, peer, pair, staleAfterStop };
 };
 
 describe.skipIf(!GIT_AVAILABLE)('sequencer continue index interop', () => {
@@ -190,6 +210,15 @@ describe.skipIf(!GIT_AVAILABLE)('sequencer continue index interop', () => {
 
           // Assert
           expect(peer).toBeDefined();
+          expect(ours).toEqual(peer);
+        });
+
+        it('Then no entry is stale after the stop, as in git', () => {
+          // Arrange + Act
+          const { ours, peer } = outcome.staleAfterStop;
+
+          // Assert
+          expect(peer).toEqual([]);
           expect(ours).toEqual(peer);
         });
 
