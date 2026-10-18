@@ -134,7 +134,9 @@ const buildMixedBase = async (dir: string, format: Format): Promise<void> => {
   await settle(dir);
 };
 
-const buildAbcBase = async (dir: string, format: Format, withD: boolean): Promise<void> => {
+type AbcLayout = 'plain' | 'withD' | 'withOld';
+
+const buildAbcBase = async (dir: string, format: Format, layout: AbcLayout): Promise<void> => {
   runGit(['init', '-q', '-b', 'main', `--object-format=${format}`, dir]);
   git(dir, 'config', 'user.name', 'Ada');
   git(dir, 'config', 'user.email', 'ada@example.com');
@@ -143,11 +145,13 @@ const buildAbcBase = async (dir: string, format: Format, withD: boolean): Promis
   await write(dir, 'a/x', 'x\n');
   await write(dir, 'b/f', 'b\n');
   await write(dir, 'c/f', 'c\n');
-  if (withD) await write(dir, 'd/f', 'd\n');
+  if (layout === 'withD') await write(dir, 'd/f', 'd\n');
+  if (layout === 'withOld') await write(dir, 'a/old/f', 'o\n');
   commitAll(dir, 'base');
   git(dir, 'checkout', '-q', '-b', 'other');
   await write(dir, 'b/f', 'other\n');
-  if (withD) git(dir, 'rm', '-q', 'd/f');
+  if (layout === 'withD') git(dir, 'rm', '-q', 'd/f');
+  if (layout === 'withOld') git(dir, 'rm', '-q', 'a/old/f');
   commitAll(dir, 'other');
   git(dir, 'checkout', '-q', 'main');
   await settle(dir);
@@ -155,7 +159,7 @@ const buildAbcBase = async (dir: string, format: Format, withD: boolean): Promis
 
 interface Row {
   readonly title: string;
-  readonly base?: 'unpack' | 'mixed' | 'abc' | 'abcd';
+  readonly base?: 'unpack' | 'mixed' | 'abc' | 'abcd' | 'oldDir';
   readonly prepare?: (dir: string) => Promise<void>;
   readonly git: (dir: string) => void;
   readonly tsgit: (ctx: Context) => Promise<unknown>;
@@ -394,12 +398,20 @@ const GUARDS: ReadonlyArray<Row> = [
     git: ok('checkout', '-q', 'other'),
     tsgit: (c) => checkout(c, { rev: 'other' }),
   },
+  {
+    title: 'checkout other above a staged a/new, with the carried a/old gone from the index',
+    base: 'oldDir',
+    prepare: (dir) => restage(dir, 'a/new/f', 'n\n'),
+    git: ok('checkout', '-q', 'other'),
+    tsgit: (c) => checkout(c, { rev: 'other' }),
+  },
 ];
 
 const buildBase = (row: Row, dir: string, format: Format): Promise<void> => {
   if (row.base === 'mixed') return buildMixedBase(dir, format);
-  if (row.base === 'abc' || row.base === 'abcd')
-    return buildAbcBase(dir, format, row.base === 'abcd');
+  if (row.base === 'abc') return buildAbcBase(dir, format, 'plain');
+  if (row.base === 'abcd') return buildAbcBase(dir, format, 'withD');
+  if (row.base === 'oldDir') return buildAbcBase(dir, format, 'withOld');
   return buildUnpackBase(dir, format);
 };
 

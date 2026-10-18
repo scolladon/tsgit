@@ -135,6 +135,19 @@ describe('updateCacheTree', () => {
         expect(childNamed(result.cacheTree, 'a').entryCount).toBe(-1);
       });
 
+      it('Then a carried directory is dropped when only the entry pass of its parent fails', async () => {
+        // Arrange
+        const { ctx, seed } = await setup(['a/old/f', 'a/x', 'b/f', 'c/f']);
+        const entries = entriesOf('a/new/g', 'a/x', 'b/f', 'c/f');
+        const sut = updateCacheTree;
+        // Act
+        const result = await sut(ctx, entries, seed, 'repair');
+        // Assert
+        const a = childNamed(result.cacheTree, 'a');
+        expect(a.children.map((child) => child.path)).toEqual(['new']);
+        expect(a.subtreeCount).toBe(1);
+      });
+
       it('Then a carried directory the index no longer has is kept', async () => {
         // Arrange
         const { ctx, seed } = await setup(['a/x', 'b/f', 'c/f', 'd/f']);

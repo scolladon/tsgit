@@ -65,6 +65,7 @@ const visitedBy = (
 /**
  * git stops at the first unrepairable directory: the ones before it are repaired, the ones
  * after it keep their carried state, and carried directories the index no longer has stay.
+ * A directory that only fails its entry pass has visited every child and dropped the unused ones.
  */
 export const toRepairedCacheTree = (
   plan: CacheTreePlan,
@@ -74,8 +75,12 @@ export const toRepairedCacheTree = (
   const aborted = abortedNodes(plan, ids);
   const nodes = cacheTreeNodesOf(plan, ids);
 
+  const stoppedAtChild = (index: number): boolean =>
+    aborted.has(index) &&
+    (plan.nodes[index] as PlannedNode).children.some((child) => aborted.has(child));
+
   const settled = (index: number, previous: CacheTreeEntry | undefined): CacheTreeEntry => {
-    if (!aborted.has(index)) return nodes[index] as CacheTreeEntry;
+    if (!stoppedAtChild(index)) return nodes[index] as CacheTreeEntry;
     const visited = visitedBy(plan, aborted, index);
     const kept = (previous?.children ?? []).map((old) => {
       const child = visited.get(keyOf(nameOf(old)));
