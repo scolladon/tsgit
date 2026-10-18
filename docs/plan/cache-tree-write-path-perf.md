@@ -1074,8 +1074,8 @@ Not a perf part; no Measure step.
   `materializeTree` (`src/application/primitives/materialize-tree.ts`) diffs the current index against the target
   tree (`computeChangeset(plan.indexForDiff, plan.target)`) and writes every difference, so a staged change is
   overwritten. Only unstaged work-tree changes are protected (by `applyChangeset`'s dirty probe, which throws
-  `checkoutOverwriteDirty` → `CHECKOUT_OVERWRITE_DIRTY { localChanges, untracked }`, `src/domain/commands/error.ts`).
-- **git's rule** (`unpack-trees.c` `twoway_merge`, per path, with `old` = HEAD's tree entry, `new` = target entry,
+  `checkoutOverwriteDirty` → `CHECKOUT_OVERWRITE_DIRTY { localChanges, untracked }`, defined in the domain commands error module).
+- **git's rule** (git's unpack-trees.c, its two-way merge, per path, with `old` = HEAD's tree entry, `new` = target entry,
   `index` = current stage-0 entry; equality = same oid and mode, "absent" counts as a value):
   - `old == new`: keep the index entry as it is (present, changed or absent) and leave the work tree alone.
   - `old != new` and (`index == old` or `index == new`): take `new` (today's behaviour).
@@ -1120,7 +1120,9 @@ Not a perf part; no Measure step.
 
 ### Gate
 
-`rm -rf .wireit && PATH=<git-2.55-bin>:$PATH npx vitest run <touched-tests> test/unit/application/commands/checkout*.test.ts test/integration/*checkout* && npm run check:types && ./node_modules/.bin/biome check <touched-files> && npm run check:spelling`
+`rm -rf .wireit && PATH=<git-2.55-bin>:$PATH npx vitest run <touched-tests> && npm run check:types && ./node_modules/.bin/biome check <touched-files> && npm run check:spelling`
+
+Also run the existing checkout unit and integration suites (they are not part of the declared file set).
 
 ### Commit
 
