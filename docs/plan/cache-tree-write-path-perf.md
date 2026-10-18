@@ -1063,6 +1063,69 @@ PATH=<git-2.55-bin>:$PATH npx vitest run test/integration/cache-tree-repair-inte
 
 `fix(stash): invalidate the kept index paths after a keep-index reset, as git does`
 
+## Part 11b — branch switch carries staged changes as git's two-way merge does
+
+Added during implementation (user-ratified fold of a pre-existing data-loss defect found by Part 11's R1 row).
+Not a perf part; no Measure step.
+
+### Context
+
+- **Defect (pinned 3/3, git 2.55 vs the branch-base build):** a non-forced `checkout <branch>` ignores the index.
+  `materializeTree` (`src/application/primitives/materialize-tree.ts`) diffs the current index against the target
+  tree (`computeChangeset(plan.indexForDiff, plan.target)`) and writes every difference, so a staged change is
+  overwritten. Only unstaged work-tree changes are protected (by `applyChangeset`'s dirty probe, which throws
+  `checkoutOverwriteDirty` → `CHECKOUT_OVERWRITE_DIRTY { localChanges, untracked }`, `src/domain/commands/error.ts`).
+- **git's rule** (`unpack-trees.c` `twoway_merge`, per path, with `old` = HEAD's tree entry, `new` = target entry,
+  `index` = current stage-0 entry; equality = same oid and mode, "absent" counts as a value):
+  - `old == new`: keep the index entry as it is (present, changed or absent) and leave the work tree alone.
+  - `old != new` and (`index == old` or `index == new`): take `new` (today's behaviour).
+  - `old != new` and `index` differs from both: refuse, path in `localChanges`. The index decides, even when the work
+    file already equals `new`.
+- **Pinned matrix** (fixture: `a/x/f b/f c/f top` on main; `other` changes `b/f` and adds `z/f`; then the setup
+  below, then `checkout other`, no force):
+
+  | Row | Setup | git 2.55 | tsgit today |
+  |---|---|---|---|
+  | R1 | `c/f` edited + staged | switches; `c/f` keeps the staged blob and content (`M  c/f`) | staged blob and content lost |
+  | R1b | `b/f` edited + staged | refuses rc=1, `localChanges: [b/f]`, nothing changed | overwrites |
+  | R1b' | as R1b, then the work file rewritten to `other`'s content | refuses, `[b/f]` | overwrites |
+  | R1c | `b/f` staged with `other`'s content | switches | switches |
+  | R1d | new `n/f` staged | switches; `n/f` kept (`A  n/f`) | `n/f` deleted from index and work tree |
+  | R1e | `git rm c/f` (staged delete) | switches; deletion kept (`D  c/f`) | deletion undone |
+  | R1f | new `z/f` staged (target adds `z/f`) | refuses, `[z/f]` | overwrites |
+  | R1g | `c/f` edited, unstaged | switches; edit kept | switches; edit kept |
+
+  Pin scripts (orchestrator scratch, recipe reproducible from the table): fixture as above; tsgit side calls
+  `repo.checkout({ rev: 'other' })` and reports `e.data.code`.
+- **Where:** `switchBranch` (`src/application/commands/checkout.ts`) already resolves `oldOid` (HEAD commit) and reads
+  the target tree under the index lock, then calls `materializeTree(ctx, { targetTree, currentIndex, force, … })`.
+  Add an optional `headTree?: ObjectId` to `MaterializeTreeOpts` (absent ⇒ today's behaviour, so every other caller —
+  reset, merge, stash, sparse — is untouched), passed only by the non-forced branch switch. In `materializeTree`,
+  before `computeChangeset`, collect HEAD's entries (`collectTargetEntries(ctx, headTree)`), then: refuse with
+  `checkoutOverwriteDirty({ localChanges, untracked: [] })` when any path hits the refuse rule (collect all, sorted
+  as the existing refusal sorts); otherwise drop `old == new` paths from the changeset AND keep their current index
+  entries in the merged index (they must not be replaced by the target's). Unborn HEAD (no `oldOid`) ⇒ no `headTree`.
+  The refusal must happen before any work-tree write.
+- **Force** (`checkout -f`) keeps today's behaviour (git's `reset_tree` path): pass no `headTree`.
+
+### TDD steps
+
+1. RED unit (`test/unit/application/primitives/materialize-tree.test.ts`, memory adapter): R1, R1d, R1e keep the
+   index entry and work file; R1b, R1b', R1f throw `CHECKOUT_OVERWRITE_DIRTY` with `localChanges` asserted and the
+   work tree and index untouched; R1c switches. Each guard of the refuse rule (`index == old`, `index == new`)
+   isolated in its own test.
+2. RED interop (`test/integration/cache-tree-repair-interop.test.ts`, git 2.55): row R1 (TREE bytes, `ls-files -s`,
+   work-file content equal to git's) plus the matrix rows as `ls-files -s` + status + refusal-code equality.
+3. GREEN in `materialize-tree.ts` + `checkout.ts`. GUARD: `checkout -f` still overwrites a staged change.
+
+### Gate
+
+`rm -rf .wireit && PATH=<git-2.55-bin>:$PATH npx vitest run <touched-tests> test/unit/application/commands/checkout*.test.ts test/integration/*checkout* && npm run check:types && ./node_modules/.bin/biome check <touched-files> && npm run check:spelling`
+
+### Commit
+
+`fix(checkout): keep staged changes on a branch switch and refuse the ones the target would overwrite`
+
 ## Part 12 — sequencer `--continue` writes the updated cache-tree and refreshes stats
 
 ### Context
