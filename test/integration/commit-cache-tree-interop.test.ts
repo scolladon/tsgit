@@ -11,7 +11,7 @@
  *   unique:         commit maintains the index TREE, excludes intent-to-add entries and refuses as git does
  *   interopSurface: index
  */
-import { chmod, mkdir, stat, utimes, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, stat, utimes, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
@@ -123,6 +123,8 @@ interface Step {
   /** The code tsgit refuses with; absent when the commit succeeds. */
   readonly refusal?: string;
   readonly rewritten: boolean;
+  /** Every index entry's stat equals the working file's after the step. */
+  readonly statsSettled?: boolean;
 }
 
 interface Row {
@@ -137,6 +139,7 @@ interface Snapshot {
   readonly extensionNames: ReadonlyArray<string>;
   readonly headTree: string | undefined;
   readonly committedPaths: string | undefined;
+  readonly staleStats: ReadonlyArray<string>;
 }
 
 interface StepOutcome {
@@ -148,6 +151,17 @@ interface StepOutcome {
   readonly oursRewritten: boolean;
 }
 
+const staleStatsOf = async (dir: string, format: Format): Promise<ReadonlyArray<string>> => {
+  const stale: string[] = [];
+  for (const entry of (await readIndex(contextFor(dir, format))).entries) {
+    const onDisk = await lstat(path.join(dir, entry.path));
+    const moved =
+      entry.mtimeSeconds !== Math.floor(onDisk.mtimeMs / 1000) || entry.fileSize !== onDisk.size;
+    if (moved) stale.push(entry.path);
+  }
+  return stale;
+};
+
 const snapshot = async (dir: string, format: Format): Promise<Snapshot> => {
   const extensions = await extensionsOf(dir, format);
   const hasHead = tryRunGitWithExit(['-C', dir, 'rev-parse', '--verify', '-q', 'HEAD']);
@@ -158,6 +172,7 @@ const snapshot = async (dir: string, format: Format): Promise<Snapshot> => {
     headTree: hasHead.exitCode === 0 ? headTree(dir) : undefined,
     committedPaths:
       hasHead.exitCode === 0 ? git(dir, 'ls-tree', '-r', '--name-only', 'HEAD') : undefined,
+    staleStats: await staleStatsOf(dir, format),
   };
 };
 
@@ -391,6 +406,48 @@ const SETTLED_ROWS: ReadonlyArray<Row> = [
   },
 ];
 
+const BACKDATED = new Date('2020-01-01T00:00:00Z');
+
+const backdateIndex = (dir: string): Promise<void> =>
+  utimes(indexPathOf(dir), BACKDATED, BACKDATED);
+
+const allowEmptyStep = (prepare: Step['prepare'], rewritten: boolean, statsSettled = false): Step =>
+  withIndexWrite({
+    ...(prepare === undefined ? {} : { prepare }),
+    gitArgs: ['commit', '-q', '--allow-empty', '-m', 'step'],
+    tsgit: commitWith('step', { allowEmpty: true }),
+    rewritten,
+    statsSettled,
+  });
+
+const REFRESH_ROWS: ReadonlyArray<Row> = [
+  {
+    title: 'commit --allow-empty after a stat-only touch of b/f (the refresh rewrites the index)',
+    steps: [allowEmptyStep((dir) => touchForward(dir, 'b/f'), true, true)],
+  },
+  {
+    title: 'commit --allow-empty with every entry racy and nothing moved (no index write)',
+    steps: [allowEmptyStep(backdateIndex, false)],
+  },
+  {
+    title: 'commit --allow-empty with b/f modified and not staged (no index write)',
+    steps: [allowEmptyStep((dir) => write(dir, 'b/f', 'changed\n'), false)],
+  },
+  {
+    title: 'commit --allow-empty with every entry racy and b/f touched (the refresh rewrites)',
+    steps: [
+      allowEmptyStep(
+        async (dir) => {
+          await touchForward(dir, 'b/f');
+          await backdateIndex(dir);
+        },
+        true,
+        true,
+      ),
+    ],
+  },
+];
+
 const HOOK_ROW: Row = {
   title: 'commit whose pre-commit hook re-stages a file',
   steps: [
@@ -428,6 +485,8 @@ const expectOutcome = (step: Step, outcome: StepOutcome): void => {
   expect([outcome.peerRewritten, outcome.oursRewritten]).toEqual([step.rewritten, step.rewritten]);
   expect(outcome.ours.headTree).toBe(outcome.peer.headTree);
   expect(outcome.ours.committedPaths).toBe(outcome.peer.committedPaths);
+  expect(outcome.ours.staleStats).toEqual(outcome.peer.staleStats);
+  if (step.statsSettled === true) expect(outcome.ours.staleStats).toEqual([]);
 };
 
 const describeRow = (row: Row, format: Format = 'sha1'): void => {
@@ -465,6 +524,7 @@ const describeRow = (row: Row, format: Format = 'sha1'): void => {
 
 describe.skipIf(!GIT_AVAILABLE)('commit cache-tree interop', () => {
   for (const row of SETTLED_ROWS) describeRow(row);
+  for (const row of REFRESH_ROWS) describeRow(row);
   describeRow(SETTLED_ROWS[0] as Row, 'sha256');
   describeRow(SETTLED_ROWS[1] as Row, 'sha256');
   describeRow(ITA_ROW);

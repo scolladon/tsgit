@@ -1,8 +1,14 @@
 import { carriedCacheTreeOf } from '../../../domain/git-index/cache-tree-update.js';
-import type { CacheTreeEntry } from '../../../domain/git-index/index-entry.js';
+import type { GitIndex } from '../../../domain/git-index/index.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import { acquireIndexLock } from '../../primitives/internal/index-lock.js';
+import { withFilterProcessPool } from '../../primitives/internal/filter-process-pool.js';
+import {
+  acquireIndexLock,
+  type IndexLock,
+  withRefreshedStat,
+} from '../../primitives/internal/index-lock.js';
+import { scanTrackedEntries, verifiedBy } from '../../primitives/internal/scan-tracked-entries.js';
 import {
   isCacheTreeFullyValid,
   updateCacheTree,
@@ -10,25 +16,39 @@ import {
 import { readIndex } from '../../primitives/read-index.js';
 import { rejectUnmergedIndex } from './unmerged-index.js';
 
-const settledRoot = async (
-  ctx: Context,
-  carried: CacheTreeEntry | undefined,
-): Promise<ObjectId | undefined> =>
-  (await isCacheTreeFullyValid(ctx, carried)) ? carried?.id : undefined;
+/** git's commit refresh is `REFRESH_QUIET`: nothing reports per-entry progress. */
+const QUIET_SCAN = (): void => undefined;
 
-/** git's prepare_index for a plain commit: lock, read, refuse unmerged, update TREE, write iff it changed. */
-export const writeIndexCacheTree = async (ctx: Context): Promise<ObjectId> => {
-  const lock = await acquireIndexLock(ctx);
-  try {
-    const index = await readIndex(ctx);
-    rejectUnmergedIndex(index.entries);
-    const carried = carriedCacheTreeOf(index.extensions, ctx.hashConfig.digestLength);
-    const settled = await settledRoot(ctx, carried);
-    if (settled !== undefined) return settled;
-    const { cacheTree, rootTree } = await updateCacheTree(ctx, index.entries, carried, 'write');
-    await lock.commit(index.entries, 'update', { cacheTree });
-    return rootTree;
-  } finally {
-    await lock.release();
+const refreshAndUpdate = async (
+  ctx: Context,
+  lock: IndexLock,
+  index: GitIndex,
+): Promise<ObjectId> => {
+  // Every entry is stage 0 here: `rejectUnmergedIndex` has already refused otherwise.
+  const scan = await scanTrackedEntries(ctx, index, index.entries, QUIET_SCAN);
+  const entries = withRefreshedStat(index, scan.refreshed);
+  const carried = carriedCacheTreeOf(index.extensions, ctx.hashConfig.digestLength);
+  const settled = (await isCacheTreeFullyValid(ctx, carried)) ? carried : undefined;
+  const verified = verifiedBy(scan);
+  if (settled?.id !== undefined) {
+    if (scan.refreshed.length > 0)
+      await lock.commit(entries, 'update', { cacheTree: settled, verified });
+    return settled.id;
   }
+  const { cacheTree, rootTree } = await updateCacheTree(ctx, entries, carried, 'write');
+  await lock.commit(entries, 'update', { cacheTree, verified });
+  return rootTree;
 };
+
+/** git's prepare_index for a plain commit: lock, read, refuse unmerged, refresh stats, update TREE, write iff stats or TREE changed. */
+export const writeIndexCacheTree = (ctx: Context): Promise<ObjectId> =>
+  withFilterProcessPool(ctx, async () => {
+    const lock = await acquireIndexLock(ctx);
+    try {
+      const index = await readIndex(ctx);
+      rejectUnmergedIndex(index.entries);
+      return await refreshAndUpdate(ctx, lock, index);
+    } finally {
+      await lock.release();
+    }
+  });

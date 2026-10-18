@@ -376,6 +376,37 @@ describe('commit', () => {
     });
   });
 
+  describe('Given allowEmpty=true and a tracked file rewritten with the same bytes', () => {
+    describe('When commit runs', () => {
+      it('Then the index is rewritten with the refreshed stat', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(1_800_000_000_000);
+          const ctx = await seed();
+          await commit(ctx, { message: 'first', author });
+          const path = `${ctx.layout.workDir}/a.txt`;
+          const content = await ctx.fs.readUtf8(path);
+          vi.setSystemTime(1_800_000_010_000);
+          await ctx.fs.writeUtf8(path, content);
+          vi.setSystemTime(1_800_000_020_000);
+          const sut = commit;
+
+          // Act
+          await sut(ctx, { message: 'second', author, allowEmpty: true });
+
+          // Assert
+          const entry = (await readIndex(ctx)).entries.find(
+            (e) => e.path === ('a.txt' as FilePath),
+          );
+          expect(entry?.mtimeSeconds).toBe(1_800_000_010);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+  });
+
   describe('Given a bare repo', () => {
     describe('When commit', () => {
       it('Then throws WORK_TREE_REQUIRED tagged with operation "commit"', async () => {

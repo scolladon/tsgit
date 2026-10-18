@@ -1,9 +1,12 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../../src/application/commands/add.js';
 import { init } from '../../../../../src/application/commands/init.js';
 import { writeIndexCacheTree } from '../../../../../src/application/commands/internal/write-index-cache-tree.js';
-import { readIndex } from '../../../../../src/application/primitives/read-index.js';
+import {
+  invalidateIndexCache,
+  readIndex,
+} from '../../../../../src/application/primitives/read-index.js';
 import { synthesizeTreeFromIndex } from '../../../../../src/application/primitives/synthesize-tree-from-index.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { carriedCacheTreeOf } from '../../../../../src/domain/git-index/cache-tree-update.js';
@@ -147,6 +150,214 @@ describe('writeIndexCacheTree', () => {
         const carried = await carriedOf(ctx);
         expect(carried?.entryCount).toBe(-1);
         expect(carried?.children.map((child) => child.entryCount)).toEqual([-1]);
+      });
+    });
+  });
+});
+
+describe('writeIndexCacheTree stat refresh', () => {
+  const T = 1_800_000_000_000;
+  const at = (offsetSeconds: number): void => {
+    vi.setSystemTime(T + offsetSeconds * 1000);
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Files written at T, added at T+2s, TREE written at T+3s: a settled repository. */
+  const seedSettled = async (): Promise<Context> => {
+    const ctx = createMemoryContext();
+    at(0);
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/f`, 'a');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b/f`, 'b');
+    at(2);
+    await add(ctx, ['a/f', 'b/f']);
+    at(3);
+    await writeIndexCacheTree(ctx);
+    return ctx;
+  };
+
+  /** Files and index both written inside second T+2: every entry is racy. */
+  const seedRacy = async (): Promise<Context> => {
+    const ctx = createMemoryContext();
+    at(2);
+    await init(ctx);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/f`, 'a');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b/f`, 'b');
+    await add(ctx, ['a/f', 'b/f']);
+    await writeIndexCacheTree(ctx);
+    return ctx;
+  };
+
+  const stagedEntry = async (ctx: Context, path: string) => {
+    invalidateIndexCache(ctx);
+    return (await readIndex(ctx)).entries.find((e) => e.path === (path as FilePath));
+  };
+
+  describe('Given a fully valid TREE and b/f rewritten with the same bytes later', () => {
+    describe('When the cache-tree is written', () => {
+      it('Then the index is rewritten with the refreshed stat and the same TREE', async () => {
+        // Arrange
+        const ctx = await seedSettled();
+        const treeBefore = await carriedOf(ctx);
+        at(5);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b/f`, 'b');
+        at(7);
+        const renames = vi.spyOn(ctx.fs, 'rename');
+        const sut = writeIndexCacheTree;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        const stat = await ctx.fs.lstat(`${ctx.layout.workDir}/b/f`);
+        const entry = await stagedEntry(ctx, 'b/f');
+        expect(renames).toHaveBeenCalledTimes(1);
+        expect(entry?.mtimeSeconds).toBe(Math.floor(stat.mtimeMs / 1000));
+        expect(result).toBe(treeBefore?.id);
+        expect(await carriedOf(ctx)).toEqual(treeBefore);
+      });
+    });
+  });
+
+  describe('Given a fully valid TREE, entries racy against the index and nothing moved', () => {
+    describe('When the cache-tree is written', () => {
+      it('Then the index is left untouched', async () => {
+        // Arrange
+        const ctx = await seedSettled();
+        const before = await indexBytes(ctx);
+        const renames = vi.spyOn(ctx.fs, 'rename');
+        at(4);
+        const sut = writeIndexCacheTree;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(renames).not.toHaveBeenCalled();
+        expect(await indexBytes(ctx)).toEqual(before);
+      });
+    });
+  });
+
+  describe('Given a fully valid TREE and b/f modified in the working tree but not staged', () => {
+    describe('When the cache-tree is written', () => {
+      it('Then the index is not rewritten and the entry stat is unchanged', async () => {
+        // Arrange
+        const ctx = await seedSettled();
+        const before = await stagedEntry(ctx, 'b/f');
+        at(5);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b/f`, 'changed!');
+        at(7);
+        const renames = vi.spyOn(ctx.fs, 'rename');
+        const sut = writeIndexCacheTree;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(renames).not.toHaveBeenCalled();
+        expect(await stagedEntry(ctx, 'b/f')).toEqual(before);
+      });
+    });
+  });
+
+  describe('Given a skip-worktree entry whose file stat drifted', () => {
+    describe('When the cache-tree is written', () => {
+      it('Then its entry is not refreshed', async () => {
+        // Arrange
+        const ctx = await seedSettled();
+        const marked = (await readIndex(ctx)).entries.map((e) =>
+          e.path === ('b/f' as FilePath) ? { ...e, flags: { ...e.flags, skipWorktree: true } } : e,
+        );
+        await plant(ctx, marked);
+        at(5);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b/f`, 'b');
+        at(7);
+        const before = await stagedEntry(ctx, 'b/f');
+        const sut = writeIndexCacheTree;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await stagedEntry(ctx, 'b/f')).toEqual(before);
+      });
+    });
+  });
+
+  describe('Given a racy entry rewritten in place and another entry whose stat moved', () => {
+    describe('When the cache-tree is written', () => {
+      it('Then the racy modified entry is smudged to size 0 and the moved one keeps its size', async () => {
+        // Arrange
+        const ctx = await seedRacy();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/f`, 'X');
+        at(4);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b/f`, 'b');
+        at(5);
+        const sut = writeIndexCacheTree;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect((await stagedEntry(ctx, 'a/f'))?.fileSize).toBe(0);
+        const moved = await stagedEntry(ctx, 'b/f');
+        expect(moved?.fileSize).toBe(1);
+        expect(moved?.mtimeSeconds).toBe(T / 1000 + 4);
+      });
+    });
+  });
+
+  describe('Given a racy unchanged entry and another entry whose stat moved', () => {
+    describe('When the cache-tree is written', () => {
+      it('Then the racy file is read once', async () => {
+        // Arrange
+        const ctx = await seedRacy();
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/f`, 'a');
+        at(4);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b/f`, 'b');
+        at(5);
+        const reads = vi.spyOn(ctx.fs, 'read');
+        const sut = writeIndexCacheTree;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const racyReads = reads.mock.calls.filter(
+          ([p]) => String(p) === `${ctx.layout.workDir}/a/f`,
+        );
+        expect(racyReads).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given an unmerged index', () => {
+    describe('When the cache-tree is written', () => {
+      it('Then it refuses before any worktree lstat', async () => {
+        // Arrange
+        const ctx = await seed({ ok: '1' });
+        const blob = await emptyBlob(ctx);
+        await plant(ctx, [entryOf('c', blob, 1), entryOf('c', blob, 2), entryOf('ok', blob, 0)]);
+        const lstat = vi.spyOn(ctx.fs, 'lstat');
+        const sut = writeIndexCacheTree;
+
+        // Act
+        const attempt = sut(ctx);
+
+        // Assert
+        await expect(attempt).rejects.toMatchObject({ data: { code: 'MERGE_HAS_CONFLICTS' } });
+        const worktreeCalls = lstat.mock.calls.filter(([p]) =>
+          String(p).startsWith(`${ctx.layout.workDir}/`),
+        );
+        expect(worktreeCalls).toEqual([]);
       });
     });
   });
