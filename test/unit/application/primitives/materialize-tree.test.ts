@@ -1410,6 +1410,27 @@ describe('materializeTree carrying staged changes (headTree)', () => {
     });
   });
 
+  describe('Given a target that only flips the mode of b to executable', () => {
+    describe('When the index still equals head', () => {
+      it('Then b takes the target mode in the index', async () => {
+        // Arrange
+        const { ctx, blobs } = await buildFixture();
+        const entry = (mode: string) =>
+          treeEntry(mode as typeof FILE_MODE.REGULAR, 'b' as FilePath, blobs.old as ObjectId);
+        const headTree = await writeTree(ctx, [entry(FILE_MODE.REGULAR)]);
+        const targetTree = await writeTree(ctx, [entry(FILE_MODE.EXECUTABLE)]);
+        const currentIndex = indexOf([makeIndexEntry('b', blobs.old as ObjectId)]);
+
+        // Act
+        const result = await materializeTree(ctx, { targetTree, currentIndex, headTree });
+
+        // Assert
+        const modes = new Map(result.newIndexEntries.map((e) => [e.path, e.mode]));
+        expect(modes.get('b' as FilePath)).toBe(FILE_MODE.EXECUTABLE);
+      });
+    });
+  });
+
   describe('Given b staged to a blob that is neither the head nor the target version', () => {
     describe('When the branch switch materialises', () => {
       it.each([
