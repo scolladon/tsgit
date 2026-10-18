@@ -1207,6 +1207,51 @@ describe('write-working-tree-file', () => {
       });
     });
 
+    describe('Given a blob over the buffered-write limit and a file system whose stream write fails', () => {
+      describe('When the blob is written', () => {
+        it('Then the failure is rethrown, the partial file is gone and the inflate source is cancelled', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const id = await writeRawObjectBytes(ctx, 'blob', new Uint8Array(1_048_577).fill(97));
+          const fullPath = `${ctx.layout.workDir}/fail.bin`;
+          const failure = new Error('disk full');
+          let cancelled = false;
+          const createInflateStream = ctx.compressor.createInflateStream.bind(ctx.compressor);
+          vi.spyOn(ctx.compressor, 'createInflateStream').mockImplementation(() => {
+            const inner = createInflateStream();
+            const reader = inner.readable.getReader();
+            const readable = new ReadableStream<Uint8Array>({
+              pull: async (controller) => {
+                const step = await reader.read();
+                if (step.done) controller.close();
+                else controller.enqueue(step.value);
+              },
+              cancel: (reason) => {
+                cancelled = true;
+                return reader.cancel(reason);
+              },
+            });
+            return { writable: inner.writable, readable };
+          });
+          vi.spyOn(ctx.fs, 'writeStream').mockImplementation(async (path, chunks) => {
+            await ctx.fs.write(path, encode('partial'));
+            for await (const _chunk of chunks) throw failure;
+            throw new Error('the stream was expected to yield');
+          });
+          const sut = writeStreamedBlob;
+
+          // Act
+          const thrown = await rejection(sut(ctx, fullPath, id, FILE_MODE.REGULAR));
+
+          // Assert
+          expect(thrown).toBe(failure);
+          expect((thrown as Error).message).toBe('disk full');
+          expect(await ctx.fs.exists(fullPath)).toBe(false);
+          expect(cancelled).toBe(true);
+        });
+      });
+    });
+
     describe('Given a small loose blob and an executable mode', () => {
       describe('When the blob is written', () => {
         it('Then the bytes land in one buffered write created with 0o777', async () => {
