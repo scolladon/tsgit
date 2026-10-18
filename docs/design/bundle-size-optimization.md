@@ -588,12 +588,12 @@ The npm tarball cap moved 1423 → 1424 KiB (measured pack 1 457 786 B); its att
 ## Size-limit raise — `.gitmodules` symlink aliases behind a backslash
 
 Measured with `npx size-limit --json` on clean builds, gzip: `main` at `785fadfc`, the branch after
-the Windows backslash refusal landed. Each failing row is raised to its measurement plus about 100 B;
-every other row is unchanged. The Full library row was raised first, after the alias scan alone.
+the security review fixes landed. Each failing row is raised to its measurement plus about 100 B;
+every other row is unchanged.
 
 | Row | main | measured | old limit | new limit | Attributable to |
 |---|--:|--:|--:|--:|---|
-| Full library | 394 361 B | 394 620 B | 394.5 kB | 394.7 kB | the `.gitmodules` symlink check's whole-path NTFS scan and the `.git` scan's component-leading backslash skip, both in the domain chunk |
+| Full library | 394 361 B | 394 718 B | 394.5 kB | 394.8 kB | the `.gitmodules` symlink check's whole-path NTFS scan, the `.git` scan's component-leading backslash skip, the windows index path rules and the sparse-excluded entry check |
 | Browser bundle (no-build) | 337 410 B | 337 663 B | 337.5 kB | 337.8 kB | the whole change, bundled once: the alias scan, the windows index path rules and their threading |
 
 The npm tarball cap moved 1424 → 1425 KiB (measured pack 1 458 653 B); its attribution lives in
